@@ -1,0 +1,48 @@
+# Public kendex settings seeded from installed skill defaults.
+# Skill scripts read this [env] table; process env and .env.local override it.
+# Keep secrets, tokens, and personal overrides in .env.local.
+
+[env]
+# The project's full test, lint and typecheck command, run from the worktree
+# root. The dev workflow refuses to validate while this is empty.
+DEV_VALIDATE_CMD = "python3 scripts/ci.py && python3 -m unittest discover -s scripts -p '*_test.py' && .agents/skills/review-gate/scripts/validate.sh && .agents/skills/bot-instructions/scripts/bot-instructions check"
+
+# The team every Linear write targets. No default: an empty value refuses
+# writes instead of guessing inside whatever workspace the API key reaches
+# (the create actions still take `--team <name>` per call). Confirm with
+# `linear.sh auth-check --strict`.
+LINEAR_TEAM = "vsys"
+
+# Issue identifier prefix used in examples (e.g. PROJ-123).
+LINEAR_TEAM_PREFIX = "VSY"
+
+# Declared agent-routing label set (e.g. "agent:generalist, agent:rust").
+# Non-empty makes `issues create` refuse a create carrying none of them —
+# such an issue is invisible to agent routing. Empty = guard off.
+LINEAR_AGENT_LABELS = "agent:generalist, agent:rust, agent:iced, agent:researcher, agent:multi, agent:human"
+
+# Non-empty makes `issues create` enforce the creation bar in the
+# project-management skill's SKILL.md, § Disposition → **Name what reaches
+# it**: it refuses a body with no `Reached by:` line, and a `--review-born
+# --priority 2` body with no `Symptom:` line. Empty = guard off.
+LINEAR_REQUIRE_REACH = "1"
+
+# Review policy shared with vanillagreencom/kendex.
+REVIEW_GATE_MODE = "enforce"
+REVIEW_GATE_CONTEXT = "Review gate"
+REVIEW_GATE_TRUSTED_STATUS_CONTEXTS = "CodeRabbit;copilot-pull-request-reviewer"
+REVIEW_GATE_CHECKRUN_SKIP_PATTERNS = "rate limited;skipped;queued"
+REVIEW_GATE_COMMENT_REVIEWERS = "chatgpt-codex-connector[bot]:Reviewed commit:;bmethod:REVIEWED-CLEAN"
+REVIEW_GATE_SHA_PREFIX_FLOOR = "7"
+REVIEW_GATE_OVERRIDE_CONTEXT = "kendex-reviewer-outage"
+REVIEW_GATE_STATUS_PUBLISHER_REJECT = "github-actions[bot]"
+REVIEW_GATE_REVIEW_OBJECT_TRUSTED_LOGINS = "coderabbitai[bot];copilot-pull-request-reviewer[bot];qodo-code-review[bot];chatgpt-codex-connector[bot];bmethod"
+REVIEW_GATE_REVIEW_OBJECT_MIN_STATE = "any"
+REVIEW_GATE_REVIEW_OBJECT_ERROR_PATTERNS = "encountered an error and was unable to review"
+REVIEW_GATE_THREADS = "enforce"
+REVIEW_GATE_API_ATTEMPTS = "1"
+REVIEW_GATE_API_RETRY_DELAY_SECONDS = "2"
+REVIEW_GATE_CARRY_FORWARD = ""
+REVIEW_GATE_VENDORED_PATHS = ""
+REVIEW_GATE_CARRY_FORWARD_EXCLUDE = ""
+REVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC = ""

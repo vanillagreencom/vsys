@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  application:
+    name: Bun (lint, types, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - name: Test CI failure handling
+        run: python3 -m unittest discover -s scripts -p '*_test.py' -v
+      - name: Check the application
+        run: python3 scripts/ci.py
+
+  review-gate-validate:
+    name: Review gate configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: .agents/skills/review-gate/scripts/validate.sh
+
+  bot-instructions:
+    name: Bot instructions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
+      - name: Check the generated review instructions
+        run: |
+          result=0
+          diff -qr trusted/.agents/skills/bot-instructions candidate/.agents/skills/bot-instructions || result=$?
+          case "$result" in
+            0) checker=trusted/.agents/skills/bot-instructions/scripts/bot-instructions ;;
+            1)
+              echo "::warning::The review package differs between the default branch and candidate; validating with the candidate package. This policy change needs human review."
+              checker=candidate/.agents/skills/bot-instructions/scripts/bot-instructions
+              ;;
+            *) echo "::error::Could not compare review packages"; exit "$result" ;;
+          esac
+          "$checker" check --repo candidate --spec candidate/.agents/skills/bot-instructions

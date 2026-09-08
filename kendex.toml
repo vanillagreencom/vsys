@@ -1,0 +1,253 @@
+schema = 6
+
+[sources.kendex]
+repo = "vanillagreencom/kendex"
+
+[install]
+harnesses = [
+    "claude",
+    "codex",
+    "opencode",
+    "cursor",
+    "pi",
+    "gemini",
+    "copilot",
+    "antigravity",
+]
+
+[agents.generalist]
+source = "kendex"
+
+[agents.planner]
+source = "kendex"
+
+[agents.researcher]
+source = "kendex"
+
+[agents.reviewer-arch]
+source = "kendex"
+
+[agents.reviewer-correctness]
+source = "kendex"
+
+[agents.reviewer-doc]
+source = "kendex"
+
+[agents.reviewer-error]
+source = "kendex"
+
+[agents.reviewer-perf]
+source = "kendex"
+
+[agents.reviewer-quality]
+source = "kendex"
+
+[agents.reviewer-safety]
+source = "kendex"
+
+[agents.reviewer-security]
+source = "kendex"
+
+[agents.reviewer-test]
+source = "kendex"
+
+[agents.rust]
+source = "kendex"
+
+[agents.scout]
+source = "kendex"
+
+[agents.tpm]
+source = "kendex"
+
+[skills.bot-instructions]
+source = "kendex"
+
+[skills.code-quality]
+source = "kendex"
+
+[skills.commit-guards]
+source = "kendex"
+
+[skills.decider]
+source = "kendex"
+
+[skills.deep-research]
+source = "kendex"
+
+[skills.dep-radar]
+source = "kendex"
+
+[skills.dev]
+source = "kendex"
+
+[skills.doc-limits]
+source = "kendex"
+
+[skills.docs-writing]
+source = "kendex"
+
+[skills.github]
+source = "kendex"
+
+[skills.harness-ci]
+source = "kendex"
+
+[skills.linear]
+source = "kendex"
+
+[skills.orch]
+source = "kendex"
+
+[skills.preflight]
+source = "kendex"
+
+[skills.project-management]
+source = "kendex"
+
+[skills.review-gate]
+source = "kendex"
+
+[skills.reviewer]
+source = "kendex"
+
+[skills.second-opinion]
+source = "kendex"
+
+[skills.worktree]
+source = "kendex"
+
+[hooks.block-argv-kill]
+source = "kendex"
+
+[hooks.block-bare-cd]
+source = "kendex"
+
+[hooks.block-repo-copy]
+source = "kendex"
+
+[hooks.block-unsafe-rm]
+source = "kendex"
+
+[hooks.block-worktree-refresh]
+source = "kendex"
+
+[hooks.command-safety]
+source = "kendex"
+
+[hooks.doc-drift-check]
+source = "kendex"
+
+[hooks.pre-commit-check]
+source = "kendex"
+
+[hooks.reviewer-read-only]
+source = "kendex"
+
+[hooks.reviewer-stop-check]
+source = "kendex"
+
+[hooks.session-drift-check]
+source = "kendex"
+
+[hooks.task-completed-check]
+source = "kendex"
+
+[commands.code-scrub]
+source = "kendex"
+
+[bot-instructions]
+schema = 1
+
+[bot-instructions.repo]
+name = "vsys"
+tracker = "VSY"
+summary = "vsys is a Linux terminal dashboard for agent processes and system health. It uses Bun, TypeScript, and OpenTUI. It reads system information without changing processes or system settings. The repository currently contains the application plan and development tools."
+
+[bot-instructions.bots]
+codex = true
+copilot = true
+coderabbit = false
+qodo = false
+qodo_best_practices = false
+qodo_review_md = false
+macroscope = false
+
+[bot-instructions.exclusions]
+derive_render = false
+
+[[bot-instructions.exclusions.path]]
+glob = ".agents/skills/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".claude/agents/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".claude/commands/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".claude/hooks/*.sh"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".claude/skills/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".codex/agents/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".codex/hooks/*.sh"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".cursor/rules/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".gemini/agents/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".gemini/commands/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".gemini/hooks/*.sh"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".github/agents/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".github/hooks/*.sh"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".opencode/agents/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".opencode/commands/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".opencode/instructions/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".pi/agents/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".pi/kendex/hooks/*.sh"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".pi/prompts/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
