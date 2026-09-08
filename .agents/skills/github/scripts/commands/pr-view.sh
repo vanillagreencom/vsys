@@ -1,0 +1,206 @@
+#!/bin/bash
+# View PR details for current branch or specified PR
+# Usage: pr-view [PR_NUMBER] [--json FIELDS]
+
+set -euo pipefail
+
+COMMAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/gh-auth.sh
+source "$COMMAND_DIR/../lib/gh-auth.sh"
+
+json_error() {
+    local status="$1"
+    local message="$2"
+    local detail="${3:-}"
+    local exit_code="${4:-1}"
+
+    jq -nc \
+        --arg status "$status" \
+        --arg error "$message" \
+        --arg detail "$detail" \
+        --argjson exit_code "$exit_code" \
+        '{status: $status, error: $error, detail: $detail, exit_code: $exit_code, number: null}'
+}
+
+emit_error_result() {
+    local status="$1"
+    local message="$2"
+    local detail="${3:-}"
+    local exit_code="${4:-1}"
+
+    printf 'pr-view: %s\n' "$message" >&2
+    if [ -n "$detail" ]; then
+        printf '%s\n' "$detail" >&2
+    fi
+    json_error "$status" "$message" "$detail" "$exit_code"
+}
+
+classify_gh_error() {
+    local detail_lc
+    detail_lc="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+
+    case "$detail_lc" in
+        *"no pull requests found"*|*"no pull request found"*|*"no open pull requests found"*|*"no pull requests"*found*)
+            printf '%s' "no_pr"
+            ;;
+        *"authentication"*|*"not logged in"*|*"bad credentials"*|*"http 401"*|*"unauthorized"*|*"gh auth login"*)
+            printf '%s' "auth_error"
+            ;;
+        *)
+            printf '%s' "gh_error"
+            ;;
+    esac
+}
+
+show_help() {
+    cat << 'EOF'
+View PR details
+
+Usage: pr-view [PR_NUMBER] [options]
+
+Arguments:
+  PR_NUMBER    PR number (optional, defaults to current branch's PR)
+
+Options:
+  --json FIELDS    Output specific fields as JSON (e.g., --json number,title)
+  --help           Show this help
+
+Note:
+  --format is not supported here. For a normalized safe/raw PR view use
+  'github.sh pr-data [PR] --format=safe|raw'.
+  Other unrecognized flags and extra positionals pass through to gh pr view
+  for compatibility.
+
+Errors:
+  Emits structured JSON on stdout ({"status":..., "error":..., "detail":...,
+  "exit_code":..., "number":...}) and exits nonzero. status is one of no_pr,
+  auth_error, token_resolution_failed, token_resolution_timeout,
+  token_resolution_unavailable, auth_timeout, gh_timeout, bad_timeout,
+  unsupported_flag, or gh_error. bad_timeout exits 2 and names the
+  KENDEX_GITHUB_*_TIMEOUT setting whose value is not a number of seconds to
+  one decimal place; nothing ran. Raw gh/op detail is preserved in stderr and
+  the JSON detail field.
+
+Examples:
+  github.sh pr-view              # View PR for current branch
+  github.sh pr-view 68           # View PR #68
+  github.sh pr-view --json number   # Check if PR exists (returns JSON or fails)
+  github.sh -C /path/to/worktree pr-view --json number
+EOF
+}
+
+main() {
+    local -a cmd=(gh pr view)
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json|--jq|--template|--repo|-q|-t|-R)
+                cmd+=("$1")
+                shift
+                if [ $# -gt 0 ]; then
+                    cmd+=("$1")
+                    shift
+                fi
+                ;;
+            --json=*)
+                cmd+=("$1")
+                shift
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            --format|--format=*)
+                emit_error_result "unsupported_flag" \
+                    "pr-view does not support --format" \
+                    "pr-view accepts only --json FIELDS. For normalized safe/raw PR output use: github.sh pr-data [PR] --format=safe|raw" \
+                    2
+                exit 2
+                ;;
+            *)
+                cmd+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # A bound the runner cannot read stops the command before it runs and
+    # comes back as 125 — with no output, because nothing ran, so at the call
+    # site it is indistinguishable from the command's own failure and an
+    # operator debugging a typo in their own setting is pointed at GitHub
+    # auth. Refused here by name, ahead of any request. The grammar is asked
+    # of the runner's own reader rather than restated.
+    local bound_name bound_value
+    for bound_name in KENDEX_GITHUB_AUTH_TIMEOUT KENDEX_GITHUB_OP_TIMEOUT \
+        KENDEX_GITHUB_PR_VIEW_TIMEOUT; do
+        bound_value="${!bound_name:-}"
+        [ -n "$bound_value" ] || continue
+        kendex_github_bound_ticks "$bound_value" >/dev/null && continue
+        emit_error_result "bad_timeout" \
+            "$bound_name is not a number of seconds to one decimal place" \
+            "$bound_value" 2
+        exit 2
+    done
+
+    local auth_out auth_err pr_out pr_err
+    PR_VIEW_TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "${PR_VIEW_TMP_DIR:-}"' EXIT
+    auth_out="$PR_VIEW_TMP_DIR/auth.out"
+    auth_err="$PR_VIEW_TMP_DIR/auth.err"
+    pr_out="$PR_VIEW_TMP_DIR/pr.out"
+    pr_err="$PR_VIEW_TMP_DIR/pr.err"
+
+    local auth_timeout="${KENDEX_GITHUB_AUTH_TIMEOUT:-10}"
+    local auth_status=0
+    kendex_github_auth_status_capture "$auth_timeout" "$auth_out" "$auth_err" || auth_status=$?
+    if [ "$auth_status" -ne 0 ]; then
+        local auth_detail
+        auth_detail="$(cat "$auth_out" "$auth_err" 2>/dev/null | head -c 1000)"
+        if [ "$auth_status" -eq 124 ]; then
+            emit_error_result "auth_timeout" "GitHub auth preflight timed out after ${auth_timeout}s" "$auth_detail" 124
+            exit 124
+        fi
+        if [ -n "${KENDEX_GITHUB_TOKEN_ERROR_TYPE:-}" ]; then
+            local token_detail="${KENDEX_GITHUB_TOKEN_ERROR_DETAIL:-$auth_detail}"
+            emit_error_result "$KENDEX_GITHUB_TOKEN_ERROR_TYPE" "${KENDEX_GITHUB_TOKEN_ERROR:-GitHub token resolution failed}" "$token_detail" 3
+            exit 3
+        fi
+        emit_error_result "auth_error" "GitHub auth preflight failed" "$auth_detail" 3
+        exit 3
+    fi
+
+    local pr_timeout="${KENDEX_GITHUB_PR_VIEW_TIMEOUT:-30}"
+    local output status=0
+    kendex_github_run_bounded_capture "$pr_timeout" "$pr_out" "$pr_err" "${cmd[@]}" || status=$?
+    output="$(cat "$pr_out")"
+    if [ "$status" -ne 0 ]; then
+        local detail error_status message exit_status
+        detail="$(cat "$pr_err" "$pr_out" 2>/dev/null | head -c 1000)"
+        if [ "$status" -eq 124 ]; then
+            emit_error_result "gh_timeout" "gh pr view timed out after ${pr_timeout}s" "$detail" 124
+            exit 124
+        fi
+        error_status="$(classify_gh_error "$detail")"
+        case "$error_status" in
+            no_pr)
+                message="No pull request found for the current branch"
+                exit_status=1
+                ;;
+            auth_error)
+                message="GitHub auth failed during gh pr view"
+                exit_status=3
+                ;;
+            *)
+                message="gh pr view failed"
+                exit_status="$status"
+                ;;
+        esac
+        emit_error_result "$error_status" "$message" "$detail" "$exit_status"
+        exit "$exit_status"
+    fi
+    if [ -n "$output" ]; then
+        printf '%s\n' "$output"
+    fi
+}
+
+main "$@"

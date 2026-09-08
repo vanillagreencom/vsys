@@ -1,0 +1,602 @@
+#!/bin/bash
+# Git diff domain summary - group changed files by domain with stats and risk flags
+# Usage: git-diff-summary [base-branch]
+#        git-diff-summary main
+#        git-diff-summary --staged
+
+set -euo pipefail
+
+show_help() {
+    cat << 'EOF'
+Git Diff Domain Summary
+
+Groups changed files by domain (auto-detected from top-level directories)
+with stats and risk flags. Designed for review routing decisions.
+
+Usage: git-diff-summary [-C path] [base-branch]
+
+Arguments:
+  base-branch    Compare against this branch (default: the remote default
+                 branch, e.g. origin/main; falls back to local main when
+                 no remote-tracking ref exists)
+  -C path        Run as if started in <path> (worktree support)
+  --staged       Show only staged changes
+  --head         Show uncommitted changes vs HEAD
+
+Output: JSON with scope (production|support), domain groupings, stats, and risk flags
+
+Risk flags:
+  unsafe_code_added, repr_c_struct_changed, extern_c_changed,
+  atomics_modified
+                 Rust-specific flags; each scans ADDED lines in .rs diffs
+                 only, for a line containing `unsafe ` (fn/impl/trait/block),
+                 `#[repr(C)]`, `extern "C"`, or `Atomic`/`atomic::`
+  panic_path_added
+                 panic patterns (panic!/unwrap()) added to production source
+  test_panic_path_added
+                 the same panic patterns added in a test surface instead —
+                 #[cfg(test)] modules, tests/ dirs, *_tests.rs, or files
+                 reachable only through a #[cfg(test)]-gated mod declaration
+                 in their declaring module, #[path] siblings included.
+                 Informational: re-review scoping treats this flag as
+                 non-risk.
+EOF
+}
+
+# Default base for review scope. A stale local main must not widen scope to
+# unrelated commits, so prefer the already-fetched remote-tracking
+# ref of the repo's default branch. No network: never fetches, so offline/CI
+# calls keep working. Falls back to local main when the repo has no remote.
+resolve_default_base() {
+    local head_ref
+    head_ref=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || true)
+    if [ -n "$head_ref" ] && git rev-parse --verify --quiet "$head_ref" >/dev/null; then
+        echo "${head_ref#refs/remotes/}"
+        return
+    fi
+    local candidate
+    for candidate in origin/main origin/master; do
+        if git rev-parse --verify --quiet "refs/remotes/$candidate" >/dev/null; then
+            echo "$candidate"
+            return
+        fi
+    done
+    echo "main"
+}
+
+# --- declaration-site test scoping ----------------------------
+# A .rs file with no file-local test markers is still test-only when its gate
+# lives at the declaration site in the declaring module:
+#     #[cfg(test)]
+#     #[path = "scan_fixtures.rs"]
+#     mod scan_fixtures;
+# File-local heuristics cannot see that, so classification also reads the
+# modules that could declare the file on the diff's new side: a file whose
+# every found declaration is #[cfg(test)]-gated is test scope; any ungated
+# declaration, or none found, keeps the file-local classification. Any read
+# failure during scanning also keeps it (fail closed: an unreadable declaring
+# module could have held an ungated route).
+#
+# The scan is LINE-BASED — no comment or literal masking, no nesting state.
+# It reads a run of column-zero outer attributes followed by a column-zero
+# `mod name;`: `pub`/`pub(...)` accepted, `#[path]` optional, `#[cfg(test)]`
+# anywhere in the run. Every #[cfg(test)] module declaration the fleet emits
+# is written that way.
+# Two consequences, stated rather than defended against:
+#   - Column-zero text that is not a top-level item reads as one anyway — the
+#     pair written flush left inside a block comment, a raw string, a macro
+#     body, or an inline `mod`. No fleet file is written that way.
+#   - A declaration the scan cannot see (an `include!`, one indented inside a
+#     body, one spelled across lines) emits nothing, and a candidate whose
+#     every VISIBLE declaration is gated is test scope — so a file reachable
+#     in production only through one of those, while also carrying a gated
+#     declaration, still classifies as test.
+# This is review-flag hygiene, not an adversarial control: a miss either way
+# moves a panic line between panic_path_added and the informational
+# test_panic_path_added, and the reviewer still reads the diff.
+
+# Mode of a path's new-side entry, empty when it has none. Reads main()'s
+# diff_ref.
+new_side_mode() {
+    case "$diff_ref" in
+        --staged|HEAD) git ls-files -s -- "$1" 2>/dev/null ;;
+        *)             git ls-tree HEAD -- "$1" 2>/dev/null ;;
+    esac | awk 'NR == 1 { print $1 }'
+}
+
+# Emits the new-side content of a file: HEAD for a base...HEAD diff, the
+# index for --staged, the worktree for --head. Reads main()'s diff_ref.
+# Exit 0 with content when readable, 2 when the file does not exist on the
+# new side, 1 on a read failure — callers must fail closed on 1.
+new_side_content() {
+    # A symlink entry (mode 120000) stores its TARGET PATH as the blob, so
+    # reading it yields link text instead of Rust — an empty parse that
+    # would silently drop every declaration the linked module holds while
+    # rustc compiles through the link and honours them. Reported unreadable
+    # so consulting candidates fail closed, never scanned as a module that
+    # happens to declare nothing.
+    if [ "$(new_side_mode "$1")" = 120000 ]; then return 1; fi
+    case "$diff_ref" in
+        --staged)
+            git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 || return 2
+            git show ":$1" 2>/dev/null || return 1
+            ;;
+        HEAD)
+            # Tracked-only, like the sibling listing: an untracked file in
+            # the worktree (e.g. the 2018-style parent path) must not carry
+            # declarations that reclassify a tracked change.
+            git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 || return 2
+            # Before -e, which follows the link: a DANGLING symlink is
+            # unreadable, not absent, and absent emits no record at all.
+            if [ -L "$1" ]; then return 1; fi
+            [ -e "$1" ] || return 2
+            cat "$1" 2>/dev/null || return 1
+            ;;
+        *)
+            git cat-file -e "HEAD:$1" 2>/dev/null || return 2
+            git show "HEAD:$1" 2>/dev/null || return 1
+            ;;
+    esac
+}
+
+# New-side tracked .rs files directly inside a directory (no recursion).
+# --head reads the index too: git diff HEAD never surfaces untracked files,
+# and an untracked declaration must not reclassify a tracked change.
+new_side_rs_siblings() {
+    case "$diff_ref" in
+        --staged|HEAD) git ls-files -- "$1" 2>/dev/null ;;
+        *)             git ls-tree --name-only HEAD -- "$1/" 2>/dev/null ;;
+    esac | awk -v d="$1" '
+        !/\.rs$/ { next }
+        d == "." { if ($0 !~ /\//) print; next }
+        { p = d "/" }
+        index($0, p) == 1 && substr($0, length(p) + 1) !~ /\// { print }
+    '
+}
+
+# Emit one candidate-agnostic record per declaration in the declaring module
+# on stdin, so a file is parsed once no matter how many candidates consult it:
+#   G<TAB><target>   declaration with #[cfg(test)] on the line above
+#   U<TAB><target>   declaration without the gate
+# <target> is the repo-relative file the declaration resolves to, lexically
+# normalized (`.`/`..` segments folded) so equivalent spellings compare equal.
+# A bare `mod name;` emits both of its legal forms, name.rs and name/mod.rs,
+# resolved in moddir: for mod-rs files (mod.rs, lib.rs, main.rs) their own
+# directory, for any other file its directory plus its stem. A #[path] value
+# resolves in fdir, the declaring file's own directory, per the Rust
+# reference. Attributes bind to the next declaration and are dropped by any
+# other line, so only the contiguous column-zero form carries a gate.
+scan_decl_records() {
+    awk -v moddir="$1" -v fdir="$2" '
+        function join(d, b) { return d == "." ? b : d "/" b }
+        # Lexical cleanup only — no symlink resolution. A path that escapes
+        # the repo root normalizes to "" and can never match a candidate.
+        function normpath(p,   parts, n, i, top, stack, out) {
+            n = split(p, parts, "/"); top = 0
+            for (i = 1; i <= n; i++) {
+                if (parts[i] == "" || parts[i] == ".") continue
+                if (parts[i] == "..") { if (top > 0) top--; else return "" }
+                else stack[++top] = parts[i]
+            }
+            out = ""
+            for (i = 1; i <= top; i++) out = out (i > 1 ? "/" : "") stack[i]
+            return out
+        }
+        function emit(target) { printf "%s\t%s\n", (gated ? "G" : "U"), target }
+        /^#\[cfg\(test\)\][[:space:]]*$/ { gated = 1; next }
+        /^#\[path[[:space:]]*=[[:space:]]*"[^"]*"\][[:space:]]*$/ {
+            match($0, /"[^"]*"/)
+            pathattr = substr($0, RSTART + 1, RLENGTH - 2)
+            next
+        }
+        # Any other outer attribute in the run: it belongs to the same
+        # declaration, so it carries the pending gate rather than clearing
+        # it. `#[cfg(test)]` above `#[allow(clippy::unwrap_used)]` above
+        # `mod tests;` is the second most common shape in the fleet.
+        /^#\[/ { next }
+        /^(pub([[:space:]]*[(][^)]*[)][[:space:]]*|[[:space:]]+))?mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;[[:space:]]*$/ {
+            name = $0
+            sub(/^pub([[:space:]]*[(][^)]*[)][[:space:]]*|[[:space:]]+)/, "", name)
+            sub(/^mod[[:space:]]+/, "", name)
+            sub(/[[:space:]]*;.*$/, "", name)
+            if (pathattr != "") emit(normpath(join(fdir, pathattr)))
+            else {
+                emit(normpath(join(moddir, name ".rs")))
+                emit(normpath(join(moddir, name "/mod.rs")))
+            }
+            gated = 0; pathattr = ""; next
+        }
+        { gated = 0; pathattr = "" }
+    '
+}
+
+# Scan caches (Bash 3.2-safe string accumulators, no associative arrays):
+# DECL_CACHE holds one `<file><TAB><filedir><TAB><record...>` line per
+# scanned finding (kind ERR marks an unreadable file); SCANNED_DIRS is a
+# newline-delimited membership set checked by exact line match, so paths
+# never meet glob interpretation. Scan state is tracked per DIRECTORY —
+# each directory's files are read once, and membership is consulted a
+# handful of times per candidate instead of once per file.
+DECL_CACHE=""
+SCANNED_DIRS=""
+
+set_contains() {
+    grep -Fxq -- "$1" <<<"$2"
+}
+
+# Scan one declaring module, appending its records to DECL_CACHE. Called
+# only from scan_dir_declaring_files, which guarantees once-per-file.
+scan_declaring_file() {
+    local fdir fbase fstem moddir rc content records
+    fdir=${1%/*}
+    [ "$1" = "${1#*/}" ] && fdir="."
+    fbase=${1##*/}
+    fstem=${fbase%.rs}
+    case "$fbase" in
+        mod.rs|lib.rs|main.rs) moddir="$fdir" ;;
+        *) if [ "$fdir" = "." ]; then moddir="$fstem"; else moddir="$fdir/$fstem"; fi ;;
+    esac
+    rc=0
+    content=$(new_side_content "$1") || rc=$?
+    # Absent on the new side: nothing to record. Unreadable: an ERR record —
+    # every candidate consulting this file must fail closed.
+    if [ "$rc" -eq 2 ]; then return 0; fi
+    if [ "$rc" -ne 0 ]; then
+        DECL_CACHE="$DECL_CACHE$1"$'\t'"$fdir"$'\t'ERR$'\n'
+        return 0
+    fi
+    # A UTF-8 BOM is an encoding preamble, not part of the first item: it
+    # would otherwise sit in front of a first-line #[cfg(test)].
+    content=${content#$'\xef\xbb\xbf'}
+    records=$(printf '%s\n' "$content" | scan_decl_records "$moddir" "$fdir" \
+        | awk -v f="$1" -v d="$fdir" '{print f "\t" d "\t" $0}')
+    [ -n "$records" ] && DECL_CACHE="$DECL_CACHE$records"$'\n'
+    return 0
+}
+
+# Scan every tracked .rs file directly inside a directory, once per
+# directory; the per-candidate evaluator filters the records afterwards
+# (including dropping the candidate's own).
+scan_dir_declaring_files() {
+    set_contains "$1" "$SCANNED_DIRS" && return 0
+    SCANNED_DIRS="$SCANNED_DIRS$1"$'\n'
+    local f
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        scan_declaring_file "$f"
+    done < <(new_side_rs_siblings "$1")
+}
+
+# scan_diff <out-var> <label> <git-diff-arg>...
+# `git diff <git-diff-arg>...` for a scan named <label>, failing closed and
+# loud when git fails (an unreadable tracked file in the diff, exit 128): a
+# bare death under pipefail, an empty diff, or a placeholder stat would each
+# read downstream as "nothing found". Stdout lands in <out-var>; git's stderr
+# is kept out of it (a warning must not shift hunk line numbers) and quoted
+# in the diagnostic.
+scan_diff() {
+    local __out_var="$1" __label="$2"; shift 2
+    local __err __rc=0 __out
+    __err=$(mktemp -t git-diff-summary-err.XXXXXX)
+    __out=$(git diff "$@" 2>"$__err") || __rc=$?
+    if [ "$__rc" -ne 0 ]; then
+        printf 'git-diff-summary: git diff failed (exit %d) while scanning %s (git diff %s): %s\n' \
+            "$__rc" "$__label" "$(printf '%s' "$*" | head -c 300)" \
+            "$(tr '\n' ' ' <"$__err" | head -c 300)" >&2
+        rm -f -- "$__err"
+        exit 1
+    fi
+    rm -f -- "$__err"
+    printf -v "$__out_var" '%s' "$__out"
+}
+
+is_cfg_test_declared() {
+    local candidate="$1"
+    local basefile dir d relevant_dirs routes
+    case "$candidate" in */*) ;; *) return 1 ;; esac
+    # A bin/ segment marks crate roots: reachable by the build without any
+    # mod declaration, so a gated declaration does not make them test-only.
+    case "$candidate" in bin/*|*/bin/*) return 1 ;; esac
+    basefile=${candidate##*/}
+    # lib.rs/main.rs are crate roots — reachable without a declaration. A
+    # mod.rs is NOT skipped: the directory form of `mod name;` legitimately
+    # resolves to name/mod.rs, and its declaration site can carry the gate.
+    case "$basefile" in lib.rs|main.rs) return 1 ;; esac
+    dir=${candidate%/*}
+    # Declaring modules are consulted from the candidate's own directory and
+    # every ancestor directory up to the repo root: same-dir siblings, the
+    # 2018-style parent file, and crate roots declaring nested files through
+    # an out-of-directory #[path]. Non-ancestor declarers are not consulted:
+    # like every unread shape, that emits no record and keeps file-local.
+    relevant_dirs="$dir"
+    d="$dir"
+    while [ "$d" != "${d%/*}" ]; do
+        d="${d%/*}"
+        relevant_dirs="$relevant_dirs"$'\n'"$d"
+    done
+    [ "$d" != "." ] && relevant_dirs="$relevant_dirs"$'\n'"."
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        scan_dir_declaring_files "$d"
+    done < <(printf '%s\n' "$relevant_dirs")
+    # Evaluate the cached records. Declarations match on their RESOLVED
+    # target, so a route discovered by any scan is genuine no matter which
+    # candidate prompted it; ERR (unreadable module) fails this candidate
+    # closed only when the file sits in its consulted set.
+    # The directory list crosses into awk tab-joined: BWK awk (macOS) refuses
+    # a -v value carrying a newline, and a tab cannot sit in a path the
+    # tab-separated cache already holds.
+    routes=$(printf '%s\n' "$DECL_CACHE" | awk -F'\t' \
+        -v cand="$candidate" -v dirs="$(printf '%s' "$relevant_dirs" | tr '\n' '\t')" '
+        BEGIN { n = split(dirs, a, "\t"); for (i = 1; i <= n; i++) rd[a[i]] = 1 }
+        $1 == cand { next }
+        $3 == "ERR" { if ($2 in rd) print "err"; next }
+        $4 != cand { next }
+        $3 == "G" { print "gated"; next }
+        $3 == "U" { print "ungated" }
+    ')
+    case "$routes" in *err*) return 1 ;; esac
+    case "$routes" in *ungated*) return 1 ;; esac
+    case "$routes" in *gated*) return 0 ;; esac
+    return 1
+}
+
+main() {
+    local base=""
+    local diff_args=""
+    local git_dir=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h) show_help; exit 0 ;;
+            --staged) diff_args="--staged"; shift ;;
+            --head) diff_args="HEAD"; shift ;;
+            -C) git_dir="$2"; shift 2 ;;
+            *) base="$1"; shift ;;
+        esac
+    done
+
+    # Use -C path if provided, otherwise repo root
+    if [ -n "$git_dir" ]; then
+        cd "$git_dir"
+    else
+        cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    fi
+
+    # Determine diff command (base resolution must run inside the target repo)
+    local diff_ref
+    if [ -n "$diff_args" ]; then
+        diff_ref="$diff_args"
+    else
+        if [ -z "$base" ]; then
+            base=$(resolve_default_base)
+        fi
+        diff_ref="${base}...HEAD"
+    fi
+
+    # Get file list with status (A/M/D/R). An unreadable diff — a base ref that
+    # does not exist, a broken repository — must not be reported as the empty
+    # summary below: that reads downstream as "nothing changed, no risk".
+    local files diff_rc=0
+    files=$(git diff --name-status "$diff_ref" 2>&1) || diff_rc=$?
+    if [ "$diff_rc" -ne 0 ]; then
+        printf 'git-diff-summary: git diff %s failed: %s\n' \
+            "$diff_ref" "$(printf '%s' "$files" | tr '\n' ' ' | head -c 300)" >&2
+        exit 1
+    fi
+
+    if [ -z "$files" ]; then
+        echo '{"files_changed": 0, "scope": "support", "domains": {}, "risk_flags": []}'
+        exit 0
+    fi
+
+    # Get stats
+    local stat_out="" stats
+    scan_diff stat_out "stats" --stat --stat-count=999 "$diff_ref"
+    stats=$(printf '%s\n' "$stat_out" | tail -1)
+
+    # Detect risk flags via grep (avoids passing huge diffs through jq)
+    local risk_flags="[]"
+    local flags=()
+    local rust_diff_added=""
+    scan_diff rust_diff_added "risk flags" "$diff_ref" -- '*.rs'
+    rust_diff_added=$(printf '%s\n' "$rust_diff_added" | grep -E '^\+' || true)
+
+    if grep -qE '^\+.*unsafe ' <<<"$rust_diff_added"; then flags+=("unsafe_code_added"); fi
+    if grep -qE '^\+.*#\[repr\(C\)\]' <<<"$rust_diff_added"; then flags+=("repr_c_struct_changed"); fi
+    if grep -qE '^\+.*extern "C"' <<<"$rust_diff_added"; then flags+=("extern_c_changed"); fi
+    if grep -qE '^\+.*(Atomic|atomic::)' <<<"$rust_diff_added"; then flags+=("atomics_modified"); fi
+
+    # panic/unwrap in production source is the `panic_path_added` risk flag.
+    # The same patterns whose enclosing context is a test surface — tests/
+    # dirs, *_tests.rs files, or #[cfg(test)] modules inside production files —
+    # are the distinct informational `test_panic_path_added` flag instead: a
+    # test assertion is not a production panic path.
+    # Changed .rs files that carry no file-local test markers but are reached
+    # only through #[cfg(test)]-gated declarations are test scope.
+    local cfg_test_declared="" rs_candidate
+    while IFS= read -r rs_candidate; do
+        [ -n "$rs_candidate" ] || continue
+        if is_cfg_test_declared "$rs_candidate"; then
+            cfg_test_declared="$cfg_test_declared$rs_candidate"$'\n'
+        fi
+    done < <(echo "$files" | awk -F'\t' '{print $NF}' \
+        | grep -E '\.rs$' \
+        | grep -vE '(/tests?/|/benches/|/fixtures/|_tests?\.rs$)' || true)
+
+    local prod_paths
+    prod_paths=$(echo "$files" | awk -F'\t' '{print $NF}' \
+        | grep -E '(^|/)src/|(^|/)lib/' \
+        | grep -vE '(/tests/|/benches/|/test/|/fixtures/|_tests?\.rs$|\.test\.[jt]sx?$|\.spec\.[jt]sx?$)' || true)
+    if [ -n "$cfg_test_declared" ] && [ -n "$prod_paths" ]; then
+        prod_paths=$(grep -Fxv -f <(printf '%s' "$cfg_test_declared") <<<"$prod_paths" || true)
+    fi
+    local prod_panic=0 test_panic=0
+    # Pathspecs are passed as a quoted array — word splitting must not shred
+    # paths containing whitespace into bogus pathspecs.
+    local p
+    local prod_path_args=()
+    while IFS= read -r p; do
+        [ -n "$p" ] && prod_path_args+=("$p")
+    done <<<"$prod_paths"
+    if [ ${#prod_path_args[@]} -gt 0 ]; then
+        # path<TAB>new-side line number of each added panic-pattern line
+        local prod_diff="" panic_lines
+        scan_diff prod_diff "panic paths" "$diff_ref" -- "${prod_path_args[@]}"
+        panic_lines=$(printf '%s\n' "$prod_diff" | awk '
+            /^diff --git / { path = ""; inhunk = 0 }
+            /^\+\+\+ b\//  { path = substr($0, 7); next }
+            /^@@/ {
+                split($0, parts, "+"); split(parts[2], nums, /[, ]/)
+                lineno = nums[1] + 0; inhunk = 1; next
+            }
+            !inhunk || path == "" { next }
+            /^-/ { next }
+            /^\+/ {
+                if ($0 ~ /panic!|unwrap\(\)/) print path "\t" lineno
+                lineno++; next
+            }
+            { lineno++ }
+        ')
+        local panic_file file_lines file_content counts pcount tcount
+        while IFS= read -r panic_file; do
+            [ -n "$panic_file" ] || continue
+            file_lines=$(echo "$panic_lines" | awk -F'\t' -v f="$panic_file" '$1 == f {print $2}' | paste -sd, -)
+            # New-side content of the file: HEAD for a base...HEAD diff, the
+            # index for --staged, the worktree for --head.
+            case "$diff_ref" in
+                --staged) file_content=$(git show ":$panic_file" 2>/dev/null || true) ;;
+                HEAD)     file_content=$(cat "$panic_file" 2>/dev/null || true) ;;
+                *)        file_content=$(git show "HEAD:$panic_file" 2>/dev/null || true) ;;
+            esac
+            # Split the panic lines into production vs #[cfg(test)] context by
+            # brace-tracking the block a #[cfg(test)] attribute opens.
+            counts=$(printf '%s\n' "$file_content" | awk -v targets="$file_lines" '
+                BEGIN { n = split(targets, t, ","); for (i = 1; i <= n; i++) want[t[i] + 0] = 1 }
+                {
+                    opens = gsub(/{/, "{"); closes = gsub(/}/, "}")
+                    intest = 0
+                    if (depth > 0) {
+                        intest = 1
+                        depth += opens - closes
+                        if (depth < 0) depth = 0
+                    } else if (pending) {
+                        if (opens > 0) {
+                            pending = 0; intest = 1
+                            depth = opens - closes
+                            if (depth < 0) depth = 0
+                        } else if ($0 !~ /^[[:space:]]*(#\[|\/\/)/ && $0 !~ /^[[:space:]]*$/) {
+                            # braceless item (e.g. a use) consumed the attribute
+                            pending = 0; intest = 1
+                        }
+                    } else if ($0 ~ /#\[cfg\(test\)\]/) {
+                        intest = 1
+                        if (opens > 0) {
+                            depth = opens - closes
+                            if (depth < 0) depth = 0
+                        } else { pending = 1 }
+                    }
+                    if (want[NR]) { if (intest) tcount++; else pcount++ }
+                }
+                END { printf "%d %d\n", pcount + 0, tcount + 0 }
+            ')
+            read -r pcount tcount <<< "$counts"
+            if [ "$pcount" -gt 0 ]; then prod_panic=1; fi
+            if [ "$tcount" -gt 0 ]; then test_panic=1; fi
+        done < <(echo "$panic_lines" | cut -f1 | sort -u)
+    fi
+    if [ "$prod_panic" -eq 1 ]; then flags+=("panic_path_added"); fi
+
+    # Whole-file test surfaces (tests/ dirs, *_tests.rs) carry the same
+    # informational flag so the addition stays visible without routing as risk.
+    local test_paths
+    test_paths=$(echo "$files" | awk -F'\t' '{print $NF}' \
+        | grep -E '(^|/)tests?/|_tests?\.rs$' || true)
+    test_paths=$(printf '%s\n%s' "$test_paths" "$cfg_test_declared" | grep -v '^$' | sort -u || true)
+    local test_path_args=()
+    while IFS= read -r p; do
+        [ -n "$p" ] && test_path_args+=("$p")
+    done <<<"$test_paths"
+    if [ ${#test_path_args[@]} -gt 0 ]; then
+        local test_diff=""
+        scan_diff test_diff "test panic paths" "$diff_ref" -- "${test_path_args[@]}"
+        test_diff=$(printf '%s\n' "$test_diff" | grep -E '^\+' || true)
+        if grep -qE '^\+.*(panic!|unwrap\(\))' <<<"$test_diff"; then test_panic=1; fi
+    fi
+    if [ "$test_panic" -eq 1 ]; then flags+=("test_panic_path_added"); fi
+
+    if [ ${#flags[@]} -gt 0 ]; then
+        risk_flags=$(printf '"%s"\n' "${flags[@]}" | jq -s '.')
+    fi
+
+    # Classify files into domains and build output.
+    # Domain = top-level directory name. Standard infrastructure dirs are grouped.
+    local cfg_test_json
+    cfg_test_json=$(printf '%s' "$cfg_test_declared" | jq -Rs 'split("\n") | map(select(length > 0))')
+    echo "$files" | jq -Rs --arg stats "$stats" --argjson risk_flags "$risk_flags" \
+        --argjson cfg_test_declared "$cfg_test_json" '
+        # Parse file list
+        split("\n") | map(select(length > 0)) | map(
+            capture("^(?<status>[AMDRC])[0-9]*\t(?<path>.+)$") // null
+        ) | map(select(. != null)) |
+        # Rename rows carry "old<TAB>new": keep the DESTINATION — it is what
+        # exists on the new side and what scope classification keys on.
+        map(.path = (.path | split("\t") | last)) |
+
+        # Classify each file into domain + scope
+        map(. + {
+            domain: (
+                if .path | test("^docs/")
+                    then "docs"
+                elif .path | test("^(tools|scripts|\\.github|\\.ci|\\.circleci|\\.gitlab|infra|deploy|terraform|pulumi)/")
+                    then "infra"
+                else
+                    (.path | split("/")[0] // "root")
+                end
+            ),
+            file_scope: (
+                if (.path as $p | $cfg_test_declared | index($p)) != null
+                    then "test"
+                elif .path | test("(/tests?/|/benches?/|/fixtures/|_tests?\\.rs$|\\.test\\.[jt]sx?$|\\.spec\\.[jt]sx?$)")
+                    then "test"
+                elif .path | test("^docs/")
+                    then "docs"
+                elif .path | test("^(tools|scripts|\\.github|\\.ci|\\.circleci|\\.gitlab|infra|deploy|terraform|pulumi)/")
+                    then "infra"
+                else "production"
+                end
+            )
+        }) |
+
+        # Capture scope before grouping (production if any prod file touched)
+        . as $all_files |
+
+        # Group by domain
+        group_by(.domain) | map({
+            key: .[0].domain,
+            value: {
+                files: [.[] | .path],
+                count: length,
+                added: [.[] | select(.status == "A")] | length,
+                modified: [.[] | select(.status == "M")] | length,
+                deleted: [.[] | select(.status == "D")] | length
+            }
+        }) | from_entries |
+
+        # Parse stats line
+        . as $domains |
+        ($stats | capture("(?<files>[0-9]+) files? changed(, (?<ins>[0-9]+) insertions?\\(\\+\\))?(, (?<del>[0-9]+) deletions?\\(-\\))?") //
+            {files: "0", ins: "0", del: "0"}) as $s |
+
+        {
+            files_changed: ($s.files | tonumber),
+            insertions: (($s.ins // "0") | tonumber),
+            deletions: (($s.del // "0") | tonumber),
+            scope: (if ($all_files | any(.file_scope == "production")) then "production" else "support" end),
+            domains: $domains,
+            risk_flags: $risk_flags
+        }
+    '
+}
+
+main "$@"

@@ -1,0 +1,35 @@
+[env]
+
+# LINEAR — which Linear team this project writes to. LINEAR_TEAM below is
+# the one key marked `# required`, so installing this skill writes that key
+# into <project>/kendex.settings.toml and nothing else. What an install
+# writes, and when, is kendex's docs/authoring/settings.md. Full key
+# reference: linear README.md.
+
+# The team every Linear write targets. No default: an empty value refuses
+# writes instead of guessing inside whatever workspace the API key reaches
+# (the create actions still take `--team <name>` per call). Confirm with
+# `linear.sh auth-check --strict`.
+LINEAR_TEAM = "" # required
+
+# Issue identifier prefix used in examples (e.g. PROJ-123).
+LINEAR_TEAM_PREFIX = "PROJ"
+
+# Declared agent-routing label set (e.g. "agent:generalist, agent:rust").
+# Non-empty makes `issues create` refuse a create carrying none of them —
+# such an issue is invisible to agent routing. Empty = guard off.
+LINEAR_AGENT_LABELS = ""
+
+# Non-empty makes `issues create` enforce the creation bar in the
+# project-management skill's SKILL.md, § Disposition → **Name what reaches
+# it**: it refuses a body with no `Reached by:` line, and a `--review-born
+# --priority 2` body with no `Symptom:` line. Empty = guard off.
+LINEAR_REQUIRE_REACH = ""
+
+# Default output format for read commands: safe, table, ids, raw.
+LINEAR_FORMAT = "safe"
+
+# Seconds before the first retry of a rate-limited or failed GraphQL call,
+# doubling on each further attempt. A whole number of seconds; 0 retries
+# without waiting at all.
+LINEAR_RETRY_BASE_DELAY = "1"

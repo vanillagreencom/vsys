@@ -1,0 +1,442 @@
+#!/usr/bin/env bash
+# Native Git worktree locks carrying an owner and a TTL heartbeat.
+set -euo pipefail
+GUARD_MARKER='kendex-session-guard' GUARD_VERSION='v1'
+DEFAULT_TTL_MINUTES=720 EXIT_NO_LEASE=3 EXIT_UNMANAGED=4
+EXIT_ENUMERATION=5 EXIT_OWNED=75
+fail() {
+	printf 'worktree-session-guard: %s\n' "$1" >&2
+	exit 1
+}
+
+usage() {
+	cat <<'EOF'
+Usage: worktree-session-guard <command> [PATH] [options]
+
+Commands:
+  claim PATH        Claim a linked worktree, or refresh the same owner's lease.
+  refresh PATH      Refresh the same owner's heartbeat without unlocking.
+  release PATH      Release the owner's lease. --stale uses heartbeat age.
+  status PATH       Print lock state as JSON.
+  list              Print one JSON object per linked worktree.
+  sweep             Release every guard lease past the TTL.
+
+Options (a flag a command does not take is a usage failure):
+  --owner NAME       claim, refresh, release, status. Lease owner; defaults to
+                     KENDEX_SESSION_OWNER, HT_SESSION_OWNER, then USER for
+                     mutating owner commands.
+  --ttl-minutes N    release, sweep. Heartbeat TTL in minutes (default 720).
+  --stale            release. Release a lease only when it is past the TTL.
+  --force            release. Release a foreign lease regardless of age.
+  --dry-run          sweep. Report results without releasing leases.
+  --repo DIR         release, status, list, sweep. Repository checkout.
+
+Mutations (claim, refresh, release, sweep) serialize on a lock in the
+repository's common dir, through flock(1) where it is on PATH and a mkdir
+mutex otherwise.
+
+Exit codes: 0 success, 1 usage/Git failure, 3 no lock, 4 non-guard lock,
+5 enumeration failure or a lease sweep could not evaluate, 75 foreign
+owner/lock or a lease not yet stale.
+EOF
+}
+
+canonical_dir() {
+	[[ -d "$1" ]] || return 1
+	(cd -P -- "$1" && pwd -P)
+}
+
+# Normalises. and.. textually, for paths that does not exist and so have no
+# symlink left to resolve.
+lexical_path() {
+	local path="$1" segment rest out=''
+	[[ "$path" == /* ]] || path="$PWD/$path"
+	rest="$path"
+	while [[ -n "$rest" ]]; do
+		segment="${rest%%/*}"
+		if [[ "$segment" == "$rest" ]]; then rest=''; else rest="${rest#*/}"; fi
+		case "$segment" in
+			'' | .) ;;
+			..) out="${out%/*}" ;;
+			*) out="$out/$segment" ;;
+		esac
+	done
+	printf '%s\n' "${out:-/}"
+}
+
+# Canonical while the path exists, lexical once it does not: a worktree whose
+# whole directory tree was destroyed must still resolve, or list stops
+# reporting it and sweep stops releasing it — the case sweep exists for.
+absolute_path() {
+	local path="$1" parent base resolved
+	if [[ -d "$path" ]]; then
+		canonical_dir "$path"
+		return
+	fi
+	parent="$(dirname -- "$path")"
+	base="$(basename -- "$path")"
+	if resolved="$(canonical_dir "$parent")"; then
+		printf '%s/%s\n' "$resolved" "$base"
+		return
+	fi
+	lexical_path "$path"
+}
+
+sanitize_owner() {
+	local value="$1"
+	[[ -n "$value" && ${#value} -le 64 && "$value" =~ ^[A-Za-z0-9._:@+-]+$ ]] \
+		|| fail "owner must use at most 64 characters from A-Z a-z 0-9 . _ : @ + -"
+	printf '%s\n' "$value"
+}
+
+sanitize_host() {
+	local value="${HOSTNAME:-}"
+	[[ -n "$value" ]] || value="$(uname -n 2>/dev/null || true)"
+	[[ -n "$value" ]] || value=unknown-host
+	printf '%s\n' "${value//[^A-Za-z0-9._:@+-]/-}"
+}
+
+iso_from_epoch() {
+	local epoch="$1" value=''
+	value="$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+	[[ -n "$value" ]] || value="$(date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+	[[ -n "$value" ]] || fail "cannot format epoch $epoch"
+	printf '%s\n' "$value"
+}
+
+lease_field() {
+	local lease="$1" key="$2" rest
+	rest="${lease#* $key=}"
+	[[ "$rest" != "$lease" ]] || return 1
+	printf '%s\n' "${rest%% *}"
+}
+
+lease_is_managed() {
+	[[ "$1" == "$GUARD_MARKER $GUARD_VERSION "* ]]
+}
+
+lease_line() {
+	local owner="$1" claimed="$2" heartbeat="$3"
+	printf '%s %s owner=%s pid=%s host=%s claimed=%s claimed_epoch=%s heartbeat=%s heartbeat_epoch=%s\n' \
+		"$GUARD_MARKER" "$GUARD_VERSION" "$owner" "$$" "$(sanitize_host)" \
+		"$(iso_from_epoch "$claimed")" "$claimed" "$(iso_from_epoch "$heartbeat")" "$heartbeat"
+}
+
+# Control characters are escaped, never deleted: lock_reason carries arbitrary
+# operator text from `git worktree lock --reason`, and a tab or newline emitted
+# raw would make list and status invalid JSON. Escaping a newline also keeps
+# `list` at one JSON object per line. A NUL cannot reach here: bash strings are
+# NUL-terminated, so the shell drops one at assignment.
+json_escape() {
+	local value="$1" out char rest code
+	value="${value//\\/\\\\}"
+	value="${value//\"/\\\"}"
+	value="${value//$'\b'/\\b}"
+	value="${value//$'\f'/\\f}"
+	value="${value//$'\n'/\\n}"
+	value="${value//$'\r'/\\r}"
+	value="${value//$'\t'/\\t}"
+	# Whatever control characters remain have no short form, so spell them
+	# \u00xx. Guarded because the character-at-a-time rewrite is only needed
+	# for that rare input.
+	if [[ "$value" != "${value//[[:cntrl:]]/}" ]]; then
+		out=''
+		rest="$value"
+		while [[ -n "$rest" ]]; do
+			char="${rest:0:1}"
+			rest="${rest:1}"
+			printf -v code '%d' "'$char"
+			if ((code < 32)); then
+				printf -v char '\\u%04x' "$code"
+			fi
+			out+="$char"
+		done
+		value="$out"
+	fi
+	printf '%s' "$value"
+}
+
+resolve_common_dir() {
+	local repo="$1" common
+	common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+	[[ "$common" == /* ]] || common="$repo/$common"
+	canonical_dir "$common"
+}
+
+# A registration's gitdir file may hold a relative path, which git writes
+# relative to the registration directory itself — never to the caller's cwd.
+#
+# The whole file, not its first line: a worktree path may contain a newline.
+# Command substitution strips the trailing newline git writes,
+# and only that one, since the recorded value always ends in "/.git", so no
+# trailing newline can be part of the path itself.
+registered_gitdir() {
+	local registration="$1" gitdir
+	gitdir="$(cat -- "$registration/gitdir" 2>/dev/null || true)"
+	[[ -n "$gitdir" ]] || return 1
+	[[ "$gitdir" == /* ]] || gitdir="$registration/$gitdir"
+	printf '%s\n' "$gitdir"
+}
+
+resolve_registration() {
+	local requested="$1" repo="$2" common registration gitdir worktree
+	REQUESTED_PATH="$(absolute_path "$requested")" || return 1
+	common="$(resolve_common_dir "$repo")" || return 1
+	COMMON_DIR="$common"
+	for registration in "$common"/worktrees/*; do
+		[[ -d "$registration" && -f "$registration/gitdir" ]] || continue
+		gitdir="$(registered_gitdir "$registration")" || continue
+		worktree="$(absolute_path "${gitdir%/.git}" 2>/dev/null || true)"
+		if [[ "$worktree" == "$REQUESTED_PATH" ]]; then
+			REGISTRATION="$registration"
+			LOCK_FILE="$registration/locked"
+			DIRECTORY_PRESENT=false
+			[[ -d "$REQUESTED_PATH" ]] && DIRECTORY_PRESENT=true
+			return 0
+		fi
+	done
+	return 1
+}
+
+GUARD_MUTEX_DIR=''
+release_guard_mutex() {
+	[[ -n "$GUARD_MUTEX_DIR" ]] || return 0
+	rmdir -- "$GUARD_MUTEX_DIR" 2>/dev/null || true
+	GUARD_MUTEX_DIR=''
+}
+
+# Serializes the whole read-decide-write of every mutating command. Without it
+# two owners racing `claim` both read "no lease", both write, and both exit 0
+# believing they hold the worktree — the failure this guard exists to stop.
+# The lock lives in the shared common dir, so one acquisition covers every
+# worktree of the repository and `sweep` takes it ONCE around its loop rather
+# than dropping it between iterations.
+#
+# flock(1) is preferred because the kernel releases it however the holder dies.
+# Stock macOS ships none, so a mkdir mutex carries the claim there: mkdir is
+# atomic on POSIX filesystems, so exactly one contender creates the directory.
+# The two do not lock each other out, so this ASSUMES every guard process on a
+# host resolves the same one. Nothing enforces that — `command -v flock` is
+# re-evaluated per invocation — and a flock-less PATH running beside a normal
+# one takes two independent locks and serializes nothing. It sits beside the
+# single-host assumption the lock's location in the common dir already makes.
+# When neither mechanism can take the lock the command fails loudly rather
+# than running unguarded.
+acquire_guard_mutex() {
+	local common="$1" lock_path tries=0
+	lock_path="$common/kendex-worktree-session-guard.lock"
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>"$lock_path" || fail "cannot open the session-guard lock file: $lock_path"
+		flock -x 9 || fail "cannot acquire the session-guard lock: $lock_path"
+		return 0
+	fi
+	# Armed before the loop, never after it wins: with no holder liveness a
+	# leaked directory is never reclaimed, so every later mutation on this
+	# repository would wait 60s and fail. release_guard_mutex is a no-op while
+	# GUARD_MUTEX_DIR is empty, so arming early costs nothing. One command
+	# boundary is still uncovered — a signal handled between mkdir returning
+	# and the assignment below — because recording the directory before mkdir
+	# would let a losing contender rmdir the winner's mutex, which is worse
+	# than a rare leak the error message already tells an operator to clear.
+	trap release_guard_mutex EXIT
+	while ! mkdir -- "$lock_path.d" 2>/dev/null; do
+		tries=$((tries + 1))
+		[[ "$tries" -lt 600 ]] || fail "cannot acquire the session-guard mutex after 60s: $lock_path.d. If no guard process is running, remove it: rmdir '$lock_path.d'"
+		sleep 0.1
+	done
+	GUARD_MUTEX_DIR="$lock_path.d"
+}
+
+write_lease() {
+	local file="$1" lease="$2" staged="$1.$$"
+	printf '%s\n' "$lease" >"$staged" || fail "cannot stage lease for $REQUESTED_PATH"
+	mv -f -- "$staged" "$file" || fail "cannot update lease for $REQUESTED_PATH"
+}
+
+read_lease() {
+	LEASE_TEXT=''
+	[[ -f "$LOCK_FILE" ]] || return 1
+	LEASE_TEXT="$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)"
+}
+
+lease_age() {
+	local heartbeat
+	heartbeat="$(lease_field "$1" heartbeat_epoch 2>/dev/null || true)"
+	[[ "$heartbeat" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$(( $(date -u +%s) - heartbeat ))"
+}
+
+status_json() {
+	local locked=false managed=false owner='' pid='' host='' claimed='' heartbeat='' age=-1 reason=''
+	if read_lease; then
+		locked=true
+		reason="$LEASE_TEXT"
+		if lease_is_managed "$LEASE_TEXT"; then
+			managed=true
+			owner="$(lease_field "$LEASE_TEXT" owner 2>/dev/null || true)"
+			pid="$(lease_field "$LEASE_TEXT" pid 2>/dev/null || true)"
+			host="$(lease_field "$LEASE_TEXT" host 2>/dev/null || true)"
+			claimed="$(lease_field "$LEASE_TEXT" claimed 2>/dev/null || true)"
+			heartbeat="$(lease_field "$LEASE_TEXT" heartbeat 2>/dev/null || true)"
+			age="$(lease_age "$LEASE_TEXT" 2>/dev/null || printf '%s' -1)"
+		fi
+	fi
+	printf '{"path":"%s","directory_present":%s,"locked":%s,"managed":%s,"owner":"%s","pid":"%s","host":"%s","claimed_at":"%s","heartbeat_at":"%s","heartbeat_age_seconds":%s,"lock_reason":"%s"}\n' \
+		"$(json_escape "$REQUESTED_PATH")" "$DIRECTORY_PRESENT" "$locked" "$managed" \
+		"$(json_escape "$owner")" "$(json_escape "$pid")" "$(json_escape "$host")" \
+		"$(json_escape "$claimed")" "$(json_escape "$heartbeat")" "$age" "$(json_escape "$reason")"
+}
+
+release_current() {
+	local stale="$1" force="$2" ttl_seconds="$3" recorded age
+	read_lease || return "$EXIT_NO_LEASE"
+	lease_is_managed "$LEASE_TEXT" || return "$EXIT_UNMANAGED"
+	recorded="$(lease_field "$LEASE_TEXT" owner 2>/dev/null || true)"
+	if [[ "$stale" == true && "$force" != true ]]; then
+		age="$(lease_age "$LEASE_TEXT" 2>/dev/null || true)"
+		[[ "$age" =~ ^-?[0-9]+$ && "$age" -ge "$ttl_seconds" ]] || return "$EXIT_OWNED"
+	elif [[ "$force" != true && "$recorded" != "$OWNER" ]]; then
+		printf 'worktree-session-guard: %s is claimed by owner=%s\n' "$REQUESTED_PATH" "${recorded:-unknown}" >&2
+		return "$EXIT_OWNED"
+	fi
+	rm -f -- "$LOCK_FILE"
+}
+
+command="${1:-}"
+[[ -n "$command" ]] || { usage; exit 1; }
+shift
+case "$command" in
+	-h | --help | help) usage; exit 0 ;;
+	claim | refresh | release | status)
+		[[ $# -gt 0 ]] || fail "$command requires a worktree path"
+		path="$1"
+		shift
+		;;
+	list | sweep) path='' ;;
+	*) fail "unknown command: $command" ;;
+esac
+
+# A flag a command does not implement is a usage failure, never a silent
+# no-op: `release --dry-run` deleted the very lease the flag promised to
+# preserve. Checked in the parse loop, so the refusal precedes every read.
+require_flag_applies() {
+	local flag="$1" applicable="$2"
+	case " $applicable " in
+		*" $command "*) return 0 ;;
+	esac
+	fail "$flag does not apply to $command (applies to: $applicable)"
+}
+
+OWNER=''
+owner_set=false
+repo="$PWD"
+repo_set=false
+ttl="$DEFAULT_TTL_MINUTES"
+stale=false
+force=false
+dry_run=false
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--owner) require_flag_applies --owner 'claim refresh release status'; [[ $# -ge 2 ]] || fail '--owner requires a value'; OWNER="$(sanitize_owner "$2")"; owner_set=true; shift 2 ;;
+		--ttl-minutes) require_flag_applies --ttl-minutes 'release sweep'; [[ $# -ge 2 && "$2" =~ ^[0-9]{1,10}$ ]] || fail '--ttl-minutes requires a non-negative integer'; ttl="$2"; shift 2 ;;
+		--stale) require_flag_applies --stale 'release'; stale=true; shift ;;
+		--force) require_flag_applies --force 'release'; force=true; shift ;;
+		--dry-run) require_flag_applies --dry-run 'sweep'; dry_run=true; shift ;;
+		--repo) require_flag_applies --repo 'release status list sweep'; [[ $# -ge 2 ]] || fail '--repo requires a directory'; repo="$2"; repo_set=true; shift 2 ;;
+		-h | --help) usage; exit 0 ;;
+		*) fail "unknown option: $1" ;;
+	esac
+done
+[[ "$repo_set" == true || -z "$path" || ! -d "$path" ]] || repo="$path"
+if [[ "$owner_set" != true ]]; then
+	OWNER="${KENDEX_SESSION_OWNER:-${HT_SESSION_OWNER:-}}"
+	if [[ -z "$OWNER" && ( "$command" == claim || "$command" == refresh || ( "$command" == release && "$stale" != true ) ) ]]; then
+		OWNER="${USER:-}"
+	fi
+	[[ -z "$OWNER" ]] || OWNER="$(sanitize_owner "$OWNER")"
+fi
+ttl_seconds="$((10#$ttl * 60))"
+
+case "$command" in
+	claim | refresh)
+		[[ -n "$OWNER" ]] || fail "$command requires an owner"
+		resolve_registration "$path" "$path" || fail "path is not a linked worktree: $path"
+		[[ "$DIRECTORY_PRESENT" == true ]] || fail "worktree directory is missing: $REQUESTED_PATH"
+		acquire_guard_mutex "$COMMON_DIR"
+		now="$(date -u +%s)"
+		if read_lease; then
+			lease_is_managed "$LEASE_TEXT" || { printf 'worktree-session-guard: %s is locked outside this guard\n' "$REQUESTED_PATH" >&2; exit "$EXIT_OWNED"; }
+			recorded="$(lease_field "$LEASE_TEXT" owner 2>/dev/null || true)"
+			[[ "$recorded" == "$OWNER" ]] || { printf 'worktree-session-guard: %s is claimed by owner=%s\n' "$REQUESTED_PATH" "${recorded:-unknown}" >&2; exit "$EXIT_OWNED"; }
+			claimed="$(lease_field "$LEASE_TEXT" claimed_epoch 2>/dev/null || true)"
+			[[ "$claimed" =~ ^[0-9]+$ ]] || claimed="$now"
+	else
+			[[ "$command" == claim ]] || { printf 'worktree-session-guard: no lease to refresh on %s\n' "$REQUESTED_PATH" >&2; exit "$EXIT_NO_LEASE"; }
+			claimed="$now"
+		fi
+		write_lease "$LOCK_FILE" "$(lease_line "$OWNER" "$claimed" "$now")"
+		printf '%s\n' "$OWNER"
+		;;
+	status)
+		resolve_registration "$path" "$repo" || fail "path is not a linked worktree of $repo: $path"
+		status_json
+		read_lease || exit "$EXIT_NO_LEASE"
+		lease_is_managed "$LEASE_TEXT" || exit "$EXIT_UNMANAGED"
+		if [[ -n "$OWNER" && "$(lease_field "$LEASE_TEXT" owner 2>/dev/null || true)" != "$OWNER" ]]; then
+			printf 'worktree-session-guard: %s is claimed by owner=%s\n' "$REQUESTED_PATH" "$(lease_field "$LEASE_TEXT" owner 2>/dev/null || printf unknown)" >&2
+			exit "$EXIT_OWNED"
+		fi
+		;;
+	release)
+		resolve_registration "$path" "$repo" || fail "path is not a linked worktree of $repo: $path"
+		[[ -n "$OWNER" || "$stale" == true || "$force" == true ]] || fail 'release requires an owner, --stale, or --force'
+		acquire_guard_mutex "$COMMON_DIR"
+		release_current "$stale" "$force" "$ttl_seconds"
+		printf 'released %s\n' "$REQUESTED_PATH"
+		;;
+	list | sweep)
+		common="$(resolve_common_dir "$repo")" || { printf 'worktree-session-guard: cannot enumerate %s\n' "$repo" >&2; exit "$EXIT_ENUMERATION"; }
+		[[ "$command" == list ]] || acquire_guard_mutex "$common"
+		unevaluated=false
+		for registration in "$common"/worktrees/*; do
+			[[ -d "$registration" && -f "$registration/gitdir" ]] || continue
+			gitdir="$(registered_gitdir "$registration")" || continue
+			REQUESTED_PATH="$(absolute_path "${gitdir%/.git}" 2>/dev/null || true)"
+			[[ -n "$REQUESTED_PATH" ]] || continue
+			REGISTRATION="$registration"
+			LOCK_FILE="$registration/locked"
+			DIRECTORY_PRESENT=false
+			[[ -d "$REQUESTED_PATH" ]] && DIRECTORY_PRESENT=true
+			if [[ "$command" == list ]]; then
+				status_json
+				continue
+			fi
+			read_lease || continue
+			lease_is_managed "$LEASE_TEXT" || continue
+			age="$(lease_age "$LEASE_TEXT" 2>/dev/null || true)"
+			# Refusing to delete an unevaluable lease is right; doing it in
+			# silence is not, because sweep would then report clean success
+			# over a lease nothing will ever collect. "Not yet stale" stays a
+			# normal silent skip.
+			unevaluable=''
+			if [[ ! "$age" =~ ^-?[0-9]+$ ]]; then
+				unevaluable='its heartbeat_epoch is missing or not a number'
+			elif [[ "$age" -lt 0 ]]; then
+				unevaluable="its heartbeat_epoch is ${age#-}s in the future"
+			fi
+			if [[ -n "$unevaluable" ]]; then
+				printf 'worktree-session-guard: cannot evaluate the lease on %s: %s\n' "$REQUESTED_PATH" "$unevaluable" >&2
+				unevaluated=true
+				continue
+			fi
+			[[ "$age" -ge "$ttl_seconds" ]] || continue
+			if [[ "$dry_run" == true ]]; then
+				printf 'would release %s (heartbeat %ss old)\n' "$REQUESTED_PATH" "$age"
+			else
+				rm -f -- "$LOCK_FILE"
+				printf 'released %s (heartbeat %ss old)\n' "$REQUESTED_PATH" "$age"
+			fi
+		done
+		[[ "$unevaluated" != true ]] || exit "$EXIT_ENUMERATION"
+		;;
+esac
