@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    ".opencode/instructions/kendex-hook-block-argv-kill.md",
+    ".opencode/instructions/kendex-hook-block-bare-cd.md",
+    ".opencode/instructions/kendex-hook-block-repo-copy.md",
+    ".opencode/instructions/kendex-hook-block-unsafe-rm.md",
+    ".opencode/instructions/kendex-hook-block-worktree-refresh.md",
+    ".opencode/instructions/kendex-hook-command-safety.md",
+    ".opencode/instructions/kendex-hook-pre-commit-check.md"
+  ],
+  "permission": {
+    "bash": {
+      "*": "ask"
+    }
+  }
+}

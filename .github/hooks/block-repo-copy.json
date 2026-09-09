@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "p='.github/hooks/block-repo-copy.sh'; r=$(cd -P . && pwd); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { echo \"kendex: no directory above $PWD holds $p; run kendex refresh in the project\" >&2; exit 1; }; bash \"$r/$p\"",
+        "matcher": "bash"
+      }
+    ]
+  }
+}

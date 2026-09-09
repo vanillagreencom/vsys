@@ -1,0 +1,28 @@
+{
+  "name": "vsys-view",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "vsys-view": "src/main.ts" },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "lint": "biome check src scripts/*.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src/",
+    "build": "bun build src/main.ts --target=bun --packages=external --outdir=dist",
+    "bench": "bun scripts/bench.ts",
+    "bench:history": "bun scripts/bench-history.ts"
+  },
+  "dependencies": {
+    "@opentui/core": "0.5.11",
+    "@opentui/react": "0.5.11",
+    "react": "19.2.8"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@types/bun": "1.4.2",
+    "@types/react": "19.2.18",
+    "bun": "1.4.2",
+    "typescript": "7.0.2"
+  }
+}
