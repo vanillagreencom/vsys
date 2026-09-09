@@ -12,6 +12,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - A quantity vsys could not read makes its meter a warning and renders as "not available", never as a question mark or an untroubled reading. Fleet columns and Lane detail read the same formatters.
 - Attention cards are grouped by cause. Each card names its subjects, a next step, and where possible a read-only command built from configured names.
 - Storage opens with bytes written since boot, by slice and by device, and the drive lifetime writes. Mount state, device counters, scrub reports and scratch sizes follow below them. `src/ui/App.test.tsx` checks that order.
+- Timeline shows what changed: lane starts and stops, cgroup moves, alerts opening and closing, and verdict changes. The store derives those events; the words, the durations and the byte counts live in `src/ui/timeline.ts`.
 - Fleet owns selection and vertical paging. The scroll box owns horizontal table scrolling. Other detail views use native vertical scrolling.
 - The UI opens views and exports evidence. It does not control observed processes or their terminal sessions.
 
@@ -29,6 +30,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - An unreadable write total renders as "not available" rather than an empty row, and every drive keeps its own lifetime row so the reader can tell which drive lacks a report. `src/ui/storage.test.ts` checks every write section with no readable source.
 - A device-mapper row and the disk beneath it count the same bytes, and the device section says so when one is present. `src/ui/storage.test.ts` checks that line.
 - No attention text is repeated. `src/ui/overview.test.ts` and `src/ui/App.test.tsx` check unique card titles across every cause.
+- The Timeline event list names the cause of each change. `src/ui/App.test.tsx` checks a lane start and an open alert in the rendered view.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
 
 ## Framework constraint

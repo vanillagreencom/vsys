@@ -35,6 +35,7 @@ import { type Attention, attention, Overview } from "./overview";
 import { settingLabel } from "./settings";
 import { writeLines } from "./storage";
 import { themePalette } from "./theme";
+import { eventLine } from "./timeline";
 
 const views = [
   "Overview",
@@ -549,6 +550,7 @@ export function App({
               Math.floor(((at - start) * chartWidth) / windows[windowIndex]),
             ),
           );
+    const changes = history.events(snapshot.time, windows[windowIndex]);
     const series: [keyof Point, string][] = [
       ["agents", "Agents CPU %"],
       ["desktop", "Desktop CPU %"],
@@ -606,7 +608,7 @@ export function App({
         {line(
           buckets
             .map((bucket, i) =>
-              bucket.some((p) => p.alerts.length)
+              bucket.some((p) => (p.events ?? []).length || p.alerts.length)
                 ? "!"
                 : i === cursorIndex
                   ? "│"
@@ -615,13 +617,14 @@ export function App({
             .join(""),
         )}
         {line(
-          `${new Date(start).toLocaleTimeString()} to ${new Date(snapshot.time).toLocaleTimeString()} | ! alert | │ cursor | · no sample`,
+          `${new Date(start).toLocaleTimeString()} to ${new Date(snapshot.time).toLocaleTimeString()} | ! change | │ cursor | · no sample`,
         )}
-        {points
-          .flatMap((p) => p.alerts)
-          .map((a, i) =>
-            line(`${new Date(a.time).toLocaleTimeString()} ! ${a.message}`, i),
+        {line(`What changed in this window (${changes.length}), newest first`)}
+        {!changes.length &&
+          line(
+            "Nothing changed in this window: no lane, cgroup or cause moved",
           )}
+        {changes.map((event, i) => line(eventLine(event, c), i))}
       </>
     );
   } else if (view === "Alerts")

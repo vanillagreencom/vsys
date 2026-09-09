@@ -2,6 +2,7 @@ import type { Config } from "../config/config";
 import { inSlice } from "../model/lanes";
 import type { Alert, Snapshot } from "../model/types";
 import { sliceSum } from "../model/verdict";
+import type { TimelineEvent } from "./events";
 
 export interface Point {
   time: number;
@@ -15,9 +16,15 @@ export interface Point {
   unconfined: number;
   builds: number;
   alerts: Alert[];
+  /** What changed since the previous sample, derived once by the store. */
+  events: TimelineEvent[];
 }
 /** Logical roles use configured slice names; nested groups are not counted twice. */
-export function point(s: Snapshot, c: Config): Point {
+export function point(
+  s: Snapshot,
+  c: Config,
+  events: TimelineEvent[] = [],
+): Point {
   const seen = new Set<string>();
   let corruption: number | null =
     s.storage.mountsAvailable === false ? null : 0;
@@ -53,5 +60,6 @@ export function point(s: Snapshot, c: Config): Point {
       .length,
     builds: s.procs.filter((p) => p.build).length,
     alerts: s.alerts.map((alert) => ({ ...alert })),
+    events,
   };
 }

@@ -13,6 +13,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - CPU percent: utilization in units of one logical core.
 - Pressure: the recent percentage of time that tasks stalled on a resource.
 - Pinned Fleet: the recorded sample selected by the timeline cursor.
+- Event: one change between two consecutive samples, held as data with its cause, subjects and numbers.
 - Checkpoint: a complete snapshot followed by exact changes to its values.
 
 ## Boundaries
@@ -27,6 +28,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - The build cache reading queries the sccache server through an injected runner, rate limited between samples and bounded by its own deadline, so a wedged server cannot hold the sample the dashboard awaits. A collector built without a runner records no reading, so no test starts that server.
 - The runtime owns collection, history, and settings changes for a running dashboard. A replaced source is handed its predecessor, so readings measured since vsys started survive the replacement.
 - The history store owns application persistence. The collector does not depend on SQLite.
+- Timeline events are derived once, in the store, from consecutive snapshots and the cause ladder. There is no second detection path, so an alert is a cause opening and closing.
 - The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane.
 
 ## Invariants
@@ -71,6 +73,10 @@ Each sample contains observed values and source errors. A failed read must remai
 - Settings changes and persistence changes preserve retained incidents. `src/store/history.test.ts` checks transfer and database merging.
 - History storage rejects a database with another application's schema. `src/store/history.test.ts` checks tables and views.
 - Timeline positions follow timestamps. `src/ui/format.test.ts` checks collection gaps and alert alignment.
+- A lane start or stop names its account and slice, and a process moves cgroups only when its PID keeps its start time. `src/store/events.test.ts` checks a reused PID and a process that stayed put.
+- An alert closes with the time it stayed open, and a settings change does not restart that clock. `src/store/events.test.ts` checks the duration across a reconfigure.
+- Desktop swap crossing its floor is the desktop-swap cause opening, and a housekeeping cause is an event but never a verdict change. `src/store/events.test.ts` checks both.
+- Every event renders as one line that states its cause. `src/ui/timeline.test.ts` checks each kind and the swap numbers.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
 - Interactive quit restores the terminal, including when history shutdown fails. `src/main.test.ts` checks isolated terminals. `src/runtime.test.ts` checks error delivery when collection and shutdown both fail.
 

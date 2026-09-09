@@ -492,3 +492,41 @@ test("Storage opens with write totals and keeps filesystem state below them", as
     h.close();
   }
 });
+
+test("Timeline lists what changed with a cause instead of raw samples", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const later = emptySnapshot(2000);
+  later.lanes = [
+    laneSnapshot({ name: "lane-a", account: "work", unconfined: true }),
+  ];
+  h.add(later);
+  const ui = await testRender(
+    <App
+      snapshot={later}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 40 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("5");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("What changed in this window");
+    expect(frame).toContain("Lane started: lane-a");
+    expect(frame).toContain("account work in agents.slice");
+    expect(frame).toContain("Alert opened: an agent ran outside");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
