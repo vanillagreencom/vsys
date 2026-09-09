@@ -51,6 +51,10 @@ Settings are stored in `~/.config/vsys-view/config.toml`. The menu controls watc
 
 History persistence is off by default. Enable it to replay incidents after a restart. A retention warning means the in-memory budget cannot hold the selected window.
 
+Storage opens with the bytes written since boot by each watched slice and by each drive, then the drive lifetime writes. Device totals are read at the resource group root, so they include services outside your session. A `dm-` row repeats the writes of the disk beneath it.
+
+Lifetime writes are read from `smartctl -A` output in the SMART report directory, which a privileged timer writes. Name each report after its device in `/sys/block`, with at most one extension: `/run/smartctl/nvme0n1.txt` matches the drive `nvme0n1`. A file matching no device is ignored. Every drive keeps its own row, so a drive with no report is named and shows "not available".
+
 Scratch scans run separately from live refresh. Storage shows the measurement time and scan state. Scripted snapshots wait for the scan to finish. Use `bun run start -- --help` for export and scripting options.
 
 ## Development

@@ -33,6 +33,7 @@ import {
 } from "./format";
 import { type Attention, attention, Overview } from "./overview";
 import { settingLabel } from "./settings";
+import { writeLines } from "./storage";
 import { themePalette } from "./theme";
 
 const views = [
@@ -489,6 +490,8 @@ export function App({
   } else if (view === "Storage")
     content = (
       <>
+        {writeLines(shown, c).map((text, i) => line(text, `write-${i}`))}
+        {line("Filesystem state")}
         {shown.storage.mountsAvailable === false
           ? line("Mount information unavailable")
           : !shown.storage.volumes.length && line("No watched btrfs mounts")}

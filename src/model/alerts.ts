@@ -1,3 +1,4 @@
+import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
 import { inSlice } from "./lanes";
 import type { Alert, Rule, Snapshot } from "./types";
@@ -6,7 +7,7 @@ import type { Alert, Rule, Snapshot } from "./types";
 export class AlertEngine {
   private active = new Set<string>();
   private pressureSince = new Map<string, number>();
-  evaluate(s: Snapshot, c: Config): Alert[] {
+  evaluate(s: Snapshot, c: CollectionConfig): Alert[] {
     const next = new Set<string>();
     const pressureKeys = new Set<string>();
     const alerts: Alert[] = [];

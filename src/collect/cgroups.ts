@@ -2,16 +2,48 @@ import { dirname, join, relative } from "node:path";
 import type { Group } from "../model/types";
 import { pairs, pressure, type Reader } from "./io";
 
+interface IoTotals {
+  read: number;
+  write: number;
+  /** Bytes written since boot, keyed by the kernel device number "MAJ:MIN". */
+  byDevice: Record<string, number>;
+}
 /** io.stat has one line per device; the group's cost is their sum. */
-function ioTotals(text: string): { read: number; write: number } | null {
-  const totals = { read: 0, write: 0 };
+function ioTotals(text: string): IoTotals | null {
+  const totals: IoTotals = { read: 0, write: 0, byDevice: {} };
   let seen = false;
-  for (const [, key, raw] of text.matchAll(/\b(rbytes|wbytes)=(\S+)/g)) {
-    if (!/^\d+$/.test(raw)) throw new Error("Invalid io.stat counter");
-    seen = true;
-    totals[key === "rbytes" ? "read" : "write"] += Number(raw);
+  for (const line of text.split("\n")) {
+    const device = line.trim().split(/\s+/)[0];
+    if (!device) continue;
+    for (const [, key, raw] of line.matchAll(/\b(rbytes|wbytes)=(\S+)/g)) {
+      if (!/^\d+$/.test(raw)) throw new Error("Invalid io.stat counter");
+      seen = true;
+      if (key === "rbytes") totals.read += Number(raw);
+      else {
+        totals.write += Number(raw);
+        totals.byDevice[device] = (totals.byDevice[device] ?? 0) + Number(raw);
+      }
+    }
   }
   return seen ? totals : null;
+}
+/**
+ * The cgroup v2 root counts every writer on the machine, including services and
+ * containers outside the user manager the watched tree covers.
+ */
+export function collectDeviceWrites(
+  r: Reader,
+  top: string,
+): Record<string, number> | null {
+  const file = join(top, "io.stat");
+  const raw = r.text(file, true);
+  if (raw === null) return null;
+  try {
+    return ioTotals(raw)?.byDevice ?? null;
+  } catch (e) {
+    r.error(file, e);
+    return null;
+  }
 }
 function rate(
   now: number | null,
@@ -56,7 +88,7 @@ export function collectGroups(
           }),
         );
         const ioRaw = r.text(join(path, "io.stat"), true);
-        let io: { read: number; write: number } | null = null;
+        let io: IoTotals | null = null;
         if (ioRaw !== null) {
           try {
             io = ioTotals(ioRaw);

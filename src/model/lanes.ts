@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import type { Config } from "../config/config";
+import type { CollectionConfig } from "../collect/settings";
 import {
   accountName,
   jobserver,
@@ -61,7 +61,7 @@ export function blockedOn(
 export function lanes(
   groups: Group[],
   procs: Proc[],
-  c: Config,
+  c: CollectionConfig,
   cores = 0,
 ): Lane[] {
   const covered = new Set<number>();

@@ -10,6 +10,7 @@ import {
   everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
+  volumeSnapshot,
 } from "../test/fixture";
 import { App, Waiting } from "./App";
 import { attention } from "./overview";
@@ -430,5 +431,64 @@ test("a lane record from an older build opens in lane detail without throwing", 
     await act(async () => {
       ui.renderer.destroy();
     });
+  }
+});
+
+test("Storage opens with write totals and keeps filesystem state below them", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.groups = [
+    groupSnapshot({
+      path: ".",
+      parent: ".",
+      name: "user@1000.service",
+      ioWrite: 2199023255552,
+    }),
+    groupSnapshot({
+      path: "agents.slice",
+      parent: ".",
+      name: "agents.slice",
+      ioWrite: 2199023255552,
+    }),
+  ];
+  s.storage.devices = [
+    { name: "nvme0n1", number: "259:0", model: null, lifetimeWritten: 1e13 },
+  ];
+  s.storage.deviceWrites = { "259:0": 2199023255552 };
+  s.storage.volumes = [volumeSnapshot("/mnt/data", { readOnly: true })];
+  const h = new History(c);
+  h.add(s);
+  const ui = await testRender(
+    <App
+      snapshot={s}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "report.json"}
+    />,
+    { width: 140, height: 45 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("4");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("agents.slice 2.0 TiB");
+    expect(frame).toContain("nvme0n1 2.0 TiB");
+    expect(frame).toContain("Lifetime writes reported by the drive");
+    // Free space and read-only state stay, below what the drive has taken.
+    expect(frame.indexOf("Written since boot, by slice")).toBeLessThan(
+      frame.indexOf("Filesystem state"),
+    );
+    expect(frame.indexOf("Filesystem state")).toBeLessThan(
+      frame.indexOf("READ ONLY"),
+    );
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
   }
 });

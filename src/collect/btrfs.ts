@@ -1,10 +1,11 @@
 import { readdir, realpath, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { Config } from "../config/config";
 import type { Storage, Volume } from "../model/types";
+import { collectDevices } from "./devices";
 import { pairs, type Reader } from "./io";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
+import type { CollectionConfig } from "./settings";
 
 /** Either a mount restriction or a superblock restriction makes a mount read-only. */
 export function btrfsMounts(
@@ -47,13 +48,14 @@ export class StorageCollector {
   }
   async collect(
     r: Reader,
-    c: Config,
+    c: CollectionConfig,
     time: number,
     mountInfo: MountInfo[] | null = readMounts(r, c.procRoot),
     waitForScratch = true,
   ): Promise<Storage> {
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
+      devices: collectDevices(r, c),
       volumes: [],
       scratch: [],
       sessions: [],

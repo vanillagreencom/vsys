@@ -1,11 +1,11 @@
 import { cpus, hostname } from "node:os";
 import { join } from "node:path";
-import type { Config } from "../config/config";
 import type { System } from "../model/types";
 import { pairs, type Reader, readPressure } from "./io";
+import type { CollectionConfig } from "./settings";
 
 /** Global reads do not depend on systemd or a particular filesystem. */
-export function collectSystem(r: Reader, c: Config): System {
+export function collectSystem(r: Reader, c: CollectionConfig): System {
   const load = r.text(join(c.procRoot, "loadavg"));
   const up = r.text(join(c.procRoot, "uptime"));
   const mem = r.text(join(c.procRoot, "meminfo"));

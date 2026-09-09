@@ -1,4 +1,4 @@
-import type { Config } from "../config/config";
+import type { CollectionConfig } from "../collect/settings";
 import { parentChain } from "./lanes";
 import type { Proc } from "./types";
 
@@ -32,7 +32,7 @@ export function pathPrefix(path: string, base: string[]): string[] {
 export function launcherTrail(
   proc: Proc,
   procs: Proc[],
-  c: Config,
+  c: CollectionConfig,
   basePath: string[],
 ): LauncherTrail {
   const capsPresent = c.capMarkers.filter((name) => proc.env[name]);

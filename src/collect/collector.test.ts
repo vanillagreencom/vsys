@@ -298,6 +298,46 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   expect(group?.cache).toBeNull();
   expect(bad.errors.map((e) => e.source)).toContain(join(path, "io.stat"));
 });
+test("device totals come from the cgroup root, not the watched user tree", async () => {
+  const f = setup();
+  f.group("agents.slice/a.scope", [40]);
+  f.write(
+    join(f.config.cgroupRoot, "agents.slice/a.scope/io.stat"),
+    "259:0 rbytes=1 wbytes=200\n",
+  );
+  // The root counts services outside the user manager, so its totals are larger.
+  f.write(
+    join(f.config.cgroupTop, "io.stat"),
+    "259:0 rbytes=9 wbytes=900\n8:0 rbytes=1 wbytes=50\n",
+  );
+  const collector = new Collector(f.config, 100, 4096);
+  expect((await collector.sample(1000)).storage.deviceWrites).toEqual({
+    "259:0": 900,
+    "8:0": 50,
+  });
+  // An unreadable root leaves the totals unknown rather than falling back.
+  f.write(join(f.config.cgroupTop, "io.stat"), "259:0 wbytes=x\n");
+  const bad = await collector.sample(2000);
+  expect(bad.storage.deviceWrites).toBeNull();
+  expect(bad.errors.map((e) => e.source)).toContain(
+    join(f.config.cgroupTop, "io.stat"),
+  );
+});
+test("a sample carries drive lifetime writes when a SMART report is readable", async () => {
+  const f = setup();
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  f.write(
+    join(f.config.smartDir, "nvme0n1"),
+    "Model Number: Test Drive\nData Units Written: 1,000,000 [512 GB]\n",
+  );
+  const s = await new Collector(f.config, 100, 4096).sample();
+  expect(s.storage.devices).toContainEqual({
+    name: "nvme0n1",
+    number: "259:0",
+    model: "Test Drive",
+    lifetimeWritten: 512_000_000_000,
+  });
+});
 test("argv exclusion hides a helper process but never an agent lane", async () => {
   const f = setup();
   f.proc(39, "app.slice/chrome.scope", {

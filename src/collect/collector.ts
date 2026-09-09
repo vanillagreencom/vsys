@@ -1,15 +1,15 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "../config/config";
 import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Snapshot } from "../model/types";
 import { StorageCollector } from "./btrfs";
-import { collectGroups } from "./cgroups";
+import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
 import { kernelCgroupRoot, readMounts } from "./mounts";
 import { ProcessCollector } from "./procs";
 import { SccacheCollector } from "./sccache";
+import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 
 /** The scheduler awaits each sample, so ticks cannot overlap. */
@@ -20,7 +20,7 @@ export class Collector {
   private processes: ProcessCollector;
   private controller = new AbortController();
   constructor(
-    readonly config: Config,
+    readonly config: CollectionConfig,
     ticksPerSecond: number,
     pageSize: number,
     private live = false,
@@ -90,6 +90,8 @@ export class Collector {
       mountInfo,
       !this.live,
     );
+    // Device totals cover the whole machine, so they are read above the watched tree.
+    storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);
     this.controller.signal.throwIfAborted();
     mark("storage");
     const sccache = await this.sccache?.collect(r, time);
@@ -121,7 +123,7 @@ export class Collector {
  * measured since vsys started rather than since the last settings change.
  */
 export async function createCollector(
-  c: Config,
+  c: CollectionConfig,
   live = true,
   previous?: { sccache?: SccacheCollector },
 ): Promise<Collector> {

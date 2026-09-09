@@ -86,8 +86,19 @@ export interface Scrub {
   text: string;
   problem: boolean;
 }
+/** A block device with its lifetime writes, when SMART output is readable. */
+export interface Device {
+  name: string;
+  /** Kernel device number "MAJ:MIN", the key io.stat writes are counted under. */
+  number: string | null;
+  model: string | null;
+  lifetimeWritten: number | null;
+}
 export interface Storage {
   mountsAvailable?: boolean;
+  /** Bytes written since boot per device number, read at the cgroup v2 root. */
+  deviceWrites?: Record<string, number> | null;
+  devices?: Device[];
   volumes: Volume[];
   scratch: Scratch[];
   sessions: Scratch[];

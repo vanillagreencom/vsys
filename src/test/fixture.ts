@@ -16,10 +16,12 @@ export function fixture() {
   const root = mkdtempSync(join(tmpdir(), "vsys-test-"));
   const config = defaults();
   config.cgroupRoot = join(root, "cgroup");
+  config.cgroupTop = join(root, "cgroup-root");
   config.procRoot = join(root, "proc");
   config.btrfsRoot = join(root, "btrfs");
   config.sysBlockRoot = join(root, "block");
   config.scrubDir = join(root, "scrub");
+  config.smartDir = join(root, "smart");
   config.scratchDirs = [];
   config.sqlitePath = join(root, "history.db");
   const write = (path: string, text: string) => {
