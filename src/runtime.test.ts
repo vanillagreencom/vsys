@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
+import { SccacheCollector } from "./collect/sccache";
 import { loadConfig } from "./config/config";
 import { Session } from "./runtime";
 import { History } from "./store/history";
@@ -154,6 +155,34 @@ test("a source failure still reaches terminal cleanup when history close fails",
     const error = await reported.promise;
     expect(error).toBeInstanceOf(AggregateError);
     expect((error as AggregateError).errors).toEqual([readError, closeError]);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+test("a settings change hands the running source to its replacement", async () => {
+  const f = fixture();
+  const h = new History(f.config);
+  // A reader with an injected query, so nothing starts a build cache server.
+  const carried = new SccacheCollector(async () => "", 0);
+  const sample = async () => emptySnapshot(1000);
+  const first = { sample, sccache: carried };
+  let handed: unknown;
+  const session = new Session(
+    f.config,
+    join(f.root, "config.toml"),
+    first,
+    h,
+    { frame: () => {}, error: () => {} },
+    async (_config, previous) => {
+      handed = previous;
+      return { sample, sccache: previous.sccache };
+    },
+  );
+  try {
+    session.start();
+    await session.configure({ ...f.config, procRoot: join(f.root, "proc2") });
+    expect(handed).toBe(first);
   } finally {
     session.stop();
     f.cleanup();

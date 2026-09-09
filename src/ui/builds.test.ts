@@ -9,7 +9,15 @@ const c = defaults();
 function busy() {
   const s = emptySnapshot();
   s.system.cores = 32;
-  s.lanes = [laneSnapshot({ id: "a", name: "lane-a", pids: [10, 11, 12] })];
+  s.lanes = [
+    laneSnapshot({
+      id: "a",
+      name: "lane-a",
+      pids: [10, 11, 12],
+      builds: { rustc: 2, "ld.mold": 1 },
+      linkers: 1,
+    }),
+  ];
   s.procs = [
     processSnapshot({ pid: 10, build: "rustc" }),
     processSnapshot({ pid: 11, build: "rustc" }),

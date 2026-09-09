@@ -25,7 +25,7 @@ export class Collector {
     pageSize: number,
     private live = false,
     /** Absent unless a caller supplies one, so no test spawns a build cache. */
-    private sccache?: SccacheCollector,
+    readonly sccache?: SccacheCollector,
   ) {
     this.processes = new ProcessCollector(ticksPerSecond, pageSize);
   }
@@ -115,10 +115,15 @@ export class Collector {
   }
 }
 
-/** getconf reads libc's clock and page units; no machine-specific constants. */
+/**
+ * getconf reads libc's clock and page units; no machine-specific constants.
+ * The predecessor's build cache reader is carried over, so its counts stay
+ * measured since vsys started rather than since the last settings change.
+ */
 export async function createCollector(
   c: Config,
   live = true,
+  previous?: { sccache?: SccacheCollector },
 ): Promise<Collector> {
   const read = async (name: string) => {
     const child = Bun.spawn(["getconf", name], {
@@ -136,5 +141,6 @@ export async function createCollector(
     return n;
   };
   const [ticks, pages] = await Promise.all([read("CLK_TCK"), read("PAGESIZE")]);
-  return new Collector(c, ticks, pages, live, new SccacheCollector());
+  const sccache = previous?.sccache ?? new SccacheCollector();
+  return new Collector(c, ticks, pages, live, sccache);
 }

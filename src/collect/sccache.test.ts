@@ -48,10 +48,19 @@ test("a restarted cache server rebases instead of reporting a negative delta", a
   const r = new Reader();
   const c = new SccacheCollector(async () => text, 0, 300000);
   await c.collect(r, 0);
-  text = stats(5, 1);
-  const after = await c.collect(r, 1000);
+  // A restart after the counters have already grown past the startup
+  // baseline: comparing with the baseline alone would miss it.
+  text = stats(900, 200);
+  await c.collect(r, 1000);
+  text = stats(600, 150);
+  const after = await c.collect(r, 2000);
   expect(after.sinceStart).toEqual({ hits: 0, misses: 0, windowMs: 0 });
-  expect(after.hits).toBe(5);
+  expect(after.recent).toEqual({ hits: 0, misses: 0, windowMs: 0 });
+  expect(after.hits).toBe(600);
+  // The lifetimes are not mixed: counting continues from the restart.
+  text = stats(640, 160);
+  const later = await c.collect(r, 3000);
+  expect(later.sinceStart).toEqual({ hits: 40, misses: 10, windowMs: 1000 });
 });
 
 test("a missing binary is unavailable, other failures are reported once", async () => {

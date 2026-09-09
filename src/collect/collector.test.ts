@@ -7,7 +7,7 @@ import { launcherTrail } from "../model/launcher";
 import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
 import { buildKind, toolName } from "./builds";
-import { Collector } from "./collector";
+import { Collector, createCollector } from "./collector";
 import { parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
 
@@ -382,4 +382,24 @@ test("build process environments carry the wrapper and the make token pool", asy
   expect(jobservers(s)).toEqual([
     { fifo: "/tmp/GMfifo1", total: 16, inUse: 1 },
   ]);
+});
+
+test("a settings change keeps the cache counts measured since vsys started", async () => {
+  const f = setup();
+  let hits = 100;
+  const sccache = new SccacheCollector(
+    async () => `Cache hits ${hits}\nCache misses 0\n`,
+    0,
+  );
+  const before = new Collector(f.config, 100, 4096, false, sccache);
+  expect((await before.sample(1000)).sccache?.hits).toBe(100);
+  hits = 140;
+  // The replacement a settings change builds carries the same reader, so the
+  // delta is not restarted by editing a setting.
+  const after = await createCollector(f.config, false, before);
+  expect((await after.sample(2000)).sccache?.sinceStart).toEqual({
+    hits: 40,
+    misses: 0,
+    windowMs: 1000,
+  });
 });

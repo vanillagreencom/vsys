@@ -1,5 +1,7 @@
 import { basename } from "node:path";
+import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
+import { jobserver } from "./naming";
 import type { Proc, Sccache, SccacheDelta, Snapshot } from "./types";
 import { buildLoad } from "./verdict";
 
@@ -52,31 +54,48 @@ function laneOwners(s: Snapshot): Map<number, { id: string; name: string }> {
       if (!owners.has(pid)) owners.set(pid, { id: lane.id, name: lane.name });
   return owners;
 }
+/** One row from build kinds counted by kind, or none when it holds no slot. */
+function buildRow(
+  id: string,
+  name: string,
+  kinds: Record<string, number>,
+  c: Config,
+): LaneBuilds | null {
+  const slots = Object.entries(kinds).filter(([kind]) =>
+    compileOrLink(kind, c.linkerNames),
+  );
+  const builds = slots.reduce((n, [, count]) => n + count, 0);
+  if (!builds) return null;
+  const linkers = slots.filter(([kind]) => c.linkerNames.includes(kind));
+  return {
+    id,
+    name,
+    builds,
+    linkers: linkers.reduce((n, [, count]) => n + count, 0),
+    linkerNames: linkers.map(([kind]) => kind),
+  };
+}
 /**
- * Build processes grouped by lane. Rows sum to the fleet total, so the count
- * the Overview meter shows and the per-lane breakdown cannot disagree.
+ * Lane rows read the build counts the lane already carries. Build processes
+ * in no lane become one more row, so the rows still sum to the fleet total
+ * that the Overview meter shows.
  */
 export function laneBuilds(s: Snapshot, c: Config): LaneBuilds[] {
-  const owners = laneOwners(s);
-  const rows = new Map<string, LaneBuilds>();
-  for (const p of s.procs) {
-    if (!p.build) continue;
-    const owner = owners.get(p.pid) ?? { id: "", name: "" };
-    const row = rows.get(owner.id) ?? {
-      ...owner,
-      builds: 0,
-      linkers: 0,
-      linkerNames: [],
-    };
-    row.builds++;
-    if (c.linkerNames.includes(p.build)) {
-      row.linkers++;
-      if (!row.linkerNames.includes(p.build)) row.linkerNames.push(p.build);
-    }
-    rows.set(owner.id, row);
-  }
-  return [...rows.values()].sort(
-    (a, b) => b.builds - a.builds || a.name.localeCompare(b.name),
+  const owned = new Set(s.lanes.flatMap((l) => l.pids));
+  const loose: Record<string, number> = {};
+  for (const p of s.procs)
+    if (p.build && !owned.has(p.pid))
+      loose[p.build] = (loose[p.build] ?? 0) + 1;
+  const rows = [
+    ...s.lanes.map((l) => buildRow(l.id, l.name, l.builds, c)),
+    buildRow("", "", loose, c),
+  ].filter((row): row is LaneBuilds => row !== null);
+  // Busiest first; the catch-all row for unwatched cgroups breaks a tie last.
+  return rows.sort(
+    (a, b) =>
+      b.builds - a.builds ||
+      Number(a.name === "") - Number(b.name === "") ||
+      a.name.localeCompare(b.name),
   );
 }
 /**
@@ -95,10 +114,12 @@ export function bypassedLanes(s: Snapshot): string[] {
   }
   return [...names].sort();
 }
-/** The token pool a process advertises, or null when it holds none. */
-function jobserverFifo(p: Proc): string | null {
-  if (!p.build || p.envAvailable === false) return null;
-  return /--jobserver-auth=fifo:(\S+)/.exec(p.env.MAKEFLAGS ?? "")?.[1] ?? null;
+/** The token pool a build process advertises, read by the shared parser. */
+function pool(p: Proc): { fifo: string; jobs: number | null } | null {
+  const { jobs, jobserver: auth } = jobserver(p);
+  return p.build && auth?.startsWith("fifo:")
+    ? { fifo: auth.slice("fifo:".length), jobs }
+    : null;
 }
 /**
  * The closest classified ancestor, found past the unclassified helpers a
@@ -129,17 +150,14 @@ export function jobservers(s: Snapshot): Jobserver[] {
   const byPid = new Map(s.procs.map((p) => [p.pid, p]));
   const rows = new Map<string, Jobserver>();
   for (const p of s.procs) {
-    const fifo = jobserverFifo(p);
-    if (fifo === null) continue;
+    const own = pool(p);
+    if (own === null) continue;
     const ancestor = buildAncestor(p, byPid);
-    if (ancestor !== null && jobserverFifo(ancestor) === fifo) continue;
-    const jobs = /(?:^|\s)(?:-j\s*|--jobs=)(\d+)/.exec(
-      p.env.MAKEFLAGS ?? "",
-    )?.[1];
-    const row = rows.get(fifo) ?? { fifo, total: null, inUse: 0 };
-    if (row.total === null && jobs !== undefined) row.total = Number(jobs);
+    if (ancestor !== null && pool(ancestor)?.fifo === own.fifo) continue;
+    const row = rows.get(own.fifo) ?? { fifo: own.fifo, total: null, inUse: 0 };
+    if (row.total === null) row.total = own.jobs;
     row.inUse++;
-    rows.set(fifo, row);
+    rows.set(own.fifo, row);
   }
   return [...rows.values()].sort((a, b) => a.fifo.localeCompare(b.fifo));
 }

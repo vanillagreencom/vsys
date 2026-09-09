@@ -16,9 +16,22 @@ const c = defaults();
 function building(): Snapshot {
   const s = emptySnapshot();
   s.system.cores = 32;
+  // Lanes carry the build counts the collector recorded for their members.
   s.lanes = [
-    laneSnapshot({ id: "a", name: "lane-a", pids: [10, 11, 12] }),
-    laneSnapshot({ id: "b", name: "lane-b", pids: [20, 21] }),
+    laneSnapshot({
+      id: "a",
+      name: "lane-a",
+      pids: [10, 11, 12],
+      builds: { rustc: 2, "ld.mold": 1 },
+      linkers: 1,
+    }),
+    laneSnapshot({
+      id: "b",
+      name: "lane-b",
+      pids: [20, 21],
+      builds: { cargo: 1, mold: 1 },
+      linkers: 1,
+    }),
   ];
   s.procs = [
     processSnapshot({ pid: 10, build: "rustc" }),
@@ -51,13 +64,41 @@ test("the per lane rows sum to the fleet total the Overview meter shows", () => 
 
 test("linkers are counted and named apart from the compilers in each lane", () => {
   const rows = laneBuilds(building(), c);
+  // lane-b runs cargo and a linker; only the linker occupies a slot.
   expect(rows.map((row) => [row.name, row.builds, row.linkers])).toEqual([
     ["lane-a", 3, 1],
-    ["lane-b", 2, 1],
+    ["lane-b", 1, 1],
     ["", 1, 0],
   ]);
   expect(rows[0].linkerNames).toEqual(["ld.mold"]);
   expect(rows[2].linkerNames).toEqual([]);
+});
+
+test("a supervising cargo is not a build slot beside the compilers it runs", () => {
+  const s = emptySnapshot();
+  s.system.cores = 8;
+  s.lanes = [
+    laneSnapshot({
+      id: "a",
+      name: "lane-a",
+      pids: [10, 11, 12],
+      builds: { cargo: 1, rustc: 2 },
+    }),
+  ];
+  s.procs = [
+    processSnapshot({ pid: 10, build: "cargo" }),
+    processSnapshot({ pid: 11, build: "rustc", ppid: 10 }),
+    processSnapshot({ pid: 12, build: "rustc", ppid: 10 }),
+    // A running test binary and a build script runner are classified builds
+    // that hold no slot either.
+    processSnapshot({ pid: 13, build: "test" }),
+    processSnapshot({ pid: 14, build: "bun" }),
+  ];
+  expect(buildLoad(s, c).builds).toBe(2);
+  expect(meters(s, c).find((m) => m.id === "builds")?.values.builds).toBe(2);
+  expect(laneBuilds(s, c).map((row) => row.builds)).toEqual([2]);
+  // The per-process list keeps every classified build.
+  expect(s.procs.filter((p) => p.build).length).toBe(5);
 });
 
 test("an empty compiler wrapper names the lane that bypasses the cache", () => {

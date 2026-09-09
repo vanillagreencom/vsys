@@ -103,9 +103,13 @@ export class SccacheCollector {
     return this.reading;
   }
   private record(time: number, now: Counters): Sccache {
+    // Any backwards movement is a restarted server. The latest reading is the
+    // comparison, because a restart after the counters grew past the startup
+    // baseline would otherwise pass and turn the recent delta negative.
+    const previous = this.samples.at(-1) ?? this.baseline;
     if (
-      this.baseline &&
-      (now.hits < this.baseline.hits || now.misses < this.baseline.misses)
+      previous &&
+      (now.hits < previous.hits || now.misses < previous.misses)
     ) {
       this.baseline = undefined;
       this.samples = [];

@@ -1,4 +1,5 @@
 import { createCollector } from "./collect/collector";
+import type { SccacheCollector } from "./collect/sccache";
 import { type Config, saveConfig, validate } from "./config/config";
 import { notify } from "./model/alerts";
 import type { Snapshot } from "./model/types";
@@ -7,8 +8,10 @@ import type { History } from "./store/history";
 interface Source {
   sample(): Promise<Snapshot>;
   close?(): void;
+  /** Readings measured since vsys started, handed to the replacement source. */
+  sccache?: SccacheCollector;
 }
-type SourceFactory = (config: Config) => Promise<Source>;
+type SourceFactory = (config: Config, previous: Source) => Promise<Source>;
 interface Events {
   frame(snapshot: Snapshot, history: History, config: Config): void;
   error(error: unknown): void;
@@ -29,7 +32,8 @@ export class Session {
     private source: Source,
     private history: History,
     private events: Events,
-    private makeSource: SourceFactory = createCollector,
+    private makeSource: SourceFactory = (config, previous) =>
+      createCollector(config, true, previous),
   ) {}
   start(): void {
     this.schedule(0);
@@ -129,7 +133,7 @@ export class Session {
           JSON.stringify(next[k as keyof Config]),
       );
       nextSource = collectionChanged
-        ? await this.makeSource(next)
+        ? await this.makeSource(next, this.source)
         : this.source;
       if (this.stopped) return;
       if (

@@ -1,3 +1,4 @@
+import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
 import { inSlice, lanePressure } from "./lanes";
 import type { Group, Lane, Snapshot, Volume } from "./types";
@@ -101,7 +102,7 @@ export function buildLoad(
   s: Snapshot,
   c: Config,
 ): { builds: number; linkers: number; lanes: number } {
-  const building = s.procs.filter((p) => p.build);
+  const building = s.procs.filter((p) => compileOrLink(p.build, c.linkerNames));
   return {
     builds: building.length,
     linkers: building.filter((p) => c.linkerNames.includes(p.build ?? ""))
