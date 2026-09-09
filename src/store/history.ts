@@ -5,6 +5,7 @@ import type { Config } from "../config/config";
 import type { Alert, Snapshot } from "../model/types";
 import { Archive } from "./archive";
 import type { LaneSample } from "./lane-series";
+import { normalizeSnapshot } from "./migrate";
 import { type Point, point } from "./point";
 
 /** Snapshots hold command lines and environment values, so only the owner may read them. */
@@ -232,12 +233,15 @@ export class History {
       )
       .get(time, cutoff);
     if (cached && cached.time >= cutoff && (!row || cached.time >= row.time))
-      return cached;
+      return normalizeSnapshot(cached);
     const data = row?.data;
+    // Rows an older build wrote lack the fields this build reads.
     return data
-      ? (JSON.parse(
-          new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(data))),
-        ) as Snapshot)
+      ? normalizeSnapshot(
+          JSON.parse(
+            new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(data))),
+          ) as Snapshot,
+        )
       : null;
   }
   alerts(end: number): Alert[] {

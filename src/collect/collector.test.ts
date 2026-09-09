@@ -247,6 +247,22 @@ test("an unreadable environment is not labelled as the default account", async (
   expect(s.lanes[0].account).toBeNull();
   expect(s.procs[0].envAvailable).toBe(false);
 });
+test("an ancestor memory.max that cannot be read leaves the lane cap unknown", async () => {
+  const f = setup();
+  f.group("agents.slice/a.scope", [40]);
+  f.proc(40, "agents.slice/a.scope");
+  const readable = await new Collector(f.config, 100, 4096).sample();
+  expect([
+    readable.lanes[0].memoryMax,
+    readable.lanes[0].memoryMaxKnown,
+  ]).toEqual([null, true]);
+  rmSync(join(f.config.cgroupRoot, "agents.slice/memory.max"));
+  const s = await new Collector(f.config, 100, 4096).sample();
+  expect([s.lanes[0].memoryMax, s.lanes[0].memoryMaxKnown]).toEqual([
+    null,
+    false,
+  ]);
+});
 test("io.stat and memory.stat give byte totals, write rates and page cache", async () => {
   const f = setup();
   f.group("agents.slice/a.scope", [40]);

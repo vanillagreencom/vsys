@@ -22,7 +22,7 @@ The [application plan](../plans/2026-09-06-vsys-view-plan.md) defines the collec
 
 - The collector reads system state. Settings, optional SQLite, requested exports and enabled notifications are separate application effects.
 - In-memory replay uses complete checkpoints and exact changes. A warning reports retention shortened by the memory budget.
-- SQLite preserves replay across restarts and rejects databases owned by other applications.
+- SQLite preserves replay across restarts and rejects databases owned by other applications. Records an older build wrote are normalized on load rather than discarded.
 - Lane charts retain samples before display aggregation. Buckets preserve short spikes and collection gaps.
 - Live scratch traversal runs separately from process refresh. Scripted collection waits for completion.
 - The terminal has one mounted application tree. Repeated refresh updates its state and preserves navigation.

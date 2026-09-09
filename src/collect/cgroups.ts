@@ -68,6 +68,7 @@ export function collectGroups(
         const file = r
           .text(join(path, "memory.stat"), true)
           ?.match(/^file (\d+)$/m)?.[1];
+        const memoryMax = r.limit(join(path, "memory.max"), true);
         const members = pids ? pids.split(/\s+/).map(Number) : [];
         if (members.some((p) => !Number.isInteger(p) || p <= 0))
           throw new Error("Invalid cgroup process ID");
@@ -88,7 +89,8 @@ export function collectGroups(
           cpuMax: r.text(join(path, "cpu.max"), true),
           memory: r.number(join(path, "memory.current"), true),
           high: r.number(join(path, "memory.high"), true),
-          max: r.number(join(path, "memory.max"), true),
+          max: memoryMax.value,
+          maxRead: memoryMax.read,
           swap: r.number(join(path, "memory.swap.current"), true),
           swapMax: r.number(join(path, "memory.swap.max"), true),
           tasks: r.number(join(path, "pids.current"), true),

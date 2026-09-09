@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, statSync } from "node:fs";
 import { defaults } from "../config/config";
-import { emptySnapshot, fixture } from "../test/fixture";
+import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
 import { History, Ring } from "./history";
 
 const cleanup: (() => void)[] = [];
@@ -49,6 +49,38 @@ test("SQLite reopens full process snapshots and alert history", () => {
   cleanup.push(() => reopened.close());
   expect(reopened.at(now)).toEqual(s);
   expect(reopened.alerts(now)).toEqual(s.alerts);
+});
+test("a stored lane written before this build's fields loads with unknown values", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  s.lanes = [laneSnapshot()];
+  first.add(s);
+  first.close();
+  // What an older build wrote: a lane with none of the fields added since.
+  const stored = {
+    ...s,
+    lanes: [{ id: s.lanes[0].id, name: "lane-a", mainPid: 40, pids: [40] }],
+  };
+  const db = new Database(f.config.sqlitePath);
+  db.query("UPDATE samples SET data = ? WHERE time = ?").run(
+    Bun.gzipSync(JSON.stringify(stored)),
+    now,
+  );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  const lane = reopened.at(now)?.lanes[0];
+  expect(lane?.name).toBe("lane-a");
+  expect(lane?.builds).toEqual({});
+  expect([lane?.memoryMaxKnown, lane?.blocked, lane?.blockedOn]).toEqual([
+    false,
+    0,
+    null,
+  ]);
 });
 test("history refuses an existing database owned by another application", () => {
   const f = fixture();

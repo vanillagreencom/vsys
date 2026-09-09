@@ -22,7 +22,9 @@ export interface Group {
   cpuMax: string | null;
   memory: number | null;
   high: number | null;
+  /** memory.max is null for the word max; maxRead separates that from an unread file. */
   max: number | null;
+  maxRead: boolean;
   swap: number | null;
   swapMax: number | null;
   tasks: number | null;

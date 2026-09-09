@@ -158,6 +158,7 @@ export function groupSnapshot(overrides: Partial<Group> = {}): Group {
     memory: 0,
     high: null,
     max: null,
+    maxRead: true,
     swap: 0,
     swapMax: null,
     tasks: 0,

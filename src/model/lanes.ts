@@ -43,7 +43,7 @@ export function effectiveMax(
   const limits = covering.flatMap((g) => (g.max === null ? [] : [g.max]));
   return {
     max: limits.length ? Math.min(...limits) : null,
-    known: covering.length > 0,
+    known: covering.length > 0 && covering.every((g) => g.maxRead),
   };
 }
 /**

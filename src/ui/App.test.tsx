@@ -4,6 +4,7 @@ import { act } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import { History } from "../store/history";
+import { normalizeLane } from "../store/migrate";
 import {
   emptySnapshot,
   everyCauseSnapshot,
@@ -382,6 +383,49 @@ test("lane detail names the account, the charged resources, the caps and the blo
     expect(frame).toContain("make jobs 6");
     expect(frame).toContain("jobserver fifo:/tmp/f");
     expect(frame).toContain("blocked: 2 tasks waiting on storage");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+  }
+});
+
+test("a lane record from an older build opens in lane detail without throwing", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    normalizeLane({
+      id: "agents.slice/a.scope",
+      name: "lane-a",
+      mainPid: 40,
+      pids: [40],
+    }),
+  ];
+  s.groups = [groupSnapshot()];
+  const h = new History(c);
+  const ui = await testRender(
+    <App
+      snapshot={s}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 140, height: 40 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("1");
+    });
+    await act(async () => {
+      ui.mockInput.pressEnter();
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("main PID 40");
+    expect(frame).toContain("memory.max not available");
+    expect(frame).toContain("Build work: none");
   } finally {
     await act(async () => {
       ui.renderer.destroy();
