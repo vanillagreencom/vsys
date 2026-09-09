@@ -76,9 +76,11 @@ Each sample contains observed values and source errors. A failed read must remai
 - Timeline positions follow timestamps. `src/ui/format.test.ts` checks collection gaps and alert alignment.
 - A lane start or stop names its account and slice, and a process moves cgroups only when its PID keeps its start time. `src/store/events.test.ts` checks a reused PID and a process that stayed put.
 - An alert closes with the time the cause was observed, and a settings change does not restart that clock. `src/store/events.test.ts` checks the duration across a reconfigure.
-- An alert is one cause on one subject. A second subject opens its own alert, and the close names the subject that was open. `src/store/events.test.ts` checks a second escaped lane.
-- A cause holds for `pressureHoldSeconds` before it opens and stays away that long before it closes, so a value flapping across a threshold records one alert rather than one per sample. The verdict follows the alerts that held. `src/store/events.test.ts` checks 100 alternating samples.
-- A process moving between two slices outside the agent slice is not a confinement change. `src/store/events.test.ts` checks that move against one that leaves the agent slice.
+- An alert is one cause on one subject. Every lane, group and path a grouped cause names watches on its own, so two lanes hitting one cause are two alerts with two durations. `src/store/events.test.ts` checks two lanes escaping at once and one replacing another.
+- A cause must hold for `pressureHoldSeconds` without a gap before it opens, and stay away that long before it closes. A value alternating either side of a threshold therefore records nothing. `src/store/events.test.ts` checks 100 alternating samples against 100 held ones.
+- The verdict follows the alerts that opened, including one waiting out its close, so a cause that steps away for a sample cannot flip it. `src/store/events.test.ts` checks the verdict across a close hold.
+- An event records the threshold it crossed, so a later settings change cannot restate what an older line measured. `src/ui/timeline.test.ts` checks a swap floor against a changed setting.
+- A move event names the cgroup it left and the one it entered, and calls the slice changed only when it differs. A move between two slices outside the agent slice is not a confinement change. `src/store/events.test.ts` and `src/ui/timeline.test.ts` check a move inside one slice against one that leaves the agent slice.
 - Desktop swap crossing its floor is the desktop-swap cause opening, and a housekeeping cause is an event but never a verdict change. `src/store/events.test.ts` checks both.
 - Every event renders as one line that states its cause. `src/ui/timeline.test.ts` checks each kind and the swap numbers.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.

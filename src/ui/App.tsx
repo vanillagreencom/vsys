@@ -551,8 +551,6 @@ export function App({
             ),
           );
     const changes = history.events(snapshot.time, windows[windowIndex]);
-    // The charts above take a fixed number of rows; the rest hold events.
-    const visible = changes.slice(0, Math.max(1, height - 24));
     const series: [keyof Point, string][] = [
       ["agents", "Agents CPU %"],
       ["desktop", "Desktop CPU %"],
@@ -564,6 +562,12 @@ export function App({
       ["unconfined", "Unconfined agents"],
       ["builds", "Build processes"],
     ];
+    // Two rows per chart, then the view header, the marker row, its legend and
+    // the count line, outside the status bar and the two footer rows.
+    const visible = changes.slice(
+      0,
+      Math.max(1, height - (series.length * 2 + 7)),
+    );
     content = (
       <>
         {line(
@@ -628,7 +632,17 @@ export function App({
           line(
             "Nothing changed in this window: no lane, cgroup or cause moved",
           )}
-        {visible.map((event, i) => line(eventLine(event, c), i))}
+        {visible.map((event) => (
+          // One row per event, so a long subject cannot push the rest of the
+          // window past the rows the cap counted.
+          <text
+            key={`${event.time}-${event.kind}-${event.cause}-${event.subject}`}
+            height={1}
+            flexShrink={0}
+            truncate
+            fg={palette.fg}
+          >{`${safe(eventLine(event, c))}`}</text>
+        ))}
       </>
     );
   } else if (view === "Alerts")

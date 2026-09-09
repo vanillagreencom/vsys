@@ -557,9 +557,50 @@ test("the Timeline event list stops at the rows the viewport has", async () => {
     });
     await ui.renderOnce();
     const frame = ui.captureCharFrame();
-    expect(frame).toContain("What changed in this window: 6 of 12");
+    expect(frame).toContain("What changed in this window: 5 of 12");
     expect(frame).toContain("Lane started: lane-0 ");
+    expect(frame).toContain("Lane started: lane-4");
     expect(frame).not.toContain("lane-11");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
+
+test("a long event subject takes one row and does not push out the rest", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(2000);
+  busy.lanes = Array.from({ length: 6 }, (_, i) =>
+    laneSnapshot({
+      id: `lane-${i}.scope`,
+      name: i === 0 ? `wide-${"x".repeat(400)}` : `lane-${i}`,
+    }),
+  );
+  h.add(busy);
+  const ui = await testRender(
+    <App
+      snapshot={busy}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 30 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("5");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("What changed in this window: 5 of 6");
+    expect(frame).toContain("Lane started: lane-4");
+    expect(frame).not.toContain("xxxxxxxxxx\n");
   } finally {
     await act(async () => {
       ui.renderer.destroy();

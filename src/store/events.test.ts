@@ -75,8 +75,10 @@ test("a process changing cgroup is one move, and a reused PID is not", () => {
   expect(move).toHaveLength(1);
   expect(move[0].subject).toBe("claude PID 40");
   expect(move[0].names).toMatchObject({
-    from: "app.slice",
-    to: "agents.slice",
+    from: "app.slice/x.scope",
+    to: "agents.slice/x.scope",
+    fromSlice: "app.slice",
+    toSlice: "agents.slice",
   });
   const reused = emptySnapshot(3000);
   reused.procs = [
@@ -196,22 +198,73 @@ test("a second subject on one cause opens and closes on its own", () => {
   expect(closed?.subject).toBe("agent-a");
   expect(closed?.cause).toBe("unconfined");
 });
-test("a cause flapping across its threshold records one alert", () => {
-  const held = defaults();
+/** Counts the alert transitions over a run of samples driven by `pressure`. */
+function run(
+  held: typeof c,
+  samples: number,
+  pressure: (i: number) => number,
+): { opens: number; closes: number } {
   const log = new EventLog();
   let opens = 0;
   let closes = 0;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < samples; i++) {
     const s = emptySnapshot(1000 + i * held.refreshMs);
-    // Alternates either side of pressureAmber, which is what a busy host does.
-    s.lanes = [laneSnapshot({ pressure: i % 2 ? held.pressureAmber + 1 : 0 })];
+    s.lanes = [laneSnapshot({ pressure: pressure(i) })];
     for (const e of log.advance(s, held)) {
       if (e.kind === "alert-open") opens++;
       if (e.kind === "alert-close") closes++;
     }
   }
-  expect(opens).toBe(1);
-  expect(closes).toBe(0);
+  return { opens, closes };
+}
+test("a cause must hold without a gap to open", () => {
+  const held = defaults();
+  const over = held.pressureAmber + 1;
+  // Alternating either side of the threshold never holds, so nothing opens.
+  expect(run(held, 100, (i) => (i % 2 ? over : 0))).toEqual({
+    opens: 0,
+    closes: 0,
+  });
+  // The same value held through the wait opens once and stays open.
+  expect(run(held, 100, () => over)).toEqual({ opens: 1, closes: 0 });
+});
+test("two lanes escaping at once are two alerts, not one", () => {
+  const log = started();
+  const both = emptySnapshot(2000);
+  both.lanes = [
+    laneSnapshot({ id: "a.scope", name: "agent-a", unconfined: true }),
+    laneSnapshot({ id: "b.scope", name: "agent-b", unconfined: true }),
+  ];
+  const opened = log
+    .advance(both, c)
+    .filter((e) => e.kind === "alert-open" && e.cause === "unconfined");
+  expect(opened.map((e) => e.subject).sort()).toEqual(["agent-a", "agent-b"]);
+  const gone = emptySnapshot(3000);
+  gone.lanes = [both.lanes[0]];
+  const closed = log.advance(gone, c).filter((e) => e.kind === "alert-close");
+  expect(closed.map((e) => e.subject)).toEqual(["agent-b"]);
+});
+test("the verdict holds while its alert waits out the close", () => {
+  const held = defaults();
+  const log = new EventLog();
+  const firing = (time: number) => {
+    const s = emptySnapshot(time);
+    s.lanes = [laneSnapshot({ name: "escaped", unconfined: true })];
+    return s;
+  };
+  const hold = held.pressureHoldSeconds * 1000;
+  log.advance(firing(1000), held);
+  expect(log.advance(firing(1000 + hold), held).map((e) => e.kind)).toContain(
+    "verdict",
+  );
+  // Absent for one sample: the alert is waiting, so the verdict must not move.
+  const waiting = log.advance(emptySnapshot(1000 + hold + 1000), held);
+  expect(waiting.map((e) => e.kind)).toEqual(["lane-stop"]);
+  const out = log.advance(emptySnapshot(1000 + hold * 2 + 1000), held);
+  expect(out.map((e) => e.kind).sort()).toEqual(["alert-close", "verdict"]);
+  expect(out.find((e) => e.kind === "verdict")?.names.previous).toBe(
+    "unconfined",
+  );
 });
 test("a move between two slices outside the agent slice is not a confinement change", () => {
   const first = emptySnapshot(1000);
@@ -220,6 +273,11 @@ test("a move between two slices outside the agent slice is not a confinement cha
   const moved = emptySnapshot(2000);
   moved.procs = [processSnapshot({ group: "other.slice/a.scope" })];
   const move = log.advance(moved, c).find((e) => e.kind === "cgroup-move");
-  expect(move?.names).toMatchObject({ from: "app.slice", to: "other.slice" });
+  expect(move?.names).toMatchObject({
+    from: "app.slice/a.scope",
+    to: "other.slice/a.scope",
+    fromSlice: "app.slice",
+    toSlice: "other.slice",
+  });
   expect(move?.cause).toBe("");
 });

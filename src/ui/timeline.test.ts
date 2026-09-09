@@ -72,10 +72,60 @@ test("a swap crossing states the swap and the floor it passed", () => {
       kind: "alert-open",
       subject: "gnome.scope",
       cause: "desktop-swap",
-      values: { swap: c.swapFloor * 2 },
+      values: { swap: c.swapFloor * 2, floor: c.swapFloor },
     }),
     c,
   );
   expect(line).toContain("Alert opened: the desktop swapped out");
   expect(line).toContain("1.0 GiB swapped against a floor of 512.0 MiB");
+  // The floor the event recorded, never the one the reader holds now.
+  const later = { ...c, swapFloor: c.swapFloor * 4 };
+  expect(
+    eventLine(
+      event({
+        kind: "alert-open",
+        cause: "desktop-swap",
+        values: { swap: c.swapFloor * 2, floor: c.swapFloor },
+      }),
+      later,
+    ),
+  ).toContain("floor of 512.0 MiB");
+  // An older row that recorded no floor says so rather than borrowing one.
+  expect(
+    eventLine(
+      event({ kind: "alert-open", cause: "desktop-swap", values: {} }),
+      c,
+    ),
+  ).toContain("floor of not available");
+});
+test("a move inside one slice names the cgroups, not a slice change", () => {
+  const inside = eventLine(
+    event({
+      kind: "cgroup-move",
+      subject: "claude PID 40",
+      names: {
+        from: "agents.slice/a.scope",
+        to: "agents.slice/b.scope",
+        fromSlice: "agents.slice",
+        toSlice: "agents.slice",
+      },
+    }),
+    c,
+  );
+  expect(inside).toContain("agents.slice/a.scope to agents.slice/b.scope");
+  expect(inside).toContain("it stayed in agents.slice");
+  const across = eventLine(
+    event({
+      kind: "cgroup-move",
+      subject: "claude PID 40",
+      names: {
+        from: "agents.slice/a.scope",
+        to: "app.slice/a.scope",
+        fromSlice: "agents.slice",
+        toSlice: "app.slice",
+      },
+    }),
+    c,
+  );
+  expect(across).toContain("it left agents.slice for app.slice");
 });

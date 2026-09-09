@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
 import { escaped } from "../model/lanes";
 import type { Snapshot } from "../model/types";
-import { type Cause, type CauseId, causes } from "../model/verdict";
+import { type Cause, type CauseId, causes, type Level } from "../model/verdict";
 
 export type EventKind =
   | "lane-start"
@@ -34,14 +34,27 @@ export function sliceOf(path: string): string {
 /** A cause on one subject, waiting to open, open, or waiting to close. */
 interface Watch {
   cause: CauseId;
-  consumer: string;
+  subject: string;
+  level: Level;
+  /** Ladder position when the cause was last seen, which ranks the verdict. */
+  rank: number;
+  verdictWorthy: boolean;
+  values: Record<string, number | null>;
   firstSeen: number;
   lastSeen: number;
   opened: boolean;
 }
-/** A cause plus the subject it names, so a second subject is a second alert. */
-function watchKey(cause: Cause): string {
-  return `${cause.id}\u0000${cause.consumer}`;
+/**
+ * A cause groups every subject it affects. Each of them is its own alert with
+ * its own duration, so two escaped lanes are two alerts rather than one.
+ */
+export function subjects(cause: Cause): { id: string; name: string }[] {
+  const named = [
+    ...cause.lanes.map((lane) => ({ id: lane.id, name: lane.name })),
+    ...cause.groups.map((group) => ({ id: group.path, name: group.name })),
+    ...cause.paths.map((path) => ({ id: path, name: path })),
+  ];
+  return named.length ? named : [{ id: cause.consumer, name: cause.consumer }];
 }
 /**
  * Events come from successive snapshots and from the one cause ladder. An
@@ -106,8 +119,10 @@ export class EventLog {
       if (!was || was.group === p.group) continue;
       add("cgroup-move", `${p.comm} PID ${p.pid}`, {
         names: {
-          from: sliceOf(was.group),
-          to: sliceOf(p.group),
+          from: was.group,
+          to: p.group,
+          fromSlice: sliceOf(was.group),
+          toSlice: sliceOf(p.group),
           tool: p.tool ?? "",
         },
         // Confinement changed only when the move left the agent slice.
@@ -117,44 +132,64 @@ export class EventLog {
     }
     const hold = c.pressureHoldSeconds * 1000;
     const ladder = causes(s, c);
-    const live = new Set(ladder.map(watchKey));
-    for (const cause of ladder) {
-      const key = watchKey(cause);
-      const watch = this.watching.get(key) ?? {
-        cause: cause.id,
-        consumer: cause.consumer,
-        firstSeen: s.time,
-        lastSeen: s.time,
-        opened: false,
-      };
-      watch.lastSeen = s.time;
-      this.watching.set(key, watch);
-      // An alert that was never recorded as open cannot be recorded as closed.
-      if (watch.opened || s.time - watch.firstSeen < hold) continue;
-      watch.opened = add("alert-open", cause.consumer, {
-        cause: cause.id,
-        names: { level: cause.level },
-        values: { ...cause.values },
+    const live = new Set<string>();
+    ladder.forEach((cause, rank) => {
+      for (const subject of subjects(cause)) {
+        const key = `${cause.id}\u0000${subject.id}`;
+        live.add(key);
+        const watch: Watch = this.watching.get(key) ?? {
+          cause: cause.id,
+          subject: subject.name,
+          level: cause.level,
+          rank,
+          verdictWorthy: cause.verdictWorthy,
+          values: {},
+          firstSeen: s.time,
+          lastSeen: s.time,
+          opened: false,
+        };
+        watch.lastSeen = s.time;
+        watch.level = cause.level;
+        watch.rank = rank;
+        // The floor the swap crossed belongs to the event, not to the setting
+        // the reader happens to hold when the line is drawn.
+        watch.values =
+          cause.id === "desktop-swap"
+            ? { ...cause.values, floor: c.swapFloor }
+            : { ...cause.values };
+        this.watching.set(key, watch);
+        // An alert that was never recorded as open cannot be recorded as closed.
+        if (watch.opened || s.time - watch.firstSeen < hold) continue;
+        watch.opened = add("alert-open", subject.name, {
+          cause: cause.id,
+          names: { level: cause.level },
+          values: { ...watch.values },
+        });
+      }
+    });
+    for (const [key, watch] of this.watching) {
+      if (live.has(key)) continue;
+      // A cause must hold without a gap to open, so a pending watch ends the
+      // moment it is absent. Only an alert already recorded waits out a gap.
+      if (!watch.opened) {
+        this.watching.delete(key);
+        continue;
+      }
+      if (s.time - watch.lastSeen < hold) continue;
+      this.watching.delete(key);
+      add("alert-close", watch.subject, {
+        cause: watch.cause,
+        values: { durationMs: watch.lastSeen - watch.firstSeen },
       });
     }
-    for (const [key, watch] of this.watching) {
-      // A cause that comes back within the hold never left.
-      if (live.has(key) || s.time - watch.lastSeen < hold) continue;
-      this.watching.delete(key);
-      if (watch.opened)
-        add("alert-close", watch.consumer, {
-          cause: watch.cause,
-          values: { durationMs: watch.lastSeen - watch.firstSeen },
-        });
-    }
-    // The verdict follows the alerts that held, so it cannot flap either.
-    const lead = ladder.find(
-      (cause) =>
-        cause.verdictWorthy && this.watching.get(watchKey(cause))?.opened,
-    );
-    const verdict = lead?.id ?? "";
+    // The verdict names the worst alert that opened, an alert waiting out its
+    // close included, so a cause that steps away for a sample cannot flip it.
+    const lead = [...this.watching.values()]
+      .filter((watch) => watch.opened && watch.verdictWorthy)
+      .sort((a, b) => a.rank - b.rank || a.firstSeen - b.firstSeen)[0];
+    const verdict = lead?.cause ?? "";
     if (verdict !== this.verdict)
-      add("verdict", lead?.consumer ?? "", {
+      add("verdict", lead?.subject ?? "", {
         cause: verdict,
         names: { previous: this.verdict, level: lead?.level ?? "ok" },
         values: lead ? { ...lead.values } : {},
