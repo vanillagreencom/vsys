@@ -29,6 +29,7 @@ test("invalid settings stop loading", () => {
     { columns: [] },
     { sort: "nope" },
     { notifications: ["unknown"] },
+    { laneNameParts: ["hostname"] },
     { keys: { quit: "j" } },
     { sqlitePath: "relative" },
     { unknown: 1 },

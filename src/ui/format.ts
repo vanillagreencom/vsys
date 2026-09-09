@@ -27,13 +27,47 @@ export function age(n: number): string {
       ? `${Math.floor(n / 60)}m`
       : `${(n / 3600).toFixed(1)}h`;
 }
+/** A quantity vsys could not read says so; it never shows a question mark. */
+export const gap = "not available";
+export function amount(n: number | null | undefined, c: Config): string {
+  return n === null || n === undefined ? gap : bytes(n, c);
+}
+export function share(n: number | null | undefined): string {
+  return n === null || n === undefined ? gap : percent(n);
+}
+/** I/O is a rate, so its unit carries the second it was measured over. */
+export function rate(n: number | null | undefined, c: Config): string {
+  return n === null || n === undefined ? gap : `${bytes(n, c)}/s`;
+}
+/** An unread cgroup tree leaves the cap unknown; only a read one is unlimited. */
+export function capText(l: Lane, c: Config): string {
+  if (!l.memoryMaxKnown) return gap;
+  return l.memoryMax === null ? "unlimited" : bytes(l.memoryMax, c);
+}
+/**
+ * A blocked lane names the count of tasks in uninterruptible wait and the
+ * resource whose stall share is the higher of the two.
+ */
+export function blockedText(l: Lane): string {
+  if (l.state !== "blocked") return l.state;
+  const on =
+    l.blockedOn === "io"
+      ? "storage"
+      : l.blockedOn === "memory"
+        ? "memory"
+        : gap;
+  const tasks = `${l.blocked} ${l.blocked === 1 ? "task" : "tasks"}`;
+  return `blocked: ${tasks} waiting on ${on}`;
+}
 export function laneValue(l: Lane, key: string, c: Config): string {
   const value = l[key as keyof Lane];
-  if (key === "rss" || key === "swap") return bytes(value as number | null, c);
-  if (key === "cpu" || key === "pressure")
-    return percent(value as number | null);
+  if (key === "rss" || key === "swap" || key === "cache")
+    return amount(value as number | null, c);
+  if (key === "readRate" || key === "writeRate")
+    return rate(value as number | null, c);
+  if (key === "cpu" || key === "pressure") return share(value as number | null);
   if (key === "age") return age(l.age);
-  return String(value ?? "?");
+  return value === null || value === undefined ? gap : String(value);
 }
 export function sortLanes(
   lanes: Lane[],

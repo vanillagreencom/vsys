@@ -50,6 +50,24 @@ export class Reader {
       return null;
     }
   }
+  /**
+   * A cgroup limit file holds a number or the word max. Those are both
+   * answers; a file that could not be read is not, so the caller can tell an
+   * absent limit from an unknown one.
+   */
+  limit(
+    path: string,
+    optional = false,
+  ): { value: number | null; read: boolean } {
+    const value = this.text(path, optional);
+    if (value === null) return { value: null, read: false };
+    if (value === "max") return { value: null, read: true };
+    if (!/^\d+$/.test(value)) {
+      this.error(path, "Invalid integer");
+      return { value: null, read: false };
+    }
+    return { value: Number(value), read: true };
+  }
   number(path: string, optional = false): number | null {
     const value = this.text(path, optional);
     if (value === null || value === "max") return null;

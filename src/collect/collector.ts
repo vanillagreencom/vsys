@@ -96,7 +96,7 @@ export class Collector {
       groups,
       procs,
       storage,
-      lanes: lanes(groups, procs, c),
+      lanes: lanes(groups, procs, c, system.cores),
       alerts: [],
       errors: r.errors,
     };

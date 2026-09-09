@@ -229,7 +229,9 @@ test("branch naming follows a linked worktree and does not hide a broken gitdir"
   f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope", { cwd });
   const collector = new Collector(f.config, 100, 4096);
-  expect((await collector.sample(1000)).lanes[0].name).toBe("feature/lane");
+  expect((await collector.sample(1000)).lanes[0].name).toBe(
+    "claude feature/lane",
+  );
   rmSync(join(f.root, "repo/.git/worktrees/lane/HEAD"));
   const broken = await collector.sample(2000);
   expect(broken.procs[0].branch).toBeNull();
@@ -242,8 +244,24 @@ test("an unreadable environment is not labelled as the default account", async (
   rmSync(join(f.config.procRoot, "40/environ"));
   mkdirSync(join(f.config.procRoot, "40/environ"));
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.lanes[0].account).toBe("?");
+  expect(s.lanes[0].account).toBeNull();
   expect(s.procs[0].envAvailable).toBe(false);
+});
+test("an ancestor memory.max that cannot be read leaves the lane cap unknown", async () => {
+  const f = setup();
+  f.group("agents.slice/a.scope", [40]);
+  f.proc(40, "agents.slice/a.scope");
+  const readable = await new Collector(f.config, 100, 4096).sample();
+  expect([
+    readable.lanes[0].memoryMax,
+    readable.lanes[0].memoryMaxKnown,
+  ]).toEqual([null, true]);
+  rmSync(join(f.config.cgroupRoot, "agents.slice/memory.max"));
+  const s = await new Collector(f.config, 100, 4096).sample();
+  expect([s.lanes[0].memoryMax, s.lanes[0].memoryMaxKnown]).toEqual([
+    null,
+    false,
+  ]);
 });
 test("io.stat and memory.stat give byte totals, write rates and page cache", async () => {
   const f = setup();

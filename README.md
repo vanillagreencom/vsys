@@ -17,14 +17,14 @@ The project includes its Bun runtime. The system Bun installation stays separate
 
 - Overview of current problems, CPU use, memory, build work and storage.
 - Searchable Fleet summaries with an optional full table.
-- Lane details with memory limits, resource history and process ancestry.
+- Lane details with memory limits, charged resources, build work, resource history and process ancestry.
 - Resource groups, build activity, Btrfs health and scratch measurements.
 - Recorded alerts and a timeline that can show Fleet at a past sample.
 - Editable settings, mouse navigation and incident exports.
 
 ## How it works
 
-Start with Overview and select an item under Needs attention now to inspect its cause. Open Fleet to find a lane by name, account, branch or worktree. Open a lane to compare resource use with its limits. Use Timeline and Alerts to investigate past events; Overview shows current observations. A partial-data notice means some sources could not be read.
+Start with Overview and select an item under Needs attention now to inspect its cause. Open Fleet to find a lane by name, account, pane, branch or worktree. A lane name joins the account, the agent, the terminal pane and the workspace, so two agents in one worktree stay apart. Open a lane to compare resource use with its limits. Use Timeline and Alerts to investigate past events; Overview shows current observations. A partial-data notice means some sources could not be read.
 
 The collector reads system files with your permissions. Application writes are limited to settings, optional history and requested exports. Desktop notifications require an enabled rule.
 
@@ -47,7 +47,7 @@ These are the default keys. The footer shows controls for the current screen.
 
 ## Settings
 
-Settings are stored in `~/.config/vsys-view/config.toml`. The menu controls watched slices, paths, thresholds, table columns, colours, units and keys. CPU use is measured per core; the Overview explains the scale.
+Settings are stored in `~/.config/vsys-view/config.toml`. The menu controls watched slices, paths, thresholds, table columns, colours, units and keys. `laneNameParts` chooses which parts name a lane and in which order; the pane address and window title come from the variables the pane exports. CPU use is measured per core; the Overview explains the scale.
 
 History persistence is off by default. Enable it to replay incidents after a restart. A retention warning means the in-memory budget cannot hold the selected window.
 

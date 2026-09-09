@@ -9,7 +9,7 @@ import {
   type Meter,
   meters,
 } from "../model/verdict";
-import { bytes, percent } from "./format";
+import { amount, bytes, gap, percent, share } from "./format";
 import { themePalette } from "./theme";
 
 export interface Attention {
@@ -229,11 +229,9 @@ export function sourceFooter(s: Snapshot): string | null {
     : null;
 }
 /** Meter prose, including the missing-mount and unavailable-counter wording. */
-const gap = "not available";
 export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
-  // A quantity vsys could not read says so; it never shows a question mark.
-  const b = (n: number | null) => (n === null ? gap : bytes(n, c));
-  const pc = (n: number | null) => (n === null ? gap : percent(n));
+  const b = (n: number | null) => amount(n, c);
+  const pc = (n: number | null) => share(n);
   const who = (label: string, value: string) =>
     meter.consumer ? `${label} ${meter.consumer} ${value}` : `${label} ${gap}`;
   const v = meter.values;

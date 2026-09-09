@@ -18,8 +18,14 @@ import type { Point } from "../store/point";
 import { Fleet } from "./Fleet";
 import {
   age,
+  amount,
+  blockedText,
   bytes,
+  capText,
+  gap,
   percent,
+  rate,
+  share,
   sortLanes,
   sparkline,
   timeBuckets,
@@ -98,9 +104,15 @@ export function App({
   const issues = attention(snapshot, c);
   const ordered = sortLanes(
     shown.lanes.filter((lane) =>
-      [lane.name, lane.account, lane.cwd, lane.branch, lane.tool].some(
-        (value) => value.toLowerCase().includes(query.toLowerCase()),
-      ),
+      [
+        lane.name,
+        lane.account ?? "",
+        lane.pane,
+        lane.title,
+        lane.cwd,
+        lane.branch,
+        lane.tool,
+      ].some((value) => value.toLowerCase().includes(query.toLowerCase())),
     ),
     c.sort,
     c.descending,
@@ -788,14 +800,9 @@ function LaneDetail({
   const [seriesError, setSeriesError] = useState<string | null>(null);
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
-  const limits = snapshot.groups
-    .filter(
-      (g) =>
-        g.path === "." ||
-        g.path === lane.id ||
-        lane.id.startsWith(`${g.path}/`),
-    )
-    .flatMap((g) => (g.max === null ? [] : [g.max]));
+  const kinds = Object.entries(lane.builds)
+    .map(([kind, n]) => `${kind} ${n}`)
+    .join(", ");
   useEffect(() => {
     if (!live) {
       setFiles(["Open file descriptors are available for live lanes"]);
@@ -854,24 +861,53 @@ function LaneDetail({
     <box flexDirection="column" flexShrink={0}>
       <text fg={palette.fg}>
         {safe(
-          `${lane.name} | ${proc?.group ?? lane.id} | main PID ${lane.mainPid}`,
+          `${lane.name} | ${proc?.group ?? lane.cgroup} | main PID ${lane.mainPid}`,
         )}
       </text>
       <text fg={palette.fg} flexShrink={0} wrapMode="word">
         {safe(
-          `Worktree: ${lane.cwd || "?"} | Branch: ${lane.branch || "?"} | Account: ${lane.account}`,
+          `Account: ${lane.account ?? gap} | Agent: ${lane.tool || gap} | Pane: ${lane.pane || gap} | Window: ${lane.title || gap}`,
         )}
+      </text>
+      <text fg={palette.fg} flexShrink={0} wrapMode="word">
+        {safe(`Worktree: ${lane.cwd || gap} | Branch: ${lane.branch || gap}`)}
       </text>
       <text
         fg={palette.fg}
         flexShrink={0}
         wrapMode="word"
-      >{`CPU ${percent(lane.cpu)} | Memory ${bytes(lane.rss, c)} | Tasks ${lane.tasks}`}</text>
+      >{`CPU ${share(lane.cpu)} of one core, ${share(lane.cpuShare)} of the machine | Tasks ${lane.tasks}`}</text>
+      <text
+        fg={palette.fg}
+        flexShrink={0}
+        wrapMode="word"
+      >{`Memory ${amount(lane.rss, c)} | Page cache ${amount(lane.cache, c)} | Swap ${amount(lane.swap, c)}`}</text>
+      <text
+        fg={palette.fg}
+        flexShrink={0}
+        wrapMode="word"
+      >{`Disk: read ${rate(lane.readRate, c)} | written ${rate(lane.writeRate, c)}`}</text>
+      <text fg={palette.fg} flexShrink={0} wrapMode="word">
+        {safe(
+          `Build work: ${kinds || "none"} | ${lane.linkers} linking | sccache clients ${lane.sccache}`,
+        )}
+      </text>
       <text
         fg={lane.dangerous ? palette.danger : palette.fg}
         flexShrink={0}
         wrapMode="word"
-      >{`Memory limit: ${limits.length ? bytes(Math.min(...limits), c) : "unlimited / unavailable"}${lane.unconfined ? " | Outside agent slice" : ""}`}</text>
+      >
+        {safe(
+          `Caps: memory.max ${capText(lane, c)} | cpu.weight ${lane.cpuWeight ?? gap} | make jobs ${lane.jobs ?? "not set"} | jobserver ${lane.jobserver ?? "not set"}${lane.unconfined ? " | Outside agent slice" : ""}`,
+        )}
+      </text>
+      <text
+        fg={lane.state === "blocked" ? palette.warning : palette.fg}
+        flexShrink={0}
+        wrapMode="word"
+      >
+        {safe(`State: ${blockedText(lane)}`)}
+      </text>
       {seriesError && <text fg={palette.danger}>{safe(seriesError)}</text>}
       {loading && <text fg={palette.fg}>Loading lane history</text>}
       <text fg={palette.fg}>{`CPU ${chart("cpu")}`}</text>

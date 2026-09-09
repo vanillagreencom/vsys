@@ -7,6 +7,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - Scope: a systemd cgroup whose name ends in `.scope`.
 - Lane: a watched scope or a group with an agent or resource alarm.
 - Escaped agent: a configured agent tool outside the configured agent slice.
+- Account: the basename of the agent configuration directory the lane's main process names, unknown when it names none.
 - Cause: one detected problem, held as data with its level, subjects, named consumer and numbers. Every lane with the same cause shares one cause.
 - Ladder: the causes ranked by impact on the person at the keyboard. Its first element is the verdict; every element is one attention card.
 - CPU percent: utilization in units of one logical core.
@@ -21,7 +22,8 @@ Each sample contains observed values and source errors. A failed read must remai
 - The mount parser owns mount roots and path escaping for cgroup and filesystem collection.
 - The model derives lanes, the cause ladder, the meters and alert transitions as numbers. Every word and every formatted number belongs to the UI.
 - A slice total sums its root groups. The cause ladder, the meters and the history point read the same function.
-- Every host-specific name the Overview needs is configuration: agent and desktop slices, excluded argv patterns, confinement cap markers and linker names.
+- Every host-specific name the Overview needs is configuration: agent and desktop slices, excluded argv patterns, confinement cap markers, linker names, compiler cache names and the environment variables that carry the account, the pane address and the window title.
+- The pane address and window title are read from the pane environment. vsys does not query the tmux server, so a pane that exports neither leaves both parts out of the lane name.
 - The runtime owns collection, history, and settings changes for a running dashboard.
 - The history store owns application persistence. The collector does not depend on SQLite.
 - The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane.
@@ -31,6 +33,11 @@ Each sample contains observed values and source errors. A failed read must remai
 - An excluded argv pattern matches an executable name or a whole flag, never prompt text, and the configured linker names are the only linker list. `src/collect/collector.test.ts` checks a prompt naming a language server and an empty linker list.
 - The environment of an escaped agent is read from that agent, not from its scope's main process. `src/collect/collector.test.ts` checks an agent child of a pane shell.
 - A launcher trail states the ancestors and their cgroups, the confinement markers and any PATH prefix. Markers with the wrong cgroup mean a shadowed launcher, their absence a bare launch. `src/model/launcher.test.ts` checks both and an unreadable environment.
+- A lane name joins the configured parts in the configured order and leaves out a part with no value. `src/model/naming.test.ts` checks the order and an unreadable environment; `src/model/lanes.test.ts` checks two accounts in one worktree and a lane that names no account.
+- Per-lane page cache, I/O rates, CPU share and cgroup weight stay unknown when the kernel did not report them, and an unread cgroup tree leaves the effective memory cap unknown rather than unlimited. `src/model/lanes.test.ts` checks a group with no counters and a lane with no covering group.
+- A cgroup limit file holds a number or the word max. A file that could not be read is neither, so the effective cap is known only when every covering ancestor was read. `src/collect/collector.test.ts` removes an ancestor's memory.max.
+- A snapshot a previous build stored is filled with the unknown value for every field it predates before any screen reads it. `src/store/history.test.ts` checks a stored lane without the current fields.
+- A blocked lane counts its tasks in uninterruptible wait and names storage or memory by the higher stall share. `src/model/lanes.test.ts` checks both resources and unknown pressure.
 - Severity ranks the ladder, an unconfined agent leads it, and a housekeeping cause is a card but never the verdict. `src/model/verdict.test.ts` checks the ranking and `src/ui/overview.test.ts` checks a scratch overage on a healthy machine.
 - A lane stalling on a resource a specific cause reports joins that card. `src/model/verdict.test.ts` checks storage stallers against a CPU one.
 - A slice name appearing at two paths is summed once. `src/model/verdict.test.ts` checks a nested copy against root selection.
