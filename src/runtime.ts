@@ -1,5 +1,6 @@
-import { collectionKeys, createCollector } from "./collect/collector";
+import { createCollector } from "./collect/collector";
 import type { SccacheCollector } from "./collect/sccache";
+import { collectionKeys } from "./collect/settings";
 import { type Config, saveConfig, validate } from "./config/config";
 import { notify } from "./model/alerts";
 import type { Snapshot } from "./model/types";

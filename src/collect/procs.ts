@@ -6,11 +6,11 @@ import {
   statSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { Config } from "../config/config";
 import { scopeMain } from "../model/scopes";
 import type { Group, Proc } from "../model/types";
 import { buildKind, excludedArgv, toolName } from "./builds";
 import type { Reader } from "./io";
+import type { CollectionConfig } from "./settings";
 
 /** stat's command can contain spaces and closing parentheses. */
 export function parseStat(
@@ -89,7 +89,7 @@ export class ProcessCollector {
   ) {}
   async collect(
     r: Reader,
-    c: Config,
+    c: CollectionConfig,
     groups: Group[],
     previous: Proc[],
     elapsedMs: number,
@@ -286,7 +286,7 @@ export class ProcessCollector {
 /** Open descriptors are read only on demand for the selected lane. */
 export function scratchFiles(
   r: Reader,
-  c: Config,
+  c: CollectionConfig,
   pids: number[],
 ): { pid: number; path: string }[] {
   const result: { pid: number; path: string }[] = [];

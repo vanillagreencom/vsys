@@ -1,8 +1,8 @@
 import type { Stats } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { Config } from "../config/config";
 import type { Scratch, SourceError } from "../model/types";
+import type { CollectionConfig } from "./settings";
 
 export interface ScratchScan {
   scratch: Scratch[];
@@ -97,7 +97,7 @@ export async function sizeDirectory(
   return (await scanRoot(path, now, signal)).root;
 }
 async function scanScratch(
-  c: Config,
+  c: CollectionConfig,
   time: number,
   signal: AbortSignal,
 ): Promise<ScratchScan> {
@@ -129,7 +129,11 @@ export class ScratchCollector {
   get pending(): boolean {
     return this.job !== undefined;
   }
-  async collect(c: Config, time: number, wait: boolean): Promise<ScratchScan> {
+  async collect(
+    c: CollectionConfig,
+    time: number,
+    wait: boolean,
+  ): Promise<ScratchScan> {
     if (this.closed) throw new Error("Scratch collector has closed");
     if (c.scratchDirs.length === 0)
       return { scratch: [], sessions: [], time, errors: [] };

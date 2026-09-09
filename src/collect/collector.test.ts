@@ -1,11 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-} from "node:fs";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { defaults } from "../config/config";
 import { bypassedLanes, jobservers } from "../model/builds";
@@ -13,7 +7,7 @@ import { launcherTrail } from "../model/launcher";
 import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
 import { buildKind, toolName } from "./builds";
-import { Collector, collectionKeys, createCollector } from "./collector";
+import { Collector, createCollector } from "./collector";
 import { parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
 
@@ -448,50 +442,4 @@ test("a settings change keeps the cache counts measured since vsys started", asy
     misses: 0,
     windowMs: 1000,
   });
-/**
- * The declaration in collector.ts is the only owner of the rebuild set. This
- * check reads the collection modules: the collectors themselves, plus the two
- * model modules a sample derives its lanes and alerts from. It reads no further,
- * so a setting only the dashboard or the runtime uses stays out of the set.
- */
-const collectionModules = () => {
-  const dir = import.meta.dir;
-  return [
-    ...readdirSync(dir)
-      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
-      .map((f) => join(dir, f)),
-    join(dir, "../model/lanes.ts"),
-    join(dir, "../model/alerts.ts"),
-  ];
-};
-/** Settings read through the config receiver, including destructured reads. */
-function settingsRead(file: string, keys: Set<string>): Set<string> {
-  const text = readFileSync(file, "utf8");
-  const found = new Set<string>();
-  for (const [, key] of text.matchAll(/\b(?:c|config|this\.config)\.(\w+)/g))
-    if (keys.has(key)) found.add(key);
-  for (const [, fields] of text.matchAll(
-    /\{([^{}]*)\}\s*=\s*(?:c|config|this\.config)\b/g,
-  ))
-    for (const field of fields.split(","))
-      if (keys.has(field.trim())) found.add(field.trim());
-  return found;
-}
-test("a setting the collectors read is declared, and a declared one is read", () => {
-  const keys = new Set(Object.keys(defaults()));
-  const declared = new Set<string>(collectionKeys);
-  const modules = collectionModules();
-  expect(modules.length).toBeGreaterThan(5);
-  const collectors = modules.filter((f) => f.includes("/collect/"));
-  const undeclared = collectors.flatMap((file) =>
-    [...settingsRead(file, keys)]
-      .filter((key) => !declared.has(key))
-      .map((key) => `${key} (${file})`),
-  );
-  expect(undeclared).toEqual([]);
-  const read = new Set(
-    modules.flatMap((file) => [...settingsRead(file, keys)]),
-  );
-  // A declared setting no collection module reads would rebuild for nothing.
-  expect(collectionKeys.filter((key) => !read.has(key))).toEqual([]);
 });

@@ -1,6 +1,5 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "../config/config";
 import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Snapshot } from "../model/types";
@@ -10,43 +9,8 @@ import { Reader } from "./io";
 import { kernelCgroupRoot, readMounts } from "./mounts";
 import { ProcessCollector } from "./procs";
 import { SccacheCollector } from "./sccache";
+import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
-
-/**
- * Every setting collection reads, and the only owner of that fact. The runtime
- * rebuilds the collector when one of them changes, so a new collection setting
- * must be declared here. Settings the dashboard reads while rendering, and the
- * notification rules the runtime applies after a sample, are not collection
- * settings and must stay out: rebuilding discards counters and alert state.
- * `collector.test.ts` checks this list against the collection modules.
- */
-export const collectionKeys: (keyof Config)[] = [
-  "cgroupRoot",
-  "cgroupTop",
-  "procRoot",
-  "btrfsRoot",
-  "sysBlockRoot",
-  "watchedSlices",
-  "agentSlice",
-  "agentTools",
-  "excludeArgv",
-  "capMarkers",
-  "linkerNames",
-  "memoryFloor",
-  "pressureAmber",
-  "pressureHoldSeconds",
-  "laneNaming",
-  "laneEnv",
-  "accountEnv",
-  "paneEnv",
-  "titleEnv",
-  "scratchDirs",
-  "scratchQuota",
-  "scratchRefreshMs",
-  "btrfsMounts",
-  "scrubDir",
-  "smartDir",
-];
 
 /** The scheduler awaits each sample, so ticks cannot overlap. */
 export class Collector {
@@ -56,7 +20,7 @@ export class Collector {
   private processes: ProcessCollector;
   private controller = new AbortController();
   constructor(
-    readonly config: Config,
+    readonly config: CollectionConfig,
     ticksPerSecond: number,
     pageSize: number,
     private live = false,
@@ -159,7 +123,7 @@ export class Collector {
  * measured since vsys started rather than since the last settings change.
  */
 export async function createCollector(
-  c: Config,
+  c: CollectionConfig,
   live = true,
   previous?: { sccache?: SccacheCollector },
 ): Promise<Collector> {

@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import type { Config } from "../config/config";
+import type { CollectionConfig } from "../collect/settings";
 import type { Proc } from "./types";
 
 /**
@@ -23,7 +23,10 @@ export function firstEnv(
  * directory has no account vsys can read, and a constant word in its place
  * would widen every lane name without telling the lanes apart.
  */
-export function accountName(main: Proc | undefined, c: Config): string | null {
+export function accountName(
+  main: Proc | undefined,
+  c: CollectionConfig,
+): string | null {
   const dir = firstEnv(main, c.accountEnv);
   return dir ? basename(dir) : null;
 }
@@ -31,10 +34,13 @@ export function accountName(main: Proc | undefined, c: Config): string | null {
  * tmux exports the pane address into every pane. A shell that knows the
  * window title exports it under the configured name; neither is required.
  */
-export function paneName(main: Proc | undefined, c: Config): string {
+export function paneName(main: Proc | undefined, c: CollectionConfig): string {
   return firstEnv(main, c.paneEnv) ?? "";
 }
-export function windowTitle(main: Proc | undefined, c: Config): string {
+export function windowTitle(
+  main: Proc | undefined,
+  c: CollectionConfig,
+): string {
   return firstEnv(main, c.titleEnv) ?? "";
 }
 /** Make writes the job count and the jobserver into MAKEFLAGS. */

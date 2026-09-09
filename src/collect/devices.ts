@@ -1,7 +1,7 @@
 import { join } from "node:path";
-import type { Config } from "../config/config";
 import type { Device } from "../model/types";
 import type { Reader } from "./io";
+import type { CollectionConfig } from "./settings";
 
 /** A logical block is 512 bytes and an NVMe data unit is a thousand of them. */
 const BLOCK = 512;
@@ -38,7 +38,7 @@ export function smartWrites(
  * is written by a privileged timer, because a read-only monitor cannot run
  * smartctl itself.
  */
-export function collectDevices(r: Reader, c: Config): Device[] {
+export function collectDevices(r: Reader, c: CollectionConfig): Device[] {
   const reports = new Map(
     r
       .names(c.smartDir, true)
