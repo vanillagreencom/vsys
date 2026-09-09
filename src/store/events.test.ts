@@ -6,6 +6,7 @@ import {
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
+  volumeSnapshot,
 } from "../test/fixture";
 import { EventLog } from "./events";
 import { History } from "./history";
@@ -280,4 +281,91 @@ test("a move between two slices outside the agent slice is not a confinement cha
     toSlice: "other.slice",
   });
   expect(move?.cause).toBe("");
+});
+test("an alert waiting to close still outranks a cause of equal severity", () => {
+  const held = defaults();
+  const hold = held.pressureHoldSeconds * 1000;
+  const log = new EventLog();
+  // The full filesystem is seen first; the escaped lane arrives later and
+  // outranks it, so the order cannot come from either one's first sighting.
+  const sample = (time: number, escapedLane: boolean): Snapshot => {
+    const s = emptySnapshot(time);
+    s.storage.volumes = [volumeSnapshot("/full", { free: 5, total: 100 })];
+    if (escapedLane)
+      s.lanes = [laneSnapshot({ name: "escaped", unconfined: true })];
+    return s;
+  };
+  log.advance(sample(1000, false), held);
+  const first = log.advance(sample(1000 + hold, false), held);
+  expect(first.find((e) => e.kind === "verdict")?.cause).toBe("free-space");
+  log.advance(sample(2000 + hold, true), held);
+  const second = log.advance(sample(2000 + hold * 2, true), held);
+  expect(second.find((e) => e.kind === "verdict")?.cause).toBe("unconfined");
+  // The lane leaves: its alert waits out the close and keeps the verdict.
+  const waiting = log.advance(sample(3000 + hold * 2, false), held);
+  expect(waiting.filter((e) => e.kind === "verdict")).toEqual([]);
+  const after = log.advance(sample(3000 + hold * 3, false), held);
+  expect(after.find((e) => e.kind === "verdict")?.cause).toBe("free-space");
+});
+test("a cause turning from a warning to danger is a new verdict", () => {
+  const held = defaults();
+  const hold = held.pressureHoldSeconds * 1000;
+  const log = new EventLog();
+  const stalling = (time: number, pressure: number): Snapshot => {
+    const s = emptySnapshot(time);
+    s.lanes = [laneSnapshot({ name: "busy", pressure })];
+    return s;
+  };
+  const warn = held.pressureAmber + 1;
+  const danger = held.pressureRed + 1;
+  log.advance(stalling(1000, warn), held);
+  const opened = log.advance(stalling(1000 + hold, warn), held);
+  expect(opened.find((e) => e.kind === "verdict")?.names.level).toBe("warn");
+  const raised = log
+    .advance(stalling(2000 + hold, danger), held)
+    .find((e) => e.kind === "verdict");
+  expect(raised?.cause).toBe("stalls");
+  expect(raised?.names).toMatchObject({
+    previous: "stalls",
+    previousLevel: "warn",
+    level: "danger",
+  });
+});
+test("each over-quota path reports its own size, not the largest", () => {
+  const log = started();
+  const large = emptySnapshot(2000);
+  large.storage.scratch = [
+    { path: "/small", bytes: c.scratchQuota + 1, age: 0, error: null },
+    { path: "/big", bytes: c.scratchQuota + 9999, age: 0, error: null },
+  ];
+  const opened = log
+    .advance(large, c)
+    .filter((e) => e.kind === "alert-open" && e.cause === "scratch");
+  expect(opened.map((e) => [e.subject, e.values.bytes])).toEqual([
+    ["/small", c.scratchQuota + 1],
+    ["/big", c.scratchQuota + 9999],
+  ]);
+});
+test("each stalling lane reports its own stall share", () => {
+  const log = started();
+  const stalling = emptySnapshot(2000);
+  stalling.lanes = [
+    laneSnapshot({ id: "a.scope", name: "lane-a", pressure: 12 }),
+    laneSnapshot({ id: "b.scope", name: "lane-b", pressure: 40 }),
+  ];
+  const opened = log
+    .advance(stalling, c)
+    .filter((e) => e.kind === "alert-open" && e.cause === "stalls");
+  expect(opened.map((e) => e.values.worst)).toEqual([12, 40]);
+});
+test("two lanes sharing a display name keep separate identities", () => {
+  const log = started();
+  const twins = emptySnapshot(2000);
+  twins.lanes = [
+    laneSnapshot({ id: "a.scope", name: "kendex" }),
+    laneSnapshot({ id: "b.scope", name: "kendex" }),
+  ];
+  const started2 = log.advance(twins, c).filter((e) => e.kind === "lane-start");
+  expect(started2.map((e) => e.subject)).toEqual(["kendex", "kendex"]);
+  expect(started2.map((e) => e.subjectId)).toEqual(["a.scope", "b.scope"]);
 });

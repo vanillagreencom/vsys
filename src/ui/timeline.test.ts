@@ -8,6 +8,7 @@ const event = (o: Partial<TimelineEvent> = {}): TimelineEvent => ({
   time: 1000,
   kind: "verdict",
   subject: "",
+  subjectId: "",
   cause: "",
   names: {},
   values: {},
@@ -128,4 +129,39 @@ test("a move inside one slice names the cgroups, not a slice change", () => {
     c,
   );
   expect(across).toContain("it left agents.slice for app.slice");
+});
+test("a verdict that only escalates says so instead of repeating itself", () => {
+  const raised = eventLine(
+    event({
+      kind: "verdict",
+      subject: "busy",
+      cause: "stalls",
+      names: { previous: "stalls", previousLevel: "warn", level: "danger" },
+    }),
+    c,
+  );
+  expect(raised).toContain("now serious, was a warning");
+  expect(raised).not.toContain("previously");
+  const replaced = eventLine(
+    event({
+      kind: "verdict",
+      cause: "stalls",
+      names: { previous: "disk", previousLevel: "danger", level: "warn" },
+    }),
+    c,
+  );
+  expect(replaced).toContain(`previously ${causePhrase("disk")}`);
+});
+test("a scratch line states the size of its own path", () => {
+  expect(
+    eventLine(
+      event({
+        kind: "alert-open",
+        subject: "/small",
+        cause: "scratch",
+        values: { bytes: 1024, quota: 512, largest: 999999 },
+      }),
+      c,
+    ),
+  ).toContain("1.0 KiB against a quota of 512 B");
 });

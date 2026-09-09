@@ -19,6 +19,30 @@ export type CauseId =
   | "memory-high"
   | "scrub"
   | "scratch";
+/**
+ * The order that breaks a tie between two causes of one severity, worst first.
+ * The ladder sorts by it, and anything ranking a cause the ladder is not
+ * currently reporting reads the same table rather than a live position. The
+ * record covers the union, so a new cause cannot be added without a rank.
+ */
+const causeOrder: Record<CauseId, number> = {
+  unconfined: 0,
+  "read-only": 1,
+  "device-errors": 2,
+  disk: 3,
+  "desktop-swap": 4,
+  "free-space": 5,
+  "memory-cap": 6,
+  stalls: 7,
+  "system-memory": 8,
+  "system-cpu": 9,
+  "memory-high": 10,
+  scrub: 11,
+  scratch: 12,
+};
+export function causeRank(id: CauseId): number {
+  return causeOrder[id];
+}
 export interface Cause {
   id: CauseId;
   level: Level;
@@ -277,9 +301,12 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         quota: c.scratchQuota,
       },
     });
-  // Severity decides the order; authoring order breaks a tie.
+  // Severity decides the order; the cause order table breaks a tie.
   const rank = { danger: 2, warn: 1, ok: 0 };
-  return out.sort((a, b) => rank[b.level] - rank[a.level]);
+  return out.sort(
+    (a, b) =>
+      rank[b.level] - rank[a.level] || causeRank(a.id) - causeRank(b.id),
+  );
 }
 /** Four meters. Each carries its numbers and the single biggest consumer. */
 export function meters(s: Snapshot, c: Config): Meter[] {

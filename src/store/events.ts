@@ -1,7 +1,13 @@
 import type { Config } from "../config/config";
-import { escaped } from "../model/lanes";
+import { escaped, lanePressure } from "../model/lanes";
 import type { Snapshot } from "../model/types";
-import { type Cause, type CauseId, causes, type Level } from "../model/verdict";
+import {
+  type Cause,
+  type CauseId,
+  causeRank,
+  causes,
+  type Level,
+} from "../model/verdict";
 
 export type EventKind =
   | "lane-start"
@@ -16,6 +22,8 @@ export interface TimelineEvent {
   kind: EventKind;
   /** The lane, process or consumer the change is about. */
   subject: string;
+  /** Its stable identity, since two lanes can carry one display name. */
+  subjectId: string;
   /** The cause behind the change, empty when the ladder holds none. */
   cause: CauseId | "";
   /** Identifiers the line needs: account, slice, tool, from, to, level. */
@@ -35,14 +43,39 @@ export function sliceOf(path: string): string {
 interface Watch {
   cause: CauseId;
   subject: string;
+  subjectId: string;
   level: Level;
-  /** Ladder position when the cause was last seen, which ranks the verdict. */
-  rank: number;
   verdictWorthy: boolean;
   values: Record<string, number | null>;
   firstSeen: number;
   lastSeen: number;
   opened: boolean;
+}
+/** Severity leads the verdict, exactly as it leads the ladder. */
+const severity: Record<Level, number> = { danger: 2, warn: 1, ok: 0 };
+/**
+ * The numbers this one subject contributed. A cause reports its worst or its
+ * largest across every subject it groups, which is not what one alert about
+ * one subject may claim.
+ */
+function subjectValues(
+  cause: Cause,
+  id: string,
+  s: Snapshot,
+  c: Config,
+): Record<string, number | null> {
+  if (cause.id === "desktop-swap")
+    return { ...cause.values, floor: c.swapFloor };
+  if (cause.id === "scratch")
+    return {
+      ...cause.values,
+      bytes: s.storage.scratch.find((x) => x.path === id)?.bytes ?? null,
+    };
+  if (cause.id === "stalls") {
+    const lane = cause.lanes.find((l) => l.id === id);
+    return { ...cause.values, worst: lane ? lanePressure(lane) : null };
+  }
+  return { ...cause.values };
 }
 /**
  * A cause groups every subject it affects. Each of them is its own alert with
@@ -70,6 +103,7 @@ export class EventLog {
   private previous: Snapshot | null = null;
   private watching = new Map<string, Watch>();
   private verdict: CauseId | "" = "";
+  private verdictLevel: Level = "ok";
   /** The first sample records the state it observes and reports no change. */
   advance(s: Snapshot, c: Config): TimelineEvent[] {
     const out: TimelineEvent[] = [];
@@ -85,6 +119,7 @@ export class EventLog {
         time: s.time,
         kind,
         subject,
+        subjectId: subject,
         cause: "",
         names: {},
         values: {},
@@ -95,6 +130,7 @@ export class EventLog {
     for (const lane of s.lanes)
       if (previous && !previous.lanes.some((old) => old.id === lane.id))
         add("lane-start", lane.name, {
+          subjectId: lane.id,
           // An unreadable account stays empty; the UI says it is unavailable.
           names: {
             account: lane.account ?? "",
@@ -106,6 +142,7 @@ export class EventLog {
     for (const lane of previous?.lanes ?? [])
       if (!s.lanes.some((live) => live.id === lane.id))
         add("lane-stop", lane.name, {
+          subjectId: lane.id,
           names: { account: lane.account ?? "", slice: sliceOf(lane.cgroup) },
           values: { age: lane.age },
         });
@@ -118,6 +155,7 @@ export class EventLog {
       const was = before.get(`${p.pid}:${p.start}`);
       if (!was || was.group === p.group) continue;
       add("cgroup-move", `${p.comm} PID ${p.pid}`, {
+        subjectId: `${p.pid}:${p.start}`,
         names: {
           from: was.group,
           to: p.group,
@@ -133,15 +171,15 @@ export class EventLog {
     const hold = c.pressureHoldSeconds * 1000;
     const ladder = causes(s, c);
     const live = new Set<string>();
-    ladder.forEach((cause, rank) => {
+    for (const cause of ladder) {
       for (const subject of subjects(cause)) {
         const key = `${cause.id}\u0000${subject.id}`;
         live.add(key);
         const watch: Watch = this.watching.get(key) ?? {
           cause: cause.id,
           subject: subject.name,
+          subjectId: subject.id,
           level: cause.level,
-          rank,
           verdictWorthy: cause.verdictWorthy,
           values: {},
           firstSeen: s.time,
@@ -150,23 +188,20 @@ export class EventLog {
         };
         watch.lastSeen = s.time;
         watch.level = cause.level;
-        watch.rank = rank;
-        // The floor the swap crossed belongs to the event, not to the setting
-        // the reader happens to hold when the line is drawn.
-        watch.values =
-          cause.id === "desktop-swap"
-            ? { ...cause.values, floor: c.swapFloor }
-            : { ...cause.values };
+        // The thresholds and the subject's own numbers belong to the event,
+        // not to the settings the reader happens to hold when it is drawn.
+        watch.values = subjectValues(cause, subject.id, s, c);
         this.watching.set(key, watch);
         // An alert that was never recorded as open cannot be recorded as closed.
         if (watch.opened || s.time - watch.firstSeen < hold) continue;
         watch.opened = add("alert-open", subject.name, {
+          subjectId: subject.id,
           cause: cause.id,
           names: { level: cause.level },
           values: { ...watch.values },
         });
       }
-    });
+    }
     for (const [key, watch] of this.watching) {
       if (live.has(key)) continue;
       // A cause must hold without a gap to open, so a pending watch ends the
@@ -178,23 +213,40 @@ export class EventLog {
       if (s.time - watch.lastSeen < hold) continue;
       this.watching.delete(key);
       add("alert-close", watch.subject, {
+        subjectId: watch.subjectId,
         cause: watch.cause,
+        names: { level: watch.level },
         values: { durationMs: watch.lastSeen - watch.firstSeen },
       });
     }
     // The verdict names the worst alert that opened, an alert waiting out its
     // close included, so a cause that steps away for a sample cannot flip it.
+    // Severity decides first, then the cause order table. A live ladder
+    // position cannot rank an alert the ladder is no longer reporting.
     const lead = [...this.watching.values()]
       .filter((watch) => watch.opened && watch.verdictWorthy)
-      .sort((a, b) => a.rank - b.rank || a.firstSeen - b.firstSeen)[0];
+      .sort(
+        (a, b) =>
+          severity[b.level] - severity[a.level] ||
+          causeRank(a.cause) - causeRank(b.cause) ||
+          a.firstSeen - b.firstSeen,
+      )[0];
     const verdict = lead?.cause ?? "";
-    if (verdict !== this.verdict)
+    const level = lead?.level ?? "ok";
+    // A cause that escalates from a warning to danger is a new verdict.
+    if (verdict !== this.verdict || level !== this.verdictLevel)
       add("verdict", lead?.subject ?? "", {
+        subjectId: lead?.subjectId ?? "",
         cause: verdict,
-        names: { previous: this.verdict, level: lead?.level ?? "ok" },
+        names: {
+          previous: this.verdict,
+          previousLevel: this.verdictLevel,
+          level,
+        },
         values: lead ? { ...lead.values } : {},
       });
     this.verdict = verdict;
+    this.verdictLevel = level;
     this.previous = s;
     return out;
   }

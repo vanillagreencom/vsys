@@ -13,7 +13,6 @@ Each sample contains observed values and source errors. A failed read must remai
 - CPU percent: utilization in units of one logical core.
 - Pressure: the recent percentage of time that tasks stalled on a resource.
 - Pinned Fleet: the recorded sample selected by the timeline cursor.
-- Event: one change between two consecutive samples, held as data with its cause, subjects and numbers.
 - Checkpoint: a complete snapshot followed by exact changes to its values.
 
 ## Boundaries
@@ -28,8 +27,8 @@ Each sample contains observed values and source errors. A failed read must remai
 - The build cache reading queries the sccache server through an injected runner, rate limited between samples and bounded by its own deadline, so a wedged server cannot hold the sample the dashboard awaits. A collector built without a runner records no reading, so no test starts that server.
 - The runtime owns collection, history, and settings changes for a running dashboard. A replaced source is handed its predecessor, so readings measured since vsys started survive the replacement.
 - The history store owns application persistence. The collector does not depend on SQLite.
-- Timeline events are derived once, in the store, from consecutive snapshots and the cause ladder. There is no second detection path, so an alert is a cause opening and closing.
 - `escaped()` in `src/model/lanes.ts` is the only definition of an agent outside its slice. Lanes, alerts, history points and timeline events all call it.
+- [Timeline events](events.md): what the timeline records, and how a change is held until it counts.
 - The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane.
 
 ## Invariants
@@ -42,7 +41,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - A cgroup limit file holds a number or the word max. A file that could not be read is neither, so the effective cap is known only when every covering ancestor was read. `src/collect/collector.test.ts` removes an ancestor's memory.max.
 - A snapshot a previous build stored is filled with the unknown value for every field it predates before any screen reads it. `src/store/history.test.ts` checks a stored lane without the current fields.
 - A blocked lane counts its tasks in uninterruptible wait and names storage or memory by the higher stall share. `src/model/lanes.test.ts` checks both resources and unknown pressure.
-- Severity ranks the ladder, an unconfined agent leads it, and a housekeeping cause is a card but never the verdict. `src/model/verdict.test.ts` checks the ranking and `src/ui/overview.test.ts` checks a scratch overage on a healthy machine.
+- Severity ranks the ladder, the cause order table breaks a tie, an unconfined agent leads it, and a housekeeping cause is a card but never the verdict. `src/model/verdict.test.ts` checks the ranking and `src/ui/overview.test.ts` checks a scratch overage on a healthy machine.
 - A lane stalling on a resource a specific cause reports joins that card. `src/model/verdict.test.ts` checks storage stallers against a CPU one.
 - A slice name appearing at two paths is summed once. `src/model/verdict.test.ts` checks a nested copy against root selection.
 - A filesystem below the configured free-space floor is a cause of its own, and a parent slice never becomes the top writer or top swap holder. `src/model/verdict.test.ts` checks both against nested groups.
@@ -74,15 +73,6 @@ Each sample contains observed values and source errors. A failed read must remai
 - Settings changes and persistence changes preserve retained incidents. `src/store/history.test.ts` checks transfer and database merging.
 - History storage rejects a database with another application's schema. `src/store/history.test.ts` checks tables and views.
 - Timeline positions follow timestamps. `src/ui/format.test.ts` checks collection gaps and alert alignment.
-- A lane start or stop names its account and slice, and a process moves cgroups only when its PID keeps its start time. `src/store/events.test.ts` checks a reused PID and a process that stayed put.
-- An alert closes with the time the cause was observed, and a settings change does not restart that clock. `src/store/events.test.ts` checks the duration across a reconfigure.
-- An alert is one cause on one subject. Every lane, group and path a grouped cause names watches on its own, so two lanes hitting one cause are two alerts with two durations. `src/store/events.test.ts` checks two lanes escaping at once and one replacing another.
-- A cause must hold for `pressureHoldSeconds` without a gap before it opens, and stay away that long before it closes. A value alternating either side of a threshold therefore records nothing. `src/store/events.test.ts` checks 100 alternating samples against 100 held ones.
-- The verdict follows the alerts that opened, including one waiting out its close, so a cause that steps away for a sample cannot flip it. `src/store/events.test.ts` checks the verdict across a close hold.
-- An event records the threshold it crossed, so a later settings change cannot restate what an older line measured. `src/ui/timeline.test.ts` checks a swap floor against a changed setting.
-- A move event names the cgroup it left and the one it entered, and calls the slice changed only when it differs. A move between two slices outside the agent slice is not a confinement change. `src/store/events.test.ts` and `src/ui/timeline.test.ts` check a move inside one slice against one that leaves the agent slice.
-- Desktop swap crossing its floor is the desktop-swap cause opening, and a housekeeping cause is an event but never a verdict change. `src/store/events.test.ts` checks both.
-- Every event renders as one line that states its cause. `src/ui/timeline.test.ts` checks each kind and the swap numbers.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
 - Interactive quit restores the terminal, including when history shutdown fails. `src/main.test.ts` checks isolated terminals. `src/runtime.test.ts` checks error delivery when collection and shutdown both fail.
 

@@ -19,6 +19,14 @@ export interface Point {
   /** What changed since the previous sample, derived once by the store. */
   events: TimelineEvent[];
 }
+/**
+ * A point marks the timeline strip when it recorded a change. Only a point
+ * persisted before events existed falls back to its alerts, so an alert still
+ * inside its hold does not mark a change the reader cannot find.
+ */
+export function changed(p: Point): boolean {
+  return p.events ? p.events.length > 0 : p.alerts.length > 0;
+}
 /** Logical roles use configured slice names; nested groups are not counted twice. */
 export function point(
   s: Snapshot,

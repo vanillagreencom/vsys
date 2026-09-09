@@ -36,10 +36,18 @@ function measurement(e: TimelineEvent, c: Config): string {
   if (e.cause === "disk") return `${share(v.some)} of the window stalled`;
   if (e.cause === "stalls") return `${share(v.worst)} at worst`;
   if (e.cause === "scratch")
-    return `${amount(v.largest, c)} against a quota of ${amount(v.quota, c)}`;
+    return `${amount(v.bytes, c)} against a quota of ${amount(v.quota, c)}`;
   return "";
 }
 const parts = (...values: string[]) => values.filter(Boolean).join(" | ");
+/** How bad a level is, in words a reader does not have to decode. */
+function levelWord(level: string | undefined): string {
+  return level === "danger"
+    ? "serious"
+    : level === "warn"
+      ? "a warning"
+      : "clear";
+}
 /** One line per event: when, what changed, and why. */
 export function eventLine(e: TimelineEvent, c: Config): string {
   const at = new Date(e.time).toLocaleTimeString();
@@ -81,9 +89,13 @@ export function eventLine(e: TimelineEvent, c: Config): string {
       e.subject,
       `open for ${age((e.values.durationMs ?? 0) / 1000)}`,
     );
+  // One cause can lead twice: a warning that turns serious is a new verdict.
+  const previous = (n.previous as CauseId | "") ?? "";
   return parts(
     `${at} Verdict: ${causePhrase(e.cause)}`,
     e.subject,
-    `previously ${causePhrase((n.previous as CauseId | "") ?? "")}`,
+    e.cause && previous === e.cause
+      ? `now ${levelWord(n.level)}, was ${levelWord(n.previousLevel)}`
+      : `previously ${causePhrase(previous)}`,
   );
 }

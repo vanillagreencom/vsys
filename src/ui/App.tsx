@@ -14,7 +14,7 @@ import { dangerousCap, parentChain, processTree } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
-import type { Point } from "../store/point";
+import { changed, type Point } from "../store/point";
 import { buildLines } from "./builds";
 import { Fleet } from "./Fleet";
 import {
@@ -614,11 +614,7 @@ export function App({
         {line(
           buckets
             .map((bucket, i) =>
-              bucket.some((p) => (p.events ?? []).length || p.alerts.length)
-                ? "!"
-                : i === cursorIndex
-                  ? "│"
-                  : "·",
+              bucket.some(changed) ? "!" : i === cursorIndex ? "│" : "·",
             )
             .join(""),
         )}
@@ -636,7 +632,7 @@ export function App({
           // One row per event, so a long subject cannot push the rest of the
           // window past the rows the cap counted.
           <text
-            key={`${event.time}-${event.kind}-${event.cause}-${event.subject}`}
+            key={`${event.time}-${event.kind}-${event.cause}-${event.subjectId}`}
             height={1}
             flexShrink={0}
             truncate

@@ -608,3 +608,44 @@ test("a long event subject takes one row and does not push out the rest", async 
     h.close();
   }
 });
+
+test("an alert inside its hold does not mark a change on the strip", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const alarmed = emptySnapshot(2000);
+  alarmed.alerts = [
+    { time: 2000, rule: "scrub", subject: "/x", message: "Scrub problem: /x" },
+  ];
+  h.add(alarmed);
+  const ui = await testRender(
+    <App
+      snapshot={alarmed}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 40 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("5");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("What changed in this window: 0 of 0");
+    // The rule fired, but no event holds yet, so the strip above the legend
+    // stays unmarked.
+    const rows = frame.split("\n");
+    const strip = rows[rows.findIndex((row) => row.includes("! change")) - 1];
+    expect(strip).toContain("·");
+    expect(strip).not.toContain("!");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
