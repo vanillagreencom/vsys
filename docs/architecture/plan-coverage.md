@@ -2,7 +2,7 @@
 
 Covers: src/ scripts/bench.ts scripts/bench-history.ts
 
-The [application plan](../plans/vsys-view-plan.md) defines the collection and replay requirements. The [UI constraints](ui.md) define refresh, navigation and display ownership.
+The [architecture overview](overview.md) defines the collection and replay requirements. The [UI constraints](ui.md) define refresh, navigation and display ownership.
 
 ## Screens
 
