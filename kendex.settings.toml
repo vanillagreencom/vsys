@@ -3,10 +3,6 @@
 # Keep secrets, tokens, and personal overrides in .env.local.
 
 [env]
-# The project's full test, lint and typecheck command, run from the worktree
-# root. The dev workflow refuses to validate while this is empty.
-DEV_VALIDATE_CMD = "python3 scripts/ci.py && python3 -m unittest discover -s scripts -p '*_test.py' && .agents/skills/review-gate/scripts/validate.sh && .agents/skills/bot-instructions/scripts/bot-instructions check"
-
 # The team every Linear write targets. No default: an empty value refuses
 # writes instead of guessing inside whatever workspace the API key reaches
 # (the create actions still take `--team <name>` per call). Confirm with
@@ -21,28 +17,285 @@ LINEAR_TEAM_PREFIX = "VSY"
 # such an issue is invisible to agent routing. Empty = guard off.
 LINEAR_AGENT_LABELS = "agent:generalist, agent:rust, agent:iced, agent:researcher, agent:multi, agent:human"
 
-# Non-empty makes `issues create` enforce the creation bar in the
-# project-management skill's SKILL.md, § Disposition → **Name what reaches
-# it**: it refuses a body with no `Reached by:` line, and a `--review-born
-# --priority 2` body with no `Symptom:` line. Empty = guard off.
+# Non-empty makes `issues create` hold the presence half of the creation bar
+# in the project-management skill's SKILL.md, § Disposition → **Name what
+# reaches it**: it refuses a body with no `Reached by:` line, and a
+# `--review-born --priority 2` body with no `Symptom:` line. What those lines
+# say is the author's to judge. Creation is the chokepoint, since
+# `Tracked: <ID>` needs only an issue to exist. Empty = guard off.
 LINEAR_REQUIRE_REACH = "1"
 
-# Review policy shared with vanillagreencom/kendex.
+# Reviewer merge gate: "approval" needs a GitHub approval; "review" needs a
+# non-author review of the current head plus zero unresolved threads; "off"
+# only where no reviewer exists. This repo's reviewers (Codex, Copilot)
+# comment but never approve, and the CI "Review gate" status is the engine's
+# verdict, so "review" is the mode that can actually pass.
+PR_REVIEW_GATE = "review"
+
+# The review-gate ENGINE's one-switch disable, consumed by orch even where
+# the review-gate skill is not installed. Only the exact value "off"
+# narrows; anything else leaves PR_REVIEW_GATE authoritative.
 REVIEW_GATE_MODE = "enforce"
+
+# Total review-wait budget in seconds before the on-timeout policy applies;
+# an explicit max_wait argument always wins.
+PR_REVIEW_WAIT_SECS = "900"
+
+# Check-run or commit-status name a trusted review bot publishes on
+# analyzed heads; a
+# success counts as review-received. SECURITY: matched by NAME and anyone
+# can publish under any name — name only the trusted bot's check. Empty =
+# review objects only.
+PR_REVIEW_CHECK = ""
+
+# When the review signal never arrives: "block" reports a timeout;
+# "proceed" records a reviewer-down override and moves on, but only with
+# zero unresolved threads — a real comment is never bypassed. Comment-only
+# bots can go silent on a trivial head, so a silent round proceeds rather
+# than stalling the session.
+PR_REVIEW_ON_TIMEOUT = "proceed"
+
+# Command text the command-safety hook refuses before the shell runs, where
+# the command-safety bundle is installed: a systemd-run invocation capped by
+# MemoryMax= or MemoryHigh= with a K- or M-suffixed value. The danger is a cap
+# measured in kilobytes or megabytes on a build: on 2026-09-06 such a starved
+# cgroup failed a kernel allocation inside a btrfs transaction and the host's
+# root volume went read-only. The workstation's agents.slice (112G) is not
+# that cap: every lane runs inside it and must stay inside it. Remedy: run
+# the reproduction as a plain process with its temp dir under the worktree's
+# tmp/, still inside the slice.
+COMMAND_SAFETY_DENY_PATTERN = "(^|[^[:alnum:]_-])systemd-run[[:space:]][^;|&]*Memory(Max|High)=[0-9]+[KkMm]([^[:alnum:]]|$)"
+
+# Seconds ci-wait keeps polling before failing when no CI checks registered
+# yet, four polls at its 180 s default interval; raise for approval-gated CI
+# with slow dispatch.
+CI_WAIT_NO_CHECKS_GRACE = "600"
+
+# Max automated ci-fix rounds per PR before a human takes over.
+CI_FIX_MAX_CYCLES = "6"
+
+# Max internal re-review cycles per issue before the verdict pass; the
+# re-review re-entry raises rereview_cycles and refuses at this, so the number
+# set is the number of re-entries allowed.
+REVIEW_MAX_CYCLES = "4"
+
+# Max external review rounds on an open PR. At or past it a finding gets a
+# disposition and no fix push, except a defect the diff introduces or arms.
+REVIEW_MAX_EXTERNAL_ROUNDS = "4"
+
+# Total concurrent agent-session budget, counting the primary; "0" =
+# unlimited. Reviews run in waves when the reviewer set exceeds free slots.
+# On the Codex runtime, set the cap `spawn-adapter slots` reports.
+REVIEWER_SLOT_BUDGET = "0"
+
+# Post-PR choices: "auto-recommended" continues within each budget; "ask" prompts.
+ORCH_DECISION_MODE = "auto-recommended"
+
+# "ask" presents the merge decision; "auto" merges once every gate is green.
+# MERGE_READY = false never auto-merges.
+ORCH_MERGE_AUTONOMY = "auto"
+
+# Seconds per brief-delivery verification pass on tmux handoff lanes.
+ORCH_TMUX_VERIFY_SECS = "15"
+
+# Max concurrent lanes the overseer keeps in flight.
+ORCH_OVERSEER_LANES = "3"
+
+# Priority-ordered roster, space/comma separated. Per entry:
+# SECOND_OPINION_<NAME>_CMD (claude and codex have defaults) and
+# SECOND_OPINION_<NAME>_MODEL (identity, when the CLI fronts another model).
+SECOND_OPINION_MODELS = "claude codex"
+
+# Opinions a review collects; 2+ unions distinct models on one diff.
+SECOND_OPINION_COUNT = "1"
+
+# Roster commands (identities claude / codex).
+SECOND_OPINION_CLAUDE_CMD = "claude -p --no-session-persistence --model opus --effort max --allowedTools Bash(read-only:true),Read,Glob,Grep"
+
+SECOND_OPINION_CODEX_CMD = "codex exec -m gpt-6-astra -s read-only -c model_reasoning_effort=xhigh --ephemeral"
+
+# Seconds to wait for the external CLI.
+SECOND_OPINION_TIMEOUT = "1080"
+
+# Home for review/audit records written without --output; a directory the
+# script CREATES is seeded with a "*" .gitignore (a pre-existing one is
+# left alone — ignore it yourself).
+SECOND_OPINION_ARTIFACT_DIR = "tmp/second-opinion"
+
+# Repo instruction files appended to the review prompt (repo-rule lens).
+# Empty disables.
+SECOND_OPINION_REVIEW_INSTRUCTIONS = "AGENTS.md .github/instructions/*.instructions.md .github/copilot-instructions.md"
+
+# Commit-status context the gate posts — the required check name in branch
+# protection. Keep it stable: changing it strands the old required context
+# on open PRs.
 REVIEW_GATE_CONTEXT = "Review gate"
+
+# Check/status names whose success on the current head counts as review
+# evidence (for bots that only file a review object when they have
+# findings). SECURITY: matched by NAME and anyone can publish under any
+# name — list only trusted bots' checks. github-actions-published check-runs
+# are rejected automatically. Empty = source disabled.
 REVIEW_GATE_TRUSTED_STATUS_CONTEXTS = "CodeRabbit;copilot-pull-request-reviewer"
+
+# A trusted "pass" whose output contains one of these substrings never ran
+# (e.g. "Review rate limited") and is NOT-EVIDENCE. Empty disables.
 REVIEW_GATE_CHECKRUN_SKIP_PATTERNS = "rate limited;skipped;queued"
+
+# 'login:binding-pattern' pairs for bots whose clean pass is only an issue
+# comment binding a commit sha (e.g. "bot[bot]:Reviewed commit:").
+# SECURITY: trust keys on the author LOGIN. Empty disables.
 REVIEW_GATE_COMMENT_REVIEWERS = "chatgpt-codex-connector[bot]:Reviewed commit:;bmethod:REVIEWED-CLEAN"
+
+# Shortest sha prefix (4–40) a comment-form reviewer may bind evidence to.
 REVIEW_GATE_SHA_PREFIX_FLOOR = "7"
+
+# MANUAL operator override status — posted by a human, never automation.
+# Substitutes for MISSING evidence only; the description must carry a
+# reason (enforced). SECURITY: same trusted-publisher model as the
+# contexts above.
+# Empty disables.
 REVIEW_GATE_OVERRIDE_CONTEXT = "kendex-reviewer-outage"
+
+# Creator logins whose commit statuses are never evidence. SECURITY:
+# wherever PR workflows hold statuses:write, PR content can mint statuses
+# through github-actions[bot] — list it; the override must then come from a
+# non-Actions identity. Empty disables.
 REVIEW_GATE_STATUS_PUBLISHER_REJECT = "github-actions[bot]"
+
+# Logins whose review objects at the exact head count as evidence. Empty =
+# any non-author — on repos with outside collaborators, set the list so a
+# drive-by review cannot satisfy the gate.
 REVIEW_GATE_REVIEW_OBJECT_TRUSTED_LOGINS = "coderabbitai[bot];copilot-pull-request-reviewer[bot];qodo-code-review[bot];chatgpt-codex-connector[bot];bmethod"
+
+# "any", or "approved" (an APPROVED at head not withdrawn by a later
+# CHANGES_REQUESTED from the same login).
 REVIEW_GATE_REVIEW_OBJECT_MIN_STATE = "any"
+
+# Substrings marking a review row's body as the reviewer's own errored-run
+# attestation — such a row is NOT-EVIDENCE, never a blocker, never carried.
+# Matched at the start of the body only (first line); a review quoting a
+# pattern in later text stays evidence. Empty disables.
 REVIEW_GATE_REVIEW_OBJECT_ERROR_PATTERNS = "encountered an error and was unable to review"
+
+# "enforce" fails closed on unresolved threads CI-side; "off" only where a
+# server-side zero-bypass ruleset already enforces thread hygiene. Evidence
+# and changes-requested still fail closed either way.
 REVIEW_GATE_THREADS = "enforce"
+
+# Bounded attempts per predicate evidence read, and the pause between them.
+# A read failing every attempt is still exit 2 (no verdict).
 REVIEW_GATE_API_ATTEMPTS = "1"
+
 REVIEW_GATE_API_RETRY_DELAY_SECONDS = "2"
+
+# Evidence carry-forward across carry-safe deltas ("docs", "comments",
+# "vendored"; empty = off): ancestor evidence extends to head when the delta
+# is entirely carry-safe. "vendored" carries every file under a path
+# REVIEW_GATE_VENDORED_PATHS names, whatever its extension. Never a waiver —
+# code changes outside the classes always need fresh evidence, and
+# changes-requested / threads still fail closed. CAVEAT: "comments" is
+# line-lexical and cannot see heredocs; "docs" has no such caveat.
 REVIEW_GATE_CARRY_FORWARD = ""
+
+# The kendex render trees "vendored" trusts as kendex output, e.g.
+# ".agents/*;.claude/skills/*" — bytes under them carry unreviewed, so hook
+# scripts and instruction markdown belong in the exclusion list, which wins.
+# A rename carries only when both its names are under the set. Config
+# errors: enabling "vendored" over an empty set, or an entry naming no
+# literal path text ("*", "*/*").
 REVIEW_GATE_VENDORED_PATHS = ""
+
+# Path globs that DISQUALIFY a carry — for policy-bearing markdown obeyed
+# mechanically (e.g. "*AGENTS.md;.github/*"), which deserves fresh review.
+# Inert while REVIEW_GATE_CARRY_FORWARD is empty.
 REVIEW_GATE_CARRY_FORWARD_EXCLUDE = ""
+
+# Exclusion globs DECLARED to match no tracked path yet, so the selftest
+# accepts them; a declaration not in the exclude list is an orphan and
+# fails the selftest.
 REVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC = ""
+
+# ── Skill settings ───────────────────────────────────────────────────────
+# What the installed skills read for repo-specific names, paths and commands.
+
+# Commit identity for agent-authored work. Empty uses the ambient git identity.
+BOT_EMAIL = ""
+BOT_NAME = ""
+BOT_REMOTE_NAME = ""
+
+# Where the decider skill keeps architecture decision records.
+DECISIONS_DIR = "docs/decisions"
+
+# Full validation runs at development completion. Submit reuses that result
+# for the same commit; CI runs the full suites independently. scripts/ci.py
+# holds the dependency, lint, type, test and build checks.
+DEV_VALIDATE_CMD = "python3 scripts/ci.py && python3 -m unittest discover -s scripts -p '*_test.py' && .agents/skills/review-gate/scripts/validate.sh && .agents/skills/bot-instructions/scripts/bot-instructions check"
+
+# The repo-root executable the guard chain runs last, after doc-limits,
+# preflight, the bot-instructions check and the commit-guards batch. This
+# repository has no guard of its own; the full checks run through
+# DEV_VALIDATE_CMD.
+COMMIT_GUARDS_PRE_COMMIT_LOCAL = ""
+
+# The fragment scope of the changelog-entries lane. The two-segment glob
+# keeps changelog.d/README.md out — its bullets document the format and are
+# not entries. CHANGELOG.md is the lane's other scope,
+# COMMIT_GUARDS_CHANGELOG_RECORD, judged by a different rule: entries there
+# are the collator's, so only lines this commit ADDS under [Unreleased] are
+# refused and the released history no one may rewrite is never measured.
+COMMIT_GUARDS_CHANGELOG_PATHS = "changelog.d/*/*.md"
+
+# Paths whose change obliges a changelog entry, checked by the commit-msg
+# lane. This repository keeps no changelog yet, so no path obliges one.
+COMMIT_GUARDS_CHANGELOG_REQUIRED_PATHS = ""
+
+# The markdown lanes judge every tracked markdown file, not only the files a
+# commit touches.
+COMMIT_GUARDS_MD_SCOPE = "all"
+
+GH_BOT_USERNAME = ""
+GH_VERIFY_CMD = ""
+
+# Branch names match Linear issue identifiers case-insensitively. GitHub
+# issues are deliberately absent because a PR's Closes line identifies them.
+GH_ISSUE_PATTERN = "vsy-[0-9]+"
+
+LINEAR_FORMAT = "safe"
+ORCH_STATE_DIR = "tmp"
+
+# ── Worktrees ────────────────────────────────────────────────────────────
+# What a fresh issue worktree gets from this checkout: only paths git does
+# not carry. An entry does nothing when git carries every path under it, and
+# links the untracked children when it does not. The harness trees are
+# committed whole, so a worktree gets them from its own branch.
+WORKTREE_BASE_DIR = "~/dev-data/.worktrees/vsys"
+WORKTREE_COPIES = ".kendex-lock.json"
+WORKTREE_DEFAULT_BRANCH = "main"
+WORKTREE_MKDIRS = "tmp"
+# node_modules: scripts/ci.py and the package scripts run the pinned Bun,
+# biome and tsc from this store. The link shares the main checkout's real
+# install (bun — bun.lock), so a dependency change is made with the branch
+# checked out in the MAIN checkout, where `bun install` rebuilds the store,
+# never in a linked worktree, whose install would write through the link.
+# .gitignore's `node_modules/` pattern covers the symlink.
+WORKTREE_SYMLINKS = ".env.local node_modules"
+
+# Nothing needs one: the CLAUDE.md shims kendex writes beside each AGENTS.md
+# are tracked files, so they arrive through git, and naming one here would
+# shadow tracked content.
+WORKTREE_RELATIVE_SYMLINKS = ""
+
+# Seconds a 1Password token resolution may take.
+KENDEX_GITHUB_OP_TIMEOUT = "10"
+
+# Seconds the `gh` auth preflight may take.
+KENDEX_GITHUB_AUTH_TIMEOUT = "10"
+
+# Seconds a single `pr-view` read may take.
+KENDEX_GITHUB_PR_VIEW_TIMEOUT = "30"
+
+# Path to the worktree CLI `open-terminal` drives. Empty resolves the
+# installed worktree skill's `scripts/worktree`; a value that is not
+# executable stops the launch with that path named.
+WORKTREE_CLI = ""
