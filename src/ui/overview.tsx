@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import { launcherTrail } from "../model/launcher";
-import type { Snapshot } from "../model/types";
+import type { CapabilityId, Snapshot } from "../model/types";
 import {
   type Cause,
   causes,
@@ -19,6 +19,7 @@ import {
   percent,
   share,
 } from "./format";
+import { capabilityReasons } from "./settings";
 import { themePalette } from "./theme";
 
 export interface Attention {
@@ -234,16 +235,31 @@ export function sourceFooter(s: Snapshot): string | null {
     : null;
 }
 /** Meter prose, including the missing-mount and unavailable-counter wording. */
+/**
+ * A quantity vsys could not read names the interface that would have supplied
+ * it, so a meter on a kernel without that interface is never merely blank.
+ */
+export function unread(s: Snapshot, id?: CapabilityId): string {
+  return id && s.capabilities.some((cap) => cap.id === id && !cap.available)
+    ? `${gap}: ${capabilityReasons[id]}`
+    : gap;
+}
 export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
-  const b = (n: number | null) => amount(n, c);
-  const pc = (n: number | null) => share(n);
-  const who = (label: string, value: string) =>
-    meter.consumer ? `${label} ${meter.consumer} ${value}` : `${label} ${gap}`;
+  // The shared wrappers format; a capability that would have supplied a
+  // missing quantity replaces their bare wording with its reason.
+  const b = (n: number | null, id?: CapabilityId) =>
+    n === null ? unread(s, id) : amount(n, c);
+  const pc = (n: number | null, id?: CapabilityId) =>
+    n === null ? unread(s, id) : share(n);
+  const who = (label: string, value: string, id?: CapabilityId) =>
+    meter.consumer
+      ? `${label} ${meter.consumer} ${value}`
+      : `${label} ${unread(s, id)}`;
   const v = meter.values;
   if (meter.id === "cpu")
-    return `CPU: agents ${pc(v.agents)} | desktop ${pc(v.desktop)} | ${who("busiest lane", pc(v.top))}`;
+    return `CPU: pressure ${pc(v.system, "psi")} | agents ${pc(v.agents, "delegation")} | desktop ${pc(v.desktop, "delegation")} | ${who("busiest lane", pc(v.top, "delegation"), "delegation")}`;
   if (meter.id === "memory")
-    return `Memory: ${b(v.used)} used of ${b(v.total)} | agent cache ${b(v.cache)} | desktop swap ${b(v.swap)} | ${who("largest", b(v.largest))}${meter.holder === undefined ? "" : ` | most swapped ${meter.holder || gap} ${b(v.holderSwap)}`}`;
+    return `Memory: ${b(v.used)} used of ${b(v.total)} | agent cache ${b(v.cache, "delegation")} | desktop swap ${b(v.swap, "delegation")} | ${who("largest", b(v.largest, "delegation"), "delegation")}${meter.holder === undefined ? "" : ` | most swapped ${meter.holder || gap} ${b(v.holderSwap, "delegation")}`}`;
   if (meter.id === "disk") {
     const space =
       s.storage.mountsAvailable === false
@@ -251,7 +267,7 @@ export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
         : s.storage.volumes.length
           ? `least free ${b(v.free)}`
           : "no watched filesystems";
-    return `Disk: pressure some ${pc(v.some)} full ${pc(v.full)} | ${space} | ${who("top writer", `${b(v.writeRate)}/s`)}`;
+    return `Disk: pressure some ${pc(v.some, "psi")} full ${pc(v.full, "psi")} | ${space} | ${who("top writer", `${b(v.writeRate, "io-stat")}/s`, "io-stat")}`;
   }
   return `${fleetTotal(v)} | ${who("busiest lane", "")}`.trimEnd();
 }

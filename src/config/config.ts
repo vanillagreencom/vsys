@@ -97,6 +97,8 @@ export interface Config {
   sparkline: "braille" | "block";
   units: "binary" | "decimal";
   notifications: string[];
+  /** Reserved for a future write mode. vsys only reads system state today. */
+  writeMode: boolean;
   keys: Record<string, string>;
 }
 export const configPath = join(homedir(), ".config/vsys-view/config.toml");
@@ -175,6 +177,7 @@ export function defaults(): Config {
     sparkline: "block",
     units: "binary",
     notifications: [],
+    writeMode: false,
     keys: {
       overview: "0",
       details: "d",

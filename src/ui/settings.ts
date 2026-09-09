@@ -1,3 +1,5 @@
+import type { Capability, CapabilityId } from "../model/types";
+
 /** Labels explain stored values without changing the configuration contract. */
 export const settingLabels: Record<string, string> = {
   refreshMs: "Refresh interval (ms)",
@@ -13,7 +15,12 @@ export const settingLabels: Record<string, string> = {
   agentSlice: "Agent resource slice",
   desktopSlice: "Desktop resource slice",
   agentTools: "Agent program names",
+  excludeArgv: "Command patterns that are not agents",
+  capMarkers: "Environment names that prove a build cap",
+  linkerNames: "Linker program names",
   memoryFloor: "Low memory limit warning (bytes)",
+  swapFloor: "Desktop swap warning (bytes)",
+  freeFloor: "Low free space warning (bytes)",
   pressureAmber: "Resource wait warning (%)",
   pressureRed: "Resource wait danger (%)",
   pressureHoldSeconds: "Wait before pressure alert (seconds)",
@@ -32,7 +39,29 @@ export const settingLabels: Record<string, string> = {
   sparkline: "Chart style",
   units: "Storage units",
   notifications: "Rules with desktop notifications",
+  writeMode: "Allow vsys to change the system (reserved; vsys only reads)",
 };
+/** Names and missing-interface wording for the capabilities probed at start. */
+export const capabilityLabels: Record<CapabilityId, string> = {
+  cgroup2: "Resource groups (cgroup v2)",
+  delegation: "Resource control for this login session",
+  psi: "Pressure stall information",
+  "io-stat": "Per-group disk counters",
+  scrub: "Disk scrub reports",
+};
+export const capabilityReasons: Record<CapabilityId, string> = {
+  cgroup2: "no cgroup v2 at the configured path",
+  delegation: "resource control is not delegated to this login session",
+  psi: "no PSI on this kernel",
+  "io-stat": "no io.stat for these resource groups",
+  scrub: "no readable scrub report directory",
+};
+/** One Settings line per capability, naming the reason and the source that decided it. */
+export function capabilityLine(cap: Capability): string {
+  return cap.available
+    ? `${capabilityLabels[cap.id]}: available`
+    : `${capabilityLabels[cap.id]}: not available: ${capabilityReasons[cap.id]} (${cap.source}: ${cap.detail})`;
+}
 export function settingLabel(key: string): string {
   return (
     settingLabels[key] ??

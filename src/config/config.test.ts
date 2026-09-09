@@ -56,3 +56,36 @@ test("missing config uses defaults but malformed TOML fails", async () => {
   f.write(path, "refreshMs = [");
   expect(loadConfig(path)).rejects.toThrow();
 });
+
+test("every host-specific name ships a systemd user-session default", () => {
+  const c = defaults();
+  expect(c.agentSlice).toBe("agents.slice");
+  expect(c.desktopSlice).toBe("app.slice");
+  expect(c.watchedSlices).toEqual(["agents.slice", "app.slice"]);
+  expect(c.cgroupRoot).toContain("/user.slice/user-");
+  expect(c.cgroupRoot).toContain("/user@");
+  expect(c.agentTools).toContain("claude");
+  expect(c.excludeArgv).toContain("rust-analyzer");
+  expect(c.capMarkers).toContain("CARGO_BUILD_JOBS");
+  expect(c.linkerNames).toContain("mold");
+  // No host-specific list ships empty, which would silently match nothing.
+  for (const list of [
+    c.agentTools,
+    c.excludeArgv,
+    c.capMarkers,
+    c.linkerNames,
+    c.watchedSlices,
+    c.scratchDirs,
+  ])
+    expect(list.length).toBeGreaterThan(0);
+});
+
+test("vsys observes only: the reserved write mode defaults off", async () => {
+  expect(defaults().writeMode).toBe(false);
+  expect(validate({}).writeMode).toBe(false);
+  const f = fixture();
+  fixtures.push(f);
+  const path = join(f.root, "settings/write-mode.toml");
+  await saveConfig(defaults(), path);
+  expect((await loadConfig(path)).writeMode).toBe(false);
+});

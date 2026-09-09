@@ -201,8 +201,25 @@ export interface Alert {
   subject: string;
   message: string;
 }
+/** A kernel or system interface the dashboard needs to fill a reading. */
+export type CapabilityId =
+  | "cgroup2"
+  | "delegation"
+  | "psi"
+  | "io-stat"
+  | "scrub";
+/** Probed once when vsys starts; absence is a known limit, not a read failure. */
+export interface Capability {
+  id: CapabilityId;
+  available: boolean;
+  /** The file or directory that decided it. */
+  source: string;
+  /** The system's own words when the source could not be used. */
+  detail: string;
+}
 /** A complete sample carries failures rather than converting them to zero. */
 export interface Snapshot {
+  capabilities: Capability[];
   time: number;
   durationMs: number;
   system: System;

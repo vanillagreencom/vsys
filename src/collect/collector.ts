@@ -2,8 +2,9 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
-import type { Snapshot } from "../model/types";
+import type { Capability, Snapshot } from "../model/types";
 import { StorageCollector } from "./btrfs";
+import { probeCapabilities } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
 import { kernelCgroupRoot, readMounts } from "./mounts";
@@ -19,6 +20,8 @@ export class Collector {
   private engine = new AlertEngine();
   private processes: ProcessCollector;
   private controller = new AbortController();
+  /** Probed once: a kernel interface does not appear or vanish between ticks. */
+  private capabilities: Capability[];
   constructor(
     readonly config: CollectionConfig,
     ticksPerSecond: number,
@@ -28,6 +31,7 @@ export class Collector {
     readonly sccache?: SccacheCollector,
   ) {
     this.processes = new ProcessCollector(ticksPerSecond, pageSize);
+    this.capabilities = probeCapabilities(config);
   }
   close(): void {
     this.controller.abort();
@@ -98,6 +102,7 @@ export class Collector {
     this.controller.signal.throwIfAborted();
     mark("sccache");
     const s: Snapshot = {
+      capabilities: this.capabilities,
       time,
       durationMs: performance.now() - start,
       system,
