@@ -41,16 +41,19 @@ export function buildKind(comm: string, command: string[]): string | null {
     )
   )
     return "test";
-  if (
-    ["node", "bun"].includes(name) &&
-    command
-      .slice(1)
-      .some(
+  if (["node", "bun"].includes(name)) {
+    const scripts = [command[1], command[1] === "run" ? command[2] : undefined];
+    if (
+      scripts.some(
         (a) =>
-          /(^|\/)(tsc|webpack|vite|rollup|esbuild|next)(\.[cm]?js)?$/.test(a) ||
-          a === "build",
+          a !== undefined &&
+          (/(^|\/)(tsc|webpack|vite|rollup|esbuild|next)(\.[cm]?js)?$/.test(
+            a,
+          ) ||
+            a === "build"),
       )
-  )
-    return name;
+    )
+      return name;
+  }
   return null;
 }

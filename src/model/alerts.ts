@@ -95,6 +95,7 @@ export class AlertEngine {
 
 /** Notification argv never passes through a shell. */
 export async function notify(alerts: Alert[], c: Config): Promise<void> {
+  const failures: Error[] = [];
   for (const a of alerts.filter((a) => c.notifications.includes(a.rule))) {
     const child = Bun.spawn(
       [
@@ -109,6 +110,13 @@ export async function notify(alerts: Alert[], c: Config): Promise<void> {
     const error = await new Response(child.stderr).text();
     const code = await child.exited;
     if (code !== 0)
-      throw new Error(`notify-send exited ${code}: ${error.trim()}`);
+      failures.push(new Error(`notify-send exited ${code}: ${error.trim()}`));
   }
+  if (failures.length)
+    throw new AggregateError(
+      failures,
+      `${failures.length} notification(s) failed: ${failures
+        .map((e) => e.message)
+        .join("; ")}`,
+    );
 }

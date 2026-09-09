@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import { defaults } from "../config/config";
 import { processSnapshot } from "../test/fixture";
-import { parentChain, processTree } from "./lanes";
+import { lanes, parentChain, processTree } from "./lanes";
 
 test("process trees keep children under their own parent despite PID order", () => {
   const a = processSnapshot({ pid: 40, ppid: 1, start: 10 });
@@ -19,4 +20,26 @@ test("process trees keep children under their own parent despite PID order", () 
     [20, 0],
   ]);
   expect(parentChain(child, [child, { ...a, start: 50 }])).toEqual([]);
+});
+
+test("an ungrouped lane takes its main PID from the scope root, not enumeration order", () => {
+  const c = defaults();
+  const wrapper = processSnapshot({
+    pid: 100,
+    ppid: 1,
+    start: 100,
+    comm: "wrapper",
+    cwd: "/repo/wrapper",
+    group: "/user.slice/escaped",
+  });
+  const child = processSnapshot({
+    pid: 50,
+    ppid: 100,
+    start: 200,
+    comm: "claude",
+    cwd: "/repo/child",
+    group: "/user.slice/escaped",
+  });
+  const [only] = lanes([], [child, wrapper], c);
+  expect([only.mainPid, only.name]).toEqual([100, "wrapper"]);
 });

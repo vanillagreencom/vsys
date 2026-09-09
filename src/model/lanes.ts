@@ -28,10 +28,9 @@ export function lanes(groups: Group[], procs: Proc[], c: Config): Lane[] {
   const byPid = new Map(procs.map((p) => [p.pid, p]));
   function lane(id: string, members: Proc[], group?: Group) {
     if (!members.length && !group) return;
+    const memberIndex = new Map(members.map((p) => [p.pid, p]));
     const main =
-      (group
-        ? scopeMain(group.pids, new Map(members.map((p) => [p.pid, p])))
-        : undefined) ??
+      scopeMain(group ? group.pids : members.map((p) => p.pid), memberIndex) ??
       members.find((p) => p.tool) ??
       members[0];
     const tool = members.find((p) => p.tool)?.tool ?? "";

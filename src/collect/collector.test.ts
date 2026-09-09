@@ -187,6 +187,7 @@ test("build and agent classification does not match prompt arguments", () => {
     [["bun", "build"], "bun"],
     [["claude", "please build"], null],
     [["node", "server.js"], null],
+    [["node", "server.js", "build"], null],
   ] as const)
     expect(buildKind(command[0], [...command])).toBe(expected);
   expect(toolName("bash", ["bash", "-c", "claude"], ["claude"])).toBeNull();
