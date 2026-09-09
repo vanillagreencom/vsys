@@ -1,11 +1,19 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "../config/config";
 import type { Alert, Snapshot } from "../model/types";
 import { Archive } from "./archive";
 import type { LaneSample } from "./lane-series";
 import { type Point, point } from "./point";
+
+/** Snapshots hold command lines and environment values, so only the owner may read them. */
+function restrict(sqlitePath: string): void {
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    const path = sqlitePath + suffix;
+    if (existsSync(path)) chmodSync(path, 0o600);
+  }
+}
 
 interface CachedLane {
   start: number;
@@ -68,8 +76,10 @@ export class History {
     this.points = new Ring(capacity);
     if (c.persistence) {
       mkdirSync(dirname(c.sqlitePath), { recursive: true });
+      const fresh = !existsSync(c.sqlitePath);
       this.db = new Database(c.sqlitePath, { create: true, strict: true });
       try {
+        if (fresh) restrict(c.sqlitePath);
         const application = this.db
           .query<{ application_id: number }, []>("PRAGMA application_id")
           .get()?.application_id;
@@ -89,6 +99,7 @@ export class History {
           );
         }
         this.db.exec("PRAGMA journal_mode=WAL");
+        restrict(c.sqlitePath);
         const cutoff = Date.now() - c.historyHours * 3600000;
         const rows = this.db
           .query<{ point: string }, [number]>(

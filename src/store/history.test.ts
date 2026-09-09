@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
+import { chmodSync, existsSync, statSync } from "node:fs";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture } from "../test/fixture";
 import { History, Ring } from "./history";
@@ -148,4 +149,25 @@ test("a destination database keeps its intervening samples when history is merge
     now + 1000,
     now + 2000,
   ]);
+});
+test("persisted snapshots and their sidecars stay readable only by the owner", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const modes = () =>
+    ["", "-wal", "-shm"]
+      .map((suffix) => f.config.sqlitePath + suffix)
+      .filter((path) => existsSync(path))
+      .map((path) => statSync(path).mode & 0o777);
+  const first = new History(f.config);
+  first.add(emptySnapshot(Date.now()));
+  expect(modes()).toEqual([0o600, 0o600, 0o600]);
+  first.close();
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const path = f.config.sqlitePath + suffix;
+    if (existsSync(path)) chmodSync(path, 0o644);
+  }
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  expect(modes()).toEqual(Array(modes().length).fill(0o600));
 });
