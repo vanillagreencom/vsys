@@ -269,31 +269,19 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   const second = b.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(second?.writeRate).toBe(1000);
   expect(second?.readRate).toBe(0);
-});
-test("an invalid io.stat counter is a source error, not a measured zero", async () => {
-  const f = setup();
-  f.group("agents.slice/a.scope", [40]);
-  f.proc(40, "agents.slice/a.scope");
-  const file = join(f.config.cgroupRoot, "agents.slice/a.scope/io.stat");
-  f.write(file, "259:0 rbytes=x wbytes=200\n");
-  const s = await new Collector(f.config, 100, 4096).sample();
+  // An invalid counter stays unknown; it never becomes a measured zero.
+  f.write(join(path, "io.stat"), "259:0 rbytes=x wbytes=200\n");
+  const bad = await collector.sample(3000);
   expect(
-    s.groups.find((g) => g.path === "agents.slice/a.scope")?.ioWrite,
+    bad.groups.find((g) => g.path === "agents.slice/a.scope")?.ioWrite,
   ).toBeNull();
-  expect(s.errors.map((e) => e.source)).toContain(file);
+  expect(bad.errors.map((e) => e.source)).toContain(join(path, "io.stat"));
 });
-test("an excluded tool process is neither a lane nor an unconfined alert", async () => {
+test("argv exclusion hides a helper process but never an agent lane", async () => {
   const f = setup();
-  f.proc(40, "app.slice/chrome.scope", {
+  f.proc(39, "app.slice/chrome.scope", {
     command: ["/usr/bin/claude", "--chrome-native-host"],
   });
-  const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.procs.find((p) => p.pid === 40)?.tool).toBeNull();
-  expect(s.lanes).toEqual([]);
-  expect(s.alerts).toEqual([]);
-});
-test("prompt text naming an excluded pattern does not hide an agent lane", async () => {
-  const f = setup();
   f.proc(40, "app.slice/pane.scope", {
     command: [
       "/usr/bin/claude",
@@ -302,35 +290,21 @@ test("prompt text naming an excluded pattern does not hide an agent lane", async
       "rust-analyzer",
     ],
   });
-  const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.procs.find((p) => p.pid === 40)?.tool).toBe("claude");
-  expect(s.lanes.map((l) => l.unconfined)).toEqual([true]);
-});
-test("the exclusion list is configuration, not a hardcoded set", async () => {
-  const f = setup();
+  const a = await new Collector(f.config, 100, 4096).sample();
+  // The host is excluded; prompt text naming a pattern never excludes.
+  expect(a.procs.find((p) => p.pid === 39)?.tool).toBeNull();
+  expect(a.procs.find((p) => p.pid === 40)?.tool).toBe("claude");
+  expect(a.lanes).toHaveLength(1);
+  expect(a.lanes[0].id).toEndWith("app.slice/pane.scope");
+  expect(a.alerts.map((x) => x.subject)).toEqual(["40:100:claude"]);
+  // The pattern list is configuration, so a different flag excludes instead.
   f.config.excludeArgv = ["--headless"];
-  f.proc(40, "app.slice/a.scope", {
-    command: ["/usr/bin/claude", "--chrome-native-host"],
-  });
   f.proc(41, "app.slice/b.scope", {
     command: ["/usr/bin/claude", "--headless"],
   });
-  const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.procs.find((p) => p.pid === 40)?.tool).toBe("claude");
-  expect(s.procs.find((p) => p.pid === 41)?.tool).toBeNull();
-});
-test("the agent inside a pane, not the pane shell, makes the lane unconfined", async () => {
-  const f = setup();
-  f.group("app.slice/tmux-spawn-4.scope", [50, 51]);
-  f.proc(50, "app.slice/tmux-spawn-4.scope", {
-    command: ["/bin/bash"],
-    comm: "bash",
-  });
-  f.proc(51, "app.slice/tmux-spawn-4.scope", { parent: 50 });
-  const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.procs.find((p) => p.pid === 50)?.tool).toBeNull();
-  expect(s.procs.find((p) => p.pid === 51)?.tool).toBe("claude");
-  expect(s.lanes.map((l) => l.unconfined)).toEqual([true]);
+  const b = await new Collector(f.config, 100, 4096).sample();
+  expect(b.procs.find((p) => p.pid === 41)?.tool).toBeNull();
+  expect(b.procs.find((p) => p.pid === 39)?.tool).toBe("claude");
 });
 test("an escaped agent's own environment reaches the launcher trail", async () => {
   const f = setup();
@@ -344,6 +318,9 @@ test("an escaped agent's own environment reaches the launcher trail", async () =
     env: "CARGO_BUILD_JOBS=16\0PATH=/shadow/bin:/usr/bin\0",
   });
   const s = await new Collector(f.config, 100, 4096).sample();
+  // The agent, not the pane shell, is what makes the lane unconfined.
+  expect(s.procs.find((p) => p.pid === 50)?.tool).toBeNull();
+  expect(s.lanes.map((l) => l.unconfined)).toEqual([true]);
   const agent = s.procs.find((p) => p.pid === 51);
   expect(agent?.env).toEqual({
     CARGO_BUILD_JOBS: "16",
@@ -351,5 +328,5 @@ test("an escaped agent's own environment reaches the launcher trail", async () =
   });
   const trail = launcherTrail(agent as Proc, s.procs, f.config, ["/usr/bin"]);
   expect(trail.conclusion).toBe("shadowed");
-  expect(trail.pathPrefix).toEqual(["/shadow/bin"]);
+  expect(trail.summary).toContain("/shadow/bin");
 });

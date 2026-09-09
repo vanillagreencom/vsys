@@ -36,9 +36,8 @@ test("every card kind ends with a next step of its own", () => {
     expect(item.next.length).toBeGreaterThan(20);
     expect(item.next).not.toBe(item.title);
     expect(item.next).not.toBe(item.detail);
-    expect(item.title.length).toBeGreaterThan(0);
-    expect(item.detail.length).toBeGreaterThan(0);
-    expect(item.headline.length).toBeGreaterThan(0);
+    const text = [item.title, item.detail, item.headline];
+    expect(text.every((line) => line.length > 0)).toBe(true);
   }
   // Every cause appears once, so no card text repeats anywhere in the list.
   const text = items.flatMap((item) => [item.title, item.detail, item.next]);
@@ -49,8 +48,14 @@ test("every card kind ends with a next step of its own", () => {
 test("the verdict is the worst cause, formatted with its numbers", () => {
   const c = defaults();
   const s = everyCauseSnapshot(c);
-  expect(verdictLine(attention(s, c, base), s)).toBe(
+  const items = attention(s, c, base);
+  expect(verdictLine(items, s)).toBe(
     "Danger: 1 lane runs outside agents.slice: escaped",
+  );
+  const swapCard = items.find((item) => item.id === "desktop-swap");
+  expect(swapCard?.title).toBe("Desktop swapped out: 512.0 MiB in app.slice");
+  expect(swapCard?.detail).toBe(
+    "gnome.scope holds 992 B. Agents hold 80.0 GiB of page cache, which the desktop cannot use.",
   );
   s.lanes = s.lanes.filter((l) => !l.unconfined);
   s.storage.volumes = [];
@@ -61,9 +66,16 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   expect(verdictLine(attention(s, c, base), s)).toBe(
     "Slow: desktop swapped out, agents hold 80.0 GiB of page cache",
   );
-  const blind = emptySnapshot();
-  blind.system.pressure = {};
-  expect(verdictLine([], blind)).toBe(
+  // A scratch overage is a card, but it never speaks for the machine.
+  const idle = emptySnapshot();
+  idle.storage.scratch = [
+    { path: "/scratch", bytes: c.scratchQuota + 1, age: 0, error: null },
+  ];
+  const housekeeping = attention(idle, c, base);
+  expect(housekeeping.map((item) => item.verdictWorthy)).toEqual([false]);
+  expect(verdictLine(housekeeping, idle)).toBe("Healthy");
+  idle.system.pressure = {};
+  expect(verdictLine([], idle)).toBe(
     "Health unknown: no pressure data on this kernel",
   );
 });
@@ -146,6 +158,7 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
   ];
   s.lanes = [
     laneSnapshot({ id: "a/510341.scope", name: "lane-510341", pids: [1, 2] }),
+    laneSnapshot({ id: "waiter", name: "waiter", ioPressure: 30 }),
   ];
   s.procs = [
     processSnapshot({ pid: 1, build: "ld.mold" }),
@@ -157,10 +170,34 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
     "Disk I/O saturated: lane-510341 writing 200.0 MiB/s",
   );
   expect(card.detail).toBe(
-    "Tasks stalled on storage 70.0% of the recent window, 41.0% of it with nothing else to run, with 2 linkers running in that lane.",
+    "Tasks stalled on storage 70.0% of the recent window, 41.0% of it with nothing else to run, with 2 linkers running in that lane. Waiting on storage: lane-510341, waiter.",
   );
   expect(card.command).toBe(`cat ${c.cgroupRoot}/a/510341.scope/io.stat`);
   expect(card.danger).toBe(true);
+  // One card, not a second generic stalls card, and it opens the writer lane.
+  expect(attention(s, c, base).map((item) => item.id)).toEqual(["disk"]);
+  expect(card.laneId).toBe("a/510341.scope");
+  expect(card.view).toBe("Fleet");
+  expect(card.next).toContain("build job count for that lane");
+  // A desktop scope that is not a lane sends the reader to Slices instead.
+  s.groups[0].path = "app.slice/gnome.scope";
+  const scope = attention(s, c, base)[0];
+  expect(scope.view).toBe("Slices");
+  expect(scope.laneId).toBeUndefined();
+  expect(scope.next).toContain("what is writing in that scope");
+});
+
+test("counted nouns in the meters and the cards are singular at one", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [processSnapshot({ pid: 1, build: "ld.mold" })];
+  expect(meterLine(meters(s, c)[3], s, c)).toBe(
+    "Build slots: 1 compile and link process / 8 cores | 1 linker | 1 building cgroup | busiest lane none",
+  );
+  s.procs.push(processSnapshot({ pid: 2, build: "mold", group: "/b.scope" }));
+  expect(meterLine(meters(s, c)[3], s, c)).toContain(
+    "2 linkers | 2 building cgroups",
+  );
 });
 
 test("source read failures leave attention and become one footer line", () => {
@@ -178,17 +215,32 @@ test("source read failures leave attention and become one footer line", () => {
 });
 
 test("read-only mounts and device errors are one card each, not one per mount", () => {
+  const s = emptySnapshot();
+  const bad = { readOnly: true, delta: { "x/corruption_errs": 1 } };
+  s.storage.volumes = [volumeSnapshot("/a", bad), volumeSnapshot("/b", bad)];
+  const items = attention(s, defaults(), base);
+  expect(items.map((item) => item.id)).toEqual(["read-only", "device-errors"]);
+  expect(items[0].title).toBe("2 mounts are read-only: /a, /b");
+});
+
+test("the memory meter names the largest scope and only then the swap holder", () => {
   const c = defaults();
   const s = emptySnapshot();
-  s.storage.volumes = [
-    volumeSnapshot("/a", { readOnly: true, delta: { "x/corruption_errs": 1 } }),
-    volumeSnapshot("/b", { readOnly: true, delta: { "x/corruption_errs": 1 } }),
+  const g = (path: string, name: string, o = {}) =>
+    groupSnapshot({ path, name, ...o });
+  s.groups = [
+    g("app.slice", c.desktopSlice, { swap: 0 }),
+    g("app.slice/gnome.scope", "gnome.scope", { swap: 992, memory: 4 }),
+    g("b.scope", "b.scope", { memory: 900 }),
   ];
-  const items = attention(s, c, base);
-  expect(items.filter((item) => item.id === "read-only")).toHaveLength(1);
-  expect(items.filter((item) => item.id === "device-errors")).toHaveLength(1);
-  expect(items.find((item) => item.id === "read-only")?.title).toBe(
-    "2 mounts are read-only: /a, /b",
+  const line = (snapshot: Snapshot) =>
+    meterLine(meters(snapshot, c)[1], snapshot, c);
+  expect(line(s)).toBe(
+    "Memory: 500 B used of 1000 B | agent cache ? | desktop swap 0 B | largest b.scope 900 B",
+  );
+  s.groups[0].swap = c.swapFloor + 1;
+  expect(line(s)).toContain(
+    "desktop swap 512.0 MiB | largest b.scope 900 B | most swapped gnome.scope 992 B",
   );
 });
 

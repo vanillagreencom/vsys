@@ -5,6 +5,7 @@ import {
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
+  volumeSnapshot,
 } from "../test/fixture";
 import type { Group, Snapshot } from "./types";
 import {
@@ -13,11 +14,11 @@ import {
   laneLinkers,
   leastFree,
   meters,
-  pressureKnown,
   sliceRoots,
   sliceSum,
   topSwapHolder,
   topWriter,
+  worstKind,
 } from "./verdict";
 
 const g = (path: string, name: string, o: Partial<Group> = {}) =>
@@ -33,16 +34,10 @@ function healthy(): Snapshot {
 }
 
 test("a healthy machine has no causes at all", () => {
-  const s = healthy();
-  expect(causes(s, defaults())).toEqual([]);
-  expect(pressureKnown(s)).toBe(true);
-  expect(pressureKnown(emptySnapshot())).toBe(true);
-  const blind = emptySnapshot();
-  blind.system.pressure = {};
-  expect(pressureKnown(blind)).toBe(false);
+  expect(causes(healthy(), defaults())).toEqual([]);
 });
 
-test("an unconfined lane leads the ladder ahead of every slowness", () => {
+test("severity ranks the ladder and housekeeping never leads it", () => {
   const c = defaults();
   const s = healthy();
   s.system.pressure.io = { some: 70, full: 40, total: 0 };
@@ -56,18 +51,36 @@ test("an unconfined lane leads the ladder ahead of every slowness", () => {
     values: { lanes: 1 },
   });
   expect(ladder[0].lanes.map((l) => l.name)).toEqual(["kendex hclaude"]);
+  // A warn disk cause is authored first, so only a sort puts the scrub above it.
+  s.lanes = [];
+  s.system.pressure.io = { some: 15, full: 2, total: 0 };
+  s.storage.scrubs = [{ path: "/scrub", text: "errors", problem: true }];
+  s.storage.scratch = [
+    { path: "/scratch", bytes: c.scratchQuota + 1, age: 0, error: null },
+  ];
+  const sorted = causes(s, c);
+  expect(sorted.map((cause) => cause.id)).toEqual(["scrub", "disk", "scratch"]);
+  expect(sorted.map((cause) => cause.level)).toEqual([
+    "danger",
+    "warn",
+    "warn",
+  ]);
+  // Scratch is a card, never the machine's verdict.
+  expect(sorted.map((cause) => cause.verdictWorthy)).toEqual([
+    true,
+    true,
+    false,
+  ]);
 });
 
 test("the agent slice name comes from config, not a hardcoded name", () => {
   const c = { ...defaults(), agentSlice: "robots.slice" };
   const s = healthy();
-  // A lane is unconfined only against the configured slice.
   s.groups = [
     g("robots.slice", "robots.slice", { cache: 7 }),
     g("app.slice", c.desktopSlice, { swap: c.swapFloor + 1 }),
   ];
-  const swapCause = causes(s, c).find((cause) => cause.id === "desktop-swap");
-  expect(swapCause?.values.cache).toBe(7);
+  expect(causes(s, c)[0].values.cache).toBe(7);
   expect(meters(s, c)[1].values.cache).toBe(7);
   // The default slice name must not be consulted anywhere.
   expect(meters(s, defaults())[1].values.cache).toBeNull();
@@ -82,55 +95,30 @@ test("a saturated disk names the writing scope and carries its numbers", () => {
   ];
   s.lanes = [
     laneSnapshot({ id: "a/510341.scope", name: "lane-510341", pids: [1] }),
+    laneSnapshot({ id: "other", name: "waiter", ioPressure: 30 }),
+    laneSnapshot({ id: "cpu-bound", name: "cruncher", pressure: 30 }),
   ];
   s.procs = [processSnapshot({ pid: 1, build: "ld.mold" })];
-  const cause = causes(s, defaults()).find((item) => item.id === "disk");
-  expect(cause).toMatchObject({
+  expect(worstKind(s.lanes[1])).toBe("io");
+  expect(worstKind(s.lanes[2])).toBe("cpu");
+  const ladder = causes(s, defaults());
+  expect(ladder[0]).toMatchObject({
+    id: "disk",
     level: "danger",
     consumer: "lane-510341",
-    values: { some: 70, full: 41, writeRate: 200, linkers: 1 },
+    values: { some: 70, full: 41, writeRate: 200, linkers: 1, stalling: 1 },
   });
-});
-
-test("disk pressure between amber and red is a warning, not a saturation", () => {
-  const c = defaults();
-  const s = healthy();
-  s.system.pressure.io = { some: 15, full: 2, total: 0 };
-  s.groups = [g("a.scope", "a.scope", { writeRate: 5 })];
-  expect(causes(s, c).find((cause) => cause.id === "disk")?.level).toBe("warn");
-});
-
-test("a swapped desktop carries its swap, holder and agent page cache", () => {
-  const c = defaults();
-  const s = healthy();
-  s.groups = [
-    g("app.slice", c.desktopSlice, { swap: c.swapFloor + 1 }),
-    g("app.slice/shell.scope", "shell.scope", { swap: 992 }),
-    g("agents.slice", c.agentSlice, { cache: 80 }),
-  ];
-  const cause = causes(s, c).find((item) => item.id === "desktop-swap");
-  expect(cause).toMatchObject({
-    level: "danger",
-    consumer: "shell.scope",
-    values: { swap: c.swapFloor + 1, holder: 992, cache: 80 },
-  });
+  // Storage stallers join the disk card; only the CPU one stays generic.
+  expect(ladder.map((cause) => cause.id)).toEqual(["disk", "stalls"]);
+  expect(ladder[0].lanes.map((l) => l.name)).toEqual(["lane-510341", "waiter"]);
+  expect(ladder[1].lanes.map((l) => l.name)).toEqual(["cruncher"]);
 });
 
 test("a filesystem below the free-space floor is its own cause", () => {
   const c = defaults();
   const s = healthy();
-  const volume = (mount: string, free: number) => ({
-    mount,
-    device: "/dev/x",
-    fsid: mount,
-    options: [],
-    readOnly: false,
-    free,
-    total: 100,
-    errors: {},
-    delta: {},
-    sinceStart: {},
-  });
+  const volume = (mount: string, free: number) =>
+    volumeSnapshot(mount, { free, total: 100 });
   s.storage.volumes = [volume("/big", c.freeFloor + 1), volume("/full", 5)];
   expect(leastFree(s.storage.volumes)?.mount).toBe("/full");
   const cause = causes(s, c).find((item) => item.id === "free-space");
@@ -201,16 +189,20 @@ test("four meters carry exact numbers and the biggest consumer", () => {
     consumer: "lane-a",
     values: { agents: 11.8, desktop: 40, top: 30 },
   });
+  // "largest" always means the largest memory scope; the swap holder is its
+  // own field and appears only while the desktop is swapped out.
   expect(memory).toEqual({
     id: "memory",
     level: "danger",
-    consumer: "shell.scope",
+    consumer: "b.scope",
+    holder: "shell.scope",
     values: {
       used: 500,
       total: 1000,
       cache: 80,
       swap: c.swapFloor + 1,
-      holder: 992,
+      largest: 9,
+      holderSwap: 992,
     },
   });
   expect(disk).toEqual({

@@ -8,7 +8,6 @@ import {
   type Level,
   type Meter,
   meters,
-  pressureKnown,
 } from "../model/verdict";
 import { bytes, percent } from "./format";
 import { themePalette } from "./theme";
@@ -27,9 +26,11 @@ export interface Attention {
   view: "Fleet" | "Storage" | "Alerts" | "Slices" | "Builds";
   laneId?: string;
   danger: boolean;
+  /** Housekeeping cards are never the verdict for the machine. */
+  verdictWorthy: boolean;
 }
 /** The severity word, the sentence, and anything the headline says instead. */
-type Copy = Omit<Attention, "id" | "danger" | "headline"> & {
+type Copy = Omit<Attention, "id" | "danger" | "headline" | "verdictWorthy"> & {
   word: string;
   headline?: string;
 };
@@ -38,6 +39,9 @@ const list = (names: string[], limit = 4): string =>
     ? `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`
     : names.join(", ");
 const p = (n: number, one: string, many: string) => (n === 1 ? one : many);
+/** A count and its noun, so no line ever reads "1 linkers". */
+const count = (n: number | null, one: string, many = `${one}s`) =>
+  `${n ?? 0} ${p(n ?? 0, one, many)}`;
 
 /** Every word and every formatted number the Overview shows lives here. */
 function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
@@ -83,16 +87,24 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         next: "Open Storage and read the per-device counters before writing more data to these devices.",
         view: "Storage",
       };
-    case "disk":
+    case "disk": {
+      // The first lane is the writer's own only when the writer resolved to one.
+      const writer =
+        cause.lanes[0]?.id === cause.groups[0]?.path
+          ? cause.lanes[0]
+          : undefined;
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `Disk I/O ${cause.level === "danger" ? "saturated" : "stalling tasks"}: ${cause.consumer} writing ${b(v.writeRate)}/s`,
-        detail: `Tasks stalled on storage ${percent(v.some)} of the recent window, ${percent(v.full)} of it with nothing else to run${v.linkers ? `, with ${v.linkers} linkers running in that lane` : ""}.`,
-        next: "Lower the build job count for that lane until the stall percentage falls.",
+        detail: `Tasks stalled on storage ${percent(v.some)} of the recent window, ${percent(v.full)} of it with nothing else to run${v.linkers ? `, with ${count(v.linkers, "linker")} running in that lane` : ""}.${v.stalling ? ` Waiting on storage: ${names}.` : ""}`,
+        next: writer
+          ? "Lower the build job count for that lane until the stall percentage falls."
+          : "Open Slices and find what is writing in that scope, then reduce its work.",
         command: `cat ${c.cgroupRoot}/${cause.groups[0]?.path}/io.stat`,
-        view: n ? "Fleet" : "Slices",
-        laneId,
+        view: writer ? "Fleet" : "Slices",
+        laneId: writer?.id,
       };
+    }
     case "desktop-swap":
       return {
         word: "Slow",
@@ -133,22 +145,16 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
     case "system-memory":
       return {
         word: "Slow",
-        headline: "Slow: memory reclaim is stalling tasks",
         title: `Memory reclaim stalls tasks ${percent(v.some)} of the recent window`,
-        detail: cause.consumer
-          ? `${cause.consumer} holds the most swap.`
-          : "No scope holds swap yet, so reclaim is dropping page cache.",
+        detail: `${cause.consumer ? `${cause.consumer} holds the most swap.` : "No scope holds swap yet, so reclaim is dropping page cache."}${n ? ` Waiting on memory: ${names}.` : ""}`,
         next: "Open Slices and reduce the work in the group with the largest memory use.",
         view: "Slices",
       };
     case "system-cpu":
       return {
         word: "Slow",
-        headline: `Slow: CPU contended${cause.consumer ? `, busiest lane ${cause.consumer}` : ""}`,
-        title: `Tasks wait for CPU ${percent(v.some)} of the recent window`,
-        detail: cause.consumer
-          ? `${cause.consumer} is the busiest lane.`
-          : "No lane is running, so the load is outside the watched slices.",
+        title: `Tasks wait for CPU ${percent(v.some)} of the recent window${cause.consumer ? `, busiest lane ${cause.consumer}` : ""}`,
+        detail: `${cause.consumer ? `${cause.consumer} is the busiest lane.` : "No lane is running, so the load is outside the watched slices."}${n ? ` Waiting on CPU: ${names}.` : ""}`,
         next: "Open Fleet and sort by CPU to find the lane to pause.",
         view: "Fleet",
       };
@@ -194,15 +200,21 @@ export function attention(
     return {
       id: cause.id,
       danger: cause.level === "danger",
+      verdictWorthy: cause.verdictWorthy,
       headline: headline ?? `${word}: ${rest.title}`,
       ...rest,
     };
   });
 }
-/** The verdict is the worst cause, or a statement that nothing is wrong. */
+/** The worst cause that speaks for the machine. Housekeeping never does. */
+export function verdictItem(items: Attention[]): Attention | undefined {
+  return items.find((item) => item.verdictWorthy);
+}
+/** The verdict is the worst such cause, or a statement that nothing is wrong. */
 export function verdictLine(items: Attention[], s: Snapshot): string {
-  if (items.length) return items[0].headline;
-  return pressureKnown(s)
+  const lead = verdictItem(items);
+  if (lead) return lead.headline;
+  return ["cpu", "memory", "io"].some((kind) => s.system.pressure[kind])
     ? "Healthy"
     : "Health unknown: no pressure data on this kernel";
 }
@@ -225,11 +237,7 @@ export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
       v.desktop,
     )} | busiest lane ${meter.consumer || "none"} ${percent(v.top)}`;
   if (meter.id === "memory")
-    return `Memory: ${b(v.used)} used of ${b(v.total)} | agent cache ${b(
-      v.cache,
-    )} | desktop swap ${b(v.swap)} | largest ${meter.consumer || "none"} ${b(
-      v.holder,
-    )}`;
+    return `Memory: ${b(v.used)} used of ${b(v.total)} | agent cache ${b(v.cache)} | desktop swap ${b(v.swap)} | largest ${meter.consumer || "none"} ${b(v.largest)}${meter.holder === undefined ? "" : ` | most swapped ${meter.holder || "none"} ${b(v.holderSwap)}`}`;
   if (meter.id === "disk") {
     const space =
       s.storage.mountsAvailable === false
@@ -241,7 +249,7 @@ export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
       v.full,
     )} | ${space} | top writer ${meter.consumer || "none"} ${b(v.writeRate)}/s`;
   }
-  return `Build slots: ${v.builds} compile and link processes / ${v.cores} cores | ${v.linkers} linkers | ${v.lanes} building cgroups | busiest lane ${meter.consumer || "none"}`;
+  return `Build slots: ${v.builds} compile and link ${p(v.builds ?? 0, "process", "processes")} / ${v.cores} cores | ${count(v.linkers, "linker")} | ${count(v.lanes, "building cgroup")} | busiest lane ${meter.consumer || "none"}`;
 }
 
 export function Overview({
@@ -265,6 +273,7 @@ export function Overview({
         ? palette.warning
         : palette.fg;
   const footer = sourceFooter(s);
+  const lead = verdictItem(items);
   const row = (text: string) => (
     <text flexShrink={0} fg={palette.fg} wrapMode="word">
       {safe(text)}
@@ -276,9 +285,7 @@ export function Overview({
         <text
           flexShrink={0}
           wrapMode="word"
-          fg={colour(
-            items.length ? (items[0].danger ? "danger" : "warn") : "ok",
-          )}
+          fg={colour(lead ? (lead.danger ? "danger" : "warn") : "ok")}
           attributes={palette.selection}
         >
           {safe(verdictLine(items, s))}

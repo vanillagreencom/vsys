@@ -27,12 +27,10 @@ export interface Group {
   swapMax: number | null;
   tasks: number | null;
   tasksMax: number | null;
-  /** Page cache charged to this group, from memory.stat. */
+  /** Page cache from memory.stat; io.stat totals since boot and their rates. */
   cache: number | null;
-  /** Bytes read and written since boot, summed over devices, from io.stat. */
   ioRead: number | null;
   ioWrite: number | null;
-  /** Bytes per second between the previous sample and this one. */
   readRate: number | null;
   writeRate: number | null;
   pressure: Record<string, Pressure | null>;

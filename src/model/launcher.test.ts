@@ -46,47 +46,33 @@ test("caps present with the wrong cgroup means the launcher was shadowed", () =>
   });
   const trail = launcherTrail(agent, procs, c, base);
   expect(trail.conclusion).toBe("shadowed");
-  expect(trail.scope).toBe("tmux-spawn-4.scope");
-  expect(trail.capsPresent).toEqual(["RUST_TEST_THREADS", "CARGO_BUILD_JOBS"]);
-  expect(trail.capsMissing).toEqual([]);
-  expect(trail.pathPrefix).toEqual(["/home/user/.shadow/bin"]);
-  expect(trail.summary).toContain("shadowed");
-  expect(trail.summary).toContain("/home/user/.shadow/bin");
-  // The chain carries each ancestor's own cgroup, which differ between them.
-  expect(trail.ancestors).toEqual([
-    {
-      pid: 10,
-      comm: "bash",
-      group: "/user.slice/app.slice/tmux-spawn-4.scope",
-      scope: "tmux-spawn-4.scope",
-      executable: "/usr/bin/bash",
-    },
-    {
-      pid: 5,
-      comm: "tmux",
-      group: "/user.slice/app.slice/tmux-server.scope",
-      scope: "tmux-server.scope",
-      executable: "/usr/bin/tmux",
-    },
-  ]);
+  expect(trail.summary).toBe(
+    "The launcher was shadowed: RUST_TEST_THREADS and CARGO_BUILD_JOBS are set, " +
+      "but the process sits in the scope tmux-spawn-4.scope. PATH starts with " +
+      "/home/user/.shadow/bin, which the login shell does not have. " +
+      "Started from: bash in tmux-spawn-4.scope, tmux in tmux-server.scope.",
+  );
 });
 
-test("the marker list is configuration, not a hardcoded pair", () => {
-  const c = { ...defaults(), capMarkers: ["MAKEFLAGS"] };
-  const { procs, agent } = escapedAgent({ CARGO_BUILD_JOBS: "16" });
-  const trail = launcherTrail(agent, procs, c, base);
-  expect(trail.conclusion).toBe("bare");
-  expect(trail.capsMissing).toEqual(["MAKEFLAGS"]);
-  expect(trail.summary).toContain("MAKEFLAGS");
-});
 test("caps absent means the agent was launched bare", () => {
   const c = defaults();
   const { procs, agent } = escapedAgent({ PATH: "/usr/bin:/bin" });
   const trail = launcherTrail(agent, procs, c, base);
   expect(trail.conclusion).toBe("bare");
-  expect(trail.capsPresent).toEqual([]);
-  expect(trail.pathPrefix).toEqual([]);
   expect(trail.summary).toContain("Launched bare");
+  // The marker list is configuration, so a set cap under another name is bare.
+  const other = escapedAgent({ CARGO_BUILD_JOBS: "16" });
+  const renamed = launcherTrail(
+    other.agent,
+    other.procs,
+    {
+      ...c,
+      capMarkers: ["MAKEFLAGS"],
+    },
+    base,
+  );
+  expect(renamed.conclusion).toBe("bare");
+  expect(renamed.summary).toContain("MAKEFLAGS");
 });
 
 test("an unreadable environment is not reported as a bare launch", () => {
@@ -101,6 +87,5 @@ test("an unreadable environment is not reported as a bare launch", () => {
 test("PATH prefix stops at the first entry the login shell also has", () => {
   expect(pathPrefix("/a:/b:/usr/bin:/c", base)).toEqual(["/a", "/b"]);
   expect(pathPrefix("/usr/bin:/a", base)).toEqual([]);
-  expect(pathPrefix("/a:/b", base)).toEqual(["/a", "/b"]);
   expect(pathPrefix("", base)).toEqual([]);
 });

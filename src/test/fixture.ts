@@ -269,9 +269,8 @@ export function everyCauseSnapshot(c: Config): Snapshot {
     volumeSnapshot("/bad", { delta: { "x/corruption_errs": 1 } }),
     volumeSnapshot("/full", { free: 5, total: 100 }),
   ];
+  const bytes = c.scratchQuota + 1;
   s.storage.scrubs = [{ path: "/scrub", text: "errors", problem: true }];
-  s.storage.scratch = [
-    { path: "/scratch", bytes: c.scratchQuota + 1, age: 0, error: null },
-  ];
+  s.storage.scratch = [{ path: "/scratch", bytes, age: 0, error: null }];
   return s;
 }

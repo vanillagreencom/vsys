@@ -9,7 +9,6 @@ Each sample contains observed values and source errors. A failed read must remai
 - Escaped agent: a configured agent tool outside the configured agent slice.
 - Cause: one detected problem, held as data with its level, subjects, named consumer and numbers. Every lane with the same cause shares one cause.
 - Ladder: the causes ranked by impact on the person at the keyboard. Its first element is the verdict; every element is one attention card.
-- Launcher trail: the ancestors, cgroup, confinement markers and PATH prefix of an escaped agent.
 - CPU percent: utilization in units of one logical core.
 - Pressure: the recent percentage of time that tasks stalled on a resource.
 - Pinned Fleet: the recorded sample selected by the timeline cursor.
@@ -29,16 +28,14 @@ Each sample contains observed values and source errors. A failed read must remai
 
 ## Invariants
 
-- An excluded argv pattern matches an executable name or a whole flag, never prompt text. `src/collect/collector.test.ts` checks the Chrome native messaging host and a prompt naming a language server.
-- The configured linker names are the only linker list. `src/collect/collector.test.ts` and `src/model/verdict.test.ts` check that an empty list classifies none.
+- An excluded argv pattern matches an executable name or a whole flag, never prompt text, and the configured linker names are the only linker list. `src/collect/collector.test.ts` checks a prompt naming a language server and an empty linker list.
 - The environment of an escaped agent is read from that agent, not from its scope's main process. `src/collect/collector.test.ts` checks an agent child of a pane shell.
-- Confinement markers with the wrong cgroup mean a shadowed launcher; their absence means a bare launch. `src/model/launcher.test.ts` checks both and an unreadable environment.
-- An unconfined agent outranks every slowness cause. `src/model/verdict.test.ts` checks the ranking and missing pressure data.
+- A launcher trail states the ancestors and their cgroups, the confinement markers and any PATH prefix. Markers with the wrong cgroup mean a shadowed launcher, their absence a bare launch. `src/model/launcher.test.ts` checks both and an unreadable environment.
+- Severity ranks the ladder, an unconfined agent leads it, and a housekeeping cause is a card but never the verdict. `src/model/verdict.test.ts` checks the ranking and `src/ui/overview.test.ts` checks a scratch overage on a healthy machine.
+- A lane stalling on a resource a specific cause reports joins that card. `src/model/verdict.test.ts` checks storage stallers against a CPU one.
 - A slice name appearing at two paths is summed once. `src/model/verdict.test.ts` checks a nested copy against root selection.
-- A filesystem below the configured free-space floor is a cause of its own. `src/model/verdict.test.ts` and `src/ui/overview.test.ts` check the cause and the meter.
-- A parent slice never becomes the top writer or the top swap holder. `src/model/verdict.test.ts` checks nested groups.
-- One cause produces one attention card, whatever the number of lanes. `src/ui/overview.test.ts` checks nine stalling lanes.
-- Every card ends with a next step distinct from its title and detail. `src/ui/overview.test.ts` triggers every cause at once.
+- A filesystem below the configured free-space floor is a cause of its own, and a parent slice never becomes the top writer or top swap holder. `src/model/verdict.test.ts` checks both against nested groups.
+- One cause produces one attention card whatever the number of lanes, and every card ends with a next step distinct from its title and detail. `src/ui/overview.test.ts` checks nine stalling lanes and triggers every cause at once.
 - Source read failures are counted once per source and stay out of attention. `src/ui/overview.test.ts` checks the footer.
 - Invalid io.stat counters stay unknown rather than becoming a zero write rate. `src/collect/collector.test.ts` plants an invalid counter.
 - Process environment caching uses PID and start time. `src/collect/collector.test.ts` exercises PID reuse and environment selection.

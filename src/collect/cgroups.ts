@@ -4,22 +4,14 @@ import { pairs, pressure, type Reader } from "./io";
 
 /** io.stat has one line per device; the group's cost is their sum. */
 export function ioTotals(text: string): { read: number; write: number } | null {
-  let read = 0;
-  let write = 0;
+  const totals = { read: 0, write: 0 };
   let seen = false;
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    const fields = line.trim().split(/\s+/).slice(1);
-    for (const field of fields) {
-      const [key, raw] = field.split("=");
-      if (key !== "rbytes" && key !== "wbytes") continue;
-      if (!/^\d+$/.test(raw ?? "")) throw new Error("Invalid io.stat counter");
-      seen = true;
-      if (key === "rbytes") read += Number(raw);
-      else write += Number(raw);
-    }
+  for (const [, key, raw] of text.matchAll(/\b(rbytes|wbytes)=(\S+)/g)) {
+    if (!/^\d+$/.test(raw)) throw new Error("Invalid io.stat counter");
+    seen = true;
+    totals[key === "rbytes" ? "read" : "write"] += Number(raw);
   }
-  return seen ? { read, write } : null;
+  return seen ? totals : null;
 }
 /** memory.stat charges page cache to the group that faulted it in. */
 export function pageCache(text: string): number | null {
@@ -31,13 +23,10 @@ function rate(
   before: number | null | undefined,
   elapsedMs: number,
 ): number | null {
-  return now === null ||
-    before === null ||
-    before === undefined ||
-    elapsedMs <= 0 ||
-    now < before
-    ? null
-    : ((now - before) * 1000) / elapsedMs;
+  const known = now !== null && before !== null && before !== undefined;
+  return known && elapsedMs > 0 && now >= before
+    ? ((now - before) * 1000) / elapsedMs
+    : null;
 }
 
 /** Walk every child so escaped scopes in other user slices remain visible. */

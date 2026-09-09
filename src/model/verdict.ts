@@ -29,12 +29,27 @@ export interface Cause {
   consumer: string;
   /** The numbers behind the cause. Formatting belongs to the UI. */
   values: Record<string, number | null>;
+  /** Housekeeping causes are cards but never the verdict for the machine. */
+  verdictWorthy: boolean;
 }
 export interface Meter {
   id: "cpu" | "memory" | "disk" | "builds";
   level: Level;
   consumer: string;
+  /** The scope holding swap, named only while the desktop is swapped out. */
+  holder?: string;
   values: Record<string, number | null>;
+}
+export type Kind = "cpu" | "memory" | "io";
+/** The resource a lane stalls on most, so one card can own that lane. */
+export function worstKind(l: Lane): Kind | null {
+  const r: [Kind, number | null][] = [
+    ["cpu", l.pressure],
+    ["memory", l.memoryPressure],
+    ["io", l.ioPressure],
+  ];
+  const best = r.filter(([, v]) => v !== null);
+  return best.sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))[0]?.[0] ?? null;
 }
 /** A slice name can appear at more than one path; nested copies are not summed. */
 export function sliceRoots(groups: Group[], name: string): Group[] {
@@ -102,20 +117,17 @@ export function laneLinkers(s: Snapshot, lane: Lane, c: Config): number {
   ).length;
 }
 /** A scope's lane name when it has one, otherwise the unit name. */
-export function consumerName(group: Group | undefined, s: Snapshot): string {
+function consumerName(group: Group | undefined, s: Snapshot): string {
   if (!group) return "";
   return s.lanes.find((l) => l.id === group.path)?.name ?? group.name;
-}
-export function pressureKnown(s: Snapshot): boolean {
-  return ["cpu", "memory", "io"].some((kind) => s.system.pressure[kind]);
 }
 function busiest(lanes: Lane[]): Lane | undefined {
   return [...lanes].sort((a, b) => (b.cpu ?? 0) - (a.cpu ?? 0))[0];
 }
 /**
- * The ranked ladder of causes, worst first. The first element is the verdict,
- * every element is an attention card, and the meters read the same numbers.
- * Ranking follows the impact on the person at the keyboard, not the count.
+ * The ladder of causes, worst first. Every element is an attention card, the
+ * first verdict-worthy one is the verdict, and the meters read the same
+ * numbers. Severity ranks it, then the impact on the person at the keyboard.
  */
 export function causes(s: Snapshot, c: Config): Cause[] {
   const out: Cause[] = [];
@@ -128,9 +140,30 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       paths: [],
       consumer: "",
       values: {},
+      verdictWorthy: true,
       ...rest,
     });
   const io = s.system.pressure.io?.some ?? null;
+  const cpu = s.system.pressure.cpu?.some ?? null;
+  const memory = s.system.pressure.memory?.some ?? null;
+  const writer = topWriter(s.groups);
+  // A lane stalling on a resource a specific cause reports belongs to that
+  // card, so one contention never produces two cards.
+  const diskFired = io !== null && io > c.pressureAmber && writer !== undefined;
+  const cpuFired = cpu !== null && cpu > c.pressureRed;
+  const memoryFired = memory !== null && memory > c.pressureRed;
+  const covered = new Set<Kind>();
+  if (diskFired) covered.add("io");
+  if (cpuFired) covered.add("cpu");
+  if (memoryFired) covered.add("memory");
+  const stalling = s.lanes.filter(
+    (l) => (lanePressure(l) ?? 0) > c.pressureAmber,
+  );
+  const owned = (kind: Kind) => stalling.filter((l) => worstKind(l) === kind);
+  const loose = stalling.filter((l) => {
+    const kind = worstKind(l);
+    return kind === null || !covered.has(kind);
+  });
   const escaped = s.lanes.filter((l) => l.unconfined);
   if (escaped.length)
     add("unconfined", "danger", {
@@ -152,11 +185,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       paths: failing.map((v) => v.mount),
       consumer: failing[0].device,
     });
-  const writer = topWriter(s.groups);
-  if (io !== null && io > c.pressureAmber && writer) {
+  if (diskFired && writer) {
     const lane = s.lanes.find((l) => l.id === writer.path);
-    add("disk", io > c.pressureRed ? "danger" : "warn", {
-      lanes: lane ? [lane] : [],
+    const stalled = owned("io").filter((l) => l.id !== lane?.id);
+    add("disk", io !== null && io > c.pressureRed ? "danger" : "warn", {
+      lanes: [...(lane ? [lane] : []), ...stalled],
       groups: [writer],
       consumer: consumerName(writer, s),
       values: {
@@ -164,6 +197,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         full: s.system.pressure.io?.full ?? null,
         writeRate: writer.writeRate,
         linkers: lane ? laneLinkers(s, lane, c) : 0,
+        stalling: stalled.length,
       },
     });
   }
@@ -194,26 +228,23 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       consumer: capped[0].name,
       values: { lanes: capped.length, floor: c.memoryFloor },
     });
-  const stalling = s.lanes.filter(
-    (l) => (lanePressure(l) ?? 0) > c.pressureAmber,
-  );
-  if (stalling.length) {
-    const worst = Math.max(...stalling.map((l) => lanePressure(l) ?? 0));
+  if (loose.length) {
+    const worst = Math.max(...loose.map((l) => lanePressure(l) ?? 0));
     add("stalls", worst > c.pressureRed ? "danger" : "warn", {
-      lanes: stalling,
-      consumer: stalling[0].name,
-      values: { lanes: stalling.length, worst },
+      lanes: loose,
+      consumer: loose[0].name,
+      values: { lanes: loose.length, worst },
     });
   }
-  const memory = s.system.pressure.memory?.some ?? null;
-  if (memory !== null && memory > c.pressureRed)
+  if (memoryFired)
     add("system-memory", "warn", {
+      lanes: owned("memory"),
       consumer: topSwapHolder(s.groups, c)?.name ?? "",
       values: { some: memory },
     });
-  const cpu = s.system.pressure.cpu?.some ?? null;
-  if (cpu !== null && cpu > c.pressureRed)
+  if (cpuFired)
     add("system-cpu", "warn", {
+      lanes: owned("cpu"),
       consumer: busiest(s.lanes)?.name ?? "",
       values: { some: cpu },
     });
@@ -221,7 +252,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     (g) => g.memory !== null && g.high !== null && g.memory >= g.high * 0.9,
   );
   if (near.length)
-    add("memory-high", "warn", { groups: near, consumer: near[0].name });
+    add("memory-high", "warn", {
+      groups: near,
+      consumer: near[0].name,
+      verdictWorthy: false,
+    });
   const scrubs = s.storage.scrubs.filter((scrub) => scrub.problem);
   if (scrubs.length)
     add("scrub", "danger", {
@@ -235,18 +270,22 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     add("scratch", "warn", {
       paths: large.map((scratch) => scratch.path),
       consumer: large[0].path,
+      verdictWorthy: false,
       values: {
         largest: Math.max(...large.map((scratch) => scratch.bytes ?? 0)),
         quota: c.scratchQuota,
       },
     });
-  return out;
+  // Severity decides the order; authoring order breaks a tie.
+  const rank = { danger: 2, warn: 1, ok: 0 };
+  return out.sort((a, b) => rank[b.level] - rank[a.level]);
 }
 /** Four meters. Each carries its numbers and the single biggest consumer. */
 export function meters(s: Snapshot, c: Config): Meter[] {
   const top = busiest(s.lanes);
   const writer = topWriter(s.groups);
   const swap = sliceSum(s.groups, c.desktopSlice, (g) => g.swap);
+  const swapped = swap !== null && swap > c.swapFloor;
   const holder = topSwapHolder(s.groups, c);
   const largest = [...s.groups]
     .filter((g) => g.name.endsWith(".scope"))
@@ -278,14 +317,16 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     },
     {
       id: "memory",
-      level: swap !== null && swap > c.swapFloor ? "danger" : "ok",
-      consumer: (swap ? holder?.name : largest?.name) ?? "",
+      level: swapped ? "danger" : "ok",
+      consumer: largest?.name ?? "",
+      holder: swapped ? (holder?.name ?? "") : undefined,
       values: {
         used: total === null || available === null ? null : total - available,
         total,
         cache: sliceSum(s.groups, c.agentSlice, (g) => g.cache),
         swap,
-        holder: (swap ? holder?.swap : largest?.memory) ?? null,
+        largest: largest?.memory ?? null,
+        holderSwap: swapped ? (holder?.swap ?? null) : null,
       },
     },
     {
