@@ -3,7 +3,7 @@ import type { Group } from "../model/types";
 import { pairs, pressure, type Reader } from "./io";
 
 /** io.stat has one line per device; the group's cost is their sum. */
-export function ioTotals(text: string): { read: number; write: number } | null {
+function ioTotals(text: string): { read: number; write: number } | null {
   const totals = { read: 0, write: 0 };
   let seen = false;
   for (const [, key, raw] of text.matchAll(/\b(rbytes|wbytes)=(\S+)/g)) {
@@ -12,11 +12,6 @@ export function ioTotals(text: string): { read: number; write: number } | null {
     totals[key === "rbytes" ? "read" : "write"] += Number(raw);
   }
   return seen ? totals : null;
-}
-/** memory.stat charges page cache to the group that faulted it in. */
-export function pageCache(text: string): number | null {
-  const match = text.match(/^file (\d+)$/m);
-  return match ? Number(match[1]) : null;
 }
 function rate(
   now: number | null,
@@ -69,7 +64,10 @@ export function collectGroups(
             r.error(join(path, "io.stat"), e);
           }
         }
-        const memRaw = r.text(join(path, "memory.stat"), true);
+        // memory.stat charges page cache to the group that faulted it in.
+        const file = r
+          .text(join(path, "memory.stat"), true)
+          ?.match(/^file (\d+)$/m)?.[1];
         const members = pids ? pids.split(/\s+/).map(Number) : [];
         if (members.some((p) => !Number.isInteger(p) || p <= 0))
           throw new Error("Invalid cgroup process ID");
@@ -95,7 +93,7 @@ export function collectGroups(
           swapMax: r.number(join(path, "memory.swap.max"), true),
           tasks: r.number(join(path, "pids.current"), true),
           tasksMax: r.number(join(path, "pids.max"), true),
-          cache: memRaw === null ? null : pageCache(memRaw),
+          cache: file === undefined ? null : Number(file),
           ioRead: io ? io.read : null,
           ioWrite: io ? io.write : null,
           readRate: rate(io ? io.read : null, old?.ioRead, elapsedMs),

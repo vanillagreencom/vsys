@@ -229,15 +229,18 @@ export function sourceFooter(s: Snapshot): string | null {
     : null;
 }
 /** Meter prose, including the missing-mount and unavailable-counter wording. */
+const gap = "not available";
 export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
-  const b = (n: number | null) => bytes(n, c);
+  // A quantity vsys could not read says so; it never shows a question mark.
+  const b = (n: number | null) => (n === null ? gap : bytes(n, c));
+  const pc = (n: number | null) => (n === null ? gap : percent(n));
+  const who = (label: string, value: string) =>
+    meter.consumer ? `${label} ${meter.consumer} ${value}` : `${label} ${gap}`;
   const v = meter.values;
   if (meter.id === "cpu")
-    return `CPU: agents ${percent(v.agents)} | desktop ${percent(
-      v.desktop,
-    )} | busiest lane ${meter.consumer || "none"} ${percent(v.top)}`;
+    return `CPU: agents ${pc(v.agents)} | desktop ${pc(v.desktop)} | ${who("busiest lane", pc(v.top))}`;
   if (meter.id === "memory")
-    return `Memory: ${b(v.used)} used of ${b(v.total)} | agent cache ${b(v.cache)} | desktop swap ${b(v.swap)} | largest ${meter.consumer || "none"} ${b(v.largest)}${meter.holder === undefined ? "" : ` | most swapped ${meter.holder || "none"} ${b(v.holderSwap)}`}`;
+    return `Memory: ${b(v.used)} used of ${b(v.total)} | agent cache ${b(v.cache)} | desktop swap ${b(v.swap)} | ${who("largest", b(v.largest))}${meter.holder === undefined ? "" : ` | most swapped ${meter.holder || gap} ${b(v.holderSwap)}`}`;
   if (meter.id === "disk") {
     const space =
       s.storage.mountsAvailable === false
@@ -245,11 +248,9 @@ export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
         : s.storage.volumes.length
           ? `least free ${b(v.free)}`
           : "no watched filesystems";
-    return `Disk: pressure some ${percent(v.some)} full ${percent(
-      v.full,
-    )} | ${space} | top writer ${meter.consumer || "none"} ${b(v.writeRate)}/s`;
+    return `Disk: pressure some ${pc(v.some)} full ${pc(v.full)} | ${space} | ${who("top writer", `${b(v.writeRate)}/s`)}`;
   }
-  return `Build slots: ${v.builds} compile and link ${p(v.builds ?? 0, "process", "processes")} / ${v.cores} cores | ${count(v.linkers, "linker")} | ${count(v.lanes, "building cgroup")} | busiest lane ${meter.consumer || "none"}`;
+  return `Build slots: ${v.builds} compile and link ${p(v.builds ?? 0, "process", "processes")} / ${v.cores} cores | ${count(v.linkers, "linker")} | ${count(v.lanes, "building cgroup")} | ${who("busiest lane", "")}`.trimEnd();
 }
 
 export function Overview({

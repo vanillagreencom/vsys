@@ -8,6 +8,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 
 - `mountScreen` owns the React root and the subscription between collection and display. It mounts once and unmounts on shutdown.
 - Overview renders the model's cause ladder. The worst cause that speaks for the machine is the verdict line and each cause is one card. All copy and all byte and percent formatting live here; the model returns numbers. Alert history can contain resolved events and cannot define current health.
+- A quantity vsys could not read makes its meter a warning and renders as "not available", never as a question mark or an untroubled reading.
 - Attention cards are grouped by cause. Each card names its subjects, a next step, and where possible a read-only command built from configured names.
 - Fleet owns selection and vertical paging. The scroll box owns horizontal table scrolling. Other detail views use native vertical scrolling.
 - The UI opens views and exports evidence. It does not control observed processes or their terminal sessions.

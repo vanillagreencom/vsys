@@ -296,18 +296,14 @@ export function meters(s: Snapshot, c: Config): Meter[] {
   const total = s.system.memory.MemTotal ?? null;
   const available = s.system.memory.MemAvailable ?? null;
   const free = leastFree(s.storage.volumes);
-  const level = (value: number | null): Level =>
-    value === null
-      ? "warn"
-      : value > c.pressureRed
-        ? "danger"
-        : value > c.pressureAmber
-          ? "warn"
-          : "ok";
+  // One rule for every meter: a quantity the level depends on that could not
+  // be read is a warning, never an untroubled reading.
+  const gauge = (n: number | null, red: number, amber: number): Level =>
+    n === null ? "warn" : n > red ? "danger" : n > amber ? "warn" : "ok";
   return [
     {
       id: "cpu",
-      level: level(cpu),
+      level: gauge(cpu, c.pressureRed, c.pressureAmber),
       consumer: top?.name ?? "",
       values: {
         agents: sliceSum(s.groups, c.agentSlice, (g) => g.cpuPercent),
@@ -317,7 +313,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     },
     {
       id: "memory",
-      level: swapped ? "danger" : "ok",
+      level: gauge(swap, c.swapFloor, c.swapFloor),
       consumer: largest?.name ?? "",
       holder: swapped ? (holder?.name ?? "") : undefined,
       values: {
@@ -331,7 +327,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     },
     {
       id: "disk",
-      level: level(io),
+      level: gauge(io, c.pressureRed, c.pressureAmber),
       consumer: consumerName(writer, s),
       values: {
         some: io,
@@ -342,12 +338,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     },
     {
       id: "builds",
-      level:
-        load.builds > s.system.cores * 2
-          ? "danger"
-          : load.builds > s.system.cores
-            ? "warn"
-            : "ok",
+      level: gauge(load.builds, s.system.cores * 2, s.system.cores),
       consumer: top?.name ?? "",
       values: {
         builds: load.builds,

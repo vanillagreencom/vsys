@@ -192,7 +192,7 @@ test("counted nouns in the meters and the cards are singular at one", () => {
   const s = emptySnapshot();
   s.procs = [processSnapshot({ pid: 1, build: "ld.mold" })];
   expect(meterLine(meters(s, c)[3], s, c)).toBe(
-    "Build slots: 1 compile and link process / 8 cores | 1 linker | 1 building cgroup | busiest lane none",
+    "Build slots: 1 compile and link process / 8 cores | 1 linker | 1 building cgroup | busiest lane not available",
   );
   s.procs.push(processSnapshot({ pid: 2, build: "mold", group: "/b.scope" }));
   expect(meterLine(meters(s, c)[3], s, c)).toContain(
@@ -236,12 +236,17 @@ test("the memory meter names the largest scope and only then the swap holder", (
   const line = (snapshot: Snapshot) =>
     meterLine(meters(snapshot, c)[1], snapshot, c);
   expect(line(s)).toBe(
-    "Memory: 500 B used of 1000 B | agent cache ? | desktop swap 0 B | largest b.scope 900 B",
+    "Memory: 500 B used of 1000 B | agent cache not available | desktop swap 0 B | largest b.scope 900 B",
   );
+  expect(meters(s, c)[1].level).toBe("ok");
   s.groups[0].swap = c.swapFloor + 1;
   expect(line(s)).toContain(
     "desktop swap 512.0 MiB | largest b.scope 900 B | most swapped gnome.scope 992 B",
   );
+  // Swap vsys could not read is a warning, never an untroubled reading.
+  s.groups[0].swap = null;
+  expect(meters(s, c)[1].level).toBe("warn");
+  expect(line(s)).toContain("desktop swap not available");
 });
 
 test("the disk meter reports free space and says when mounts are unreadable", () => {
@@ -252,8 +257,11 @@ test("the disk meter reports free space and says when mounts are unreadable", ()
   const line = (snapshot: Snapshot) =>
     meterLine(meters(snapshot, c)[2], snapshot, c);
   expect(line(s)).toBe(
-    "Disk: pressure some 12.0% full 3.0% | least free 5.0 GiB | top writer none ?/s",
+    "Disk: pressure some 12.0% full 3.0% | least free 5.0 GiB | top writer not available",
   );
+  // A readable mount whose free space is unknown says so, in the same words.
+  s.storage.volumes[0].free = null;
+  expect(line(s)).toContain("least free not available");
   s.storage.mountsAvailable = false;
   expect(line(s)).toContain("mount information unavailable");
   const bare = emptySnapshot();

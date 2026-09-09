@@ -269,12 +269,13 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   const second = b.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(second?.writeRate).toBe(1000);
   expect(second?.readRate).toBe(0);
-  // An invalid counter stays unknown; it never becomes a measured zero.
+  // An unreadable or invalid counter stays unknown, never a measured zero.
   f.write(join(path, "io.stat"), "259:0 rbytes=x wbytes=200\n");
+  rmSync(join(path, "memory.stat"));
   const bad = await collector.sample(3000);
-  expect(
-    bad.groups.find((g) => g.path === "agents.slice/a.scope")?.ioWrite,
-  ).toBeNull();
+  const group = bad.groups.find((g) => g.path === "agents.slice/a.scope");
+  expect(group?.ioWrite).toBeNull();
+  expect(group?.cache).toBeNull();
   expect(bad.errors.map((e) => e.source)).toContain(join(path, "io.stat"));
 });
 test("argv exclusion hides a helper process but never an agent lane", async () => {
