@@ -10,7 +10,13 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import { attention, meterLine, sourceFooter, verdictLine } from "./overview";
+import {
+  attention,
+  meterLine,
+  sourceFooter,
+  unread,
+  verdictLine,
+} from "./overview";
 
 const base = ["/usr/bin", "/bin"];
 test("overview promotes active problems and does not call past events current", () => {
@@ -309,4 +315,17 @@ test("a meter names the interface behind a missing reading", () => {
   expect(cpu()).toContain(
     "agents not available: resource control is not delegated to this login session",
   );
+});
+
+test("a snapshot stored before the probe reads plainly and never claims a cause", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // What History.at returns for a row an older build wrote.
+  s.capabilities = [];
+  s.system.pressure.cpu = null;
+  expect(meterLine(meters(s, c)[0], s, c)).toBe(
+    "CPU: pressure not available | agents not available | desktop not available | busiest lane not available",
+  );
+  expect(unread(s, "psi")).toBe("not available");
+  expect(unread(s)).toBe("not available");
 });

@@ -661,8 +661,9 @@ export function App({
       </>
     );
   else if (view === "Settings") {
-    // The capability list and its two headings take rows from the setting list.
-    const rows = Math.max(1, height - 12 - shown.capabilities.length);
+    // The probe describes the running program, so a pinned past sample does
+    // not replace it. The list and its two headings take rows from the settings.
+    const rows = Math.max(1, height - 12 - snapshot.capabilities.length);
     const start = Math.max(0, settingIndex - Math.floor(rows / 2));
     content = (
       <>
@@ -670,7 +671,7 @@ export function App({
           `Settings | ${c.keys.open} edits | return saves | escape cancels | lists: ["a", "b"]`,
         )}
         {line("System capabilities (probed when vsys started)")}
-        {shown.capabilities.map((cap) => (
+        {snapshot.capabilities.map((cap) => (
           <text
             key={cap.id}
             height={1}
