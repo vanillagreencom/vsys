@@ -8,17 +8,19 @@ The [application plan](../plans/2026-09-06-vsys-view-plan.md) defines the collec
 
 | Screen | Behaviour | Verification |
 | --- | --- | --- |
-| Overview | One ranked cause ladder: its first element is the verdict line, every element is a card with a next step and a copyable command; four meters that each name their biggest consumer; unreadable sources in a footer | `src/model/verdict.test.ts`, `src/model/launcher.test.ts`, `src/ui/overview.test.ts`, `src/ui/App.test.tsx` |
-| Fleet | Searchable lane summaries naming account, agent, pane and workspace; optional full table with sorting, column visibility and order; resource and limit colours | Collector fixtures, `src/model/naming.test.ts`, `src/ui/format.test.ts`, `src/ui/screen.test.tsx`, `src/ui/theme.test.tsx` |
-| Lane | Cgroup, memory, page cache, swap, CPU share, I/O rates, build work by kind, compiler cache clients, effective caps and the blocked reason; complete lane history; launch environment, process tree and live scratch descriptors | Collector fixtures, `src/model/lanes.test.ts`, `src/store/lane-series.test.ts`, `src/ui/App.test.tsx` |
+| [Overview](verdict.md) | One ranked cause ladder: its first element is the verdict line, every element is a card with a next step and a copyable command; four meters that each name their biggest consumer; unreadable sources in a footer | `src/model/verdict.test.ts`, `src/model/launcher.test.ts`, `src/ui/overview.test.ts`, `src/ui/App.test.tsx` |
+| [Fleet](lanes.md) | Searchable lane summaries naming account, agent, pane and workspace; optional full table with sorting, column visibility and order; resource and limit colours | Collector fixtures, `src/model/naming.test.ts`, `src/ui/format.test.ts`, `src/ui/screen.test.tsx`, `src/ui/theme.test.tsx` |
+| [Lane](lanes.md) | Cgroup, memory, page cache, swap, CPU share, I/O rates, build work by kind, compiler cache clients, effective caps and the blocked reason; complete lane history; launch environment, process tree and live scratch descriptors | Collector fixtures, `src/model/lanes.test.ts`, `src/store/lane-series.test.ts`, `src/ui/App.test.tsx` |
 | Slices | Cgroup tree, sibling CPU weight share, quotas, memory, swap, task limits and pressure | Typed source fixtures and rendered navigation test |
-| Builds | Fleet compile and link total against cores, per-lane rows with linkers named, build cache effectiveness and make token pools, then per-process classification, threads, CPU, RSS, directory and elapsed time | Build classifier fixtures, summary and line tests, build cache parser and delta tests |
-| Storage | Bytes written since boot per slice and, from the cgroup v2 root, per device; drive lifetime writes; below them mount state, device counters and deltas, scrub reports, free space, scratch sizes and measurement age | `src/model/writes.test.ts`, `src/ui/storage.test.ts`, `src/collect/devices.test.ts`, mount parser, Btrfs and scratch tests |
-| Timeline | What changed and why: lane starts and stops, cgroup moves, alerts opening and closing with their duration, verdict changes; resource series, time cursor, change markers and Fleet pinning | [Timeline events](events.md), time-bucket tests, archive replay and rendered pinning test |
+| [Builds](builds.md) | Fleet compile and link total against cores, per-lane rows with linkers named, build cache effectiveness and make token pools, then per-process classification, threads, CPU, RSS, directory and elapsed time | Build classifier fixtures, summary and line tests, build cache parser and delta tests |
+| [Storage](storage.md) | Bytes written since boot per slice and, from the cgroup v2 root, per device; drive lifetime writes; below them mount state, device counters and deltas, scrub reports, free space, scratch sizes and measurement age | `src/model/writes.test.ts`, `src/ui/storage.test.ts`, `src/collect/devices.test.ts`, mount parser, Btrfs and scratch tests |
+| [Timeline](events.md) | What changed and why: lane starts and stops, cgroup moves, alerts opening and closing with their duration, verdict changes; resource series, time cursor, change markers and Fleet pinning | `src/store/events.test.ts`, `src/ui/timeline.test.ts`, time-bucket tests, archive replay and rendered pinning test |
 | Alerts | Rule transitions, pressure hold time, per-rule notifications and source errors | Rule and notification tests |
-| Settings | Validated TOML, named settings, editable keys, display preferences and history configuration | Configuration, settings UI and runtime replacement tests |
+| [Settings](settings.md) | Validated TOML, named settings, editable keys, display preferences and history configuration | Configuration, settings UI and runtime replacement tests |
 
 ## Storage and runtime
+
+The [history store](history.md) and [settings and the runtime](settings.md) hold the invariants behind this section.
 
 - The collector reads system state. Settings, optional SQLite, requested exports and enabled notifications are separate application effects.
 - In-memory replay uses complete checkpoints and exact changes. A warning reports retention shortened by the memory budget.

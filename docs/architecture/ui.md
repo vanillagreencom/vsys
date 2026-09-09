@@ -31,7 +31,10 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - A device-mapper row and the disk beneath it count the same bytes, and the device section says so when one is present. `src/ui/storage.test.ts` checks that line.
 - No attention text is repeated. `src/ui/overview.test.ts` and `src/ui/App.test.tsx` check unique card titles across every cause.
 - The Timeline event list names the cause of each change. Each event takes one truncated row and the list stops at the rows the viewport has, stating how many of the window's events it shows. `src/ui/App.test.tsx` checks a lane start with an open alert, twelve events in a short terminal, and a 400-character subject that must not push the rows below it out.
+- Timeline positions follow timestamps. `src/ui/format.test.ts` checks collection gaps and alert alignment.
+- Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
+- Interactive quit restores the terminal, including when history shutdown fails. `src/main.test.ts` checks isolated terminals. `src/runtime.test.ts` checks error delivery when collection and shutdown both fail.
 
 ## Framework constraint
 
