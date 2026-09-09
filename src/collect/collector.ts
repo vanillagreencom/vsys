@@ -13,9 +13,12 @@ import { SccacheCollector } from "./sccache";
 import { collectSystem } from "./system";
 
 /**
- * Every setting collection reads. A saved change to one of them rebuilds the
- * collector, so a new collection setting must be declared here.
- * `collector.test.ts` scans the collection modules and fails on a forgotten one.
+ * Every setting collection reads, and the only owner of that fact. The runtime
+ * rebuilds the collector when one of them changes, so a new collection setting
+ * must be declared here. Settings the dashboard reads while rendering, and the
+ * notification rules the runtime applies after a sample, are not collection
+ * settings and must stay out: rebuilding discards counters and alert state.
+ * `collector.test.ts` checks this list against the collection modules.
  */
 export const collectionKeys: (keyof Config)[] = [
   "cgroupRoot",
@@ -25,24 +28,24 @@ export const collectionKeys: (keyof Config)[] = [
   "sysBlockRoot",
   "watchedSlices",
   "agentSlice",
-  "desktopSlice",
   "agentTools",
   "excludeArgv",
   "capMarkers",
   "linkerNames",
   "memoryFloor",
   "pressureAmber",
-  "pressureRed",
   "pressureHoldSeconds",
   "laneNaming",
   "laneEnv",
+  "accountEnv",
+  "paneEnv",
+  "titleEnv",
   "scratchDirs",
   "scratchQuota",
   "scratchRefreshMs",
   "btrfsMounts",
   "scrubDir",
   "smartDir",
-  "notifications",
 ];
 
 /** The scheduler awaits each sample, so ticks cannot overlap. */

@@ -98,7 +98,6 @@ export interface Storage {
   mountsAvailable?: boolean;
   /** Bytes written since boot per device number, read at the cgroup v2 root. */
   deviceWrites?: Record<string, number> | null;
-  smartAvailable?: boolean;
   devices?: Device[];
   volumes: Volume[];
   scratch: Scratch[];

@@ -15,10 +15,12 @@ const number = (raw: string) => Number(raw.replace(/[,\s]/g, ""));
 export function smartWrites(
   text: string,
 ): Pick<Device, "model" | "lifetimeWritten"> {
+  // Model Family names a range of drives and is printed above the drive's own
+  // model, so it is only a fallback.
   const model =
-    text.match(
-      /^(?:Device Model|Model Number|Model Family):\s*(.+?)\s*$/m,
-    )?.[1] ?? null;
+    text.match(/^(?:Device Model|Model Number):\s*(.+?)\s*$/m)?.[1] ??
+    text.match(/^Model Family:\s*(.+?)\s*$/m)?.[1] ??
+    null;
   const units = text.match(/^Data Units Written:\s*([\d,\s]+?)(?:\s*\[.*)?$/m);
   if (units) return { model, lifetimeWritten: number(units[1]) * DATA_UNIT };
   const lbas = text.match(
@@ -36,10 +38,7 @@ export function smartWrites(
  * is written by a privileged timer, because a read-only monitor cannot run
  * smartctl itself.
  */
-export function collectDevices(
-  r: Reader,
-  c: Config,
-): { devices: Device[]; smartAvailable: boolean } {
+export function collectDevices(r: Reader, c: Config): Device[] {
   const reports = new Map(
     r
       .names(c.smartDir, true)
@@ -47,6 +46,9 @@ export function collectDevices(
   );
   const devices: Device[] = [];
   for (const name of r.names(c.sysBlockRoot, true).sort()) {
+    // Loop, memory and optical devices have no lifetime to report.
+    if (/^(?:loop|ram|zram|sr|fd)\d+$/.test(name) && !reports.has(name))
+      continue;
     const dev = r.text(join(c.sysBlockRoot, name, "dev"), true);
     const report = reports.get(name);
     const raw = report === undefined ? null : r.text(report);
@@ -58,5 +60,5 @@ export function collectDevices(
         : smartWrites(raw)),
     });
   }
-  return { devices, smartAvailable: reports.size > 0 };
+  return devices;
 }

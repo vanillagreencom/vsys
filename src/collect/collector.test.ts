@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import {
-  existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { defaults } from "../config/config";
 import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherTrail } from "../model/launcher";
@@ -337,7 +337,6 @@ test("a sample carries drive lifetime writes when a SMART report is readable", a
     "Model Number: Test Drive\nData Units Written: 1,000,000 [512 GB]\n",
   );
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.storage.smartAvailable).toBe(true);
   expect(s.storage.devices).toContainEqual({
     name: "nvme0n1",
     number: "259:0",
@@ -450,33 +449,49 @@ test("a settings change keeps the cache counts measured since vsys started", asy
     windowMs: 1000,
   });
 /**
- * The runtime rebuilds the collector from this declaration. A setting read
- * during collection but left undeclared would be inert until a restart, so the
- * declaration is checked against the modules rather than maintained by hand.
+ * The declaration in collector.ts is the only owner of the rebuild set. This
+ * check reads the collection modules: the collectors themselves, plus the two
+ * model modules a sample derives its lanes and alerts from. It reads no further,
+ * so a setting only the dashboard or the runtime uses stays out of the set.
  */
-test("every setting the collection modules read is a declared collection key", () => {
+const collectionModules = () => {
+  const dir = import.meta.dir;
+  return [
+    ...readdirSync(dir)
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
+      .map((f) => join(dir, f)),
+    join(dir, "../model/lanes.ts"),
+    join(dir, "../model/alerts.ts"),
+  ];
+};
+/** Settings read through the config receiver, including destructured reads. */
+function settingsRead(file: string, keys: Set<string>): Set<string> {
+  const text = readFileSync(file, "utf8");
+  const found = new Set<string>();
+  for (const [, key] of text.matchAll(/\b(?:c|config|this\.config)\.(\w+)/g))
+    if (keys.has(key)) found.add(key);
+  for (const [, fields] of text.matchAll(
+    /\{([^{}]*)\}\s*=\s*(?:c|config|this\.config)\b/g,
+  ))
+    for (const field of fields.split(","))
+      if (keys.has(field.trim())) found.add(field.trim());
+  return found;
+}
+test("a setting the collectors read is declared, and a declared one is read", () => {
   const keys = new Set(Object.keys(defaults()));
   const declared = new Set<string>(collectionKeys);
-  const read = new Map<string, string>();
-  const seen = new Set<string>();
-  const walk = (file: string) => {
-    // The config module names every setting; it defines them rather than reading them.
-    if (seen.has(file) || file.endsWith("config/config.ts")) return;
-    seen.add(file);
-    const text = readFileSync(file, "utf8");
-    for (const [, key] of text.matchAll(/\b(?:c|config|this\.config)\.(\w+)/g))
-      if (keys.has(key)) read.set(key, file);
-    for (const [, spec] of text.matchAll(/from\s+"(\.[^"]+)"/g)) {
-      const base = resolve(dirname(file), spec);
-      const target = [".ts", ".tsx"].map((e) => base + e).find(existsSync);
-      if (!target) throw new Error(`Cannot resolve import: ${spec} in ${file}`);
-      walk(target);
-    }
-  };
-  walk(join(import.meta.dir, "collector.ts"));
-  expect(seen.size).toBeGreaterThan(5);
-  const undeclared = [...read]
-    .filter(([key]) => !declared.has(key))
-    .map(([key, file]) => `${key} (${file})`);
+  const modules = collectionModules();
+  expect(modules.length).toBeGreaterThan(5);
+  const collectors = modules.filter((f) => f.includes("/collect/"));
+  const undeclared = collectors.flatMap((file) =>
+    [...settingsRead(file, keys)]
+      .filter((key) => !declared.has(key))
+      .map((key) => `${key} (${file})`),
+  );
   expect(undeclared).toEqual([]);
+  const read = new Set(
+    modules.flatMap((file) => [...settingsRead(file, keys)]),
+  );
+  // A declared setting no collection module reads would rebuild for nothing.
+  expect(collectionKeys.filter((key) => !read.has(key))).toEqual([]);
 });

@@ -20,7 +20,6 @@ test("write totals lead the Storage view with slice, device and drive rows", () 
       ioWrite: 2199023255552,
     }),
   ];
-  s.storage.smartAvailable = true;
   s.storage.deviceWrites = { "259:0": 3298534883328, "253:0": 3298534883328 };
   s.storage.devices = [
     {
@@ -41,11 +40,11 @@ test("write totals lead the Storage view with slice, device and drive rows", () 
     "  A dm- row repeats the writes of the disk beneath it.",
     "Lifetime writes reported by the drive",
     "  nvme0n1 (Samsung) 41.0 TiB",
+    "  dm-0 not available",
   ]);
 });
 test("an unreadable source says so and never renders a blank row", () => {
   const s = emptySnapshot();
-  s.storage.smartAvailable = false;
   expect(writeLines(s, c)).toEqual([
     "Written since boot, by slice",
     "  agents.slice not available",

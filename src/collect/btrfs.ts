@@ -53,11 +53,9 @@ export class StorageCollector {
     mountInfo: MountInfo[] | null = readMounts(r, c.procRoot),
     waitForScratch = true,
   ): Promise<Storage> {
-    const { devices: blockDevices, smartAvailable } = collectDevices(r, c);
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
-      smartAvailable,
-      devices: blockDevices,
+      devices: collectDevices(r, c),
       volumes: [],
       scratch: [],
       sessions: [],

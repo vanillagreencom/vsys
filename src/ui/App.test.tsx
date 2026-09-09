@@ -451,7 +451,6 @@ test("Storage opens with write totals and keeps filesystem state below them", as
       ioWrite: 2199023255552,
     }),
   ];
-  s.storage.smartAvailable = true;
   s.storage.devices = [
     { name: "nvme0n1", number: "259:0", model: null, lifetimeWritten: 1e13 },
   ];

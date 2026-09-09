@@ -13,7 +13,6 @@ export interface WriteTotals {
   lifetime: WriteTotal[];
   /** False when the source could not be read, which is not an empty result. */
   devicesAvailable: boolean;
-  smartAvailable: boolean;
 }
 /** The most written first; an unknown total sorts last and keeps its name. */
 function order(a: WriteTotal, b: WriteTotal): number {
@@ -38,14 +37,14 @@ export function writeTotals(s: Snapshot, c: Config): WriteTotals {
     devices: Object.entries(perDevice ?? {})
       .map(([id, written]) => ({ name: names.get(id) ?? id, written }))
       .sort(order),
+    // Every drive keeps its row, so a drive without a report is named as the
+    // one missing its lifetime writes.
     lifetime: devices
-      .filter((d) => d.lifetimeWritten !== null)
       .map((d) => ({
         name: d.model ? `${d.name} (${d.model})` : d.name,
         written: d.lifetimeWritten,
       }))
       .sort(order),
     devicesAvailable: perDevice !== null,
-    smartAvailable: s.storage.smartAvailable !== false,
   };
 }

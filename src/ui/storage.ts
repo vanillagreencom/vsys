@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
 import type { Snapshot } from "../model/types";
 import { type WriteTotal, writeTotals } from "../model/writes";
-import { amount, unavailable } from "./format";
+import { amount, gap } from "./format";
 
 /**
  * The write totals that open the Storage view. Filesystem state follows them,
@@ -12,7 +12,7 @@ export function writeLines(s: Snapshot, c: Config): string[] {
   const rows = (available: boolean, entries: WriteTotal[]) =>
     available && entries.length
       ? entries.map((e) => `  ${e.name} ${amount(e.written, c)}`)
-      : [`  ${unavailable}`];
+      : [`  ${gap}`];
   // A device-mapper row and the disk under it both count the same bytes.
   const mapped = t.devices.some((d) => /^dm-/.test(d.name));
   return [
@@ -24,6 +24,6 @@ export function writeLines(s: Snapshot, c: Config): string[] {
       ? ["  A dm- row repeats the writes of the disk beneath it."]
       : []),
     "Lifetime writes reported by the drive",
-    ...rows(t.smartAvailable, t.lifetime),
+    ...rows(true, t.lifetime),
   ];
 }

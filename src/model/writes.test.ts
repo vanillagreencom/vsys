@@ -35,7 +35,6 @@ function snapshot() {
     },
     { name: "sda", number: "8:0", model: null, lifetimeWritten: null },
   ];
-  s.storage.smartAvailable = true;
   s.storage.deviceWrites = { "259:0": 2_000_000, "8:0": 1_000_000 };
   return s;
 }
@@ -51,6 +50,7 @@ test("written bytes are reported per slice and per named device", () => {
   ]);
   expect(t.lifetime).toEqual([
     { name: "nvme0n1 (Samsung)", written: 9_000_000 },
+    { name: "sda", written: null },
   ]);
   expect(t.devicesAvailable).toBe(true);
 });
@@ -68,13 +68,14 @@ test("an unreadable counter stays unknown rather than becoming zero", () => {
     { name: "app.slice", written: null },
   ]);
 });
-test("SMART output that cannot be read leaves lifetime writes unavailable", () => {
+test("a drive with no readable report keeps a named row of its own", () => {
   const s = snapshot();
-  s.storage.smartAvailable = false;
   s.storage.devices = [
     { name: "sda", number: "8:0", model: null, lifetimeWritten: null },
+    { name: "nvme0n1", number: "259:0", model: null, lifetimeWritten: 7 },
   ];
-  const t = writeTotals(s, c);
-  expect(t.smartAvailable).toBe(false);
-  expect(t.lifetime).toEqual([]);
+  expect(writeTotals(s, c).lifetime).toEqual([
+    { name: "nvme0n1", written: 7 },
+    { name: "sda", written: null },
+  ]);
 });
