@@ -1,5 +1,5 @@
 import type { Config } from "../config/config";
-import type { BuildsSummary, Rates } from "../model/builds";
+import type { BuildsSummary, CacheEffect, Rates } from "../model/builds";
 import { buildsSummary } from "../model/builds";
 import type { Snapshot } from "../model/types";
 import { age, count, gap, plural, share } from "./format";
@@ -12,12 +12,11 @@ export function fleetTotal(v: Record<string, number | null>): string {
   const builds = v.builds ?? 0;
   return `Build slots: ${builds} compile and link ${plural(builds, "process", "processes")} / ${v.cores ?? 0} cores | ${count(v.linkers, "linker")} | ${count(v.lanes, "building cgroup")}`;
 }
-/** Elapsed time of a measured window, so a short window is never called five minutes. */
-function window(ms: number): string {
-  return ms > 0 ? `over ${age(ms / 1000)}` : "over no elapsed time";
-}
+/** The measured window is stated, so a short one is never called five minutes. */
 function cacheWork(r: Rates): string {
-  return `${count(r.hits, "hit")}, ${count(r.misses, "miss", "misses")}, ${share(r.rate)} hit rate ${window(r.windowMs)}`;
+  const over =
+    r.windowMs > 0 ? `over ${age(r.windowMs / 1000)}` : "over no elapsed time";
+  return `${count(r.hits, "hit")}, ${count(r.misses, "miss", "misses")}, ${share(r.rate)} hit rate ${over}`;
 }
 /** Every word and every formatted number the Builds view shows lives here. */
 export function buildLines(s: Snapshot, c: Config): string[] {
@@ -39,7 +38,7 @@ export function buildLines(s: Snapshot, c: Config): string[] {
     lines.push(
       `  ${row.name || "outside the watched lanes"}: ${count(row.builds, "compile and link process", "compile and link processes")}, ${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`,
     );
-  lines.push(...cacheLines(summary));
+  lines.push(...cacheLines(summary.cache));
   for (const j of summary.jobservers)
     lines.push(
       `make jobserver ${j.fifo}: ${j.inUse} of ${j.total === null ? gap : j.total} ${plural(j.total ?? j.inUse, "token", "tokens")} in use`,
@@ -47,8 +46,7 @@ export function buildLines(s: Snapshot, c: Config): string[] {
   return lines;
 }
 /** The cache reading, then anything that makes the reading misleading. */
-export function cacheLines(summary: BuildsSummary): string[] {
-  const cache = summary.cache;
+function cacheLines(cache: CacheEffect): string[] {
   const lines = cache.available
     ? [
         `sccache since vsys started: ${cache.sinceStart === null ? gap : cacheWork(cache.sinceStart)}`,

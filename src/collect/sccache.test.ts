@@ -4,21 +4,22 @@ import { parseSccacheStats, SccacheCollector } from "./sccache";
 
 /** The shape `sccache --show-stats` prints, including the qualified subsets. */
 const stats = (hits: number, misses: number) =>
-  [
-    "Compile requests                    200",
-    "Compile requests executed           190",
-    `Cache hits                          ${hits}`,
-    `Cache hits (Rust)                   ${hits}`,
-    `Cache misses                        ${misses}`,
-    `Cache misses (Rust)                 ${misses}`,
-    "Cache timeouts                        0",
-    "Cache errors                          0",
-    "",
-  ].join("\n");
+  `Compile requests                    200
+Compile requests executed           190
+Cache hits                          ${hits}
+Cache hits (Rust)                   ${hits}
+Cache misses                        ${misses}
+Cache misses (Rust)                 ${misses}
+Cache errors                          0
+`;
 
 test("qualified cache lines are subsets and never add to the totals", () => {
   expect(parseSccacheStats(stats(80, 40))).toEqual({ hits: 80, misses: 40 });
   expect(parseSccacheStats("Compile requests 3\n")).toBeNull();
+  // Qualified lines alone are not totals; a partial reading is not a zero.
+  expect(
+    parseSccacheStats("Cache hits (Rust)  80\nCache misses (Rust)  40\n"),
+  ).toBeNull();
 });
 
 test("counters become a delta since start and a five minute delta", async () => {
@@ -72,6 +73,28 @@ test("a missing binary is unavailable, other failures are reported once", async 
   }, 0);
   expect((await broken.collect(r, 0)).available).toBe(false);
   expect(r.errors.map((e) => e.source)).toEqual(["sccache --show-stats"]);
+});
+
+test("a wedged cache server times out rather than holding the sample", async () => {
+  const r = new Reader();
+  // A query that never answers, standing in for a wedged sccache server. The
+  // deadline also reaches it, which is how the real query kills its child.
+  const given: number[] = [];
+  const wedged = new SccacheCollector(
+    (ms) => {
+      given.push(ms);
+      return new Promise<string>(() => {});
+    },
+    0,
+    300000,
+    5,
+  );
+  const started = Date.now();
+  expect((await wedged.collect(r, 0)).available).toBe(false);
+  expect(Date.now() - started).toBeLessThan(2000);
+  expect(given).toEqual([5]);
+  expect(r.errors.map((e) => e.source)).toEqual(["sccache --show-stats"]);
+  expect(r.errors[0].message).toContain("did not answer within 5 ms");
 });
 
 test("the stats query is not repeated on every sample", async () => {

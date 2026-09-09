@@ -26,6 +26,7 @@ function building(): Snapshot {
     processSnapshot({ pid: 12, build: "ld.mold" }),
     processSnapshot({ pid: 20, build: "cargo" }),
     processSnapshot({ pid: 21, build: "mold" }),
+    // A build outside every watched lane, and a process that is not a build.
     processSnapshot({ pid: 30, build: "cc", group: "/app.slice/make.scope" }),
     processSnapshot({ pid: 31, build: null }),
   ];
@@ -61,11 +62,15 @@ test("linkers are counted and named apart from the compilers in each lane", () =
 
 test("an empty compiler wrapper names the lane that bypasses the cache", () => {
   const s = building();
-  s.procs[0].env = { RUSTC_WRAPPER: "" };
-  s.procs[3].env = { RUSTC_WRAPPER: "/usr/bin/sccache" };
+  const find = (pid: number) => {
+    const p = s.procs.find((x) => x.pid === pid);
+    if (!p) throw new Error("Missing fixture process");
+    return p;
+  };
+  find(10).env = { RUSTC_WRAPPER: "" };
+  find(20).env = { RUSTC_WRAPPER: "/usr/bin/sccache" };
   // An unreadable environment is not evidence of a bypass.
-  s.procs[5].env = { RUSTC_WRAPPER: "" };
-  s.procs[5].envAvailable = false;
+  Object.assign(find(30), { env: { RUSTC_WRAPPER: "" }, envAvailable: false });
   expect(bypassedLanes(s)).toEqual(["lane-a"]);
   const reading: Sccache = {
     available: true,
@@ -104,6 +109,32 @@ test("a make jobserver reports tokens in use against the pool it was given", () 
     { fifo: "/tmp/GMfifo42", total: 16, inUse: 3 },
     { fifo: "/tmp/GMfifo7", total: null, inUse: 1 },
   ]);
+});
+
+test("only the outermost holder of a token pool is counted", () => {
+  const s = building();
+  const flags = " -j4 --jobserver-auth=fifo:/tmp/GMfifo42";
+  const p = (pid: number, ppid: number, build: string | null, env = flags) =>
+    processSnapshot({ pid, ppid, build, env: { MAKEFLAGS: env } });
+  // make -> two cc, and under one of them collect2 -> ld. MAKEFLAGS is
+  // inherited by all of them and only the unclassified collect2 breaks the
+  // chain, so the two compilers hold the pool and the linker does not.
+  s.procs = [
+    p(5, 1, null),
+    p(10, 5, "cc"),
+    p(11, 5, "cc"),
+    p(12, 10, null),
+    p(13, 12, "ld.mold"),
+    // A second pool nested under the first is its own holder.
+    p(14, 10, "cc", " -j2 --jobserver-auth=fifo:/tmp/GMfifo7"),
+  ];
+  const pools = jobservers(s);
+  expect(pools).toEqual([
+    { fifo: "/tmp/GMfifo42", total: 4, inUse: 2 },
+    { fifo: "/tmp/GMfifo7", total: 2, inUse: 1 },
+  ]);
+  for (const pool of pools)
+    expect(pool.inUse).toBeLessThanOrEqual(pool.total ?? 0);
 });
 
 test("a pipe jobserver and a missing environment produce no token pool", () => {

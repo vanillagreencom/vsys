@@ -53,10 +53,7 @@ test("an unread cache says so and a hit rate needs served requests", () => {
     "sccache recently: 0 hits, 0 misses, not available hit rate over 5m",
   );
   expect(lines.join("\n")).not.toContain("?");
-});
-
-test("an empty wrapper adds the bypass note naming the lane", () => {
-  const s = busy();
+  // An empty wrapper adds the bypass note naming the lane.
   s.procs[0].env = { RUSTC_WRAPPER: "" };
   expect(buildLines(s, c).at(-1)).toBe(
     "sccache is bypassed in lane-a: RUSTC_WRAPPER is empty there, so those compilations never reach the cache.",

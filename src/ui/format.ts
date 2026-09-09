@@ -20,13 +20,14 @@ export function percent(n: number | null | undefined): string {
     ? "?"
     : `${n.toFixed(1)}%`;
 }
-export function plural(n: number, one: string, many: string): string {
-  return n === 1 ? one : many;
-}
+export const plural = (n: number, one: string, many: string): string =>
+  n === 1 ? one : many;
 /** A count and its noun, so no line ever reads "1 linkers". */
-export function count(n: number | null, one: string, many = `${one}s`): string {
-  return `${n ?? 0} ${plural(n ?? 0, one, many)}`;
-}
+export const count = (
+  n: number | null,
+  one: string,
+  many = `${one}s`,
+): string => `${n ?? 0} ${plural(n ?? 0, one, many)}`;
 export function age(n: number): string {
   return n < 60
     ? `${Math.floor(n)}s`

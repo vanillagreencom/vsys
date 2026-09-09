@@ -95,7 +95,7 @@ export interface Storage {
   scratchTime?: number | null;
   scratchPending?: boolean;
 }
-/** Counters observed over a window, with the window vsys actually watched. */
+/** Counters observed over the window vsys actually watched. */
 export interface SccacheDelta {
   hits: number;
   misses: number;

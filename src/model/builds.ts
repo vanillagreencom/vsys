@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { Config } from "../config/config";
-import type { Sccache, SccacheDelta, Snapshot } from "./types";
+import type { Proc, Sccache, SccacheDelta, Snapshot } from "./types";
 import { buildLoad } from "./verdict";
 
 /** One row per lane that is building, plus one row for everything outside them. */
@@ -19,12 +19,7 @@ export interface Jobserver {
   total: number | null;
   inUse: number;
 }
-export interface Rates {
-  hits: number;
-  misses: number;
-  rate: number | null;
-  windowMs: number;
-}
+export type Rates = SccacheDelta & { rate: number | null };
 export interface CacheEffect {
   available: boolean;
   sinceStart: Rates | null;
@@ -100,20 +95,47 @@ export function bypassedLanes(s: Snapshot): string[] {
   }
   return [...names].sort();
 }
+/** The token pool a process advertises, or null when it holds none. */
+function jobserverFifo(p: Proc): string | null {
+  if (!p.build || p.envAvailable === false) return null;
+  return /--jobserver-auth=fifo:(\S+)/.exec(p.env.MAKEFLAGS ?? "")?.[1] ?? null;
+}
 /**
- * Token pools read from build process environments. Tokens in use are the
- * build processes holding the pool; the FIFO itself is never opened, because
- * reading it would take a token away from the build.
+ * The closest classified ancestor, found past the unclassified helpers a
+ * compiler puts between itself and its linker. The start-time guard rejects a
+ * reused parent PID and ends any cycle.
+ */
+function buildAncestor(p: Proc, byPid: Map<number, Proc>): Proc | null {
+  const seen = new Set([p.pid]);
+  let child = p;
+  let a = byPid.get(p.ppid);
+  while (a && a.start <= child.start && !seen.has(a.pid)) {
+    if (a.build) return a;
+    seen.add(a.pid);
+    child = a;
+    a = byPid.get(a.ppid);
+  }
+  return null;
+}
+/**
+ * Token pools read from build process environments. The FIFO itself is never
+ * opened, because reading it would take a token away from the build.
+ *
+ * MAKEFLAGS is inherited down the process tree, so a compiler and the linker
+ * it runs advertise one pool twice. Only the outermost holder took a token,
+ * and only it is counted.
  */
 export function jobservers(s: Snapshot): Jobserver[] {
+  const byPid = new Map(s.procs.map((p) => [p.pid, p]));
   const rows = new Map<string, Jobserver>();
   for (const p of s.procs) {
-    if (!p.build || p.envAvailable === false) continue;
-    const flags = p.env.MAKEFLAGS;
-    if (flags === undefined) continue;
-    const fifo = /--jobserver-auth=fifo:(\S+)/.exec(flags)?.[1];
-    if (fifo === undefined) continue;
-    const jobs = /(?:^|\s)(?:-j\s*|--jobs=)(\d+)/.exec(flags)?.[1];
+    const fifo = jobserverFifo(p);
+    if (fifo === null) continue;
+    const ancestor = buildAncestor(p, byPid);
+    if (ancestor !== null && jobserverFifo(ancestor) === fifo) continue;
+    const jobs = /(?:^|\s)(?:-j\s*|--jobs=)(\d+)/.exec(
+      p.env.MAKEFLAGS ?? "",
+    )?.[1];
     const row = rows.get(fifo) ?? { fifo, total: null, inUse: 0 };
     if (row.total === null && jobs !== undefined) row.total = Number(jobs);
     row.inUse++;

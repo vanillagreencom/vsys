@@ -11,14 +11,13 @@ export interface Counters {
  * and adding it would double count.
  */
 export function parseSccacheStats(text: string): Counters | null {
-  const fields = new Map<string, number>();
-  for (const line of text.split("\n")) {
-    const match = /^(Cache (?:hits|misses))\s+(\d+)$/.exec(line.trim());
-    if (match) fields.set(match[1], Number(match[2]));
-  }
-  const hits = fields.get("Cache hits");
-  const misses = fields.get("Cache misses");
-  return hits === undefined || misses === undefined ? null : { hits, misses };
+  const field = (label: string) =>
+    new RegExp(`^${label}[ \\t]+(\\d+)[ \\t]*\\r?$`, "m").exec(text)?.[1];
+  const hits = field("Cache hits");
+  const misses = field("Cache misses");
+  return hits === undefined || misses === undefined
+    ? null
+    : { hits: Number(hits), misses: Number(misses) };
 }
 const unavailable: Sccache = {
   available: false,
@@ -27,11 +26,16 @@ const unavailable: Sccache = {
   sinceStart: null,
   recent: null,
 };
-/** Read-only stats query. A missing binary is an absent feature, not an error. */
-async function showStats(): Promise<string> {
+/**
+ * Read-only stats query. A missing binary is an absent feature, not an error.
+ * The deadline kills the child, because a wedged cache server must not hold
+ * the sample that the dashboard is waiting on.
+ */
+async function showStats(timeoutMs: number): Promise<string> {
   const child = Bun.spawn(["sccache", "--show-stats"], {
     stdout: "pipe",
     stderr: "pipe",
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const [out, error, code] = await Promise.all([
     new Response(child.stdout).text(),
@@ -53,10 +57,30 @@ export class SccacheCollector {
   private reading: Sccache = unavailable;
   private queriedAt: number | null = null;
   constructor(
-    private run: () => Promise<string> = showStats,
+    private run: (timeoutMs: number) => Promise<string> = showStats,
     private minIntervalMs = 5000,
     private windowMs = 300000,
+    private timeoutMs = 2000,
   ) {}
+  /**
+   * The sample awaits this query, so it carries its own deadline whatever the
+   * query does with the one it is given. A timeout is a source error and the
+   * reading falls back to unavailable, rather than a dashboard that stops.
+   */
+  private async query(): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Error(
+      `sccache --show-stats did not answer within ${this.timeoutMs} ms`,
+    );
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(reject, this.timeoutMs, late);
+    });
+    try {
+      return await Promise.race([this.run(this.timeoutMs), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   async collect(r: Reader, time: number): Promise<Sccache> {
     if (
       this.queriedAt !== null &&
@@ -66,7 +90,7 @@ export class SccacheCollector {
       return this.reading;
     let counters: Counters | null = null;
     try {
-      counters = parseSccacheStats(await this.run());
+      counters = parseSccacheStats(await this.query());
       if (counters === null)
         r.error("sccache --show-stats", "Missing cache hit and miss counters");
     } catch (e) {
