@@ -1,12 +1,27 @@
-node_modules/
-dist/
+node_modules
+dist
 *.db
 .env
 .env.local
-__pycache__/
-# Orchestrator scratch state for the current work item.
+.claude/settings.local.json
 tmp/
+docs/roadmaps/
+docs/plans/
+docs/handoff/
+docs/reviews/
+
+# The linear skill's local cache. Bare, not `.cache/`. A trailing-slash
+# pattern matches a real directory but not a symlink pointing at one, and
+# every worktree links this path (WORKTREE_SYMLINKS).
+.cache
+
+# Filled-in local working copies of docs (backed up privately, never committed).
+docs/*-local.md
 
 # kendex: this machine's install ledger — the .agents trees and the
 # links into them are committed, so a clone works without kendex.
 /.kendex-lock.json
+
+# Python bytecode caches, written beside any script this repo runs with python3
+__pycache__/
+*.pyc

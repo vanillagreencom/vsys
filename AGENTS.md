@@ -2,7 +2,7 @@
 
 vsys is a Linux terminal dashboard for agent processes and system health. The application uses Bun, TypeScript, and OpenTUI. Collection reads system state without changing it.
 
-Read `docs/plans/` for the application design. Read `DEVELOPMENT.md` for local validation and CI requirements.
+Read `docs/architecture/overview.md` for the application design. Read `DEVELOPMENT.md` for local validation and CI requirements.
 
 ## Code Review Rules
 
