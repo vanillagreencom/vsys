@@ -27,8 +27,18 @@ export interface Group {
   swapMax: number | null;
   tasks: number | null;
   tasksMax: number | null;
+  /** Page cache charged to this group, from memory.stat. */
+  cache: number | null;
+  /** Bytes read and written since boot, summed over devices, from io.stat. */
+  ioRead: number | null;
+  ioWrite: number | null;
+  /** Bytes per second between the previous sample and this one. */
+  readRate: number | null;
+  writeRate: number | null;
   pressure: Record<string, Pressure | null>;
 }
+/** Every process carries its own role. A terminal pane never lends its role to a child. */
+export type Role = "agent" | "pane" | "helper" | "build" | "other";
 /** Only the selected environment fields leave the process collector. */
 export interface Proc {
   pid: number;
@@ -51,6 +61,7 @@ export interface Proc {
   branch: string | null;
   tool: string | null;
   build: string | null;
+  role: Role;
 }
 /** Filesystem counters stay keyed by filesystem and device. */
 export interface Volume {

@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Config } from "../config/config";
+import { classify, excludedArgv } from "../model/roles";
 import { scopeMain } from "../model/scopes";
 import type { Group, Proc } from "../model/types";
 import { buildKind, toolName } from "./builds";
@@ -149,7 +150,10 @@ export class ProcessCollector {
               ?.slice(3);
           if (group === undefined)
             throw new Error("cgroup v2 membership missing");
-          const tool = toolName(stat.comm, command, c.agentTools);
+          const helper = excludedArgv(command, c.excludeArgv);
+          const tool = helper
+            ? null
+            : toolName(stat.comm, command, c.agentTools);
           // Kernel threads and zombies have no userspace executable or cwd.
           const cwd = command.length ? r.link(`${root}/cwd`) : null;
           const candidate = before.get(stat.pid);
@@ -171,7 +175,8 @@ export class ProcessCollector {
             command,
             group,
             tool,
-            build: buildKind(stat.comm, command),
+            build: helper ? null : buildKind(stat.comm, command),
+            role: "other",
             cwd,
             executable: null,
             branch: null,
@@ -202,18 +207,27 @@ export class ProcessCollector {
         return p ? [p.pid] : [];
       }),
     );
+    for (const p of result) p.role = classify(p, mainPids.has(p.pid), c);
     const allowed = new Set([
       "CLAUDE_CONFIG_DIR",
+      "PATH",
       "TMPDIR",
       "CLAUDE_CODE_TMPDIR",
       "CARGO_BUILD_JOBS",
       "RUST_TEST_THREADS",
       "SHELL",
       c.laneEnv,
+      ...c.capMarkers,
     ]);
-    for (const pid of mainPids) {
+    // An escaped agent is a child of the pane's shell, so its own launch
+    // environment is what the trail needs, not the scope main's.
+    const envPids = new Set([
+      ...mainPids,
+      ...result.filter((p) => p.tool).map((p) => p.pid),
+    ]);
+    for (const pid of envPids) {
       const p = byPid.get(pid);
-      if (!p) throw new Error("Selected scope main process is missing");
+      if (!p) throw new Error("Selected process is missing");
       const cached = this.env.get(pid);
       if (cached?.start === p.start) {
         p.env = cached.values;

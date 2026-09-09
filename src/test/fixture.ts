@@ -48,6 +48,8 @@ export function fixture() {
       "memory.swap.max": "max",
       "pids.current": String(pids.length),
       "pids.max": "max",
+      "io.stat": "259:0 rbytes=1000 wbytes=2000 rios=1 wios=2\n",
+      "memory.stat": "anon 5000\nfile 4000\n",
       "cpu.pressure": psi,
       "memory.pressure": psi,
       "io.pressure": psi,
@@ -159,6 +161,11 @@ export function groupSnapshot(overrides: Partial<Group> = {}): Group {
     swapMax: null,
     tasks: 0,
     tasksMax: null,
+    cache: null,
+    ioRead: null,
+    ioWrite: null,
+    readRate: null,
+    writeRate: null,
     pressure: {},
     ...overrides,
   };
@@ -212,6 +219,7 @@ export function processSnapshot(overrides: Partial<Proc> = {}): Proc {
     branch: "main",
     tool: "claude",
     build: null,
+    role: "agent",
     ...overrides,
   };
 }

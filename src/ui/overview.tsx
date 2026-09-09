@@ -1,99 +1,226 @@
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import { lanePressure } from "../model/lanes";
-import type { Snapshot } from "../model/types";
-import { point } from "../store/point";
+import { launcherTrail } from "../model/launcher";
+import type { Lane, Snapshot } from "../model/types";
+import {
+  desktopSwap,
+  type Level,
+  laneLinkers,
+  meters,
+  sliceGroup,
+  topSwapHolder,
+  topWriter,
+  unconfinedLanes,
+  verdict,
+} from "../model/verdict";
 import { bytes, percent } from "./format";
 import { themePalette } from "./theme";
 
 export interface Attention {
+  /** One identifier per cause. Two lanes with one cause share one card. */
   id: string;
   title: string;
   detail: string;
-  view: "Fleet" | "Storage" | "Alerts" | "Slices";
+  /** What the reader should do next, in words. */
+  next: string;
+  /** Read-only text to copy, built from configured names. */
+  command?: string;
+  view: "Fleet" | "Storage" | "Alerts" | "Slices" | "Builds";
   laneId?: string;
   danger: boolean;
 }
-/** Current observations drive attention; historical rule hits can already be resolved. */
-export function attention(s: Snapshot, c: Config): Attention[] {
+const list = (names: string[], limit = 4): string =>
+  names.length > limit
+    ? `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`
+    : names.join(", ");
+
+/**
+ * Cards are grouped by cause, never by lane. Nine lanes stalling on one
+ * saturated disk produce one card that names all nine.
+ */
+export function attention(
+  s: Snapshot,
+  c: Config,
+  basePath: string[] = (process.env.PATH ?? "").split(":"),
+): Attention[] {
   const items: Attention[] = [];
-  for (const v of s.storage.volumes) {
-    if (v.readOnly)
-      items.push({
-        id: `ro:${v.mount}`,
-        title: `${v.mount} is read-only`,
-        detail: "Programs cannot save changes on this mount.",
-        view: "Storage",
-        danger: true,
-      });
-    if (Object.values(v.delta).some((n) => n > 0))
-      items.push({
-        id: `errors:${v.mount}`,
-        title: `${v.mount}: new device errors`,
-        detail: "Device error counters increased since the previous sample.",
-        view: "Storage",
-        danger: true,
-      });
-  }
-  for (const l of s.lanes) {
-    const problems = [
-      l.dangerous && "low memory limit",
-      l.unconfined && "outside agent slice",
-      (lanePressure(l) ?? 0) > c.pressureAmber && "resource stalls",
-    ].filter(Boolean);
-    if (problems.length)
-      items.push({
-        id: l.id,
-        title: `${l.name}: ${problems.join(", ")}`,
-        detail: l.dangerous
-          ? "The memory limit can stop work. Open the lane to inspect its limits."
-          : l.unconfined
-            ? "Agent slice limits do not apply here. Inspect how this process was launched."
-            : "Tasks are waiting for CPU, memory or storage. Inspect lane pressure.",
-        view: "Fleet",
-        laneId: l.id,
-        danger:
-          l.dangerous || l.unconfined || (lanePressure(l) ?? 0) > c.pressureRed,
-      });
-  }
-  for (const g of s.groups) {
-    if (g.memory !== null && g.high !== null && g.memory >= g.high * 0.9)
-      items.push({
-        id: `high:${g.path}`,
-        title: `${g.name}: near memory threshold`,
-        detail: "Memory reclaim can slow tasks in this group.",
-        view: "Slices",
-        danger: false,
-      });
-  }
-  for (const scrub of s.storage.scrubs)
-    if (scrub.problem)
-      items.push({
-        id: scrub.path,
-        title: "Filesystem scrub needs attention",
-        detail: scrub.path,
-        view: "Storage",
-        danger: true,
-      });
-  for (const scratch of s.storage.scratch)
-    if (scratch.bytes !== null && scratch.bytes > c.scratchQuota)
-      items.push({
-        id: scratch.path,
-        title: "Scratch storage exceeds its quota",
-        detail: `${scratch.path}: ${bytes(scratch.bytes, c)}`,
-        view: "Storage",
-        danger: false,
-      });
-  if (s.errors.length)
+  const only = (lanes: Lane[]) =>
+    lanes.length === 1 ? lanes[0].id : undefined;
+  const escaped = unconfinedLanes(s);
+  if (escaped.length) {
+    const trails = s.procs
+      .filter((p) => p.tool && escaped.some((l) => l.pids.includes(p.pid)))
+      .map((p) => launcherTrail(p, s.procs, c, basePath));
     items.push({
-      id: "sources",
-      title: `${s.errors.length} source reads unavailable`,
-      detail:
-        "Some measurements are missing. Open Alerts to inspect the source errors.",
-      view: "Alerts",
+      id: "unconfined",
+      title: `${escaped.length} ${
+        escaped.length === 1 ? "lane runs" : "lanes run"
+      } outside ${c.agentSlice}: ${list(escaped.map((l) => l.name))}`,
+      detail: trails.length
+        ? trails.map((t) => t.summary).join(" ")
+        : `${c.agentSlice} limits do not apply to these processes.`,
+      next: `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`,
+      command: `systemd-run --user --slice=${c.agentSlice} --scope -- ${
+        escaped[0].tool || "AGENT"
+      }`,
+      view: "Fleet",
+      laneId: only(escaped),
+      danger: true,
+    });
+  }
+  const io = s.system.pressure.io?.some ?? null;
+  const writer = topWriter(s.groups);
+  if (io !== null && io > c.pressureAmber && writer) {
+    const lane = s.lanes.find((l) => l.id === writer.path);
+    const linkers = lane ? laneLinkers(s, lane, c) : 0;
+    items.push({
+      id: "disk",
+      title: `Disk saturated: ${lane?.name ?? writer.name} writing ${bytes(
+        writer.writeRate,
+        c,
+      )}/s`,
+      detail: `Tasks stalled on storage ${percent(io)} of the recent window${
+        linkers ? `, with ${linkers} linkers running in that lane` : ""
+      }.`,
+      next: "Lower the build job count for that lane until the stall percentage falls.",
+      command: `cat ${c.cgroupRoot}/${writer.path}/io.stat`,
+      view: lane ? "Fleet" : "Slices",
+      laneId: lane?.id,
+      danger: io > c.pressureRed,
+    });
+  }
+  const swap = desktopSwap(s.groups, c);
+  if (swap !== null && swap > c.swapFloor) {
+    const holder = topSwapHolder(s.groups, c);
+    const cache = sliceGroup(s.groups, c.agentSlice)?.cache ?? null;
+    items.push({
+      id: "desktop-swap",
+      title: `Desktop swapped out: ${bytes(swap, c)} in ${c.desktopSlice}`,
+      detail: `${
+        holder ? `${holder.name} holds ${bytes(holder.swap, c)}. ` : ""
+      }Agents hold ${bytes(cache, c)} of page cache, which the desktop cannot use.`,
+      next: "Reduce concurrent build work, or cap the agent slice memory so the desktop keeps its pages.",
+      command: `cat ${c.cgroupRoot}/${c.agentSlice}/memory.stat`,
+      view: "Slices",
+      danger: true,
+    });
+  }
+  const capped = s.lanes.filter((l) => l.dangerous);
+  if (capped.length)
+    items.push({
+      id: "memory-cap",
+      title: `${capped.length} ${
+        capped.length === 1 ? "lane has" : "lanes have"
+      } a memory limit below ${bytes(c.memoryFloor, c)}: ${list(
+        capped.map((l) => l.name),
+      )}`,
+      detail: "The limit can stop work before it finishes.",
+      next: "Open the lane and check its effective memory.max against the parent slices.",
+      command: `systemctl --user show ${c.agentSlice} -p MemoryMax`,
+      view: "Fleet",
+      laneId: only(capped),
+      danger: true,
+    });
+  const stalling = s.lanes.filter(
+    (l) => (lanePressure(l) ?? 0) > c.pressureAmber,
+  );
+  if (stalling.length)
+    items.push({
+      id: "stalls",
+      title: `${stalling.length} ${
+        stalling.length === 1 ? "lane is" : "lanes are"
+      } stalling on a resource: ${list(stalling.map((l) => l.name))}`,
+      detail: `Highest stall share ${percent(
+        Math.max(...stalling.map((l) => lanePressure(l) ?? 0)),
+      )} of the recent window.`,
+      next: "Open Fleet and compare the CPU, memory and I/O pressure columns to find which resource is short.",
+      view: "Fleet",
+      laneId: only(stalling),
+      danger: stalling.some((l) => (lanePressure(l) ?? 0) > c.pressureRed),
+    });
+  const near = s.groups.filter(
+    (g) => g.memory !== null && g.high !== null && g.memory >= g.high * 0.9,
+  );
+  if (near.length)
+    items.push({
+      id: "memory-high",
+      title: `${near.length} ${
+        near.length === 1 ? "group is" : "groups are"
+      } near the memory threshold: ${list(near.map((g) => g.name))}`,
+      detail: "Memory reclaim can slow every task in these groups.",
+      next: "Open Slices and raise memory.high, or reduce the work running there.",
+      view: "Slices",
+      danger: false,
+    });
+  const readOnly = s.storage.volumes.filter((v) => v.readOnly);
+  if (readOnly.length)
+    items.push({
+      id: "read-only",
+      title: `${readOnly.length} ${
+        readOnly.length === 1 ? "mount is" : "mounts are"
+      } read-only: ${list(readOnly.map((v) => v.mount))}`,
+      detail: "Programs cannot save changes on these mounts.",
+      next: "Open Storage, then check the kernel log for the error that forced the mount read-only.",
+      view: "Storage",
+      danger: true,
+    });
+  const failing = s.storage.volumes.filter((v) =>
+    Object.values(v.delta).some((n) => n > 0),
+  );
+  if (failing.length)
+    items.push({
+      id: "device-errors",
+      title: `New device errors on ${list(failing.map((v) => v.mount))}`,
+      detail: "Device error counters increased since the previous sample.",
+      next: "Open Storage and read the per-device counters before writing more data to these devices.",
+      view: "Storage",
+      danger: true,
+    });
+  const scrubs = s.storage.scrubs.filter((scrub) => scrub.problem);
+  if (scrubs.length)
+    items.push({
+      id: "scrub",
+      title: `${scrubs.length} filesystem ${
+        scrubs.length === 1
+          ? "scrub reports a problem"
+          : "scrubs report problems"
+      }`,
+      detail: list(scrubs.map((scrub) => scrub.path)),
+      next: "Open Storage and read the scrub report.",
+      view: "Storage",
+      danger: true,
+    });
+  const large = s.storage.scratch.filter(
+    (scratch) => scratch.bytes !== null && scratch.bytes > c.scratchQuota,
+  );
+  if (large.length)
+    items.push({
+      id: "scratch",
+      title: `${large.length} scratch ${
+        large.length === 1 ? "directory exceeds" : "directories exceed"
+      } the quota: ${list(large.map((scratch) => scratch.path))}`,
+      detail: `Largest ${bytes(
+        Math.max(...large.map((scratch) => scratch.bytes ?? 0)),
+        c,
+      )} against a quota of ${bytes(c.scratchQuota, c)}.`,
+      next: "Open Storage and remove the scratch directories that finished work no longer needs.",
+      view: "Storage",
       danger: false,
     });
   return items.sort((a, b) => Number(b.danger) - Number(a.danger));
+}
+/**
+ * A source vsys cannot read is a vsys problem, not a system problem. It belongs
+ * in a footer, counted once per source rather than once per failed read.
+ */
+export function sourceFooter(s: Snapshot): string | null {
+  const sources = new Set(s.errors.map((e) => e.source));
+  return sources.size
+    ? `vsys cannot read ${sources.size} ${
+        sources.size === 1 ? "source" : "sources"
+      }; open Settings`
+    : null;
 }
 
 export function Overview({
@@ -110,11 +237,18 @@ export function Overview({
   onOpen: (item: Attention) => void;
 }) {
   const palette = themePalette(c.theme);
-  const p = point(s, c);
-  const builds = s.procs.filter((proc) => proc.build);
-  const leastFree = s.storage.volumes
-    .filter((v) => v.free !== null)
-    .sort((a, b) => (a.free ?? 0) - (b.free ?? 0))[0];
+  const colour = (level: Level) =>
+    level === "danger"
+      ? palette.danger
+      : level === "warn"
+        ? palette.warning
+        : palette.fg;
+  const state = verdict(s, c);
+  const gauges = meters(s, c, {
+    bytes: (n) => bytes(n, c),
+    percent,
+  });
+  const footer = sourceFooter(s);
   const row = (text: string) => (
     <text flexShrink={0} fg={palette.fg} wrapMode="word">
       {safe(text)}
@@ -123,10 +257,36 @@ export function Overview({
   return (
     <box flexDirection="column" flexShrink={0} gap={1}>
       <box flexDirection="column" flexShrink={0}>
+        <text
+          flexShrink={0}
+          wrapMode="word"
+          fg={colour(state.level)}
+          attributes={palette.selection}
+        >
+          {safe(state.headline)}
+        </text>
+        {row(state.detail)}
         {row("Overview: current system state")}
-        {row(
-          `${s.lanes.length} lanes | ${s.procs.filter((proc) => proc.tool).length} agent processes | ${builds.length} build processes`,
-        )}
+      </box>
+      <box
+        flexDirection="column"
+        flexShrink={0}
+        border
+        borderColor={palette.fg}
+        title="Resource use"
+        paddingX={1}
+      >
+        {gauges.map((meter) => (
+          <text
+            key={meter.id}
+            flexShrink={0}
+            wrapMode="word"
+            fg={colour(meter.level)}
+          >
+            {safe(`${meter.label}: ${meter.value} | ${meter.who}`)}
+          </text>
+        ))}
+        {row("CPU 100% = one busy core. Threads can be idle.")}
       </box>
       <box flexDirection="column" flexShrink={0}>
         {row(`Needs attention now${items.length ? ` (${items.length})` : ""}`)}
@@ -151,37 +311,11 @@ export function Overview({
               {safe(`${i === selected ? ">" : " "} ${item.title}`)}
             </text>
             {row(`  ${item.detail}`)}
+            {row(`  Next: ${item.next}`)}
+            {item.command !== undefined && row(`  Copy: ${item.command}`)}
             {row(`  Open ${item.laneId ? "lane" : item.view.toLowerCase()} >`)}
           </box>
         ))}
-      </box>
-      <box
-        flexDirection="column"
-        flexShrink={0}
-        border
-        borderColor={palette.fg}
-        title="Resource use"
-        paddingX={1}
-      >
-        {row(
-          `CPU: agents ${percent(p.agents)} | desktop ${percent(p.desktop)}`,
-        )}
-        {row(
-          `Memory: ${bytes(p.memory, c)} used / ${bytes(s.system.memory.MemTotal, c)} total`,
-        )}
-        {row(
-          `Build work: ${builds.reduce((n, proc) => n + proc.threads, 0)} threads / ${s.system.cores} CPU cores`,
-        )}
-        {row("CPU 100% = one busy core. Threads can be idle.")}
-        {row(
-          s.storage.mountsAvailable === false
-            ? "Storage: mount information unavailable"
-            : leastFree
-              ? `Least free storage: ${bytes(leastFree.free, c)} at ${leastFree.mount}`
-              : s.storage.volumes.length
-                ? "Storage: free space unavailable"
-                : "No watched Btrfs filesystems on this host.",
-        )}
       </box>
       <box flexDirection="column" flexShrink={0}>
         {row("Find an answer")}
@@ -198,6 +332,7 @@ export function Overview({
           row(
             "Scratch measurement is in progress; other data continues to refresh.",
           )}
+        {footer !== null && row(footer)}
       </box>
     </box>
   );

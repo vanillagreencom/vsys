@@ -7,6 +7,10 @@ Each sample contains observed values and source errors. A failed read must remai
 - Scope: a systemd cgroup whose name ends in `.scope`.
 - Lane: a watched scope or a group with an agent or resource alarm.
 - Escaped agent: a configured agent tool outside the configured agent slice.
+- Role: what one process is. Agent, terminal pane, excluded helper, build job, or other. A pane never lends its role to a child.
+- Verdict: the single line naming the state of the machine for the person at the keyboard.
+- Cause: what one attention card reports. Every lane with the same cause shares one card.
+- Launcher trail: the ancestors, cgroup, confinement markers and PATH prefix of an escaped agent.
 - CPU percent: utilization in units of one logical core.
 - Pressure: the recent percentage of time that tasks stalled on a resource.
 - Pinned Fleet: the recorded sample selected by the timeline cursor.
@@ -17,13 +21,23 @@ Each sample contains observed values and source errors. A failed read must remai
 - Collectors depend on source files and typed configuration. They do not import the UI or write kernel state.
 - Scratch traversal runs as a cooperative background task during interactive collection. Snapshots carry its measurement time and pending state. Scripted collection waits for a complete scan.
 - The mount parser owns mount roots and path escaping for cgroup and filesystem collection.
-- The model derives lanes and alert transitions. Desktop notifications require per-rule configuration.
+- The model derives lanes, roles, the verdict, the meters and alert transitions. Desktop notifications require per-rule configuration.
+- Every host-specific name the Overview needs is configuration: agent and desktop slices, excluded argv patterns, confinement cap markers, pane scope prefixes and linker names.
 - The runtime owns collection, history, and settings changes for a running dashboard.
 - The history store owns application persistence. The collector does not depend on SQLite.
 - The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane.
 
 ## Invariants
 
+- An excluded argv pattern removes a process from agent and build classification. `src/collect/collector.test.ts` checks the Chrome native messaging host.
+- Roles are decided per process. `src/model/roles.test.ts` and `src/collect/collector.test.ts` check a pane shell against the agent inside it.
+- The environment of an escaped agent is read from that agent, not from its scope's main process. `src/collect/collector.test.ts` checks an agent child of a pane shell.
+- Confinement markers with the wrong cgroup mean a shadowed launcher; their absence means a bare launch. `src/model/launcher.test.ts` checks both and an unreadable environment.
+- An unconfined agent outranks every slowness verdict. `src/model/verdict.test.ts` checks the ranking and missing pressure data.
+- A parent slice never becomes the top writer or the top swap holder. `src/model/verdict.test.ts` checks nested groups.
+- One cause produces one attention card, whatever the number of lanes. `src/ui/overview.test.ts` checks nine stalling lanes.
+- Source read failures are counted once per source and stay out of attention. `src/ui/overview.test.ts` checks the footer.
+- Invalid io.stat counters stay unknown rather than becoming a zero write rate. `src/collect/collector.test.ts` plants an invalid counter.
 - Process environment caching uses PID and start time. `src/collect/collector.test.ts` exercises PID reuse and environment selection.
 - Scope launch metadata belongs to the scope's main process. `src/collect/collector.test.ts` checks a wrapper with an agent child.
 - When a PID appears in sibling scope lists, its process membership file selects the row. `src/collect/collector.test.ts` checks that fallback.

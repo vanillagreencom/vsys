@@ -53,7 +53,12 @@ export interface Config {
   agentSlice: string;
   desktopSlice: string;
   agentTools: string[];
+  excludeArgv: string[];
+  capMarkers: string[];
+  paneScopePrefixes: string[];
+  linkerNames: string[];
   memoryFloor: number;
+  swapFloor: number;
   pressureAmber: number;
   pressureRed: number;
   pressureHoldSeconds: number;
@@ -99,7 +104,21 @@ export function defaults(): Config {
       "crush",
       "dsh",
     ],
+    excludeArgv: [
+      "--chrome-native-host",
+      "--type=renderer",
+      "--type=gpu-process",
+      "--type=utility",
+      "--type=zygote",
+      "rust-analyzer",
+      "typescript-language-server",
+      "language-server",
+    ],
+    capMarkers: ["RUST_TEST_THREADS", "CARGO_BUILD_JOBS"],
+    paneScopePrefixes: ["tmux-spawn-"],
+    linkerNames: ["ld", "lld", "ld.lld", "mold", "ld.mold"],
     memoryFloor: 1073741824,
+    swapFloor: 536870912,
     pressureAmber: 10,
     pressureRed: 25,
     pressureHoldSeconds: 10,
@@ -179,6 +198,7 @@ export function validate(value: unknown): Config {
     "refreshMs",
     "historyHours",
     "memoryFloor",
+    "swapFloor",
     "pressureAmber",
     "pressureRed",
     "pressureHoldSeconds",

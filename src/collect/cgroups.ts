@@ -2,6 +2,44 @@ import { dirname, join, relative } from "node:path";
 import type { Group } from "../model/types";
 import { pairs, pressure, type Reader } from "./io";
 
+/** io.stat has one line per device; the group's cost is their sum. */
+export function ioTotals(text: string): { read: number; write: number } | null {
+  let read = 0;
+  let write = 0;
+  let seen = false;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    const fields = line.trim().split(/\s+/).slice(1);
+    for (const field of fields) {
+      const [key, raw] = field.split("=");
+      if (key !== "rbytes" && key !== "wbytes") continue;
+      if (!/^\d+$/.test(raw ?? "")) throw new Error("Invalid io.stat counter");
+      seen = true;
+      if (key === "rbytes") read += Number(raw);
+      else write += Number(raw);
+    }
+  }
+  return seen ? { read, write } : null;
+}
+/** memory.stat charges page cache to the group that faulted it in. */
+export function pageCache(text: string): number | null {
+  const match = text.match(/^file (\d+)$/m);
+  return match ? Number(match[1]) : null;
+}
+function rate(
+  now: number | null,
+  before: number | null | undefined,
+  elapsedMs: number,
+): number | null {
+  return now === null ||
+    before === null ||
+    before === undefined ||
+    elapsedMs <= 0 ||
+    now < before
+    ? null
+    : ((now - before) * 1000) / elapsedMs;
+}
+
 /** Walk every child so escaped scopes in other user slices remain visible. */
 export function collectGroups(
   r: Reader,
@@ -33,6 +71,16 @@ export function collectGroups(
             }
           }),
         );
+        const ioRaw = r.text(join(path, "io.stat"), true);
+        let io: { read: number; write: number } | null = null;
+        if (ioRaw !== null) {
+          try {
+            io = ioTotals(ioRaw);
+          } catch (e) {
+            r.error(join(path, "io.stat"), e);
+          }
+        }
+        const memRaw = r.text(join(path, "memory.stat"), true);
         const members = pids ? pids.split(/\s+/).map(Number) : [];
         if (members.some((p) => !Number.isInteger(p) || p <= 0))
           throw new Error("Invalid cgroup process ID");
@@ -58,6 +106,11 @@ export function collectGroups(
           swapMax: r.number(join(path, "memory.swap.max"), true),
           tasks: r.number(join(path, "pids.current"), true),
           tasksMax: r.number(join(path, "pids.max"), true),
+          cache: memRaw === null ? null : pageCache(memRaw),
+          ioRead: io ? io.read : null,
+          ioWrite: io ? io.write : null,
+          readRate: rate(io ? io.read : null, old?.ioRead, elapsedMs),
+          writeRate: rate(io ? io.write : null, old?.ioWrite, elapsedMs),
           pressure: psi,
         });
       } catch (e) {

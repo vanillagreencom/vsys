@@ -7,7 +7,9 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 ## Boundaries
 
 - `mountScreen` owns the React root and the subscription between collection and display. It mounts once and unmounts on shutdown.
-- Overview derives current concerns from observed values. Alert history can contain resolved events and cannot define current health.
+- Overview derives the verdict, four meters and current concerns from observed values. Alert history can contain resolved events and cannot define current health.
+- Attention cards are grouped by cause. Each card names its subjects, a next step, and where possible a read-only command built from configured names.
+- Sources vsys cannot read appear in a footer line, never as an attention card.
 - Fleet owns selection and vertical paging. The scroll box owns horizontal table scrolling. Other detail views use native vertical scrolling.
 - The UI opens views and exports evidence. It does not control observed processes or their terminal sessions.
 
@@ -19,6 +21,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Overview keeps the selected concern visible. `src/ui/App.test.tsx` checks a long list in a small terminal and opening the selected lane.
 - Search filters names, accounts, worktrees, branches and tools. `src/ui/App.test.tsx` checks a worktree search and clearing the filter.
 - A recorded event alone does not become a current concern. `src/ui/overview.test.ts` checks resolved events and missing source data.
+- No attention text is repeated. `src/ui/overview.test.ts` and `src/ui/App.test.tsx` check unique card titles across every cause.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
 
 ## Framework constraint

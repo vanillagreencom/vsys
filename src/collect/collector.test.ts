@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { launcherTrail } from "../model/launcher";
+import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
 import { buildKind, toolName } from "./builds";
 import { Collector } from "./collector";
@@ -54,13 +56,21 @@ test("scope CPU, memory, environment and process identity survive sampling", asy
   expect(reused.procs[0].cpuPercent).toBeNull();
   expect(reused.lanes[0].account).toBe("new");
 });
-test("only scope main process environment is collected", async () => {
+test("environment is collected for scope mains and agents, not other children", async () => {
   const f = setup();
-  f.group("agents.slice/a.scope", [40, 41]);
+  f.group("agents.slice/a.scope", [40, 41, 42]);
   f.proc(40, "agents.slice/a.scope");
-  f.proc(41, "agents.slice/a.scope", { env: "TMPDIR=/private\0", parent: 40 });
+  f.proc(41, "agents.slice/a.scope", {
+    command: ["/bin/cat"],
+    comm: "cat",
+    env: "TMPDIR=/private\0",
+    parent: 40,
+  });
+  // The launcher trail needs the agent's own caps, so an agent child is read.
+  f.proc(42, "agents.slice/a.scope", { env: "TMPDIR=/agent\0", parent: 40 });
   const s = await new Collector(f.config, 100, 4096).sample();
   expect(s.procs.find((p) => p.pid === 41)?.env).toEqual({});
+  expect(s.procs.find((p) => p.pid === 42)?.env).toEqual({ TMPDIR: "/agent" });
 });
 test("a scope wrapper owns launch metadata even when an agent is its child", async () => {
   const f = setup();
@@ -228,4 +238,88 @@ test("an unreadable environment is not labelled as the default account", async (
   const s = await new Collector(f.config, 100, 4096).sample();
   expect(s.lanes[0].account).toBe("?");
   expect(s.procs[0].envAvailable).toBe(false);
+});
+test("io.stat and memory.stat give byte totals, write rates and page cache", async () => {
+  const f = setup();
+  f.group("agents.slice/a.scope", [40]);
+  f.proc(40, "agents.slice/a.scope");
+  const path = join(f.config.cgroupRoot, "agents.slice/a.scope");
+  f.write(
+    join(path, "io.stat"),
+    "259:0 rbytes=100 wbytes=200\n8:0 rbytes=1 wbytes=2\n",
+  );
+  f.write(join(path, "memory.stat"), "anon 5\nfile 4096\nslab 1\n");
+  const collector = new Collector(f.config, 100, 4096);
+  const a = await collector.sample(1000);
+  const first = a.groups.find((g) => g.path === "agents.slice/a.scope");
+  expect(first).toMatchObject({ ioRead: 101, ioWrite: 202, cache: 4096 });
+  // The first sample has no earlier counter, so a rate is unknown, not zero.
+  expect(first?.writeRate).toBeNull();
+  f.write(
+    join(path, "io.stat"),
+    "259:0 rbytes=100 wbytes=1200\n8:0 rbytes=1 wbytes=2\n",
+  );
+  const b = await collector.sample(2000);
+  const second = b.groups.find((g) => g.path === "agents.slice/a.scope");
+  expect(second?.writeRate).toBe(1000);
+  expect(second?.readRate).toBe(0);
+});
+test("an invalid io.stat counter is a source error, not a measured zero", async () => {
+  const f = setup();
+  f.group("agents.slice/a.scope", [40]);
+  f.proc(40, "agents.slice/a.scope");
+  const file = join(f.config.cgroupRoot, "agents.slice/a.scope/io.stat");
+  f.write(file, "259:0 rbytes=x wbytes=200\n");
+  const s = await new Collector(f.config, 100, 4096).sample();
+  expect(
+    s.groups.find((g) => g.path === "agents.slice/a.scope")?.ioWrite,
+  ).toBeNull();
+  expect(s.errors.map((e) => e.source)).toContain(file);
+});
+test("an excluded tool process is neither a lane nor an unconfined alert", async () => {
+  const f = setup();
+  f.proc(40, "app.slice/chrome.scope", {
+    command: ["/usr/bin/claude", "--chrome-native-host"],
+  });
+  const s = await new Collector(f.config, 100, 4096).sample();
+  const host = s.procs.find((p) => p.pid === 40);
+  expect(host?.tool).toBeNull();
+  expect(host?.role).toBe("helper");
+  expect(s.lanes).toEqual([]);
+  expect(s.alerts).toEqual([]);
+});
+test("a pane shell and the agent inside it get their own roles", async () => {
+  const f = setup();
+  f.group("app.slice/tmux-spawn-4.scope", [50, 51]);
+  f.proc(50, "app.slice/tmux-spawn-4.scope", {
+    command: ["/bin/bash"],
+    comm: "bash",
+  });
+  f.proc(51, "app.slice/tmux-spawn-4.scope", { parent: 50 });
+  const s = await new Collector(f.config, 100, 4096).sample();
+  expect(s.procs.find((p) => p.pid === 50)?.role).toBe("pane");
+  expect(s.procs.find((p) => p.pid === 51)?.role).toBe("agent");
+  // The lane is unconfined because the agent, not the pane, is outside the slice.
+  expect(s.lanes.map((l) => l.unconfined)).toEqual([true]);
+});
+test("an escaped agent's own environment reaches the launcher trail", async () => {
+  const f = setup();
+  f.group("app.slice/tmux-spawn-4.scope", [50, 51]);
+  f.proc(50, "app.slice/tmux-spawn-4.scope", {
+    command: ["/bin/bash"],
+    comm: "bash",
+  });
+  f.proc(51, "app.slice/tmux-spawn-4.scope", {
+    parent: 50,
+    env: "CARGO_BUILD_JOBS=16\0PATH=/shadow/bin:/usr/bin\0",
+  });
+  const s = await new Collector(f.config, 100, 4096).sample();
+  const agent = s.procs.find((p) => p.pid === 51);
+  expect(agent?.env).toEqual({
+    CARGO_BUILD_JOBS: "16",
+    PATH: "/shadow/bin:/usr/bin",
+  });
+  const trail = launcherTrail(agent as Proc, s.procs, f.config, ["/usr/bin"]);
+  expect(trail.conclusion).toBe("shadowed");
+  expect(trail.pathPrefix).toEqual(["/shadow/bin"]);
 });
