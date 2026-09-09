@@ -40,7 +40,7 @@ export const settingLabels: Record<string, string> = {
   scrubDir: "Scrub report directory",
   smartDir: "SMART report directory",
   columns: "Table columns in display order",
-  sort: "Fleet sort column",
+  sort: "Agents sort column",
   descending: "Sort largest first",
   sparkline: "Chart style",
   units: "Storage units",

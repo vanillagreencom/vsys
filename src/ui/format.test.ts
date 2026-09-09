@@ -15,7 +15,7 @@ import {
   timeBuckets,
 } from "./format";
 
-test("every Fleet column sorts both ways independently of lane identity", () => {
+test("every Agents column sorts both ways independently of lane identity", () => {
   for (const column of columns) {
     const numeric =
       typeof laneSnapshot()[column] === "number" ||
