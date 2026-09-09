@@ -1,8 +1,58 @@
 # vsys-view
 
-Terminal dashboard for an agent fleet on Linux: who is using the CPU, which
-lanes are starved, which agent processes escaped their resource slice, what is
-building, and whether the disks are healthy. Observes only; never changes
-anything.
+vsys-view is a Linux terminal dashboard for people who run AI agents. It shows which work needs attention, where resources go, and what happened before a problem.
 
-Built on OpenTUI (Bun + TypeScript + Zig renderer). Plan: `docs/plans/`.
+## Install
+
+Run these commands from the repository:
+
+```sh
+bun install
+bun run start
+```
+
+The project includes its Bun runtime. The system Bun installation stays separate.
+
+## Features
+
+- Overview of current problems, CPU use, memory, build work and storage.
+- Searchable Fleet summaries with an optional full table.
+- Lane details with memory limits, resource history and process ancestry.
+- Resource groups, build activity, Btrfs health and scratch measurements.
+- Recorded alerts and a timeline that can show Fleet at a past sample.
+- Editable settings, mouse navigation and incident exports.
+
+## How it works
+
+Start with Overview and select an item under Needs attention now to inspect its cause. Open Fleet to find a lane by name, account, branch or worktree. Open a lane to compare resource use with its limits. Use Timeline and Alerts to investigate past events; Overview shows current observations. A partial-data notice means some sources could not be read.
+
+The collector reads system files with your permissions. Application writes are limited to settings, optional history and requested exports. Desktop notifications require an enabled rule.
+
+## Controls
+
+These are the default keys. The footer shows controls for the current screen.
+
+| Action | Key |
+| --- | --- |
+| Open Overview | `0` |
+| Open Fleet | `1` |
+| Select a lane or concern | Up / Down |
+| Inspect the selection | Enter |
+| Find a lane in Fleet | `/` |
+| Apply search / clear search | Enter / Esc while searching |
+| Switch Fleet summary / full table | `d` |
+| Choose table columns | `c` |
+| Open Settings | `,` |
+| Quit the dashboard | `q` or Ctrl+C |
+
+## Settings
+
+Settings are stored in `~/.config/vsys-view/config.toml`. The menu controls watched slices, paths, thresholds, table columns, colours, units and keys. CPU use is measured per core; the Overview explains the scale.
+
+History persistence is off by default. Enable it to replay incidents after a restart. A retention warning means the in-memory budget cannot hold the selected window.
+
+Scratch scans run separately from live refresh. Storage shows the measurement time and scan state. Scripted snapshots wait for the scan to finish. Use `bun run start -- --help` for export and scripting options.
+
+## Development
+
+See [Development](DEVELOPMENT.md) for validation, [UI behaviour](docs/architecture/ui.md) for rendering constraints, and [plan coverage](docs/architecture/plan-coverage.md) for verification references.
