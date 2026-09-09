@@ -8,7 +8,7 @@ The [application plan](../plans/2026-09-06-vsys-view-plan.md) defines the collec
 
 | Screen | Behaviour | Verification |
 | --- | --- | --- |
-| Overview | Current concerns with direct inspection; resource and storage summaries; missing-data notices | `src/ui/overview.test.ts`, `src/ui/App.test.tsx` |
+| Overview | One ranked cause ladder: its first element is the verdict line, every element is a card with a next step and a copyable command; four meters that each name their biggest consumer; unreadable sources in a footer | `src/model/verdict.test.ts`, `src/model/launcher.test.ts`, `src/ui/overview.test.ts`, `src/ui/App.test.tsx` |
 | Fleet | Searchable lane summaries; optional full table with sorting, column visibility and order; resource and limit colours | Collector fixtures, `src/ui/format.test.ts`, `src/ui/screen.test.tsx`, `src/ui/theme.test.tsx` |
 | Lane | Resource use and effective memory limit; complete lane history; launch environment, process tree and live scratch descriptors | Collector fixtures, `src/model/lanes.test.ts`, `src/store/lane-series.test.ts`, rendered navigation test |
 | Slices | Cgroup tree, sibling CPU weight share, quotas, memory, swap, task limits and pressure | Typed source fixtures and rendered navigation test |

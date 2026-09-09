@@ -27,6 +27,12 @@ export interface Group {
   swapMax: number | null;
   tasks: number | null;
   tasksMax: number | null;
+  /** Page cache from memory.stat; io.stat totals since boot and their rates. */
+  cache: number | null;
+  ioRead: number | null;
+  ioWrite: number | null;
+  readRate: number | null;
+  writeRate: number | null;
   pressure: Record<string, Pressure | null>;
 }
 /** Only the selected environment fields leave the process collector. */

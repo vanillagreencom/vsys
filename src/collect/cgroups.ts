@@ -2,6 +2,28 @@ import { dirname, join, relative } from "node:path";
 import type { Group } from "../model/types";
 import { pairs, pressure, type Reader } from "./io";
 
+/** io.stat has one line per device; the group's cost is their sum. */
+function ioTotals(text: string): { read: number; write: number } | null {
+  const totals = { read: 0, write: 0 };
+  let seen = false;
+  for (const [, key, raw] of text.matchAll(/\b(rbytes|wbytes)=(\S+)/g)) {
+    if (!/^\d+$/.test(raw)) throw new Error("Invalid io.stat counter");
+    seen = true;
+    totals[key === "rbytes" ? "read" : "write"] += Number(raw);
+  }
+  return seen ? totals : null;
+}
+function rate(
+  now: number | null,
+  before: number | null | undefined,
+  elapsedMs: number,
+): number | null {
+  const known = now !== null && before !== null && before !== undefined;
+  return known && elapsedMs > 0 && now >= before
+    ? ((now - before) * 1000) / elapsedMs
+    : null;
+}
+
 /** Walk every child so escaped scopes in other user slices remain visible. */
 export function collectGroups(
   r: Reader,
@@ -33,6 +55,19 @@ export function collectGroups(
             }
           }),
         );
+        const ioRaw = r.text(join(path, "io.stat"), true);
+        let io: { read: number; write: number } | null = null;
+        if (ioRaw !== null) {
+          try {
+            io = ioTotals(ioRaw);
+          } catch (e) {
+            r.error(join(path, "io.stat"), e);
+          }
+        }
+        // memory.stat charges page cache to the group that faulted it in.
+        const file = r
+          .text(join(path, "memory.stat"), true)
+          ?.match(/^file (\d+)$/m)?.[1];
         const members = pids ? pids.split(/\s+/).map(Number) : [];
         if (members.some((p) => !Number.isInteger(p) || p <= 0))
           throw new Error("Invalid cgroup process ID");
@@ -58,6 +93,11 @@ export function collectGroups(
           swapMax: r.number(join(path, "memory.swap.max"), true),
           tasks: r.number(join(path, "pids.current"), true),
           tasksMax: r.number(join(path, "pids.max"), true),
+          cache: file === undefined ? null : Number(file),
+          ioRead: io ? io.read : null,
+          ioWrite: io ? io.write : null,
+          readRate: rate(io ? io.read : null, old?.ioRead, elapsedMs),
+          writeRate: rate(io ? io.write : null, old?.ioWrite, elapsedMs),
           pressure: psi,
         });
       } catch (e) {

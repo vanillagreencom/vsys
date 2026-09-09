@@ -53,7 +53,12 @@ export interface Config {
   agentSlice: string;
   desktopSlice: string;
   agentTools: string[];
+  excludeArgv: string[];
+  capMarkers: string[];
+  linkerNames: string[];
   memoryFloor: number;
+  swapFloor: number;
+  freeFloor: number;
   pressureAmber: number;
   pressureRed: number;
   pressureHoldSeconds: number;
@@ -99,7 +104,28 @@ export function defaults(): Config {
       "crush",
       "dsh",
     ],
+    excludeArgv: [
+      "--chrome-native-host",
+      "--type=renderer",
+      "--type=gpu-process",
+      "--type=utility",
+      "--type=zygote",
+      "rust-analyzer",
+      "typescript-language-server",
+    ],
+    capMarkers: ["RUST_TEST_THREADS", "CARGO_BUILD_JOBS"],
+    linkerNames: [
+      "ld",
+      "lld",
+      "ld.lld",
+      "mold",
+      "ld.mold",
+      "ld.gold",
+      "ld.bfd",
+    ],
     memoryFloor: 1073741824,
+    swapFloor: 536870912,
+    freeFloor: 5368709120,
     pressureAmber: 10,
     pressureRed: 25,
     pressureHoldSeconds: 10,
@@ -179,6 +205,8 @@ export function validate(value: unknown): Config {
     "refreshMs",
     "historyHours",
     "memoryFloor",
+    "swapFloor",
+    "freeFloor",
     "pressureAmber",
     "pressureRed",
     "pressureHoldSeconds",

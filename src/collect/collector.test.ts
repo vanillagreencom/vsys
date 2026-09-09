@@ -1,6 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { defaults } from "../config/config";
+import { launcherTrail } from "../model/launcher";
+import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
 import { buildKind, toolName } from "./builds";
 import { Collector } from "./collector";
@@ -54,13 +57,21 @@ test("scope CPU, memory, environment and process identity survive sampling", asy
   expect(reused.procs[0].cpuPercent).toBeNull();
   expect(reused.lanes[0].account).toBe("new");
 });
-test("only scope main process environment is collected", async () => {
+test("environment is collected for scope mains and agents, not other children", async () => {
   const f = setup();
-  f.group("agents.slice/a.scope", [40, 41]);
+  f.group("agents.slice/a.scope", [40, 41, 42]);
   f.proc(40, "agents.slice/a.scope");
-  f.proc(41, "agents.slice/a.scope", { env: "TMPDIR=/private\0", parent: 40 });
+  f.proc(41, "agents.slice/a.scope", {
+    command: ["/bin/cat"],
+    comm: "cat",
+    env: "TMPDIR=/private\0",
+    parent: 40,
+  });
+  // The launcher trail needs the agent's own caps, so an agent child is read.
+  f.proc(42, "agents.slice/a.scope", { env: "TMPDIR=/agent\0", parent: 40 });
   const s = await new Collector(f.config, 100, 4096).sample();
   expect(s.procs.find((p) => p.pid === 41)?.env).toEqual({});
+  expect(s.procs.find((p) => p.pid === 42)?.env).toEqual({ TMPDIR: "/agent" });
 });
 test("a scope wrapper owns launch metadata even when an agent is its child", async () => {
   const f = setup();
@@ -182,6 +193,7 @@ test("zram symlinks under sys block expose compression stats", async () => {
 test("build and agent classification does not match prompt arguments", () => {
   for (const [command, expected] of [
     [["/usr/bin/rustc"], "rustc"],
+    [["/usr/bin/ld.mold", "-o", "app"], "ld.mold"],
     [["/repo/target/debug/deps/suite-abc123"], "test"],
     [["node", "/bin/tsc"], "node"],
     [["bun", "build"], "bun"],
@@ -189,7 +201,11 @@ test("build and agent classification does not match prompt arguments", () => {
     [["node", "server.js"], null],
     [["node", "server.js", "build"], null],
   ] as const)
-    expect(buildKind(command[0], [...command])).toBe(expected);
+    expect(buildKind(command[0], [...command], defaults().linkerNames)).toBe(
+      expected,
+    );
+  // The linker list is configuration, so an empty list classifies no linker.
+  expect(buildKind("ld.mold", ["/usr/bin/ld.mold"], [])).toBeNull();
   expect(toolName("bash", ["bash", "-c", "claude"], ["claude"])).toBeNull();
   expect(toolName("node", ["node", "/bin/codex.js"], ["codex"])).toBe("codex");
 });
@@ -228,4 +244,90 @@ test("an unreadable environment is not labelled as the default account", async (
   const s = await new Collector(f.config, 100, 4096).sample();
   expect(s.lanes[0].account).toBe("?");
   expect(s.procs[0].envAvailable).toBe(false);
+});
+test("io.stat and memory.stat give byte totals, write rates and page cache", async () => {
+  const f = setup();
+  f.group("agents.slice/a.scope", [40]);
+  f.proc(40, "agents.slice/a.scope");
+  const path = join(f.config.cgroupRoot, "agents.slice/a.scope");
+  f.write(
+    join(path, "io.stat"),
+    "259:0 rbytes=100 wbytes=200\n8:0 rbytes=1 wbytes=2\n",
+  );
+  f.write(join(path, "memory.stat"), "anon 5\nfile 4096\nslab 1\n");
+  const collector = new Collector(f.config, 100, 4096);
+  const a = await collector.sample(1000);
+  const first = a.groups.find((g) => g.path === "agents.slice/a.scope");
+  expect(first).toMatchObject({ ioRead: 101, ioWrite: 202, cache: 4096 });
+  // The first sample has no earlier counter, so a rate is unknown, not zero.
+  expect(first?.writeRate).toBeNull();
+  f.write(
+    join(path, "io.stat"),
+    "259:0 rbytes=100 wbytes=1200\n8:0 rbytes=1 wbytes=2\n",
+  );
+  const b = await collector.sample(2000);
+  const second = b.groups.find((g) => g.path === "agents.slice/a.scope");
+  expect(second?.writeRate).toBe(1000);
+  expect(second?.readRate).toBe(0);
+  // An unreadable or invalid counter stays unknown, never a measured zero.
+  f.write(join(path, "io.stat"), "259:0 rbytes=x wbytes=200\n");
+  rmSync(join(path, "memory.stat"));
+  const bad = await collector.sample(3000);
+  const group = bad.groups.find((g) => g.path === "agents.slice/a.scope");
+  expect(group?.ioWrite).toBeNull();
+  expect(group?.cache).toBeNull();
+  expect(bad.errors.map((e) => e.source)).toContain(join(path, "io.stat"));
+});
+test("argv exclusion hides a helper process but never an agent lane", async () => {
+  const f = setup();
+  f.proc(39, "app.slice/chrome.scope", {
+    command: ["/usr/bin/claude", "--chrome-native-host"],
+  });
+  f.proc(40, "app.slice/pane.scope", {
+    command: [
+      "/usr/bin/claude",
+      "-p",
+      "fix the typescript-language-server config",
+      "rust-analyzer",
+    ],
+  });
+  const a = await new Collector(f.config, 100, 4096).sample();
+  // The host is excluded; prompt text naming a pattern never excludes.
+  expect(a.procs.find((p) => p.pid === 39)?.tool).toBeNull();
+  expect(a.procs.find((p) => p.pid === 40)?.tool).toBe("claude");
+  expect(a.lanes).toHaveLength(1);
+  expect(a.lanes[0].id).toEndWith("app.slice/pane.scope");
+  expect(a.alerts.map((x) => x.subject)).toEqual(["40:100:claude"]);
+  // The pattern list is configuration, so a different flag excludes instead.
+  f.config.excludeArgv = ["--headless"];
+  f.proc(41, "app.slice/b.scope", {
+    command: ["/usr/bin/claude", "--headless"],
+  });
+  const b = await new Collector(f.config, 100, 4096).sample();
+  expect(b.procs.find((p) => p.pid === 41)?.tool).toBeNull();
+  expect(b.procs.find((p) => p.pid === 39)?.tool).toBe("claude");
+});
+test("an escaped agent's own environment reaches the launcher trail", async () => {
+  const f = setup();
+  f.group("app.slice/tmux-spawn-4.scope", [50, 51]);
+  f.proc(50, "app.slice/tmux-spawn-4.scope", {
+    command: ["/bin/bash"],
+    comm: "bash",
+  });
+  f.proc(51, "app.slice/tmux-spawn-4.scope", {
+    parent: 50,
+    env: "CARGO_BUILD_JOBS=16\0PATH=/shadow/bin:/usr/bin\0",
+  });
+  const s = await new Collector(f.config, 100, 4096).sample();
+  // The agent, not the pane shell, is what makes the lane unconfined.
+  expect(s.procs.find((p) => p.pid === 50)?.tool).toBeNull();
+  expect(s.lanes.map((l) => l.unconfined)).toEqual([true]);
+  const agent = s.procs.find((p) => p.pid === 51);
+  expect(agent?.env).toEqual({
+    CARGO_BUILD_JOBS: "16",
+    PATH: "/shadow/bin:/usr/bin",
+  });
+  const trail = launcherTrail(agent as Proc, s.procs, f.config, ["/usr/bin"]);
+  expect(trail.conclusion).toBe("shadowed");
+  expect(trail.summary).toContain("/shadow/bin");
 });

@@ -4,8 +4,14 @@ import { act } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import { History } from "../store/history";
-import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
+import {
+  emptySnapshot,
+  everyCauseSnapshot,
+  groupSnapshot,
+  laneSnapshot,
+} from "../test/fixture";
 import { App, Waiting } from "./App";
+import { attention } from "./overview";
 
 test("keyboard and mouse navigate views and open lane detail", async () => {
   const c = defaults();
@@ -216,14 +222,8 @@ test("startup stays interruptible before the first sample arrives", async () => 
 });
 test("overview keeps keyboard-selected concerns visible in a small terminal", async () => {
   const c = defaults();
-  const s = emptySnapshot();
-  s.lanes = Array.from({ length: 30 }, (_, i) =>
-    laneSnapshot({
-      id: `lane-${i}`,
-      name: `concern-${String(i).padStart(2, "0")}`,
-      dangerous: true,
-    }),
-  );
+  // One card per cause, so the list is grouped and still long enough to scroll.
+  const s = everyCauseSnapshot(c);
   const h = new History(c);
   h.add(s);
   const ui = await testRender(
@@ -238,19 +238,28 @@ test("overview keeps keyboard-selected concerns visible in a small terminal", as
     { width: 80, height: 24 },
   );
   try {
-    for (let i = 0; i < 20; i++) {
+    await ui.renderOnce();
+    const cards = attention(s, c);
+    expect(cards.length).toBeGreaterThan(10);
+    for (let i = 0; i < cards.length - 1; i++) {
       await act(async () => {
         ui.mockInput.pressArrow("down");
       });
       await ui.renderOnce();
     }
-    expect(ui.captureCharFrame()).toContain("> concern-20");
+    expect(ui.captureCharFrame()).toContain("/scratch");
     expect(ui.captureCharFrame().split("\n")[0]).toContain("vsys-view");
+    for (let i = 0; i < cards.length - 1; i++) {
+      await act(async () => {
+        ui.mockInput.pressArrow("up");
+      });
+      await ui.renderOnce();
+    }
     await act(async () => {
       ui.mockInput.pressEnter();
     });
     await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("concern-20");
+    expect(ui.captureCharFrame()).toContain("escaped");
     expect(ui.captureCharFrame()).toContain("main PID 40");
   } finally {
     await act(async () => {

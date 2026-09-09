@@ -15,24 +15,32 @@ export function toolName(
     );
   return tools.find((t) => candidates.includes(t)) ?? null;
 }
+/**
+ * Tool processes that are not lanes are recognised by their executable name or
+ * by a whole flag. Never by prompt text: `claude -p "fix the language server"`
+ * must stay an agent.
+ */
+export function excludedArgv(command: string[], patterns: string[]): boolean {
+  const exe = command[0] ?? "";
+  const names = [exe, basename(exe)];
+  const flags = command.filter((a) => a.startsWith("-"));
+  return patterns.some(
+    (p) => p !== "" && (names.includes(p) || flags.includes(p)),
+  );
+}
 /** target test artifacts are distinguishable from target build scripts. */
-export function buildKind(comm: string, command: string[]): string | null {
+export function buildKind(
+  comm: string,
+  command: string[],
+  linkers: string[],
+): string | null {
   const name = basename(command[0] ?? comm);
+  // One configured list of linker names serves the classifier and the meters.
+  if (linkers.includes(name)) return name;
   if (
-    [
-      "rustc",
-      "cargo",
-      "cc",
-      "gcc",
-      "g++",
-      "clang",
-      "clang++",
-      "ld",
-      "lld",
-      "ld.lld",
-      "mold",
-      "tsc",
-    ].includes(name)
+    ["rustc", "cargo", "cc", "gcc", "g++", "clang", "clang++", "tsc"].includes(
+      name,
+    )
   )
     return name;
   if (
