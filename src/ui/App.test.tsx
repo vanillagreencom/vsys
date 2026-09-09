@@ -492,3 +492,160 @@ test("Storage opens with write totals and keeps filesystem state below them", as
     h.close();
   }
 });
+
+test("Timeline lists what changed with a cause instead of raw samples", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const later = emptySnapshot(2000);
+  later.lanes = [
+    laneSnapshot({ name: "lane-a", account: "work", unconfined: true }),
+  ];
+  h.add(later);
+  const ui = await testRender(
+    <App
+      snapshot={later}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 40 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("5");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("What changed in this window: 3 of 3");
+    expect(frame).toContain("Lane started: lane-a");
+    expect(frame).toContain("account work in agents.slice");
+    expect(frame).toContain("Alert opened: an agent ran outside");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
+
+test("the Timeline event list stops at the rows the viewport has", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(2000);
+  busy.lanes = Array.from({ length: 12 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}.scope`, name: `lane-${i}` }),
+  );
+  h.add(busy);
+  const ui = await testRender(
+    <App
+      snapshot={busy}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 30 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("5");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("What changed in this window: 5 of 12");
+    expect(frame).toContain("Lane started: lane-0 ");
+    expect(frame).toContain("Lane started: lane-4");
+    expect(frame).not.toContain("lane-11");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
+
+test("a long event subject takes one row and does not push out the rest", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(2000);
+  busy.lanes = Array.from({ length: 6 }, (_, i) =>
+    laneSnapshot({
+      id: `lane-${i}.scope`,
+      name: i === 0 ? `wide-${"x".repeat(400)}` : `lane-${i}`,
+    }),
+  );
+  h.add(busy);
+  const ui = await testRender(
+    <App
+      snapshot={busy}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 30 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("5");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("What changed in this window: 5 of 6");
+    expect(frame).toContain("Lane started: lane-4");
+    expect(frame).not.toContain("xxxxxxxxxx\n");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
+
+test("an alert inside its hold does not mark a change on the strip", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const alarmed = emptySnapshot(2000);
+  alarmed.alerts = [
+    { time: 2000, rule: "scrub", subject: "/x", message: "Scrub problem: /x" },
+  ];
+  h.add(alarmed);
+  const ui = await testRender(
+    <App
+      snapshot={alarmed}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 40 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("5");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("What changed in this window: 0 of 0");
+    // The rule fired, but no event holds yet, so the strip above the legend
+    // stays unmarked.
+    const rows = frame.split("\n");
+    const strip = rows[rows.findIndex((row) => row.includes("! change")) - 1];
+    expect(strip).toContain("·");
+    expect(strip).not.toContain("!");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});

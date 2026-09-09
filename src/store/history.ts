@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import type { Config } from "../config/config";
 import type { Alert, Snapshot } from "../model/types";
 import { Archive } from "./archive";
+import { EventLog, type TimelineEvent } from "./events";
 import type { LaneSample } from "./lane-series";
 import { normalizeSnapshot } from "./migrate";
 import { type Point, point } from "./point";
@@ -63,6 +64,7 @@ export class Ring<T> {
 /** Compressed samples preserve historical process identity and metadata. */
 export class History {
   private archive = new Archive();
+  private eventLog = new EventLog();
   private points: Ring<Point>;
   private db?: Database;
   private laneCache = new Map<string, CachedLane>();
@@ -118,7 +120,7 @@ export class History {
     }
   }
   add(s: Snapshot): void {
-    const p = point(s, this.c);
+    const p = point(s, this.c, this.eventLog.advance(s, this.c));
     const json = JSON.stringify(s);
     const cutoff = s.time - this.c.historyHours * 3600000;
     this.archive.prune(cutoff);
@@ -162,6 +164,9 @@ export class History {
       const capacity = Math.max(next.points.capacity, points.size);
       next.points = new Ring(capacity);
       next.archive = this.archive.copy(cutoff);
+      // Derivation continues across a settings change, so an alert that opened
+      // before it still closes with its full duration.
+      next.eventLog = this.eventLog;
       for (const p of [...points.values()].sort((a, b) => a.time - b.time))
         next.points.push(p);
       const copy = (row: { time: number; data: Uint8Array; point: string }) => {
@@ -243,6 +248,13 @@ export class History {
           ) as Snapshot,
         )
       : null;
+  }
+  /** Recorded changes in the window, newest first. */
+  events(end: number, durationMs: number): TimelineEvent[] {
+    // Rows persisted before events existed carry none.
+    return [...this.window(end, durationMs)]
+      .reverse()
+      .flatMap((p) => p.events ?? []);
   }
   alerts(end: number): Alert[] {
     return this.window(end, this.c.historyHours * 3600000).flatMap(

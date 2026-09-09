@@ -19,12 +19,12 @@ The project includes its Bun runtime. The system Bun installation stays separate
 - Searchable Fleet summaries with an optional full table.
 - Lane details with memory limits, charged resources, build work, resource history and process ancestry.
 - Resource groups, build activity, Btrfs health and scratch measurements.
-- Recorded alerts and a timeline that can show Fleet at a past sample.
+- A timeline of what changed with its cause, and Fleet at a past sample.
 - Editable settings, mouse navigation and incident exports.
 
 ## How it works
 
-Start with Overview and select an item under Needs attention now to inspect its cause. Open Fleet to find a lane by name, account, pane, branch or worktree. A lane name joins the account, the agent, the terminal pane and the workspace, so two agents in one worktree stay apart. Open a lane to compare resource use with its limits. Use Timeline and Alerts to investigate past events; Overview shows current observations. A partial-data notice means some sources could not be read.
+Start with Overview and select an item under Needs attention now to inspect its cause. Open Fleet to find a lane by name, account, pane, branch or worktree. A lane name joins the account, the agent, the terminal pane and the workspace, so two agents in one worktree stay apart. Open a lane to compare resource use with its limits. Open Timeline to read what changed and why: lanes starting and stopping, processes moving between cgroups, alerts opening and closing with how long they lasted, and each new verdict. Use Alerts for the recorded rule transitions; Overview shows current observations. A partial-data notice means some sources could not be read.
 
 The collector reads system files with your permissions. Application writes are limited to settings, optional history and requested exports. Desktop notifications require an enabled rule.
 

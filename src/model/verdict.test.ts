@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import {
   emptySnapshot,
+  everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
@@ -10,6 +11,7 @@ import {
 import type { Group, Snapshot } from "./types";
 import {
   buildLoad,
+  causeRank,
   causes,
   laneLinkers,
   leastFree,
@@ -235,4 +237,33 @@ test("build load counts configured linkers separately and per lane", () => {
   expect(laneLinkers(s, laneSnapshot({ pids: [1, 2] }), c)).toBe(1);
   // The linker list is configuration, so a shorter list counts fewer linkers.
   expect(buildLoad(s, { ...c, linkerNames: ["mold"] }).linkers).toBe(1);
+});
+
+test("the cause order table is the ladder's own tie order", () => {
+  const c = defaults();
+  const ladder = causes(everyCauseSnapshot(c), c);
+  // Every rank is distinct, so no two causes can tie on the table itself.
+  const ranks = ladder.map((cause) => causeRank(cause.id));
+  expect(new Set(ranks).size).toBe(ranks.length);
+  // Severity first, then the table. Written out, so the table cannot drift
+  // from the ladder by agreeing with itself.
+  expect(ladder.map((cause) => cause.id)).toEqual([
+    "unconfined",
+    "read-only",
+    "device-errors",
+    "disk",
+    "desktop-swap",
+    "free-space",
+    "memory-cap",
+    "scrub",
+    "system-memory",
+    "system-cpu",
+    "memory-high",
+    "scratch",
+  ]);
+  // Within one severity the table alone decides, so those ranks only rise.
+  const danger = ladder
+    .filter((cause) => cause.level === "danger")
+    .map((cause) => causeRank(cause.id));
+  expect(danger).toEqual([...danger].sort((a, b) => a - b));
 });

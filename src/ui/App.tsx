@@ -14,7 +14,7 @@ import { dangerousCap, parentChain, processTree } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
-import type { Point } from "../store/point";
+import { changed, type Point } from "../store/point";
 import { buildLines } from "./builds";
 import { Fleet } from "./Fleet";
 import {
@@ -35,6 +35,7 @@ import { type Attention, attention, Overview } from "./overview";
 import { settingLabel } from "./settings";
 import { writeLines } from "./storage";
 import { themePalette } from "./theme";
+import { eventLine } from "./timeline";
 
 const views = [
   "Overview",
@@ -549,6 +550,7 @@ export function App({
               Math.floor(((at - start) * chartWidth) / windows[windowIndex]),
             ),
           );
+    const changes = history.events(snapshot.time, windows[windowIndex]);
     const series: [keyof Point, string][] = [
       ["agents", "Agents CPU %"],
       ["desktop", "Desktop CPU %"],
@@ -560,6 +562,12 @@ export function App({
       ["unconfined", "Unconfined agents"],
       ["builds", "Build processes"],
     ];
+    // Two rows per chart, then the view header, the marker row, its legend and
+    // the count line, outside the status bar and the two footer rows.
+    const visible = changes.slice(
+      0,
+      Math.max(1, height - (series.length * 2 + 7)),
+    );
     content = (
       <>
         {line(
@@ -606,22 +614,31 @@ export function App({
         {line(
           buckets
             .map((bucket, i) =>
-              bucket.some((p) => p.alerts.length)
-                ? "!"
-                : i === cursorIndex
-                  ? "│"
-                  : "·",
+              bucket.some(changed) ? "!" : i === cursorIndex ? "│" : "·",
             )
             .join(""),
         )}
         {line(
-          `${new Date(start).toLocaleTimeString()} to ${new Date(snapshot.time).toLocaleTimeString()} | ! alert | │ cursor | · no sample`,
+          `${new Date(start).toLocaleTimeString()} to ${new Date(snapshot.time).toLocaleTimeString()} | ! change | │ cursor | · no sample`,
         )}
-        {points
-          .flatMap((p) => p.alerts)
-          .map((a, i) =>
-            line(`${new Date(a.time).toLocaleTimeString()} ! ${a.message}`, i),
+        {line(
+          `What changed in this window: ${visible.length} of ${changes.length}, newest first`,
+        )}
+        {!changes.length &&
+          line(
+            "Nothing changed in this window: no lane, cgroup or cause moved",
           )}
+        {visible.map((event) => (
+          // One row per event, so a long subject cannot push the rest of the
+          // window past the rows the cap counted.
+          <text
+            key={`${event.time}-${event.kind}-${event.cause}-${event.subjectId}`}
+            height={1}
+            flexShrink={0}
+            truncate
+            fg={palette.fg}
+          >{`${safe(eventLine(event, c))}`}</text>
+        ))}
       </>
     );
   } else if (view === "Alerts")

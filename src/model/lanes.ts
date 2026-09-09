@@ -13,6 +13,10 @@ import type { Group, Lane, Proc } from "./types";
 export function inSlice(path: string, slice: string): boolean {
   return path.split("/").includes(slice);
 }
+/** One rule for an escaped agent: a configured tool outside the agent slice. */
+export function escaped(p: Proc, c: CollectionConfig): boolean {
+  return p.tool !== null && !inSlice(p.group, c.agentSlice);
+}
 /** An ancestor cgroup cap also limits a lane. */
 export function dangerousCap(
   group: Group,
@@ -155,9 +159,7 @@ export function lanes(
             : "empty",
       blocked: members.filter((p) => p.state === "D").length,
       blockedOn: blockedOn(ioPressure, memoryPressure),
-      unconfined: members.some(
-        (p) => p.tool && !inSlice(p.group, c.agentSlice),
-      ),
+      unconfined: members.some((p) => escaped(p, c)),
       dangerous: group ? dangerousCap(group, groups, c.memoryFloor) : false,
     });
     for (const p of members) covered.add(p.pid);
@@ -184,12 +186,12 @@ export function lanes(
     if (
       c.watchedSlices.some((s) => inSlice(group.path, s)) ||
       dangerousCap(group, groups, c.memoryFloor) ||
-      members.some((p) => p.tool && !inSlice(p.group, c.agentSlice))
+      members.some((p) => escaped(p, c))
     )
       lane(group.path, members, group);
   }
   for (const proc of procs.filter(
-    (p) => p.tool && !inSlice(p.group, c.agentSlice) && !covered.has(p.pid),
+    (p) => escaped(p, c) && !covered.has(p.pid),
   )) {
     if (covered.has(proc.pid)) continue;
     lane(
