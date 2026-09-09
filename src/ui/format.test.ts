@@ -2,7 +2,17 @@ import { expect, test } from "bun:test";
 import { columns, defaults } from "../config/config";
 import { exportSnapshot, safe } from "../model/export";
 import { emptySnapshot, laneSnapshot } from "../test/fixture";
-import { bytes, percent, sortLanes, sparkline, timeBuckets } from "./format";
+import {
+  amount,
+  blockedText,
+  bytes,
+  laneValue,
+  percent,
+  rate,
+  sortLanes,
+  sparkline,
+  timeBuckets,
+} from "./format";
 
 test("every Fleet column sorts both ways independently of lane identity", () => {
   for (const column of columns) {
@@ -28,6 +38,34 @@ test("units distinguish missing counters from zero", () => {
   expect(bytes(null, defaults())).toBe("?");
   expect(percent(0)).toBe("0.0%");
   expect(percent(null)).toBe("?");
+});
+test("unreadable lane quantities say so instead of showing a question mark", () => {
+  const c = defaults();
+  expect(amount(null, c)).toBe("not available");
+  expect(rate(2097152, c)).toBe("2.0 MiB/s");
+  expect(rate(null, c)).toBe("not available");
+  expect(laneValue(laneSnapshot({ cache: null }), "cache", c)).toBe(
+    "not available",
+  );
+  expect(laneValue(laneSnapshot({ writeRate: 1024 }), "writeRate", c)).toBe(
+    "1.0 KiB/s",
+  );
+  expect(laneValue(laneSnapshot({ account: null }), "account", c)).toBe(
+    "not available",
+  );
+});
+test("a blocked lane says how many tasks wait and on which resource", () => {
+  const blocked = { state: "blocked", blocked: 2 } as const;
+  expect(blockedText(laneSnapshot({ ...blocked, blockedOn: "io" }))).toBe(
+    "blocked: 2 tasks waiting on storage",
+  );
+  expect(
+    blockedText(laneSnapshot({ ...blocked, blocked: 1, blockedOn: "memory" })),
+  ).toBe("blocked: 1 task waiting on memory");
+  expect(blockedText(laneSnapshot({ ...blocked, blockedOn: null }))).toBe(
+    "blocked: 2 tasks waiting on not available",
+  );
+  expect(blockedText(laneSnapshot())).toBe("sleeping");
 });
 test("chart buckets retain spikes and unknown samples", () => {
   expect(sparkline([0, 100, 0, 0], 2, "block")).toBe("█▁");

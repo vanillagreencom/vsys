@@ -28,6 +28,20 @@ export const columns = [
   "tests",
   "age",
   "state",
+  "cgroup",
+  "cache",
+  "readRate",
+  "writeRate",
+  "sccache",
+  "blocked",
+] as const;
+/** The parts a lane name can be built from, in the order config lists them. */
+export const nameParts = [
+  "account",
+  "tool",
+  "pane",
+  "title",
+  "workspace",
 ] as const;
 export const rules: Rule[] = [
   "unconfined",
@@ -64,6 +78,11 @@ export interface Config {
   pressureHoldSeconds: number;
   laneNaming: "worktree" | "branch" | "env";
   laneEnv: string;
+  laneNameParts: string[];
+  accountEnv: string[];
+  paneEnv: string[];
+  titleEnv: string[];
+  sccacheNames: string[];
   scratchDirs: string[];
   scratchQuota: number;
   scratchRefreshMs: number;
@@ -131,6 +150,11 @@ export function defaults(): Config {
     pressureHoldSeconds: 10,
     laneNaming: "worktree",
     laneEnv: "VSYS_LANE",
+    laneNameParts: [...nameParts],
+    accountEnv: ["CLAUDE_CONFIG_DIR", "CODEX_HOME"],
+    paneEnv: ["VSYS_PANE", "TMUX_PANE"],
+    titleEnv: ["VSYS_PANE_TITLE"],
+    sccacheNames: ["sccache"],
     scratchDirs: [
       join(homedir(), "dev/.scratch/agents"),
       join(homedir(), "dev/.scratch/claude"),
@@ -270,6 +294,12 @@ export function validate(value: unknown): Config {
     !columns.includes(c.sort as (typeof columns)[number])
   )
     throw new Error("Invalid lane environment, columns or sort");
+  if (
+    c.laneNameParts.some(
+      (part) => !nameParts.includes(part as (typeof nameParts)[number]),
+    )
+  )
+    throw new Error("Unknown lane name part");
   if (c.notifications.some((r) => !rules.includes(r as Rule)))
     throw new Error("Unknown notification rule");
   for (const [action, key] of Object.entries(c.keys)) {

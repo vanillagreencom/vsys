@@ -2,7 +2,7 @@ import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import { lanePressure } from "../model/lanes";
 import type { Lane } from "../model/types";
-import { bytes, laneValue, percent } from "./format";
+import { blockedText, bytes, laneValue, percent } from "./format";
 import { themePalette } from "./theme";
 
 const labels: Record<string, string> = {
@@ -21,9 +21,15 @@ const labels: Record<string, string> = {
   tests: "Tests",
   age: "Age",
   state: "State",
+  cgroup: "Cgroup",
+  cache: "Page cache",
+  readRate: "Read",
+  writeRate: "Written",
+  sccache: "sccache",
+  blocked: "Blocked",
 };
 const columnWidth = (column: string) =>
-  column === "cwd" ? 28 : column === "name" ? 22 : 14;
+  column === "cwd" || column === "cgroup" ? 28 : column === "name" ? 22 : 14;
 
 /** Fixed-height rows prevent wrapping and give selection sole ownership of vertical paging. */
 export function Fleet({
@@ -142,7 +148,7 @@ export function Fleet({
               attributes={attributes}
             >
               {safe(
-                `${selected === index ? ">" : " "} ${lane.name}  ${lane.tool || "processes"} | ${lane.dangerous ? "Low memory limit" : lane.unconfined ? "Outside agent slice" : lane.state}`,
+                `${selected === index ? ">" : " "} ${lane.name}  ${lane.tool || "processes"} | ${lane.dangerous ? "Low memory limit" : lane.unconfined ? "Outside agent slice" : blockedText(lane)}`,
               )}
             </text>
             <text

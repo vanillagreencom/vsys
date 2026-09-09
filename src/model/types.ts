@@ -110,24 +110,48 @@ export interface System {
 export interface Lane {
   id: string;
   name: string;
-  account: string;
+  /** An unreadable environment leaves the account unknown, never "default". */
+  account: string | null;
+  /** tmux pane address and window title, empty when the pane exported none. */
+  pane: string;
+  title: string;
   cwd: string;
   branch: string;
   tool: string;
+  /** The cgroup this lane's work is charged to. */
+  cgroup: string;
   mainPid: number;
   pids: number[];
   cpu: number | null;
+  /** The lane's CPU as a share of the machine, in percent of all cores. */
+  cpuShare: number | null;
   pressure: number | null;
   memoryPressure: number | null;
   ioPressure: number | null;
   rss: number;
+  /** Page cache the kernel charges to this lane's cgroup. */
+  cache: number | null;
   swap: number | null;
+  readRate: number | null;
+  writeRate: number | null;
   tasks: number;
   rustc: number;
   cargo: number;
   tests: number;
+  /** Every build process in the lane counted by its kind. */
+  builds: Record<string, number>;
+  linkers: number;
+  sccache: number;
+  /** Effective caps: the tightest limit any ancestor imposes. */
+  memoryMax: number | null;
+  cpuWeight: number | null;
+  jobs: number | null;
+  jobserver: string | null;
   age: number;
   state: string;
+  /** Tasks in uninterruptible wait, and the resource they wait on. */
+  blocked: number;
+  blockedOn: "io" | "memory" | null;
   unconfined: boolean;
   dangerous: boolean;
 }

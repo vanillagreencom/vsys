@@ -320,3 +320,71 @@ test("Fleet search finds a worktree and clears without losing the full list", as
     h.close();
   }
 });
+
+test("lane detail names the account, the charged resources, the caps and the block", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({
+      name: ".2claude claude %3 kendex",
+      account: ".2claude",
+      pane: "%3",
+      cgroup: "agents.slice/a.scope",
+      cache: 4096,
+      readRate: 1048576,
+      writeRate: 2097152,
+      cpuShare: 25,
+      builds: { rustc: 2, "ld.mold": 1 },
+      linkers: 1,
+      sccache: 3,
+      memoryMax: 2147483648,
+      cpuWeight: 50,
+      jobs: 6,
+      jobserver: "fifo:/tmp/f",
+      state: "blocked",
+      blocked: 2,
+      blockedOn: "io",
+    }),
+  ];
+  s.groups = [groupSnapshot()];
+  const h = new History(c);
+  h.add(s);
+  const ui = await testRender(
+    <App
+      snapshot={s}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 45 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("1");
+    });
+    await act(async () => {
+      ui.mockInput.pressEnter();
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("agents.slice/a.scope");
+    expect(frame).toContain("Account: .2claude");
+    expect(frame).toContain("Pane: %3");
+    expect(frame).toContain("Page cache 4.0 KiB");
+    expect(frame).toContain("read 1.0 MiB/s");
+    expect(frame).toContain("written 2.0 MiB/s");
+    expect(frame).toContain("rustc 2, ld.mold 1");
+    expect(frame).toContain("sccache clients 3");
+    expect(frame).toContain("memory.max 2.0 GiB");
+    expect(frame).toContain("cpu.weight 50");
+    expect(frame).toContain("make jobs 6");
+    expect(frame).toContain("jobserver fifo:/tmp/f");
+    expect(frame).toContain("blocked: 2 tasks waiting on storage");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+  }
+});

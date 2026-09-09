@@ -213,8 +213,12 @@ export class ProcessCollector {
       "CARGO_BUILD_JOBS",
       "RUST_TEST_THREADS",
       "SHELL",
+      "MAKEFLAGS",
       c.laneEnv,
       ...c.capMarkers,
+      ...c.accountEnv,
+      ...c.paneEnv,
+      ...c.titleEnv,
     ]);
     // An escaped agent is a child of the pane's shell, so its own launch
     // environment is what the trail needs, not the scope main's.

@@ -1,5 +1,12 @@
 import { basename } from "node:path";
 import type { Config } from "../config/config";
+import {
+  accountName,
+  jobserver,
+  laneName,
+  paneName,
+  windowTitle,
+} from "./naming";
 import { scopeMain } from "./scopes";
 import type { Group, Lane, Proc } from "./types";
 
@@ -21,8 +28,33 @@ export function dangerousCap(
       g.max < floor,
   );
 }
+/** The tightest memory.max on the group itself or on any of its ancestors. */
+export function effectiveMax(groups: Group[], path: string): number | null {
+  const limits = groups
+    .filter(
+      (g) => g.path === "." || g.path === path || path.startsWith(`${g.path}/`),
+    )
+    .flatMap((g) => (g.max === null ? [] : [g.max]));
+  return limits.length ? Math.min(...limits) : null;
+}
+/**
+ * A blocked lane waits on storage or on memory reclaim. The resource with the
+ * higher stall share is the one to name; unknown pressure names neither.
+ */
+export function blockedOn(
+  io: number | null,
+  memory: number | null,
+): "io" | "memory" | null {
+  if ((io ?? 0) <= 0 && (memory ?? 0) <= 0) return null;
+  return (io ?? 0) >= (memory ?? 0) ? "io" : "memory";
+}
 /** Alarmed scopes stay visible even when their slice is not watched. */
-export function lanes(groups: Group[], procs: Proc[], c: Config): Lane[] {
+export function lanes(
+  groups: Group[],
+  procs: Proc[],
+  c: Config,
+  cores = 0,
+): Lane[] {
   const covered = new Set<number>();
   const result: Lane[] = [];
   const byPid = new Map(procs.map((p) => [p.pid, p]));
@@ -42,35 +74,66 @@ export function lanes(groups: Group[], procs: Proc[], c: Config): Lane[] {
         : c.laneNaming === "env"
           ? main?.env[c.laneEnv]
           : basename(cwd);
+    const account = accountName(main, c);
+    const pane = paneName(main, c);
+    const title = windowTitle(main, c);
+    const cgroup = group?.path ?? main?.group ?? id;
+    const cpu =
+      group?.cpuPercent ??
+      (members.every((p) => p.cpuPercent !== null)
+        ? members.reduce((n, p) => n + (p.cpuPercent ?? 0), 0)
+        : null);
+    const builds: Record<string, number> = {};
+    for (const p of members)
+      if (p.build) builds[p.build] = (builds[p.build] ?? 0) + 1;
+    const ioPressure = group?.pressure.io?.some ?? null;
+    const memoryPressure = group?.pressure.memory?.some ?? null;
     result.push({
       id,
-      name: derived || group?.name || main?.comm || id,
-      account: main?.envAvailable
-        ? basename(main.env.CLAUDE_CONFIG_DIR ?? "default")
-        : "?",
+      name:
+        laneName({ account, tool, pane, title, workspace: derived || null }, [
+          ...c.laneNameParts,
+        ]) ||
+        derived ||
+        group?.name ||
+        main?.comm ||
+        id,
+      account,
+      pane,
+      title,
       cwd,
       branch,
       tool,
+      cgroup,
       mainPid: main?.pid ?? 0,
       pids: members.map((p) => p.pid),
-      cpu:
-        group?.cpuPercent ??
-        (members.every((p) => p.cpuPercent !== null)
-          ? members.reduce((n, p) => n + (p.cpuPercent ?? 0), 0)
-          : null),
+      cpu,
+      cpuShare: cpu === null || cores <= 0 ? null : cpu / cores,
       pressure: group?.pressure.cpu?.some ?? null,
-      memoryPressure: group?.pressure.memory?.some ?? null,
-      ioPressure: group?.pressure.io?.some ?? null,
+      memoryPressure,
+      ioPressure,
       rss: members.reduce((n, p) => n + p.rss, 0),
+      cache: group?.cache ?? null,
       swap:
         group?.swap ??
         (members.every((p) => p.swap !== null)
           ? members.reduce((n, p) => n + (p.swap ?? 0), 0)
           : null),
+      readRate: group?.readRate ?? null,
+      writeRate: group?.writeRate ?? null,
       tasks: group?.tasks ?? members.reduce((n, p) => n + p.threads, 0),
-      rustc: members.filter((p) => p.build === "rustc").length,
-      cargo: members.filter((p) => p.build === "cargo").length,
-      tests: members.filter((p) => p.build === "test").length,
+      rustc: builds.rustc ?? 0,
+      cargo: builds.cargo ?? 0,
+      tests: builds.test ?? 0,
+      builds,
+      linkers: members.filter((p) => c.linkerNames.includes(p.build ?? ""))
+        .length,
+      sccache: members.filter((p) =>
+        c.sccacheNames.includes(basename(p.command[0] ?? p.comm)),
+      ).length,
+      memoryMax: effectiveMax(groups, cgroup),
+      cpuWeight: group?.weight ?? null,
+      ...jobserver(main),
       age: Math.max(0, ...members.map((p) => p.age)),
       state: members.some((p) => p.state === "D")
         ? "blocked"
@@ -79,6 +142,8 @@ export function lanes(groups: Group[], procs: Proc[], c: Config): Lane[] {
           : members.length
             ? "sleeping"
             : "empty",
+      blocked: members.filter((p) => p.state === "D").length,
+      blockedOn: blockedOn(ioPressure, memoryPressure),
       unconfined: members.some(
         (p) => p.tool && !inSlice(p.group, c.agentSlice),
       ),
