@@ -33,6 +33,8 @@ export interface Group {
   cache: number | null;
   ioRead: number | null;
   ioWrite: number | null;
+  /** Bytes written since boot per kernel device number, from the same read. */
+  ioWriteByDevice: Record<string, number> | null;
   readRate: number | null;
   writeRate: number | null;
   pressure: Record<string, Pressure | null>;
@@ -86,8 +88,18 @@ export interface Scrub {
   text: string;
   problem: boolean;
 }
+/** A block device with its lifetime writes, when SMART output is readable. */
+export interface Device {
+  name: string;
+  /** Kernel device number "MAJ:MIN", the key io.stat writes are counted under. */
+  number: string | null;
+  model: string | null;
+  lifetimeWritten: number | null;
+}
 export interface Storage {
   mountsAvailable?: boolean;
+  smartAvailable?: boolean;
+  devices?: Device[];
   volumes: Volume[];
   scratch: Scratch[];
   sessions: Scratch[];

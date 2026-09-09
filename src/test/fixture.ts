@@ -20,6 +20,7 @@ export function fixture() {
   config.btrfsRoot = join(root, "btrfs");
   config.sysBlockRoot = join(root, "block");
   config.scrubDir = join(root, "scrub");
+  config.smartDir = join(root, "smart");
   config.scratchDirs = [];
   config.sqlitePath = join(root, "history.db");
   const write = (path: string, text: string) => {
@@ -166,6 +167,7 @@ export function groupSnapshot(overrides: Partial<Group> = {}): Group {
     cache: null,
     ioRead: null,
     ioWrite: null,
+    ioWriteByDevice: null,
     readRate: null,
     writeRate: null,
     pressure: {},

@@ -13,7 +13,7 @@ The [application plan](../plans/2026-09-06-vsys-view-plan.md) defines the collec
 | Lane | Cgroup, memory, page cache, swap, CPU share, I/O rates, build work by kind, compiler cache clients, effective caps and the blocked reason; complete lane history; launch environment, process tree and live scratch descriptors | Collector fixtures, `src/model/lanes.test.ts`, `src/store/lane-series.test.ts`, `src/ui/App.test.tsx` |
 | Slices | Cgroup tree, sibling CPU weight share, quotas, memory, swap, task limits and pressure | Typed source fixtures and rendered navigation test |
 | Builds | Fleet compile and link total against cores, per-lane rows with linkers named, build cache effectiveness and make token pools, then per-process classification, threads, CPU, RSS, directory and elapsed time | Build classifier fixtures, summary and line tests, build cache parser and delta tests |
-| Storage | Mount state, device counters and deltas, scrub reports, free space, scratch sizes and measurement age | Mount parser, Btrfs and scratch tests |
+| Storage | Bytes written since boot per slice and per device, drive lifetime writes; below them mount state, device counters and deltas, scrub reports, free space, scratch sizes and measurement age | `src/model/writes.test.ts`, `src/ui/storage.test.ts`, `src/collect/devices.test.ts`, mount parser, Btrfs and scratch tests |
 | Timeline | Resource series, corruption, escaped agents and builds; time cursor, alert markers and Fleet pinning | Time-bucket tests, CPU role tests, archive replay and rendered pinning test |
 | Alerts | Rule transitions, pressure hold time, per-rule notifications and source errors | Rule and notification tests |
 | Settings | Validated TOML, named settings, editable keys, display preferences and history configuration | Configuration, settings UI and runtime replacement tests |
@@ -32,7 +32,7 @@ The [application plan](../plans/2026-09-06-vsys-view-plan.md) defines the collec
 
 - Fleet defaults to summaries. The full table retains column visibility, ordering and sorting. Other views use trees, grouped records or charts.
 - Notifications use `notify-send` with explicit per-rule settings. Alert hook execution is absent.
-- SMART counters are omitted. Existing scrub reports need no privileged helper.
+- Lifetime writes are read from `smartctl -A` reports left in a configured directory, as scrub reports are. vsys runs no privileged helper of its own, so a drive with no report keeps its lifetime writes unknown.
 
 ## Verification
 

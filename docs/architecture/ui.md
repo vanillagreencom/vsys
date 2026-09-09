@@ -11,6 +11,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Overview renders the model's cause ladder. The worst cause that speaks for the machine is the verdict line and each cause is one card. All copy and all byte and percent formatting live here; the model returns numbers. Alert history can contain resolved events and cannot define current health.
 - A quantity vsys could not read makes its meter a warning and renders as "not available", never as a question mark or an untroubled reading. Fleet columns and Lane detail read the same formatters.
 - Attention cards are grouped by cause. Each card names its subjects, a next step, and where possible a read-only command built from configured names.
+- Storage opens with bytes written since boot, by slice and by device, and the drive lifetime writes. Mount state, device counters, scrub reports and scratch sizes follow below them. `src/ui/App.test.tsx` checks that order.
 - Fleet owns selection and vertical paging. The scroll box owns horizontal table scrolling. Other detail views use native vertical scrolling.
 - The UI opens views and exports evidence. It does not control observed processes or their terminal sessions.
 
@@ -25,6 +26,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Unreadable lane quantities render as "not available", an unread memory cap is never shown as unlimited, and a blocked lane names its waiting task count and resource. `src/ui/format.test.ts` checks the lane formatters.
 - Search filters names, accounts, panes, window titles, worktrees, branches and tools. `src/ui/App.test.tsx` checks a worktree search and clearing the filter.
 - A recorded event alone does not become a current concern. `src/ui/overview.test.ts` checks resolved events and missing source data.
+- An unreadable write total renders as "not available" rather than an empty row. `src/ui/storage.test.ts` checks every write section with no readable source.
 - No attention text is repeated. `src/ui/overview.test.ts` and `src/ui/App.test.tsx` check unique card titles across every cause.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
 

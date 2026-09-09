@@ -23,6 +23,7 @@ export const settingLabels: Record<string, string> = {
   scratchRefreshMs: "Scratch scan interval (ms)",
   btrfsMounts: "Watched Btrfs mounts",
   scrubDir: "Scrub report directory",
+  smartDir: "SMART report directory",
   columns: "Table columns in display order",
   sort: "Fleet sort column",
   descending: "Sort largest first",

@@ -2,6 +2,7 @@ import { readdir, realpath, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Config } from "../config/config";
 import type { Storage, Volume } from "../model/types";
+import { collectDevices } from "./devices";
 import { pairs, type Reader } from "./io";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
@@ -52,8 +53,11 @@ export class StorageCollector {
     mountInfo: MountInfo[] | null = readMounts(r, c.procRoot),
     waitForScratch = true,
   ): Promise<Storage> {
+    const { devices: blockDevices, smartAvailable } = collectDevices(r, c);
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
+      smartAvailable,
+      devices: blockDevices,
       volumes: [],
       scratch: [],
       sessions: [],

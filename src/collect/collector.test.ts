@@ -279,6 +279,8 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   const a = await collector.sample(1000);
   const first = a.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(first).toMatchObject({ ioRead: 101, ioWrite: 202, cache: 4096 });
+  // The Storage view's per-device totals come from this same io.stat read.
+  expect(first?.ioWriteByDevice).toEqual({ "259:0": 200, "8:0": 2 });
   // The first sample has no earlier counter, so a rate is unknown, not zero.
   expect(first?.writeRate).toBeNull();
   f.write(
@@ -295,8 +297,25 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   const bad = await collector.sample(3000);
   const group = bad.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(group?.ioWrite).toBeNull();
+  expect(group?.ioWriteByDevice).toBeNull();
   expect(group?.cache).toBeNull();
   expect(bad.errors.map((e) => e.source)).toContain(join(path, "io.stat"));
+});
+test("a sample carries drive lifetime writes when a SMART report is readable", async () => {
+  const f = setup();
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  f.write(
+    join(f.config.smartDir, "nvme0n1"),
+    "Model Number: Test Drive\nData Units Written: 1,000,000 [512 GB]\n",
+  );
+  const s = await new Collector(f.config, 100, 4096).sample();
+  expect(s.storage.smartAvailable).toBe(true);
+  expect(s.storage.devices).toContainEqual({
+    name: "nvme0n1",
+    number: "259:0",
+    model: "Test Drive",
+    lifetimeWritten: 512_000_000_000,
+  });
 });
 test("argv exclusion hides a helper process but never an agent lane", async () => {
   const f = setup();

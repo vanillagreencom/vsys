@@ -15,6 +15,11 @@ export function bytes(n: number | null | undefined, c: Config): string {
   }
   return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
 }
+/** A quantity vsys could not read says so; it never shows a question mark. */
+export const unavailable = "not available";
+export function amount(n: number | null | undefined, c: Config): string {
+  return n === null || n === undefined ? unavailable : bytes(n, c);
+}
 export function percent(n: number | null | undefined): string {
   return n === null || n === undefined || !Number.isFinite(n)
     ? "?"
