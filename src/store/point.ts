@@ -1,6 +1,7 @@
 import type { Config } from "../config/config";
 import { inSlice } from "../model/lanes";
-import type { Alert, Group, Snapshot } from "../model/types";
+import type { Alert, Snapshot } from "../model/types";
+import { sliceSum } from "../model/verdict";
 
 export interface Point {
   time: number;
@@ -14,20 +15,6 @@ export interface Point {
   unconfined: number;
   builds: number;
   alerts: Alert[];
-}
-function sliceCpu(groups: Group[], name: string): number | null {
-  const matching = groups.filter((g) => g.name === name);
-  const roots = matching.filter(
-    (g) =>
-      !matching.some(
-        (parent) =>
-          parent !== g &&
-          (parent.path === "." || g.path.startsWith(`${parent.path}/`)),
-      ),
-  );
-  return roots.length && roots.every((g) => g.cpuPercent !== null)
-    ? roots.reduce((sum, g) => sum + (g.cpuPercent ?? 0), 0)
-    : null;
 }
 /** Logical roles use configured slice names; nested groups are not counted twice. */
 export function point(s: Snapshot, c: Config): Point {
@@ -54,8 +41,8 @@ export function point(s: Snapshot, c: Config): Point {
   const available = s.system.memory.MemAvailable;
   return {
     time: s.time,
-    agents: sliceCpu(s.groups, c.agentSlice),
-    desktop: sliceCpu(s.groups, c.desktopSlice),
+    agents: sliceSum(s.groups, c.agentSlice, (g) => g.cpuPercent),
+    desktop: sliceSum(s.groups, c.desktopSlice, (g) => g.cpuPercent),
     memory:
       total === undefined || available === undefined ? null : total - available,
     pressure: s.system.pressure.cpu?.some ?? null,

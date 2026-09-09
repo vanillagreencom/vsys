@@ -7,7 +7,8 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 ## Boundaries
 
 - `mountScreen` owns the React root and the subscription between collection and display. It mounts once and unmounts on shutdown.
-- Overview derives the verdict, four meters and current concerns from observed values. Alert history can contain resolved events and cannot define current health.
+- Overview renders the model's cause ladder. The first cause is the verdict line and each cause is one card. Alert history can contain resolved events and cannot define current health.
+- All Overview copy and all byte and percent formatting live in `src/ui/overview.tsx`. The model returns numbers.
 - Attention cards are grouped by cause. Each card names its subjects, a next step, and where possible a read-only command built from configured names.
 - Sources vsys cannot read appear in a footer line, never as an attention card.
 - Fleet owns selection and vertical paging. The scroll box owns horizontal table scrolling. Other detail views use native vertical scrolling.

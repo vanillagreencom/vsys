@@ -7,10 +7,9 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Config } from "../config/config";
-import { classify, excludedArgv } from "../model/roles";
 import { scopeMain } from "../model/scopes";
 import type { Group, Proc } from "../model/types";
-import { buildKind, toolName } from "./builds";
+import { buildKind, excludedArgv, toolName } from "./builds";
 import type { Reader } from "./io";
 
 /** stat's command can contain spaces and closing parentheses. */
@@ -175,8 +174,7 @@ export class ProcessCollector {
             command,
             group,
             tool,
-            build: helper ? null : buildKind(stat.comm, command),
-            role: "other",
+            build: helper ? null : buildKind(stat.comm, command, c.linkerNames),
             cwd,
             executable: null,
             branch: null,
@@ -207,7 +205,6 @@ export class ProcessCollector {
         return p ? [p.pid] : [];
       }),
     );
-    for (const p of result) p.role = classify(p, mainPids.has(p.pid), c);
     const allowed = new Set([
       "CLAUDE_CONFIG_DIR",
       "PATH",

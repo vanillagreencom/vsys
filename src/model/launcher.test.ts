@@ -15,7 +15,6 @@ function escapedAgent(env: Record<string, string>) {
     executable: "/usr/bin/bash",
     group: "/user.slice/app.slice/tmux-spawn-4.scope",
     tool: null,
-    role: "pane",
   });
   const agent = processSnapshot({
     pid: 11,
@@ -24,7 +23,18 @@ function escapedAgent(env: Record<string, string>) {
     group: "/user.slice/app.slice/tmux-spawn-4.scope",
     env,
   });
-  return { procs: [shell, agent], agent };
+  const tmux = processSnapshot({
+    pid: 5,
+    ppid: 1,
+    start: 20,
+    comm: "tmux",
+    command: ["/usr/bin/tmux"],
+    executable: "/usr/bin/tmux",
+    group: "/user.slice/app.slice/tmux-server.scope",
+    tool: null,
+  });
+  shell.ppid = 5;
+  return { procs: [tmux, shell, agent], agent };
 }
 
 test("caps present with the wrong cgroup means the launcher was shadowed", () => {
@@ -42,15 +52,33 @@ test("caps present with the wrong cgroup means the launcher was shadowed", () =>
   expect(trail.pathPrefix).toEqual(["/home/user/.shadow/bin"]);
   expect(trail.summary).toContain("shadowed");
   expect(trail.summary).toContain("/home/user/.shadow/bin");
-  // The ancestor chain carries each ancestor's cgroup and scope unit.
-  expect(trail.ancestors).toHaveLength(1);
-  expect(trail.ancestors[0]).toMatchObject({
-    pid: 10,
-    scope: "tmux-spawn-4.scope",
-    executable: "/usr/bin/bash",
-  });
+  // The chain carries each ancestor's own cgroup, which differ between them.
+  expect(trail.ancestors).toEqual([
+    {
+      pid: 10,
+      comm: "bash",
+      group: "/user.slice/app.slice/tmux-spawn-4.scope",
+      scope: "tmux-spawn-4.scope",
+      executable: "/usr/bin/bash",
+    },
+    {
+      pid: 5,
+      comm: "tmux",
+      group: "/user.slice/app.slice/tmux-server.scope",
+      scope: "tmux-server.scope",
+      executable: "/usr/bin/tmux",
+    },
+  ]);
 });
 
+test("the marker list is configuration, not a hardcoded pair", () => {
+  const c = { ...defaults(), capMarkers: ["MAKEFLAGS"] };
+  const { procs, agent } = escapedAgent({ CARGO_BUILD_JOBS: "16" });
+  const trail = launcherTrail(agent, procs, c, base);
+  expect(trail.conclusion).toBe("bare");
+  expect(trail.capsMissing).toEqual(["MAKEFLAGS"]);
+  expect(trail.summary).toContain("MAKEFLAGS");
+});
 test("caps absent means the agent was launched bare", () => {
   const c = defaults();
   const { procs, agent } = escapedAgent({ PATH: "/usr/bin:/bin" });

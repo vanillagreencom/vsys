@@ -1,7 +1,16 @@
 import type { Config } from "../config/config";
 import { parentChain } from "./lanes";
-import { scopeUnit } from "./roles";
 import type { Proc } from "./types";
+
+/** The unit name of the scope a process sits in, or null outside any scope. */
+export function scopeUnit(group: string): string | null {
+  return (
+    group
+      .split("/")
+      .filter((s) => s.endsWith(".scope"))
+      .at(-1) ?? null
+  );
+}
 
 export interface LauncherStep {
   pid: number;

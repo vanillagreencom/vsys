@@ -7,8 +7,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { Config } from "../config/config";
 import { defaults } from "../config/config";
-import type { Group, Lane, Proc, Snapshot } from "../model/types";
+import type { Group, Lane, Proc, Snapshot, Volume } from "../model/types";
 
 /** Fake kernel files never require systemd, mounted test disks, or live agents. */
 export function fixture() {
@@ -219,7 +220,58 @@ export function processSnapshot(overrides: Partial<Proc> = {}): Proc {
     branch: "main",
     tool: "claude",
     build: null,
-    role: "agent",
     ...overrides,
   };
+}
+export function volumeSnapshot(
+  mount: string,
+  overrides: Partial<Volume> = {},
+): Volume {
+  return {
+    mount,
+    device: "/dev/x",
+    fsid: mount,
+    options: [],
+    readOnly: false,
+    free: 1e12,
+    total: 2e12,
+    errors: {},
+    delta: {},
+    sinceStart: {},
+    ...overrides,
+  };
+}
+/** A snapshot that triggers every cause the ladder knows, one of each. */
+export function everyCauseSnapshot(c: Config): Snapshot {
+  const s = emptySnapshot();
+  const g = (path: string, name: string, o: Partial<Group> = {}) =>
+    groupSnapshot({ path, name, ...o });
+  s.system.pressure = {
+    cpu: { some: 90, full: 0, total: 0 },
+    memory: { some: 80, full: 0, total: 0 },
+    io: { some: 70, full: 41, total: 0 },
+  };
+  s.lanes = [
+    laneSnapshot({ id: "lane-escaped", name: "escaped", unconfined: true }),
+    laneSnapshot({ id: "lane-capped", name: "capped", dangerous: true }),
+    laneSnapshot({ id: "w.scope", name: "writer", pids: [1], ioPressure: 40 }),
+  ];
+  s.procs = [processSnapshot({ pid: 1, build: "ld.mold" })];
+  s.groups = [
+    g("w.scope", "w.scope", { writeRate: 209715200 }),
+    g("app.slice", c.desktopSlice, { swap: c.swapFloor + 1 }),
+    g("app.slice/gnome.scope", "gnome.scope", { swap: 992 }),
+    g("agents.slice", c.agentSlice, { cache: 85899345920 }),
+    g("h.scope", "h.scope", { memory: 100, high: 100 }),
+  ];
+  s.storage.volumes = [
+    volumeSnapshot("/ro", { readOnly: true }),
+    volumeSnapshot("/bad", { delta: { "x/corruption_errs": 1 } }),
+    volumeSnapshot("/full", { free: 5, total: 100 }),
+  ];
+  s.storage.scrubs = [{ path: "/scrub", text: "errors", problem: true }];
+  s.storage.scratch = [
+    { path: "/scratch", bytes: c.scratchQuota + 1, age: 0, error: null },
+  ];
+  return s;
 }

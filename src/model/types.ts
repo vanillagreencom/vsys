@@ -37,8 +37,6 @@ export interface Group {
   writeRate: number | null;
   pressure: Record<string, Pressure | null>;
 }
-/** Every process carries its own role. A terminal pane never lends its role to a child. */
-export type Role = "agent" | "pane" | "helper" | "build" | "other";
 /** Only the selected environment fields leave the process collector. */
 export interface Proc {
   pid: number;
@@ -61,7 +59,6 @@ export interface Proc {
   branch: string | null;
   tool: string | null;
   build: string | null;
-  role: Role;
 }
 /** Filesystem counters stay keyed by filesystem and device. */
 export interface Volume {

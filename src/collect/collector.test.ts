@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { defaults } from "../config/config";
 import { launcherTrail } from "../model/launcher";
 import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
@@ -192,6 +193,7 @@ test("zram symlinks under sys block expose compression stats", async () => {
 test("build and agent classification does not match prompt arguments", () => {
   for (const [command, expected] of [
     [["/usr/bin/rustc"], "rustc"],
+    [["/usr/bin/ld.mold", "-o", "app"], "ld.mold"],
     [["/repo/target/debug/deps/suite-abc123"], "test"],
     [["node", "/bin/tsc"], "node"],
     [["bun", "build"], "bun"],
@@ -199,7 +201,11 @@ test("build and agent classification does not match prompt arguments", () => {
     [["node", "server.js"], null],
     [["node", "server.js", "build"], null],
   ] as const)
-    expect(buildKind(command[0], [...command])).toBe(expected);
+    expect(buildKind(command[0], [...command], defaults().linkerNames)).toBe(
+      expected,
+    );
+  // The linker list is configuration, so an empty list classifies no linker.
+  expect(buildKind("ld.mold", ["/usr/bin/ld.mold"], [])).toBeNull();
   expect(toolName("bash", ["bash", "-c", "claude"], ["claude"])).toBeNull();
   expect(toolName("node", ["node", "/bin/codex.js"], ["codex"])).toBe("codex");
 });
@@ -282,13 +288,38 @@ test("an excluded tool process is neither a lane nor an unconfined alert", async
     command: ["/usr/bin/claude", "--chrome-native-host"],
   });
   const s = await new Collector(f.config, 100, 4096).sample();
-  const host = s.procs.find((p) => p.pid === 40);
-  expect(host?.tool).toBeNull();
-  expect(host?.role).toBe("helper");
+  expect(s.procs.find((p) => p.pid === 40)?.tool).toBeNull();
   expect(s.lanes).toEqual([]);
   expect(s.alerts).toEqual([]);
 });
-test("a pane shell and the agent inside it get their own roles", async () => {
+test("prompt text naming an excluded pattern does not hide an agent lane", async () => {
+  const f = setup();
+  f.proc(40, "app.slice/pane.scope", {
+    command: [
+      "/usr/bin/claude",
+      "-p",
+      "fix the typescript-language-server config",
+      "rust-analyzer",
+    ],
+  });
+  const s = await new Collector(f.config, 100, 4096).sample();
+  expect(s.procs.find((p) => p.pid === 40)?.tool).toBe("claude");
+  expect(s.lanes.map((l) => l.unconfined)).toEqual([true]);
+});
+test("the exclusion list is configuration, not a hardcoded set", async () => {
+  const f = setup();
+  f.config.excludeArgv = ["--headless"];
+  f.proc(40, "app.slice/a.scope", {
+    command: ["/usr/bin/claude", "--chrome-native-host"],
+  });
+  f.proc(41, "app.slice/b.scope", {
+    command: ["/usr/bin/claude", "--headless"],
+  });
+  const s = await new Collector(f.config, 100, 4096).sample();
+  expect(s.procs.find((p) => p.pid === 40)?.tool).toBe("claude");
+  expect(s.procs.find((p) => p.pid === 41)?.tool).toBeNull();
+});
+test("the agent inside a pane, not the pane shell, makes the lane unconfined", async () => {
   const f = setup();
   f.group("app.slice/tmux-spawn-4.scope", [50, 51]);
   f.proc(50, "app.slice/tmux-spawn-4.scope", {
@@ -297,9 +328,8 @@ test("a pane shell and the agent inside it get their own roles", async () => {
   });
   f.proc(51, "app.slice/tmux-spawn-4.scope", { parent: 50 });
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.procs.find((p) => p.pid === 50)?.role).toBe("pane");
-  expect(s.procs.find((p) => p.pid === 51)?.role).toBe("agent");
-  // The lane is unconfined because the agent, not the pane, is outside the slice.
+  expect(s.procs.find((p) => p.pid === 50)?.tool).toBeNull();
+  expect(s.procs.find((p) => p.pid === 51)?.tool).toBe("claude");
   expect(s.lanes.map((l) => l.unconfined)).toEqual([true]);
 });
 test("an escaped agent's own environment reaches the launcher trail", async () => {
