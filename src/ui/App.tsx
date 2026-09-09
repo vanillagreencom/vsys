@@ -15,6 +15,7 @@ import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
 import type { Point } from "../store/point";
+import { buildLines } from "./builds";
 import { Fleet } from "./Fleet";
 import {
   age,
@@ -470,8 +471,9 @@ export function App({
       .sort((a, b) => a.group.localeCompare(b.group) || a.pid - b.pid);
     content = (
       <>
+        {buildLines(shown, c).map((text, i) => line(text, `summary-${i}`))}
         {line(
-          `Build processes ${builds.length} | threads ${builds.reduce((n, p) => n + p.threads, 0)} | CPU cores ${shown.system.cores}`,
+          `Build threads ${builds.reduce((n, p) => n + p.threads, 0)} | CPU cores ${shown.system.cores}`,
         )}
         {builds.map((p, i) => (
           <box key={p.pid} flexDirection="column">

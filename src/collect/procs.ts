@@ -213,6 +213,7 @@ export class ProcessCollector {
       "CARGO_BUILD_JOBS",
       "RUST_TEST_THREADS",
       "SHELL",
+      "RUSTC_WRAPPER",
       "MAKEFLAGS",
       c.laneEnv,
       ...c.capMarkers,
@@ -220,11 +221,12 @@ export class ProcessCollector {
       ...c.paneEnv,
       ...c.titleEnv,
     ]);
-    // An escaped agent is a child of the pane's shell, so its own launch
-    // environment is what the trail needs, not the scope main's.
+    // An escaped agent is a child of the pane's shell and a build process
+    // carries its own compiler wrapper and make token pool, so each reads its
+    // own launch environment rather than the scope main's.
     const envPids = new Set([
       ...mainPids,
-      ...result.filter((p) => p.tool).map((p) => p.pid),
+      ...result.filter((p) => p.tool || p.build).map((p) => p.pid),
     ]);
     for (const pid of envPids) {
       const p = byPid.get(pid);

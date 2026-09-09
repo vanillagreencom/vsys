@@ -24,6 +24,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - A slice total sums its root groups. The cause ladder, the meters and the history point read the same function.
 - Every host-specific name the Overview needs is configuration: agent and desktop slices, excluded argv patterns, confinement cap markers, linker names, compiler cache names and the environment variables that carry the account, the pane address and the window title.
 - The pane address and window title are read from the pane environment. vsys does not query the tmux server, so a pane that exports neither leaves both parts out of the lane name.
+- The build cache reading queries the sccache server through an injected runner, rate limited between samples. A collector built without one records no reading, so no test starts that server.
 - The runtime owns collection, history, and settings changes for a running dashboard.
 - The history store owns application persistence. The collector does not depend on SQLite.
 - The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane.
@@ -45,6 +46,11 @@ Each sample contains observed values and source errors. A failed read must remai
 - One cause produces one attention card whatever the number of lanes, and every card ends with a next step distinct from its title and detail. `src/ui/overview.test.ts` checks nine stalling lanes and triggers every cause at once.
 - Source read failures are counted once per source and stay out of attention. `src/ui/overview.test.ts` checks the footer.
 - Invalid io.stat counters stay unknown rather than becoming a zero write rate. `src/collect/collector.test.ts` plants an invalid counter.
+- The Builds fleet total and the Overview build meter print one sentence built from one function and one buildLoad result, and the per-lane rows sum to it. `src/ui/builds.test.ts` checks the shared sentence and `src/model/builds.test.ts` checks the sum, including build processes outside every lane.
+- Only a build process with an empty RUSTC_WRAPPER in a readable environment bypasses the build cache. `src/model/builds.test.ts` checks a set wrapper and an unreadable environment.
+- A jobserver FIFO is never opened, because reading it would take a token from the build. Tokens in use are the build processes holding the pool, and a pool whose MAKEFLAGS omits a job count has an unknown total. `src/model/builds.test.ts` checks both.
+- Build cache counters that moved backwards rebase rather than producing a negative delta, and a missing sccache binary is an absent feature rather than a source error. `src/collect/sccache.test.ts` checks the restart, the missing binary and a failing query.
+- A build process's own environment supplies its compiler wrapper and make token pool. `src/collect/collector.test.ts` checks both fields against the unselected variables.
 - Process environment caching uses PID and start time. `src/collect/collector.test.ts` exercises PID reuse and environment selection.
 - Scope launch metadata belongs to the scope's main process. `src/collect/collector.test.ts` checks a wrapper with an agent child.
 - When a PID appears in sibling scope lists, its process membership file selects the row. `src/collect/collector.test.ts` checks that fallback.

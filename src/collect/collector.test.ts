@@ -2,12 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { defaults } from "../config/config";
+import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherTrail } from "../model/launcher";
 import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
 import { buildKind, toolName } from "./builds";
 import { Collector } from "./collector";
 import { parseStat } from "./procs";
+import { SccacheCollector } from "./sccache";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -348,4 +350,36 @@ test("an escaped agent's own environment reaches the launcher trail", async () =
   const trail = launcherTrail(agent as Proc, s.procs, f.config, ["/usr/bin"]);
   expect(trail.conclusion).toBe("shadowed");
   expect(trail.summary).toContain("/shadow/bin");
+});
+
+test("build process environments carry the wrapper and the make token pool", async () => {
+  const f = setup();
+  f.group("agents.slice/b.scope", [50]);
+  f.proc(50, "agents.slice/b.scope", {
+    comm: "rustc",
+    command: ["/usr/bin/rustc", "src/lib.rs"],
+    env: "RUSTC_WRAPPER=\0MAKEFLAGS= -j16 --jobserver-auth=fifo:/tmp/GMfifo1\0SECRET=hidden\0",
+  });
+  const collector = new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    new SccacheCollector(async () => "Cache hits 8\nCache misses 2\n", 0),
+  );
+  const s = await collector.sample(1000);
+  expect(s.errors).toEqual([]);
+  const p = s.procs.find((x) => x.pid === 50);
+  expect(p?.build).toBe("rustc");
+  // Only the selected fields leave the collector; the wrapper keeps its
+  // empty value rather than disappearing with the unselected variables.
+  expect(p?.env).toEqual({
+    RUSTC_WRAPPER: "",
+    MAKEFLAGS: " -j16 --jobserver-auth=fifo:/tmp/GMfifo1",
+  });
+  expect(s.sccache?.hits).toBe(8);
+  expect(bypassedLanes(s)).toEqual([s.lanes[0].name]);
+  expect(jobservers(s)).toEqual([
+    { fifo: "/tmp/GMfifo1", total: 16, inUse: 1 },
+  ]);
 });

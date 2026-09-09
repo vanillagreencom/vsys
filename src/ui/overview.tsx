@@ -9,7 +9,16 @@ import {
   type Meter,
   meters,
 } from "../model/verdict";
-import { amount, bytes, gap, percent, share } from "./format";
+import { fleetTotal } from "./builds";
+import {
+  amount,
+  bytes,
+  count,
+  gap,
+  plural as p,
+  percent,
+  share,
+} from "./format";
 import { themePalette } from "./theme";
 
 export interface Attention {
@@ -38,10 +47,6 @@ const list = (names: string[], limit = 4): string =>
   names.length > limit
     ? `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`
     : names.join(", ");
-const p = (n: number, one: string, many: string) => (n === 1 ? one : many);
-/** A count and its noun, so no line ever reads "1 linkers". */
-const count = (n: number | null, one: string, many = `${one}s`) =>
-  `${n ?? 0} ${p(n ?? 0, one, many)}`;
 
 /** Every word and every formatted number the Overview shows lives here. */
 function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
@@ -248,7 +253,7 @@ export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
           : "no watched filesystems";
     return `Disk: pressure some ${pc(v.some)} full ${pc(v.full)} | ${space} | ${who("top writer", `${b(v.writeRate)}/s`)}`;
   }
-  return `Build slots: ${v.builds} compile and link ${p(v.builds ?? 0, "process", "processes")} / ${v.cores} cores | ${count(v.linkers, "linker")} | ${count(v.lanes, "building cgroup")} | ${who("busiest lane", "")}`.trimEnd();
+  return `${fleetTotal(v)} | ${who("busiest lane", "")}`.trimEnd();
 }
 
 export function Overview({

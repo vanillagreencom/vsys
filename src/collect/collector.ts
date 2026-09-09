@@ -9,6 +9,7 @@ import { collectGroups } from "./cgroups";
 import { Reader } from "./io";
 import { kernelCgroupRoot, readMounts } from "./mounts";
 import { ProcessCollector } from "./procs";
+import { SccacheCollector } from "./sccache";
 import { collectSystem } from "./system";
 
 /** The scheduler awaits each sample, so ticks cannot overlap. */
@@ -23,6 +24,8 @@ export class Collector {
     ticksPerSecond: number,
     pageSize: number,
     private live = false,
+    /** Absent unless a caller supplies one, so no test spawns a build cache. */
+    private sccache?: SccacheCollector,
   ) {
     this.processes = new ProcessCollector(ticksPerSecond, pageSize);
   }
@@ -89,6 +92,9 @@ export class Collector {
     );
     this.controller.signal.throwIfAborted();
     mark("storage");
+    const sccache = await this.sccache?.collect(r, time);
+    this.controller.signal.throwIfAborted();
+    mark("sccache");
     const s: Snapshot = {
       time,
       durationMs: performance.now() - start,
@@ -99,6 +105,7 @@ export class Collector {
       lanes: lanes(groups, procs, c, system.cores),
       alerts: [],
       errors: r.errors,
+      ...(sccache ? { sccache } : {}),
     };
     s.alerts = this.engine.evaluate(s, c);
     mark("model");
@@ -129,5 +136,5 @@ export async function createCollector(
     return n;
   };
   const [ticks, pages] = await Promise.all([read("CLK_TCK"), read("PAGESIZE")]);
-  return new Collector(c, ticks, pages, live);
+  return new Collector(c, ticks, pages, live, new SccacheCollector());
 }
