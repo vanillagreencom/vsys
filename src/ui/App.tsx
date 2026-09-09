@@ -551,6 +551,8 @@ export function App({
             ),
           );
     const changes = history.events(snapshot.time, windows[windowIndex]);
+    // The charts above take a fixed number of rows; the rest hold events.
+    const visible = changes.slice(0, Math.max(1, height - 24));
     const series: [keyof Point, string][] = [
       ["agents", "Agents CPU %"],
       ["desktop", "Desktop CPU %"],
@@ -619,12 +621,14 @@ export function App({
         {line(
           `${new Date(start).toLocaleTimeString()} to ${new Date(snapshot.time).toLocaleTimeString()} | ! change | │ cursor | · no sample`,
         )}
-        {line(`What changed in this window (${changes.length}), newest first`)}
+        {line(
+          `What changed in this window: ${visible.length} of ${changes.length}, newest first`,
+        )}
         {!changes.length &&
           line(
             "Nothing changed in this window: no lane, cgroup or cause moved",
           )}
-        {changes.map((event, i) => line(eventLine(event, c), i))}
+        {visible.map((event, i) => line(eventLine(event, c), i))}
       </>
     );
   } else if (view === "Alerts")

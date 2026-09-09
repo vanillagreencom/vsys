@@ -1,6 +1,6 @@
 import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
-import { inSlice } from "./lanes";
+import { escaped } from "./lanes";
 import type { Alert, Rule, Snapshot } from "./types";
 
 /** Rules emit transitions, with sustained pressure measured in wall time. */
@@ -28,7 +28,7 @@ export class AlertEngine {
       hit(
         "unconfined",
         `${p.pid}:${p.start}:${p.tool}`,
-        p.tool !== null && !inSlice(p.group, c.agentSlice),
+        escaped(p, c),
         `${p.tool} PID ${p.pid} runs outside ${c.agentSlice}`,
       );
     }

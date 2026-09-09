@@ -494,7 +494,7 @@ test("Storage opens with write totals and keeps filesystem state below them", as
 });
 
 test("Timeline lists what changed with a cause instead of raw samples", async () => {
-  const c = defaults();
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
   const h = new History(c);
   h.add(emptySnapshot(1000));
   const later = emptySnapshot(2000);
@@ -519,10 +519,47 @@ test("Timeline lists what changed with a cause instead of raw samples", async ()
     });
     await ui.renderOnce();
     const frame = ui.captureCharFrame();
-    expect(frame).toContain("What changed in this window");
+    expect(frame).toContain("What changed in this window: 3 of 3");
     expect(frame).toContain("Lane started: lane-a");
     expect(frame).toContain("account work in agents.slice");
     expect(frame).toContain("Alert opened: an agent ran outside");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
+
+test("the Timeline event list stops at the rows the viewport has", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(2000);
+  busy.lanes = Array.from({ length: 12 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}.scope`, name: `lane-${i}` }),
+  );
+  h.add(busy);
+  const ui = await testRender(
+    <App
+      snapshot={busy}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "snapshot.json"}
+    />,
+    { width: 160, height: 30 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("5");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("What changed in this window: 6 of 12");
+    expect(frame).toContain("Lane started: lane-0 ");
+    expect(frame).not.toContain("lane-11");
   } finally {
     await act(async () => {
       ui.renderer.destroy();

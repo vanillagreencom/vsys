@@ -10,7 +10,8 @@ import {
 import { EventLog } from "./events";
 import { History } from "./history";
 
-const c = defaults();
+/** A zero hold isolates the derivation from the flap suppression below. */
+const c = { ...defaults(), pressureHoldSeconds: 0 };
 /** Every test starts from a sample the log has already seen. */
 function started(first: Snapshot = emptySnapshot(1000)): EventLog {
   const log = new EventLog();
@@ -109,7 +110,7 @@ test("an alert closes with the time it stayed open", () => {
     .advance(emptySnapshot(6000), c)
     .find((e) => e.kind === "alert-close");
   expect(closed?.cause).toBe("unconfined");
-  expect(closed?.values.durationMs).toBe(4000);
+  expect(closed?.values.durationMs).toBe(1000);
 });
 test("desktop swap crossing the floor opens and closes one event", () => {
   const log = started();
@@ -159,10 +160,13 @@ test("a housekeeping cause is an event but never a verdict change", () => {
 test("history records the derived events and keeps an alert open across settings", () => {
   const history = new History(c);
   history.add(emptySnapshot(1000));
-  const firing = emptySnapshot(2000);
-  firing.lanes = [laneSnapshot({ name: "escaped", unconfined: true })];
-  history.add(firing);
-  expect(history.events(2000, 10000).map((e) => e.kind)).toContain(
+  const lanes = [laneSnapshot({ name: "escaped", unconfined: true })];
+  for (const time of [2000, 3000]) {
+    const firing = emptySnapshot(time);
+    firing.lanes = lanes;
+    history.add(firing);
+  }
+  expect(history.events(3000, 10000).map((e) => e.kind)).toContain(
     "alert-open",
   );
   const changed = history.reconfigure({ ...c, refreshMs: 2000 });
@@ -170,7 +174,52 @@ test("history records the derived events and keeps an alert open across settings
   const closed = changed
     .events(6000, 10000)
     .find((e) => e.kind === "alert-close");
-  expect(closed?.values.durationMs).toBe(4000);
+  expect(closed?.values.durationMs).toBe(1000);
   changed.close();
   history.close();
+});
+test("a second subject on one cause opens and closes on its own", () => {
+  const log = started();
+  const first = emptySnapshot(2000);
+  first.lanes = [
+    laneSnapshot({ id: "a.scope", name: "agent-a", unconfined: true }),
+  ];
+  log.advance(first, c);
+  const second = emptySnapshot(3000);
+  second.lanes = [
+    laneSnapshot({ id: "b.scope", name: "agent-b", unconfined: true }),
+  ];
+  const out = log.advance(second, c);
+  const opened = out.find((e) => e.kind === "alert-open");
+  const closed = out.find((e) => e.kind === "alert-close");
+  expect(opened?.subject).toBe("agent-b");
+  expect(closed?.subject).toBe("agent-a");
+  expect(closed?.cause).toBe("unconfined");
+});
+test("a cause flapping across its threshold records one alert", () => {
+  const held = defaults();
+  const log = new EventLog();
+  let opens = 0;
+  let closes = 0;
+  for (let i = 0; i < 100; i++) {
+    const s = emptySnapshot(1000 + i * held.refreshMs);
+    // Alternates either side of pressureAmber, which is what a busy host does.
+    s.lanes = [laneSnapshot({ pressure: i % 2 ? held.pressureAmber + 1 : 0 })];
+    for (const e of log.advance(s, held)) {
+      if (e.kind === "alert-open") opens++;
+      if (e.kind === "alert-close") closes++;
+    }
+  }
+  expect(opens).toBe(1);
+  expect(closes).toBe(0);
+});
+test("a move between two slices outside the agent slice is not a confinement change", () => {
+  const first = emptySnapshot(1000);
+  first.procs = [processSnapshot({ group: "app.slice/a.scope" })];
+  const log = started(first);
+  const moved = emptySnapshot(2000);
+  moved.procs = [processSnapshot({ group: "other.slice/a.scope" })];
+  const move = log.advance(moved, c).find((e) => e.kind === "cgroup-move");
+  expect(move?.names).toMatchObject({ from: "app.slice", to: "other.slice" });
+  expect(move?.cause).toBe("");
 });

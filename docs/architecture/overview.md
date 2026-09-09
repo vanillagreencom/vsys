@@ -29,6 +29,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - The runtime owns collection, history, and settings changes for a running dashboard. A replaced source is handed its predecessor, so readings measured since vsys started survive the replacement.
 - The history store owns application persistence. The collector does not depend on SQLite.
 - Timeline events are derived once, in the store, from consecutive snapshots and the cause ladder. There is no second detection path, so an alert is a cause opening and closing.
+- `escaped()` in `src/model/lanes.ts` is the only definition of an agent outside its slice. Lanes, alerts, history points and timeline events all call it.
 - The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane.
 
 ## Invariants
@@ -74,7 +75,10 @@ Each sample contains observed values and source errors. A failed read must remai
 - History storage rejects a database with another application's schema. `src/store/history.test.ts` checks tables and views.
 - Timeline positions follow timestamps. `src/ui/format.test.ts` checks collection gaps and alert alignment.
 - A lane start or stop names its account and slice, and a process moves cgroups only when its PID keeps its start time. `src/store/events.test.ts` checks a reused PID and a process that stayed put.
-- An alert closes with the time it stayed open, and a settings change does not restart that clock. `src/store/events.test.ts` checks the duration across a reconfigure.
+- An alert closes with the time the cause was observed, and a settings change does not restart that clock. `src/store/events.test.ts` checks the duration across a reconfigure.
+- An alert is one cause on one subject. A second subject opens its own alert, and the close names the subject that was open. `src/store/events.test.ts` checks a second escaped lane.
+- A cause holds for `pressureHoldSeconds` before it opens and stays away that long before it closes, so a value flapping across a threshold records one alert rather than one per sample. The verdict follows the alerts that held. `src/store/events.test.ts` checks 100 alternating samples.
+- A process moving between two slices outside the agent slice is not a confinement change. `src/store/events.test.ts` checks that move against one that leaves the agent slice.
 - Desktop swap crossing its floor is the desktop-swap cause opening, and a housekeeping cause is an event but never a verdict change. `src/store/events.test.ts` checks both.
 - Every event renders as one line that states its cause. `src/ui/timeline.test.ts` checks each kind and the swap numbers.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.

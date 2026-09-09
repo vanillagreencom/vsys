@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
-import { inSlice } from "../model/lanes";
+import { escaped } from "../model/lanes";
 import type { Snapshot } from "../model/types";
-import { type CauseId, causes } from "../model/verdict";
+import { type Cause, type CauseId, causes } from "../model/verdict";
 
 export type EventKind =
   | "lane-start"
@@ -31,34 +31,53 @@ export function sliceOf(path: string): string {
     above.findLast((part) => part.endsWith(".slice")) ?? above.at(-1) ?? ""
   );
 }
+/** A cause on one subject, waiting to open, open, or waiting to close. */
+interface Watch {
+  cause: CauseId;
+  consumer: string;
+  firstSeen: number;
+  lastSeen: number;
+  opened: boolean;
+}
+/** A cause plus the subject it names, so a second subject is a second alert. */
+function watchKey(cause: Cause): string {
+  return `${cause.id}\u0000${cause.consumer}`;
+}
 /**
  * Events come from successive snapshots and from the one cause ladder. An
  * alert is a cause on that ladder, so desktop swap crossing its floor is the
  * desktop-swap cause opening and closing, never a second detection path.
+ *
+ * A cause must hold for pressureHoldSeconds before it opens, and must stay
+ * away that long before it closes, so a value flapping across a threshold
+ * records one alert rather than one per sample. The recorded duration is the
+ * time the cause was observed, which excludes the wait before the close.
  */
 export class EventLog {
   private previous: Snapshot | null = null;
-  private open = new Map<CauseId, { time: number; consumer: string }>();
+  private watching = new Map<string, Watch>();
   private verdict: CauseId | "" = "";
   /** The first sample records the state it observes and reports no change. */
   advance(s: Snapshot, c: Config): TimelineEvent[] {
     const out: TimelineEvent[] = [];
     const previous = this.previous;
+    // The first sample has nothing to compare against, so it records nothing.
     const add = (
       kind: EventKind,
       subject: string,
       rest: Partial<TimelineEvent> = {},
-    ) => {
-      if (previous)
-        out.push({
-          time: s.time,
-          kind,
-          subject,
-          cause: "",
-          names: {},
-          values: {},
-          ...rest,
-        });
+    ): boolean => {
+      if (!previous) return false;
+      out.push({
+        time: s.time,
+        kind,
+        subject,
+        cause: "",
+        names: {},
+        values: {},
+        ...rest,
+      });
+      return true;
     };
     for (const lane of s.lanes)
       if (previous && !previous.lanes.some((old) => old.id === lane.id))
@@ -91,30 +110,48 @@ export class EventLog {
           to: sliceOf(p.group),
           tool: p.tool ?? "",
         },
-        cause: p.tool && !inSlice(p.group, c.agentSlice) ? "unconfined" : "",
+        // Confinement changed only when the move left the agent slice.
+        cause: escaped(p, c) && !escaped(was, c) ? "unconfined" : "",
         values: { pid: p.pid },
       });
     }
+    const hold = c.pressureHoldSeconds * 1000;
     const ladder = causes(s, c);
-    const live = new Set(ladder.map((cause) => cause.id));
+    const live = new Set(ladder.map(watchKey));
     for (const cause of ladder) {
-      if (this.open.has(cause.id)) continue;
-      this.open.set(cause.id, { time: s.time, consumer: cause.consumer });
-      add("alert-open", cause.consumer, {
+      const key = watchKey(cause);
+      const watch = this.watching.get(key) ?? {
+        cause: cause.id,
+        consumer: cause.consumer,
+        firstSeen: s.time,
+        lastSeen: s.time,
+        opened: false,
+      };
+      watch.lastSeen = s.time;
+      this.watching.set(key, watch);
+      // An alert that was never recorded as open cannot be recorded as closed.
+      if (watch.opened || s.time - watch.firstSeen < hold) continue;
+      watch.opened = add("alert-open", cause.consumer, {
         cause: cause.id,
         names: { level: cause.level },
         values: { ...cause.values },
       });
     }
-    for (const [id, opened] of this.open) {
-      if (live.has(id)) continue;
-      this.open.delete(id);
-      add("alert-close", opened.consumer, {
-        cause: id,
-        values: { durationMs: s.time - opened.time },
-      });
+    for (const [key, watch] of this.watching) {
+      // A cause that comes back within the hold never left.
+      if (live.has(key) || s.time - watch.lastSeen < hold) continue;
+      this.watching.delete(key);
+      if (watch.opened)
+        add("alert-close", watch.consumer, {
+          cause: watch.cause,
+          values: { durationMs: watch.lastSeen - watch.firstSeen },
+        });
     }
-    const lead = ladder.find((cause) => cause.verdictWorthy);
+    // The verdict follows the alerts that held, so it cannot flap either.
+    const lead = ladder.find(
+      (cause) =>
+        cause.verdictWorthy && this.watching.get(watchKey(cause))?.opened,
+    );
     const verdict = lead?.id ?? "";
     if (verdict !== this.verdict)
       add("verdict", lead?.consumer ?? "", {

@@ -1,5 +1,5 @@
 import type { Config } from "../config/config";
-import { inSlice } from "../model/lanes";
+import { escaped } from "../model/lanes";
 import type { Alert, Snapshot } from "../model/types";
 import { sliceSum } from "../model/verdict";
 import type { TimelineEvent } from "./events";
@@ -56,8 +56,7 @@ export function point(
     memoryPressure: s.system.pressure.memory?.some ?? null,
     ioPressure: s.system.pressure.io?.some ?? null,
     corruption,
-    unconfined: s.procs.filter((p) => p.tool && !inSlice(p.group, c.agentSlice))
-      .length,
+    unconfined: s.procs.filter((p) => escaped(p, c)).length,
     builds: s.procs.filter((p) => p.build).length,
     alerts: s.alerts.map((alert) => ({ ...alert })),
     events,

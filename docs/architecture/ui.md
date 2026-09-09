@@ -30,7 +30,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - An unreadable write total renders as "not available" rather than an empty row, and every drive keeps its own lifetime row so the reader can tell which drive lacks a report. `src/ui/storage.test.ts` checks every write section with no readable source.
 - A device-mapper row and the disk beneath it count the same bytes, and the device section says so when one is present. `src/ui/storage.test.ts` checks that line.
 - No attention text is repeated. `src/ui/overview.test.ts` and `src/ui/App.test.tsx` check unique card titles across every cause.
-- The Timeline event list names the cause of each change. `src/ui/App.test.tsx` checks a lane start and an open alert in the rendered view.
+- The Timeline event list names the cause of each change and stops at the rows the viewport has, stating how many of the window's events it shows. `src/ui/App.test.tsx` checks a lane start with an open alert, and twelve events in a short terminal.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
 
 ## Framework constraint
