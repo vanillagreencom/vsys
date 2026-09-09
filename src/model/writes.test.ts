@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { emptySnapshot, groupSnapshot } from "../test/fixture";
-import { deviceWrites, writeTotals } from "./writes";
+import { writeTotals } from "./writes";
 
 const c = defaults();
 function snapshot() {
@@ -12,21 +12,18 @@ function snapshot() {
       parent: ".",
       name: "user@1000.service",
       ioWrite: 3_000_000,
-      ioWriteByDevice: { "259:0": 2_000_000, "8:0": 1_000_000 },
     }),
     groupSnapshot({
       path: "agents.slice",
       parent: ".",
       name: "agents.slice",
       ioWrite: 2_000_000,
-      ioWriteByDevice: { "259:0": 2_000_000 },
     }),
     groupSnapshot({
       path: "app.slice",
       parent: ".",
       name: "app.slice",
       ioWrite: 1_000_000,
-      ioWriteByDevice: { "8:0": 1_000_000 },
     }),
   ];
   s.storage.devices = [
@@ -39,6 +36,7 @@ function snapshot() {
     { name: "sda", number: "8:0", model: null, lifetimeWritten: null },
   ];
   s.storage.smartAvailable = true;
+  s.storage.deviceWrites = { "259:0": 2_000_000, "8:0": 1_000_000 };
   return s;
 }
 test("written bytes are reported per slice and per named device", () => {
@@ -56,22 +54,9 @@ test("written bytes are reported per slice and per named device", () => {
   ]);
   expect(t.devicesAvailable).toBe(true);
 });
-test("the cgroup root holds the device totals, so subtrees are not counted twice", () => {
-  const s = snapshot();
-  expect(deviceWrites(s.groups)).toEqual({
-    "259:0": 2_000_000,
-    "8:0": 1_000_000,
-  });
-  s.groups = s.groups.filter((g) => g.path !== ".");
-  expect(deviceWrites(s.groups)).toEqual({
-    "259:0": 2_000_000,
-    "8:0": 1_000_000,
-  });
-});
 test("an unreadable counter stays unknown rather than becoming zero", () => {
   const s = snapshot();
-  s.groups[0].ioWriteByDevice = null;
-  expect(deviceWrites(s.groups)).toBeNull();
+  s.storage.deviceWrites = null;
   const missing = writeTotals(s, c);
   expect(missing.devicesAvailable).toBe(false);
   expect(missing.devices).toEqual([]);

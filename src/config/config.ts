@@ -60,6 +60,7 @@ export interface Config {
   persistence: boolean;
   sqlitePath: string;
   cgroupRoot: string;
+  cgroupTop: string;
   procRoot: string;
   btrfsRoot: string;
   sysBlockRoot: string;
@@ -106,6 +107,7 @@ export function defaults(): Config {
     persistence: false,
     sqlitePath: join(homedir(), ".local/state/vsys-view/history.db"),
     cgroupRoot: `/sys/fs/cgroup/user.slice/user-${process.getuid?.() ?? 1000}.slice/user@${process.getuid?.() ?? 1000}.service`,
+    cgroupTop: "/sys/fs/cgroup",
     procRoot: "/proc",
     btrfsRoot: "/sys/fs/btrfs",
     sysBlockRoot: "/sys/block",
@@ -270,6 +272,7 @@ export function validate(value: unknown): Config {
   for (const key of [
     "sqlitePath",
     "cgroupRoot",
+    "cgroupTop",
     "procRoot",
     "btrfsRoot",
     "sysBlockRoot",

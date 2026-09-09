@@ -443,20 +443,19 @@ test("Storage opens with write totals and keeps filesystem state below them", as
       parent: ".",
       name: "user@1000.service",
       ioWrite: 2199023255552,
-      ioWriteByDevice: { "259:0": 2199023255552 },
     }),
     groupSnapshot({
       path: "agents.slice",
       parent: ".",
       name: "agents.slice",
       ioWrite: 2199023255552,
-      ioWriteByDevice: { "259:0": 2199023255552 },
     }),
   ];
   s.storage.smartAvailable = true;
   s.storage.devices = [
     { name: "nvme0n1", number: "259:0", model: null, lifetimeWritten: 1e13 },
   ];
+  s.storage.deviceWrites = { "259:0": 2199023255552 };
   s.storage.volumes = [volumeSnapshot("/mnt/data", { readOnly: true })];
   const h = new History(c);
   h.add(s);

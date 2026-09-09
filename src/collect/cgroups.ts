@@ -27,6 +27,24 @@ function ioTotals(text: string): IoTotals | null {
   }
   return seen ? totals : null;
 }
+/**
+ * The cgroup v2 root counts every writer on the machine, including services and
+ * containers outside the user manager the watched tree covers.
+ */
+export function collectDeviceWrites(
+  r: Reader,
+  top: string,
+): Record<string, number> | null {
+  const file = join(top, "io.stat");
+  const raw = r.text(file, true);
+  if (raw === null) return null;
+  try {
+    return ioTotals(raw)?.byDevice ?? null;
+  } catch (e) {
+    r.error(file, e);
+    return null;
+  }
+}
 function rate(
   now: number | null,
   before: number | null | undefined,
@@ -112,7 +130,6 @@ export function collectGroups(
           cache: file === undefined ? null : Number(file),
           ioRead: io ? io.read : null,
           ioWrite: io ? io.write : null,
-          ioWriteByDevice: io ? io.byDevice : null,
           readRate: rate(io ? io.read : null, old?.ioRead, elapsedMs),
           writeRate: rate(io ? io.write : null, old?.ioWrite, elapsedMs),
           pressure: psi,

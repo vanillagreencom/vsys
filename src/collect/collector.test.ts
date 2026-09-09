@@ -1,13 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, rmSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { defaults } from "../config/config";
 import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherTrail } from "../model/launcher";
 import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
 import { buildKind, toolName } from "./builds";
-import { Collector, createCollector } from "./collector";
+import { Collector, collectionKeys, createCollector } from "./collector";
 import { parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
 
@@ -279,8 +285,6 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   const a = await collector.sample(1000);
   const first = a.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(first).toMatchObject({ ioRead: 101, ioWrite: 202, cache: 4096 });
-  // The Storage view's per-device totals come from this same io.stat read.
-  expect(first?.ioWriteByDevice).toEqual({ "259:0": 200, "8:0": 2 });
   // The first sample has no earlier counter, so a rate is unknown, not zero.
   expect(first?.writeRate).toBeNull();
   f.write(
@@ -297,9 +301,33 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   const bad = await collector.sample(3000);
   const group = bad.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(group?.ioWrite).toBeNull();
-  expect(group?.ioWriteByDevice).toBeNull();
   expect(group?.cache).toBeNull();
   expect(bad.errors.map((e) => e.source)).toContain(join(path, "io.stat"));
+});
+test("device totals come from the cgroup root, not the watched user tree", async () => {
+  const f = setup();
+  f.group("agents.slice/a.scope", [40]);
+  f.write(
+    join(f.config.cgroupRoot, "agents.slice/a.scope/io.stat"),
+    "259:0 rbytes=1 wbytes=200\n",
+  );
+  // The root counts services outside the user manager, so its totals are larger.
+  f.write(
+    join(f.config.cgroupTop, "io.stat"),
+    "259:0 rbytes=9 wbytes=900\n8:0 rbytes=1 wbytes=50\n",
+  );
+  const collector = new Collector(f.config, 100, 4096);
+  expect((await collector.sample(1000)).storage.deviceWrites).toEqual({
+    "259:0": 900,
+    "8:0": 50,
+  });
+  // An unreadable root leaves the totals unknown rather than falling back.
+  f.write(join(f.config.cgroupTop, "io.stat"), "259:0 wbytes=x\n");
+  const bad = await collector.sample(2000);
+  expect(bad.storage.deviceWrites).toBeNull();
+  expect(bad.errors.map((e) => e.source)).toContain(
+    join(f.config.cgroupTop, "io.stat"),
+  );
 });
 test("a sample carries drive lifetime writes when a SMART report is readable", async () => {
   const f = setup();
@@ -421,4 +449,34 @@ test("a settings change keeps the cache counts measured since vsys started", asy
     misses: 0,
     windowMs: 1000,
   });
+/**
+ * The runtime rebuilds the collector from this declaration. A setting read
+ * during collection but left undeclared would be inert until a restart, so the
+ * declaration is checked against the modules rather than maintained by hand.
+ */
+test("every setting the collection modules read is a declared collection key", () => {
+  const keys = new Set(Object.keys(defaults()));
+  const declared = new Set<string>(collectionKeys);
+  const read = new Map<string, string>();
+  const seen = new Set<string>();
+  const walk = (file: string) => {
+    // The config module names every setting; it defines them rather than reading them.
+    if (seen.has(file) || file.endsWith("config/config.ts")) return;
+    seen.add(file);
+    const text = readFileSync(file, "utf8");
+    for (const [, key] of text.matchAll(/\b(?:c|config|this\.config)\.(\w+)/g))
+      if (keys.has(key)) read.set(key, file);
+    for (const [, spec] of text.matchAll(/from\s+"(\.[^"]+)"/g)) {
+      const base = resolve(dirname(file), spec);
+      const target = [".ts", ".tsx"].map((e) => base + e).find(existsSync);
+      if (!target) throw new Error(`Cannot resolve import: ${spec} in ${file}`);
+      walk(target);
+    }
+  };
+  walk(join(import.meta.dir, "collector.ts"));
+  expect(seen.size).toBeGreaterThan(5);
+  const undeclared = [...read]
+    .filter(([key]) => !declared.has(key))
+    .map(([key, file]) => `${key} (${file})`);
+  expect(undeclared).toEqual([]);
 });

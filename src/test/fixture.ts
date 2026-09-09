@@ -16,6 +16,7 @@ export function fixture() {
   const root = mkdtempSync(join(tmpdir(), "vsys-test-"));
   const config = defaults();
   config.cgroupRoot = join(root, "cgroup");
+  config.cgroupTop = join(root, "cgroup-root");
   config.procRoot = join(root, "proc");
   config.btrfsRoot = join(root, "btrfs");
   config.sysBlockRoot = join(root, "block");
@@ -167,7 +168,6 @@ export function groupSnapshot(overrides: Partial<Group> = {}): Group {
     cache: null,
     ioRead: null,
     ioWrite: null,
-    ioWriteByDevice: null,
     readRate: null,
     writeRate: null,
     pressure: {},

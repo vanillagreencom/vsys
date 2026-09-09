@@ -5,6 +5,7 @@ export const settingLabels: Record<string, string> = {
   persistence: "Save history across restarts",
   sqlitePath: "History database path",
   cgroupRoot: "Resource groups path",
+  cgroupTop: "Machine-wide resource group root",
   procRoot: "Process information path",
   btrfsRoot: "Btrfs information path",
   sysBlockRoot: "Block device information path",

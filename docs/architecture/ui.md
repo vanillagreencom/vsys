@@ -27,6 +27,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Search filters names, accounts, panes, window titles, worktrees, branches and tools. `src/ui/App.test.tsx` checks a worktree search and clearing the filter.
 - A recorded event alone does not become a current concern. `src/ui/overview.test.ts` checks resolved events and missing source data.
 - An unreadable write total renders as "not available" rather than an empty row. `src/ui/storage.test.ts` checks every write section with no readable source.
+- A device-mapper row and the disk beneath it count the same bytes, and the device section says so when one is present. `src/ui/storage.test.ts` checks that line.
 - No attention text is repeated. `src/ui/overview.test.ts` and `src/ui/App.test.tsx` check unique card titles across every cause.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
 

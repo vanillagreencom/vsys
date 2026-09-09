@@ -1,4 +1,4 @@
-import { createCollector } from "./collect/collector";
+import { collectionKeys, createCollector } from "./collect/collector";
 import type { SccacheCollector } from "./collect/sccache";
 import { type Config, saveConfig, validate } from "./config/config";
 import { notify } from "./model/alerts";
@@ -108,29 +108,8 @@ export class Session {
     let nextHistory = this.history;
     let nextSource = this.source;
     try {
-      const collectionChanged = [
-        "cgroupRoot",
-        "procRoot",
-        "btrfsRoot",
-        "sysBlockRoot",
-        "watchedSlices",
-        "agentSlice",
-        "agentTools",
-        "memoryFloor",
-        "pressureAmber",
-        "pressureRed",
-        "pressureHoldSeconds",
-        "laneNaming",
-        "laneEnv",
-        "scratchDirs",
-        "scratchQuota",
-        "scratchRefreshMs",
-        "btrfsMounts",
-        "scrubDir",
-      ].some(
-        (k) =>
-          JSON.stringify(this.config[k as keyof Config]) !==
-          JSON.stringify(next[k as keyof Config]),
+      const collectionChanged = collectionKeys.some(
+        (k) => JSON.stringify(this.config[k]) !== JSON.stringify(next[k]),
       );
       nextSource = collectionChanged
         ? await this.makeSource(next, this.source)

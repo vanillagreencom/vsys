@@ -5,12 +5,45 @@ import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Snapshot } from "../model/types";
 import { StorageCollector } from "./btrfs";
-import { collectGroups } from "./cgroups";
+import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
 import { kernelCgroupRoot, readMounts } from "./mounts";
 import { ProcessCollector } from "./procs";
 import { SccacheCollector } from "./sccache";
 import { collectSystem } from "./system";
+
+/**
+ * Every setting collection reads. A saved change to one of them rebuilds the
+ * collector, so a new collection setting must be declared here.
+ * `collector.test.ts` scans the collection modules and fails on a forgotten one.
+ */
+export const collectionKeys: (keyof Config)[] = [
+  "cgroupRoot",
+  "cgroupTop",
+  "procRoot",
+  "btrfsRoot",
+  "sysBlockRoot",
+  "watchedSlices",
+  "agentSlice",
+  "desktopSlice",
+  "agentTools",
+  "excludeArgv",
+  "capMarkers",
+  "linkerNames",
+  "memoryFloor",
+  "pressureAmber",
+  "pressureRed",
+  "pressureHoldSeconds",
+  "laneNaming",
+  "laneEnv",
+  "scratchDirs",
+  "scratchQuota",
+  "scratchRefreshMs",
+  "btrfsMounts",
+  "scrubDir",
+  "smartDir",
+  "notifications",
+];
 
 /** The scheduler awaits each sample, so ticks cannot overlap. */
 export class Collector {
@@ -90,6 +123,8 @@ export class Collector {
       mountInfo,
       !this.live,
     );
+    // Device totals cover the whole machine, so they are read above the watched tree.
+    storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);
     this.controller.signal.throwIfAborted();
     mark("storage");
     const sccache = await this.sccache?.collect(r, time);

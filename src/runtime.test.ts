@@ -188,3 +188,36 @@ test("a settings change hands the running source to its replacement", async () =
     f.cleanup();
   }
 });
+
+test("a saved collection setting rebuilds the source before the next sample", async () => {
+  const f = fixture();
+  const h = new History(f.config);
+  const built: string[] = [];
+  const collected = Promise.withResolvers<void>();
+  const session = new Session(
+    f.config,
+    join(f.root, "config.toml"),
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    {
+      frame: () => collected.resolve(),
+      error: (error) => collected.reject(error),
+    },
+    async (c) => {
+      built.push(c.smartDir);
+      return { sample: async () => emptySnapshot(2000) };
+    },
+  );
+  try {
+    session.start();
+    await collected.promise;
+    // A display-only setting keeps the running source.
+    await session.configure({ ...f.config, theme: "dark" });
+    expect(built).toEqual([]);
+    await session.configure({ ...f.config, smartDir: join(f.root, "smart2") });
+    expect(built).toEqual([join(f.root, "smart2")]);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});

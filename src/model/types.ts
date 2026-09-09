@@ -33,8 +33,6 @@ export interface Group {
   cache: number | null;
   ioRead: number | null;
   ioWrite: number | null;
-  /** Bytes written since boot per kernel device number, from the same read. */
-  ioWriteByDevice: Record<string, number> | null;
   readRate: number | null;
   writeRate: number | null;
   pressure: Record<string, Pressure | null>;
@@ -98,6 +96,8 @@ export interface Device {
 }
 export interface Storage {
   mountsAvailable?: boolean;
+  /** Bytes written since boot per device number, read at the cgroup v2 root. */
+  deviceWrites?: Record<string, number> | null;
   smartAvailable?: boolean;
   devices?: Device[];
   volumes: Volume[];
