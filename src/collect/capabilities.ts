@@ -1,14 +1,28 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "../config/config";
-import type { Capability, CapabilityId } from "../model/types";
+import type {
+  Capability,
+  CapabilityFailure,
+  CapabilityId,
+} from "../model/types";
 import { pressure } from "./io";
 
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
+type Outcome = { failure: CapabilityFailure; detail: string } | null;
 
-function why(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * The system decides the diagnosis, never the reader. An errno for a source
+ * that does not exist is an absent interface; any other errno is a source this
+ * user cannot read; a throw with no errno came from parsing what was read.
+ */
+function classify(error: unknown): Outcome {
+  const code = (error as NodeJS.ErrnoException).code;
+  const detail = error instanceof Error ? error.message : String(error);
+  if (code === "ENOENT" || code === "ENOTDIR" || code === "ENODEV")
+    return { failure: "absent", detail };
+  return { failure: code ? "unreadable" : "malformed", detail };
 }
 
 /**
@@ -17,13 +31,13 @@ function why(error: unknown): string {
  * reason rather than as a per-sample source failure on every tick.
  */
 export function probeCapabilities(c: Config): Capability[] {
-  const probes: [CapabilityId, string, () => string][] = [
+  const probes: [CapabilityId, string, () => Outcome][] = [
     [
       "cgroup2",
       join(c.cgroupRoot, "cgroup.controllers"),
       () => {
         readFileSync(join(c.cgroupRoot, "cgroup.controllers"), "utf8");
-        return "";
+        return null;
       },
     ],
     [
@@ -35,9 +49,10 @@ export function probeCapabilities(c: Config): Capability[] {
           "utf8",
         ).split(/\s+/);
         const absent = delegated.filter((name) => !enabled.includes(name));
+        // The interface answered; it just does not carry these controllers.
         return absent.length
-          ? `controllers not enabled: ${absent.join(" ")}`
-          : "";
+          ? { failure: "incomplete", detail: absent.join(" ") }
+          : null;
       },
     ],
     [
@@ -45,7 +60,7 @@ export function probeCapabilities(c: Config): Capability[] {
       join(c.procRoot, "pressure/cpu"),
       () => {
         pressure(readFileSync(join(c.procRoot, "pressure/cpu"), "utf8"));
-        return "";
+        return null;
       },
     ],
     [
@@ -53,7 +68,7 @@ export function probeCapabilities(c: Config): Capability[] {
       join(c.cgroupRoot, "io.stat"),
       () => {
         readFileSync(join(c.cgroupRoot, "io.stat"), "utf8");
-        return "";
+        return null;
       },
     ],
     [
@@ -61,17 +76,23 @@ export function probeCapabilities(c: Config): Capability[] {
       c.scrubDir,
       () => {
         readdirSync(c.scrubDir);
-        return "";
+        return null;
       },
     ],
   ];
   return probes.map(([id, source, run]) => {
-    let detail: string;
+    let outcome: Outcome;
     try {
-      detail = run();
+      outcome = run();
     } catch (error) {
-      detail = why(error);
+      outcome = classify(error);
     }
-    return { id, available: detail === "", source, detail };
+    return {
+      id,
+      available: outcome === null,
+      failure: outcome?.failure ?? null,
+      source,
+      detail: outcome?.detail ?? "",
+    };
   });
 }

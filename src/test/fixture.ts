@@ -141,6 +141,7 @@ export function capabilitySnapshot(): Capability[] {
   ).map((id) => ({
     id,
     available: true,
+    failure: null,
     source: `/fixture/${id}`,
     detail: "",
   }));

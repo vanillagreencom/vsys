@@ -174,7 +174,9 @@ export class ProcessCollector {
             command,
             group,
             tool,
-            build: helper ? null : buildKind(stat.comm, command, c.linkerNames),
+            build: helper
+              ? null
+              : buildKind(stat.comm, command, c.compilerNames, c.linkerNames),
             cwd,
             executable: null,
             branch: null,
@@ -214,9 +216,9 @@ export class ProcessCollector {
       "RUST_TEST_THREADS",
       "SHELL",
       "RUSTC_WRAPPER",
-      "MAKEFLAGS",
       c.laneEnv,
       ...c.capMarkers,
+      ...c.jobserverEnv,
       ...c.accountEnv,
       ...c.paneEnv,
       ...c.titleEnv,

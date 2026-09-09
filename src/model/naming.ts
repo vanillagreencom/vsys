@@ -43,12 +43,15 @@ export function windowTitle(
 ): string {
   return firstEnv(main, c.titleEnv) ?? "";
 }
-/** Make writes the job count and the jobserver into MAKEFLAGS. */
-export function jobserver(main: Proc | undefined): {
+/** Make writes the job count and the token pool into the configured variable. */
+export function jobserver(
+  main: Proc | undefined,
+  envNames: string[],
+): {
   jobs: number | null;
   jobserver: string | null;
 } {
-  const flags = firstEnv(main, ["MAKEFLAGS"]) ?? "";
+  const flags = firstEnv(main, envNames) ?? "";
   const jobs = flags.match(/(?:^|\s)-j\s*(\d+)/);
   const auth = flags.match(/--jobserver-(?:auth|fds)=(\S+)/);
   return {

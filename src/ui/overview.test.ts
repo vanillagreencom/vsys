@@ -279,7 +279,9 @@ test("a meter names the interface behind a missing reading", () => {
   const s = emptySnapshot();
   const drop = (id: CapabilityId) => {
     s.capabilities = s.capabilities.map((cap) =>
-      cap.id === id ? { ...cap, available: false } : cap,
+      cap.id === id
+        ? { ...cap, available: false, failure: "absent" as const }
+        : cap,
     );
   };
   const cpu = () => meterLine(meters(s, c)[0], s, c);

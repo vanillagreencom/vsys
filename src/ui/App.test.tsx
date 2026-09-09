@@ -658,6 +658,7 @@ test("Settings lists a missing capability and cards stay copy text", async () =>
       ? {
           ...cap,
           available: false,
+          failure: "absent" as const,
           source: "/proc/pressure/cpu",
           detail: "ENOENT: no such file or directory",
         }
@@ -753,6 +754,7 @@ test("Settings reports the running program while a past sample is pinned", async
       ? {
           ...cap,
           available: false,
+          failure: "absent" as const,
           source: "/proc/pressure/cpu",
           detail: "ENOENT: no such file or directory",
         }

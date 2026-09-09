@@ -68,12 +68,16 @@ test("every host-specific name ships a systemd user-session default", () => {
   expect(c.excludeArgv).toContain("rust-analyzer");
   expect(c.capMarkers).toContain("CARGO_BUILD_JOBS");
   expect(c.linkerNames).toContain("mold");
+  expect(c.compilerNames).toContain("rustc");
+  expect(c.jobserverEnv).toEqual(["MAKEFLAGS"]);
   // No host-specific list ships empty, which would silently match nothing.
   for (const list of [
     c.agentTools,
     c.excludeArgv,
     c.capMarkers,
     c.linkerNames,
+    c.compilerNames,
+    c.jobserverEnv,
     c.watchedSlices,
     c.scratchDirs,
   ])

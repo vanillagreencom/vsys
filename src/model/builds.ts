@@ -17,7 +17,7 @@ export interface LaneBuilds {
 /** A GNU make token pool, identified by the FIFO its participants share. */
 export interface Jobserver {
   fifo: string;
-  /** Tokens the pool was created with, unknown when MAKEFLAGS omits -j. */
+  /** Tokens the pool was created with, unknown when the flags omit -j. */
   total: number | null;
   inUse: number;
 }
@@ -62,7 +62,7 @@ function buildRow(
   c: Config,
 ): LaneBuilds | null {
   const slots = Object.entries(kinds).filter(([kind]) =>
-    compileOrLink(kind, c.linkerNames),
+    compileOrLink(kind, c.compilerNames, c.linkerNames),
   );
   const builds = slots.reduce((n, [, count]) => n + count, 0);
   if (!builds) return null;
@@ -115,8 +115,11 @@ export function bypassedLanes(s: Snapshot): string[] {
   return [...names].sort();
 }
 /** The token pool a build process advertises, read by the shared parser. */
-function pool(p: Proc): { fifo: string; jobs: number | null } | null {
-  const { jobs, jobserver: auth } = jobserver(p);
+function pool(
+  p: Proc,
+  envNames: string[],
+): { fifo: string; jobs: number | null } | null {
+  const { jobs, jobserver: auth } = jobserver(p, envNames);
   return p.build && auth?.startsWith("fifo:")
     ? { fifo: auth.slice("fifo:".length), jobs }
     : null;
@@ -142,18 +145,19 @@ function buildAncestor(p: Proc, byPid: Map<number, Proc>): Proc | null {
  * Token pools read from build process environments. The FIFO itself is never
  * opened, because reading it would take a token away from the build.
  *
- * MAKEFLAGS is inherited down the process tree, so a compiler and the linker
- * it runs advertise one pool twice. Only the outermost holder took a token,
- * and only it is counted.
+ * The flags variable is inherited down the process tree, so a compiler and the
+ * linker it runs advertise one pool twice. Only the outermost holder took a
+ * token, and only it is counted.
  */
-export function jobservers(s: Snapshot): Jobserver[] {
+export function jobservers(s: Snapshot, c: Config): Jobserver[] {
   const byPid = new Map(s.procs.map((p) => [p.pid, p]));
   const rows = new Map<string, Jobserver>();
   for (const p of s.procs) {
-    const own = pool(p);
+    const own = pool(p, c.jobserverEnv);
     if (own === null) continue;
     const ancestor = buildAncestor(p, byPid);
-    if (ancestor !== null && pool(ancestor)?.fifo === own.fifo) continue;
+    if (ancestor !== null && pool(ancestor, c.jobserverEnv)?.fifo === own.fifo)
+      continue;
     const row = rows.get(own.fifo) ?? { fifo: own.fifo, total: null, inUse: 0 };
     if (row.total === null) row.total = own.jobs;
     row.inUse++;
@@ -178,6 +182,6 @@ export function buildsSummary(s: Snapshot, c: Config): BuildsSummary {
     cores: s.system.cores,
     rows: laneBuilds(s, c),
     cache: cacheEffect(s),
-    jobservers: jobservers(s),
+    jobservers: jobservers(s, c),
   };
 }

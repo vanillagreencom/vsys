@@ -126,7 +126,9 @@ export function buildLoad(
   s: Snapshot,
   c: Config,
 ): { builds: number; linkers: number; lanes: number } {
-  const building = s.procs.filter((p) => compileOrLink(p.build, c.linkerNames));
+  const building = s.procs.filter((p) =>
+    compileOrLink(p.build, c.compilerNames, c.linkerNames),
+  );
   return {
     builds: building.length,
     linkers: building.filter((p) => c.linkerNames.includes(p.build ?? ""))

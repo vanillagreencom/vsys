@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Capability, CapabilityId } from "../model/types";
 import { fixture } from "../test/fixture";
+import { capabilityReason } from "../ui/settings";
 import { probeCapabilities } from "./capabilities";
 import { Collector } from "./collector";
 
@@ -38,7 +39,9 @@ test("a delegated cgroup v2 session probes every capability available", () => {
     "scrub",
   ]);
   expect(caps.filter((cap) => !cap.available)).toEqual([]);
-  expect(caps.every((cap) => cap.detail === "")).toBe(true);
+  expect(caps.every((cap) => cap.failure === null && cap.detail === "")).toBe(
+    true,
+  );
 });
 
 test("a missing interface names the source that decided it and the reason", () => {
@@ -46,6 +49,7 @@ test("a missing interface names the source that decided it and the reason", () =
   // No cgroup.controllers, no cgroup.subtree_control, no scrub directory.
   const bare = byId(probeCapabilities(f.config));
   expect(bare.get("cgroup2")?.available).toBe(false);
+  expect(bare.get("cgroup2")?.failure).toBe("absent");
   expect(bare.get("cgroup2")?.source).toBe(
     join(f.config.cgroupRoot, "cgroup.controllers"),
   );
@@ -57,9 +61,11 @@ test("a missing interface names the source that decided it and the reason", () =
   expect(bare.get("io-stat")?.available).toBe(true);
   // A hierarchy that enables neither controller names both, not the file error.
   writeFileSync(join(f.config.cgroupRoot, "cgroup.subtree_control"), "pids\n");
+  // A hierarchy that answered is incomplete, never absent or malformed.
   expect(byId(probeCapabilities(f.config)).get("delegation")).toMatchObject({
     available: false,
-    detail: "controllers not enabled: cpu memory",
+    failure: "incomplete",
+    detail: "cpu memory",
   });
   writeFileSync(
     join(f.config.cgroupRoot, "cgroup.subtree_control"),
@@ -75,16 +81,43 @@ test("a kernel without PSI and without io.stat reports both absences", () => {
   rmSync(join(f.config.procRoot, "pressure"), { recursive: true });
   rmSync(join(f.config.cgroupRoot, "io.stat"));
   const caps = byId(probeCapabilities(f.config));
-  expect(caps.get("psi")?.available).toBe(false);
-  expect(caps.get("psi")?.source).toBe(join(f.config.procRoot, "pressure/cpu"));
-  expect(caps.get("io-stat")?.available).toBe(false);
-  // A present but unparsable pressure file is an absence, not a zero reading.
-  mkdirSync(join(f.config.procRoot, "pressure"));
-  writeFileSync(join(f.config.procRoot, "pressure/cpu"), "some avg10=0.00\n");
-  expect(byId(probeCapabilities(f.config)).get("psi")).toMatchObject({
+  expect(caps.get("psi")).toMatchObject({
     available: false,
+    failure: "absent",
+  });
+  expect(caps.get("psi")?.source).toBe(join(f.config.procRoot, "pressure/cpu"));
+  expect(caps.get("io-stat")).toMatchObject({
+    available: false,
+    failure: "absent",
+  });
+});
+
+test("a present pressure file that fails is not reported as a missing kernel", () => {
+  const f = setup();
+  const path = join(f.config.procRoot, "pressure/cpu");
+  // The file exists and was read; only its contents are wrong.
+  writeFileSync(path, "some avg10=0.00\n");
+  const malformed = byId(probeCapabilities(f.config)).get("psi");
+  expect(malformed).toMatchObject({
+    available: false,
+    failure: "malformed",
     detail: "Missing pressure fields",
   });
+  expect(capabilityReason(malformed as Capability)).toBe(
+    `${path} is not in the expected format`,
+  );
+  expect(capabilityReason(malformed as Capability)).not.toContain(
+    "no PSI on this kernel",
+  );
+  // A source that exists but cannot be read is its own diagnosis. A directory
+  // in the file's place fails with an errno whatever user runs the test.
+  rmSync(path);
+  mkdirSync(path);
+  const unreadable = byId(probeCapabilities(f.config)).get("psi");
+  expect(unreadable?.failure).toBe("unreadable");
+  expect(capabilityReason(unreadable as Capability)).toBe(
+    `${path} exists but cannot be read`,
+  );
 });
 
 test("every sample carries the capabilities probed when vsys started", async () => {

@@ -208,13 +208,25 @@ export type CapabilityId =
   | "psi"
   | "io-stat"
   | "scrub";
+/**
+ * Why a source could not be used. The kinds are distinct diagnoses: a kernel
+ * that never built the interface, a file the user cannot read, a file that did
+ * not parse, and an interface present but not giving what a reading needs.
+ */
+export type CapabilityFailure =
+  | "absent"
+  | "unreadable"
+  | "malformed"
+  | "incomplete";
 /** Probed once when vsys starts; absence is a known limit, not a read failure. */
 export interface Capability {
   id: CapabilityId;
   available: boolean;
+  /** Null while the capability is available. */
+  failure: CapabilityFailure | null;
   /** The file or directory that decided it. */
   source: string;
-  /** The system's own words when the source could not be used. */
+  /** The system's own words when a read failed, or the values that decided it. */
   detail: string;
 }
 /** A complete sample carries failures rather than converting them to zero. */

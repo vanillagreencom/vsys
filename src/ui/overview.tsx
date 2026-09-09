@@ -19,7 +19,7 @@ import {
   percent,
   share,
 } from "./format";
-import { capabilityReasons } from "./settings";
+import { capabilityReason } from "./settings";
 import { themePalette } from "./theme";
 
 export interface Attention {
@@ -240,9 +240,9 @@ export function sourceFooter(s: Snapshot): string | null {
  * it, so a meter on a kernel without that interface is never merely blank.
  */
 export function unread(s: Snapshot, id?: CapabilityId): string {
-  return id && s.capabilities.some((cap) => cap.id === id && !cap.available)
-    ? `${gap}: ${capabilityReasons[id]}`
-    : gap;
+  const missing = s.capabilities.find((cap) => cap.id === id && !cap.available);
+  const reason = missing ? capabilityReason(missing) : "";
+  return reason ? `${gap}: ${reason}` : gap;
 }
 export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
   // The shared wrappers format; a capability that would have supplied a

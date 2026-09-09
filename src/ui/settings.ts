@@ -18,6 +18,8 @@ export const settingLabels: Record<string, string> = {
   excludeArgv: "Command patterns that are not agents",
   capMarkers: "Environment names that prove a build cap",
   linkerNames: "Linker program names",
+  compilerNames: "Compiler program names",
+  jobserverEnv: "Environment names that carry the build token pool",
   memoryFloor: "Low memory limit warning (bytes)",
   swapFloor: "Desktop swap warning (bytes)",
   freeFloor: "Low free space warning (bytes)",
@@ -54,18 +56,38 @@ export const capabilityLabels: Record<CapabilityId, string> = {
   "io-stat": "Per-group disk counters",
   scrub: "Disk scrub reports",
 };
-export const capabilityReasons: Record<CapabilityId, string> = {
+/** What the interface never existing means, per capability. */
+const absentReasons: Record<CapabilityId, string> = {
   cgroup2: "no cgroup v2 at the configured path",
   delegation: "resource control is not delegated to this login session",
   psi: "no PSI on this kernel",
   "io-stat": "no io.stat for these resource groups",
   scrub: "no readable scrub report directory",
 };
+/**
+ * One cause per capability, derived from what the probe found rather than from
+ * the identifier alone. A present file that cannot be read or does not parse
+ * must not send the reader looking for a kernel that lacks the interface.
+ */
+export function capabilityReason(cap: Capability): string {
+  switch (cap.failure) {
+    case "absent":
+      return absentReasons[cap.id];
+    case "unreadable":
+      return `${cap.source} exists but cannot be read`;
+    case "malformed":
+      return `${cap.source} is not in the expected format`;
+    case "incomplete":
+      return `this login session is not given ${cap.detail}`;
+    default:
+      return "";
+  }
+}
 /** One Settings line per capability, naming the reason and the source that decided it. */
 export function capabilityLine(cap: Capability): string {
-  return cap.available
-    ? `${capabilityLabels[cap.id]}: available`
-    : `${capabilityLabels[cap.id]}: not available: ${capabilityReasons[cap.id]} (${cap.source}: ${cap.detail})`;
+  if (cap.available) return `${capabilityLabels[cap.id]}: available`;
+  const reason = capabilityReason(cap);
+  return `${capabilityLabels[cap.id]}: not available${reason ? `: ${reason}` : ""} (${cap.source}: ${cap.detail})`;
 }
 export function settingLabel(key: string): string {
   return (

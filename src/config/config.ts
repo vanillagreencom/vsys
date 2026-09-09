@@ -71,6 +71,8 @@ export interface Config {
   excludeArgv: string[];
   capMarkers: string[];
   linkerNames: string[];
+  compilerNames: string[];
+  jobserverEnv: string[];
   memoryFloor: number;
   swapFloor: number;
   freeFloor: number;
@@ -147,6 +149,8 @@ export function defaults(): Config {
       "ld.gold",
       "ld.bfd",
     ],
+    compilerNames: ["rustc", "cc", "gcc", "g++", "clang", "clang++", "tsc"],
+    jobserverEnv: ["MAKEFLAGS"],
     memoryFloor: 1073741824,
     swapFloor: 536870912,
     freeFloor: 5368709120,

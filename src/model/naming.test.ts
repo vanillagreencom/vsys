@@ -46,16 +46,22 @@ test("the pane address is read from the first exported variable", () => {
   expect(paneName(processSnapshot({ env: {} }), c)).toBe("");
 });
 
-test("the make jobserver is read from MAKEFLAGS, and absence is not zero", () => {
+test("the make jobserver is read from the configured variable", () => {
+  const c = defaults();
   expect(
     jobserver(
       processSnapshot({
         env: { MAKEFLAGS: " -j8 --jobserver-auth=fifo:/tmp/GMfifo1" },
       }),
+      c.jobserverEnv,
     ),
   ).toEqual({ jobs: 8, jobserver: "fifo:/tmp/GMfifo1" });
-  expect(jobserver(processSnapshot({ env: {} }))).toEqual({
+  expect(jobserver(processSnapshot({ env: {} }), c.jobserverEnv)).toEqual({
     jobs: null,
     jobserver: null,
   });
+  // The variable is configuration, so another build system can be watched.
+  expect(
+    jobserver(processSnapshot({ env: { NINJAFLAGS: " -j2" } }), ["NINJAFLAGS"]),
+  ).toEqual({ jobs: 2, jobserver: null });
 });
