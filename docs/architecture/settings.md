@@ -6,7 +6,7 @@ Settings are validated before they reach a running dashboard. The runtime replac
 
 ## Boundaries
 
-- Every host-specific name the Overview needs is configuration: agent and desktop slices, excluded argv patterns, confinement cap markers, compiler and linker names, compiler cache names and the environment variables that carry the account, the pane address, the window title and the build token pool.
+- Every host-specific name Home needs is configuration: agent and desktop slices, excluded argv patterns, confinement cap markers, compiler and linker names, compiler cache names and the environment variables that carry the account, the pane address, the window title and the build token pool.
 - The capability probe reads each interface once at start, with the kind of any failure. One result serves every snapshot, so an interface cannot change between ticks.
 - vsys reads system state and never changes it. A remediation command is text to copy, and `writeMode` reserves a name nothing reads.
 

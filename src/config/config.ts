@@ -95,7 +95,6 @@ export interface Config {
   columns: string[];
   sort: string;
   descending: boolean;
-  theme: "terminal" | "light" | "dark";
   sparkline: "braille" | "block";
   units: "binary" | "decimal";
   notifications: string[];
@@ -177,15 +176,21 @@ export function defaults(): Config {
     columns: [...columns],
     sort: "cpu",
     descending: true,
-    theme: "terminal",
     sparkline: "block",
     units: "binary",
     notifications: [],
     writeMode: false,
     keys: {
-      overview: "0",
-      details: "d",
-      search: "/",
+      home: "1",
+      agents: "2",
+      resources: "3",
+      builds: "4",
+      storage: "5",
+      timeline: "6",
+      settings: "7",
+      next: "tab",
+      previous: "shift+tab",
+      help: "?",
       quit: "q",
       down: "j",
       up: "k",
@@ -193,20 +198,15 @@ export function defaults(): Config {
       right: "l",
       open: "return",
       back: "escape",
-      settings: ",",
+      search: "/",
+      details: "d",
+      columns: "c",
       sort: "s",
       reverse: "r",
       pin: "p",
       window: "w",
-      columns: "c",
       exportJson: "e",
       exportMarkdown: "m",
-      fleet: "1",
-      slices: "2",
-      builds: "3",
-      storage: "4",
-      timeline: "5",
-      alerts: "6",
     },
   };
 }
@@ -269,7 +269,6 @@ export function validate(value: unknown): Config {
     );
   for (const [key, allowed] of Object.entries({
     laneNaming: ["worktree", "branch", "env"],
-    theme: ["terminal", "light", "dark"],
     sparkline: ["braille", "block"],
     units: ["binary", "decimal"],
   })) {

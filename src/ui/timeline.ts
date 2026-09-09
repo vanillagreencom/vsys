@@ -1,5 +1,5 @@
 import type { Config } from "../config/config";
-import type { CauseId } from "../model/verdict";
+import type { CauseId, Level } from "../model/verdict";
 import type { TimelineEvent } from "../store/events";
 import { age, amount, gap, share } from "./format";
 
@@ -48,54 +48,93 @@ function levelWord(level: string | undefined): string {
       ? "a warning"
       : "clear";
 }
-/** One line per event: when, what changed, and why. */
-export function eventLine(e: TimelineEvent, c: Config): string {
-  const at = new Date(e.time).toLocaleTimeString();
+/** An event in parts, so a row can colour the kind and dim the time. */
+export interface EventParts {
+  time: string;
+  /** What happened, in two or three words. */
+  kind: string;
+  /** The subject and the reason, joined for one row. */
+  text: string;
+  level: Level;
+}
+export function eventParts(e: TimelineEvent, c: Config): EventParts {
+  const time = new Date(e.time).toLocaleTimeString();
   const n = e.names;
   const where = `account ${n.account || gap} in ${n.slice || "no slice"}`;
   if (e.kind === "lane-start")
-    return parts(
-      `${at} Lane started: ${e.subject}`,
-      where,
-      `${n.tool || "no agent tool"} entered a watched scope`,
-    );
+    return {
+      time,
+      kind: "Lane started",
+      text: parts(
+        e.subject,
+        where,
+        `${n.tool || "no agent tool"} entered a watched scope`,
+      ),
+      level: "ok",
+    };
   if (e.kind === "lane-stop")
-    return parts(
-      `${at} Lane stopped: ${e.subject}`,
-      where,
-      `its processes left after ${age(e.values.age ?? 0)}`,
-    );
+    return {
+      time,
+      kind: "Lane stopped",
+      text: parts(
+        e.subject,
+        where,
+        `its processes left after ${age(e.values.age ?? 0)}`,
+      ),
+      level: "ok",
+    };
   if (e.kind === "cgroup-move") {
     // The slice is worth a clause only when the move actually changed it.
     const moved =
       n.fromSlice === n.toSlice
         ? `it stayed in ${n.toSlice || "no slice"}`
         : `it left ${n.fromSlice || "no slice"} for ${n.toSlice || "no slice"}`;
-    return parts(
-      `${at} Moved cgroup: ${e.subject}`,
-      `${n.from || "no cgroup"} to ${n.to || "no cgroup"}`,
-      e.cause ? causePhrase(e.cause) : moved,
-    );
+    return {
+      time,
+      kind: "Moved cgroup",
+      text: parts(
+        e.subject,
+        `${n.from || "no cgroup"} to ${n.to || "no cgroup"}`,
+        e.cause ? causePhrase(e.cause) : moved,
+      ),
+      level: e.cause ? "warn" : "ok",
+    };
   }
   if (e.kind === "alert-open")
-    return parts(
-      `${at} Alert opened: ${causePhrase(e.cause)}`,
-      e.subject,
-      measurement(e, c),
-    );
+    return {
+      time,
+      kind: "Alert opened",
+      text: parts(causePhrase(e.cause), e.subject, measurement(e, c)),
+      level: n.level === "danger" ? "danger" : "warn",
+    };
   if (e.kind === "alert-close")
-    return parts(
-      `${at} Alert closed: ${causePhrase(e.cause)}`,
-      e.subject,
-      `open for ${age((e.values.durationMs ?? 0) / 1000)}`,
-    );
+    return {
+      time,
+      kind: "Alert closed",
+      text: parts(
+        causePhrase(e.cause),
+        e.subject,
+        `open for ${age((e.values.durationMs ?? 0) / 1000)}`,
+      ),
+      level: "ok",
+    };
   // One cause can lead twice: a warning that turns serious is a new verdict.
   const previous = (n.previous as CauseId | "") ?? "";
-  return parts(
-    `${at} Verdict: ${causePhrase(e.cause)}`,
-    e.subject,
-    e.cause && previous === e.cause
-      ? `now ${levelWord(n.level)}, was ${levelWord(n.previousLevel)}`
-      : `previously ${causePhrase(previous)}`,
-  );
+  return {
+    time,
+    kind: "Verdict",
+    text: parts(
+      causePhrase(e.cause),
+      e.subject,
+      e.cause && previous === e.cause
+        ? `now ${levelWord(n.level)}, was ${levelWord(n.previousLevel)}`
+        : `previously ${causePhrase(previous)}`,
+    ),
+    level: n.level === "danger" ? "danger" : n.level === "warn" ? "warn" : "ok",
+  };
+}
+/** One line per event: when, what changed, and why. */
+export function eventLine(e: TimelineEvent, c: Config): string {
+  const { time, kind, text } = eventParts(e, c);
+  return `${time} ${kind}: ${text}`;
 }

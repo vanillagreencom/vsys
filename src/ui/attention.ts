@@ -1,15 +1,7 @@
 import type { Config } from "../config/config";
-import { safe } from "../model/export";
 import { launcherTrail } from "../model/launcher";
 import type { CapabilityId, Snapshot } from "../model/types";
-import {
-  type Cause,
-  causes,
-  type Level,
-  type Meter,
-  meters,
-} from "../model/verdict";
-import { fleetTotal } from "./builds";
+import { type Cause, causes, type Level, type Meter } from "../model/verdict";
 import {
   amount,
   bytes,
@@ -20,7 +12,6 @@ import {
   share,
 } from "./format";
 import { capabilityReason } from "./settings";
-import { themePalette } from "./theme";
 
 export interface Attention {
   /** One identifier per cause. Two lanes with one cause share one card. */
@@ -33,7 +24,7 @@ export interface Attention {
   next: string;
   /** Read-only text to copy, built from configured names. */
   command?: string;
-  view: "Fleet" | "Storage" | "Alerts" | "Slices" | "Builds";
+  view: "Agents" | "Storage" | "Resources" | "Builds";
   laneId?: string;
   danger: boolean;
   /** Housekeeping cards are never the verdict for the machine. */
@@ -73,7 +64,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
           : `${c.agentSlice} limits do not apply to these processes.`,
         next: `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`,
         command: `systemd-run --user --slice=${c.agentSlice} --scope -- ${cause.lanes[0].tool || "AGENT"}`,
-        view: "Fleet",
+        view: "Agents",
         laneId,
       };
     }
@@ -105,9 +96,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: `Tasks stalled on storage ${percent(v.some)} of the recent window, ${percent(v.full)} of it with nothing else to run${v.linkers ? `, with ${count(v.linkers, "linker")} running in that lane` : ""}.${v.stalling ? ` Waiting on storage: ${names}.` : ""}`,
         next: writer
           ? "Lower the build job count for that lane until the stall percentage falls."
-          : "Open Slices and find what is writing in that scope, then reduce its work.",
+          : "Open Resources and find what is writing in that scope, then reduce its work.",
         command: `cat ${c.cgroupRoot}/${cause.groups[0]?.path}/io.stat`,
-        view: writer ? "Fleet" : "Slices",
+        view: writer ? "Agents" : "Resources",
         laneId: writer?.id,
       };
     }
@@ -119,7 +110,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: `${cause.consumer ? `${cause.consumer} holds ${b(v.holder)}. ` : ""}Agents hold ${b(v.cache)} of page cache, which the desktop cannot use.`,
         next: "Reduce concurrent build work, or cap the agent slice memory so the desktop keeps its pages.",
         command: `cat ${c.cgroupRoot}/${c.agentSlice}/memory.stat`,
-        view: "Slices",
+        view: "Resources",
       };
     case "free-space":
       return {
@@ -136,7 +127,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: "The limit can stop work before it finishes.",
         next: "Open the lane and check its effective memory.max against the parent slices.",
         command: `systemctl --user show ${c.agentSlice} -p MemoryMax`,
-        view: "Fleet",
+        view: "Agents",
         laneId,
       };
     case "stalls":
@@ -144,8 +135,8 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `${n} ${p(n, "lane is", "lanes are")} stalling on a resource: ${names}`,
         detail: `Highest stall share ${percent(v.worst)} of the recent window.`,
-        next: "Open Fleet and compare the CPU, memory and I/O pressure columns to find which resource is short.",
-        view: "Fleet",
+        next: "Open Agents and compare the CPU, memory and I/O pressure columns to find which resource is short.",
+        view: "Agents",
         laneId,
       };
     case "system-memory":
@@ -153,16 +144,16 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         word: "Slow",
         title: `Memory reclaim stalls tasks ${percent(v.some)} of the recent window`,
         detail: `${cause.consumer ? `${cause.consumer} holds the most swap.` : "No scope holds swap yet, so reclaim is dropping page cache."}${n ? ` Waiting on memory: ${names}.` : ""}`,
-        next: "Open Slices and reduce the work in the group with the largest memory use.",
-        view: "Slices",
+        next: "Open Resources and reduce the work in the group with the largest memory use.",
+        view: "Resources",
       };
     case "system-cpu":
       return {
         word: "Slow",
         title: `Tasks wait for CPU ${percent(v.some)} of the recent window${cause.consumer ? `, busiest lane ${cause.consumer}` : ""}`,
         detail: `${cause.consumer ? `${cause.consumer} is the busiest lane.` : "No lane is running, so the load is outside the watched slices."}${n ? ` Waiting on CPU: ${names}.` : ""}`,
-        next: "Open Fleet and sort by CPU to find the lane to pause.",
-        view: "Fleet",
+        next: "Open Agents and sort by CPU to find the lane to pause.",
+        view: "Agents",
       };
     case "memory-high": {
       const groups = cause.groups.length;
@@ -170,8 +161,8 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         word: "Busy",
         title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => g.name))}`,
         detail: "Memory reclaim can slow every task in these groups.",
-        next: "Open Slices and raise memory.high, or reduce the work running there.",
-        view: "Slices",
+        next: "Open Resources and raise memory.high, or reduce the work running there.",
+        view: "Resources",
       };
     }
     case "scrub":
@@ -234,7 +225,6 @@ export function sourceFooter(s: Snapshot): string | null {
     ? `vsys cannot read ${sources.size} ${p(sources.size, "source", "sources")}; open Settings`
     : null;
 }
-/** Meter prose, including the missing-mount and unavailable-counter wording. */
 /**
  * A quantity vsys could not read names the interface that would have supplied
  * it, so a meter on a kernel without that interface is never merely blank.
@@ -244,140 +234,92 @@ export function unread(s: Snapshot, id?: CapabilityId): string {
   const reason = missing ? capabilityReason(missing) : "";
   return reason ? `${gap}: ${reason}` : gap;
 }
-export function meterLine(meter: Meter, s: Snapshot, c: Config): string {
+/** A meter as a tile: one headline number, one line of context, and the facts behind it. */
+export interface TileCopy {
+  label: string;
+  value: string;
+  detail: string;
+  level: Level;
+  /** Everything the meter knows, for the screen that drills into it. */
+  facts: [string, string][];
+}
+export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
   // The shared wrappers format; a capability that would have supplied a
   // missing quantity replaces their bare wording with its reason.
   const b = (n: number | null, id?: CapabilityId) =>
     n === null ? unread(s, id) : amount(n, c);
   const pc = (n: number | null, id?: CapabilityId) =>
     n === null ? unread(s, id) : share(n);
-  const who = (label: string, value: string, id?: CapabilityId) =>
-    meter.consumer
-      ? `${label} ${meter.consumer} ${value}`
-      : `${label} ${unread(s, id)}`;
+  const who = (value: string, id?: CapabilityId) =>
+    meter.consumer ? `${meter.consumer} ${value}`.trimEnd() : unread(s, id);
   const v = meter.values;
+  const level = meter.level;
   if (meter.id === "cpu")
-    return `CPU: pressure ${pc(v.system, "psi")} | agents ${pc(v.agents, "delegation")} | desktop ${pc(v.desktop, "delegation")} | ${who("busiest lane", pc(v.top, "delegation"), "delegation")}`;
+    return {
+      label: "CPU wait",
+      value: pc(v.system, "psi"),
+      detail: `agents ${pc(v.agents, "delegation")} · desktop ${pc(v.desktop, "delegation")}`,
+      level,
+      facts: [
+        ["Tasks waiting", pc(v.system, "psi")],
+        ["Agents", pc(v.agents, "delegation")],
+        ["Desktop", pc(v.desktop, "delegation")],
+        ["Busiest agent", who(pc(v.top, "delegation"), "delegation")],
+      ],
+    };
   if (meter.id === "memory")
-    return `Memory: ${b(v.used)} used of ${b(v.total)} | agent cache ${b(v.cache, "delegation")} | desktop swap ${b(v.swap, "delegation")} | ${who("largest", b(v.largest, "delegation"), "delegation")}${meter.holder === undefined ? "" : ` | most swapped ${meter.holder || gap} ${b(v.holderSwap, "delegation")}`}`;
+    return {
+      label: "Memory",
+      value: b(v.used),
+      detail: `of ${b(v.total)} · swap ${b(v.swap, "delegation")}`,
+      level,
+      facts: [
+        ["Used", `${b(v.used)} of ${b(v.total)}`],
+        ["Agent page cache", b(v.cache, "delegation")],
+        ["Desktop swap", b(v.swap, "delegation")],
+        ["Largest", who(b(v.largest, "delegation"), "delegation")],
+        ...(meter.holder === undefined
+          ? []
+          : [
+              [
+                "Most swapped",
+                `${meter.holder || gap} ${b(v.holderSwap, "delegation")}`,
+              ] as [string, string],
+            ]),
+      ],
+    };
   if (meter.id === "disk") {
     const space =
       s.storage.mountsAvailable === false
         ? "mount information unavailable"
         : s.storage.volumes.length
-          ? `least free ${b(v.free)}`
+          ? `${b(v.free)} free`
           : "no watched filesystems";
-    return `Disk: pressure some ${pc(v.some, "psi")} full ${pc(v.full, "psi")} | ${space} | ${who("top writer", `${b(v.writeRate, "io-stat")}/s`, "io-stat")}`;
+    return {
+      label: "Disk wait",
+      value: pc(v.some, "psi"),
+      detail: space,
+      level,
+      facts: [
+        [
+          "Tasks waiting",
+          `${pc(v.some, "psi")} · nothing runnable ${pc(v.full, "psi")}`,
+        ],
+        ["Least free", space],
+        ["Top writer", who(`${b(v.writeRate, "io-stat")}/s`, "io-stat")],
+      ],
+    };
   }
-  return `${fleetTotal(v)} | ${who("busiest lane", "")}`.trimEnd();
-}
-
-export function Overview({
-  snapshot: s,
-  config: c,
-  items,
-  selected,
-  onOpen,
-}: {
-  snapshot: Snapshot;
-  config: Config;
-  items: Attention[];
-  selected: number;
-  onOpen: (item: Attention) => void;
-}) {
-  const palette = themePalette(c.theme);
-  const colour = (level: Level) =>
-    level === "danger"
-      ? palette.danger
-      : level === "warn"
-        ? palette.warning
-        : palette.fg;
-  const footer = sourceFooter(s);
-  const lead = verdictItem(items);
-  const row = (text: string) => (
-    <text flexShrink={0} fg={palette.fg} wrapMode="word">
-      {safe(text)}
-    </text>
-  );
-  return (
-    <box flexDirection="column" flexShrink={0} gap={1}>
-      <box flexDirection="column" flexShrink={0}>
-        <text
-          flexShrink={0}
-          wrapMode="word"
-          fg={colour(lead ? (lead.danger ? "danger" : "warn") : "ok")}
-          attributes={palette.selection}
-        >
-          {safe(verdictLine(items, s))}
-        </text>
-        {row("Overview: current system state")}
-      </box>
-      <box
-        flexDirection="column"
-        flexShrink={0}
-        border
-        borderColor={palette.fg}
-        title="Resource use"
-        paddingX={1}
-      >
-        {meters(s, c).map((meter) => (
-          <text
-            key={meter.id}
-            flexShrink={0}
-            wrapMode="word"
-            fg={colour(meter.level)}
-          >
-            {safe(meterLine(meter, s, c))}
-          </text>
-        ))}
-        {row("CPU 100% = one busy core. Threads can be idle.")}
-      </box>
-      <box flexDirection="column" flexShrink={0}>
-        {row(`Needs attention now${items.length ? ` (${items.length})` : ""}`)}
-        {!items.length &&
-          row("No current problems detected in available data.")}
-        {items.map((item, i) => (
-          <box
-            id={`attention-${i}`}
-            key={item.id}
-            flexDirection="column"
-            flexShrink={0}
-            marginBottom={1}
-            onMouseDown={() => onOpen(item)}
-          >
-            <text
-              flexShrink={0}
-              wrapMode="word"
-              fg={item.danger ? palette.danger : palette.warning}
-              bg={i === selected ? palette.selected : undefined}
-              attributes={i === selected ? palette.selection : undefined}
-            >
-              {safe(`${i === selected ? ">" : " "} ${item.title}`)}
-            </text>
-            {row(`  ${item.detail}`)}
-            {row(`  Next: ${item.next}`)}
-            {item.command !== undefined && row(`  Copy: ${item.command}`)}
-            {row(`  Open ${item.laneId ? "lane" : item.view.toLowerCase()} >`)}
-          </box>
-        ))}
-      </box>
-      <box flexDirection="column" flexShrink={0}>
-        {row("Find an answer")}
-        {row(
-          `${c.keys.fleet} Fleet: who is using resources?  ${c.keys.builds} Builds: what is compiling?`,
-        )}
-        {row(
-          `${c.keys.storage} Storage: can programs save files?  ${c.keys.timeline} Timeline: what changed?`,
-        )}
-        {row(
-          `${c.keys.alerts} Alerts: recorded events and missing data.  ${c.keys.settings} Settings: paths and preferences.`,
-        )}
-        {s.storage.scratchPending &&
-          row(
-            "Scratch measurement is in progress; other data continues to refresh.",
-          )}
-        {footer !== null && row(footer)}
-      </box>
-    </box>
-  );
+  return {
+    label: "Builds",
+    value: `${v.builds ?? 0} of ${v.cores ?? 0} cores`,
+    detail: `${count(v.linkers, "linker")} · ${count(v.lanes, "lane")}`,
+    level,
+    facts: [
+      ["Compile and link", `${v.builds ?? 0} of ${v.cores ?? 0} cores`],
+      ["Linkers", String(v.linkers ?? 0)],
+      ["Lanes building", String(v.lanes ?? 0)],
+      ["Busiest agent", who("")],
+    ],
+  };
 }

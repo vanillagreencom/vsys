@@ -15,39 +15,50 @@ The project includes its Bun runtime. The system Bun installation stays separate
 
 ## Features
 
-- Overview of current problems, CPU use, memory, build work and storage.
-- Searchable Fleet summaries with an optional full table.
-- Lane details with memory limits, charged resources, build work, resource history and process ancestry.
-- Resource groups, build activity, Btrfs health and scratch measurements.
-- A timeline of what changed with its cause, and Fleet at a past sample.
-- Editable settings, mouse navigation and incident exports.
+- Home: the verdict for the machine, CPU, memory, disk and build tiles with history, and one card per current problem with its next step.
+- Agents: every watched lane as a row with a CPU bar and a badge, a search, and an optional full table.
+- Agent detail: resources against limits, history charts, and the processes, launch and open files on request.
+- Resources: the machine's meters and the cgroup tree, with idle groups hidden until asked.
+- Builds: compile and link work against cores, cache hit rate, make token pools, and the building processes on request.
+- Storage: bytes written per slice and per drive, drive lifetime writes, filesystems, scrub reports and scratch sizes.
+- Timeline: charts over a chosen window, a time cursor, and what changed with its cause.
+- Settings: what vsys can read on this machine, the sources it cannot, and every setting editable in place.
+- A notice in the corner and a terminal notification when a serious problem appears.
 
 ## How it works
 
-Start with Overview and select an item under Needs attention now to inspect its cause. Open Fleet to find a lane by name, account, pane, branch or worktree. A lane name joins the account, the agent, the terminal pane and the workspace, so two agents in one worktree stay apart. Open a lane to compare resource use with its limits. Open Timeline to read what changed and why: lanes starting and stopping, processes moving between cgroups, alerts opening and closing with how long they lasted, and each new verdict. Use Alerts for the recorded rule transitions; Overview shows current observations. A partial-data notice means some sources could not be read.
+Home opens first. Its first line is the verdict: healthy, or the worst current cause. Select a card under Needs attention to read its detail, its next step and a command to copy, then press Enter to open the agent or the screen it points at. Agents lists every lane; a lane name joins the account, the agent, the terminal pane and the workspace, so two agents in one worktree stay apart. Open a lane to compare its use with its limits and to unfold its processes. Timeline shows the last five minutes to the last day, and lists what changed and why: lanes starting and stopping, processes moving between cgroups, alerts opening and closing with how long they lasted, and each new verdict. Settings names the system interfaces vsys probed at start and the sources it could not read.
 
-The collector reads system files with your permissions. Application writes are limited to settings, optional history and requested exports. Desktop notifications require an enabled rule.
+The dashboard uses the terminal's own sixteen colours. Red is serious, yellow is a warning, and the accent colour marks the selection and the active tab.
+
+The collector reads system files with your permissions. Application writes are limited to settings, optional history and requested exports. Desktop notifications through `notify-send` require an enabled rule.
 
 ## Controls
 
-These are the default keys. The footer shows controls for the current screen.
+These are the default keys. The footer shows the keys for the current screen, and `?` lists them all.
 
 | Action | Key |
 | --- | --- |
-| Open Overview | `0` |
-| Open Fleet | `1` |
-| Select a lane or concern | Up / Down |
-| Inspect the selection | Enter |
-| Find a lane in Fleet | `/` |
-| Apply search / clear search | Enter / Esc while searching |
-| Switch Fleet summary / full table | `d` |
+| Open a screen | `1` to `7`, or click its tab |
+| Next or previous screen | `Tab` / `Shift+Tab` |
+| Select a row | `↑` `↓` or `k` `j` |
+| Open the selection, or unfold a section | `Enter` |
+| Back to the list | `Esc` |
+| Find an agent | `/` |
+| List or full table | `d` |
 | Choose table columns | `c` |
-| Open Settings | `,` |
-| Quit the dashboard | `q` or Ctrl+C |
+| Sort column and direction | `s` / `r` |
+| Move the time cursor | `←` `→` or `h` `l` |
+| Change the time window | `w` |
+| Show the machine at the cursor | `p` |
+| Export JSON or Markdown | `e` / `m` |
+| Quit | `q` or Ctrl+C |
 
 ## Settings
 
-Settings are stored in `~/.config/vsys-view/config.toml`. The menu controls watched slices, paths, thresholds, table columns, colours, units and keys, and it lists the system interfaces vsys probed when it started, naming the reason for each one it could not use. `laneNameParts` chooses which parts name a lane and in which order; the pane address and window title come from the variables the pane exports. vsys only reads system state: a card's remediation command is text to copy. CPU use is measured per core; the Overview explains the scale.
+Settings are stored in `~/.config/vsys-view/config.toml`. The Settings screen groups them by what they change: display, history, thresholds, agents, builds, paths, program and keys. `laneNameParts` chooses which parts name a lane and in which order; the pane address and window title come from the variables the pane exports. vsys only reads system state: a card's remediation command is text to copy. CPU use is measured per core, so one busy core reads as 100%.
+
+The `theme` setting and the `overview`, `fleet`, `slices` and `alerts` keys are gone. A config file that still names them fails validation with the name of the setting to remove. The tabs are bound by `home`, `agents`, `resources`, `builds`, `storage`, `timeline` and `settings`.
 
 History persistence is off by default. Enable it to replay incidents after a restart. A retention warning means the in-memory budget cannot hold the selected window.
 

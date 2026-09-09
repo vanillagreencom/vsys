@@ -12,11 +12,11 @@ import {
 } from "../test/fixture";
 import {
   attention,
-  meterLine,
+  meterTile,
   sourceFooter,
   unread,
   verdictLine,
-} from "./overview";
+} from "./attention";
 
 const base = ["/usr/bin", "/bin"];
 test("overview promotes active problems and does not call past events current", () => {
@@ -183,12 +183,12 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
   // One card, not a second generic stalls card, and it opens the writer lane.
   expect(attention(s, c, base).map((item) => item.id)).toEqual(["disk"]);
   expect(card.laneId).toBe("a/510341.scope");
-  expect(card.view).toBe("Fleet");
+  expect(card.view).toBe("Agents");
   expect(card.next).toContain("build job count for that lane");
-  // A desktop scope that is not a lane sends the reader to Slices instead.
+  // A desktop scope that is not a lane sends the reader to Resources instead.
   s.groups[0].path = "app.slice/gnome.scope";
   const scope = attention(s, c, base)[0];
-  expect(scope.view).toBe("Slices");
+  expect(scope.view).toBe("Resources");
   expect(scope.laneId).toBeUndefined();
   expect(scope.next).toContain("what is writing in that scope");
 });
@@ -197,13 +197,17 @@ test("counted nouns in the meters and the cards are singular at one", () => {
   const c = defaults();
   const s = emptySnapshot();
   s.procs = [processSnapshot({ pid: 1, build: "ld.mold" })];
-  expect(meterLine(meters(s, c)[3], s, c)).toBe(
-    "Build slots: 1 compile and link process / 8 cores | 1 linker | 1 building cgroup | busiest lane not available",
-  );
+  const builds = () => meterTile(meters(s, c)[3], s, c);
+  expect(builds().value).toBe("1 of 8 cores");
+  expect(builds().detail).toBe("1 linker · 1 lane");
+  expect(builds().facts).toEqual([
+    ["Compile and link", "1 of 8 cores"],
+    ["Linkers", "1"],
+    ["Lanes building", "1"],
+    ["Busiest agent", "not available"],
+  ]);
   s.procs.push(processSnapshot({ pid: 2, build: "mold", group: "/b.scope" }));
-  expect(meterLine(meters(s, c)[3], s, c)).toContain(
-    "2 linkers | 2 building cgroups",
-  );
+  expect(builds().detail).toBe("2 linkers · 2 lanes");
 });
 
 test("source read failures leave attention and become one footer line", () => {
@@ -239,20 +243,27 @@ test("the memory meter names the largest scope and only then the swap holder", (
     g("app.slice/gnome.scope", "gnome.scope", { swap: 992, memory: 4 }),
     g("b.scope", "b.scope", { memory: 900 }),
   ];
-  const line = (snapshot: Snapshot) =>
-    meterLine(meters(snapshot, c)[1], snapshot, c);
-  expect(line(s)).toBe(
-    "Memory: 500 B used of 1000 B | agent cache not available | desktop swap 0 B | largest b.scope 900 B",
-  );
+  const tile = (snapshot: Snapshot) =>
+    meterTile(meters(snapshot, c)[1], snapshot, c);
+  expect(tile(s).value).toBe("500 B");
+  expect(tile(s).detail).toBe("of 1000 B · swap 0 B");
+  expect(tile(s).facts).toEqual([
+    ["Used", "500 B of 1000 B"],
+    ["Agent page cache", "not available"],
+    ["Desktop swap", "0 B"],
+    ["Largest", "b.scope 900 B"],
+  ]);
   expect(meters(s, c)[1].level).toBe("ok");
   s.groups[0].swap = c.swapFloor + 1;
-  expect(line(s)).toContain(
-    "desktop swap 512.0 MiB | largest b.scope 900 B | most swapped gnome.scope 992 B",
-  );
+  expect(tile(s).facts.slice(2)).toEqual([
+    ["Desktop swap", "512.0 MiB"],
+    ["Largest", "b.scope 900 B"],
+    ["Most swapped", "gnome.scope 992 B"],
+  ]);
   // Swap vsys could not read is a warning, never an untroubled reading.
   s.groups[0].swap = null;
   expect(meters(s, c)[1].level).toBe("warn");
-  expect(line(s)).toContain("desktop swap not available");
+  expect(tile(s).detail).toBe("of 1000 B · swap not available");
 });
 
 test("the disk meter reports free space and says when mounts are unreadable", () => {
@@ -260,18 +271,21 @@ test("the disk meter reports free space and says when mounts are unreadable", ()
   const s = emptySnapshot();
   s.system.pressure.io = { some: 12, full: 3, total: 0 };
   s.storage.volumes = [volumeSnapshot("/full", { free: 5368709120 })];
-  const line = (snapshot: Snapshot) =>
-    meterLine(meters(snapshot, c)[2], snapshot, c);
-  expect(line(s)).toBe(
-    "Disk: pressure some 12.0% full 3.0% | least free 5.0 GiB | top writer not available",
-  );
+  const tile = (snapshot: Snapshot) =>
+    meterTile(meters(snapshot, c)[2], snapshot, c);
+  expect(tile(s).value).toBe("12.0%");
+  expect(tile(s).facts).toEqual([
+    ["Tasks waiting", "12.0% · nothing runnable 3.0%"],
+    ["Least free", "5.0 GiB free"],
+    ["Top writer", "not available"],
+  ]);
   // A readable mount whose free space is unknown says so, in the same words.
   s.storage.volumes[0].free = null;
-  expect(line(s)).toContain("least free not available");
+  expect(tile(s).detail).toBe("not available free");
   s.storage.mountsAvailable = false;
-  expect(line(s)).toContain("mount information unavailable");
+  expect(tile(s).detail).toBe("mount information unavailable");
   const bare = emptySnapshot();
-  expect(line(bare)).toContain("no watched filesystems");
+  expect(tile(bare).detail).toBe("no watched filesystems");
 });
 
 test("a meter names the interface behind a missing reading", () => {
@@ -284,39 +298,49 @@ test("a meter names the interface behind a missing reading", () => {
         : cap,
     );
   };
-  const cpu = () => meterLine(meters(s, c)[0], s, c);
-  const memory = () => meterLine(meters(s, c)[1], s, c);
-  const disk = () => meterLine(meters(s, c)[2], s, c);
+  const facts = (index: number) =>
+    Object.fromEntries(meterTile(meters(s, c)[index], s, c).facts);
+  const cpu = () => facts(0);
+  const memory = () => facts(1);
+  const disk = () => facts(2);
   // On a complete host an unread quantity says only that it is unread.
   s.system.pressure.cpu = null;
-  expect(cpu()).toBe(
-    "CPU: pressure not available | agents not available | desktop not available | busiest lane not available",
-  );
+  expect(cpu()).toEqual({
+    "Tasks waiting": "not available",
+    Agents: "not available",
+    Desktop: "not available",
+    "Busiest agent": "not available",
+  });
   drop("psi");
-  expect(cpu()).toBe(
-    "CPU: pressure not available: no PSI on this kernel | agents not available | desktop not available | busiest lane not available",
-  );
-  expect(disk()).toContain(
-    "pressure some not available: no PSI on this kernel full not available: no PSI on this kernel",
+  expect(cpu()["Tasks waiting"]).toBe("not available: no PSI on this kernel");
+  expect(cpu().Agents).toBe("not available");
+  expect(disk()["Tasks waiting"]).toBe(
+    "not available: no PSI on this kernel · nothing runnable not available: no PSI on this kernel",
   );
   // A reading the kernel did supply is unaffected by an absence elsewhere.
   s.system.pressure.io = { some: 12, full: 3, total: 0 };
-  expect(disk()).toContain("Disk: pressure some 12.0% full 3.0%");
+  expect(disk()["Tasks waiting"]).toBe("12.0% · nothing runnable 3.0%");
   // Each absent interface explains only the numbers it would have supplied.
   drop("io-stat");
-  expect(disk()).toContain(
-    "top writer not available: no io.stat for these resource groups",
+  expect(disk()["Top writer"]).toBe(
+    "not available: no io.stat for these resource groups",
   );
-  expect(memory()).toBe(
-    "Memory: 500 B used of 1000 B | agent cache not available | desktop swap not available | largest not available",
-  );
+  expect(memory()).toEqual({
+    Used: "500 B of 1000 B",
+    "Agent page cache": "not available",
+    "Desktop swap": "not available",
+    Largest: "not available",
+  });
   drop("delegation");
-  expect(memory()).toBe(
-    "Memory: 500 B used of 1000 B | agent cache not available: resource control is not delegated to this login session | desktop swap not available: resource control is not delegated to this login session | largest not available: resource control is not delegated to this login session",
-  );
-  expect(cpu()).toContain(
-    "agents not available: resource control is not delegated to this login session",
-  );
+  const delegated =
+    "not available: resource control is not delegated to this login session";
+  expect(memory()).toEqual({
+    Used: "500 B of 1000 B",
+    "Agent page cache": delegated,
+    "Desktop swap": delegated,
+    Largest: delegated,
+  });
+  expect(cpu().Agents).toBe(delegated);
 });
 
 test("a snapshot stored before the probe reads plainly and never claims a cause", () => {
@@ -325,9 +349,12 @@ test("a snapshot stored before the probe reads plainly and never claims a cause"
   // What History.at returns for a row an older build wrote.
   s.capabilities = [];
   s.system.pressure.cpu = null;
-  expect(meterLine(meters(s, c)[0], s, c)).toBe(
-    "CPU: pressure not available | agents not available | desktop not available | busiest lane not available",
-  );
+  expect(meterTile(meters(s, c)[0], s, c).facts).toEqual([
+    ["Tasks waiting", "not available"],
+    ["Agents", "not available"],
+    ["Desktop", "not available"],
+    ["Busiest agent", "not available"],
+  ]);
   expect(unread(s, "psi")).toBe("not available");
   expect(unread(s)).toBe("not available");
 });
