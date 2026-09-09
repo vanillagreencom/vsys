@@ -137,7 +137,14 @@ export function fixture() {
 /** Tests assume a complete host unless they remove a capability themselves. */
 export function capabilitySnapshot(): Capability[] {
   return (
-    ["cgroup2", "delegation", "psi", "io-stat", "scrub"] as CapabilityId[]
+    [
+      "cgroup2",
+      "delegation",
+      "psi",
+      "io-stat",
+      "scrub",
+      "smart",
+    ] as CapabilityId[]
   ).map((id) => ({
     id,
     available: true,

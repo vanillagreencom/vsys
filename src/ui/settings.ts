@@ -55,6 +55,7 @@ export const capabilityLabels: Record<CapabilityId, string> = {
   psi: "Pressure stall information",
   "io-stat": "Per-group disk counters",
   scrub: "Disk scrub reports",
+  smart: "Drive lifetime reports",
 };
 /** What the interface never existing means, per capability. */
 const absentReasons: Record<CapabilityId, string> = {
@@ -63,6 +64,7 @@ const absentReasons: Record<CapabilityId, string> = {
   psi: "no PSI on this kernel",
   "io-stat": "no io.stat for these resource groups",
   scrub: "no readable scrub report directory",
+  smart: "no readable drive report directory",
 };
 /**
  * One cause per capability, derived from what the probe found rather than from

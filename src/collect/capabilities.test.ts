@@ -30,6 +30,7 @@ test("a delegated cgroup v2 session probes every capability available", () => {
     "cpu io memory pids\n",
   );
   mkdirSync(f.config.scrubDir, { recursive: true });
+  mkdirSync(f.config.smartDir, { recursive: true });
   const caps = probeCapabilities(f.config);
   expect(caps.map((cap) => cap.id)).toEqual([
     "cgroup2",
@@ -37,6 +38,7 @@ test("a delegated cgroup v2 session probes every capability available", () => {
     "psi",
     "io-stat",
     "scrub",
+    "smart",
   ]);
   expect(caps.filter((cap) => !cap.available)).toEqual([]);
   expect(caps.every((cap) => cap.failure === null && cap.detail === "")).toBe(
@@ -56,6 +58,18 @@ test("a missing interface names the source that decided it and the reason", () =
   expect(bare.get("cgroup2")?.detail).toContain("ENOENT");
   expect(bare.get("scrub")?.source).toBe(f.config.scrubDir);
   expect(bare.get("scrub")?.available).toBe(false);
+  // The privileged timer writes drive reports; an absent directory is its own
+  // diagnosis and never the scrub one, because the two carry different data.
+  expect(bare.get("smart")).toMatchObject({
+    available: false,
+    failure: "absent",
+    source: f.config.smartDir,
+  });
+  expect(capabilityReason(bare.get("smart") as Capability)).toBe(
+    "no readable drive report directory",
+  );
+  mkdirSync(f.config.smartDir, { recursive: true });
+  expect(byId(probeCapabilities(f.config)).get("smart")?.available).toBe(true);
   // The fixture writes PSI and io.stat, so those two remain available.
   expect(bare.get("psi")?.available).toBe(true);
   expect(bare.get("io-stat")?.available).toBe(true);

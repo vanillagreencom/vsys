@@ -1,12 +1,13 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "../config/config";
+
 import type {
   Capability,
   CapabilityFailure,
   CapabilityId,
 } from "../model/types";
 import { pressure } from "./io";
+import type { CollectionConfig } from "./settings";
 
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
@@ -30,7 +31,7 @@ function classify(error: unknown): Outcome {
  * so a permanently absent kernel interface is reported as an absence with its
  * reason rather than as a per-sample source failure on every tick.
  */
-export function probeCapabilities(c: Config): Capability[] {
+export function probeCapabilities(c: CollectionConfig): Capability[] {
   const probes: [CapabilityId, string, () => Outcome][] = [
     [
       "cgroup2",
@@ -76,6 +77,14 @@ export function probeCapabilities(c: Config): Capability[] {
       c.scrubDir,
       () => {
         readdirSync(c.scrubDir);
+        return null;
+      },
+    ],
+    [
+      "smart",
+      c.smartDir,
+      () => {
+        readdirSync(c.smartDir);
         return null;
       },
     ],

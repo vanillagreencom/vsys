@@ -207,7 +207,8 @@ export type CapabilityId =
   | "delegation"
   | "psi"
   | "io-stat"
-  | "scrub";
+  | "scrub"
+  | "smart";
 /**
  * Why a source could not be used. The kinds are distinct diagnoses: a kernel
  * that never built the interface, a file the user cannot read, a file that did

@@ -13,6 +13,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Attention cards are grouped by cause. Each card names its subjects, a next step, and where possible a read-only command built from configured names.
 - Storage opens with bytes written since boot, by slice and by device, and the drive lifetime writes. Mount state, device counters, scrub reports and scratch sizes follow below them. `src/ui/App.test.tsx` checks that order.
 - Timeline shows what changed: lane starts and stops, cgroup moves, alerts opening and closing, and verdict changes. The store derives those events; the words, the durations and the byte counts live in `src/ui/timeline.ts`.
+- Settings lists the capabilities probed at start above the stored settings, each with the reason it is missing and the source that decided it. The probe describes the running program, so the list comes from the live sample even while a past sample is pinned. The capability identifiers and failure kinds are data; one function here turns them into the single cause that Settings and the meter fallbacks both show.
 - Fleet owns selection and vertical paging. The scroll box owns horizontal table scrolling. Other detail views use native vertical scrolling.
 - The UI opens views and exports evidence. It does not control observed processes or their terminal sessions.
 
@@ -33,6 +34,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - The Timeline event list names the cause of each change. Each event takes one truncated row and the list stops at the rows the viewport has, stating how many of the window's events it shows. `src/ui/App.test.tsx` checks a lane start with an open alert, twelve events in a short terminal, and a 400-character subject that must not push the rows below it out.
 - Timeline positions follow timestamps. `src/ui/format.test.ts` checks collection gaps and alert alignment.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
+- Settings names every stored setting and every probed capability. `src/ui/settings.test.ts` checks label coverage and the missing-capability wording, and `src/ui/App.test.tsx` checks the rendered screen on a kernel without PSI, a sample stored before the probe, and a pinned past sample.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
 - Interactive quit restores the terminal, including when history shutdown fails. `src/main.test.ts` checks isolated terminals. `src/runtime.test.ts` checks error delivery when collection and shutdown both fail.
 

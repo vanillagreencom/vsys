@@ -19,6 +19,7 @@ test("Settings states each capability and why a missing one is missing", () => {
     "Pressure stall information: available",
     "Per-group disk counters: available",
     "Disk scrub reports: available",
+    "Drive lifetime reports: available",
   ]);
   expect(
     capabilityLine({
