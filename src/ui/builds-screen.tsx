@@ -10,7 +10,17 @@ import { keyLabel } from "./chrome";
 import { age, bytes, count, gap, percent, share } from "./format";
 import { useScreenKeys } from "./keys";
 import { ui } from "./theme";
-import { Bar, Empty, Heading, Line, List, Row, Tile, Tiles } from "./widgets";
+import {
+  Bar,
+  Empty,
+  Heading,
+  Line,
+  List,
+  nextDown,
+  Row,
+  Tile,
+  Tiles,
+} from "./widgets";
 
 /** The cache reading in one clause, with the window it was measured over. */
 export function cacheText(r: Rates | null): string {
@@ -37,7 +47,7 @@ export function Builds({
   const rows = summary.rows;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setSelected((i) => Math.min(rows.length - 1, i + 1));
+      setSelected((i) => nextDown(rows.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {

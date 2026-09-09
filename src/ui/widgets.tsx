@@ -172,6 +172,15 @@ export function Row({
 }
 
 /**
+ * The selection one row below `index` in a list of `count` rows. Clamped at 0
+ * so an empty list holds the selection on the first row: a bare
+ * `count - 1` yields -1, and no row highlights when the rows come back.
+ */
+export function nextDown(count: number, index: number): number {
+  return Math.max(0, Math.min(count - 1, index + 1));
+}
+
+/**
  * A list windowed to the rows it has. Selection owns paging: the selected row
  * stays in view and the viewport never moves on its own.
  */

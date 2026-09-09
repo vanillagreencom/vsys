@@ -23,7 +23,16 @@ import {
 } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, scrollbar, ui } from "./theme";
-import { Bar, Empty, Heading, Line, Row, Tile, Tiles } from "./widgets";
+import {
+  Bar,
+  Empty,
+  Heading,
+  Line,
+  nextDown,
+  Row,
+  Tile,
+  Tiles,
+} from "./widgets";
 
 /** The Home list mixes concerns and agents; Enter opens whichever is selected. */
 export type HomeItem =
@@ -89,7 +98,7 @@ export function Home({
   }, [selected]);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      onSelect(Math.min(rows.length - 1, selected + 1));
+      onSelect(nextDown(rows.length, selected));
       return true;
     }
     if (name === c.keys.up || name === "up") {

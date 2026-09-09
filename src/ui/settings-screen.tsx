@@ -17,7 +17,7 @@ import {
   settingLabel,
 } from "./settings";
 import { scrollbar, ui } from "./theme";
-import { Empty, Heading, Line, Row } from "./widgets";
+import { Empty, Heading, Line, nextDown, Row } from "./widgets";
 
 /** A selectable line on Settings: a stored value, or the unreadable sources. */
 export type SettingItem =
@@ -100,7 +100,7 @@ export function Settings({
       return true;
     }
     if (name === c.keys.down || name === "down") {
-      setSelected((i) => Math.min(items.length - 1, i + 1));
+      setSelected((i) => nextDown(items.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {

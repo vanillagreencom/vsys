@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
-import { bar, chartRows, Line, List, Row } from "./widgets";
+import { bar, chartRows, Line, List, nextDown, Row } from "./widgets";
 
 test("a bar fills in proportion, clamps at its width, and stays empty when unread", () => {
   const rows: [number | null, number, number, string][] = [
@@ -94,6 +94,20 @@ test("a list windows around the selection and says what it left out", async () =
       none.renderer.destroy();
     });
   }
+});
+
+test("a down move stops at the last row and holds an empty list at the first", () => {
+  // count, index before the move, index after it.
+  const rows: [number, number, number][] = [
+    [0, 0, 0],
+    [0, 4, 0],
+    [1, 0, 0],
+    [3, 0, 1],
+    [3, 1, 2],
+    [3, 2, 2],
+  ];
+  for (const [count, index, expected] of rows)
+    expect(nextDown(count, index)).toBe(expected);
 });
 
 test("a line takes the terminal's foreground unless a colour is given", async () => {

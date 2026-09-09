@@ -31,6 +31,7 @@ import {
   gutter,
   Heading,
   Line,
+  nextDown,
   Row,
   Tile,
   Tiles,
@@ -105,7 +106,7 @@ export function Agent({
   }, [history, lane.id, snapshot.time, windowMs]);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setSection((i) => Math.min(sections.length - 1, i + 1));
+      setSection((i) => nextDown(sections.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {

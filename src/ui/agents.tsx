@@ -10,7 +10,7 @@ import { narrowWidth } from "./chrome";
 import { amount, blockedText, laneValue, share, sortLanes } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, scrollbar, ui } from "./theme";
-import { Bar, Line, List, Row } from "./widgets";
+import { Bar, Line, List, nextDown, Row } from "./widgets";
 
 export const columnLabels: Record<string, string> = {
   name: "Agent",
@@ -150,7 +150,7 @@ export function Agents({
     const index = chooser ? column : selected;
     const move = chooser ? setColumn : setSelected;
     if (name === c.keys.down || name === "down") {
-      move(Math.min(rows - 1, index + 1));
+      move(nextDown(rows, index));
       return true;
     }
     if (name === c.keys.up || name === "up") {

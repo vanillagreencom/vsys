@@ -8,7 +8,7 @@ import { meterTile } from "./attention";
 import { amount, bytes, gap, percent, share } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, ui } from "./theme";
-import { Bar, Field, Heading, List, Row } from "./widgets";
+import { Bar, Field, Heading, List, nextDown, Row } from "./widgets";
 
 /** A group with nothing running and little memory is noise until asked for. */
 export function idle(g: Group): boolean {
@@ -55,7 +55,7 @@ export function Resources({
   const hidden = s.groups.length - rows.length;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setSelected((i) => Math.min(rows.length - 1, i + 1));
+      setSelected((i) => nextDown(rows.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {

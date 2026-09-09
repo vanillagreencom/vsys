@@ -8,7 +8,7 @@ import { type WriteTotal, writeTotals } from "../model/writes";
 import { age, amount, gap } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, scrollbar, ui } from "./theme";
-import { Bar, Empty, Field, Heading, Line, Row } from "./widgets";
+import { Bar, Empty, Field, Heading, Line, nextDown, Row } from "./widgets";
 
 /** Everything the reader can select on Storage, top to bottom. */
 export type StorageItem =
@@ -67,7 +67,7 @@ export function Storage({
   }, [selected]);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setSelected((i) => Math.min(items.length - 1, i + 1));
+      setSelected((i) => nextDown(items.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {
