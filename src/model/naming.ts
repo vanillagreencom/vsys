@@ -19,13 +19,13 @@ export function firstEnv(
 }
 /**
  * Two agents in one worktree differ by their account, so the configuration
- * directory basename names the lane. A readable environment without any of
- * the configured variables is the tool's own default account.
+ * directory basename names the lane. A process that names no configuration
+ * directory has no account vsys can read, and a constant word in its place
+ * would widen every lane name without telling the lanes apart.
  */
 export function accountName(main: Proc | undefined, c: Config): string | null {
-  if (!main || main.envAvailable === false) return null;
   const dir = firstEnv(main, c.accountEnv);
-  return dir ? basename(dir) : "default";
+  return dir ? basename(dir) : null;
 }
 /**
  * tmux exports the pane address into every pane. A shell that knows the

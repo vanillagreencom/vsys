@@ -20,7 +20,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Arrow selection does not also move the Fleet viewport. `src/ui/screen.test.tsx` checks both summary paging and full-table scrolling.
 - Overview keeps the selected concern visible. `src/ui/App.test.tsx` checks a long list in a small terminal and opening the selected lane.
 - Lane detail names the account, the pane, the cgroup, the charged resources, the build work by kind, the effective caps and the blocked reason. `src/ui/App.test.tsx` checks the rendered lane.
-- Unreadable lane quantities render as "not available" and a blocked lane names its waiting task count and resource. `src/ui/format.test.ts` checks the lane formatters.
+- Unreadable lane quantities render as "not available", an unread memory cap is never shown as unlimited, and a blocked lane names its waiting task count and resource. `src/ui/format.test.ts` checks the lane formatters.
 - Search filters names, accounts, panes, window titles, worktrees, branches and tools. `src/ui/App.test.tsx` checks a worktree search and clearing the filter.
 - A recorded event alone does not become a current concern. `src/ui/overview.test.ts` checks resolved events and missing source data.
 - No attention text is repeated. `src/ui/overview.test.ts` and `src/ui/App.test.tsx` check unique card titles across every cause.

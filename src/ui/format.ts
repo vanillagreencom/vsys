@@ -39,6 +39,11 @@ export function share(n: number | null | undefined): string {
 export function rate(n: number | null | undefined, c: Config): string {
   return n === null || n === undefined ? gap : `${bytes(n, c)}/s`;
 }
+/** An unread cgroup tree leaves the cap unknown; only a read one is unlimited. */
+export function capText(l: Lane, c: Config): string {
+  if (!l.memoryMaxKnown) return gap;
+  return l.memoryMax === null ? "unlimited" : bytes(l.memoryMax, c);
+}
 /**
  * A blocked lane names the count of tasks in uninterruptible wait and the
  * resource whose stall share is the higher of the two.

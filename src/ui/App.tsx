@@ -21,6 +21,7 @@ import {
   amount,
   blockedText,
   bytes,
+  capText,
   gap,
   percent,
   rate,
@@ -897,7 +898,7 @@ function LaneDetail({
         wrapMode="word"
       >
         {safe(
-          `Caps: memory.max ${lane.memoryMax === null ? "unlimited" : bytes(lane.memoryMax, c)} | cpu.weight ${lane.cpuWeight ?? gap} | make jobs ${lane.jobs ?? "not set"} | jobserver ${lane.jobserver ?? "not set"}${lane.unconfined ? " | Outside agent slice" : ""}`,
+          `Caps: memory.max ${capText(lane, c)} | cpu.weight ${lane.cpuWeight ?? gap} | make jobs ${lane.jobs ?? "not set"} | jobserver ${lane.jobserver ?? "not set"}${lane.unconfined ? " | Outside agent slice" : ""}`,
         )}
       </text>
       <text

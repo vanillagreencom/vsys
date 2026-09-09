@@ -142,8 +142,12 @@ export interface Lane {
   builds: Record<string, number>;
   linkers: number;
   sccache: number;
-  /** Effective caps: the tightest limit any ancestor imposes. */
+  /**
+   * Effective caps: the tightest limit any ancestor imposes. A null cap is
+   * unlimited only while the cgroup tree covering the lane was read.
+   */
   memoryMax: number | null;
+  memoryMaxKnown: boolean;
   cpuWeight: number | null;
   jobs: number | null;
   jobserver: string | null;

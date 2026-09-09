@@ -11,7 +11,7 @@ test("the account comes from whichever agent configuration directory is set", ()
   const codex = processSnapshot({ env: { CODEX_HOME: "/home/x/.codex-work" } });
   expect(accountName(claude, c)).toBe(".2claude");
   expect(accountName(codex, c)).toBe(".codex-work");
-  expect(accountName(processSnapshot({ env: {} }), c)).toBe("default");
+  expect(accountName(processSnapshot({ env: {} }), c)).toBeNull();
   expect(
     accountName(processSnapshot({ env: {}, envAvailable: false }), c),
   ).toBeNull();

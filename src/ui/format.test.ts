@@ -6,6 +6,7 @@ import {
   amount,
   blockedText,
   bytes,
+  capText,
   laneValue,
   percent,
   rate,
@@ -53,6 +54,14 @@ test("unreadable lane quantities say so instead of showing a question mark", () 
   expect(laneValue(laneSnapshot({ account: null }), "account", c)).toBe(
     "not available",
   );
+});
+test("an unread memory cap says so instead of claiming the lane is unlimited", () => {
+  const c = defaults();
+  expect(capText(laneSnapshot({ memoryMax: 2147483648 }), c)).toBe("2.0 GiB");
+  expect(capText(laneSnapshot({ memoryMax: null }), c)).toBe("unlimited");
+  expect(
+    capText(laneSnapshot({ memoryMax: null, memoryMaxKnown: false }), c),
+  ).toBe("not available");
 });
 test("a blocked lane says how many tasks wait and on which resource", () => {
   const blocked = { state: "blocked", blocked: 2 } as const;

@@ -28,14 +28,23 @@ export function dangerousCap(
       g.max < floor,
   );
 }
-/** The tightest memory.max on the group itself or on any of its ancestors. */
-export function effectiveMax(groups: Group[], path: string): number | null {
-  const limits = groups
-    .filter(
-      (g) => g.path === "." || g.path === path || path.startsWith(`${g.path}/`),
-    )
-    .flatMap((g) => (g.max === null ? [] : [g.max]));
-  return limits.length ? Math.min(...limits) : null;
+/**
+ * The tightest memory.max on the group itself or on any of its ancestors. An
+ * unlimited cap and an unread cgroup tree are different answers, so the caller
+ * never reports a lane as unlimited on data it could not read.
+ */
+export function effectiveMax(
+  groups: Group[],
+  path: string,
+): { max: number | null; known: boolean } {
+  const covering = groups.filter(
+    (g) => g.path === "." || g.path === path || path.startsWith(`${g.path}/`),
+  );
+  const limits = covering.flatMap((g) => (g.max === null ? [] : [g.max]));
+  return {
+    max: limits.length ? Math.min(...limits) : null,
+    known: covering.length > 0,
+  };
 }
 /**
  * A blocked lane waits on storage or on memory reclaim. The resource with the
@@ -86,6 +95,7 @@ export function lanes(
     const builds: Record<string, number> = {};
     for (const p of members)
       if (p.build) builds[p.build] = (builds[p.build] ?? 0) + 1;
+    const caps = effectiveMax(groups, cgroup);
     const ioPressure = group?.pressure.io?.some ?? null;
     const memoryPressure = group?.pressure.memory?.some ?? null;
     result.push({
@@ -131,7 +141,8 @@ export function lanes(
       sccache: members.filter((p) =>
         c.sccacheNames.includes(basename(p.command[0] ?? p.comm)),
       ).length,
-      memoryMax: effectiveMax(groups, cgroup),
+      memoryMax: caps.max,
+      memoryMaxKnown: caps.known,
       cpuWeight: group?.weight ?? null,
       ...jobserver(main),
       age: Math.max(0, ...members.map((p) => p.age)),

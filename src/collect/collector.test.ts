@@ -230,7 +230,7 @@ test("branch naming follows a linked worktree and does not hide a broken gitdir"
   f.proc(40, "agents.slice/a.scope", { cwd });
   const collector = new Collector(f.config, 100, 4096);
   expect((await collector.sample(1000)).lanes[0].name).toBe(
-    "default claude feature/lane",
+    "claude feature/lane",
   );
   rmSync(join(f.root, "repo/.git/worktrees/lane/HEAD"));
   const broken = await collector.sample(2000);

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { groupSnapshot, processSnapshot } from "../test/fixture";
-import { lanes, parentChain, processTree } from "./lanes";
+import { effectiveMax, lanes, parentChain, processTree } from "./lanes";
 
 test("process trees keep children under their own parent despite PID order", () => {
   const a = processSnapshot({ pid: 40, ppid: 1, start: 10 });
@@ -41,7 +41,7 @@ test("an ungrouped lane takes its main PID from the scope root, not enumeration 
     group: "/user.slice/escaped",
   });
   const [only] = lanes([], [child, wrapper], c);
-  expect([only.mainPid, only.name]).toEqual([100, "default claude wrapper"]);
+  expect([only.mainPid, only.name]).toEqual([100, "claude wrapper"]);
 });
 
 test("two agents in one worktree under different accounts get different names", () => {
@@ -120,7 +120,11 @@ test("a lane reports its cgroup, its charged resources and its effective caps", 
   expect([lane.linkers, lane.rustc, lane.tests, lane.sccache]).toEqual([
     1, 1, 1, 1,
   ]);
-  expect([lane.memoryMax, lane.cpuWeight]).toEqual([2147483648, 50]);
+  expect([lane.memoryMax, lane.memoryMaxKnown, lane.cpuWeight]).toEqual([
+    2147483648,
+    true,
+    50,
+  ]);
   expect([lane.jobs, lane.jobserver]).toEqual([6, "fifo:/tmp/f"]);
 });
 
@@ -158,6 +162,50 @@ test("counters the kernel did not report stay unknown rather than becoming zero"
     lane.cpuWeight,
     lane.memoryMax,
   ]).toEqual([null, null, null, null, null, null]);
+});
+
+test("an unread cgroup tree leaves the memory cap unknown rather than unlimited", () => {
+  const c = defaults();
+  const covered = groupSnapshot({
+    path: "agents.slice/a.scope",
+    name: "a.scope",
+    pids: [1],
+    max: null,
+  });
+  const proc = processSnapshot({ pid: 1, group: "/agents.slice/a.scope" });
+  expect(effectiveMax([covered], "agents.slice/a.scope")).toEqual({
+    max: null,
+    known: true,
+  });
+  expect(effectiveMax([], "agents.slice/a.scope")).toEqual({
+    max: null,
+    known: false,
+  });
+  const [scoped] = lanes([covered], [proc], c);
+  expect([scoped.memoryMax, scoped.memoryMaxKnown]).toEqual([null, true]);
+  const [escaped] = lanes(
+    [],
+    [processSnapshot({ pid: 1, group: "/app.slice/x.scope" })],
+    c,
+  );
+  expect([escaped.memoryMax, escaped.memoryMaxKnown]).toEqual([null, false]);
+});
+
+test("a lane with no configured account leaves that part out of its name", () => {
+  const c = defaults();
+  const group = "/agents.slice/a.scope";
+  const [lane] = lanes(
+    [
+      groupSnapshot({
+        path: "agents.slice/a.scope",
+        name: "a.scope",
+        pids: [1],
+      }),
+    ],
+    [processSnapshot({ pid: 1, group, cwd: "/repo/kendex", env: {} })],
+    c,
+  );
+  expect([lane.account, lane.name]).toEqual([null, "claude kendex"]);
 });
 
 test("a blocked lane counts its waiting tasks and names the resource they wait on", () => {

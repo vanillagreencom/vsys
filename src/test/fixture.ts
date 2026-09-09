@@ -202,6 +202,7 @@ export function laneSnapshot(overrides: Partial<Lane> = {}): Lane {
     linkers: 0,
     sccache: 0,
     memoryMax: null,
+    memoryMaxKnown: true,
     cpuWeight: 100,
     jobs: null,
     jobserver: null,
