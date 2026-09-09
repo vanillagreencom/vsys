@@ -28,6 +28,15 @@ export function excludedArgv(command: string[], patterns: string[]): boolean {
     (p) => p !== "" && (names.includes(p) || flags.includes(p)),
   );
 }
+/**
+ * The compilers that occupy a build slot. cargo, a running test binary and a
+ * script runner supervise or execute work rather than compiling it, so they
+ * are classified builds without being slots.
+ */
+const compilers = ["rustc", "cc", "gcc", "g++", "clang", "clang++", "tsc"];
+/** One predicate for every slot total: the fleet, the meter and the lane rows. */
+export const compileOrLink = (build: string | null, linkers: string[]) =>
+  build !== null && (compilers.includes(build) || linkers.includes(build));
 /** target test artifacts are distinguishable from target build scripts. */
 export function buildKind(
   comm: string,
@@ -37,12 +46,7 @@ export function buildKind(
   const name = basename(command[0] ?? comm);
   // One configured list of linker names serves the classifier and the meters.
   if (linkers.includes(name)) return name;
-  if (
-    ["rustc", "cargo", "cc", "gcc", "g++", "clang", "clang++", "tsc"].includes(
-      name,
-    )
-  )
-    return name;
+  if (compilers.includes(name) || name === "cargo") return name;
   if (
     /\/target\/(?:[^/]+\/)?(?:debug|release)\/deps\/[^/]+-[a-f0-9]+$/.test(
       command[0] ?? "",

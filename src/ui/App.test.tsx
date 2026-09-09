@@ -84,7 +84,7 @@ test("keyboard and mouse navigate views and open lane detail", async () => {
       await ui.mockMouse.click(4, 5);
     });
     await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("Build processes");
+    expect(ui.captureCharFrame()).toContain("Build slots:");
   } finally {
     await act(async () => {
       ui.renderer.destroy();

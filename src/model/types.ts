@@ -95,6 +95,20 @@ export interface Storage {
   scratchTime?: number | null;
   scratchPending?: boolean;
 }
+/** Counters observed over the window vsys actually watched. */
+export interface SccacheDelta {
+  hits: number;
+  misses: number;
+  windowMs: number;
+}
+/** sccache counters. An unreadable server stays distinguishable from zero work. */
+export interface Sccache {
+  available: boolean;
+  hits: number | null;
+  misses: number | null;
+  sinceStart: SccacheDelta | null;
+  recent: SccacheDelta | null;
+}
 export interface System {
   host: string;
   cores: number;
@@ -187,4 +201,6 @@ export interface Snapshot {
   lanes: Lane[];
   alerts: Alert[];
   errors: SourceError[];
+  /** Absent in snapshots recorded before the build-cache reading existed. */
+  sccache?: Sccache;
 }
