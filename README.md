@@ -47,7 +47,7 @@ These are the default keys. The footer shows controls for the current screen.
 
 ## Settings
 
-Settings are stored in `~/.config/vsys-view/config.toml`. The menu controls watched slices, paths, thresholds, table columns, colours, units and keys. `laneNameParts` chooses which parts name a lane and in which order; the pane address and window title come from the variables the pane exports. CPU use is measured per core; the Overview explains the scale.
+Settings are stored in `~/.config/vsys-view/config.toml`. The menu controls watched slices, paths, thresholds, table columns, colours, units and keys, and it lists the system interfaces vsys probed when it started, naming the reason for each one it could not use. `laneNameParts` chooses which parts name a lane and in which order; the pane address and window title come from the variables the pane exports. vsys only reads system state: a card's remediation command is text to copy. CPU use is measured per core; the Overview explains the scale.
 
 History persistence is off by default. Enable it to replay incidents after a restart. A retention warning means the in-memory budget cannot hold the selected window.
 

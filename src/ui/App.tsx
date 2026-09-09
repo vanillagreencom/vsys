@@ -32,7 +32,7 @@ import {
   timeBuckets,
 } from "./format";
 import { type Attention, attention, Overview } from "./overview";
-import { settingLabel } from "./settings";
+import { capabilityLine, settingLabel } from "./settings";
 import { writeLines } from "./storage";
 import { themePalette } from "./theme";
 import { eventLine } from "./timeline";
@@ -661,34 +661,48 @@ export function App({
       </>
     );
   else if (view === "Settings") {
-    const start = Math.max(0, settingIndex - Math.floor((height - 10) / 2));
+    // The probe describes the running program, so a pinned past sample does
+    // not replace it. The list and its two headings take rows from the settings.
+    const rows = Math.max(1, height - 12 - snapshot.capabilities.length);
+    const start = Math.max(0, settingIndex - Math.floor(rows / 2));
     content = (
       <>
         {line(
           `Settings | ${c.keys.open} edits | return saves | escape cancels | lists: ["a", "b"]`,
         )}
-        {settings
-          .slice(start, start + Math.max(1, height - 10))
-          .map((key, i) => (
-            <text
-              key={key}
-              height={1}
-              flexShrink={0}
-              truncate
-              bg={settingIndex === start + i ? palette.selected : undefined}
-              fg={palette.fg}
-              attributes={
-                settingIndex === start + i ? palette.selection : undefined
-              }
-              onMouseDown={() => {
-                setSettingIndex(start + i);
-                setInput(settingText(key));
-                setEditing(true);
-              }}
-            >
-              {safe(`${settingLabel(key)}: ${settingText(key)}`)}
-            </text>
-          ))}
+        {line("System capabilities (probed when vsys started)")}
+        {snapshot.capabilities.map((cap) => (
+          <text
+            key={cap.id}
+            height={1}
+            flexShrink={0}
+            truncate
+            fg={cap.available ? palette.fg : palette.warning}
+          >
+            {safe(capabilityLine(cap))}
+          </text>
+        ))}
+        {line("Stored settings")}
+        {settings.slice(start, start + rows).map((key, i) => (
+          <text
+            key={key}
+            height={1}
+            flexShrink={0}
+            truncate
+            bg={settingIndex === start + i ? palette.selected : undefined}
+            fg={palette.fg}
+            attributes={
+              settingIndex === start + i ? palette.selection : undefined
+            }
+            onMouseDown={() => {
+              setSettingIndex(start + i);
+              setInput(settingText(key));
+              setEditing(true);
+            }}
+          >
+            {safe(`${settingLabel(key)}: ${settingText(key)}`)}
+          </text>
+        ))}
         {editing && (
           <box
             border

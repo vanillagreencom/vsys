@@ -71,6 +71,8 @@ export interface Config {
   excludeArgv: string[];
   capMarkers: string[];
   linkerNames: string[];
+  compilerNames: string[];
+  jobserverEnv: string[];
   memoryFloor: number;
   swapFloor: number;
   freeFloor: number;
@@ -97,6 +99,8 @@ export interface Config {
   sparkline: "braille" | "block";
   units: "binary" | "decimal";
   notifications: string[];
+  /** Reserved for a future write mode. vsys only reads system state today. */
+  writeMode: boolean;
   keys: Record<string, string>;
 }
 export const configPath = join(homedir(), ".config/vsys-view/config.toml");
@@ -145,6 +149,8 @@ export function defaults(): Config {
       "ld.gold",
       "ld.bfd",
     ],
+    compilerNames: ["rustc", "cc", "gcc", "g++", "clang", "clang++", "tsc"],
+    jobserverEnv: ["MAKEFLAGS"],
     memoryFloor: 1073741824,
     swapFloor: 536870912,
     freeFloor: 5368709120,
@@ -175,6 +181,7 @@ export function defaults(): Config {
     sparkline: "block",
     units: "binary",
     notifications: [],
+    writeMode: false,
     keys: {
       overview: "0",
       details: "d",

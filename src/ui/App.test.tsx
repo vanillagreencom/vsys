@@ -649,3 +649,147 @@ test("an alert inside its hold does not mark a change on the strip", async () =>
     h.close();
   }
 });
+
+test("Settings lists a missing capability and cards stay copy text", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "psi"
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: "/proc/pressure/cpu",
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  const h = new History(c);
+  h.add(s);
+  const ui = await testRender(
+    <App
+      snapshot={s}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "export.json"}
+    />,
+    { width: 200, height: 40 },
+  );
+  try {
+    await ui.renderOnce();
+    // A remediation command is text the reader copies, never an action to run.
+    const overview = ui.captureCharFrame();
+    const item = attention(s, c, ["/usr/bin"]).find(
+      (i) => i.command !== undefined,
+    );
+    expect(item?.command).toBeDefined();
+    expect(overview).toContain("Copy: ");
+    await act(async () => {
+      ui.mockInput.pressKey(",");
+    });
+    await ui.renderOnce();
+    const settings = ui.captureCharFrame();
+    expect(settings).toContain("System capabilities");
+    expect(settings).toContain("Stored settings");
+    expect(settings).toContain(
+      "Pressure stall information: not available: no PSI on this kernel",
+    );
+    expect(settings).toContain("Resource groups (cgroup v2): available");
+    // The header states the mode the reserved write-mode flag leaves in place.
+    expect(settings).toContain("read-only monitor");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
+
+test("Settings opens on a snapshot stored before the capability probe", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // What History.at returns for a row an older build wrote.
+  s.capabilities = [];
+  const h = new History(c);
+  h.add(s);
+  const ui = await testRender(
+    <App
+      snapshot={s}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "export.json"}
+    />,
+    { width: 160, height: 40 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey(",");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("System capabilities");
+    expect(frame).toContain("Stored settings");
+    expect(frame).toContain("Refresh interval (ms): 1000");
+    expect(frame).not.toContain("not available");
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});
+
+test("Settings reports the running program while a past sample is pinned", async () => {
+  const c = defaults();
+  // A retained sample an older build wrote, and a live one that probed.
+  const stored = emptySnapshot(1000);
+  stored.capabilities = [];
+  const live = emptySnapshot(2000);
+  live.capabilities = live.capabilities.map((cap) =>
+    cap.id === "psi"
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: "/proc/pressure/cpu",
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  const h = new History(c);
+  h.add(stored);
+  const ui = await testRender(
+    <App
+      snapshot={live}
+      history={h}
+      config={c}
+      onSave={async () => {}}
+      onQuit={() => {}}
+      onExport={async () => "export.json"}
+    />,
+    { width: 160, height: 40 },
+  );
+  try {
+    await act(async () => {
+      ui.mockInput.pressKey("p");
+    });
+    await act(async () => {
+      ui.mockInput.pressKey(",");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("Fleet pinned");
+    expect(frame).toContain(
+      "Pressure stall information: not available: no PSI on this kernel",
+    );
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+    h.close();
+  }
+});

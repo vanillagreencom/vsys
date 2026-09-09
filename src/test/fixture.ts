@@ -9,7 +9,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
-import type { Group, Lane, Proc, Snapshot, Volume } from "../model/types";
+import type {
+  Capability,
+  CapabilityId,
+  Group,
+  Lane,
+  Proc,
+  Snapshot,
+  Volume,
+} from "../model/types";
 
 /** Fake kernel files never require systemd, mounted test disks, or live agents. */
 export function fixture() {
@@ -126,8 +134,28 @@ export function fixture() {
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
+/** Tests assume a complete host unless they remove a capability themselves. */
+export function capabilitySnapshot(): Capability[] {
+  return (
+    [
+      "cgroup2",
+      "delegation",
+      "psi",
+      "io-stat",
+      "scrub",
+      "smart",
+    ] as CapabilityId[]
+  ).map((id) => ({
+    id,
+    available: true,
+    failure: null,
+    source: `/fixture/${id}`,
+    detail: "",
+  }));
+}
 export function emptySnapshot(time = 1000): Snapshot {
   return {
+    capabilities: capabilitySnapshot(),
     time,
     durationMs: 0,
     system: {

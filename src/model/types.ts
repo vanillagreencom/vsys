@@ -201,8 +201,38 @@ export interface Alert {
   subject: string;
   message: string;
 }
+/** A kernel or system interface the dashboard needs to fill a reading. */
+export type CapabilityId =
+  | "cgroup2"
+  | "delegation"
+  | "psi"
+  | "io-stat"
+  | "scrub"
+  | "smart";
+/**
+ * Why a source could not be used. The kinds are distinct diagnoses: a kernel
+ * that never built the interface, a file the user cannot read, a file that did
+ * not parse, and an interface present but not giving what a reading needs.
+ */
+export type CapabilityFailure =
+  | "absent"
+  | "unreadable"
+  | "malformed"
+  | "incomplete";
+/** Probed once when vsys starts; absence is a known limit, not a read failure. */
+export interface Capability {
+  id: CapabilityId;
+  available: boolean;
+  /** Null while the capability is available. */
+  failure: CapabilityFailure | null;
+  /** The file or directory that decided it. */
+  source: string;
+  /** The system's own words when a read failed, or the values that decided it. */
+  detail: string;
+}
 /** A complete sample carries failures rather than converting them to zero. */
 export interface Snapshot {
+  capabilities: Capability[];
   time: number;
   durationMs: number;
   system: System;

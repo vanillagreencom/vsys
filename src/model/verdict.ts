@@ -126,7 +126,9 @@ export function buildLoad(
   s: Snapshot,
   c: Config,
 ): { builds: number; linkers: number; lanes: number } {
-  const building = s.procs.filter((p) => compileOrLink(p.build, c.linkerNames));
+  const building = s.procs.filter((p) =>
+    compileOrLink(p.build, c.compilerNames, c.linkerNames),
+  );
   return {
     builds: building.length,
     linkers: building.filter((p) => c.linkerNames.includes(p.build ?? ""))
@@ -334,6 +336,8 @@ export function meters(s: Snapshot, c: Config): Meter[] {
       level: gauge(cpu, c.pressureRed, c.pressureAmber),
       consumer: top?.name ?? "",
       values: {
+        // The stall percentage the level grades on, so the meter shows its cause.
+        system: cpu,
         agents: sliceSum(s.groups, c.agentSlice, (g) => g.cpuPercent),
         desktop: sliceSum(s.groups, c.desktopSlice, (g) => g.cpuPercent),
         top: top?.cpu ?? null,

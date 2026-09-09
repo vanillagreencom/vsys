@@ -82,6 +82,28 @@ test("a stored lane written before this build's fields loads with unknown values
     null,
   ]);
 });
+test("a stored snapshot written before the capability probe loads with none", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  first.add(s);
+  first.close();
+  // What an older build wrote: a snapshot with no capabilities key at all.
+  const { capabilities, ...stored } = s;
+  expect(capabilities.length).toBeGreaterThan(0);
+  const db = new Database(f.config.sqlitePath);
+  db.query("UPDATE samples SET data = ? WHERE time = ?").run(
+    Bun.gzipSync(JSON.stringify(stored)),
+    now,
+  );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  expect(reopened.at(now)?.capabilities).toEqual([]);
+});
 test("history refuses an existing database owned by another application", () => {
   const f = fixture();
   cleanup.push(f.cleanup);

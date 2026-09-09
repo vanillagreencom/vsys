@@ -189,7 +189,7 @@ test("four meters carry exact numbers and the biggest consumer", () => {
     id: "cpu",
     level: "ok",
     consumer: "lane-a",
-    values: { agents: 11.8, desktop: 40, top: 30 },
+    values: { system: 1, agents: 11.8, desktop: 40, top: 30 },
   });
   // "largest" always means the largest memory scope; the swap holder is its
   // own field and appears only while the desktop is swapped out.

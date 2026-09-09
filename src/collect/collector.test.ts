@@ -203,11 +203,21 @@ test("build and agent classification does not match prompt arguments", () => {
     [["node", "server.js"], null],
     [["node", "server.js", "build"], null],
   ] as const)
-    expect(buildKind(command[0], [...command], defaults().linkerNames)).toBe(
-      expected,
-    );
-  // The linker list is configuration, so an empty list classifies no linker.
-  expect(buildKind("ld.mold", ["/usr/bin/ld.mold"], [])).toBeNull();
+    expect(
+      buildKind(
+        command[0],
+        [...command],
+        defaults().compilerNames,
+        defaults().linkerNames,
+      ),
+    ).toBe(expected);
+  // Both name lists are configuration, so an empty list classifies nothing.
+  expect(
+    buildKind("ld.mold", ["/usr/bin/ld.mold"], defaults().compilerNames, []),
+  ).toBeNull();
+  expect(
+    buildKind("rustc", ["/usr/bin/rustc"], [], defaults().linkerNames),
+  ).toBeNull();
   expect(toolName("bash", ["bash", "-c", "claude"], ["claude"])).toBeNull();
   expect(toolName("node", ["node", "/bin/codex.js"], ["codex"])).toBe("codex");
 });
@@ -419,7 +429,7 @@ test("build process environments carry the wrapper and the make token pool", asy
   });
   expect(s.sccache?.hits).toBe(8);
   expect(bypassedLanes(s)).toEqual([s.lanes[0].name]);
-  expect(jobservers(s)).toEqual([
+  expect(jobservers(s, f.config)).toEqual([
     { fifo: "/tmp/GMfifo1", total: 16, inUse: 1 },
   ]);
 });

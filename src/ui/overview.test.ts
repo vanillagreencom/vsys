@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
-import type { Snapshot } from "../model/types";
+import type { CapabilityId, Snapshot } from "../model/types";
 import { meters } from "../model/verdict";
 import {
   emptySnapshot,
@@ -10,7 +10,13 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import { attention, meterLine, sourceFooter, verdictLine } from "./overview";
+import {
+  attention,
+  meterLine,
+  sourceFooter,
+  unread,
+  verdictLine,
+} from "./overview";
 
 const base = ["/usr/bin", "/bin"];
 test("overview promotes active problems and does not call past events current", () => {
@@ -266,4 +272,62 @@ test("the disk meter reports free space and says when mounts are unreadable", ()
   expect(line(s)).toContain("mount information unavailable");
   const bare = emptySnapshot();
   expect(line(bare)).toContain("no watched filesystems");
+});
+
+test("a meter names the interface behind a missing reading", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const drop = (id: CapabilityId) => {
+    s.capabilities = s.capabilities.map((cap) =>
+      cap.id === id
+        ? { ...cap, available: false, failure: "absent" as const }
+        : cap,
+    );
+  };
+  const cpu = () => meterLine(meters(s, c)[0], s, c);
+  const memory = () => meterLine(meters(s, c)[1], s, c);
+  const disk = () => meterLine(meters(s, c)[2], s, c);
+  // On a complete host an unread quantity says only that it is unread.
+  s.system.pressure.cpu = null;
+  expect(cpu()).toBe(
+    "CPU: pressure not available | agents not available | desktop not available | busiest lane not available",
+  );
+  drop("psi");
+  expect(cpu()).toBe(
+    "CPU: pressure not available: no PSI on this kernel | agents not available | desktop not available | busiest lane not available",
+  );
+  expect(disk()).toContain(
+    "pressure some not available: no PSI on this kernel full not available: no PSI on this kernel",
+  );
+  // A reading the kernel did supply is unaffected by an absence elsewhere.
+  s.system.pressure.io = { some: 12, full: 3, total: 0 };
+  expect(disk()).toContain("Disk: pressure some 12.0% full 3.0%");
+  // Each absent interface explains only the numbers it would have supplied.
+  drop("io-stat");
+  expect(disk()).toContain(
+    "top writer not available: no io.stat for these resource groups",
+  );
+  expect(memory()).toBe(
+    "Memory: 500 B used of 1000 B | agent cache not available | desktop swap not available | largest not available",
+  );
+  drop("delegation");
+  expect(memory()).toBe(
+    "Memory: 500 B used of 1000 B | agent cache not available: resource control is not delegated to this login session | desktop swap not available: resource control is not delegated to this login session | largest not available: resource control is not delegated to this login session",
+  );
+  expect(cpu()).toContain(
+    "agents not available: resource control is not delegated to this login session",
+  );
+});
+
+test("a snapshot stored before the probe reads plainly and never claims a cause", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // What History.at returns for a row an older build wrote.
+  s.capabilities = [];
+  s.system.pressure.cpu = null;
+  expect(meterLine(meters(s, c)[0], s, c)).toBe(
+    "CPU: pressure not available | agents not available | desktop not available | busiest lane not available",
+  );
+  expect(unread(s, "psi")).toBe("not available");
+  expect(unread(s)).toBe("not available");
 });

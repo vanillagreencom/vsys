@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { buildKind, compileOrLink } from "../collect/builds";
 import { defaults } from "../config/config";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
 import {
@@ -146,7 +147,7 @@ test("a make jobserver reports tokens in use against the pool it was given", () 
   // A second pool without -j leaves its total unknown rather than zero.
   const other = s.procs.find((x) => x.pid === 20);
   if (other) other.env = { MAKEFLAGS: "w --jobserver-auth=fifo:/tmp/GMfifo7" };
-  expect(jobservers(s)).toEqual([
+  expect(jobservers(s, defaults())).toEqual([
     { fifo: "/tmp/GMfifo42", total: 16, inUse: 3 },
     { fifo: "/tmp/GMfifo7", total: null, inUse: 1 },
   ]);
@@ -169,7 +170,7 @@ test("only the outermost holder of a token pool is counted", () => {
     // A second pool nested under the first is its own holder.
     p(14, 10, "cc", " -j2 --jobserver-auth=fifo:/tmp/GMfifo7"),
   ];
-  const pools = jobservers(s);
+  const pools = jobservers(s, defaults());
   expect(pools).toEqual([
     { fifo: "/tmp/GMfifo42", total: 4, inUse: 2 },
     { fifo: "/tmp/GMfifo7", total: 2, inUse: 1 },
@@ -182,5 +183,25 @@ test("a pipe jobserver and a missing environment produce no token pool", () => {
   const s = building();
   const p = s.procs[0];
   p.env = { MAKEFLAGS: " -j16 --jobserver-auth=3,4" };
-  expect(jobservers(s)).toEqual([]);
+  expect(jobservers(s, defaults())).toEqual([]);
+});
+
+test("a configured wrapper name occupies a build slot like any compiler", () => {
+  const c = defaults();
+  c.compilerNames = [...c.compilerNames, "distcc"];
+  const s = building();
+  s.procs = [
+    processSnapshot({ pid: 10, build: "distcc", group: s.procs[0].group }),
+  ];
+  // The classifier, the fleet total and the lane row read one configured list.
+  expect(
+    buildKind("distcc", ["/usr/bin/distcc"], c.compilerNames, c.linkerNames),
+  ).toBe("distcc");
+  expect(compileOrLink("distcc", c.compilerNames, c.linkerNames)).toBe(true);
+  expect(buildsSummary(s, c).builds).toBe(1);
+  // Removing the name from configuration removes the slot; nothing is implied.
+  expect(compileOrLink("distcc", defaults().compilerNames, c.linkerNames)).toBe(
+    false,
+  );
+  expect(buildsSummary(s, defaults()).builds).toBe(0);
 });

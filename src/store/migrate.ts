@@ -60,5 +60,11 @@ export function normalizeLane(stored: Partial<Lane>): Lane {
  * carried. It is idempotent: a snapshot of the current shape passes through.
  */
 export function normalizeSnapshot(s: Snapshot): Snapshot {
-  return { ...s, lanes: (s.lanes ?? []).map(normalizeLane) };
+  return {
+    ...s,
+    // A build older than the capability probe recorded no capabilities. An
+    // empty list is the unknown value: no reading claims a missing interface.
+    capabilities: s.capabilities ?? [],
+    lanes: (s.lanes ?? []).map(normalizeLane),
+  };
 }
