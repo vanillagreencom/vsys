@@ -235,7 +235,7 @@ export function processTree(procs: Proc[]): { proc: Proc; depth: number }[] {
     })
     .map(({ proc, chain }) => ({ proc, depth: chain.length - 1 }));
 }
-/** Fleet colouring considers every resource while its pressure column shows CPU. */
+/** Agents colouring considers every resource while its pressure column shows CPU. */
 export function lanePressure(lane: Lane): number | null {
   const values = [lane.pressure, lane.memoryPressure, lane.ioPressure].filter(
     (n): n is number => typeof n === "number",

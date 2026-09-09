@@ -48,7 +48,7 @@ export function exportSnapshot(
       s.system.zram.map((z) => [z.device, z.original, z.compressed, z.used]),
     ),
     "",
-    "## Fleet",
+    "## Agents",
     "",
     ...table(
       [

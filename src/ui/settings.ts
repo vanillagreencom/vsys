@@ -11,7 +11,7 @@ export const settingLabels: Record<string, string> = {
   procRoot: "Process information path",
   btrfsRoot: "Btrfs information path",
   sysBlockRoot: "Block device information path",
-  watchedSlices: "Slices shown in Fleet",
+  watchedSlices: "Slices shown under Agents",
   agentSlice: "Agent resource slice",
   desktopSlice: "Desktop resource slice",
   agentTools: "Agent program names",
@@ -40,14 +40,75 @@ export const settingLabels: Record<string, string> = {
   scrubDir: "Scrub report directory",
   smartDir: "SMART report directory",
   columns: "Table columns in display order",
-  sort: "Fleet sort column",
+  sort: "Agents sort column",
   descending: "Sort largest first",
-  theme: "Colour theme",
   sparkline: "Chart style",
   units: "Storage units",
   notifications: "Rules with desktop notifications",
   writeMode: "Allow vsys to change the system (reserved; vsys only reads)",
 };
+/** Settings by what they change, so a reader finds one without a search. */
+export const settingGroups: [string, string[]][] = [
+  [
+    "Display",
+    ["units", "sparkline", "columns", "sort", "descending", "refreshMs"],
+  ],
+  ["History", ["historyHours", "persistence", "sqlitePath"]],
+  [
+    "Thresholds",
+    [
+      "pressureAmber",
+      "pressureRed",
+      "pressureHoldSeconds",
+      "memoryFloor",
+      "swapFloor",
+      "freeFloor",
+      "scratchQuota",
+    ],
+  ],
+  [
+    "Agents",
+    [
+      "agentTools",
+      "excludeArgv",
+      "watchedSlices",
+      "agentSlice",
+      "desktopSlice",
+      "laneNaming",
+      "laneEnv",
+      "laneNameParts",
+      "accountEnv",
+      "paneEnv",
+      "titleEnv",
+    ],
+  ],
+  [
+    "Builds",
+    [
+      "compilerNames",
+      "linkerNames",
+      "sccacheNames",
+      "jobserverEnv",
+      "capMarkers",
+    ],
+  ],
+  [
+    "Paths",
+    [
+      "cgroupRoot",
+      "cgroupTop",
+      "procRoot",
+      "btrfsRoot",
+      "sysBlockRoot",
+      "btrfsMounts",
+      "scrubDir",
+      "smartDir",
+      "scratchDirs",
+      "scratchRefreshMs",
+    ],
+  ],
+  ["Program", ["notifications", "writeMode"]],
+];
 /** Names and missing-interface wording for the capabilities probed at start. */
 export const capabilityLabels: Record<CapabilityId, string> = {
   cgroup2: "Resource groups (cgroup v2)",

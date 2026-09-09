@@ -3,6 +3,7 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
+import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import {
@@ -13,88 +14,100 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { App, Waiting } from "./App";
-import { attention } from "./overview";
+import { attention } from "./attention";
 
-test("keyboard and mouse navigate views and open lane detail", async () => {
-  const c = defaults();
-  const s = emptySnapshot();
-  s.lanes = [laneSnapshot()];
-  s.groups = [groupSnapshot()];
-  const h = new History(c);
-  h.add(s);
-  let quit = false;
+/** One mounted App over a history, with the hooks a test asserts on. */
+async function mount(
+  s: Snapshot,
+  c: Config,
+  size = { width: 140, height: 35 },
+  hooks: Partial<{
+    onSave: (next: Config) => Promise<void>;
+    onQuit: () => void;
+    history: History;
+  }> = {},
+) {
+  const h = hooks.history ?? new History(c);
+  if (!hooks.history) h.add(s);
   const ui = await testRender(
     <App
       snapshot={s}
       history={h}
       config={c}
-      onSave={async () => {}}
-      onQuit={() => {
-        quit = true;
-      }}
+      onSave={hooks.onSave ?? (async () => {})}
+      onQuit={hooks.onQuit ?? (() => {})}
       onExport={async () => "snapshot.json"}
     />,
-    { width: 140, height: 35 },
+    size,
   );
-  try {
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("Overview: current system state");
+  const press = async (key: string) => {
     await act(async () => {
-      ui.mockInput.pressKey("1");
+      if (key === "enter") ui.mockInput.pressEnter();
+      else if (key === "escape") {
+        // A lone escape waits for the rest of a sequence before it is a key.
+        ui.mockInput.pressEscape();
+        await Bun.sleep(50);
+      } else if (["up", "down", "left", "right"].includes(key))
+        ui.mockInput.pressArrow(key as "up" | "down" | "left" | "right");
+      else ui.mockInput.pressKey(key);
     });
     await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("lane-a");
-    await act(async () => {
-      ui.mockInput.pressKey("2");
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("CPU weight / quota");
-    await act(async () => {
-      ui.mockInput.pressKey("3");
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("No build processes");
-    await act(async () => {
-      ui.mockInput.pressKey("4");
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("No watched btrfs mounts");
-    await act(async () => {
-      ui.mockInput.pressKey("5");
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("Btrfs corruption");
-    await act(async () => {
-      ui.mockInput.pressKey("6");
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("No rule hits");
-    await act(async () => {
-      ui.mockInput.pressKey("1");
-    });
-    await act(async () => {
-      ui.mockInput.pressEnter();
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("main PID 40");
-    await act(async () => {
-      ui.mockInput.pressKey("q");
-    });
-    expect(quit).toBe(true);
-    await act(async () => {
-      await ui.mockMouse.click(4, 5);
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("Build slots:");
-  } finally {
+  };
+  const frame = () => ui.captureCharFrame();
+  const close = async () => {
     await act(async () => {
       ui.renderer.destroy();
     });
     h.close();
+  };
+  return { ui, h, press, frame, close };
+}
+
+test("keys and the mouse move between tabs, open an agent, and quit", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot()];
+  s.groups = [groupSnapshot()];
+  let quit = false;
+  const t = await mount(s, c, undefined, {
+    onQuit: () => {
+      quit = true;
+    },
+  });
+  try {
+    await t.ui.renderOnce();
+    expect(t.frame()).toContain("Needs attention");
+    const expected: [string, string][] = [
+      ["2", "sorted by CPU"],
+      ["3", "Groups"],
+      ["4", "Nothing is compiling or linking"],
+      ["5", "Written since boot"],
+      ["6", "What changed"],
+      ["7", "Data sources"],
+    ];
+    for (const [key, text] of expected) {
+      await t.press(key);
+      expect(t.frame()).toContain(text);
+    }
+    await t.press("2");
+    await t.press("enter");
+    expect(t.frame()).toContain("PID 40");
+    expect(t.frame()).toContain("Processes");
+    await t.press("escape");
+    expect(t.frame()).toContain("sorted by CPU");
+    await act(async () => {
+      await t.ui.mockMouse.click(60, 0);
+    });
+    await t.ui.renderOnce();
+    expect(t.frame()).toContain("Groups");
+    await t.press("q");
+    expect(quit).toBe(true);
+  } finally {
+    await t.close();
   }
 });
 
-test("cursor pinning preserves the prior Fleet snapshot", async () => {
+test("pinning shows the machine at the cursor on the sample views only", async () => {
   const c = defaults();
   const h = new History(c);
   const old = emptySnapshot(1000);
@@ -103,97 +116,74 @@ test("cursor pinning preserves the prior Fleet snapshot", async () => {
   const latest = emptySnapshot(2000);
   latest.lanes = [laneSnapshot({ name: "after" })];
   h.add(latest);
-  const ui = await testRender(
-    <App
-      snapshot={latest}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "snapshot.json"}
-    />,
-    { width: 140, height: 35 },
-  );
+  const t = await mount(latest, c, undefined, { history: h });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey("5");
-    });
-    await act(async () => {
-      ui.mockInput.pressKey("h");
-    });
-    await act(async () => {
-      ui.mockInput.pressKey("p");
-      ui.mockInput.pressKey("1");
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("PINNED");
-    expect(ui.captureCharFrame()).toContain("before");
-    expect(ui.captureCharFrame()).not.toContain("after");
+    await t.press("6");
+    await t.press("h");
+    await t.press("p");
+    await t.press("2");
+    expect(t.frame()).toContain("◆");
+    expect(t.frame()).toContain("before");
+    expect(t.frame()).not.toContain("after");
+    await t.press("1");
+    expect(t.frame()).toContain("● live");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
-test("the settings form saves edited values and supports modified quit bindings", async () => {
+
+test("Settings edits a value in place and honours a changed quit binding", async () => {
   const c = defaults();
   c.keys.quit = "alt+q";
   const s = emptySnapshot();
-  const h = new History(c);
-  h.add(s);
   let saved: Config | undefined;
   let quits = 0;
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={async (next) => {
-        saved = next;
-      }}
-      onQuit={() => {
-        quits++;
-      }}
-      onExport={async () => "export.json"}
-    />,
-    { width: 140, height: 35 },
-  );
+  const t = await mount(s, c, undefined, {
+    onSave: async (next) => {
+      saved = next;
+    },
+    onQuit: () => {
+      quits++;
+    },
+  });
   try {
+    await t.press("7");
+    expect(t.frame()).toContain("Refresh interval (ms)");
+    // The unreadable-sources row comes first; the refresh interval is the
+    // last Display setting.
+    for (let i = 0; i < 6; i++) await t.press("down");
+    await t.press("enter");
+    expect(t.frame()).toContain("Enter saves");
     await act(async () => {
-      ui.mockInput.pressKey(",");
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("Refresh interval (ms): 1000");
-    await act(async () => {
-      ui.mockInput.pressEnter();
-    });
-    await act(async () => {
-      ui.mockInput.pressKey("END");
-      for (let i = 0; i < 4; i++) ui.mockInput.pressBackspace();
-    });
-    await act(async () => {
-      await ui.mockInput.typeText("500");
+      t.ui.mockInput.pressKey("END");
+      for (let i = 0; i < 4; i++) t.ui.mockInput.pressBackspace();
     });
     await act(async () => {
-      ui.mockInput.pressEnter();
+      await t.ui.mockInput.typeText("500");
     });
+    await t.press("enter");
     expect(saved?.refreshMs).toBe(500);
+    // While the editor is open, a tab digit is text, never navigation.
+    await t.press("enter");
     await act(async () => {
-      ui.mockInput.pressKey("q", { meta: true });
+      await t.ui.mockInput.typeText("2");
+    });
+    await t.ui.renderOnce();
+    expect(t.frame()).toContain("Enter saves");
+    await t.press("escape");
+    await act(async () => {
+      t.ui.mockInput.pressKey("q", { meta: true });
     });
     expect(quits).toBe(1);
     await act(async () => {
-      ui.mockInput.pressCtrlC();
+      t.ui.mockInput.pressCtrlC();
     });
     expect(quits).toBe(2);
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
+
 test("startup stays interruptible before the first sample arrives", async () => {
   let quits = 0;
   const ui = await testRender(
@@ -207,7 +197,7 @@ test("startup stays interruptible before the first sample arrives", async () => 
   );
   try {
     await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("Collecting system data");
+    expect(ui.captureCharFrame()).toContain("Reading system data");
     await act(async () => {
       ui.mockInput.pressKey("q");
     });
@@ -222,108 +212,79 @@ test("startup stays interruptible before the first sample arrives", async () => 
     });
   }
 });
-test("overview keeps keyboard-selected concerns visible in a small terminal", async () => {
+
+test("Home keeps the selected concern in view and opens its agent", async () => {
   const c = defaults();
   // One card per cause, so the list is grouped and still long enough to scroll.
   const s = everyCauseSnapshot(c);
-  const h = new History(c);
-  h.add(s);
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "report.json"}
-    />,
-    { width: 80, height: 24 },
-  );
+  const t = await mount(s, c, { width: 80, height: 24 });
   try {
-    await ui.renderOnce();
+    await t.ui.renderOnce();
     const cards = attention(s, c);
     expect(cards.length).toBeGreaterThan(10);
-    for (let i = 0; i < cards.length - 1; i++) {
-      await act(async () => {
-        ui.mockInput.pressArrow("down");
-      });
-      await ui.renderOnce();
-    }
-    expect(ui.captureCharFrame()).toContain("/scratch");
-    expect(ui.captureCharFrame().split("\n")[0]).toContain("vsys-view");
-    for (let i = 0; i < cards.length - 1; i++) {
-      await act(async () => {
-        ui.mockInput.pressArrow("up");
-      });
-      await ui.renderOnce();
-    }
-    await act(async () => {
-      ui.mockInput.pressEnter();
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("escaped");
-    expect(ui.captureCharFrame()).toContain("main PID 40");
+    // Only the selected card shows its next step; the rest stay one row.
+    expect(
+      t
+        .frame()
+        .split("\n")
+        .filter((row) => row.includes("Next")).length,
+    ).toBe(1);
+    for (let i = 0; i < cards.length - 1; i++) await t.press("down");
+    expect(t.frame()).toContain("/scratch");
+    expect(t.frame().split("\n")[0]).toContain("vsys");
+    for (let i = 0; i < cards.length - 1; i++) await t.press("up");
+    await t.press("enter");
+    expect(t.frame()).toContain("escaped");
+    expect(t.frame()).toContain("PID 40");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
-test("Fleet search finds a worktree and clears without losing the full list", async () => {
+
+test("the help overlay opens on its key and any key closes it", async () => {
+  const c = defaults();
+  const t = await mount(emptySnapshot(), c);
+  try {
+    await t.press("?");
+    expect(t.frame()).toContain("next and previous tab");
+    await t.press("2");
+    expect(t.frame()).not.toContain("next and previous tab");
+    expect(t.frame()).toContain("Needs attention");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Agents finds a worktree and clears the search without losing the list", async () => {
   const c = defaults();
   const s = emptySnapshot();
   s.lanes = [
     laneSnapshot({ name: "payments", cwd: "/work/acme/payment-service" }),
     laneSnapshot({ id: "other", name: "website", cwd: "/work/site" }),
   ];
-  const h = new History(c);
-  h.add(s);
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "report.json"}
-    />,
-    { width: 80, height: 24 },
-  );
+  const t = await mount(s, c, { width: 80, height: 24 });
   try {
+    await t.press("2");
+    await t.press("/");
     await act(async () => {
-      ui.mockInput.pressKey("1");
+      await t.ui.mockInput.typeText("ACME");
     });
+    await t.press("enter");
+    expect(t.frame()).toContain("payments");
+    expect(t.frame()).not.toContain("website");
+    await t.press("/");
     await act(async () => {
-      ui.mockInput.pressKey("/");
-    });
-    await act(async () => {
-      await ui.mockInput.typeText("ACME");
-    });
-    await act(async () => {
-      ui.mockInput.pressEnter();
-    });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("payments");
-    expect(ui.captureCharFrame()).not.toContain("website");
-    await act(async () => {
-      ui.mockInput.pressKey("/");
-    });
-    await act(async () => {
-      ui.mockInput.pressEscape();
+      t.ui.mockInput.pressEscape();
       await Bun.sleep(50);
     });
-    await ui.renderOnce();
-    expect(ui.captureCharFrame()).toContain("website");
+    await t.ui.renderOnce();
+    expect(t.frame()).toContain("website");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
 
-test("lane detail names the account, the charged resources, the caps and the block", async () => {
+test("agent detail names the account, the charged resources, the limits and the block", async () => {
   const c = defaults();
   const s = emptySnapshot();
   s.lanes = [
@@ -349,49 +310,37 @@ test("lane detail names the account, the charged resources, the caps and the blo
     }),
   ];
   s.groups = [groupSnapshot()];
-  const h = new History(c);
-  h.add(s);
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "snapshot.json"}
-    />,
-    { width: 160, height: 45 },
-  );
+  const t = await mount(s, c, { width: 160, height: 45 });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey("1");
-    });
-    await act(async () => {
-      ui.mockInput.pressEnter();
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("agents.slice/a.scope");
-    expect(frame).toContain("Account: .2claude");
-    expect(frame).toContain("Pane: %3");
-    expect(frame).toContain("Page cache 4.0 KiB");
-    expect(frame).toContain("read 1.0 MiB/s");
-    expect(frame).toContain("written 2.0 MiB/s");
-    expect(frame).toContain("rustc 2, ld.mold 1");
-    expect(frame).toContain("sccache clients 3");
-    expect(frame).toContain("memory.max 2.0 GiB");
-    expect(frame).toContain("cpu.weight 50");
-    expect(frame).toContain("make jobs 6");
-    expect(frame).toContain("jobserver fifo:/tmp/f");
-    expect(frame).toContain("blocked: 2 tasks waiting on storage");
+    await t.press("2");
+    await t.press("enter");
+    const frame = t.frame();
+    for (const text of [
+      "a.scope",
+      "account .2claude",
+      "pane %3",
+      "cache 4.0 KiB",
+      "read 1.0 MiB/s",
+      "2.0 MiB/s",
+      "2 rustc, 1 ld.mold",
+      "3 sccache clients",
+      "memory 2.0 GiB",
+      "CPU weight 50",
+      "make jobs 6",
+      "jobserver fifo:/tmp/f",
+      "blocked: 2 tasks waiting on storage",
+    ])
+      expect(frame).toContain(text);
+    // The process tree stays closed until the reader opens it.
+    expect(frame).not.toContain("directory");
+    await t.press("enter");
+    expect(t.frame()).toContain("directory");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
+    await t.close();
   }
 });
 
-test("a lane record from an older build opens in lane detail without throwing", async () => {
+test("a lane record from an older build opens in agent detail without throwing", async () => {
   const c = defaults();
   const s = emptySnapshot();
   s.lanes = [
@@ -403,34 +352,16 @@ test("a lane record from an older build opens in lane detail without throwing", 
     }),
   ];
   s.groups = [groupSnapshot()];
-  const h = new History(c);
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "snapshot.json"}
-    />,
-    { width: 140, height: 40 },
-  );
+  const t = await mount(s, c, { width: 140, height: 40 });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey("1");
-    });
-    await act(async () => {
-      ui.mockInput.pressEnter();
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("main PID 40");
-    expect(frame).toContain("memory.max not available");
-    expect(frame).toContain("Build work: none");
+    await t.press("2");
+    await t.press("enter");
+    const frame = t.frame();
+    expect(frame).toContain("PID 40");
+    expect(frame).toContain("memory not available");
+    expect(frame).toContain("none · 0 linking");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
+    await t.close();
   }
 });
 
@@ -456,40 +387,23 @@ test("Storage opens with write totals and keeps filesystem state below them", as
   ];
   s.storage.deviceWrites = { "259:0": 2199023255552 };
   s.storage.volumes = [volumeSnapshot("/mnt/data", { readOnly: true })];
-  const h = new History(c);
-  h.add(s);
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "report.json"}
-    />,
-    { width: 140, height: 45 },
-  );
+  const t = await mount(s, c, { width: 140, height: 45 });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey("4");
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("agents.slice 2.0 TiB");
-    expect(frame).toContain("nvme0n1 2.0 TiB");
-    expect(frame).toContain("Lifetime writes reported by the drive");
+    await t.press("5");
+    const frame = t.frame();
+    expect(frame).toMatch(/agents\.slice\s+█+\s+2\.0 TiB/);
+    expect(frame).toMatch(/nvme0n1\s+█+\s+2\.0 TiB/);
+    expect(frame).toContain("Drive lifetime writes");
+    expect(frame).toContain("9.1 TiB");
     // Free space and read-only state stay, below what the drive has taken.
-    expect(frame.indexOf("Written since boot, by slice")).toBeLessThan(
-      frame.indexOf("Filesystem state"),
+    expect(frame.indexOf("Written since boot")).toBeLessThan(
+      frame.indexOf("Filesystems"),
     );
-    expect(frame.indexOf("Filesystem state")).toBeLessThan(
-      frame.indexOf("READ ONLY"),
+    expect(frame.indexOf("Filesystems")).toBeLessThan(
+      frame.indexOf("read-only"),
     );
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
 
@@ -502,110 +416,43 @@ test("Timeline lists what changed with a cause instead of raw samples", async ()
     laneSnapshot({ name: "lane-a", account: "work", unconfined: true }),
   ];
   h.add(later);
-  const ui = await testRender(
-    <App
-      snapshot={later}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "snapshot.json"}
-    />,
-    { width: 160, height: 40 },
-  );
+  const t = await mount(later, c, { width: 160, height: 40 }, { history: h });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey("5");
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("What changed in this window: 3 of 3");
-    expect(frame).toContain("Lane started: lane-a");
+    await t.press("6");
+    const frame = t.frame();
+    expect(frame).toContain("What changed  3, newest first");
+    expect(frame).toMatch(/Lane started\s+lane-a/);
     expect(frame).toContain("account work in agents.slice");
-    expect(frame).toContain("Alert opened: an agent ran outside");
+    expect(frame).toMatch(/Alert opened\s+an agent ran outside/);
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
 
-test("the Timeline event list stops at the rows the viewport has", async () => {
+test("the Timeline change list stops at the rows the viewport has", async () => {
   const c = { ...defaults(), pressureHoldSeconds: 0 };
   const h = new History(c);
   h.add(emptySnapshot(1000));
   const busy = emptySnapshot(2000);
   busy.lanes = Array.from({ length: 12 }, (_, i) =>
-    laneSnapshot({ id: `lane-${i}.scope`, name: `lane-${i}` }),
-  );
-  h.add(busy);
-  const ui = await testRender(
-    <App
-      snapshot={busy}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "snapshot.json"}
-    />,
-    { width: 160, height: 30 },
-  );
-  try {
-    await act(async () => {
-      ui.mockInput.pressKey("5");
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("What changed in this window: 5 of 12");
-    expect(frame).toContain("Lane started: lane-0 ");
-    expect(frame).toContain("Lane started: lane-4");
-    expect(frame).not.toContain("lane-11");
-  } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
-  }
-});
-
-test("a long event subject takes one row and does not push out the rest", async () => {
-  const c = { ...defaults(), pressureHoldSeconds: 0 };
-  const h = new History(c);
-  h.add(emptySnapshot(1000));
-  const busy = emptySnapshot(2000);
-  busy.lanes = Array.from({ length: 6 }, (_, i) =>
     laneSnapshot({
       id: `lane-${i}.scope`,
       name: i === 0 ? `wide-${"x".repeat(400)}` : `lane-${i}`,
     }),
   );
   h.add(busy);
-  const ui = await testRender(
-    <App
-      snapshot={busy}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "snapshot.json"}
-    />,
-    { width: 160, height: 30 },
-  );
+  const t = await mount(busy, c, { width: 160, height: 30 }, { history: h });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey("5");
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("What changed in this window: 5 of 6");
-    expect(frame).toContain("Lane started: lane-4");
+    await t.press("6");
+    const frame = t.frame();
+    expect(frame).toContain("What changed  6 of 12, newest first");
+    expect(frame).toMatch(/Lane started\s+lane-5/);
+    expect(frame).not.toContain("lane-11");
+    // A 400-character subject takes one row and cannot push the rest out.
     expect(frame).not.toContain("xxxxxxxxxx\n");
+    expect(frame).toContain("? keys");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
 
@@ -618,35 +465,18 @@ test("an alert inside its hold does not mark a change on the strip", async () =>
     { time: 2000, rule: "scrub", subject: "/x", message: "Scrub problem: /x" },
   ];
   h.add(alarmed);
-  const ui = await testRender(
-    <App
-      snapshot={alarmed}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "snapshot.json"}
-    />,
-    { width: 160, height: 40 },
-  );
+  const t = await mount(alarmed, c, { width: 160, height: 40 }, { history: h });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey("5");
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("What changed in this window: 0 of 0");
-    // The rule fired, but no event holds yet, so the strip above the legend
-    // stays unmarked.
+    await t.press("6");
+    const frame = t.frame();
+    expect(frame).toContain("Nothing changed in this window");
+    // The rule fired, but no event holds yet, so the strip stays unmarked.
     const rows = frame.split("\n");
-    const strip = rows[rows.findIndex((row) => row.includes("! change")) - 1];
-    expect(strip).toContain("·");
+    const strip = rows[rows.findIndex((row) => row.includes("At cursor")) - 2];
+    expect(strip).toContain("▲");
     expect(strip).not.toContain("!");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
 
@@ -664,46 +494,24 @@ test("Settings lists a missing capability and cards stay copy text", async () =>
         }
       : cap,
   );
-  const h = new History(c);
-  h.add(s);
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "export.json"}
-    />,
-    { width: 200, height: 40 },
-  );
+  const t = await mount(s, c, { width: 200, height: 40 });
   try {
-    await ui.renderOnce();
+    await t.ui.renderOnce();
     // A remediation command is text the reader copies, never an action to run.
-    const overview = ui.captureCharFrame();
     const item = attention(s, c, ["/usr/bin"]).find(
       (i) => i.command !== undefined,
     );
     expect(item?.command).toBeDefined();
-    expect(overview).toContain("Copy: ");
-    await act(async () => {
-      ui.mockInput.pressKey(",");
-    });
-    await ui.renderOnce();
-    const settings = ui.captureCharFrame();
-    expect(settings).toContain("System capabilities");
-    expect(settings).toContain("Stored settings");
-    expect(settings).toContain(
-      "Pressure stall information: not available: no PSI on this kernel",
+    expect(t.frame()).toContain(`Copy ${item?.command}`);
+    await t.press("7");
+    const settings = t.frame();
+    expect(settings).toContain("Data sources  1 not available");
+    expect(settings).toMatch(
+      /○ Pressure stall information\s+no PSI on this kernel/,
     );
-    expect(settings).toContain("Resource groups (cgroup v2): available");
-    // The header states the mode the reserved write-mode flag leaves in place.
-    expect(settings).toContain("read-only monitor");
+    expect(settings).toMatch(/● Resource groups \(cgroup v2\)\s+available/);
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
 
@@ -712,34 +520,15 @@ test("Settings opens on a snapshot stored before the capability probe", async ()
   const s = emptySnapshot();
   // What History.at returns for a row an older build wrote.
   s.capabilities = [];
-  const h = new History(c);
-  h.add(s);
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "export.json"}
-    />,
-    { width: 160, height: 40 },
-  );
+  const t = await mount(s, c, { width: 160, height: 40 });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey(",");
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("System capabilities");
-    expect(frame).toContain("Stored settings");
-    expect(frame).toContain("Refresh interval (ms): 1000");
+    await t.press("7");
+    const frame = t.frame();
+    expect(frame).toContain("before vsys probed its sources");
+    expect(frame).toMatch(/Refresh interval \(ms\)\s+1000/);
     expect(frame).not.toContain("not available");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
   }
 });
 
@@ -762,34 +551,39 @@ test("Settings reports the running program while a past sample is pinned", async
   );
   const h = new History(c);
   h.add(stored);
-  const ui = await testRender(
-    <App
-      snapshot={live}
-      history={h}
-      config={c}
-      onSave={async () => {}}
-      onQuit={() => {}}
-      onExport={async () => "export.json"}
-    />,
-    { width: 160, height: 40 },
-  );
+  const t = await mount(live, c, { width: 160, height: 40 }, { history: h });
   try {
-    await act(async () => {
-      ui.mockInput.pressKey("p");
-    });
-    await act(async () => {
-      ui.mockInput.pressKey(",");
-    });
-    await ui.renderOnce();
-    const frame = ui.captureCharFrame();
-    expect(frame).toContain("Fleet pinned");
-    expect(frame).toContain(
-      "Pressure stall information: not available: no PSI on this kernel",
-    );
+    await t.press("p");
+    expect(t.frame()).toContain("show ");
+    await t.press("7");
+    expect(t.frame()).toContain("no PSI on this kernel");
   } finally {
-    await act(async () => {
-      ui.renderer.destroy();
-    });
-    h.close();
+    await t.close();
+  }
+});
+
+test("a narrow terminal gives the tabs their own row and drops the wait column", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a", pressure: 12 })];
+  const wide = await mount(s, c, { width: 140, height: 24 });
+  try {
+    await wide.press("2");
+    const frame = wide.frame();
+    expect(frame.split("\n")[0]).toContain("2 Agents");
+    expect(frame).toContain("12.0% wait");
+  } finally {
+    await wide.close();
+  }
+  const narrow = await mount(s, c, { width: 80, height: 24 });
+  try {
+    await narrow.press("2");
+    const rows = narrow.frame().split("\n");
+    expect(rows[0]).not.toContain("2 Agents");
+    expect(rows[1]).toContain("2 Agents");
+    expect(narrow.frame()).toContain("lane-a");
+    expect(narrow.frame()).not.toContain("wait");
+  } finally {
+    await narrow.close();
   }
 });

@@ -114,6 +114,27 @@ export function timeBuckets<T extends { time: number }>(
   }
   return buckets;
 }
+/**
+ * The peak of one field in each time bucket, so a chart column shows the worst
+ * moment in its span and a bucket with no sample stays null.
+ */
+export function bucketPeaks<T extends { time: number }>(
+  points: T[],
+  start: number,
+  end: number,
+  width: number,
+  pick: (point: T) => number | null,
+): (number | null)[] {
+  return timeBuckets(points, start, end, width).map((bucket) => {
+    let peak: number | null = null;
+    for (const point of bucket) {
+      const value = pick(point);
+      if (value !== null && Number.isFinite(value))
+        peak = peak === null ? value : Math.max(peak, value);
+    }
+    return peak;
+  });
+}
 /** Aggregate the maximum in each bucket so brief stalls remain visible. */
 export function sparkline(
   values: (number | null)[],

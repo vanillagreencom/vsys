@@ -212,7 +212,7 @@ test("a saved collection setting rebuilds the source before the next sample", as
     session.start();
     await collected.promise;
     // A display setting keeps the running source.
-    await session.configure({ ...f.config, theme: "dark" });
+    await session.configure({ ...f.config, units: "decimal" });
     expect(built).toEqual([]);
     // So does a notification rule: rebuilding would discard counters and the
     // alert state that decides which rule hits are new.

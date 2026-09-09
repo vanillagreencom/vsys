@@ -78,7 +78,7 @@ function buildRow(
 /**
  * Lane rows read the build counts the lane already carries. Build processes
  * in no lane become one more row, so the rows still sum to the fleet total
- * that the Overview meter shows.
+ * that the Home meter shows.
  */
 export function laneBuilds(s: Snapshot, c: Config): LaneBuilds[] {
   const owned = new Set(s.lanes.flatMap((l) => l.pids));
@@ -174,7 +174,7 @@ export function cacheEffect(s: Snapshot): CacheEffect {
     bypassed: bypassedLanes(s),
   };
 }
-/** The fleet total comes from the same buildLoad the Overview meter reads. */
+/** The fleet total comes from the same buildLoad the Home meter reads. */
 export function buildsSummary(s: Snapshot, c: Config): BuildsSummary {
   const load = buildLoad(s, c);
   return {

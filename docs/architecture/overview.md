@@ -12,7 +12,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - Ladder: the causes ranked by impact on the person at the keyboard. Its first element is the verdict; every element is one attention card.
 - CPU percent: utilization in units of one logical core.
 - Pressure: the recent percentage of time that tasks stalled on a resource.
-- Pinned Fleet: the recorded sample selected by the timeline cursor.
+- Pinned sample: the recorded sample selected by the timeline cursor.
 - Checkpoint: a complete snapshot followed by exact changes to its values.
 
 ## Boundaries
@@ -37,5 +37,5 @@ Each sample contains observed values and source errors. A failed read must remai
 - [Timeline events](events.md): what the timeline records, and how a change is held until it counts.
 - [History store](history.md): replay, retention, persistence and their validation limits.
 - [Settings and the runtime](settings.md): what a settings change replaces and what it preserves.
-- [UI behaviour](ui.md): the mounted tree, navigation, and the words and units every view prints.
+- [UI behaviour](ui.md): the shell, the screens, the colour rule, and the words and units every view prints.
 - [Plan coverage](plan-coverage.md): the implementation and the checks for each screen.

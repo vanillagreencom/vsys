@@ -4,39 +4,46 @@ Covers: src/ui/ src/main.ts src/main.test.ts
 
 The screen owns one mounted React tree. Collection publishes a stable snapshot to that tree. Navigation, selection, search and editing belong to the mounted application and survive a sample update.
 
+## Terms
+
+- Shell: the header with the tabs, the content area and the footer. `App` in `src/ui/App.tsx` is the shell.
+- Screen: what one tab shows. Each screen is one file under `src/ui/`, named for its tab.
+- Drill-down: detail a screen shows only after the reader selects a row or opens a section: an agent's processes, a filesystem's error counters, the sources vsys cannot read.
+- Notice: a bordered box in the top-right corner that names a new serious cause and goes away by itself. The same text goes to the terminal as a desktop notification.
+- Pinned sample: the recorded sample selected by the timeline cursor. Agents, Resources, Builds and Storage show it; Home, Timeline and Settings stay live.
+
 ## Boundaries
 
 - `mountScreen` owns the React root and the subscription between collection and display. It mounts once and unmounts on shutdown.
-- Builds renders the model's build summary. It shares the fleet-total sentence with the Overview build meter, so the two screens cannot report different numbers.
-- Overview renders the model's cause ladder. The worst cause that speaks for the machine is the verdict line and each cause is one card. All copy and all byte and percent formatting live here; the model returns numbers. Alert history can contain resolved events and cannot define current health.
-- A quantity vsys could not read makes its meter a warning and renders as "not available", never as a question mark or an untroubled reading. Fleet columns and Lane detail read the same formatters.
-- Attention cards are grouped by cause. Each card names its subjects, a next step, and where possible a read-only command built from configured names.
-- Storage opens with bytes written since boot, by slice and by device, and the drive lifetime writes. Mount state, device counters, scrub reports and scratch sizes follow below them. `src/ui/App.test.tsx` checks that order.
-- Timeline shows what changed: lane starts and stops, cgroup moves, alerts opening and closing, and verdict changes. The store derives those events; the words, the durations and the byte counts live in `src/ui/timeline.ts`.
-- Settings lists the capabilities probed at start above the stored settings, each with the reason it is missing and the source that decided it. The probe describes the running program, so the list comes from the live sample even while a past sample is pinned. The capability identifiers and failure kinds are data; one function here turns them into the single cause that Settings and the meter fallbacks both show.
-- Fleet owns selection and vertical paging. The scroll box owns horizontal table scrolling. Other detail views use native vertical scrolling.
+- The shell owns the one keyboard subscription. A screen registers a handler through `useScreenKeys` and sees each key first; a handler that returns true keeps the key from the shell's bindings, so an open search box or editor takes every key.
+- Colour comes from `src/ui/theme.ts` alone: the terminal's default foreground and background, the sixteen indexed colours, and the bold and dim attributes. No screen names a hex value. Every line of text renders through `Line`, because OpenTUI paints text white when no colour is given.
+- `src/ui/attention.ts` turns the model's cause ladder and meters into words: the verdict line, one card per cause, and one tile per meter. The model returns numbers; every word and every formatted number lives in the UI.
+- Home shows the verdict, four meter tiles with a sparkline each, the cards, and the busiest agents. Only the selected card shows its detail, its next step and its copy-only command.
+- Agents holds the list, the table, the search and the open agent, so the list selection survives a visit to the detail. The agent detail keeps its processes, launch and open files in closed sections.
+- Resources shows the meter facts, then the cgroup tree with idle leaves hidden until asked. Builds, Storage and Timeline follow the same order: headline tiles or charts first, rows below, raw detail on request.
+- Settings lists the probed capabilities and the unreadable sources above the stored settings, grouped by what they change. The probe describes the running program, so the list comes from the live sample even while a past sample is pinned.
+- Charts are text: `chartRows` draws a multi-row series in eighths, `sparkline` draws one row, and `bucketPeaks` places samples by time so a collection gap stays visible. Both read the peak of each bucket, so a short spike is never averaged away.
 - The UI opens views and exports evidence. It does not control observed processes or their terminal sessions.
 
 ## Invariants
 
 - Refresh leaves one screen and a stable listener count. `src/ui/screen.test.tsx` checks repeated updates through the production mount function, followed by unmount.
 - Refresh preserves the selected view. `src/ui/screen.test.tsx` checks navigation during updates and a resize.
-- Arrow selection does not also move the Fleet viewport. `src/ui/screen.test.tsx` checks both summary paging and full-table scrolling.
-- The Builds view leads with the fleet total, then the per-lane rows, then the build cache and token pools. `src/ui/builds.test.ts` checks that order and the absence of question marks in unknown quantities.
-- Overview keeps the selected concern visible. `src/ui/App.test.tsx` checks a long list in a small terminal and opening the selected lane.
-- Lane detail names the account, the pane, the cgroup, the charged resources, the build work by kind, the effective caps and the blocked reason. `src/ui/App.test.tsx` checks the rendered lane.
+- Arrow selection pages the list and never moves the viewport. `src/ui/screen.test.tsx` checks the Agents list and the table's horizontal scroll.
+- A serious cause that appears between two samples raises one notice and one terminal notification, on whichever view is open, and never a second one for the same cause. `src/ui/screen.test.tsx` checks a mount turning read-only.
+- Every visible span uses a default or indexed colour, selection is marked in the accent colour, and severity uses red and yellow. `src/ui/theme.test.tsx` checks the rendered spans; `src/ui/widgets.test.tsx` checks that a bare text element is what the guard catches.
+- A key a screen consumes never reaches the shell: a digit typed into the settings editor is text, not a tab. `src/ui/App.test.tsx` checks the editor.
+- Home keeps the selected card visible and opens its agent. `src/ui/App.test.tsx` checks a long list in a small terminal.
+- Agent detail names the account, the pane, the cgroup, the charged resources, the build work by kind, the effective limits and the blocked reason, and keeps its process tree closed until opened. `src/ui/App.test.tsx` checks the rendered detail.
 - Unreadable lane quantities render as "not available", an unread memory cap is never shown as unlimited, and a blocked lane names its waiting task count and resource. `src/ui/format.test.ts` checks the lane formatters.
-- Search filters names, accounts, panes, window titles, worktrees, branches and tools. `src/ui/App.test.tsx` checks a worktree search and clearing the filter.
-- A recorded event alone does not become a current concern. `src/ui/overview.test.ts` checks resolved events and missing source data.
-- An unreadable write total renders as "not available" rather than an empty row, and every drive keeps its own lifetime row so the reader can tell which drive lacks a report. `src/ui/storage.test.ts` checks every write section with no readable source.
-- A device-mapper row and the disk beneath it count the same bytes, and the device section says so when one is present. `src/ui/storage.test.ts` checks that line.
-- No attention text is repeated. `src/ui/overview.test.ts` and `src/ui/App.test.tsx` check unique card titles across every cause.
-- The Timeline event list names the cause of each change. Each event takes one truncated row and the list stops at the rows the viewport has, stating how many of the window's events it shows. `src/ui/App.test.tsx` checks a lane start with an open alert, twelve events in a short terminal, and a 400-character subject that must not push the rows below it out.
-- Timeline positions follow timestamps. `src/ui/format.test.ts` checks collection gaps and alert alignment.
+- Search filters names, accounts, panes, window titles, worktrees, branches and tools. `src/ui/agents.test.ts` checks each field; `src/ui/App.test.tsx` checks clearing the filter.
+- A recorded event alone does not become a current concern. `src/ui/attention.test.ts` checks resolved events and missing source data.
+- Storage leads with bytes written, then filesystems, scrub reports and scratch. `src/ui/App.test.tsx` checks the order and a read-only mount; `src/ui/storage-screen.test.ts` checks the selectable rows and the filesystem severity.
+- Every setting sits in exactly one group. `src/ui/settings-screen.test.ts` derives the expected set from the defaults.
+- The Timeline change list names the cause of each change, takes one row per event, and stops at the rows the viewport has. `src/ui/App.test.tsx` checks a lane start with an open alert, twelve events in a short terminal, and a 400-character subject.
+- A narrow terminal moves the tabs to their own row and drops the wait column; a short one drops the Timeline sparklines but keeps the change list. `src/ui/App.test.tsx` checks 80 columns.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
-- Settings names every stored setting and every probed capability. `src/ui/settings.test.ts` checks label coverage and the missing-capability wording, and `src/ui/App.test.tsx` checks the rendered screen on a kernel without PSI, a sample stored before the probe, and a pinned past sample.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
-- Interactive quit restores the terminal, including when history shutdown fails. `src/main.test.ts` checks isolated terminals. `src/runtime.test.ts` checks error delivery when collection and shutdown both fail.
 
 ## Framework constraint
 

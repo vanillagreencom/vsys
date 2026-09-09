@@ -65,12 +65,12 @@ try:
         ready, _, _ = select.select([master], [], [], 0.05)
         if ready:
             output += os.read(master, 65536)
-        if ready_at is None and b"Fleet" in output:
+        if ready_at is None and b"Agents" in output:
             ready_at = time.monotonic()
         if not sent and ready_at is not None and (sys.argv[3] != "refresh" or time.monotonic() - ready_at > 2):
             os.write(master, bytes([3]) if sys.argv[3] == "ctrl+c" else b"q")
             sent = True
-    assert b"Fleet" in output, "Application did not render its Fleet view"
+    assert b"Agents" in output, "Application did not render its tabs"
     expected = 1 if sys.argv[3] == "fault" else 0
     assert child.poll() == expected, f"Unexpected exit: {child.poll()}, {output!r}"
     assert termios.tcgetattr(slave) == before, "Application changed terminal settings after quit"
