@@ -931,3 +931,24 @@ test("a configurable numeric column reads down its last digit", async () => {
     await t.close();
   }
 });
+
+test("a tile in a narrow pane marks its cut instead of stopping mid-word", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 12.3, cpuShare: 12.3 })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await t.press("2");
+    // The preview pane's tiles are a third of the screen, so their sentences
+    // do not fit; a cut with no mark reads as a sentence that simply ended.
+    const line = t
+      .frame()
+      .split("\n")
+      .find((row) => row.includes("of one core"));
+    expect(line).toBeDefined();
+    expect(line).toContain("…");
+  } finally {
+    await t.close();
+  }
+});

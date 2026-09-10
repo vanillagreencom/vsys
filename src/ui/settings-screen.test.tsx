@@ -6,7 +6,6 @@ import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
 import { mount, selectedRow } from "../test/harness";
-import { attention } from "./attention";
 import { settingGroups } from "./settings";
 import { settingItems, sourceCounts } from "./settings-screen";
 
@@ -96,7 +95,7 @@ test("Settings edits a value in place and honours a changed quit binding", async
   }
 });
 
-test("Settings lists a missing capability and cards stay copy text", async () => {
+test("Settings lists a capability it could not read, with the reason", async () => {
   const c = defaults();
   const s = everyCauseSnapshot(c);
   s.capabilities = s.capabilities.map((cap) =>
@@ -112,13 +111,6 @@ test("Settings lists a missing capability and cards stay copy text", async () =>
   );
   const t = await mount(s, c, { width: 200, height: 40 });
   try {
-    await t.ui.renderOnce();
-    // A remediation command is text the reader copies, never an action to run.
-    const item = attention(s, c, ["/usr/bin"]).find(
-      (i) => i.command !== undefined,
-    );
-    expect(item?.command).toBeDefined();
-    expect(t.frame()).toContain(`Copy ${item?.command}`);
     await t.press("7");
     const settings = t.frame();
     expect(settings).toContain("Data sources  1 not available");

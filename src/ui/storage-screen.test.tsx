@@ -5,7 +5,6 @@ import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { mount } from "../test/harness";
 import { type KeyHandler, KeyProvider } from "./keys";
-import { Resources } from "./resources";
 import {
   itemPath,
   Storage,
@@ -291,7 +290,8 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
   s.storage.volumes = [volumeSnapshot("/data")];
   s.groups = [groupSnapshot({ path: "busy.scope", name: "busy.scope" })];
   /** One screen rendered with a target, reporting what it did with it. */
-  async function landOn(screen: "storage" | "resources", target: string) {
+  /** Storage rendered with a target, reporting what it did with it. */
+  async function landOn(target: string) {
     const notices: [string, string][] = [];
     let used = 0;
     const handlers = new Set<KeyHandler>();
@@ -306,11 +306,7 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
     };
     const ui = await testRender(
       <KeyProvider handlers={handlers}>
-        {screen === "storage" ? (
-          <Storage {...props} width={140} />
-        ) : (
-          <Resources {...props} width={140} height={30} />
-        )}
+        <Storage {...props} width={140} />
       </KeyProvider>,
       { width: 140, height: 30 },
     );
@@ -325,16 +321,11 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
   // the card named. The request is still consumed, so it cannot fire again on
   // a later sample, and the reader is told rather than left on a screen that
   // looks like they never pressed anything.
-  for (const screen of ["storage", "resources"] as const) {
-    const gone = await landOn(screen, "/gone");
-    expect({ screen, used: gone.used }).toEqual({ screen, used: 1 });
-    expect({ screen, notices: gone.notices }).toEqual({
-      screen,
-      notices: [["/gone is no longer in the sample", "warn"]],
-    });
-  }
+  const gone = await landOn("/gone");
+  expect(gone.used).toBe(1);
+  expect(gone.notices).toEqual([["/gone is no longer in the sample", "warn"]]);
   // A row that is there is landed on, and says nothing.
-  const found = await landOn("storage", "/data");
+  const found = await landOn("/data");
   expect(found.used).toBe(1);
   expect(found.notices).toEqual([]);
   expect(found.frame).toContain("/data");

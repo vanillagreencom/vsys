@@ -1,16 +1,19 @@
 import { expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { testRender } from "@opentui/react/test-utils";
 import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture, groupSnapshot } from "../test/fixture";
 import { mount } from "../test/harness";
+import { type KeyHandler, KeyProvider } from "./keys";
 import {
   groupLabels,
   groupLevel,
   groupRows,
   idle,
+  Resources,
   treePrefixes,
 } from "./resources";
 
@@ -181,4 +184,47 @@ test("Resources sizes its tiles by the width it has, at a hundred columns", asyn
   } finally {
     await t.close();
   }
+});
+
+test("a target whose group has gone is said out loud, not dropped", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.groups = [groupSnapshot({ path: "busy.scope", name: "busy.scope" })];
+  /** Resources rendered with a target, reporting what it did with it. */
+  async function landOn(target: string) {
+    const notices: [string, string][] = [];
+    let used = 0;
+    const handlers = new Set<KeyHandler>();
+    const ui = await testRender(
+      <KeyProvider handlers={handlers}>
+        <Resources
+          snapshot={s}
+          config={c}
+          target={target}
+          onTargetUsed={() => {
+            used += 1;
+          }}
+          onNotice={(text: string, level: string) =>
+            notices.push([text, level])
+          }
+          width={140}
+          height={30}
+        />
+      </KeyProvider>,
+      { width: 140, height: 30 },
+    );
+    try {
+      await ui.renderOnce();
+      return { used, notices, frame: ui.captureCharFrame() };
+    } finally {
+      ui.renderer.destroy();
+    }
+  }
+  // A collector refresh between the keypress and this effect can take the row
+  // the card named. The request is still consumed, so it cannot fire again on
+  // a later sample, and the reader is told rather than left on a screen that
+  // looks like they never pressed anything.
+  const gone = await landOn("/gone");
+  expect(gone.used).toBe(1);
+  expect(gone.notices).toEqual([["/gone is no longer in the sample", "warn"]]);
 });
