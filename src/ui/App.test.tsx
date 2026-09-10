@@ -22,7 +22,7 @@ import { osc52 } from "./clipboard";
 import { type HomeItem, homeItems, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
-import { Storage } from "./storage-screen";
+import { Storage, volumesByDevice } from "./storage-screen";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
 async function mount(
@@ -2550,4 +2550,50 @@ test("a device reports the free space a member could read", async () => {
   } finally {
     await t.close();
   }
+});
+
+test("Storage draws two filesystems that report one device", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // One filesystem reached through a mapper alias and another through the
+  // same source string: two identities, one device between them. The heading
+  // is drawn once per group, so the device cannot identify a group.
+  s.storage.volumes = [
+    volumeSnapshot("/one", { device: "/dev/mapper/pool", fsid: "abc" }),
+    volumeSnapshot("/two", { device: "/dev/mapper/pool", fsid: "def" }),
+  ];
+  // What the fixture has to hold, asserted before anything is drawn. Two ids
+  // that do not share a device would draw two distinct keys whatever the key
+  // is, and prove nothing about which one was used.
+  expect(
+    volumesByDevice(s.storage.volumes).map((g) => `${g.id} ${g.device}`),
+  ).toEqual(["abc /dev/mapper/pool", "def /dev/mapper/pool"]);
+  const logged: string[] = [];
+  const wasError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  };
+  let frame = "";
+  try {
+    const t = await mount(s, c, { width: 140, height: 30 });
+    try {
+      await t.press("5");
+      frame = t.frame();
+    } finally {
+      await t.close();
+    }
+  } finally {
+    console.error = wasError;
+  }
+  // Both filesystems reached the screen, so the diagnostic below is about two
+  // drawn groups rather than a fixture that quietly drew one.
+  expect([frame.includes("/one"), frame.includes("/two")]).toEqual([
+    true,
+    true,
+  ]);
+  // Keyed by the device these two groups share one key, which React reports as
+  // unsupported: it may duplicate or omit a child, and which it does is not
+  // ours to choose. This render still draws both, so the diagnostic is the only
+  // place the collision is stated, and the test reads it rather than the frame.
+  expect(logged.filter((line) => /same key/i.test(line))).toEqual([]);
 });
