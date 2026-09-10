@@ -19,7 +19,7 @@ import { App, hints, Waiting } from "./App";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
-import { homeItems } from "./home";
+import { type HomeItem, homeItems, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
 import { Storage } from "./storage-screen";
@@ -2326,5 +2326,127 @@ test("a row opened with the keyboard keeps its change when one arrives above it"
     expect(t2.frame()).toContain(cursor);
   } finally {
     await t2.close();
+  }
+});
+
+test("Home opens the row the reader chose after the list moves under it", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  /** A history holding one sample that carries all three Home row kinds. */
+  const fresh = () => {
+    const h = new History(c);
+    h.add(emptySnapshot(1000));
+    const s = everyCauseSnapshot(c);
+    s.time = 2000;
+    h.add(s);
+    return { h, s };
+  };
+  const seed = fresh();
+  const rows = homeItems(
+    attention(seed.s, c),
+    seed.s,
+    5,
+    seed.h.recentEvents(seed.s.time, recentChanges),
+  );
+  const firstOf = (kind: HomeItem["kind"]) =>
+    rows.findIndex((row) => row.kind === kind);
+  const lastOf = (kind: HomeItem["kind"]) =>
+    rows.length - 1 - [...rows].reverse().findIndex((row) => row.kind === kind);
+  /** A sample carrying a new lane, which records a change and adds an agent. */
+  const arrives = (s: Snapshot): Snapshot => ({
+    ...s,
+    time: 3000,
+    lanes: [...s.lanes, laneSnapshot({ id: "new.scope", name: "newcomer" })],
+  });
+  /** A sample where CPU pressure is gone, so that card leaves the list. */
+  const clears = (s: Snapshot): Snapshot => ({
+    ...s,
+    time: 3000,
+    system: {
+      ...s.system,
+      pressure: {
+        ...s.system.pressure,
+        cpu: { some: 0, full: 0, total: 0 },
+      },
+    },
+  });
+  // One case per row kind. Home mixes three and each list moves in its own
+  // way, so each kind is chosen, moved under and opened on its own: a rule
+  // written per kind reaches only the kinds someone remembered.
+  /** The agent screen opens on one lane and names it above everything else. */
+  const laneTitle = (frame: string) => (frame.split("\n")[2] ?? "").trim();
+  const cases = [
+    // The scratch card is the last concern, so the card above it clearing
+    // moves it up a row.
+    {
+      kind: "concern" as const,
+      at: lastOf("concern"),
+      later: clears,
+      opens: "/scratch",
+      reads: selectedRow,
+    },
+    // A new lane records a change, and a change lands above every change
+    // already listed.
+    {
+      kind: "change" as const,
+      at: firstOf("change"),
+      later: arrives,
+      opens: "escaped",
+      reads: selectedRow,
+    },
+    // The same lane adds an agent row, and agents sort by id, so it lands
+    // above the last of them.
+    {
+      kind: "agent" as const,
+      at: lastOf("agent"),
+      later: arrives,
+      opens: "writer",
+      reads: laneTitle,
+    },
+  ];
+  for (const { kind, at, later, opens, reads } of cases) {
+    // Standing still: the presses reach the intended row, and opening it lands
+    // on what that row names. This is what the moved list has to preserve.
+    const still = fresh();
+    const t = await mount(
+      still.s,
+      c,
+      { width: 160, height: 44 },
+      { history: still.h },
+    );
+    try {
+      await t.press("1");
+      for (let i = 0; i < at; i++) await t.press("j");
+      await t.press("enter");
+      expect({ kind, on: reads(t.frame()) }).toEqual({
+        kind,
+        on: expect.stringContaining(opens) as unknown as string,
+      });
+    } finally {
+      await t.close();
+    }
+    // Moving: a sample lands while the reader sits on that row and puts
+    // something above it. Enter has to open the row the reader chose, not
+    // whatever took its place.
+    const shifting = fresh();
+    const m = await mount(
+      shifting.s,
+      c,
+      { width: 160, height: 44 },
+      { history: shifting.h },
+    );
+    try {
+      await m.press("1");
+      for (let i = 0; i < at; i++) await m.press("j");
+      const next = later(shifting.s);
+      shifting.h.add(next);
+      await m.update(next);
+      await m.press("enter");
+      expect({ kind, on: reads(m.frame()) }).toEqual({
+        kind,
+        on: expect.stringContaining(opens) as unknown as string,
+      });
+    } finally {
+      await m.close();
+    }
   }
 });

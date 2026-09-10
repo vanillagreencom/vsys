@@ -96,18 +96,28 @@ class Points {
     return this.ring.all();
   }
   push(p: Point): void {
-    this.ring.push(p);
+    // A full ring evicts its oldest point on a push and hands it back. That is
+    // the same eviction `shift` performs and it drops the same changes, so
+    // both go through `drop`: keeping an evicted point's change in the index
+    // put a change outside retention on Home, where opening it landed on no
+    // Timeline row at all.
+    const evicted = this.ring.push(p);
     const events = p.events ?? [];
-    if (!events.length) return;
-    // Newest point first, and a point's own changes in the order it recorded
-    // them, which is the order every reader of this list already expects.
-    this.newest = [...events, ...this.newest].slice(0, Points.indexed);
+    if (events.length)
+      // Newest point first, and a point's own changes in the order it recorded
+      // them, which is the order every reader of this list already expects.
+      this.newest = [...events, ...this.newest].slice(0, Points.indexed);
+    this.drop(evicted);
   }
   shift(): Point | undefined {
     const gone = this.ring.shift();
+    this.drop(gone);
+    return gone;
+  }
+  /** A point has left retention, so the changes it carried leave the index. */
+  private drop(gone: Point | undefined): void {
     if (gone?.events?.length)
       this.newest = this.newest.filter((e) => e.time !== gone.time);
-    return gone;
   }
   /**
    * The newest changes at or before `end`, newest first. The index answers

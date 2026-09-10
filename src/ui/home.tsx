@@ -63,6 +63,17 @@ export function homeItems(
       .map((lane) => ({ kind: "agent", lane }) as const),
   ];
 }
+/**
+ * What tells one Home row from another, whichever kind it is. Home mixes three
+ * kinds and its rows prepend, so a row number names a different item one sample
+ * later. One function for all three, because a rule written per kind reaches
+ * the kinds someone remembered.
+ */
+export function homeKey(row: HomeItem): string {
+  if (row.kind === "concern") return `concern:${row.item.id}`;
+  if (row.kind === "change") return `change:${eventKey(row.event)}`;
+  return `agent:${row.lane.id}`;
+}
 /** The row a Home item opens: an agent, a card's own row, or a moment. */
 export function homeTarget(row: HomeItem): Target | undefined {
   if (row.kind === "agent") return { kind: "lane", id: row.lane.id };
@@ -112,7 +123,7 @@ export function Home({
   alertsOpened,
   points,
   windowMs,
-  selected,
+  selection,
   width,
   height,
   onSelect,
@@ -129,10 +140,11 @@ export function Home({
   alertsOpened: number;
   points: Point[];
   windowMs: number;
-  selected: number;
+  /** The row the reader chose, and the item that row named. */
+  selection: { index: number; id: string | null };
   width: number;
   height: number;
-  onSelect: (index: number) => void;
+  onSelect: (selection: { index: number; id: string | null }) => void;
   onOpen: (item: HomeItem) => void;
   /** Opens the screen behind a tile, which breaks that meter down. */
   onOpenView: (view: View) => void;
@@ -169,6 +181,26 @@ export function Home({
    * rule with a hole waiting for the next row type, and phase 2 added the
    * third and missed it at once.
    */
+  /**
+   * The row to draw, resolved against the rows this render has. Following the
+   * chosen item keeps the reader on it when a change arrives above it, and
+   * where that item has gone the nearest row that exists takes over. Same rule
+   * as the Agents list and the Timeline list.
+   */
+  const found = rows.findIndex((row) => homeKey(row) === selection.id);
+  const selected =
+    found >= 0
+      ? found
+      : Math.min(selection.index, Math.max(0, rows.length - 1));
+  /** Move the selection, recording the row and the item it names together. */
+  const choose = (index: number) =>
+    onSelect({ index, id: rows[index] ? homeKey(rows[index]) : null });
+  // The first row is a choice too. Home cannot seed it at construction, since
+  // its parent holds the selection and only this screen knows the rows, so it
+  // is recorded on the first render that has any.
+  useEffect(() => {
+    if (selection.id === null && rows.length) choose(selection.index);
+  });
   const marked = (i: number) => rowsFocused && i === selected;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
@@ -177,12 +209,12 @@ export function Home({
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setTile(null);
-      onSelect(nextDown(rows.length, selected));
+      choose(nextDown(rows.length, selected));
       return true;
     }
     if (name === c.keys.up || name === "up") {
       setTile(null);
-      onSelect(Math.max(0, selected - 1));
+      choose(Math.max(0, selected - 1));
       return true;
     }
     if (name === c.keys.left || name === "left") {

@@ -165,7 +165,16 @@ export function App({
 }: AppProps) {
   const renderer = useRenderer();
   const [view, setView] = useState<View>("Home");
-  const [homeIndex, setHomeIndex] = useState(0);
+  /**
+   * The Home row the reader chose, and the item that row named. Home's rows
+   * prepend, so a row number alone names a different item one sample later.
+   * It is held here rather than in the screen because it outlives the screen:
+   * leaving Home and returning must land where the reader was.
+   */
+  const [homeSelection, setHomeSelection] = useState<{
+    index: number;
+    id: string | null;
+  }>({ index: 0, id: null });
   const [laneId, setLaneId] = useState<string | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
   const [pinned, setPinned] = useState<Snapshot | null>(null);
@@ -375,10 +384,10 @@ export function App({
         alertsOpened={opened}
         points={points}
         windowMs={windows[windowIndex]}
-        selected={homeIndex}
+        selection={homeSelection}
         width={width - 4}
         height={contentHeight}
-        onSelect={setHomeIndex}
+        onSelect={setHomeSelection}
         onCopy={copy}
         onOpen={(row) => {
           if (row.kind === "agent") openLane(row.lane.id);

@@ -301,3 +301,34 @@ test("reading recent history costs the same whether or not there is much to read
     });
   }
 });
+
+test("a change aged out by a push leaves the index with its point", () => {
+  // A full ring whose oldest point is still retained grows rather than
+  // wrapping, so the push evicts nothing. It evicts only once a sampling gap
+  // has carried that point past the retention cutoff, which is when `push`
+  // returns the casualty and is the case this covers.
+  const c = {
+    ...defaults(),
+    refreshMs: 3600000,
+    historyHours: 3,
+    persistence: false,
+  };
+  const hours = 3600000;
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const running = emptySnapshot(2000);
+  running.lanes = [laneSnapshot({ id: "l1.scope", name: "l1" })];
+  h.add(running);
+  h.add(emptySnapshot(3000));
+  expect(h.recentEvents(3000, 3).map((e) => e.time)).toEqual([3000, 2000]);
+  // The gap. The first push past it drops the oldest point, which carried no
+  // change; the second drops the point that carried one.
+  h.add(emptySnapshot(3 * hours + 2000));
+  h.add(emptySnapshot(3 * hours + 3000));
+  const indexed = h.recentEvents(3 * hours + 3000, 3);
+  const walked = h.events(3 * hours + 3000, c.historyHours * hours);
+  // A row Home offers has to be a row the Timeline can still land on, so the
+  // index cannot hold a change whose point has gone.
+  expect(indexed.some((e) => e.time === 2000)).toBe(false);
+  expect(indexed).toEqual(walked.slice(0, 3));
+});
