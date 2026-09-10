@@ -105,10 +105,25 @@ export function Settings({
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   // Moving the selection brings the row into view; opening something under it
-  // brings the whole block, because an editor the reader cannot see is an
-  // editor they cannot use. Scrolling to the block while merely walking the
-  // list is what pushes the row itself off the top edge.
-  const opened = editing || picking !== null || sourcesOpen;
+  // brings the whole block, because a detail the reader cannot see is a detail
+  // they cannot read. Scrolling to the block while merely walking the list is
+  // what pushes the row itself off the top edge.
+  //
+  // Which of the two applies is decided by what is actually drawn under the
+  // selected row, because naming the openers one by one missed a whole kind:
+  // a capability shows its detail as soon as it is selected when it could not
+  // be read, and on Enter when it could, and neither was named here. Selecting
+  // an unreadable source near the end of a short list scrolled its row flush
+  // to the bottom edge and left the sentence saying why below the fold.
+  const chosen = items[selected];
+  const opened =
+    editing ||
+    picking !== null ||
+    sourcesOpen ||
+    (chosen?.kind === "capability" &&
+      (openCap === chosen.id ||
+        s.capabilities.find((cap) => cap.id === chosen.id)?.available ===
+          false));
   // biome-ignore lint/correctness/useExhaustiveDependencies: the column count is a re-run trigger here, not a value the effect reads
   useEffect(() => {
     const box = scroller.current;
@@ -142,7 +157,10 @@ export function Settings({
     into();
     const pending = setTimeout(into, 0);
     return () => clearTimeout(pending);
-  }, [selected, opened, twoColumns, picking, choice]);
+    // `openCap` is here as insurance rather than as a fix: `opened` already
+    // reads it, so every case that changes one changes the other. Named
+    // separately, a mode that later stops reading it still re-runs.
+  }, [selected, opened, twoColumns, picking, choice, openCap]);
   /**
    * The one place the selection follows the query. Three paths change what the
    * filter shows — typing in the box, opening it on a query already there, and

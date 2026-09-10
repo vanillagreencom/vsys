@@ -682,3 +682,68 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     await t.close();
   }
 });
+
+test("a source that could not be read shows why, at the end of a short list", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The last capability is the one that could not be read, so walking to it
+  // puts it at the bottom edge of a viewport too short for the list.
+  const last = s.capabilities[s.capabilities.length - 1];
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === last.id
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: "/proc/pressure/cpu",
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  const t = await mount(s, c, { width: 140, height: 10 });
+  try {
+    await t.press("7");
+    const at = settingItems(c, s.capabilities).findIndex(
+      (item) => item.kind === "capability" && item.id === last.id,
+    );
+    expect(at).toBeGreaterThan(0);
+    for (let i = 0; i < at; i++) await t.press("down");
+    const frame = t.frame();
+    // The row is the one selected, and the sentence saying why it could not be
+    // read is on the screen with it. Scrolled to the row alone, the row landed
+    // flush against the bottom edge and this line was the one below the fold —
+    // which is the whole of what the reader selected it for.
+    expect(selectedRow(frame)).toContain("Drive lifetime reports");
+    expect(frame).toContain("(/proc/pressure/cpu: ENOENT");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Enter on a readable source brings its own source line with it", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The last capability, so opening it at the bottom edge of a short viewport
+  // is where the line it opens would fall past the fold.
+  const last = s.capabilities[s.capabilities.length - 1];
+  const t = await mount(s, c, { width: 140, height: 10 });
+  try {
+    await t.press("7");
+    const at = settingItems(c, s.capabilities).findIndex(
+      (item) => item.kind === "capability" && item.id === last.id,
+    );
+    expect(at).toBeGreaterThan(0);
+    for (let i = 0; i < at; i++) await t.press("down");
+    // Nothing is open yet, so the source is not on the screen to begin with.
+    expect(t.frame()).not.toContain(last.source);
+    await t.press("enter");
+    const frame = t.frame();
+    expect(selectedRow(frame)).toContain("Drive lifetime reports");
+    // Enter is what opened this, so Enter has to be what moves the view: with
+    // `openCap` outside the effect's dependencies the block grew a line and
+    // nothing re-ran, leaving that line below the fold.
+    expect(frame).toContain(last.source);
+  } finally {
+    await t.close();
+  }
+});
