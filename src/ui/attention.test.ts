@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import type { CapabilityId, Snapshot } from "../model/types";
-import { meters } from "../model/verdict";
+import { meters, topSwapHolder } from "../model/verdict";
 import {
   emptySnapshot,
   everyCauseSnapshot,
@@ -398,4 +398,24 @@ test("no card offers a command with an unresolved value in it", () => {
     expect(item.command ?? "").not.toContain("undefined");
     expect(item.command ?? "").not.toContain("null");
   }
+});
+
+test("the memory-reclaim card carries the scope its own text names", () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const holder = topSwapHolder(s.groups, c);
+  expect(holder).toBeDefined();
+  const items = attention(s, c, base);
+  const memory = items.find((item) => item.id === "system-memory");
+  const swapped = items.find((item) => item.id === "desktop-swap");
+  expect(memory).toBeDefined();
+  expect(swapped).toBeDefined();
+  // Both cards name this one scope in their own text, so both carry it and
+  // both open on the same row. Naming it and carrying nothing left the card
+  // opening on whichever row the screen already had selected.
+  expect(memory?.target).toEqual({ kind: "group", path: holder?.path ?? "" });
+  expect(swapped?.target).toEqual(memory?.target);
+  // And they name it the same way, decoded rather than as its raw unit.
+  expect(memory?.detail).toContain("gnome holds the most swap");
+  expect(memory?.detail).not.toContain(".scope");
 });

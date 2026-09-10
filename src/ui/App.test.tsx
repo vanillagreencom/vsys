@@ -1475,3 +1475,24 @@ test("a Timeline with no sample under the cursor budgets the line it draws", asy
     await t.close();
   }
 });
+
+test("a memory-reclaim card opens on the scope holding the swap", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const items = attention(s, c);
+  const at = items.findIndex((item) => item.id === "system-memory");
+  expect(at).toBeGreaterThan(-1);
+  const t = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await t.press("1");
+    for (let i = 0; i < at; i++) await t.press("j");
+    await t.press("enter");
+    // The card's own text names the scope holding the most swap, so that is
+    // the row it lands on. Carrying no group landed on whichever row
+    // Resources already had selected, silently and without an error.
+    expect(t.frame()).toContain("Groups");
+    expect(selectedRow(t.frame())).toContain("gnome");
+  } finally {
+    await t.close();
+  }
+});

@@ -232,18 +232,29 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     });
   }
   const swap = sliceSum(s.groups, c.desktopSlice, (g) => g.swap);
-  if (swap !== null && swap > c.swapFloor) {
-    const holder = topSwapHolder(s.groups, c);
+  const swapHolder = topSwapHolder(s.groups, c);
+  /**
+   * The scope holding the most swap, and the two fields that name it. Two
+   * cards point at this one scope — the swap card and the memory-reclaim card
+   * — so they read it from here rather than each resolving it again. Held
+   * apart, one carried the group and the other named the scope in its text
+   * and carried nothing, which left its card opening on whichever row the
+   * screen happened to have selected. Where no scope holds swap the group is
+   * an empty list, stated rather than left out.
+   */
+  const holds = {
+    groups: swapHolder ? [swapHolder] : [],
+    consumer: consumerName(swapHolder, s),
+  };
+  if (swap !== null && swap > c.swapFloor)
     add("desktop-swap", "danger", {
-      groups: holder ? [holder] : [],
-      consumer: consumerName(holder, s),
+      ...holds,
       values: {
         swap,
-        holder: holder?.swap ?? null,
+        holder: swapHolder?.swap ?? null,
         cache: sliceSum(s.groups, c.agentSlice, (g) => g.cache),
       },
     });
-  }
   const free = leastFree(s.storage.volumes);
   if (free && (free.free ?? 0) < c.freeFloor)
     add("free-space", "danger", {
@@ -269,7 +280,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (memoryFired)
     add("system-memory", "warn", {
       lanes: owned("memory"),
-      consumer: topSwapHolder(s.groups, c)?.name ?? "",
+      ...holds,
       values: { some: memory },
     });
   if (cpuFired)
