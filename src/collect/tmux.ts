@@ -134,8 +134,13 @@ export interface PaneSet {
 export async function readPanes(): Promise<PaneSet> {
   return { socket: serverSocket(), byId: parsePanes(await run(listPanesArgv)) };
 }
+/** What a tmux read answers with, so a test can stand in for a server. */
+export type Ask = (argv: string[]) => Promise<string>;
 /** The last lines that pane drew. A pane that has gone away throws its reason. */
-export async function capturePane(target: string): Promise<string[]> {
+export async function capturePane(
+  target: string,
+  ask: Ask = run,
+): Promise<string[]> {
   if (!target) throw new Error("This agent exported no pane to read");
-  return paneLines(await run(capturePaneArgv(target)));
+  return paneLines(await ask(capturePaneArgv(target)));
 }

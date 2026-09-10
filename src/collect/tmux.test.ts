@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  type Ask,
   capturePane,
   capturePaneArgv,
   insideTmux,
@@ -115,20 +116,36 @@ test("a configured address is a target tmux accepts, not one vsys refuses", asyn
     "-t",
     "work:2.1",
   ]);
+  // A stand-in server, so this asserts what vsys does rather than what the
+  // machine running the suite happens to have. Asked for the real thing, this
+  // passed on a machine with no tmux: the spawn threw `Executable not found
+  // in $PATH`, which is neither empty nor the old sentence, so a test named
+  // for tmux accepting an address passed where tmux did not exist.
+  const asked: string[][] = [];
+  const server = (said: string): Ask => {
+    return (argv) => {
+      asked.push(argv);
+      return Promise.reject(new Error(said));
+    };
+  };
+  // The configured address reaches the server as the target it is, unchanged.
+  await expect(
+    capturePane("work:2.1", server("can't find pane: work:2.1")),
+  ).rejects.toThrow("can't find pane: work:2.1");
+  expect(asked).toEqual([["tmux", "capture-pane", "-p", "-t", "work:2.1"]]);
   // What reaches the reader when the server refuses is the server's own
   // words. What used to reach them was `work:2.1 is not a pane address`,
   // about a value they were told to set.
-  let refused = "";
-  try {
-    await capturePane("no-such-session:9.9");
-  } catch (error) {
-    refused = error instanceof Error ? error.message : String(error);
-  }
-  expect(refused).not.toBe("no-such-session:9.9 is not a pane address");
-  expect(refused).not.toBe("");
+  const lines = await capturePane("work:2.1", async (argv) => {
+    asked.push(argv);
+    return "one\ntwo\n";
+  });
+  expect(lines).toEqual(["one", "two"]);
   // A pane with nothing to name is still refused, because there is nothing to
-  // ask about.
-  expect(capturePane("")).rejects.toThrow("exported no pane");
+  // ask about, and nothing is asked.
+  const before = asked.length;
+  await expect(capturePane("")).rejects.toThrow("exported no pane");
+  expect(asked.length).toBe(before);
 });
 
 test("the copied line quotes its target, and the arguments do not", () => {
