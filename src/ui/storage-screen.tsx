@@ -168,13 +168,13 @@ export function Storage({
       setSelected((i) => stepWithin(counts, i, -1));
       return true;
     }
-    if (name === c.keys.left || name === "left") {
+    if (name === c.keys.previous) {
       setSelected(
         (i) => ranges[stepRegion(counts, regionOf(counts, i), -1)][0],
       );
       return true;
     }
-    if (name === c.keys.right || name === "right") {
+    if (name === c.keys.next) {
       setSelected((i) => ranges[stepRegion(counts, regionOf(counts, i), 1)][0]);
       return true;
     }

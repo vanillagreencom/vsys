@@ -73,7 +73,9 @@ export async function mount(
         // A lone escape waits for the rest of a sequence before it is a key.
         ui.mockInput.pressEscape();
         await Bun.sleep(50);
-      } else if (["up", "down", "left", "right"].includes(key))
+      } else if (key === "tab") ui.mockInput.pressTab();
+      else if (key === "shift+tab") ui.mockInput.pressTab({ shift: true });
+      else if (["up", "down", "left", "right"].includes(key))
         ui.mockInput.pressArrow(key as "up" | "down" | "left" | "right");
       else ui.mockInput.pressKey(key);
     });
