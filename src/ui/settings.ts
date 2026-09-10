@@ -286,6 +286,30 @@ const incompleteReasons: Partial<Record<CapabilityId, string>> = {
   tmux: "tmux is installed but no server is answering",
 };
 /**
+ * What is missing from the screens while a capability is not available. A
+ * reader cannot act on "no PSI on this kernel"; they can act on knowing that
+ * every wait reading is blank rather than zero, and where those readings are.
+ * Blank and zero are different answers, and a dashboard that shows zero for a
+ * number it could not read is lying.
+ */
+const capabilityCost: Record<CapabilityId, string> = {
+  cgroup2:
+    "no lane is measured at all: Agents, Resources and Builds are blank rather than zero",
+  delegation:
+    "per-lane CPU and memory are blank rather than zero on Agents and Resources",
+  psi: "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
+  "io-stat":
+    "per-group disk writes are blank rather than zero, on Home and Storage",
+  scrub: "Storage lists no scrub report, which is not the same as a clean one",
+  smart:
+    "Storage shows no drive lifetime writes, which is not the same as none written",
+  tmux: "the Agents pane column is absent and no agent's terminal can be read",
+};
+/** What a reader loses while this capability is missing. */
+export function capabilityLoss(cap: Capability): string {
+  return cap.available ? "" : capabilityCost[cap.id];
+}
+/**
  * One cause per capability, derived from what the probe found rather than from
  * the identifier alone. A present file that cannot be read or does not parse
  * must not send the reader looking for a kernel that lacks the interface.

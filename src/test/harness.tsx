@@ -36,13 +36,20 @@ export async function mount(
   let publish: ((next: Snapshot) => void) | null = null;
   function Mounted() {
     const [current, setCurrent] = useState(s);
+    // A saved setting comes back as the config the screens read, the way the
+    // running program's session hands it back. Without that, a key that saves
+    // is a key whose effect no test can see.
+    const [config, setConfig] = useState(c);
     publish = setCurrent;
     return (
       <App
         snapshot={current}
         history={h}
-        config={c}
-        onSave={hooks.onSave ?? (async () => {})}
+        config={config}
+        onSave={async (next) => {
+          setConfig(next);
+          await hooks.onSave?.(next);
+        }}
         onQuit={hooks.onQuit ?? (() => {})}
         onExport={hooks.onExport ?? (async () => "snapshot.json")}
         onAction={hooks.onAction ?? (async () => {})}

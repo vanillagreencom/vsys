@@ -148,8 +148,10 @@ test("a narrow terminal gives the tabs their own row and drops the wait column",
     const frame = wide.frame();
     expect(frame.split("\n")[0]).toContain("2 Agents");
     // The heading names the column, so the cell carries only the reading.
+    // The sorted column carries its direction, and on a numeric column the
+    // arrow leads so the heading still ends where the digits do.
     expect(frame).toMatch(
-      /Agent\s+Program\s+CPU\s+Trend\s+Memory\s+Wait\s+State/,
+      /Agent\s+PID\s+Program\s+↓ CPU\s+Trend\s+Memory\s+Wait\s+State/,
     );
     expect(frame).toContain("12.0%");
   } finally {
