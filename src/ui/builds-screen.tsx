@@ -7,17 +7,20 @@ import type { Snapshot } from "../model/types";
 import { meters } from "../model/verdict";
 import { meterTile } from "./attention";
 import { keyLabel } from "./chrome";
+import { type Column, cell, columnGap, columnsWidth, fit } from "./columns";
 import { age, bytes, count, gap, percent, share } from "./format";
 import { useScreenKeys } from "./keys";
-import { ui } from "./theme";
+import { metric, ui } from "./theme";
 import {
   Bar,
   Empty,
-  Heading,
   Line,
   List,
   nextDown,
+  Reading,
   Row,
+  Section,
+  TableHeader,
   Tile,
   Tiles,
 } from "./widgets";
@@ -36,15 +39,30 @@ export function Builds({
   snapshot: s,
   config: c,
   height,
+  width,
 }: {
   snapshot: Snapshot;
   config: Config;
   height: number;
+  width: number;
 }) {
   const [selected, setSelected] = useState(0);
   const [processes, setProcesses] = useState(false);
   const summary = buildsSummary(s, c);
   const rows = summary.rows;
+  const fixed: Column[] = [
+    { label: "", width: 10 },
+    { label: "Building", width: 14, align: "right" as const },
+    { label: "Linkers", width: 30 },
+  ];
+  const buildColumns: Column[] = [
+    {
+      label: "Lane",
+      width: Math.max(12, Math.min(40, width - 5 - columnsWidth(fixed))),
+    },
+    ...fixed,
+  ];
+  const [nameColumn, barColumn, countColumn] = buildColumns;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setSelected((i) => nextDown(rows.length, i));
@@ -124,7 +142,12 @@ export function Builds({
           )}
         </Line>
       )}
-      <Heading title="Lanes building" count={rows.length || undefined} />
+      <Section
+        title="Lanes building"
+        width={width}
+        count={rows.length || undefined}
+      />
+      {rows.length > 0 && <TableHeader columns={buildColumns} />}
       {!rows.length && <Empty text="Nothing is compiling or linking." />}
       <List
         items={rows}
@@ -140,21 +163,34 @@ export function Builds({
               setProcesses(true);
             }}
           >
-            {safe(
-              (row.name || "outside the watched lanes").padEnd(40).slice(0, 40),
-            )}{" "}
-            <Bar value={row.builds} max={topBuilds} width={10} />
-            {` ${String(row.builds).padStart(4)} ${row.builds === 1 ? "process " : "processes"}`}
+            {safe(cell(nameColumn, row.name || "outside the watched lanes"))}
+            {columnGap}
+            <Bar
+              value={row.builds}
+              max={topBuilds}
+              width={barColumn.width}
+              color={metric.builds}
+            />
+            {columnGap}
+            <Reading
+              value={row.builds}
+              text={cell(
+                countColumn,
+                `${row.builds} ${row.builds === 1 ? "process" : "processes"}`,
+              )}
+            />
+            {columnGap}
             <span attributes={ui.dim}>
-              {`  ${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`}
+              {`${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`}
             </span>
           </Row>
         )}
       />
       {processes && current && (
         <box flexDirection="column" flexShrink={0} marginTop={1}>
-          <Heading
+          <Section
             title={`Processes in ${current.name || "no watched lane"}`}
+            width={width}
             count={procs.length}
             marginTop={0}
           />
@@ -168,7 +204,7 @@ export function Builds({
             .map((p) => (
               <Line key={p.pid} height={1} flexShrink={0} truncate>
                 {safe(
-                  `${String(p.pid).padEnd(8)} ${(p.build ?? "").padEnd(11)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(8)}  ${bytes(p.rss, c).padStart(9)}  ${age(p.age).padStart(5)}  ${p.cwd ?? gap}`,
+                  `${fit(String(p.pid), 8)} ${fit(p.build ?? "", 11)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(8)}  ${bytes(p.rss, c).padStart(9)}  ${age(p.age).padStart(5)}  ${p.cwd ?? gap}`,
                 )}
               </Line>
             ))}

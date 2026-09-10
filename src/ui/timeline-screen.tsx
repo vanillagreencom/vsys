@@ -3,11 +3,12 @@ import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import { changed, type Point } from "../store/point";
+import { fit } from "./columns";
 import { bucketPeaks, bytes, percent, sparkline, timeBuckets } from "./format";
 import { useScreenKeys } from "./keys";
-import { levelColor, ui } from "./theme";
+import { levelColor, metric, readingWeight, ui } from "./theme";
 import { eventParts } from "./timeline";
-import { Chart, Empty, gutter, Heading, Line } from "./widgets";
+import { Chart, Empty, gutter, Line, Section } from "./widgets";
 
 /** The windows the reader can step through, shortest first. */
 export const windows = [300000, 900000, 3600000, 21600000, 86400000];
@@ -142,13 +143,16 @@ export function Timeline({
   const changes = history.events(s.time, windowMs);
   // The header, two three-row charts with titles, the sparklines, the axis
   // and the heading come before the change list.
+  // Each row takes its metric's own colour, so six sparklines one under the
+  // other are six quantities rather than one wall of amber. Escaped agents and
+  // corruption are severities, not metrics, and keep the severity colours.
   const rows = [
-    ["CPU wait", "pressure", percent],
-    ["Memory wait", "memoryPressure", percent],
-    ["Disk wait", "ioPressure", percent],
-    ["Builds", "builds", String],
-    ["Escaped", "unconfined", String],
-    ["Corruption", "corruption", String],
+    ["CPU wait", "pressure", percent, metric.cpu],
+    ["Memory wait", "memoryPressure", percent, metric.memory],
+    ["Disk wait", "ioPressure", percent, metric.disk],
+    ["Builds", "builds", String, metric.builds],
+    ["Escaped", "unconfined", String, ui.warn],
+    ["Corruption", "corruption", String, ui.danger],
   ] as const;
   // A short terminal keeps the two charts and the change list, and drops the
   // sparkline rows, which the At-cursor line still summarises.
@@ -186,7 +190,7 @@ export function Timeline({
           height={3}
           max={agentsTop}
           top={percent(agentsTop)}
-          color={ui.accent}
+          color={metric.cpu}
         />
         <Chart
           title={`Memory  ${value("memory", (n) => bytes(n, c))}`}
@@ -194,17 +198,25 @@ export function Timeline({
           height={3}
           max={memoryTop}
           top={bytes(memoryTop, c)}
-          color={ui.second}
+          color={metric.memory}
         />
         {!short &&
-          rows.map(([label, key]) => (
-            <Line key={key} height={1} flexShrink={0} truncate>
-              <span attributes={ui.dim}>{label.padEnd(gutter)}</span>
-              <span fg={key === "builds" ? ui.fg : ui.warn}>
-                {sparkline(peaks(key), chartWidth, c.sparkline)}
-              </span>
-            </Line>
-          ))}
+          rows.map(([label, key, , color]) => {
+            const values = peaks(key);
+            return (
+              <Line key={key} height={1} flexShrink={0} truncate>
+                <span attributes={ui.dim}>{fit(label, gutter)}</span>
+                <span
+                  fg={color}
+                  attributes={readingWeight(
+                    Math.max(0, ...values.map((v) => v ?? 0)),
+                  )}
+                >
+                  {sparkline(values, chartWidth, c.sparkline)}
+                </span>
+              </Line>
+            );
+          })}
         <Line height={1} flexShrink={0} truncate>
           <span attributes={ui.dim}>{" ".repeat(gutter)}</span>
           {markerRuns(buckets.map(anyChange), cursorColumn).map((run) => (
@@ -228,7 +240,7 @@ export function Timeline({
         </Line>
       </box>
       <Line height={1} flexShrink={0} truncate>
-        <span attributes={ui.dim}>{"At cursor".padEnd(gutter)}</span>
+        <span attributes={ui.dim}>{fit("At cursor", gutter)}</span>
         {selected
           ? rows
               .map(
@@ -238,8 +250,9 @@ export function Timeline({
               .join(" · ")
           : "no sample"}
       </Line>
-      <Heading
+      <Section
         title="What changed"
+        width={width - 4}
         count={
           changes.length
             ? `${visible.length < changes.length ? `${visible.length} of ` : ""}${changes.length}, newest first`
@@ -265,7 +278,7 @@ export function Timeline({
               fg={levelColor(e.level)}
               attributes={e.level === "ok" ? ui.none : ui.bold}
             >
-              {e.kind.padEnd(13)}
+              {fit(e.kind, 13)}
             </span>
             {safe(e.text)}
           </Line>

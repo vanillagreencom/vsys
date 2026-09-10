@@ -2,13 +2,24 @@ import { useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import { dangerousCap } from "../model/lanes";
+import { unitLabel } from "../model/naming";
 import type { Group, Snapshot } from "../model/types";
 import { type Level, meters } from "../model/verdict";
 import { meterTile } from "./attention";
+import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import { amount, bytes, gap, percent, share } from "./format";
 import { useScreenKeys } from "./keys";
-import { levelColor, ui } from "./theme";
-import { Bar, Field, Heading, List, nextDown, Row } from "./widgets";
+import { levelColor, metric, ui } from "./theme";
+import {
+  Bar,
+  Field,
+  List,
+  nextDown,
+  Reading,
+  Row,
+  Section,
+  TableHeader,
+} from "./widgets";
 
 /** A group with nothing running and little memory is noise until asked for. */
 export function idle(g: Group): boolean {
@@ -81,9 +92,24 @@ export function Resources({
   const current = rows[Math.min(selected, rows.length - 1)];
   const topCpu = Math.max(100, ...rows.map((g) => g.cpuPercent ?? 0));
   const topMemory = Math.max(1, ...rows.map((g) => g.memory ?? 0));
-  const nameWidth = Math.max(12, Math.min(44, width - 4 - 50));
-  // Four machine lines, the heading, and the detail block under the list.
-  const listHeight = height - 4 - 2 - 4;
+  const fixed: Column[] = [
+    { label: "", width: 8 },
+    { label: "CPU", width: 7, align: "right" as const },
+    { label: "", width: 8 },
+    { label: "Memory", width: 10, align: "right" as const },
+    { label: "Tasks", width: 14, align: "right" as const },
+  ];
+  const groupColumns: Column[] = [
+    {
+      label: "Group",
+      width: Math.max(12, Math.min(44, width - 5 - columnsWidth(fixed))),
+    },
+    ...fixed,
+  ];
+  const [nameColumn, cpuBar, cpuColumn, memoryBar, memoryColumn, tasksColumn] =
+    groupColumns;
+  // Four machine lines, the section, the table heading, and the detail block.
+  const listHeight = height - 4 - 3 - 4;
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
       {tiles.map((tile) => (
@@ -105,10 +131,12 @@ export function Resources({
           )
           .join("")}`}
       />
-      <Heading
+      <Section
         title="Groups"
+        width={width - 4}
         count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}`}
       />
+      <TableHeader columns={groupColumns} />
       <List
         items={rows}
         selected={selected}
@@ -116,7 +144,7 @@ export function Resources({
         empty="No resource group could be read."
         render={(g, i, isSelected) => {
           const depth = g.path === "." ? 0 : g.path.split("/").length;
-          const name = `${"  ".repeat(depth)}${g.path === "." ? "session" : g.name}`;
+          const name = `${"  ".repeat(depth)}${g.path === "." ? "session" : unitLabel(g.name)}`;
           return (
             <Row
               key={g.path}
@@ -124,18 +152,42 @@ export function Resources({
               color={levelColor(groupLevel(g, s, c))}
               onOpen={() => setSelected(i)}
             >
-              {safe(name.padEnd(nameWidth).slice(0, nameWidth))}{" "}
-              <Bar value={g.cpuPercent} max={topCpu} width={8} />
-              {` ${share(g.cpuPercent).padStart(7)} `}
-              <Bar value={g.memory} max={topMemory} width={8} />
-              {` ${amount(g.memory, c).padStart(10)}`}
-              <span attributes={ui.dim}>{`  ${g.tasks ?? gap} tasks`}</span>
+              {safe(cell(nameColumn, name))}
+              {columnGap}
+              <Bar
+                value={g.cpuPercent}
+                max={topCpu}
+                width={cpuBar.width}
+                color={metric.cpu}
+              />
+              {columnGap}
+              <Reading
+                value={g.cpuPercent}
+                text={cell(cpuColumn, share(g.cpuPercent))}
+              />
+              {columnGap}
+              <Bar
+                value={g.memory}
+                max={topMemory}
+                width={memoryBar.width}
+                color={metric.memory}
+              />
+              {columnGap}
+              <Reading
+                value={g.memory}
+                text={cell(memoryColumn, amount(g.memory, c))}
+              />
+              {columnGap}
+              <span attributes={ui.dim}>
+                {cell(tasksColumn, `${g.tasks ?? gap} tasks`)}
+              </span>
             </Row>
           );
         }}
       />
       {current && (
         <box flexDirection="column" flexShrink={0} marginTop={1}>
+          <Field label="Unit" value={current.name} />
           <Field
             label="Limits"
             value={`memory high ${limit(current.high)} · max ${current.maxRead ? limit(current.max) : gap} · swap ${amount(current.swap, c)} of ${limit(current.swapMax)} · tasks max ${current.tasksMax ?? "none"}`}

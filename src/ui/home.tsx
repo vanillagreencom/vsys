@@ -3,16 +3,16 @@ import { useEffect, useRef } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
-import { type Level, meters } from "../model/verdict";
+import { type Level, type Meter, meters } from "../model/verdict";
 import type { Point } from "../store/point";
 import {
   type Attention,
   meterTile,
-  sourceFooter,
   verdictItem,
   verdictLine,
 } from "./attention";
 import { keyLabel } from "./chrome";
+import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import {
   amount,
   bucketPeaks,
@@ -22,14 +22,16 @@ import {
   sparkline,
 } from "./format";
 import { useScreenKeys } from "./keys";
-import { levelColor, scrollbar, ui } from "./theme";
+import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
   Empty,
-  Heading,
   Line,
   nextDown,
+  Reading,
   Row,
+  Section,
+  TableHeader,
   Tile,
   Tiles,
 } from "./widgets";
@@ -50,6 +52,13 @@ export function homeItems(
       .map((lane) => ({ kind: "agent", lane }) as const),
   ];
 }
+/** The history field each meter's tile charts, so the two cannot drift apart. */
+const meterSeries: Record<Meter["id"], keyof Point> = {
+  cpu: "pressure",
+  memory: "memory",
+  disk: "ioPressure",
+  builds: "builds",
+};
 /** The one-row chart under a tile: the peak of each history bucket, placed by time. */
 function series(
   points: Point[],
@@ -121,19 +130,27 @@ export function Home({
   });
   const lead = verdictItem(items);
   const level: Level = lead ? (lead.danger ? "danger" : "warn") : "ok";
-  const tiles = meters(s, c).map((meter) => meterTile(meter, s, c));
-  const charts: (keyof Point)[] = [
-    "pressure",
-    "memory",
-    "ioPressure",
-    "builds",
-  ];
+  const gauges = meters(s, c);
   const tileWidth = Math.max(8, Math.floor((width - 2 * 3) / 4));
-  const footer = sourceFooter(s);
   const agents = rows.filter((r) => r.kind === "agent");
   const topCpu = Math.max(100, ...agents.map((r) => r.lane.cpu ?? 0));
-  // Marker, bar, CPU, memory and state take fixed columns; the name has the rest.
-  const nameWidth = Math.max(8, Math.min(40, width - 46));
+  // The marker, the bar and the readings take fixed columns; the name has the
+  // rest, and the heading reads the same spec the rows do.
+  const fixed: Column[] = [
+    { label: "", width: 10 },
+    { label: "CPU", width: 7, align: "right" },
+    { label: "Memory", width: 10, align: "right" },
+    { label: "State", width: 9 },
+  ];
+  const agentColumns: Column[] = [
+    {
+      label: "Agent",
+      width: Math.max(8, Math.min(40, width - 5 - columnsWidth(fixed))),
+    },
+    ...fixed,
+  ];
+  const [nameColumn, barColumn, cpuColumn, memoryColumn, stateColumn] =
+    agentColumns;
   return (
     <scrollbox
       ref={scroller}
@@ -154,25 +171,33 @@ export function Home({
         </Line>
         <box height={1} flexShrink={0} />
         <Tiles>
-          {tiles.map((tile, i) => (
-            <Tile
-              key={tile.label}
-              label={tile.label}
-              value={tile.value}
-              level={tile.level}
-              detail={tile.detail}
-              chart={series(
-                points,
-                charts[i],
-                s.time - windowMs,
-                s.time,
-                tileWidth,
-                c.sparkline,
-              )}
-            />
-          ))}
+          {gauges.map((gauge) => {
+            const tile = meterTile(gauge, s, c);
+            return (
+              <Tile
+                key={tile.label}
+                label={tile.label}
+                value={tile.value}
+                level={tile.level}
+                detail={tile.detail}
+                chart={series(
+                  points,
+                  meterSeries[gauge.id],
+                  s.time - windowMs,
+                  s.time,
+                  tileWidth,
+                  c.sparkline,
+                )}
+                chartColor={metric[gauge.id]}
+              />
+            );
+          })}
         </Tiles>
-        <Heading title="Needs attention" count={items.length || undefined} />
+        <Section
+          title="Needs attention"
+          count={items.length || undefined}
+          width={width}
+        />
         {!items.length && (
           <Empty text="No current problems in the data vsys can read." />
         )}
@@ -214,32 +239,40 @@ export function Home({
             </box>
           ) : null,
         )}
-        <Heading title="Busiest agents" />
+        <Section title="Busiest agents" width={width} />
         {!agents.length && (
           <Empty text="No agent is running in a watched scope." />
         )}
+        {agents.length > 0 && <TableHeader columns={agentColumns} />}
         {rows.map((row, i) =>
           row.kind === "agent" ? (
             <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>
               <Row selected={i === selected} onOpen={() => onOpen(row)}>
-                {safe(row.lane.name.padEnd(nameWidth).slice(0, nameWidth))}
-                {"  "}
-                <Bar value={row.lane.cpu} max={topCpu} width={10} />
-                {`  ${share(row.lane.cpu).padStart(7)}  ${amount(row.lane.rss, c).padStart(10)}`}
-                <span attributes={ui.dim}>{`  ${row.lane.state}`}</span>
+                {safe(cell(nameColumn, row.lane.name))}
+                {columnGap}
+                <Bar
+                  value={row.lane.cpu}
+                  max={topCpu}
+                  width={barColumn.width}
+                  color={metric.cpu}
+                />
+                {columnGap}
+                <Reading
+                  value={row.lane.cpu}
+                  text={cell(cpuColumn, share(row.lane.cpu))}
+                />
+                {columnGap}
+                <Reading
+                  value={row.lane.rss}
+                  text={cell(memoryColumn, amount(row.lane.rss, c))}
+                />
+                {columnGap}
+                <span attributes={ui.dim}>
+                  {cell(stateColumn, row.lane.state)}
+                </span>
               </Row>
             </box>
           ) : null,
-        )}
-        {footer !== null && (
-          <Line
-            flexShrink={0}
-            wrapMode="word"
-            marginTop={1}
-            attributes={ui.dim}
-          >
-            {footer}
-          </Line>
         )}
       </box>
     </scrollbox>

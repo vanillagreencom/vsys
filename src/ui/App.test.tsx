@@ -169,7 +169,7 @@ test("Settings edits a value in place and honours a changed quit binding", async
   });
   try {
     await t.press("7");
-    expect(t.frame()).toContain("Refresh interval (ms)");
+    expect(t.frame()).toContain("Refresh interval");
     // The unreadable-sources row comes first; the refresh interval is the
     // last Display setting.
     for (let i = 0; i < 6; i++) await t.press("down");
@@ -339,7 +339,7 @@ test("agent detail names the account, the charged resources, the limits and the 
     for (const text of [
       "a.scope",
       "account .2claude",
-      "pane %3",
+      "pane 3",
       "cache 4.0 KiB",
       "read 1.0 MiB/s",
       "2.0 MiB/s",
@@ -546,7 +546,12 @@ test("Settings opens on a snapshot stored before the capability probe", async ()
     await t.press("7");
     const frame = t.frame();
     expect(frame).toContain("before vsys probed its sources");
-    expect(frame).toMatch(/Refresh interval \(ms\)\s+1000/);
+    // The list shows the value in the unit the reader reads; the editor
+    // still opens the stored number.
+    expect(frame).toMatch(/Refresh interval\s+1s/);
+    expect(frame).toMatch(/Low memory limit\s+1\.0 GiB/);
+    expect(frame).toMatch(/Save history\s+Off/);
+    expect(frame).toMatch(/Table columns\s+name, account, cwd, and 18 more/);
     expect(frame).not.toContain("not available");
   } finally {
     await t.close();
@@ -592,7 +597,9 @@ test("a narrow terminal gives the tabs their own row and drops the wait column",
     await wide.press("2");
     const frame = wide.frame();
     expect(frame.split("\n")[0]).toContain("2 Agents");
-    expect(frame).toContain("12.0% wait");
+    // The heading names the column, so the cell carries only the reading.
+    expect(frame).toMatch(/Agent\s+Program\s+CPU\s+Memory\s+Wait\s+State/);
+    expect(frame).toContain("12.0%");
   } finally {
     await wide.close();
   }
@@ -603,7 +610,8 @@ test("a narrow terminal gives the tabs their own row and drops the wait column",
     expect(rows[0]).not.toContain("2 Agents");
     expect(rows[1]).toContain("2 Agents");
     expect(narrow.frame()).toContain("lane-a");
-    expect(narrow.frame()).not.toContain("wait");
+    expect(narrow.frame()).not.toContain("Wait");
+    expect(narrow.frame()).not.toContain("12.0%");
   } finally {
     await narrow.close();
   }
@@ -747,5 +755,51 @@ test("with write mode on an agent action names its scope and waits for a yes", a
     });
   } finally {
     await t.close();
+  }
+});
+
+test("a numeric column ends where its heading ends, on the rendered screen", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 5, rss: 1024, pressure: 12 })];
+  const t = await mount(s, c, { width: 140, height: 24 });
+  try {
+    await t.press("2");
+    const lines = t.frame().split("\n");
+    const heading = lines.find(
+      (line) => line.includes("Agent") && line.includes("Memory"),
+    );
+    const row = lines.find((line) => line.includes("lane-a"));
+    expect(heading).toBeDefined();
+    expect(row).toBeDefined();
+    if (!heading || !row) throw new Error("no heading and row to compare");
+    // Right-aligned cells and their headings share a last column, which is
+    // what one shared column spec buys.
+    const rows: [string, string][] = [
+      ["CPU", "5.0%"],
+      ["Memory", "1.0 KiB"],
+      ["Wait", "12.0%"],
+    ];
+    for (const [label, value] of rows)
+      expect({
+        label,
+        heading: heading.indexOf(label) + label.length,
+      }).toEqual({ label, heading: row.indexOf(value) + value.length });
+  } finally {
+    await t.close();
+  }
+  // The narrower terminal keeps every column inside the panel: the last one
+  // is reached, not cut off the right edge.
+  const tight = await mount(s, c, { width: 100, height: 24 });
+  try {
+    await tight.press("2");
+    const line = tight
+      .frame()
+      .split("\n")
+      .find((row) => row.includes("lane-a"));
+    expect(line).toContain("sleeping");
+    expect(line?.length).toBe(100);
+  } finally {
+    await tight.close();
   }
 });

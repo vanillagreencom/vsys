@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { processSnapshot } from "../test/fixture";
-import { accountName, jobserver, laneName, paneName } from "./naming";
+import {
+  accountName,
+  jobserver,
+  laneName,
+  paneLabel,
+  paneName,
+  unitLabel,
+} from "./naming";
 
 test("the account comes from whichever agent configuration directory is set", () => {
   const c = defaults();
@@ -64,4 +71,55 @@ test("the make jobserver is read from the configured variable", () => {
   expect(
     jobserver(processSnapshot({ env: { NINJAFLAGS: " -j2" } }), ["NINJAFLAGS"]),
   ).toEqual({ jobs: 2, jobserver: null });
+});
+
+test("a tmux pane address is rendered as a pane, and any other value is left alone", () => {
+  const rows: [string, string][] = [
+    ["%9", "pane 9"],
+    ["%0", "pane 0"],
+    ["%123", "pane 123"],
+    // Only tmux's own address form is machinery; a name someone chose stays.
+    ["work:2.1", "work:2.1"],
+    ["%main", "%main"],
+    ["%", "%"],
+    ["", ""],
+  ];
+  for (const [pane, expected] of rows)
+    expect({ pane, label: paneLabel(pane) }).toEqual({ pane, label: expected });
+});
+
+test("a unit name loses systemd's machinery and keeps what names it", () => {
+  const rows: [string, string][] = [
+    // The documented desktop form: the launcher and the unique value go.
+    [
+      "app-Hyprland-chromium\\x2dpersonal-af7ff2b7.scope",
+      "chromium (personal)",
+    ],
+    ["app-Hyprland-ghostty-3d98e590.scope", "ghostty"],
+    ["app-org.chromium.Chromium-391090.scope", "org.chromium.Chromium"],
+    ["app-graphical.slice", "graphical"],
+    // No convention to follow: the outer field is context, the inner names it.
+    ["agent-confine-854045-20986.scope", "agent 854045"],
+    // Nothing generated, so nothing is dropped.
+    ["tmux.service", "tmux"],
+    ["wayland-wm@hyprland.desktop.service", "wayland wm@hyprland.desktop"],
+    ["session.slice", "session"],
+    ["user@1000.service", "user@1000"],
+    // More than one escaped hyphen is a name of its own, not a program and an
+    // instance, so it is left whole.
+    [
+      "app-limine\\x2dsnapper\\x2dnotify@autostart-1234abcd.scope",
+      "limine-snapper-notify@autostart",
+    ],
+  ];
+  for (const [unit, expected] of rows)
+    expect({ unit, label: unitLabel(unit) }).toEqual({ unit, label: expected });
+  // Nothing a screen renders still carries an escape, a type suffix or the
+  // launcher prefix.
+  for (const [unit] of rows) {
+    const label = unitLabel(unit);
+    expect(label).not.toContain("\\x");
+    expect(label.endsWith(".scope")).toBe(false);
+    expect(label.startsWith("app-")).toBe(false);
+  }
 });

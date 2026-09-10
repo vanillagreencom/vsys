@@ -11,11 +11,13 @@ import {
 } from "../model/actions";
 import { safe } from "../model/export";
 import { parentChain, processTree } from "../model/lanes";
+import { paneLabel } from "../model/naming";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
 import { laneBadge, laneLevel } from "./agents";
 import { keyLabel } from "./chrome";
+import { fit } from "./columns";
 import {
   age,
   amount,
@@ -30,30 +32,30 @@ import {
   sparkline,
 } from "./format";
 import { useScreenKeys } from "./keys";
-import { levelColor, scrollbar, ui } from "./theme";
+import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Chart,
   Empty,
   Field,
   gutter,
-  Heading,
   Line,
   nextDown,
   Row,
+  Section,
   Tile,
   Tiles,
 } from "./widgets";
 
 /** The drill-down sections, closed until the reader opens one. */
 const sections = ["Processes", "Launch", "Open files", "Actions"] as const;
-type Section = (typeof sections)[number];
+type SectionName = (typeof sections)[number];
 /**
  * The selectable lines under Details. Actions sits last, so opening it adds
  * its rows below every section header and leaves the other rows where they
  * were.
  */
 type DetailRow =
-  | { kind: "section"; name: Section }
+  | { kind: "section"; name: SectionName }
   | { kind: "action"; intent: LaneIntent };
 
 /** One agent: what it is, what it uses, its history, then its processes. */
@@ -88,7 +90,7 @@ export function Agent({
   const [loading, setLoading] = useState(false);
   const [seriesError, setSeriesError] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
-  const [open, setOpen] = useState<Set<Section>>(new Set());
+  const [open, setOpen] = useState<Set<SectionName>>(new Set());
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`detail-${selected}`);
@@ -161,7 +163,7 @@ export function Agent({
     }
     return false;
   });
-  const toggle = (name: Section) =>
+  const toggle = (name: SectionName) =>
     setOpen((current) => {
       const next = new Set(current);
       if (next.has(name)) next.delete(name);
@@ -191,7 +193,7 @@ export function Agent({
     .join(", ");
   const unique = [...new Set(files)];
   const tree = processTree(members);
-  const count = (name: Section) =>
+  const count = (name: SectionName) =>
     name === "Processes"
       ? tree.length
       : name === "Open files"
@@ -220,7 +222,7 @@ export function Agent({
             [
               lane.tool || "no agent program",
               `account ${lane.account ?? gap}`,
-              lane.pane ? `pane ${lane.pane}` : "",
+              lane.pane ? paneLabel(lane.pane) : "",
               lane.title ? `window ${lane.title}` : "",
             ]
               .filter(Boolean)
@@ -279,7 +281,7 @@ export function Agent({
           height={3}
           max={cpuTop}
           top={percent(cpuTop)}
-          color={levelColor(level)}
+          color={metric.cpu}
         />
         <Chart
           title="Memory"
@@ -287,22 +289,23 @@ export function Agent({
           height={3}
           max={rssTop}
           top={bytes(rssTop, c)}
+          color={metric.memory}
         />
         {(
           [
-            ["CPU wait", "pressure"],
-            ["Memory wait", "memoryPressure"],
-            ["Disk wait", "ioPressure"],
+            ["CPU wait", "pressure", metric.cpu],
+            ["Memory wait", "memoryPressure", metric.memory],
+            ["Disk wait", "ioPressure", metric.disk],
           ] as const
-        ).map(([label, key]) => (
+        ).map(([label, key, color]) => (
           <Line key={key} height={1} flexShrink={0} truncate>
-            <span attributes={ui.dim}>{label.padEnd(gutter)}</span>
-            <span fg={ui.warn}>
+            <span attributes={ui.dim}>{fit(label, gutter)}</span>
+            <span fg={color}>
               {sparkline(peaks(key), chartWidth, c.sparkline)}
             </span>
           </Line>
         ))}
-        <Heading title="Details" />
+        <Section title="Details" width={width - 4} />
         {rows.map((row, i) =>
           row.kind === "action" ? (
             <box
@@ -316,7 +319,7 @@ export function Agent({
                 onOpen={() => onAct(row.intent)}
                 color={row.intent.action === "Stop" ? ui.danger : undefined}
               >
-                {row.intent.action.padEnd(8)}
+                {fit(row.intent.action, 8)}
                 <span attributes={ui.dim}>{safe(row.intent.text)}</span>
               </Row>
             </box>
@@ -349,7 +352,7 @@ export function Agent({
                       {tree.map(({ proc: p, depth }) => (
                         <Line key={p.pid} height={1} truncate>
                           {safe(
-                            `${"  ".repeat(depth)}${String(p.pid).padEnd(8 - depth * 2)} ${p.comm.padEnd(14).slice(0, 14)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(7)}  ${bytes(p.rss, c).padStart(9)}  ${p.cwd ?? gap}`,
+                            `${"  ".repeat(depth)}${fit(String(p.pid), 8 - depth * 2)} ${fit(p.comm, 14)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(7)}  ${bytes(p.rss, c).padStart(9)}  ${p.cwd ?? gap}`,
                           )}
                         </Line>
                       ))}
@@ -394,7 +397,7 @@ export function Agent({
                         parentChain(proc, snapshot.procs).map((p) => (
                           <Line key={p.pid} height={1} truncate>
                             {safe(
-                              `${String(p.pid).padEnd(8)} ${p.executable ?? gap}  ${p.command.join(" ")}`,
+                              `${fit(String(p.pid), 8)} ${p.executable ?? gap}  ${p.command.join(" ")}`,
                             )}
                           </Line>
                         ))}

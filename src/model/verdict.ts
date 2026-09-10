@@ -1,6 +1,7 @@
 import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
 import { inSlice, lanePressure } from "./lanes";
+import { unitLabel } from "./naming";
 import type { Group, Lane, Snapshot, Volume } from "./types";
 
 export type Level = "ok" | "warn" | "danger";
@@ -146,7 +147,9 @@ export function laneLinkers(s: Snapshot, lane: Lane, c: Config): number {
 /** A scope's lane name when it has one, otherwise the unit name. */
 function consumerName(group: Group | undefined, s: Snapshot): string {
   if (!group) return "";
-  return s.lanes.find((l) => l.id === group.path)?.name ?? group.name;
+  return (
+    s.lanes.find((l) => l.id === group.path)?.name ?? unitLabel(group.name)
+  );
 }
 function busiest(lanes: Lane[]): Lane | undefined {
   return [...lanes].sort((a, b) => (b.cpu ?? 0) - (a.cpu ?? 0))[0];
@@ -233,7 +236,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     const holder = topSwapHolder(s.groups, c);
     add("desktop-swap", "danger", {
       groups: holder ? [holder] : [],
-      consumer: holder?.name ?? "",
+      consumer: consumerName(holder, s),
       values: {
         swap,
         holder: holder?.swap ?? null,
@@ -346,8 +349,8 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     {
       id: "memory",
       level: gauge(swap, c.swapFloor, c.swapFloor),
-      consumer: largest?.name ?? "",
-      holder: swapped ? (holder?.name ?? "") : undefined,
+      consumer: consumerName(largest, s),
+      holder: swapped ? consumerName(holder, s) : undefined,
       values: {
         used: total === null || available === null ? null : total - available,
         total,

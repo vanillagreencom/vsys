@@ -8,10 +8,19 @@ import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
 import { Agent } from "./agent";
 import { narrowWidth } from "./chrome";
+import { type Column, cell, columnGap, columnsWidth, fit } from "./columns";
 import { amount, blockedText, laneValue, share, sortLanes } from "./format";
 import { useScreenKeys } from "./keys";
-import { levelColor, scrollbar, ui } from "./theme";
-import { Bar, Line, List, nextDown, Row } from "./widgets";
+import { levelColor, metric, scrollbar, ui } from "./theme";
+import {
+  Bar,
+  Line,
+  List,
+  nextDown,
+  Reading,
+  Row,
+  TableHeader,
+} from "./widgets";
 
 export const columnLabels: Record<string, string> = {
   name: "Agent",
@@ -246,12 +255,51 @@ export function Agents({
       </box>
     );
   const sortLabel = `${columnLabels[c.sort] ?? c.sort} ${c.descending ? "↓" : "↑"}`;
-  const listHeight = height - 2 - (searching ? 3 : 0);
+  const listHeight = height - 3 - (searching ? 3 : 0);
   const topCpu = Math.max(100, ...lanes.map((l) => l.cpu ?? 0));
-  // Marker, program, bar, CPU, memory, wait and the badge take fixed columns;
-  // a narrow terminal drops the program and the wait share.
+  // The program and the wait share leave a narrow terminal; the name takes
+  // whatever the fixed columns leave, and the heading reads the same spec.
   const narrow = width < narrowWidth;
-  const nameWidth = Math.max(12, Math.min(36, width - 4 - (narrow ? 42 : 62)));
+  // The two panel margins and the selection marker take five columns. The
+  // readings are fixed, State keeps a floor so a lane's badge always has room,
+  // and the name takes what is left up to a cap.
+  const margins = 5;
+  const stateFloor = 9;
+  const readings: Column[] = [
+    ...(narrow ? [] : [{ label: "Program", width: 9 }]),
+    { label: "", width: 10 },
+    { label: "CPU", width: 7, align: "right" as const },
+    { label: "Memory", width: 10, align: "right" as const },
+    ...(narrow ? [] : [{ label: "Wait", width: 11, align: "right" as const }]),
+  ];
+  const spare =
+    width -
+    margins -
+    columnsWidth(readings) -
+    columnGap.length * 2 -
+    stateFloor;
+  const measured: Column[] = [
+    { label: "Agent", width: Math.max(12, Math.min(36, spare)) },
+    ...readings,
+  ];
+  // A lane's badge is a sentence, so State takes every column the rest leave.
+  const laneColumns: Column[] = [
+    ...measured,
+    {
+      label: "State",
+      width: Math.max(
+        stateFloor,
+        width - margins - columnsWidth(measured) - columnGap.length,
+      ),
+    },
+  ];
+  const [nameColumn] = laneColumns;
+  const laneColumn = (label: string): Column => {
+    const found = laneColumns.find((x) => x.label === label);
+    if (!found) throw new Error(`No lane column named ${label}`);
+    return found;
+  };
+  const barColumn = laneColumns[narrow ? 1 : 2];
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
       <Line height={1} flexShrink={0} truncate>
@@ -335,9 +383,10 @@ export function Agents({
                 >
                   {c.columns
                     .map((name) =>
-                      safe(laneValue(lane, name, c))
-                        .padEnd(columnWidth(name))
-                        .slice(0, columnWidth(name) - 1),
+                      fit(
+                        safe(laneValue(lane, name, c)),
+                        columnWidth(name) - 1,
+                      ),
                     )
                     .join(" ")}
                 </Row>
@@ -346,50 +395,74 @@ export function Agents({
           </box>
         </scrollbox>
       ) : (
-        <List
-          items={lanes}
-          selected={selected}
-          height={listHeight}
-          empty={
-            query
-              ? "No agent matches."
-              : "No process runs in a watched scope, and no agent has escaped one."
-          }
-          render={(lane, i, isSelected) => {
-            const badge = laneBadge(lane);
-            return (
-              <Row
-                key={lane.id}
-                selected={isSelected}
-                color={levelColor(laneLevel(lane, c))}
-                onOpen={() => {
-                  setSelected(i);
-                  onOpen(lane.id);
-                }}
-              >
-                {safe(lane.name.padEnd(nameWidth).slice(0, nameWidth))}
-                {!narrow && (
-                  <span attributes={ui.dim}>
-                    {` ${safe((lane.tool || "").padEnd(9).slice(0, 9))}`}
-                  </span>
-                )}{" "}
-                <Bar
-                  value={lane.cpu}
-                  max={topCpu}
-                  width={10}
-                  level={laneLevel(lane, c)}
-                />
-                {` ${share(lane.cpu).padStart(7)} ${amount(lane.rss, c).padStart(10)}`}
-                {!narrow && ` ${share(lane.pressure).padStart(6)} wait`}
-                {badge ? (
-                  <span fg={levelColor(badge.level)}>{`  ${badge.text}`}</span>
-                ) : (
-                  <span attributes={ui.dim}>{`  ${lane.state}`}</span>
-                )}
-              </Row>
-            );
-          }}
-        />
+        <>
+          {lanes.length > 0 && <TableHeader columns={laneColumns} />}
+          <List
+            items={lanes}
+            selected={selected}
+            height={listHeight}
+            empty={
+              query
+                ? "No agent matches."
+                : "No process runs in a watched scope, and no agent has escaped one."
+            }
+            render={(lane, i, isSelected) => {
+              const badge = laneBadge(lane);
+              return (
+                <Row
+                  key={lane.id}
+                  selected={isSelected}
+                  color={levelColor(laneLevel(lane, c))}
+                  onOpen={() => {
+                    setSelected(i);
+                    onOpen(lane.id);
+                  }}
+                >
+                  {safe(cell(nameColumn, lane.name))}
+                  {!narrow && (
+                    <span attributes={ui.dim}>
+                      {`${columnGap}${safe(cell(laneColumn("Program"), lane.tool))}`}
+                    </span>
+                  )}
+                  {columnGap}
+                  <Bar
+                    value={lane.cpu}
+                    max={topCpu}
+                    width={barColumn.width}
+                    color={metric.cpu}
+                  />
+                  {columnGap}
+                  <Reading
+                    value={lane.cpu}
+                    text={cell(laneColumn("CPU"), share(lane.cpu))}
+                  />
+                  {columnGap}
+                  <Reading
+                    value={lane.rss}
+                    text={cell(laneColumn("Memory"), amount(lane.rss, c))}
+                  />
+                  {!narrow && columnGap}
+                  {!narrow && (
+                    <Reading
+                      value={lane.pressure}
+                      text={cell(laneColumn("Wait"), share(lane.pressure))}
+                    />
+                  )}
+                  {columnGap}
+                  {badge ? (
+                    <span fg={levelColor(badge.level)}>
+                      {cell(laneColumn("State"), badge.text)}
+                    </span>
+                  ) : (
+                    <span attributes={ui.dim}>
+                      {cell(laneColumn("State"), lane.state)}
+                    </span>
+                  )}
+                </Row>
+              );
+            }}
+          />
+        </>
       )}
     </box>
   );

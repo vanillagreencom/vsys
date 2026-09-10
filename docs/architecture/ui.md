@@ -16,7 +16,10 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 
 - `mountScreen` owns the React root and the subscription between collection and display. It mounts once and unmounts on shutdown.
 - The shell owns the one keyboard subscription. A screen registers a handler through `useScreenKeys` and sees each key first; a handler that returns true keeps the key from the shell's bindings, so an open search box or editor takes every key.
-- Colour comes from `src/ui/theme.ts` alone: the terminal's default foreground and background, the sixteen indexed colours, and the bold and dim attributes. No screen names a hex value. Every line of text renders through `Line`, because OpenTUI paints text white when no colour is given.
+- Colour comes from `src/ui/theme.ts` alone, and each role has one meaning: red, amber and green are severity and nothing else; cyan is what the reader can act on; grey is behind the selected row and under an unfilled bar. `metric` gives each metric family its own hue, used wherever that quantity is drawn on any screen. No screen names a hex value. Every line of text renders through `Line`, because OpenTUI paints text white when no colour is given.
+- A reading of zero recedes and a reading keeps its weight, through `readingWeight`. Thirty rows of `0.0%` otherwise compete with the column beside them.
+- `src/ui/columns.ts` owns column arithmetic: `fit` pads or cuts to a width and marks a cut with an ellipsis, and one `Column[]` feeds both `TableHeader` and the row renderer under it, so a width cannot move one without the other.
+- A section is a bold title with a dim rule to the panel edge (`Section`). A box is reserved for what floats above the screen: the notice, the confirmation and the help panel.
 - `src/ui/attention.ts` turns the model's cause ladder and meters into words: the verdict line, one card per cause, and one tile per meter. The model returns numbers; every word and every formatted number lives in the UI.
 - Home shows the verdict, four meter tiles with a sparkline each, the cards, and the busiest agents. Only the selected card shows its detail, its next step and its command, which the copy key puts on the clipboard.
 - Agents holds the list, the table, the search and the open agent, so the list selection survives a visit to the detail. The agent detail keeps its processes, launch, open files and actions in closed sections.
@@ -33,7 +36,9 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Refresh preserves the selected view. `src/ui/screen.test.tsx` checks navigation during updates and a resize.
 - Arrow selection pages the list and never moves the viewport. `src/ui/screen.test.tsx` checks the Agents list and the table's horizontal scroll.
 - A serious cause that appears between two samples raises one notice and one terminal notification, on whichever view is open, and never a second one for the same cause. `src/ui/screen.test.tsx` checks a mount turning read-only.
-- Every visible span uses a default or indexed colour, selection is marked in the accent colour, and severity uses red and yellow. `src/ui/theme.test.tsx` checks the rendered spans; `src/ui/widgets.test.tsx` checks that a bare text element is what the guard catches.
+- Every visible span uses a default or indexed colour, selection is marked in the accent colour and painted behind, and severity uses red and yellow. `src/ui/theme.test.tsx` checks the rendered spans; `src/ui/widgets.test.tsx` checks that a bare text element is what the guard catches.
+- Every colour any screen paints comes from the role table, and no two roles share an index. `src/ui/theme.test.tsx` walks every tab, the agent detail and the help panel and admits no other colour.
+- A table's heading and its rows read one column spec. `src/ui/columns.test.ts` checks that a cell and its heading occupy the same columns, and that a cut falls between characters.
 - A key a screen consumes never reaches the shell: a digit typed into the settings editor is text, not a tab. `src/ui/App.test.tsx` checks the editor.
 - Home keeps the selected card visible and opens its agent. `src/ui/App.test.tsx` checks a long list in a small terminal.
 - The copy key sends the selected command as an OSC 52 sequence and copies nothing when the row carries none. `src/ui/clipboard.test.ts` checks the encoding against planted terminators; `src/ui/App.test.tsx` reads the sequence off a test output stream.

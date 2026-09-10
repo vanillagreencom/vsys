@@ -10,13 +10,7 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import {
-  attention,
-  meterTile,
-  sourceFooter,
-  unread,
-  verdictLine,
-} from "./attention";
+import { attention, meterTile, unread, verdictLine } from "./attention";
 
 const base = ["/usr/bin", "/bin"];
 test("overview promotes active problems and does not call past events current", () => {
@@ -61,7 +55,7 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   const swapCard = items.find((item) => item.id === "desktop-swap");
   expect(swapCard?.title).toBe("Desktop swapped out: 512.0 MiB in app.slice");
   expect(swapCard?.detail).toBe(
-    "gnome.scope holds 992 B. Agents hold 80.0 GiB of page cache, which the desktop cannot use.",
+    "gnome holds 992 B. Agents hold 80.0 GiB of page cache, which the desktop cannot use.",
   );
   s.lanes = s.lanes.filter((l) => !l.unconfined);
   s.storage.volumes = [];
@@ -210,7 +204,7 @@ test("counted nouns in the meters and the cards are singular at one", () => {
   expect(builds().detail).toBe("2 linkers · 2 lanes");
 });
 
-test("source read failures leave attention and become one footer line", () => {
+test("source read failures are not a machine problem and raise no card", () => {
   const c = defaults();
   const s = emptySnapshot();
   s.errors = [
@@ -219,9 +213,6 @@ test("source read failures leave attention and become one footer line", () => {
     { source: "/proc/2", message: "permission denied" },
   ];
   expect(attention(s, c, base)).toEqual([]);
-  // Counted once per source, so repeated failed reads cannot make it climb.
-  expect(sourceFooter(s)).toBe("vsys cannot read 2 sources; open Settings");
-  expect(sourceFooter(emptySnapshot())).toBe(null);
 });
 
 test("read-only mounts and device errors are one card each, not one per mount", () => {
@@ -251,14 +242,14 @@ test("the memory meter names the largest scope and only then the swap holder", (
     ["Used", "500 B of 1000 B"],
     ["Agent page cache", "not available"],
     ["Desktop swap", "0 B"],
-    ["Largest", "b.scope 900 B"],
+    ["Largest", "b 900 B"],
   ]);
   expect(meters(s, c)[1].level).toBe("ok");
   s.groups[0].swap = c.swapFloor + 1;
   expect(tile(s).facts.slice(2)).toEqual([
     ["Desktop swap", "512.0 MiB"],
-    ["Largest", "b.scope 900 B"],
-    ["Most swapped", "gnome.scope 992 B"],
+    ["Largest", "b 900 B"],
+    ["Most swapped", "gnome 992 B"],
   ]);
   // Swap vsys could not read is a warning, never an untroubled reading.
   s.groups[0].swap = null;
@@ -306,14 +297,16 @@ test("a meter names the interface behind a missing reading", () => {
   // On a complete host an unread quantity says only that it is unread.
   s.system.pressure.cpu = null;
   expect(cpu()).toEqual({
-    "Tasks waiting": "not available",
-    Agents: "not available",
-    Desktop: "not available",
+    "Time tasks waited": "not available",
+    "Cores agents use": "not available",
+    "Cores desktop uses": "not available",
     "Busiest agent": "not available",
   });
   drop("psi");
-  expect(cpu()["Tasks waiting"]).toBe("not available: no PSI on this kernel");
-  expect(cpu().Agents).toBe("not available");
+  expect(cpu()["Time tasks waited"]).toBe(
+    "not available: no PSI on this kernel",
+  );
+  expect(cpu()["Cores agents use"]).toBe("not available");
   expect(disk()["Tasks waiting"]).toBe(
     "not available: no PSI on this kernel · nothing runnable not available: no PSI on this kernel",
   );
@@ -340,7 +333,7 @@ test("a meter names the interface behind a missing reading", () => {
     "Desktop swap": delegated,
     Largest: delegated,
   });
-  expect(cpu().Agents).toBe(delegated);
+  expect(cpu()["Cores agents use"]).toBe(delegated);
 });
 
 test("a snapshot stored before the probe reads plainly and never claims a cause", () => {
@@ -350,9 +343,9 @@ test("a snapshot stored before the probe reads plainly and never claims a cause"
   s.capabilities = [];
   s.system.pressure.cpu = null;
   expect(meterTile(meters(s, c)[0], s, c).facts).toEqual([
-    ["Tasks waiting", "not available"],
-    ["Agents", "not available"],
-    ["Desktop", "not available"],
+    ["Time tasks waited", "not available"],
+    ["Cores agents use", "not available"],
+    ["Cores desktop uses", "not available"],
     ["Busiest agent", "not available"],
   ]);
   expect(unread(s, "psi")).toBe("not available");
