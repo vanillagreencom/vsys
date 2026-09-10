@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { createCollector } from "./collect/collector";
 import { configPath, loadConfig } from "./config/config";
+import { runEffect } from "./effect";
 import { exportSnapshot } from "./model/export";
 import { Session } from "./runtime";
 import { History } from "./store/history";
@@ -100,24 +101,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       });
       return file;
     },
-    // The shell refuses every action while write mode is off; reaching here
-    // means the reader turned it on and confirmed this exact command.
-    onAction: async ({ effect }) => {
-      if (effect.kind === "cgroup") {
-        await writeFile(effect.path, effect.value);
-        return;
-      }
-      const child = Bun.spawn(effect.argv, {
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "pipe",
-      });
-      const status = await child.exited;
-      if (status !== 0)
-        throw new Error(
-          `${effect.argv[0]} exited ${status}: ${(await new Response(child.stderr).text()).trim()}`,
-        );
-    },
+    // The shell refuses every action on a pinned sample and every action while
+    // write mode is off; reaching here means the reader turned it on and
+    // confirmed this exact command against live data.
+    onAction: ({ effect }) => runEffect(effect),
     output: process.stdout,
   });
   const session = new Session(config, path, collector, history, {

@@ -22,7 +22,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - The runtime owns collection, history, and settings changes for a running dashboard. A replaced source is handed its predecessor, so readings measured since vsys started survive the replacement.
 - The history store owns application persistence. The collector does not depend on SQLite.
 - `escaped()` in `src/model/lanes.ts` is the only definition of an agent outside its slice. Lanes, alerts, history points and timeline events all call it.
-- The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane, and changes system state only through a confirmed lane action with `writeMode` on.
+- The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane, and changes system state only through a confirmed lane action with `writeMode` on, never from a pinned sample. `src/effect.ts` is the one place that performs an action.
 
 ## Invariants
 

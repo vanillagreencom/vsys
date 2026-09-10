@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { Config } from "../config/config";
+import { shellLine, shellWord } from "./shell";
 import type { Lane } from "./types";
 
 /** What a reader can ask vsys to do to one lane, in menu order. */
@@ -60,7 +61,7 @@ export function laneCommand(
     return {
       action,
       scope,
-      text: argv.join(" "),
+      text: shellLine(argv),
       effect: { kind: "run", argv },
     };
   }
@@ -69,7 +70,7 @@ export function laneCommand(
   return {
     action,
     scope,
-    text: `echo ${value} > ${path}`,
+    text: `${shellLine(["echo", value])} > ${shellWord(path)}`,
     effect: { kind: "cgroup", path, value },
   };
 }

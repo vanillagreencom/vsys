@@ -662,6 +662,29 @@ test("with write mode off an agent action is copy text and signals nothing", asy
   }
 });
 
+test("an action on a pinned sample is refused with the reason, not run", async () => {
+  const calls: LaneCommand[] = [];
+  const t = await stopSelected({ ...defaults(), writeMode: true }, calls);
+  try {
+    await t.press("p");
+    expect(t.frame()).toContain("Agents, Resources, Builds and Storage show");
+    await t.press("enter");
+    // The pinned lane's scope is a name from the past. Acting on it would
+    // freeze or signal whatever holds that name now.
+    const frame = t.frame();
+    expect(frame).toContain("Pinned sample · a.scope may be gone");
+    expect(frame).toContain("or its name reused");
+    expect(frame).not.toContain("Stop a.scope?");
+    expect(calls).toEqual([]);
+    // Returning to live data restores the action.
+    await t.press("p");
+    await t.press("enter");
+    expect(t.frame()).toContain("Stop a.scope?");
+  } finally {
+    await t.close();
+  }
+});
+
 test("with write mode on an agent action names its scope and waits for a yes", async () => {
   const calls: LaneCommand[] = [];
   const t = await stopSelected({ ...defaults(), writeMode: true }, calls);

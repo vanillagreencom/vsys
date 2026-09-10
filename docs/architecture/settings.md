@@ -14,7 +14,7 @@ Settings are validated before they reach a running dashboard. The runtime replac
 
 - A missing capability carries its source and a cause that follows what the probe met, so an unread quantity names it and an unreadable or unparsable source is never called a missing interface. `src/collect/capabilities.test.ts`, `src/ui/settings.test.ts` and `src/ui/attention.test.ts` check the kinds and the meters.
 - Every host-specific name ships a systemd user-session default and `writeMode` ships off. `src/config/config.test.ts` checks these.
-- `writeMode` off refuses every lane action, and on holds each behind a confirmation naming the scope. `src/ui/App.test.tsx` checks both.
+- `writeMode` off refuses every lane action, and on holds each behind a confirmation naming the scope. A pinned sample refuses one whatever `writeMode` says, because its scope name may belong to another lane by now. `src/ui/App.test.tsx` checks all three.
 - The settings collection reads are declared in `src/collect/settings.ts`, and the runtime rebuilds the collector from that declaration alone. Every function collection reaches takes that subset of the settings rather than the whole configuration, so reading an undeclared setting fails the type check instead of leaving the collector stale. Display settings and notification rules stay out, because a rebuild discards the counters and alert state a sample compares against. `src/runtime.test.ts` checks that a collection setting rebuilds and that a display setting and a notification rule do not.
 - Collection does not overlap itself when settings change. `src/runtime.test.ts` controls an in-flight source and checks rescheduling.
 - Failed settings writes preserve active history. `src/runtime.test.ts` checks replacement failure.

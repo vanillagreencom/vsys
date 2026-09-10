@@ -1,5 +1,6 @@
 import type { Config } from "../config/config";
 import { launcherTrail } from "../model/launcher";
+import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
 import {
@@ -63,7 +64,14 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
           ? trails.map((t) => t.summary).join(" ")
           : `${c.agentSlice} limits do not apply to these processes.`,
         next: `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`,
-        command: `systemd-run --user --slice=${c.agentSlice} --scope -- ${cause.lanes[0].tool || "AGENT"}`,
+        command: shellLine([
+          "systemd-run",
+          "--user",
+          `--slice=${c.agentSlice}`,
+          "--scope",
+          "--",
+          cause.lanes[0].tool || "AGENT",
+        ]),
         view: "Agents",
         laneId,
       };
@@ -97,7 +105,10 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         next: writer
           ? "Lower the build job count for that lane until the stall percentage falls."
           : "Open Resources and find what is writing in that scope, then reduce its work.",
-        command: `cat ${c.cgroupRoot}/${cause.groups[0]?.path}/io.stat`,
+        command: shellLine([
+          "cat",
+          `${c.cgroupRoot}/${cause.groups[0]?.path}/io.stat`,
+        ]),
         view: writer ? "Agents" : "Resources",
         laneId: writer?.id,
       };
@@ -109,7 +120,10 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         title: `Desktop swapped out: ${b(v.swap)} in ${c.desktopSlice}`,
         detail: `${cause.consumer ? `${cause.consumer} holds ${b(v.holder)}. ` : ""}Agents hold ${b(v.cache)} of page cache, which the desktop cannot use.`,
         next: "Reduce concurrent build work, or cap the agent slice memory so the desktop keeps its pages.",
-        command: `cat ${c.cgroupRoot}/${c.agentSlice}/memory.stat`,
+        command: shellLine([
+          "cat",
+          `${c.cgroupRoot}/${c.agentSlice}/memory.stat`,
+        ]),
         view: "Resources",
       };
     case "free-space":
@@ -126,7 +140,14 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         title: `${n} ${p(n, "lane has", "lanes have")} a memory limit below ${b(v.floor)}: ${names}`,
         detail: "The limit can stop work before it finishes.",
         next: "Open the lane and check its effective memory.max against the parent slices.",
-        command: `systemctl --user show ${c.agentSlice} -p MemoryMax`,
+        command: shellLine([
+          "systemctl",
+          "--user",
+          "show",
+          c.agentSlice,
+          "-p",
+          "MemoryMax",
+        ]),
         view: "Agents",
         laneId,
       };

@@ -173,10 +173,18 @@ export function App({
     output.write(osc52(command));
     notice(`Copied: ${command}`);
   };
-  // vsys reads system state unless the reader turns write mode on. The refusal
-  // sits above the one call that reaches an effect, so no screen arrives at it
-  // by another route, and the confirmation stands between it and the effect.
+  // vsys reads system state unless the reader turns write mode on, and an
+  // action always addresses the live machine. Both refusals sit above the one
+  // call that reaches an effect, so no screen arrives at it by another route,
+  // and the confirmation stands between it and the effect.
   const act = (command: LaneCommand) => {
+    if (pinned) {
+      notice(
+        `Pinned sample · ${command.scope} may be gone or its name reused · ${keyLabel(c.keys.pin)} shows live data`,
+        "warn",
+      );
+      return;
+    }
     if (!c.writeMode) {
       notice(
         `Write mode is off · ${keyLabel(c.keys.copy)} copies the command to run yourself`,

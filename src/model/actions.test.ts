@@ -63,3 +63,32 @@ test("a lane vsys cannot address by scope gets no target at all", () => {
       target: laneTarget(laneSnapshot({ cgroup }), c),
     }).toEqual({ reason, target: null });
 });
+
+test("a copied command survives an escaped scope name and a path with a space", () => {
+  // Real scope names carry systemd's own escapes: the Resources screen on a
+  // desktop machine shows app-Hyprland-chromium\x2dpersonal-af7ff2b7.scope.
+  const scope = "app-Hyprland-chromium\\x2dpersonal-af7ff2b7.scope";
+  const root = "/tmp/vsys test/cgroup";
+  const lane = laneSnapshot({ cgroup: `agents.slice/${scope}` });
+  const target = laneTarget(lane, { ...c, cgroupRoot: root });
+  expect(target).toEqual({ scope, directory: `${root}/agents.slice/${scope}` });
+  if (target === null) throw new Error("the fixture lane runs in a scope");
+  const freeze = laneCommand("Freeze", target);
+  const stop = laneCommand("Stop", target);
+  expect(freeze.text).toBe(
+    `echo 1 > '${root}/agents.slice/${scope}/cgroup.freeze'`,
+  );
+  expect(stop.text).toBe(`systemctl --user kill --signal=TERM '${scope}'`);
+  // Quoting is for the reader's shell alone. The effect reaches the kernel and
+  // systemd as values, so a quote in either would name a path or a unit that
+  // does not exist.
+  expect(freeze.effect).toEqual({
+    kind: "cgroup",
+    path: `${root}/agents.slice/${scope}/cgroup.freeze`,
+    value: "1",
+  });
+  expect(stop.effect).toEqual({
+    kind: "run",
+    argv: ["systemctl", "--user", "kill", "--signal=TERM", scope],
+  });
+});
