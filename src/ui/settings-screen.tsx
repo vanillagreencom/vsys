@@ -1,12 +1,12 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useRef, useState } from "react";
-import { type Config, validate } from "../config/config";
+import { type Config, choices, validate } from "../config/config";
 import {
   settingText as editText,
   settingValue as editValue,
 } from "../config/editor";
 import { safe } from "../model/export";
-import type { Snapshot } from "../model/types";
+import type { Capability, CapabilityId, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import { keyLabel, wideWidth } from "./chrome";
 import { columnGap, fit } from "./columns";
@@ -14,6 +14,7 @@ import { useScreenKeys } from "./keys";
 import {
   capabilityLabels,
   capabilityReason,
+  editorKind,
   settingDisplay,
   settingGroups,
   settingHelp,
@@ -22,11 +23,21 @@ import {
 import { scrollbar, ui } from "./theme";
 import { Empty, Line, nextDown, Row, Section } from "./widgets";
 
-/** A selectable line on Settings: a stored value, or the unreadable sources. */
+/**
+ * A selectable line on Settings: a probed capability, a stored value, or the
+ * unreadable sources. A capability row is selectable because its reason and
+ * its source are longer than a row, and a reader who cannot select it cannot
+ * read past the truncation.
+ */
 export type SettingItem =
+  | { kind: "capability"; id: CapabilityId }
   | { kind: "setting"; key: string }
   | { kind: "sources" };
-export function settingItems(c: Config, query = ""): SettingItem[] {
+export function settingItems(
+  c: Config,
+  capabilities: Capability[] = [],
+  query = "",
+): SettingItem[] {
   const q = query.trim().toLowerCase();
   // A filter matches the name the reader sees and the name they would write
   // in the config file, so either spelling finds the row.
@@ -35,6 +46,10 @@ export function settingItems(c: Config, query = ""): SettingItem[] {
     key.toLowerCase().includes(q) ||
     settingLabel(key).toLowerCase().includes(q);
   return [
+    // The capability rows are drawn whatever the filter says, so they are
+    // listed whatever the filter says: the render and the selection read one
+    // order or the selection lands on a row the reader is not looking at.
+    ...capabilities.map((cap) => ({ kind: "capability", id: cap.id }) as const),
     ...(q ? [] : [{ kind: "sources" } as const]),
     ...settingGroups.flatMap(([, keys]) =>
       keys.filter(matches).map((key) => ({ kind: "setting", key }) as const),
@@ -71,14 +86,22 @@ export function Settings({
 }) {
   const [selected, setSelected] = useState(0);
   const [editing, setEditing] = useState(false);
+  const [picking, setPicking] = useState<string[] | null>(null);
+  const [choice, setChoice] = useState(0);
   const [input, setInput] = useState("");
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  // Which capability row has its source open. A row that could not be read
+  // states its reason as soon as it is selected, because that is the thing the
+  // reader came for. Where the reading worked there is nothing to explain, so
+  // its source sits behind Enter: the footer offers Enter on this screen, and a
+  // footer key is a promise that the row it lands on answers.
+  const [openCap, setOpenCap] = useState<CapabilityId | null>(null);
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
-  const items = settingItems(c, query);
+  const items = settingItems(c, s.capabilities, query);
   // Two columns above the stated width: forty-four settings down one column
   // leave two thirds of a wide terminal empty.
-  const twoColumns = width >= wideWidth && !editing;
+  const twoColumns = width >= wideWidth && !editing && !picking;
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   // Opening the editor collapses two columns into one, so a right-column row
@@ -90,31 +113,59 @@ export function Settings({
   // layout has been drawn.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the layout is a re-run trigger here, not a value the effect reads
   useEffect(() => {
-    const into = () =>
-      scroller.current?.scrollChildIntoView(`setting-${selected}`);
+    // While a picker is open the row the reader is moving is one of its
+    // options, not the setting it hangs under. `sort` offers more options than
+    // a short terminal has rows, so pointing this at the setting left every
+    // choice below the fold unreachable except blind.
+    const id = picking ? `choice-${choice}` : `setting-${selected}`;
+    const into = () => scroller.current?.scrollChildIntoView(id);
     into();
     const pending = setTimeout(into, 0);
     return () => clearTimeout(pending);
-  }, [selected, twoColumns, editing]);
+  }, [selected, twoColumns, editing, picking, choice]);
+  /**
+   * The one place the selection follows the query. Three paths change what the
+   * filter shows — typing in the box, opening it on a query already there, and
+   * clearing it — and each decided the row for itself. The capability rows are
+   * listed whatever the filter says, so the first row of a filtered list is
+   * not the first row the filter matched, and every path that reached for row
+   * zero landed the highlight on a row the query never matched.
+   */
+  const filterTo = (text: string) => {
+    setQuery(text);
+    if (!text.trim()) {
+      setSelected(0);
+      return;
+    }
+    // No match means no row rather than the first one. `nextDown` takes -1 to
+    // the first visible row, so the arrows still work from here.
+    setSelected(
+      settingItems(c, s.capabilities, text).findIndex(
+        (item) => item.kind === "setting",
+      ),
+    );
+  };
   // A query can match nothing, so no row is selected and no row is rendered.
   const current: SettingItem | undefined = items[selected];
-  const beginEdit = (index: number) => {
-    const item: SettingItem | undefined = items[index];
-    if (item?.kind !== "setting") return;
-    setSelected(index);
-    setInput(editText(settingValue(c, item.key)));
-    setEditing(true);
-  };
-  async function commit(text: string) {
-    if (current?.kind !== "setting") return;
+  /**
+   * The one way a setting reaches the file. A toggle, a pick and a typed value
+   * all arrive here, so every kind is validated before it is saved and none can
+   * grow a shorter path.
+   */
+  async function save(key: string, read: () => unknown) {
     try {
-      const key = current.key;
-      const parsed = editValue(settingValue(c, key), text);
+      // The value is produced inside the guard, not handed in already made.
+      // The text box takes half-typed TOML on purpose, so a list the reader
+      // has not finished throws here rather than parsing: evaluated at the
+      // call site it threw before this `try`, and Enter did nothing and said
+      // nothing on the one screen built so a reader need not know the grammar.
+      const parsed = read();
       const next = key.startsWith("keys.")
         ? { ...c, keys: { ...c.keys, [key.slice(5)]: parsed } }
         : { ...c, [key]: parsed };
       await onSave(validate(next));
       setEditing(false);
+      setPicking(null);
       onNotice(`${settingLabel(key)} saved`, "ok");
     } catch (error) {
       onNotice(
@@ -123,20 +174,64 @@ export function Settings({
       );
     }
   }
+  /**
+   * What Enter does on a row, by the kind of value it holds. A boolean has two
+   * states and needs no editor; an enum has a listed set and needs no grammar;
+   * everything else opens the text box.
+   */
+  const beginEdit = (index: number) => {
+    const item: SettingItem | undefined = items[index];
+    if (item?.kind !== "setting") return;
+    setSelected(index);
+    const value = settingValue(c, item.key);
+    const kind = editorKind(item.key, value);
+    if (kind === "toggle") {
+      void save(item.key, () => !value);
+      return;
+    }
+    if (kind === "choice") {
+      const allowed = [...(choices[item.key] ?? [])];
+      setChoice(Math.max(0, allowed.indexOf(String(value))));
+      setPicking(allowed);
+      return;
+    }
+    setInput(editText(value));
+    setEditing(true);
+  };
+  async function commit(text: string) {
+    if (current?.kind !== "setting") return;
+    await save(current.key, () =>
+      editValue(settingValue(c, current.key), text),
+    );
+  }
   useScreenKeys((name, key) => {
     if (searching) {
       if (name === c.keys.back) {
         key.preventDefault();
         setSearching(false);
-        setQuery("");
-        setSelected(0);
+        filterTo("");
       }
       return true;
     }
-    if (name === c.keys.search && !editing) {
+    // A picker is modal. Opening search behind it left the picker running
+    // unseen, swallowing every key until the reader found Escape.
+    if (name === c.keys.search && !editing && !picking) {
       key.preventDefault();
       setSearching(true);
-      setSelected(0);
+      // The box opens on the query it still holds, so the row it leaves
+      // selected is the one that query matched, not row zero.
+      filterTo(query);
+      return true;
+    }
+    if (picking) {
+      key.preventDefault();
+      if (name === c.keys.back) setPicking(null);
+      else if (name === c.keys.down || name === "down")
+        setChoice((i) => nextDown(picking.length, i));
+      else if (name === c.keys.up || name === "up")
+        setChoice((i) => Math.max(0, i - 1));
+      else if (name === c.keys.open && current?.kind === "setting")
+        void save(current.key, () => picking[choice]);
       return true;
     }
     if (editing) {
@@ -156,7 +251,9 @@ export function Settings({
     }
     if (name === c.keys.open) {
       if (current?.kind === "sources") setSourcesOpen((v) => !v);
-      else beginEdit(selected);
+      else if (current?.kind === "capability")
+        setOpenCap((v) => (v === current.id ? null : current.id));
+      else if (current?.kind === "setting") beginEdit(selected);
       return true;
     }
     return false;
@@ -198,6 +295,17 @@ export function Settings({
   const sourcesIndex = items.findIndex((item) => item.kind === "sources");
   const settingIndex = (key: string) =>
     items.findIndex((item) => item.kind === "setting" && item.key === key);
+  const typedItems = (text: string): string[] | null => {
+    try {
+      const value = editValue([], text);
+      return Array.isArray(value) ? value.map(String) : null;
+    } catch {
+      // A half-typed list is not a list yet; the box shows the text alone
+      // until it parses again.
+      return null;
+    }
+  };
+  let index = 0;
   const settingRow = (key: string) => {
     const i = settingIndex(key);
     const help = settingHelp(key);
@@ -210,7 +318,7 @@ export function Settings({
             {safe(settingDisplay(key, settingValue(c, key), c))}
           </span>
         </Row>
-        {!editing && i === selected && help !== "" && (
+        {!editing && !picking && i === selected && help !== "" && (
           <Line
             flexShrink={0}
             wrapMode="word"
@@ -222,21 +330,62 @@ export function Settings({
         )}
         {editing && i === selected && (
           <box
-            height={3}
+            flexDirection="column"
             flexShrink={0}
             border
             borderStyle="rounded"
             borderColor={ui.accent}
             title={` ${settingLabel(key)} · ${keyLabel(c.keys.open)} saves · ${keyLabel(c.keys.back)} cancels `}
           >
-            <input
-              focused
-              value={input}
-              onInput={setInput}
-              onSubmit={() => {
-                void commit(input);
-              }}
-            />
+            <box height={1} flexShrink={0}>
+              <input
+                focused
+                value={input}
+                onInput={setInput}
+                onSubmit={() => {
+                  void commit(input);
+                }}
+              />
+            </box>
+            {/* A list on one line is a wall of quotes and commas. The same
+                text, one item per line, is a list the reader can count. */}
+            {editorKind(key, settingValue(c, key)) === "list" &&
+              typedItems(input)?.map((item, at) => (
+                <Line
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a list item is its position
+                  key={`item-${at}`}
+                  height={1}
+                  flexShrink={0}
+                  truncate
+                  attributes={ui.dim}
+                >
+                  {safe(`${at + 1}. ${item}`)}
+                </Line>
+              ))}
+          </box>
+        )}
+        {picking && i === selected && (
+          <box
+            flexDirection="column"
+            flexShrink={0}
+            border
+            borderStyle="rounded"
+            borderColor={ui.accent}
+            title={` ${settingLabel(key)} · ${keyLabel(c.keys.open)} saves · ${keyLabel(c.keys.back)} cancels `}
+          >
+            {picking.map((option, at) => (
+              <box id={`choice-${at}`} key={option} flexShrink={0}>
+                <Row
+                  selected={at === choice}
+                  onOpen={() => {
+                    setChoice(at);
+                    void save(key, () => option);
+                  }}
+                >
+                  {option}
+                </Row>
+              </box>
+            ))}
           </box>
         )}
       </box>
@@ -248,7 +397,7 @@ export function Settings({
       flexGrow={1}
       minHeight={0}
       scrollY
-      focused={!editing}
+      focused={!editing && !picking}
       verticalScrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
@@ -266,7 +415,7 @@ export function Settings({
               focused
               value={query}
               placeholder="name or label"
-              onInput={setQuery}
+              onInput={filterTo}
               onSubmit={() => setSearching(false)}
             />
           </box>
@@ -279,21 +428,41 @@ export function Settings({
           }
           marginTop={0}
         />
-        {s.capabilities.map((cap) => (
-          <Line key={cap.id} height={1} flexShrink={0} truncate>
-            <span fg={cap.available ? ui.ok : ui.warn}>
-              {cap.available ? "● " : "○ "}
-            </span>
-            {fit(capabilityLabels[cap.id], 42)}
-            <span attributes={ui.dim}>
-              {cap.available
-                ? "available"
-                : safe(
-                    `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
+        {s.capabilities.map((cap) => {
+          const i = index++;
+          return (
+            <box
+              id={`setting-${i}`}
+              key={cap.id}
+              flexDirection="column"
+              flexShrink={0}
+            >
+              <Row selected={i === selected} onOpen={() => setSelected(i)}>
+                <span fg={cap.available ? ui.ok : ui.warn}>
+                  {cap.available ? "● " : "○ "}
+                </span>
+                {fit(capabilityLabels[cap.id], 42)}
+                <span attributes={ui.dim}>
+                  {cap.available ? "available" : safe(capabilityReason(cap))}
+                </span>
+              </Row>
+              {i === selected && (!cap.available || openCap === cap.id) && (
+                <Line
+                  flexShrink={0}
+                  wrapMode="word"
+                  paddingLeft={3}
+                  attributes={ui.dim}
+                >
+                  {safe(
+                    cap.available
+                      ? `${cap.source}: ${cap.detail}`
+                      : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
                   )}
-            </span>
-          </Line>
-        ))}
+                </Line>
+              )}
+            </box>
+          );
+        })}
         {!s.capabilities.length && (
           <Empty text="This sample was recorded before vsys probed its sources." />
         )}

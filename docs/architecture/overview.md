@@ -23,6 +23,7 @@ Each sample contains observed values and source errors. A failed read must remai
 - The history store owns application persistence. The collector does not depend on SQLite.
 - `escaped()` in `src/model/lanes.ts` is the only definition of an agent outside its slice. Lanes, alerts, history points and timeline events all call it.
 - The UI consumes snapshots. It reads open scratch descriptors only for a live selected lane, and changes system state only through a confirmed lane action with `writeMode` on, never from a pinned sample, and only against the lane as the current sample shows it. `src/effect.ts` is the one place that performs an action.
+- The installed OpenTUI React root creates a reconciler container each time its `render` method is called. Calling it for every sample leaves previous trees mounted. Live data therefore enters through React's external-store subscription after the initial mount. The production-path listener test must remain in place when this dependency changes.
 
 ## Invariants
 

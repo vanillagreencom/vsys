@@ -1,4 +1,4 @@
-import type { Config } from "../config/config";
+import { type Config, choices } from "../config/config";
 import type { Capability, CapabilityId } from "../model/types";
 import { age, bytes } from "./format";
 
@@ -305,6 +305,18 @@ export function capabilityLine(cap: Capability): string {
   return `${capabilityLabels[cap.id]}: not available${reason ? `: ${reason}` : ""} (${cap.source}: ${cap.detail})`;
 }
 
+/**
+ * Which editor a setting opens. One judge, read by the key that opens the row
+ * and by the box that draws under it, so what a reader is offered and what
+ * their key does cannot disagree.
+ */
+export type EditorKind = "toggle" | "choice" | "list" | "text";
+export function editorKind(key: string, value: unknown): EditorKind {
+  if (typeof value === "boolean") return "toggle";
+  if (choices[key]) return "choice";
+  if (Array.isArray(value)) return "list";
+  return "text";
+}
 /** `exportJson` reads as `Export json`: one word per camel hump, capitalised. */
 export function actionLabel(action: string): string {
   const words = action.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
