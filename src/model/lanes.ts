@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
-import type { PaneAddress } from "../collect/tmux";
+import { isPaneId, type PaneAddress } from "../collect/tmux";
 import {
   accountName,
   distinctNames,
@@ -125,8 +125,15 @@ export function lanes(
       pane,
       // The resolved address is a reading, not part of the name: `%9` stays
       // the handle every action uses, and the address is what a reader reads.
-      address: panes?.get(pane)?.address ?? "",
-      window: panes?.get(pane)?.window ?? "",
+      //
+      // The map is keyed by tmux's own `%N`, and `paneEnv` reads `VSYS_PANE`
+      // first, which this project documents and tests as holding an address
+      // like `work:2.1`. Looked up by that, every configured lane found
+      // nothing and showed no address at all. An address configured directly
+      // is already the thing a reader types, so it is carried as it stands;
+      // what it cannot give is a window name, which only the server knows.
+      address: isPaneId(pane) ? (panes?.get(pane)?.address ?? "") : pane,
+      window: isPaneId(pane) ? (panes?.get(pane)?.window ?? "") : "",
       title,
       cwd,
       branch,

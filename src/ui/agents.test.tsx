@@ -1059,3 +1059,44 @@ test("when the row cannot hold both, the address stays and the trend goes", asyn
     await tight.close();
   }
 });
+
+test("search finds a row by the address and the window it shows", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({
+      id: "a",
+      name: "lane-a",
+      pane: "%1",
+      address: "work:2.1",
+      window: "build",
+    }),
+    laneSnapshot({ id: "b", name: "lane-b", pane: "%2" }),
+  ];
+  s.groups = [groupSnapshot()];
+  // The address is a column of the list; the window is named in the agent's
+  // own detail. Both are things a reader has read on the screen and would
+  // type to come back to the row carrying them.
+  for (const query of ["work:2.1", "build"]) {
+    const t = await mount(s, c, { width: 200, height: 24 });
+    try {
+      await t.press("2");
+      await t.press("/");
+      for (const ch of query) await t.press(ch);
+      await t.press("enter");
+      const frame = t.frame();
+      // Neither field was searched, so typing either removed the only row
+      // that carries it.
+      expect({ query, kept: frame.includes("lane-a") }).toEqual({
+        query,
+        kept: true,
+      });
+      expect({ query, other: frame.includes("lane-b") }).toEqual({
+        query,
+        other: false,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});

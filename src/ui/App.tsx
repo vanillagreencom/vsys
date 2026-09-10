@@ -426,8 +426,8 @@ export function App({
         onOpen={setLaneId}
         onCopy={copy}
         onAct={act}
-        onCapture={onCapture}
-        onSwitch={onSwitch}
+        onCapture={pinned ? undefined : onCapture}
+        onSwitch={pinned ? undefined : onSwitch}
       />
     );
   else if (view === "Resources")

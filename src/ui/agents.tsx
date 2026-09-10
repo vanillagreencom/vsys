@@ -266,6 +266,10 @@ export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
         lane.name,
         lane.account ?? "",
         lane.pane,
+        // The address and the window are columns a reader can see, so a query
+        // typed from the screen has to find the row showing it.
+        lane.address,
+        lane.window,
         lane.title,
         lane.cwd,
         lane.branch,
@@ -587,6 +591,7 @@ export function Agents({
         windowMs={windowMs}
         onCopy={onCopy}
         onAct={onAct}
+        onError={onError}
         onCapture={onCapture}
         onSwitch={onSwitch}
       />

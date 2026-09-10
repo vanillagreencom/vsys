@@ -1,13 +1,14 @@
 # Lanes and processes
 
-Covers: src/model/lanes.ts src/model/naming.ts src/model/launcher.ts src/model/scopes.ts src/model/alerts.ts src/collect/procs.ts
+Covers: src/model/lanes.ts src/model/naming.ts src/model/launcher.ts src/model/scopes.ts src/model/alerts.ts src/collect/procs.ts src/collect/tmux.ts
 
 A lane is a watched scope, or a group an agent or a resource alarm made worth watching. The collector reads the processes, the model derives the lane, its name, its launch trail and the alert rules that fire on it.
 
 ## Boundaries
 
-- The pane address and window title are read from the pane environment. vsys does not query the tmux server, so a pane that exports neither leaves both parts out of the lane name.
-- The pane address never reaches a lane name. `%9` is a server-global tmux pane id, so the number says nothing about which session or window holds the pane, and two agents in one worktree are told apart by their window rather than by anything the number shows. The lane keeps the address as the handle it is: `tmux switch-client -t %9` reaches that pane. Resolving it to `session:window.pane` needs a tmux call vsys does not make.
+- The pane handle and window title are read from the pane environment, and a pane that exports neither leaves both parts out of the lane name. The address and the window name beside them are read from the tmux server, in one `list-panes` for the whole machine rather than one call per lane.
+- The pane handle never reaches a lane name. `%9` is a server-global tmux pane id, so the number says nothing about which session or window holds the pane, and two agents in one worktree are told apart by their window rather than by anything the number shows. The lane keeps it as the handle it is: `tmux switch-client -t %9` reaches that pane. The address a reader types is resolved beside it, from the server rather than from the handle.
+- A pane handle is resolved only when it is one: `%N` and nothing else, which is tmux's own grammar. `paneEnv` reads `VSYS_PANE` first, and that is configured with an address like `work:2.1` rather than a handle. An address configured directly is already what a reader types, so it stands as the address and carries no window name, which only the server holds.
 - `unitLabel()` in `src/model/naming.ts` is the only place a systemd unit name becomes a name a screen shows. Lanes, resource groups and every meter consumer call it.
 - `distinctNames()` in `src/model/naming.ts` is the only rule for names that repeat. Lanes call it through `distinguish()`; Resources calls it over every group, so hiding the idle rows cannot rename a row the reader is looking at.
 

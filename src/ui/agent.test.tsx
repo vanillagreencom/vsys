@@ -2,9 +2,10 @@ import { expect, test } from "bun:test";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
+import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
-import { mount } from "../test/harness";
+import { mount, selectedRow } from "../test/harness";
 import { osc52 } from "./clipboard";
 
 test("agent detail names the account, the charged resources, the limits and the block", async () => {
@@ -370,6 +371,117 @@ test("an agent with no pane offers no terminal and no way to reach one", async (
     const frame = t.frame();
     expect(frame).toContain("exported no pane address");
     expect(frame).not.toContain("Go to terminal");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a pinned sample offers no terminal capture and no switch", async () => {
+  const c = defaults();
+  const s = emptySnapshot(1000);
+  s.lanes = [laneSnapshot({ id: "a", name: "lane-a", pane: "%1" })];
+  s.groups = [groupSnapshot()];
+  const captured: string[] = [];
+  const switched: string[] = [];
+  const h = new History(c);
+  h.add(s);
+  const later = { ...s, time: 2000 };
+  h.add(later);
+  /** Open the agent's Terminal section, whichever row the detail opens on. */
+  const openTerminal = async (t: Awaited<ReturnType<typeof mount>>) => {
+    for (let i = 0; i < 12; i++) {
+      if (selectedRow(t.frame()).includes("Terminal")) break;
+      await t.press("j");
+    }
+    expect(selectedRow(t.frame())).toContain("Terminal");
+    await t.press("enter");
+  };
+  const t = await mount(
+    later,
+    c,
+    { width: 160, height: 40 },
+    {
+      history: h,
+      onCapture: async (paneId: string) => {
+        captured.push(paneId);
+        return ["live output"];
+      },
+      onSwitch: async (paneId: string) => {
+        switched.push(paneId);
+      },
+    },
+  );
+  try {
+    await t.press("2");
+    await t.press("enter");
+    await openTerminal(t);
+    // Live, the terminal reads the pane. Asserted so its absence below means
+    // something rather than agreeing with a fixture that never read at all.
+    expect(captured.length).toBeGreaterThan(0);
+    const before = captured.length;
+    // Pin the older sample: the shell is now showing the past.
+    await t.press("escape");
+    await t.press("6");
+    await t.press("left");
+    await t.press(c.keys.pin);
+    // The shell's own words for a pinned sample: the views that follow the
+    // cursor say which moment they are showing.
+    expect(t.frame()).toContain("Agents, Resources, Builds and Storage show");
+    await t.press("2");
+    await t.press("enter");
+    await openTerminal(t);
+    const frame = t.frame();
+    // No read of what that pane holds now, inside a view of an older sample,
+    // and the row says which it is rather than drawing an empty box.
+    expect(captured.length).toBe(before);
+    expect(frame).toContain("A pane is read live; this is a past sample.");
+    // And nothing to switch to: two keypresses would have moved the reader to
+    // whatever holds that pane id today.
+    await t.press("j");
+    await t.press("enter");
+    expect(switched).toEqual([]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a switch that is refused tells the reader why", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: "a", name: "lane-a", pane: "%1" })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height: 40 },
+    {
+      onCapture: async () => ["output"],
+      onSwitch: async () => {
+        throw new Error("can't find pane %1");
+      },
+    },
+  );
+  try {
+    await t.press("2");
+    await t.press("enter");
+    // The row that goes to the terminal exists only once the section is open,
+    // so this walks to the section, opens it, then walks to the row.
+    for (let i = 0; i < 12; i++) {
+      if (selectedRow(t.frame()).includes("Terminal")) break;
+      await t.press("j");
+    }
+    expect(selectedRow(t.frame())).toContain("Terminal");
+    await t.press("enter");
+    for (let i = 0; i < 4; i++) {
+      if (selectedRow(t.frame()).includes("Go to terminal")) break;
+      await t.press("j");
+    }
+    expect(selectedRow(t.frame())).toContain("Go to terminal");
+    await t.press("enter");
+    await t.update(s);
+    // The server's own words reach the reader. Dropped, the key did nothing
+    // and said nothing, and the rejection went to the runtime instead.
+    expect(t.frame()).toContain("can't find pane %1");
   } finally {
     await t.close();
   }

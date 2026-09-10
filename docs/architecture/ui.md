@@ -1,6 +1,6 @@
 # UI behaviour
 
-Covers: src/ui/ src/main.ts src/main.test.ts
+Covers: src/ui/ src/main.ts src/main.test.ts src/effect.ts
 
 The screen owns one mounted React tree. Collection publishes a stable snapshot to that tree. Navigation, selection, search and editing belong to the mounted application and survive a sample update.
 
@@ -29,7 +29,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - `src/ui/attention.ts` turns the model's cause ladder and meters into words: the verdict line, one card per cause, and one tile per meter. The model returns numbers; every word and every formatted number lives in the UI.
 - A card carries the row it names as a `Target`, and a Home change carries the moment it happened. The shell hands that target to the destination screen, which selects the row and clears the target as it takes it, so opening the same card twice lands twice. A card that names no single row carries none.
 - Home shows the verdict, four meter tiles with a sparkline each, the cards, the last few changes with the alerts opened since vsys started, and the busiest agents. Only the selected card shows its detail, its next step and its command, which the copy key puts on the clipboard.
-- Agents holds the list, the table, the search and the open agent, so the list selection survives a visit to the detail. The agent detail keeps its processes, launch, open files and actions in closed sections.
+- Agents holds the list, the table, the search and the open agent, so the list selection survives a visit to the detail. The agent detail keeps its processes, launch, terminal, open files and actions in closed sections.
 - A row's CPU trend is read for the rows on screen and no others, through `useLaneTrends` in `src/ui/agents.tsx`. The read and the render share one quantised moment, so a sample costs no read and the drawn window cannot slide over a series that did not move. A row still waiting draws blank columns: a placeholder in a chart column is read as a measurement. Each series draws as it arrives, so the slowest read holds up one row and not the column, and the column appears only where the name can spare it: a name cut back to its account tells one row from the next by nothing.
 - The copy key writes an OSC 52 sequence to the process output stream, which reaches the system clipboard over SSH and inside tmux. `src/ui/clipboard.ts` builds it, because the renderer's own OSC 52 call writes through its native core where no test can read what was sent. The payload is base64, so process text in a command cannot close the sequence.
 - Actions are the one thing the UI does to the system, and only with `writeMode` on. A screen holds an intent — the action, the lane it named and the line the reader saw — carrying no effect, so nothing a screen keeps can be run. The shell refuses while `writeMode` is off or a past sample is pinned; otherwise the confirmation stands, and the key that answers it re-derives the command from the current sample through `resolveIntent` in `src/model/actions.ts`, which is the only exported way to an effect. `src/effect.ts` performs it. A lane whose cgroup names no systemd scope gets no actions.

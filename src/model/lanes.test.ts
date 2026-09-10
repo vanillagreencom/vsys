@@ -277,3 +277,45 @@ test("a blocked lane counts its waiting tasks and names the resource they wait o
   expect(on(5, 40).blockedOn).toBe("memory");
   expect(lanes([groupSnapshot(base)], procs, c)[0].blockedOn).toBeNull();
 });
+
+test("a configured pane address is the address, not a key into the server", () => {
+  const c = defaults();
+  const groups = [groupSnapshot({ path: "a.scope", name: "a.scope" })];
+  // `paneEnv` reads VSYS_PANE first, and that carries an address rather than a
+  // pane id — which is what this project's own naming test asserts wins.
+  const configured = processSnapshot({
+    pid: 1,
+    group: "a.scope",
+    tool: "claude",
+    env: { VSYS_PANE: "work:2.1" },
+  });
+  const handle = processSnapshot({
+    pid: 2,
+    group: "b.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%12" },
+  });
+  const panes = new Map([["%12", { address: "work:3.2", window: "build" }]]);
+  const [byAddress] = lanes(groups, [configured], c, 0, panes);
+  // Looked up in a map keyed by `%N` it found nothing and the row showed no
+  // address at all, for the configuration this repository documents.
+  expect({ pane: byAddress.pane, address: byAddress.address }).toEqual({
+    pane: "work:2.1",
+    address: "work:2.1",
+  });
+  // What it cannot give is a window name: only the server knows those, and it
+  // was not asked about this pane.
+  expect(byAddress.window).toBe("");
+  // A handle still resolves through the server, which is the other half.
+  const [byHandle] = lanes(
+    [groupSnapshot({ path: "b.scope", name: "b.scope" })],
+    [handle],
+    c,
+    0,
+    panes,
+  );
+  expect({ address: byHandle.address, window: byHandle.window }).toEqual({
+    address: "work:3.2",
+    window: "build",
+  });
+});

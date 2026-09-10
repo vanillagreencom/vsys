@@ -214,6 +214,7 @@ export function Agent({
   windowMs,
   onCopy,
   onAct,
+  onError,
   onCapture,
   onSwitch,
 }: {
@@ -228,6 +229,8 @@ export function Agent({
   onCopy: (command: string | undefined) => void;
   /** Asks the shell for an action; the shell alone decides whether it runs. */
   onAct: (intent: LaneIntent) => void;
+  /** Where a rejected read or switch reaches the reader, as a notice. */
+  onError: (error: unknown) => void;
   /**
    * Reads what the agent's pane last drew. This changes nothing, so it is not
    * an action and does not wait on write mode.
@@ -322,7 +325,7 @@ export function Agent({
   const target = laneTarget(lane, c);
   const rows: DetailRow[] = [
     ...sections.flatMap((name): DetailRow[] =>
-      name === "Terminal" && terminalOpen && lane.pane
+      name === "Terminal" && terminalOpen && lane.pane && live
         ? [{ kind: "section", name }, { kind: "terminal" }]
         : [{ kind: "section", name }],
     ),
@@ -370,7 +373,10 @@ export function Agent({
    * macOS, while a switch behaves the same wherever tmux runs.
    */
   const goToTerminal = () => {
-    if (onSwitch) void onSwitch(lane.pane);
+    // A switch rejects when the pane has gone, the server stopped or the
+    // target is not one it holds. Dropped, the reader pressed a key, nothing
+    // moved, and nothing said why.
+    if (onSwitch) void onSwitch(lane.pane).catch(onError);
     else onCopy(switchCommand(lane.pane));
   };
   const toggle = (name: SectionName) =>
@@ -545,10 +551,17 @@ export function Agent({
                       {!lane.pane && (
                         <Empty text="This agent exported no pane address, so vsys cannot find its terminal." />
                       )}
-                      {lane.pane && !onCapture && (
+                      {/* A pane holds what it holds now, so reading one inside
+                          a view of an older sample would put the present
+                          inside the past. Said here rather than blamed on the
+                          server, which is reachable. */}
+                      {lane.pane && !live && (
+                        <Empty text="A pane is read live; this is a past sample." />
+                      )}
+                      {lane.pane && live && !onCapture && (
                         <Empty text="Reading a pane needs a tmux server this vsys can reach." />
                       )}
-                      {lane.pane && onCapture && pane === null && (
+                      {lane.pane && live && onCapture && pane === null && (
                         <Empty text="Reading the pane…" />
                       )}
                       {pane !== null && "error" in pane && (
