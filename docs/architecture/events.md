@@ -8,6 +8,7 @@ An event is one change between two consecutive samples, held as data with its ca
 
 - The store owns the derivation. It records the events for a sample on that sample's history point, and nothing else derives them.
 - An event carries data: the cause, the subject with its identity, the names and the numbers. Every word, duration and byte count belongs to `src/ui/timeline.ts`.
+- A subject that is a cgroup is named by `consumerName()` in `src/model/verdict.ts`, the one place that turns a cgroup into a name a reader reads. The event keeps the raw unit beside it, so the Timeline row can show the handle under the selection.
 - An event records the thresholds it was measured against, so a later settings change cannot restate what an older line crossed.
 
 ## Invariants
@@ -15,6 +16,7 @@ An event is one change between two consecutive samples, held as data with its ca
 - A lane start or stop names its account and slice, and a process moves cgroups only when its PID keeps its start time. `src/store/events.test.ts` checks a reused PID and a process that stayed put.
 - A move event names the cgroup it left and the one it entered, and calls the slice changed only when it differs. A move between two slices outside the agent slice is not a confinement change. `src/store/events.test.ts` and `src/ui/timeline.test.ts` check a move inside one slice against one that leaves the agent slice.
 - An alert is one cause on one subject. Every lane, group and path a grouped cause names watches on its own, so two lanes hitting one cause are two alerts with two durations. `src/store/events.test.ts` checks two lanes escaping at once and one replacing another.
+- No event subject reaches a screen as a systemd unit name, and the unit it decoded from stays on the event. `src/store/events.test.ts` checks a scope subject against a lane subject.
 - An alert reports the numbers of its own subject, never the worst or largest across the subjects its cause grouped. `src/store/events.test.ts` checks two over-quota paths and two stalling lanes.
 - An alert closes with the time the cause was observed, and a settings change does not restart that clock. `src/store/events.test.ts` checks the duration across a reconfigure.
 - A cause must hold for `pressureHoldSeconds` without a gap before it opens, and stay away that long before it closes. A value alternating either side of a threshold therefore records nothing. `src/store/events.test.ts` checks 100 alternating samples against 100 held ones.

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
@@ -19,8 +20,11 @@ import { eventParts } from "./timeline";
 import {
   Chart,
   Empty,
+  Field,
   gutter,
   Line,
+  nextDown,
+  Row,
   Section,
   Sparkline,
   Tile,
@@ -83,6 +87,8 @@ export function Timeline({
   height,
   onCursor,
   onWindow,
+  target,
+  onTargetUsed,
 }: {
   snapshot: Snapshot;
   history: History;
@@ -94,7 +100,11 @@ export function Timeline({
   height: number;
   onCursor: (time: number | null) => void;
   onWindow: (index: number) => void;
+  /** The event time a Home row asked this screen to land on. */
+  target: number | null;
+  onTargetUsed: () => void;
 }) {
+  const [row, setRow] = useState(0);
   const windowMs = windows[windowIndex];
   const start = s.time - windowMs;
   const chartWidth = Math.max(10, width - 4 - gutter);
@@ -109,6 +119,20 @@ export function Timeline({
           Math.max(0, Math.floor(((at - start) * chartWidth) / windowMs)),
         );
   useScreenKeys((name, key) => {
+    if (name === c.keys.down || name === "down") {
+      setRow((at) => nextDown(changes.length, at));
+      return true;
+    }
+    if (name === c.keys.up || name === "up") {
+      setRow((at) => Math.max(0, at - 1));
+      return true;
+    }
+    // The change list is a list: Enter moves the time cursor to the row, and
+    // the pin key pins the sample the row happened in.
+    if (name === c.keys.open && changes[row]) {
+      onCursor(changes[row].time);
+      return true;
+    }
     const left = name === c.keys.left || name === "left";
     const right = name === c.keys.right || name === "right";
     if (!left && !right) return false;
@@ -159,6 +183,16 @@ export function Timeline({
     );
   };
   const changes = history.events(s.time, windowMs);
+  // A row Home asked for is selected and made the cursor, once.
+  useEffect(() => {
+    if (target === null) return;
+    onTargetUsed();
+    const at = changes.findIndex((event) => event.time === target);
+    if (at >= 0) {
+      setRow(at);
+      onCursor(changes[at].time);
+    }
+  }, [target, onTargetUsed, changes, onCursor]);
   // The header, two three-row charts with titles, the sparklines, the axis
   // and the heading come before the change list.
   // Each row takes its metric's own colour, so six sparklines one under the
@@ -288,26 +322,38 @@ export function Timeline({
       {!changes.length && (
         <Empty text="Nothing changed in this window: no lane, cgroup or cause moved." />
       )}
-      {visible.map((event) => {
+      {visible.map((event, at) => {
         const e = eventParts(event, c);
+        const unit = event.names.unit;
         return (
           // One row per event, so a long subject cannot push the rest out.
-          <Line
+          <box
             key={`${event.time}-${event.kind}-${event.cause}-${event.subjectId}`}
-            height={1}
+            flexDirection="column"
             flexShrink={0}
-            truncate
-            onMouseDown={() => onCursor(event.time)}
           >
-            <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
-            <span
-              fg={levelColor(e.level)}
-              attributes={e.level === "ok" ? ui.none : ui.bold}
+            <Row
+              selected={at === row}
+              onOpen={() => {
+                setRow(at);
+                onCursor(event.time);
+              }}
             >
-              {fit(e.kind, 13)}
-            </span>
-            {safe(e.text)}
-          </Line>
+              <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
+              <span
+                fg={levelColor(e.level)}
+                attributes={e.level === "ok" ? ui.none : ui.bold}
+              >
+                {fit(e.kind, 13)}
+              </span>
+              {safe(e.text)}
+            </Row>
+            {at === row && unit && unit !== event.subject && (
+              // The subject reads as a name; the unit it decoded from is the
+              // handle a reader needs to reach the scope itself.
+              <Field label="Unit" value={unit} width={14} />
+            )}
+          </box>
         );
       })}
     </box>

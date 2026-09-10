@@ -36,7 +36,7 @@ import {
   views,
 } from "./chrome";
 import { type Output, osc52 } from "./clipboard";
-import { Home } from "./home";
+import { Home, homeTarget } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
 import { Settings } from "./settings-screen";
@@ -192,6 +192,21 @@ export function App({
   }, [toast]);
   // A serious cause that was not there a sample ago is announced once, on
   // screen and to the terminal, whichever view is open.
+  // Alerts opened since the dashboard started, so a reader returning to it
+  // sees how much happened while they were away.
+  const [opened, setOpened] = useState(0);
+  const counted = useRef<number | null>(null);
+  useEffect(() => {
+    const events = history.events(snapshot.time, windows[windows.length - 1]);
+    const latest = events[0]?.time ?? 0;
+    const since = counted.current;
+    counted.current = latest;
+    if (since === null) return;
+    const fresh = events.filter(
+      (event) => event.time > since && event.kind === "alert-open",
+    ).length;
+    if (fresh) setOpened((n) => n + fresh);
+  }, [history, snapshot.time]);
   const seen = useRef<Set<string> | null>(null);
   useEffect(() => {
     const ids = new Set(issues.map((item) => item.id));
@@ -219,7 +234,7 @@ export function App({
    * A card names one row; opening it lands on that row. The destination clears
    * the target as it takes it, so opening the same card twice lands twice.
    */
-  const openCard = (view: View, at: Target | undefined) => {
+  const openCard = (view: View | "Timeline", at: Target | undefined) => {
     if (at?.kind === "lane") {
       openLane(at.id);
       return;
@@ -350,6 +365,8 @@ export function App({
         snapshot={snapshot}
         config={c}
         items={issues}
+        changes={history.events(snapshot.time, windows[windowIndex])}
+        alertsOpened={opened}
         points={points}
         windowMs={windows[windowIndex]}
         selected={homeIndex}
@@ -359,6 +376,7 @@ export function App({
         onCopy={copy}
         onOpen={(row) => {
           if (row.kind === "agent") openLane(row.lane.id);
+          else if (row.kind === "change") openCard("Timeline", homeTarget(row));
           else openCard(row.item.view, row.item.target);
         }}
         // A tile drills down into a screen, the same as a card does, so it
@@ -430,6 +448,8 @@ export function App({
         height={contentHeight}
         onCursor={setCursor}
         onWindow={setWindowIndex}
+        target={target?.kind === "time" ? target.at : null}
+        onTargetUsed={clearTarget}
       />
     );
   else

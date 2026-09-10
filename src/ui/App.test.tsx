@@ -862,8 +862,10 @@ test("a wide terminal puts the concerns and the agents side by side", async () =
       .frame()
       .split("\n")
       .find((line) => line.includes("Needs attention"));
-    // One row carries both headings, so the two lists sit beside each other.
-    expect(heading).toContain("Busiest agents");
+    // One row carries two headings, so the columns sit beside each other:
+    // what is wrong now on the left, what happened and who is busy on the right.
+    expect(heading).toContain("Recent changes");
+    expect(wide.frame()).toContain("Busiest agents");
   } finally {
     await wide.close();
   }
@@ -873,7 +875,8 @@ test("a wide terminal puts the concerns and the agents side by side", async () =
     await tall.press("1");
     const lines = tall.frame().split("\n");
     const heading = lines.find((line) => line.includes("Needs attention"));
-    expect(heading).not.toContain("Busiest agents");
+    expect(heading).not.toContain("Recent changes");
+    expect(lines.some((line) => line.includes("Recent changes"))).toBe(true);
     expect(lines.some((line) => line.includes("Busiest agents"))).toBe(true);
   } finally {
     await tall.close();
@@ -1569,6 +1572,92 @@ test("a tile opens live data, not the sample the reader pinned", async () => {
   }
 });
 
+/**
+ * A history holding a lane start, then a quiet sample after it. The change is
+ * older than the newest sample, so the cursor a change asks for is not the
+ * cursor the screen would take on its own.
+ */
+function withChange(c: Config) {
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const change = emptySnapshot(2000);
+  change.lanes = [laneSnapshot({ id: "a", name: "lane-a" })];
+  h.add(change);
+  const latest = { ...change, time: 3000 };
+  h.add(latest);
+  return { h, snapshot: latest };
+}
+
+test("Home lists what changed and opening one lands on Timeline at that moment", async () => {
+  const c = defaults();
+  const { h, snapshot } = withChange(c);
+  const t = await mount(
+    snapshot,
+    c,
+    { width: 180, height: 44 },
+    { history: h },
+  );
+  try {
+    await t.press("1");
+    const frame = t.frame();
+    expect(frame).toContain("Recent changes");
+    expect(frame).toContain("Lane started");
+    // The newest change is the first row of the section.
+    const rows = frame.split("\n");
+    const first = rows.findIndex((row) => row.includes("Recent changes"));
+    expect(rows[first + 1]).toContain("Lane started");
+    // With no concern open, the newest change is the selected row already.
+    await t.press("enter");
+    const timeline = t.frame();
+    expect(timeline).toContain("What changed");
+    // The cursor sits on the change, not on the newest sample it would take.
+    expect(timeline).toContain(`cursor ${new Date(2000).toLocaleString()}`);
+    expect(timeline).not.toContain(`cursor ${new Date(3000).toLocaleString()}`);
+    expect(selectedRow(timeline)).toContain(
+      new Date(2000).toLocaleTimeString(),
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("the Timeline change list is driven from the keyboard, not the mouse alone", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(5000);
+  busy.lanes = [1, 2, 3].map((n) =>
+    laneSnapshot({ id: `lane-${n}`, name: `lane-${n}` }),
+  );
+  h.add(busy);
+  // A quiet sample after the changes, so the cursor Enter sets differs from
+  // the one the screen takes on its own.
+  const latest = { ...busy, time: 9000 };
+  h.add(latest);
+  const t = await mount(latest, c, { width: 180, height: 44 }, { history: h });
+  try {
+    await t.press("6");
+    const first = selectedRow(t.frame());
+    expect(first).toContain("Lane started");
+    // Down moves the selection to the next change, and up moves it back.
+    await t.press("j");
+    const second = selectedRow(t.frame());
+    expect(second).toContain("Lane started");
+    expect(second).not.toBe(first);
+    await t.press("k");
+    expect(selectedRow(t.frame())).toBe(first);
+    // Enter moves the time cursor onto the selected change.
+    expect(t.frame()).toContain(`cursor ${new Date(9000).toLocaleString()}`);
+    await t.press("enter");
+    expect(t.frame()).toContain(`cursor ${new Date(5000).toLocaleString()}`);
+    // The pin key still pins from this screen, so a row can be pinned.
+    await t.press("p");
+    expect(t.frame()).toMatch(/Agents, Resources, Builds and Storage show/);
+  } finally {
+    await t.close();
+  }
+});
+
 test("a lane that exits while open leaves the list on a row that exists", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -1812,6 +1901,46 @@ test("the copy notice does not claim a silent terminal empties the clipboard", a
     // is the command they just copied.
     expect(frame).toContain("leaves the clipboard unchanged");
     expect(frame).not.toContain("pastes nothing");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a change about a cgroup reads as a name, with the unit under the selection", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  const first = everyCauseSnapshot(c);
+  first.groups = first.groups.map((g) =>
+    g.name === "gnome.scope"
+      ? { ...g, name: "app-Hyprland-ghostty-b95bd288.scope" }
+      : g,
+  );
+  h.add(first);
+  h.add({ ...first, time: first.time + 1000 });
+  const t = await mount(
+    { ...first, time: first.time + 1000 },
+    c,
+    { width: 180, height: 44 },
+    { history: h },
+  );
+  try {
+    await t.press("6");
+    const frame = t.frame();
+    // systemd's own name never reaches the row.
+    expect(frame).not.toContain("app-Hyprland-ghostty");
+    expect(frame).toContain("ghostty");
+    // The raw unit is one keystroke away, under the row that decoded it.
+    const at = t
+      .frame()
+      .split("\n")
+      .findIndex((row) => row.includes("the desktop swapped out"));
+    expect(at).toBeGreaterThan(-1);
+    const heading = t
+      .frame()
+      .split("\n")
+      .findIndex((row) => row.includes("What changed"));
+    for (let i = heading + 1; i < at; i++) await t.press("j");
+    expect(t.frame()).toContain("app-Hyprland-ghostty-b95bd288.scope");
   } finally {
     await t.close();
   }

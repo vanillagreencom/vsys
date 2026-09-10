@@ -6,6 +6,7 @@ import {
   type CauseId,
   causeRank,
   causes,
+  consumerName,
   type Level,
 } from "../model/verdict";
 
@@ -44,6 +45,8 @@ interface Watch {
   cause: CauseId;
   subject: string;
   subjectId: string;
+  /** The systemd unit the subject name decoded from, empty when it is not one. */
+  unit: string;
   level: Level;
   verdictWorthy: boolean;
   values: Record<string, number | null>;
@@ -81,10 +84,19 @@ function subjectValues(
  * A cause groups every subject it affects. Each of them is its own alert with
  * its own duration, so two escaped lanes are two alerts rather than one.
  */
-export function subjects(cause: Cause): { id: string; name: string }[] {
+export function subjects(
+  cause: Cause,
+  s: Snapshot,
+): { id: string; name: string; unit?: string }[] {
   const named = [
     ...cause.lanes.map((lane) => ({ id: lane.id, name: lane.name })),
-    ...cause.groups.map((group) => ({ id: group.path, name: group.name })),
+    // A cgroup's own name is systemd's, not a reader's. `consumerName` is the
+    // one place that turns one into a name, so an event says what a card says.
+    ...cause.groups.map((group) => ({
+      id: group.path,
+      name: consumerName(group, s),
+      unit: group.name,
+    })),
     ...cause.paths.map((path) => ({ id: path, name: path })),
   ];
   return named.length ? named : [{ id: cause.consumer, name: cause.consumer }];
@@ -172,13 +184,14 @@ export class EventLog {
     const ladder = causes(s, c);
     const live = new Set<string>();
     for (const cause of ladder) {
-      for (const subject of subjects(cause)) {
+      for (const subject of subjects(cause, s)) {
         const key = `${cause.id}\u0000${subject.id}`;
         live.add(key);
         const watch: Watch = this.watching.get(key) ?? {
           cause: cause.id,
           subject: subject.name,
           subjectId: subject.id,
+          unit: subject.unit ?? "",
           level: cause.level,
           verdictWorthy: cause.verdictWorthy,
           values: {},
@@ -197,7 +210,9 @@ export class EventLog {
         watch.opened = add("alert-open", subject.name, {
           subjectId: subject.id,
           cause: cause.id,
-          names: { level: cause.level },
+          // The unit name the subject decoded from, for the drill-down; a
+          // reader who needs the raw name can still reach it.
+          names: { level: cause.level, unit: watch.unit },
           values: { ...watch.values },
         });
       }
@@ -215,7 +230,7 @@ export class EventLog {
       add("alert-close", watch.subject, {
         subjectId: watch.subjectId,
         cause: watch.cause,
-        names: { level: watch.level },
+        names: { level: watch.level, unit: watch.unit },
         values: { durationMs: watch.lastSeen - watch.firstSeen },
       });
     }

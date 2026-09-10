@@ -3,6 +3,7 @@ import { defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
 import {
   emptySnapshot,
+  everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
@@ -395,4 +396,29 @@ test("memory reclaim alerts one per stalled lane, not one for the scope it point
   // for something that had not itself gone wrong, and would churn them every
   // time the top holder changed.
   expect(opened.map((e) => e.subjectId).sort()).toEqual(["a", "b"]);
+});
+
+test("a change about a cgroup names it the way a card does, and keeps the unit", () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const log = new EventLog();
+  const quiet = everyCauseSnapshot(c);
+  quiet.groups = quiet.groups.map((g) =>
+    g.name === "gnome.scope"
+      ? { ...g, name: "app-Hyprland-ghostty-b95bd288.scope" }
+      : g,
+  );
+  log.advance(quiet, c);
+  const events = log.advance({ ...quiet, time: quiet.time + 1000 }, c);
+  const swap = events.find((e) => e.cause === "desktop-swap");
+  if (!swap) throw new Error("expected a desktop-swap alert");
+  // systemd's own name is not a name; the reader gets the one the cards use.
+  expect(swap.subject).toBe("ghostty");
+  expect(swap.subject).not.toContain(".scope");
+  expect(swap.subject).not.toContain("app-");
+  // The raw unit stays reachable, for a reader who needs the handle.
+  expect(swap.names.unit).toBe("app-Hyprland-ghostty-b95bd288.scope");
+  // A lane subject already reads as a name and carries no unit of its own.
+  const lane = events.find((e) => e.cause === "memory-cap");
+  expect(lane?.subject).toBe("capped");
+  expect(lane?.names.unit ?? "").toBe("");
 });

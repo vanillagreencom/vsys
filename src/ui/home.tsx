@@ -4,10 +4,12 @@ import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
 import { type Level, type Meter, meters } from "../model/verdict";
+import type { TimelineEvent } from "../store/events";
 import type { Point } from "../store/point";
 import {
   type Attention,
   meterTile,
+  type Target,
   verdictItem,
   verdictLine,
 } from "./attention";
@@ -23,6 +25,7 @@ import {
 } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, ui } from "./theme";
+import { eventParts } from "./timeline";
 import {
   Bar,
   Empty,
@@ -37,21 +40,34 @@ import {
   tilesPerRow,
 } from "./widgets";
 
-/** The Home list mixes concerns and agents; Enter opens whichever is selected. */
+/** The Home list mixes concerns, changes and agents; Enter opens the selected one. */
 export type HomeItem =
   | { kind: "concern"; item: Attention }
+  | { kind: "change"; event: TimelineEvent }
   | { kind: "agent"; lane: Lane };
+/** How many recent changes Home lists, newest first. */
+export const recentChanges = 3;
 export function homeItems(
   items: Attention[],
   s: Snapshot,
   busiest = 5,
+  changes: TimelineEvent[] = [],
 ): HomeItem[] {
   return [
     ...items.map((item) => ({ kind: "concern", item }) as const),
+    ...changes
+      .slice(0, recentChanges)
+      .map((event) => ({ kind: "change", event }) as const),
     ...sortLanes(s.lanes, "cpu", true)
       .slice(0, busiest)
       .map((lane) => ({ kind: "agent", lane }) as const),
   ];
+}
+/** The row a Home item opens: an agent, a card's own row, or a moment. */
+export function homeTarget(row: HomeItem): Target | undefined {
+  if (row.kind === "agent") return { kind: "lane", id: row.lane.id };
+  if (row.kind === "change") return { kind: "time", at: row.event.time };
+  return row.item.target;
 }
 /** The history field each meter's tile charts, so the two cannot drift apart. */
 const meterSeries: Record<Meter["id"], keyof Point> = {
@@ -91,6 +107,8 @@ export function Home({
   snapshot: s,
   config: c,
   items,
+  changes,
+  alertsOpened,
   points,
   windowMs,
   selected,
@@ -104,6 +122,10 @@ export function Home({
   snapshot: Snapshot;
   config: Config;
   items: Attention[];
+  /** The window's changes, newest first, as the Timeline lists them. */
+  changes: TimelineEvent[];
+  /** Alerts opened since the dashboard started. */
+  alertsOpened: number;
   points: Point[];
   windowMs: number;
   selected: number;
@@ -122,10 +144,13 @@ export function Home({
   const columns = width >= wideWidth;
   const busiest = Math.max(
     3,
-    columns ? height - 10 : height - 10 - items.length * 2,
+    columns
+      ? height - 10 - recentChanges - 2
+      : height - 10 - items.length * 2 - recentChanges - 2,
   );
   const gauges = meters(s, c);
-  const rows = homeItems(items, s, busiest);
+  const rows = homeItems(items, s, busiest, changes);
+  const recent = rows.filter((r) => r.kind === "change");
   // Null while the rows hold the selection. Left or right moves onto the
   // tiles, up or down moves back off them, so one Enter is never ambiguous.
   const [tile, setTile] = useState<number | null>(null);
@@ -321,6 +346,47 @@ export function Home({
             flexBasis={columns ? 0 : undefined}
             minWidth={0}
           >
+            <Section
+              title="Recent changes"
+              width={panel}
+              count={
+                alertsOpened
+                  ? `${alertsOpened} ${plural(alertsOpened, "alert", "alerts")} opened since vsys started`
+                  : undefined
+              }
+            />
+            {!recent.length && (
+              <Empty text="Nothing has changed since vsys started." />
+            )}
+            {rows.map((row, i) =>
+              row.kind === "change" ? (
+                <box
+                  id={`home-${i}`}
+                  key={`${row.event.time}-${row.event.subjectId}-${row.event.kind}`}
+                  flexShrink={0}
+                >
+                  <Row selected={i === selected} onOpen={() => onOpen(row)}>
+                    {(() => {
+                      const e = eventParts(row.event, c);
+                      return (
+                        <>
+                          <span
+                            attributes={ui.dim}
+                          >{`${e.time.padStart(11)}  `}</span>
+                          <span
+                            fg={levelColor(e.level)}
+                            attributes={e.level === "ok" ? ui.none : ui.bold}
+                          >
+                            {cell({ label: "", width: 13 }, e.kind)}
+                          </span>
+                          {safe(e.text)}
+                        </>
+                      );
+                    })()}
+                  </Row>
+                </box>
+              ) : null,
+            )}
             <Section title="Busiest agents" width={panel} />
             {!agents.length && (
               <Empty text="No agent is running in a watched scope." />
