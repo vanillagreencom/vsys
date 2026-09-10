@@ -333,7 +333,7 @@ test("a change aged out by a push leaves the index with its point", () => {
   expect(indexed).toEqual(walked.slice(0, 3));
 });
 
-test("a stored event written before subjects were decoded loads with a name", () => {
+test("a stored event is decoded only where the record proves it held a unit", () => {
   const f = fixture();
   cleanup.push(f.cleanup);
   f.config.persistence = true;
@@ -343,37 +343,65 @@ test("a stored event written before subjects were decoded loads with a name", ()
   first.add(s);
   first.close();
   const unit = "agent-confine-854045-20986.scope";
+  // Four records an older build could have written. The first is the case the
+  // migration exists for. The rest are what a suffix cannot tell apart from
+  // it: a lane named after a branch, a lane subject on an alert, and a mount.
+  const events = [
+    {
+      time: now,
+      kind: "alert-open",
+      subject: unit,
+      subjectId: `app.slice/${unit}`,
+      cause: "desktop-swap",
+      names: { level: "danger" },
+      values: {},
+    },
+    {
+      time: now,
+      kind: "lane-start",
+      subject: "release.scope",
+      subjectId: "agents.slice/release.scope",
+      cause: "",
+      names: { account: "default", slice: "agents.slice", tool: "claude" },
+      values: {},
+    },
+    {
+      time: now,
+      kind: "alert-open",
+      subject: "release.scope",
+      subjectId: "agents.slice/agent-claude-77.scope",
+      cause: "stalls",
+      names: { level: "warn" },
+      values: {},
+    },
+    {
+      time: now,
+      kind: "alert-open",
+      subject: "/mnt/cache.scope",
+      subjectId: "/mnt/cache.scope",
+      cause: "free-space",
+      names: { level: "danger" },
+      values: {},
+    },
+  ];
+  // What the fixture has to hold, asserted before the load rather than assumed:
+  // every subject ends in a unit suffix and not one carries a unit. A migration
+  // reading the shape of the string sees four identical records here.
+  expect(
+    events.map((e) => {
+      const names: Record<string, string | undefined> = e.names;
+      return e.subject.endsWith(".scope") && names.unit === undefined;
+    }),
+  ).toEqual([true, true, true, true]);
   const db = new Database(f.config.sqlitePath);
   const row = db
     .query<{ point: string }, [number]>(
       "SELECT point FROM samples WHERE time = ?",
     )
     .get(now);
-  // What an older build wrote: systemd's own handle as the subject, with no
-  // unit beside it, because the event had nowhere to keep one. A lane subject
-  // was already a name then and has to survive the load untouched.
   const stored = {
     ...(JSON.parse(row?.point ?? "{}") as Record<string, unknown>),
-    events: [
-      {
-        time: now,
-        kind: "alert-open",
-        subject: unit,
-        subjectId: `app.slice/${unit}`,
-        cause: "desktop-swap",
-        names: { level: "danger" },
-        values: {},
-      },
-      {
-        time: now,
-        kind: "lane-start",
-        subject: "lane-a",
-        subjectId: "a.scope",
-        cause: "",
-        names: { account: "default", slice: "agents.slice", tool: "claude" },
-        values: {},
-      },
-    ],
+    events,
   };
   db.query("UPDATE samples SET point = ? WHERE time = ?").run(
     JSON.stringify(stored),
@@ -382,14 +410,18 @@ test("a stored event written before subjects were decoded loads with a name", ()
   db.close();
   const reopened = new History(f.config);
   cleanup.push(() => reopened.close());
-  const loaded = reopened.events(now, 3600000);
-  // The stored subject was the unit, so it becomes the unit and the decoded
-  // name takes its place: no screen shows a `.scope` handle for the whole
-  // retention window after the upgrade.
+  // Only the record whose subject is the last segment of its own cgroup path,
+  // on a kind that carries a cgroup at all, is decoded. Rewriting either of
+  // the lane records would rename a lane a reader chose the name of, and
+  // rewriting the mount would rename a directory.
   expect(
-    loaded.map((e) => ({ subject: e.subject, unit: e.names.unit ?? "" })),
+    reopened
+      .events(now, 3600000)
+      .map((e) => `${e.subject} | ${e.names.unit ?? ""}`),
   ).toEqual([
-    { subject: "agent 854045", unit },
-    { subject: "lane-a", unit: "" },
+    `agent 854045 | ${unit}`,
+    "release.scope | ",
+    "release.scope | ",
+    "/mnt/cache.scope | ",
   ]);
 });
