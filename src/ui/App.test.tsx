@@ -1112,3 +1112,31 @@ test("a mount's detail does not repeat the device row's error counters", async (
     await t.close();
   }
 });
+
+test("the device error counters are legible at a hundred columns", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/data", {
+      device: "/dev/nvme0n1p2",
+      errors: { "nvme0n1p2/corruption_errs": 3 },
+      // A counter that rose since the last sample turns the row red, so this
+      // reading is the one the colour is telling the reader to go and find.
+      delta: { "nvme0n1p2/corruption_errs": 1 },
+      options: ["rw", "subvol=@data"],
+    }),
+  ];
+  const t = await mount(s, c, { width: 100, height: 30 });
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    // The device row's own columns fill a terminal this narrow, so the
+    // counters wrap onto a line of their own. They are the reading behind the
+    // row's colour, and since the mount detail stopped repeating them, the
+    // only copy of it.
+    expect(frame).toContain("corruption 3 (+1)");
+    expect(frame.split("corruption 3").length - 1).toBe(1);
+  } finally {
+    await t.close();
+  }
+});

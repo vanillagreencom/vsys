@@ -300,9 +300,20 @@ export function Storage({
                 <span attributes={ui.dim}>
                   {`  ${volumes.length} ${volumes.length === 1 ? "mount" : "mounts"}`}
                 </span>
-                <span fg={worst === "danger" ? ui.danger : undefined}>
-                  {`  ${safe(errorText(first))}`}
-                </span>
+              </Line>
+              {/* The row above fills a hundred-column terminal with its fixed
+                  columns, so the counters got none and were cut away whole.
+                  They are the reading behind the row's colour and the only
+                  copy of it, so they wrap on a line of their own, once per
+                  device, where a narrow terminal can still show them. */}
+              <Line
+                flexShrink={0}
+                wrapMode="word"
+                paddingLeft={2}
+                fg={worst === "danger" ? ui.danger : undefined}
+                attributes={worst === "danger" ? ui.none : ui.dim}
+              >
+                {safe(errorText(first))}
               </Line>
               {volumes.map(volumeRow)}
             </box>

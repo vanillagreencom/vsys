@@ -57,11 +57,20 @@ export function groupLabels(groups: Group[]): Map<string, string> {
   return new Map(groups.map((g, i) => [g.path, names[i]]));
 }
 /**
+ * How deep a path sits. A group's parent is its own path with the last segment
+ * removed, so the segments count the ancestors: `.` is the root and `a/b` sits
+ * two below it. This is the only measure of depth left when the parent's own
+ * row is missing, because the chain of `parent` links stops there.
+ */
+const depth = (path: string): number =>
+  path === "." ? 0 : path.split("/").length;
+/**
  * The glyphs that draw one row's depth. A row knows whether it is the last
  * child of its parent, and every ancestor whose own subtree has ended leaves
  * blank rather than a trunk, so the lines join what is actually nested.
  */
 export function treePrefixes(groups: Group[]): Map<string, string> {
+  const present = new Set(groups.map((g) => g.path));
   const children = new Map<string, Group[]>();
   for (const g of groups) {
     if (g.parent === g.path) continue;
@@ -79,10 +88,19 @@ export function treePrefixes(groups: Group[]): Map<string, string> {
     });
   };
   for (const g of groups)
-    if (!prefixes.has(g.path) && g.parent === g.path) prefixes.set(g.path, "");
-  for (const g of groups) if (g.parent === g.path) walk(g.path, "");
-  // A row whose parent was filtered out of this list still needs a prefix.
-  for (const g of groups) if (!prefixes.has(g.path)) prefixes.set(g.path, "");
+    if (g.parent === g.path) {
+      prefixes.set(g.path, "");
+      walk(g.path, "");
+    }
+  // A parent can have no row here: its own cgroup read failed, or it was
+  // filtered out as idle while a child was not. Its children are still listed,
+  // and giving them the root's empty prefix would draw a nesting the machine
+  // does not have — every disconnected subtree flattened onto one level. Each
+  // missing parent starts its own subtree instead, indented to the depth its
+  // path states, and its descendants walk from there as any others do.
+  for (const [parent, kids] of children)
+    if (!present.has(parent) && kids.length)
+      walk(parent, "   ".repeat(depth(parent)));
   return prefixes;
 }
 export function groupLevel(g: Group, s: Snapshot, c: Config): Level {

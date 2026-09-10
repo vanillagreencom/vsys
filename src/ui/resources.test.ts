@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { collectGroups } from "../collect/cgroups";
+import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
-import { emptySnapshot, groupSnapshot } from "../test/fixture";
+import { emptySnapshot, fixture, groupSnapshot } from "../test/fixture";
 import {
   groupLabels,
   groupLevel,
@@ -109,4 +113,52 @@ test("the tree draws its nesting, and the last child closes its branch", () => {
   // The branch above has ended, so nothing is drawn through its column.
   expect(prefixes.get("app.slice/two/deep")).toBe("│     └─ ");
   expect(prefixes.get("session.slice")).toBe("└─ ");
+});
+
+test("a subtree whose parent could not be read keeps the depth it sits at", () => {
+  const f = fixture();
+  try {
+    f.group("a.slice");
+    f.group("a.slice/x.service");
+    f.group("a.slice/x.service/deep.scope");
+    // The collector records a failed read and descends into the children
+    // regardless, so a group can be listed while its parent is not.
+    rmSync(join(f.config.cgroupRoot, "a.slice", "cpu.stat"));
+    const r = new Reader();
+    const groups = collectGroups(r, f.config.cgroupRoot, [], 1000);
+    const paths = groups.map((g) => g.path);
+    expect(paths).not.toContain("a.slice");
+    expect(paths).toContain("a.slice/x.service");
+    expect(
+      r.errors.some((e) => e.source.endsWith(join("a.slice", "cpu.stat"))),
+    ).toBe(true);
+    // The disconnected subtree keeps its own depth instead of collapsing onto
+    // the root, which is the nesting this screen exists to draw.
+    const prefixes = treePrefixes(groups);
+    expect(prefixes.get("a.slice/x.service")).toBe("   └─ ");
+    expect(prefixes.get("a.slice/x.service/deep.scope")).toBe("      └─ ");
+    // Every listed group is placed, whatever its parent did.
+    for (const g of groups) expect(prefixes.has(g.path)).toBe(true);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("an idle parent filtered from the list still leaves its children nested", () => {
+  const g = (path: string, parent: string) =>
+    groupSnapshot({ path, parent, name: path.split("/").at(-1) ?? path });
+  // `a.slice` is absent from this list, as `groupRows` leaves it when it is
+  // idle and a child of it is not.
+  const prefixes = treePrefixes([
+    g(".", "."),
+    g("a.slice/one", "a.slice"),
+    g("a.slice/two", "a.slice"),
+    g("a.slice/two/deep", "a.slice/two"),
+    g("b.slice", "."),
+  ]);
+  expect(prefixes.get(".")).toBe("");
+  expect(prefixes.get("b.slice")).toBe("└─ ");
+  expect(prefixes.get("a.slice/one")).toBe("   ├─ ");
+  expect(prefixes.get("a.slice/two")).toBe("   └─ ");
+  expect(prefixes.get("a.slice/two/deep")).toBe("      └─ ");
 });
