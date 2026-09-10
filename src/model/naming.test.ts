@@ -5,7 +5,6 @@ import {
   accountName,
   jobserver,
   laneName,
-  paneLabel,
   paneName,
   unitLabel,
 } from "./naming";
@@ -73,19 +72,18 @@ test("the make jobserver is read from the configured variable", () => {
   ).toEqual({ jobs: 2, jobserver: null });
 });
 
-test("a tmux pane address is rendered as a pane, and any other value is left alone", () => {
-  const rows: [string, string][] = [
-    ["%9", "pane 9"],
-    ["%0", "pane 0"],
-    ["%123", "pane 123"],
-    // Only tmux's own address form is machinery; a name someone chose stays.
-    ["work:2.1", "work:2.1"],
-    ["%main", "%main"],
-    ["%", "%"],
-    ["", ""],
-  ];
-  for (const [pane, expected] of rows)
-    expect({ pane, label: paneLabel(pane) }).toEqual({ pane, label: expected });
+test("the pane address is kept as the handle the server gave, never rewritten", () => {
+  const c = defaults();
+  // `%9` addresses a pane on the tmux server: `switch-client -t %9` reaches
+  // it. vsys stores it as it is and names no lane with it, because the number
+  // says nothing about which window the pane sits in.
+  const lane = paneName(processSnapshot({ env: { TMUX_PANE: "%9" } }), c);
+  expect(lane).toBe("%9");
+  expect(
+    laneName({ account: "work", tool: "claude", workspace: "vsys" }, [
+      ...c.laneNameParts,
+    ]),
+  ).toBe("work claude vsys");
 });
 
 test("a unit name loses systemd's machinery and keeps what names it", () => {

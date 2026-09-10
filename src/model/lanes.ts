@@ -4,7 +4,6 @@ import {
   accountName,
   jobserver,
   laneName,
-  paneLabel,
   paneName,
   unitLabel,
   windowTitle,
@@ -106,14 +105,14 @@ export function lanes(
     const memoryPressure = group?.pressure.memory?.some ?? null;
     result.push({
       id,
-      // The pane is left out here whatever the configured order: it is a
-      // separator, not a name, so `distinguish` adds it back only to the lanes
-      // it actually tells apart.
+      // No pane part: `%9` is a server-global tmux handle, not a name, and a
+      // reader cannot tell which window it belongs to. It stays on the lane as
+      // the handle it is, and `distinguish` separates lanes by what a reader
+      // already recognises.
       name:
-        laneName(
-          { account, tool, title, workspace: derived || null },
-          c.laneNameParts.filter((part) => part !== "pane"),
-        ) ||
+        laneName({ account, tool, title, workspace: derived || null }, [
+          ...c.laneNameParts,
+        ]) ||
         derived ||
         (group ? unitLabel(group.name) : "") ||
         main?.comm ||
@@ -217,7 +216,6 @@ export function lanes(
  */
 export function distinguish(lanes: Lane[]): void {
   const candidates: ((l: Lane) => string)[] = [
-    (l) => paneLabel(l.pane),
     (l) => (l.cwd ? basename(l.cwd) : ""),
     (l) => (l.mainPid ? `PID ${l.mainPid}` : ""),
     (l) => l.id,

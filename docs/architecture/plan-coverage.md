@@ -35,7 +35,7 @@ The [history store](history.md) and [settings and the runtime](settings.md) hold
 - Agents defaults to rows. The full table retains column visibility, ordering and sorting. Other views use trees, grouped records or charts.
 - Rule transitions have no screen of their own: alerts opening and closing appear in the Timeline change list, and unreadable sources under Settings.
 - Notifications use `notify-send` with explicit per-rule settings. Alert hook execution is absent.
-- Every string on screen is a word the reader knows or a value they can act on. A tmux pane address, a systemd escape and a unit suffix are machinery and are decoded in `src/model/naming.ts` before any screen sees them.
+- Every string on screen is a word the reader knows or a value they can act on. A systemd escape and a unit suffix are machinery and are decoded in `src/model/naming.ts` before any screen sees them; a tmux pane address is a handle, so it stays whole on the agent detail and out of every name.
 - Colour carries one meaning per role and a metric keeps its hue across screens, so a reader comparing two screens compares the same quantity. `src/ui/theme.ts` holds the table and `src/ui/theme.test.tsx` admits no colour outside it.
 - Lifetime writes are read from `smartctl -A` reports left in a configured directory, as scrub reports are. Each file is named after its `/sys/block` device with at most one extension, and a file matching no device is ignored. vsys runs no privileged helper of its own, so a drive with no report keeps its lifetime writes unknown.
 

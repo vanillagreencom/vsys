@@ -11,7 +11,6 @@ import {
 } from "../model/actions";
 import { safe } from "../model/export";
 import { parentChain, processTree } from "../model/lanes";
-import { paneLabel } from "../model/naming";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
@@ -222,7 +221,7 @@ export function Agent({
             [
               lane.tool || "no agent program",
               `account ${lane.account ?? gap}`,
-              lane.pane ? paneLabel(lane.pane) : "",
+              lane.pane ? `pane ${lane.pane}` : "",
               lane.title ? `window ${lane.title}` : "",
             ]
               .filter(Boolean)

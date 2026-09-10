@@ -7,7 +7,7 @@ A lane is a watched scope, or a group an agent or a resource alarm made worth wa
 ## Boundaries
 
 - The pane address and window title are read from the pane environment. vsys does not query the tmux server, so a pane that exports neither leaves both parts out of the lane name.
-- The pane is a separator, not a name. `laneNameParts` orders the parts that name a lane; the pane is left out of that composition whatever the order says, and `distinguish()` in `src/model/lanes.ts` adds it back only to lanes that would otherwise share a name.
+- The pane address never reaches a lane name. `%9` is a server-global tmux pane id, so the number says nothing about which session or window holds the pane, and two agents in one worktree are told apart by their window rather than by anything the number shows. The lane keeps the address as the handle it is: `tmux switch-client -t %9` reaches that pane. Resolving it to `session:window.pane` needs a tmux call vsys does not make.
 - `unitLabel()` in `src/model/naming.ts` is the only place a systemd unit name becomes a name a screen shows. Lanes, resource groups and every meter consumer call it.
 
 ## Invariants
@@ -16,8 +16,8 @@ A lane is a watched scope, or a group an agent or a resource alarm made worth wa
 - The environment of an escaped agent is read from that agent, not from its scope's main process. `src/collect/collector.test.ts` checks an agent child of a pane shell.
 - A launcher trail states the ancestors and their cgroups, the confinement markers and any PATH prefix. Markers with the wrong cgroup mean a shadowed launcher, their absence a bare launch. `src/model/launcher.test.ts` checks both and an unreadable environment.
 - A lane name joins the configured parts in the configured order and leaves out a part with no value. `src/model/naming.test.ts` checks the order and an unreadable environment; `src/model/lanes.test.ts` checks two accounts in one worktree and a lane that names no account.
-- No two lanes in one sample render the same name. A colliding group takes the first candidate that separates every member of it: the pane, then the working directory basename, then the process id, then the lane id, which is unique by construction. `src/model/lanes.test.ts` checks each step and that the result is distinct.
-- A tmux pane address reaches no screen as `%9`, and a unit name reaches none carrying a `\xNN` escape, the `app-` launcher prefix or a `.scope` suffix. `src/model/naming.test.ts` checks the forms and asserts the absence.
+- No two lanes in one sample render the same name. A colliding group takes the first candidate that separates every member of it: the working directory basename, then the process id, then the lane id, which is unique by construction. `src/model/lanes.test.ts` checks each step and that the result is distinct.
+- No lane name carries a pane address, and no unit name reaches a screen carrying a `\xNN` escape, the `app-` launcher prefix or a `.scope` suffix. `src/model/naming.test.ts` checks the unit forms and asserts the absence; `src/model/lanes.test.ts` checks that a name holds no `%`.
 - Per-lane page cache, I/O rates, CPU share and cgroup weight stay unknown when the kernel did not report them, and an unread cgroup tree leaves the effective memory cap unknown rather than unlimited. `src/model/lanes.test.ts` checks a group with no counters and a lane with no covering group.
 - A cgroup limit file holds a number or the word max. A file that could not be read is neither, so the effective cap is known only when every covering ancestor was read. `src/collect/collector.test.ts` removes an ancestor's memory.max.
 - A blocked lane counts its tasks in uninterruptible wait and names storage or memory by the higher stall share. `src/model/lanes.test.ts` checks both resources and unknown pressure.

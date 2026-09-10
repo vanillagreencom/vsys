@@ -73,7 +73,7 @@ test("two agents in one worktree under different accounts get different names", 
   expect([a.account, a.pane, b.title]).toEqual([".2claude", "%3", "review"]);
 });
 
-test("lanes that resolve to one name are separated, by pane before anything else", () => {
+test("lanes that resolve to one name are separated by what a reader recognises", () => {
   const c = defaults();
   const same = (n: number, pane: string, cwd = "/repo/kendex") =>
     processSnapshot({
@@ -89,28 +89,27 @@ test("lanes that resolve to one name are separated, by pane before anything else
       pids: [n],
     }),
   );
-  const named = lanes(groups, [same(1, "%3"), same(2, "%9")], c);
-  expect(named.map((l) => l.name)).toEqual([
-    ".2claude claude kendex pane 3",
-    ".2claude claude kendex pane 9",
-  ]);
-  // With no pane to tell them apart, the working directory does; with the
-  // same directory too, the process id always does.
-  const noPane = lanes(
+  // Different worktrees: the directory separates them.
+  const byDirectory = lanes(
     groups,
-    [same(1, "", "/repo/one"), same(2, "", "/repo/two")],
+    [same(1, "%3", "/repo/one"), same(2, "%9", "/repo/two")],
     c,
   );
-  expect(noPane.map((l) => l.name)).toEqual([
+  expect(byDirectory.map((l) => l.name)).toEqual([
     ".2claude claude one",
     ".2claude claude two",
   ]);
-  const identical = lanes(groups, [same(1, ""), same(2, "")], c);
-  expect(identical.map((l) => l.name)).toEqual([
+  // One worktree and two panes: the pane addresses differ but name nothing a
+  // reader can place, so the process id separates them instead.
+  const byPid = lanes(groups, [same(1, "%17"), same(2, "%21")], c);
+  expect(byPid.map((l) => l.name)).toEqual([
     ".2claude claude kendex PID 1",
     ".2claude claude kendex PID 2",
   ]);
-  expect(new Set(identical.map((l) => l.name)).size).toBe(identical.length);
+  // The pane address is kept as the handle, on the lane, out of the name.
+  expect(byPid.map((l) => l.pane)).toEqual(["%17", "%21"]);
+  for (const lane of byPid) expect(lane.name).not.toContain("%");
+  expect(new Set(byPid.map((l) => l.name)).size).toBe(byPid.length);
 });
 
 test("a lane reports its cgroup, its charged resources and its effective caps", () => {

@@ -73,14 +73,6 @@ export function laneName(
     .join(" ");
 }
 /**
- * tmux exports its own pane address, `%9`, which names nothing to a reader.
- * Any other value a pane exports was chosen by a person and is left alone.
- */
-export function paneLabel(pane: string): string {
-  const address = pane.match(/^%(\d+)$/);
-  return address ? `pane ${address[1]}` : pane;
-}
-/**
  * systemd escapes a byte it cannot carry in a unit name as `\xNN`. Only the
  * escapes are decoded here: the caller has already split the name on systemd's
  * own separator, so a decoded hyphen cannot be mistaken for one.

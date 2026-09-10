@@ -339,7 +339,7 @@ test("agent detail names the account, the charged resources, the limits and the 
     for (const text of [
       "a.scope",
       "account .2claude",
-      "pane 3",
+      "pane %3",
       "cache 4.0 KiB",
       "read 1.0 MiB/s",
       "2.0 MiB/s",
