@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Capability, CapabilityId } from "../model/types";
 import { fixture } from "../test/fixture";
 import { capabilityReason } from "../ui/settings";
-import { probeCapabilities } from "./capabilities";
+import { probeCapabilities, probeTmux } from "./capabilities";
 import { Collector } from "./collector";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
@@ -185,4 +185,23 @@ test("tmux absent and tmux without a server are separate diagnoses", () => {
   const caps = byId(probeCapabilities(f.config, answering));
   expect(caps.get("tmux")?.available).toBe(true);
   expect(caps.get("psi")?.available).toBe(true);
+});
+
+test("a tmux with no server running is not a missing tmux", () => {
+  // The words tmux prints when its socket is not there. They read as a missing
+  // file because they are about one, and matching them against a pattern for a
+  // missing program told a reader with tmux installed to install it.
+  const refused = probeTmux([
+    "sh",
+    "-c",
+    "echo 'error connecting to /tmp/tmux-1000/default (No such file or directory)' >&2; exit 1",
+  ]);
+  expect(refused?.failure).toBe("incomplete");
+  expect(refused?.detail).toContain("error connecting");
+  // A program that is not there at all never runs, and that is the only
+  // absence: it is a fact about the spawn rather than a reading of any words.
+  const missing = probeTmux(["vsys-has-no-such-program", "-V"]);
+  expect(missing?.failure).toBe("absent");
+  // And a server that answers is no failure of either kind.
+  expect(probeTmux(["sh", "-c", "exit 0"])).toBeNull();
 });

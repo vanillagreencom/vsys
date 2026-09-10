@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaults } from "./config/config";
-import { runEffect } from "./effect";
+import { runEffect, switchToPane } from "./effect";
 import { laneIntent, laneTarget, resolveIntent } from "./model/actions";
 import { emptySnapshot, laneSnapshot } from "./test/fixture";
 
@@ -71,4 +71,33 @@ test("a program that fails reports its own stderr rather than passing as done", 
     argv: ["sh", "-c", `printf '%s\\n' ${JSON.stringify(reason)} >&2; exit 5`],
   });
   await expect(run).rejects.toThrow(`sh exited 5: ${reason}`);
+});
+
+test("the switch asks tmux for the target and reports what it refuses", async () => {
+  const asked: string[][] = [];
+  /** A child that answers the way a spawned tmux would. */
+  const fake = (status: number, said: string) => (argv: string[]) => {
+    asked.push(argv);
+    return {
+      exited: Promise.resolve(status),
+      stderr: new Response(said).body,
+    };
+  };
+  // The arguments are tmux's own, and the target reaches it as one of them
+  // rather than as part of a line.
+  await switchToPane("work:2.1", fake(0, ""));
+  expect(asked).toEqual([["tmux", "switch-client", "-t", "work:2.1"]]);
+  // A refusal reaches the reader in the server's words. Dropped, the reader
+  // pressed a key, nothing moved and nothing said why.
+  await expect(
+    switchToPane("%9", fake(1, "can't find pane %9\n")),
+  ).rejects.toThrow("can't find pane %9");
+  // A refusal with nothing to say still says something.
+  await expect(switchToPane("%9", fake(3, "   "))).rejects.toThrow(
+    "tmux switch-client exited 3",
+  );
+  // Nothing to address is refused before anything is spawned.
+  const before = asked.length;
+  await expect(switchToPane("")).rejects.toThrow("exported no pane");
+  expect(asked.length).toBe(before);
 });

@@ -33,24 +33,30 @@ function classify(error: unknown): Outcome {
  * second is not a broken installation, so it is reported as an interface that
  * answered without giving what the reading needs.
  */
-export function probeTmux(): Outcome {
+export function probeTmux(argv: string[] = listPanesArgv): Outcome {
   let result: { exitCode: number; stderr: Uint8Array };
   try {
-    result = Bun.spawnSync(listPanesArgv, {
+    result = Bun.spawnSync(argv, {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
     });
   } catch (error) {
+    // Nothing ran: Bun throws when the program is not on the path. That is the
+    // whole of what `absent` means, and it is a fact about the spawn rather
+    // than a reading of anything the program said.
     return { failure: "absent", detail: String(error) };
   }
   if (result.exitCode === 0) return null;
-  const detail = new TextDecoder().decode(result.stderr).trim();
-  // Bun reports a missing program through the exit status rather than a throw
-  // on every platform, so the server's own words decide which absence it is.
-  return /not found|ENOENT|No such file/i.test(detail)
-    ? { failure: "absent", detail }
-    : { failure: "incomplete", detail: detail || "no server running" };
+  // tmux ran and refused, which is never an absence however it is worded. A
+  // server that is not up says `error connecting to /tmp/tmux-1000/default
+  // (No such file or directory)`, and matching that against a pattern for a
+  // missing program told a reader who has tmux installed to go and install it.
+  return {
+    failure: "incomplete",
+    detail:
+      new TextDecoder().decode(result.stderr).trim() || "no server running",
+  };
 }
 
 /**
