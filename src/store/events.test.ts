@@ -422,3 +422,30 @@ test("a change about a cgroup names it the way a card does, and keeps the unit",
   expect(lane?.subject).toBe("capped");
   expect(lane?.names.unit ?? "").toBe("");
 });
+
+test("host memory pressure with no lane stalled under it still names its scope", () => {
+  const log = started();
+  const s = emptySnapshot(2000);
+  s.system.pressure = { memory: { some: 80, full: 0, total: 0 } };
+  // A desktop scope holding swap, and no lane waiting on memory. The cause
+  // has nothing of its own to name, so it falls back to one subject.
+  s.groups = [
+    groupSnapshot({
+      path: "app.slice/gnome.scope",
+      name: "gnome.scope",
+      swap: 992,
+    }),
+  ];
+  const opened = log
+    .advance(s, c)
+    .filter((e) => e.kind === "alert-open" && e.cause === "system-memory");
+  // Still exactly one alert. `at` is where to look, not a subject, and using
+  // it here changes what the one subject is rather than how many there are.
+  expect(opened.length).toBe(1);
+  // And that one subject carries a real identity: the scope's path, the name
+  // a card would show, and the raw unit the row can open under itself. A bare
+  // consumer string left the reader with no handle at all.
+  expect(opened[0].subjectId).toBe("app.slice/gnome.scope");
+  expect(opened[0].subject).toBe("gnome");
+  expect(opened[0].names.unit).toBe("gnome.scope");
+});

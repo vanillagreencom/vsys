@@ -99,7 +99,22 @@ export function subjects(
     })),
     ...cause.paths.map((path) => ({ id: path, name: path })),
   ];
-  return named.length ? named : [{ id: cause.consumer, name: cause.consumer }];
+  if (named.length) return named;
+  // The cause is about nothing it can name — host pressure with no lane
+  // stalled under it — so it gets one fallback subject. Where it names a
+  // scope to look at, that scope is the identity that subject carries: its
+  // path, its decoded name, and the raw unit behind it, so the change row can
+  // still show the handle its subject decoded from.
+  //
+  // This changes what the one subject is, never how many there are. `at` is
+  // not a subject and is not added to `named`: a cause with no lanes and no
+  // groups already produced exactly one row here, and it still does.
+  const at = cause.at;
+  const scope =
+    at?.kind === "group" ? s.groups.find((g) => g.path === at.path) : undefined;
+  if (scope)
+    return [{ id: scope.path, name: consumerName(scope, s), unit: scope.name }];
+  return [{ id: cause.consumer, name: cause.consumer }];
 }
 /**
  * Events come from successive snapshots and from the one cause ladder. An
