@@ -9,6 +9,8 @@ import { buildLoad } from "./verdict";
 export interface LaneBuilds {
   id: string;
   name: string;
+  /** The process leading the lane, which tells two of one name apart. */
+  mainPid: number;
   builds: number;
   linkers: number;
   /** The linker executables running there, so the disk writers are named. */
@@ -58,6 +60,7 @@ function laneOwners(s: Snapshot): Map<number, { id: string; name: string }> {
 function buildRow(
   id: string,
   name: string,
+  mainPid: number,
   kinds: Record<string, number>,
   c: Config,
 ): LaneBuilds | null {
@@ -70,6 +73,7 @@ function buildRow(
   return {
     id,
     name,
+    mainPid,
     builds,
     linkers: linkers.reduce((n, [, count]) => n + count, 0),
     linkerNames: linkers.map(([kind]) => kind),
@@ -87,8 +91,8 @@ export function laneBuilds(s: Snapshot, c: Config): LaneBuilds[] {
     if (p.build && !owned.has(p.pid))
       loose[p.build] = (loose[p.build] ?? 0) + 1;
   const rows = [
-    ...s.lanes.map((l) => buildRow(l.id, l.name, l.builds, c)),
-    buildRow("", "", loose, c),
+    ...s.lanes.map((l) => buildRow(l.id, l.name, l.mainPid, l.builds, c)),
+    buildRow("", "", 0, loose, c),
   ].filter((row): row is LaneBuilds => row !== null);
   // Busiest first; the catch-all row for unwatched cgroups breaks a tie last.
   return rows.sort(

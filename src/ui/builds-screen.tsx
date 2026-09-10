@@ -50,7 +50,12 @@ export function Builds({
   const [processes, setProcesses] = useState(false);
   const summary = buildsSummary(s, c);
   const rows = summary.rows;
+  // The id for the same reason every other lane list carries one: two lanes
+  // that resolve to one name are told apart by a column, never by a suffix on
+  // the name. The catch-all row for work outside every lane leads no process,
+  // so its cell is blank rather than a made-up zero.
   const fixed: Column[] = [
+    { label: "PID", width: 8, align: "right" as const },
     { label: "", width: 10 },
     { label: "Building", width: 14, align: "right" as const },
     { label: "Linkers", width: 30 },
@@ -62,7 +67,8 @@ export function Builds({
     },
     ...fixed,
   ];
-  const [nameColumn, barColumn, countColumn, linkerColumn] = buildColumns;
+  const [nameColumn, pidColumn, barColumn, countColumn, linkerColumn] =
+    buildColumns;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setSelected((i) => nextDown(rows.length, i));
@@ -183,6 +189,9 @@ export function Builds({
               }}
             >
               {safe(cell(nameColumn, row.name || "outside the watched lanes"))}
+              <span attributes={ui.dim}>
+                {`${columnGap}${cell(pidColumn, row.mainPid ? String(row.mainPid) : "")}`}
+              </span>
               {columnGap}
               <Bar
                 value={row.builds}
