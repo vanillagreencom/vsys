@@ -121,12 +121,24 @@ export function useLaneTrends(
   windowMs: number,
 ): Map<string, LaneSample[]> {
   const [loaded, setLoaded] = useState(new Map<string, LaneSample[]>());
+  // The chart draws `trendWidth` buckets across the window, so the shape a row
+  // shows cannot change until the newest bucket rolls over. That boundary is
+  // the cadence the store is read on. Keying on the time would cost a read per
+  // visible row on every sample; keying on nothing but the lane and the window
+  // is what this did, and the window then never moved: the series stayed as it
+  // was first read while `end` advanced away from it, until the drawn window
+  // held almost none of it and the row was mostly gaps.
+  const bucketMs = windowMs / trendWidth;
+  const bucket = Math.floor(end / bucketMs);
+  // The read wants the newest time, but the time is not what triggers it, so
+  // it is read from a ref rather than from the effect's dependencies.
+  const endRef = useRef(end);
+  endRef.current = end;
+  const drawn = useRef(bucket);
   // One judge for "has this series been asked for": the set of keys already
   // requested. It is a ref rather than state because a render between the ask
   // and the answer would otherwise see an empty cache and ask again, and it
-  // covers in-flight reads as well as settled ones. The key is the lane and
-  // the window, never the time, so a new sample re-runs this effect and it
-  // asks for nothing.
+  // covers in-flight reads as well as settled ones.
   const requested = useRef(new Set<string>());
   // A read is discarded only when the screen is gone. Tying it to the effect's
   // own life instead would throw away every read that took longer than the
@@ -141,6 +153,12 @@ export function useLaneTrends(
   }, []);
   const ids = lanes.map((lane) => lane.id).join("\u0000");
   useEffect(() => {
+    if (drawn.current !== bucket) {
+      drawn.current = bucket;
+      // A rolled-over bucket is a new answer for every row, so what was asked
+      // for in the last one is not what is wanted now.
+      requested.current.clear();
+    }
     const missing = (ids ? ids.split("\u0000") : []).filter((id) => {
       const key = `${id}\u0000${windowMs}`;
       if (requested.current.has(key)) return false;
@@ -155,7 +173,7 @@ export function useLaneTrends(
       void (async () => {
         let samples: LaneSample[] = [];
         try {
-          samples = await history.laneWindow(id, end, windowMs);
+          samples = await history.laneWindow(id, endRef.current, windowMs);
         } catch {
           // A series that cannot be read is a row with no trend, never a row
           // showing another lane's.
@@ -167,7 +185,7 @@ export function useLaneTrends(
         );
       })();
     }
-  }, [history, ids, windowMs, end]);
+  }, [history, ids, windowMs, bucket]);
   return loaded;
 }
 /**
@@ -477,7 +495,11 @@ export function Agents({
   // Only the rows the list draws: the window the list computes is the window
   // the store is asked for, so the two cannot disagree.
   const shown = listWindow(lanes.length, selected, listHeight);
-  const visible = showTrend ? lanes.slice(shown.start, shown.end) : [];
+  // Where the column is not drawn it is not read. The table view and the column
+  // chooser draw something else, and an open agent draws its own detail, which
+  // reads its series on the snapshot time rather than through this list.
+  const drawsTrend = showTrend && !table && !chooser && laneId === null;
+  const visible = drawsTrend ? lanes.slice(shown.start, shown.end) : [];
   const trends = useLaneTrends(history, visible, s.time, windowMs);
   const trend = (id: string) =>
     trendMarks(

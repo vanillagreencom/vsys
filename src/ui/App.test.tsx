@@ -16,7 +16,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { App, hints, Waiting } from "./App";
-import { findLanes } from "./agents";
+import { findLanes, trendWidth } from "./agents";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
@@ -24,6 +24,7 @@ import { type HomeItem, homeItems, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
 import { Storage, volumesByDevice } from "./storage-screen";
+import { windows } from "./timeline-screen";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
 async function mount(
@@ -2674,8 +2675,9 @@ test("a long list reads the history of the rows on screen and no others", async 
     expect(shown.size).toBeGreaterThan(0);
     expect(shown.size).toBeLessThan(s.lanes.length);
     expect([...asked].sort()).toEqual([...shown].sort());
-    // No series is read twice, and a new sample reads none: the loaded set is
-    // keyed by lane and window, so a refresh does not reach the store.
+    // No series is read twice, and a sample inside the chart's newest bucket
+    // reads none: the loaded set is keyed by lane, window and that bucket, so
+    // a refresh within one does not reach the store.
     expect(asked.length).toBe(new Set(asked).size);
     const before = asked.length;
     await t.update({ ...s, time: s.time + 1000 });
@@ -2848,6 +2850,99 @@ test("clicking a tile opens the screen its key opens", async () => {
       expect({ label, on: t.frame().includes(lands) }).toEqual({
         label,
         on: true,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("the trend re-reads when its newest bucket rolls over, and not before", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 }),
+    laneSnapshot({ id: "lane-b", name: "lane-b", cpu: 1 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const { h, asked } = countingHistory(c, s);
+  // The chart draws `trendWidth` buckets across the default window, so this is
+  // the span the drawn shape cannot change within. Asserted here rather than
+  // assumed, because the whole cadence is derived from it.
+  const bucketMs = windows[0] / trendWidth;
+  expect(bucketMs).toBe(25000);
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    expect(t.frame()).toContain("Trend");
+    const first = new Set(asked).size;
+    expect(first).toBe(2);
+    // Inside the bucket: samples land, and the store is not asked again. A
+    // read per visible row per sample is what this cadence exists to avoid.
+    await t.update({ ...s, time: s.time + 1000 });
+    await t.update({ ...s, time: s.time + 2000 });
+    expect(asked.length).toBe(first);
+    // Past it: the newest bucket has rolled over, so the drawn shape can
+    // change and every visible row is read again. Keyed on lane and window
+    // alone this stayed at `first` for as long as the screen was open, and the
+    // trend aged out of its own window.
+    await t.update({ ...s, time: s.time + bucketMs + 1000 });
+    expect(asked.length).toBe(first * 2);
+    expect([...new Set(asked)].sort()).toEqual(["lane-a", "lane-b"]);
+    // And the second bucket does not read a third time on its own samples.
+    await t.update({ ...s, time: s.time + bucketMs + 2000 });
+    expect(asked.length).toBe(first * 2);
+  } finally {
+    await t.close();
+  }
+});
+
+test("no trend column means the store is asked for no series at all", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 }),
+    laneSnapshot({ id: "lane-b", name: "lane-b", cpu: 1 }),
+  ];
+  s.groups = [groupSnapshot()];
+  // Three states that draw something other than the trend column, each with
+  // the width that would otherwise draw it. What is counted is what the store
+  // was asked for: a check on the drawn frame passes while the disk is read.
+  // Each case names the series it may still read. The table view and the
+  // chooser may read none. An open agent reads its own, on the snapshot time,
+  // which is the detail's own contract and not this list's.
+  const cases: [
+    string,
+    (t: Awaited<ReturnType<typeof mount>>) => Promise<void>,
+    string[],
+  ][] = [
+    ["the table view", async (t) => await t.press(c.keys.details), []],
+    ["the column chooser", async (t) => await t.press(c.keys.columns), []],
+    ["an open agent", async (t) => await t.press("enter"), ["lane-a"]],
+  ];
+  for (const [what, reach, allowed] of cases) {
+    const { h, asked } = countingHistory(c, s);
+    const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+    try {
+      await t.press("2");
+      // The column is drawn here, so this is the state the case leaves.
+      expect({ what, drawn: t.frame().includes("Trend") }).toEqual({
+        what,
+        drawn: true,
+      });
+      const before = asked.length;
+      expect(before).toBeGreaterThan(0);
+      await reach(t);
+      expect({ what, drawn: t.frame().includes("Trend") }).toEqual({
+        what,
+        drawn: false,
+      });
+      // A sample lands while the column is not drawn. Nothing the list would
+      // have read is read for it.
+      await t.update({ ...s, time: s.time + windows[0] });
+      expect({ what, read: [...new Set(asked.slice(before))] }).toEqual({
+        what,
+        read: allowed,
       });
     } finally {
       await t.close();
