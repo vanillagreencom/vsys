@@ -16,6 +16,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 
 - `mountScreen` owns the React root and the subscription between collection and display. It mounts once and unmounts on shutdown.
 - The shell owns the one keyboard subscription. A screen registers a handler through `useScreenKeys` and sees each key first; a handler that returns true keeps the key from the shell's bindings, so an open search box or editor takes every key.
+- The footer names the keys the current screen handles and nothing else. The agent detail is its own entry in the shell's `hints` table, because it takes none of the list's keys and adds a way back.
 - Colour comes from `src/ui/theme.ts` alone, and each role has one meaning: red, amber and green are severity and nothing else; cyan is what the reader can act on; grey is behind the selected row and under an unfilled bar. `metric` gives each metric family its own hue, used wherever that quantity is drawn on any screen. No screen names a hex value. Every line of text renders through `Line`, because OpenTUI paints text white when no colour is given.
 - A reading of zero recedes and a reading keeps its weight, through `readingWeight`. Thirty rows of `0.0%` otherwise compete with the column beside them.
 - `src/ui/columns.ts` owns column arithmetic: `fit` pads or cuts to a width and marks a cut with an ellipsis, and one `Column[]` feeds both `TableHeader` and the row renderer under it, so a width cannot move one without the other.
@@ -24,6 +25,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - The header reserves the host and the clock, then offers the tabs what is left; the tabs take their own row when that is not enough. `tabsFitOneRow` in `src/ui/chrome.tsx` is the one place that decides, and the shell reads it to know how tall the content area is.
 - A chart column with no sample is drawn quietly, and a window vsys has not filled is labelled with the span it holds rather than the span requested (`spanLabel`). A first run is then a screen waiting for data, not a screen reporting none.
 - `src/ui/attention.ts` turns the model's cause ladder and meters into words: the verdict line, one card per cause, and one tile per meter. The model returns numbers; every word and every formatted number lives in the UI.
+- A card carries the row it names as a `Target`. The shell hands that target to the destination screen, which selects the row and clears the target as it takes it, so opening the same card twice lands twice. A card that names no single row carries none.
 - Home shows the verdict, four meter tiles with a sparkline each, the cards, and the busiest agents. Only the selected card shows its detail, its next step and its command, which the copy key puts on the clipboard.
 - Agents holds the list, the table, the search and the open agent, so the list selection survives a visit to the detail. The agent detail keeps its processes, launch, open files and actions in closed sections.
 - The copy key writes an OSC 52 sequence to the process output stream, which reaches the system clipboard over SSH and inside tmux. `src/ui/clipboard.ts` builds it, because the renderer's own OSC 52 call writes through its native core where no test can read what was sent. The payload is base64, so process text in a command cannot close the sequence.
@@ -44,6 +46,12 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - A table's heading and its rows read one column spec. `src/ui/columns.test.ts` checks that a cell and its heading occupy the same columns, and that a cut falls between characters.
 - A key a screen consumes never reaches the shell: a digit typed into the settings editor is text, not a tab. `src/ui/App.test.tsx` checks the editor.
 - Home keeps the selected card visible and opens its agent. `src/ui/App.test.tsx` checks a long list in a small terminal.
+- Opening a card lands on the row it names: the quota card on its directory in Storage, the memory-threshold card on its group in Resources. `src/ui/attention.test.ts` checks the targets the cards carry; `src/ui/App.test.tsx` checks where the screen lands.
+- A footer names only keys its screen handles. `src/ui/App.test.tsx` checks the agent detail against the list it sits inside.
+- Leaving an agent returns to the list with that agent selected, including one opened from Home. `src/ui/App.test.tsx` checks both routes.
+- Home opens on the most urgent row: a concern where there is one, the busiest agent where there is not. `src/ui/App.test.tsx` checks both.
+- The tiles are reachable with the arrow keys and each opens the screen that breaks its number down. `src/ui/App.test.tsx` checks all four and that moving off the tiles returns Enter to the rows.
+- No card offers a command carrying an unresolved value, which would reach the reader as the word `undefined` in text they are invited to run. `src/ui/attention.test.ts` checks every cause.
 - A wide terminal puts Home's two lists on one row and Agents' summary beside its list; a narrow one stacks them. `src/ui/App.test.tsx` checks both widths.
 - The help panel is the width of its own content at any terminal size, and every row inside its border belongs to it. `src/ui/App.test.tsx` checks two sizes and compares the widths.
 - Four tiles wrap rather than squeeze their captions together. `src/ui/widgets.test.tsx` derives the per-row count from the width.

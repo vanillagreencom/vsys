@@ -24,7 +24,7 @@ test("overview promotes active problems and does not call past events current", 
   s.lanes = [laneSnapshot({ dangerous: true })];
   const problems = attention(s, c, base);
   expect(problems).toHaveLength(1);
-  expect(problems[0].laneId).toBe(s.lanes[0].id);
+  expect(problems[0].target).toEqual({ kind: "lane", id: s.lanes[0].id });
   expect(problems[0].danger).toBe(true);
 });
 
@@ -94,7 +94,7 @@ test("nine stalling lanes produce one card that names them", () => {
   expect(stalls[0].detail).toBe(
     "Highest stall share 40.0% of the recent window.",
   );
-  expect(stalls[0].laneId).toBeUndefined();
+  expect(stalls[0].target?.kind).not.toBe("lane");
 });
 
 test("unconfined lanes are one card that states the launcher conclusion", () => {
@@ -137,7 +137,7 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
   expect(card.command).toBe(
     "systemd-run --user --slice=agents.slice --scope -- claude",
   );
-  expect(card.laneId).toBeUndefined();
+  expect(card.target?.kind).not.toBe("lane");
   // The marker list is configuration, so a different marker changes the verdict.
   const other = attention(s, { ...c, capMarkers: ["MAKEFLAGS"] }, base).find(
     (item) => item.id === "unconfined",
@@ -176,14 +176,14 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
   expect(card.danger).toBe(true);
   // One card, not a second generic stalls card, and it opens the writer lane.
   expect(attention(s, c, base).map((item) => item.id)).toEqual(["disk"]);
-  expect(card.laneId).toBe("a/510341.scope");
+  expect(card.target).toEqual({ kind: "lane", id: "a/510341.scope" });
   expect(card.view).toBe("Agents");
   expect(card.next).toContain("build job count for that lane");
   // A desktop scope that is not a lane sends the reader to Resources instead.
   s.groups[0].path = "app.slice/gnome.scope";
   const scope = attention(s, c, base)[0];
   expect(scope.view).toBe("Resources");
-  expect(scope.laneId).toBeUndefined();
+  expect(scope.target?.kind).not.toBe("lane");
   expect(scope.next).toContain("what is writing in that scope");
 });
 
@@ -350,4 +350,52 @@ test("a snapshot stored before the probe reads plainly and never claims a cause"
   ]);
   expect(unread(s, "psi")).toBe("not available");
   expect(unread(s)).toBe("not available");
+});
+
+test("a card that names one row carries it, and a card naming none carries nothing", () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const items = attention(s, c, base);
+  const target = (id: string) => items.find((item) => item.id === id)?.target;
+  // Each card points at the thing its own sentence names.
+  expect(target("scratch")).toEqual({ kind: "path", path: "/scratch" });
+  expect(target("read-only")).toEqual({ kind: "path", path: "/ro" });
+  expect(target("device-errors")).toEqual({ kind: "path", path: "/bad" });
+  expect(target("free-space")).toEqual({ kind: "path", path: "/full" });
+  expect(target("scrub")).toEqual({ kind: "path", path: "/scrub" });
+  expect(target("memory-high")).toEqual({ kind: "group", path: "h.scope" });
+  expect(target("desktop-swap")).toEqual({
+    kind: "group",
+    path: "app.slice/gnome.scope",
+  });
+  expect(target("memory-cap")).toEqual({ kind: "lane", id: "lane-capped" });
+  // A machine-wide stall names no single row, so it points at none.
+  expect(target("system-cpu")).toBeUndefined();
+  // Every target the cards carry is one the destination can resolve.
+  for (const item of items) {
+    const at = item.target;
+    if (!at) continue;
+    if (at.kind === "lane")
+      expect(s.lanes.some((l) => l.id === at.id)).toBe(true);
+    if (at.kind === "group")
+      expect(s.groups.some((g) => g.path === at.path)).toBe(true);
+  }
+});
+
+test("no card offers a command with an unresolved value in it", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.system.pressure.io = { some: 70, full: 41, total: 0 };
+  s.groups = [
+    groupSnapshot({ path: "w.scope", name: "w.scope", writeRate: 209715200 }),
+  ];
+  s.lanes = [laneSnapshot({ id: "waiter", name: "waiter", ioPressure: 30 })];
+  const disk = attention(s, c, base).find((item) => item.id === "disk");
+  expect(disk?.command).toBe(`cat ${c.cgroupRoot}/w.scope/io.stat`);
+  // A command is text the reader is invited to copy and run, so an optional
+  // value interpolated into one would reach them as the word "undefined".
+  for (const item of attention(everyCauseSnapshot(c), c, base)) {
+    expect(item.command ?? "").not.toContain("undefined");
+    expect(item.command ?? "").not.toContain("null");
+  }
 });

@@ -1,6 +1,6 @@
 import type { RGBA } from "@opentui/core";
 import type { TextProps } from "@opentui/react";
-import { Children, type ReactNode } from "react";
+import { Children, cloneElement, isValidElement, type ReactNode } from "react";
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
 import { type Column, fit, headerText } from "./columns";
@@ -188,18 +188,27 @@ export function Tile({
   value,
   level = "ok",
   detail,
+  selected = false,
   chart,
   chartColor,
+  width,
 }: {
   label: string;
   value: string;
   level?: Level;
   detail: string;
+  /** Marked when the reader has moved the selection onto this tile. */
+  selected?: boolean;
   /** A one-row sparkline under the number, when history exists. */
   chart?: string;
   /** The metric's own hue, so the same quantity reads alike on every screen. */
   chartColor?: RGBA;
+  /** The tile's own columns, filled in by `Tiles`. A cut then ends in a mark. */
+  width?: number;
 }) {
+  // Cutting a sentence with no mark leaves `of one core · 12.3% of the`, which
+  // reads as a sentence rather than as one that ran out of room.
+  const sized = (text: string) => (width ? fit(text, width) : text);
   return (
     <box
       flexDirection="column"
@@ -208,12 +217,18 @@ export function Tile({
       minWidth={0}
       overflow="hidden"
     >
-      <Line height={1} width="100%" truncate attributes={ui.dim}>
-        {label}
+      <Line
+        height={1}
+        width="100%"
+        truncate
+        bg={selected ? ui.quiet : undefined}
+        attributes={selected ? ui.bold : ui.dim}
+      >
+        {sized(label)}
       </Line>
       <Line height={1} width="100%" truncate>
         <span fg={levelColor(level)} attributes={ui.bold}>
-          {safe(value)}
+          {sized(safe(value))}
         </span>
       </Line>
       {chart !== undefined && (
@@ -222,7 +237,7 @@ export function Tile({
         </Line>
       )}
       <Line height={1} width="100%" truncate attributes={ui.dim}>
-        {safe(detail)}
+        {sized(safe(detail))}
       </Line>
     </box>
   );
@@ -257,11 +272,21 @@ export function Tiles({
 }) {
   const count = Children.count(children);
   const perRow = tilesPerRow(count, width);
+  // Each tile's own columns: the panel less the gaps, shared evenly. A tile
+  // that knows its width can mark a cut instead of ending mid-word.
+  const each =
+    width === undefined
+      ? undefined
+      : Math.max(1, Math.floor((width - 2 * (perRow - 1)) / perRow));
   const rows: ReactNode[][] = [];
   Children.forEach(children, (child, i) => {
     const at = Math.floor(i / perRow);
     if (!rows[at]) rows[at] = [];
-    rows[at].push(child);
+    rows[at].push(
+      each !== undefined && isValidElement<{ width?: number }>(child)
+        ? cloneElement(child, { width: each })
+        : child,
+    );
   });
   return (
     <box flexDirection="column" flexShrink={0} gap={1}>

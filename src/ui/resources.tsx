@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import { dangerousCap } from "../model/lanes";
@@ -123,15 +123,36 @@ export function Resources({
   config: c,
   height,
   width,
+  target,
+  onTargetUsed,
 }: {
   snapshot: Snapshot;
   config: Config;
   height: number;
   width: number;
+  /** The group path a card asked this screen to land on. */
+  target: string | null;
+  onTargetUsed: () => void;
 }) {
   const [selected, setSelected] = useState(0);
   const [all, setAll] = useState(false);
   const rows = groupRows(s, all);
+  // A card that names a group lands on it. An idle group is not in the rows
+  // until they are all shown, so the target opens them.
+  useEffect(() => {
+    if (target === null) return;
+    onTargetUsed();
+    const at = groupRows(s, all).findIndex((g) => g.path === target);
+    if (at >= 0) {
+      setSelected(at);
+      return;
+    }
+    const hidden = s.groups.findIndex((g) => g.path === target);
+    if (hidden >= 0) {
+      setAll(true);
+      setSelected(s.groups.findIndex((g) => g.path === target));
+    }
+  }, [target, onTargetUsed, s, all]);
   const hidden = s.groups.length - rows.length;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
@@ -200,6 +221,7 @@ export function Resources({
           />
         ))}
         <Tile
+          key="Swap"
           label="Swap"
           value={amount(swapUsed, c)}
           detail={`of ${amount(s.system.memory.SwapTotal ?? null, c)}${s.system.zram

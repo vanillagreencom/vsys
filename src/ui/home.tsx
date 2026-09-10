@@ -1,5 +1,5 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
@@ -11,7 +11,7 @@ import {
   verdictItem,
   verdictLine,
 } from "./attention";
-import { keyLabel, wideWidth } from "./chrome";
+import { keyLabel, type View, wideWidth } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import {
   amount,
@@ -60,6 +60,13 @@ const meterSeries: Record<Meter["id"], keyof Point> = {
   disk: "ioPressure",
   builds: "builds",
 };
+/** The screen behind each tile: the one that breaks its number down. */
+export const meterView: Record<Meter["id"], View> = {
+  cpu: "Resources",
+  memory: "Resources",
+  disk: "Storage",
+  builds: "Builds",
+};
 /** The one-row chart under a tile: the peak of each history bucket, placed by time. */
 function series(
   points: Point[],
@@ -91,6 +98,7 @@ export function Home({
   height,
   onSelect,
   onOpen,
+  onOpenView,
   onCopy,
 }: {
   snapshot: Snapshot;
@@ -103,6 +111,8 @@ export function Home({
   height: number;
   onSelect: (index: number) => void;
   onOpen: (item: HomeItem) => void;
+  /** Opens the screen behind a tile, which breaks that meter down. */
+  onOpenView: (view: View) => void;
   /** Undefined when the selected row carries no command, which the shell says. */
   onCopy: (command: string | undefined) => void;
 }) {
@@ -114,18 +124,36 @@ export function Home({
     3,
     columns ? height - 10 : height - 10 - items.length * 2,
   );
+  const gauges = meters(s, c);
   const rows = homeItems(items, s, busiest);
+  // Null while the rows hold the selection. Left or right moves onto the
+  // tiles, up or down moves back off them, so one Enter is never ambiguous.
+  const [tile, setTile] = useState<number | null>(null);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`home-${selected}`);
   }, [selected]);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
+      setTile(null);
       onSelect(nextDown(rows.length, selected));
       return true;
     }
     if (name === c.keys.up || name === "up") {
+      setTile(null);
       onSelect(Math.max(0, selected - 1));
+      return true;
+    }
+    if (name === c.keys.left || name === "left") {
+      setTile((at) => Math.max(0, (at ?? 0) - 1));
+      return true;
+    }
+    if (name === c.keys.right || name === "right") {
+      setTile((at) => (at === null ? 0 : Math.min(gauges.length - 1, at + 1)));
+      return true;
+    }
+    if (name === c.keys.open && tile !== null && gauges[tile]) {
+      onOpenView(meterView[gauges[tile].id]);
       return true;
     }
     if (name === c.keys.open && rows[selected]) {
@@ -141,7 +169,6 @@ export function Home({
   });
   const lead = verdictItem(items);
   const level: Level = lead ? (lead.danger ? "danger" : "warn") : "ok";
-  const gauges = meters(s, c);
   const panel = columns ? Math.floor((width - 3) / 2) : width;
   // A tile row shares its width between the tiles on it, two columns apart,
   // so the chart is as wide as the tile that carries it however many that is.
@@ -189,15 +216,16 @@ export function Home({
         </Line>
         <box height={1} flexShrink={0} />
         <Tiles width={width}>
-          {gauges.map((gauge) => {
-            const tile = meterTile(gauge, s, c);
+          {gauges.map((gauge, at) => {
+            const card = meterTile(gauge, s, c);
             return (
               <Tile
-                key={tile.label}
-                label={tile.label}
-                value={tile.value}
-                level={tile.level}
-                detail={tile.detail}
+                key={card.label}
+                label={card.label}
+                value={card.value}
+                level={card.level}
+                detail={card.detail}
+                selected={tile === at}
                 chart={series(
                   points,
                   meterSeries[gauge.id],
@@ -267,7 +295,7 @@ export function Home({
                         truncate
                         attributes={ui.dim}
                       >
-                        {`${keyLabel(c.keys.open)} opens ${row.item.laneId ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`}
+                        {`${keyLabel(c.keys.open)} opens ${row.item.target?.kind === "lane" ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`}
                       </Line>
                     </box>
                   )}

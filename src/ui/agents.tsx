@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { type Config, columns, validate } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
@@ -131,6 +131,13 @@ export function Agents({
   const [column, setColumn] = useState(0);
   const lanes = findLanes(s.lanes, query, c);
   const open = laneId === null ? null : s.lanes.find((l) => l.id === laneId);
+  // A lane opened from Home or from a card was never selected in this list,
+  // so going back would land on the first row. Follow the open lane instead.
+  useEffect(() => {
+    if (laneId === null) return;
+    const at = lanes.findIndex((lane) => lane.id === laneId);
+    if (at >= 0) setSelected(at);
+  }, [laneId, lanes]);
   const save = (value: Config) => {
     try {
       void onSave(validate(value)).catch(onError);

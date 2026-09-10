@@ -629,7 +629,10 @@ test("the copy key puts the selected card's command on the clipboard", async () 
     for (let i = 0; i < index; i++) await t.press("j");
     await t.press("y");
     expect(t.written).toEqual([osc52(command ?? "")]);
-    expect(t.frame()).toContain("Copied:");
+    // The notice names where the text went and what silence means, because
+    // OSC 52 is a request to the terminal that vsys cannot confirm.
+    expect(t.frame()).toContain("Copied to the system clipboard");
+    expect(t.frame()).toContain("OSC 52");
     // A card with no command copies nothing rather than an empty clipboard.
     const bare = items.findIndex((item) => item.command === undefined);
     expect(bare).toBeGreaterThanOrEqual(0);
@@ -1043,6 +1046,70 @@ test("a filtered Settings list opens the row the highlight is on", async () => {
   }
 });
 
+/** The row a screen marks as selected, without its marker. */
+function selectedRow(frame: string): string {
+  const line = frame.split("\n").find((row) => row.includes("▍"));
+  return (line ?? "").replace("▍", "").trim();
+}
+
+test("opening a concern lands on the row the card names", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const items = attention(s, c);
+  const t = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await t.press("1");
+    // The scratch card names /scratch and opens Storage on it.
+    const at = items.findIndex((item) => item.id === "scratch");
+    expect(at).toBeGreaterThan(-1);
+    for (let i = 0; i < at; i++) await t.press("j");
+    await t.press("enter");
+    expect(t.frame()).toContain("Written since boot");
+    expect(selectedRow(t.frame())).toContain("/scratch");
+  } finally {
+    await t.close();
+  }
+  // The memory-threshold card names a group and opens Resources on it.
+  const g = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await g.press("1");
+    const at = items.findIndex((item) => item.id === "memory-high");
+    for (let i = 0; i < at; i++) await g.press("j");
+    await g.press("enter");
+    expect(g.frame()).toContain("Groups");
+    expect(selectedRow(g.frame())).toContain("h");
+  } finally {
+    await g.close();
+  }
+});
+
+test("every screen's footer names only keys that screen handles", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a" })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 30 });
+  try {
+    const footer = () => t.frame().split("\n").at(-2) ?? "";
+    // The agent detail takes neither the list's find nor its table key, and
+    // it is a screen the reader can leave, so it says how.
+    await t.press("2");
+    expect(footer()).toContain("find");
+    expect(footer()).toContain("table");
+    await t.press("enter");
+    const detail = footer();
+    expect(detail).not.toContain("find");
+    expect(detail).not.toContain("table");
+    expect(detail).toContain("copy");
+    expect(detail).toContain("back");
+    // Back to the list restores the list's own keys.
+    await t.press("escape");
+    expect(footer()).toContain("find");
+  } finally {
+    await t.close();
+  }
+});
+
 test("a query that matches nothing leaves Enter with nothing to open", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -1136,6 +1203,127 @@ test("the device error counters are legible at a hundred columns", async () => {
     // only copy of it.
     expect(frame).toContain("corruption 3 (+1)");
     expect(frame.split("corruption 3").length - 1).toBe(1);
+  } finally {
+    await t.close();
+  }
+});
+
+test("leaving an agent returns to the list with that agent selected", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cpu: 9 }),
+    laneSnapshot({ id: "b", name: "lane-b", cpu: 5 }),
+    laneSnapshot({ id: "z", name: "lane-z", cpu: 1 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 120, height: 30 });
+  try {
+    await t.press("2");
+    await t.press("j");
+    await t.press("enter");
+    expect(t.frame()).toContain("lane-b");
+    await t.press("escape");
+    expect(selectedRow(t.frame())).toContain("lane-b");
+    // A lane opened from Home was never selected in the list, and going back
+    // still lands on it rather than on the first row.
+    await t.press("1");
+    await t.press("j");
+    await t.press("j");
+    await t.press("enter");
+    await t.press("escape");
+    expect(selectedRow(t.frame())).toContain("lane-z");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Home opens with the most urgent row selected", async () => {
+  const c = defaults();
+  const busy = everyCauseSnapshot(c);
+  const t = await mount(busy, c, { width: 160, height: 44 });
+  try {
+    await t.press("1");
+    // With a concern open, the selection is that concern, not an agent. The
+    // two columns share a row, so the line carries the agent heading too.
+    expect(selectedRow(t.frame())).toContain(attention(busy, c)[0].title);
+  } finally {
+    await t.close();
+  }
+  const calm = emptySnapshot();
+  calm.lanes = [
+    laneSnapshot({ id: "slow", name: "lane-slow", cpu: 1 }),
+    laneSnapshot({ id: "busy", name: "lane-busy", cpu: 90 }),
+  ];
+  const quiet = await mount(calm, c, { width: 160, height: 44 });
+  try {
+    await quiet.press("1");
+    expect(attention(calm, c)).toEqual([]);
+    expect(quiet.frame()).toContain("Healthy");
+    expect(selectedRow(quiet.frame())).toContain("lane-busy");
+  } finally {
+    await quiet.close();
+  }
+});
+
+test("the arrow keys reach the tiles and open the screen behind one", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a" })];
+  s.groups = [groupSnapshot()];
+  const rows: [number, string][] = [
+    // CPU and Memory break down under Resources, Disk under Storage, Builds
+    // under Builds.
+    [0, "Groups"],
+    [1, "Groups"],
+    [2, "Written since boot"],
+    [3, "Lanes building"],
+  ];
+  for (const [tile, lands] of rows) {
+    const t = await mount(s, c, { width: 160, height: 30 });
+    try {
+      await t.press("1");
+      for (let i = 0; i <= tile; i++) await t.press("right");
+      await t.press("enter");
+      expect({ tile, on: t.frame().includes(lands) }).toEqual({
+        tile,
+        on: true,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+  // Up or down leaves the tiles, so Enter opens a row again rather than a
+  // screen behind a tile.
+  const back = await mount(s, c, { width: 160, height: 30 });
+  try {
+    await back.press("1");
+    await back.press("right");
+    await back.press("down");
+    await back.press("enter");
+    expect(back.frame()).toContain("lane-a");
+    expect(back.frame()).not.toContain("Groups");
+  } finally {
+    await back.close();
+  }
+});
+
+test("a tile in a narrow pane marks its cut instead of stopping mid-word", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 12.3, cpuShare: 12.3 })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await t.press("2");
+    // The preview pane's tiles are a third of the screen, so their sentences
+    // do not fit; a cut with no mark reads as a sentence that simply ended.
+    const line = t
+      .frame()
+      .split("\n")
+      .find((row) => row.includes("of one core"));
+    expect(line).toBeDefined();
+    expect(line).toContain("…");
   } finally {
     await t.close();
   }

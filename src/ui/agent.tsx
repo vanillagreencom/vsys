@@ -112,23 +112,27 @@ export function AgentTiles({
   return (
     <Tiles width={width}>
       <Tile
+        key="CPU"
         label="CPU"
         value={share(lane.cpu)}
         level={laneLevel(lane, c)}
         detail={`of one core · ${share(lane.cpuShare)} of the machine`}
       />
       <Tile
+        key="Memory"
         label="Memory"
         value={amount(lane.rss, c)}
         level={lane.dangerous ? "danger" : "ok"}
         detail={`cache ${amount(lane.cache, c)} · swap ${amount(lane.swap, c)}`}
       />
       <Tile
+        key="Disk written"
         label="Disk written"
         value={rate(lane.writeRate, c)}
         detail={`read ${rate(lane.readRate, c)}`}
       />
       <Tile
+        key="Tasks"
         label="Tasks"
         value={String(lane.tasks)}
         level={lane.state === "blocked" ? "warn" : "ok"}

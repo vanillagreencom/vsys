@@ -3,7 +3,13 @@ import {
   useRenderer,
   useTerminalDimensions,
 } from "@opentui/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { Config } from "../config/config";
 import { keyName } from "../config/keys";
 import {
@@ -16,7 +22,7 @@ import type { Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
 import { Agents } from "./agents";
-import { attention, verdictItem } from "./attention";
+import { attention, type Target, verdictItem } from "./attention";
 import { Builds } from "./builds-screen";
 import {
   Confirm,
@@ -85,9 +91,15 @@ const stale: Record<
   unaddressable: (i) => `${i.scope} is no longer a scope vsys can address`,
   changed: (i) => `${i.scope} no longer runs the line you confirmed`,
 };
-const hints: Record<View, (c: Config) => [string, string][]> = {
+/**
+ * The keys each screen handles, so a footer never names one the screen
+ * ignores. The agent detail is its own entry because it takes none of the
+ * list's keys and adds a way back.
+ */
+const hints: Record<View | "Agent", (c: Config) => [string, string][]> = {
   Home: (c) => [
     ["↑↓", "select"],
+    ["←→", "tiles"],
     [c.keys.open, "open"],
     [c.keys.copy, "copy"],
   ],
@@ -96,6 +108,12 @@ const hints: Record<View, (c: Config) => [string, string][]> = {
     [c.keys.open, "open"],
     [c.keys.search, "find"],
     [c.keys.details, "table"],
+  ],
+  Agent: (c) => [
+    ["↑↓", "select"],
+    [c.keys.open, "open"],
+    [c.keys.copy, "copy"],
+    [c.keys.back, "back"],
   ],
   Resources: (c) => [
     ["↑↓", "select"],
@@ -140,6 +158,7 @@ export function App({
   const [pinned, setPinned] = useState<Snapshot | null>(null);
   const [windowIndex, setWindowIndex] = useState(0);
   const [help, setHelp] = useState(false);
+  const [target, setTarget] = useState<Target | null>(null);
   const [confirming, setConfirming] = useState<LaneIntent | null>(null);
   const [toast, setToast] = useState<{ text: string; level: Level } | null>(
     null,
@@ -181,13 +200,31 @@ export function App({
     setLaneId(id);
     setView("Agents");
   };
+  /**
+   * A card names one row; opening it lands on that row. The destination clears
+   * the target as it takes it, so opening the same card twice lands twice.
+   */
+  const openCard = (view: View, at: Target | undefined) => {
+    if (at?.kind === "lane") {
+      openLane(at.id);
+      return;
+    }
+    setPinned(null);
+    setTarget(at ?? null);
+    navigate(view);
+  };
+  const clearTarget = useCallback(() => setTarget(null), []);
   const copy = (command: string | undefined) => {
     if (command === undefined) {
       notice("This row has no command to copy", "warn");
       return;
     }
     output.write(osc52(command));
-    notice(`Copied: ${command}`);
+    // OSC 52 is a request to the terminal, not a write vsys can confirm, so
+    // the notice says where the text was sent and what silence means.
+    notice(
+      "Copied to the system clipboard through the terminal. A terminal that ignores OSC 52 pastes nothing; the command stays on screen.",
+    );
   };
   // vsys reads system state unless the reader turns write mode on, and an
   // action always addresses the live machine. Both refusals sit above the one
@@ -303,9 +340,9 @@ export function App({
         onCopy={copy}
         onOpen={(row) => {
           if (row.kind === "agent") openLane(row.lane.id);
-          else if (row.item.laneId) openLane(row.item.laneId);
-          else navigate(row.item.view);
+          else openCard(row.item.view, row.item.target);
         }}
+        onOpenView={navigate}
       />
     );
   else if (view === "Agents")
@@ -333,6 +370,8 @@ export function App({
         config={c}
         height={contentHeight}
         width={width}
+        target={target?.kind === "group" ? target.path : null}
+        onTargetUsed={clearTarget}
       />
     );
   else if (view === "Builds")
@@ -345,7 +384,15 @@ export function App({
       />
     );
   else if (view === "Storage")
-    content = <Storage snapshot={shown} config={c} width={width - 4} />;
+    content = (
+      <Storage
+        snapshot={shown}
+        config={c}
+        width={width - 4}
+        target={target?.kind === "path" ? target.path : null}
+        onTargetUsed={clearTarget}
+      />
+    );
   else if (view === "Timeline")
     content = (
       <Timeline
@@ -405,7 +452,10 @@ export function App({
           {content}
         </box>
         <Footer
-          hints={[...hints[view](c), [c.keys.help, "keys"]]}
+          hints={[
+            ...hints[view === "Agents" && laneId !== null ? "Agent" : view](c),
+            [c.keys.help, "keys"],
+          ]}
           status={status}
           statusColor={
             lead ? levelColor(lead.danger ? "danger" : "warn") : ui.ok

@@ -101,14 +101,16 @@ export function Builds({
   const topBuilds = Math.max(1, ...rows.map((r) => r.builds));
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
-      <Tiles>
+      <Tiles width={width}>
         <Tile
+          key="Compile and link"
           label="Compile and link"
           value={total.value}
           level={total.level}
           detail={total.detail}
         />
         <Tile
+          key="Cache hits"
           label="Cache hits"
           value={
             cache.available && cache.recent ? share(cache.recent.rate) : gap
@@ -121,17 +123,27 @@ export function Builds({
           }
         />
         <Tile
+          key="Make tokens"
           label="Make tokens"
           value={
             summary.jobservers.length
               ? summary.jobservers
-                  .map((j) => `${j.inUse} of ${j.total ?? gap}`)
+                  .map((j) =>
+                    j.total === null
+                      ? `${j.inUse} in use`
+                      : `${j.inUse} of ${j.total}`,
+                  )
                   .join(", ")
               : "no pool"
           }
           detail={
-            summary.jobservers.map((j) => j.fifo).join(", ") ||
-            "no make jobserver in use"
+            summary.jobservers.length
+              ? `${summary.jobservers.map((j) => j.fifo).join(", ")}${
+                  summary.jobservers.some((j) => j.total === null)
+                    ? " · pool size not readable from the fifo"
+                    : ""
+                }`
+              : "no make jobserver in use"
           }
         />
       </Tiles>
