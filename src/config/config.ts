@@ -47,6 +47,17 @@ export const nameParts = [
   "title",
   "workspace",
 ] as const;
+/**
+ * The values an enum setting may hold. The picker offers these and `validate`
+ * accepts these, so a value a reader can choose is a value that saves, and a
+ * new choice cannot reach the picker without also reaching the validator.
+ */
+export const choices: Record<string, readonly string[]> = {
+  laneNaming: ["worktree", "branch", "env"],
+  sparkline: ["braille", "block"],
+  units: ["binary", "decimal"],
+  sort: columns,
+};
 export const rules: Rule[] = [
   "unconfined",
   "memory-cap",
@@ -275,11 +286,7 @@ export function validate(value: unknown): Config {
     throw new Error(
       "Pressure thresholds must increase from amber to red and cannot exceed 100 percent",
     );
-  for (const [key, allowed] of Object.entries({
-    laneNaming: ["worktree", "branch", "env"],
-    sparkline: ["braille", "block"],
-    units: ["binary", "decimal"],
-  })) {
+  for (const [key, allowed] of Object.entries(choices)) {
     if (!allowed.includes(String(c[key as keyof Config])))
       throw new Error(`Invalid ${key}`);
   }
@@ -310,10 +317,9 @@ export function validate(value: unknown): Config {
   if (
     !c.laneEnv ||
     !c.columns.length ||
-    c.columns.some((x) => !columns.includes(x as (typeof columns)[number])) ||
-    !columns.includes(c.sort as (typeof columns)[number])
+    c.columns.some((x) => !columns.includes(x as (typeof columns)[number]))
   )
-    throw new Error("Invalid lane environment, columns or sort");
+    throw new Error("Invalid lane environment or columns");
   if (
     c.laneNameParts.some(
       (part) => !nameParts.includes(part as (typeof nameParts)[number]),

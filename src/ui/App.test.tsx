@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import type { Config } from "../config/config";
-import { defaults, validate } from "../config/config";
+import { choices, defaults, validate } from "../config/config";
 import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
@@ -24,6 +24,7 @@ import { osc52 } from "./clipboard";
 import { type HomeItem, homeItems, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
+import { settingItems } from "./settings-screen";
 import { Storage, volumesByDevice } from "./storage-screen";
 import { windows } from "./timeline-screen";
 
@@ -191,9 +192,11 @@ test("Settings edits a value in place and honours a changed quit binding", async
   try {
     await t.press("7");
     expect(t.frame()).toContain("Refresh interval");
-    // The unreadable-sources row comes first; the refresh interval is the
-    // last Display setting.
-    for (let i = 0; i < 6; i++) await t.press("down");
+    // The capability rows and the unreadable-sources row come before the
+    // settings, and the refresh interval is the last of the five Display
+    // settings above it.
+    const above = s.capabilities.length + 1 + 5;
+    for (let i = 0; i < above; i++) await t.press("down");
     await t.press("enter");
     expect(t.frame()).toContain("Enter saves");
     await act(async () => {
@@ -975,6 +978,184 @@ test("the help panel covers what it sits on, at any terminal size", async () => 
   }
   expect(widths.length).toBe(2);
   expect(widths[0]).toBe(widths[1]);
+});
+
+/**
+ * How far down a setting sits, from the same list the screen selects through.
+ * Counting rows in the frame would break on the first row that scrolls.
+ */
+function rowIndex(c: Config, s: Snapshot, key: string): number {
+  const at = settingItems(c, s.capabilities).findIndex(
+    (item) => item.kind === "setting" && item.key === key,
+  );
+  expect(at).toBeGreaterThan(-1);
+  return at;
+}
+/** Open Settings and put the selection on one setting's row. */
+async function onSetting(
+  t: Awaited<ReturnType<typeof mount>>,
+  c: Config,
+  s: Snapshot,
+  key: string,
+) {
+  await t.press("7");
+  const at = rowIndex(c, s, key);
+  for (let i = 0; i < at; i++) await t.press("down");
+}
+
+test("Enter on a boolean toggles it, with no editor and no grammar", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  let saved: Config | undefined;
+  const t = await mount(s, c, undefined, {
+    onSave: async (next) => {
+      saved = next;
+    },
+  });
+  try {
+    await onSetting(t, c, s, "persistence");
+    await t.press("enter");
+    expect(saved?.persistence).toBe(!c.persistence);
+    // The reader never sees a box asking them to type `true`.
+    expect(t.frame()).not.toContain("Enter saves");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Enter on an enum offers its words and saves the one chosen", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  let saved: Config | undefined;
+  const t = await mount(s, c, undefined, {
+    onSave: async (next) => {
+      saved = next;
+    },
+  });
+  try {
+    await onSetting(t, c, s, "units");
+    // The selected row explains itself until the list takes its place.
+    expect(t.frame()).toContain("Binary units count 1024 to the step");
+    await t.press("enter");
+    const list = t.frame();
+    expect(list).not.toContain("Binary units count 1024 to the step");
+    // The list offers exactly what the validator accepts, from one table.
+    for (const word of choices.units ?? []) expect(list).toContain(word);
+    await t.press("down");
+    await t.press("enter");
+    expect(saved?.units).toBe("decimal");
+    expect(saved?.units).not.toBe(c.units);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a list edits as text but reads one item per line", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  let saved: Config | undefined;
+  const t = await mount(s, c, undefined, {
+    onSave: async (next) => {
+      saved = next;
+    },
+  });
+  try {
+    await onSetting(t, c, s, "agentTools");
+    await t.press("enter");
+    const open = t.frame();
+    expect(open).toContain("Enter saves");
+    // Numbered lines, so a reader can count a list they cannot read in one row.
+    c.agentTools.forEach((tool, at) => {
+      expect(open).toContain(`${at + 1}. ${tool}`);
+    });
+    await act(async () => {
+      t.ui.mockInput.pressKey("END");
+      for (let i = 0; i < c.agentTools.length * 24; i++)
+        t.ui.mockInput.pressBackspace();
+    });
+    await act(async () => {
+      await t.ui.mockInput.typeText('["claude", "pi"]');
+    });
+    await t.ui.renderOnce();
+    // The items track the text as it is typed, not the value that was stored.
+    expect(t.frame()).toContain("2. pi");
+    await t.press("enter");
+    expect(saved?.agentTools).toEqual(["claude", "pi"]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a value the validator refuses is reported and never saved", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  let saves = 0;
+  const t = await mount(s, c, undefined, {
+    onSave: async () => {
+      saves++;
+    },
+  });
+  try {
+    await onSetting(t, c, s, "refreshMs");
+    await t.press("enter");
+    await act(async () => {
+      t.ui.mockInput.pressKey("END");
+      for (let i = 0; i < 8; i++) t.ui.mockInput.pressBackspace();
+    });
+    await act(async () => {
+      await t.ui.mockInput.typeText("0");
+    });
+    await t.press("enter");
+    expect(saves).toBe(0);
+    expect(t.frame()).toContain("Refresh interval must be between 100");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a missing capability wraps its reason and its source under the row", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "psi"
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: "/proc/pressure/cpu",
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  // Eighty columns is the width the issue names; the diagnostic is seventy-six
+  // characters, so it cannot reach the reader on one indented row.
+  const t = await mount(s, c, { width: 80, height: 30 });
+  try {
+    await t.press("7");
+    const at = settingItems(c, s.capabilities).findIndex(
+      (item) => item.kind === "capability" && item.id === "psi",
+    );
+    expect(at).toBeGreaterThan(-1);
+    // Unselected, the row carries the reason and nothing that would be cut.
+    expect(t.frame()).not.toContain("/proc/pressure/cpu");
+    for (let i = 0; i < at; i++) await t.press("down");
+    expect(selectedRow(t.frame())).toContain("Pressure stall information");
+    const lines = t.frame().split("\n");
+    const source = lines.findIndex((line) =>
+      line.includes("/proc/pressure/cpu"),
+    );
+    expect(source).toBeGreaterThan(-1);
+    // It runs onto a second line rather than being cut at the terminal edge,
+    // and the whole diagnostic is there to be read across the two.
+    expect(lines[source + 1]?.trim()).not.toBe("");
+    const joined = `${lines[source]} ${lines[source + 1]}`
+      // The scrollbar draws in the last column of every line.
+      .replace(/[^\x20-\x7e]/g, " ")
+      .replace(/\s+/g, " ");
+    expect(joined).toContain("ENOENT: no such file or directory");
+  } finally {
+    await t.close();
+  }
 });
 
 test("Settings filters by name and by the label the reader sees", async () => {
