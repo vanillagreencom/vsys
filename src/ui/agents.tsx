@@ -114,11 +114,25 @@ export const trendWidth = 12;
  * and a refresh must read none: the loaded set is keyed by lane and window,
  * so scrolling reads what scrolling revealed and nothing else.
  */
-/** What a trend read is an answer to: the store, the window and the bucket. */
+/**
+ * The moment a trend is read against and drawn against, which has to be one
+ * moment. The chart's columns are buckets of the window, so its shape cannot
+ * change until the newest bucket rolls over, and quantising to that boundary
+ * is what lets a sample cost no read. The drawn window has to be quantised the
+ * same way: left on the sample time it slides forward over a series that did
+ * not move, and every column it slides past draws as a gap. A gap in this
+ * dashboard means vsys could not read something, so an unquantised render
+ * makes the chart lie in the vocabulary the rest of the screen uses.
+ */
+export function trendEnd(end: number, windowMs: number): number {
+  const bucketMs = windowMs / trendWidth;
+  return Math.floor(end / bucketMs) * bucketMs;
+}
+/** What a trend read is an answer to: the store, the window and that moment. */
 interface Question {
   history: History;
   windowMs: number;
-  bucket: number;
+  at: number;
 }
 export function useLaneTrends(
   history: History,
@@ -127,24 +141,16 @@ export function useLaneTrends(
   windowMs: number,
 ): Map<string, LaneSample[]> {
   const [loaded, setLoaded] = useState(new Map<string, LaneSample[]>());
-  // The chart draws `trendWidth` buckets across the window, so the shape a row
-  // shows cannot change until the newest bucket rolls over. That boundary is
-  // the cadence the store is read on. Keying on the time would cost a read per
-  // visible row on every sample; keying on nothing but the lane and the window
-  // is what this did, and the window then never moved: the series stayed as it
-  // was first read while `end` advanced away from it, until the drawn window
-  // held almost none of it and the row was mostly gaps.
-  const bucketMs = windowMs / trendWidth;
-  const bucket = Math.floor(end / bucketMs);
-  // The read wants the newest time, but the time is not what triggers it, so
-  // it is read from a ref rather than from the effect's dependencies.
-  const endRef = useRef(end);
-  endRef.current = end;
+  // The one moment this reads against, and the one the caller draws against.
+  // Keying on the sample time would cost a read per visible row every second;
+  // keying on nothing but the lane and the window is what this did, and the
+  // window then never moved at all.
+  const at = trendEnd(end, windowMs);
   // What a read is an answer to. A read carries it and hands it back, so a
   // series that arrives after the question moved on is recognised rather than
   // stored: the only way into `loaded` takes one of these, so an unlabelled
   // series cannot be stored at all.
-  const wanted = useRef<Question>({ history, windowMs, bucket });
+  const wanted = useRef<Question>({ history, windowMs, at });
   // One judge for "has this series been asked for": the set of keys already
   // requested. It is a ref rather than state because a render between the ask
   // and the answer would otherwise see an empty cache and ask again, and it
@@ -164,12 +170,8 @@ export function useLaneTrends(
   const ids = lanes.map((lane) => lane.id).join("\u0000");
   useEffect(() => {
     const was = wanted.current;
-    if (
-      was.bucket !== bucket ||
-      was.windowMs !== windowMs ||
-      was.history !== history
-    ) {
-      wanted.current = { history, windowMs, bucket };
+    if (was.at !== at || was.windowMs !== windowMs || was.history !== history) {
+      wanted.current = { history, windowMs, at };
       // A rolled-over bucket, a resized window and a replaced store each make
       // a new answer for every row, so what was asked for under the old
       // question is not what is wanted now.
@@ -199,7 +201,7 @@ export function useLaneTrends(
       if (!mounted.current) return;
       const now = wanted.current;
       if (
-        answer.asked.bucket !== now.bucket ||
+        answer.asked.at !== now.at ||
         answer.asked.windowMs !== now.windowMs ||
         answer.asked.history !== now.history
       )
@@ -221,7 +223,7 @@ export function useLaneTrends(
         try {
           samples = await asked.history.laneWindow(
             id,
-            endRef.current,
+            asked.at,
             asked.windowMs,
           );
         } catch {
@@ -232,7 +234,7 @@ export function useLaneTrends(
         store({ asked, id, samples });
       })();
     }
-  }, [history, ids, windowMs, bucket]);
+  }, [history, ids, windowMs, at]);
   return loaded;
 }
 /**
@@ -551,7 +553,7 @@ export function Agents({
   const trend = (id: string) =>
     trendMarks(
       trends.get(`${id}\u0000${windowMs}`),
-      s.time,
+      trendEnd(s.time, windowMs),
       windowMs,
       c.sparkline,
     );

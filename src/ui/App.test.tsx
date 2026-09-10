@@ -17,7 +17,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { App, hints, Waiting } from "./App";
-import { findLanes, trendMarks, trendWidth } from "./agents";
+import { findLanes, trendEnd, trendMarks, trendWidth } from "./agents";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
@@ -3011,6 +3011,75 @@ test("a read from the previous bucket cannot overwrite the newer one", async () 
     const frame = t.frame();
     expect(frame).toContain(busy);
     expect(frame).not.toContain(quiet);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a sample inside a bucket does not slide the drawn window", async () => {
+  const c = defaults();
+  const bucketMs = windows[0] / trendWidth;
+  // A sample time sitting on a bucket boundary, so the whole of the next
+  // bucket is available to advance into without crossing out of it.
+  const base = 10 * windows[0];
+  const s = emptySnapshot(base);
+  s.lanes = [laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 })];
+  s.groups = [groupSnapshot()];
+  expect(trendEnd(base, windows[0])).toBe(base);
+  // One sample in the middle of every drawn column, so a row drawn against
+  // the moment this was read for has no gap anywhere in it.
+  const series: LaneSample[] = Array.from({ length: trendWidth }, (_, i) => ({
+    time: base - windows[0] + (i + 0.5) * bucketMs,
+    cpu: 50,
+    rss: null,
+    pressure: null,
+    memoryPressure: null,
+    ioPressure: null,
+  }));
+  const h = new History(c);
+  h.add(s);
+  // The store answers with the same samples however it is asked, so nothing
+  // the row draws can come from the data changing.
+  const ends: number[] = [];
+  h.laneWindow = async (_id: string, end: number) => {
+    ends.push(end);
+    return series;
+  };
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    // The list row, not the summary beside it: the marker names the row that
+    // carries the trend column.
+    const row = () =>
+      t
+        .frame()
+        .split("\n")
+        .find((l) => l.includes("▍")) ?? "";
+    const before = row();
+    expect(before).not.toBe("");
+    // The cell this series draws has no gap in it, and the row is drawing that
+    // cell. A fixture that already gapped could not show the difference.
+    const drawn = trendMarks(series, base, windows[0], c.sparkline);
+    expect(drawn).not.toContain("·");
+    expect(before).toContain(drawn);
+    // A sample lands inside the bucket, close to its far edge, which is where
+    // the drawn window would have slid past the newest sample the read holds.
+    // What the store holds has not moved: same series, and no second read.
+    const reads = ends.length;
+    const inside = base + bucketMs - 1000;
+    expect(trendEnd(inside, windows[0])).toBe(base);
+    await t.update({ ...s, time: inside });
+    expect(ends.length).toBe(reads);
+    // So the row cannot have changed. Drawn against the sample time its last
+    // column would hold no sample and draw as a gap, which in this dashboard
+    // is vsys saying it could not read something.
+    expect(row()).toBe(before);
+    // Crossing the boundary is where the row is allowed to move, and must: it
+    // is read again, against the new moment.
+    const over = base + bucketMs + 1000;
+    await t.update({ ...s, time: over });
+    expect(ends.length).toBe(reads + 1);
+    expect(ends[ends.length - 1]).toBe(trendEnd(over, windows[0]));
   } finally {
     await t.close();
   }
