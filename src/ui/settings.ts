@@ -305,10 +305,15 @@ export function capabilityLine(cap: Capability): string {
   return `${capabilityLabels[cap.id]}: not available${reason ? `: ${reason}` : ""} (${cap.source}: ${cap.detail})`;
 }
 
+/** `exportJson` reads as `Export json`: one word per camel hump, capitalised. */
+export function actionLabel(action: string): string {
+  const words = action.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 export function settingLabel(key: string): string {
   return (
     settingInfo[key]?.label ??
-    (key.startsWith("keys.") ? `Key: ${key.slice(5)}` : key)
+    (key.startsWith("keys.") ? actionLabel(key.slice(5)) : key)
   );
 }
 /** The sentence under the selected row; a key binding needs none. */

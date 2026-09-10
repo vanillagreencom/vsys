@@ -3,7 +3,13 @@ import {
   useRenderer,
   useTerminalDimensions,
 } from "@opentui/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { Config } from "../config/config";
 import { keyName } from "../config/keys";
 import {
@@ -16,7 +22,7 @@ import type { Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
 import { Agents } from "./agents";
-import { attention, verdictItem } from "./attention";
+import { attention, type Target, verdictItem } from "./attention";
 import { Builds } from "./builds-screen";
 import {
   Confirm,
@@ -85,9 +91,22 @@ const stale: Record<
   unaddressable: (i) => `${i.scope} is no longer a scope vsys can address`,
   changed: (i) => `${i.scope} no longer runs the line you confirmed`,
 };
-const hints: Record<View, (c: Config) => [string, string][]> = {
+/**
+ * The keys each screen handles, so a footer never names one the screen
+ * ignores. The agent detail is its own entry because it takes none of the
+ * list's keys and adds a way back.
+ */
+/**
+ * What each screen's footer offers. A screen names only keys it acts on,
+ * which `App.test.tsx` holds it to by pressing every one of them.
+ */
+export const hints: Record<
+  View | "Agent" | "AgentGone",
+  (c: Config) => [string, string][]
+> = {
   Home: (c) => [
     ["↑↓", "select"],
+    ["←→", "tiles"],
     [c.keys.open, "open"],
     [c.keys.copy, "copy"],
   ],
@@ -97,6 +116,18 @@ const hints: Record<View, (c: Config) => [string, string][]> = {
     [c.keys.search, "find"],
     [c.keys.details, "table"],
   ],
+  Agent: (c) => [
+    ["↑↓", "select"],
+    [c.keys.open, "open"],
+    [c.keys.copy, "copy"],
+    [c.keys.back, "back"],
+  ],
+  /**
+   * The agent that was open has left the sample. That screen is one sentence
+   * saying so, and it acts on Back and nothing else, so Back is all the
+   * footer offers.
+   */
+  AgentGone: (c) => [[c.keys.back, "back"]],
   Resources: (c) => [
     ["↑↓", "select"],
     [c.keys.details, "all groups"],
@@ -105,10 +136,10 @@ const hints: Record<View, (c: Config) => [string, string][]> = {
     ["↑↓", "select"],
     [c.keys.open, "processes"],
   ],
-  Storage: (c) => [
-    ["↑↓", "select"],
-    [c.keys.open, "details"],
-  ],
+  // A Storage row shows its detail under the selection, so moving the
+  // selection is the whole of what the reader does here and Enter has nothing
+  // to act on. A hint for it would be a promise the screen cannot keep.
+  Storage: () => [["↑↓", "select"]],
   Timeline: (c) => [
     ["←→", "time"],
     [c.keys.window, "window"],
@@ -140,6 +171,7 @@ export function App({
   const [pinned, setPinned] = useState<Snapshot | null>(null);
   const [windowIndex, setWindowIndex] = useState(0);
   const [help, setHelp] = useState(false);
+  const [target, setTarget] = useState<Target | null>(null);
   const [confirming, setConfirming] = useState<LaneIntent | null>(null);
   const [toast, setToast] = useState<{ text: string; level: Level } | null>(
     null,
@@ -149,8 +181,10 @@ export function App({
   const shown = pinned ?? snapshot;
   const issues = attention(snapshot, c);
   const points = history.window(snapshot.time, windows[windowIndex]);
-  const notice = (text: string, level: Level = "ok") =>
-    setToast({ text, level });
+  const notice = useCallback(
+    (text: string, level: Level = "ok") => setToast({ text, level }),
+    [],
+  );
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), toastMs);
@@ -181,13 +215,35 @@ export function App({
     setLaneId(id);
     setView("Agents");
   };
+  /**
+   * A card names one row; opening it lands on that row. The destination clears
+   * the target as it takes it, so opening the same card twice lands twice.
+   */
+  const openCard = (view: View, at: Target | undefined) => {
+    if (at?.kind === "lane") {
+      openLane(at.id);
+      return;
+    }
+    setPinned(null);
+    // A card naming no lane points at the list. An agent left open earlier
+    // would render its own detail instead, so the card would land on a screen
+    // it never named.
+    if (view === "Agents") setLaneId(null);
+    setTarget(at ?? null);
+    navigate(view);
+  };
+  const clearTarget = useCallback(() => setTarget(null), []);
   const copy = (command: string | undefined) => {
     if (command === undefined) {
       notice("This row has no command to copy", "warn");
       return;
     }
     output.write(osc52(command));
-    notice(`Copied: ${command}`);
+    // OSC 52 is a request to the terminal, not a write vsys can confirm, so
+    // the notice says where the text was sent and what silence means.
+    notice(
+      "Copied to the clipboard through the terminal. A terminal ignoring OSC 52 leaves the clipboard unchanged; the command stays on screen.",
+    );
   };
   // vsys reads system state unless the reader turns write mode on, and an
   // action always addresses the live machine. Both refusals sit above the one
@@ -303,9 +359,12 @@ export function App({
         onCopy={copy}
         onOpen={(row) => {
           if (row.kind === "agent") openLane(row.lane.id);
-          else if (row.item.laneId) openLane(row.item.laneId);
-          else navigate(row.item.view);
+          else openCard(row.item.view, row.item.target);
         }}
+        // A tile drills down into a screen, the same as a card does, so it
+        // goes through the same door: opening one on a pinned sample would
+        // show the pinned data beside a Home that is live.
+        onOpenView={(to) => openCard(to, undefined)}
       />
     );
   else if (view === "Agents")
@@ -333,6 +392,9 @@ export function App({
         config={c}
         height={contentHeight}
         width={width}
+        target={target?.kind === "group" ? target.path : null}
+        onTargetUsed={clearTarget}
+        onNotice={notice}
       />
     );
   else if (view === "Builds")
@@ -345,7 +407,16 @@ export function App({
       />
     );
   else if (view === "Storage")
-    content = <Storage snapshot={shown} config={c} width={width - 4} />;
+    content = (
+      <Storage
+        snapshot={shown}
+        config={c}
+        width={width - 4}
+        target={target?.kind === "path" ? target.path : null}
+        onTargetUsed={clearTarget}
+        onNotice={notice}
+      />
+    );
   else if (view === "Timeline")
     content = (
       <Timeline
@@ -371,6 +442,19 @@ export function App({
         onNotice={notice}
       />
     );
+  /**
+   * Which hint set the footer draws. A process exits and the agent a reader
+   * had open leaves the sample: what stays on screen is a sentence saying so,
+   * and it takes only Back. The reader is not moved to another agent's data,
+   * and the footer names no key that screen will not act on, which is the
+   * whole of what a hint set promises.
+   */
+  const hintView: keyof typeof hints =
+    view !== "Agents" || laneId === null
+      ? view
+      : shown.lanes.some((lane) => lane.id === laneId)
+        ? "Agent"
+        : "AgentGone";
   const lead = verdictItem(issues);
   const unread = new Set(snapshot.errors.map((e) => e.source)).size;
   const status = lead
@@ -405,7 +489,7 @@ export function App({
           {content}
         </box>
         <Footer
-          hints={[...hints[view](c), [c.keys.help, "keys"]]}
+          hints={[...hints[hintView](c), [c.keys.help, "keys"]]}
           status={status}
           statusColor={
             lead ? levelColor(lead.danger ? "danger" : "warn") : ui.ok

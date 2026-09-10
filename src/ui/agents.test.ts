@@ -1,8 +1,16 @@
 import { expect, test } from "bun:test";
-import { defaults } from "../config/config";
+import { columns, defaults } from "../config/config";
 import type { Level } from "../model/verdict";
 import { laneSnapshot } from "../test/fixture";
-import { findLanes, laneBadge, laneLevel } from "./agents";
+import {
+  columnLabels,
+  findLanes,
+  laneBadge,
+  laneLevel,
+  tableColumn,
+} from "./agents";
+import { cell, columnGap, headerText } from "./columns";
+import { laneValue } from "./format";
 
 test("search matches every naming field, case-insensitively, in the sort order", () => {
   const c = defaults();
@@ -57,4 +65,33 @@ test("a lane's badge names the worst thing about it, and its level follows the t
   ];
   for (const [pressure, level] of rows)
     expect(laneLevel(laneSnapshot({ pressure }), c)).toBe(level);
+});
+
+test("the table's heading and its rows are built from one column spec", () => {
+  const c = defaults();
+  const spec = c.columns.map(tableColumn);
+  // Every configurable column has a spec, derived from the settings contract
+  // rather than from a second list here.
+  expect(spec.length).toBe(c.columns.length);
+  for (const name of columns)
+    expect({ name, label: tableColumn(name).label }).toEqual({
+      name,
+      label: columnLabels[name] ?? name,
+    });
+  // A row occupies exactly the columns the heading does.
+  const lane = laneSnapshot({ name: "lane-a" });
+  const row = spec
+    .map((column, at) => cell(column, laneValue(lane, c.columns[at], c)))
+    .join(columnGap);
+  expect(row.length).toBe(headerText(spec).length);
+  // The numeric columns end where their headings end.
+  const cpu = c.columns.indexOf("cpu");
+  const before = spec
+    .slice(0, cpu)
+    .reduce((n, col) => n + col.width + columnGap.length, 0);
+  expect(row.slice(before, before + spec[cpu].width).trimStart()).toBe(
+    laneValue(lane, "cpu", c),
+  );
+  expect(spec[cpu].align).toBe("right");
+  expect(tableColumn("name").align).toBeUndefined();
 });

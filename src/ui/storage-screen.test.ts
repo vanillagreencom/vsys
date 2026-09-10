@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, volumeSnapshot } from "../test/fixture";
-import { storageItems, volumeLevel } from "./storage-screen";
+import {
+  itemPath,
+  storageItems,
+  volumeLevel,
+  volumesByDevice,
+} from "./storage-screen";
 
 test("Storage lists filesystems, then scrubs, then scratch directories, then sessions", () => {
   const s = emptySnapshot();
@@ -33,4 +38,28 @@ test("a filesystem is serious when read-only, when errors grow, or when space is
     expect(volumeLevel(volumeSnapshot("/m", overrides), c.freeFloor)).toBe(
       level,
     );
+});
+
+test("a device's mounts are listed together even when they arrive interleaved", () => {
+  const s = emptySnapshot();
+  // Two devices alternating in the sample. The rows are drawn grouped by
+  // device and the selection counts them as it draws them, so this list has
+  // to be grouped too. Snapshot order would put /b second, where the drawn
+  // second row is /c: the highlight would name one mount and the row under
+  // it would be another.
+  // Both the device and the filesystem id are named, so the grouping this
+  // asserts is the same one whichever of the two identifies a filesystem.
+  s.storage.volumes = [
+    volumeSnapshot("/a", { device: "/dev/one", fsid: "one" }),
+    volumeSnapshot("/b", { device: "/dev/two", fsid: "two" }),
+    volumeSnapshot("/c", { device: "/dev/one", fsid: "one" }),
+  ];
+  expect(storageItems(s).map(itemPath)).toEqual(["/a", "/c", "/b"]);
+  // And the rows are drawn in that same order, which is what makes the two
+  // agree rather than agreeing by coincidence.
+  expect(
+    volumesByDevice(s.storage.volumes).flatMap((group) =>
+      group.volumes.map((volume) => volume.mount),
+    ),
+  ).toEqual(["/a", "/c", "/b"]);
 });

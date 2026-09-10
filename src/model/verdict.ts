@@ -44,13 +44,30 @@ const causeOrder: Record<CauseId, number> = {
 export function causeRank(id: CauseId): number {
   return causeOrder[id];
 }
+/**
+ * Where a cause points the reader. This is not a subject: a cause about a
+ * machine-wide stall names the scope worth opening without claiming that scope
+ * is one of the things that went wrong. Nothing here ever becomes an alert.
+ */
+export type CauseAt =
+  | { kind: "lane"; id: string }
+  | { kind: "group"; path: string }
+  | { kind: "path"; path: string };
 export interface Cause {
   id: CauseId;
   level: Level;
-  /** Lanes, groups and paths this cause affects, in the order to show them. */
+  /**
+   * What this cause is about: the lanes, groups and paths it affects, in the
+   * order to show them. Each one becomes its own alert with its own duration,
+   * so two escaped lanes are two alerts. A row put here to make a card open on
+   * it opens an alert for it too, and the counts a reader watches on Home and
+   * on Timeline rise for something that never went wrong. Use `at` for that.
+   */
   lanes: Lane[];
   groups: Group[];
   paths: string[];
+  /** Where the card lands, when that row is not one of the subjects above. */
+  at?: CauseAt;
   /** The single biggest consumer behind the cause, empty when there is none. */
   consumer: string;
   /** The numbers behind the cause. Formatting belongs to the UI. */
@@ -232,18 +249,29 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     });
   }
   const swap = sliceSum(s.groups, c.desktopSlice, (g) => g.swap);
-  if (swap !== null && swap > c.swapFloor) {
-    const holder = topSwapHolder(s.groups, c);
+  /**
+   * The scope holding the most swap, resolved once because two causes name it
+   * — and they mean different things by it. The swap cause is about that
+   * scope, so it is one of its subjects. The memory-reclaim cause is about
+   * reclaim stalling tasks; the scope is only where to look, and naming it a
+   * subject there opened a second alert for something that had not itself
+   * gone wrong.
+   */
+  const swapHolder = topSwapHolder(s.groups, c);
+  const holderName = consumerName(swapHolder, s);
+  const holderAt: CauseAt | undefined = swapHolder
+    ? { kind: "group", path: swapHolder.path }
+    : undefined;
+  if (swap !== null && swap > c.swapFloor)
     add("desktop-swap", "danger", {
-      groups: holder ? [holder] : [],
-      consumer: consumerName(holder, s),
+      groups: swapHolder ? [swapHolder] : [],
+      consumer: holderName,
       values: {
         swap,
-        holder: holder?.swap ?? null,
+        holder: swapHolder?.swap ?? null,
         cache: sliceSum(s.groups, c.agentSlice, (g) => g.cache),
       },
     });
-  }
   const free = leastFree(s.storage.volumes);
   if (free && (free.free ?? 0) < c.freeFloor)
     add("free-space", "danger", {
@@ -269,7 +297,8 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (memoryFired)
     add("system-memory", "warn", {
       lanes: owned("memory"),
-      consumer: topSwapHolder(s.groups, c)?.name ?? "",
+      consumer: holderName,
+      at: holderAt,
       values: { some: memory },
     });
   if (cpuFired)

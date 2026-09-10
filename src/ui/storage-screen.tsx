@@ -25,9 +25,18 @@ export type StorageItem =
   | { kind: "volume"; volume: Volume }
   | { kind: "scrub"; path: string }
   | { kind: "scratch"; scratch: Scratch; session: boolean };
+/** The path each selectable row stands for, which a card can name. */
+export function itemPath(item: StorageItem): string {
+  if (item.kind === "volume") return item.volume.mount;
+  return item.kind === "scrub" ? item.path : item.scratch.path;
+}
 export function storageItems(s: Snapshot): StorageItem[] {
   return [
-    ...s.storage.volumes.map((volume) => ({ kind: "volume", volume }) as const),
+    // Grouped by device, because that is the order the rows are drawn in and
+    // the selection counts them as it draws them.
+    ...volumesByDevice(s.storage.volumes).flatMap((group) =>
+      group.volumes.map((volume) => ({ kind: "volume", volume }) as const),
+    ),
     ...s.storage.scrubs.map(
       (scrub) => ({ kind: "scrub", path: scrub.path }) as const,
     ),
@@ -91,10 +100,17 @@ export function Storage({
   snapshot: s,
   config: c,
   width,
+  target,
+  onTargetUsed,
+  onNotice,
 }: {
   snapshot: Snapshot;
   config: Config;
   width: number;
+  /** The mount, report or directory a card asked this screen to land on. */
+  target: string | null;
+  onTargetUsed: () => void;
+  onNotice: (text: string, level: Level) => void;
 }) {
   const [selected, setSelected] = useState(0);
   const items = storageItems(s);
@@ -102,6 +118,19 @@ export function Storage({
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`storage-${selected}`);
   }, [selected]);
+  // A card names a row and this lands on it. The row is found before the
+  // request is acknowledged, because a collector refresh between the keypress
+  // and this effect can remove the mount or directory it named. Acknowledging
+  // first dropped the request in silence, leaving a screen that looks like the
+  // reader never pressed anything. The request is still consumed either way,
+  // so opening the same card twice lands twice.
+  useEffect(() => {
+    if (target === null) return;
+    const at = storageItems(s).findIndex((item) => itemPath(item) === target);
+    if (at >= 0) setSelected(at);
+    else onNotice(`${target} is no longer in the sample`, "warn");
+    onTargetUsed();
+  }, [target, onTargetUsed, onNotice, s]);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setSelected((i) => nextDown(items.length, i));

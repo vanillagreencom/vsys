@@ -369,3 +369,30 @@ test("two lanes sharing a display name keep separate identities", () => {
   expect(started2.map((e) => e.subject)).toEqual(["kendex", "kendex"]);
   expect(started2.map((e) => e.subjectId)).toEqual(["a.scope", "b.scope"]);
 });
+
+test("memory reclaim alerts one per stalled lane, not one for the scope it points at", () => {
+  const log = started();
+  const s = emptySnapshot(2000);
+  s.system.pressure = { memory: { some: 80, full: 0, total: 0 } };
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", memoryPressure: 40 }),
+    laneSnapshot({ id: "b", name: "lane-b", memoryPressure: 30 }),
+  ];
+  // A desktop scope holding swap. The reclaim cause names it as where to
+  // look; it is not one of the things that stalled.
+  s.groups = [
+    groupSnapshot({
+      path: "app.slice/gnome.scope",
+      name: "gnome.scope",
+      swap: 992,
+    }),
+  ];
+  const opened = log
+    .advance(s, c)
+    .filter((e) => e.kind === "alert-open" && e.cause === "system-memory");
+  // One alert per lane waiting on memory, and none for the scope. An alert
+  // for it would raise the counts the reader watches on Home and on Timeline
+  // for something that had not itself gone wrong, and would churn them every
+  // time the top holder changed.
+  expect(opened.map((e) => e.subjectId).sort()).toEqual(["a", "b"]);
+});

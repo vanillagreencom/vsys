@@ -15,6 +15,16 @@ import {
 } from "./format";
 import { capabilityReason } from "./settings";
 
+/**
+ * The row the card's screen should land on. A card names one thing; opening it
+ * and leaving the reader to find that thing again on the next screen wastes
+ * the naming.
+ */
+export type Target =
+  | { kind: "lane"; id: string }
+  | { kind: "group"; path: string }
+  | { kind: "path"; path: string }
+  | { kind: "time"; at: number };
 export interface Attention {
   /** One identifier per cause. Two lanes with one cause share one card. */
   id: string;
@@ -27,7 +37,8 @@ export interface Attention {
   /** Read-only text to copy, built from configured names. */
   command?: string;
   view: "Agents" | "Storage" | "Resources" | "Builds";
-  laneId?: string;
+  /** Absent when the card names no single row, such as a machine-wide stall. */
+  target?: Target;
   danger: boolean;
   /** Housekeeping cards are never the verdict for the machine. */
   verdictWorthy: boolean;
@@ -49,7 +60,19 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
   const n = cause.lanes.length;
   const names = list(cause.lanes.map((l) => l.name));
   const mounts = list(cause.paths);
-  const laneId = n === 1 ? cause.lanes[0].id : undefined;
+  const lane: Target | undefined =
+    n === 1 ? { kind: "lane", id: cause.lanes[0].id } : undefined;
+  // Where a card whose row is a group lands. A cause states `at` when the row
+  // to open is not one of the things it affects; otherwise the first affected
+  // group is that row.
+  const group: Target | undefined =
+    cause.at ??
+    (cause.groups[0]
+      ? { kind: "group", path: cause.groups[0].path }
+      : undefined);
+  const first: Target | undefined = cause.paths[0]
+    ? { kind: "path", path: cause.paths[0] }
+    : undefined;
   const paths = cause.paths.length;
   switch (cause.id) {
     case "unconfined": {
@@ -74,7 +97,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
           cause.lanes[0].tool || "AGENT",
         ]),
         view: "Agents",
-        laneId,
+        target: lane,
       };
     }
     case "read-only":
@@ -84,6 +107,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: "Programs cannot save changes on these mounts.",
         next: "Open Storage, then check the kernel log for the error that forced the mount read-only.",
         view: "Storage",
+        target: first,
       };
     case "device-errors":
       return {
@@ -92,6 +116,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: `Error counters on ${cause.consumer} increased since the previous sample.`,
         next: "Open Storage and read the per-device counters before writing more data to these devices.",
         view: "Storage",
+        target: first,
       };
     case "disk": {
       // The first lane is the writer's own only when the writer resolved to one.
@@ -106,12 +131,16 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         next: writer
           ? "Lower the build job count for that lane until the stall percentage falls."
           : "Open Resources and find what is writing in that scope, then reduce its work.",
-        command: shellLine([
-          "cat",
-          `${c.cgroupRoot}/${cause.groups[0]?.path}/io.stat`,
-        ]),
+        // No resolved group is no path, and a command naming an unresolved
+        // path is one a reader would copy and run against nothing.
+        command: cause.groups[0]
+          ? shellLine([
+              "cat",
+              `${c.cgroupRoot}/${cause.groups[0].path}/io.stat`,
+            ])
+          : undefined,
         view: writer ? "Agents" : "Resources",
-        laneId: writer?.id,
+        target: writer ? { kind: "lane", id: writer.id } : group,
       };
     }
     case "desktop-swap":
@@ -126,6 +155,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
           `${c.cgroupRoot}/${c.agentSlice}/memory.stat`,
         ]),
         view: "Resources",
+        target: group,
       };
     case "free-space":
       return {
@@ -134,6 +164,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: `Free space is below the configured floor of ${b(c.freeFloor)}.`,
         next: "Open Storage and remove build output or scratch data from that filesystem.",
         view: "Storage",
+        target: cause.consumer
+          ? { kind: "path", path: cause.consumer }
+          : undefined,
       };
     case "memory-cap":
       return {
@@ -150,7 +183,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
           "MemoryMax",
         ]),
         view: "Agents",
-        laneId,
+        target: lane,
       };
     case "stalls":
       return {
@@ -159,7 +192,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: `Highest stall share ${percent(v.worst)} of the recent window.`,
         next: "Open Agents and compare the CPU, memory and I/O pressure columns to find which resource is short.",
         view: "Agents",
-        laneId,
+        target: lane,
       };
     case "system-memory":
       return {
@@ -168,6 +201,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: `${cause.consumer ? `${cause.consumer} holds the most swap.` : "No scope holds swap yet, so reclaim is dropping page cache."}${n ? ` Waiting on memory: ${names}.` : ""}`,
         next: "Open Resources and reduce the work in the group with the largest memory use.",
         view: "Resources",
+        target: group,
       };
     case "system-cpu":
       return {
@@ -185,6 +219,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: "Memory reclaim can slow every task in these groups.",
         next: "Open Resources and raise memory.high, or reduce the work running there.",
         view: "Resources",
+        target: group,
       };
     }
     case "scrub":
@@ -194,6 +229,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: mounts,
         next: "Open Storage and read the scrub report.",
         view: "Storage",
+        target: first,
       };
     case "scratch":
       return {
@@ -202,6 +238,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         detail: `Largest ${b(v.largest)} against a quota of ${b(v.quota)}.`,
         next: "Open Storage and remove the scratch directories that finished work no longer needs.",
         view: "Storage",
+        target: first,
       };
   }
 }

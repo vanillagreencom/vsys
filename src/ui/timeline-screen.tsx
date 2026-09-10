@@ -7,6 +7,7 @@ import { fit } from "./columns";
 import {
   bucketPeaks,
   bytes,
+  gap,
   percent,
   spanLabel,
   sparkline,
@@ -15,7 +16,17 @@ import {
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, readingWeight, ui } from "./theme";
 import { eventParts } from "./timeline";
-import { Chart, Empty, gutter, Line, Section, Sparkline } from "./widgets";
+import {
+  Chart,
+  Empty,
+  gutter,
+  Line,
+  Section,
+  Sparkline,
+  Tile,
+  Tiles,
+  tilesHeight,
+} from "./widgets";
 
 /** The windows the reader can step through, shortest first. */
 export const windows = [300000, 900000, 3600000, 21600000, 86400000];
@@ -161,13 +172,17 @@ export function Timeline({
     ["Escaped", "unconfined", String, ui.warn],
     ["Corruption", "corruption", String, ui.danger],
   ] as const;
+  // The window row and its blank, two three-row charts with their titles, the
+  // marker strip and the axis, the cursor readings and the section heading.
+  // With no sample under the cursor those readings are one line, not a wrapped
+  // tile block: budgeting the block on a short first-run Timeline dropped the
+  // sparkline rows and left the space they would have taken empty.
+  const cursorHeight = selected ? tilesHeight(rows.length, width - 4, 2) : 1;
+  const fixed = 2 + 4 + 4 + 3 + cursorHeight + 1;
   // A short terminal keeps the two charts and the change list, and drops the
-  // sparkline rows, which the At-cursor line still summarises.
-  const short = height < 2 + 4 + 4 + rows.length + 3 + 2 + 3;
-  const listHeight = Math.max(
-    3,
-    height - (2 + 4 + 4 + (short ? 0 : rows.length) + 3 + 2),
-  );
+  // sparkline rows, which the cursor tiles still summarise.
+  const short = height < fixed + rows.length + 3;
+  const listHeight = Math.max(3, height - (fixed + (short ? 0 : rows.length)));
   const visible = changes.slice(0, listHeight);
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
@@ -248,17 +263,19 @@ export function Timeline({
           {`${" ".repeat(gutter)}${new Date(start).toLocaleTimeString()}${" ".repeat(Math.max(1, chartWidth - 22))}${new Date(s.time).toLocaleTimeString()}`}
         </Line>
       </box>
-      <Line height={1} flexShrink={0} truncate>
-        <span attributes={ui.dim}>{fit("At cursor", gutter)}</span>
-        {selected
-          ? rows
-              .map(
-                ([label, key, format]) =>
-                  `${label.toLowerCase()} ${value(key, format) || "not available"}`,
-              )
-              .join(" · ")
-          : "no sample"}
-      </Line>
+      {/* Six readings joined by dots is a run the reader has to parse; one
+          tile each names the quantity above its own number. */}
+      {selected ? (
+        <Tiles width={width - 4}>
+          {rows.map(([label, key, format]) => (
+            <Tile key={key} label={label} value={value(key, format) || gap} />
+          ))}
+        </Tiles>
+      ) : (
+        <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
+          No sample under the cursor.
+        </Line>
+      )}
       <Section
         title="What changed"
         width={width - 4}

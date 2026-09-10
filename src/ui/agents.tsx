@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { type Config, columns, validate } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
@@ -8,7 +8,7 @@ import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
 import { Agent, AgentSummary } from "./agent";
 import { narrowWidth, wideWidth } from "./chrome";
-import { type Column, cell, columnGap, columnsWidth, fit } from "./columns";
+import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import { amount, blockedText, laneValue, share, sortLanes } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, ui } from "./theme";
@@ -45,7 +45,8 @@ export const columnLabels: Record<string, string> = {
   sccache: "sccache",
   blocked: "Blocked",
 };
-const widths: Record<string, number> = {
+/** Table columns wider than the default, because their values are names. */
+const wideColumns: Record<string, number> = {
   name: 26,
   account: 14,
   cwd: 30,
@@ -53,7 +54,47 @@ const widths: Record<string, number> = {
   tool: 10,
   cgroup: 30,
 };
-const columnWidth = (column: string) => widths[column] ?? 12;
+/** A configurable column whose Lane field holds a number. */
+type NumericColumn = {
+  [K in (typeof columns)[number]]: NonNullable<Lane[K]> extends number
+    ? K
+    : never;
+}[(typeof columns)[number]];
+/**
+ * Table columns whose values are numbers, which read down their last digit.
+ * The names are still written out, because a type is not a value, but the
+ * type is derived from `Lane` and requires exactly the numeric fields among
+ * the configurable columns: one missing or one too many is a compile error.
+ * A plain list is what left `cache`, `readRate`, `writeRate`, `sccache` and
+ * `blocked` aligned left beside their neighbours.
+ */
+const numericColumns: Record<NumericColumn, true> = {
+  cpu: true,
+  pressure: true,
+  rss: true,
+  swap: true,
+  tasks: true,
+  rustc: true,
+  cargo: true,
+  tests: true,
+  age: true,
+  cache: true,
+  readRate: true,
+  writeRate: true,
+  sccache: true,
+  blocked: true,
+};
+/**
+ * One table column, from the same spec the list rows read. The heading and
+ * the row under it are built from this and cannot drift apart.
+ */
+export function tableColumn(name: string): Column {
+  return {
+    label: columnLabels[name] ?? name,
+    width: wideColumns[name] ?? 12,
+    align: Object.hasOwn(numericColumns, name) ? "right" : undefined,
+  };
+}
 /** The lanes whose text matches the query, in the configured order. */
 export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
   const q = query.toLowerCase();
@@ -131,6 +172,23 @@ export function Agents({
   const [column, setColumn] = useState(0);
   const lanes = findLanes(s.lanes, query, c);
   const open = laneId === null ? null : s.lanes.find((l) => l.id === laneId);
+  // A lane opened from Home or from a card was never selected in this list,
+  // so going back would land on the first row. Follow the open lane instead.
+  useEffect(() => {
+    if (laneId === null) return;
+    const at = lanes.findIndex((lane) => lane.id === laneId);
+    if (at >= 0) {
+      setSelected(at);
+      return;
+    }
+    // The lane is not in this list. It cannot be a filter hiding it: this
+    // screen unmounts when the reader leaves it, so a query cannot outlive
+    // the screen, and every route that opens a lane from inside the list
+    // picks a row the list is already showing. What is left is a lane that
+    // has exited, so hold a row that exists rather than an index past the end
+    // of the list, which highlights nothing and opens nothing.
+    setSelected((i) => Math.min(i, Math.max(0, lanes.length - 1)));
+  }, [laneId, lanes]);
   const save = (value: Config) => {
     try {
       void onSave(validate(value)).catch(onError);
@@ -300,6 +358,8 @@ export function Agents({
     },
   ];
   const [nameColumn] = laneColumns;
+  // The table's own columns, read by its heading and by every row in it.
+  const tableColumns = c.columns.map(tableColumn);
   const laneColumn = (label: string): Column => {
     const found = laneColumns.find((x) => x.label === label);
     if (!found) throw new Error(`No lane column named ${label}`);
@@ -349,29 +409,47 @@ export function Agents({
             contentOptions={{ flexShrink: 0 }}
           >
             <box flexDirection="column" flexShrink={0}>
+              {/* One cell per column so a click sorts it, spaced by the gap
+                  the rows under it are joined with. */}
               <box height={1} flexShrink={0} flexDirection="row">
+                {/* The marker column sits outside the gapped cells, because a
+                    row draws its marker with no gap after it. */}
                 <Line width={1} height={1}>
                   {" "}
                 </Line>
-                {c.columns.map((name) => (
-                  <Line
-                    key={name}
-                    width={columnWidth(name)}
-                    height={1}
-                    flexShrink={0}
-                    truncate
-                    attributes={c.sort === name ? ui.bold : ui.dim}
-                    onMouseDown={() =>
-                      save({
-                        ...c,
-                        sort: name,
-                        descending: c.sort === name ? !c.descending : true,
-                      })
-                    }
-                  >
-                    {`${columnLabels[name] ?? name}${c.sort === name ? (c.descending ? " ↓" : " ↑") : ""}`}
-                  </Line>
-                ))}
+                <box
+                  height={1}
+                  flexShrink={0}
+                  flexDirection="row"
+                  gap={columnGap.length}
+                >
+                  {tableColumns.map((column, at) => {
+                    const name = c.columns[at];
+                    const sorted = c.sort === name;
+                    return (
+                      <Line
+                        key={name}
+                        width={column.width}
+                        height={1}
+                        flexShrink={0}
+                        truncate
+                        attributes={sorted ? ui.bold : ui.dim}
+                        onMouseDown={() =>
+                          save({
+                            ...c,
+                            sort: name,
+                            descending: sorted ? !c.descending : true,
+                          })
+                        }
+                      >
+                        {cell(
+                          column,
+                          `${column.label}${sorted ? (c.descending ? " ↓" : " ↑") : ""}`,
+                        )}
+                      </Line>
+                    );
+                  })}
+                </box>
               </box>
               <List
                 items={lanes}
@@ -388,14 +466,11 @@ export function Agents({
                       onOpen(lane.id);
                     }}
                   >
-                    {c.columns
-                      .map((name) =>
-                        fit(
-                          safe(laneValue(lane, name, c)),
-                          columnWidth(name) - 1,
-                        ),
+                    {tableColumns
+                      .map((column, at) =>
+                        cell(column, safe(laneValue(lane, c.columns[at], c))),
                       )
-                      .join(" ")}
+                      .join(columnGap)}
                   </Row>
                 )}
               />

@@ -17,7 +17,22 @@ test("every stored setting shows under a name a reader can act on", () => {
   expect(stored.filter((key) => settingLabel(key) === key)).toEqual([]);
   expect(stored.filter((key) => settingHelp(key) === "")).toEqual([]);
   expect([...Object.keys(settingInfo)].sort()).toEqual([...stored].sort());
-  expect(settingLabel("keys.quit")).toBe("Key: quit");
+  // Inside a section already titled Keys, a `Key:` prefix on every row is
+  // noise; the action's own name is what tells the rows apart.
+  const bindings: [string, string][] = [
+    ["quit", "Quit"],
+    ["home", "Home"],
+    ["exportJson", "Export json"],
+    ["exportMarkdown", "Export markdown"],
+    ["previous", "Previous"],
+  ];
+  for (const [action, label] of bindings)
+    expect({ action, label: settingLabel(`keys.${action}`) }).toEqual({
+      action,
+      label,
+    });
+  for (const action of Object.keys(defaults().keys))
+    expect(settingLabel(`keys.${action}`)).not.toContain("Key:");
   expect(settingHelp("keys.quit")).toBe("");
 });
 
