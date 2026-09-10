@@ -206,6 +206,7 @@ export function Help({ config: c }: { config: Config }) {
         [k.open, "open the selection"],
         [k.back, "go back"],
         [`${k.next} ${k.previous}`, "next and previous tab"],
+        [k.hold, "hold a list's row order"],
       ],
     ],
     [

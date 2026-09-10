@@ -36,6 +36,8 @@ import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Chart,
+  Detail,
+  Disclosure,
   Empty,
   Field,
   gutter,
@@ -555,19 +557,14 @@ export function Agent({
               flexShrink={0}
             >
               <Row selected={selected === i} onOpen={() => toggle(row.name)}>
-                <span fg={ui.accent}>{open.has(row.name) ? "▾ " : "▸ "}</span>
-                {row.name}
-                {count(row.name) !== undefined && (
-                  <span attributes={ui.dim}>{`  ${count(row.name)}`}</span>
-                )}
+                <Disclosure
+                  open={open.has(row.name)}
+                  name={row.name}
+                  count={count(row.name)}
+                />
               </Row>
               {open.has(row.name) && (
-                <box
-                  flexDirection="column"
-                  flexShrink={0}
-                  paddingLeft={3}
-                  paddingBottom={1}
-                >
+                <Detail>
                   {row.name === "Processes" && (
                     <>
                       <Line height={1} truncate attributes={ui.dim}>
@@ -702,7 +699,7 @@ export function Agent({
                           : `Write mode is off · ${keyLabel(c.keys.copy)} copies the selected command`}
                       </Line>
                     ))}
-                </box>
+                </Detail>
               )}
             </box>
           ),

@@ -99,3 +99,10 @@ export function selectedRow(frame: string): string {
   const line = frame.split("\n").find((row) => row.includes("▍"));
   return (line ?? "").replace("▍", "").trim();
 }
+
+/**
+ * A line drawn as a child of the row above it: the rule at its left, then the
+ * indent, then its text. An indent alone reads as a new top-level line, which
+ * is the whole reason the rule exists.
+ */
+export const isChildLine = (line: string): boolean => / │ +\S/.test(line);

@@ -114,8 +114,9 @@ export const hints: Record<
 > = {
   Home: (c) => [
     ["↑↓", "select"],
-    ["←→", "tiles"],
+    ["←→", "region"],
     [c.keys.open, "open"],
+    [c.keys.hold, "hold order"],
     [c.keys.copy, "copy"],
   ],
   Agents: (c) => [

@@ -21,7 +21,15 @@ import {
   settingLabel,
 } from "./settings";
 import { scrollbar, ui } from "./theme";
-import { Detail, Empty, Line, nextDown, Row, Section } from "./widgets";
+import {
+  Detail,
+  Disclosure,
+  Empty,
+  Line,
+  nextDown,
+  Row,
+  Section,
+} from "./widgets";
 
 /**
  * A selectable line on Settings: a probed capability, a stored value, or the
@@ -472,7 +480,14 @@ export function Settings({
                   <span fg={cap.available ? ui.ok : ui.warn}>
                     {cap.available ? "● " : "○ "}
                   </span>
-                  {fit(capabilityLabels[cap.id], 42)}
+                  {cap.available ? (
+                    fit(capabilityLabels[cap.id], 42)
+                  ) : (
+                    <Disclosure
+                      open={i === selected}
+                      name={fit(capabilityLabels[cap.id], 40)}
+                    />
+                  )}
                   <span attributes={ui.dim}>
                     {cap.available ? "available" : safe(capabilityReason(cap))}
                   </span>
@@ -506,10 +521,15 @@ export function Settings({
                     color={sources.length ? ui.warn : undefined}
                     onOpen={() => setSourcesOpen((v) => !v)}
                   >
-                    <span fg={ui.accent}>{sourcesOpen ? "▾ " : "▸ "}</span>
-                    {sources.length
-                      ? `${sources.length} ${sources.length === 1 ? "source" : "sources"} vsys cannot read`
-                      : "Every source was read"}
+                    <Disclosure
+                      open={sourcesOpen}
+                      name={
+                        sources.length
+                          ? "Sources vsys cannot read"
+                          : "Every source was read"
+                      }
+                      count={sources.length || undefined}
+                    />
                   </Row>
                 </box>
                 {sourcesOpen && (
