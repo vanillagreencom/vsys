@@ -11,6 +11,7 @@ import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
+  Detail,
   Empty,
   Field,
   Line,
@@ -397,14 +398,11 @@ export function Storage({
                 </span>
               </Row>
               {i === selected && (
-                <Line
-                  flexShrink={0}
-                  wrapMode="word"
-                  paddingLeft={2}
-                  attributes={ui.dim}
-                >
-                  {safe(scrub.text)}
-                </Line>
+                <Detail indent={2}>
+                  <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                    {safe(scrub.text)}
+                  </Line>
+                </Detail>
               )}
             </box>
           );

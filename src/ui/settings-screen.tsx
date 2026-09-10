@@ -21,7 +21,7 @@ import {
   settingLabel,
 } from "./settings";
 import { scrollbar, ui } from "./theme";
-import { Empty, Line, nextDown, Row, Section } from "./widgets";
+import { Detail, Empty, Line, nextDown, Row, Section } from "./widgets";
 
 /**
  * A selectable line on Settings: a probed capability, a stored value, or the
@@ -104,25 +104,45 @@ export function Settings({
   const twoColumns = width >= wideWidth && !editing && !picking;
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
-  // Opening the editor collapses two columns into one, so a right-column row
-  // moves below the whole left column and the editor can open out of view.
-  // Two things follow. The scroll runs when the layout changes, not only when
-  // the selection does. And it runs twice: the scroll box measures the row
-  // where it currently sits, so a move within an unchanged layout lands at
-  // once, while a move the layout itself made is measured again after the new
-  // layout has been drawn.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the layout is a re-run trigger here, not a value the effect reads
+  // Moving the selection brings the row into view; opening something under it
+  // brings the whole block, because an editor the reader cannot see is an
+  // editor they cannot use. Scrolling to the block while merely walking the
+  // list is what pushes the row itself off the top edge.
+  const opened = editing || picking !== null || sourcesOpen;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the column count is a re-run trigger here, not a value the effect reads
   useEffect(() => {
-    // While a picker is open the row the reader is moving is one of its
-    // options, not the setting it hangs under. `sort` offers more options than
-    // a short terminal has rows, so pointing this at the setting left every
-    // choice below the fold unreachable except blind.
-    const id = picking ? `choice-${choice}` : `setting-${selected}`;
-    const into = () => scroller.current?.scrollChildIntoView(id);
+    const box = scroller.current;
+    if (!box) return;
+    if (picking) {
+      // A picker is a list inside a row: what the reader is moving is one of
+      // its options. Pointed at the setting instead, every option below the
+      // fold could only be chosen blind.
+      const onto = () => box.scrollChildIntoView(`choice-${choice}`);
+      onto();
+      const waiting = setTimeout(onto, 0);
+      return () => clearTimeout(waiting);
+    }
+    if (!opened) {
+      // Walking the list moves the row into view and nothing else. Scrolling
+      // to the block it heads is what used to push the row off the top edge
+      // the moment the block grew a line.
+      box.scrollChildIntoView(`setting-${selected}`);
+      return;
+    }
+    // Something opened under the row, and its height is not laid out yet, so
+    // there is nothing to scroll into view. The row goes near the top instead
+    // and the viewport below it is left for whatever it opened.
+    // Opening also collapses two columns into one above the stated width, and
+    // the row has not moved yet on this pass, so the measurement is taken
+    // again once the new layout has been drawn.
+    const into = () => {
+      const row = box.content.findDescendantById(`setting-${selected}`);
+      if (row) box.scrollBy(row.y - box.viewport.y - 1);
+    };
     into();
     const pending = setTimeout(into, 0);
     return () => clearTimeout(pending);
-  }, [selected, twoColumns, editing, picking, choice]);
+  }, [selected, opened, twoColumns, picking, choice]);
   /**
    * The one place the selection follows the query. Three paths change what the
    * filter shows — typing in the box, opening it on a query already there, and
@@ -242,10 +262,15 @@ export function Settings({
       return true;
     }
     if (name === c.keys.down || name === "down") {
+      // The arrow moves the selection and nothing else. Without this the
+      // focused scrollbox scrolls the viewport as well, and the row the reader
+      // is standing on slides off the top edge.
+      key.preventDefault();
       setSelected((i) => nextDown(items.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {
+      key.preventDefault();
       setSelected((i) => Math.max(0, i - 1));
       return true;
     }
@@ -310,23 +335,22 @@ export function Settings({
     const i = settingIndex(key);
     const help = settingHelp(key);
     return (
-      <box id={`setting-${i}`} key={key} flexDirection="column" flexShrink={0}>
-        <Row selected={i === selected} onOpen={() => beginEdit(i)}>
-          {fit(settingLabel(key), 24)}
-          {columnGap}
-          <span attributes={i === selected ? ui.none : ui.dim}>
-            {safe(settingDisplay(key, settingValue(c, key), c))}
-          </span>
-        </Row>
+      <box id={`block-${i}`} key={key} flexDirection="column" flexShrink={0}>
+        <box id={`setting-${i}`} flexShrink={0}>
+          <Row selected={i === selected} onOpen={() => beginEdit(i)}>
+            {fit(settingLabel(key), 24)}
+            {columnGap}
+            <span attributes={i === selected ? ui.none : ui.dim}>
+              {safe(settingDisplay(key, settingValue(c, key), c))}
+            </span>
+          </Row>
+        </box>
         {!editing && !picking && i === selected && help !== "" && (
-          <Line
-            flexShrink={0}
-            wrapMode="word"
-            paddingLeft={3}
-            attributes={ui.dim}
-          >
-            {help}
-          </Line>
+          <Detail>
+            <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+              {help}
+            </Line>
+          </Detail>
         )}
         {editing && i === selected && (
           <box
@@ -432,33 +456,32 @@ export function Settings({
           const i = index++;
           return (
             <box
-              id={`setting-${i}`}
+              id={`block-${i}`}
               key={cap.id}
               flexDirection="column"
               flexShrink={0}
             >
-              <Row selected={i === selected} onOpen={() => setSelected(i)}>
-                <span fg={cap.available ? ui.ok : ui.warn}>
-                  {cap.available ? "● " : "○ "}
-                </span>
-                {fit(capabilityLabels[cap.id], 42)}
-                <span attributes={ui.dim}>
-                  {cap.available ? "available" : safe(capabilityReason(cap))}
-                </span>
-              </Row>
+              <box id={`setting-${i}`} flexShrink={0}>
+                <Row selected={i === selected} onOpen={() => setSelected(i)}>
+                  <span fg={cap.available ? ui.ok : ui.warn}>
+                    {cap.available ? "● " : "○ "}
+                  </span>
+                  {fit(capabilityLabels[cap.id], 42)}
+                  <span attributes={ui.dim}>
+                    {cap.available ? "available" : safe(capabilityReason(cap))}
+                  </span>
+                </Row>
+              </box>
               {i === selected && (!cap.available || openCap === cap.id) && (
-                <Line
-                  flexShrink={0}
-                  wrapMode="word"
-                  paddingLeft={3}
-                  attributes={ui.dim}
-                >
-                  {safe(
-                    cap.available
-                      ? `${cap.source}: ${cap.detail}`
-                      : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
-                  )}
-                </Line>
+                <Detail>
+                  <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                    {safe(
+                      cap.available
+                        ? `${cap.source}: ${cap.detail}`
+                        : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
+                    )}
+                  </Line>
+                </Detail>
               )}
             </box>
           );
@@ -466,41 +489,40 @@ export function Settings({
         {!s.capabilities.length && (
           <Empty text="This sample was recorded before vsys probed its sources." />
         )}
-        {sourcesIndex >= 0 && (
-          <box
-            id={`setting-${sourcesIndex}`}
-            flexDirection="column"
-            flexShrink={0}
-          >
-            <Row
-              selected={sourcesIndex === selected}
-              color={sources.length ? ui.warn : undefined}
-              onOpen={() => setSourcesOpen((v) => !v)}
-            >
-              <span fg={ui.accent}>{sourcesOpen ? "▾ " : "▸ "}</span>
-              {sources.length
-                ? `${sources.length} ${sources.length === 1 ? "source" : "sources"} vsys cannot read`
-                : "Every source was read"}
-            </Row>
-            {sourcesOpen &&
-              sources.map(([source, n]) => (
-                <Line
-                  key={source}
-                  height={1}
-                  flexShrink={0}
-                  truncate
-                  paddingLeft={3}
-                >
-                  {safe(fit(source, 48))}
-                  <span attributes={ui.dim}>
-                    {safe(
-                      `${s.errors.find((e) => e.source === source)?.message ?? ""}${n > 1 ? ` (${n} reads)` : ""}`,
-                    )}
-                  </span>
-                </Line>
-              ))}
-          </box>
-        )}
+        {sourcesIndex >= 0 &&
+          (() => {
+            const i = sourcesIndex;
+            return (
+              <box id={`block-${i}`} flexDirection="column" flexShrink={0}>
+                <box id={`setting-${i}`} flexShrink={0}>
+                  <Row
+                    selected={i === selected}
+                    color={sources.length ? ui.warn : undefined}
+                    onOpen={() => setSourcesOpen((v) => !v)}
+                  >
+                    <span fg={ui.accent}>{sourcesOpen ? "▾ " : "▸ "}</span>
+                    {sources.length
+                      ? `${sources.length} ${sources.length === 1 ? "source" : "sources"} vsys cannot read`
+                      : "Every source was read"}
+                  </Row>
+                </box>
+                {sourcesOpen && (
+                  <Detail>
+                    {sources.map(([source, n]) => (
+                      <Line key={source} height={1} flexShrink={0} truncate>
+                        {safe(fit(source, 48))}
+                        <span attributes={ui.dim}>
+                          {safe(
+                            `${s.errors.find((e) => e.source === source)?.message ?? ""}${n > 1 ? ` (${n} reads)` : ""}`,
+                          )}
+                        </span>
+                      </Line>
+                    ))}
+                  </Detail>
+                )}
+              </box>
+            );
+          })()}
         <box
           flexDirection={twoColumns ? "row" : "column"}
           flexShrink={0}

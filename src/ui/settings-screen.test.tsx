@@ -411,6 +411,25 @@ test("a filtered Settings list opens the row the highlight is on", async () => {
   }
 });
 
+test("walking down Settings keeps the selected row on the screen", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 35 });
+  try {
+    await t.press("7");
+    // Far enough that the list has to scroll. The row the reader is standing
+    // on comes with it: the arrow moves the selection, never the viewport as
+    // well.
+    for (let i = 0; i < 30; i++) {
+      expect(selectedRow(t.frame())).not.toBe("");
+      await t.press("down");
+    }
+    expect(selectedRow(t.frame())).not.toBe("");
+  } finally {
+    await t.close();
+  }
+});
+
 test("a query that matches nothing leaves Enter with nothing to open", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -630,6 +649,43 @@ test("reopening the find box keeps the query on the row it matched", async () =>
     // row Enter actually opened. The capability rows are on the screen either
     // way, so their presence says nothing.
     expect(t.frame()).toContain("Wait warning · Enter saves");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a row's detail is indented under it, its wrapped lines included", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "psi"
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: "/proc/pressure/cpu",
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  const t = await mount(s, c, { width: 80, height: 30 });
+  try {
+    await t.press("7");
+    const at = settingItems(c, s.capabilities).findIndex(
+      (item) => item.kind === "capability" && item.id === "psi",
+    );
+    for (let i = 0; i < at; i++) await t.press("down");
+    const lines = t.frame().split("\n");
+    const row = lines.findIndex((line) => line.includes("▍○ Pressure"));
+    expect(row).toBeGreaterThan(-1);
+    // The screen's own margin is two columns and the detail adds three, so a
+    // detail line starts at column five. The second line is the one that
+    // matters: padding on a text element leaves every wrapped line at the
+    // margin, which reads as the next row rather than as part of this one.
+    expect(lines[row + 1].startsWith("     ")).toBe(true);
+    expect(lines[row + 1].slice(5).startsWith(" ")).toBe(false);
+    expect(lines[row + 2].startsWith("     ")).toBe(true);
+    expect(lines[row + 2].slice(5).startsWith(" ")).toBe(false);
   } finally {
     await t.close();
   }
