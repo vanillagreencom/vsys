@@ -185,12 +185,9 @@ export function Storage({
         </Row>
         {i === selected && (
           <box flexDirection="column" flexShrink={0} paddingLeft={4}>
-            <Field label="Device" value={v.device} />
-            <Field
-              label="Errors"
-              value={errorText(v)}
-              color={level === "danger" ? ui.danger : undefined}
-            />
+            {/* The device row above names the device and its error counters
+                once for every mount grouped under it, and subvolumes of one
+                filesystem share both. The options are the mount's own. */}
             <Field label="Options" value={v.options.join(", ")} />
           </box>
         )}

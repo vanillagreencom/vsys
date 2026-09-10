@@ -21,6 +21,7 @@ import {
   TableHeader,
   Tile,
   Tiles,
+  tilesPerRow,
 } from "./widgets";
 
 /** A group with nothing running and little memory is noise until asked for. */
@@ -160,12 +161,17 @@ export function Resources({
   ];
   const [nameColumn, cpuBar, cpuColumn, memoryBar, memoryColumn, tasksColumn] =
     groupColumns;
-  // The tile row and its blank, the section, the table heading, and the
-  // detail block under the list.
-  const listHeight = height - 5 - 3 - 4;
+  const inner = width - 4;
+  // The meters that are not builds, and the Swap tile beside them.
+  const tileCount = tiles.length + 1;
+  const tileRows = Math.ceil(tileCount / tilesPerRow(tileCount, inner));
+  // Each tile row is three lines and the rows sit one line apart; then the
+  // blank under them, the section with its margin, the table heading, and the
+  // four detail fields with their own margin.
+  const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - 5;
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
-      <Tiles>
+      <Tiles width={inner}>
         {tiles.map((tile) => (
           <Tile
             key={tile.label}

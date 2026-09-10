@@ -84,16 +84,17 @@ export function Settings({
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`setting-${selected}`);
   }, [selected]);
-  const current = items[selected];
+  // A query can match nothing, so no row is selected and no row is rendered.
+  const current: SettingItem | undefined = items[selected];
   const beginEdit = (index: number) => {
-    const item = items[index];
-    if (item.kind !== "setting") return;
+    const item: SettingItem | undefined = items[index];
+    if (item?.kind !== "setting") return;
     setSelected(index);
     setInput(editText(settingValue(c, item.key)));
     setEditing(true);
   };
   async function commit(text: string) {
-    if (current.kind !== "setting") return;
+    if (current?.kind !== "setting") return;
     try {
       const key = current.key;
       const parsed = editValue(settingValue(c, key), text);
@@ -142,7 +143,7 @@ export function Settings({
       return true;
     }
     if (name === c.keys.open) {
-      if (current.kind === "sources") setSourcesOpen((v) => !v);
+      if (current?.kind === "sources") setSourcesOpen((v) => !v);
       else beginEdit(selected);
       return true;
     }
@@ -178,9 +179,15 @@ export function Settings({
     return before < rowsTotal / 2;
   });
   const sides = twoColumns ? [left, sections.slice(left.length)] : [sections];
-  let index = 0;
+  // A row's index is its position in `items`, looked up rather than counted
+  // alongside it. A counter and a list can disagree, and a filter that drops a
+  // row from the list while the render still counts it is how they do: the
+  // highlight then sits on one row while Enter opens another.
+  const sourcesIndex = items.findIndex((item) => item.kind === "sources");
+  const settingIndex = (key: string) =>
+    items.findIndex((item) => item.kind === "setting" && item.key === key);
   const settingRow = (key: string) => {
-    const i = index++;
+    const i = settingIndex(key);
     const help = settingHelp(key);
     return (
       <box id={`setting-${i}`} key={key} flexDirection="column" flexShrink={0}>
@@ -278,40 +285,41 @@ export function Settings({
         {!s.capabilities.length && (
           <Empty text="This sample was recorded before vsys probed its sources." />
         )}
-        {(() => {
-          const i = index++;
-          return (
-            <box id={`setting-${i}`} flexDirection="column" flexShrink={0}>
-              <Row
-                selected={i === selected}
-                color={sources.length ? ui.warn : undefined}
-                onOpen={() => setSourcesOpen((v) => !v)}
-              >
-                <span fg={ui.accent}>{sourcesOpen ? "▾ " : "▸ "}</span>
-                {sources.length
-                  ? `${sources.length} ${sources.length === 1 ? "source" : "sources"} vsys cannot read`
-                  : "Every source was read"}
-              </Row>
-              {sourcesOpen &&
-                sources.map(([source, n]) => (
-                  <Line
-                    key={source}
-                    height={1}
-                    flexShrink={0}
-                    truncate
-                    paddingLeft={3}
-                  >
-                    {safe(fit(source, 48))}
-                    <span attributes={ui.dim}>
-                      {safe(
-                        `${s.errors.find((e) => e.source === source)?.message ?? ""}${n > 1 ? ` (${n} reads)` : ""}`,
-                      )}
-                    </span>
-                  </Line>
-                ))}
-            </box>
-          );
-        })()}
+        {sourcesIndex >= 0 && (
+          <box
+            id={`setting-${sourcesIndex}`}
+            flexDirection="column"
+            flexShrink={0}
+          >
+            <Row
+              selected={sourcesIndex === selected}
+              color={sources.length ? ui.warn : undefined}
+              onOpen={() => setSourcesOpen((v) => !v)}
+            >
+              <span fg={ui.accent}>{sourcesOpen ? "▾ " : "▸ "}</span>
+              {sources.length
+                ? `${sources.length} ${sources.length === 1 ? "source" : "sources"} vsys cannot read`
+                : "Every source was read"}
+            </Row>
+            {sourcesOpen &&
+              sources.map(([source, n]) => (
+                <Line
+                  key={source}
+                  height={1}
+                  flexShrink={0}
+                  truncate
+                  paddingLeft={3}
+                >
+                  {safe(fit(source, 48))}
+                  <span attributes={ui.dim}>
+                    {safe(
+                      `${s.errors.find((e) => e.source === source)?.message ?? ""}${n > 1 ? ` (${n} reads)` : ""}`,
+                    )}
+                  </span>
+                </Line>
+              ))}
+          </box>
+        )}
         <box
           flexDirection={twoColumns ? "row" : "column"}
           flexShrink={0}

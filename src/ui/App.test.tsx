@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import type { Config } from "../config/config";
-import { defaults } from "../config/config";
+import { defaults, validate } from "../config/config";
 import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
@@ -16,6 +16,7 @@ import {
 } from "../test/fixture";
 import { App, Waiting } from "./App";
 import { attention } from "./attention";
+import { headerRowWidth } from "./chrome";
 import { osc52 } from "./clipboard";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
@@ -962,6 +963,151 @@ test("Settings filters by name and by the label the reader sees", async () => {
     const byKey = t.frame();
     expect(byKey).toContain("Desktop swap warning");
     expect(byKey).not.toContain("Wait warning");
+  } finally {
+    await t.close();
+  }
+});
+
+/** Seven tabs of equal width, so a predicate that multiplies the widest tab
+ * instead of summing them all reads exactly the gap columns short. */
+const equalTabs = () =>
+  validate({
+    ...defaults(),
+    keys: {
+      ...defaults().keys,
+      home: "ctrl+f1",
+      agents: "alt+a",
+      resources: "f1",
+      builds: "alt+b",
+      storage: "pgup",
+      timeline: "f10",
+      settings: "f11",
+    },
+  });
+
+test("the header lays out on the row its own predicate promised", async () => {
+  const c = equalTabs();
+  const s = emptySnapshot();
+  s.system.host = "cachy";
+  const clock = new Date(s.time).toLocaleTimeString();
+  const exact = headerRowWidth("cachy", clock, null, c);
+  // At the width the predicate accepts, the tabs share the header's own row
+  // and the clock still ends it.
+  const fits = await mount(s, c, { width: exact, height: 24 });
+  try {
+    // An unbound key draws a frame without changing what is on it.
+    await fits.press("z");
+    const lines = fits.frame().split("\n");
+    expect(lines[0]).toContain("cachy");
+    expect(lines[0]).toContain("Settings");
+    expect(lines[0].trimEnd().endsWith(clock)).toBe(true);
+  } finally {
+    await fits.close();
+  }
+  // Five columns short of that, the tabs take a row of their own. The earlier
+  // predicate accepted this width, and the row it drew ran the last tab into
+  // the clock: `7 Settin5:50:23 PM`.
+  const tight = await mount(s, c, { width: exact - 5, height: 24 });
+  try {
+    await tight.press("z");
+    const lines = tight.frame().split("\n");
+    expect(lines[0]).toContain("cachy");
+    expect(lines[0].trimEnd().endsWith(clock)).toBe(true);
+    expect(lines[1]).toContain("Home");
+    expect(lines[1]).toContain("Settings");
+  } finally {
+    await tight.close();
+  }
+});
+
+test("a filtered Settings list opens the row the highlight is on", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "wait") await t.press(ch);
+    // Enter closes the find box and keeps the query, so the list is filtered
+    // and the first match carries the highlight.
+    await t.press("enter");
+    await t.press("enter");
+    // The editor is titled with the setting it edits, so its presence names
+    // the row Enter actually opened.
+    const frame = t.frame();
+    expect(frame).toContain("Wait warning");
+    expect(frame).toContain("Enter saves");
+    expect(frame).not.toContain("Storage units");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a query that matches nothing leaves Enter with nothing to open", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "zzzz") await t.press(ch);
+    await t.press("enter");
+    // No row is selected, so Enter opens nothing rather than reading past the
+    // end of the list. The read past the end throws inside the key emitter,
+    // which swallows it, so what this pins is the list the render walks: the
+    // sources row is not a setting, the filter drops it from `items`, and a
+    // render driven by `items` therefore does not draw it either. While it
+    // was drawn from a counter beside the list, it stayed on screen holding
+    // the highlight that belonged to a row further down.
+    await t.press("enter");
+    const frame = t.frame();
+    expect(frame).toContain("Data sources");
+    expect(frame).not.toContain("Every source was read");
+    expect(frame).not.toContain("Enter saves");
+    expect(frame).not.toContain("Storage units");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Resources sizes its tiles by the width it has, at a hundred columns", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 100, height: 30 });
+  try {
+    await t.press("3");
+    const lines = t.frame().split("\n");
+    const at = (text: string) => lines.findIndex((line) => line.includes(text));
+    // Four tiles in ninety-six columns are twenty-two columns each, under the
+    // width a tile needs, so they wrap to two rows instead of truncating.
+    expect(at("CPU wait")).toBeGreaterThan(-1);
+    expect(at("Swap")).toBeGreaterThan(at("CPU wait"));
+    // The detail under the number is a whole sentence, not a cut one.
+    expect(lines.some((line) => line.includes("desktop"))).toBe(true);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a mount's detail does not repeat the device row's error counters", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/data", {
+      device: "/dev/nvme0n1p2",
+      errors: { "nvme0n1p2/corruption_errs": 3 },
+      options: ["rw", "subvol=@data"],
+    }),
+  ];
+  const t = await mount(s, c, { width: 140, height: 30 });
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    // The device row states the counters once for every mount grouped under
+    // it. The mount below it carries only what differs between mounts.
+    expect(frame.split("corruption 3").length - 1).toBe(1);
+    expect(frame).toContain("subvol=@data");
+    expect(frame).not.toContain("Errors");
   } finally {
     await t.close();
   }

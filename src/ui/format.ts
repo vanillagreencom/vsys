@@ -152,7 +152,11 @@ export function collectedSpan(
   windowMs: number,
 ): { ms: number; partial: boolean } {
   const first = values.findIndex((v) => v !== null);
-  if (first <= 0) return { ms: windowMs, partial: false };
+  // No sample at all is not a full window. `findIndex` answers -1 there, and
+  // reporting the requested window tells a reader who started vsys seconds ago
+  // that it holds five minutes of history.
+  if (first === -1) return { ms: 0, partial: true };
+  if (first === 0) return { ms: windowMs, partial: false };
   return {
     ms: Math.round((windowMs * (values.length - first)) / values.length),
     partial: true,

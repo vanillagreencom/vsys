@@ -37,25 +37,59 @@ export const viewKey = (view: View): string => view.toLowerCase();
 export const narrowWidth = 100;
 /** The width at or above which a screen can hold two columns side by side. */
 export const wideWidth = 150;
-/** The columns one tab takes: its key, a space, and the longest view name. */
-const tabWidth = (c: Config) =>
-  Math.max(...views.map((v) => c.keys[viewKey(v)].length + 1 + v.length));
+/** The columns each tab takes: its key, a space, and that view's own name. */
+const tabWidths = (c: Config): number[] =>
+  views.map((v) => [...c.keys[viewKey(v)]].length + 1 + [...v].length);
+/** The blank between two tabs when they share the header's row. */
+const tabGap = 2;
 /**
- * Whether the tabs fit on the header's own row. The host and the clock are
- * reserved first, so a tab row is offered only what is actually left: at a
- * hundred columns the capture read `cachyHome` and `7 Settin5:50:23 PM`
- * because the tabs took the space those two were already using.
+ * The marker after the program name: live data, or the time of the sample the
+ * reader pinned. `Header` draws this string and the fit predicate measures it,
+ * so a pinned marker is never costed as the shorter live one.
+ */
+export const headerMarker = (pinnedAt: number | null): string =>
+  pinnedAt === null
+    ? " ● live"
+    : ` ◆ ${new Date(pinnedAt).toLocaleTimeString()}`;
+/**
+ * The columns the one-row header needs: the row's own padding, the program
+ * name and its marker, the host with the blanks around it, every tab and the
+ * gaps between them, and the clock. Every term is measured from what `Header`
+ * renders, so the predicate and the row it decides cannot disagree.
+ */
+export function headerRowWidth(
+  host: string,
+  clock: string,
+  pinnedAt: number | null,
+  c: Config,
+): number {
+  const tabs = tabWidths(c);
+  return (
+    2 +
+    4 +
+    [...headerMarker(pinnedAt)].length +
+    2 +
+    [...host].length +
+    1 +
+    tabs.reduce((total, width) => total + width, 0) +
+    tabGap * (tabs.length - 1) +
+    1 +
+    [...clock].length
+  );
+}
+/**
+ * Whether the tabs fit on the header's own row. At a hundred columns the
+ * capture read `cachyHome` and `7 Settin5:50:23 PM` because the tabs took the
+ * columns the host and the clock were already using.
  */
 export function tabsFitOneRow(
   width: number,
   host: string,
   clock: string,
+  pinnedAt: number | null,
   c: Config,
 ): boolean {
-  // Two padding columns, the program name and its live marker, the host, the
-  // clock, and a blank on either side of the tab block.
-  const reserved = 2 + 12 + [...host].length + [...clock].length + 4;
-  return width - reserved >= tabWidth(c) * views.length + views.length - 1;
+  return headerRowWidth(host, clock, pinnedAt, c) <= width;
 }
 /**
  * The program, whether it shows live data, the host, the tabs and the clock.
@@ -79,7 +113,7 @@ export function Header({
   onNavigate: (view: View) => void;
 }) {
   const clock = new Date(time).toLocaleTimeString();
-  const narrow = !tabsFitOneRow(width, host, clock, c);
+  const narrow = !tabsFitOneRow(width, host, clock, pinnedAt, c);
   const tabs = (
     <box
       flexDirection="row"
@@ -110,13 +144,9 @@ export function Header({
       <box flexDirection="row" height={1} flexShrink={0} paddingX={1}>
         <Line height={1} flexShrink={0} truncate>
           <span attributes={ui.bold}>vsys</span>
-          {pinnedAt === null ? (
-            <span fg={ui.ok}>{" ● live"}</span>
-          ) : (
-            <span fg={ui.warn}>
-              {` ◆ ${new Date(pinnedAt).toLocaleTimeString()}`}
-            </span>
-          )}
+          <span fg={pinnedAt === null ? ui.ok : ui.warn}>
+            {headerMarker(pinnedAt)}
+          </span>
           <span attributes={ui.dim}>{`  ${safe(host)} `}</span>
         </Line>
         {narrow ? <box flexGrow={1} /> : tabs}

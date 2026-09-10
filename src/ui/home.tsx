@@ -34,6 +34,7 @@ import {
   TableHeader,
   Tile,
   Tiles,
+  tilesPerRow,
 } from "./widgets";
 
 /** The Home list mixes concerns and agents; Enter opens whichever is selected. */
@@ -142,7 +143,13 @@ export function Home({
   const level: Level = lead ? (lead.danger ? "danger" : "warn") : "ok";
   const gauges = meters(s, c);
   const panel = columns ? Math.floor((width - 3) / 2) : width;
-  const chartWidth = Math.max(8, Math.floor((width - 2 * 3) / 4));
+  // A tile row shares its width between the tiles on it, two columns apart,
+  // so the chart is as wide as the tile that carries it however many that is.
+  const perRow = tilesPerRow(gauges.length, width);
+  const chartWidth = Math.max(
+    8,
+    Math.floor((width - 2 * (perRow - 1)) / perRow),
+  );
   const agents = rows.filter((r) => r.kind === "agent");
   const topCpu = Math.max(100, ...agents.map((r) => r.lane.cpu ?? 0));
   // The marker, the bar and the readings take fixed columns; the name has the
