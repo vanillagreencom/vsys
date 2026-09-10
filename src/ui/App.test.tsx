@@ -3,6 +3,7 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
+import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
@@ -15,6 +16,7 @@ import {
 } from "../test/fixture";
 import { App, Waiting } from "./App";
 import { attention } from "./attention";
+import { osc52 } from "./clipboard";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
 async function mount(
@@ -24,11 +26,15 @@ async function mount(
   hooks: Partial<{
     onSave: (next: Config) => Promise<void>;
     onQuit: () => void;
+    onAction: (command: LaneCommand) => Promise<void>;
     history: History;
   }> = {},
 ) {
   const h = hooks.history ?? new History(c);
   if (!hooks.history) h.add(s);
+  // The clipboard escape goes to a stream the test reads back, standing in for
+  // the process output stream the running program hands over.
+  const written: string[] = [];
   const ui = await testRender(
     <App
       snapshot={s}
@@ -37,6 +43,8 @@ async function mount(
       onSave={hooks.onSave ?? (async () => {})}
       onQuit={hooks.onQuit ?? (() => {})}
       onExport={async () => "snapshot.json"}
+      onAction={hooks.onAction ?? (async () => {})}
+      output={{ write: (chunk: string) => written.push(chunk) }}
     />,
     size,
   );
@@ -60,7 +68,7 @@ async function mount(
     });
     h.close();
   };
-  return { ui, h, press, frame, close };
+  return { ui, h, press, frame, close, written };
 }
 
 test("keys and the mouse move between tabs, open an agent, and quit", async () => {
@@ -585,5 +593,97 @@ test("a narrow terminal gives the tabs their own row and drops the wait column",
     expect(narrow.frame()).not.toContain("wait");
   } finally {
     await narrow.close();
+  }
+});
+
+test("the copy key puts the selected card's command on the clipboard", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const items = attention(s, c);
+  const index = items.findIndex((item) => item.command !== undefined);
+  const command = items[index].command;
+  const t = await mount(s, c, { width: 160, height: 45 });
+  try {
+    for (let i = 0; i < index; i++) await t.press("j");
+    await t.press("y");
+    expect(t.written).toEqual([osc52(command ?? "")]);
+    expect(t.frame()).toContain("Copied:");
+    // A card with no command copies nothing rather than an empty clipboard.
+    const bare = items.findIndex((item) => item.command === undefined);
+    expect(bare).toBeGreaterThanOrEqual(0);
+    for (let i = index; i < bare; i++) await t.press("j");
+    await t.press("y");
+    expect(t.written.length).toBe(1);
+    expect(t.frame()).toContain("no command to copy");
+  } finally {
+    await t.close();
+  }
+});
+
+/** Opens one agent, opens its Actions section and selects Stop. */
+async function stopSelected(c: Config, calls: LaneCommand[]) {
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot()];
+  s.groups = [groupSnapshot()];
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height: 45 },
+    {
+      onAction: async (command) => {
+        calls.push(command);
+      },
+    },
+  );
+  await t.press("2");
+  await t.press("enter");
+  // Processes, Launch and Open files sit above Actions; opening it adds its
+  // three rows below, and Stop is the last of them.
+  for (let i = 0; i < 3; i++) await t.press("j");
+  await t.press("enter");
+  for (let i = 0; i < 3; i++) await t.press("j");
+  return t;
+}
+const stopCommand = "systemctl --user kill --signal=TERM a.scope";
+
+test("with write mode off an agent action is copy text and signals nothing", async () => {
+  const calls: LaneCommand[] = [];
+  const t = await stopSelected(defaults(), calls);
+  try {
+    expect(t.frame()).toContain("Write mode is off");
+    expect(t.frame()).toContain(stopCommand);
+    await t.press("enter");
+    expect(calls).toEqual([]);
+    expect(t.frame()).not.toContain("Confirm");
+    await t.press("y");
+    expect(t.written).toEqual([osc52(stopCommand)]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("with write mode on an agent action names its scope and waits for a yes", async () => {
+  const calls: LaneCommand[] = [];
+  const t = await stopSelected({ ...defaults(), writeMode: true }, calls);
+  try {
+    await t.press("enter");
+    const frame = t.frame();
+    expect(frame).toContain("Confirm");
+    expect(frame).toContain("Stop a.scope?");
+    expect(frame).toContain(stopCommand);
+    expect(calls).toEqual([]);
+    // Anything but the open key answers no.
+    await t.press("k");
+    expect(t.frame()).not.toContain("Stop a.scope?");
+    expect(calls).toEqual([]);
+    await t.press("enter");
+    await t.press("enter");
+    expect(calls.map((command) => command.text)).toEqual([stopCommand]);
+    expect(calls[0].effect).toEqual({
+      kind: "run",
+      argv: ["systemctl", "--user", "kill", "--signal=TERM", "a.scope"],
+    });
+  } finally {
+    await t.close();
   }
 });

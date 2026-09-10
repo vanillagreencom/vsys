@@ -1,7 +1,14 @@
-import { useEffect, useState } from "react";
+import type { ScrollBoxRenderable } from "@opentui/core";
+import { useEffect, useRef, useState } from "react";
 import { Reader } from "../collect/io";
 import { scratchFiles } from "../collect/procs";
 import type { Config } from "../config/config";
+import {
+  type LaneCommand,
+  laneActions,
+  laneCommand,
+  laneTarget,
+} from "../model/actions";
 import { safe } from "../model/export";
 import { parentChain, processTree } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
@@ -38,8 +45,16 @@ import {
 } from "./widgets";
 
 /** The drill-down sections, closed until the reader opens one. */
-const sections = ["Processes", "Launch", "Open files"] as const;
+const sections = ["Processes", "Launch", "Open files", "Actions"] as const;
 type Section = (typeof sections)[number];
+/**
+ * The selectable lines under Details. Actions sits last, so opening it adds
+ * its rows below every section header and leaves the other rows where they
+ * were.
+ */
+type DetailRow =
+  | { kind: "section"; name: Section }
+  | { kind: "action"; command: LaneCommand };
 
 /** One agent: what it is, what it uses, its history, then its processes. */
 export function Agent({
@@ -50,6 +65,8 @@ export function Agent({
   live,
   width,
   windowMs,
+  onCopy,
+  onAct,
 }: {
   lane: Lane;
   snapshot: Snapshot;
@@ -58,6 +75,10 @@ export function Agent({
   live: boolean;
   width: number;
   windowMs: number;
+  /** Undefined when the selected row carries no command, which the shell says. */
+  onCopy: (command: string | undefined) => void;
+  /** Asks the shell to run an action; the shell alone decides whether it may. */
+  onAct: (command: LaneCommand) => void;
 }) {
   const [files, setFiles] = useState<string[]>([]);
   const [loaded, setLoaded] = useState<{
@@ -66,8 +87,12 @@ export function Agent({
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [seriesError, setSeriesError] = useState<string | null>(null);
-  const [section, setSection] = useState(0);
+  const [selected, setSelected] = useState(0);
   const [open, setOpen] = useState<Set<Section>>(new Set());
+  const scroller = useRef<ScrollBoxRenderable | null>(null);
+  useEffect(() => {
+    scroller.current?.scrollChildIntoView(`detail-${selected}`);
+  }, [selected]);
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
   useEffect(() => {
@@ -104,17 +129,34 @@ export function Agent({
       current = false;
     };
   }, [history, lane.id, snapshot.time, windowMs]);
+  const target = laneTarget(lane, c);
+  const rows: DetailRow[] = [
+    ...sections.map((name) => ({ kind: "section", name }) as const),
+    ...(open.has("Actions") && target
+      ? laneActions.map(
+          (action) =>
+            ({ kind: "action", command: laneCommand(action, target) }) as const,
+        )
+      : []),
+  ];
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setSection((i) => nextDown(sections.length, i));
+      setSelected((i) => nextDown(rows.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      setSection((i) => Math.max(0, i - 1));
+      setSelected((i) => Math.max(0, i - 1));
       return true;
     }
     if (name === c.keys.open) {
-      toggle(sections[section]);
+      const row = rows[selected];
+      if (row?.kind === "section") toggle(row.name);
+      else if (row) onAct(row.command);
+      return true;
+    }
+    if (name === c.keys.copy) {
+      const row = rows[selected];
+      onCopy(row?.kind === "action" ? row.command.text : undefined);
       return true;
     }
     return false;
@@ -157,6 +199,7 @@ export function Agent({
         : undefined;
   return (
     <scrollbox
+      ref={scroller}
       flexGrow={1}
       minHeight={0}
       scrollY
@@ -260,88 +303,132 @@ export function Agent({
           </Line>
         ))}
         <Heading title="Details" />
-        {sections.map((name, i) => (
-          <box key={name} flexDirection="column" flexShrink={0}>
-            <Row selected={section === i} onOpen={() => toggle(name)}>
-              <span fg={ui.accent}>{open.has(name) ? "▾ " : "▸ "}</span>
-              {name}
-              {count(name) !== undefined && (
-                <span attributes={ui.dim}>{`  ${count(name)}`}</span>
-              )}
-            </Row>
-            {open.has(name) && (
-              <box
-                flexDirection="column"
-                flexShrink={0}
-                paddingLeft={3}
-                paddingBottom={1}
+        {rows.map((row, i) =>
+          row.kind === "action" ? (
+            <box
+              id={`detail-${i}`}
+              key={row.command.action}
+              flexShrink={0}
+              paddingLeft={3}
+            >
+              <Row
+                selected={selected === i}
+                onOpen={() => onAct(row.command)}
+                color={row.command.action === "Stop" ? ui.danger : undefined}
               >
-                {name === "Processes" && (
-                  <>
-                    <Line height={1} truncate attributes={ui.dim}>
-                      {"PID      CPU    threads  memory     directory"}
-                    </Line>
-                    {tree.map(({ proc: p, depth }) => (
-                      <Line key={p.pid} height={1} truncate>
-                        {safe(
-                          `${"  ".repeat(depth)}${String(p.pid).padEnd(8 - depth * 2)} ${p.comm.padEnd(14).slice(0, 14)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(7)}  ${bytes(p.rss, c).padStart(9)}  ${p.cwd ?? gap}`,
-                        )}
-                      </Line>
-                    ))}
-                    {!tree.length && (
-                      <Empty text="No process in this sample." />
-                    )}
-                  </>
+                {row.command.action.padEnd(8)}
+                <span attributes={ui.dim}>{safe(row.command.text)}</span>
+              </Row>
+            </box>
+          ) : (
+            <box
+              id={`detail-${i}`}
+              key={row.name}
+              flexDirection="column"
+              flexShrink={0}
+            >
+              <Row selected={selected === i} onOpen={() => toggle(row.name)}>
+                <span fg={ui.accent}>{open.has(row.name) ? "▾ " : "▸ "}</span>
+                {row.name}
+                {count(row.name) !== undefined && (
+                  <span attributes={ui.dim}>{`  ${count(row.name)}`}</span>
                 )}
-                {name === "Launch" && (
-                  <>
-                    <Field label="Cgroup" value={proc?.group ?? lane.cgroup} />
-                    <Field
-                      label="Command"
-                      value={proc?.command.join(" ") ?? gap}
-                    />
-                    <Field label="Executable" value={proc?.executable ?? gap} />
-                    <Field
-                      label="Environment"
-                      value={
-                        proc?.envAvailable === false
-                          ? gap
-                          : Object.entries(proc?.env ?? {})
-                              .map(([k, v]) => `${k}=${v}`)
-                              .join(" ") || "none of the watched variables"
-                      }
-                    />
-                    <Line height={1} truncate attributes={ui.dim} marginTop={1}>
-                      Started by
-                    </Line>
-                    {proc &&
-                      parentChain(proc, snapshot.procs).map((p) => (
+              </Row>
+              {open.has(row.name) && (
+                <box
+                  flexDirection="column"
+                  flexShrink={0}
+                  paddingLeft={3}
+                  paddingBottom={1}
+                >
+                  {row.name === "Processes" && (
+                    <>
+                      <Line height={1} truncate attributes={ui.dim}>
+                        {"PID      CPU    threads  memory     directory"}
+                      </Line>
+                      {tree.map(({ proc: p, depth }) => (
                         <Line key={p.pid} height={1} truncate>
                           {safe(
-                            `${String(p.pid).padEnd(8)} ${p.executable ?? gap}  ${p.command.join(" ")}`,
+                            `${"  ".repeat(depth)}${String(p.pid).padEnd(8 - depth * 2)} ${p.comm.padEnd(14).slice(0, 14)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(7)}  ${bytes(p.rss, c).padStart(9)}  ${p.cwd ?? gap}`,
                           )}
                         </Line>
                       ))}
-                  </>
-                )}
-                {name === "Open files" &&
-                  (live ? (
-                    unique.length ? (
-                      unique.map((file) => (
-                        <Line key={file} height={1} truncate>
-                          {safe(file)}
-                        </Line>
-                      ))
+                      {!tree.length && (
+                        <Empty text="No process in this sample." />
+                      )}
+                    </>
+                  )}
+                  {row.name === "Launch" && (
+                    <>
+                      <Field
+                        label="Cgroup"
+                        value={proc?.group ?? lane.cgroup}
+                      />
+                      <Field
+                        label="Command"
+                        value={proc?.command.join(" ") ?? gap}
+                      />
+                      <Field
+                        label="Executable"
+                        value={proc?.executable ?? gap}
+                      />
+                      <Field
+                        label="Environment"
+                        value={
+                          proc?.envAvailable === false
+                            ? gap
+                            : Object.entries(proc?.env ?? {})
+                                .map(([k, v]) => `${k}=${v}`)
+                                .join(" ") || "none of the watched variables"
+                        }
+                      />
+                      <Line
+                        height={1}
+                        truncate
+                        attributes={ui.dim}
+                        marginTop={1}
+                      >
+                        Started by
+                      </Line>
+                      {proc &&
+                        parentChain(proc, snapshot.procs).map((p) => (
+                          <Line key={p.pid} height={1} truncate>
+                            {safe(
+                              `${String(p.pid).padEnd(8)} ${p.executable ?? gap}  ${p.command.join(" ")}`,
+                            )}
+                          </Line>
+                        ))}
+                    </>
+                  )}
+                  {row.name === "Open files" &&
+                    (live ? (
+                      unique.length ? (
+                        unique.map((file) => (
+                          <Line key={file} height={1} truncate>
+                            {safe(file)}
+                          </Line>
+                        ))
+                      ) : (
+                        <Empty text="No scratch file is open." />
+                      )
                     ) : (
-                      <Empty text="No scratch file is open." />
-                    )
-                  ) : (
-                    <Empty text="Open files are read live; this is a past sample." />
-                  ))}
-              </box>
-            )}
-          </box>
-        ))}
+                      <Empty text="Open files are read live; this is a past sample." />
+                    ))}
+                  {row.name === "Actions" &&
+                    (target === null ? (
+                      <Empty text="This agent runs in no systemd scope vsys can address, so it has no actions." />
+                    ) : (
+                      <Line height={1} truncate attributes={ui.dim}>
+                        {c.writeMode
+                          ? `${keyLabel(c.keys.open)} runs the selected action after a confirmation`
+                          : `Write mode is off · ${keyLabel(c.keys.copy)} copies the selected command`}
+                      </Line>
+                    ))}
+                </box>
+              )}
+            </box>
+          ),
+        )}
         <Line
           height={1}
           flexShrink={0}
@@ -349,7 +436,7 @@ export function Agent({
           attributes={ui.dim}
           marginTop={1}
         >
-          {`${keyLabel(c.keys.open)} opens a section · ${keyLabel(c.keys.back)} back to the list`}
+          {`${keyLabel(c.keys.open)} opens a section · ${keyLabel(c.keys.copy)} copies a command · ${keyLabel(c.keys.back)} back to the list`}
         </Line>
       </box>
     </scrollbox>

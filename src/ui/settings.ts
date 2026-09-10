@@ -45,7 +45,7 @@ export const settingLabels: Record<string, string> = {
   sparkline: "Chart style",
   units: "Storage units",
   notifications: "Rules with desktop notifications",
-  writeMode: "Allow vsys to change the system (reserved; vsys only reads)",
+  writeMode: "Allow the agent Freeze, Thaw and Stop actions",
 };
 /** Settings by what they change, so a reader finds one without a search. */
 export const settingGroups: [string, string[]][] = [

@@ -98,7 +98,10 @@ export interface Config {
   sparkline: "braille" | "block";
   units: "binary" | "decimal";
   notifications: string[];
-  /** Reserved for a future write mode. vsys only reads system state today. */
+  /**
+   * Off by default: vsys only reads system state. On, the agent detail's
+   * Freeze, Thaw and Stop actions may run after a confirmation.
+   */
   writeMode: boolean;
   keys: Record<string, string>;
 }
@@ -205,6 +208,7 @@ export function defaults(): Config {
       reverse: "r",
       pin: "p",
       window: "w",
+      copy: "y",
       exportJson: "e",
       exportMarkdown: "m",
     },

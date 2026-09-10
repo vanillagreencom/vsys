@@ -10,7 +10,10 @@ import { App, type AppProps, Waiting } from "./App";
 export function mountScreen(
   renderer: CliRenderer,
   config: Config,
-  actions: Pick<AppProps, "onQuit" | "onSave" | "onExport">,
+  actions: Pick<
+    AppProps,
+    "onQuit" | "onSave" | "onExport" | "onAction" | "output"
+  >,
 ) {
   type Frame = { snapshot: Snapshot; history: History; config: Config };
   let frame: Frame | null = null;

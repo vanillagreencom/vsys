@@ -6,6 +6,7 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { keyName } from "../config/keys";
+import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
@@ -13,14 +14,17 @@ import { Agents } from "./agents";
 import { attention, verdictItem } from "./attention";
 import { Builds } from "./builds-screen";
 import {
+  Confirm,
   Footer,
   Header,
   Help,
+  keyLabel,
   narrowWidth,
   type View,
   viewKey,
   views,
 } from "./chrome";
+import { type Output, osc52 } from "./clipboard";
 import { Home } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
@@ -59,6 +63,10 @@ export interface AppProps {
   onSave: (c: Config) => Promise<void>;
   onQuit: () => void;
   onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
+  /** Runs one confirmed action. The shell reaches it only in write mode. */
+  onAction: (command: LaneCommand) => Promise<void>;
+  /** Where the clipboard escape goes: the process output stream. */
+  output: Output;
 }
 /** The views that show a past sample while one is pinned. */
 const pinnable: View[] = ["Agents", "Resources", "Builds", "Storage"];
@@ -66,6 +74,7 @@ const hints: Record<View, (c: Config) => [string, string][]> = {
   Home: (c) => [
     ["↑↓", "select"],
     [c.keys.open, "open"],
+    [c.keys.copy, "copy"],
   ],
   Agents: (c) => [
     ["↑↓", "select"],
@@ -104,6 +113,8 @@ export function App({
   onSave,
   onQuit,
   onExport,
+  onAction,
+  output,
 }: AppProps) {
   const renderer = useRenderer();
   const [view, setView] = useState<View>("Home");
@@ -113,6 +124,7 @@ export function App({
   const [pinned, setPinned] = useState<Snapshot | null>(null);
   const [windowIndex, setWindowIndex] = useState(0);
   const [help, setHelp] = useState(false);
+  const [confirming, setConfirming] = useState<LaneCommand | null>(null);
   const [toast, setToast] = useState<{ text: string; level: Level } | null>(
     null,
   );
@@ -153,10 +165,40 @@ export function App({
     setLaneId(id);
     setView("Agents");
   };
+  const copy = (command: string | undefined) => {
+    if (command === undefined) {
+      notice("This row has no command to copy", "warn");
+      return;
+    }
+    output.write(osc52(command));
+    notice(`Copied: ${command}`);
+  };
+  // vsys reads system state unless the reader turns write mode on. The refusal
+  // sits above the one call that reaches an effect, so no screen arrives at it
+  // by another route, and the confirmation stands between it and the effect.
+  const act = (command: LaneCommand) => {
+    if (!c.writeMode) {
+      notice(
+        `Write mode is off · ${keyLabel(c.keys.copy)} copies the command to run yourself`,
+        "warn",
+      );
+      return;
+    }
+    setConfirming(command);
+  };
   useKeyboard((key) => {
     const name = keyName(key);
     if (name === "ctrl+c") {
       onQuit();
+      return;
+    }
+    if (confirming) {
+      const command = confirming;
+      setConfirming(null);
+      if (name === c.keys.open)
+        void onAction(command)
+          .then(() => notice(`${command.action} ${command.scope}: done`))
+          .catch(report);
       return;
     }
     if (help) {
@@ -213,6 +255,7 @@ export function App({
         selected={homeIndex}
         width={width - 4}
         onSelect={setHomeIndex}
+        onCopy={copy}
         onOpen={(row) => {
           if (row.kind === "agent") openLane(row.lane.id);
           else if (row.item.laneId) openLane(row.item.laneId);
@@ -234,6 +277,8 @@ export function App({
         onSave={onSave}
         onError={report}
         onOpen={setLaneId}
+        onCopy={copy}
+        onAct={act}
       />
     );
   else if (view === "Resources")
@@ -315,6 +360,7 @@ export function App({
           statusDim={!lead && status !== "all clear"}
         />
         {toast && <Toast text={toast.text} level={toast.level} />}
+        {confirming && <Confirm command={confirming} config={c} />}
         {help && <Help config={c} />}
       </box>
     </KeyProvider>

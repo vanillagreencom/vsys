@@ -1,4 +1,5 @@
 import type { Config } from "../config/config";
+import type { LaneCommand } from "../model/actions";
 import { safe } from "../model/export";
 import { ui } from "./theme";
 import { Line, Overlay } from "./widgets";
@@ -172,6 +173,7 @@ export function Help({ config: c }: { config: Config }) {
     [
       "Program",
       [
+        [k.copy, "copy the selected command"],
         [`${k.exportJson} ${k.exportMarkdown}`, "export JSON or Markdown"],
         [k.help, "this help"],
         [`${k.quit} ctrl+c`, "quit"],
@@ -192,5 +194,48 @@ export function Help({ config: c }: { config: Config }) {
         </box>
       ))}
     </Overlay>
+  );
+}
+
+/**
+ * The question a system-changing action waits behind. It names the scope and
+ * shows the exact line, so the reader confirms what will run rather than which
+ * menu entry was selected.
+ */
+export function Confirm({
+  command,
+  config: c,
+}: {
+  command: LaneCommand;
+  config: Config;
+}) {
+  return (
+    <box
+      position="absolute"
+      top={3}
+      left={4}
+      right={4}
+      zIndex={20}
+      border
+      borderStyle="rounded"
+      borderColor={ui.danger}
+      title=" Confirm "
+      paddingX={2}
+      paddingY={1}
+      flexDirection="column"
+      backgroundColor={ui.bg}
+    >
+      <Line wrapMode="word">
+        <span attributes={ui.bold}>{`${command.action} `}</span>
+        <span>{`${safe(command.scope)}?`}</span>
+      </Line>
+      <Line wrapMode="word" attributes={ui.dim}>
+        {safe(command.text)}
+      </Line>
+      <Line height={1} truncate marginTop={1}>
+        <span fg={ui.accent}>{keyLabel(c.keys.open)}</span>
+        <span attributes={ui.dim}> confirms · any other key cancels</span>
+      </Line>
+    </box>
   );
 }

@@ -8,9 +8,9 @@ The [architecture overview](overview.md) defines the collection and replay requi
 
 | Screen | Behaviour | Verification |
 | --- | --- | --- |
-| [Home](verdict.md) | The verdict line, four meter tiles with sparklines, one card per cause with a next step and a copyable command, the busiest agents, and the unreadable-source footer | `src/model/verdict.test.ts`, `src/model/launcher.test.ts`, `src/ui/attention.test.ts`, `src/ui/home.test.ts`, `src/ui/App.test.tsx` |
+| [Home](verdict.md) | The verdict line, four meter tiles with sparklines, one card per cause with a next step and a command the copy key sends to the clipboard, the busiest agents, and the unreadable-source footer | `src/model/verdict.test.ts`, `src/model/launcher.test.ts`, `src/ui/attention.test.ts`, `src/ui/clipboard.test.ts`, `src/ui/home.test.ts`, `src/ui/App.test.tsx` |
 | [Agents](lanes.md) | Searchable rows naming account, agent, pane and workspace with a CPU bar and a badge; optional full table with sorting, column visibility and order | Collector fixtures, `src/model/naming.test.ts`, `src/ui/format.test.ts`, `src/ui/agents.test.ts`, `src/ui/screen.test.tsx`, `src/ui/theme.test.tsx` |
-| [Agent](lanes.md) | Cgroup, memory, page cache, swap, CPU share, I/O rates, build work by kind, compiler cache clients, effective limits and the blocked reason; CPU, memory and wait history; processes, launch and open files in closed sections | Collector fixtures, `src/model/lanes.test.ts`, `src/store/lane-series.test.ts`, `src/ui/App.test.tsx` |
+| [Agent](lanes.md) | Cgroup, memory, page cache, swap, CPU share, I/O rates, build work by kind, compiler cache clients, effective limits and the blocked reason; CPU, memory and wait history; processes, launch, open files and the Freeze, Thaw and Stop actions in closed sections | Collector fixtures, `src/model/lanes.test.ts`, `src/model/actions.test.ts`, `src/store/lane-series.test.ts`, `src/ui/App.test.tsx` |
 | Resources | Meter facts, swap, the cgroup tree with CPU and memory bars, idle leaves hidden until asked, limits and pressure for the selected group | `src/ui/resources.test.ts`, rendered navigation test |
 | [Builds](builds.md) | Compile and link against cores, cache hit rate and make token pools as tiles, per-lane rows with linkers named, the processes of the selected lane on request | Build classifier fixtures, `src/ui/builds-screen.test.ts`, `src/ui/attention.test.ts`, build cache parser and delta tests |
 | [Storage](storage.md) | Bytes written since boot per slice and per device as bars, drive lifetime writes, filesystems with free space and read-only state, error counters and options for the selected one, scrub reports, scratch sizes against the quota | `src/model/writes.test.ts`, `src/ui/storage-screen.test.ts`, `src/collect/devices.test.ts`, mount parser, Btrfs and scratch tests |
@@ -21,7 +21,8 @@ The [architecture overview](overview.md) defines the collection and replay requi
 
 The [history store](history.md) and [settings and the runtime](settings.md) hold the invariants behind this section.
 
-- The collector reads system state. Settings, optional SQLite, requested exports and enabled notifications are separate application effects.
+- The collector reads system state. Settings, optional SQLite, requested exports, enabled notifications and confirmed lane actions are separate application effects.
+- A lane action changes system state and runs only with `writeMode` on, after a confirmation naming the scope. `src/model/actions.ts` returns the command without running it, so the exact line is pinned by a test.
 - In-memory replay uses complete checkpoints and exact changes. A warning reports retention shortened by the memory budget.
 - SQLite preserves replay across restarts and rejects databases owned by other applications. Records an older build wrote are normalized on load rather than discarded.
 - Lane charts retain samples before display aggregation. Buckets preserve short spikes and collection gaps.

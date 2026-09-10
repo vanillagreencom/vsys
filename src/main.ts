@@ -22,7 +22,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   });
   if (values.help) {
     console.log(
-      "vsys-view [--once] [--markdown] [--config PATH]\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths.",
+      "vsys-view [--once] [--markdown] [--config PATH]\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
     );
     return;
   }
@@ -100,6 +100,25 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       });
       return file;
     },
+    // The shell refuses every action while write mode is off; reaching here
+    // means the reader turned it on and confirmed this exact command.
+    onAction: async ({ effect }) => {
+      if (effect.kind === "cgroup") {
+        await writeFile(effect.path, effect.value);
+        return;
+      }
+      const child = Bun.spawn(effect.argv, {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      const status = await child.exited;
+      if (status !== 0)
+        throw new Error(
+          `${effect.argv[0]} exited ${status}: ${(await new Response(child.stderr).text()).trim()}`,
+        );
+    },
+    output: process.stdout,
   });
   const session = new Session(config, path, collector, history, {
     frame: screen.update,

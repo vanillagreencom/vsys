@@ -29,6 +29,8 @@ test("live refresh keeps one screen, stable listeners and the selected view", as
       },
       onSave: async () => {},
       onExport: async () => "report.json",
+      onAction: async () => {},
+      output: { write: () => {} },
     });
   });
   try {
@@ -141,6 +143,8 @@ test("a serious cause that appears between samples raises a notice on any view",
       onQuit: () => {},
       onSave: async () => {},
       onExport: async () => "report.json",
+      onAction: async () => {},
+      output: { write: () => {} },
     });
   });
   try {
