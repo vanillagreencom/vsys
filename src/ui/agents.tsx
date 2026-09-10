@@ -8,7 +8,7 @@ import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
 import { Agent, AgentSummary } from "./agent";
 import { narrowWidth, wideWidth } from "./chrome";
-import { type Column, cell, columnGap, columnsWidth, fit } from "./columns";
+import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import { amount, blockedText, laneValue, share, sortLanes } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, ui } from "./theme";
@@ -45,7 +45,8 @@ export const columnLabels: Record<string, string> = {
   sccache: "sccache",
   blocked: "Blocked",
 };
-const widths: Record<string, number> = {
+/** Table columns wider than the default, because their values are names. */
+const wideColumns: Record<string, number> = {
   name: 26,
   account: 14,
   cwd: 30,
@@ -53,7 +54,29 @@ const widths: Record<string, number> = {
   tool: 10,
   cgroup: 30,
 };
-const columnWidth = (column: string) => widths[column] ?? 12;
+/** Table columns whose values are numbers, which read down their last digit. */
+const numericColumns = new Set([
+  "cpu",
+  "pressure",
+  "rss",
+  "swap",
+  "tasks",
+  "rustc",
+  "cargo",
+  "tests",
+  "age",
+]);
+/**
+ * One table column, from the same spec the list rows read. The heading and
+ * the row under it are built from this and cannot drift apart.
+ */
+export function tableColumn(name: string): Column {
+  return {
+    label: columnLabels[name] ?? name,
+    width: wideColumns[name] ?? 12,
+    align: numericColumns.has(name) ? "right" : undefined,
+  };
+}
 /** The lanes whose text matches the query, in the configured order. */
 export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
   const q = query.toLowerCase();
@@ -307,6 +330,8 @@ export function Agents({
     },
   ];
   const [nameColumn] = laneColumns;
+  // The table's own columns, read by its heading and by every row in it.
+  const tableColumns = c.columns.map(tableColumn);
   const laneColumn = (label: string): Column => {
     const found = laneColumns.find((x) => x.label === label);
     if (!found) throw new Error(`No lane column named ${label}`);
@@ -356,29 +381,47 @@ export function Agents({
             contentOptions={{ flexShrink: 0 }}
           >
             <box flexDirection="column" flexShrink={0}>
+              {/* One cell per column so a click sorts it, spaced by the gap
+                  the rows under it are joined with. */}
               <box height={1} flexShrink={0} flexDirection="row">
+                {/* The marker column sits outside the gapped cells, because a
+                    row draws its marker with no gap after it. */}
                 <Line width={1} height={1}>
                   {" "}
                 </Line>
-                {c.columns.map((name) => (
-                  <Line
-                    key={name}
-                    width={columnWidth(name)}
-                    height={1}
-                    flexShrink={0}
-                    truncate
-                    attributes={c.sort === name ? ui.bold : ui.dim}
-                    onMouseDown={() =>
-                      save({
-                        ...c,
-                        sort: name,
-                        descending: c.sort === name ? !c.descending : true,
-                      })
-                    }
-                  >
-                    {`${columnLabels[name] ?? name}${c.sort === name ? (c.descending ? " ↓" : " ↑") : ""}`}
-                  </Line>
-                ))}
+                <box
+                  height={1}
+                  flexShrink={0}
+                  flexDirection="row"
+                  gap={columnGap.length}
+                >
+                  {tableColumns.map((column, at) => {
+                    const name = c.columns[at];
+                    const sorted = c.sort === name;
+                    return (
+                      <Line
+                        key={name}
+                        width={column.width}
+                        height={1}
+                        flexShrink={0}
+                        truncate
+                        attributes={sorted ? ui.bold : ui.dim}
+                        onMouseDown={() =>
+                          save({
+                            ...c,
+                            sort: name,
+                            descending: sorted ? !c.descending : true,
+                          })
+                        }
+                      >
+                        {cell(
+                          column,
+                          `${column.label}${sorted ? (c.descending ? " ↓" : " ↑") : ""}`,
+                        )}
+                      </Line>
+                    );
+                  })}
+                </box>
               </box>
               <List
                 items={lanes}
@@ -395,14 +438,11 @@ export function Agents({
                       onOpen(lane.id);
                     }}
                   >
-                    {c.columns
-                      .map((name) =>
-                        fit(
-                          safe(laneValue(lane, name, c)),
-                          columnWidth(name) - 1,
-                        ),
+                    {tableColumns
+                      .map((column, at) =>
+                        cell(column, safe(laneValue(lane, c.columns[at], c))),
                       )
-                      .join(" ")}
+                      .join(columnGap)}
                   </Row>
                 )}
               />

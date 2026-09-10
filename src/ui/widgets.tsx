@@ -196,7 +196,8 @@ export function Tile({
   label: string;
   value: string;
   level?: Level;
-  detail: string;
+  /** Omitted where the number needs no context, which drops its row. */
+  detail?: string;
   /** Marked when the reader has moved the selection onto this tile. */
   selected?: boolean;
   /** A one-row sparkline under the number, when history exists. */
@@ -236,11 +237,22 @@ export function Tile({
           <Sparkline marks={chart} color={chartColor ?? levelColor(level)} />
         </Line>
       )}
-      <Line height={1} width="100%" truncate attributes={ui.dim}>
-        {sized(safe(detail))}
-      </Line>
+      {detail !== undefined && (
+        <Line height={1} width="100%" truncate attributes={ui.dim}>
+          {sized(safe(detail))}
+        </Line>
+      )}
     </box>
   );
+}
+/** The rows a tile row occupies, so a caller can budget the space it takes. */
+export function tilesHeight(
+  count: number,
+  width: number | undefined,
+  lines: number,
+): number {
+  const rows = Math.ceil(count / tilesPerRow(count, width));
+  return rows * lines + (rows - 1);
 }
 
 /** The columns a tile needs before its own text starts running together. */

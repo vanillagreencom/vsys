@@ -467,9 +467,13 @@ test("the Timeline change list stops at the rows the viewport has", async () => 
   try {
     await t.press("6");
     const frame = t.frame();
-    expect(frame).toContain("What changed  6 of 12, newest first");
-    expect(frame).toMatch(/Lane started\s+lane-5/);
+    expect(frame).toContain("What changed  8 of 12, newest first");
+    expect(frame).toMatch(/Lane started\s+lane-7/);
     expect(frame).not.toContain("lane-11");
+    // The cursor tiles summarise the six metrics, so a terminal too short for
+    // both drops the sparkline rows rather than the change list.
+    expect(frame).toContain("Memory wait");
+    expect(frame).not.toMatch(/Memory wait\s+·/);
     // A 400-character subject takes one row and cannot push the rest out.
     expect(frame).not.toContain("xxxxxxxxxx\n");
     expect(frame).toContain("? keys");
@@ -493,9 +497,9 @@ test("an alert inside its hold does not mark a change on the strip", async () =>
     const frame = t.frame();
     expect(frame).toContain("Nothing changed in this window");
     // The rule fired, but no event holds yet, so the strip stays unmarked.
-    const rows = frame.split("\n");
-    const strip = rows[rows.findIndex((row) => row.includes("At cursor")) - 2];
-    expect(strip).toContain("▲");
+    // The strip is the row carrying the cursor mark, under the charts.
+    const strip = frame.split("\n").find((row) => row.includes("▲"));
+    expect(strip).toBeDefined();
     expect(strip).not.toContain("!");
   } finally {
     await t.close();
@@ -1324,6 +1328,82 @@ test("a tile in a narrow pane marks its cut instead of stopping mid-word", async
       .find((row) => row.includes("of one core"));
     expect(line).toBeDefined();
     expect(line).toContain("…");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the cursor readings are tiles, one quantity above each number", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const s = emptySnapshot(2000);
+  s.system.pressure.cpu = { some: 12, full: 0, total: 0 };
+  h.add(s);
+  const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
+  try {
+    await t.press("6");
+    const lines = t.frame().split("\n");
+    // Six readings on one row joined by dots is a run to parse; each now
+    // names its quantity on the row above its own number.
+    const labels = lines.findIndex(
+      (line) => line.includes("CPU wait") && line.includes("Disk wait"),
+    );
+    expect(labels).toBeGreaterThan(-1);
+    expect(lines[labels + 1]).toContain("12.0%");
+    expect(t.frame()).not.toMatch(/cpu wait 12\.0% ·/);
+  } finally {
+    await t.close();
+  }
+  // No sample under the cursor says so rather than printing a row of dots.
+  const bare = new History(c);
+  const empty = emptySnapshot(1000);
+  const b = await mount(
+    empty,
+    c,
+    { width: 180, height: 44 },
+    { history: bare },
+  );
+  try {
+    await b.press("6");
+    expect(b.frame()).toContain("No sample under the cursor");
+  } finally {
+    await b.close();
+  }
+});
+
+test("the table's cells land under their headings, not beside them", async () => {
+  // Sorted by name, so the compared headings carry no sort marker of their own.
+  const c = {
+    ...defaults(),
+    columns: ["name", "cpu", "rss", "state"],
+    sort: "name",
+  };
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 5, rss: 1024 })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 24 });
+  try {
+    await t.press("2");
+    await t.press("d");
+    const lines = t.frame().split("\n");
+    const heading = lines.find(
+      (line) => line.includes("Agent") && line.includes("Memory"),
+    );
+    const row = lines.find((line) => line.includes("lane-a"));
+    expect(heading).toBeDefined();
+    expect(row).toBeDefined();
+    if (!heading || !row) throw new Error("no heading and row to compare");
+    // The heading and the row read one spec, so a numeric cell ends where its
+    // heading ends whatever the widths are.
+    for (const [label, value] of [
+      ["CPU", "5.0%"],
+      ["Memory", "1.0 KiB"],
+    ] as const)
+      expect({
+        label,
+        ends: heading.indexOf(label) + label.length,
+      }).toEqual({ label, ends: row.indexOf(value) + value.length });
   } finally {
     await t.close();
   }
