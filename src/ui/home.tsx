@@ -80,6 +80,7 @@ export function Home({
   width,
   onSelect,
   onOpen,
+  onCopy,
 }: {
   snapshot: Snapshot;
   config: Config;
@@ -90,6 +91,8 @@ export function Home({
   width: number;
   onSelect: (index: number) => void;
   onOpen: (item: HomeItem) => void;
+  /** Undefined when the selected row carries no command, which the shell says. */
+  onCopy: (command: string | undefined) => void;
 }) {
   const rows = homeItems(items, s);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
@@ -107,6 +110,11 @@ export function Home({
     }
     if (name === c.keys.open && rows[selected]) {
       onOpen(rows[selected]);
+      return true;
+    }
+    if (name === c.keys.copy) {
+      const row = rows[selected];
+      onCopy(row?.kind === "concern" ? row.item.command : undefined);
       return true;
     }
     return false;
@@ -199,7 +207,7 @@ export function Home({
                     </Line>
                   )}
                   <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
-                    {`${keyLabel(c.keys.open)} opens ${row.item.laneId ? "the agent" : row.item.view}`}
+                    {`${keyLabel(c.keys.open)} opens ${row.item.laneId ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`}
                   </Line>
                 </box>
               )}

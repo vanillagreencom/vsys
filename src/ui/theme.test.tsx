@@ -25,6 +25,8 @@ test("the screen uses the terminal's own colours and marks selection in the acce
       onSave={async () => {}}
       onQuit={() => {}}
       onExport={async () => "snapshot.json"}
+      onAction={async () => {}}
+      output={{ write: () => {} }}
     />,
     { width: 140, height: 35 },
   );
