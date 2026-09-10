@@ -48,7 +48,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - A key a screen consumes never reaches the shell: a digit typed into the settings editor is text, not a tab. `src/ui/App.test.tsx` checks the editor.
 - Home keeps the selected card visible and opens its agent. `src/ui/App.test.tsx` checks a long list in a small terminal.
 - Opening a card lands on the row it names: the quota card on its directory in Storage, the memory-threshold card on its group in Resources. `src/ui/attention.test.ts` checks the targets the cards carry; `src/ui/App.test.tsx` checks where the screen lands.
-- A footer names only keys its screen handles. `src/ui/App.test.tsx` checks the agent detail against the list it sits inside.
+- A footer names only keys its screen handles. `src/ui/App.test.tsx` presses every key every screen's footer offers and requires the screen to act on it, and checks the agent detail against the list it sits inside.
 - Leaving an agent returns to the list with that agent selected, including one opened from Home. `src/ui/App.test.tsx` checks both routes.
 - Home opens on the most urgent row: a concern where there is one, the busiest agent where there is not. `src/ui/App.test.tsx` checks both.
 - The tiles are reachable with the arrow keys and each opens the screen that breaks its number down. `src/ui/App.test.tsx` checks all four and that moving off the tiles returns Enter to the rows.

@@ -159,7 +159,17 @@ export function Agents({
   useEffect(() => {
     if (laneId === null) return;
     const at = lanes.findIndex((lane) => lane.id === laneId);
-    if (at >= 0) setSelected(at);
+    if (at >= 0) {
+      setSelected(at);
+      return;
+    }
+    // The lane is not in this list. It cannot be a filter hiding it: this
+    // screen unmounts when the reader leaves it, so a query cannot outlive
+    // the screen, and every route that opens a lane from inside the list
+    // picks a row the list is already showing. What is left is a lane that
+    // has exited, so hold a row that exists rather than an index past the end
+    // of the list, which highlights nothing and opens nothing.
+    setSelected((i) => Math.min(i, Math.max(0, lanes.length - 1)));
   }, [laneId, lanes]);
   const save = (value: Config) => {
     try {

@@ -96,7 +96,11 @@ const stale: Record<
  * ignores. The agent detail is its own entry because it takes none of the
  * list's keys and adds a way back.
  */
-const hints: Record<
+/**
+ * What each screen's footer offers. A screen names only keys it acts on,
+ * which `App.test.tsx` holds it to by pressing every one of them.
+ */
+export const hints: Record<
   View | "Agent" | "AgentGone",
   (c: Config) => [string, string][]
 > = {
@@ -132,10 +136,10 @@ const hints: Record<
     ["↑↓", "select"],
     [c.keys.open, "processes"],
   ],
-  Storage: (c) => [
-    ["↑↓", "select"],
-    [c.keys.open, "details"],
-  ],
+  // A Storage row shows its detail under the selection, so moving the
+  // selection is the whole of what the reader does here and Enter has nothing
+  // to act on. A hint for it would be a promise the screen cannot keep.
+  Storage: () => [["↑↓", "select"]],
   Timeline: (c) => [
     ["←→", "time"],
     [c.keys.window, "window"],
@@ -351,7 +355,10 @@ export function App({
           if (row.kind === "agent") openLane(row.lane.id);
           else openCard(row.item.view, row.item.target);
         }}
-        onOpenView={navigate}
+        // A tile drills down into a screen, the same as a card does, so it
+        // goes through the same door: opening one on a pinned sample would
+        // show the pinned data beside a Home that is live.
+        onOpenView={(to) => openCard(to, undefined)}
       />
     );
   else if (view === "Agents")

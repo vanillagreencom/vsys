@@ -140,7 +140,7 @@ export function Builds({
             summary.jobservers.length
               ? `${summary.jobservers.map((j) => j.fifo).join(", ")}${
                   summary.jobservers.some((j) => j.total === null)
-                    ? " · pool size not readable from the fifo"
+                    ? " · pool size not stated in the build flags"
                     : ""
                 }`
               : "no make jobserver in use"

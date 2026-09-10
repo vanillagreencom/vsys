@@ -12,11 +12,12 @@ import {
   everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
+  processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import { App, Waiting } from "./App";
+import { App, hints, Waiting } from "./App";
 import { attention } from "./attention";
-import { headerRowWidth } from "./chrome";
+import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
@@ -1087,7 +1088,48 @@ test("opening a concern lands on the row the card names", async () => {
   }
 });
 
+/** A sample that gives every screen rows to act on. */
+function everyScreenSnapshot() {
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cpu: 9, builds: { "ld.mold": 1 } }),
+    laneSnapshot({ id: "b", name: "lane-b", cpu: 1 }),
+  ];
+  s.groups = [
+    groupSnapshot({ path: "busy.scope", name: "busy.scope", cpuPercent: 50 }),
+    groupSnapshot({ path: "idle.scope", name: "idle.scope" }),
+  ];
+  s.storage.volumes = [volumeSnapshot("/data")];
+  return s;
+}
+
 test("every screen's footer names only keys that screen handles", async () => {
+  const c = defaults();
+  // Arrow pairs are movement, which the list tests already cover; every other
+  // hint is a promise that pressing that key does something on that screen.
+  const pressable = (key: string) => key !== "↑↓" && key !== "←→";
+  for (const view of views)
+    for (const [key] of hints[view](c).filter(([key]) => pressable(key))) {
+      const t = await mount(everyScreenSnapshot(), c, {
+        width: 160,
+        height: 40,
+      });
+      try {
+        await t.press(String(views.indexOf(view) + 1));
+        const before = t.frame();
+        await t.press(key === "return" ? "enter" : key);
+        expect({ view, key, acted: t.frame() !== before }).toEqual({
+          view,
+          key,
+          acted: true,
+        });
+      } finally {
+        await t.close();
+      }
+    }
+});
+
+test("the agent detail names only its own keys, and the list gets its back", async () => {
   const c = defaults();
   const s = emptySnapshot();
   s.lanes = [laneSnapshot({ name: "lane-a" })];
@@ -1492,6 +1534,97 @@ test("a memory-reclaim card opens on the scope holding the swap", async () => {
     // Resources already had selected, silently and without an error.
     expect(t.frame()).toContain("Groups");
     expect(selectedRow(t.frame())).toContain("gnome");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a tile opens live data, not the sample the reader pinned", async () => {
+  const c = defaults();
+  const h = new History(c);
+  const s = emptySnapshot(1000);
+  s.groups = [
+    groupSnapshot({ path: "busy.scope", name: "busy.scope", cpuPercent: 50 }),
+  ];
+  h.add(s);
+  const t = await mount(s, c, { width: 160, height: 40 }, { history: h });
+  try {
+    await t.press("6");
+    await t.press("p");
+    // Timeline is not one of the pinned screens, so it says which ones are.
+    expect(t.frame()).toContain("Agents, Resources, Builds and Storage show");
+    await t.press("1");
+    await t.press("right");
+    await t.press("enter");
+    // A tile drills down like a card does, so it clears the pin. Landing on
+    // Resources with the pin still set would show the pinned sample beside a
+    // Home that was live.
+    expect(t.frame()).toContain("Groups");
+    expect(t.frame().split("\n")[0]).toContain("● live");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a lane that exits while open leaves the list on a row that exists", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cpu: 9 }),
+    laneSnapshot({ id: "b", name: "lane-b", cpu: 5 }),
+    laneSnapshot({ id: "z", name: "lane-z", cpu: 1 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 40 });
+  try {
+    await t.press("2");
+    await t.press("j");
+    await t.press("j");
+    await t.press("enter");
+    expect(t.frame()).toContain("lane-z");
+    // The process exits while its detail is open.
+    await t.update({ ...s, lanes: s.lanes.slice(0, 2) });
+    expect(t.frame()).toContain("no longer in the sample");
+    await t.press("escape");
+    // Back in the list, the row number the reader left on names nothing. A
+    // row that exists takes the highlight, and Enter opens that row rather
+    // than finding no lane at all.
+    expect(selectedRow(t.frame())).toContain("lane-b");
+    await t.press("enter");
+    const footer = t.frame().split("\n").at(-2) ?? "";
+    expect(footer).toContain("back");
+    expect(footer).not.toContain("find");
+    expect(t.frame()).toContain("lane-b");
+  } finally {
+    await t.close();
+  }
+});
+
+test("an unstated pool size is not reported as an unreadable one", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", pids: [40], builds: { rustc: 1 } }),
+  ];
+  // A build process advertising a token pool whose flags carry no -j. Nothing
+  // is read from the fifo, by design: reading it would take a token.
+  s.procs = [
+    processSnapshot({
+      pid: 40,
+      build: "rustc",
+      env: { MAKEFLAGS: "--jobserver-auth=fifo:/tmp/pool" },
+    }),
+  ];
+  // Wide enough that the tile draws the whole sentence rather than a cut one.
+  const t = await mount(s, c, { width: 220, height: 30 });
+  try {
+    await t.press("4");
+    const frame = t.frame();
+    expect(frame).toContain("pool size not stated in the build flags");
+    // The old wording sent a reader to look for a permissions problem that
+    // never existed.
+    expect(frame).not.toContain("not readable");
+    expect(frame).not.toContain("from the fifo");
   } finally {
     await t.close();
   }
