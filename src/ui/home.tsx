@@ -358,12 +358,23 @@ export function Home({
   const topCpu = Math.max(100, ...agents.map((r) => r.lane.cpu ?? 0));
   // The marker, the bar and the readings take fixed columns; the name has the
   // rest, and the heading reads the same spec the rows do.
-  const fixed: Column[] = [
+  // The id is here for the same reason it is on the Agents list: six rows
+  // reading `method` with nothing beside them name nothing at all. This table
+  // shares its width with the column beside it, so when the name cannot keep
+  // its floor the state goes first — a blocked or running lane already shows
+  // in its numbers, while a name that identifies nothing shows in nothing.
+  const homeNameFloor = 24;
+  const fixedWith = (state: boolean): Column[] => [
+    { label: "PID", width: 8, align: "right" },
     { label: "", width: 10 },
     { label: "CPU", width: 7, align: "right" },
     { label: "Memory", width: 10, align: "right" },
-    { label: "State", width: 9 },
+    ...(state ? [{ label: "State", width: 9 } as Column] : []),
   ];
+  const nameRoom = (state: boolean) =>
+    panel - 5 - columnsWidth(fixedWith(state));
+  const withState = nameRoom(true) >= homeNameFloor;
+  const fixed = fixedWith(withState);
   // Three columns, so three rows scan as three rows. The subject takes what
   // the time and the kind leave and is cut through the same helper every other
   // cell uses, which ends a cut with its mark instead of stopping mid-word.
@@ -375,12 +386,13 @@ export function Home({
   const agentColumns: Column[] = [
     {
       label: "Agent",
-      width: Math.max(8, Math.min(40, panel - 5 - columnsWidth(fixed))),
+      width: Math.max(8, Math.min(40, nameRoom(withState))),
     },
     ...fixed,
   ];
-  const [nameColumn, barColumn, cpuColumn, memoryColumn, stateColumn] =
+  const [nameColumn, pidColumn, barColumn, cpuColumn, memoryColumn] =
     agentColumns;
+  const stateColumn = withState ? agentColumns[5] : undefined;
   return (
     <scrollbox
       ref={scroller}
@@ -560,6 +572,9 @@ export function Home({
                 <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>
                   <Row selected={marked(i)} onOpen={() => onOpen(row)}>
                     {safe(cell(nameColumn, row.lane.name))}
+                    <span attributes={ui.dim}>
+                      {`${columnGap}${cell(pidColumn, row.lane.mainPid ? String(row.lane.mainPid) : "")}`}
+                    </span>
                     {columnGap}
                     <Bar
                       value={row.lane.cpu}
@@ -577,9 +592,9 @@ export function Home({
                       value={row.lane.rss}
                       text={cell(memoryColumn, amount(row.lane.rss, c))}
                     />
-                    {columnGap}
+                    {stateColumn && columnGap}
                     <span attributes={ui.dim}>
-                      {cell(stateColumn, row.lane.state)}
+                      {stateColumn ? cell(stateColumn, row.lane.state) : ""}
                     </span>
                   </Row>
                 </box>

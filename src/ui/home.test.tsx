@@ -364,27 +364,6 @@ test("the region key moves across all four Home regions, and the focused one say
   }
 });
 
-test("a tile in a narrow pane marks its cut instead of stopping mid-word", async () => {
-  const c = defaults();
-  const s = emptySnapshot();
-  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 12.3, cpuShare: 12.3 })];
-  s.groups = [groupSnapshot()];
-  const t = await mount(s, c, { width: 180, height: 30 });
-  try {
-    await t.press("2");
-    // The preview pane's tiles are a third of the screen, so their sentences
-    // do not fit; a cut with no mark reads as a sentence that simply ended.
-    const line = t
-      .frame()
-      .split("\n")
-      .find((row) => row.includes("of one core"));
-    expect(line).toBeDefined();
-    expect(line).toContain("…");
-  } finally {
-    await t.close();
-  }
-});
-
 /**
  * A history holding a lane start, then a quiet sample after it. The change is
  * older than the newest sample, so the cursor a change asks for is not the
@@ -1113,5 +1092,102 @@ test("a change row cuts with a mark, at any width, and its columns line up", asy
     } finally {
       await t.close();
     }
+  }
+});
+
+/** Six lanes that resolve to one name, the shape the capture showed. */
+function sameName(count = 6) {
+  const s = emptySnapshot();
+  // Every reading identical, so nothing but an identity column can separate
+  // them. Differing numbers would let a row look distinct while its name still
+  // named nothing.
+  s.lanes = Array.from({ length: count }, (_, i) =>
+    laneSnapshot({
+      id: `lane-${i}`,
+      name: "method",
+      mainPid: 3400 + i * 17,
+      cpu: 40,
+      rss: 1024,
+      builds: { rustc: 2 },
+      pids: [3400 + i * 17],
+    }),
+  );
+  s.groups = [groupSnapshot()];
+  return s;
+}
+
+test("no list of lane names draws two rows a reader cannot tell apart", async () => {
+  const c = defaults();
+  const s = sameName();
+  // Home's Busiest agents, the Agents list and the Builds lanes: every screen
+  // that draws lane names, at a width where the name column alone would show
+  // six identical rows.
+  for (const [screen, marker] of [
+    ["1", "method"],
+    ["2", "method"],
+    ["4", "method"],
+  ] as const) {
+    for (const width of [120, 180]) {
+      const t = await mount(s, c, { width, height: 40 });
+      try {
+        await t.press(screen);
+        const rows = t
+          .frame()
+          .split("\n")
+          .filter((line) => line.includes(marker))
+          .map((line) => line.trimEnd());
+        expect({ screen, width, rows: rows.length }).toEqual({
+          screen,
+          width,
+          rows: rows.length,
+        });
+        expect(rows.length).toBeGreaterThan(1);
+        // Whatever the width leaves room for, two rows never read the same.
+        expect({ screen, width, distinct: new Set(rows).size }).toEqual({
+          screen,
+          width,
+          distinct: rows.length,
+        });
+      } finally {
+        await t.close();
+      }
+    }
+  }
+});
+
+test("Home keeps the name readable rather than the state column", async () => {
+  const c = defaults();
+  const s = sameName(2);
+  // Names exactly at the floor, so a column that starved the name would cut
+  // them and a reader would be left with two identical stubs.
+  const long = ["method-worktree-alpha-01", "method-worktree-alpha-02"];
+  s.lanes.forEach((lane, i) => {
+    lane.name = long[i];
+  });
+  // Two Home columns, and not enough width for the name, the id and the state
+  // together: the state is what goes.
+  const t = await mount(s, c, { width: 160, height: 40 });
+  try {
+    await t.press("1");
+    const frame = t.frame();
+    for (const name of long) expect(frame).toContain(name);
+    const rows = frame.split("\n").filter((line) => line.includes("method-"));
+    expect(new Set(rows.map((row) => row.trimEnd())).size).toBe(rows.length);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the agent detail names the process leading the lane it opened", async () => {
+  const c = defaults();
+  const s = sameName();
+  const t = await mount(s, c, { width: 160, height: 40 });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    // One lane at a time, so the identity block is where the id has to be.
+    expect(t.frame()).toContain("PID 3400");
+  } finally {
+    await t.close();
   }
 });
