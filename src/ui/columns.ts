@@ -13,9 +13,14 @@ export const columnGap = "  ";
 /** A cut is marked, so a shortened name is never mistaken for a whole one. */
 const ellipsis = "…";
 /**
- * Pad or cut `text` to exactly `width` display columns. Code points are
- * counted rather than UTF-16 units, so a name outside the basic plane is not
- * cut through the middle of a character.
+ * Pad or cut `text` to exactly `width` code points. Both branches count code
+ * points, never UTF-16 units, so a name outside the basic plane is neither cut
+ * through the middle of a character nor padded one column short: `padEnd` and
+ * `padStart` count units, and an emoji is two of them.
+ *
+ * A code point is not a terminal cell. A CJK character draws two cells, so a
+ * name holding one still misaligns its column. Nothing vsys renders reaches
+ * that today, and cell-width measurement is not built here.
  */
 export function fit(
   text: string,
@@ -24,8 +29,10 @@ export function fit(
 ): string {
   if (width <= 0) return "";
   const points = [...text];
-  if (points.length <= width)
-    return align === "right" ? text.padStart(width) : text.padEnd(width);
+  if (points.length <= width) {
+    const padding = " ".repeat(width - points.length);
+    return align === "right" ? `${padding}${text}` : `${text}${padding}`;
+  }
   return width === 1
     ? ellipsis
     : `${points.slice(0, width - 1).join("")}${ellipsis}`;

@@ -63,6 +63,24 @@ test("a stored value reads in the unit the reader reads, not the unit it is stor
   expect(settingDisplay("historyHours", 1000, c)).toBe("1000");
 });
 
+test("an interval under a second reads as itself, never as zero", () => {
+  const c = defaults();
+  // `age()` floors to whole seconds. Through it a 500 ms refresh read `0s`
+  // and 1500 ms read `1s`, so a reader who set 500 was told the interval was
+  // zero. `validate()` accepts refreshMs from 100 upward, so these are values
+  // the settings screen has to show.
+  expect(settingDisplay("refreshMs", 100, c)).toBe("100ms");
+  expect(settingDisplay("refreshMs", 500, c)).toBe("500ms");
+  expect(settingDisplay("refreshMs", 999, c)).toBe("999ms");
+  expect(settingDisplay("refreshMs", 1500, c)).toBe("1.5s");
+  expect(settingDisplay("refreshMs", 2250, c)).toBe("2.3s");
+  // A whole number of seconds keeps the shorter reading it already had, and a
+  // minute or more still reads in the unit every other span uses.
+  expect(settingDisplay("refreshMs", 1000, c)).toBe("1s");
+  expect(settingDisplay("scratchRefreshMs", 30000, c)).toBe("30s");
+  expect(settingDisplay("scratchRefreshMs", 60000, c)).toBe("1m");
+});
+
 test("Settings states each capability and why a missing one is missing", () => {
   const caps = capabilitySnapshot();
   expect(caps.map(capabilityLine)).toEqual([

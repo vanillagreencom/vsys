@@ -314,6 +314,21 @@ export function settingHelp(key: string): string {
   return settingInfo[key]?.help ?? "";
 }
 /**
+ * A stored millisecond count as the interval it sets. `age()` floors to whole
+ * seconds, so a 500 ms refresh read `0s` and 1500 ms read `1s`, telling a
+ * reader an interval they had set was zero. `validate()` accepts `refreshMs`
+ * from 100, so sub-second and fractional-second intervals are ordinary values
+ * and keep their own reading. A minute or more falls back to `age()`, which
+ * every other span on screen is read in.
+ */
+function interval(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  return seconds < 60
+    ? `${seconds.toFixed(1).replace(/\.0$/, "")}s`
+    : age(seconds);
+}
+/**
  * A stored value as the reader reads it: a byte count in its unit, an interval
  * as a duration, a boolean as a word, and a long list as what it starts with
  * and how much more it holds. The editor still opens the stored value, so
@@ -331,7 +346,7 @@ export function settingDisplay(key: string, value: unknown, c: Config): string {
       case "bytes":
         return bytes(value, c);
       case "ms":
-        return age(value / 1000);
+        return interval(value);
       case "percent":
         return `${value}%`;
     }

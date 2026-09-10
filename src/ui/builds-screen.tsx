@@ -62,7 +62,7 @@ export function Builds({
     },
     ...fixed,
   ];
-  const [nameColumn, barColumn, countColumn] = buildColumns;
+  const [nameColumn, barColumn, countColumn, linkerColumn] = buildColumns;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setSelected((i) => nextDown(rows.length, i));
@@ -181,7 +181,10 @@ export function Builds({
             />
             {columnGap}
             <span attributes={ui.dim}>
-              {`${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`}
+              {cell(
+                linkerColumn,
+                `${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`,
+              )}
             </span>
           </Row>
         )}

@@ -32,6 +32,28 @@ test("a cut falls between characters, never through one", () => {
   expect([...cut].length).toBe(3);
 });
 
+test("padding counts code points, so a cell is never one column short", () => {
+  // `padEnd` and `padStart` count UTF-16 units, and an emoji is two of them:
+  // padding by unit leaves the cell a column narrow and moves the cell beside
+  // it, which is the drift one shared column spec exists to prevent.
+  expect(fit("\u{1F642}", 6)).toBe("\u{1F642}     ");
+  expect(fit("\u{1F642}", 6, "right")).toBe("     \u{1F642}");
+  for (const align of [undefined, "right"] as const)
+    expect({ align, points: [...fit("\u{1F642}", 6, align)].length }).toEqual({
+      align,
+      points: 6,
+    });
+  const columns: Column[] = [
+    { label: "Agent", width: 6 },
+    { label: "CPU", width: 6, align: "right" },
+  ];
+  const row = [cell(columns[0], "\u{1F642}"), cell(columns[1], "5.0%")].join(
+    columnGap,
+  );
+  expect([...row].length).toBe(columnsWidth(columns));
+  expect([...row].length).toBe([...headerText(columns)].length);
+});
+
 test("the heading is built from the same spec its rows read", () => {
   const columns: Column[] = [
     { label: "Agent", width: 10 },
