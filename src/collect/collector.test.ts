@@ -498,27 +498,57 @@ test("one tmux read resolves every lane's pane, however many lanes there are", a
   expect(reads).toBe(2);
 });
 
-test("no tmux server means no addresses and no read attempted", async () => {
+test("a tmux server that starts after vsys still gets its lanes addressed", async () => {
   const f = setup();
   panedFixture(f, 3);
   let reads = 0;
+  // The ordinary order for this program: vsys is a dashboard for agents, and
+  // the agents, with the tmux they run in, start after it.
+  let running = false;
   const collector = new Collector(f.config, 100, 4096, false, undefined, {
     probe: () => ({ failure: "incomplete", detail: "no server running" }),
     panes: async () => {
       reads++;
-      return { socket: "", byId: new Map() };
+      if (!running) throw new Error("no server on /tmp/tmux-1000/default");
+      return {
+        socket: "/tmp/tmux-1000/default",
+        byId: new Map(
+          Array.from({ length: 3 }, (_, i) => [
+            `%${i}`,
+            { address: `vsys:${i}.1`, window: `w-${i}` },
+          ]),
+        ),
+      };
     },
   });
-  const s = await collector.sample(1000);
-  expect(reads).toBe(0);
-  expect(s.lanes.every((lane) => lane.address === "")).toBe(true);
+  const before = await collector.sample(1000);
+  expect(before.lanes.every((lane) => lane.address === "")).toBe(true);
   // The pane handle still arrives; only its resolution is missing.
-  expect(s.lanes.some((lane) => lane.pane.startsWith("%"))).toBe(true);
-  expect(s.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
+  expect(before.lanes.some((lane) => lane.pane.startsWith("%"))).toBe(true);
+  expect(before.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
     false,
   );
-  // Nothing else about the sample changes.
-  expect(s.errors).toEqual([]);
+  // A server that never answered is a capability with a reason, not a source
+  // the reader is told is unreadable on every tick for the life of the run.
+  expect(before.errors).toEqual([]);
+  // A server comes up. Nothing re-probes and nothing restarts.
+  running = true;
+  const after = await collector.sample(2000);
+  expect(after.lanes.filter((lane) => lane.address !== "")).toHaveLength(3);
+  expect(after.lanes.find((lane) => lane.pane === "%0")?.address).toBe(
+    "vsys:0.1",
+  );
+  expect(after.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
+    true,
+  );
+  // Gated on the startup probe this read was never attempted at all, so the
+  // count is what says the gate opened rather than the addresses arriving by
+  // some other route.
+  expect(reads).toBe(2);
+  // The first snapshot is not rewritten by what the second learned.
+  expect(before.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
+    false,
+  );
 });
 
 test("a tmux server that stops answering mid-run costs the addresses, not the sample", async () => {

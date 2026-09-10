@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { act } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
@@ -238,6 +239,8 @@ test("the agent detail names only its own keys, and the list gets its back", asy
 async function paned(
   hooks: Parameters<typeof mount>[3] = {},
   lane: Partial<Parameters<typeof laneSnapshot>[0]> = {},
+  /** Short enough that the detail overflows, when that is what is under test. */
+  height = 45,
 ) {
   const c = defaults();
   const s = emptySnapshot();
@@ -250,9 +253,12 @@ async function paned(
     }),
   ];
   s.groups = [groupSnapshot()];
-  const t = await mount(s, c, { width: 160, height: 45 }, hooks);
+  const t = await mount(s, c, { width: 160, height }, hooks);
   await t.press("2");
   await t.press("enter");
+  // A reader arrives at a screen that has finished drawing itself. Pressing
+  // keys inside the same tick is a test's privilege, not a reader's.
+  await settle(t);
   // Processes and Launch sit above Terminal.
   for (let i = 0; i < 2; i++) await t.press("j");
   return { ...t, snapshot: s, config: c };
@@ -482,6 +488,103 @@ test("a switch that is refused tells the reader why", async () => {
     // The server's own words reach the reader. Dropped, the key did nothing
     // and said nothing, and the rejection went to the runtime instead.
     expect(t.frame()).toContain("can't find pane %1");
+  } finally {
+    await t.close();
+  }
+});
+
+/** Lets the second layout pass land, which is when a grown row knows its size. */
+async function settle(t: Awaited<ReturnType<typeof mount>>) {
+  // A render, so the effect runs against the new tree and schedules its second
+  // pass; then time for that pass; then a render to draw where it scrolled to.
+  await t.ui.renderOnce();
+  await act(async () => {
+    await Bun.sleep(20);
+  });
+  await t.ui.renderOnce();
+}
+
+test("a capture arriving under the reader does not take the row they are on", async () => {
+  let release: ((lines: string[]) => void) | null = null;
+  const t = await paned({
+    onCapture: () =>
+      new Promise<string[]>((resolve) => {
+        release = resolve;
+      }),
+  });
+  try {
+    await t.press("enter");
+    // Down to the last row, below the terminal the capture is about to fill.
+    for (let i = 0; i < 8; i++) await t.press("j");
+    await settle(t);
+    expect(selectedRow(t.frame())).toContain("Actions");
+    // Twelve lines land above the row the keys still act on. Told to re-run
+    // only when `selected` changed, this effect did not run at all, and the
+    // reader was left pressing enter on a row that had left the screen.
+    await act(async () => {
+      release?.(Array.from({ length: 12 }, (_, i) => `capline ${i}`));
+      await Promise.resolve();
+    });
+    await settle(t);
+    const frame = t.frame();
+    expect(frame).toContain("capline 11");
+    expect(selectedRow(frame)).toContain("Actions");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a sample leaves the reader where they scrolled to", async () => {
+  const t = await paned(
+    {
+      onCapture: async () =>
+        Array.from({ length: 12 }, (_, i) => `capline ${i}`),
+    },
+    {},
+    // Short enough that the detail is taller than the box holding it, which is
+    // the only shape in which there is anywhere for a reader to scroll.
+    24,
+  );
+  try {
+    await t.press("enter");
+    for (let i = 0; i < 8; i++) await t.press("j");
+    await settle(t);
+    // The wheel moves this box, so an effect that ran on every render and
+    // scrolled every time would take the reader back here on the next tick.
+    const band = (f: string) => f.split("\n").slice(3, 6).join("\n");
+    const standing = band(t.frame());
+    for (let i = 0; i < 20; i++) await t.wheel(40, 20, "up");
+    const wheeled = band(t.frame());
+    expect(wheeled).not.toBe(standing);
+    await t.update({ ...t.snapshot, time: t.snapshot.time + 1000 });
+    await settle(t);
+    expect(band(t.frame())).toBe(wheeled);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the detail opens at the top, not part-way down at its first section", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ pane: "%9", address: "vsys:1.1" })];
+  s.groups = [groupSnapshot()];
+  // Short enough that the sections sit below the fold, so scrolling to one of
+  // them would be visible.
+  const t = await mount(s, c, { width: 160, height: 24 });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    // Nothing has moved yet, so there is nothing to keep in view. Scrolling to
+    // the selected row on arrival would open the screen below the identity
+    // line and the charts, which is what the reader came here to read.
+    await act(async () => {
+      await Bun.sleep(20);
+    });
+    await t.ui.renderOnce();
+    const frame = t.frame();
+    expect(frame).toContain("account default");
+    expect(frame).toContain("PID 40");
   } finally {
     await t.close();
   }

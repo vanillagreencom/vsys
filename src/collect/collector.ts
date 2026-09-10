@@ -36,8 +36,17 @@ export class Collector {
   private engine = new AlertEngine();
   private processes: ProcessCollector;
   private controller = new AbortController();
-  /** Probed once: a kernel interface does not appear or vanish between ticks. */
+  /**
+   * Probed once: a kernel interface does not appear or vanish between ticks.
+   * tmux is the exception, and only half of it. Whether tmux is on the path is
+   * as static as the rest; whether a server answers is not, and this program
+   * is a dashboard for agents that start after it.
+   */
   private capabilities: Capability[];
+  /** tmux is installed, so a read is worth attempting however it went last. */
+  private tmuxOnPath: boolean;
+  /** A server answered the last time vsys asked, the startup probe included. */
+  private tmuxServed: boolean;
   constructor(
     readonly config: CollectionConfig,
     ticksPerSecond: number,
@@ -52,6 +61,22 @@ export class Collector {
     this.capabilities = probeCapabilities(
       config,
       tmux?.probe ?? (() => noTmux),
+    );
+    const probed = this.capabilities.find((cap) => cap.id === "tmux");
+    this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
+    this.tmuxServed = probed?.available === true;
+  }
+  /** What the last read says about the server, carried into the next sample. */
+  private recordTmux(outcome: Outcome): void {
+    this.capabilities = this.capabilities.map((cap) =>
+      cap.id === "tmux"
+        ? {
+            ...cap,
+            available: outcome === null,
+            failure: outcome?.failure ?? null,
+            detail: outcome?.detail ?? "",
+          }
+        : cap,
     );
   }
   close(): void {
@@ -125,15 +150,32 @@ export class Collector {
     // One read for the whole server, however many lanes ask for an address.
     // A server that stops answering mid-run leaves the addresses empty rather
     // than failing the sample: a pane address is a convenience, not a reading.
+    //
+    // The read is attempted whenever tmux is installed, not only when a server
+    // answered at startup. Gating on the startup probe froze a machine that
+    // had no server yet into never having one, which is the ordinary order for
+    // a dashboard whose agents start after it. The read is its own probe:
+    // measured on this machine, a refused `list-panes` costs 1.06 ms at the
+    // median against 1.26 ms for one that answers, so asking is cheaper than
+    // asking twice.
     let panes: PaneSet | undefined;
-    if (
-      this.tmux &&
-      this.capabilities.some((cap) => cap.id === "tmux" && cap.available)
-    )
+    if (this.tmux && this.tmuxOnPath)
       try {
         panes = await this.tmux.panes();
+        this.recordTmux(null);
+        this.tmuxServed = true;
       } catch (error) {
-        r.error("tmux list-panes", error);
+        // A server that never answered is a capability with a reason, which
+        // Settings shows. Reporting it as an unreadable source instead would
+        // put `1 sources unreadable` on the status line for the whole life of
+        // a machine that has tmux installed and simply is not running it.
+        // Losing a server that was answering is the thing worth a line.
+        if (this.tmuxServed) r.error("tmux list-panes", error);
+        this.tmuxServed = false;
+        this.recordTmux({
+          failure: "incomplete",
+          detail: error instanceof Error ? error.message : String(error),
+        });
       }
     mark("tmux");
     const s: Snapshot = {
