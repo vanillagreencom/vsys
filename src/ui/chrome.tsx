@@ -33,8 +33,30 @@ export function keyLabel(key: string): string {
 /** The settings key that opens a view is the view's own name. */
 export const viewKey = (view: View): string => view.toLowerCase();
 
-/** The width under which the tabs take their own row. */
+/** The width under which a list drops the columns it can do without. */
 export const narrowWidth = 100;
+/** The width at or above which a screen can hold two columns side by side. */
+export const wideWidth = 150;
+/** The columns one tab takes: its key, a space, and the longest view name. */
+const tabWidth = (c: Config) =>
+  Math.max(...views.map((v) => c.keys[viewKey(v)].length + 1 + v.length));
+/**
+ * Whether the tabs fit on the header's own row. The host and the clock are
+ * reserved first, so a tab row is offered only what is actually left: at a
+ * hundred columns the capture read `cachyHome` and `7 Settin5:50:23 PM`
+ * because the tabs took the space those two were already using.
+ */
+export function tabsFitOneRow(
+  width: number,
+  host: string,
+  clock: string,
+  c: Config,
+): boolean {
+  // Two padding columns, the program name and its live marker, the host, the
+  // clock, and a blank on either side of the tab block.
+  const reserved = 2 + 12 + [...host].length + [...clock].length + 4;
+  return width - reserved >= tabWidth(c) * views.length + views.length - 1;
+}
 /**
  * The program, whether it shows live data, the host, the tabs and the clock.
  * One row when the terminal is wide enough, two when it is not.
@@ -56,7 +78,8 @@ export function Header({
   config: Config;
   onNavigate: (view: View) => void;
 }) {
-  const narrow = width < narrowWidth;
+  const clock = new Date(time).toLocaleTimeString();
+  const narrow = !tabsFitOneRow(width, host, clock, c);
   const tabs = (
     <box
       flexDirection="row"
@@ -94,11 +117,11 @@ export function Header({
               {` ◆ ${new Date(pinnedAt).toLocaleTimeString()}`}
             </span>
           )}
-          <span attributes={ui.dim}>{`  ${safe(host)}`}</span>
+          <span attributes={ui.dim}>{`  ${safe(host)} `}</span>
         </Line>
         {narrow ? <box flexGrow={1} /> : tabs}
         <Line height={1} flexShrink={0} attributes={ui.dim}>
-          {new Date(time).toLocaleTimeString()}
+          {` ${clock}`}
         </Line>
       </box>
       {narrow && tabs}
@@ -181,14 +204,27 @@ export function Help({ config: c }: { config: Config }) {
       ],
     ],
   ];
+  // The panel is as wide as its widest line and as tall as its rows, so no
+  // part of the screen behind it shows through inside its border.
+  const keyColumn = 16;
+  const columns =
+    Math.max(
+      ...groups.flatMap(([name, rows]) => [
+        [...name].length,
+        ...rows.map(([, action]) => keyColumn + [...action].length),
+      ]),
+    ) + 1;
+  const lines = groups.reduce((total, [, rows]) => total + rows.length + 2, 0);
   return (
-    <Overlay title="Keys">
+    <Overlay title="Keys" columns={columns} lines={lines}>
       {groups.map(([name, rows]) => (
         <box key={name} flexDirection="column" flexShrink={0} marginBottom={1}>
-          <Line attributes={ui.bold}>{name}</Line>
+          <Line attributes={ui.bold} width="100%">
+            {name}
+          </Line>
           {rows.map(([key, action]) => (
-            <Line key={action} height={1} truncate>
-              <span fg={ui.accent}>{fit(key, 16)}</span>
+            <Line key={action} height={1} width="100%" truncate>
+              <span fg={ui.accent}>{fit(key, keyColumn)}</span>
               <span>{action}</span>
             </Line>
           ))}

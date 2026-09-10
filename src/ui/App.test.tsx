@@ -839,3 +839,130 @@ test("the linkers cell stays inside its column on the rendered Builds screen", a
     await t.close();
   }
 });
+
+test("a wide terminal puts the concerns and the agents side by side", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const wide = await mount(s, c, { width: 180, height: 44 });
+  try {
+    await wide.press("1");
+    const heading = wide
+      .frame()
+      .split("\n")
+      .find((line) => line.includes("Needs attention"));
+    // One row carries both headings, so the two lists sit beside each other.
+    expect(heading).toContain("Busiest agents");
+  } finally {
+    await wide.close();
+  }
+  // Below the width they stack, and the headings sit on separate rows.
+  const tall = await mount(s, c, { width: 120, height: 44 });
+  try {
+    await tall.press("1");
+    const lines = tall.frame().split("\n");
+    const heading = lines.find((line) => line.includes("Needs attention"));
+    expect(heading).not.toContain("Busiest agents");
+    expect(lines.some((line) => line.includes("Busiest agents"))).toBe(true);
+  } finally {
+    await tall.close();
+  }
+});
+
+test("a wide Agents list carries the selected agent beside it", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cwd: "/repo/one" }),
+    laneSnapshot({ id: "b", name: "lane-b", cwd: "/repo/two" }),
+  ];
+  s.groups = [groupSnapshot()];
+  const wide = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await wide.press("2");
+    const frame = wide.frame();
+    // The pane names the selected agent beside the list, so a row can be read
+    // against what it means without opening it.
+    expect(frame).toContain("Selected");
+    expect(frame).toContain("/repo/one");
+    expect(frame).not.toContain("/repo/two");
+    await wide.press("j");
+    expect(wide.frame()).toContain("/repo/two");
+  } finally {
+    await wide.close();
+  }
+  // Below the width the list keeps the whole panel.
+  const narrow = await mount(s, c, { width: 120, height: 30 });
+  try {
+    await narrow.press("2");
+    expect(narrow.frame()).not.toContain("Selected");
+  } finally {
+    await narrow.close();
+  }
+});
+
+test("the help panel covers what it sits on, at any terminal size", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const widths: number[] = [];
+  for (const size of [
+    { width: 180, height: 44 },
+    { width: 100, height: 32 },
+  ]) {
+    const t = await mount(s, c, size);
+    try {
+      await t.press("?");
+      const lines = t.frame().split("\n");
+      const top = lines.findIndex((line) => line.includes("╭"));
+      const bottom = lines.findIndex((line) => line.includes("╰"));
+      expect(top).toBeGreaterThan(-1);
+      expect(bottom).toBeGreaterThan(top);
+      const left = lines[top].indexOf("╭");
+      const right = lines[top].lastIndexOf("╮");
+      expect(right).toBeGreaterThan(left);
+      // The panel is as wide as its own content, so it is the same width in
+      // both terminals and never reaches either edge.
+      widths.push(right - left + 1);
+      expect(left).toBeGreaterThan(0);
+      expect(right).toBeLessThan(size.width - 1);
+      // Inside the border, every cell belongs to the panel: nothing from the
+      // screen behind it shows through its blank columns.
+      for (let row = top + 1; row < bottom; row++) {
+        const inside = lines[row].slice(left, right + 1);
+        expect({ row, edges: `${inside[0]}${inside.at(-1)}` }).toEqual({
+          row,
+          edges: "││",
+        });
+      }
+    } finally {
+      await t.close();
+    }
+  }
+  expect(widths.length).toBe(2);
+  expect(widths[0]).toBe(widths[1]);
+});
+
+test("Settings filters by name and by the label the reader sees", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 180, height: 40 });
+  try {
+    await t.press("7");
+    expect(t.frame()).toContain("Storage units");
+    // "wait" appears in no setting's stored name; it is what the labels say.
+    await t.press("/");
+    for (const ch of "wait") await t.press(ch);
+    const byLabel = t.frame();
+    expect(byLabel).toContain("Wait warning");
+    expect(byLabel).toContain("Wait before alert");
+    expect(byLabel).not.toContain("Storage units");
+    // The stored name finds it too, not only the label.
+    await t.press("escape");
+    await t.press("/");
+    for (const ch of "swapfloor") await t.press(ch);
+    const byKey = t.frame();
+    expect(byKey).toContain("Desktop swap warning");
+    expect(byKey).not.toContain("Wait warning");
+  } finally {
+    await t.close();
+  }
+});

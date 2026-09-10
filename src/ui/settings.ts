@@ -11,8 +11,8 @@ import { age, bytes } from "./format";
 export interface SettingInfo {
   label: string;
   help: string;
-  /** A stored number the reader reads in another unit. */
-  unit?: "bytes" | "ms" | "percent";
+  /** The unit a stored number is written in, so its value can carry it. */
+  unit?: "bytes" | "ms" | "seconds" | "hours" | "percent";
 }
 export const settingInfo: Record<string, SettingInfo> = {
   refreshMs: {
@@ -23,6 +23,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   historyHours: {
     label: "History window",
     help: "How far back the Timeline and the charts can reach.",
+    unit: "hours",
   },
   persistence: {
     label: "Save history",
@@ -116,6 +117,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   pressureHoldSeconds: {
     label: "Wait before alert",
     help: "How long a stall must hold before it becomes an alert.",
+    unit: "seconds",
   },
   laneNaming: {
     label: "Lane name source",
@@ -347,6 +349,10 @@ export function settingDisplay(key: string, value: unknown, c: Config): string {
         return bytes(value, c);
       case "ms":
         return interval(value);
+      case "seconds":
+        return `${value}s`;
+      case "hours":
+        return `${value}h`;
       case "percent":
         return `${value}%`;
     }

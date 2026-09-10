@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
 import {
   accountName,
+  distinctNames,
   jobserver,
   laneName,
   paneName,
@@ -208,38 +209,19 @@ export function lanes(
   return result;
 }
 /**
- * A name two lanes share names neither: fourteen rows reading `method` tell
- * the reader nothing about which is which. Each colliding group takes the
- * first candidate that separates every member of it, so a lane only grows a
- * suffix when it needs one. The lane id is last and is unique by
- * construction, which is what ends the search.
+ * Two lanes that resolve to one name tell the reader nothing about which is
+ * which. The working directory separates most of them; the process id always
+ * can, and the lane id is unique by construction.
  */
 export function distinguish(lanes: Lane[]): void {
-  const candidates: ((l: Lane) => string)[] = [
+  const names = distinctNames(lanes, (l) => l.name, [
     (l) => (l.cwd ? basename(l.cwd) : ""),
     (l) => (l.mainPid ? `PID ${l.mainPid}` : ""),
     (l) => l.id,
-  ];
-  const groups = new Map<string, Lane[]>();
-  for (const lane of lanes) {
-    const group = groups.get(lane.name);
-    if (group) group.push(lane);
-    else groups.set(lane.name, [lane]);
-  }
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const separates = candidates.find((pick) => {
-      const values = group.map(pick);
-      return (
-        values.every((value) => value) &&
-        new Set(values).size === group.length &&
-        values.every((value, i) => !group[i].name.includes(value))
-      );
-    });
-    if (!separates)
-      throw new Error(`Lane ids repeat: ${group.map((l) => l.id).join(", ")}`);
-    for (const lane of group) lane.name = `${lane.name} ${separates(lane)}`;
-  }
+  ]);
+  lanes.forEach((lane, i) => {
+    lane.name = names[i];
+  });
 }
 
 /** Parent IDs can disappear between samples; cycles terminate explicitly. */

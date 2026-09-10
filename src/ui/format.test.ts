@@ -8,10 +8,12 @@ import {
   blockedText,
   bytes,
   capText,
+  collectedSpan,
   laneValue,
   percent,
   rate,
   sortLanes,
+  spanLabel,
   sparkline,
   timeBuckets,
 } from "./format";
@@ -135,4 +137,27 @@ test("a span reads in the largest unit that still says something", () => {
       seconds,
       shown: expected,
     });
+});
+
+test("a chart names the span it holds, not the span it was asked for", () => {
+  const window = 300000;
+  const full = Array.from({ length: 10 }, (_, i) => i);
+  expect(collectedSpan(full, window)).toEqual({ ms: window, partial: false });
+  expect(spanLabel(full, window)).toBe("last 5m");
+  // vsys started a moment ago: nine of ten columns hold nothing, and naming
+  // the requested window there says nothing about what is on screen.
+  const fresh = [...Array(9).fill(null), 1];
+  expect(collectedSpan(fresh, window)).toEqual({ ms: 30000, partial: true });
+  expect(spanLabel(fresh, window)).toBe("30s collected of 5m");
+  // A gap inside a filled window is a collection gap, not a short history.
+  const gapped = [1, null, null, 4];
+  expect(collectedSpan(gapped, window)).toEqual({
+    ms: window,
+    partial: false,
+  });
+  // Nothing collected at all is the whole window, still unfilled.
+  expect(collectedSpan([null, null], window)).toEqual({
+    ms: window,
+    partial: false,
+  });
 });

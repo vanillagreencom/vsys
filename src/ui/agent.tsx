@@ -28,6 +28,7 @@ import {
   percent,
   rate,
   share,
+  spanLabel,
   sparkline,
 } from "./format";
 import { useScreenKeys } from "./keys";
@@ -41,6 +42,7 @@ import {
   nextDown,
   Row,
   Section,
+  Sparkline,
   Tile,
   Tiles,
 } from "./widgets";
@@ -57,6 +59,131 @@ type DetailRow =
   | { kind: "section"; name: SectionName }
   | { kind: "action"; intent: LaneIntent };
 
+/** Who an agent is: its name, its badge, its account and where it runs. */
+export function AgentIdentity({
+  lane,
+  snapshot,
+  config: c,
+}: {
+  lane: Lane;
+  snapshot: Snapshot;
+  config: Config;
+}) {
+  const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
+  const badge = laneBadge(lane);
+  return (
+    <>
+      <Line height={1} flexShrink={0} truncate>
+        <span attributes={ui.bold} fg={levelColor(laneLevel(lane, c))}>
+          {safe(lane.name)}
+        </span>
+        {badge && <span fg={levelColor(badge.level)}>{`  ${badge.text}`}</span>}
+      </Line>
+      <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
+        {safe(
+          [
+            lane.tool || "no agent program",
+            `account ${lane.account ?? gap}`,
+            lane.pane ? `pane ${lane.pane}` : "",
+            lane.title ? `window ${lane.title}` : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        )}
+      </Line>
+      <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
+        {safe(
+          `${lane.cwd || "no worktree"}${lane.branch ? `  ${lane.branch}` : ""}  ·  ${(proc?.group ?? lane.cgroup).split("/").filter(Boolean).at(-1) ?? lane.cgroup}  ·  PID ${lane.mainPid}  ·  up ${age(lane.age)}`,
+        )}
+      </Line>
+    </>
+  );
+}
+/** What one agent is using, as tiles. */
+export function AgentTiles({
+  lane,
+  config: c,
+  width,
+}: {
+  lane: Lane;
+  config: Config;
+  width?: number;
+}) {
+  return (
+    <Tiles width={width}>
+      <Tile
+        label="CPU"
+        value={share(lane.cpu)}
+        level={laneLevel(lane, c)}
+        detail={`of one core · ${share(lane.cpuShare)} of the machine`}
+      />
+      <Tile
+        label="Memory"
+        value={amount(lane.rss, c)}
+        level={lane.dangerous ? "danger" : "ok"}
+        detail={`cache ${amount(lane.cache, c)} · swap ${amount(lane.swap, c)}`}
+      />
+      <Tile
+        label="Disk written"
+        value={rate(lane.writeRate, c)}
+        detail={`read ${rate(lane.readRate, c)}`}
+      />
+      <Tile
+        label="Tasks"
+        value={String(lane.tasks)}
+        level={lane.state === "blocked" ? "warn" : "ok"}
+        detail={blockedText(lane)}
+      />
+    </Tiles>
+  );
+}
+/**
+ * The selected agent beside the list, so the reader compares a row against
+ * what it means without leaving the list.
+ */
+export function AgentSummary({
+  lane,
+  snapshot,
+  config: c,
+  width,
+}: {
+  lane: Lane;
+  snapshot: Snapshot;
+  config: Config;
+  width: number;
+}) {
+  return (
+    <box flexDirection="column" flexShrink={0} minWidth={0}>
+      <Section title="Selected" width={width} marginTop={0} />
+      <AgentIdentity lane={lane} snapshot={snapshot} config={c} />
+      <box height={1} flexShrink={0} />
+      <AgentTiles lane={lane} config={c} width={width} />
+      <box height={1} flexShrink={0} />
+      <Field
+        label="Limits"
+        value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap}`}
+        color={lane.dangerous ? ui.danger : undefined}
+      />
+      <Field
+        label="Builds"
+        value={`${
+          Object.entries(lane.builds)
+            .map(([kind, n]) => `${n} ${kind}`)
+            .join(", ") || "none"
+        } · ${lane.linkers} linking`}
+      />
+      <Line
+        height={1}
+        flexShrink={0}
+        truncate
+        attributes={ui.dim}
+        marginTop={1}
+      >
+        {`${keyLabel(c.keys.open)} opens this agent`}
+      </Line>
+    </box>
+  );
+}
 /** One agent: what it is, what it uses, its history, then its processes. */
 export function Agent({
   lane,
@@ -185,8 +312,6 @@ export function Agent({
     Math.max(floor, ...values.map((v) => v ?? 0));
   const cpuTop = top(cpuPeaks, 100);
   const rssTop = top(rssPeaks, 1);
-  const level = laneLevel(lane, c);
-  const badge = laneBadge(lane);
   const kinds = Object.entries(lane.builds)
     .map(([kind, n]) => `${n} ${kind}`)
     .join(", ");
@@ -208,57 +333,9 @@ export function Agent({
       contentOptions={{ flexShrink: 0 }}
     >
       <box flexDirection="column" flexShrink={0} paddingX={2}>
-        <Line height={1} flexShrink={0} truncate>
-          <span attributes={ui.bold} fg={levelColor(level)}>
-            {safe(lane.name)}
-          </span>
-          {badge && (
-            <span fg={levelColor(badge.level)}>{`  ${badge.text}`}</span>
-          )}
-        </Line>
-        <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
-          {safe(
-            [
-              lane.tool || "no agent program",
-              `account ${lane.account ?? gap}`,
-              lane.pane ? `pane ${lane.pane}` : "",
-              lane.title ? `window ${lane.title}` : "",
-            ]
-              .filter(Boolean)
-              .join(" · "),
-          )}
-        </Line>
-        <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
-          {safe(
-            `${lane.cwd || "no worktree"}${lane.branch ? `  ${lane.branch}` : ""}  ·  ${(proc?.group ?? lane.cgroup).split("/").filter(Boolean).at(-1) ?? lane.cgroup}  ·  PID ${lane.mainPid}  ·  up ${age(lane.age)}`,
-          )}
-        </Line>
+        <AgentIdentity lane={lane} snapshot={snapshot} config={c} />
         <box height={1} flexShrink={0} />
-        <Tiles>
-          <Tile
-            label="CPU"
-            value={share(lane.cpu)}
-            level={level}
-            detail={`of one core · ${share(lane.cpuShare)} of the machine`}
-          />
-          <Tile
-            label="Memory"
-            value={amount(lane.rss, c)}
-            level={lane.dangerous ? "danger" : "ok"}
-            detail={`cache ${amount(lane.cache, c)} · swap ${amount(lane.swap, c)}`}
-          />
-          <Tile
-            label="Disk written"
-            value={rate(lane.writeRate, c)}
-            detail={`read ${rate(lane.readRate, c)}`}
-          />
-          <Tile
-            label="Tasks"
-            value={String(lane.tasks)}
-            level={lane.state === "blocked" ? "warn" : "ok"}
-            detail={blockedText(lane)}
-          />
-        </Tiles>
+        <AgentTiles lane={lane} config={c} width={width - 4} />
         <box height={1} flexShrink={0} />
         <Field
           label="Limits"
@@ -275,7 +352,7 @@ export function Agent({
           <Line attributes={ui.dim}>Loading history</Line>
         )}
         <Chart
-          title={`CPU · last ${age(windowMs / 1000)}`}
+          title={`CPU · ${spanLabel(cpuPeaks, windowMs)}`}
           values={cpuPeaks}
           height={3}
           max={cpuTop}
@@ -299,9 +376,10 @@ export function Agent({
         ).map(([label, key, color]) => (
           <Line key={key} height={1} flexShrink={0} truncate>
             <span attributes={ui.dim}>{fit(label, gutter)}</span>
-            <span fg={color}>
-              {sparkline(peaks(key), chartWidth, c.sparkline)}
-            </span>
+            <Sparkline
+              marks={sparkline(peaks(key), chartWidth, c.sparkline)}
+              color={color}
+            />
           </Line>
         ))}
         <Section title="Details" width={width - 4} />

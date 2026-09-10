@@ -141,6 +141,31 @@ export function bucketPeaks<T extends { time: number }>(
     return peak;
   });
 }
+/**
+ * The span a chart's columns actually carry. vsys started seconds ago against
+ * a five-minute window paints one stub of data and a row of gaps, and naming
+ * the requested window there tells the reader nothing about what they are
+ * looking at.
+ */
+export function collectedSpan(
+  values: (number | null)[],
+  windowMs: number,
+): { ms: number; partial: boolean } {
+  const first = values.findIndex((v) => v !== null);
+  if (first <= 0) return { ms: windowMs, partial: false };
+  return {
+    ms: Math.round((windowMs * (values.length - first)) / values.length),
+    partial: true,
+  };
+}
+/** The span a chart covers, as a reader says it. */
+export function spanLabel(values: (number | null)[], windowMs: number): string {
+  const span = collectedSpan(values, windowMs);
+  const held = age(span.ms / 1000);
+  return span.partial
+    ? `${held} collected of ${age(windowMs / 1000)}`
+    : `last ${held}`;
+}
 /** Aggregate the maximum in each bucket so brief stalls remain visible. */
 export function sparkline(
   values: (number | null)[],

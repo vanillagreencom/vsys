@@ -8,7 +8,7 @@ import {
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
-import { keyLabel } from "./chrome";
+import { keyLabel, wideWidth } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { useScreenKeys } from "./keys";
 import {
@@ -26,15 +26,23 @@ import { Empty, Line, nextDown, Row, Section } from "./widgets";
 export type SettingItem =
   | { kind: "setting"; key: string }
   | { kind: "sources" };
-export function settingItems(c: Config): SettingItem[] {
+export function settingItems(c: Config, query = ""): SettingItem[] {
+  const q = query.trim().toLowerCase();
+  // A filter matches the name the reader sees and the name they would write
+  // in the config file, so either spelling finds the row.
+  const matches = (key: string) =>
+    !q ||
+    key.toLowerCase().includes(q) ||
+    settingLabel(key).toLowerCase().includes(q);
   return [
-    { kind: "sources" },
+    ...(q ? [] : [{ kind: "sources" } as const]),
     ...settingGroups.flatMap(([, keys]) =>
-      keys.map((key) => ({ kind: "setting", key }) as const),
+      keys.filter(matches).map((key) => ({ kind: "setting", key }) as const),
     ),
-    ...Object.keys(c.keys).map(
-      (key) => ({ kind: "setting", key: `keys.${key}` }) as const,
-    ),
+    ...Object.keys(c.keys)
+      .map((key) => `keys.${key}`)
+      .filter(matches)
+      .map((key) => ({ kind: "setting", key }) as const),
   ];
 }
 /** Errors counted once per source, worst sources first. */
@@ -65,7 +73,13 @@ export function Settings({
   const [editing, setEditing] = useState(false);
   const [input, setInput] = useState("");
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const items = settingItems(c);
+  const [searching, setSearching] = useState(false);
+  const [query, setQuery] = useState("");
+  const items = settingItems(c, query);
+  // Two columns above the stated width: forty-four settings down one column
+  // leave two thirds of a wide terminal empty.
+  const twoColumns = width >= wideWidth && !editing;
+  const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`setting-${selected}`);
@@ -97,6 +111,21 @@ export function Settings({
     }
   }
   useScreenKeys((name, key) => {
+    if (searching) {
+      if (name === c.keys.back) {
+        key.preventDefault();
+        setSearching(false);
+        setQuery("");
+        setSelected(0);
+      }
+      return true;
+    }
+    if (name === c.keys.search && !editing) {
+      key.preventDefault();
+      setSearching(true);
+      setSelected(0);
+      return true;
+    }
     if (editing) {
       if (name === c.keys.back) {
         key.preventDefault();
@@ -121,6 +150,34 @@ export function Settings({
   });
   const sources = sourceCounts(s);
   const missing = s.capabilities.filter((cap) => !cap.available);
+  const shown = new Set(
+    items.flatMap((item) => (item.kind === "setting" ? [item.key] : [])),
+  );
+  const sections = [
+    ...settingGroups.map(([title, keys]) => ({
+      title,
+      keys: keys.filter((key) => shown.has(key)),
+    })),
+    {
+      title: "Keys",
+      keys: Object.keys(c.keys)
+        .map((key) => `keys.${key}`)
+        .filter((key) => shown.has(key)),
+    },
+  ].filter((section) => section.keys.length);
+  // The split keeps the sections in the order `settingItems` lists them, so a
+  // row's position in the render is its position in the selection.
+  const rowsTotal = sections.reduce(
+    (total, section) => total + section.keys.length + 1,
+    0,
+  );
+  let running = 0;
+  const left = sections.filter((section) => {
+    const before = running;
+    running += section.keys.length + 1;
+    return before < rowsTotal / 2;
+  });
+  const sides = twoColumns ? [left, sections.slice(left.length)] : [sections];
   let index = 0;
   const settingRow = (key: string) => {
     const i = index++;
@@ -177,6 +234,24 @@ export function Settings({
       contentOptions={{ flexShrink: 0 }}
     >
       <box flexDirection="column" flexShrink={0} paddingX={2}>
+        {searching && (
+          <box
+            height={3}
+            flexShrink={0}
+            border
+            borderStyle="rounded"
+            borderColor={ui.accent}
+            title=" Find a setting "
+          >
+            <input
+              focused
+              value={query}
+              placeholder="name or label"
+              onInput={setQuery}
+              onSubmit={() => setSearching(false)}
+            />
+          </box>
+        )}
         <Section
           title="Data sources"
           width={width}
@@ -237,14 +312,30 @@ export function Settings({
             </box>
           );
         })()}
-        {settingGroups.map(([group, keys]) => (
-          <box key={group} flexDirection="column" flexShrink={0}>
-            <Section title={group} width={width} />
-            {keys.map(settingRow)}
-          </box>
-        ))}
-        <Section title="Keys" width={width} />
-        {Object.keys(c.keys).map((key) => settingRow(`keys.${key}`))}
+        <box
+          flexDirection={twoColumns ? "row" : "column"}
+          flexShrink={0}
+          gap={twoColumns ? 3 : 0}
+        >
+          {sides.map((side, at) => (
+            <box
+              // biome-ignore lint/suspicious/noArrayIndexKey: a side is its position
+              key={`side-${at}`}
+              flexDirection="column"
+              flexShrink={0}
+              flexGrow={twoColumns ? 1 : 0}
+              flexBasis={twoColumns ? 0 : undefined}
+              minWidth={0}
+            >
+              {side.map(({ title, keys }) => (
+                <box key={title} flexDirection="column" flexShrink={0}>
+                  <Section title={title} width={column} />
+                  {keys.map(settingRow)}
+                </box>
+              ))}
+            </box>
+          ))}
+        </box>
         <Line
           height={1}
           flexShrink={0}

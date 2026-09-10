@@ -73,6 +73,41 @@ export function laneName(
     .join(" ");
 }
 /**
+ * Names that repeat name nothing: three rows reading `ghostty` tell the reader
+ * nothing about which is which. Each colliding set takes the first candidate
+ * that separates every one of its members, so a name only grows a suffix when
+ * it needs one, and a candidate already inside the name is not repeated. The
+ * caller's last candidate has to be unique, which is what ends the search.
+ */
+export function distinctNames<T>(
+  items: T[],
+  name: (item: T) => string,
+  candidates: ((item: T) => string)[],
+): string[] {
+  const names = items.map(name);
+  const groups = new Map<string, number[]>();
+  names.forEach((value, i) => {
+    const group = groups.get(value);
+    if (group) group.push(i);
+    else groups.set(value, [i]);
+  });
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const separates = candidates.find((pick) => {
+      const values = group.map((i) => pick(items[i]));
+      return (
+        values.every((value) => value) &&
+        new Set(values).size === group.length &&
+        values.every((value, at) => !names[group[at]].includes(value))
+      );
+    });
+    if (!separates)
+      throw new Error(`Names cannot be separated: ${names[group[0]]}`);
+    for (const i of group) names[i] = `${names[i]} ${separates(items[i])}`;
+  }
+  return names;
+}
+/**
  * systemd escapes a byte it cannot carry in a unit name as `\xNN`. Only the
  * escapes are decoded here: the caller has already split the name on systemd's
  * own separator, so a decoded hyphen cannot be mistaken for one.

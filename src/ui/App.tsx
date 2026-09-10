@@ -24,7 +24,7 @@ import {
   Header,
   Help,
   keyLabel,
-  narrowWidth,
+  tabsFitOneRow,
   type View,
   viewKey,
   views,
@@ -117,6 +117,7 @@ const hints: Record<View, (c: Config) => [string, string][]> = {
   Settings: (c) => [
     ["↑↓", "select"],
     [c.keys.open, "edit"],
+    [c.keys.search, "find"],
   ],
 };
 
@@ -273,8 +274,14 @@ export function App({
     }
   });
   // The header, the blank line under it and the footer; the tabs take one
-  // more row in a narrow terminal.
-  const contentHeight = Math.max(1, height - 3 - (width < narrowWidth ? 1 : 0));
+  // more row when the host and the clock leave them too little.
+  const twoRowHeader = !tabsFitOneRow(
+    width,
+    snapshot.system.host,
+    new Date(snapshot.time).toLocaleTimeString(),
+    c,
+  );
+  const contentHeight = Math.max(1, height - 3 - (twoRowHeader ? 1 : 0));
   let content: ReactNode;
   if (view === "Home")
     content = (
@@ -286,6 +293,7 @@ export function App({
         windowMs={windows[windowIndex]}
         selected={homeIndex}
         width={width - 4}
+        height={contentHeight}
         onSelect={setHomeIndex}
         onCopy={copy}
         onOpen={(row) => {

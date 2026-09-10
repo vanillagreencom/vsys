@@ -13,9 +13,9 @@ import { useScreenKeys } from "./keys";
 import { metric, ui } from "./theme";
 import {
   Bar,
-  Empty,
   Line,
   List,
+  Nothing,
   nextDown,
   Reading,
   Row,
@@ -148,47 +148,54 @@ export function Builds({
         count={rows.length || undefined}
       />
       {rows.length > 0 && <TableHeader columns={buildColumns} />}
-      {!rows.length && <Empty text="Nothing is compiling or linking." />}
-      <List
-        items={rows}
-        selected={selected}
-        height={Math.max(3, Math.floor((height - 8) / 2))}
-        empty=""
-        render={(row, i, isSelected) => (
-          <Row
-            key={row.id || "outside"}
-            selected={isSelected}
-            onOpen={() => {
-              setSelected(i);
-              setProcesses(true);
-            }}
-          >
-            {safe(cell(nameColumn, row.name || "outside the watched lanes"))}
-            {columnGap}
-            <Bar
-              value={row.builds}
-              max={topBuilds}
-              width={barColumn.width}
-              color={metric.builds}
-            />
-            {columnGap}
-            <Reading
-              value={row.builds}
-              text={cell(
-                countColumn,
-                `${row.builds} ${row.builds === 1 ? "process" : "processes"}`,
-              )}
-            />
-            {columnGap}
-            <span attributes={ui.dim}>
-              {cell(
-                linkerColumn,
-                `${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`,
-              )}
-            </span>
-          </Row>
-        )}
-      />
+      {!rows.length && (
+        <Nothing
+          text="Nothing is compiling or linking."
+          next="A lane appears here as soon as it starts a compiler or a linker, with its process count and its linkers named."
+        />
+      )}
+      {rows.length > 0 && (
+        <List
+          items={rows}
+          selected={selected}
+          height={Math.max(3, Math.floor((height - 8) / 2))}
+          empty=""
+          render={(row, i, isSelected) => (
+            <Row
+              key={row.id || "outside"}
+              selected={isSelected}
+              onOpen={() => {
+                setSelected(i);
+                setProcesses(true);
+              }}
+            >
+              {safe(cell(nameColumn, row.name || "outside the watched lanes"))}
+              {columnGap}
+              <Bar
+                value={row.builds}
+                max={topBuilds}
+                width={barColumn.width}
+                color={metric.builds}
+              />
+              {columnGap}
+              <Reading
+                value={row.builds}
+                text={cell(
+                  countColumn,
+                  `${row.builds} ${row.builds === 1 ? "process" : "processes"}`,
+                )}
+              />
+              {columnGap}
+              <span attributes={ui.dim}>
+                {cell(
+                  linkerColumn,
+                  `${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`,
+                )}
+              </span>
+            </Row>
+          )}
+        />
+      )}
       {processes && current && (
         <box flexDirection="column" flexShrink={0} marginTop={1}>
           <Section
