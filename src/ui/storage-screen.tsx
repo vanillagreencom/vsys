@@ -39,6 +39,31 @@ export function storageItems(s: Snapshot): StorageItem[] {
     ),
   ];
 }
+/**
+ * Btrfs subvolumes of one filesystem each mount separately and each report the
+ * whole device's free space, so seven rows repeat one long device name and one
+ * free-space figure. The device is named once and its mounts sit under it.
+ */
+export interface DeviceVolumes {
+  device: string;
+  volumes: Volume[];
+}
+export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
+  const order: string[] = [];
+  const byDevice = new Map<string, Volume[]>();
+  for (const volume of volumes) {
+    const group = byDevice.get(volume.device);
+    if (group) group.push(volume);
+    else {
+      byDevice.set(volume.device, [volume]);
+      order.push(volume.device);
+    }
+  }
+  return order.map((device) => ({
+    device,
+    volumes: byDevice.get(device) ?? [],
+  }));
+}
 export function volumeLevel(v: Volume, freeFloor: number): Level {
   if (v.readOnly || Object.values(v.delta).some((n) => n > 0)) return "danger";
   if (v.free !== null && v.free < freeFloor) return "danger";
@@ -89,11 +114,24 @@ export function Storage({
     return false;
   });
   const totals = writeTotals(s, c);
-  const writeRows = (rows: WriteTotal[], available: boolean, label: string) => {
+  const writeRows = (
+    rows: WriteTotal[],
+    available: boolean,
+    label: string,
+    unread = "",
+  ) => {
     if (!available || !rows.length) return <Empty text={`${label}: ${gap}`} />;
     const top = Math.max(1, ...rows.map((r) => r.written ?? 0));
     // A section with no readable total has no scale, so it shows no bars.
     const measured = rows.some((r) => r.written !== null);
+    // Every row reading "not available" is one fact, not a list: it says the
+    // source was unreadable, and repeating it per row says nothing more.
+    if (!measured && unread)
+      return (
+        <Empty
+          text={`${label}: ${gap} for any of the ${rows.length} drives. ${unread}`}
+        />
+      );
     return rows.map((row) => (
       <Line key={row.name} height={1} flexShrink={0} truncate>
         {safe(fit(row.name, 28))}
@@ -126,6 +164,36 @@ export function Storage({
     c.scratchQuota,
     ...[...st.scratch, ...st.sessions].map((x) => x.bytes ?? 0),
   );
+  const volumeRow = (v: Volume) => {
+    const i = next();
+    const level = volumeLevel(v, c.freeFloor);
+    return (
+      <box
+        id={`storage-${i}`}
+        key={v.mount}
+        flexDirection="column"
+        flexShrink={0}
+      >
+        <Row
+          selected={i === selected}
+          color={levelColor(level)}
+          onOpen={() => setSelected(i)}
+        >
+          {"  "}
+          {safe(fit(v.mount, 40))}
+          {v.readOnly && <span fg={ui.danger}>read-only</span>}
+        </Row>
+        {i === selected && (
+          <box flexDirection="column" flexShrink={0} paddingLeft={4}>
+            {/* The device row above names the device and its error counters
+                once for every mount grouped under it, and subvolumes of one
+                filesystem share both. The options are the mount's own. */}
+            <Field label="Options" value={v.options.join(", ")} />
+          </box>
+        )}
+      </box>
+    );
+  };
   const scratchRow = (item: Extract<StorageItem, { kind: "scratch" }>) => {
     const i = next();
     const x = item.scratch;
@@ -186,7 +254,12 @@ export function Storage({
           </Line>
         )}
         <Section title="Drive lifetime writes" width={width} />
-        {writeRows(totals.lifetime, true, "lifetime")}
+        {writeRows(
+          totals.lifetime,
+          true,
+          "lifetime",
+          `vsys runs no privileged helper, so it reads what a timer leaves in ${c.smartDir}.`,
+        )}
         <Section
           title="Filesystems"
           width={width}
@@ -198,43 +271,51 @@ export function Storage({
         {st.mountsAvailable !== false && !st.volumes.length && (
           <Empty text="No watched Btrfs mount." />
         )}
-        {st.volumes.map((v) => {
-          const i = next();
-          const level = volumeLevel(v, c.freeFloor);
+        {volumesByDevice(st.volumes).map(({ device, volumes }) => {
+          // Subvolumes of one filesystem each report the whole device's free
+          // space, so the device states it once and its mounts carry only what
+          // differs between them.
+          const first = volumes[0];
           const used =
-            v.total !== null && v.free !== null ? v.total - v.free : null;
+            first.total !== null && first.free !== null
+              ? first.total - first.free
+              : null;
+          const worst: Level = volumes.some(
+            (v) => volumeLevel(v, c.freeFloor) === "danger",
+          )
+            ? "danger"
+            : "ok";
           return (
-            <box
-              id={`storage-${i}`}
-              key={v.mount}
-              flexDirection="column"
-              flexShrink={0}
-            >
-              <Row
-                selected={i === selected}
-                color={levelColor(level)}
-                onOpen={() => setSelected(i)}
-              >
-                {safe(fit(v.mount, 24))}
+            <box key={device} flexDirection="column" flexShrink={0}>
+              <Line height={1} flexShrink={0} truncate>
+                <span fg={levelColor(worst)}>{safe(fit(device, 42))}</span>
                 {columnGap}
-                <Bar value={used} max={v.total ?? 1} width={12} level={level} />
-                {`${columnGap}${fit(amount(v.free, c), 10, "right")} free of ${amount(v.total, c)}`}
-                {v.readOnly ? (
-                  <span fg={ui.danger}> read-only</span>
-                ) : (
-                  <span attributes={ui.dim}>{`  ${safe(v.device)}`}</span>
-                )}
-              </Row>
-              {i === selected && (
-                <box flexDirection="column" flexShrink={0} paddingLeft={2}>
-                  <Field
-                    label="Errors"
-                    value={errorText(v)}
-                    color={level === "danger" ? ui.danger : undefined}
-                  />
-                  <Field label="Options" value={v.options.join(", ")} />
-                </box>
-              )}
+                <Bar
+                  value={used}
+                  max={first.total ?? 1}
+                  width={12}
+                  level={worst}
+                />
+                {`${columnGap}${fit(amount(first.free, c), 10, "right")} free of ${amount(first.total, c)}`}
+                <span attributes={ui.dim}>
+                  {`  ${volumes.length} ${volumes.length === 1 ? "mount" : "mounts"}`}
+                </span>
+              </Line>
+              {/* The row above fills a hundred-column terminal with its fixed
+                  columns, so the counters got none and were cut away whole.
+                  They are the reading behind the row's colour and the only
+                  copy of it, so they wrap on a line of their own, once per
+                  device, where a narrow terminal can still show them. */}
+              <Line
+                flexShrink={0}
+                wrapMode="word"
+                paddingLeft={2}
+                fg={worst === "danger" ? ui.danger : undefined}
+                attributes={worst === "danger" ? ui.none : ui.dim}
+              >
+                {safe(errorText(first))}
+              </Line>
+              {volumes.map(volumeRow)}
             </box>
           );
         })}

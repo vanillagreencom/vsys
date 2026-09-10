@@ -11,7 +11,7 @@ import {
   verdictItem,
   verdictLine,
 } from "./attention";
-import { keyLabel } from "./chrome";
+import { keyLabel, wideWidth } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import {
   amount,
@@ -34,6 +34,7 @@ import {
   TableHeader,
   Tile,
   Tiles,
+  tilesPerRow,
 } from "./widgets";
 
 /** The Home list mixes concerns and agents; Enter opens whichever is selected. */
@@ -87,6 +88,7 @@ export function Home({
   windowMs,
   selected,
   width,
+  height,
   onSelect,
   onOpen,
   onCopy,
@@ -98,12 +100,21 @@ export function Home({
   windowMs: number;
   selected: number;
   width: number;
+  height: number;
   onSelect: (index: number) => void;
   onOpen: (item: HomeItem) => void;
   /** Undefined when the selected row carries no command, which the shell says. */
   onCopy: (command: string | undefined) => void;
 }) {
-  const rows = homeItems(items, s);
+  // The verdict, the tiles and the two section headings come before the rows;
+  // side by side the agents have the column to themselves, stacked they share
+  // it with the concerns.
+  const columns = width >= wideWidth;
+  const busiest = Math.max(
+    3,
+    columns ? height - 10 : height - 10 - items.length * 2,
+  );
+  const rows = homeItems(items, s, busiest);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`home-${selected}`);
@@ -131,7 +142,14 @@ export function Home({
   const lead = verdictItem(items);
   const level: Level = lead ? (lead.danger ? "danger" : "warn") : "ok";
   const gauges = meters(s, c);
-  const tileWidth = Math.max(8, Math.floor((width - 2 * 3) / 4));
+  const panel = columns ? Math.floor((width - 3) / 2) : width;
+  // A tile row shares its width between the tiles on it, two columns apart,
+  // so the chart is as wide as the tile that carries it however many that is.
+  const perRow = tilesPerRow(gauges.length, width);
+  const chartWidth = Math.max(
+    8,
+    Math.floor((width - 2 * (perRow - 1)) / perRow),
+  );
   const agents = rows.filter((r) => r.kind === "agent");
   const topCpu = Math.max(100, ...agents.map((r) => r.lane.cpu ?? 0));
   // The marker, the bar and the readings take fixed columns; the name has the
@@ -145,7 +163,7 @@ export function Home({
   const agentColumns: Column[] = [
     {
       label: "Agent",
-      width: Math.max(8, Math.min(40, width - 5 - columnsWidth(fixed))),
+      width: Math.max(8, Math.min(40, panel - 5 - columnsWidth(fixed))),
     },
     ...fixed,
   ];
@@ -170,7 +188,7 @@ export function Home({
           {`${s.lanes.length} ${plural(s.lanes.length, "agent", "agents")} · ${s.system.cores} cores · ${items.length ? `${items.length} ${plural(items.length, "concern", "concerns")}` : "nothing needs attention"}`}
         </Line>
         <box height={1} flexShrink={0} />
-        <Tiles>
+        <Tiles width={width}>
           {gauges.map((gauge) => {
             const tile = meterTile(gauge, s, c);
             return (
@@ -185,7 +203,7 @@ export function Home({
                   meterSeries[gauge.id],
                   s.time - windowMs,
                   s.time,
-                  tileWidth,
+                  chartWidth,
                   c.sparkline,
                 )}
                 chartColor={metric[gauge.id]}
@@ -193,87 +211,114 @@ export function Home({
             );
           })}
         </Tiles>
-        <Section
-          title="Needs attention"
-          count={items.length || undefined}
-          width={width}
-        />
-        {!items.length && (
-          <Empty text="No current problems in the data vsys can read." />
-        )}
-        {rows.map((row, i) =>
-          row.kind === "concern" ? (
-            <box
-              id={`home-${i}`}
-              key={row.item.id}
-              flexDirection="column"
-              flexShrink={0}
-            >
-              <Row
-                selected={i === selected}
-                color={row.item.danger ? ui.danger : ui.warn}
-                onOpen={() => onOpen(row)}
-              >
-                {safe(row.item.title)}
-              </Row>
-              {i === selected && (
-                <box flexDirection="column" flexShrink={0} paddingLeft={2}>
-                  <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                    {safe(row.item.detail)}
-                  </Line>
-                  <Line flexShrink={0} wrapMode="word">
-                    <span attributes={ui.dim}>Next </span>
-                    {safe(row.item.next)}
-                  </Line>
-                  {row.item.command !== undefined && (
-                    <Line flexShrink={0} wrapMode="word">
-                      <span attributes={ui.dim}>Copy </span>
-                      <span fg={ui.accent}>{safe(row.item.command)}</span>
-                    </Line>
+        <box
+          flexDirection={columns ? "row" : "column"}
+          flexShrink={0}
+          gap={columns ? 3 : 0}
+        >
+          <box
+            flexDirection="column"
+            flexShrink={0}
+            flexGrow={columns ? 1 : 0}
+            flexBasis={columns ? 0 : undefined}
+            minWidth={0}
+          >
+            <Section
+              title="Needs attention"
+              count={items.length || undefined}
+              width={panel}
+            />
+            {!items.length && (
+              <Empty text="No current problems in the data vsys can read." />
+            )}
+            {rows.map((row, i) =>
+              row.kind === "concern" ? (
+                <box
+                  id={`home-${i}`}
+                  key={row.item.id}
+                  flexDirection="column"
+                  flexShrink={0}
+                >
+                  <Row
+                    selected={i === selected}
+                    color={row.item.danger ? ui.danger : ui.warn}
+                    onOpen={() => onOpen(row)}
+                  >
+                    {safe(row.item.title)}
+                  </Row>
+                  {i === selected && (
+                    <box flexDirection="column" flexShrink={0} paddingLeft={2}>
+                      <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                        {safe(row.item.detail)}
+                      </Line>
+                      <Line flexShrink={0} wrapMode="word">
+                        <span attributes={ui.dim}>Next </span>
+                        {safe(row.item.next)}
+                      </Line>
+                      {row.item.command !== undefined && (
+                        <Line flexShrink={0} wrapMode="word">
+                          <span attributes={ui.dim}>Copy </span>
+                          <span fg={ui.accent}>{safe(row.item.command)}</span>
+                        </Line>
+                      )}
+                      <Line
+                        height={1}
+                        flexShrink={0}
+                        truncate
+                        attributes={ui.dim}
+                      >
+                        {`${keyLabel(c.keys.open)} opens ${row.item.laneId ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`}
+                      </Line>
+                    </box>
                   )}
-                  <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
-                    {`${keyLabel(c.keys.open)} opens ${row.item.laneId ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`}
-                  </Line>
                 </box>
-              )}
-            </box>
-          ) : null,
-        )}
-        <Section title="Busiest agents" width={width} />
-        {!agents.length && (
-          <Empty text="No agent is running in a watched scope." />
-        )}
-        {agents.length > 0 && <TableHeader columns={agentColumns} />}
-        {rows.map((row, i) =>
-          row.kind === "agent" ? (
-            <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>
-              <Row selected={i === selected} onOpen={() => onOpen(row)}>
-                {safe(cell(nameColumn, row.lane.name))}
-                {columnGap}
-                <Bar
-                  value={row.lane.cpu}
-                  max={topCpu}
-                  width={barColumn.width}
-                  color={metric.cpu}
-                />
-                {columnGap}
-                <Reading
-                  value={row.lane.cpu}
-                  text={cell(cpuColumn, share(row.lane.cpu))}
-                />
-                {columnGap}
-                <Reading
-                  value={row.lane.rss}
-                  text={cell(memoryColumn, amount(row.lane.rss, c))}
-                />
-                {columnGap}
-                <span attributes={ui.dim}>
-                  {cell(stateColumn, row.lane.state)}
-                </span>
-              </Row>
-            </box>
-          ) : null,
-        )}
+              ) : null,
+            )}
+          </box>
+          <box
+            flexDirection="column"
+            flexShrink={0}
+            flexGrow={columns ? 1 : 0}
+            flexBasis={columns ? 0 : undefined}
+            minWidth={0}
+          >
+            <Section title="Busiest agents" width={panel} />
+            {!agents.length && (
+              <Empty text="No agent is running in a watched scope." />
+            )}
+            {agents.length > 0 && <TableHeader columns={agentColumns} />}
+            {rows.map((row, i) =>
+              row.kind === "agent" ? (
+                <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>
+                  <Row selected={i === selected} onOpen={() => onOpen(row)}>
+                    {safe(cell(nameColumn, row.lane.name))}
+                    {columnGap}
+                    <Bar
+                      value={row.lane.cpu}
+                      max={topCpu}
+                      width={barColumn.width}
+                      color={metric.cpu}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={row.lane.cpu}
+                      text={cell(cpuColumn, share(row.lane.cpu))}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={row.lane.rss}
+                      text={cell(memoryColumn, amount(row.lane.rss, c))}
+                    />
+                    {columnGap}
+                    <span attributes={ui.dim}>
+                      {cell(stateColumn, row.lane.state)}
+                    </span>
+                  </Row>
+                </box>
+              ) : null,
+            )}
+          </box>
+        </box>
       </box>
     </scrollbox>
   );

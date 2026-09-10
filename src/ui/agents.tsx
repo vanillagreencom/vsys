@@ -6,8 +6,8 @@ import { lanePressure } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
-import { Agent } from "./agent";
-import { narrowWidth } from "./chrome";
+import { Agent, AgentSummary } from "./agent";
+import { narrowWidth, wideWidth } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth, fit } from "./columns";
 import { amount, blockedText, laneValue, share, sortLanes } from "./format";
 import { useScreenKeys } from "./keys";
@@ -254,12 +254,18 @@ export function Agents({
         ))}
       </box>
     );
+  const selectedLane = lanes[Math.min(selected, lanes.length - 1)];
   const sortLabel = `${columnLabels[c.sort] ?? c.sort} ${c.descending ? "↓" : "↑"}`;
   const listHeight = height - 3 - (searching ? 3 : 0);
   const topCpu = Math.max(100, ...lanes.map((l) => l.cpu ?? 0));
-  // The program and the wait share leave a narrow terminal; the name takes
+  // Above the stated width the selected agent's summary sits beside the list,
+  // so a row can be read against what it means without leaving the list.
+  const sidePane = width >= wideWidth && !searching && !chooser && !table;
+  const sideWidth = sidePane ? Math.max(34, Math.floor(width / 3)) : 0;
+  const listWidth = width - sideWidth - (sidePane ? 3 : 0);
+  // The program and the wait share leave a narrow list; the name takes
   // whatever the fixed columns leave, and the heading reads the same spec.
-  const narrow = width < narrowWidth;
+  const narrow = listWidth < narrowWidth;
   // The two panel margins and the selection marker take five columns. The
   // readings are fixed, State keeps a floor so a lane's badge always has room,
   // and the name takes what is left up to a cap.
@@ -273,7 +279,7 @@ export function Agents({
     ...(narrow ? [] : [{ label: "Wait", width: 11, align: "right" as const }]),
   ];
   const spare =
-    width -
+    listWidth -
     margins -
     columnsWidth(readings) -
     columnGap.length * 2 -
@@ -289,7 +295,7 @@ export function Agents({
       label: "State",
       width: Math.max(
         stateFloor,
-        width - margins - columnsWidth(measured) - columnGap.length,
+        listWidth - margins - columnsWidth(measured) - columnGap.length,
       ),
     },
   ];
@@ -301,168 +307,180 @@ export function Agents({
   };
   const barColumn = laneColumns[narrow ? 1 : 2];
   return (
-    <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
-      <Line height={1} flexShrink={0} truncate>
-        <span
-          attributes={ui.bold}
-        >{`${lanes.length} ${lanes.length === 1 ? "agent" : "agents"}`}</span>
-        <span attributes={ui.dim}>
-          {`  sorted by ${sortLabel}${query ? `  matching "${safe(query)}"` : ""}`}
-        </span>
-      </Line>
-      <box height={1} flexShrink={0} />
-      {searching && (
-        <box
-          height={3}
-          flexShrink={0}
-          border
-          borderStyle="rounded"
-          borderColor={ui.accent}
-          title=" Find "
-          marginBottom={0}
-        >
-          <input
-            focused
-            value={query}
-            placeholder="name, account, pane, branch or worktree"
-            onInput={setQuery}
-            onSubmit={() => setSearching(false)}
-          />
-        </box>
-      )}
-      {table ? (
-        <scrollbox
-          id="agents-table"
-          flexGrow={1}
-          minHeight={0}
-          focused={!searching}
-          scrollX
-          scrollY={false}
-          horizontalScrollbarOptions={scrollbar}
-          contentOptions={{ flexShrink: 0 }}
-        >
-          <box flexDirection="column" flexShrink={0}>
-            <box height={1} flexShrink={0} flexDirection="row">
-              <Line width={1} height={1}>
-                {" "}
-              </Line>
-              {c.columns.map((name) => (
-                <Line
-                  key={name}
-                  width={columnWidth(name)}
-                  height={1}
-                  flexShrink={0}
-                  truncate
-                  attributes={c.sort === name ? ui.bold : ui.dim}
-                  onMouseDown={() =>
-                    save({
-                      ...c,
-                      sort: name,
-                      descending: c.sort === name ? !c.descending : true,
-                    })
-                  }
-                >
-                  {`${columnLabels[name] ?? name}${c.sort === name ? (c.descending ? " ↓" : " ↑") : ""}`}
+    <box flexDirection="row" flexGrow={1} minHeight={0} paddingX={2} gap={3}>
+      <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
+        <Line height={1} flexShrink={0} truncate>
+          <span
+            attributes={ui.bold}
+          >{`${lanes.length} ${lanes.length === 1 ? "agent" : "agents"}`}</span>
+          <span attributes={ui.dim}>
+            {`  sorted by ${sortLabel}${query ? `  matching "${safe(query)}"` : ""}`}
+          </span>
+        </Line>
+        <box height={1} flexShrink={0} />
+        {searching && (
+          <box
+            height={3}
+            flexShrink={0}
+            border
+            borderStyle="rounded"
+            borderColor={ui.accent}
+            title=" Find "
+            marginBottom={0}
+          >
+            <input
+              focused
+              value={query}
+              placeholder="name, account, pane, branch or worktree"
+              onInput={setQuery}
+              onSubmit={() => setSearching(false)}
+            />
+          </box>
+        )}
+        {table ? (
+          <scrollbox
+            id="agents-table"
+            flexGrow={1}
+            minHeight={0}
+            focused={!searching}
+            scrollX
+            scrollY={false}
+            horizontalScrollbarOptions={scrollbar}
+            contentOptions={{ flexShrink: 0 }}
+          >
+            <box flexDirection="column" flexShrink={0}>
+              <box height={1} flexShrink={0} flexDirection="row">
+                <Line width={1} height={1}>
+                  {" "}
                 </Line>
-              ))}
+                {c.columns.map((name) => (
+                  <Line
+                    key={name}
+                    width={columnWidth(name)}
+                    height={1}
+                    flexShrink={0}
+                    truncate
+                    attributes={c.sort === name ? ui.bold : ui.dim}
+                    onMouseDown={() =>
+                      save({
+                        ...c,
+                        sort: name,
+                        descending: c.sort === name ? !c.descending : true,
+                      })
+                    }
+                  >
+                    {`${columnLabels[name] ?? name}${c.sort === name ? (c.descending ? " ↓" : " ↑") : ""}`}
+                  </Line>
+                ))}
+              </box>
+              <List
+                items={lanes}
+                selected={selected}
+                height={listHeight - 1}
+                empty="No agent matches."
+                render={(lane, i, isSelected) => (
+                  <Row
+                    key={lane.id}
+                    selected={isSelected}
+                    color={levelColor(laneLevel(lane, c))}
+                    onOpen={() => {
+                      setSelected(i);
+                      onOpen(lane.id);
+                    }}
+                  >
+                    {c.columns
+                      .map((name) =>
+                        fit(
+                          safe(laneValue(lane, name, c)),
+                          columnWidth(name) - 1,
+                        ),
+                      )
+                      .join(" ")}
+                  </Row>
+                )}
+              />
             </box>
+          </scrollbox>
+        ) : (
+          <>
+            {lanes.length > 0 && <TableHeader columns={laneColumns} />}
             <List
               items={lanes}
               selected={selected}
-              height={listHeight - 1}
-              empty="No agent matches."
-              render={(lane, i, isSelected) => (
-                <Row
-                  key={lane.id}
-                  selected={isSelected}
-                  color={levelColor(laneLevel(lane, c))}
-                  onOpen={() => {
-                    setSelected(i);
-                    onOpen(lane.id);
-                  }}
-                >
-                  {c.columns
-                    .map((name) =>
-                      fit(
-                        safe(laneValue(lane, name, c)),
-                        columnWidth(name) - 1,
-                      ),
-                    )
-                    .join(" ")}
-                </Row>
-              )}
-            />
-          </box>
-        </scrollbox>
-      ) : (
-        <>
-          {lanes.length > 0 && <TableHeader columns={laneColumns} />}
-          <List
-            items={lanes}
-            selected={selected}
-            height={listHeight}
-            empty={
-              query
-                ? "No agent matches."
-                : "No process runs in a watched scope, and no agent has escaped one."
-            }
-            render={(lane, i, isSelected) => {
-              const badge = laneBadge(lane);
-              return (
-                <Row
-                  key={lane.id}
-                  selected={isSelected}
-                  color={levelColor(laneLevel(lane, c))}
-                  onOpen={() => {
-                    setSelected(i);
-                    onOpen(lane.id);
-                  }}
-                >
-                  {safe(cell(nameColumn, lane.name))}
-                  {!narrow && (
-                    <span attributes={ui.dim}>
-                      {`${columnGap}${safe(cell(laneColumn("Program"), lane.tool))}`}
-                    </span>
-                  )}
-                  {columnGap}
-                  <Bar
-                    value={lane.cpu}
-                    max={topCpu}
-                    width={barColumn.width}
-                    color={metric.cpu}
-                  />
-                  {columnGap}
-                  <Reading
-                    value={lane.cpu}
-                    text={cell(laneColumn("CPU"), share(lane.cpu))}
-                  />
-                  {columnGap}
-                  <Reading
-                    value={lane.rss}
-                    text={cell(laneColumn("Memory"), amount(lane.rss, c))}
-                  />
-                  {!narrow && columnGap}
-                  {!narrow && (
-                    <Reading
-                      value={lane.pressure}
-                      text={cell(laneColumn("Wait"), share(lane.pressure))}
+              height={listHeight}
+              empty={
+                query
+                  ? "No agent matches."
+                  : "No process runs in a watched scope, and no agent has escaped one."
+              }
+              render={(lane, i, isSelected) => {
+                const badge = laneBadge(lane);
+                return (
+                  <Row
+                    key={lane.id}
+                    selected={isSelected}
+                    color={levelColor(laneLevel(lane, c))}
+                    onOpen={() => {
+                      setSelected(i);
+                      onOpen(lane.id);
+                    }}
+                  >
+                    {safe(cell(nameColumn, lane.name))}
+                    {!narrow && (
+                      <span attributes={ui.dim}>
+                        {`${columnGap}${safe(cell(laneColumn("Program"), lane.tool))}`}
+                      </span>
+                    )}
+                    {columnGap}
+                    <Bar
+                      value={lane.cpu}
+                      max={topCpu}
+                      width={barColumn.width}
+                      color={metric.cpu}
                     />
-                  )}
-                  {columnGap}
-                  {badge ? (
-                    <span fg={levelColor(badge.level)}>
-                      {cell(laneColumn("State"), badge.text)}
-                    </span>
-                  ) : (
-                    <span attributes={ui.dim}>
-                      {cell(laneColumn("State"), lane.state)}
-                    </span>
-                  )}
-                </Row>
-              );
-            }}
+                    {columnGap}
+                    <Reading
+                      value={lane.cpu}
+                      text={cell(laneColumn("CPU"), share(lane.cpu))}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={lane.rss}
+                      text={cell(laneColumn("Memory"), amount(lane.rss, c))}
+                    />
+                    {!narrow && columnGap}
+                    {!narrow && (
+                      <Reading
+                        value={lane.pressure}
+                        text={cell(laneColumn("Wait"), share(lane.pressure))}
+                      />
+                    )}
+                    {columnGap}
+                    {badge ? (
+                      <span fg={levelColor(badge.level)}>
+                        {cell(laneColumn("State"), badge.text)}
+                      </span>
+                    ) : (
+                      <span attributes={ui.dim}>
+                        {cell(laneColumn("State"), lane.state)}
+                      </span>
+                    )}
+                  </Row>
+                );
+              }}
+            />
+          </>
+        )}
+      </box>
+      {sidePane && selectedLane && (
+        <box flexDirection="column" flexShrink={0} width={sideWidth}>
+          <AgentSummary
+            lane={selectedLane}
+            snapshot={s}
+            config={c}
+            width={sideWidth}
           />
-        </>
+        </box>
       )}
     </box>
   );

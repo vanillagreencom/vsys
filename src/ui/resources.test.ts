@@ -1,7 +1,17 @@
 import { expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { collectGroups } from "../collect/cgroups";
+import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
-import { emptySnapshot, groupSnapshot } from "../test/fixture";
-import { groupLevel, groupRows, idle } from "./resources";
+import { emptySnapshot, fixture, groupSnapshot } from "../test/fixture";
+import {
+  groupLabels,
+  groupLevel,
+  groupRows,
+  idle,
+  treePrefixes,
+} from "./resources";
 
 test("a leaf with no work and little memory is idle; slices and the root never are", () => {
   const mib = 1024 * 1024;
@@ -44,4 +54,111 @@ test("a group's level follows its worst pressure, its cap and its memory thresho
   const capped = groupSnapshot({ max: c.memoryFloor - 1, maxRead: true });
   s.groups = [capped];
   expect(groupLevel(capped, s, c)).toBe("danger");
+});
+
+test("groups that decode to one name are separated, and hiding rows never renames one", () => {
+  const g = (path: string, name: string, pids: number[] = [], memory = 0) =>
+    groupSnapshot({
+      path,
+      parent: path.split("/").slice(0, -1).join("/") || ".",
+      name,
+      pids,
+      memory,
+    });
+  // Three terminal scopes and two browser scopes decode to one word each.
+  const groups = [
+    g(".", "user@1000.service"),
+    g("app.slice", "app.slice"),
+    // Busy enough to survive the idle filter; the other two are not.
+    g("app.slice/a", "app-Hyprland-ghostty-3d98e590.scope", [11], 1 << 30),
+    g("app.slice/b", "app-Hyprland-ghostty-b95bd288.scope", [22]),
+    g("session.slice", "session.slice"),
+    g("session.slice/c", "app-Hyprland-ghostty-2ce4140b.scope", [33]),
+  ];
+  const labels = groupLabels(groups);
+  expect(labels.get("app.slice/a")).toBe("ghostty PID 11");
+  expect(labels.get("app.slice/b")).toBe("ghostty PID 22");
+  expect(labels.get("session.slice/c")).toBe("ghostty PID 33");
+  expect(labels.get(".")).toBe("user@1000");
+  expect(labels.get("session.slice")).toBe("session");
+  expect(new Set(labels.values()).size).toBe(groups.length);
+  // Settling the names over the visible rows alone would answer differently,
+  // which is why the screen hands over every group: a row must not be renamed
+  // by hiding a row somewhere else.
+  const s = emptySnapshot();
+  s.groups = groups;
+  const visible = groupRows(s, false);
+  expect(visible.length).toBeLessThan(groups.length);
+  const overVisible = groupLabels(visible);
+  expect([...overVisible.values()]).not.toEqual(
+    visible.map((row) => labels.get(row.path)),
+  );
+});
+
+test("the tree draws its nesting, and the last child closes its branch", () => {
+  const g = (path: string, parent: string) =>
+    groupSnapshot({ path, parent, name: path.split("/").at(-1) ?? path });
+  const prefixes = treePrefixes([
+    g(".", "."),
+    g("app.slice", "."),
+    g("app.slice/one", "app.slice"),
+    g("app.slice/two", "app.slice"),
+    g("app.slice/two/deep", "app.slice/two"),
+    g("session.slice", "."),
+  ]);
+  expect(prefixes.get(".")).toBe("");
+  expect(prefixes.get("app.slice")).toBe("├─ ");
+  expect(prefixes.get("app.slice/one")).toBe("│  ├─ ");
+  expect(prefixes.get("app.slice/two")).toBe("│  └─ ");
+  // The branch above has ended, so nothing is drawn through its column.
+  expect(prefixes.get("app.slice/two/deep")).toBe("│     └─ ");
+  expect(prefixes.get("session.slice")).toBe("└─ ");
+});
+
+test("a subtree whose parent could not be read keeps the depth it sits at", () => {
+  const f = fixture();
+  try {
+    f.group("a.slice");
+    f.group("a.slice/x.service");
+    f.group("a.slice/x.service/deep.scope");
+    // The collector records a failed read and descends into the children
+    // regardless, so a group can be listed while its parent is not.
+    rmSync(join(f.config.cgroupRoot, "a.slice", "cpu.stat"));
+    const r = new Reader();
+    const groups = collectGroups(r, f.config.cgroupRoot, [], 1000);
+    const paths = groups.map((g) => g.path);
+    expect(paths).not.toContain("a.slice");
+    expect(paths).toContain("a.slice/x.service");
+    expect(
+      r.errors.some((e) => e.source.endsWith(join("a.slice", "cpu.stat"))),
+    ).toBe(true);
+    // The disconnected subtree keeps its own depth instead of collapsing onto
+    // the root, which is the nesting this screen exists to draw.
+    const prefixes = treePrefixes(groups);
+    expect(prefixes.get("a.slice/x.service")).toBe("   └─ ");
+    expect(prefixes.get("a.slice/x.service/deep.scope")).toBe("      └─ ");
+    // Every listed group is placed, whatever its parent did.
+    for (const g of groups) expect(prefixes.has(g.path)).toBe(true);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("an idle parent filtered from the list still leaves its children nested", () => {
+  const g = (path: string, parent: string) =>
+    groupSnapshot({ path, parent, name: path.split("/").at(-1) ?? path });
+  // `a.slice` is absent from this list, as `groupRows` leaves it when it is
+  // idle and a child of it is not.
+  const prefixes = treePrefixes([
+    g(".", "."),
+    g("a.slice/one", "a.slice"),
+    g("a.slice/two", "a.slice"),
+    g("a.slice/two/deep", "a.slice/two"),
+    g("b.slice", "."),
+  ]);
+  expect(prefixes.get(".")).toBe("");
+  expect(prefixes.get("b.slice")).toBe("└─ ");
+  expect(prefixes.get("a.slice/one")).toBe("   ├─ ");
+  expect(prefixes.get("a.slice/two")).toBe("   └─ ");
+  expect(prefixes.get("a.slice/two/deep")).toBe("      └─ ");
 });

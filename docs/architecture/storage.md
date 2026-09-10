@@ -8,6 +8,7 @@ Storage collection reads filesystem state, device counters, drive reports and sc
 
 - Scratch traversal runs as a cooperative background task during interactive collection. Snapshots carry its measurement time and pending state. Scripted collection waits for a complete scan.
 - The mount parser owns mount roots and path escaping for cgroup and filesystem collection.
+- Btrfs subvolumes of one filesystem mount separately and each reports the whole device's free space and error counters. Storage groups them under their device, which names itself, its free space and its errors once; a mount row carries only what differs between mounts. A section whose every row is unreadable collapses to one line naming the source it needs.
 
 ## Invariants
 

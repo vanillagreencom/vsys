@@ -1,6 +1,6 @@
 import type { RGBA } from "@opentui/core";
 import type { TextProps } from "@opentui/react";
-import type { ReactNode } from "react";
+import { Children, type ReactNode } from "react";
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
 import { type Column, fit, headerText } from "./columns";
@@ -62,6 +62,29 @@ export function Empty({ text }: { text: string }) {
     </Line>
   );
 }
+/**
+ * The middle of an otherwise blank screen: what is not happening, and what
+ * will appear here when it does. A message in the top-left corner of fifty
+ * empty rows reads as a screen that failed to draw.
+ */
+export function Nothing({ text, next }: { text: string; next: string }) {
+  return (
+    <box
+      flexGrow={1}
+      minHeight={0}
+      flexDirection="column"
+      justifyContent="center"
+      alignItems="center"
+    >
+      <Line flexShrink={0} attributes={ui.dim} wrapMode="word">
+        {text}
+      </Line>
+      <Line flexShrink={0} attributes={ui.dim} wrapMode="word">
+        {next}
+      </Line>
+    </box>
+  );
+}
 
 /** A dim label followed by its value on one line. */
 export function Field({
@@ -120,6 +143,25 @@ export function Bar({
     </>
   );
 }
+/**
+ * A one-row chart. Columns with no sample are drawn quietly, so a window vsys
+ * has not filled yet reads as waiting rather than as lost data.
+ */
+export function Sparkline({ marks, color }: { marks: string; color?: RGBA }) {
+  return (
+    <>
+      {gapRuns(marks).map((run) => (
+        <span
+          key={`${run.at}`}
+          fg={run.sampled ? color : ui.quiet}
+          attributes={run.sampled ? ui.none : ui.dim}
+        >
+          {run.text}
+        </span>
+      ))}
+    </>
+  );
+}
 /** A number in a table cell: a zero recedes, a reading keeps its weight. */
 export function Reading({
   value,
@@ -159,32 +201,81 @@ export function Tile({
   chartColor?: RGBA;
 }) {
   return (
-    <box flexDirection="column" flexGrow={1} flexBasis={0} minWidth={0}>
-      <Line height={1} truncate attributes={ui.dim}>
+    <box
+      flexDirection="column"
+      flexGrow={1}
+      flexBasis={0}
+      minWidth={0}
+      overflow="hidden"
+    >
+      <Line height={1} width="100%" truncate attributes={ui.dim}>
         {label}
       </Line>
-      <Line height={1} truncate>
+      <Line height={1} width="100%" truncate>
         <span fg={levelColor(level)} attributes={ui.bold}>
           {safe(value)}
         </span>
       </Line>
       {chart !== undefined && (
-        <Line height={1} truncate fg={chartColor ?? levelColor(level)}>
-          {chart}
+        <Line height={1} width="100%" truncate>
+          <Sparkline marks={chart} color={chartColor ?? levelColor(level)} />
         </Line>
       )}
-      <Line height={1} truncate attributes={ui.dim}>
+      <Line height={1} width="100%" truncate attributes={ui.dim}>
         {safe(detail)}
       </Line>
     </box>
   );
 }
 
-/** A row of tiles with a gap between them. */
-export function Tiles({ children }: { children: ReactNode }) {
+/** The columns a tile needs before its own text starts running together. */
+export const tileWidth = 26;
+/**
+ * How many tiles one row can hold. Four tiles in a hundred columns give each
+ * twenty-three and the captions merge; two rows of two give each forty-eight.
+ * An unstated width keeps every tile on one row.
+ */
+export function tilesPerRow(count: number, width: number | undefined): number {
+  if (width === undefined || count < 1) return Math.max(1, count);
+  const fits = Math.max(1, Math.floor((width + 2) / (tileWidth + 2)));
+  // The rows share the tiles evenly: four tiles in a width that holds three
+  // read better as two rows of two than as a row of three and a lone tile.
+  const rows = Math.ceil(count / Math.min(count, fits));
+  return Math.ceil(count / rows);
+}
+/**
+ * Tiles side by side, wrapping to further rows when the width cannot hold
+ * them all.
+ */
+export function Tiles({
+  children,
+  width,
+}: {
+  children: ReactNode;
+  /** The panel's inner width. Omitted keeps every tile on one row. */
+  width?: number;
+}) {
+  const count = Children.count(children);
+  const perRow = tilesPerRow(count, width);
+  const rows: ReactNode[][] = [];
+  Children.forEach(children, (child, i) => {
+    const at = Math.floor(i / perRow);
+    if (!rows[at]) rows[at] = [];
+    rows[at].push(child);
+  });
   return (
-    <box flexDirection="row" flexShrink={0} gap={2}>
-      {children}
+    <box flexDirection="column" flexShrink={0} gap={1}>
+      {rows.map((row, at) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: a row is its position
+        <box key={`tiles-${at}`} flexDirection="row" flexShrink={0} gap={2}>
+          {row}
+          {/* The last row keeps the earlier rows' column widths. */}
+          {Array.from({ length: perRow - row.length }, (_, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a filler is its position
+            <box key={`pad-${i}`} flexGrow={1} flexBasis={0} minWidth={0} />
+          ))}
+        </box>
+      ))}
     </box>
   );
 }
@@ -302,6 +393,24 @@ export function chartRows(
 }
 /** The columns a chart's axis labels take, shared with any label beside a sparkline. */
 export const gutter = 13;
+/** The mark a chart column with no sample draws, on the base row. */
+const gapMark = "·";
+/**
+ * A chart row split into runs of sampled and unsampled columns, so a gap can
+ * be painted quietly in one span rather than a span per column.
+ */
+export function gapRuns(
+  row: string,
+): { at: number; sampled: boolean; text: string }[] {
+  const runs: { at: number; sampled: boolean; text: string }[] = [];
+  [...row].forEach((mark, at) => {
+    const sampled = mark !== gapMark;
+    const last = runs.at(-1);
+    if (last && last.sampled === sampled) last.text += mark;
+    else runs.push({ at, sampled, text: mark });
+  });
+  return runs;
+}
 export function Chart({
   title,
   values,
@@ -336,7 +445,17 @@ export function Chart({
               gutter - 1,
             )}{" "}
           </span>
-          <span fg={color}>{row}</span>
+          {/* A column with no sample is dim, so a window vsys has not filled
+              yet reads as waiting rather than as a fault. */}
+          {gapRuns(row).map((run) => (
+            <span
+              key={`${run.at}`}
+              fg={run.sampled ? color : ui.quiet}
+              attributes={run.sampled ? ui.none : ui.dim}
+            >
+              {run.text}
+            </span>
+          ))}
         </Line>
       ))}
       {cursor !== undefined && (
@@ -374,21 +493,33 @@ export function Toast({ text, level }: { text: string; level: Level }) {
   );
 }
 
-/** A centred panel over the screen, used for help. */
+/**
+ * A centred panel over the screen. It is sized to the content it was given,
+ * because a panel stretched to the terminal leaves the screen behind it
+ * showing through its own blank rows, which reads as a paint fault.
+ */
 export function Overlay({
   title,
+  columns,
+  lines,
   children,
 }: {
   title: string;
+  /** The widest line the content holds, in columns. */
+  columns: number;
+  /** The rows the content takes. */
+  lines: number;
   children: ReactNode;
 }) {
   return (
     <box
       position="absolute"
-      top={2}
-      left={4}
-      right={4}
-      bottom={2}
+      top="50%"
+      left="50%"
+      marginTop={-Math.ceil((lines + 4) / 2)}
+      marginLeft={-Math.ceil((columns + 6) / 2)}
+      width={columns + 6}
+      height={lines + 4}
       zIndex={20}
       border
       borderStyle="rounded"

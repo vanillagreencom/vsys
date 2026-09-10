@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import { dangerousCap } from "../model/lanes";
-import { unitLabel } from "../model/naming";
+import { distinctNames, unitLabel } from "../model/naming";
 import type { Group, Snapshot } from "../model/types";
 import { type Level, meters } from "../model/verdict";
 import { meterTile } from "./attention";
@@ -19,6 +19,9 @@ import {
   Row,
   Section,
   TableHeader,
+  Tile,
+  Tiles,
+  tilesPerRow,
 } from "./widgets";
 
 /** A group with nothing running and little memory is noise until asked for. */
@@ -33,6 +36,72 @@ export function idle(g: Group): boolean {
 /** The rows Resources lists, in tree order, with idle leaves hidden unless asked. */
 export function groupRows(s: Snapshot, all: boolean): Group[] {
   return s.groups.filter((g) => all || !idle(g));
+}
+/**
+ * The name each group shows, distinct across the whole tree. Three scopes of
+ * one program decode to one word, so the parent separates them where it
+ * differs and the first process id always does. Hiding idle rows never
+ * renames a row, because the names are settled over every group.
+ */
+export function groupLabels(groups: Group[]): Map<string, string> {
+  const byPath = new Map(groups.map((g) => [g.path, g]));
+  const parent = (g: Group) => {
+    const above = byPath.get(g.parent);
+    return above && above !== g ? unitLabel(above.name) : "";
+  };
+  const names = distinctNames(groups, (g) => unitLabel(g.name), [
+    (g) => (parent(g) ? `in ${parent(g)}` : ""),
+    (g) => (g.pids[0] ? `PID ${g.pids[0]}` : ""),
+    (g) => g.path,
+  ]);
+  return new Map(groups.map((g, i) => [g.path, names[i]]));
+}
+/**
+ * How deep a path sits. A group's parent is its own path with the last segment
+ * removed, so the segments count the ancestors: `.` is the root and `a/b` sits
+ * two below it. This is the only measure of depth left when the parent's own
+ * row is missing, because the chain of `parent` links stops there.
+ */
+const depth = (path: string): number =>
+  path === "." ? 0 : path.split("/").length;
+/**
+ * The glyphs that draw one row's depth. A row knows whether it is the last
+ * child of its parent, and every ancestor whose own subtree has ended leaves
+ * blank rather than a trunk, so the lines join what is actually nested.
+ */
+export function treePrefixes(groups: Group[]): Map<string, string> {
+  const present = new Set(groups.map((g) => g.path));
+  const children = new Map<string, Group[]>();
+  for (const g of groups) {
+    if (g.parent === g.path) continue;
+    const list = children.get(g.parent);
+    if (list) list.push(g);
+    else children.set(g.parent, [g]);
+  }
+  const prefixes = new Map<string, string>();
+  const walk = (path: string, trunk: string) => {
+    const kids = children.get(path) ?? [];
+    kids.forEach((child, i) => {
+      const last = i === kids.length - 1;
+      prefixes.set(child.path, `${trunk}${last ? "└─ " : "├─ "}`);
+      walk(child.path, `${trunk}${last ? "   " : "│  "}`);
+    });
+  };
+  for (const g of groups)
+    if (g.parent === g.path) {
+      prefixes.set(g.path, "");
+      walk(g.path, "");
+    }
+  // A parent can have no row here: its own cgroup read failed, or it was
+  // filtered out as idle while a child was not. Its children are still listed,
+  // and giving them the root's empty prefix would draw a nesting the machine
+  // does not have — every disconnected subtree flattened onto one level. Each
+  // missing parent starts its own subtree instead, indented to the depth its
+  // path states, and its descendants walk from there as any others do.
+  for (const [parent, kids] of children)
+    if (!present.has(parent) && kids.length)
+      walk(parent, "   ".repeat(depth(parent)));
+  return prefixes;
 }
 export function groupLevel(g: Group, s: Snapshot, c: Config): Level {
   if (
@@ -83,6 +152,8 @@ export function Resources({
   const tiles = meters(s, c)
     .filter((m) => m.id !== "builds")
     .map((m) => meterTile(m, s, c));
+  const labels = groupLabels(s.groups);
+  const prefixes = treePrefixes(rows);
   const limit = (v: number | null) => (v === null ? "none" : bytes(v, c));
   const { SwapTotal, SwapFree } = s.system.memory;
   const swapUsed =
@@ -108,29 +179,38 @@ export function Resources({
   ];
   const [nameColumn, cpuBar, cpuColumn, memoryBar, memoryColumn, tasksColumn] =
     groupColumns;
-  // Four machine lines, the section, the table heading, and the detail block.
-  const listHeight = height - 4 - 3 - 4;
+  const inner = width - 4;
+  // The meters that are not builds, and the Swap tile beside them.
+  const tileCount = tiles.length + 1;
+  const tileRows = Math.ceil(tileCount / tilesPerRow(tileCount, inner));
+  // Each tile row is three lines and the rows sit one line apart; then the
+  // blank under them, the section with its margin, the table heading, and the
+  // four detail fields with their own margin.
+  const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - 5;
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
-      {tiles.map((tile) => (
-        <Field
-          key={tile.label}
-          label={tile.label}
-          value={tile.facts
-            .map(([k, v]) => `${k.toLowerCase()} ${v}`)
-            .join(" · ")}
-          color={levelColor(tile.level)}
+      <Tiles width={inner}>
+        {tiles.map((tile) => (
+          <Tile
+            key={tile.label}
+            label={tile.label}
+            value={tile.value}
+            level={tile.level}
+            detail={tile.detail}
+          />
+        ))}
+        <Tile
+          label="Swap"
+          value={amount(swapUsed, c)}
+          detail={`of ${amount(s.system.memory.SwapTotal ?? null, c)}${s.system.zram
+            .map(
+              (z) =>
+                ` · ${z.device} ${bytes(z.original, c)} in ${bytes(z.compressed, c)}`,
+            )
+            .join("")}`}
         />
-      ))}
-      <Field
-        label="Swap"
-        value={`${amount(swapUsed, c)} of ${amount(s.system.memory.SwapTotal ?? null, c)}${s.system.zram
-          .map(
-            (z) =>
-              ` · ${z.device} holds ${bytes(z.original, c)} in ${bytes(z.compressed, c)}`,
-          )
-          .join("")}`}
-      />
+      </Tiles>
+      <box height={1} flexShrink={0} />
       <Section
         title="Groups"
         width={width - 4}
@@ -143,8 +223,7 @@ export function Resources({
         height={listHeight}
         empty="No resource group could be read."
         render={(g, i, isSelected) => {
-          const depth = g.path === "." ? 0 : g.path.split("/").length;
-          const name = `${"  ".repeat(depth)}${g.path === "." ? "session" : unitLabel(g.name)}`;
+          const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;
           return (
             <Row
               key={g.path}

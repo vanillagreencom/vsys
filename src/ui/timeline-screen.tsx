@@ -4,11 +4,18 @@ import type { Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import { changed, type Point } from "../store/point";
 import { fit } from "./columns";
-import { bucketPeaks, bytes, percent, sparkline, timeBuckets } from "./format";
+import {
+  bucketPeaks,
+  bytes,
+  percent,
+  spanLabel,
+  sparkline,
+  timeBuckets,
+} from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, readingWeight, ui } from "./theme";
 import { eventParts } from "./timeline";
-import { Chart, Empty, gutter, Line, Section } from "./widgets";
+import { Chart, Empty, gutter, Line, Section, Sparkline } from "./widgets";
 
 /** The windows the reader can step through, shortest first. */
 export const windows = [300000, 900000, 3600000, 21600000, 86400000];
@@ -185,7 +192,7 @@ export function Timeline({
       <box height={1} flexShrink={0} />
       <box flexDirection="column" flexShrink={0} onMouseDown={onChart}>
         <Chart
-          title={`Agents CPU  ${value("agents", percent)}`}
+          title={`Agents CPU  ${value("agents", percent)}  ${spanLabel(agents, windowMs)}`}
           values={agents}
           height={3}
           max={agentsTop}
@@ -207,12 +214,14 @@ export function Timeline({
               <Line key={key} height={1} flexShrink={0} truncate>
                 <span attributes={ui.dim}>{fit(label, gutter)}</span>
                 <span
-                  fg={color}
                   attributes={readingWeight(
                     Math.max(0, ...values.map((v) => v ?? 0)),
                   )}
                 >
-                  {sparkline(values, chartWidth, c.sparkline)}
+                  <Sparkline
+                    marks={sparkline(values, chartWidth, c.sparkline)}
+                    color={color}
+                  />
                 </span>
               </Line>
             );

@@ -33,8 +33,64 @@ export function keyLabel(key: string): string {
 /** The settings key that opens a view is the view's own name. */
 export const viewKey = (view: View): string => view.toLowerCase();
 
-/** The width under which the tabs take their own row. */
+/** The width under which a list drops the columns it can do without. */
 export const narrowWidth = 100;
+/** The width at or above which a screen can hold two columns side by side. */
+export const wideWidth = 150;
+/** The columns each tab takes: its key, a space, and that view's own name. */
+const tabWidths = (c: Config): number[] =>
+  views.map((v) => [...c.keys[viewKey(v)]].length + 1 + [...v].length);
+/** The blank between two tabs when they share the header's row. */
+const tabGap = 2;
+/**
+ * The marker after the program name: live data, or the time of the sample the
+ * reader pinned. `Header` draws this string and the fit predicate measures it,
+ * so a pinned marker is never costed as the shorter live one.
+ */
+export const headerMarker = (pinnedAt: number | null): string =>
+  pinnedAt === null
+    ? " ● live"
+    : ` ◆ ${new Date(pinnedAt).toLocaleTimeString()}`;
+/**
+ * The columns the one-row header needs: the row's own padding, the program
+ * name and its marker, the host with the blanks around it, every tab and the
+ * gaps between them, and the clock. Every term is measured from what `Header`
+ * renders, so the predicate and the row it decides cannot disagree.
+ */
+export function headerRowWidth(
+  host: string,
+  clock: string,
+  pinnedAt: number | null,
+  c: Config,
+): number {
+  const tabs = tabWidths(c);
+  return (
+    2 +
+    4 +
+    [...headerMarker(pinnedAt)].length +
+    2 +
+    [...host].length +
+    1 +
+    tabs.reduce((total, width) => total + width, 0) +
+    tabGap * (tabs.length - 1) +
+    1 +
+    [...clock].length
+  );
+}
+/**
+ * Whether the tabs fit on the header's own row. At a hundred columns the
+ * capture read `cachyHome` and `7 Settin5:50:23 PM` because the tabs took the
+ * columns the host and the clock were already using.
+ */
+export function tabsFitOneRow(
+  width: number,
+  host: string,
+  clock: string,
+  pinnedAt: number | null,
+  c: Config,
+): boolean {
+  return headerRowWidth(host, clock, pinnedAt, c) <= width;
+}
 /**
  * The program, whether it shows live data, the host, the tabs and the clock.
  * One row when the terminal is wide enough, two when it is not.
@@ -56,7 +112,8 @@ export function Header({
   config: Config;
   onNavigate: (view: View) => void;
 }) {
-  const narrow = width < narrowWidth;
+  const clock = new Date(time).toLocaleTimeString();
+  const narrow = !tabsFitOneRow(width, host, clock, pinnedAt, c);
   const tabs = (
     <box
       flexDirection="row"
@@ -87,18 +144,14 @@ export function Header({
       <box flexDirection="row" height={1} flexShrink={0} paddingX={1}>
         <Line height={1} flexShrink={0} truncate>
           <span attributes={ui.bold}>vsys</span>
-          {pinnedAt === null ? (
-            <span fg={ui.ok}>{" ● live"}</span>
-          ) : (
-            <span fg={ui.warn}>
-              {` ◆ ${new Date(pinnedAt).toLocaleTimeString()}`}
-            </span>
-          )}
-          <span attributes={ui.dim}>{`  ${safe(host)}`}</span>
+          <span fg={pinnedAt === null ? ui.ok : ui.warn}>
+            {headerMarker(pinnedAt)}
+          </span>
+          <span attributes={ui.dim}>{`  ${safe(host)} `}</span>
         </Line>
         {narrow ? <box flexGrow={1} /> : tabs}
         <Line height={1} flexShrink={0} attributes={ui.dim}>
-          {new Date(time).toLocaleTimeString()}
+          {` ${clock}`}
         </Line>
       </box>
       {narrow && tabs}
@@ -181,14 +234,27 @@ export function Help({ config: c }: { config: Config }) {
       ],
     ],
   ];
+  // The panel is as wide as its widest line and as tall as its rows, so no
+  // part of the screen behind it shows through inside its border.
+  const keyColumn = 16;
+  const columns =
+    Math.max(
+      ...groups.flatMap(([name, rows]) => [
+        [...name].length,
+        ...rows.map(([, action]) => keyColumn + [...action].length),
+      ]),
+    ) + 1;
+  const lines = groups.reduce((total, [, rows]) => total + rows.length + 2, 0);
   return (
-    <Overlay title="Keys">
+    <Overlay title="Keys" columns={columns} lines={lines}>
       {groups.map(([name, rows]) => (
         <box key={name} flexDirection="column" flexShrink={0} marginBottom={1}>
-          <Line attributes={ui.bold}>{name}</Line>
+          <Line attributes={ui.bold} width="100%">
+            {name}
+          </Line>
           {rows.map(([key, action]) => (
-            <Line key={action} height={1} truncate>
-              <span fg={ui.accent}>{fit(key, 16)}</span>
+            <Line key={action} height={1} width="100%" truncate>
+              <span fg={ui.accent}>{fit(key, keyColumn)}</span>
               <span>{action}</span>
             </Line>
           ))}

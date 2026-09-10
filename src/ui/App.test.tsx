@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import type { Config } from "../config/config";
-import { defaults } from "../config/config";
+import { defaults, validate } from "../config/config";
 import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
@@ -16,6 +16,7 @@ import {
 } from "../test/fixture";
 import { App, Waiting } from "./App";
 import { attention } from "./attention";
+import { headerRowWidth } from "./chrome";
 import { osc52 } from "./clipboard";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
@@ -835,6 +836,306 @@ test("the linkers cell stays inside its column on the rendered Builds screen", a
     expect(linkers.length).toBe(30);
     expect(linkers.endsWith("…")).toBe(true);
     expect(row).not.toContain("ld.bfd");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a wide terminal puts the concerns and the agents side by side", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const wide = await mount(s, c, { width: 180, height: 44 });
+  try {
+    await wide.press("1");
+    const heading = wide
+      .frame()
+      .split("\n")
+      .find((line) => line.includes("Needs attention"));
+    // One row carries both headings, so the two lists sit beside each other.
+    expect(heading).toContain("Busiest agents");
+  } finally {
+    await wide.close();
+  }
+  // Below the width they stack, and the headings sit on separate rows.
+  const tall = await mount(s, c, { width: 120, height: 44 });
+  try {
+    await tall.press("1");
+    const lines = tall.frame().split("\n");
+    const heading = lines.find((line) => line.includes("Needs attention"));
+    expect(heading).not.toContain("Busiest agents");
+    expect(lines.some((line) => line.includes("Busiest agents"))).toBe(true);
+  } finally {
+    await tall.close();
+  }
+});
+
+test("a wide Agents list carries the selected agent beside it", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cwd: "/repo/one" }),
+    laneSnapshot({ id: "b", name: "lane-b", cwd: "/repo/two" }),
+  ];
+  s.groups = [groupSnapshot()];
+  const wide = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await wide.press("2");
+    const frame = wide.frame();
+    // The pane names the selected agent beside the list, so a row can be read
+    // against what it means without opening it.
+    expect(frame).toContain("Selected");
+    expect(frame).toContain("/repo/one");
+    expect(frame).not.toContain("/repo/two");
+    await wide.press("j");
+    expect(wide.frame()).toContain("/repo/two");
+  } finally {
+    await wide.close();
+  }
+  // Below the width the list keeps the whole panel.
+  const narrow = await mount(s, c, { width: 120, height: 30 });
+  try {
+    await narrow.press("2");
+    expect(narrow.frame()).not.toContain("Selected");
+  } finally {
+    await narrow.close();
+  }
+});
+
+test("the help panel covers what it sits on, at any terminal size", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const widths: number[] = [];
+  for (const size of [
+    { width: 180, height: 44 },
+    { width: 100, height: 32 },
+  ]) {
+    const t = await mount(s, c, size);
+    try {
+      await t.press("?");
+      const lines = t.frame().split("\n");
+      const top = lines.findIndex((line) => line.includes("╭"));
+      const bottom = lines.findIndex((line) => line.includes("╰"));
+      expect(top).toBeGreaterThan(-1);
+      expect(bottom).toBeGreaterThan(top);
+      const left = lines[top].indexOf("╭");
+      const right = lines[top].lastIndexOf("╮");
+      expect(right).toBeGreaterThan(left);
+      // The panel is as wide as its own content, so it is the same width in
+      // both terminals and never reaches either edge.
+      widths.push(right - left + 1);
+      expect(left).toBeGreaterThan(0);
+      expect(right).toBeLessThan(size.width - 1);
+      // Inside the border, every cell belongs to the panel: nothing from the
+      // screen behind it shows through its blank columns.
+      for (let row = top + 1; row < bottom; row++) {
+        const inside = lines[row].slice(left, right + 1);
+        expect({ row, edges: `${inside[0]}${inside.at(-1)}` }).toEqual({
+          row,
+          edges: "││",
+        });
+      }
+    } finally {
+      await t.close();
+    }
+  }
+  expect(widths.length).toBe(2);
+  expect(widths[0]).toBe(widths[1]);
+});
+
+test("Settings filters by name and by the label the reader sees", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 180, height: 40 });
+  try {
+    await t.press("7");
+    expect(t.frame()).toContain("Storage units");
+    // "wait" appears in no setting's stored name; it is what the labels say.
+    await t.press("/");
+    for (const ch of "wait") await t.press(ch);
+    const byLabel = t.frame();
+    expect(byLabel).toContain("Wait warning");
+    expect(byLabel).toContain("Wait before alert");
+    expect(byLabel).not.toContain("Storage units");
+    // The stored name finds it too, not only the label.
+    await t.press("escape");
+    await t.press("/");
+    for (const ch of "swapfloor") await t.press(ch);
+    const byKey = t.frame();
+    expect(byKey).toContain("Desktop swap warning");
+    expect(byKey).not.toContain("Wait warning");
+  } finally {
+    await t.close();
+  }
+});
+
+/** Seven tabs of equal width, so a predicate that multiplies the widest tab
+ * instead of summing them all reads exactly the gap columns short. */
+const equalTabs = () =>
+  validate({
+    ...defaults(),
+    keys: {
+      ...defaults().keys,
+      home: "ctrl+f1",
+      agents: "alt+a",
+      resources: "f1",
+      builds: "alt+b",
+      storage: "pgup",
+      timeline: "f10",
+      settings: "f11",
+    },
+  });
+
+test("the header lays out on the row its own predicate promised", async () => {
+  const c = equalTabs();
+  const s = emptySnapshot();
+  s.system.host = "cachy";
+  const clock = new Date(s.time).toLocaleTimeString();
+  const exact = headerRowWidth("cachy", clock, null, c);
+  // At the width the predicate accepts, the tabs share the header's own row
+  // and the clock still ends it.
+  const fits = await mount(s, c, { width: exact, height: 24 });
+  try {
+    // An unbound key draws a frame without changing what is on it.
+    await fits.press("z");
+    const lines = fits.frame().split("\n");
+    expect(lines[0]).toContain("cachy");
+    expect(lines[0]).toContain("Settings");
+    expect(lines[0].trimEnd().endsWith(clock)).toBe(true);
+  } finally {
+    await fits.close();
+  }
+  // Five columns short of that, the tabs take a row of their own. The earlier
+  // predicate accepted this width, and the row it drew ran the last tab into
+  // the clock: `7 Settin5:50:23 PM`.
+  const tight = await mount(s, c, { width: exact - 5, height: 24 });
+  try {
+    await tight.press("z");
+    const lines = tight.frame().split("\n");
+    expect(lines[0]).toContain("cachy");
+    expect(lines[0].trimEnd().endsWith(clock)).toBe(true);
+    expect(lines[1]).toContain("Home");
+    expect(lines[1]).toContain("Settings");
+  } finally {
+    await tight.close();
+  }
+});
+
+test("a filtered Settings list opens the row the highlight is on", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "wait") await t.press(ch);
+    // Enter closes the find box and keeps the query, so the list is filtered
+    // and the first match carries the highlight.
+    await t.press("enter");
+    await t.press("enter");
+    // The editor is titled with the setting it edits, so its presence names
+    // the row Enter actually opened.
+    const frame = t.frame();
+    expect(frame).toContain("Wait warning");
+    expect(frame).toContain("Enter saves");
+    expect(frame).not.toContain("Storage units");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a query that matches nothing leaves Enter with nothing to open", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "zzzz") await t.press(ch);
+    await t.press("enter");
+    // No row is selected, so Enter opens nothing rather than reading past the
+    // end of the list. The read past the end throws inside the key emitter,
+    // which swallows it, so what this pins is the list the render walks: the
+    // sources row is not a setting, the filter drops it from `items`, and a
+    // render driven by `items` therefore does not draw it either. While it
+    // was drawn from a counter beside the list, it stayed on screen holding
+    // the highlight that belonged to a row further down.
+    await t.press("enter");
+    const frame = t.frame();
+    expect(frame).toContain("Data sources");
+    expect(frame).not.toContain("Every source was read");
+    expect(frame).not.toContain("Enter saves");
+    expect(frame).not.toContain("Storage units");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Resources sizes its tiles by the width it has, at a hundred columns", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 100, height: 30 });
+  try {
+    await t.press("3");
+    const lines = t.frame().split("\n");
+    const at = (text: string) => lines.findIndex((line) => line.includes(text));
+    // Four tiles in ninety-six columns are twenty-two columns each, under the
+    // width a tile needs, so they wrap to two rows instead of truncating.
+    expect(at("CPU wait")).toBeGreaterThan(-1);
+    expect(at("Swap")).toBeGreaterThan(at("CPU wait"));
+    // The detail under the number is a whole sentence, not a cut one.
+    expect(lines.some((line) => line.includes("desktop"))).toBe(true);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a mount's detail does not repeat the device row's error counters", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/data", {
+      device: "/dev/nvme0n1p2",
+      errors: { "nvme0n1p2/corruption_errs": 3 },
+      options: ["rw", "subvol=@data"],
+    }),
+  ];
+  const t = await mount(s, c, { width: 140, height: 30 });
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    // The device row states the counters once for every mount grouped under
+    // it. The mount below it carries only what differs between mounts.
+    expect(frame.split("corruption 3").length - 1).toBe(1);
+    expect(frame).toContain("subvol=@data");
+    expect(frame).not.toContain("Errors");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the device error counters are legible at a hundred columns", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/data", {
+      device: "/dev/nvme0n1p2",
+      errors: { "nvme0n1p2/corruption_errs": 3 },
+      // A counter that rose since the last sample turns the row red, so this
+      // reading is the one the colour is telling the reader to go and find.
+      delta: { "nvme0n1p2/corruption_errs": 1 },
+      options: ["rw", "subvol=@data"],
+    }),
+  ];
+  const t = await mount(s, c, { width: 100, height: 30 });
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    // The device row's own columns fill a terminal this narrow, so the
+    // counters wrap onto a line of their own. They are the reading behind the
+    // row's colour, and since the mount detail stopped repeating them, the
+    // only copy of it.
+    expect(frame).toContain("corruption 3 (+1)");
+    expect(frame.split("corruption 3").length - 1).toBe(1);
   } finally {
     await t.close();
   }

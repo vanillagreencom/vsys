@@ -1,7 +1,16 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
-import { bar, chartRows, Line, List, nextDown, Row } from "./widgets";
+import {
+  bar,
+  chartRows,
+  gapRuns,
+  Line,
+  List,
+  nextDown,
+  Row,
+  tilesPerRow,
+} from "./widgets";
 
 test("a bar fills in proportion, clamps at its width, and stays empty when unread", () => {
   const rows: [number | null, number, number, string][] = [
@@ -131,4 +140,51 @@ test("a line takes the terminal's foreground unless a colour is given", async ()
       ui.renderer.destroy();
     });
   }
+});
+
+test("a chart row splits into runs, so a gap is painted quietly in one span", () => {
+  // A fresh start: gaps, then the samples that have arrived.
+  expect(gapRuns("···▁▂").map((run) => [run.sampled, run.text])).toEqual([
+    [false, "···"],
+    [true, "▁▂"],
+  ]);
+  expect(gapRuns("▁·▂").map((run) => [run.sampled, run.text])).toEqual([
+    [true, "▁"],
+    [false, "·"],
+    [true, "▂"],
+  ]);
+  expect(gapRuns("")).toEqual([]);
+  // Every column of the row is accounted for exactly once.
+  const row = "··▁█·· ▂";
+  expect(
+    gapRuns(row)
+      .map((run) => run.text)
+      .join(""),
+  ).toBe(row);
+});
+
+test("tiles wrap rather than squeeze their captions together", () => {
+  const rows: [number, number | undefined, number][] = [
+    // Four tiles need 26 columns each plus the gaps between them, and the
+    // rows share them evenly rather than leaving a lone tile below three.
+    [4, 160, 4],
+    [4, 110, 4],
+    [4, 100, 2],
+    [4, 96, 2],
+    [4, 80, 2],
+    [4, 40, 1],
+    [4, 1, 1],
+    // Three tiles do fit in a hundred columns, so they stay on one row.
+    [3, 100, 3],
+    [3, 60, 2],
+    // No width stated keeps them on one row, whatever the count.
+    [4, undefined, 4],
+    [1, 40, 1],
+  ];
+  for (const [count, width, expected] of rows)
+    expect({ count, width, perRow: tilesPerRow(count, width) }).toEqual({
+      count,
+      width,
+      perRow: expected,
+    });
 });
