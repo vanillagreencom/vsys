@@ -3,7 +3,7 @@ import type { TextProps } from "@opentui/react";
 import { Children, cloneElement, isValidElement, type ReactNode } from "react";
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
-import { type Column, fit, headerText } from "./columns";
+import { type Column, fit, headerText, sortedColumns } from "./columns";
 import { levelColor, readingWeight, ui } from "./theme";
 
 /**
@@ -79,10 +79,21 @@ export function Disclosure({
  * width changed in one place moves both. The selection marker takes the first
  * column of every row, so the heading starts one column in.
  */
-export function TableHeader({ columns }: { columns: Column[] }) {
+export function TableHeader({
+  columns,
+  sort,
+}: {
+  columns: Column[];
+  /**
+   * The heading the rows are sorted by, and which way. Without it a reader
+   * has to remember what they pressed; with it the answer is on the screen
+   * where the sorting shows.
+   */
+  sort?: { label: string; descending: boolean };
+}) {
   return (
     <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
-      {` ${headerText(columns)}`}
+      {` ${headerText(sortedColumns(columns, sort))}`}
     </Line>
   );
 }

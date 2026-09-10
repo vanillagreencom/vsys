@@ -114,8 +114,13 @@ test("Settings lists a capability it could not read, with the reason", async () 
     await t.press("7");
     const settings = t.frame();
     expect(settings).toContain("Data sources  1 not available");
-    // The marker says there is more here before the reader presses anything.
+    // The marker says there is more here before the reader presses anything,
+    // and the row says what the missing source costs rather than naming the
+    // kernel interface it could not find.
     expect(settings).toMatch(
+      /○ ▸ Pressure stall information\s+every wait reading is blank rather than zero/,
+    );
+    expect(settings).not.toMatch(
       /○ ▸ Pressure stall information\s+no PSI on this kernel/,
     );
     expect(settings).toMatch(/● Resource groups \(cgroup v2\)\s+available/);
@@ -171,7 +176,8 @@ test("Settings reports the running program while a past sample is pinned", async
     await t.press("p");
     expect(t.frame()).toContain("show ");
     await t.press("7");
-    expect(t.frame()).toContain("no PSI on this kernel");
+    // The probe describes the running program, so the row is the live one.
+    expect(t.frame()).toContain("every wait reading is blank rather than zero");
   } finally {
     await t.close();
   }

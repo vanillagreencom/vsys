@@ -13,6 +13,7 @@ import { columnGap, fit } from "./columns";
 import { useScreenKeys } from "./keys";
 import {
   capabilityLabels,
+  capabilityLoss,
   capabilityReason,
   editorKind,
   settingDisplay,
@@ -489,7 +490,7 @@ export function Settings({
                     />
                   )}
                   <span attributes={ui.dim}>
-                    {cap.available ? "available" : safe(capabilityReason(cap))}
+                    {cap.available ? "available" : safe(capabilityLoss(cap))}
                   </span>
                 </Row>
               </box>
@@ -521,6 +522,10 @@ export function Settings({
                     color={sources.length ? ui.warn : undefined}
                     onOpen={() => setSourcesOpen((v) => !v)}
                   >
+                    {/* Two columns stand in for the capability rows' own
+                        dot, so this row's marker lines up with theirs
+                        rather than sitting two columns to their left. */}
+                    {"  "}
                     <Disclosure
                       open={sourcesOpen}
                       name={
@@ -528,7 +533,11 @@ export function Settings({
                           ? "Sources vsys cannot read"
                           : "Every source was read"
                       }
-                      count={sources.length || undefined}
+                      count={
+                        sources.length
+                          ? `${sources.length} · what they feed is blank, not zero`
+                          : undefined
+                      }
                     />
                   </Row>
                 </box>

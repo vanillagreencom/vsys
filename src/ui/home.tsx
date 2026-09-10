@@ -47,6 +47,18 @@ export type HomeItem =
   | { kind: "concern"; item: Attention }
   | { kind: "change"; event: TimelineEvent }
   | { kind: "agent"; lane: Lane };
+/**
+ * The columns `Busiest agents` sorts by, in the order the sort key cycles
+ * through them, each with the lane field it reads. Home sorts its own four
+ * headings rather than the whole Agents column set: a heading a screen does
+ * not draw cannot show a reader which way it is sorted.
+ */
+export const busiestSorts: [string, string][] = [
+  ["CPU", "cpu"],
+  ["Memory", "rss"],
+  ["Agent", "name"],
+  ["State", "state"],
+];
 /** How many recent changes Home lists, newest first. */
 export const recentChanges = 3;
 export function homeItems(
@@ -61,8 +73,16 @@ export function homeItems(
    * A lane that has ended drops out; one that has climbed does not push in.
    */
   held?: string[],
+  /** Which of `busiestSorts` the rows are ordered by, and which way. */
+  sort: { key: string; descending: boolean } = {
+    key: "cpu",
+    descending: true,
+  },
 ): HomeItem[] {
-  const ranked = sortLanes(s.lanes, "cpu", true).slice(0, busiest);
+  const ranked = sortLanes(s.lanes, sort.key, sort.descending).slice(
+    0,
+    busiest,
+  );
   const lanes = held
     ? held.flatMap((id) => s.lanes.filter((lane) => lane.id === id))
     : ranked;
@@ -177,7 +197,10 @@ export function Home({
   // in at that moment; it releases when Home unmounts, so nobody is left
   // reading a stale order they forgot they asked for.
   const [held, setHeld] = useState<string[] | null>(null);
-  const rows = homeItems(items, s, busiest, changes, held ?? undefined);
+  // Home's own sort, not the one Agents stores: the two screens draw different
+  // headings, and a marker has to sit on a heading the reader can see.
+  const [sort, setSort] = useState({ key: "cpu", descending: true });
+  const rows = homeItems(items, s, busiest, changes, held ?? undefined, sort);
   const recent = rows.filter((r) => r.kind === "change");
   // Null while the rows hold the selection. Left or right moves onto the
   // tiles, up or down moves back off them, so one Enter is never ambiguous.
@@ -282,12 +305,24 @@ export function Home({
       onOpen(rows[selected]);
       return true;
     }
+    if (name === c.keys.sort) {
+      const at = busiestSorts.findIndex(([, key]) => key === sort.key);
+      setSort({
+        key: busiestSorts[(at + 1) % busiestSorts.length][1],
+        descending: sort.descending,
+      });
+      return true;
+    }
+    if (name === c.keys.reverse) {
+      setSort({ key: sort.key, descending: !sort.descending });
+      return true;
+    }
     if (name === c.keys.hold) {
       setHeld((current) =>
         current
           ? null
-          : homeItems(items, s, busiest, changes).flatMap((row) =>
-              row.kind === "agent" ? [row.lane.id] : [],
+          : homeItems(items, s, busiest, changes, undefined, sort).flatMap(
+              (row) => (row.kind === "agent" ? [row.lane.id] : []),
             ),
       );
       return true;
@@ -321,6 +356,14 @@ export function Home({
     { label: "CPU", width: 7, align: "right" },
     { label: "Memory", width: 10, align: "right" },
     { label: "State", width: 9 },
+  ];
+  // Three columns, so three rows scan as three rows. The subject takes what
+  // the time and the kind leave and is cut through the same helper every other
+  // cell uses, which ends a cut with its mark instead of stopping mid-word.
+  const changeColumns: Column[] = [
+    { label: "", width: 11, align: "right" },
+    { label: "", width: 13 },
+    { label: "", width: Math.max(8, panel - 5 - 11 - 13 - 4) },
   ];
   const agentColumns: Column[] = [
     {
@@ -465,18 +508,20 @@ export function Home({
                   <Row selected={marked(i)} onOpen={() => onOpen(row)}>
                     {(() => {
                       const e = eventParts(row.event, c);
+                      const [timeColumn, kindColumn, subjectColumn] =
+                        changeColumns;
                       return (
                         <>
-                          <span
-                            attributes={ui.dim}
-                          >{`${e.time.padStart(11)}  `}</span>
+                          <span attributes={ui.dim}>
+                            {`${cell(timeColumn, e.time)}${columnGap}`}
+                          </span>
                           <span
                             fg={levelColor(e.level)}
                             attributes={e.level === "ok" ? ui.none : ui.bold}
                           >
-                            {cell({ label: "", width: 13 }, e.kind)}
+                            {cell(kindColumn, e.kind)}
                           </span>
-                          {safe(e.text)}
+                          {safe(cell(subjectColumn, e.text))}
                         </>
                       );
                     })()}
@@ -493,7 +538,16 @@ export function Home({
             {!agents.length && (
               <Empty text="No agent is running in a watched scope." />
             )}
-            {agents.length > 0 && <TableHeader columns={agentColumns} />}
+            {agents.length > 0 && (
+              <TableHeader
+                columns={agentColumns}
+                sort={{
+                  label:
+                    busiestSorts.find(([, key]) => key === sort.key)?.[0] ?? "",
+                  descending: sort.descending,
+                }}
+              />
+            )}
             {rows.map((row, i) =>
               row.kind === "agent" ? (
                 <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>

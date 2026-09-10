@@ -47,6 +47,41 @@ export const cell = (column: Column, value: string): string =>
 export const headerText = (columns: Column[]): string =>
   columns.map((column) => cell(column, column.label)).join(columnGap);
 /**
+ * The same columns with the sorted one carrying its direction. The arrow goes
+ * inside the column's own width, so marking a column moves no other column and
+ * the rows under it stay where they are.
+ */
+export const sortedColumns = (
+  columns: Column[],
+  sort?: { label: string; descending: boolean },
+): Column[] =>
+  sort === undefined
+    ? columns
+    : columns.map((column) => ({
+        ...column,
+        label: sortedLabel(
+          column,
+          column.label !== "" && column.label === sort.label,
+          sort.descending,
+        ),
+      }));
+/**
+ * One heading, with its direction when it is the one being sorted by. On a
+ * numeric column the arrow leads, so the heading still ends where the digits
+ * under it end; on a text column it follows the word it belongs to.
+ */
+export const sortedLabel = (
+  column: Column,
+  sorted: boolean,
+  descending: boolean,
+): string => {
+  if (!sorted) return column.label;
+  const arrow = descending ? "↓" : "↑";
+  return column.align === "right"
+    ? `${arrow} ${column.label}`
+    : `${column.label} ${arrow}`;
+};
+/**
  * The columns a spec occupies, including the blanks between its cells. A
  * caller sizing a flexible column subtracts this from the width it has.
  */
