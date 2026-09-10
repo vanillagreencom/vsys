@@ -210,7 +210,7 @@ test("a mount's detail does not repeat the device row's error counters", async (
   }
 });
 
-test("Storage moves between its three lists with left and right", async () => {
+test("Storage moves between its three lists with the region key", async () => {
   const c = defaults();
   const s = emptySnapshot();
   s.storage.volumes = [
@@ -233,17 +233,18 @@ test("Storage moves between its three lists with left and right", async () => {
     expect(selectedRow(t.frame())).toContain("/home");
     for (let i = 0; i < 10; i++) await t.press("down");
     expect(selectedRow(t.frame())).toContain("/home");
-    // Right is the one way to the next list, and it lands on its first row.
-    await t.press("right");
+    // The region key is the one way to the next list, and it lands on its
+    // first row.
+    await t.press(c.keys.next);
     expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
-    await t.press("right");
+    await t.press(c.keys.next);
     expect(selectedRow(t.frame())).toContain("/scratch/a");
     // The last list holds rather than wrapping.
-    await t.press("right");
+    await t.press(c.keys.next);
     expect(selectedRow(t.frame())).toContain("/scratch/a");
-    await t.press("left");
+    await t.press(c.keys.previous);
     expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
-    await t.press("left");
+    await t.press(c.keys.previous);
     expect(selectedRow(t.frame())).toContain("/data");
   } finally {
     await t.close();

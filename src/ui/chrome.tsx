@@ -205,8 +205,9 @@ export function Help({ config: c }: { config: Config }) {
         [`${k.left} ${k.right} ← →`, "move the time cursor"],
         [k.open, "open the selection"],
         [k.back, "go back"],
-        [`${k.next} ${k.previous}`, "next and previous tab"],
+        [`${k.next} ${k.previous}`, "next and previous region"],
         [k.hold, "hold a list's row order"],
+        ["1 - 7", "go to a screen"],
       ],
     ],
     [

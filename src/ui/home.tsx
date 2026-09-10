@@ -247,9 +247,10 @@ export function Home({
   // Home holds four regions and the tile row is one of them. The three lists
   // are ranges over the one flat selection the render draws; the tiles keep
   // their own index, which is why they are region zero rather than rows inside
-  // it. Left and right move between regions and up and down move inside the
-  // one in focus, which is one rule for the whole screen rather than a second
-  // rule for the tiles.
+  // it. The arrows move inside the region in focus, along that region's own
+  // axis: left and right along the horizontal tile row, up and down down a
+  // vertical list. Moving between regions has its own key, so no arrow means
+  // one thing in one region and something else in the next.
   const counts = [
     rows.filter((row) => row.kind === "concern").length,
     rows.filter((row) => row.kind === "change").length,
@@ -279,22 +280,28 @@ export function Home({
     toList(next);
   };
   useScreenKeys((name) => {
-    if (name === c.keys.down || name === "down") {
-      if (tile !== null) setTile(Math.min(gauges.length - 1, tile + 1));
-      else choose(stepWithin(counts, selected, 1));
+    if (name === c.keys.next) {
+      focus(1);
       return true;
     }
-    if (name === c.keys.up || name === "up") {
-      if (tile !== null) setTile(Math.max(0, tile - 1));
-      else choose(stepWithin(counts, selected, -1));
-      return true;
-    }
-    if (name === c.keys.left || name === "left") {
+    if (name === c.keys.previous) {
       focus(-1);
       return true;
     }
+    if (name === c.keys.down || name === "down") {
+      if (tile === null) choose(stepWithin(counts, selected, 1));
+      return true;
+    }
+    if (name === c.keys.up || name === "up") {
+      if (tile === null) choose(stepWithin(counts, selected, -1));
+      return true;
+    }
+    if (name === c.keys.left || name === "left") {
+      if (tile !== null) setTile(Math.max(0, tile - 1));
+      return true;
+    }
     if (name === c.keys.right || name === "right") {
-      focus(1);
+      if (tile !== null) setTile(Math.min(gauges.length - 1, tile + 1));
       return true;
     }
     if (name === c.keys.open && tile !== null && gauges[tile]) {

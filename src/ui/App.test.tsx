@@ -117,9 +117,9 @@ test("the help overlay opens on its key and any key closes it", async () => {
   const t = await mount(emptySnapshot(), c);
   try {
     await t.press("?");
-    expect(t.frame()).toContain("next and previous tab");
+    expect(t.frame()).toContain("next and previous region");
     await t.press("2");
-    expect(t.frame()).not.toContain("next and previous tab");
+    expect(t.frame()).not.toContain("next and previous region");
     expect(t.frame()).toContain("Needs attention");
   } finally {
     await t.close();
@@ -212,6 +212,10 @@ function everyScreenSnapshot() {
     groupSnapshot({ path: "idle.scope", name: "idle.scope" }),
   ];
   s.storage.volumes = [volumeSnapshot("/data")];
+  // Storage moves between its three lists, so it needs more than one of them
+  // to have somewhere to move to.
+  s.storage.scrubs = [{ path: "/data", text: "ok", problem: false }];
+  s.storage.scratch = [{ path: "/tmp/x", bytes: 1, age: 0, error: null }];
   return s;
 }
 
@@ -321,5 +325,32 @@ test("the header lays out on the row its own predicate promised", async () => {
     expect(lines[1]).toContain("Settings");
   } finally {
     await tight.close();
+  }
+});
+
+test("the region key moves inside a screen and never between screens", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a" })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 30 });
+  try {
+    await t.press("2");
+    expect(t.frame()).toContain("sorted by");
+    // A screen with one region has nowhere to move to, and the key does not
+    // fall through to the shell and change the screen underneath the reader.
+    for (const key of ["tab", "shift+tab"]) {
+      await t.press(key);
+      expect({ key, on: t.frame().includes("sorted by") }).toEqual({
+        key,
+        on: true,
+      });
+    }
+    // The number keys are how a screen is reached, and they are printed across
+    // the header at all times.
+    await t.press("5");
+    expect(t.frame()).toContain("Written since boot");
+  } finally {
+    await t.close();
   }
 });
