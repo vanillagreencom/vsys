@@ -52,7 +52,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - The Timeline change list is a list: the arrow keys move the selection, Enter moves the time cursor to the selected change, and the selected row shows the raw unit its subject decoded from. `src/ui/App.test.tsx` drives it from the keyboard alone.
 - A footer names only keys its screen handles. `src/ui/App.test.tsx` presses every key every screen's footer offers and requires the screen to act on it, and checks the agent detail against the list it sits inside.
 - Leaving an agent returns to the list with that agent selected, including one opened from Home. `src/ui/App.test.tsx` checks both routes.
-- Home opens on the most urgent row: a concern where there is one, the busiest agent where there is not. `src/ui/App.test.tsx` checks both.
+- Home opens on the most urgent row, in the order it lists them: a concern where there is one, else the newest change, else the busiest agent. `src/ui/App.test.tsx` checks all three.
 - The tiles are reachable with the arrow keys and each opens the screen that breaks its number down. `src/ui/App.test.tsx` checks all four and that moving off the tiles returns Enter to the rows.
 - No card offers a command carrying an unresolved value, which would reach the reader as the word `undefined` in text they are invited to run. `src/ui/attention.test.ts` checks every cause.
 - A wide terminal puts Home's two lists on one row and Agents' summary beside its list; a narrow one stacks them. `src/ui/App.test.tsx` checks both widths.

@@ -25,7 +25,7 @@ import {
 } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, ui } from "./theme";
-import { eventParts } from "./timeline";
+import { eventKey, eventParts } from "./timeline";
 import {
   Bar,
   Empty,
@@ -359,11 +359,7 @@ export function Home({
             )}
             {rows.map((row, i) =>
               row.kind === "change" ? (
-                <box
-                  id={`home-${i}`}
-                  key={`${row.event.time}-${row.event.subjectId}-${row.event.kind}`}
-                  flexShrink={0}
-                >
+                <box id={`home-${i}`} key={eventKey(row.event)} flexShrink={0}>
                   <Row selected={i === selected} onOpen={() => onOpen(row)}>
                     {(() => {
                       const e = eventParts(row.event, c);

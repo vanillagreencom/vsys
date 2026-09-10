@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import type { TimelineEvent } from "../store/events";
-import { causePhrase, eventLine } from "./timeline";
+import { causePhrase, eventKey, eventLine } from "./timeline";
 
 const c = defaults();
 const event = (o: Partial<TimelineEvent> = {}): TimelineEvent => ({
@@ -164,4 +164,44 @@ test("a scratch line states the size of its own path", () => {
       c,
     ),
   ).toContain("1.0 KiB against a quota of 512 B");
+});
+
+test("an event's identity tells two alerts apart that share a subject", () => {
+  const base = {
+    time: 1000,
+    subject: "gnome",
+    subjectId: "app.slice/gnome.scope",
+    names: {},
+    values: {},
+  };
+  // One sample can open two alerts for one subject under different causes.
+  // Without the cause in the identity they are one key, and React is free to
+  // reuse or drop the wrong row.
+  const swap = eventKey({
+    ...base,
+    kind: "alert-open",
+    cause: "desktop-swap",
+  } as TimelineEvent);
+  const memory = eventKey({
+    ...base,
+    kind: "alert-open",
+    cause: "system-memory",
+  } as TimelineEvent);
+  expect(swap).not.toBe(memory);
+  // And every field that can differ does differ the key.
+  const parts = [
+    { time: 2000 },
+    { kind: "alert-close" },
+    { cause: "disk" },
+    { subjectId: "other.scope" },
+  ];
+  for (const part of parts) {
+    const other = eventKey({
+      ...base,
+      kind: "alert-open",
+      cause: "desktop-swap",
+      ...part,
+    } as TimelineEvent);
+    expect({ part, same: other === swap }).toEqual({ part, same: false });
+  }
 });

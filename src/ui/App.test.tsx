@@ -1319,6 +1319,28 @@ test("Home opens with the most urgent row selected", async () => {
   } finally {
     await quiet.close();
   }
+  // Between the two: no concern, but something changed. The change is what
+  // the reader has not seen, so it is what the selection opens on.
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const moved = { ...calm, time: 2000 };
+  h.add(moved);
+  const changed = await mount(
+    moved,
+    c,
+    { width: 160, height: 44 },
+    {
+      history: h,
+    },
+  );
+  try {
+    await changed.press("1");
+    expect(attention(moved, c)).toEqual([]);
+    expect(selectedRow(changed.frame())).toContain("Lane started");
+    expect(selectedRow(changed.frame())).not.toContain("lane-busy ");
+  } finally {
+    await changed.close();
+  }
 });
 
 test("the arrow keys reach the tiles and open the screen behind one", async () => {
@@ -2030,6 +2052,84 @@ test("no alerts opened reads as a count, not as a missing one", async () => {
     // Nothing has gone wrong, so the count is zero. A zero that renders as
     // absence cannot be told from a count vsys never took.
     expect(t.frame()).toContain("0 alerts opened since vsys started");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Home counts the alerts that open while it runs", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  const quiet = emptySnapshot(1000);
+  h.add(quiet);
+  const t = await mount(quiet, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    // Nothing has happened yet, and the baseline sample is not counted.
+    expect(t.frame()).toContain("0 alerts opened since vsys started");
+    // A lane escapes its slice, which opens an alert. The sample reaches the
+    // running dashboard the way collection delivers it.
+    const firing = emptySnapshot(2000);
+    firing.lanes = [
+      laneSnapshot({ id: "e.scope", name: "escaped", unconfined: true }),
+    ];
+    h.add(firing);
+    await t.update(firing);
+    expect(t.frame()).toContain("1 alert opened since vsys started");
+    // A second sample with a second cause adds to it rather than replacing it.
+    const worse = emptySnapshot(3000);
+    worse.lanes = [
+      laneSnapshot({ id: "e.scope", name: "escaped", unconfined: true }),
+      laneSnapshot({ id: "c.scope", name: "capped", dangerous: true }),
+    ];
+    h.add(worse);
+    await t.update(worse);
+    expect(t.frame()).toContain("2 alerts opened since vsys started");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a shorter window leaves the Timeline selection on a row that exists", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  // Twelve changes half an hour ago, and one recent. The five-minute window
+  // holds the recent one alone; an hour holds them all.
+  const old = emptySnapshot(2000);
+  old.lanes = Array.from({ length: 12 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}.scope`, name: `lane-${i}` }),
+  );
+  h.add(old);
+  // One lane stops, forty minutes later. That stop is the only change the
+  // five-minute window holds; without it the short window is empty and there
+  // is no row to be on either way.
+  const now = {
+    ...old,
+    time: 2000 + 40 * 60000,
+    lanes: old.lanes.slice(1),
+  };
+  h.add(now);
+  const t = await mount(now, c, { width: 160, height: 40 }, { history: h });
+  try {
+    await t.press("6");
+    // Widen to an hour, then select a deep row.
+    await t.press("w");
+    await t.press("w");
+    for (let i = 0; i < 8; i++) await t.press("j");
+    expect(selectedRow(t.frame())).not.toBe("");
+    // Cycle back to a window that holds fewer changes. The row number the
+    // reader was on names nothing there.
+    await t.press("w");
+    await t.press("w");
+    await t.press("w");
+    const frame = t.frame();
+    expect(frame).toContain("Last 5m");
+    // A row that exists is marked, and Enter acts on it rather than on a
+    // change the list does not have.
+    expect(selectedRow(frame)).not.toBe("");
+    await t.press("enter");
+    expect(t.frame()).toContain("What changed");
   } finally {
     await t.close();
   }

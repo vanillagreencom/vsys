@@ -16,7 +16,7 @@ import {
 } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, readingWeight, ui } from "./theme";
-import { eventParts } from "./timeline";
+import { eventKey, eventParts } from "./timeline";
 import {
   Chart,
   Field,
@@ -104,7 +104,15 @@ export function Timeline({
   target: number | null;
   onTargetUsed: () => void;
 }) {
-  const [row, setRow] = useState(0);
+  /**
+   * What the reader chose: the row they moved to, and the change that row
+   * named. The window key can swap a long list for a shorter one and a new
+   * sample prepends to it, so a row number alone outlives what it pointed at.
+   */
+  const [selection, setSelection] = useState<{
+    index: number;
+    id: string | null;
+  }>({ index: 0, id: null });
   const windowMs = windows[windowIndex];
   const start = s.time - windowMs;
   const chartWidth = Math.max(10, width - 4 - gutter);
@@ -120,11 +128,11 @@ export function Timeline({
         );
   useScreenKeys((name, key) => {
     if (name === c.keys.down || name === "down") {
-      setRow((at) => nextDown(changes.length, at));
+      choose(nextDown(changes.length, row));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      setRow((at) => Math.max(0, at - 1));
+      choose(Math.max(0, row - 1));
       return true;
     }
     // The change list is a list: Enter moves the time cursor to the row, and
@@ -184,6 +192,24 @@ export function Timeline({
   };
   const changes = history.events(s.time, windowMs);
   /**
+   * The row to draw, resolved against the list this render has. Following the
+   * chosen change keeps the reader on it when the list shifts under them, and
+   * where that change has gone the nearest row that exists takes over, so the
+   * highlight is never on a row the list does not have and Enter is never a
+   * no-op. Same rule as a lane leaving the Agents list.
+   */
+  const found = changes.findIndex((event) => eventKey(event) === selection.id);
+  const row =
+    found >= 0
+      ? found
+      : Math.min(selection.index, Math.max(0, changes.length - 1));
+  /** Move the selection, recording the row and the change it names together. */
+  const choose = (index: number) =>
+    setSelection({
+      index,
+      id: changes[index] ? eventKey(changes[index]) : null,
+    });
+  /**
    * A row Home asked for is selected and made the cursor, once. Home lists
    * everything retained, so the row can be older than the window this screen
    * is showing and absent from `changes` entirely. Widening to a window that
@@ -195,7 +221,9 @@ export function Timeline({
     if (target === null) return;
     const at = changes.findIndex((event) => event.time === target);
     if (at >= 0) {
-      setRow(at);
+      // Set directly rather than through `choose`: a helper rebuilt each
+      // render would be a dependency of this effect that changes every pass.
+      setSelection({ index: at, id: eventKey(changes[at]) });
       onCursor(changes[at].time);
       onTargetUsed();
       return;
@@ -345,15 +373,11 @@ export function Timeline({
           const unit = event.names.unit;
           return (
             // One row per event, so a long subject cannot push the rest out.
-            <box
-              key={`${event.time}-${event.kind}-${event.cause}-${event.subjectId}`}
-              flexDirection="column"
-              flexShrink={0}
-            >
+            <box key={eventKey(event)} flexDirection="column" flexShrink={0}>
               <Row
                 selected={isSelected}
                 onOpen={() => {
-                  setRow(at);
+                  choose(at);
                   onCursor(event.time);
                 }}
               >
