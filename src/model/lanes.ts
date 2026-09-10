@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
+import type { PaneAddress } from "../collect/tmux";
 import {
   accountName,
   distinctNames,
@@ -69,6 +70,8 @@ export function lanes(
   procs: Proc[],
   c: CollectionConfig,
   cores = 0,
+  /** Every pane the tmux server holds, read once for the whole sample. */
+  panes?: Map<string, PaneAddress>,
 ): Lane[] {
   const covered = new Set<number>();
   const result: Lane[] = [];
@@ -120,6 +123,10 @@ export function lanes(
         id,
       account,
       pane,
+      // The resolved address is a reading, not part of the name: `%9` stays
+      // the handle every action uses, and the address is what a reader reads.
+      address: panes?.get(pane)?.address ?? "",
+      window: panes?.get(pane)?.window ?? "",
       title,
       cwd,
       branch,

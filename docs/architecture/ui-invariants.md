@@ -43,5 +43,9 @@ The properties the [UI behaviour](ui.md) document's boundaries rest on, each wit
 - The Timeline change list names the cause of each change, takes one row per event, and stops at the rows the viewport has. `src/ui/timeline-screen.test.tsx` checks a lane start with an open alert, twelve events in a short terminal, and a 400-character subject.
 - A narrow terminal moves the tabs to their own row and drops the wait column. `src/ui/App.test.tsx` checks 80 columns.
 - A terminal too short for both the Timeline's cursor tiles and its change list drops the sparkline rows and keeps the list. `src/ui/timeline-screen.test.tsx` checks a viewport that cannot hold everything.
+- One tmux read resolves every lane's pane, whatever the number of lanes, and a server that stops answering costs the addresses rather than the sample. `src/collect/collector.test.ts` counts the reads against twelve panes and fails the read on purpose.
+- A pane that has gone away says why, and the pane is read only while its section is open. `src/ui/agent.test.tsx` counts the captures across a closed section, an open one and a new sample.
+- What a pane drew cannot move the cursor, repaint the screen or write the clipboard. `src/collect/tmux.test.ts` feeds it a screen clear and a clipboard write; `src/ui/agent.test.tsx` checks the rendered frame and the clipboard stream.
+- The switch to a terminal is offered only from inside the server holding the pane; outside it the command is copied instead. `src/ui/agent.test.tsx` checks both, and no path launches a terminal emulator.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.

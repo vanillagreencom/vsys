@@ -18,6 +18,8 @@ const setup = () => {
 };
 const byId = (caps: Capability[]) =>
   new Map(caps.map((cap) => [cap.id, cap] as [CapabilityId, Capability]));
+/** A tmux server that answers, so no test in this file spawns a real one. */
+const answering = () => null;
 
 test("a delegated cgroup v2 session probes every capability available", () => {
   const f = setup();
@@ -31,7 +33,7 @@ test("a delegated cgroup v2 session probes every capability available", () => {
   );
   mkdirSync(f.config.scrubDir, { recursive: true });
   mkdirSync(f.config.smartDir, { recursive: true });
-  const caps = probeCapabilities(f.config);
+  const caps = probeCapabilities(f.config, answering);
   expect(caps.map((cap) => cap.id)).toEqual([
     "cgroup2",
     "delegation",
@@ -39,6 +41,7 @@ test("a delegated cgroup v2 session probes every capability available", () => {
     "io-stat",
     "scrub",
     "smart",
+    "tmux",
   ]);
   expect(caps.filter((cap) => !cap.available)).toEqual([]);
   expect(caps.every((cap) => cap.failure === null && cap.detail === "")).toBe(
@@ -49,7 +52,7 @@ test("a delegated cgroup v2 session probes every capability available", () => {
 test("a missing interface names the source that decided it and the reason", () => {
   const f = setup();
   // No cgroup.controllers, no cgroup.subtree_control, no scrub directory.
-  const bare = byId(probeCapabilities(f.config));
+  const bare = byId(probeCapabilities(f.config, answering));
   expect(bare.get("cgroup2")?.available).toBe(false);
   expect(bare.get("cgroup2")?.failure).toBe("absent");
   expect(bare.get("cgroup2")?.source).toBe(
@@ -69,14 +72,18 @@ test("a missing interface names the source that decided it and the reason", () =
     "no readable drive report directory",
   );
   mkdirSync(f.config.smartDir, { recursive: true });
-  expect(byId(probeCapabilities(f.config)).get("smart")?.available).toBe(true);
+  expect(
+    byId(probeCapabilities(f.config, answering)).get("smart")?.available,
+  ).toBe(true);
   // The fixture writes PSI and io.stat, so those two remain available.
   expect(bare.get("psi")?.available).toBe(true);
   expect(bare.get("io-stat")?.available).toBe(true);
   // A hierarchy that enables neither controller names both, not the file error.
   writeFileSync(join(f.config.cgroupRoot, "cgroup.subtree_control"), "pids\n");
   // A hierarchy that answered is incomplete, never absent or malformed.
-  expect(byId(probeCapabilities(f.config)).get("delegation")).toMatchObject({
+  expect(
+    byId(probeCapabilities(f.config, answering)).get("delegation"),
+  ).toMatchObject({
     available: false,
     failure: "incomplete",
     detail: "cpu memory",
@@ -85,16 +92,16 @@ test("a missing interface names the source that decided it and the reason", () =
     join(f.config.cgroupRoot, "cgroup.subtree_control"),
     "cpu memory pids\n",
   );
-  expect(byId(probeCapabilities(f.config)).get("delegation")?.available).toBe(
-    true,
-  );
+  expect(
+    byId(probeCapabilities(f.config, answering)).get("delegation")?.available,
+  ).toBe(true);
 });
 
 test("a kernel without PSI and without io.stat reports both absences", () => {
   const f = setup();
   rmSync(join(f.config.procRoot, "pressure"), { recursive: true });
   rmSync(join(f.config.cgroupRoot, "io.stat"));
-  const caps = byId(probeCapabilities(f.config));
+  const caps = byId(probeCapabilities(f.config, answering));
   expect(caps.get("psi")).toMatchObject({
     available: false,
     failure: "absent",
@@ -111,7 +118,7 @@ test("a present pressure file that fails is not reported as a missing kernel", (
   const path = join(f.config.procRoot, "pressure/cpu");
   // The file exists and was read; only its contents are wrong.
   writeFileSync(path, "some avg10=0.00\n");
-  const malformed = byId(probeCapabilities(f.config)).get("psi");
+  const malformed = byId(probeCapabilities(f.config, answering)).get("psi");
   expect(malformed).toMatchObject({
     available: false,
     failure: "malformed",
@@ -127,7 +134,7 @@ test("a present pressure file that fails is not reported as a missing kernel", (
   // in the file's place fails with an errno whatever user runs the test.
   rmSync(path);
   mkdirSync(path);
-  const unreadable = byId(probeCapabilities(f.config)).get("psi");
+  const unreadable = byId(probeCapabilities(f.config, answering)).get("psi");
   expect(unreadable?.failure).toBe("unreadable");
   expect(capabilityReason(unreadable as Capability)).toBe(
     `${path} exists but cannot be read`,
@@ -146,7 +153,36 @@ test("every sample carries the capabilities probed when vsys started", async () 
   );
   const second = await collector.sample(2000);
   expect(second.capabilities).toEqual(first.capabilities);
-  expect(byId(probeCapabilities(f.config)).get("cgroup2")?.available).toBe(
-    true,
+  expect(
+    byId(probeCapabilities(f.config, answering)).get("cgroup2")?.available,
+  ).toBe(true);
+});
+
+test("tmux absent and tmux without a server are separate diagnoses", () => {
+  const f = setup();
+  // No tmux on the path at all: nothing to run, so the interface is absent.
+  const absent = byId(
+    probeCapabilities(f.config, () => ({
+      failure: "absent" as const,
+      detail: "tmux: command not found",
+    })),
+  ).get("tmux");
+  expect(absent).toMatchObject({ available: false, failure: "absent" });
+  expect(capabilityReason(absent as Capability)).toBe("no tmux on the path");
+  // Installed, but nothing running for it to read. That is not a broken
+  // installation, and it must not read as one.
+  const idle = byId(
+    probeCapabilities(f.config, () => ({
+      failure: "incomplete" as const,
+      detail: "no server running on /tmp/tmux-1000/default",
+    })),
+  ).get("tmux");
+  expect(idle).toMatchObject({ available: false, failure: "incomplete" });
+  expect(capabilityReason(idle as Capability)).toBe(
+    "tmux is installed but no server is answering",
   );
+  // The other capabilities are decided by their own reads, not by this one.
+  const caps = byId(probeCapabilities(f.config, answering));
+  expect(caps.get("tmux")?.available).toBe(true);
+  expect(caps.get("psi")?.available).toBe(true);
 });

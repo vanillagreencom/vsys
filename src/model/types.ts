@@ -141,6 +141,13 @@ export interface Lane {
   account: string | null;
   /** tmux pane address and window title, empty when the pane exported none. */
   pane: string;
+  /**
+   * The pane resolved to `session:window.pane`, and the window's own name.
+   * Empty when tmux is absent, no server answers, or the pane has gone: the
+   * lane still acts through the raw `pane` handle, which never changes.
+   */
+  address: string;
+  window: string;
   title: string;
   cwd: string;
   branch: string;
@@ -208,7 +215,8 @@ export type CapabilityId =
   | "psi"
   | "io-stat"
   | "scrub"
-  | "smart";
+  | "smart"
+  | "tmux";
 /**
  * Why a source could not be used. The kinds are distinct diagnoses: a kernel
  * that never built the interface, a file the user cannot read, a file that did

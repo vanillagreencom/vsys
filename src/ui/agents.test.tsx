@@ -563,6 +563,53 @@ test("a lane exiting under the selection keeps one lane under highlight, pane an
   }
 });
 
+/** Two agents in one worktree, told apart by their window rather than by luck. */
+function sameWorktree(resolved: boolean) {
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({
+      id: "a",
+      name: "ken-1298",
+      cpu: 20,
+      pane: "%9",
+      address: resolved ? "vsys:1.1" : "",
+      window: resolved ? "ken-1298" : "",
+    }),
+    laneSnapshot({
+      id: "b",
+      name: "ken-1295",
+      cpu: 10,
+      pane: "%13",
+      address: resolved ? "vsys:2.1" : "",
+      window: resolved ? "ken-1295" : "",
+    }),
+  ];
+  s.groups = [groupSnapshot()];
+  return s;
+}
+
+test("a listed pane part shows the resolved address as its own column", async () => {
+  const c = defaults();
+  // The setting that once composed `%9` into the name now selects this column.
+  expect(c.laneNameParts).toContain("pane");
+  // Below the width that puts the selected agent's summary beside the list,
+  // so every line in the frame is a list line.
+  const t = await mount(sameWorktree(true), c, { width: 140, height: 24 });
+  try {
+    await t.press("2");
+    const frame = t.frame();
+    expect(frame).toContain("Pane");
+    expect(frame).toContain("vsys:1.1");
+    expect(frame).toContain("vsys:2.1");
+    // The address is a column of its own, never glued into the name.
+    expect(frame).not.toContain("ken-1298 vsys:1.1");
+    // The raw handle stays off the list: it names no window a reader can place.
+    expect(frame).not.toContain("%9");
+  } finally {
+    await t.close();
+  }
+});
+
 test("a lane that exits while open leaves the list on a row that exists", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -597,6 +644,22 @@ test("a lane that exits while open leaves the list on a row that exists", async 
   }
 });
 
+test("no tmux server means no address column and nothing else changes", async () => {
+  const c = defaults();
+  const t = await mount(sameWorktree(false), c, { width: 140, height: 24 });
+  try {
+    await t.press("2");
+    const frame = t.frame();
+    // No heading, no empty column, and both agents still read as themselves.
+    expect(frame).not.toContain("Pane");
+    expect(frame).toContain("ken-1298");
+    expect(frame).toContain("ken-1295");
+    expect(frame).toContain("Trend");
+  } finally {
+    await t.close();
+  }
+});
+
 test("an agent that leaves the sample offers only the key its screen acts on", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -624,6 +687,23 @@ test("an agent that leaves the sample offers only the key its screen acts on", a
     await t.press("escape");
     expect(t.frame()).not.toContain("no longer in the sample");
     expect(footer()).toContain("find");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a config that does not list the pane part shows no address column", async () => {
+  const c = defaults();
+  c.laneNameParts = c.laneNameParts.filter((part) => part !== "pane");
+  // Below the width that puts the selected agent's summary beside the list,
+  // so every line in the frame is a list line.
+  const t = await mount(sameWorktree(true), c, { width: 140, height: 24 });
+  try {
+    await t.press("2");
+    const frame = t.frame();
+    expect(frame).not.toContain("Pane");
+    expect(frame).not.toContain("vsys:1.1");
+    expect(frame).toContain("ken-1298");
   } finally {
     await t.close();
   }
@@ -950,5 +1030,32 @@ test("a tile in a narrow pane marks its cut instead of stopping mid-word", async
     expect(line).toContain("…");
   } finally {
     await t.close();
+  }
+});
+
+test("when the row cannot hold both, the address stays and the trend goes", async () => {
+  const c = defaults();
+  const s = sameWorktree(true);
+  // Wide enough for the name, the address and the trend together.
+  const wide = await mount(s, c, { width: 200, height: 24 });
+  try {
+    await wide.press("2");
+    expect(wide.frame()).toContain("Pane");
+    expect(wide.frame()).toContain("Trend");
+  } finally {
+    await wide.close();
+  }
+  // Narrower: one of the two has to go, and it is not the one that says which
+  // agent this is.
+  const tight = await mount(s, c, { width: 180, height: 24 });
+  try {
+    await tight.press("2");
+    expect(tight.frame()).toContain("Pane");
+    expect(tight.frame()).toContain("vsys:1.1");
+    expect(tight.frame()).not.toContain("Trend");
+    // The name is still whole, which is what the floor is there to protect.
+    expect(tight.frame()).toContain("ken-1298");
+  } finally {
+    await tight.close();
   }
 });

@@ -105,9 +105,9 @@ async function stopSelected(c: Config, calls: LaneCommand[]) {
   );
   await t.press("2");
   await t.press("enter");
-  // Processes, Launch and Open files sit above Actions; opening it adds its
-  // three rows below, and Stop is the last of them.
-  for (let i = 0; i < 3; i++) await t.press("j");
+  // Processes, Launch, Terminal and Open files sit above Actions; opening it
+  // adds its three rows below, and Stop is the last of them.
+  for (let i = 0; i < 4; i++) await t.press("j");
   await t.press("enter");
   for (let i = 0; i < 3; i++) await t.press("j");
   return { ...t, snapshot: s };
@@ -228,6 +228,148 @@ test("the agent detail names only its own keys, and the list gets its back", asy
     // Back to the list restores the list's own keys.
     await t.press("escape");
     expect(footer()).toContain("find");
+  } finally {
+    await t.close();
+  }
+});
+
+/** An agent in a tmux pane, with the detail open on it. */
+async function paned(
+  hooks: Parameters<typeof mount>[3] = {},
+  lane: Partial<Parameters<typeof laneSnapshot>[0]> = {},
+) {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({
+      pane: "%9",
+      address: "vsys:1.1",
+      window: "ken-1298",
+      ...lane,
+    }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 45 }, hooks);
+  await t.press("2");
+  await t.press("enter");
+  // Processes and Launch sit above Terminal.
+  for (let i = 0; i < 2; i++) await t.press("j");
+  return { ...t, snapshot: s, config: c };
+}
+
+test("the terminal reads the pane while its section is open and not otherwise", async () => {
+  const asked: string[] = [];
+  const t = await paned({
+    onCapture: async (paneId) => {
+      asked.push(paneId);
+      return ["$ cargo build", "   Compiling vsys v0.1.0"];
+    },
+  });
+  try {
+    // Closed, nothing is read: a section nobody opened costs no tmux call.
+    await t.update({ ...t.snapshot, time: t.snapshot.time + 1000 });
+    expect(asked).toEqual([]);
+    await t.press("enter");
+    expect(t.frame()).toContain("Compiling vsys");
+    // It reads the pane the lane holds, by the raw handle rather than by the
+    // address a reader reads.
+    expect(asked).toEqual(["%9"]);
+    // A new sample is a new read: a terminal that does not move is not one.
+    await t.update({ ...t.snapshot, time: t.snapshot.time + 2000 });
+    expect(asked).toEqual(["%9", "%9"]);
+    // Closed again, and the samples that follow read nothing.
+    await t.press("enter");
+    await t.update({ ...t.snapshot, time: t.snapshot.time + 3000 });
+    expect(asked).toEqual(["%9", "%9"]);
+    expect(t.frame()).not.toContain("Compiling vsys");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a pane that has gone away says why rather than showing an empty box", async () => {
+  const t = await paned({
+    onCapture: async () => {
+      throw new Error("can't find pane %9");
+    },
+  });
+  try {
+    await t.press("enter");
+    const frame = t.frame();
+    expect(frame).toContain("could not be read");
+    expect(frame).toContain("can't find pane %9");
+  } finally {
+    await t.close();
+  }
+});
+
+test("what a pane drew is shown as text, never obeyed", async () => {
+  const t = await paned({
+    onCapture: async () => [`${"\u001b"}[2Jcleared`, "plain output"],
+  });
+  try {
+    await t.press("enter");
+    const frame = t.frame();
+    // The words arrive; the sequence that would have cleared the screen does
+    // not, and nothing reached the clipboard stream.
+    expect(frame).toContain("plain output");
+    expect(t.written.join("")).toBe("");
+    for (const line of frame.split("\n"))
+      expect(
+        [...line].some((ch) => {
+          const code = ch.charCodeAt(0);
+          return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+        }),
+      ).toBe(false);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the switch is offered only when vsys shares the tmux server", async () => {
+  const switched: string[] = [];
+  const inside = await paned({
+    onCapture: async () => ["output"],
+    onSwitch: async (paneId) => {
+      switched.push(paneId);
+    },
+  });
+  try {
+    await inside.press("enter");
+    expect(inside.frame()).toContain("Go to terminal");
+    await inside.press("j");
+    await inside.press("enter");
+    // It moves the view to the pane vsys holds the handle for.
+    expect(switched).toEqual(["%9"]);
+    expect(inside.written.join("")).toBe("");
+  } finally {
+    await inside.close();
+  }
+  // Outside that server there is no view to move, so the line is handed over
+  // instead and the row says why.
+  const outside = await paned({ onCapture: async () => ["output"] });
+  try {
+    await outside.press("enter");
+    expect(outside.frame()).toContain("not inside that tmux server");
+    await outside.press("j");
+    await outside.press("enter");
+    expect(outside.frame()).toContain("tmux switch-client -t %9");
+    expect(osc52("tmux switch-client -t %9")).toBe(outside.written.join(""));
+  } finally {
+    await outside.close();
+  }
+});
+
+test("an agent with no pane offers no terminal and no way to reach one", async () => {
+  const t = await paned(
+    { onCapture: async () => ["output"] },
+    { pane: "", address: "" },
+  );
+  try {
+    await t.press("enter");
+    const frame = t.frame();
+    expect(frame).toContain("exported no pane address");
+    expect(frame).not.toContain("Go to terminal");
   } finally {
     await t.close();
   }

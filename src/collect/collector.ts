@@ -4,7 +4,7 @@ import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Capability, Snapshot } from "../model/types";
 import { StorageCollector } from "./btrfs";
-import { probeCapabilities } from "./capabilities";
+import { type Outcome, probeCapabilities, probeTmux } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
 import { kernelCgroupRoot, readMounts } from "./mounts";
@@ -12,6 +12,22 @@ import { ProcessCollector } from "./procs";
 import { SccacheCollector } from "./sccache";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
+import { type PaneAddress, readPanes } from "./tmux";
+
+/**
+ * Reading the tmux server: the probe that decides the capability, and the one
+ * call per sample that resolves every lane's pane. A collector given none
+ * reads no tmux at all, which is what keeps tmux out of the test suite; the
+ * program always supplies one.
+ */
+export interface TmuxReader {
+  probe: () => Outcome;
+  panes: () => Promise<Map<string, PaneAddress>>;
+}
+const noTmux: Outcome = {
+  failure: "absent",
+  detail: "this collector was given no tmux reader",
+};
 
 /** The scheduler awaits each sample, so ticks cannot overlap. */
 export class Collector {
@@ -29,9 +45,14 @@ export class Collector {
     private live = false,
     /** Absent unless a caller supplies one, so no test spawns a build cache. */
     readonly sccache?: SccacheCollector,
+    /** Absent unless a caller supplies one, so no test spawns tmux. */
+    private tmux?: TmuxReader,
   ) {
     this.processes = new ProcessCollector(ticksPerSecond, pageSize);
-    this.capabilities = probeCapabilities(config);
+    this.capabilities = probeCapabilities(
+      config,
+      tmux?.probe ?? (() => noTmux),
+    );
   }
   close(): void {
     this.controller.abort();
@@ -101,6 +122,20 @@ export class Collector {
     const sccache = await this.sccache?.collect(r, time);
     this.controller.signal.throwIfAborted();
     mark("sccache");
+    // One read for the whole server, however many lanes ask for an address.
+    // A server that stops answering mid-run leaves the addresses empty rather
+    // than failing the sample: a pane address is a convenience, not a reading.
+    let panes: Map<string, PaneAddress> | undefined;
+    if (
+      this.tmux &&
+      this.capabilities.some((cap) => cap.id === "tmux" && cap.available)
+    )
+      try {
+        panes = await this.tmux.panes();
+      } catch (error) {
+        r.error("tmux list-panes", error);
+      }
+    mark("tmux");
     const s: Snapshot = {
       capabilities: this.capabilities,
       time,
@@ -109,7 +144,7 @@ export class Collector {
       groups,
       procs,
       storage,
-      lanes: lanes(groups, procs, c, system.cores),
+      lanes: lanes(groups, procs, c, system.cores, panes),
       alerts: [],
       errors: r.errors,
       ...(sccache ? { sccache } : {}),
@@ -149,5 +184,10 @@ export async function createCollector(
   };
   const [ticks, pages] = await Promise.all([read("CLK_TCK"), read("PAGESIZE")]);
   const sccache = previous?.sccache ?? new SccacheCollector();
-  return new Collector(c, ticks, pages, live, sccache);
+  // The program reads the real tmux server; a collector built any other way
+  // reads none, which is what keeps tmux out of the test suite.
+  return new Collector(c, ticks, pages, live, sccache, {
+    probe: probeTmux,
+    panes: readPanes,
+  });
 }

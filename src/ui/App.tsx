@@ -76,6 +76,14 @@ export interface AppProps {
   onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
   /** Runs one confirmed action. The shell reaches it only in write mode. */
   onAction: (command: LaneCommand) => Promise<void>;
+  /**
+   * Reads what an agent's tmux pane last drew, and moves the reader's own view
+   * to it. Both read or move a view rather than touching a process, so neither
+   * waits on write mode. `onSwitch` is absent when vsys runs outside the tmux
+   * server holding the pane, and then the row hands over the command instead.
+   */
+  onCapture?: (paneId: string) => Promise<string[]>;
+  onSwitch?: (paneId: string) => Promise<void>;
   /** Where the clipboard escape goes: the process output stream. */
   output: Output;
 }
@@ -161,6 +169,8 @@ export function App({
   onQuit,
   onExport,
   onAction,
+  onCapture,
+  onSwitch,
   output,
 }: AppProps) {
   const renderer = useRenderer();
@@ -416,6 +426,8 @@ export function App({
         onOpen={setLaneId}
         onCopy={copy}
         onAct={act}
+        onCapture={onCapture}
+        onSwitch={onSwitch}
       />
     );
   else if (view === "Resources")

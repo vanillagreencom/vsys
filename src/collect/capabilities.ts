@@ -8,10 +8,11 @@ import type {
 } from "../model/types";
 import { pressure } from "./io";
 import type { CollectionConfig } from "./settings";
+import { listPanesArgv } from "./tmux";
 
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
-type Outcome = { failure: CapabilityFailure; detail: string } | null;
+export type Outcome = { failure: CapabilityFailure; detail: string } | null;
 
 /**
  * The system decides the diagnosis, never the reader. An errno for a source
@@ -27,11 +28,41 @@ function classify(error: unknown): Outcome {
 }
 
 /**
+ * Whether a tmux server answers. Two separate absences: no tmux on the path at
+ * all, and a tmux that is installed with nothing running for it to read. The
+ * second is not a broken installation, so it is reported as an interface that
+ * answered without giving what the reading needs.
+ */
+export function probeTmux(): Outcome {
+  let result: { exitCode: number; stderr: Uint8Array };
+  try {
+    result = Bun.spawnSync(listPanesArgv, {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } catch (error) {
+    return { failure: "absent", detail: String(error) };
+  }
+  if (result.exitCode === 0) return null;
+  const detail = new TextDecoder().decode(result.stderr).trim();
+  // Bun reports a missing program through the exit status rather than a throw
+  // on every platform, so the server's own words decide which absence it is.
+  return /not found|ENOENT|No such file/i.test(detail)
+    ? { failure: "absent", detail }
+    : { failure: "incomplete", detail: detail || "no server running" };
+}
+
+/**
  * One read decides each capability. These reads happen once, when vsys starts,
  * so a permanently absent kernel interface is reported as an absence with its
  * reason rather than as a per-sample source failure on every tick.
  */
-export function probeCapabilities(c: CollectionConfig): Capability[] {
+export function probeCapabilities(
+  c: CollectionConfig,
+  /** Injected so no test spawns tmux, and so a stub can fail it on purpose. */
+  tmux: () => Outcome = probeTmux,
+): Capability[] {
   const probes: [CapabilityId, string, () => Outcome][] = [
     [
       "cgroup2",
@@ -88,6 +119,7 @@ export function probeCapabilities(c: CollectionConfig): Capability[] {
         return null;
       },
     ],
+    ["tmux", listPanesArgv.join(" "), tmux],
   ];
   return probes.map(([id, source, run]) => {
     let outcome: Outcome;
