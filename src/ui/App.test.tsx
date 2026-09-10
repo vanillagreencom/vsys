@@ -1629,3 +1629,77 @@ test("an unstated pool size is not reported as an unreadable one", async () => {
     await t.close();
   }
 });
+
+test("Home marks one focus at a time, and the keys follow it", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const t = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await t.press("1");
+    // The rows hold the focus: a row is marked and its detail is under it.
+    const onRows = t.frame();
+    expect(selectedRow(onRows)).not.toBe("");
+    expect(onRows).toContain("Next ");
+    // Moving onto a tile takes the focus with it. Marking a row here would
+    // say one thing while Enter opened another.
+    await t.press("right");
+    const onTile = t.frame();
+    expect(selectedRow(onTile)).toBe("");
+    expect(onTile).not.toContain("Next ");
+    // And copy has no row to act on, rather than copying the row the tiles
+    // are sitting above.
+    await t.press("y");
+    expect(t.frame()).toContain("no command to copy");
+    // Moving back off the tiles restores the row and its detail.
+    await t.press("down");
+    expect(selectedRow(t.frame())).not.toBe("");
+    expect(t.frame()).toContain("Next ");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a configurable numeric column reads down its last digit", async () => {
+  // Five numeric columns were missing from the right-align set, so a reader
+  // who configured one got a number that did not line up with its neighbours.
+  const c = {
+    ...defaults(),
+    columns: ["name", "cache", "readRate", "blocked", "sccache"],
+  };
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({
+      name: "lane-a",
+      cache: 1024,
+      readRate: 2048,
+      blocked: 3,
+      sccache: 4,
+    }),
+  ];
+  const t = await mount(s, c, { width: 180, height: 24 });
+  try {
+    await t.press("2");
+    await t.press("d");
+    const lines = t.frame().split("\n");
+    const heading = lines.find(
+      (line) => line.includes("Page cache") && line.includes("Blocked"),
+    );
+    const row = lines.find((line) => line.includes("lane-a"));
+    expect(heading).toBeDefined();
+    expect(row).toBeDefined();
+    if (!heading || !row) throw new Error("no heading and row to compare");
+    const ends: [string, string][] = [
+      ["Page cache", "1.0 KiB"],
+      ["Read", "2.0 KiB/s"],
+      ["Blocked", "3"],
+      ["sccache", "4"],
+    ];
+    for (const [label, value] of ends)
+      expect({
+        label,
+        ends: heading.indexOf(label) + label.length,
+      }).toEqual({ label, ends: row.indexOf(value) + value.length });
+  } finally {
+    await t.close();
+  }
+});

@@ -129,6 +129,14 @@ export function Home({
   // Null while the rows hold the selection. Left or right moves onto the
   // tiles, up or down moves back off them, so one Enter is never ambiguous.
   const [tile, setTile] = useState<number | null>(null);
+  /**
+   * Whether the rows hold the focus rather than the tiles. The highlight, the
+   * selected concern's detail and the row-only actions all read this one
+   * value, so the screen cannot mark one item while a key acts on another.
+   * A focus model for every region of every screen is #38's work; this is the
+   * one screen that already has two places a selection can sit.
+   */
+  const rowsFocused = tile === null;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`home-${selected}`);
@@ -161,7 +169,10 @@ export function Home({
       return true;
     }
     if (name === c.keys.copy) {
-      const row = rows[selected];
+      // A tile is a reading, not a command, so while one holds the focus
+      // there is no row for copy to act on. Copying whatever row the tiles
+      // happen to sit above would act on an item the screen is not marking.
+      const row = rowsFocused ? rows[selected] : undefined;
       onCopy(row?.kind === "concern" ? row.item.command : undefined);
       return true;
     }
@@ -268,13 +279,13 @@ export function Home({
                   flexShrink={0}
                 >
                   <Row
-                    selected={i === selected}
+                    selected={rowsFocused && i === selected}
                     color={row.item.danger ? ui.danger : ui.warn}
                     onOpen={() => onOpen(row)}
                   >
                     {safe(row.item.title)}
                   </Row>
-                  {i === selected && (
+                  {rowsFocused && i === selected && (
                     <box flexDirection="column" flexShrink={0} paddingLeft={2}>
                       <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                         {safe(row.item.detail)}
@@ -318,7 +329,10 @@ export function Home({
             {rows.map((row, i) =>
               row.kind === "agent" ? (
                 <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>
-                  <Row selected={i === selected} onOpen={() => onOpen(row)}>
+                  <Row
+                    selected={rowsFocused && i === selected}
+                    onOpen={() => onOpen(row)}
+                  >
                     {safe(cell(nameColumn, row.lane.name))}
                     {columnGap}
                     <Bar

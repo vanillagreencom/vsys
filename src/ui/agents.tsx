@@ -54,18 +54,36 @@ const wideColumns: Record<string, number> = {
   tool: 10,
   cgroup: 30,
 };
-/** Table columns whose values are numbers, which read down their last digit. */
-const numericColumns = new Set([
-  "cpu",
-  "pressure",
-  "rss",
-  "swap",
-  "tasks",
-  "rustc",
-  "cargo",
-  "tests",
-  "age",
-]);
+/** A configurable column whose Lane field holds a number. */
+type NumericColumn = {
+  [K in (typeof columns)[number]]: NonNullable<Lane[K]> extends number
+    ? K
+    : never;
+}[(typeof columns)[number]];
+/**
+ * Table columns whose values are numbers, which read down their last digit.
+ * The names are still written out, because a type is not a value, but the
+ * type is derived from `Lane` and requires exactly the numeric fields among
+ * the configurable columns: one missing or one too many is a compile error.
+ * A plain list is what left `cache`, `readRate`, `writeRate`, `sccache` and
+ * `blocked` aligned left beside their neighbours.
+ */
+const numericColumns: Record<NumericColumn, true> = {
+  cpu: true,
+  pressure: true,
+  rss: true,
+  swap: true,
+  tasks: true,
+  rustc: true,
+  cargo: true,
+  tests: true,
+  age: true,
+  cache: true,
+  readRate: true,
+  writeRate: true,
+  sccache: true,
+  blocked: true,
+};
 /**
  * One table column, from the same spec the list rows read. The heading and
  * the row under it are built from this and cannot drift apart.
@@ -74,7 +92,7 @@ export function tableColumn(name: string): Column {
   return {
     label: columnLabels[name] ?? name,
     width: wideColumns[name] ?? 12,
-    align: numericColumns.has(name) ? "right" : undefined,
+    align: Object.hasOwn(numericColumns, name) ? "right" : undefined,
   };
 }
 /** The lanes whose text matches the query, in the configured order. */
