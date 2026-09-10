@@ -774,3 +774,40 @@ test("a selected setting keeps its help sentence on the screen", async () => {
     await t.close();
   }
 });
+
+test("the sources list opens with its last entry readable", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // Four unreadable sources: enough that the opened list does not fit under
+  // the row where it sits, and few enough that the whole of it fits the
+  // viewport once the row is moved up for it. Both halves matter — a list
+  // taller than the viewport cannot be shown by any scroll position, and a
+  // list that fits either way could not tell one scroll from another.
+  s.errors = Array.from({ length: 4 }, (_, i) => ({
+    source: `/proc/source-${i}`,
+    message: `read failed ${i}`,
+  }));
+  const at = settingItems(c, s.capabilities).findIndex(
+    (item) => item.kind === "sources",
+  );
+  // Every capability is listed ahead of it, so this index is not a constant.
+  expect(at).toBeGreaterThan(0);
+  const t = await mount(s, c, { width: 140, height: 12 });
+  try {
+    await t.press("7");
+    for (let i = 0; i < at; i++) await t.press("down");
+    // Closed, the list is not on the screen at all.
+    expect(t.frame()).not.toContain("/proc/source-3");
+    await t.press("enter");
+    const frame = t.frame();
+    // The phrase both spellings of this row share: the design pass rewrites
+    // its label, and which row is selected is the claim, not its wording.
+    expect(selectedRow(frame)).toContain("vsys cannot read");
+    // The row moved up far enough for the whole list, last entry included.
+    // Brought into view as a row instead, the row sits at the bottom edge and
+    // every entry it opened is below it.
+    expect(frame).toContain("/proc/source-3");
+  } finally {
+    await t.close();
+  }
+});

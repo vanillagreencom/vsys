@@ -105,14 +105,14 @@ export function Settings({
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   // Every entry is a block with its row at the top, so whether anything is
-  // drawn under the selected row is one measurement: the block is taller than
-  // the row heading it. Naming the openers instead missed a kind twice — a
+  // drawn under the selected row is one question the block answers: it has a
+  // second child. Naming the openers instead missed a kind twice — a
   // capability shows its reason as soon as it is selected, a setting shows its
   // help sentence — and a third clause would have missed the next one.
   //
   // The second pass is for the arithmetic, which reads positions the opening
-  // has not been laid out into yet. The count above it needs no second pass,
-  // which is why it is a count.
+  // has not been laid out into yet. The question above it is asked of the
+  // tree, which holds the detail already, so it needs no second pass.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the column count, the editor, the sources row and an opened capability are re-run triggers here, not values the effect reads
   useEffect(() => {
     const box = scroller.current;
