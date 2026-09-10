@@ -226,51 +226,78 @@ test("persisted snapshots and their sidecars stay readable only by the owner", (
   expect(modes()).toEqual(Array(modes().length).fill(0o600));
 });
 
-test("reading recent history asks for the rows it shows, not for all of them", () => {
+test("reading recent history costs the same whether or not there is much to read", () => {
   const c = {
     ...defaults(),
     refreshMs: 100,
     historyHours: 24,
     persistence: false,
   };
-  const h = new History(c);
   const held = 2000;
-  for (let i = 0; i < held; i++) {
-    const s = emptySnapshot(1000 + i * 100);
-    // A change every five hundred points, so the newest few are near the end.
-    if (i % 500 === 0)
-      s.lanes = [laneSnapshot({ id: `l${i}.scope`, name: `l${i}` })];
-    h.add(s);
-  }
+  /** One history of `held` points carrying `changes` lane starts. */
+  const filled = (changes: number) => {
+    const h = new History(c);
+    // Lanes accumulate, so each marked sample is one lane start and nothing
+    // stops: a lane that appeared and vanished would be two changes, not one.
+    // The first sample records no change, so the marks start past it.
+    const every = changes ? Math.floor(held / (changes + 1)) : held + 1;
+    const lanes = [];
+    for (let i = 0; i < held; i++) {
+      const s = emptySnapshot(1000 + i * 100);
+      if (changes && i > 0 && i % every === 0 && i / every <= changes)
+        lanes.push(laneSnapshot({ id: `l${i}.scope`, name: `l${i}` }));
+      s.lanes = [...lanes];
+      h.add(s);
+    }
+    return h;
+  };
+  /**
+   * Count what a read touches rather than how long it takes: a timing
+   * assertion here would be a check that cannot fail.
+   */
+  const cost = (h: History, end: number) => {
+    let materialised = 0;
+    let touched = 0;
+    const all = Ring.prototype.all;
+    const get = Ring.prototype.get;
+    Ring.prototype.all = function counted(this: Ring<unknown>) {
+      const out = all.call(this);
+      materialised += out.length;
+      return out;
+    };
+    Ring.prototype.get = function counted(this: Ring<unknown>, index: number) {
+      touched += 1;
+      return get.call(this, index);
+    };
+    try {
+      // What Home reads on every render, and what the alert count reads on
+      // every sample.
+      const recent = h.recentEvents(end, 3);
+      const after = h.eventsAfter(end - 100, end);
+      return { recent, after, materialised, touched };
+    } finally {
+      Ring.prototype.all = all;
+      Ring.prototype.get = get;
+    }
+  };
   const now = 1000 + (held - 1) * 100;
-  // Count what each read touches rather than how long it takes: a timing
-  // assertion here would be a check that cannot fail.
-  let materialised = 0;
-  let touched = 0;
-  const all = Ring.prototype.all;
-  const get = Ring.prototype.get;
-  Ring.prototype.all = function counted(this: Ring<unknown>) {
-    const out = all.call(this);
-    materialised += out.length;
-    return out;
-  };
-  Ring.prototype.get = function counted(this: Ring<unknown>, index: number) {
-    touched += 1;
-    return get.call(this, index);
-  };
-  try {
-    // What Home reads on every render, and what the alert count reads on
-    // every sample.
-    const recent = h.recentEvents(now, 3);
-    const after = h.eventsAfter(now - 100, now);
-    expect(recent.length).toBe(3);
-    expect(after).toEqual([]);
-    // Nothing is copied out of the ring, and the walk stops at what it was
-    // asked for rather than covering the retained window.
-    expect(materialised).toBe(0);
-    expect(touched).toBeLessThan(held);
-  } finally {
-    Ring.prototype.all = all;
-    Ring.prototype.get = get;
+  // None at all, fewer than Home asks for, then plenty. The sparse cases come
+  // first because they are the ones a walk cannot cut short, and they are the
+  // ordinary state of a quiet machine — which is what Home's own "nothing has
+  // changed" message describes.
+  for (const changes of [0, 2, 4]) {
+    const { recent, after, materialised, touched } = cost(filled(changes), now);
+    expect({ changes, found: recent.length }).toEqual({
+      changes,
+      found: Math.min(changes, 3),
+    });
+    expect({ changes, after }).toEqual({ changes, after: [] });
+    // Nothing is copied out of the ring, and the reads cost a handful of
+    // lookups rather than a pass over the retained window.
+    expect({ changes, materialised }).toEqual({ changes, materialised: 0 });
+    expect({ changes, bounded: touched < 20 }).toEqual({
+      changes,
+      bounded: true,
+    });
   }
 });
