@@ -6,7 +6,7 @@ import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
 import { mount, selectedRow } from "../test/harness";
-import { settingGroups } from "./settings";
+import { settingGroups, settingHelp } from "./settings";
 import { settingItems, sourceCounts } from "./settings-screen";
 
 test("every stored setting sits in exactly one group, and no group names a stranger", () => {
@@ -743,6 +743,33 @@ test("Enter on a readable source brings its own source line with it", async () =
     // `openCap` outside the effect's dependencies the block grew a line and
     // nothing re-ran, leaving that line below the fold.
     expect(frame).toContain(last.source);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a selected setting keeps its help sentence on the screen", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const items = settingItems(c, s.capabilities);
+  // The row whose help falls past the bottom edge on this viewport. Asserted
+  // here rather than assumed: a row with no help, or one the viewport has room
+  // for either way, would pass whatever the screen did with it.
+  const at = items.findIndex(
+    (item) => item.kind === "setting" && item.key === "units",
+  );
+  expect(at).toBeGreaterThan(0);
+  const help = settingHelp("units");
+  expect(help).not.toBe("");
+  const t = await mount(s, c, { width: 140, height: 9 });
+  try {
+    await t.press("7");
+    for (let i = 0; i < at; i++) await t.press("down");
+    const frame = t.frame();
+    expect(selectedRow(frame)).toContain("Storage units");
+    // Scrolled to the row alone, the row landed against the bottom edge and
+    // the sentence explaining it was the line below the fold.
+    expect(frame).toContain(help);
   } finally {
     await t.close();
   }

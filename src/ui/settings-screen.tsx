@@ -104,27 +104,16 @@ export function Settings({
   const twoColumns = width >= wideWidth && !editing && !picking;
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
-  // Moving the selection brings the row into view; opening something under it
-  // brings the whole block, because a detail the reader cannot see is a detail
-  // they cannot read. Scrolling to the block while merely walking the list is
-  // what pushes the row itself off the top edge.
+  // Every entry is a block with its row at the top, so whether anything is
+  // drawn under the selected row is one measurement: the block is taller than
+  // the row heading it. Naming the openers instead missed a kind twice — a
+  // capability shows its reason as soon as it is selected, a setting shows its
+  // help sentence — and a third clause would have missed the next one.
   //
-  // Which of the two applies is decided by what is actually drawn under the
-  // selected row, because naming the openers one by one missed a whole kind:
-  // a capability shows its detail as soon as it is selected when it could not
-  // be read, and on Enter when it could, and neither was named here. Selecting
-  // an unreadable source near the end of a short list scrolled its row flush
-  // to the bottom edge and left the sentence saying why below the fold.
-  const chosen = items[selected];
-  const opened =
-    editing ||
-    picking !== null ||
-    sourcesOpen ||
-    (chosen?.kind === "capability" &&
-      (openCap === chosen.id ||
-        s.capabilities.find((cap) => cap.id === chosen.id)?.available ===
-          false));
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the column count is a re-run trigger here, not a value the effect reads
+  // The second pass is for the arithmetic, which reads positions the opening
+  // has not been laid out into yet. The count above it needs no second pass,
+  // which is why it is a count.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the column count, the editor, the sources row and an opened capability are re-run triggers here, not values the effect reads
   useEffect(() => {
     const box = scroller.current;
     if (!box) return;
@@ -137,30 +126,29 @@ export function Settings({
       const waiting = setTimeout(onto, 0);
       return () => clearTimeout(waiting);
     }
-    if (!opened) {
-      // Walking the list moves the row into view and nothing else. Scrolling
-      // to the block it heads is what used to push the row off the top edge
-      // the moment the block grew a line.
-      box.scrollChildIntoView(`setting-${selected}`);
-      return;
-    }
-    // Something opened under the row, and its height is not laid out yet, so
-    // there is nothing to scroll into view. The row goes near the top instead
-    // and the viewport below it is left for whatever it opened.
-    // Opening also collapses two columns into one above the stated width, and
-    // the row has not moved yet on this pass, so the measurement is taken
-    // again once the new layout has been drawn.
-    const into = () => {
+    const place = () => {
       const row = box.content.findDescendantById(`setting-${selected}`);
-      if (row) box.scrollBy(row.y - box.viewport.y - 1);
+      if (!row) return;
+      // What is drawn under the row is read as a count of children rather than
+      // as a height: the detail is in the tree as soon as it is rendered, and
+      // its height is not known until the layout after that. A measurement in
+      // rows would be right one pass too late.
+      const block = box.content.findDescendantById(`block-${selected}`);
+      if (!block || block.getChildrenCount() < 2) {
+        // Nothing under the row: bringing the row into view is the whole of
+        // it. Scrolling to the block here is what pushed the row off the top
+        // edge the moment the block grew a line.
+        box.scrollChildIntoView(`setting-${selected}`);
+        return;
+      }
+      // Something is under it, so the row goes near the top and the viewport
+      // below is left for whatever it opened.
+      box.scrollBy(row.y - box.viewport.y - 1);
     };
-    into();
-    const pending = setTimeout(into, 0);
+    place();
+    const pending = setTimeout(place, 0);
     return () => clearTimeout(pending);
-    // `openCap` is here as insurance rather than as a fix: `opened` already
-    // reads it, so every case that changes one changes the other. Named
-    // separately, a mode that later stops reading it still re-runs.
-  }, [selected, opened, twoColumns, picking, choice, openCap]);
+  }, [selected, twoColumns, picking, choice, editing, sourcesOpen, openCap]);
   /**
    * The one place the selection follows the query. Three paths change what the
    * filter shows — typing in the box, opening it on a query already there, and
