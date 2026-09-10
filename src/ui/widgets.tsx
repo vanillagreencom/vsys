@@ -24,21 +24,54 @@ export function Section({
   count,
   width,
   marginTop = 1,
+  focused = false,
 }: {
   title: string;
   count?: number | string;
   /** The panel's inner width, which the rule runs to. */
   width: number;
   marginTop?: number;
+  /**
+   * The region the arrows are moving inside. Its title takes the accent colour
+   * and its rule stops being dim, so a reader never has to press a key to find
+   * out where they are.
+   */
+  focused?: boolean;
 }) {
   const label = count === undefined ? title : `${title}  ${count}`;
   const rule = Math.max(0, width - [...label].length - 1);
   return (
     <Line height={1} flexShrink={0} truncate marginTop={marginTop}>
-      <span attributes={ui.bold}>{title}</span>
+      <span attributes={ui.bold} fg={focused ? ui.accent : undefined}>
+        {title}
+      </span>
       {count !== undefined && <span attributes={ui.dim}>{`  ${count}`}</span>}
-      <span attributes={ui.dim}>{` ${"─".repeat(rule)}`}</span>
+      <span attributes={focused ? ui.none : ui.dim}>
+        {` ${"─".repeat(rule)}`}
+      </span>
     </Line>
+  );
+}
+/**
+ * The one marker for a row that has more inside it: closed, open, and how much
+ * is in there. It is drawn whether or not anything is open, so a reader can see
+ * what is worth opening without opening it.
+ */
+export function Disclosure({
+  open,
+  name,
+  count,
+}: {
+  open: boolean;
+  name: string;
+  count?: number | string;
+}) {
+  return (
+    <>
+      <span fg={ui.accent}>{open ? "▾ " : "▸ "}</span>
+      {safe(name)}
+      {count !== undefined && <span attributes={ui.dim}>{`  ${count}`}</span>}
+    </>
   );
 }
 /**
@@ -322,10 +355,11 @@ export function Tiles({
 }
 
 /**
- * The block under a row that explains it, indented so it reads as part of that
- * row rather than as the next one. The indent goes on a box: `paddingLeft` on
- * a text element moves nothing at all, so a detail written that way sits at the
- * same margin as the row above it and its wrapped lines run the full width.
+ * The block under a row that explains it: a rule down its left edge and an
+ * indent after it, so it reads as part of that row rather than as the next
+ * one. An indent alone is not enough at a glance, and the indent alone is what
+ * this was before. The indent goes on a box, because `paddingLeft` on a text
+ * element moves nothing at all, not even its first line.
  */
 export function Detail({
   children,
@@ -334,8 +368,16 @@ export function Detail({
   children: ReactNode;
   indent?: number;
 }) {
+  // The rule is a box's own left border, so it runs the full height of
+  // whatever is inside without anyone counting lines.
   return (
-    <box flexDirection="column" flexShrink={0} paddingLeft={indent}>
+    <box
+      flexDirection="column"
+      flexShrink={0}
+      border={["left"]}
+      borderColor={ui.quiet}
+      paddingLeft={indent - 1}
+    >
       {children}
     </box>
   );

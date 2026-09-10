@@ -4,7 +4,7 @@ import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
 import { normalizeLane } from "../store/migrate";
 import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
-import { mount } from "../test/harness";
+import { isChildLine, mount } from "../test/harness";
 import { osc52 } from "./clipboard";
 
 test("agent detail names the account, the charged resources, the limits and the block", async () => {
@@ -370,6 +370,28 @@ test("an agent with no pane offers no terminal and no way to reach one", async (
     const frame = t.frame();
     expect(frame).toContain("exported no pane address");
     expect(frame).not.toContain("Go to terminal");
+  } finally {
+    await t.close();
+  }
+});
+
+test("an open section is drawn as a child of its own row", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot()];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 45 });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    // Closed, the row still says there is something inside it.
+    expect(t.frame()).toContain("▸ Processes");
+    await t.press("enter");
+    const lines = t.frame().split("\n");
+    const row = lines.findIndex((line) => line.includes("▾ Processes"));
+    expect(row).toBeGreaterThan(-1);
+    expect(isChildLine(lines[row])).toBe(false);
+    expect(isChildLine(lines[row + 1])).toBe(true);
   } finally {
     await t.close();
   }

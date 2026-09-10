@@ -5,7 +5,7 @@ import { choices, defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
-import { mount, selectedRow } from "../test/harness";
+import { isChildLine, mount, selectedRow } from "../test/harness";
 import { settingGroups, settingHelp } from "./settings";
 import { settingItems, sourceCounts } from "./settings-screen";
 
@@ -114,9 +114,11 @@ test("Settings lists a capability it could not read, with the reason", async () 
     await t.press("7");
     const settings = t.frame();
     expect(settings).toContain("Data sources  1 not available");
+    // The marker says there is more here before the reader presses anything.
     expect(settings).toMatch(
-      /○ Pressure stall information\s+no PSI on this kernel/,
+      /○ ▸ Pressure stall information\s+no PSI on this kernel/,
     );
+    expect(settings).toMatch(/● Resource groups \(cgroup v2\)\s+available/);
     expect(settings).toMatch(/● Resource groups \(cgroup v2\)\s+available/);
   } finally {
     await t.close();
@@ -668,16 +670,19 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     );
     for (let i = 0; i < at; i++) await t.press("down");
     const lines = t.frame().split("\n");
-    const row = lines.findIndex((line) => line.includes("▍○ Pressure"));
+    const row = lines.findIndex((line) => line.includes("▍○ ▾ Pressure"));
     expect(row).toBeGreaterThan(-1);
     // The screen's own margin is two columns and the detail adds three, so a
     // detail line starts at column five. The second line is the one that
     // matters: padding on a text element leaves every wrapped line at the
     // margin, which reads as the next row rather than as part of this one.
-    expect(lines[row + 1].startsWith("     ")).toBe(true);
-    expect(lines[row + 1].slice(5).startsWith(" ")).toBe(false);
-    expect(lines[row + 2].startsWith("     ")).toBe(true);
-    expect(lines[row + 2].slice(5).startsWith(" ")).toBe(false);
+    // The row itself carries no rule; both of its continuation lines do, and
+    // the wrapped one is the line an indent alone never reached.
+    expect(isChildLine(lines[row])).toBe(false);
+    expect(isChildLine(lines[row + 1])).toBe(true);
+    expect(isChildLine(lines[row + 2])).toBe(true);
+    expect(lines[row + 1]).toContain("/proc/pressure/cpu");
+    expect(lines[row + 2].trimEnd().endsWith("directory)")).toBe(true);
   } finally {
     await t.close();
   }

@@ -3,7 +3,7 @@ import { testRender } from "@opentui/react/test-utils";
 import { defaults } from "../config/config";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
-import { mount } from "../test/harness";
+import { isChildLine, mount, selectedRow } from "../test/harness";
 import { type KeyHandler, KeyProvider } from "./keys";
 import {
   itemPath,
@@ -166,6 +166,26 @@ test("a device reports the free space a member could read", async () => {
   }
 });
 
+test("a filesystem's detail is drawn as a child of its row", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [volumeSnapshot("/data", { device: "/dev/sda1" })];
+  const t = await mount(s, c, { width: 160, height: 40 });
+  try {
+    await t.press("5");
+    const lines = t.frame().split("\n");
+    const row = lines.findIndex((line) => line.includes("▾ /data"));
+    expect(row).toBeGreaterThan(-1);
+    expect(isChildLine(lines[row])).toBe(false);
+    expect(isChildLine(lines[row + 1])).toBe(true);
+    // The mount's own detail, not the device row's: subvolumes of one
+    // filesystem share a device and its error counters, stated once above.
+    expect(lines[row + 1]).toContain("Options");
+  } finally {
+    await t.close();
+  }
+});
+
 test("a mount's detail does not repeat the device row's error counters", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -185,6 +205,46 @@ test("a mount's detail does not repeat the device row's error counters", async (
     expect(frame.split("corruption 3").length - 1).toBe(1);
     expect(frame).toContain("subvol=@data");
     expect(frame).not.toContain("Errors");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Storage moves between its three lists with left and right", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/data", { device: "/dev/sda1" }),
+    volumeSnapshot("/home", { device: "/dev/sda2" }),
+  ];
+  s.storage.scrubs = [
+    { path: "/run/btrfs-scrub/one", text: "clean", problem: false },
+  ];
+  s.storage.scratch = [
+    { path: "/scratch/a", bytes: 10, age: 0, error: null },
+    { path: "/scratch/b", bytes: 20, age: 0, error: null },
+  ];
+  const t = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await t.press("5");
+    expect(selectedRow(t.frame())).toContain("/data");
+    // Down stays inside the filesystems rather than walking into the reports.
+    await t.press("down");
+    expect(selectedRow(t.frame())).toContain("/home");
+    for (let i = 0; i < 10; i++) await t.press("down");
+    expect(selectedRow(t.frame())).toContain("/home");
+    // Right is the one way to the next list, and it lands on its first row.
+    await t.press("right");
+    expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
+    await t.press("right");
+    expect(selectedRow(t.frame())).toContain("/scratch/a");
+    // The last list holds rather than wrapping.
+    await t.press("right");
+    expect(selectedRow(t.frame())).toContain("/scratch/a");
+    await t.press("left");
+    expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
+    await t.press("left");
+    expect(selectedRow(t.frame())).toContain("/data");
   } finally {
     await t.close();
   }

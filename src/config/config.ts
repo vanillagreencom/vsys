@@ -222,6 +222,7 @@ export function defaults(): Config {
       sort: "s",
       reverse: "r",
       pin: "p",
+      hold: "o",
       window: "w",
       copy: "y",
       exportJson: "e",

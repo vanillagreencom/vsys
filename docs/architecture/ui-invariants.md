@@ -47,5 +47,8 @@ The properties the [UI behaviour](ui.md) document's boundaries rest on, each wit
 - A pane that has gone away says why, and the pane is read only while its section is open. `src/ui/agent.test.tsx` counts the captures across a closed section, an open one and a new sample.
 - What a pane drew cannot move the cursor, repaint the screen or write the clipboard. `src/collect/tmux.test.ts` feeds it a screen clear and a clipboard write; `src/ui/agent.test.tsx` checks the rendered frame and the clipboard stream.
 - The switch to a terminal is offered only from inside the server holding the pane; outside it the command is copied instead. `src/ui/agent.test.tsx` checks both, and no path launches a terminal emulator.
+- Left and right move between a screen's regions and up and down stay inside one. `src/ui/regions.test.ts` pins the arithmetic against empty regions and both ends; `src/ui/home.test.tsx` walks all four Home regions and reads back which title is lit; `src/ui/storage-screen.test.tsx` walks its three.
+- Every line that expands under another carries the rule and the indent. `src/ui/home.test.tsx`, `src/ui/settings-screen.test.tsx`, `src/ui/storage-screen.test.tsx` and `src/ui/agent.test.tsx` check one site each.
+- A held order keeps its rows while their numbers move, drops a lane that ended, refuses a lane that climbed, and is released by leaving the screen. `src/ui/home.test.tsx` swaps the readings under a hold and reads the rows back.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
