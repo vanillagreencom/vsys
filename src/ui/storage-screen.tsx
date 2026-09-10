@@ -54,24 +54,41 @@ export function storageItems(s: Snapshot): StorageItem[] {
  * free-space figure. The device is named once and its mounts sit under it.
  */
 export interface DeviceVolumes {
+  /** The identity the group was formed on: the filesystem id where resolved. */
+  id: string;
+  /** The device a reader would type, taken from the group's first mount. */
   device: string;
   volumes: Volume[];
 }
+/**
+ * What identifies the filesystem a mount belongs to. The collector resolves a
+ * Btrfs filesystem id per mount, and that is the identity the counters are
+ * keyed by. The mount source is not: one filesystem reached through a mapper
+ * alias, a canonical path or a second member device carries three different
+ * source strings and would split into three headings, each repeating the one
+ * free-space figure this grouping exists to state once. The source is the
+ * fallback for a mount whose filesystem id could not be resolved.
+ */
+const filesystemKey = (v: Volume): string => v.fsid ?? v.device;
 export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
   const order: string[] = [];
   const byDevice = new Map<string, Volume[]>();
   for (const volume of volumes) {
-    const group = byDevice.get(volume.device);
+    const key = filesystemKey(volume);
+    const group = byDevice.get(key);
     if (group) group.push(volume);
     else {
-      byDevice.set(volume.device, [volume]);
-      order.push(volume.device);
+      byDevice.set(key, [volume]);
+      order.push(key);
     }
   }
-  return order.map((device) => ({
-    device,
-    volumes: byDevice.get(device) ?? [],
-  }));
+  return order.map((key) => {
+    const volumes = byDevice.get(key) ?? [];
+    // The heading names the device a reader would type. The identity stays
+    // beside it, because two filesystems can report one device string and
+    // only the id tells the groups apart.
+    return { id: key, device: volumes[0]?.device ?? key, volumes };
+  });
 }
 export function volumeLevel(v: Volume, freeFloor: number): Level {
   if (v.readOnly || Object.values(v.delta).some((n) => n > 0)) return "danger";
@@ -300,11 +317,15 @@ export function Storage({
         {st.mountsAvailable !== false && !st.volumes.length && (
           <Empty text="No watched Btrfs mount." />
         )}
-        {volumesByDevice(st.volumes).map(({ device, volumes }) => {
+        {volumesByDevice(st.volumes).map(({ id, device, volumes }) => {
           // Subvolumes of one filesystem each report the whole device's free
           // space, so the device states it once and its mounts carry only what
-          // differs between them.
-          const first = volumes[0];
+          // differs between them. `statfs` is attempted per mount, so one
+          // member can have failed where another succeeded: read the figures
+          // from a member that has them rather than from whichever came first.
+          const first =
+            volumes.find((v) => v.free !== null && v.total !== null) ??
+            volumes[0];
           const used =
             first.total !== null && first.free !== null
               ? first.total - first.free
@@ -315,7 +336,7 @@ export function Storage({
             ? "danger"
             : "ok";
           return (
-            <box key={device} flexDirection="column" flexShrink={0}>
+            <box key={id} flexDirection="column" flexShrink={0}>
               <Line height={1} flexShrink={0} truncate>
                 <span fg={levelColor(worst)}>{safe(fit(device, 42))}</span>
                 {columnGap}

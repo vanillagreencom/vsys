@@ -63,3 +63,45 @@ test("a device's mounts are listed together even when they arrive interleaved", 
     ),
   ).toEqual(["/a", "/c", "/b"]);
 });
+
+test("one filesystem is one heading, however its mounts name their device", () => {
+  // The collector resolves a filesystem id per mount and the mount source it
+  // resolved it from. A mapper alias, the canonical path it points at and a
+  // second member device are three source strings for one filesystem.
+  const groups = volumesByDevice([
+    volumeSnapshot("/data", { device: "/dev/mapper/pool", fsid: "abc" }),
+    volumeSnapshot("/data/home", { device: "/dev/dm-0", fsid: "abc" }),
+    volumeSnapshot("/data/log", { device: "/dev/sda2", fsid: "abc" }),
+    volumeSnapshot("/other", { device: "/dev/sdb1", fsid: "def" }),
+  ]);
+  expect(groups.map((group) => group.id)).toEqual(["abc", "def"]);
+  expect(groups[0].volumes.map((v) => v.mount)).toEqual([
+    "/data",
+    "/data/home",
+    "/data/log",
+  ]);
+  // The heading still names a device a reader would type.
+  expect(groups[0].device).toBe("/dev/mapper/pool");
+  expect(groups[1].volumes.map((v) => v.mount)).toEqual(["/other"]);
+  // Where the id could not be resolved the source string is the fallback, so
+  // those mounts still group rather than each standing alone.
+  const unresolved = volumesByDevice([
+    volumeSnapshot("/x", { device: "/dev/sdc1", fsid: null }),
+    volumeSnapshot("/y", { device: "/dev/sdc1", fsid: null }),
+    volumeSnapshot("/z", { device: "/dev/sdd1", fsid: null }),
+  ]);
+  expect(unresolved.map((group) => group.id)).toEqual([
+    "/dev/sdc1",
+    "/dev/sdd1",
+  ]);
+  // Two filesystems can report one device string, and only the id parts them.
+  const shared = volumesByDevice([
+    volumeSnapshot("/p", { device: "/dev/sde1", fsid: "one" }),
+    volumeSnapshot("/q", { device: "/dev/sde1", fsid: "two" }),
+  ]);
+  expect(shared.map((group) => group.id)).toEqual(["one", "two"]);
+  expect(shared.map((group) => group.device)).toEqual([
+    "/dev/sde1",
+    "/dev/sde1",
+  ]);
+});

@@ -81,9 +81,21 @@ export function Settings({
   const twoColumns = width >= wideWidth && !editing;
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
+  // Opening the editor collapses two columns into one, so a right-column row
+  // moves below the whole left column and the editor can open out of view.
+  // Two things follow. The scroll runs when the layout changes, not only when
+  // the selection does. And it runs twice: the scroll box measures the row
+  // where it currently sits, so a move within an unchanged layout lands at
+  // once, while a move the layout itself made is measured again after the new
+  // layout has been drawn.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the layout is a re-run trigger here, not a value the effect reads
   useEffect(() => {
-    scroller.current?.scrollChildIntoView(`setting-${selected}`);
-  }, [selected]);
+    const into = () =>
+      scroller.current?.scrollChildIntoView(`setting-${selected}`);
+    into();
+    const pending = setTimeout(into, 0);
+    return () => clearTimeout(pending);
+  }, [selected, twoColumns, editing]);
   // A query can match nothing, so no row is selected and no row is rendered.
   const current: SettingItem | undefined = items[selected];
   const beginEdit = (index: number) => {

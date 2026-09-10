@@ -2450,3 +2450,104 @@ test("Home opens the row the reader chose after the list moves under it", async 
     }
   }
 });
+
+test("a lane exiting under the selection keeps one lane under highlight, pane and Enter", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cpu: 9, cwd: "/repo/a" }),
+    laneSnapshot({ id: "b", name: "lane-b", cpu: 5, cwd: "/repo/b" }),
+    laneSnapshot({ id: "z", name: "lane-z", cpu: 1, cwd: "/repo/z" }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await t.press("2");
+    await t.press("j");
+    await t.press("j");
+    expect(selectedRow(t.frame())).toContain("lane-z");
+    expect(t.frame()).toContain("/repo/z");
+    // The lane exits. Every row below it moves up, and the row number the
+    // reader was on now names nothing.
+    await t.update({ ...s, lanes: s.lanes.slice(0, 2) });
+    const frame = t.frame();
+    // One lane, read three ways: the highlight in the list, the summary
+    // beside it, and what Enter opens.
+    expect(selectedRow(frame)).toContain("lane-b");
+    expect(frame).toContain("/repo/b");
+    expect(frame).not.toContain("/repo/z");
+    await t.press("enter");
+    const footer = t.frame().split("\n").at(-2) ?? "";
+    // The detail's own footer: it opened, rather than Enter finding no lane.
+    expect(footer).toContain("back");
+    expect(footer).not.toContain("find");
+    expect(t.frame()).toContain("lane-b");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the editor opens in view when the layout moves the row it edits", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await t.press("7");
+    // Walk to the last setting. Two columns hold it on the right-hand side.
+    for (let i = 0; i < 80; i++) await t.press("j");
+    const marker = (frame: string) => {
+      const line = frame.split("\n").find((row) => row.includes("▍"));
+      return line === undefined ? -1 : line.indexOf("▍");
+    };
+    expect(marker(t.frame())).toBeGreaterThan(90);
+    // Opening the editor collapses the two columns into one, so this row
+    // moves below the whole left column. The scroll has to follow the layout
+    // that moved it, not the selection, which did not change.
+    await t.press("enter");
+    // The scroll measures where the row currently sits, so it waits for the
+    // new layout to be drawn: the editor is in view on the frame after the
+    // collapse. Republishing the sample draws that frame and types nothing.
+    await t.update(s);
+    const frame = t.frame();
+    // This row's editor, named by the row it edits. Measuring on the old
+    // layout scrolled to the top of the list, where the opened row is not.
+    expect(frame).toContain("Export markdown · Enter saves");
+    expect(frame).not.toContain("Storage units");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a device reports the free space a member could read", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // `statfs` is attempted per mount, so one member of a filesystem can carry
+  // no reading while another carries one.
+  s.storage.volumes = [
+    volumeSnapshot("/data", {
+      device: "/dev/nvme0n1p2",
+      fsid: "one",
+      free: null,
+      total: null,
+    }),
+    volumeSnapshot("/data/home", {
+      device: "/dev/nvme0n1p2",
+      fsid: "one",
+      free: 1e11,
+      total: 2e11,
+    }),
+  ];
+  const t = await mount(s, c, { width: 140, height: 30 });
+  try {
+    await t.press("5");
+    const line = t
+      .frame()
+      .split("\n")
+      .find((row) => row.includes("/dev/nvme0n1p2"));
+    expect(line).toBeDefined();
+    expect(line).toContain("93.1 GiB free of 186.3 GiB");
+    expect(line).not.toContain("not avail");
+  } finally {
+    await t.close();
+  }
+});
