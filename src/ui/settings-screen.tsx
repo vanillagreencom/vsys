@@ -124,19 +124,25 @@ export function Settings({
     return () => clearTimeout(pending);
   }, [selected, twoColumns, editing, picking, choice]);
   /**
-   * The row a query moves the highlight to. The capability rows are listed
-   * whatever the filter says, so the first row of a filtered list is not the
-   * first row the filter matched, and landing on it would open a row the
-   * reader was not looking for.
+   * The one place the selection follows the query. Three paths change what the
+   * filter shows — typing in the box, opening it on a query already there, and
+   * clearing it — and each decided the row for itself. The capability rows are
+   * listed whatever the filter says, so the first row of a filtered list is
+   * not the first row the filter matched, and every path that reached for row
+   * zero landed the highlight on a row the query never matched.
    */
-  const firstMatch = (text: string) => {
-    if (!text.trim()) return 0;
-    // No match means no row: the capability rows are listed whatever the
-    // filter says, so falling back to the first row would put the highlight
-    // on one the query did not match and open its detail on Enter. `nextDown`
-    // takes -1 to the first visible row, so the arrows still work from here.
-    return settingItems(c, s.capabilities, text).findIndex(
-      (item) => item.kind === "setting",
+  const filterTo = (text: string) => {
+    setQuery(text);
+    if (!text.trim()) {
+      setSelected(0);
+      return;
+    }
+    // No match means no row rather than the first one. `nextDown` takes -1 to
+    // the first visible row, so the arrows still work from here.
+    setSelected(
+      settingItems(c, s.capabilities, text).findIndex(
+        (item) => item.kind === "setting",
+      ),
     );
   };
   // A query can match nothing, so no row is selected and no row is rendered.
@@ -203,8 +209,7 @@ export function Settings({
       if (name === c.keys.back) {
         key.preventDefault();
         setSearching(false);
-        setQuery("");
-        setSelected(0);
+        filterTo("");
       }
       return true;
     }
@@ -213,7 +218,9 @@ export function Settings({
     if (name === c.keys.search && !editing && !picking) {
       key.preventDefault();
       setSearching(true);
-      setSelected(0);
+      // The box opens on the query it still holds, so the row it leaves
+      // selected is the one that query matched, not row zero.
+      filterTo(query);
       return true;
     }
     if (picking) {
@@ -223,7 +230,7 @@ export function Settings({
         setChoice((i) => nextDown(picking.length, i));
       else if (name === c.keys.up || name === "up")
         setChoice((i) => Math.max(0, i - 1));
-      else if (name === c.keys.open && current.kind === "setting")
+      else if (name === c.keys.open && current?.kind === "setting")
         void save(current.key, () => picking[choice]);
       return true;
     }
@@ -408,10 +415,7 @@ export function Settings({
               focused
               value={query}
               placeholder="name or label"
-              onInput={(value: string) => {
-                setQuery(value);
-                setSelected(firstMatch(value));
-              }}
+              onInput={filterTo}
               onSubmit={() => setSearching(false)}
             />
           </box>

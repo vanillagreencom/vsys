@@ -3390,3 +3390,32 @@ test("a query that matches no setting leaves no row selected", async () => {
     await t.close();
   }
 });
+
+test("reopening the find box keeps the query on the row it matched", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "wait warning") await t.press(ch);
+    await t.press("enter");
+    // The query stands and the row it matched is selected.
+    expect(selectedRow(t.frame())).toContain("Wait warning");
+    // Open the box again without changing anything, and submit. The query is
+    // still there, so the row it matched is still the row Enter opens: reset
+    // to the top it landed on a capability row, which is listed whatever the
+    // filter says and is never what the query matched.
+    await t.press("/");
+    expect(t.frame()).toContain("Find a setting");
+    await t.press("enter");
+    expect(selectedRow(t.frame())).toContain("Wait warning");
+    await t.press("enter");
+    // The editor is titled with the setting it edits, so its title names the
+    // row Enter actually opened. The capability rows are on the screen either
+    // way, so their presence says nothing.
+    expect(t.frame()).toContain("Wait warning · Enter saves");
+  } finally {
+    await t.close();
+  }
+});
