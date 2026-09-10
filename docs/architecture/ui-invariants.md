@@ -1,5 +1,7 @@
 # UI invariants
 
+Covers: src/ui/ src/main.ts src/main.test.ts
+
 The properties the [UI behaviour](ui.md) document's boundaries rest on, each with the test that holds it. A claim here without a test beside it is a claim nothing keeps.
 
 - Refresh leaves one screen and a stable listener count. `src/ui/screen.test.tsx` checks repeated updates through the production mount function, followed by unmount.
