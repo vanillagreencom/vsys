@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaults } from "./config/config";
 import { runEffect } from "./effect";
-import { laneCommand } from "./model/actions";
+import { laneIntent, laneTarget, resolveIntent } from "./model/actions";
+import { emptySnapshot, laneSnapshot } from "./test/fixture";
 
 /** A directory standing in for the lane's own cgroup. */
 function scopeDir() {
@@ -17,20 +19,24 @@ function scopeDir() {
 test("a freeze and a thaw write their own value to the lane's cgroup", async () => {
   const d = scopeDir();
   try {
-    const target = {
-      laneId: "agents.slice/a.scope",
-      mainPid: 40,
-      scope: "a.scope",
-      directory: d.root,
-    };
-    const attribute = join(d.root, "cgroup.freeze");
-    // The command the confirmation showed is the one that runs, so a wrong
-    // value here is a lane frozen when the reader asked for it to be thawed.
+    // The whole path a confirmed action takes, from the lane a sample shows to
+    // the byte in the kernel file, so a wrong freeze value anywhere along it is
+    // a lane frozen when the reader asked for it to be thawed.
+    const c = { ...defaults(), cgroupRoot: d.root };
+    const lane = laneSnapshot({ id: "a.scope", cgroup: "a.scope" });
+    const target = laneTarget(lane, c);
+    if (target === null) throw new Error("the fixture lane runs in a scope");
+    const s = { ...emptySnapshot(), lanes: [lane] };
+    const attribute = join(d.root, "a.scope", "cgroup.freeze");
+    mkdirSync(join(d.root, "a.scope"), { recursive: true });
     for (const [action, value] of [
       ["Freeze", "1"],
       ["Thaw", "0"],
     ] as const) {
-      await runEffect(laneCommand(action, target).effect);
+      const resolved = resolveIntent(laneIntent(action, target), s, c);
+      if (resolved.state !== "ready")
+        throw new Error(`the fixture lane resolves ${action}`);
+      await runEffect(resolved.command.effect);
       expect({ action, wrote: readFileSync(attribute, "utf8") }).toEqual({
         action,
         wrote: value,

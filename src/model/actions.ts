@@ -20,8 +20,8 @@ export type LaneEffect =
  * What a reader asks for and confirms: one action against the lane they were
  * looking at, and the line the confirmation showed them. It carries no effect,
  * so nothing a screen holds can be run. A dialog can stand open across any
- * number of samples, and the effect exists only on a `LaneCommand`, which only
- * `resolveIntent` returns and only from the snapshot of the moment.
+ * number of samples, and `resolveIntent` is the only function this module
+ * exports that returns a `LaneCommand`, always from the snapshot it is handed.
  */
 export interface LaneIntent {
   action: LaneAction;
@@ -71,12 +71,13 @@ export function laneTarget(lane: Lane, c: Config): LaneTarget | null {
   };
 }
 /**
- * The exact command an action would run, so a caller can show it, copy it or
- * run it without a second spelling of any of the three. It takes a resolved
- * target rather than a lane, so a lane with no addressable scope cannot reach
- * a command at all.
+ * The exact command an action would run: the one spelling behind the line a
+ * screen shows, the text a reader copies and the effect that reaches the
+ * system. It takes a resolved target rather than a lane, so a lane with no
+ * addressable scope cannot reach a command at all, and it stays inside this
+ * module, so no caller can build an effect without a snapshot to justify it.
  */
-export function laneCommand(
+function laneCommand(
   action: LaneAction,
   { laneId, mainPid, scope, directory }: LaneTarget,
 ): LaneCommand {

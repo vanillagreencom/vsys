@@ -3,10 +3,11 @@ import { defaults } from "../config/config";
 import { emptySnapshot, laneSnapshot } from "../test/fixture";
 import {
   type LaneAction,
+  type LaneCommand,
   type LaneEffect,
   type LaneResolution,
+  type LaneTarget,
   laneActions,
-  laneCommand,
   laneIntent,
   laneTarget,
   resolveIntent,
@@ -15,9 +16,32 @@ import type { Lane } from "./types";
 
 const c = defaults();
 const dir = `${c.cgroupRoot}/agents.slice/a.scope`;
+const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes });
+/**
+ * The command an action reaches through the module's own seam. Nothing
+ * outside builds one: an effect exists only where a snapshot justified it.
+ */
+function commandFor(
+  action: LaneAction,
+  target: LaneTarget,
+  lanes: Lane[],
+  config = c,
+): LaneCommand {
+  const resolved = resolveIntent(
+    laneIntent(action, target),
+    world(lanes),
+    config,
+  );
+  if (resolved.state !== "ready")
+    throw new Error(
+      `the fixture lane resolves ${action}, not ${resolved.state}`,
+    );
+  return resolved.command;
+}
 
 test("each action names the lane's own scope and the exact work it would do", () => {
-  const target = laneTarget(laneSnapshot(), c);
+  const lane = laneSnapshot();
+  const target = laneTarget(lane, c);
   expect(target).toEqual({
     laneId: "agents.slice/a.scope",
     mainPid: 40,
@@ -49,7 +73,7 @@ test("each action names the lane's own scope and the exact work it would do", ()
   // without a row here fails rather than going untested.
   expect(rows.map(([action]) => action)).toEqual([...laneActions]);
   for (const [action, text, effect] of rows) {
-    const command = laneCommand(action, target);
+    const command = commandFor(action, target, [lane]);
     expect(command.action).toBe(action);
     expect(command.scope).toBe("a.scope");
     expect(command.text).toBe(text);
@@ -87,8 +111,11 @@ test("a copied command survives an escaped scope name and a path with a space", 
     directory: `${root}/agents.slice/${scope}`,
   });
   if (target === null) throw new Error("the fixture lane runs in a scope");
-  const freeze = laneCommand("Freeze", target);
-  const stop = laneCommand("Stop", target);
+  const freeze = commandFor("Freeze", target, [lane], {
+    ...c,
+    cgroupRoot: root,
+  });
+  const stop = commandFor("Stop", target, [lane], { ...c, cgroupRoot: root });
   expect(freeze.text).toBe(
     `echo 1 > '${root}/agents.slice/${scope}/cgroup.freeze'`,
   );
@@ -121,7 +148,6 @@ test("an intent reaches an effect only while it still names the same work", () =
     scope: "a.scope",
     text: "systemctl --user kill --signal=TERM a.scope",
   });
-  const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes });
   const rows: [string, Lane[], LaneResolution["state"]][] = [
     ["the lane the reader confirmed", [lane], "ready"],
     ["a lane that ended", [], "ended"],
