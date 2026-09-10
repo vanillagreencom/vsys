@@ -319,3 +319,56 @@ test("a configured pane address is the address, not a key into the server", () =
     window: "build",
   });
 });
+
+test("a pane on another tmux server resolves to nothing, not to a stranger", () => {
+  const c = defaults();
+  const groups = [
+    groupSnapshot({ path: "a.scope", name: "a.scope" }),
+    groupSnapshot({ path: "b.scope", name: "b.scope" }),
+  ];
+  const socket = "/tmp/tmux-1000/default";
+  // Two lanes carrying the same handle, because `%9` is unique per server and
+  // says nothing across one. One belongs to the server vsys read; the other
+  // does not.
+  const here = processSnapshot({
+    pid: 1,
+    group: "a.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%9", TMUX: `${socket},4242,0` },
+  });
+  const away = processSnapshot({
+    pid: 2,
+    group: "b.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%9", TMUX: "/tmp/tmux-1000/other,777,0" },
+  });
+  const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
+  const [mine, theirs] = lanes(groups, [here, away], c, 0, panes, socket);
+  // The lane on this server reads as it always did.
+  expect({
+    address: mine.address,
+    window: mine.window,
+    elsewhere: mine.elsewhere,
+  }).toEqual({ address: "work:1.1", window: "build", elsewhere: false });
+  // The other resolves to nothing and says why. Compared by handle alone both
+  // rows showed `work:1.1`, and a switch would have moved the reader to a pane
+  // they have never seen.
+  expect({
+    address: theirs.address,
+    window: theirs.window,
+    elsewhere: theirs.elsewhere,
+  }).toEqual({ address: "", window: "", elsewhere: true });
+  // A boundary vsys cannot see is not one it refuses at: with no server known
+  // for the read, or none for the lane, both resolve as before.
+  const [unknownServer] = lanes(groups, [away], c, 0, panes);
+  expect(unknownServer.elsewhere).toBe(false);
+  const bare = processSnapshot({
+    pid: 3,
+    group: "a.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%9" },
+  });
+  const [unknownLane] = lanes(groups, [bare], c, 0, panes, socket);
+  expect(unknownLane.elsewhere).toBe(false);
+  expect(unknownLane.address).toBe("work:1.1");
+});

@@ -279,7 +279,7 @@ export function Agent({
   // opened it is not a terminal. The body has no other use for it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the sample time is the clock
   useEffect(() => {
-    if (!terminalOpen || !onCapture || !lane.pane) {
+    if (!terminalOpen || !onCapture || !lane.pane || lane.elsewhere) {
       setPane(null);
       return;
     }
@@ -325,7 +325,11 @@ export function Agent({
   const target = laneTarget(lane, c);
   const rows: DetailRow[] = [
     ...sections.flatMap((name): DetailRow[] =>
-      name === "Terminal" && terminalOpen && lane.pane && live
+      name === "Terminal" &&
+      terminalOpen &&
+      lane.pane &&
+      live &&
+      !lane.elsewhere
         ? [{ kind: "section", name }, { kind: "terminal" }]
         : [{ kind: "section", name }],
     ),
@@ -555,15 +559,23 @@ export function Agent({
                           a view of an older sample would put the present
                           inside the past. Said here rather than blamed on the
                           server, which is reachable. */}
-                      {lane.pane && !live && (
+                      {/* `%9` is unique per tmux server, so the server this
+                          vsys reads holds a `%9` of its own: reading or
+                          switching would reach a stranger's pane. */}
+                      {lane.pane && lane.elsewhere && (
+                        <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
+                      )}
+                      {lane.pane && !lane.elsewhere && !live && (
                         <Empty text="A pane is read live; this is a past sample." />
                       )}
-                      {lane.pane && live && !onCapture && (
+                      {lane.pane && !lane.elsewhere && live && !onCapture && (
                         <Empty text="Reading a pane needs a tmux server this vsys can reach." />
                       )}
-                      {lane.pane && live && onCapture && pane === null && (
-                        <Empty text="Reading the pane…" />
-                      )}
+                      {lane.pane &&
+                        !lane.elsewhere &&
+                        live &&
+                        onCapture &&
+                        pane === null && <Empty text="Reading the pane…" />}
                       {pane !== null && "error" in pane && (
                         <Empty
                           text={`This pane could not be read: ${safe(pane.error)}`}

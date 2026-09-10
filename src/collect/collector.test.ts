@@ -473,12 +473,15 @@ test("one tmux read resolves every lane's pane, however many lanes there are", a
     probe: () => null,
     panes: async () => {
       reads++;
-      return new Map(
-        Array.from({ length: 12 }, (_, i) => [
-          `%${i}`,
-          { address: `vsys:${i}.1`, window: `w-${i}` },
-        ]),
-      );
+      return {
+        socket: "/tmp/tmux-1000/default",
+        byId: new Map(
+          Array.from({ length: 12 }, (_, i) => [
+            `%${i}`,
+            { address: `vsys:${i}.1`, window: `w-${i}` },
+          ]),
+        ),
+      };
     },
   });
   const s = await collector.sample(1000);
@@ -503,7 +506,7 @@ test("no tmux server means no addresses and no read attempted", async () => {
     probe: () => ({ failure: "incomplete", detail: "no server running" }),
     panes: async () => {
       reads++;
-      return new Map();
+      return { socket: "", byId: new Map() };
     },
   });
   const s = await collector.sample(1000);

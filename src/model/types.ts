@@ -148,6 +148,12 @@ export interface Lane {
    */
   address: string;
   window: string;
+  /**
+   * The pane belongs to a tmux server this vsys is not talking to, so its
+   * handle names a different pane here. True only when both servers are known
+   * and differ.
+   */
+  elsewhere: boolean;
   title: string;
   cwd: string;
   branch: string;

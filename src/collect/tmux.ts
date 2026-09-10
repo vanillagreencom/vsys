@@ -99,9 +99,22 @@ async function run(argv: string[]): Promise<string> {
     throw new Error(error.trim() || `${argv[0]} exited ${status}`);
   return out;
 }
+/**
+ * The socket path of the server this vsys talks to. tmux exports `TMUX` as
+ * `socket,pid,session`, and its first field is the server. Empty when vsys is
+ * outside tmux, which means the default socket rather than a known one.
+ */
+export const serverSocket = (): string =>
+  (process.env.TMUX ?? "").split(",")[0] ?? "";
+/** Every pane one server holds, and which server that was. */
+export interface PaneSet {
+  /** Empty when vsys is outside tmux, which is not the same as knowing. */
+  socket: string;
+  byId: Map<string, PaneAddress>;
+}
 /** Every pane the server holds, in one call however many lanes ask for one. */
-export async function readPanes(): Promise<Map<string, PaneAddress>> {
-  return parsePanes(await run(listPanesArgv));
+export async function readPanes(): Promise<PaneSet> {
+  return { socket: serverSocket(), byId: parsePanes(await run(listPanesArgv)) };
 }
 /** The last lines that pane drew. A pane that has gone away throws its reason. */
 export async function capturePane(paneId: string): Promise<string[]> {

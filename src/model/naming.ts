@@ -37,6 +37,14 @@ export function accountName(
 export function paneName(main: Proc | undefined, c: CollectionConfig): string {
   return firstEnv(main, c.paneEnv) ?? "";
 }
+/**
+ * The tmux server the pane belongs to, from the `TMUX` its own shell carries.
+ * Empty when the process exported none, which is not a claim about which
+ * server it is.
+ */
+export function paneSocket(main: Proc | undefined): string {
+  return (firstEnv(main, ["TMUX"]) ?? "").split(",")[0] ?? "";
+}
 export function windowTitle(
   main: Proc | undefined,
   c: CollectionConfig,

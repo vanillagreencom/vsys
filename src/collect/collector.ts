@@ -12,7 +12,7 @@ import { ProcessCollector } from "./procs";
 import { SccacheCollector } from "./sccache";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
-import { type PaneAddress, readPanes } from "./tmux";
+import { type PaneSet, readPanes } from "./tmux";
 
 /**
  * Reading the tmux server: the probe that decides the capability, and the one
@@ -22,7 +22,7 @@ import { type PaneAddress, readPanes } from "./tmux";
  */
 export interface TmuxReader {
   probe: () => Outcome;
-  panes: () => Promise<Map<string, PaneAddress>>;
+  panes: () => Promise<PaneSet>;
 }
 const noTmux: Outcome = {
   failure: "absent",
@@ -125,7 +125,7 @@ export class Collector {
     // One read for the whole server, however many lanes ask for an address.
     // A server that stops answering mid-run leaves the addresses empty rather
     // than failing the sample: a pane address is a convenience, not a reading.
-    let panes: Map<string, PaneAddress> | undefined;
+    let panes: PaneSet | undefined;
     if (
       this.tmux &&
       this.capabilities.some((cap) => cap.id === "tmux" && cap.available)
@@ -144,7 +144,7 @@ export class Collector {
       groups,
       procs,
       storage,
-      lanes: lanes(groups, procs, c, system.cores, panes),
+      lanes: lanes(groups, procs, c, system.cores, panes?.byId, panes?.socket),
       alerts: [],
       errors: r.errors,
       ...(sccache ? { sccache } : {}),
