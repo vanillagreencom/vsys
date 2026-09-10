@@ -246,6 +246,7 @@ export function Resources({
         items={rows}
         selected={selected}
         height={listHeight}
+        onSelect={setSelected}
         empty="No resource group could be read."
         render={(g, i, isSelected) => {
           const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;

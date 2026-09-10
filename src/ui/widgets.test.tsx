@@ -7,6 +7,7 @@ import {
   gapRuns,
   Line,
   List,
+  listWindow,
   nextDown,
   Row,
   tilesPerRow,
@@ -187,4 +188,26 @@ test("tiles wrap rather than squeeze their captions together", () => {
       width,
       perRow: expected,
     });
+});
+
+test("a windowed list shows the rows it has room for, around the selection", () => {
+  const rows: [number, number, number, [number, number]][] = [
+    // count, selected, height, [start, end)
+    [40, 0, 24, [0, 23]],
+    [40, 39, 24, [17, 40]],
+    [40, 20, 24, [9, 32]],
+    // Fewer rows than the height: every one, and no window to slide.
+    [5, 0, 24, [0, 5]],
+    [5, 4, 24, [0, 5]],
+    // A terminal with no room still shows one row rather than none.
+    [40, 10, 1, [10, 11]],
+    [0, 0, 24, [0, 0]],
+  ];
+  for (const [count, selected, height, [start, end]] of rows)
+    expect({
+      count,
+      selected,
+      height,
+      at: listWindow(count, selected, height),
+    }).toEqual({ count, selected, height, at: { start, end } });
 });

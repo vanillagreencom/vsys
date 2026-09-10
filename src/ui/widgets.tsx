@@ -192,6 +192,7 @@ export function Tile({
   chart,
   chartColor,
   width,
+  onOpen,
 }: {
   label: string;
   value: string;
@@ -206,6 +207,8 @@ export function Tile({
   chartColor?: RGBA;
   /** The tile's own columns, filled in by `Tiles`. A cut then ends in a mark. */
   width?: number;
+  /** Opens whatever the tile stands for; the same target its key reaches. */
+  onOpen?: () => void;
 }) {
   // Cutting a sentence with no mark leaves `of one core · 12.3% of the`, which
   // reads as a sentence rather than as one that ran out of room.
@@ -217,6 +220,7 @@ export function Tile({
       flexBasis={0}
       minWidth={0}
       overflow="hidden"
+      onMouseDown={onOpen}
     >
       <Line
         height={1}
@@ -359,8 +363,28 @@ export function nextDown(count: number, index: number): number {
 }
 
 /**
+ * The rows a windowed list shows, as a half-open range. A caller that has to
+ * fetch something per visible row reads this rather than repeating the
+ * arithmetic, so what it fetches and what the list draws cannot disagree.
+ */
+export function listWindow(
+  count: number,
+  selected: number,
+  height: number,
+  rowHeight = 1,
+): { start: number; end: number } {
+  if (count < 1) return { start: 0, end: 0 };
+  const rows = Math.max(1, Math.floor((height - 1) / rowHeight));
+  const start = Math.max(
+    0,
+    Math.min(selected - Math.floor(rows / 2), count - rows),
+  );
+  return { start, end: Math.min(count, start + rows) };
+}
+/**
  * A list windowed to the rows it has. Selection owns paging: the selected row
- * stays in view and the viewport never moves on its own.
+ * stays in view and the viewport never moves on its own. The wheel moves the
+ * selection rather than the viewport, for the same reason.
  */
 export function List<T>({
   items,
@@ -369,6 +393,7 @@ export function List<T>({
   rowHeight = 1,
   render,
   empty,
+  onSelect,
 }: {
   items: T[];
   selected: number;
@@ -376,20 +401,30 @@ export function List<T>({
   rowHeight?: number;
   render: (item: T, index: number, selected: boolean) => ReactNode;
   empty: string;
+  /** Given, the wheel moves the selection one row per notch. */
+  onSelect?: (index: number) => void;
 }) {
   if (!items.length) return <Empty text={empty} />;
-  const count = Math.max(1, Math.floor((height - 1) / rowHeight));
-  const start = Math.max(
-    0,
-    Math.min(selected - Math.floor(count / 2), items.length - count),
-  );
-  const end = Math.min(items.length, start + count);
+  const { start, end } = listWindow(items.length, selected, height, rowHeight);
   return (
-    <box flexDirection="column" flexShrink={0}>
+    <box
+      flexDirection="column"
+      flexShrink={0}
+      onMouseScroll={
+        onSelect &&
+        ((event) => {
+          const up = event.scroll?.direction === "up";
+          if (!up && event.scroll?.direction !== "down") return;
+          onSelect(
+            Math.max(0, Math.min(items.length - 1, selected + (up ? -1 : 1))),
+          );
+        })
+      }
+    >
       {items
         .slice(start, end)
         .map((item, i) => render(item, start + i, start + i === selected))}
-      {items.length > count && (
+      {items.length > end - start && (
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
           {`${start + 1}–${end} of ${items.length}`}
         </Line>

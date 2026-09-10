@@ -171,6 +171,7 @@ export function Builds({
           items={rows}
           selected={selected}
           height={Math.max(3, Math.floor((height - 8) / 2))}
+          onSelect={setSelected}
           empty=""
           render={(row, i, isSelected) => (
             <Row

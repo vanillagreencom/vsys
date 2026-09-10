@@ -82,13 +82,25 @@ async function mount(
     await ui.renderOnce();
   };
   const frame = () => ui.captureCharFrame();
+  const wheel = async (x: number, y: number, way: "up" | "down") => {
+    await act(async () => {
+      await ui.mockMouse.scroll(x, y, way);
+    });
+    await ui.renderOnce();
+  };
+  const click = async (x: number, y: number) => {
+    await act(async () => {
+      await ui.mockMouse.click(x, y);
+    });
+    await ui.renderOnce();
+  };
   const close = async () => {
     await act(async () => {
       ui.renderer.destroy();
     });
     h.close();
   };
-  return { ui, h, press, frame, close, written, update };
+  return { ui, h, press, frame, wheel, click, close, written, update };
 }
 
 test("keys and the mouse move between tabs, open an agent, and quit", async () => {
@@ -612,7 +624,9 @@ test("a narrow terminal gives the tabs their own row and drops the wait column",
     const frame = wide.frame();
     expect(frame.split("\n")[0]).toContain("2 Agents");
     // The heading names the column, so the cell carries only the reading.
-    expect(frame).toMatch(/Agent\s+Program\s+CPU\s+Memory\s+Wait\s+State/);
+    expect(frame).toMatch(
+      /Agent\s+Program\s+CPU\s+Trend\s+Memory\s+Wait\s+State/,
+    );
     expect(frame).toContain("12.0%");
   } finally {
     await wide.close();
@@ -2622,4 +2636,221 @@ test("Storage draws two filesystems that report one device", async () => {
   // ours to choose. This render still draws both, so the diagnostic is the only
   // place the collision is stated, and the test reads it rather than the frame.
   expect(logged.filter((line) => /same key/i.test(line))).toEqual([]);
+});
+
+/** A history that records which lane series were asked for. */
+function countingHistory(c: Config, s: Snapshot) {
+  const h = new History(c);
+  h.add(s);
+  const asked: string[] = [];
+  const real = h.laneWindow.bind(h);
+  h.laneWindow = async (id: string, end: number, durationMs: number) => {
+    asked.push(id);
+    return real(id, end, durationMs);
+  };
+  return { h, asked };
+}
+
+test("a long list reads the history of the rows on screen and no others", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // Forty lanes, descending by CPU, so the order on screen is known.
+  s.lanes = Array.from({ length: 40 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}`, name: `lane-${i}`, cpu: 100 - i }),
+  );
+  s.groups = [groupSnapshot()];
+  const { h, asked } = countingHistory(c, s);
+  // Wide enough for the trend column: the read exists to draw it.
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    expect(t.frame()).toContain("Trend");
+    // The claim is about reads, not about pixels: a change that widened the
+    // read would draw the same rows and pass a test that only looked at them.
+    // The expectation is the rows actually on screen, so no layout arithmetic
+    // is copied here to drift from the screen's own.
+    const onScreen = () => new Set(t.frame().match(/lane-\d+/g) ?? []);
+    const shown = onScreen();
+    expect(shown.size).toBeGreaterThan(0);
+    expect(shown.size).toBeLessThan(s.lanes.length);
+    expect([...asked].sort()).toEqual([...shown].sort());
+    // No series is read twice, and a new sample reads none: the loaded set is
+    // keyed by lane and window, so a refresh does not reach the store.
+    expect(asked.length).toBe(new Set(asked).size);
+    const before = asked.length;
+    await t.update({ ...s, time: s.time + 1000 });
+    await t.update({ ...s, time: s.time + 2000 });
+    expect(asked.length).toBe(before);
+    // Scrolling reads what scrolling revealed, and nothing above it.
+    for (let i = 0; i < shown.size; i++) await t.press("j");
+    const revealed = onScreen();
+    expect(new Set(asked).size).toBeGreaterThan(shown.size);
+    for (const id of asked)
+      expect(shown.has(id) || revealed.has(id)).toBe(true);
+    // Scrolling one row into view reads that row, not the whole window again:
+    // the rows already read stay read.
+    expect(asked.length).toBe(new Set(asked).size);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a series that arrives after the next sample still draws", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: "lane-0", name: "lane-0", cpu: 100 })];
+  s.groups = [groupSnapshot()];
+  const h = new History(c);
+  h.add(s);
+  const real = h.laneWindow.bind(h);
+  // A store with real history answers in its own time. This one answers only
+  // when the test says so, after further samples have arrived.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  h.laneWindow = async (id: string, end: number, durationMs: number) => {
+    const samples = await real(id, end, durationMs);
+    await held;
+    return samples;
+  };
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    // Two samples land while the read is still out.
+    await t.update({ ...s, time: s.time + 1000 });
+    await t.update({ ...s, time: s.time + 2000 });
+    // The gap glyph belongs to the trend alone: the bar draws blocks and
+    // dashes, so finding it proves the series reached the row.
+    expect(selectedRow(t.frame())).not.toContain("···");
+    release();
+    await t.update({ ...s, time: s.time + 3000 });
+    expect(selectedRow(t.frame())).toContain("···");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a series that never answers does not blank the other rows", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "lane-0", name: "lane-0", cpu: 100 }),
+    laneSnapshot({ id: "lane-1", name: "lane-1", cpu: 50 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const h = new History(c);
+  h.add(s);
+  const real = h.laneWindow.bind(h);
+  h.laneWindow = async (id: string, end: number, durationMs: number) =>
+    id === "lane-1"
+      ? await new Promise<never>(() => {})
+      : await real(id, end, durationMs);
+  // Wide enough for the trend, narrow enough to keep the side pane away, so a
+  // row is the only place its lane's name appears.
+  const t = await mount(s, c, { width: 120, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    await t.update({ ...s, time: s.time + 1000 });
+    const row = (name: string) =>
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes(name)) ?? "";
+    // The gap glyph belongs to the trend alone: the bar draws blocks and
+    // dashes, so finding it proves the series reached the row.
+    expect(row("lane-0")).toContain("···");
+    expect(row("lane-1")).not.toContain("···");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a narrow list keeps the name and drops the trend", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // Names that only differ at their end, so a name cut short would leave the
+  // rows indistinguishable.
+  s.lanes = Array.from({ length: 6 }, (_, i) =>
+    laneSnapshot({
+      id: `lane-${i}`,
+      name: `.hclaude claude ken-13${10 + i}`,
+      cpu: 100 - i,
+    }),
+  );
+  s.groups = [groupSnapshot()];
+  const { h, asked } = countingHistory(c, s);
+  const t = await mount(s, c, { width: 100, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    const frame = t.frame();
+    expect(frame).not.toContain("Trend");
+    // The name arrives whole, so one row can be told from the next.
+    expect(frame).toContain(".hclaude claude ken-1310");
+    expect(frame).toContain(".hclaude claude ken-1315");
+    // A column that is not drawn is not read for either.
+    expect(asked).toEqual([]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the wheel moves the selection by one row", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = Array.from({ length: 12 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}`, name: `lane-${i}`, cpu: 100 - i }),
+  );
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 24 });
+  try {
+    await t.press("2");
+    expect(selectedRow(t.frame())).toContain("lane-0");
+    // One notch down is one row down, not a viewport jump.
+    await t.wheel(10, 8, "down");
+    expect(selectedRow(t.frame())).toContain("lane-1");
+    await t.wheel(10, 8, "down");
+    expect(selectedRow(t.frame())).toContain("lane-2");
+    await t.wheel(10, 8, "up");
+    expect(selectedRow(t.frame())).toContain("lane-1");
+    // The selection stops at the ends rather than wrapping.
+    for (let i = 0; i < 4; i++) await t.wheel(10, 8, "up");
+    expect(selectedRow(t.frame())).toContain("lane-0");
+  } finally {
+    await t.close();
+  }
+});
+
+test("clicking a tile opens the screen its key opens", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a" })];
+  s.groups = [groupSnapshot()];
+  // The click lands on the same target the arrow keys reach, because both
+  // read `meterView`. The tile is found by its own caption, so the test does
+  // not repeat the layout's arithmetic.
+  const rows: [string, string][] = [
+    ["CPU wait", "Groups"],
+    ["Memory", "Groups"],
+    ["Disk wait", "Written since boot"],
+    ["Builds", "Lanes building"],
+  ];
+  for (const [label, lands] of rows) {
+    const t = await mount(s, c, { width: 160, height: 30 });
+    try {
+      await t.press("1");
+      const lines = t.frame().split("\n");
+      const row = lines.findIndex(
+        (line) => line.includes("CPU wait") && line.includes("Builds"),
+      );
+      expect(row).toBeGreaterThan(-1);
+      await t.click(lines[row].indexOf(label), row);
+      expect({ label, on: t.frame().includes(lands) }).toEqual({
+        label,
+        on: true,
+      });
+    } finally {
+      await t.close();
+    }
+  }
 });
