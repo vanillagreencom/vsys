@@ -429,7 +429,7 @@ test("a series that never answers does not blank the other rows", async () => {
       : await real(id, end, durationMs);
   // Wide enough for the trend, narrow enough to keep the side pane away, so a
   // row is the only place its lane's name appears.
-  const t = await mount(s, c, { width: 120, height: 24 }, { history: h });
+  const t = await mount(s, c, { width: 140, height: 24 }, { history: h });
   try {
     await t.press("2");
     await t.update({ ...s, time: s.time + 1000 });
@@ -1036,26 +1036,158 @@ test("a tile in a narrow pane marks its cut instead of stopping mid-word", async
 test("when the row cannot hold both, the address stays and the trend goes", async () => {
   const c = defaults();
   const s = sameWorktree(true);
-  // Wide enough for the name, the address and the trend together.
-  const wide = await mount(s, c, { width: 200, height: 24 });
-  try {
-    await wide.press("2");
-    expect(wide.frame()).toContain("Pane");
-    expect(wide.frame()).toContain("Trend");
-  } finally {
-    await wide.close();
+  // Below the width that puts a summary beside the list, so the terminal's
+  // width is the list's width. The trend goes first because its number is
+  // already in the CPU column; the two identity columns go last, because
+  // nothing else on the row says what they say.
+  const rows: [number, string[], string[]][] = [
+    [140, ["Pane", "PID", "Trend"], []],
+    [130, ["Pane", "PID"], ["Trend"]],
+    // The id outlasts the address: it is on every row, and it is what tells
+    // two lanes with one name apart.
+    [115, ["PID"], ["Pane", "Trend"]],
+    [100, [], ["Pane", "PID", "Trend"]],
+  ];
+  for (const [width, present, absent] of rows) {
+    const t = await mount(s, c, { width, height: 24 });
+    try {
+      await t.press("2");
+      const frame = t.frame();
+      for (const label of present)
+        expect({ width, label, on: frame.includes(label) }).toEqual({
+          width,
+          label,
+          on: true,
+        });
+      for (const label of absent)
+        expect({ width, label, on: frame.includes(label) }).toEqual({
+          width,
+          label,
+          on: false,
+        });
+      // Whatever went, the name is still whole: that is what the floor is for.
+      expect(frame).toContain("ken-1298");
+    } finally {
+      await t.close();
+    }
   }
-  // Narrower: one of the two has to go, and it is not the one that says which
-  // agent this is.
-  const tight = await mount(s, c, { width: 180, height: 24 });
+});
+
+test("a narrowing list sheds its columns in one stated order", async () => {
+  const c = defaults();
+  const s = sameWorktree(true);
+  // Below the width that puts a summary beside the list, so the terminal's
+  // width is the list's width. The trend goes first because its number is
+  // already in the CPU column; the two identity columns go last, because
+  // nothing else on the row says what they say.
+  const rows: [number, string[], string[]][] = [
+    [140, ["Pane", "PID", "Trend"], []],
+    [130, ["Pane", "PID"], ["Trend"]],
+    // The id outlasts the address: it is on every row, and it is what tells
+    // two lanes with one name apart.
+    [115, ["PID"], ["Pane", "Trend"]],
+    [100, [], ["Pane", "PID", "Trend"]],
+  ];
+  for (const [width, present, absent] of rows) {
+    const t = await mount(s, c, { width, height: 24 });
+    try {
+      await t.press("2");
+      const frame = t.frame();
+      for (const label of present)
+        expect({ width, label, on: frame.includes(label) }).toEqual({
+          width,
+          label,
+          on: true,
+        });
+      for (const label of absent)
+        expect({ width, label, on: frame.includes(label) }).toEqual({
+          width,
+          label,
+          on: false,
+        });
+      // Whatever went, the name is still whole: that is what the floor is for.
+      expect(frame).toContain("ken-1298");
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("two lanes with one name are told apart by the id column, not the name", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The same account, program and worktree: nothing in a name can separate
+  // these two, and nothing is appended to try.
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "ken-1298", mainPid: 4071, cpu: 20 }),
+    laneSnapshot({ id: "b", name: "ken-1298", mainPid: 9152, cpu: 10 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 140, height: 24 });
   try {
-    await tight.press("2");
-    expect(tight.frame()).toContain("Pane");
-    expect(tight.frame()).toContain("vsys:1.1");
-    expect(tight.frame()).not.toContain("Trend");
-    // The name is still whole, which is what the floor is there to protect.
-    expect(tight.frame()).toContain("ken-1298");
+    await t.press("2");
+    const frame = t.frame();
+    const rows = frame.split("\n").filter((line) => line.includes("ken-1298"));
+    expect(rows).toHaveLength(2);
+    // Every row carries its id, whether or not it shares a name.
+    expect(rows[0]).toContain("4071");
+    expect(rows[1]).toContain("9152");
+    // The name is the name: no row appends an id to it.
+    expect(frame).not.toContain("ken-1298 PID");
+    expect(frame).toMatch(/Agent\s+PID\s+Program/);
+    // The id is a column, so it scans: both ids sit at the same offset.
+    const at = (line: string) => line.indexOf("4071") + line.indexOf("9152");
+    expect(rows[0].indexOf("4071")).toBe(rows[1].indexOf("9152"));
+    expect(at(rows[0])).toBeGreaterThan(0);
   } finally {
-    await tight.close();
+    await t.close();
+  }
+});
+
+test("the id column is drawn for a lane that shares its name with nobody", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: "a", name: "lonely", mainPid: 1234 })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 140, height: 24 });
+  try {
+    await t.press("2");
+    const row =
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("lonely")) ?? "";
+    // An id that appeared only where two rows collided would read as
+    // arbitrary; it is on every row or it is on none.
+    expect(row).toContain("1234");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the Agents list marks the sorted heading and flips it with the direction", async () => {
+  const c = defaults();
+  const s = sameWorktree(true);
+  const t = await mount(s, c, { width: 140, height: 24 });
+  try {
+    await t.press("2");
+    const heading = () =>
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("Agent") && line.includes("Memory")) ??
+      "";
+    expect(heading()).toContain("↓ CPU");
+    await t.press(c.keys.reverse);
+    expect(heading()).toContain("↑ CPU");
+    // The heading moves with the sort key, and only one heading carries it.
+    await t.press(c.keys.sort);
+    const marked = heading()
+      .split(/\s{2,}/)
+      .filter((part) => part.includes("↑") || part.includes("↓"));
+    expect(marked).toHaveLength(1);
+    expect(marked[0]).not.toContain("CPU");
+  } finally {
+    await t.close();
   }
 });

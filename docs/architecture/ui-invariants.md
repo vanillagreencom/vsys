@@ -50,5 +50,9 @@ The properties the [UI behaviour](ui.md) document's boundaries rest on, each wit
 - Left and right move between a screen's regions and up and down stay inside one. `src/ui/regions.test.ts` pins the arithmetic against empty regions and both ends; `src/ui/home.test.tsx` walks all four Home regions and reads back which title is lit; `src/ui/storage-screen.test.tsx` walks its three.
 - Every line that expands under another carries the rule and the indent. `src/ui/home.test.tsx`, `src/ui/settings-screen.test.tsx`, `src/ui/storage-screen.test.tsx` and `src/ui/agent.test.tsx` check one site each.
 - A held order keeps its rows while their numbers move, drops a lane that ended, refuses a lane that climbed, and is released by leaving the screen. `src/ui/home.test.tsx` swaps the readings under a hold and reads the rows back.
+- No name carries a disambiguator, and every row carries its process id. `src/model/lanes.test.ts` checks two lanes that resolve to one name; `src/ui/agents.test.tsx` checks that both rows draw their ids at the same offset and that a lane sharing its name with nobody draws one too.
+- A narrowing list sheds trend, then the id, then the pane, and never the name. `src/ui/agents.test.tsx` checks four widths.
+- The sorted heading carries its direction and moves with the sort key. `src/ui/home.test.tsx` drives it from the keyboard on Home; `src/ui/agents.test.tsx` checks the Agents list and that only one heading is marked.
+- A cut row ends in its mark. `src/ui/home.test.tsx` checks a change subject longer than any column it could be given, at two widths.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.

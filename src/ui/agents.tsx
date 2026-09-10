@@ -9,7 +9,13 @@ import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
 import { Agent, AgentSummary } from "./agent";
 import { narrowWidth, wideWidth } from "./chrome";
-import { type Column, cell, columnGap, columnsWidth } from "./columns";
+import {
+  type Column,
+  cell,
+  columnGap,
+  columnsWidth,
+  sortedLabel,
+} from "./columns";
 import {
   amount,
   blockedText,
@@ -106,6 +112,19 @@ export function tableColumn(name: string): Column {
     align: Object.hasOwn(numericColumns, name) ? "right" : undefined,
   };
 }
+/**
+ * The list heading a stored sort column appears under. The table draws every
+ * column, so it needs no table; the list draws a few, and a sort on one it
+ * does not draw simply marks no heading.
+ */
+const listHeading: Record<string, string> = {
+  name: "Agent",
+  tool: "Program",
+  cpu: "CPU",
+  rss: "Memory",
+  pressure: "Wait",
+  state: "State",
+};
 /** The columns a row's trend sparkline takes. */
 export const trendWidth = 12;
 /**
@@ -505,34 +524,51 @@ export function Agents({
   // spare the columns: a name cut back to its account tells one row from the
   // next by nothing at all, which costs the reader more than a trend gains.
   const nameFloor = 24;
-  // `laneNameParts` listing `pane` no longer composes anything into the name:
-  // `%9` is a server handle a reader cannot place. It selects this column
-  // instead, so a stored config keeps loading and the setting keeps meaning.
-  const showAddress =
-    !narrow &&
-    c.laneNameParts.includes("pane") &&
-    lanes.some((lane) => lane.address !== "");
-  const readingsWith = (trend: boolean): Column[] => [
-    ...(showAddress ? [{ label: "Pane", width: 12 }] : []),
+  // Three columns are optional, and a narrow list sheds them in this order
+  // until the name has its floor back. The trend goes first, because its own
+  // number is already in the CPU column beside it. The pane address goes next:
+  // it says more than an id, but only for lanes inside the tmux server vsys
+  // reads. The process id goes last, because it is on every row and it is what
+  // tells two lanes with one name apart. A name cut back to its account tells
+  // one row from the next by nothing at all, which is what the floor protects.
+  const optional = ["Trend", "Pane", "PID"] as const;
+  const wanted: Record<(typeof optional)[number], boolean> = {
+    Trend: !narrow,
+    PID: !narrow,
+    // `laneNameParts` listing `pane` composes nothing into the name: `%9` is a
+    // server handle a reader cannot place. It selects this column instead, so
+    // a stored config keeps loading and the setting keeps its meaning.
+    Pane:
+      !narrow &&
+      c.laneNameParts.includes("pane") &&
+      lanes.some((lane) => lane.address !== ""),
+  };
+  const readingsWith = (shown: Set<string>): Column[] => [
+    ...(shown.has("Pane") ? [{ label: "Pane", width: 12 }] : []),
+    ...(shown.has("PID")
+      ? [{ label: "PID", width: 8, align: "right" as const }]
+      : []),
     ...(narrow ? [] : [{ label: "Program", width: 9 }]),
     { label: "", width: 10 },
     { label: "CPU", width: 7, align: "right" as const },
-    ...(trend ? [{ label: "Trend", width: trendWidth }] : []),
+    ...(shown.has("Trend") ? [{ label: "Trend", width: trendWidth }] : []),
     { label: "Memory", width: 10, align: "right" as const },
     ...(narrow ? [] : [{ label: "Wait", width: 11, align: "right" as const }]),
   ];
-  const roomWith = (trend: boolean) =>
+  const roomWith = (shown: Set<string>) =>
     listWidth -
     margins -
-    columnsWidth(readingsWith(trend)) -
+    columnsWidth(readingsWith(shown)) -
     columnGap.length * 2 -
     stateFloor;
-  // When both cannot fit, the trend goes and the address stays: the address is
-  // identity nothing else on the row carries, while the trend's own number is
-  // already in the CPU column beside it.
-  const showTrend = !narrow && roomWith(true) >= nameFloor;
-  const readings = readingsWith(showTrend);
-  const spare = roomWith(showTrend);
+  const showing = new Set(optional.filter((label) => wanted[label]));
+  for (const label of optional) {
+    if (roomWith(showing) >= nameFloor) break;
+    showing.delete(label);
+  }
+  const showTrend = showing.has("Trend");
+  const readings = readingsWith(showing);
+  const spare = roomWith(showing);
   const measured: Column[] = [
     { label: "Agent", width: Math.max(12, Math.min(36, spare)) },
     ...readings,
@@ -700,7 +736,7 @@ export function Agents({
                       >
                         {cell(
                           column,
-                          `${column.label}${sorted ? (c.descending ? " ↓" : " ↑") : ""}`,
+                          sortedLabel(column, sorted, c.descending),
                         )}
                       </Line>
                     );
@@ -735,7 +771,15 @@ export function Agents({
           </scrollbox>
         ) : (
           <>
-            {lanes.length > 0 && <TableHeader columns={laneColumns} />}
+            {lanes.length > 0 && (
+              <TableHeader
+                columns={laneColumns}
+                sort={{
+                  label: listHeading[c.sort] ?? "",
+                  descending: c.descending,
+                }}
+              />
+            )}
             <List
               items={lanes}
               selected={selected}
@@ -759,9 +803,17 @@ export function Agents({
                     }}
                   >
                     {safe(cell(nameColumn, lane.name))}
-                    {showAddress && (
+                    {showing.has("Pane") && (
                       <span attributes={ui.dim}>
                         {`${columnGap}${safe(cell(laneColumn("Pane"), lane.address))}`}
+                      </span>
+                    )}
+                    {showing.has("PID") && (
+                      // Every row, not only the ones that would collide: an id
+                      // that appears on some rows and not others reads as
+                      // arbitrary rather than as identity.
+                      <span attributes={ui.dim}>
+                        {`${columnGap}${cell(laneColumn("PID"), lane.mainPid ? String(lane.mainPid) : "")}`}
                       </span>
                     )}
                     {!narrow && (

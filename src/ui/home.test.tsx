@@ -1017,3 +1017,85 @@ test("up and down stay inside the region in focus", async () => {
     await t.close();
   }
 });
+
+test("Busiest agents sorts from its own headings, and the heading says which", async () => {
+  const c = defaults();
+  const s = twoAgents(true);
+  const t = await mount(s, c, { width: 160, height: 30 });
+  try {
+    await t.press("1");
+    const heading = () =>
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("Agent") && line.includes("Memory")) ??
+      "";
+    const agentRows = () =>
+      t
+        .frame()
+        .split("\n")
+        .filter((line) => /lane-[ab]/.test(line));
+    // It opens sorted by CPU, largest first, and the heading says so.
+    expect(heading()).toContain("↓ CPU");
+    expect(agentRows()[0]).toContain("lane-a");
+    // The direction flips, the marker flips with it, and the rows follow.
+    await t.press(c.keys.reverse);
+    expect(heading()).toContain("↑ CPU");
+    expect(agentRows()[0]).toContain("lane-b");
+    // The sort key moves to the next heading this screen actually draws.
+    await t.press(c.keys.sort);
+    expect(heading()).toContain("Memory");
+    expect(heading()).not.toContain("CPU ↑");
+    expect(heading()).not.toContain("↑ CPU");
+    // Round the four headings and back to where it started.
+    for (let i = 0; i < 3; i++) await t.press(c.keys.sort);
+    expect(heading()).toContain("↑ CPU");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a change row cuts with a mark, at any width, and its columns line up", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const change = emptySnapshot(2000);
+  // A subject longer than any column it could be given, so it has to be cut
+  // at both widths and the cut is what is under test.
+  change.lanes = [
+    laneSnapshot({
+      id: "a",
+      name: `lane-${"long-".repeat(40)}end`,
+    }),
+  ];
+  h.add(change);
+  const latest = { ...change, time: 3000 };
+  h.add(latest);
+  for (const width of [120, 180]) {
+    const t = await mount(latest, c, { width, height: 30 }, { history: h });
+    try {
+      await t.press("1");
+      const rows = t
+        .frame()
+        .split("\n")
+        .filter((line) => /Lane started/.test(line));
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        // The subject was cut, and it says so. A row that simply stopped
+        // mid-word leaves a reader guessing whether that was the whole name.
+        const upTo = row.slice(0, row.search(/\s{2,}\S*$/) + 1) || row;
+        expect({ width, tail: row.trimEnd().slice(-8) }).toEqual({
+          width,
+          tail: expect.stringContaining("…") as unknown as string,
+        });
+        expect(upTo.length).toBeGreaterThan(0);
+      }
+      // The kind starts at the same column on every row, which is what makes
+      // three rows scan as three rows.
+      const at = rows.map((row) => row.indexOf("Lane started"));
+      expect(new Set(at).size).toBe(1);
+    } finally {
+      await t.close();
+    }
+  }
+});
