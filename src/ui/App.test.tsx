@@ -3265,3 +3265,128 @@ test("a sample inside a bucket does not slide the drawn window", async () => {
     await t.close();
   }
 });
+
+test("a list the reader has not finished says why it was not saved", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "agent programs") await t.press(ch);
+    await t.press("enter");
+    // The row this opens holds a list, which is the kind whose grammar the
+    // text box deliberately lets a reader half-type.
+    await t.press("enter");
+    expect(t.frame()).toContain("Enter saves");
+    // A bracket appended to the list already in the box: the reader has typed
+    // something the grammar does not accept, which is the case this editor
+    // exists to keep them from having to think about.
+    await t.press("]");
+    await t.press("enter");
+    // Something reaches the reader. Silence here is the failure: the editor
+    // exists so nobody needs to know the grammar, and this is the one place
+    // the grammar still shows.
+    // Something reaches the reader, and it is the parser's complaint rather
+    // than silence. Evaluated outside the guard the throw escaped `save`, so
+    // Enter did nothing and said nothing on the one screen built so a reader
+    // need not know the grammar.
+    const frame = t.frame();
+    expect(frame).toContain("Failed to parse");
+    // And nothing was saved: the notice is the whole of what happened.
+    expect(frame).not.toContain("Agent programs saved");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a picker keeps its choice on the screen on a short terminal", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // Short enough that the options cannot all be drawn at once.
+  const t = await mount(s, c, { width: 140, height: 16 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "sort column") await t.press(ch);
+    await t.press("enter");
+    await t.press("enter");
+    const options = [...choices.sort];
+    // What the fixture must hold: more options than the terminal has rows, so
+    // a picker drawing them all runs off the bottom.
+    expect(options.length).toBeGreaterThan(16);
+    // The list row under the picker stays marked, so the picker's own choice
+    // is the last marked line rather than the first.
+    const chosen = () =>
+      t
+        .frame()
+        .split("\n")
+        .filter((l) => l.includes("▍"))
+        .at(-1) ?? "";
+    // It opens on the value the setting holds, not on the first option.
+    const from = options.indexOf(c.sort);
+    expect(from).toBeGreaterThan(-1);
+    expect(chosen()).toContain(options[from]);
+    // Walk to the last option. Every step keeps the choice on the screen;
+    // drawn in full it left the viewport and the rest were chosen blind.
+    for (let i = from + 1; i < options.length; i++) {
+      await t.press("j");
+      expect({ i, on: chosen().includes(options[i]) }).toEqual({ i, on: true });
+    }
+  } finally {
+    await t.close();
+  }
+});
+
+test("search does not open behind a picker", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "sort column") await t.press(ch);
+    await t.press("enter");
+    await t.press("enter");
+    const options = [...choices.sort];
+    const chosen = () =>
+      t
+        .frame()
+        .split("\n")
+        .filter((l) => l.includes("▍"))
+        .at(-1) ?? "";
+    const from = options.indexOf(c.sort);
+    expect(chosen()).toContain(options[from]);
+    // The find key inside a picker. It used to open search, reset the
+    // selection and leave the picker running unseen, swallowing every key.
+    await t.press("/");
+    expect(t.frame()).not.toContain("Find a setting");
+    // The picker is still what receives keys, which is what the reader needs:
+    // the next arrow moves the choice rather than a list they cannot see.
+    await t.press("j");
+    expect(chosen()).toContain(options[from + 1]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a query that matches no setting leaves no row selected", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "zzzz") await t.press(ch);
+    // The capability rows are listed whatever the filter says, so there are
+    // rows on the screen; none of them is what the reader asked for.
+    expect(t.frame()).toContain("Data sources");
+    // Nothing is highlighted, and Enter opens nothing.
+    expect(selectedRow(t.frame())).toBe("");
+    await t.press("enter");
+    expect(t.frame()).not.toContain("Enter saves");
+    expect(selectedRow(t.frame())).toBe("");
+  } finally {
+    await t.close();
+  }
+});

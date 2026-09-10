@@ -1,6 +1,6 @@
 # Settings and the runtime
 
-Covers: src/config/ src/collect/settings.ts src/runtime.ts
+Covers: src/config/ src/collect/settings.ts src/runtime.ts src/ui/settings-screen.tsx
 
 Settings are validated before they reach a running dashboard. The runtime replaces the collector, the history store or neither, depending on which settings changed. A capability is a system interface a reading needs, probed once at start.
 
@@ -22,3 +22,5 @@ Settings are validated before they reach a running dashboard. The runtime replac
 - Collection does not overlap itself when settings change. `src/runtime.test.ts` controls an in-flight source and checks rescheduling.
 - Failed settings writes preserve active history. `src/runtime.test.ts` checks replacement failure.
 - Saving settings through a file link preserves the link. `src/config/config.test.ts` checks the target contents.
+- Every setting sits in exactly one group. `src/ui/settings-screen.test.ts` derives the expected set from the defaults.
+- The settings editor answers every Enter: a value the grammar rejects reaches the reader as the parser's complaint rather than as silence, a picker keeps its chosen option on the screen however long its list, search cannot open behind a picker, and a query matching no setting selects nothing rather than a row it did not match. `src/ui/App.test.tsx` checks all four from the keyboard.

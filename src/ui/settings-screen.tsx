@@ -113,12 +113,16 @@ export function Settings({
   // layout has been drawn.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the layout is a re-run trigger here, not a value the effect reads
   useEffect(() => {
-    const into = () =>
-      scroller.current?.scrollChildIntoView(`setting-${selected}`);
+    // While a picker is open the row the reader is moving is one of its
+    // options, not the setting it hangs under. `sort` offers more options than
+    // a short terminal has rows, so pointing this at the setting left every
+    // choice below the fold unreachable except blind.
+    const id = picking ? `choice-${choice}` : `setting-${selected}`;
+    const into = () => scroller.current?.scrollChildIntoView(id);
     into();
     const pending = setTimeout(into, 0);
     return () => clearTimeout(pending);
-  }, [selected, twoColumns, editing]);
+  }, [selected, twoColumns, editing, picking, choice]);
   /**
    * The row a query moves the highlight to. The capability rows are listed
    * whatever the filter says, so the first row of a filtered list is not the
@@ -127,10 +131,13 @@ export function Settings({
    */
   const firstMatch = (text: string) => {
     if (!text.trim()) return 0;
-    const at = settingItems(c, s.capabilities, text).findIndex(
+    // No match means no row: the capability rows are listed whatever the
+    // filter says, so falling back to the first row would put the highlight
+    // on one the query did not match and open its detail on Enter. `nextDown`
+    // takes -1 to the first visible row, so the arrows still work from here.
+    return settingItems(c, s.capabilities, text).findIndex(
       (item) => item.kind === "setting",
     );
-    return at >= 0 ? at : 0;
   };
   // A query can match nothing, so no row is selected and no row is rendered.
   const current: SettingItem | undefined = items[selected];
@@ -139,8 +146,14 @@ export function Settings({
    * all arrive here, so every kind is validated before it is saved and none can
    * grow a shorter path.
    */
-  async function save(key: string, parsed: unknown) {
+  async function save(key: string, read: () => unknown) {
     try {
+      // The value is produced inside the guard, not handed in already made.
+      // The text box takes half-typed TOML on purpose, so a list the reader
+      // has not finished throws here rather than parsing: evaluated at the
+      // call site it threw before this `try`, and Enter did nothing and said
+      // nothing on the one screen built so a reader need not know the grammar.
+      const parsed = read();
       const next = key.startsWith("keys.")
         ? { ...c, keys: { ...c.keys, [key.slice(5)]: parsed } }
         : { ...c, [key]: parsed };
@@ -167,7 +180,7 @@ export function Settings({
     const value = settingValue(c, item.key);
     const kind = editorKind(item.key, value);
     if (kind === "toggle") {
-      void save(item.key, !value);
+      void save(item.key, () => !value);
       return;
     }
     if (kind === "choice") {
@@ -181,7 +194,9 @@ export function Settings({
   };
   async function commit(text: string) {
     if (current?.kind !== "setting") return;
-    await save(current.key, editValue(settingValue(c, current.key), text));
+    await save(current.key, () =>
+      editValue(settingValue(c, current.key), text),
+    );
   }
   useScreenKeys((name, key) => {
     if (searching) {
@@ -193,7 +208,9 @@ export function Settings({
       }
       return true;
     }
-    if (name === c.keys.search && !editing) {
+    // A picker is modal. Opening search behind it left the picker running
+    // unseen, swallowing every key until the reader found Escape.
+    if (name === c.keys.search && !editing && !picking) {
       key.preventDefault();
       setSearching(true);
       setSelected(0);
@@ -207,7 +224,7 @@ export function Settings({
       else if (name === c.keys.up || name === "up")
         setChoice((i) => Math.max(0, i - 1));
       else if (name === c.keys.open && current.kind === "setting")
-        void save(current.key, picking[choice]);
+        void save(current.key, () => picking[choice]);
       return true;
     }
     if (editing) {
@@ -350,16 +367,17 @@ export function Settings({
             title={` ${settingLabel(key)} · ${keyLabel(c.keys.open)} saves · ${keyLabel(c.keys.back)} cancels `}
           >
             {picking.map((option, at) => (
-              <Row
-                key={option}
-                selected={at === choice}
-                onOpen={() => {
-                  setChoice(at);
-                  void save(key, option);
-                }}
-              >
-                {option}
-              </Row>
+              <box id={`choice-${at}`} key={option} flexShrink={0}>
+                <Row
+                  selected={at === choice}
+                  onOpen={() => {
+                    setChoice(at);
+                    void save(key, () => option);
+                  }}
+                >
+                  {option}
+                </Row>
+              </box>
             ))}
           </box>
         )}
