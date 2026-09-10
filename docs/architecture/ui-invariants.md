@@ -38,6 +38,7 @@ The properties the [UI behaviour](ui.md) document's boundaries rest on, each wit
 - Storage leads with bytes written, then filesystems, scrub reports and scratch. `src/ui/storage-screen.test.tsx` checks the order and a read-only mount; `src/ui/storage-screen.test.tsx` checks the selectable rows and the filesystem severity.
 - Every setting sits in exactly one group. `src/ui/settings-screen.test.tsx` derives the expected set from the defaults.
 - The Timeline change list names the cause of each change, takes one row per event, and stops at the rows the viewport has. `src/ui/timeline-screen.test.tsx` checks a lane start with an open alert, twelve events in a short terminal, and a 400-character subject.
-- A narrow terminal moves the tabs to their own row and drops the wait column; a short one drops the Timeline sparklines but keeps the change list. `src/ui/App.test.tsx` checks 80 columns.
+- A narrow terminal moves the tabs to their own row and drops the wait column. `src/ui/App.test.tsx` checks 80 columns.
+- A terminal too short for both the Timeline's cursor tiles and its change list drops the sparkline rows and keeps the list. `src/ui/timeline-screen.test.tsx` checks a viewport that cannot hold everything.
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
