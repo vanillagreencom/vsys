@@ -112,12 +112,18 @@ async function run(argv: string[]): Promise<string> {
   return out;
 }
 /**
- * The socket path of the server this vsys talks to. tmux exports `TMUX` as
- * `socket,pid,session`, and its first field is the server. Empty when vsys is
- * outside tmux, which means the default socket rather than a known one.
+ * Which tmux server this vsys talks to. tmux exports `TMUX` as
+ * `socket,serverpid,session`, and the first two fields name the server: every
+ * client of one server carries both alike, and only the session differs. The
+ * path alone would call a server that died and restarted on the default
+ * socket the same server, so a process still holding an old `%N` would have
+ * it resolved against panes that are not its own. Empty when vsys is outside
+ * tmux, which means the default socket rather than a known one.
  */
-export const serverSocket = (): string =>
-  (process.env.TMUX ?? "").split(",")[0] ?? "";
+export const serverSocket = (): string => serverPart(process.env.TMUX);
+/** The `socket,serverpid` of a `TMUX` value, and "" when there is none. */
+export const serverPart = (tmux: string | null | undefined): string =>
+  (tmux ?? "").split(",").slice(0, 2).join(",");
 /** Every pane one server holds, and which server that was. */
 export interface PaneSet {
   /** Empty when vsys is outside tmux, which is not the same as knowing. */

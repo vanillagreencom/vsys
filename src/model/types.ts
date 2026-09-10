@@ -142,9 +142,14 @@ export interface Lane {
   /** tmux pane address and window title, empty when the pane exported none. */
   pane: string;
   /**
-   * The pane resolved to `session:window.pane`, and the window's own name.
-   * Empty when tmux is absent, no server answers, or the pane has gone: the
-   * lane still acts through the raw `pane` handle, which never changes.
+   * The address a reader can type, `session:window.pane`. A `%N` handle is
+   * resolved to one by the server; anything else the pane exported is already
+   * an address and stands as it is, with no window name, which only the
+   * server holds. Empty when a handle resolved to nothing: no tmux, no server
+   * answering, the pane gone, or the handle belonging to another server. It
+   * is never a reading of whether tmux is there, because a configured address
+   * fills it with no tmux at all. The lane still acts through the raw `pane`
+   * handle, which never changes.
    */
   address: string;
   window: string;
