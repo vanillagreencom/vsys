@@ -1,5 +1,5 @@
 import type { Config } from "../config/config";
-import type { LaneCommand } from "../model/actions";
+import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
 import { ui } from "./theme";
 import { Line, Overlay } from "./widgets";
@@ -206,7 +206,7 @@ export function Confirm({
   command,
   config: c,
 }: {
-  command: LaneCommand;
+  command: LaneIntent;
   config: Config;
 }) {
   return (

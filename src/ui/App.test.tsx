@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
-import { act } from "react";
+import { act, useState } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
@@ -35,19 +35,32 @@ async function mount(
   // The clipboard escape goes to a stream the test reads back, standing in for
   // the process output stream the running program hands over.
   const written: string[] = [];
-  const ui = await testRender(
-    <App
-      snapshot={s}
-      history={h}
-      config={c}
-      onSave={hooks.onSave ?? (async () => {})}
-      onQuit={hooks.onQuit ?? (() => {})}
-      onExport={async () => "snapshot.json"}
-      onAction={hooks.onAction ?? (async () => {})}
-      output={{ write: (chunk: string) => written.push(chunk) }}
-    />,
-    size,
-  );
+  // Collection publishes a new snapshot into the mounted tree every tick, the
+  // way `mountScreen` does, so a test can let a sample land mid-interaction.
+  let publish: ((next: Snapshot) => void) | null = null;
+  function Mounted() {
+    const [current, setCurrent] = useState(s);
+    publish = setCurrent;
+    return (
+      <App
+        snapshot={current}
+        history={h}
+        config={c}
+        onSave={hooks.onSave ?? (async () => {})}
+        onQuit={hooks.onQuit ?? (() => {})}
+        onExport={async () => "snapshot.json"}
+        onAction={hooks.onAction ?? (async () => {})}
+        output={{ write: (chunk: string) => written.push(chunk) }}
+      />
+    );
+  }
+  const ui = await testRender(<Mounted />, size);
+  const update = async (next: Snapshot) => {
+    await act(async () => {
+      publish?.(next);
+    });
+    await ui.renderOnce();
+  };
   const press = async (key: string) => {
     await act(async () => {
       if (key === "enter") ui.mockInput.pressEnter();
@@ -68,7 +81,7 @@ async function mount(
     });
     h.close();
   };
-  return { ui, h, press, frame, close, written };
+  return { ui, h, press, frame, close, written, update };
 }
 
 test("keys and the mouse move between tabs, open an agent, and quit", async () => {
@@ -642,7 +655,7 @@ async function stopSelected(c: Config, calls: LaneCommand[]) {
   for (let i = 0; i < 3; i++) await t.press("j");
   await t.press("enter");
   for (let i = 0; i < 3; i++) await t.press("j");
-  return t;
+  return { ...t, snapshot: s };
 }
 const stopCommand = "systemctl --user kill --signal=TERM a.scope";
 
@@ -657,6 +670,29 @@ test("with write mode off an agent action is copy text and signals nothing", asy
     expect(t.frame()).not.toContain("Confirm");
     await t.press("y");
     expect(t.written).toEqual([osc52(stopCommand)]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a lane that changes under an open confirmation takes nothing", async () => {
+  const calls: LaneCommand[] = [];
+  const t = await stopSelected({ ...defaults(), writeMode: true }, calls);
+  try {
+    await t.press("enter");
+    expect(t.frame()).toContain("Stop a.scope?");
+    // Samples keep landing while the question stands. This one says the lane
+    // the reader confirmed is gone and another process holds its scope name.
+    await t.update({
+      ...t.snapshot,
+      lanes: [laneSnapshot({ mainPid: 41 })],
+    });
+    expect(t.frame()).toContain("Stop a.scope?");
+    await t.press("enter");
+    const frame = t.frame();
+    expect(frame).toContain("Another process holds a.scope now");
+    expect(frame).toContain("nothing ran");
+    expect(calls).toEqual([]);
   } finally {
     await t.close();
   }
@@ -700,6 +736,9 @@ test("with write mode on an agent action names its scope and waits for a yes", a
     expect(t.frame()).not.toContain("Stop a.scope?");
     expect(calls).toEqual([]);
     await t.press("enter");
+    // A sample landing under the question is the ordinary case: the lane is
+    // the same lane, so the confirmed line still runs.
+    await t.update({ ...t.snapshot, lanes: [laneSnapshot()] });
     await t.press("enter");
     expect(calls.map((command) => command.text)).toEqual([stopCommand]);
     expect(calls[0].effect).toEqual({

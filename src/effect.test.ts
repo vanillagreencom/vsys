@@ -17,7 +17,12 @@ function scopeDir() {
 test("a freeze and a thaw write their own value to the lane's cgroup", async () => {
   const d = scopeDir();
   try {
-    const target = { scope: "a.scope", directory: d.root };
+    const target = {
+      laneId: "agents.slice/a.scope",
+      mainPid: 40,
+      scope: "a.scope",
+      directory: d.root,
+    };
     const attribute = join(d.root, "cgroup.freeze");
     // The command the confirmation showed is the one that runs, so a wrong
     // value here is a lane frozen when the reader asked for it to be thawed.

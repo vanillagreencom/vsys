@@ -6,7 +6,12 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { keyName } from "../config/keys";
-import type { LaneCommand } from "../model/actions";
+import {
+  type LaneCommand,
+  type LaneIntent,
+  type LaneResolution,
+  resolveIntent,
+} from "../model/actions";
 import type { Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
@@ -70,6 +75,16 @@ export interface AppProps {
 }
 /** The views that show a past sample while one is pinned. */
 const pinnable: View[] = ["Agents", "Resources", "Builds", "Storage"];
+/** Why the line a reader confirmed is not the line the machine would run. */
+const stale: Record<
+  Exclude<LaneResolution["state"], "ready">,
+  (intent: LaneIntent) => string
+> = {
+  ended: (i) => `${i.scope} ended while the confirmation was open`,
+  replaced: (i) => `Another process holds ${i.scope} now`,
+  unaddressable: (i) => `${i.scope} is no longer a scope vsys can address`,
+  changed: (i) => `${i.scope} no longer runs the line you confirmed`,
+};
 const hints: Record<View, (c: Config) => [string, string][]> = {
   Home: (c) => [
     ["↑↓", "select"],
@@ -124,7 +139,7 @@ export function App({
   const [pinned, setPinned] = useState<Snapshot | null>(null);
   const [windowIndex, setWindowIndex] = useState(0);
   const [help, setHelp] = useState(false);
-  const [confirming, setConfirming] = useState<LaneCommand | null>(null);
+  const [confirming, setConfirming] = useState<LaneIntent | null>(null);
   const [toast, setToast] = useState<{ text: string; level: Level } | null>(
     null,
   );
@@ -177,10 +192,10 @@ export function App({
   // action always addresses the live machine. Both refusals sit above the one
   // call that reaches an effect, so no screen arrives at it by another route,
   // and the confirmation stands between it and the effect.
-  const act = (command: LaneCommand) => {
+  const act = (intent: LaneIntent) => {
     if (pinned) {
       notice(
-        `Pinned sample · ${command.scope} may be gone or its name reused · ${keyLabel(c.keys.pin)} shows live data`,
+        `Pinned sample · ${intent.scope} may be gone or its name reused · ${keyLabel(c.keys.pin)} shows live data`,
         "warn",
       );
       return;
@@ -192,7 +207,7 @@ export function App({
       );
       return;
     }
-    setConfirming(command);
+    setConfirming(intent);
   };
   useKeyboard((key) => {
     const name = keyName(key);
@@ -201,12 +216,21 @@ export function App({
       return;
     }
     if (confirming) {
-      const command = confirming;
+      const intent = confirming;
       setConfirming(null);
-      if (name === c.keys.open)
-        void onAction(command)
-          .then(() => notice(`${command.action} ${command.scope}: done`))
+      // The dialog stood open across every sample since it opened. What runs
+      // is re-derived from the current one, so the reader's confirmed line is
+      // the line that runs or nothing is.
+      if (name === c.keys.open) {
+        const resolved = resolveIntent(intent, snapshot, c);
+        if (resolved.state !== "ready") {
+          notice(`${stale[resolved.state](intent)} · nothing ran`, "warn");
+          return;
+        }
+        void onAction(resolved.command)
+          .then(() => notice(`${intent.action} ${intent.scope}: done`))
           .catch(report);
+      }
       return;
     }
     if (help) {

@@ -22,7 +22,7 @@ The [architecture overview](overview.md) defines the collection and replay requi
 The [history store](history.md) and [settings and the runtime](settings.md) hold the invariants behind this section.
 
 - The collector reads system state. Settings, optional SQLite, requested exports, enabled notifications and confirmed lane actions are separate application effects.
-- A lane action changes system state and runs only with `writeMode` on, against live data, after a confirmation naming the scope. `src/model/actions.ts` returns the command without running it and `src/effect.ts` performs it, so the exact line and the effect each carry their own test.
+- A lane action changes system state and runs only with `writeMode` on, against live data, after a confirmation naming the scope. `src/model/actions.ts` returns the command without running it and `src/effect.ts` performs it, so the exact line and the effect each carry their own test. What a screen holds carries no effect, and the confirmed line is re-derived from the sample of the keypress, so a lane that changed under an open confirmation takes nothing.
 - In-memory replay uses complete checkpoints and exact changes. A warning reports retention shortened by the memory budget.
 - SQLite preserves replay across restarts and rejects databases owned by other applications. Records an older build wrote are normalized on load rather than discarded.
 - Lane charts retain samples before display aggregation. Buckets preserve short spikes and collection gaps.

@@ -1,20 +1,29 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
-import { laneSnapshot } from "../test/fixture";
+import { emptySnapshot, laneSnapshot } from "../test/fixture";
 import {
   type LaneAction,
   type LaneEffect,
+  type LaneResolution,
   laneActions,
   laneCommand,
+  laneIntent,
   laneTarget,
+  resolveIntent,
 } from "./actions";
+import type { Lane } from "./types";
 
 const c = defaults();
 const dir = `${c.cgroupRoot}/agents.slice/a.scope`;
 
 test("each action names the lane's own scope and the exact work it would do", () => {
   const target = laneTarget(laneSnapshot(), c);
-  expect(target).toEqual({ scope: "a.scope", directory: dir });
+  expect(target).toEqual({
+    laneId: "agents.slice/a.scope",
+    mainPid: 40,
+    scope: "a.scope",
+    directory: dir,
+  });
   if (target === null) throw new Error("the fixture lane runs in a scope");
   const rows: [LaneAction, string, LaneEffect][] = [
     [
@@ -71,7 +80,12 @@ test("a copied command survives an escaped scope name and a path with a space", 
   const root = "/tmp/vsys test/cgroup";
   const lane = laneSnapshot({ cgroup: `agents.slice/${scope}` });
   const target = laneTarget(lane, { ...c, cgroupRoot: root });
-  expect(target).toEqual({ scope, directory: `${root}/agents.slice/${scope}` });
+  expect(target).toEqual({
+    laneId: lane.id,
+    mainPid: lane.mainPid,
+    scope,
+    directory: `${root}/agents.slice/${scope}`,
+  });
   if (target === null) throw new Error("the fixture lane runs in a scope");
   const freeze = laneCommand("Freeze", target);
   const stop = laneCommand("Stop", target);
@@ -90,5 +104,53 @@ test("a copied command survives an escaped scope name and a path with a space", 
   expect(stop.effect).toEqual({
     kind: "run",
     argv: ["systemctl", "--user", "kill", "--signal=TERM", scope],
+  });
+});
+
+test("an intent reaches an effect only while it still names the same work", () => {
+  const lane = laneSnapshot();
+  const target = laneTarget(lane, c);
+  if (target === null) throw new Error("the fixture lane runs in a scope");
+  const intent = laneIntent("Stop", target);
+  // What a screen holds is the reader's half alone. There is no effect on it
+  // to run, whatever happens to the lane afterwards.
+  expect(intent).toEqual({
+    action: "Stop",
+    laneId: "agents.slice/a.scope",
+    mainPid: 40,
+    scope: "a.scope",
+    text: "systemctl --user kill --signal=TERM a.scope",
+  });
+  const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes });
+  const rows: [string, Lane[], LaneResolution["state"]][] = [
+    ["the lane the reader confirmed", [lane], "ready"],
+    ["a lane that ended", [], "ended"],
+    [
+      "its scope name taken by a later process",
+      [laneSnapshot({ mainPid: 41 })],
+      "replaced",
+    ],
+    [
+      "a lane whose cgroup is no longer a scope",
+      [laneSnapshot({ cgroup: "agents.slice" })],
+      "unaddressable",
+    ],
+    [
+      "a lane that moved to another scope",
+      [laneSnapshot({ cgroup: "agents.slice/b.scope" })],
+      "changed",
+    ],
+  ];
+  // The reason travels with the row so a failure names which case broke.
+  for (const [reason, lanes, state] of rows)
+    expect({
+      reason,
+      state: resolveIntent(intent, world(lanes), c).state,
+    }).toEqual({ reason, state });
+  const ready = resolveIntent(intent, world([lane]), c);
+  if (ready.state !== "ready") throw new Error("the same lane resolves");
+  expect(ready.command.effect).toEqual({
+    kind: "run",
+    argv: ["systemctl", "--user", "kill", "--signal=TERM", "a.scope"],
   });
 });

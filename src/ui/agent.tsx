@@ -4,9 +4,9 @@ import { Reader } from "../collect/io";
 import { scratchFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import {
-  type LaneCommand,
+  type LaneIntent,
   laneActions,
-  laneCommand,
+  laneIntent,
   laneTarget,
 } from "../model/actions";
 import { safe } from "../model/export";
@@ -54,7 +54,7 @@ type Section = (typeof sections)[number];
  */
 type DetailRow =
   | { kind: "section"; name: Section }
-  | { kind: "action"; command: LaneCommand };
+  | { kind: "action"; intent: LaneIntent };
 
 /** One agent: what it is, what it uses, its history, then its processes. */
 export function Agent({
@@ -77,8 +77,8 @@ export function Agent({
   windowMs: number;
   /** Undefined when the selected row carries no command, which the shell says. */
   onCopy: (command: string | undefined) => void;
-  /** Asks the shell to run an action; the shell alone decides whether it may. */
-  onAct: (command: LaneCommand) => void;
+  /** Asks the shell for an action; the shell alone decides whether it runs. */
+  onAct: (intent: LaneIntent) => void;
 }) {
   const [files, setFiles] = useState<string[]>([]);
   const [loaded, setLoaded] = useState<{
@@ -135,7 +135,7 @@ export function Agent({
     ...(open.has("Actions") && target
       ? laneActions.map(
           (action) =>
-            ({ kind: "action", command: laneCommand(action, target) }) as const,
+            ({ kind: "action", intent: laneIntent(action, target) }) as const,
         )
       : []),
   ];
@@ -151,12 +151,12 @@ export function Agent({
     if (name === c.keys.open) {
       const row = rows[selected];
       if (row?.kind === "section") toggle(row.name);
-      else if (row) onAct(row.command);
+      else if (row) onAct(row.intent);
       return true;
     }
     if (name === c.keys.copy) {
       const row = rows[selected];
-      onCopy(row?.kind === "action" ? row.command.text : undefined);
+      onCopy(row?.kind === "action" ? row.intent.text : undefined);
       return true;
     }
     return false;
@@ -307,17 +307,17 @@ export function Agent({
           row.kind === "action" ? (
             <box
               id={`detail-${i}`}
-              key={row.command.action}
+              key={row.intent.action}
               flexShrink={0}
               paddingLeft={3}
             >
               <Row
                 selected={selected === i}
-                onOpen={() => onAct(row.command)}
-                color={row.command.action === "Stop" ? ui.danger : undefined}
+                onOpen={() => onAct(row.intent)}
+                color={row.intent.action === "Stop" ? ui.danger : undefined}
               >
-                {row.command.action.padEnd(8)}
-                <span attributes={ui.dim}>{safe(row.command.text)}</span>
+                {row.intent.action.padEnd(8)}
+                <span attributes={ui.dim}>{safe(row.intent.text)}</span>
               </Row>
             </box>
           ) : (

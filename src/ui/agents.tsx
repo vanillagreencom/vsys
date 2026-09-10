@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { type Config, columns, validate } from "../config/config";
-import type { LaneCommand } from "../model/actions";
+import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
 import { lanePressure } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
@@ -112,7 +112,7 @@ export function Agents({
   onError: (error: unknown) => void;
   onOpen: (id: string | null) => void;
   onCopy: (command: string | undefined) => void;
-  onAct: (command: LaneCommand) => void;
+  onAct: (intent: LaneIntent) => void;
 }) {
   const [selected, setSelected] = useState(0);
   const [searching, setSearching] = useState(false);
