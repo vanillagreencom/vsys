@@ -173,8 +173,11 @@ export function Timeline({
     ["Corruption", "corruption", String, ui.danger],
   ] as const;
   // The window row and its blank, two three-row charts with their titles, the
-  // marker strip and the axis, the cursor tiles and the section heading.
-  const cursorHeight = tilesHeight(rows.length, width - 4, 2);
+  // marker strip and the axis, the cursor readings and the section heading.
+  // With no sample under the cursor those readings are one line, not a wrapped
+  // tile block: budgeting the block on a short first-run Timeline dropped the
+  // sparkline rows and left the space they would have taken empty.
+  const cursorHeight = selected ? tilesHeight(rows.length, width - 4, 2) : 1;
   const fixed = 2 + 4 + 4 + 3 + cursorHeight + 1;
   // A short terminal keeps the two charts and the change list, and drops the
   // sparkline rows, which the cursor tiles still summarise.

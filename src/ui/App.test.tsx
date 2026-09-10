@@ -1408,3 +1408,70 @@ test("the table's cells land under their headings, not beside them", async () =>
     await t.close();
   }
 });
+
+test("an agent that leaves the sample offers only the key its screen acts on", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cpu: 9 }),
+    laneSnapshot({ id: "b", name: "lane-b", cpu: 5 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 140, height: 30 });
+  const footer = () => t.frame().split("\n").at(-2) ?? "";
+  try {
+    await t.press("2");
+    await t.press("enter");
+    expect(footer()).toContain("copy");
+    // The process exits. What stays on screen is one sentence saying so.
+    await t.update({ ...s, lanes: [s.lanes[1]] });
+    expect(t.frame()).toContain("no longer in the sample");
+    // That screen acts on Back and nothing else, so nothing else is offered.
+    const gone = footer();
+    expect(gone).toContain("back");
+    expect(gone).not.toContain("copy");
+    expect(gone).not.toContain("select");
+    expect(gone).not.toContain("open");
+    // The key it does offer works, and the list's own hints come back.
+    await t.press("escape");
+    expect(t.frame()).not.toContain("no longer in the sample");
+    expect(footer()).toContain("find");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a Timeline with no sample under the cursor budgets the line it draws", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // A history with nothing in it: vsys started a moment ago, so no sample
+  // sits under the cursor and the readings are one line, not a tile block.
+  const t = await mount(
+    s,
+    c,
+    { width: 100, height: 29 },
+    { history: new History(c) },
+  );
+  try {
+    await t.press("6");
+    const frame = t.frame();
+    expect(frame).toContain("No sample under the cursor.");
+    // Budgeting the tile block instead of that line costs four rows, which is
+    // enough at this height to drop the sparklines and leave their space
+    // empty. Each row is one metric, and they are what the reader loses.
+    for (const label of [
+      "CPU wait",
+      "Memory wait",
+      "Disk wait",
+      "Builds",
+      "Escaped",
+      "Corruption",
+    ])
+      expect({ label, drawn: frame.includes(label) }).toEqual({
+        label,
+        drawn: true,
+      });
+  } finally {
+    await t.close();
+  }
+});

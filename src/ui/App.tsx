@@ -96,7 +96,10 @@ const stale: Record<
  * ignores. The agent detail is its own entry because it takes none of the
  * list's keys and adds a way back.
  */
-const hints: Record<View | "Agent", (c: Config) => [string, string][]> = {
+const hints: Record<
+  View | "Agent" | "AgentGone",
+  (c: Config) => [string, string][]
+> = {
   Home: (c) => [
     ["↑↓", "select"],
     ["←→", "tiles"],
@@ -115,6 +118,12 @@ const hints: Record<View | "Agent", (c: Config) => [string, string][]> = {
     [c.keys.copy, "copy"],
     [c.keys.back, "back"],
   ],
+  /**
+   * The agent that was open has left the sample. That screen is one sentence
+   * saying so, and it acts on Back and nothing else, so Back is all the
+   * footer offers.
+   */
+  AgentGone: (c) => [[c.keys.back, "back"]],
   Resources: (c) => [
     ["↑↓", "select"],
     [c.keys.details, "all groups"],
@@ -418,6 +427,19 @@ export function App({
         onNotice={notice}
       />
     );
+  /**
+   * Which hint set the footer draws. A process exits and the agent a reader
+   * had open leaves the sample: what stays on screen is a sentence saying so,
+   * and it takes only Back. The reader is not moved to another agent's data,
+   * and the footer names no key that screen will not act on, which is the
+   * whole of what a hint set promises.
+   */
+  const hintView: keyof typeof hints =
+    view !== "Agents" || laneId === null
+      ? view
+      : shown.lanes.some((lane) => lane.id === laneId)
+        ? "Agent"
+        : "AgentGone";
   const lead = verdictItem(issues);
   const unread = new Set(snapshot.errors.map((e) => e.source)).size;
   const status = lead
@@ -452,10 +474,7 @@ export function App({
           {content}
         </box>
         <Footer
-          hints={[
-            ...hints[view === "Agents" && laneId !== null ? "Agent" : view](c),
-            [c.keys.help, "keys"],
-          ]}
+          hints={[...hints[hintView](c), [c.keys.help, "keys"]]}
           status={status}
           statusColor={
             lead ? levelColor(lead.danger ? "danger" : "warn") : ui.ok
