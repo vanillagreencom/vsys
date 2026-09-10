@@ -24,13 +24,15 @@ import {
   sparkline,
 } from "./format";
 import { useScreenKeys } from "./keys";
+import { regionOf, regionRanges, stepRegion, stepWithin } from "./regions";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import { eventKey, eventParts } from "./timeline";
 import {
   Bar,
+  Detail,
+  Disclosure,
   Empty,
   Line,
-  nextDown,
   Reading,
   Row,
   Section,
@@ -52,15 +54,24 @@ export function homeItems(
   s: Snapshot,
   busiest = 5,
   changes: TimelineEvent[] = [],
+  /**
+   * The row order a reader asked to keep, as lane ids. Holding the order is
+   * not freezing the data: each held id is looked up in the current sample, so
+   * the numbers keep moving while the rows stay where the reader left them.
+   * A lane that has ended drops out; one that has climbed does not push in.
+   */
+  held?: string[],
 ): HomeItem[] {
+  const ranked = sortLanes(s.lanes, "cpu", true).slice(0, busiest);
+  const lanes = held
+    ? held.flatMap((id) => s.lanes.filter((lane) => lane.id === id))
+    : ranked;
   return [
     ...items.map((item) => ({ kind: "concern", item }) as const),
     ...changes
       .slice(0, recentChanges)
       .map((event) => ({ kind: "change", event }) as const),
-    ...sortLanes(s.lanes, "cpu", true)
-      .slice(0, busiest)
-      .map((lane) => ({ kind: "agent", lane }) as const),
+    ...lanes.map((lane) => ({ kind: "agent", lane }) as const),
   ];
 }
 /**
@@ -162,7 +173,11 @@ export function Home({
       : height - 10 - items.length * 2 - recentChanges - 2,
   );
   const gauges = meters(s, c);
-  const rows = homeItems(items, s, busiest, changes);
+  // Null until the reader asks. Holding keeps the ids in the order they were
+  // in at that moment; it releases when Home unmounts, so nobody is left
+  // reading a stale order they forgot they asked for.
+  const [held, setHeld] = useState<string[] | null>(null);
+  const rows = homeItems(items, s, busiest, changes, held ?? undefined);
   const recent = rows.filter((r) => r.kind === "change");
   // Null while the rows hold the selection. Left or right moves onto the
   // tiles, up or down moves back off them, so one Enter is never ambiguous.
@@ -206,23 +221,57 @@ export function Home({
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`home-${selected}`);
   }, [selected]);
+  // Home holds four regions and the tile row is one of them. The three lists
+  // are ranges over the one flat selection the render draws; the tiles keep
+  // their own index, which is why they are region zero rather than rows inside
+  // it. Left and right move between regions and up and down move inside the
+  // one in focus, which is one rule for the whole screen rather than a second
+  // rule for the tiles.
+  const counts = [
+    rows.filter((row) => row.kind === "concern").length,
+    rows.filter((row) => row.kind === "change").length,
+    rows.filter((row) => row.kind === "agent").length,
+  ];
+  const ranges = regionRanges(counts);
+  const region = tile === null ? 1 + regionOf(counts, selected) : 0;
+  const toList = (at: number) => {
+    if (at < 0 || !ranges[at] || counts[at] === 0) return;
+    setTile(null);
+    choose(ranges[at][0]);
+  };
+  const focus = (way: -1 | 1) => {
+    if (tile !== null) {
+      // Region zero: there is nothing to its left, and its right is the first
+      // list that has a row in it.
+      if (way > 0) toList(stepRegion(counts, -1, 1));
+      return;
+    }
+    const here = region - 1;
+    const next = stepRegion(counts, here, way);
+    // No list that way: to the left of the first one are the tiles.
+    if (next === here) {
+      if (way < 0 && gauges.length) setTile(0);
+      return;
+    }
+    toList(next);
+  };
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setTile(null);
-      choose(nextDown(rows.length, selected));
+      if (tile !== null) setTile(Math.min(gauges.length - 1, tile + 1));
+      else choose(stepWithin(counts, selected, 1));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      setTile(null);
-      choose(Math.max(0, selected - 1));
+      if (tile !== null) setTile(Math.max(0, tile - 1));
+      else choose(stepWithin(counts, selected, -1));
       return true;
     }
     if (name === c.keys.left || name === "left") {
-      setTile((at) => Math.max(0, (at ?? 0) - 1));
+      focus(-1);
       return true;
     }
     if (name === c.keys.right || name === "right") {
-      setTile((at) => (at === null ? 0 : Math.min(gauges.length - 1, at + 1)));
+      focus(1);
       return true;
     }
     if (name === c.keys.open && tile !== null && gauges[tile]) {
@@ -231,6 +280,16 @@ export function Home({
     }
     if (name === c.keys.open && rows[selected]) {
       onOpen(rows[selected]);
+      return true;
+    }
+    if (name === c.keys.hold) {
+      setHeld((current) =>
+        current
+          ? null
+          : homeItems(items, s, busiest, changes).flatMap((row) =>
+              row.kind === "agent" ? [row.lane.id] : [],
+            ),
+      );
       return true;
     }
     if (name === c.keys.copy) {
@@ -332,6 +391,7 @@ export function Home({
               title="Needs attention"
               count={items.length || undefined}
               width={panel}
+              focused={region === 1}
             />
             {!items.length && (
               <Empty text="No current problems in the data vsys can read." />
@@ -349,10 +409,10 @@ export function Home({
                     color={row.item.danger ? ui.danger : ui.warn}
                     onOpen={() => onOpen(row)}
                   >
-                    {safe(row.item.title)}
+                    <Disclosure open={i === selected} name={row.item.title} />
                   </Row>
                   {marked(i) && (
-                    <box flexDirection="column" flexShrink={0} paddingLeft={2}>
+                    <Detail indent={2}>
                       <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                         {safe(row.item.detail)}
                       </Line>
@@ -374,7 +434,7 @@ export function Home({
                       >
                         {`${keyLabel(c.keys.open)} opens ${row.item.target?.kind === "lane" ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`}
                       </Line>
-                    </box>
+                    </Detail>
                   )}
                 </box>
               ) : null,
@@ -390,6 +450,7 @@ export function Home({
             <Section
               title="Recent changes"
               width={panel}
+              focused={region === 2}
               // Zero alerts is a reading a reader can act on. Dropping the
               // count there leaves no way to tell it from a count vsys never
               // took, which is the same defect as a blank standing for zero.
@@ -423,7 +484,12 @@ export function Home({
                 </box>
               ) : null,
             )}
-            <Section title="Busiest agents" width={panel} />
+            <Section
+              title="Busiest agents"
+              width={panel}
+              focused={region === 3}
+              count={held ? "order held" : undefined}
+            />
             {!agents.length && (
               <Empty text="No agent is running in a watched scope." />
             )}

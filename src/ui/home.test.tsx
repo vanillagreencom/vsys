@@ -10,11 +10,12 @@ import {
   groupSnapshot,
   laneSnapshot,
 } from "../test/fixture";
-import { mount, selectedRow } from "../test/harness";
+import { isChildLine, mount, selectedRow } from "../test/harness";
 import { attention } from "./attention";
 import { osc52 } from "./clipboard";
 import type { HomeItem } from "./home";
 import { homeItems, homeTarget, recentChanges } from "./home";
+import { ui } from "./theme";
 import { eventKey } from "./timeline";
 
 test("Home lists every concern first, then the busiest agents, capped", () => {
@@ -269,7 +270,10 @@ test("the arrow keys reach the tiles and open the screen behind one", async () =
     const t = await mount(s, c, { width: 160, height: 30 });
     try {
       await t.press("1");
-      for (let i = 0; i <= tile; i++) await t.press("right");
+      // Left reaches the tile region; down moves inside it, the same rule as
+      // every other region on the screen.
+      await t.press("left");
+      for (let i = 0; i < tile; i++) await t.press("down");
       await t.press("enter");
       expect({ tile, on: t.frame().includes(lands) }).toEqual({
         tile,
@@ -279,18 +283,89 @@ test("the arrow keys reach the tiles and open the screen behind one", async () =
       await t.close();
     }
   }
-  // Up or down leaves the tiles, so Enter opens a row again rather than a
-  // screen behind a tile.
+  // Right leaves the tiles for the next region, so Enter opens a row again
+  // rather than a screen behind a tile.
   const back = await mount(s, c, { width: 160, height: 30 });
   try {
     await back.press("1");
+    await back.press("left");
     await back.press("right");
-    await back.press("down");
     await back.press("enter");
     expect(back.frame()).toContain("lane-a");
     expect(back.frame()).not.toContain("Groups");
   } finally {
     await back.close();
+  }
+});
+
+test("left and right move across all four Home regions, and the focused one says so", async () => {
+  const c = defaults();
+  const { h, snapshot } = withChange(c);
+  const s = everyCauseSnapshot(c);
+  s.time = snapshot.time;
+  s.lanes = [...s.lanes, laneSnapshot({ id: "z", name: "lane-z", cpu: 90 })];
+  const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    // Each region's title is drawn once; the focused one is the only one that
+    // is not dim, which is what a reader reads without pressing anything.
+    const titles = ["Needs attention", "Recent changes", "Busiest agents"];
+    const focusedTitle = () => {
+      const spans = t.ui
+        .captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .filter((span) => titles.some((title) => span.text.includes(title)));
+      const lit = spans.filter((span) => span.fg.equals(ui.accent));
+      expect(lit).toHaveLength(1);
+      return titles.find((title) => lit[0].text.includes(title)) ?? "";
+    };
+    // Home opens on a concern, so the first region is the one in focus.
+    expect(focusedTitle()).toBe("Needs attention");
+    await t.press("right");
+    expect(focusedTitle()).toBe("Recent changes");
+    await t.press("right");
+    expect(focusedTitle()).toBe("Busiest agents");
+    // The last region holds rather than wrapping.
+    await t.press("right");
+    expect(focusedTitle()).toBe("Busiest agents");
+    // Back the same way, and once more onto the tiles, where no list title is
+    // lit at all.
+    await t.press("left");
+    expect(focusedTitle()).toBe("Recent changes");
+    await t.press("left");
+    expect(focusedTitle()).toBe("Needs attention");
+    await t.press("left");
+    const spans = t.ui
+      .captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .filter((span) => titles.some((title) => span.text.includes(title)));
+    expect(spans.filter((span) => span.fg.equals(ui.accent))).toHaveLength(0);
+    // On the tiles, Enter opens the screen behind one.
+    await t.press("enter");
+    expect(t.frame()).toContain("Groups");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a tile in a narrow pane marks its cut instead of stopping mid-word", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 12.3, cpuShare: 12.3 })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await t.press("2");
+    // The preview pane's tiles are a third of the screen, so their sentences
+    // do not fit; a cut with no mark reads as a sentence that simply ended.
+    const line = t
+      .frame()
+      .split("\n")
+      .find((row) => row.includes("of one core"));
+    expect(line).toBeDefined();
+    expect(line).toContain("…");
+  } finally {
+    await t.close();
   }
 });
 
@@ -444,14 +519,16 @@ test("Home marks one focus at a time, on every kind of row it lists", async () =
         marked: true,
       });
       // Moving onto a tile takes the focus with it. A row marked here would
-      // say one thing while Enter opened another.
-      await t.press("right");
+      // say one thing while Enter opened another. The tiles sit to the left of
+      // the first list, so reaching them walks left through whatever lists are
+      // between: what is asserted is the rule, not the number of presses.
+      for (let i = 0; i < 4; i++) await t.press("left");
       expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
         kind,
         marked: false,
       });
       // And moving back off the tiles restores it.
-      await t.press("down");
+      await t.press("right");
       expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
         kind,
         marked: true,
@@ -550,6 +627,11 @@ test("Home opens the row the reader chose after the list moves under it", async 
     },
   ];
   for (const { kind, at, later, opens, reads } of cases) {
+    // Up and down move inside one list and right moves to the next, so a row is
+    // reached by its region and its offset within it rather than by counting
+    // from the top of all three.
+    const region = ["concern", "change", "agent"].indexOf(kind);
+    const offset = at - firstOf(kind);
     // Standing still: the presses reach the intended row, and opening it lands
     // on what that row names. This is what the moved list has to preserve.
     const still = fresh();
@@ -561,7 +643,8 @@ test("Home opens the row the reader chose after the list moves under it", async 
     );
     try {
       await t.press("1");
-      for (let i = 0; i < at; i++) await t.press("j");
+      for (let i = 0; i < region; i++) await t.press("right");
+      for (let i = 0; i < offset; i++) await t.press("j");
       await t.press("enter");
       expect({ kind, on: reads(t.frame()) }).toEqual({
         kind,
@@ -582,7 +665,8 @@ test("Home opens the row the reader chose after the list moves under it", async 
     );
     try {
       await m.press("1");
-      for (let i = 0; i < at; i++) await m.press("j");
+      for (let i = 0; i < region; i++) await m.press("right");
+      for (let i = 0; i < offset; i++) await m.press("j");
       const next = later(shifting.s);
       shifting.h.add(next);
       await m.update(next);
@@ -647,7 +731,7 @@ test("a tile opens live data, not the sample the reader pinned", async () => {
     // Timeline is not one of the pinned screens, so it says which ones are.
     expect(t.frame()).toContain("Agents, Resources, Builds and Storage show");
     await t.press("1");
-    await t.press("right");
+    await t.press("left");
     await t.press("enter");
     // A tile drills down like a card does, so it clears the pin. Landing on
     // Resources with the pin still set would show the pinned sample beside a
@@ -670,6 +754,51 @@ test("no alerts opened reads as a count, not as a missing one", async () => {
     // Nothing has gone wrong, so the count is zero. A zero that renders as
     // absence cannot be told from a count vsys never took.
     expect(t.frame()).toContain("0 alerts opened since vsys started");
+  } finally {
+    await t.close();
+  }
+});
+
+/** Two agents whose order flips the moment their CPU readings swap. */
+function twoAgents(topFirst: boolean) {
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cpu: topFirst ? 90 : 10 }),
+    laneSnapshot({ id: "b", name: "lane-b", cpu: topFirst ? 10 : 90 }),
+  ];
+  s.groups = [groupSnapshot()];
+  return s;
+}
+
+test("the held order keeps its rows while their numbers keep moving", async () => {
+  const c = defaults();
+  const s = twoAgents(true);
+  const t = await mount(s, c, { width: 160, height: 30 });
+  try {
+    await t.press("1");
+    const agentRows = () =>
+      t
+        .frame()
+        .split("\n")
+        .filter((line) => /lane-[ab]/.test(line))
+        .map((line) => line.trim());
+    expect(agentRows()[0]).toContain("lane-a");
+    expect(agentRows()[0]).toContain("90.0%");
+    await t.press(c.keys.hold);
+    // The section says it is holding, in the place its count sits.
+    expect(t.frame()).toContain("Busiest agents  order held");
+    // The readings swap, so the sort would put lane-b on top.
+    await t.update(twoAgents(false));
+    const held = agentRows();
+    expect(held[0]).toContain("lane-a");
+    expect(held[1]).toContain("lane-b");
+    // Held is the order, never the data: the numbers are the new ones.
+    expect(held[0]).toContain("10.0%");
+    expect(held[1]).toContain("90.0%");
+    // Releasing lets the sort through again.
+    await t.press(c.keys.hold);
+    expect(t.frame()).not.toContain("order held");
+    expect(agentRows()[0]).toContain("lane-b");
   } finally {
     await t.close();
   }
@@ -738,6 +867,29 @@ test("a memory-reclaim card opens on the scope holding the swap", async () => {
   }
 });
 
+test("a held order is released by leaving the screen", async () => {
+  const c = defaults();
+  const t = await mount(twoAgents(true), c, { width: 160, height: 30 });
+  try {
+    await t.press("1");
+    await t.press(c.keys.hold);
+    expect(t.frame()).toContain("order held");
+    // Nobody is left reading an order they forgot they asked for.
+    await t.press("2");
+    await t.press("1");
+    expect(t.frame()).not.toContain("order held");
+    await t.update(twoAgents(false));
+    expect(
+      t
+        .frame()
+        .split("\n")
+        .filter((line) => /lane-[ab]/.test(line))[0],
+    ).toContain("lane-b");
+  } finally {
+    await t.close();
+  }
+});
+
 test("the copy notice does not claim a silent terminal empties the clipboard", async () => {
   const c = defaults();
   const s = everyCauseSnapshot(c);
@@ -775,6 +927,92 @@ test("a remediation command is copy text, never an action to run", async () => {
     );
     expect(item?.command).toBeDefined();
     expect(t.frame()).toContain(`Copy ${item?.command}`);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a held row that ends drops out, and one that climbs does not push in", () => {
+  const c = defaults();
+  const s = twoAgents(true);
+  const held = ["a", "b"];
+  // A third agent arrives at the top of the ranking.
+  s.lanes = [...s.lanes, laneSnapshot({ id: "c", name: "lane-c", cpu: 99 })];
+  const rows = homeItems([], s, 5, [], held).filter(
+    (row) => row.kind === "agent",
+  );
+  expect(rows.map((row) => row.lane.id)).toEqual(["a", "b"]);
+  // One of the held lanes ends between samples.
+  s.lanes = s.lanes.filter((lane) => lane.id !== "a");
+  expect(
+    homeItems([], s, 5, [], held)
+      .filter((row) => row.kind === "agent")
+      .map((row) => row.lane.id),
+  ).toEqual(["b"]);
+  // Without a hold the ranking decides, and the newcomer leads it.
+  expect(
+    homeItems([], twoAgents(true), 5, [])
+      .filter((row) => row.kind === "agent")
+      .map((row) => row.lane.id),
+  ).toEqual(["a", "b"]);
+  expect(c.keys.hold).toBeTruthy();
+});
+
+test("a concern's detail is drawn as a child of the row it belongs to", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const t = await mount(s, c, { width: 160, height: 40 });
+  try {
+    await t.press("1");
+    const lines = t.frame().split("\n");
+    const row = lines.findIndex((line) => line.includes("▍▾ "));
+    expect(row).toBeGreaterThan(-1);
+    // The row carries the marker; the lines under it carry the rule.
+    expect(isChildLine(lines[row])).toBe(false);
+    expect(isChildLine(lines[row + 1])).toBe(true);
+    // An unselected concern still says it has more inside it.
+    expect(lines.some((line) => line.includes("▸ "))).toBe(true);
+  } finally {
+    await t.close();
+  }
+});
+
+test("up and down stay inside the region in focus", async () => {
+  const c = defaults();
+  const { h, snapshot } = withChange(c);
+  const s = everyCauseSnapshot(c);
+  s.time = snapshot.time;
+  const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    const titles = ["Needs attention", "Recent changes", "Busiest agents"];
+    const focused = () => {
+      const lit = t.ui
+        .captureSpans()
+        .lines.flatMap((line) => line.spans)
+        .filter((span) => span.fg.equals(ui.accent))
+        .filter((span) => titles.some((title) => span.text.includes(title)));
+      return titles.find((title) => lit[0]?.text.includes(title)) ?? "";
+    };
+    expect(focused()).toBe("Needs attention");
+    // Far more presses than the region has rows: it holds at its last row
+    // rather than walking into the next region.
+    // Two columns put two regions on one physical line, so the row is read
+    // with its runs of spaces collapsed rather than column by column.
+    const row = () => selectedRow(t.frame()).replace(/\s+/g, " ");
+    const first = row();
+    await t.press("down");
+    expect(row()).not.toBe(first);
+    for (let i = 0; i < 20; i++) await t.press("down");
+    expect(focused()).toBe("Needs attention");
+    for (let i = 0; i < 20; i++) await t.press("up");
+    expect(focused()).toBe("Needs attention");
+    expect(row()).toBe(first);
+    // The next region is reached the one way it can be.
+    await t.press("right");
+    expect(focused()).toBe("Recent changes");
+    for (let i = 0; i < 20; i++) await t.press("down");
+    expect(focused()).toBe("Recent changes");
   } finally {
     await t.close();
   }
