@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import {
+  capturePane,
+  capturePaneArgv,
   insideTmux,
   isPaneId,
   paneFormat,
   paneLines,
   parsePanes,
+  switchClientArgv,
   switchCommand,
 } from "./tmux";
 
@@ -99,4 +102,47 @@ test("vsys can move the reader's view only from inside a tmux client", () => {
   // A pane id in the environment is not a client: an agent's own pane says
   // nothing about which server vsys itself is attached to.
   expect(insideTmux({ TMUX_PANE: "%9" })).toBe(false);
+});
+
+test("a configured address is a target tmux accepts, not one vsys refuses", async () => {
+  // `-t` takes a target, and `session:window.pane` is one. Refusing it was
+  // vsys's own restriction, and it refused the value the documentation tells
+  // a reader to put in `VSYS_PANE`.
+  expect(capturePaneArgv("work:2.1")).toEqual([
+    "tmux",
+    "capture-pane",
+    "-p",
+    "-t",
+    "work:2.1",
+  ]);
+  // What reaches the reader when the server refuses is the server's own
+  // words. What used to reach them was `work:2.1 is not a pane address`,
+  // about a value they were told to set.
+  let refused = "";
+  try {
+    await capturePane("no-such-session:9.9");
+  } catch (error) {
+    refused = error instanceof Error ? error.message : String(error);
+  }
+  expect(refused).not.toBe("no-such-session:9.9 is not a pane address");
+  expect(refused).not.toBe("");
+  // A pane with nothing to name is still refused, because there is nothing to
+  // ask about.
+  expect(capturePane("")).rejects.toThrow("exported no pane");
+});
+
+test("the copied line quotes its target, and the arguments do not", () => {
+  // A session named with a space pastes as two words: the command then runs
+  // against something else, or fails.
+  expect(switchCommand("my work:1.1")).toBe(
+    "tmux switch-client -t 'my work:1.1'",
+  );
+  // The argv path hands tmux separate arguments, so a quote there would be
+  // part of the target rather than around it.
+  expect(switchClientArgv("my work:1.1")).toEqual([
+    "tmux",
+    "switch-client",
+    "-t",
+    "my work:1.1",
+  ]);
 });

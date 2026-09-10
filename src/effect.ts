@@ -1,5 +1,5 @@
 import { writeFile } from "node:fs/promises";
-import { isPaneId, switchClientArgv } from "./collect/tmux";
+import { switchClientArgv } from "./collect/tmux";
 import type { LaneEffect } from "./model/actions";
 
 /**
@@ -33,9 +33,9 @@ export async function runEffect(effect: LaneEffect): Promise<void> {
  * pass through `runEffect` or wait on write mode. The pane id is checked
  * against tmux's own grammar first, so nothing but a pane can be addressed.
  */
-export async function switchToPane(paneId: string): Promise<void> {
-  if (!isPaneId(paneId)) throw new Error(`${paneId} is not a pane address`);
-  const child = Bun.spawn(switchClientArgv(paneId), {
+export async function switchToPane(target: string): Promise<void> {
+  if (!target) throw new Error("This agent exported no pane to switch to");
+  const child = Bun.spawn(switchClientArgv(target), {
     stdin: "ignore",
     stdout: "ignore",
     stderr: "pipe",

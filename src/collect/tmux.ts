@@ -1,4 +1,5 @@
 import { safe } from "../model/export";
+import { shellLine } from "../model/shell";
 
 /**
  * Where one pane sits in the tmux server. A pane id like `%9` is server-global
@@ -33,11 +34,22 @@ export const switchClientArgv = (paneId: string) => [
   "-t",
   paneId,
 ];
-/** The line a reader copies when vsys cannot switch to the pane itself. */
-export const switchCommand = (paneId: string) =>
-  switchClientArgv(paneId).join(" ");
+/**
+ * The line a reader copies when vsys cannot switch to the pane itself. This
+ * one goes to a shell, so its target is quoted: a session named with a space
+ * pastes as two words and runs against something else. The argv above is
+ * handed to `Bun.spawn` as separate arguments and must not be quoted.
+ */
+export const switchCommand = (target: string) =>
+  shellLine(switchClientArgv(target));
 
-/** A pane id, by tmux's own grammar: `%` and digits, nothing else. */
+/**
+ * A pane id, by tmux's own grammar: `%` and digits, nothing else. This decides
+ * one thing: whether a handle can be looked up in a map keyed by `%N`. It does
+ * not decide what tmux may be asked to do, because `-t` takes any target and
+ * `session:window.pane` is one — refusing those refused input tmux accepts,
+ * from readers who configured `VSYS_PANE` because the documentation says to.
+ */
 export const isPaneId = (value: string): boolean => /^%\d+$/.test(value);
 
 /**
@@ -117,7 +129,7 @@ export async function readPanes(): Promise<PaneSet> {
   return { socket: serverSocket(), byId: parsePanes(await run(listPanesArgv)) };
 }
 /** The last lines that pane drew. A pane that has gone away throws its reason. */
-export async function capturePane(paneId: string): Promise<string[]> {
-  if (!isPaneId(paneId)) throw new Error(`${paneId} is not a pane address`);
-  return paneLines(await run(capturePaneArgv(paneId)));
+export async function capturePane(target: string): Promise<string[]> {
+  if (!target) throw new Error("This agent exported no pane to read");
+  return paneLines(await run(capturePaneArgv(target)));
 }
