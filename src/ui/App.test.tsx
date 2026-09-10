@@ -2206,3 +2206,125 @@ test("a Home row opens the change the reader chose, not the first at its moment"
     await t.close();
   }
 });
+
+test("a row opened with the keyboard keeps its change when one arrives above it", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const first = emptySnapshot(2000);
+  first.lanes = [laneSnapshot({ id: "alpha.scope", name: "alpha" })];
+  h.add(first);
+  const t = await mount(first, c, { width: 160, height: 40 }, { history: h });
+  try {
+    await t.press("6");
+    const changes = h.events(first.time, c.historyHours * 3600000);
+    expect(changes.length).toBe(1);
+    // Open the only row with the keyboard, without ever pressing an arrow, so
+    // this is the entry that recorded no identity.
+    await t.press("enter");
+    expect(selectedRow(t.frame())).toContain("alpha");
+    const cursor = `cursor ${new Date(changes[0].time).toLocaleString()}`;
+    expect(t.frame()).toContain(cursor);
+    // A later sample puts a change above it. The list is newest first, so the
+    // row the reader opened is no longer row zero.
+    const second = emptySnapshot(3000);
+    second.lanes = [
+      laneSnapshot({ id: "alpha.scope", name: "alpha" }),
+      laneSnapshot({ id: "beta.scope", name: "beta" }),
+    ];
+    h.add(second);
+    await t.update(second);
+    const after = h.events(second.time, c.historyHours * 3600000);
+    expect(after.length).toBe(2);
+    expect(after[0].subject).toBe("beta");
+    // The highlight, the cursor and the sample the pin key acts on all still
+    // name the row the reader chose, rather than the highlight jumping to the
+    // new top row while the cursor stayed behind.
+    expect(selectedRow(t.frame())).toContain("alpha");
+    expect(t.frame()).toContain(cursor);
+    await t.press("p");
+    expect(t.frame()).toContain("Agents, Resources, Builds and Storage show");
+  } finally {
+    await t.close();
+  }
+  // And the first row is a choice before the reader touches anything: a
+  // change arriving above it must not take the highlight off the row they
+  // were reading. This is what the seeded initial identity holds on its own,
+  // since no key has been pressed to record one.
+  const untouched = new History(c);
+  untouched.add(emptySnapshot(1000));
+  const one = emptySnapshot(2000);
+  one.lanes = [laneSnapshot({ id: "alpha.scope", name: "alpha" })];
+  untouched.add(one);
+  const quiet = await mount(
+    one,
+    c,
+    { width: 160, height: 40 },
+    {
+      history: untouched,
+    },
+  );
+  try {
+    await quiet.press("6");
+    expect(selectedRow(quiet.frame())).toContain("alpha");
+    const two = emptySnapshot(3000);
+    two.lanes = [
+      laneSnapshot({ id: "alpha.scope", name: "alpha" }),
+      laneSnapshot({ id: "beta.scope", name: "beta" }),
+    ];
+    untouched.add(two);
+    await quiet.update(two);
+    expect(selectedRow(quiet.frame())).toContain("alpha");
+  } finally {
+    await quiet.close();
+  }
+  // The case that isolates the key path from the seed: the seeded change
+  // leaves the window, so the highlight falls back to a row the selection does
+  // not name, and Enter is the only thing that can record what it opened.
+  const drifting = new History(c);
+  drifting.add(emptySnapshot(1000));
+  const early = emptySnapshot(2000);
+  early.lanes = [laneSnapshot({ id: "alpha.scope", name: "alpha" })];
+  drifting.add(early);
+  const t2 = await mount(
+    early,
+    c,
+    { width: 160, height: 40 },
+    {
+      history: drifting,
+    },
+  );
+  try {
+    await t2.press("6");
+    expect(selectedRow(t2.frame())).toContain("alpha");
+    // Ten minutes on, alpha's change is outside the five-minute window and
+    // beta's is the only row. The highlight is on a change the selection does
+    // not name.
+    const later = emptySnapshot(602000);
+    later.lanes = [
+      laneSnapshot({ id: "alpha.scope", name: "alpha" }),
+      laneSnapshot({ id: "beta.scope", name: "beta" }),
+    ];
+    drifting.add(later);
+    await t2.update(later);
+    expect(selectedRow(t2.frame())).toContain("beta");
+    await t2.press("enter");
+    const cursor = `cursor ${new Date(602000).toLocaleString()}`;
+    expect(t2.frame()).toContain(cursor);
+    // A third change arrives above it.
+    const newest = emptySnapshot(603000);
+    newest.lanes = [
+      ...later.lanes,
+      laneSnapshot({ id: "gamma.scope", name: "gamma" }),
+    ];
+    drifting.add(newest);
+    await t2.update(newest);
+    // The highlight and the cursor still name beta. Without the key path
+    // recording what it opened, the highlight follows the stale index to
+    // gamma while the cursor stays on beta.
+    expect(selectedRow(t2.frame())).toContain("beta");
+    expect(t2.frame()).toContain(cursor);
+  } finally {
+    await t2.close();
+  }
+});

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
+import type { TimelineEvent } from "../store/events";
 import type { History } from "../store/history";
 import { changed, type Point } from "../store/point";
 import { fit } from "./columns";
@@ -105,16 +106,22 @@ export function Timeline({
   target: { at: number; id: string } | null;
   onTargetUsed: () => void;
 }) {
+  const windowMs = windows[windowIndex];
+  const changes = history.events(s.time, windowMs);
   /**
    * What the reader chose: the row they moved to, and the change that row
    * named. The window key can swap a long list for a shorter one and a new
    * sample prepends to it, so a row number alone outlives what it pointed at.
+   *
+   * The first row is a choice like any other, so it is seeded with the change
+   * it sits on rather than left as a null to be resolved by index. Left null,
+   * a change arriving at the top took the highlight while the cursor stayed
+   * on the row the reader had opened.
    */
   const [selection, setSelection] = useState<{
     index: number;
     id: string | null;
-  }>({ index: 0, id: null });
-  const windowMs = windows[windowIndex];
+  }>(() => ({ index: 0, id: changes[0] ? eventKey(changes[0]) : null }));
   const start = s.time - windowMs;
   const chartWidth = Math.max(10, width - 4 - gutter);
   const buckets = timeBuckets(points, start, s.time, chartWidth);
@@ -129,17 +136,19 @@ export function Timeline({
         );
   useScreenKeys((name, key) => {
     if (name === c.keys.down || name === "down") {
-      choose(nextDown(changes.length, row));
+      const next = nextDown(changes.length, row);
+      select(next, changes[next]);
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      choose(Math.max(0, row - 1));
+      const up = Math.max(0, row - 1);
+      select(up, changes[up]);
       return true;
     }
     // The change list is a list: Enter moves the time cursor to the row, and
     // the pin key pins the sample the row happened in.
     if (name === c.keys.open && changes[row]) {
-      onCursor(changes[row].time);
+      open(row, changes[row]);
       return true;
     }
     const left = name === c.keys.left || name === "left";
@@ -191,7 +200,6 @@ export function Timeline({
       ),
     );
   };
-  const changes = history.events(s.time, windowMs);
   /**
    * The row to draw, resolved against the list this render has. Following the
    * chosen change keeps the reader on it when the list shifts under them, and
@@ -204,12 +212,29 @@ export function Timeline({
     found >= 0
       ? found
       : Math.min(selection.index, Math.max(0, changes.length - 1));
-  /** Move the selection, recording the row and the change it names together. */
-  const choose = (index: number) =>
-    setSelection({
-      index,
-      id: changes[index] ? eventKey(changes[index]) : null,
-    });
+  /**
+   * Move the highlight. The row and the change it names are recorded together
+   * and the change is passed in, so no caller can record a row number without
+   * saying which change it points at.
+   */
+  const select = useCallback(
+    (index: number, event: TimelineEvent | undefined) =>
+      setSelection({ index, id: event ? eventKey(event) : null }),
+    [],
+  );
+  /**
+   * Open a row: the highlight, the recorded identity and the time cursor move
+   * as one. Every entry calls this — the keys, the mouse, and a row Home asked
+   * for — because a rule written at each entry reaches the entries someone
+   * remembered, and the key path was the one that was not.
+   */
+  const open = useCallback(
+    (index: number, event: TimelineEvent) => {
+      select(index, event);
+      onCursor(event.time);
+    },
+    [select, onCursor],
+  );
   /**
    * A row Home asked for is selected and made the cursor, once. Home lists
    * everything retained, so the row can be older than the window this screen
@@ -225,10 +250,7 @@ export function Timeline({
     // whichever row the reader opened.
     const at = changes.findIndex((event) => eventKey(event) === target.id);
     if (at >= 0) {
-      // Set directly rather than through `choose`: a helper rebuilt each
-      // render would be a dependency of this effect that changes every pass.
-      setSelection({ index: at, id: eventKey(changes[at]) });
-      onCursor(changes[at].time);
+      open(at, changes[at]);
       onTargetUsed();
       return;
     }
@@ -241,7 +263,7 @@ export function Timeline({
     // capped below that width, so Home cannot list such a row; the request is
     // still consumed rather than left to fire on every later sample.
     onTargetUsed();
-  }, [target, onTargetUsed, changes, onCursor, onWindow, windowIndex, s.time]);
+  }, [target, onTargetUsed, changes, open, onWindow, windowIndex, s.time]);
   // The header, two three-row charts with titles, the sparklines, the axis
   // and the heading come before the change list.
   // Each row takes its metric's own colour, so six sparklines one under the
@@ -378,13 +400,7 @@ export function Timeline({
           return (
             // One row per event, so a long subject cannot push the rest out.
             <box key={eventKey(event)} flexDirection="column" flexShrink={0}>
-              <Row
-                selected={isSelected}
-                onOpen={() => {
-                  choose(at);
-                  onCursor(event.time);
-                }}
-              >
+              <Row selected={isSelected} onOpen={() => open(at, event)}>
                 <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
                 <span
                   fg={levelColor(e.level)}
