@@ -859,3 +859,48 @@ test("the recap holds what happened while the reader was away for longer than th
     await t.close();
   }
 });
+
+test("a memory-reclaim card opens on the scope holding the swap", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const items = attention(s, c);
+  const at = items.findIndex((item) => item.id === "system-memory");
+  expect(at).toBeGreaterThan(-1);
+  const t = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await t.press("1");
+    for (let i = 0; i < at; i++) await t.press("j");
+    await t.press("enter");
+    // The card's own text names the scope holding the most swap, so that is
+    // the row it lands on. Carrying no group landed on whichever row
+    // Resources already had selected, silently and without an error.
+    expect(t.frame()).toContain("Groups");
+    expect(selectedRow(t.frame())).toContain("gnome");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the copy notice does not claim a silent terminal empties the clipboard", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const items = attention(s, c);
+  const at = items.findIndex((item) => item.command !== undefined);
+  expect(at).toBeGreaterThan(-1);
+  // The toast cuts at its own width rather than wrapping, so this is wide
+  // enough to draw the clause the assertion is about.
+  const t = await mount(s, c, { width: 200, height: 44 });
+  try {
+    await t.press("1");
+    for (let i = 0; i < at; i++) await t.press("j");
+    await t.press("y");
+    const frame = t.frame();
+    // A terminal that ignores the request leaves the clipboard alone. Saying
+    // a paste gives nothing sends the reader to paste stale text believing it
+    // is the command they just copied.
+    expect(frame).toContain("leaves the clipboard unchanged");
+    expect(frame).not.toContain("pastes nothing");
+  } finally {
+    await t.close();
+  }
+});

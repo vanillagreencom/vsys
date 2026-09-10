@@ -22,6 +22,6 @@
 
 **Revisit When**: A lane gains a stable identity of its own, independent of its cgroup path and its leading process. The `replaced` and `changed` answers would then collapse into one.
 
-**Verification**: `src/model/actions.test.ts` covers the five answers over one intent; `src/ui/App.test.tsx` lands a sample under an open confirmation, both one that changes the lane and one that does not. Every test that needs an effect goes through `resolveIntent`, and a call to the private builder from outside the module fails the type check.
+**Verification**: `src/model/actions.test.ts` covers the five answers over one intent; `src/ui/agent.test.tsx` lands a sample under an open confirmation, both one that changes the lane and one that does not. Every test that needs an effect goes through `resolveIntent`, and a call to the private builder from outside the module fails the type check.
 
 **References**: [D002](D002-lane-action-mechanism.md)

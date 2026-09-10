@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
+import { testRender } from "@opentui/react/test-utils";
 import { defaults } from "../config/config";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { mount } from "../test/harness";
+import { type KeyHandler, KeyProvider } from "./keys";
+import { Resources } from "./resources";
 import {
   itemPath,
+  Storage,
   storageItems,
   volumeLevel,
   volumesByDevice,
@@ -279,4 +283,59 @@ test("one filesystem is one heading, however its mounts name their device", () =
     "/dev/sde1",
     "/dev/sde1",
   ]);
+});
+
+test("a target whose row has gone is said out loud, not dropped", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [volumeSnapshot("/data")];
+  s.groups = [groupSnapshot({ path: "busy.scope", name: "busy.scope" })];
+  /** One screen rendered with a target, reporting what it did with it. */
+  async function landOn(screen: "storage" | "resources", target: string) {
+    const notices: [string, string][] = [];
+    let used = 0;
+    const handlers = new Set<KeyHandler>();
+    const props = {
+      snapshot: s,
+      config: c,
+      target,
+      onTargetUsed: () => {
+        used += 1;
+      },
+      onNotice: (text: string, level: string) => notices.push([text, level]),
+    };
+    const ui = await testRender(
+      <KeyProvider handlers={handlers}>
+        {screen === "storage" ? (
+          <Storage {...props} width={140} />
+        ) : (
+          <Resources {...props} width={140} height={30} />
+        )}
+      </KeyProvider>,
+      { width: 140, height: 30 },
+    );
+    try {
+      await ui.renderOnce();
+      return { used, notices, frame: ui.captureCharFrame() };
+    } finally {
+      ui.renderer.destroy();
+    }
+  }
+  // A collector refresh between the keypress and this effect can take the row
+  // the card named. The request is still consumed, so it cannot fire again on
+  // a later sample, and the reader is told rather than left on a screen that
+  // looks like they never pressed anything.
+  for (const screen of ["storage", "resources"] as const) {
+    const gone = await landOn(screen, "/gone");
+    expect({ screen, used: gone.used }).toEqual({ screen, used: 1 });
+    expect({ screen, notices: gone.notices }).toEqual({
+      screen,
+      notices: [["/gone is no longer in the sample", "warn"]],
+    });
+  }
+  // A row that is there is landed on, and says nothing.
+  const found = await landOn("storage", "/data");
+  expect(found.used).toBe(1);
+  expect(found.notices).toEqual([]);
+  expect(found.frame).toContain("/data");
 });

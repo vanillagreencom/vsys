@@ -5,6 +5,7 @@ import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture, groupSnapshot } from "../test/fixture";
+import { mount } from "../test/harness";
 import {
   groupLabels,
   groupLevel,
@@ -161,4 +162,23 @@ test("an idle parent filtered from the list still leaves its children nested", (
   expect(prefixes.get("a.slice/one")).toBe("   ├─ ");
   expect(prefixes.get("a.slice/two")).toBe("   └─ ");
   expect(prefixes.get("a.slice/two/deep")).toBe("      └─ ");
+});
+
+test("Resources sizes its tiles by the width it has, at a hundred columns", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 100, height: 30 });
+  try {
+    await t.press("3");
+    const lines = t.frame().split("\n");
+    const at = (text: string) => lines.findIndex((line) => line.includes(text));
+    // Four tiles in ninety-six columns are twenty-two columns each, under the
+    // width a tile needs, so they wrap to two rows instead of truncating.
+    expect(at("CPU wait")).toBeGreaterThan(-1);
+    expect(at("Swap")).toBeGreaterThan(at("CPU wait"));
+    // The detail under the number is a whole sentence, not a cut one.
+    expect(lines.some((line) => line.includes("desktop"))).toBe(true);
+  } finally {
+    await t.close();
+  }
 });

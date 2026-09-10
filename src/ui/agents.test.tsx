@@ -886,3 +886,48 @@ test("a sample inside a bucket does not slide the drawn window", async () => {
     await t.close();
   }
 });
+
+test("a configurable numeric column reads down its last digit", async () => {
+  // Five numeric columns were missing from the right-align set, so a reader
+  // who configured one got a number that did not line up with its neighbours.
+  const c = {
+    ...defaults(),
+    columns: ["name", "cache", "readRate", "blocked", "sccache"],
+  };
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({
+      name: "lane-a",
+      cache: 1024,
+      readRate: 2048,
+      blocked: 3,
+      sccache: 4,
+    }),
+  ];
+  const t = await mount(s, c, { width: 180, height: 24 });
+  try {
+    await t.press("2");
+    await t.press("d");
+    const lines = t.frame().split("\n");
+    const heading = lines.find(
+      (line) => line.includes("Page cache") && line.includes("Blocked"),
+    );
+    const row = lines.find((line) => line.includes("lane-a"));
+    expect(heading).toBeDefined();
+    expect(row).toBeDefined();
+    if (!heading || !row) throw new Error("no heading and row to compare");
+    const ends: [string, string][] = [
+      ["Page cache", "1.0 KiB"],
+      ["Read", "2.0 KiB/s"],
+      ["Blocked", "3"],
+      ["sccache", "4"],
+    ];
+    for (const [label, value] of ends)
+      expect({
+        label,
+        ends: heading.indexOf(label) + label.length,
+      }).toEqual({ label, ends: row.indexOf(value) + value.length });
+  } finally {
+    await t.close();
+  }
+});
