@@ -16,13 +16,14 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { App, hints, Waiting } from "./App";
+import { findLanes } from "./agents";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
 import { type HomeItem, homeItems, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
-import { Storage } from "./storage-screen";
+import { Storage, volumesByDevice } from "./storage-screen";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
 async function mount(
@@ -2449,4 +2450,176 @@ test("Home opens the row the reader chose after the list moves under it", async 
       await m.close();
     }
   }
+});
+
+test("a lane exiting under the selection keeps one lane under highlight, pane and Enter", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cpu: 9, cwd: "/repo/a" }),
+    laneSnapshot({ id: "b", name: "lane-b", cpu: 5, cwd: "/repo/b" }),
+    laneSnapshot({ id: "z", name: "lane-z", cpu: 1, cwd: "/repo/z" }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await t.press("2");
+    await t.press("j");
+    await t.press("j");
+    expect(selectedRow(t.frame())).toContain("lane-z");
+    expect(t.frame()).toContain("/repo/z");
+    // The lane exits. Every row below it moves up, and the row number the
+    // reader was on now names nothing.
+    await t.update({ ...s, lanes: s.lanes.slice(0, 2) });
+    const frame = t.frame();
+    // One lane, read three ways: the highlight in the list, the summary
+    // beside it, and what Enter opens.
+    expect(selectedRow(frame)).toContain("lane-b");
+    expect(frame).toContain("/repo/b");
+    expect(frame).not.toContain("/repo/z");
+    // The list moves a second time: a lane arrives that sorts below the rest,
+    // which is what makes the departed lane's row number valid again.
+    const arrived = {
+      ...s,
+      lanes: [
+        ...s.lanes.slice(0, 2),
+        laneSnapshot({ id: "n", name: "lane-n", cpu: 0, cwd: "/repo/n" }),
+      ],
+    };
+    // What the fixture has to move, read before the selection is: the lane the
+    // reader was on is gone, and the newcomer holds the row number it left
+    // behind. A newcomer sorting anywhere else would prove nothing.
+    expect(findLanes(arrived.lanes, "", c).map((lane) => lane.name)).toEqual([
+      "lane-a",
+      "lane-b",
+      "lane-n",
+    ]);
+    await t.update(arrived);
+    const after = t.frame();
+    expect(after).toContain("lane-n");
+    // Still the fallback the exit resolved to, not the lane that took the row
+    // number the reader's selection used to name.
+    expect(selectedRow(after)).toContain("lane-b");
+    expect(after).toContain("/repo/b");
+    expect(after).not.toContain("/repo/n");
+    await t.press("enter");
+    const footer = t.frame().split("\n").at(-2) ?? "";
+    // The detail's own footer: it opened, rather than Enter finding no lane.
+    expect(footer).toContain("back");
+    expect(footer).not.toContain("find");
+    expect(t.frame()).toContain("lane-b");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the editor opens in view when the layout moves the row it edits", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 180, height: 30 });
+  try {
+    await t.press("7");
+    // Walk to the last setting. Two columns hold it on the right-hand side.
+    for (let i = 0; i < 80; i++) await t.press("j");
+    const marker = (frame: string) => {
+      const line = frame.split("\n").find((row) => row.includes("▍"));
+      return line === undefined ? -1 : line.indexOf("▍");
+    };
+    expect(marker(t.frame())).toBeGreaterThan(90);
+    // Opening the editor collapses the two columns into one, so this row
+    // moves below the whole left column. The scroll has to follow the layout
+    // that moved it, not the selection, which did not change.
+    await t.press("enter");
+    // The scroll measures where the row currently sits, so it waits for the
+    // new layout to be drawn: the editor is in view on the frame after the
+    // collapse. Republishing the sample draws that frame and types nothing.
+    await t.update(s);
+    const frame = t.frame();
+    // This row's editor, named by the row it edits. Measuring on the old
+    // layout scrolled to the top of the list, where the opened row is not.
+    expect(frame).toContain("Export markdown · Enter saves");
+    expect(frame).not.toContain("Storage units");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a device reports the free space a member could read", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // `statfs` is attempted per mount, so one member of a filesystem can carry
+  // no reading while another carries one.
+  s.storage.volumes = [
+    volumeSnapshot("/data", {
+      device: "/dev/nvme0n1p2",
+      fsid: "one",
+      free: null,
+      total: null,
+    }),
+    volumeSnapshot("/data/home", {
+      device: "/dev/nvme0n1p2",
+      fsid: "one",
+      free: 1e11,
+      total: 2e11,
+    }),
+  ];
+  const t = await mount(s, c, { width: 140, height: 30 });
+  try {
+    await t.press("5");
+    const line = t
+      .frame()
+      .split("\n")
+      .find((row) => row.includes("/dev/nvme0n1p2"));
+    expect(line).toBeDefined();
+    expect(line).toContain("93.1 GiB free of 186.3 GiB");
+    expect(line).not.toContain("not avail");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Storage draws two filesystems that report one device", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // One filesystem reached through a mapper alias and another through the
+  // same source string: two identities, one device between them. The heading
+  // is drawn once per group, so the device cannot identify a group.
+  s.storage.volumes = [
+    volumeSnapshot("/one", { device: "/dev/mapper/pool", fsid: "abc" }),
+    volumeSnapshot("/two", { device: "/dev/mapper/pool", fsid: "def" }),
+  ];
+  // What the fixture has to hold, asserted before anything is drawn. Two ids
+  // that do not share a device would draw two distinct keys whatever the key
+  // is, and prove nothing about which one was used.
+  expect(
+    volumesByDevice(s.storage.volumes).map((g) => `${g.id} ${g.device}`),
+  ).toEqual(["abc /dev/mapper/pool", "def /dev/mapper/pool"]);
+  const logged: string[] = [];
+  const wasError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  };
+  let frame = "";
+  try {
+    const t = await mount(s, c, { width: 140, height: 30 });
+    try {
+      await t.press("5");
+      frame = t.frame();
+    } finally {
+      await t.close();
+    }
+  } finally {
+    console.error = wasError;
+  }
+  // Both filesystems reached the screen, so the diagnostic below is about two
+  // drawn groups rather than a fixture that quietly drew one.
+  expect([frame.includes("/one"), frame.includes("/two")]).toEqual([
+    true,
+    true,
+  ]);
+  // Keyed by the device these two groups share one key, which React reports as
+  // unsupported: it may duplicate or omit a child, and which it does is not
+  // ours to choose. This render still draws both, so the diagnostic is the only
+  // place the collision is stated, and the test reads it rather than the frame.
+  expect(logged.filter((line) => /same key/i.test(line))).toEqual([]);
 });

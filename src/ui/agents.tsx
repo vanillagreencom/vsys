@@ -164,7 +164,17 @@ export function Agents({
   onCopy: (command: string | undefined) => void;
   onAct: (intent: LaneIntent) => void;
 }) {
-  const [selected, setSelected] = useState(0);
+  /**
+   * What the reader chose: the row they moved to, and the lane that row named
+   * at the time. The row number alone cannot survive a live list — a lane
+   * exits and every row below it moves up — and this screen reads the
+   * selection three times over, for the highlight, for the summary beside the
+   * list, and for what the open action opens.
+   */
+  const [selection, setSelection] = useState<{
+    index: number;
+    id: string | null;
+  }>({ index: 0, id: null });
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const [table, setTable] = useState(false);
@@ -172,22 +182,61 @@ export function Agents({
   const [column, setColumn] = useState(0);
   const lanes = findLanes(s.lanes, query, c);
   const open = laneId === null ? null : s.lanes.find((l) => l.id === laneId);
+  /** Move the selection, recording the row and the lane it names together. */
+  const choose = (index: number) =>
+    setSelection({ index, id: lanes[index]?.id ?? null });
+  /**
+   * The row to draw, resolved against the list this render actually has.
+   * Following the chosen lane keeps the reader on it when a re-sort or an exit
+   * above them moves it; where that lane has gone, the nearest row that exists
+   * takes over. Resolving here rather than in an effect means no frame is ever
+   * drawn with a selection the list cannot honour.
+   */
+  const found = lanes.findIndex((lane) => lane.id === selection.id);
+  const selected =
+    found >= 0
+      ? found
+      : Math.min(selection.index, Math.max(0, lanes.length - 1));
+  // The resolution above is only for this frame, and it has to be recorded or
+  // the next list is resolved against a lane that has gone. A departed lane
+  // leaves `selection.index` naming a row that no longer exists, and a lane
+  // arriving lower down the order makes that row number valid again: the
+  // highlight would leave the fallback for the newcomer. Writing the resolved
+  // row back makes the fallback a choice, the way a key press is one.
+  //
+  // The order of the two effects is load-bearing. This one must run first, so
+  // that a lane opened from elsewhere wins the pass it arrives in; declared
+  // after, the two write different rows on every pass and never settle, which
+  // hangs the render rather than merely picking the wrong row. Each settles by
+  // returning the current object when nothing moved.
+  useEffect(() => {
+    const id = lanes[selected]?.id ?? null;
+    setSelection((current) =>
+      current.index === selected && current.id === id
+        ? current
+        : { index: selected, id },
+    );
+  }, [lanes, selected]);
   // A lane opened from Home or from a card was never selected in this list,
   // so going back would land on the first row. Follow the open lane instead.
   useEffect(() => {
     if (laneId === null) return;
     const at = lanes.findIndex((lane) => lane.id === laneId);
-    if (at >= 0) {
-      setSelected(at);
-      return;
-    }
-    // The lane is not in this list. It cannot be a filter hiding it: this
-    // screen unmounts when the reader leaves it, so a query cannot outlive
-    // the screen, and every route that opens a lane from inside the list
-    // picks a row the list is already showing. What is left is a lane that
-    // has exited, so hold a row that exists rather than an index past the end
-    // of the list, which highlights nothing and opens nothing.
-    setSelected((i) => Math.min(i, Math.max(0, lanes.length - 1)));
+    // A lane missing from this list has exited; a filter cannot be hiding it,
+    // because this screen unmounts when the reader leaves it and every route
+    // that opens a lane from inside the list picks a row the list is already
+    // showing. The resolution above holds a row that exists for that case, so
+    // nothing is needed here for it.
+    //
+    // `lanes` is rebuilt every render, so this runs every render. Returning
+    // the same object is how it stops: a fresh one of equal value would be a
+    // new state on each pass and would never settle.
+    if (at >= 0)
+      setSelection((current) =>
+        current.index === at && current.id === laneId
+          ? current
+          : { index: at, id: laneId },
+      );
   }, [laneId, lanes]);
   const save = (value: Config) => {
     try {
@@ -220,7 +269,7 @@ export function Agents({
     }
     const rows = chooser ? columns.length : lanes.length;
     const index = chooser ? column : selected;
-    const move = chooser ? setColumn : setSelected;
+    const move = (next: number) => (chooser ? setColumn(next) : choose(next));
     if (name === c.keys.down || name === "down") {
       move(nextDown(rows, index));
       return true;
@@ -237,7 +286,7 @@ export function Agents({
     if (name === c.keys.search) {
       key.preventDefault();
       setSearching(true);
-      setSelected(0);
+      choose(0);
       return true;
     }
     if (name === c.keys.details) {
@@ -312,7 +361,7 @@ export function Agents({
         ))}
       </box>
     );
-  const selectedLane = lanes[Math.min(selected, lanes.length - 1)];
+  const selectedLane = lanes[selected];
   const sortLabel = `${columnLabels[c.sort] ?? c.sort} ${c.descending ? "↓" : "↑"}`;
   const listHeight = height - 3 - (searching ? 3 : 0);
   const topCpu = Math.max(100, ...lanes.map((l) => l.cpu ?? 0));
@@ -462,7 +511,7 @@ export function Agents({
                     selected={isSelected}
                     color={levelColor(laneLevel(lane, c))}
                     onOpen={() => {
-                      setSelected(i);
+                      choose(i);
                       onOpen(lane.id);
                     }}
                   >
@@ -496,7 +545,7 @@ export function Agents({
                     selected={isSelected}
                     color={levelColor(laneLevel(lane, c))}
                     onOpen={() => {
-                      setSelected(i);
+                      choose(i);
                       onOpen(lane.id);
                     }}
                   >
