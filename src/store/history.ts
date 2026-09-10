@@ -221,10 +221,56 @@ export class History {
   configure(c: Config): void {
     this.c = c;
   }
+  /**
+   * Points in a window, oldest first. The walk starts at the newest and stops
+   * when it leaves the window, so it touches the points in that window rather
+   * than materialising every retained point and filtering. At a hundred
+   * milliseconds over a day the ring holds 864,000 of them, and this is read
+   * on every sample by every screen that charts anything.
+   */
   window(end: number, durationMs: number): Point[] {
-    return this.points
-      .all()
-      .filter((p) => p.time <= end && p.time >= end - durationMs);
+    const out: Point[] = [];
+    for (let i = this.points.size - 1; i >= 0; i--) {
+      const p = this.points.get(i);
+      if (!p || p.time > end) continue;
+      if (p.time < end - durationMs) break;
+      out.push(p);
+    }
+    return out.reverse();
+  }
+  /**
+   * Changes newer than `since`, newest first. The walk stops at the first
+   * point that is not, so a caller asking on every sample touches the points
+   * that arrived since it last asked rather than the whole retained window.
+   */
+  eventsAfter(since: number, end: number): TimelineEvent[] {
+    const out: TimelineEvent[] = [];
+    for (let i = this.points.size - 1; i >= 0; i--) {
+      const p = this.points.get(i);
+      if (!p || p.time > end) continue;
+      if (p.time <= since) break;
+      out.push(...(p.events ?? []));
+    }
+    return out;
+  }
+  /**
+   * The newest changes, newest first, stopping as soon as `limit` are found.
+   * Home shows three; finding them must not cost a scan of a day's history on
+   * every render. A history holding fewer than `limit` changes still walks
+   * back to the oldest retained point, but allocates nothing on the way.
+   */
+  recentEvents(end: number, limit: number): TimelineEvent[] {
+    const out: TimelineEvent[] = [];
+    if (limit <= 0) return out;
+    for (let i = this.points.size - 1; i >= 0 && out.length < limit; i--) {
+      const p = this.points.get(i);
+      if (!p || p.time > end) continue;
+      for (const event of p.events ?? []) {
+        out.push(event);
+        if (out.length >= limit) break;
+      }
+    }
+    return out;
   }
   at(time: number): Snapshot | null {
     const cutoff =

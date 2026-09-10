@@ -225,3 +225,52 @@ test("persisted snapshots and their sidecars stay readable only by the owner", (
   cleanup.push(() => reopened.close());
   expect(modes()).toEqual(Array(modes().length).fill(0o600));
 });
+
+test("reading recent history asks for the rows it shows, not for all of them", () => {
+  const c = {
+    ...defaults(),
+    refreshMs: 100,
+    historyHours: 24,
+    persistence: false,
+  };
+  const h = new History(c);
+  const held = 2000;
+  for (let i = 0; i < held; i++) {
+    const s = emptySnapshot(1000 + i * 100);
+    // A change every five hundred points, so the newest few are near the end.
+    if (i % 500 === 0)
+      s.lanes = [laneSnapshot({ id: `l${i}.scope`, name: `l${i}` })];
+    h.add(s);
+  }
+  const now = 1000 + (held - 1) * 100;
+  // Count what each read touches rather than how long it takes: a timing
+  // assertion here would be a check that cannot fail.
+  let materialised = 0;
+  let touched = 0;
+  const all = Ring.prototype.all;
+  const get = Ring.prototype.get;
+  Ring.prototype.all = function counted(this: Ring<unknown>) {
+    const out = all.call(this);
+    materialised += out.length;
+    return out;
+  };
+  Ring.prototype.get = function counted(this: Ring<unknown>, index: number) {
+    touched += 1;
+    return get.call(this, index);
+  };
+  try {
+    // What Home reads on every render, and what the alert count reads on
+    // every sample.
+    const recent = h.recentEvents(now, 3);
+    const after = h.eventsAfter(now - 100, now);
+    expect(recent.length).toBe(3);
+    expect(after).toEqual([]);
+    // Nothing is copied out of the ring, and the walk stops at what it was
+    // asked for rather than covering the retained window.
+    expect(materialised).toBe(0);
+    expect(touched).toBeLessThan(held);
+  } finally {
+    Ring.prototype.all = all;
+    Ring.prototype.get = get;
+  }
+});

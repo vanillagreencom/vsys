@@ -84,11 +84,32 @@ function subjectValues(
  * A cause groups every subject it affects. Each of them is its own alert with
  * its own duration, so two escaped lanes are two alerts rather than one.
  */
-export function subjects(
-  cause: Cause,
-  s: Snapshot,
-): { id: string; name: string; unit?: string }[] {
-  const named = [
+/** One subject: what it is, what a reader calls it, and the unit behind it. */
+interface Subject {
+  id: string;
+  name: string;
+  unit?: string;
+}
+/**
+ * One entry per identity, keeping every field any of them carried. A cause can
+ * name one thing twice on purpose — `disk` lists the top writer as a lane and
+ * as a group, because it is both — and the two entries know different halves:
+ * the lane knows the reader's name, the group knows the systemd unit. Left as
+ * two, the first creates the watch and the second cannot add to it, so the
+ * unit is dropped for exactly the subject that has one.
+ */
+function merge(entries: Subject[]): Subject[] {
+  const byId = new Map<string, Subject>();
+  for (const entry of entries) {
+    const seen = byId.get(entry.id);
+    if (!seen) byId.set(entry.id, { ...entry });
+    else if (entry.unit !== undefined && seen.unit === undefined)
+      seen.unit = entry.unit;
+  }
+  return [...byId.values()];
+}
+export function subjects(cause: Cause, s: Snapshot): Subject[] {
+  const named = merge([
     ...cause.lanes.map((lane) => ({ id: lane.id, name: lane.name })),
     // A cgroup's own name is systemd's, not a reader's. `consumerName` is the
     // one place that turns one into a name, so an event says what a card says.
@@ -98,7 +119,7 @@ export function subjects(
       unit: group.name,
     })),
     ...cause.paths.map((path) => ({ id: path, name: path })),
-  ];
+  ]);
   if (named.length) return named;
   // The cause is about nothing it can name — host pressure with no lane
   // stalled under it — so it gets one fallback subject. Where it names a
@@ -272,6 +293,10 @@ export class EventLog {
           previous: this.verdict,
           previousLevel: this.verdictLevel,
           level,
+          // The verdict names a subject, so it carries what that subject
+          // decoded from. Without it a selected Verdict row is the one change
+          // whose raw scope handle a reader cannot reach.
+          unit: lead?.unit ?? "",
         },
         values: lead ? { ...lead.values } : {},
       });

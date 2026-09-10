@@ -449,3 +449,61 @@ test("host memory pressure with no lane stalled under it still names its scope",
   expect(opened[0].subject).toBe("gnome");
   expect(opened[0].names.unit).toBe("gnome.scope");
 });
+
+test("a cause that names one thing twice opens one alert carrying its unit", () => {
+  const log = started();
+  const s = emptySnapshot(2000);
+  s.system.pressure = { io: { some: 80, full: 0, total: 0 } };
+  // The top writer is a scope that is also an agent lane, so `disk` lists it
+  // as both on purpose: the lane knows the reader's name, the group knows the
+  // systemd unit. Two entries for one identity meant the first created the
+  // watch and the second could not add the unit to it.
+  s.groups = [
+    groupSnapshot({
+      path: "agents.slice/a.scope",
+      name: "a.scope",
+      writeRate: 209715200,
+    }),
+  ];
+  s.lanes = [
+    laneSnapshot({ id: "agents.slice/a.scope", name: "lane-a", pids: [40] }),
+  ];
+  s.procs = [processSnapshot({ pid: 40, build: "ld.mold" })];
+  const opened = log
+    .advance(s, c)
+    .filter((e) => e.kind === "alert-open" && e.cause === "disk");
+  expect(opened.length).toBe(1);
+  expect(opened[0].subjectId).toBe("agents.slice/a.scope");
+  expect(opened[0].names.unit).toBe("a.scope");
+});
+
+test("a verdict led by a cgroup names the unit behind its subject", () => {
+  const log = started();
+  const s = emptySnapshot(2000);
+  // The desktop swapped out is a cgroup-led cause and speaks for the machine,
+  // so the verdict it wins names a scope rather than a lane or a path. A group
+  // near its memory threshold is housekeeping and never the verdict.
+  s.groups = [
+    groupSnapshot({
+      path: "app.slice",
+      name: "app.slice",
+      swap: c.swapFloor + 1,
+    }),
+    groupSnapshot({
+      path: "app.slice/gnome.scope",
+      name: "gnome.scope",
+      swap: 992,
+    }),
+  ];
+  const events = log.advance(s, c);
+  const opened = events.find(
+    (e) => e.kind === "alert-open" && e.cause === "desktop-swap",
+  );
+  expect(opened?.names.unit).toBe("gnome.scope");
+  const verdict = events.find((e) => e.kind === "verdict");
+  expect(verdict).toBeDefined();
+  expect(verdict?.subjectId).toBe("app.slice/gnome.scope");
+  // The verdict row is a change like any other, so its raw scope handle is
+  // reachable from it too.
+  expect(verdict?.names.unit).toBe("gnome.scope");
+});

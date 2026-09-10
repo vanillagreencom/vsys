@@ -36,7 +36,7 @@ import {
   views,
 } from "./chrome";
 import { type Output, osc52 } from "./clipboard";
-import { Home, homeTarget } from "./home";
+import { Home, homeTarget, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
 import { Settings } from "./settings-screen";
@@ -197,14 +197,15 @@ export function App({
   const [opened, setOpened] = useState(0);
   const counted = useRef<number | null>(null);
   useEffect(() => {
-    const events = history.events(snapshot.time, windows[windows.length - 1]);
-    const latest = events[0]?.time ?? 0;
+    // Only what arrived since the last sample. Reading the whole retained
+    // window and filtering it meant scanning every point vsys holds, on every
+    // sample, to count the handful that were new.
     const since = counted.current;
-    counted.current = latest;
+    counted.current = snapshot.time;
     if (since === null) return;
-    const fresh = events.filter(
-      (event) => event.time > since && event.kind === "alert-open",
-    ).length;
+    const fresh = history
+      .eventsAfter(since, snapshot.time)
+      .filter((event) => event.kind === "alert-open").length;
     if (fresh) setOpened((n) => n + fresh);
   }, [history, snapshot.time]);
   const seen = useRef<Set<string> | null>(null);
@@ -365,10 +366,12 @@ export function App({
         snapshot={snapshot}
         config={c}
         items={issues}
-        // Everything retained, not the Timeline's current window. This
-        // section exists for the reader who was away, and a five-minute
-        // window told them nothing had changed while an hour sat in history.
-        changes={history.events(snapshot.time, c.historyHours * 3600000)}
+        // The newest few from everything retained, not the Timeline's
+        // current window: this section exists for the reader who was away,
+        // and a five-minute window told them nothing had changed while an
+        // hour sat in history. It asks for the rows it shows, so finding them
+        // stops rather than scanning a day of history on every render.
+        changes={history.recentEvents(snapshot.time, recentChanges)}
         alertsOpened={opened}
         points={points}
         windowMs={windows[windowIndex]}
