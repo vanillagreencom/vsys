@@ -25,5 +25,5 @@ An event is one change between two consecutive samples, held as data with its ca
 - A verdict is a cause and its level, so a cause turning from a warning into danger is a new verdict. `src/store/events.test.ts` checks a lane stalling harder.
 - Desktop swap crossing its floor is the desktop-swap cause opening, and a housekeeping cause is an event but never a verdict change. `src/store/events.test.ts` checks both.
 - An event carries the identity of its subject as well as its name, since two lanes can show one name. `src/store/events.test.ts` checks two lanes named alike.
-- A point marks the timeline strip when it recorded an event. Only a point persisted before events existed falls back to its alerts, so an alert still inside its hold marks nothing. `src/store/point.test.ts` and `src/ui/App.test.tsx` check an empty list against a missing one.
+- A point marks the timeline strip when it recorded an event. Only a point persisted before events existed falls back to its alerts, so an alert still inside its hold marks nothing. `src/store/point.test.ts` and `src/ui/timeline-screen.test.tsx` check an empty list against a missing one.
 - Every event renders as one line that states its cause. `src/ui/timeline.test.ts` checks each kind, the swap numbers and an escalating verdict.

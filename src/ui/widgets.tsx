@@ -322,6 +322,26 @@ export function Tiles({
 }
 
 /**
+ * The block under a row that explains it, indented so it reads as part of that
+ * row rather than as the next one. The indent goes on a box: `paddingLeft` on
+ * a text element moves nothing at all, so a detail written that way sits at the
+ * same margin as the row above it and its wrapped lines run the full width.
+ */
+export function Detail({
+  children,
+  indent = 3,
+}: {
+  children: ReactNode;
+  indent?: number;
+}) {
+  return (
+    <box flexDirection="column" flexShrink={0} paddingLeft={indent}>
+      {children}
+    </box>
+  );
+}
+
+/**
  * One selectable line. The selected line is painted behind and keeps its
  * marker: in a list thirty rows deep a marker alone is easy to lose.
  */

@@ -20,6 +20,6 @@
 
 **Revisit When**: The renderer exposes the bytes it sent, or its test harness gives a readable output stream. Delegating then removes this file.
 
-**Verification**: `src/ui/clipboard.test.ts` decodes the payload and plants terminators in the copied text; `src/ui/App.test.tsx` reads the sequence off the mounted shell's output stream.
+**Verification**: `src/ui/clipboard.test.ts` decodes the payload and plants terminators in the copied text; `src/ui/home.test.tsx` reads the sequence off the mounted shell's output stream.
 
 **References**: [D002](D002-lane-action-mechanism.md)

@@ -18,4 +18,4 @@ Storage collection reads filesystem state, device counters, drive reports and sc
 - Device error deltas use filesystem and device identity. `src/collect/btrfs.test.ts` checks sample and startup baselines.
 - Missing mount information or device counters remain unknown in history. `src/store/point.test.ts` and `src/collect/btrfs.test.ts` check those failures.
 - Aborted scrubs remain problems even when they counted no errors. `src/collect/btrfs.test.ts` checks that condition.
-- Storage leads with bytes written, then filesystems, scrub reports and scratch. `src/ui/App.test.tsx` checks the order and a read-only mount; `src/ui/storage-screen.test.ts` checks the selectable rows and the filesystem severity.
+- Storage leads with bytes written, then filesystems, scrub reports and scratch. `src/ui/storage-screen.test.tsx` checks the order and a read-only mount; `src/ui/storage-screen.test.tsx` checks the selectable rows and the filesystem severity.

@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { TextAttributes } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
+import { metric, ui } from "./theme";
 import {
   bar,
   chartRows,
@@ -10,6 +12,7 @@ import {
   listWindow,
   nextDown,
   Row,
+  Sparkline,
   tilesPerRow,
 } from "./widgets";
 
@@ -210,4 +213,30 @@ test("a windowed list shows the rows it has room for, around the selection", () 
       height,
       at: listWindow(count, selected, height),
     }).toEqual({ count, selected, height, at: { start, end } });
+});
+
+test("a chart's gaps are painted quietly and its samples in the metric's colour", async () => {
+  // Spans need a text element to sit in, the way every screen draws them.
+  const ui2 = await testRender(
+    <Line>
+      <Sparkline marks="··▁█" color={metric.cpu} />
+    </Line>,
+    { width: 8, height: 1 },
+  );
+  try {
+    await ui2.renderOnce();
+    const spans = ui2.captureSpans().lines.flatMap((line) => line.spans);
+    const gap = spans.find((span) => span.text.includes("·"));
+    const sampled = spans.find((span) => span.text.includes("█"));
+    expect(gap?.text).toBe("··");
+    // A column with no sample recedes; one with a sample carries the metric.
+    expect(gap?.fg.equals(ui.quiet)).toBe(true);
+    expect((gap?.attributes ?? 0) & TextAttributes.DIM).not.toBe(0);
+    expect(sampled?.fg.equals(metric.cpu)).toBe(true);
+    expect((sampled?.attributes ?? 0) & TextAttributes.DIM).toBe(0);
+  } finally {
+    await act(async () => {
+      ui2.renderer.destroy();
+    });
+  }
 });

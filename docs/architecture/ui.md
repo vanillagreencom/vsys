@@ -10,7 +10,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Screen: what one tab shows. Each screen is one file under `src/ui/`, named for its tab.
 - Drill-down: detail a screen shows only after the reader selects a row or opens a section: an agent's processes, a filesystem's error counters, the sources vsys cannot read.
 - Notice: a bordered box in the top-right corner that names a new serious cause and goes away by itself. The same text goes to the terminal as a desktop notification.
-- Pinned sample: defined in `docs/architecture/overview.md`. Agents, Resources, Builds and Storage show it; Home, Timeline and Settings stay live.
+- Pinned sample: the recorded sample selected by the timeline cursor. Agents, Resources, Builds and Storage show it; Home, Timeline and Settings stay live.
 
 ## Boundaries
 
@@ -41,39 +41,8 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 
 ## Invariants
 
-- Refresh leaves one screen and a stable listener count. `src/ui/screen.test.tsx` checks repeated updates through the production mount function, followed by unmount.
-- Refresh preserves the selected view. `src/ui/screen.test.tsx` checks navigation during updates and a resize.
-- Arrow selection pages the list and never moves the viewport. `src/ui/screen.test.tsx` checks the Agents list and the table's horizontal scroll.
-- A serious cause that appears between two samples raises one notice and one terminal notification, on whichever view is open, and never a second one for the same cause. `src/ui/screen.test.tsx` checks a mount turning read-only.
-- Every visible span uses a default or indexed colour, selection is marked in the accent colour and painted behind, and severity uses red and yellow. `src/ui/theme.test.tsx` checks the rendered spans; `src/ui/widgets.test.tsx` checks that a bare text element is what the guard catches.
-- Every colour any screen paints comes from the role table, and no two roles share an index. `src/ui/theme.test.tsx` walks every tab, the agent detail and the help panel and admits no other colour.
-- A table's heading and its rows read one column spec. `src/ui/columns.test.ts` checks that a cell and its heading occupy the same columns, and that a cut falls between characters; `src/ui/App.test.tsx` checks the rendered Agents list and the rendered Agents table.
-- A key a screen consumes never reaches the shell: a digit typed into the settings editor is text, not a tab. `src/ui/App.test.tsx` checks the editor.
-- Home keeps the selected card visible and opens its agent. `src/ui/App.test.tsx` checks a long list in a small terminal.
-- Opening a card lands on the row it names: the quota card on its directory in Storage, the memory-threshold card on its group in Resources. `src/ui/attention.test.ts` checks the targets the cards carry; `src/ui/App.test.tsx` checks where the screen lands.
-- Home lists the newest change first and opening one lands on Timeline with that time as the cursor, not with the cursor the screen would take on its own. `src/ui/home.test.ts` checks the order and the target; `src/ui/App.test.tsx` checks the landing.
-- The Timeline change list is a list: the arrow keys move the selection, Enter moves the time cursor to the selected change, and the selected row shows the raw unit its subject decoded from. `src/ui/App.test.tsx` drives it from the keyboard alone.
-- A footer names only keys its screen handles. `src/ui/App.test.tsx` presses every key every screen's footer offers and requires the screen to act on it, and checks the agent detail against the list it sits inside.
-- Leaving an agent returns to the list with that agent selected, including one opened from Home. `src/ui/App.test.tsx` checks both routes.
-- Home opens on the most urgent row, in the order it lists them: a concern where there is one, else the newest change, else the busiest agent. `src/ui/App.test.tsx` checks all three.
-- The tiles are reachable with the arrow keys and with the mouse, and both reach the same screen because both read `meterView`. `src/ui/App.test.tsx` checks all four from the keyboard, all four from a click, and that moving off the tiles returns Enter to the rows.
-- A list of forty lanes reads the history of the rows on screen and no others, and only where the column is drawn. The read and the render share one quantised moment, `trendEnd`: a row is read once per chart bucket, is drawn against the moment it was read against, and keeps only the answer to the question being asked. So a sample costs no read, cannot slide the window over a series that did not move and turn the columns it passes into gaps, and cannot be overtaken by a read still in flight from the previous bucket. `src/ui/App.test.tsx` asserts the lane ids the store was asked for rather than the rows drawn, holds two reads across a bucket roll to answer out of order, and compares the drawn row across a sample inside one.
-- The wheel moves a list's selection by one row and stops at the ends. `src/ui/App.test.tsx` drives it; `src/ui/widgets.test.tsx` pins the window arithmetic the list and its callers share.
-- No card offers a command carrying an unresolved value, which would reach the reader as the word `undefined` in text they are invited to run. `src/ui/attention.test.ts` checks every cause.
-- A wide terminal puts Home's two lists on one row and Agents' summary beside its list; a narrow one stacks them. `src/ui/App.test.tsx` checks both widths.
-- The help panel is the width of its own content at any terminal size, and every row inside its border belongs to it. `src/ui/App.test.tsx` checks two sizes and compares the widths.
-- Four tiles wrap rather than squeeze their captions together. `src/ui/widgets.test.tsx` derives the per-row count from the width.
-- A chart names the span it holds. `src/ui/format.test.ts` checks a window with one column of samples against a full one.
-- The copy key sends the selected command as an OSC 52 sequence and copies nothing when the row carries none. `src/ui/clipboard.test.ts` checks the encoding against planted terminators; `src/ui/App.test.tsx` reads the sequence off a test output stream.
-- No agent action reaches an effect while `writeMode` is off or while a past sample is pinned, and otherwise the confirmation stands between the key and the call. `src/ui/App.test.tsx` plants an action hook that must not be called; `src/model/actions.test.ts` pins the exact command of each action; `src/effect.test.ts` drives both effect kinds and a program that exits non-zero.
-- A confirmation is answered against the sample of the moment, never the one it opened on. A lane that ended, one whose scope name a later process took, one whose cgroup stopped resolving and one that moved to another scope each refuse and say which. `src/model/actions.test.ts` covers the five answers; `src/ui/App.test.tsx` lands a sample under an open confirmation and checks a lane that changed against one that did not.
-- A command a reader copies is a shell line: `src/model/shell.ts` quotes every word, so the backslash escapes in a real systemd scope name and a space in a configured path survive the paste. The effect keeps the unquoted values, which is what the kernel and systemd read. `src/model/shell.test.ts` reads each word back through `/bin/sh`.
-- Agent detail names the account, the pane, the cgroup, the charged resources, the build work by kind, the effective limits and the blocked reason, and keeps its process tree closed until opened. `src/ui/App.test.tsx` checks the rendered detail.
-- Unreadable lane quantities render as "not available", an unread memory cap is never shown as unlimited, and a blocked lane names its waiting task count and resource. `src/ui/format.test.ts` checks the lane formatters.
-- Search filters names, accounts, panes, window titles, worktrees, branches and tools. `src/ui/agents.test.ts` checks each field; `src/ui/App.test.tsx` checks clearing the filter.
-- A recorded event alone does not become a current concern. `src/ui/attention.test.ts` checks resolved events and missing source data.
-- The Timeline change list names the cause of each change, takes one row per event, and stops at the rows the viewport has. `src/ui/App.test.tsx` checks a lane start with an open alert, twelve events in a short terminal, and a 400-character subject.
-- A narrow terminal moves the tabs to their own row and drops the wait column; a short one drops the Timeline sparklines but keeps the change list. `src/ui/App.test.tsx` checks 80 columns.
+The properties these boundaries rest on, each with the test that holds it, are in [UI invariants](ui-invariants.md).
+
 - Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
 - Terminal restoration also runs on failed shutdown. `src/main.test.ts` checks isolated terminals and keeps the application alive through repeated refreshes to detect listener warnings.
 - How live data reaches the tree is a property of the rendering dependency, not of a screen: `docs/architecture/overview.md` states it.

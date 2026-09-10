@@ -1,15 +1,19 @@
 import { expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { testRender } from "@opentui/react/test-utils";
 import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture, groupSnapshot } from "../test/fixture";
+import { mount } from "../test/harness";
+import { type KeyHandler, KeyProvider } from "./keys";
 import {
   groupLabels,
   groupLevel,
   groupRows,
   idle,
+  Resources,
   treePrefixes,
 } from "./resources";
 
@@ -161,4 +165,66 @@ test("an idle parent filtered from the list still leaves its children nested", (
   expect(prefixes.get("a.slice/one")).toBe("   ├─ ");
   expect(prefixes.get("a.slice/two")).toBe("   └─ ");
   expect(prefixes.get("a.slice/two/deep")).toBe("      └─ ");
+});
+
+test("Resources sizes its tiles by the width it has, at a hundred columns", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const t = await mount(s, c, { width: 100, height: 30 });
+  try {
+    await t.press("3");
+    const lines = t.frame().split("\n");
+    const at = (text: string) => lines.findIndex((line) => line.includes(text));
+    // Four tiles in ninety-six columns are twenty-two columns each, under the
+    // width a tile needs, so they wrap to two rows instead of truncating.
+    expect(at("CPU wait")).toBeGreaterThan(-1);
+    expect(at("Swap")).toBeGreaterThan(at("CPU wait"));
+    // The detail under the number is a whole sentence, not a cut one.
+    expect(lines.some((line) => line.includes("desktop"))).toBe(true);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a target whose group has gone is said out loud, not dropped", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.groups = [groupSnapshot({ path: "busy.scope", name: "busy.scope" })];
+  /** Resources rendered with a target, reporting what it did with it. */
+  async function landOn(target: string) {
+    const notices: [string, string][] = [];
+    let used = 0;
+    const handlers = new Set<KeyHandler>();
+    const ui = await testRender(
+      <KeyProvider handlers={handlers}>
+        <Resources
+          snapshot={s}
+          config={c}
+          target={target}
+          onTargetUsed={() => {
+            used += 1;
+          }}
+          onNotice={(text: string, level: string) =>
+            notices.push([text, level])
+          }
+          width={140}
+          height={30}
+        />
+      </KeyProvider>,
+      { width: 140, height: 30 },
+    );
+    try {
+      await ui.renderOnce();
+      return { used, notices, frame: ui.captureCharFrame() };
+    } finally {
+      ui.renderer.destroy();
+    }
+  }
+  // A collector refresh between the keypress and this effect can take the row
+  // the card named. The request is still consumed, so it cannot fire again on
+  // a later sample, and the reader is told rather than left on a screen that
+  // looks like they never pressed anything.
+  const gone = await landOn("/gone");
+  expect(gone.used).toBe(1);
+  expect(gone.notices).toEqual([["/gone is no longer in the sample", "warn"]]);
 });
