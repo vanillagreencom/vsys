@@ -35,7 +35,11 @@ export const columns = [
   "sccache",
   "blocked",
 ] as const;
-/** The parts a lane name can be built from, in the order config lists them. */
+/**
+ * The parts a lane name can be built from, in the order config lists them.
+ * `pane` is still accepted so a stored config file keeps loading, but it
+ * composes nothing: a tmux pane address is a server handle, not a name.
+ */
 export const nameParts = [
   "account",
   "tool",

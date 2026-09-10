@@ -28,12 +28,18 @@ export const count = (
   one: string,
   many = `${one}s`,
 ): string => `${n ?? 0} ${plural(n ?? 0, one, many)}`;
+/**
+ * A span in the largest unit that still says something. Past two days an
+ * hour count is arithmetic the reader has to do: `54.9h ago` is `2.3d ago`.
+ */
 export function age(n: number): string {
   return n < 60
     ? `${Math.floor(n)}s`
     : n < 3600
       ? `${Math.floor(n / 60)}m`
-      : `${(n / 3600).toFixed(1)}h`;
+      : n < 172800
+        ? `${(n / 3600).toFixed(1)}h`
+        : `${(n / 86400).toFixed(1)}d`;
 }
 /** A quantity vsys could not read says so; it never shows a question mark. */
 export const gap = "not available";

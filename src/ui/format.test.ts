@@ -3,6 +3,7 @@ import { columns, defaults } from "../config/config";
 import { exportSnapshot, safe } from "../model/export";
 import { emptySnapshot, laneSnapshot } from "../test/fixture";
 import {
+  age,
   amount,
   blockedText,
   bytes,
@@ -113,4 +114,25 @@ test("exports preserve evidence and neutralize terminal control characters", () 
   expect(JSON.parse(exportSnapshot(s, "json"))).toEqual(s);
   expect(exportSnapshot(s, "markdown")).toContain("# vsys-view snapshot");
   expect(safe("a\u001b[2J\nb")).toBe("a [2J b");
+});
+
+test("a span reads in the largest unit that still says something", () => {
+  const rows: [number, string][] = [
+    [0, "0s"],
+    [59, "59s"],
+    [60, "1m"],
+    [3599, "59m"],
+    [3600, "1.0h"],
+    // Storage prints the age of a scratch directory, and 54.9h is arithmetic
+    // the reader has to do.
+    [172799, "48.0h"],
+    [172800, "2.0d"],
+    [197640, "2.3d"],
+    [864000, "10.0d"],
+  ];
+  for (const [seconds, expected] of rows)
+    expect({ seconds, shown: age(seconds) }).toEqual({
+      seconds,
+      shown: expected,
+    });
 });

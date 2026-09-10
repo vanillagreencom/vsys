@@ -196,8 +196,8 @@ test("four meters carry exact numbers and the biggest consumer", () => {
   expect(memory).toEqual({
     id: "memory",
     level: "danger",
-    consumer: "b.scope",
-    holder: "shell.scope",
+    consumer: "b",
+    holder: "shell",
     values: {
       used: 500,
       total: 1000,
@@ -210,7 +210,7 @@ test("four meters carry exact numbers and the biggest consumer", () => {
   expect(disk).toEqual({
     id: "disk",
     level: "warn",
-    consumer: "b.scope",
+    consumer: "b",
     values: { some: 12, full: 3, writeRate: 200, free: null },
   });
   expect(builds).toEqual({

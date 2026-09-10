@@ -1,6 +1,7 @@
 import type { Config } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
+import { fit } from "./columns";
 import { ui } from "./theme";
 import { Line, Overlay } from "./widgets";
 
@@ -187,7 +188,7 @@ export function Help({ config: c }: { config: Config }) {
           <Line attributes={ui.bold}>{name}</Line>
           {rows.map(([key, action]) => (
             <Line key={action} height={1} truncate>
-              <span fg={ui.accent}>{key.padEnd(16)}</span>
+              <span fg={ui.accent}>{fit(key, 16)}</span>
               <span>{action}</span>
             </Line>
           ))}

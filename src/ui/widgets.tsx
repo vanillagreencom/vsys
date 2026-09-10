@@ -3,7 +3,8 @@ import type { TextProps } from "@opentui/react";
 import type { ReactNode } from "react";
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
-import { levelColor, ui } from "./theme";
+import { type Column, fit, headerText } from "./columns";
+import { levelColor, readingWeight, ui } from "./theme";
 
 /**
  * A text line in the terminal's own foreground. OpenTUI paints text white
@@ -13,20 +14,42 @@ export function Line(props: TextProps) {
   return <text fg={ui.fg} {...props} />;
 }
 
-/** A section title: the name in bold, an optional count beside it in dim. */
-export function Heading({
+/**
+ * A section: the name in bold, an optional count beside it, and a dim rule to
+ * the panel edge so the reader sees where one section ends and the next
+ * begins. A section is never boxed; a box is for what floats above the screen.
+ */
+export function Section({
   title,
   count,
+  width,
   marginTop = 1,
 }: {
   title: string;
   count?: number | string;
+  /** The panel's inner width, which the rule runs to. */
+  width: number;
   marginTop?: number;
 }) {
+  const label = count === undefined ? title : `${title}  ${count}`;
+  const rule = Math.max(0, width - [...label].length - 1);
   return (
     <Line height={1} flexShrink={0} truncate marginTop={marginTop}>
       <span attributes={ui.bold}>{title}</span>
       {count !== undefined && <span attributes={ui.dim}>{`  ${count}`}</span>}
+      <span attributes={ui.dim}>{` ${"─".repeat(rule)}`}</span>
+    </Line>
+  );
+}
+/**
+ * The heading over a table, built from the column spec its rows read, so a
+ * width changed in one place moves both. The selection marker takes the first
+ * column of every row, so the heading starts one column in.
+ */
+export function TableHeader({ columns }: { columns: Column[] }) {
+  return (
+    <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
+      {` ${headerText(columns)}`}
     </Line>
   );
 }
@@ -54,16 +77,13 @@ export function Field({
 }) {
   return (
     <Line height={1} flexShrink={0} truncate>
-      <span attributes={ui.dim}>{label.padEnd(width)}</span>
+      <span attributes={ui.dim}>{fit(label, width)}</span>
       <span fg={color}>{safe(value)}</span>
     </Line>
   );
 }
 
-/**
- * A horizontal meter. The filled part takes the level colour; the rest stays
- * dim so an empty meter is visible without shouting.
- */
+/** The filled part of a meter, in eighths of nothing: whole cells only. */
 export function bar(value: number | null, max: number, width: number): string {
   if (width < 1) return "";
   const filled =
@@ -72,23 +92,48 @@ export function bar(value: number | null, max: number, width: number): string {
       : Math.round((Math.max(0, Math.min(value, max)) / max) * width);
   return "█".repeat(filled);
 }
+/**
+ * The unfilled part is a rail rather than a shaded block: thirty rows of
+ * near-empty bars would otherwise lay a grey slab across the screen.
+ */
 export function Bar({
   value,
   max,
   width,
   level = "ok",
+  color,
 }: {
   value: number | null;
   max: number;
   width: number;
   level?: Level;
+  /** Overrides the severity colour where a bar draws one named metric. */
+  color?: RGBA;
 }) {
   const filled = bar(value, max, width);
   return (
     <>
-      <span fg={levelColor(level)}>{filled}</span>
-      <span attributes={ui.dim}>{"░".repeat(width - filled.length)}</span>
+      <span fg={color ?? levelColor(level)}>{filled}</span>
+      <span fg={ui.quiet} attributes={ui.dim}>
+        {"─".repeat(width - filled.length)}
+      </span>
     </>
+  );
+}
+/** A number in a table cell: a zero recedes, a reading keeps its weight. */
+export function Reading({
+  value,
+  text,
+  color,
+}: {
+  value: number | null | undefined;
+  text: string;
+  color?: RGBA;
+}) {
+  return (
+    <span fg={color} attributes={readingWeight(value)}>
+      {text}
+    </span>
   );
 }
 
@@ -102,6 +147,7 @@ export function Tile({
   level = "ok",
   detail,
   chart,
+  chartColor,
 }: {
   label: string;
   value: string;
@@ -109,6 +155,8 @@ export function Tile({
   detail: string;
   /** A one-row sparkline under the number, when history exists. */
   chart?: string;
+  /** The metric's own hue, so the same quantity reads alike on every screen. */
+  chartColor?: RGBA;
 }) {
   return (
     <box flexDirection="column" flexGrow={1} flexBasis={0} minWidth={0}>
@@ -121,7 +169,7 @@ export function Tile({
         </span>
       </Line>
       {chart !== undefined && (
-        <Line height={1} truncate fg={levelColor(level)}>
+        <Line height={1} truncate fg={chartColor ?? levelColor(level)}>
           {chart}
         </Line>
       )}
@@ -142,8 +190,8 @@ export function Tiles({ children }: { children: ReactNode }) {
 }
 
 /**
- * One selectable line. The selected line carries a marker in the accent
- * colour, so selection never repaints the whole row.
+ * One selectable line. The selected line is painted behind and keeps its
+ * marker: in a list thirty rows deep a marker alone is easy to lose.
  */
 export function Row({
   selected,
@@ -159,9 +207,11 @@ export function Row({
   return (
     <Line
       height={1}
+      width="100%"
       flexShrink={0}
       truncate
       fg={color}
+      bg={selected ? ui.quiet : undefined}
       attributes={selected ? ui.bold : ui.none}
       onMouseDown={onOpen}
     >
@@ -313,6 +363,7 @@ export function Toast({ text, level }: { text: string; level: Level }) {
       border
       borderStyle="rounded"
       borderColor={levelColor(level)}
+      backgroundColor={ui.bg}
       paddingX={1}
       maxWidth="60%"
     >

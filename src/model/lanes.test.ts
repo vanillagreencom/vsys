@@ -67,9 +67,49 @@ test("two agents in one worktree under different accounts get different names", 
     }),
   ];
   const [a, b] = lanes(groups, procs, c);
-  expect(a.name).toBe(".2claude claude %3 kendex");
+  // The accounts already separate these two, so neither carries a pane.
+  expect(a.name).toBe(".2claude claude kendex");
   expect(b.name).toBe(".codex codex review kendex");
   expect([a.account, a.pane, b.title]).toEqual([".2claude", "%3", "review"]);
+});
+
+test("lanes that resolve to one name are separated by what a reader recognises", () => {
+  const c = defaults();
+  const same = (n: number, pane: string, cwd = "/repo/kendex") =>
+    processSnapshot({
+      pid: n,
+      cwd,
+      group: `/agents.slice/${n}.scope`,
+      env: { CLAUDE_CONFIG_DIR: "/home/x/.2claude", TMUX_PANE: pane },
+    });
+  const groups = [1, 2].map((n) =>
+    groupSnapshot({
+      path: `agents.slice/${n}.scope`,
+      name: `${n}.scope`,
+      pids: [n],
+    }),
+  );
+  // Different worktrees: the directory separates them.
+  const byDirectory = lanes(
+    groups,
+    [same(1, "%3", "/repo/one"), same(2, "%9", "/repo/two")],
+    c,
+  );
+  expect(byDirectory.map((l) => l.name)).toEqual([
+    ".2claude claude one",
+    ".2claude claude two",
+  ]);
+  // One worktree and two panes: the pane addresses differ but name nothing a
+  // reader can place, so the process id separates them instead.
+  const byPid = lanes(groups, [same(1, "%17"), same(2, "%21")], c);
+  expect(byPid.map((l) => l.name)).toEqual([
+    ".2claude claude kendex PID 1",
+    ".2claude claude kendex PID 2",
+  ]);
+  // The pane address is kept as the handle, on the lane, out of the name.
+  expect(byPid.map((l) => l.pane)).toEqual(["%17", "%21"]);
+  for (const lane of byPid) expect(lane.name).not.toContain("%");
+  expect(new Set(byPid.map((l) => l.name)).size).toBe(byPid.length);
 });
 
 test("a lane reports its cgroup, its charged resources and its effective caps", () => {

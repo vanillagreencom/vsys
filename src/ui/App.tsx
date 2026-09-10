@@ -323,9 +323,16 @@ export function App({
       />
     );
   else if (view === "Builds")
-    content = <Builds snapshot={shown} config={c} height={contentHeight} />;
+    content = (
+      <Builds
+        snapshot={shown}
+        config={c}
+        height={contentHeight}
+        width={width - 4}
+      />
+    );
   else if (view === "Storage")
-    content = <Storage snapshot={shown} config={c} />;
+    content = <Storage snapshot={shown} config={c} width={width - 4} />;
   else if (view === "Timeline")
     content = (
       <Timeline
@@ -346,6 +353,7 @@ export function App({
       <Settings
         snapshot={snapshot}
         config={c}
+        width={width - 4}
         onSave={onSave}
         onNotice={notice}
       />

@@ -1,5 +1,6 @@
 import type { Config } from "../config/config";
 import { launcherTrail } from "../model/launcher";
+import { unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
@@ -180,7 +181,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       const groups = cause.groups.length;
       return {
         word: "Busy",
-        title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => g.name))}`,
+        title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => unitLabel(g.name)))}`,
         detail: "Memory reclaim can slow every task in these groups.",
         next: "Open Resources and raise memory.high, or reduce the work running there.",
         view: "Resources",
@@ -237,16 +238,6 @@ export function verdictLine(items: Attention[], s: Snapshot): string {
     : "Health unknown: no pressure data on this kernel";
 }
 /**
- * A source vsys cannot read is a vsys problem, not a system problem. It belongs
- * in a footer, counted once per source rather than once per failed read.
- */
-export function sourceFooter(s: Snapshot): string | null {
-  const sources = new Set(s.errors.map((e) => e.source));
-  return sources.size
-    ? `vsys cannot read ${sources.size} ${p(sources.size, "source", "sources")}; open Settings`
-    : null;
-}
-/**
  * A quantity vsys could not read names the interface that would have supplied
  * it, so a meter on a kernel without that interface is never merely blank.
  */
@@ -275,16 +266,19 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
     meter.consumer ? `${meter.consumer} ${value}`.trimEnd() : unread(s, id);
   const v = meter.values;
   const level = meter.level;
+  // The headline is time lost to waiting; the detail is how much of the
+  // machine is in use. Two percentages of different things sit one line apart,
+  // so each says which it is.
   if (meter.id === "cpu")
     return {
       label: "CPU wait",
       value: pc(v.system, "psi"),
-      detail: `agents ${pc(v.agents, "delegation")} · desktop ${pc(v.desktop, "delegation")}`,
+      detail: `in use: agents ${pc(v.agents, "delegation")} · desktop ${pc(v.desktop, "delegation")}`,
       level,
       facts: [
-        ["Tasks waiting", pc(v.system, "psi")],
-        ["Agents", pc(v.agents, "delegation")],
-        ["Desktop", pc(v.desktop, "delegation")],
+        ["Time tasks waited", pc(v.system, "psi")],
+        ["Cores agents use", pc(v.agents, "delegation")],
+        ["Cores desktop uses", pc(v.desktop, "delegation")],
         ["Busiest agent", who(pc(v.top, "delegation"), "delegation")],
       ],
     };

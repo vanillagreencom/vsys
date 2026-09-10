@@ -5,10 +5,20 @@ import { safe } from "../model/export";
 import type { Scratch, Snapshot, Volume } from "../model/types";
 import type { Level } from "../model/verdict";
 import { type WriteTotal, writeTotals } from "../model/writes";
+import { columnGap, fit } from "./columns";
 import { age, amount, gap } from "./format";
 import { useScreenKeys } from "./keys";
-import { levelColor, scrollbar, ui } from "./theme";
-import { Bar, Empty, Field, Heading, Line, nextDown, Row } from "./widgets";
+import { levelColor, metric, scrollbar, ui } from "./theme";
+import {
+  Bar,
+  Empty,
+  Field,
+  Line,
+  nextDown,
+  Reading,
+  Row,
+  Section,
+} from "./widgets";
 
 /** Everything the reader can select on Storage, top to bottom. */
 export type StorageItem =
@@ -55,9 +65,11 @@ function errorText(v: Volume): string {
 export function Storage({
   snapshot: s,
   config: c,
+  width,
 }: {
   snapshot: Snapshot;
   config: Config;
+  width: number;
 }) {
   const [selected, setSelected] = useState(0);
   const items = storageItems(s);
@@ -84,11 +96,20 @@ export function Storage({
     const measured = rows.some((r) => r.written !== null);
     return rows.map((row) => (
       <Line key={row.name} height={1} flexShrink={0} truncate>
-        {safe(row.name.padEnd(28).slice(0, 28))}{" "}
-        {measured && <Bar value={row.written} max={top} width={16} />}
-        {measured
-          ? ` ${amount(row.written, c).padStart(10)}`
-          : amount(row.written, c)}
+        {safe(fit(row.name, 28))}
+        {columnGap}
+        {measured && (
+          <Bar value={row.written} max={top} width={16} color={metric.disk} />
+        )}
+        {columnGap}
+        <Reading
+          value={row.written}
+          text={
+            measured
+              ? fit(amount(row.written, c), 10, "right")
+              : amount(row.written, c)
+          }
+        />
       </Line>
     ));
   };
@@ -126,14 +147,19 @@ export function Storage({
           color={over ? ui.warn : undefined}
           onOpen={() => setSelected(i)}
         >
-          {safe(x.path.padEnd(40).slice(0, 40))}{" "}
+          {safe(fit(x.path, 40))}
+          {columnGap}
           <Bar
             value={x.bytes}
             max={scratchTop}
             width={12}
             level={over ? "warn" : "ok"}
           />
-          {` ${amount(x.bytes, c).padStart(10)}`}
+          {columnGap}
+          <Reading
+            value={x.bytes}
+            text={fit(amount(x.bytes, c), 10, "right")}
+          />
           <span attributes={ui.dim}>{`  ${modified} ago`}</span>
           {x.error && <span fg={ui.warn}>{`  ${safe(x.error)}`}</span>}
         </Row>
@@ -150,7 +176,7 @@ export function Storage({
       contentOptions={{ flexShrink: 0 }}
     >
       <box flexDirection="column" flexShrink={0} paddingX={2}>
-        <Heading title="Written since boot" marginTop={0} />
+        <Section title="Written since boot" width={width} marginTop={0} />
         {writeRows(totals.slices, true, "by slice")}
         <box height={1} flexShrink={0} />
         {writeRows(totals.devices, totals.devicesAvailable, "by drive")}
@@ -159,9 +185,13 @@ export function Storage({
             A dm- row repeats the writes of the disk beneath it.
           </Line>
         )}
-        <Heading title="Drive lifetime writes" />
+        <Section title="Drive lifetime writes" width={width} />
         {writeRows(totals.lifetime, true, "lifetime")}
-        <Heading title="Filesystems" count={st.volumes.length || undefined} />
+        <Section
+          title="Filesystems"
+          width={width}
+          count={st.volumes.length || undefined}
+        />
         {st.mountsAvailable === false && (
           <Empty text="Mount information is not available." />
         )}
@@ -185,9 +215,10 @@ export function Storage({
                 color={levelColor(level)}
                 onOpen={() => setSelected(i)}
               >
-                {safe(v.mount.padEnd(24).slice(0, 24))}{" "}
+                {safe(fit(v.mount, 24))}
+                {columnGap}
                 <Bar value={used} max={v.total ?? 1} width={12} level={level} />
-                {` ${amount(v.free, c).padStart(10)} free of ${amount(v.total, c)}`}
+                {`${columnGap}${fit(amount(v.free, c), 10, "right")} free of ${amount(v.total, c)}`}
                 {v.readOnly ? (
                   <span fg={ui.danger}> read-only</span>
                 ) : (
@@ -207,7 +238,11 @@ export function Storage({
             </box>
           );
         })}
-        <Heading title="Scrub reports" count={st.scrubs.length || undefined} />
+        <Section
+          title="Scrub reports"
+          width={width}
+          count={st.scrubs.length || undefined}
+        />
         {!st.scrubs.length && (
           <Empty text="No scrub report in the report directory." />
         )}
@@ -243,7 +278,8 @@ export function Storage({
             </box>
           );
         })}
-        <Heading
+        <Section
+          width={width}
           title="Scratch"
           count={`${scanState} · quota ${amount(c.scratchQuota, c)}`}
         />

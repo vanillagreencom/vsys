@@ -9,15 +9,18 @@ import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import { keyLabel } from "./chrome";
+import { columnGap, fit } from "./columns";
 import { useScreenKeys } from "./keys";
 import {
   capabilityLabels,
   capabilityReason,
+  settingDisplay,
   settingGroups,
+  settingHelp,
   settingLabel,
 } from "./settings";
 import { scrollbar, ui } from "./theme";
-import { Empty, Heading, Line, nextDown, Row } from "./widgets";
+import { Empty, Line, nextDown, Row, Section } from "./widgets";
 
 /** A selectable line on Settings: a stored value, or the unreadable sources. */
 export type SettingItem =
@@ -48,11 +51,13 @@ const settingValue = (c: Config, key: string): unknown =>
 export function Settings({
   snapshot: s,
   config: c,
+  width,
   onSave,
   onNotice,
 }: {
   snapshot: Snapshot;
   config: Config;
+  width: number;
   onSave: (c: Config) => Promise<void>;
   onNotice: (text: string, level: Level) => void;
 }) {
@@ -119,15 +124,26 @@ export function Settings({
   let index = 0;
   const settingRow = (key: string) => {
     const i = index++;
-    const value = editText(settingValue(c, key));
+    const help = settingHelp(key);
     return (
       <box id={`setting-${i}`} key={key} flexDirection="column" flexShrink={0}>
         <Row selected={i === selected} onOpen={() => beginEdit(i)}>
-          {settingLabel(key).padEnd(44).slice(0, 44)}
+          {fit(settingLabel(key), 24)}
+          {columnGap}
           <span attributes={i === selected ? ui.none : ui.dim}>
-            {safe(value)}
+            {safe(settingDisplay(key, settingValue(c, key), c))}
           </span>
         </Row>
+        {!editing && i === selected && help !== "" && (
+          <Line
+            flexShrink={0}
+            wrapMode="word"
+            paddingLeft={3}
+            attributes={ui.dim}
+          >
+            {help}
+          </Line>
+        )}
         {editing && i === selected && (
           <box
             height={3}
@@ -161,8 +177,9 @@ export function Settings({
       contentOptions={{ flexShrink: 0 }}
     >
       <box flexDirection="column" flexShrink={0} paddingX={2}>
-        <Heading
+        <Section
           title="Data sources"
+          width={width}
           count={
             missing.length ? `${missing.length} not available` : "all available"
           }
@@ -173,7 +190,7 @@ export function Settings({
             <span fg={cap.available ? ui.ok : ui.warn}>
               {cap.available ? "● " : "○ "}
             </span>
-            {capabilityLabels[cap.id].padEnd(42)}
+            {fit(capabilityLabels[cap.id], 42)}
             <span attributes={ui.dim}>
               {cap.available
                 ? "available"
@@ -209,7 +226,7 @@ export function Settings({
                     truncate
                     paddingLeft={3}
                   >
-                    {safe(source.padEnd(48).slice(0, 48))}
+                    {safe(fit(source, 48))}
                     <span attributes={ui.dim}>
                       {safe(
                         `${s.errors.find((e) => e.source === source)?.message ?? ""}${n > 1 ? ` (${n} reads)` : ""}`,
@@ -222,11 +239,11 @@ export function Settings({
         })()}
         {settingGroups.map(([group, keys]) => (
           <box key={group} flexDirection="column" flexShrink={0}>
-            <Heading title={group} />
+            <Section title={group} width={width} />
             {keys.map(settingRow)}
           </box>
         ))}
-        <Heading title="Keys" />
+        <Section title="Keys" width={width} />
         {Object.keys(c.keys).map((key) => settingRow(`keys.${key}`))}
         <Line
           height={1}

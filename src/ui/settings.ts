@@ -1,51 +1,201 @@
+import type { Config } from "../config/config";
 import type { Capability, CapabilityId } from "../model/types";
+import { age, bytes } from "./format";
 
-/** Labels explain stored values without changing the configuration contract. */
-export const settingLabels: Record<string, string> = {
-  refreshMs: "Refresh interval (ms)",
-  historyHours: "History window (hours)",
-  persistence: "Save history across restarts",
-  sqlitePath: "History database path",
-  cgroupRoot: "Resource groups path",
-  cgroupTop: "Machine-wide resource group root",
-  procRoot: "Process information path",
-  btrfsRoot: "Btrfs information path",
-  sysBlockRoot: "Block device information path",
-  watchedSlices: "Slices shown under Agents",
-  agentSlice: "Agent resource slice",
-  desktopSlice: "Desktop resource slice",
-  agentTools: "Agent program names",
-  excludeArgv: "Command patterns that are not agents",
-  capMarkers: "Environment names that prove a build cap",
-  linkerNames: "Linker program names",
-  compilerNames: "Compiler program names",
-  jobserverEnv: "Environment names that carry the build token pool",
-  memoryFloor: "Low memory limit warning (bytes)",
-  swapFloor: "Desktop swap warning (bytes)",
-  freeFloor: "Low free space warning (bytes)",
-  pressureAmber: "Resource wait warning (%)",
-  pressureRed: "Resource wait danger (%)",
-  pressureHoldSeconds: "Wait before pressure alert (seconds)",
-  laneNaming: "Lane name source",
-  laneEnv: "Lane name environment variable",
-  laneNameParts: "Parts that name a lane, in order",
-  accountEnv: "Environment names that carry the account",
-  paneEnv: "Environment names that carry the pane address",
-  titleEnv: "Environment names that carry the window title",
-  sccacheNames: "Compiler cache program names",
-  scratchDirs: "Scratch directories",
-  scratchQuota: "Scratch quota per directory (bytes)",
-  scratchRefreshMs: "Scratch scan interval (ms)",
-  btrfsMounts: "Watched Btrfs mounts",
-  scrubDir: "Scrub report directory",
-  smartDir: "SMART report directory",
-  columns: "Table columns in display order",
-  sort: "Agents sort column",
-  descending: "Sort largest first",
-  sparkline: "Chart style",
-  units: "Storage units",
-  notifications: "Rules with desktop notifications",
-  writeMode: "Allow the agent Freeze, Thaw and Stop actions",
+/**
+ * What one setting is called in the list, what it means in full, and the unit
+ * its stored number is written in. The label fits its column beside its value;
+ * the sentence goes under the row the reader selected, so no line has to hold
+ * both.
+ */
+export interface SettingInfo {
+  label: string;
+  help: string;
+  /** A stored number the reader reads in another unit. */
+  unit?: "bytes" | "ms" | "percent";
+}
+export const settingInfo: Record<string, SettingInfo> = {
+  refreshMs: {
+    label: "Refresh interval",
+    help: "How often vsys reads system state.",
+    unit: "ms",
+  },
+  historyHours: {
+    label: "History window",
+    help: "How far back the Timeline and the charts can reach.",
+  },
+  persistence: {
+    label: "Save history",
+    help: "Keep recorded samples across restarts in the history database.",
+  },
+  sqlitePath: {
+    label: "History database",
+    help: "Where saved history is written.",
+  },
+  cgroupRoot: {
+    label: "Resource groups path",
+    help: "The cgroup tree for this login session, which every lane sits under.",
+  },
+  cgroupTop: {
+    label: "Machine group root",
+    help: "The machine-wide cgroup mount, read for whole-machine disk totals.",
+  },
+  procRoot: {
+    label: "Process information",
+    help: "The kernel's process directory.",
+  },
+  btrfsRoot: {
+    label: "Btrfs information",
+    help: "The kernel's Btrfs directory, read for filesystem error counters.",
+  },
+  sysBlockRoot: {
+    label: "Block devices",
+    help: "The kernel's block device directory, read for drive names.",
+  },
+  watchedSlices: {
+    label: "Watched slices",
+    help: "The slices whose scopes appear under Agents.",
+  },
+  agentSlice: {
+    label: "Agent slice",
+    help: "The slice agents belong in. A tool running outside it has escaped.",
+  },
+  desktopSlice: {
+    label: "Desktop slice",
+    help: "The slice the desktop session runs in, watched for swapping.",
+  },
+  agentTools: {
+    label: "Agent programs",
+    help: "Program names vsys counts as an agent.",
+  },
+  excludeArgv: {
+    label: "Not an agent",
+    help: "Command patterns that rule a process out, such as browser helpers.",
+  },
+  capMarkers: {
+    label: "Build cap variables",
+    help: "Environment names whose presence proves a build concurrency cap.",
+  },
+  linkerNames: {
+    label: "Linkers",
+    help: "Program names counted as link work.",
+  },
+  compilerNames: {
+    label: "Compilers",
+    help: "Program names counted as compile work.",
+  },
+  jobserverEnv: {
+    label: "Token pool variables",
+    help: "Environment names carrying the make token pool.",
+  },
+  memoryFloor: {
+    label: "Low memory limit",
+    help: "A lane whose effective memory cap is under this is called dangerous.",
+    unit: "bytes",
+  },
+  swapFloor: {
+    label: "Desktop swap warning",
+    help: "Desktop swap above this raises the swapped-out cause.",
+    unit: "bytes",
+  },
+  freeFloor: {
+    label: "Low free space",
+    help: "A filesystem with less free space than this raises a danger.",
+    unit: "bytes",
+  },
+  pressureAmber: {
+    label: "Wait warning",
+    help: "The stall share at which a meter turns amber.",
+    unit: "percent",
+  },
+  pressureRed: {
+    label: "Wait danger",
+    help: "The stall share at which a meter turns red.",
+    unit: "percent",
+  },
+  pressureHoldSeconds: {
+    label: "Wait before alert",
+    help: "How long a stall must hold before it becomes an alert.",
+  },
+  laneNaming: {
+    label: "Lane name source",
+    help: "Which fact names a lane's workspace: its worktree, its branch or a variable.",
+  },
+  laneEnv: {
+    label: "Lane name variable",
+    help: "The environment name read when the lane name source is a variable.",
+  },
+  laneNameParts: {
+    label: "Lane name parts",
+    help: "The parts that name a lane, in order. A listed pane composes nothing: a tmux pane address names no window a reader can place. Where two lanes still resolve to one name, vsys adds the working directory or the process id.",
+  },
+  accountEnv: {
+    label: "Account variables",
+    help: "Environment names carrying the agent configuration directory.",
+  },
+  paneEnv: {
+    label: "Pane variables",
+    help: "Environment names carrying the terminal pane address.",
+  },
+  titleEnv: {
+    label: "Window title variables",
+    help: "Environment names carrying the terminal window title.",
+  },
+  sccacheNames: {
+    label: "Compiler cache",
+    help: "Program names counted as compiler cache clients.",
+  },
+  scratchDirs: {
+    label: "Scratch directories",
+    help: "Directories measured against the scratch quota.",
+  },
+  scratchQuota: {
+    label: "Scratch quota",
+    help: "A scratch directory larger than this raises a housekeeping card.",
+    unit: "bytes",
+  },
+  scratchRefreshMs: {
+    label: "Scratch scan interval",
+    help: "How often scratch directories are measured, separately from refresh.",
+    unit: "ms",
+  },
+  btrfsMounts: {
+    label: "Watched Btrfs mounts",
+    help: "Mount points watched for error counters and free space. Empty watches every Btrfs mount.",
+  },
+  scrubDir: {
+    label: "Scrub reports",
+    help: "The directory a privileged timer leaves scrub reports in.",
+  },
+  smartDir: {
+    label: "Drive reports",
+    help: "The directory a privileged timer leaves smartctl reports in.",
+  },
+  columns: {
+    label: "Table columns",
+    help: "The columns of the Agents table, in display order.",
+  },
+  sort: { label: "Sort column", help: "The column the Agents list sorts on." },
+  descending: {
+    label: "Largest first",
+    help: "Sort the Agents list from the largest value down.",
+  },
+  sparkline: {
+    label: "Chart style",
+    help: "The characters a one-row chart is drawn with.",
+  },
+  units: {
+    label: "Storage units",
+    help: "Binary units count 1024 to the step; decimal units count 1000.",
+  },
+  notifications: {
+    label: "Desktop notifications",
+    help: "The rules whose alerts also reach the desktop through notify-send.",
+  },
+  writeMode: {
+    label: "Agent actions",
+    help: "Allow the agent detail's Freeze, Thaw and Stop to run, each after a confirmation. Off, they are copy text.",
+  },
 };
 /** Settings by what they change, so a reader finds one without a search. */
 export const settingGroups: [string, string[]][] = [
@@ -152,9 +302,53 @@ export function capabilityLine(cap: Capability): string {
   const reason = capabilityReason(cap);
   return `${capabilityLabels[cap.id]}: not available${reason ? `: ${reason}` : ""} (${cap.source}: ${cap.detail})`;
 }
+
 export function settingLabel(key: string): string {
   return (
-    settingLabels[key] ??
+    settingInfo[key]?.label ??
     (key.startsWith("keys.") ? `Key: ${key.slice(5)}` : key)
   );
+}
+/** The sentence under the selected row; a key binding needs none. */
+export function settingHelp(key: string): string {
+  return settingInfo[key]?.help ?? "";
+}
+/**
+ * A stored millisecond count as the interval it sets. `age()` floors to whole
+ * seconds, so a 500 ms refresh read `0s` and 1500 ms read `1s`, telling a
+ * reader an interval they had set was zero. `validate()` accepts `refreshMs`
+ * from 100, so sub-second and fractional-second intervals are ordinary values
+ * and keep their own reading. A minute or more falls back to `age()`, which
+ * every other span on screen is read in.
+ */
+function interval(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  return seconds < 60
+    ? `${seconds.toFixed(1).replace(/\.0$/, "")}s`
+    : age(seconds);
+}
+/**
+ * A stored value as the reader reads it: a byte count in its unit, an interval
+ * as a duration, a boolean as a word, and a long list as what it starts with
+ * and how much more it holds. The editor still opens the stored value, so
+ * nothing here has to round-trip.
+ */
+export function settingDisplay(key: string, value: unknown, c: Config): string {
+  if (typeof value === "boolean") return value ? "On" : "Off";
+  if (Array.isArray(value)) {
+    if (!value.length) return "none";
+    const shown = value.slice(0, 3).join(", ");
+    return value.length > 3 ? `${shown}, and ${value.length - 3} more` : shown;
+  }
+  if (typeof value === "number")
+    switch (settingInfo[key]?.unit) {
+      case "bytes":
+        return bytes(value, c);
+      case "ms":
+        return interval(value);
+      case "percent":
+        return `${value}%`;
+    }
+  return String(value);
 }
