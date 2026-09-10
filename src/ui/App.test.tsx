@@ -6,6 +6,7 @@ import { defaults, validate } from "../config/config";
 import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
+import type { LaneSample } from "../store/lane-series";
 import { normalizeLane } from "../store/migrate";
 import {
   emptySnapshot,
@@ -16,7 +17,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { App, hints, Waiting } from "./App";
-import { findLanes } from "./agents";
+import { findLanes, trendEnd, trendMarks, trendWidth } from "./agents";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
@@ -24,6 +25,7 @@ import { type HomeItem, homeItems, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
 import { Storage, volumesByDevice } from "./storage-screen";
+import { windows } from "./timeline-screen";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
 async function mount(
@@ -82,13 +84,25 @@ async function mount(
     await ui.renderOnce();
   };
   const frame = () => ui.captureCharFrame();
+  const wheel = async (x: number, y: number, way: "up" | "down") => {
+    await act(async () => {
+      await ui.mockMouse.scroll(x, y, way);
+    });
+    await ui.renderOnce();
+  };
+  const click = async (x: number, y: number) => {
+    await act(async () => {
+      await ui.mockMouse.click(x, y);
+    });
+    await ui.renderOnce();
+  };
   const close = async () => {
     await act(async () => {
       ui.renderer.destroy();
     });
     h.close();
   };
-  return { ui, h, press, frame, close, written, update };
+  return { ui, h, press, frame, wheel, click, close, written, update };
 }
 
 test("keys and the mouse move between tabs, open an agent, and quit", async () => {
@@ -612,7 +626,9 @@ test("a narrow terminal gives the tabs their own row and drops the wait column",
     const frame = wide.frame();
     expect(frame.split("\n")[0]).toContain("2 Agents");
     // The heading names the column, so the cell carries only the reading.
-    expect(frame).toMatch(/Agent\s+Program\s+CPU\s+Memory\s+Wait\s+State/);
+    expect(frame).toMatch(
+      /Agent\s+Program\s+CPU\s+Trend\s+Memory\s+Wait\s+State/,
+    );
     expect(frame).toContain("12.0%");
   } finally {
     await wide.close();
@@ -2622,4 +2638,449 @@ test("Storage draws two filesystems that report one device", async () => {
   // ours to choose. This render still draws both, so the diagnostic is the only
   // place the collision is stated, and the test reads it rather than the frame.
   expect(logged.filter((line) => /same key/i.test(line))).toEqual([]);
+});
+
+/** A history that records which lane series were asked for. */
+function countingHistory(c: Config, s: Snapshot) {
+  const h = new History(c);
+  h.add(s);
+  const asked: string[] = [];
+  const real = h.laneWindow.bind(h);
+  h.laneWindow = async (id: string, end: number, durationMs: number) => {
+    asked.push(id);
+    return real(id, end, durationMs);
+  };
+  return { h, asked };
+}
+
+test("a long list reads the history of the rows on screen and no others", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // Forty lanes, descending by CPU, so the order on screen is known.
+  s.lanes = Array.from({ length: 40 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}`, name: `lane-${i}`, cpu: 100 - i }),
+  );
+  s.groups = [groupSnapshot()];
+  const { h, asked } = countingHistory(c, s);
+  // Wide enough for the trend column: the read exists to draw it.
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    expect(t.frame()).toContain("Trend");
+    // The claim is about reads, not about pixels: a change that widened the
+    // read would draw the same rows and pass a test that only looked at them.
+    // The expectation is the rows actually on screen, so no layout arithmetic
+    // is copied here to drift from the screen's own.
+    const onScreen = () => new Set(t.frame().match(/lane-\d+/g) ?? []);
+    const shown = onScreen();
+    expect(shown.size).toBeGreaterThan(0);
+    expect(shown.size).toBeLessThan(s.lanes.length);
+    expect([...asked].sort()).toEqual([...shown].sort());
+    // No series is read twice, and a sample inside the chart's newest bucket
+    // reads none: the loaded set is keyed by lane, window and that bucket, so
+    // a refresh within one does not reach the store.
+    expect(asked.length).toBe(new Set(asked).size);
+    const before = asked.length;
+    await t.update({ ...s, time: s.time + 1000 });
+    await t.update({ ...s, time: s.time + 2000 });
+    expect(asked.length).toBe(before);
+    // Scrolling reads what scrolling revealed, and nothing above it.
+    for (let i = 0; i < shown.size; i++) await t.press("j");
+    const revealed = onScreen();
+    expect(new Set(asked).size).toBeGreaterThan(shown.size);
+    for (const id of asked)
+      expect(shown.has(id) || revealed.has(id)).toBe(true);
+    // Scrolling one row into view reads that row, not the whole window again:
+    // the rows already read stay read.
+    expect(asked.length).toBe(new Set(asked).size);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a series that arrives after the next sample still draws", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: "lane-0", name: "lane-0", cpu: 100 })];
+  s.groups = [groupSnapshot()];
+  const h = new History(c);
+  h.add(s);
+  const real = h.laneWindow.bind(h);
+  // A store with real history answers in its own time. This one answers only
+  // when the test says so, after further samples have arrived.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  h.laneWindow = async (id: string, end: number, durationMs: number) => {
+    const samples = await real(id, end, durationMs);
+    await held;
+    return samples;
+  };
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    // Two samples land while the read is still out.
+    await t.update({ ...s, time: s.time + 1000 });
+    await t.update({ ...s, time: s.time + 2000 });
+    // The gap glyph belongs to the trend alone: the bar draws blocks and
+    // dashes, so finding it proves the series reached the row.
+    expect(selectedRow(t.frame())).not.toContain("···");
+    release();
+    await t.update({ ...s, time: s.time + 3000 });
+    expect(selectedRow(t.frame())).toContain("···");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a series that never answers does not blank the other rows", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "lane-0", name: "lane-0", cpu: 100 }),
+    laneSnapshot({ id: "lane-1", name: "lane-1", cpu: 50 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const h = new History(c);
+  h.add(s);
+  const real = h.laneWindow.bind(h);
+  h.laneWindow = async (id: string, end: number, durationMs: number) =>
+    id === "lane-1"
+      ? await new Promise<never>(() => {})
+      : await real(id, end, durationMs);
+  // Wide enough for the trend, narrow enough to keep the side pane away, so a
+  // row is the only place its lane's name appears.
+  const t = await mount(s, c, { width: 120, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    await t.update({ ...s, time: s.time + 1000 });
+    const row = (name: string) =>
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes(name)) ?? "";
+    // The gap glyph belongs to the trend alone: the bar draws blocks and
+    // dashes, so finding it proves the series reached the row.
+    expect(row("lane-0")).toContain("···");
+    expect(row("lane-1")).not.toContain("···");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a narrow list keeps the name and drops the trend", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // Names that only differ at their end, so a name cut short would leave the
+  // rows indistinguishable.
+  s.lanes = Array.from({ length: 6 }, (_, i) =>
+    laneSnapshot({
+      id: `lane-${i}`,
+      name: `.hclaude claude ken-13${10 + i}`,
+      cpu: 100 - i,
+    }),
+  );
+  s.groups = [groupSnapshot()];
+  const { h, asked } = countingHistory(c, s);
+  const t = await mount(s, c, { width: 100, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    const frame = t.frame();
+    expect(frame).not.toContain("Trend");
+    // The name arrives whole, so one row can be told from the next.
+    expect(frame).toContain(".hclaude claude ken-1310");
+    expect(frame).toContain(".hclaude claude ken-1315");
+    // A column that is not drawn is not read for either.
+    expect(asked).toEqual([]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the wheel moves the selection by one row", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = Array.from({ length: 12 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}`, name: `lane-${i}`, cpu: 100 - i }),
+  );
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 24 });
+  try {
+    await t.press("2");
+    expect(selectedRow(t.frame())).toContain("lane-0");
+    // One notch down is one row down, not a viewport jump.
+    await t.wheel(10, 8, "down");
+    expect(selectedRow(t.frame())).toContain("lane-1");
+    await t.wheel(10, 8, "down");
+    expect(selectedRow(t.frame())).toContain("lane-2");
+    await t.wheel(10, 8, "up");
+    expect(selectedRow(t.frame())).toContain("lane-1");
+    // The selection stops at the ends rather than wrapping.
+    for (let i = 0; i < 4; i++) await t.wheel(10, 8, "up");
+    expect(selectedRow(t.frame())).toContain("lane-0");
+  } finally {
+    await t.close();
+  }
+});
+
+test("clicking a tile opens the screen its key opens", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a" })];
+  s.groups = [groupSnapshot()];
+  // The click lands on the same target the arrow keys reach, because both
+  // read `meterView`. The tile is found by its own caption, so the test does
+  // not repeat the layout's arithmetic.
+  const rows: [string, string][] = [
+    ["CPU wait", "Groups"],
+    ["Memory", "Groups"],
+    ["Disk wait", "Written since boot"],
+    ["Builds", "Lanes building"],
+  ];
+  for (const [label, lands] of rows) {
+    const t = await mount(s, c, { width: 160, height: 30 });
+    try {
+      await t.press("1");
+      const lines = t.frame().split("\n");
+      const row = lines.findIndex(
+        (line) => line.includes("CPU wait") && line.includes("Builds"),
+      );
+      expect(row).toBeGreaterThan(-1);
+      await t.click(lines[row].indexOf(label), row);
+      expect({ label, on: t.frame().includes(lands) }).toEqual({
+        label,
+        on: true,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("the trend re-reads when its newest bucket rolls over, and not before", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 }),
+    laneSnapshot({ id: "lane-b", name: "lane-b", cpu: 1 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const { h, asked } = countingHistory(c, s);
+  // The chart draws `trendWidth` buckets across the default window, so this is
+  // the span the drawn shape cannot change within. Asserted here rather than
+  // assumed, because the whole cadence is derived from it.
+  const bucketMs = windows[0] / trendWidth;
+  expect(bucketMs).toBe(25000);
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    expect(t.frame()).toContain("Trend");
+    const first = new Set(asked).size;
+    expect(first).toBe(2);
+    // Inside the bucket: samples land, and the store is not asked again. A
+    // read per visible row per sample is what this cadence exists to avoid.
+    await t.update({ ...s, time: s.time + 1000 });
+    await t.update({ ...s, time: s.time + 2000 });
+    expect(asked.length).toBe(first);
+    // Past it: the newest bucket has rolled over, so the drawn shape can
+    // change and every visible row is read again. Keyed on lane and window
+    // alone this stayed at `first` for as long as the screen was open, and the
+    // trend aged out of its own window.
+    await t.update({ ...s, time: s.time + bucketMs + 1000 });
+    expect(asked.length).toBe(first * 2);
+    expect([...new Set(asked)].sort()).toEqual(["lane-a", "lane-b"]);
+    // And the second bucket does not read a third time on its own samples.
+    await t.update({ ...s, time: s.time + bucketMs + 2000 });
+    expect(asked.length).toBe(first * 2);
+  } finally {
+    await t.close();
+  }
+});
+
+test("no trend column means the store is asked for no series at all", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 }),
+    laneSnapshot({ id: "lane-b", name: "lane-b", cpu: 1 }),
+  ];
+  s.groups = [groupSnapshot()];
+  // Three states that draw something other than the trend column, each with
+  // the width that would otherwise draw it. What is counted is what the store
+  // was asked for: a check on the drawn frame passes while the disk is read.
+  // Each case names the series it may still read. The table view and the
+  // chooser may read none. An open agent reads its own, on the snapshot time,
+  // which is the detail's own contract and not this list's.
+  const cases: [
+    string,
+    (t: Awaited<ReturnType<typeof mount>>) => Promise<void>,
+    string[],
+  ][] = [
+    ["the table view", async (t) => await t.press(c.keys.details), []],
+    ["the column chooser", async (t) => await t.press(c.keys.columns), []],
+    ["an open agent", async (t) => await t.press("enter"), ["lane-a"]],
+  ];
+  for (const [what, reach, allowed] of cases) {
+    const { h, asked } = countingHistory(c, s);
+    const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+    try {
+      await t.press("2");
+      // The column is drawn here, so this is the state the case leaves.
+      expect({ what, drawn: t.frame().includes("Trend") }).toEqual({
+        what,
+        drawn: true,
+      });
+      const before = asked.length;
+      expect(before).toBeGreaterThan(0);
+      await reach(t);
+      expect({ what, drawn: t.frame().includes("Trend") }).toEqual({
+        what,
+        drawn: false,
+      });
+      // A sample lands while the column is not drawn. Nothing the list would
+      // have read is read for it.
+      await t.update({ ...s, time: s.time + windows[0] });
+      expect({ what, read: [...new Set(asked.slice(before))] }).toEqual({
+        what,
+        read: allowed,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("a read from the previous bucket cannot overwrite the newer one", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 })];
+  s.groups = [groupSnapshot()];
+  const bucketMs = windows[0] / trendWidth;
+  const at = s.time + bucketMs + 1000;
+  /** A full window of samples at one reading, so the drawn shape is flat. */
+  const span = (cpu: number): LaneSample[] =>
+    Array.from({ length: trendWidth }, (_, i) => ({
+      time: at - windows[0] + (i + 0.5) * bucketMs,
+      cpu,
+      rss: null,
+      pressure: null,
+      memoryPressure: null,
+      ioPressure: null,
+    }));
+  const older = span(0);
+  const newer = span(100);
+  const quiet = trendMarks(older, at, windows[0], c.sparkline);
+  const busy = trendMarks(newer, at, windows[0], c.sparkline);
+  // The two series have to be told apart on the screen, or the assertion below
+  // holds whichever one won.
+  expect(quiet).not.toBe(busy);
+  const h = new History(c);
+  h.add(s);
+  // Every read is held, so this test decides which one answers first.
+  const held: { end: number; answer: (samples: LaneSample[]) => void }[] = [];
+  h.laneWindow = (_id: string, end: number) =>
+    new Promise<LaneSample[]>((resolve) => {
+      held.push({ end, answer: resolve });
+    });
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    expect(held.length).toBe(1);
+    // The bucket rolls while that read is still in flight, so a second read
+    // starts for the same row under a newer question.
+    await t.update({ ...s, time: at });
+    // What the fixture has to interleave, asserted before either answers: two
+    // reads outstanding for one row, the second asking for a later end than the
+    // first. A fixture with one read, or with the older resolving first, would
+    // pass without touching the case.
+    expect(held.length).toBe(2);
+    expect(held[1].end).toBeGreaterThan(held[0].end);
+    // The newer answers first, then the older. Stored on arrival rather than
+    // on what it answers, the older would land last and put its window back on
+    // the screen.
+    await act(async () => {
+      held[1].answer(newer);
+    });
+    await act(async () => {
+      held[0].answer(older);
+    });
+    // Resolving a promise draws nothing on its own; the frame is what the
+    // screen would show once it has been drawn again.
+    await t.ui.renderOnce();
+    const frame = t.frame();
+    expect(frame).toContain(busy);
+    expect(frame).not.toContain(quiet);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a sample inside a bucket does not slide the drawn window", async () => {
+  const c = defaults();
+  const bucketMs = windows[0] / trendWidth;
+  // A sample time sitting on a bucket boundary, so the whole of the next
+  // bucket is available to advance into without crossing out of it.
+  const base = 10 * windows[0];
+  const s = emptySnapshot(base);
+  s.lanes = [laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 })];
+  s.groups = [groupSnapshot()];
+  expect(trendEnd(base, windows[0])).toBe(base);
+  // One sample in the middle of every drawn column, so a row drawn against
+  // the moment this was read for has no gap anywhere in it.
+  const series: LaneSample[] = Array.from({ length: trendWidth }, (_, i) => ({
+    time: base - windows[0] + (i + 0.5) * bucketMs,
+    cpu: 50,
+    rss: null,
+    pressure: null,
+    memoryPressure: null,
+    ioPressure: null,
+  }));
+  const h = new History(c);
+  h.add(s);
+  // The store answers with the same samples however it is asked, so nothing
+  // the row draws can come from the data changing.
+  const ends: number[] = [];
+  h.laneWindow = async (_id: string, end: number) => {
+    ends.push(end);
+    return series;
+  };
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    // The list row, not the summary beside it: the marker names the row that
+    // carries the trend column.
+    const row = () =>
+      t
+        .frame()
+        .split("\n")
+        .find((l) => l.includes("▍")) ?? "";
+    const before = row();
+    expect(before).not.toBe("");
+    // The cell this series draws has no gap in it, and the row is drawing that
+    // cell. A fixture that already gapped could not show the difference.
+    const drawn = trendMarks(series, base, windows[0], c.sparkline);
+    expect(drawn).not.toContain("·");
+    expect(before).toContain(drawn);
+    // A sample lands inside the bucket, close to its far edge, which is where
+    // the drawn window would have slid past the newest sample the read holds.
+    // What the store holds has not moved: same series, and no second read.
+    const reads = ends.length;
+    const inside = base + bucketMs - 1000;
+    expect(trendEnd(inside, windows[0])).toBe(base);
+    await t.update({ ...s, time: inside });
+    expect(ends.length).toBe(reads);
+    // So the row cannot have changed. Drawn against the sample time its last
+    // column would hold no sample and draw as a gap, which in this dashboard
+    // is vsys saying it could not read something.
+    expect(row()).toBe(before);
+    // Crossing the boundary is where the row is allowed to move, and must: it
+    // is read again, against the new moment.
+    const over = base + bucketMs + 1000;
+    await t.update({ ...s, time: over });
+    expect(ends.length).toBe(reads + 1);
+    expect(ends[ends.length - 1]).toBe(trendEnd(over, windows[0]));
+  } finally {
+    await t.close();
+  }
 });

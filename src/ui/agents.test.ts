@@ -8,6 +8,8 @@ import {
   laneBadge,
   laneLevel,
   tableColumn,
+  trendMarks,
+  trendWidth,
 } from "./agents";
 import { cell, columnGap, headerText } from "./columns";
 import { laneValue } from "./format";
@@ -94,4 +96,36 @@ test("the table's heading and its rows are built from one column spec", () => {
   );
   expect(spec[cpu].align).toBe("right");
   expect(tableColumn("name").align).toBeUndefined();
+});
+
+test("a row with no series yet draws nothing, and a read one draws what it holds", () => {
+  const end = 300000;
+  const window = 300000;
+  // Still loading: a placeholder in a chart column would be read as a flat
+  // measurement at zero, which is a different claim from "not read yet".
+  const loading = trendMarks(undefined, end, window, "block");
+  expect(loading).toBe(" ".repeat(trendWidth));
+  expect(loading.trim()).toBe("");
+  // Read and empty is its own answer: the window holds no sample, and the
+  // gap dots say so.
+  const empty = trendMarks([], end, window, "block");
+  expect([...new Set(empty)]).toEqual(["·"]);
+  expect(empty.length).toBe(trendWidth);
+  // Read with samples: the marks rise with the values.
+  const rising = trendMarks(
+    Array.from({ length: trendWidth }, (_, i) => ({
+      time: i * (window / trendWidth) + 1,
+      cpu: i * 10,
+      rss: 0,
+      pressure: null,
+      memoryPressure: null,
+      ioPressure: null,
+    })),
+    end,
+    window,
+    "block",
+  );
+  expect(rising.length).toBe(trendWidth);
+  expect(rising).not.toContain(" ");
+  expect(rising.at(-1)).toBe("█");
 });

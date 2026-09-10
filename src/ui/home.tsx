@@ -311,6 +311,7 @@ export function Home({
                   c.sparkline,
                 )}
                 chartColor={metric[gauge.id]}
+                onOpen={() => onOpenView(meterView[gauge.id])}
               />
             );
           })}
