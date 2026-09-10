@@ -19,6 +19,7 @@ import { App, hints, Waiting } from "./App";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
+import { type HomeItem, homeItems, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
 import { Storage } from "./storage-screen";
@@ -471,8 +472,11 @@ test("the Timeline change list stops at the rows the viewport has", async () => 
   try {
     await t.press("6");
     const frame = t.frame();
-    expect(frame).toContain("What changed  8 of 12, newest first");
-    expect(frame).toMatch(/Lane started\s+lane-7/);
+    // The heading counts what there is; the list says which of them it drew,
+    // in the one place that knows, rather than in two that can disagree.
+    expect(frame).toContain("What changed  12, newest first");
+    expect(frame).toContain("1\u20136 of 12");
+    expect(frame).toMatch(/Lane started\s+lane-5/);
     expect(frame).not.toContain("lane-11");
     // The cursor tiles summarise the six metrics, so a terminal too short for
     // both drops the sparkline rows rather than the change list.
@@ -862,8 +866,10 @@ test("a wide terminal puts the concerns and the agents side by side", async () =
       .frame()
       .split("\n")
       .find((line) => line.includes("Needs attention"));
-    // One row carries both headings, so the two lists sit beside each other.
-    expect(heading).toContain("Busiest agents");
+    // One row carries two headings, so the columns sit beside each other:
+    // what is wrong now on the left, what happened and who is busy on the right.
+    expect(heading).toContain("Recent changes");
+    expect(wide.frame()).toContain("Busiest agents");
   } finally {
     await wide.close();
   }
@@ -873,7 +879,8 @@ test("a wide terminal puts the concerns and the agents side by side", async () =
     await tall.press("1");
     const lines = tall.frame().split("\n");
     const heading = lines.find((line) => line.includes("Needs attention"));
-    expect(heading).not.toContain("Busiest agents");
+    expect(heading).not.toContain("Recent changes");
+    expect(lines.some((line) => line.includes("Recent changes"))).toBe(true);
     expect(lines.some((line) => line.includes("Busiest agents"))).toBe(true);
   } finally {
     await tall.close();
@@ -1313,6 +1320,28 @@ test("Home opens with the most urgent row selected", async () => {
   } finally {
     await quiet.close();
   }
+  // Between the two: no concern, but something changed. The change is what
+  // the reader has not seen, so it is what the selection opens on.
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const moved = { ...calm, time: 2000 };
+  h.add(moved);
+  const changed = await mount(
+    moved,
+    c,
+    { width: 160, height: 44 },
+    {
+      history: h,
+    },
+  );
+  try {
+    await changed.press("1");
+    expect(attention(moved, c)).toEqual([]);
+    expect(selectedRow(changed.frame())).toContain("Lane started");
+    expect(selectedRow(changed.frame())).not.toContain("lane-busy ");
+  } finally {
+    await changed.close();
+  }
 });
 
 test("the arrow keys reach the tiles and open the screen behind one", async () => {
@@ -1569,6 +1598,92 @@ test("a tile opens live data, not the sample the reader pinned", async () => {
   }
 });
 
+/**
+ * A history holding a lane start, then a quiet sample after it. The change is
+ * older than the newest sample, so the cursor a change asks for is not the
+ * cursor the screen would take on its own.
+ */
+function withChange(c: Config) {
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const change = emptySnapshot(2000);
+  change.lanes = [laneSnapshot({ id: "a", name: "lane-a" })];
+  h.add(change);
+  const latest = { ...change, time: 3000 };
+  h.add(latest);
+  return { h, snapshot: latest };
+}
+
+test("Home lists what changed and opening one lands on Timeline at that moment", async () => {
+  const c = defaults();
+  const { h, snapshot } = withChange(c);
+  const t = await mount(
+    snapshot,
+    c,
+    { width: 180, height: 44 },
+    { history: h },
+  );
+  try {
+    await t.press("1");
+    const frame = t.frame();
+    expect(frame).toContain("Recent changes");
+    expect(frame).toContain("Lane started");
+    // The newest change is the first row of the section.
+    const rows = frame.split("\n");
+    const first = rows.findIndex((row) => row.includes("Recent changes"));
+    expect(rows[first + 1]).toContain("Lane started");
+    // With no concern open, the newest change is the selected row already.
+    await t.press("enter");
+    const timeline = t.frame();
+    expect(timeline).toContain("What changed");
+    // The cursor sits on the change, not on the newest sample it would take.
+    expect(timeline).toContain(`cursor ${new Date(2000).toLocaleString()}`);
+    expect(timeline).not.toContain(`cursor ${new Date(3000).toLocaleString()}`);
+    expect(selectedRow(timeline)).toContain(
+      new Date(2000).toLocaleTimeString(),
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("the Timeline change list is driven from the keyboard, not the mouse alone", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(5000);
+  busy.lanes = [1, 2, 3].map((n) =>
+    laneSnapshot({ id: `lane-${n}`, name: `lane-${n}` }),
+  );
+  h.add(busy);
+  // A quiet sample after the changes, so the cursor Enter sets differs from
+  // the one the screen takes on its own.
+  const latest = { ...busy, time: 9000 };
+  h.add(latest);
+  const t = await mount(latest, c, { width: 180, height: 44 }, { history: h });
+  try {
+    await t.press("6");
+    const first = selectedRow(t.frame());
+    expect(first).toContain("Lane started");
+    // Down moves the selection to the next change, and up moves it back.
+    await t.press("j");
+    const second = selectedRow(t.frame());
+    expect(second).toContain("Lane started");
+    expect(second).not.toBe(first);
+    await t.press("k");
+    expect(selectedRow(t.frame())).toBe(first);
+    // Enter moves the time cursor onto the selected change.
+    expect(t.frame()).toContain(`cursor ${new Date(9000).toLocaleString()}`);
+    await t.press("enter");
+    expect(t.frame()).toContain(`cursor ${new Date(5000).toLocaleString()}`);
+    // The pin key still pins from this screen, so a row can be pinned.
+    await t.press("p");
+    expect(t.frame()).toMatch(/Agents, Resources, Builds and Storage show/);
+  } finally {
+    await t.close();
+  }
+});
+
 test("a lane that exits while open leaves the list on a row that exists", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -1633,30 +1748,66 @@ test("an unstated pool size is not reported as an unreadable one", async () => {
   }
 });
 
-test("Home marks one focus at a time, and the keys follow it", async () => {
-  const c = defaults();
+test("Home marks one focus at a time, on every kind of row it lists", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  // A sample with all three row types on screen at once: concerns, a change,
+  // and agents. The rule was written at each render site, so it reached two of
+  // the three and the test that named it used only a concern.
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
   const s = everyCauseSnapshot(c);
-  const t = await mount(s, c, { width: 160, height: 44 });
+  s.time = 2000;
+  h.add(s);
+  const rows = homeItems(
+    attention(s, c),
+    s,
+    5,
+    h.events(s.time, c.historyHours * 3600000),
+  );
+  const kinds = ["concern", "change", "agent"] as const;
+  for (const kind of kinds)
+    expect({ kind, present: rows.some((row) => row.kind === kind) }).toEqual({
+      kind,
+      present: true,
+    });
+  for (const kind of kinds) {
+    const at = rows.findIndex((row) => row.kind === kind);
+    const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
+    try {
+      await t.press("1");
+      for (let i = 0; i < at; i++) await t.press("j");
+      // The rows hold the focus, so this row is marked.
+      expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
+        kind,
+        marked: true,
+      });
+      // Moving onto a tile takes the focus with it. A row marked here would
+      // say one thing while Enter opened another.
+      await t.press("right");
+      expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
+        kind,
+        marked: false,
+      });
+      // And moving back off the tiles restores it.
+      await t.press("down");
+      expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
+        kind,
+        marked: true,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+  // The selected concern's detail follows the same rule, and so does copy:
+  // while a tile holds the focus there is no row for either to act on.
+  const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
   try {
     await t.press("1");
-    // The rows hold the focus: a row is marked and its detail is under it.
-    const onRows = t.frame();
-    expect(selectedRow(onRows)).not.toBe("");
-    expect(onRows).toContain("Next ");
-    // Moving onto a tile takes the focus with it. Marking a row here would
-    // say one thing while Enter opened another.
+    expect(t.frame()).toContain("Next ");
     await t.press("right");
-    const onTile = t.frame();
-    expect(selectedRow(onTile)).toBe("");
-    expect(onTile).not.toContain("Next ");
-    // And copy has no row to act on, rather than copying the row the tiles
-    // are sitting above.
+    expect(t.frame()).not.toContain("Next ");
     await t.press("y");
     expect(t.frame()).toContain("no command to copy");
-    // Moving back off the tiles restores the row and its detail.
-    await t.press("down");
-    expect(selectedRow(t.frame())).not.toBe("");
-    expect(t.frame()).toContain("Next ");
   } finally {
     await t.close();
   }
@@ -1814,5 +1965,488 @@ test("the copy notice does not claim a silent terminal empties the clipboard", a
     expect(frame).not.toContain("pastes nothing");
   } finally {
     await t.close();
+  }
+});
+
+test("a change about a cgroup reads as a name, with the unit under the selection", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  const first = everyCauseSnapshot(c);
+  first.groups = first.groups.map((g) =>
+    g.name === "gnome.scope"
+      ? { ...g, name: "app-Hyprland-ghostty-b95bd288.scope" }
+      : g,
+  );
+  h.add(first);
+  h.add({ ...first, time: first.time + 1000 });
+  const t = await mount(
+    { ...first, time: first.time + 1000 },
+    c,
+    { width: 180, height: 44 },
+    { history: h },
+  );
+  try {
+    await t.press("6");
+    const frame = t.frame();
+    // systemd's own name never reaches the row.
+    expect(frame).not.toContain("app-Hyprland-ghostty");
+    expect(frame).toContain("ghostty");
+    // The raw unit is one keystroke away, under the row that decoded it.
+    const at = t
+      .frame()
+      .split("\n")
+      .findIndex((row) => row.includes("the desktop swapped out"));
+    expect(at).toBeGreaterThan(-1);
+    const heading = t
+      .frame()
+      .split("\n")
+      .findIndex((row) => row.includes("What changed"));
+    for (let i = heading + 1; i < at; i++) await t.press("j");
+    expect(t.frame()).toContain("app-Hyprland-ghostty-b95bd288.scope");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the recap holds what happened while the reader was away for longer than the window", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  // A lane starts, and then half an hour passes with nothing further. The
+  // default Timeline window is five minutes, so this change is outside it.
+  const started = emptySnapshot(2000);
+  started.lanes = [laneSnapshot({ id: "a.scope", name: "lane-a" })];
+  h.add(started);
+  // The lane keeps running, so the start is the only change there is and it
+  // is half an hour old. Stopping it would put a fresh event in the window
+  // and the recap would look right for the wrong reason.
+  const later = { ...started, time: 2000 + 30 * 60000 };
+  h.add(later);
+  const t = await mount(later, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    const frame = t.frame();
+    // The section is for the reader who was away. Sourcing it from the window
+    // told them nothing had changed while the change sat in history.
+    expect(frame).not.toContain("Nothing has changed");
+    expect(frame).toContain("lane-a");
+    // And opening that row lands on it, which needs a window wide enough to
+    // hold it: the five-minute window does not contain it at all.
+    const at = t
+      .frame()
+      .split("\n")
+      .findIndex((row) => row.includes("Recent changes"));
+    expect(at).toBeGreaterThan(-1);
+    const rows = t.frame().split("\n");
+    const row = rows.findIndex((line, i) => i > at && line.includes("lane-a"));
+    expect(row).toBeGreaterThan(-1);
+    for (let i = 0; i < row - at - 1; i++) await t.press("j");
+    await t.press("enter");
+    const timeline = t.frame();
+    expect(timeline).toContain("What changed");
+    expect(selectedRow(timeline)).toContain("lane-a");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the Timeline selection stays on a row the reader can see", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(2000);
+  busy.lanes = Array.from({ length: 12 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}.scope`, name: `lane-${i}` }),
+  );
+  h.add(busy);
+  const t = await mount(busy, c, { width: 160, height: 30 }, { history: h });
+  try {
+    await t.press("6");
+    // Walk the selection past the fold. The list pages around it, so the
+    // highlighted row is drawn wherever the selection sits; a fixed slice let
+    // it walk off the end of what was drawn.
+    for (let i = 0; i < 11; i++) await t.press("j");
+    const frame = t.frame();
+    expect(selectedRow(frame)).not.toBe("");
+    expect(selectedRow(frame)).toContain("lane-11");
+    // And Enter acts on the row that is marked, not on one off-screen.
+    await t.press("enter");
+    expect(t.frame()).toContain("What changed");
+    expect(selectedRow(t.frame())).toContain("lane-11");
+  } finally {
+    await t.close();
+  }
+});
+
+test("no alerts opened reads as a count, not as a missing one", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a" })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await t.press("1");
+    // Nothing has gone wrong, so the count is zero. A zero that renders as
+    // absence cannot be told from a count vsys never took.
+    expect(t.frame()).toContain("0 alerts opened since vsys started");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Home counts the alerts that open while it runs", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  const quiet = emptySnapshot(1000);
+  h.add(quiet);
+  const t = await mount(quiet, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    // Nothing has happened yet, and the baseline sample is not counted.
+    expect(t.frame()).toContain("0 alerts opened since vsys started");
+    // A lane escapes its slice, which opens an alert. The sample reaches the
+    // running dashboard the way collection delivers it.
+    const firing = emptySnapshot(2000);
+    firing.lanes = [
+      laneSnapshot({ id: "e.scope", name: "escaped", unconfined: true }),
+    ];
+    h.add(firing);
+    await t.update(firing);
+    expect(t.frame()).toContain("1 alert opened since vsys started");
+    // A second sample with a second cause adds to it rather than replacing it.
+    const worse = emptySnapshot(3000);
+    worse.lanes = [
+      laneSnapshot({ id: "e.scope", name: "escaped", unconfined: true }),
+      laneSnapshot({ id: "c.scope", name: "capped", dangerous: true }),
+    ];
+    h.add(worse);
+    await t.update(worse);
+    expect(t.frame()).toContain("2 alerts opened since vsys started");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a shorter window leaves the Timeline selection on a row that exists", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  // Twelve changes half an hour ago, and one recent. The five-minute window
+  // holds the recent one alone; an hour holds them all.
+  const old = emptySnapshot(2000);
+  old.lanes = Array.from({ length: 12 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}.scope`, name: `lane-${i}` }),
+  );
+  h.add(old);
+  // One lane stops, forty minutes later. That stop is the only change the
+  // five-minute window holds; without it the short window is empty and there
+  // is no row to be on either way.
+  const now = {
+    ...old,
+    time: 2000 + 40 * 60000,
+    lanes: old.lanes.slice(1),
+  };
+  h.add(now);
+  const t = await mount(now, c, { width: 160, height: 40 }, { history: h });
+  try {
+    await t.press("6");
+    // Widen to an hour, then select a deep row.
+    await t.press("w");
+    await t.press("w");
+    for (let i = 0; i < 8; i++) await t.press("j");
+    expect(selectedRow(t.frame())).not.toBe("");
+    // Cycle back to a window that holds fewer changes. The row number the
+    // reader was on names nothing there.
+    await t.press("w");
+    await t.press("w");
+    await t.press("w");
+    const frame = t.frame();
+    expect(frame).toContain("Last 5m");
+    // A row that exists is marked, and Enter acts on it rather than on a
+    // change the list does not have.
+    expect(selectedRow(frame)).not.toBe("");
+    await t.press("enter");
+    expect(t.frame()).toContain("What changed");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a Home row opens the change the reader chose, not the first at its moment", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  // Three lanes start in one sample, so all three changes carry time 2000.
+  // A timestamp names the moment, not the change.
+  const busy = emptySnapshot(2000);
+  busy.lanes = ["alpha", "beta", "gamma"].map((name) =>
+    laneSnapshot({ id: `${name}.scope`, name }),
+  );
+  h.add(busy);
+  const changes = h.events(busy.time, c.historyHours * 3600000);
+  expect(changes.length).toBe(3);
+  expect(new Set(changes.map((e) => e.time)).size).toBe(1);
+  const t = await mount(busy, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    // Open the second of the three.
+    const rows = homeItems(attention(busy, c), busy, 5, changes);
+    const at = rows.findIndex((row) => row.kind === "change");
+    expect(at).toBeGreaterThan(-1);
+    for (let i = 0; i < at + 1; i++) await t.press("j");
+    const chosen = selectedRow(t.frame());
+    expect(chosen).toContain(changes[1].subject);
+    await t.press("enter");
+    // The Timeline lands on that change, not on the first one sharing its
+    // time. Matching by time always found the first however far down the
+    // reader had moved.
+    expect(t.frame()).toContain("What changed");
+    expect(selectedRow(t.frame())).toContain(changes[1].subject);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a row opened with the keyboard keeps its change when one arrives above it", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const first = emptySnapshot(2000);
+  first.lanes = [laneSnapshot({ id: "alpha.scope", name: "alpha" })];
+  h.add(first);
+  const t = await mount(first, c, { width: 160, height: 40 }, { history: h });
+  try {
+    await t.press("6");
+    const changes = h.events(first.time, c.historyHours * 3600000);
+    expect(changes.length).toBe(1);
+    // Open the only row with the keyboard, without ever pressing an arrow, so
+    // this is the entry that recorded no identity.
+    await t.press("enter");
+    expect(selectedRow(t.frame())).toContain("alpha");
+    const cursor = `cursor ${new Date(changes[0].time).toLocaleString()}`;
+    expect(t.frame()).toContain(cursor);
+    // A later sample puts a change above it. The list is newest first, so the
+    // row the reader opened is no longer row zero.
+    const second = emptySnapshot(3000);
+    second.lanes = [
+      laneSnapshot({ id: "alpha.scope", name: "alpha" }),
+      laneSnapshot({ id: "beta.scope", name: "beta" }),
+    ];
+    h.add(second);
+    await t.update(second);
+    const after = h.events(second.time, c.historyHours * 3600000);
+    expect(after.length).toBe(2);
+    expect(after[0].subject).toBe("beta");
+    // The highlight, the cursor and the sample the pin key acts on all still
+    // name the row the reader chose, rather than the highlight jumping to the
+    // new top row while the cursor stayed behind.
+    expect(selectedRow(t.frame())).toContain("alpha");
+    expect(t.frame()).toContain(cursor);
+    await t.press("p");
+    expect(t.frame()).toContain("Agents, Resources, Builds and Storage show");
+  } finally {
+    await t.close();
+  }
+  // And the first row is a choice before the reader touches anything: a
+  // change arriving above it must not take the highlight off the row they
+  // were reading. This is what the seeded initial identity holds on its own,
+  // since no key has been pressed to record one.
+  const untouched = new History(c);
+  untouched.add(emptySnapshot(1000));
+  const one = emptySnapshot(2000);
+  one.lanes = [laneSnapshot({ id: "alpha.scope", name: "alpha" })];
+  untouched.add(one);
+  const quiet = await mount(
+    one,
+    c,
+    { width: 160, height: 40 },
+    {
+      history: untouched,
+    },
+  );
+  try {
+    await quiet.press("6");
+    expect(selectedRow(quiet.frame())).toContain("alpha");
+    const two = emptySnapshot(3000);
+    two.lanes = [
+      laneSnapshot({ id: "alpha.scope", name: "alpha" }),
+      laneSnapshot({ id: "beta.scope", name: "beta" }),
+    ];
+    untouched.add(two);
+    await quiet.update(two);
+    expect(selectedRow(quiet.frame())).toContain("alpha");
+  } finally {
+    await quiet.close();
+  }
+  // The case that isolates the key path from the seed: the seeded change
+  // leaves the window, so the highlight falls back to a row the selection does
+  // not name, and Enter is the only thing that can record what it opened.
+  const drifting = new History(c);
+  drifting.add(emptySnapshot(1000));
+  const early = emptySnapshot(2000);
+  early.lanes = [laneSnapshot({ id: "alpha.scope", name: "alpha" })];
+  drifting.add(early);
+  const t2 = await mount(
+    early,
+    c,
+    { width: 160, height: 40 },
+    {
+      history: drifting,
+    },
+  );
+  try {
+    await t2.press("6");
+    expect(selectedRow(t2.frame())).toContain("alpha");
+    // Ten minutes on, alpha's change is outside the five-minute window and
+    // beta's is the only row. The highlight is on a change the selection does
+    // not name.
+    const later = emptySnapshot(602000);
+    later.lanes = [
+      laneSnapshot({ id: "alpha.scope", name: "alpha" }),
+      laneSnapshot({ id: "beta.scope", name: "beta" }),
+    ];
+    drifting.add(later);
+    await t2.update(later);
+    expect(selectedRow(t2.frame())).toContain("beta");
+    await t2.press("enter");
+    const cursor = `cursor ${new Date(602000).toLocaleString()}`;
+    expect(t2.frame()).toContain(cursor);
+    // A third change arrives above it.
+    const newest = emptySnapshot(603000);
+    newest.lanes = [
+      ...later.lanes,
+      laneSnapshot({ id: "gamma.scope", name: "gamma" }),
+    ];
+    drifting.add(newest);
+    await t2.update(newest);
+    // The highlight and the cursor still name beta. Without the key path
+    // recording what it opened, the highlight follows the stale index to
+    // gamma while the cursor stays on beta.
+    expect(selectedRow(t2.frame())).toContain("beta");
+    expect(t2.frame()).toContain(cursor);
+  } finally {
+    await t2.close();
+  }
+});
+
+test("Home opens the row the reader chose after the list moves under it", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  /** A history holding one sample that carries all three Home row kinds. */
+  const fresh = () => {
+    const h = new History(c);
+    h.add(emptySnapshot(1000));
+    const s = everyCauseSnapshot(c);
+    s.time = 2000;
+    h.add(s);
+    return { h, s };
+  };
+  const seed = fresh();
+  const rows = homeItems(
+    attention(seed.s, c),
+    seed.s,
+    5,
+    seed.h.recentEvents(seed.s.time, recentChanges),
+  );
+  const firstOf = (kind: HomeItem["kind"]) =>
+    rows.findIndex((row) => row.kind === kind);
+  const lastOf = (kind: HomeItem["kind"]) =>
+    rows.length - 1 - [...rows].reverse().findIndex((row) => row.kind === kind);
+  /** A sample carrying a new lane, which records a change and adds an agent. */
+  const arrives = (s: Snapshot): Snapshot => ({
+    ...s,
+    time: 3000,
+    lanes: [...s.lanes, laneSnapshot({ id: "new.scope", name: "newcomer" })],
+  });
+  /** A sample where CPU pressure is gone, so that card leaves the list. */
+  const clears = (s: Snapshot): Snapshot => ({
+    ...s,
+    time: 3000,
+    system: {
+      ...s.system,
+      pressure: {
+        ...s.system.pressure,
+        cpu: { some: 0, full: 0, total: 0 },
+      },
+    },
+  });
+  // One case per row kind. Home mixes three and each list moves in its own
+  // way, so each kind is chosen, moved under and opened on its own: a rule
+  // written per kind reaches only the kinds someone remembered.
+  /** The agent screen opens on one lane and names it above everything else. */
+  const laneTitle = (frame: string) => (frame.split("\n")[2] ?? "").trim();
+  const cases = [
+    // The scratch card is the last concern, so the card above it clearing
+    // moves it up a row.
+    {
+      kind: "concern" as const,
+      at: lastOf("concern"),
+      later: clears,
+      opens: "/scratch",
+      reads: selectedRow,
+    },
+    // A new lane records a change, and a change lands above every change
+    // already listed.
+    {
+      kind: "change" as const,
+      at: firstOf("change"),
+      later: arrives,
+      opens: "escaped",
+      reads: selectedRow,
+    },
+    // The same lane adds an agent row, and agents sort by id, so it lands
+    // above the last of them.
+    {
+      kind: "agent" as const,
+      at: lastOf("agent"),
+      later: arrives,
+      opens: "writer",
+      reads: laneTitle,
+    },
+  ];
+  for (const { kind, at, later, opens, reads } of cases) {
+    // Standing still: the presses reach the intended row, and opening it lands
+    // on what that row names. This is what the moved list has to preserve.
+    const still = fresh();
+    const t = await mount(
+      still.s,
+      c,
+      { width: 160, height: 44 },
+      { history: still.h },
+    );
+    try {
+      await t.press("1");
+      for (let i = 0; i < at; i++) await t.press("j");
+      await t.press("enter");
+      expect({ kind, on: reads(t.frame()) }).toEqual({
+        kind,
+        on: expect.stringContaining(opens) as unknown as string,
+      });
+    } finally {
+      await t.close();
+    }
+    // Moving: a sample lands while the reader sits on that row and puts
+    // something above it. Enter has to open the row the reader chose, not
+    // whatever took its place.
+    const shifting = fresh();
+    const m = await mount(
+      shifting.s,
+      c,
+      { width: 160, height: 44 },
+      { history: shifting.h },
+    );
+    try {
+      await m.press("1");
+      for (let i = 0; i < at; i++) await m.press("j");
+      const next = later(shifting.s);
+      shifting.h.add(next);
+      await m.update(next);
+      await m.press("enter");
+      expect({ kind, on: reads(m.frame()) }).toEqual({
+        kind,
+        on: expect.stringContaining(opens) as unknown as string,
+      });
+    } finally {
+      await m.close();
+    }
   }
 });

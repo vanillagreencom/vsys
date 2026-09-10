@@ -225,3 +225,203 @@ test("persisted snapshots and their sidecars stay readable only by the owner", (
   cleanup.push(() => reopened.close());
   expect(modes()).toEqual(Array(modes().length).fill(0o600));
 });
+
+test("reading recent history costs the same whether or not there is much to read", () => {
+  const c = {
+    ...defaults(),
+    refreshMs: 100,
+    historyHours: 24,
+    persistence: false,
+  };
+  const held = 2000;
+  /** One history of `held` points carrying `changes` lane starts. */
+  const filled = (changes: number) => {
+    const h = new History(c);
+    // Lanes accumulate, so each marked sample is one lane start and nothing
+    // stops: a lane that appeared and vanished would be two changes, not one.
+    // The first sample records no change, so the marks start past it.
+    const every = changes ? Math.floor(held / (changes + 1)) : held + 1;
+    const lanes = [];
+    for (let i = 0; i < held; i++) {
+      const s = emptySnapshot(1000 + i * 100);
+      if (changes && i > 0 && i % every === 0 && i / every <= changes)
+        lanes.push(laneSnapshot({ id: `l${i}.scope`, name: `l${i}` }));
+      s.lanes = [...lanes];
+      h.add(s);
+    }
+    return h;
+  };
+  /**
+   * Count what a read touches rather than how long it takes: a timing
+   * assertion here would be a check that cannot fail.
+   */
+  const cost = (h: History, end: number) => {
+    let materialised = 0;
+    let touched = 0;
+    const all = Ring.prototype.all;
+    const get = Ring.prototype.get;
+    Ring.prototype.all = function counted(this: Ring<unknown>) {
+      const out = all.call(this);
+      materialised += out.length;
+      return out;
+    };
+    Ring.prototype.get = function counted(this: Ring<unknown>, index: number) {
+      touched += 1;
+      return get.call(this, index);
+    };
+    try {
+      // What Home reads on every render, and what the alert count reads on
+      // every sample.
+      const recent = h.recentEvents(end, 3);
+      const after = h.eventsAfter(end - 100, end);
+      return { recent, after, materialised, touched };
+    } finally {
+      Ring.prototype.all = all;
+      Ring.prototype.get = get;
+    }
+  };
+  const now = 1000 + (held - 1) * 100;
+  // None at all, fewer than Home asks for, then plenty. The sparse cases come
+  // first because they are the ones a walk cannot cut short, and they are the
+  // ordinary state of a quiet machine — which is what Home's own "nothing has
+  // changed" message describes.
+  for (const changes of [0, 2, 4]) {
+    const { recent, after, materialised, touched } = cost(filled(changes), now);
+    expect({ changes, found: recent.length }).toEqual({
+      changes,
+      found: Math.min(changes, 3),
+    });
+    expect({ changes, after }).toEqual({ changes, after: [] });
+    // Nothing is copied out of the ring, and the reads cost a handful of
+    // lookups rather than a pass over the retained window.
+    expect({ changes, materialised }).toEqual({ changes, materialised: 0 });
+    expect({ changes, bounded: touched < 20 }).toEqual({
+      changes,
+      bounded: true,
+    });
+  }
+});
+
+test("a change aged out by a push leaves the index with its point", () => {
+  // A full ring whose oldest point is still retained grows rather than
+  // wrapping, so the push evicts nothing. It evicts only once a sampling gap
+  // has carried that point past the retention cutoff, which is when `push`
+  // returns the casualty and is the case this covers.
+  const c = {
+    ...defaults(),
+    refreshMs: 3600000,
+    historyHours: 3,
+    persistence: false,
+  };
+  const hours = 3600000;
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const running = emptySnapshot(2000);
+  running.lanes = [laneSnapshot({ id: "l1.scope", name: "l1" })];
+  h.add(running);
+  h.add(emptySnapshot(3000));
+  expect(h.recentEvents(3000, 3).map((e) => e.time)).toEqual([3000, 2000]);
+  // The gap. The first push past it drops the oldest point, which carried no
+  // change; the second drops the point that carried one.
+  h.add(emptySnapshot(3 * hours + 2000));
+  h.add(emptySnapshot(3 * hours + 3000));
+  const indexed = h.recentEvents(3 * hours + 3000, 3);
+  const walked = h.events(3 * hours + 3000, c.historyHours * hours);
+  // A row Home offers has to be a row the Timeline can still land on, so the
+  // index cannot hold a change whose point has gone.
+  expect(indexed.some((e) => e.time === 2000)).toBe(false);
+  expect(indexed).toEqual(walked.slice(0, 3));
+});
+
+test("a stored event is decoded only where the record proves it held a unit", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  first.add(s);
+  first.close();
+  const unit = "agent-confine-854045-20986.scope";
+  // Four records an older build could have written. The first is the case the
+  // migration exists for. The rest are what a suffix cannot tell apart from
+  // it: a lane named after a branch, a lane subject on an alert, and a mount.
+  const events = [
+    {
+      time: now,
+      kind: "alert-open",
+      subject: unit,
+      subjectId: `app.slice/${unit}`,
+      cause: "desktop-swap",
+      names: { level: "danger" },
+      values: {},
+    },
+    {
+      time: now,
+      kind: "lane-start",
+      subject: "release.scope",
+      subjectId: "agents.slice/release.scope",
+      cause: "",
+      names: { account: "default", slice: "agents.slice", tool: "claude" },
+      values: {},
+    },
+    {
+      time: now,
+      kind: "alert-open",
+      subject: "release.scope",
+      subjectId: "agents.slice/agent-claude-77.scope",
+      cause: "stalls",
+      names: { level: "warn" },
+      values: {},
+    },
+    {
+      time: now,
+      kind: "alert-open",
+      subject: "/mnt/cache.scope",
+      subjectId: "/mnt/cache.scope",
+      cause: "free-space",
+      names: { level: "danger" },
+      values: {},
+    },
+  ];
+  // What the fixture has to hold, asserted before the load rather than assumed:
+  // every subject ends in a unit suffix and not one carries a unit. A migration
+  // reading the shape of the string sees four identical records here.
+  expect(
+    events.map((e) => {
+      const names: Record<string, string | undefined> = e.names;
+      return e.subject.endsWith(".scope") && names.unit === undefined;
+    }),
+  ).toEqual([true, true, true, true]);
+  const db = new Database(f.config.sqlitePath);
+  const row = db
+    .query<{ point: string }, [number]>(
+      "SELECT point FROM samples WHERE time = ?",
+    )
+    .get(now);
+  const stored = {
+    ...(JSON.parse(row?.point ?? "{}") as Record<string, unknown>),
+    events,
+  };
+  db.query("UPDATE samples SET point = ? WHERE time = ?").run(
+    JSON.stringify(stored),
+    now,
+  );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  // Only the record whose subject is the last segment of its own cgroup path,
+  // on a kind that carries a cgroup at all, is decoded. Rewriting either of
+  // the lane records would rename a lane a reader chose the name of, and
+  // rewriting the mount would rename a directory.
+  expect(
+    reopened
+      .events(now, 3600000)
+      .map((e) => `${e.subject} | ${e.names.unit ?? ""}`),
+  ).toEqual([
+    `agent 854045 | ${unit}`,
+    "release.scope | ",
+    "release.scope | ",
+    "/mnt/cache.scope | ",
+  ]);
+});

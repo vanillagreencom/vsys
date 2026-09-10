@@ -4,10 +4,12 @@ import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
 import { type Level, type Meter, meters } from "../model/verdict";
+import type { TimelineEvent } from "../store/events";
 import type { Point } from "../store/point";
 import {
   type Attention,
   meterTile,
+  type Target,
   verdictItem,
   verdictLine,
 } from "./attention";
@@ -23,6 +25,7 @@ import {
 } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, ui } from "./theme";
+import { eventKey, eventParts } from "./timeline";
 import {
   Bar,
   Empty,
@@ -37,21 +40,46 @@ import {
   tilesPerRow,
 } from "./widgets";
 
-/** The Home list mixes concerns and agents; Enter opens whichever is selected. */
+/** The Home list mixes concerns, changes and agents; Enter opens the selected one. */
 export type HomeItem =
   | { kind: "concern"; item: Attention }
+  | { kind: "change"; event: TimelineEvent }
   | { kind: "agent"; lane: Lane };
+/** How many recent changes Home lists, newest first. */
+export const recentChanges = 3;
 export function homeItems(
   items: Attention[],
   s: Snapshot,
   busiest = 5,
+  changes: TimelineEvent[] = [],
 ): HomeItem[] {
   return [
     ...items.map((item) => ({ kind: "concern", item }) as const),
+    ...changes
+      .slice(0, recentChanges)
+      .map((event) => ({ kind: "change", event }) as const),
     ...sortLanes(s.lanes, "cpu", true)
       .slice(0, busiest)
       .map((lane) => ({ kind: "agent", lane }) as const),
   ];
+}
+/**
+ * What tells one Home row from another, whichever kind it is. Home mixes three
+ * kinds and its rows prepend, so a row number names a different item one sample
+ * later. One function for all three, because a rule written per kind reaches
+ * the kinds someone remembered.
+ */
+export function homeKey(row: HomeItem): string {
+  if (row.kind === "concern") return `concern:${row.item.id}`;
+  if (row.kind === "change") return `change:${eventKey(row.event)}`;
+  return `agent:${row.lane.id}`;
+}
+/** The row a Home item opens: an agent, a card's own row, or a moment. */
+export function homeTarget(row: HomeItem): Target | undefined {
+  if (row.kind === "agent") return { kind: "lane", id: row.lane.id };
+  if (row.kind === "change")
+    return { kind: "time", at: row.event.time, id: eventKey(row.event) };
+  return row.item.target;
 }
 /** The history field each meter's tile charts, so the two cannot drift apart. */
 const meterSeries: Record<Meter["id"], keyof Point> = {
@@ -91,9 +119,11 @@ export function Home({
   snapshot: s,
   config: c,
   items,
+  changes,
+  alertsOpened,
   points,
   windowMs,
-  selected,
+  selection,
   width,
   height,
   onSelect,
@@ -104,12 +134,17 @@ export function Home({
   snapshot: Snapshot;
   config: Config;
   items: Attention[];
+  /** Every retained change, newest first, as the Timeline lists them. */
+  changes: TimelineEvent[];
+  /** Alerts opened since the dashboard started. */
+  alertsOpened: number;
   points: Point[];
   windowMs: number;
-  selected: number;
+  /** The row the reader chose, and the item that row named. */
+  selection: { index: number; id: string | null };
   width: number;
   height: number;
-  onSelect: (index: number) => void;
+  onSelect: (selection: { index: number; id: string | null }) => void;
   onOpen: (item: HomeItem) => void;
   /** Opens the screen behind a tile, which breaks that meter down. */
   onOpenView: (view: View) => void;
@@ -122,10 +157,13 @@ export function Home({
   const columns = width >= wideWidth;
   const busiest = Math.max(
     3,
-    columns ? height - 10 : height - 10 - items.length * 2,
+    columns
+      ? height - 10 - recentChanges - 2
+      : height - 10 - items.length * 2 - recentChanges - 2,
   );
   const gauges = meters(s, c);
-  const rows = homeItems(items, s, busiest);
+  const rows = homeItems(items, s, busiest, changes);
+  const recent = rows.filter((r) => r.kind === "change");
   // Null while the rows hold the selection. Left or right moves onto the
   // tiles, up or down moves back off them, so one Enter is never ambiguous.
   const [tile, setTile] = useState<number | null>(null);
@@ -137,6 +175,33 @@ export function Home({
    * one screen that already has two places a selection can sit.
    */
   const rowsFocused = tile === null;
+  /**
+   * Whether the row at `i` carries the selection marker. All three row types
+   * ask here rather than repeating the rule: a rule written at each site is a
+   * rule with a hole waiting for the next row type, and phase 2 added the
+   * third and missed it at once.
+   */
+  /**
+   * The row to draw, resolved against the rows this render has. Following the
+   * chosen item keeps the reader on it when a change arrives above it, and
+   * where that item has gone the nearest row that exists takes over. Same rule
+   * as the Agents list and the Timeline list.
+   */
+  const found = rows.findIndex((row) => homeKey(row) === selection.id);
+  const selected =
+    found >= 0
+      ? found
+      : Math.min(selection.index, Math.max(0, rows.length - 1));
+  /** Move the selection, recording the row and the item it names together. */
+  const choose = (index: number) =>
+    onSelect({ index, id: rows[index] ? homeKey(rows[index]) : null });
+  // The first row is a choice too. Home cannot seed it at construction, since
+  // its parent holds the selection and only this screen knows the rows, so it
+  // is recorded on the first render that has any.
+  useEffect(() => {
+    if (selection.id === null && rows.length) choose(selection.index);
+  });
+  const marked = (i: number) => rowsFocused && i === selected;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`home-${selected}`);
@@ -144,12 +209,12 @@ export function Home({
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setTile(null);
-      onSelect(nextDown(rows.length, selected));
+      choose(nextDown(rows.length, selected));
       return true;
     }
     if (name === c.keys.up || name === "up") {
       setTile(null);
-      onSelect(Math.max(0, selected - 1));
+      choose(Math.max(0, selected - 1));
       return true;
     }
     if (name === c.keys.left || name === "left") {
@@ -279,13 +344,13 @@ export function Home({
                   flexShrink={0}
                 >
                   <Row
-                    selected={rowsFocused && i === selected}
+                    selected={marked(i)}
                     color={row.item.danger ? ui.danger : ui.warn}
                     onOpen={() => onOpen(row)}
                   >
                     {safe(row.item.title)}
                   </Row>
-                  {rowsFocused && i === selected && (
+                  {marked(i) && (
                     <box flexDirection="column" flexShrink={0} paddingLeft={2}>
                       <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                         {safe(row.item.detail)}
@@ -321,6 +386,42 @@ export function Home({
             flexBasis={columns ? 0 : undefined}
             minWidth={0}
           >
+            <Section
+              title="Recent changes"
+              width={panel}
+              // Zero alerts is a reading a reader can act on. Dropping the
+              // count there leaves no way to tell it from a count vsys never
+              // took, which is the same defect as a blank standing for zero.
+              count={`${alertsOpened} ${plural(alertsOpened, "alert", "alerts")} opened since vsys started`}
+            />
+            {!recent.length && (
+              <Empty text="Nothing has changed since vsys started." />
+            )}
+            {rows.map((row, i) =>
+              row.kind === "change" ? (
+                <box id={`home-${i}`} key={eventKey(row.event)} flexShrink={0}>
+                  <Row selected={marked(i)} onOpen={() => onOpen(row)}>
+                    {(() => {
+                      const e = eventParts(row.event, c);
+                      return (
+                        <>
+                          <span
+                            attributes={ui.dim}
+                          >{`${e.time.padStart(11)}  `}</span>
+                          <span
+                            fg={levelColor(e.level)}
+                            attributes={e.level === "ok" ? ui.none : ui.bold}
+                          >
+                            {cell({ label: "", width: 13 }, e.kind)}
+                          </span>
+                          {safe(e.text)}
+                        </>
+                      );
+                    })()}
+                  </Row>
+                </box>
+              ) : null,
+            )}
             <Section title="Busiest agents" width={panel} />
             {!agents.length && (
               <Empty text="No agent is running in a watched scope." />
@@ -329,10 +430,7 @@ export function Home({
             {rows.map((row, i) =>
               row.kind === "agent" ? (
                 <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>
-                  <Row
-                    selected={rowsFocused && i === selected}
-                    onOpen={() => onOpen(row)}
-                  >
+                  <Row selected={marked(i)} onOpen={() => onOpen(row)}>
                     {safe(cell(nameColumn, row.lane.name))}
                     {columnGap}
                     <Bar

@@ -1,6 +1,8 @@
+import { useCallback, useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
+import type { TimelineEvent } from "../store/events";
 import type { History } from "../store/history";
 import { changed, type Point } from "../store/point";
 import { fit } from "./columns";
@@ -15,12 +17,15 @@ import {
 } from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, readingWeight, ui } from "./theme";
-import { eventParts } from "./timeline";
+import { eventKey, eventParts } from "./timeline";
 import {
   Chart,
-  Empty,
+  Field,
   gutter,
   Line,
+  List,
+  nextDown,
+  Row,
   Section,
   Sparkline,
   Tile,
@@ -83,6 +88,8 @@ export function Timeline({
   height,
   onCursor,
   onWindow,
+  target,
+  onTargetUsed,
 }: {
   snapshot: Snapshot;
   history: History;
@@ -94,8 +101,27 @@ export function Timeline({
   height: number;
   onCursor: (time: number | null) => void;
   onWindow: (index: number) => void;
+  /** The event time a Home row asked this screen to land on. */
+  /** The moment a Home row asked for, and which change at that moment. */
+  target: { at: number; id: string } | null;
+  onTargetUsed: () => void;
 }) {
   const windowMs = windows[windowIndex];
+  const changes = history.events(s.time, windowMs);
+  /**
+   * What the reader chose: the row they moved to, and the change that row
+   * named. The window key can swap a long list for a shorter one and a new
+   * sample prepends to it, so a row number alone outlives what it pointed at.
+   *
+   * The first row is a choice like any other, so it is seeded with the change
+   * it sits on rather than left as a null to be resolved by index. Left null,
+   * a change arriving at the top took the highlight while the cursor stayed
+   * on the row the reader had opened.
+   */
+  const [selection, setSelection] = useState<{
+    index: number;
+    id: string | null;
+  }>(() => ({ index: 0, id: changes[0] ? eventKey(changes[0]) : null }));
   const start = s.time - windowMs;
   const chartWidth = Math.max(10, width - 4 - gutter);
   const buckets = timeBuckets(points, start, s.time, chartWidth);
@@ -109,6 +135,22 @@ export function Timeline({
           Math.max(0, Math.floor(((at - start) * chartWidth) / windowMs)),
         );
   useScreenKeys((name, key) => {
+    if (name === c.keys.down || name === "down") {
+      const next = nextDown(changes.length, row);
+      select(next, changes[next]);
+      return true;
+    }
+    if (name === c.keys.up || name === "up") {
+      const up = Math.max(0, row - 1);
+      select(up, changes[up]);
+      return true;
+    }
+    // The change list is a list: Enter moves the time cursor to the row, and
+    // the pin key pins the sample the row happened in.
+    if (name === c.keys.open && changes[row]) {
+      open(row, changes[row]);
+      return true;
+    }
     const left = name === c.keys.left || name === "left";
     const right = name === c.keys.right || name === "right";
     if (!left && !right) return false;
@@ -158,7 +200,70 @@ export function Timeline({
       ),
     );
   };
-  const changes = history.events(s.time, windowMs);
+  /**
+   * The row to draw, resolved against the list this render has. Following the
+   * chosen change keeps the reader on it when the list shifts under them, and
+   * where that change has gone the nearest row that exists takes over, so the
+   * highlight is never on a row the list does not have and Enter is never a
+   * no-op. Same rule as a lane leaving the Agents list.
+   */
+  const found = changes.findIndex((event) => eventKey(event) === selection.id);
+  const row =
+    found >= 0
+      ? found
+      : Math.min(selection.index, Math.max(0, changes.length - 1));
+  /**
+   * Move the highlight. The row and the change it names are recorded together
+   * and the change is passed in, so no caller can record a row number without
+   * saying which change it points at.
+   */
+  const select = useCallback(
+    (index: number, event: TimelineEvent | undefined) =>
+      setSelection({ index, id: event ? eventKey(event) : null }),
+    [],
+  );
+  /**
+   * Open a row: the highlight, the recorded identity and the time cursor move
+   * as one. Every entry calls this — the keys, the mouse, and a row Home asked
+   * for — because a rule written at each entry reaches the entries someone
+   * remembered, and the key path was the one that was not.
+   */
+  const open = useCallback(
+    (index: number, event: TimelineEvent) => {
+      select(index, event);
+      onCursor(event.time);
+    },
+    [select, onCursor],
+  );
+  /**
+   * A row Home asked for is selected and made the cursor, once. Home lists
+   * everything retained, so the row can be older than the window this screen
+   * is showing and absent from `changes` entirely. Widening to a window that
+   * holds it comes first, and the request is kept until it has been landed
+   * on: consuming it before finding the row is the silent no-op where the
+   * reader presses a key and the screen looks untouched.
+   */
+  useEffect(() => {
+    if (target === null) return;
+    // Found by identity, not by time: every change in one sample shares that
+    // sample's time, so matching on the time lands on the first of them
+    // whichever row the reader opened.
+    const at = changes.findIndex((event) => eventKey(event) === target.id);
+    if (at >= 0) {
+      open(at, changes[at]);
+      onTargetUsed();
+      return;
+    }
+    const wider = windows.findIndex((ms) => s.time - target.at <= ms);
+    if (wider >= 0 && wider !== windowIndex) {
+      onWindow(wider);
+      return;
+    }
+    // Older than the widest window, so no window can hold it. Retention is
+    // capped below that width, so Home cannot list such a row; the request is
+    // still consumed rather than left to fire on every later sample.
+    onTargetUsed();
+  }, [target, onTargetUsed, changes, open, onWindow, windowIndex, s.time]);
   // The header, two three-row charts with titles, the sparklines, the axis
   // and the heading come before the change list.
   // Each row takes its metric's own colour, so six sparklines one under the
@@ -178,12 +283,12 @@ export function Timeline({
   // tile block: budgeting the block on a short first-run Timeline dropped the
   // sparkline rows and left the space they would have taken empty.
   const cursorHeight = selected ? tilesHeight(rows.length, width - 4, 2) : 1;
-  const fixed = 2 + 4 + 4 + 3 + cursorHeight + 1;
+  // ...and the unit line the selected row can open under itself.
+  const fixed = 2 + 4 + 4 + 3 + cursorHeight + 1 + 1;
   // A short terminal keeps the two charts and the change list, and drops the
   // sparkline rows, which the cursor tiles still summarise.
   const short = height < fixed + rows.length + 3;
   const listHeight = Math.max(3, height - (fixed + (short ? 0 : rows.length)));
-  const visible = changes.slice(0, listHeight);
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
       <box flexDirection="row" height={1} flexShrink={0}>
@@ -279,37 +384,41 @@ export function Timeline({
       <Section
         title="What changed"
         width={width - 4}
-        count={
-          changes.length
-            ? `${visible.length < changes.length ? `${visible.length} of ` : ""}${changes.length}, newest first`
-            : undefined
-        }
+        count={changes.length ? `${changes.length}, newest first` : undefined}
       />
-      {!changes.length && (
-        <Empty text="Nothing changed in this window: no lane, cgroup or cause moved." />
-      )}
-      {visible.map((event) => {
-        const e = eventParts(event, c);
-        return (
-          // One row per event, so a long subject cannot push the rest out.
-          <Line
-            key={`${event.time}-${event.kind}-${event.cause}-${event.subjectId}`}
-            height={1}
-            flexShrink={0}
-            truncate
-            onMouseDown={() => onCursor(event.time)}
-          >
-            <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
-            <span
-              fg={levelColor(e.level)}
-              attributes={e.level === "ok" ? ui.none : ui.bold}
-            >
-              {fit(e.kind, 13)}
-            </span>
-            {safe(e.text)}
-          </Line>
-        );
-      })}
+      {/* The shared list, which pages around its own selection. Slicing the
+          first rows here instead let the selection walk off the end of what
+          was drawn, and Enter then acted on a row the reader could not see. */}
+      <List
+        items={changes}
+        selected={row}
+        height={listHeight}
+        empty="Nothing changed in this window: no lane, cgroup or cause moved."
+        render={(event, at, isSelected) => {
+          const e = eventParts(event, c);
+          const unit = event.names.unit;
+          return (
+            // One row per event, so a long subject cannot push the rest out.
+            <box key={eventKey(event)} flexDirection="column" flexShrink={0}>
+              <Row selected={isSelected} onOpen={() => open(at, event)}>
+                <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
+                <span
+                  fg={levelColor(e.level)}
+                  attributes={e.level === "ok" ? ui.none : ui.bold}
+                >
+                  {fit(e.kind, 13)}
+                </span>
+                {safe(e.text)}
+              </Row>
+              {isSelected && unit && unit !== event.subject && (
+                // The subject reads as a name; the unit it decoded from is the
+                // handle a reader needs to reach the scope itself.
+                <Field label="Unit" value={unit} width={14} />
+              )}
+            </box>
+          );
+        }}
+      />
     </box>
   );
 }

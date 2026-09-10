@@ -57,6 +57,15 @@ export interface EventParts {
   text: string;
   level: Level;
 }
+/**
+ * What tells one change from another. Two alerts can open for one subject in
+ * one sample under different causes, so the cause is part of the identity:
+ * without it React sees two siblings with one key and is free to reuse or drop
+ * the wrong row. Both screens that list changes read this, so their keys
+ * cannot drift apart.
+ */
+export const eventKey = (e: TimelineEvent): string =>
+  `${e.time}-${e.kind}-${e.cause}-${e.subjectId}`;
 export function eventParts(e: TimelineEvent, c: Config): EventParts {
   const time = new Date(e.time).toLocaleTimeString();
   const n = e.names;

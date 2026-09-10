@@ -24,7 +24,13 @@ export type Target =
   | { kind: "lane"; id: string }
   | { kind: "group"; path: string }
   | { kind: "path"; path: string }
-  | { kind: "time"; at: number };
+  /**
+   * A moment, and which change at it. Every change found in one sample shares
+   * that sample's time, so the time alone names the first of them and not the
+   * one the reader chose. The cursor is set from `at`; the row is found by
+   * `id`.
+   */
+  | { kind: "time"; at: number; id: string };
 export interface Attention {
   /** One identifier per cause. Two lanes with one cause share one card. */
   id: string;

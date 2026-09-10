@@ -6,7 +6,7 @@ import type { Alert, Snapshot } from "../model/types";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
 import type { LaneSample } from "./lane-series";
-import { normalizeSnapshot } from "./migrate";
+import { normalizePoint, normalizeSnapshot } from "./migrate";
 import { type Point, point } from "./point";
 
 /** Snapshots hold command lines and environment values, so only the owner may read them. */
@@ -61,11 +61,92 @@ export class Ring<T> {
   }
 }
 
+/**
+ * The retained points, and the newest changes among them kept as they arrive.
+ *
+ * Finding the newest few by scanning stops early only when there are enough to
+ * find. A quiet machine holds fewer changes than a screen asks for, and there
+ * the scan reaches the oldest retained point every time — at a hundred
+ * milliseconds over a day that is 864,000 reads per render, on the machine
+ * least likely to have anyone watching for the cause.
+ *
+ * Eviction is oldest first, so every change outside the index is older than
+ * every change in it and can never be promoted into it. Dropping an evicted
+ * point's changes is the whole of what eviction has to do, and no path here
+ * ever rescans.
+ */
+class Points {
+  /** Headroom over what any screen asks for, so the index answers every call. */
+  static readonly indexed = 8;
+  private ring: Ring<Point>;
+  private newest: TimelineEvent[] = [];
+  constructor(capacity: number) {
+    this.ring = new Ring(capacity);
+  }
+  get size(): number {
+    return this.ring.size;
+  }
+  get capacity(): number {
+    return this.ring.capacity;
+  }
+  get(index: number): Point | undefined {
+    return this.ring.get(index);
+  }
+  all(): Point[] {
+    return this.ring.all();
+  }
+  push(p: Point): void {
+    // A full ring evicts its oldest point on a push and hands it back. That is
+    // the same eviction `shift` performs and it drops the same changes, so
+    // both go through `drop`: keeping an evicted point's change in the index
+    // put a change outside retention on Home, where opening it landed on no
+    // Timeline row at all.
+    const evicted = this.ring.push(p);
+    const events = p.events ?? [];
+    if (events.length)
+      // Newest point first, and a point's own changes in the order it recorded
+      // them, which is the order every reader of this list already expects.
+      this.newest = [...events, ...this.newest].slice(0, Points.indexed);
+    this.drop(evicted);
+  }
+  shift(): Point | undefined {
+    const gone = this.ring.shift();
+    this.drop(gone);
+    return gone;
+  }
+  /** A point has left retention, so the changes it carried leave the index. */
+  private drop(gone: Point | undefined): void {
+    if (gone?.events?.length)
+      this.newest = this.newest.filter((e) => e.time !== gone.time);
+  }
+  /**
+   * The newest changes at or before `end`, newest first. The index answers
+   * whenever `end` is at or past the newest retained point, which is what a
+   * live screen asks; an older `end` is a historical read and walks.
+   */
+  recent(end: number, limit: number): TimelineEvent[] {
+    if (limit <= 0) return [];
+    const latest = this.ring.get(this.ring.size - 1)?.time;
+    if (limit <= Points.indexed && latest !== undefined && end >= latest)
+      return this.newest.slice(0, limit);
+    const out: TimelineEvent[] = [];
+    for (let i = this.ring.size - 1; i >= 0 && out.length < limit; i--) {
+      const p = this.ring.get(i);
+      if (!p || p.time > end) continue;
+      for (const event of p.events ?? []) {
+        out.push(event);
+        if (out.length >= limit) break;
+      }
+    }
+    return out;
+  }
+}
+
 /** Compressed samples preserve historical process identity and metadata. */
 export class History {
   private archive = new Archive();
   private eventLog = new EventLog();
-  private points: Ring<Point>;
+  private points: Points;
   private db?: Database;
   private laneCache = new Map<string, CachedLane>();
   private laneLoads = new Map<string, Promise<void>>();
@@ -76,7 +157,7 @@ export class History {
   }
   constructor(private c: Config) {
     const capacity = Math.ceil((c.historyHours * 3600000) / c.refreshMs);
-    this.points = new Ring(capacity);
+    this.points = new Points(capacity);
     if (c.persistence) {
       mkdirSync(dirname(c.sqlitePath), { recursive: true });
       const fresh = !existsSync(c.sqlitePath);
@@ -110,9 +191,12 @@ export class History {
           )
           .all(cutoff);
         if (rows.length > this.points.capacity)
-          this.points = new Ring(rows.length);
+          this.points = new Points(rows.length);
+        // A stored point was written by whichever build was running then, so
+        // it reaches the ring through the same normalising step a stored
+        // snapshot does.
         for (const row of rows)
-          this.points.push(JSON.parse(row.point) as Point);
+          this.points.push(normalizePoint(JSON.parse(row.point) as Point));
       } catch (error) {
         this.db.close();
         throw error;
@@ -140,7 +224,7 @@ export class History {
       this.points.size === this.points.capacity &&
       (this.points.get(0)?.time ?? 0) >= cutoff
     ) {
-      const expanded = new Ring<Point>(this.points.capacity * 2);
+      const expanded = new Points(this.points.capacity * 2);
       for (const point of this.points.all()) expanded.push(point);
       this.points = expanded;
     }
@@ -162,7 +246,7 @@ export class History {
           .map((p) => [p.time, p]),
       );
       const capacity = Math.max(next.points.capacity, points.size);
-      next.points = new Ring(capacity);
+      next.points = new Points(capacity);
       next.archive = this.archive.copy(cutoff);
       // Derivation continues across a settings change, so an alert that opened
       // before it still closes with its full duration.
@@ -221,10 +305,45 @@ export class History {
   configure(c: Config): void {
     this.c = c;
   }
+  /**
+   * Points in a window, oldest first. The walk starts at the newest and stops
+   * when it leaves the window, so it touches the points in that window rather
+   * than materialising every retained point and filtering. At a hundred
+   * milliseconds over a day the ring holds 864,000 of them, and this is read
+   * on every sample by every screen that charts anything.
+   */
   window(end: number, durationMs: number): Point[] {
-    return this.points
-      .all()
-      .filter((p) => p.time <= end && p.time >= end - durationMs);
+    const out: Point[] = [];
+    for (let i = this.points.size - 1; i >= 0; i--) {
+      const p = this.points.get(i);
+      if (!p || p.time > end) continue;
+      if (p.time < end - durationMs) break;
+      out.push(p);
+    }
+    return out.reverse();
+  }
+  /**
+   * Changes newer than `since`, newest first. The walk stops at the first
+   * point that is not, so a caller asking on every sample touches the points
+   * that arrived since it last asked rather than the whole retained window.
+   */
+  eventsAfter(since: number, end: number): TimelineEvent[] {
+    const out: TimelineEvent[] = [];
+    for (let i = this.points.size - 1; i >= 0; i--) {
+      const p = this.points.get(i);
+      if (!p || p.time > end) continue;
+      if (p.time <= since) break;
+      out.push(...(p.events ?? []));
+    }
+    return out;
+  }
+  /**
+   * The newest changes, newest first, stopping as soon as `limit` are found.
+   * Home shows three, and finding them costs neither a scan nor a copy: the
+   * index behind this is kept as points arrive.
+   */
+  recentEvents(end: number, limit: number): TimelineEvent[] {
+    return this.points.recent(end, limit);
   }
   at(time: number): Snapshot | null {
     const cutoff =

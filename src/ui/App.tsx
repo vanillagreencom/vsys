@@ -36,7 +36,7 @@ import {
   views,
 } from "./chrome";
 import { type Output, osc52 } from "./clipboard";
-import { Home } from "./home";
+import { Home, homeTarget, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
 import { Settings } from "./settings-screen";
@@ -165,7 +165,16 @@ export function App({
 }: AppProps) {
   const renderer = useRenderer();
   const [view, setView] = useState<View>("Home");
-  const [homeIndex, setHomeIndex] = useState(0);
+  /**
+   * The Home row the reader chose, and the item that row named. Home's rows
+   * prepend, so a row number alone names a different item one sample later.
+   * It is held here rather than in the screen because it outlives the screen:
+   * leaving Home and returning must land where the reader was.
+   */
+  const [homeSelection, setHomeSelection] = useState<{
+    index: number;
+    id: string | null;
+  }>({ index: 0, id: null });
   const [laneId, setLaneId] = useState<string | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
   const [pinned, setPinned] = useState<Snapshot | null>(null);
@@ -192,6 +201,22 @@ export function App({
   }, [toast]);
   // A serious cause that was not there a sample ago is announced once, on
   // screen and to the terminal, whichever view is open.
+  // Alerts opened since the dashboard started, so a reader returning to it
+  // sees how much happened while they were away.
+  const [opened, setOpened] = useState(0);
+  const counted = useRef<number | null>(null);
+  useEffect(() => {
+    // Only what arrived since the last sample. Reading the whole retained
+    // window and filtering it meant scanning every point vsys holds, on every
+    // sample, to count the handful that were new.
+    const since = counted.current;
+    counted.current = snapshot.time;
+    if (since === null) return;
+    const fresh = history
+      .eventsAfter(since, snapshot.time)
+      .filter((event) => event.kind === "alert-open").length;
+    if (fresh) setOpened((n) => n + fresh);
+  }, [history, snapshot.time]);
   const seen = useRef<Set<string> | null>(null);
   useEffect(() => {
     const ids = new Set(issues.map((item) => item.id));
@@ -219,7 +244,7 @@ export function App({
    * A card names one row; opening it lands on that row. The destination clears
    * the target as it takes it, so opening the same card twice lands twice.
    */
-  const openCard = (view: View, at: Target | undefined) => {
+  const openCard = (view: View | "Timeline", at: Target | undefined) => {
     if (at?.kind === "lane") {
       openLane(at.id);
       return;
@@ -350,15 +375,23 @@ export function App({
         snapshot={snapshot}
         config={c}
         items={issues}
+        // The newest few from everything retained, not the Timeline's
+        // current window: this section exists for the reader who was away,
+        // and a five-minute window told them nothing had changed while an
+        // hour sat in history. It asks for the rows it shows, so finding them
+        // stops rather than scanning a day of history on every render.
+        changes={history.recentEvents(snapshot.time, recentChanges)}
+        alertsOpened={opened}
         points={points}
         windowMs={windows[windowIndex]}
-        selected={homeIndex}
+        selection={homeSelection}
         width={width - 4}
         height={contentHeight}
-        onSelect={setHomeIndex}
+        onSelect={setHomeSelection}
         onCopy={copy}
         onOpen={(row) => {
           if (row.kind === "agent") openLane(row.lane.id);
+          else if (row.kind === "change") openCard("Timeline", homeTarget(row));
           else openCard(row.item.view, row.item.target);
         }}
         // A tile drills down into a screen, the same as a card does, so it
@@ -430,6 +463,8 @@ export function App({
         height={contentHeight}
         onCursor={setCursor}
         onWindow={setWindowIndex}
+        target={target?.kind === "time" ? target : null}
+        onTargetUsed={clearTarget}
       />
     );
   else

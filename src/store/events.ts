@@ -6,6 +6,7 @@ import {
   type CauseId,
   causeRank,
   causes,
+  consumerName,
   type Level,
 } from "../model/verdict";
 
@@ -44,6 +45,8 @@ interface Watch {
   cause: CauseId;
   subject: string;
   subjectId: string;
+  /** The systemd unit the subject name decoded from, empty when it is not one. */
+  unit: string;
   level: Level;
   verdictWorthy: boolean;
   values: Record<string, number | null>;
@@ -81,13 +84,58 @@ function subjectValues(
  * A cause groups every subject it affects. Each of them is its own alert with
  * its own duration, so two escaped lanes are two alerts rather than one.
  */
-export function subjects(cause: Cause): { id: string; name: string }[] {
-  const named = [
+/** One subject: what it is, what a reader calls it, and the unit behind it. */
+interface Subject {
+  id: string;
+  name: string;
+  unit?: string;
+}
+/**
+ * One entry per identity, keeping every field any of them carried. A cause can
+ * name one thing twice on purpose — `disk` lists the top writer as a lane and
+ * as a group, because it is both — and the two entries know different halves:
+ * the lane knows the reader's name, the group knows the systemd unit. Left as
+ * two, the first creates the watch and the second cannot add to it, so the
+ * unit is dropped for exactly the subject that has one.
+ */
+function merge(entries: Subject[]): Subject[] {
+  const byId = new Map<string, Subject>();
+  for (const entry of entries) {
+    const seen = byId.get(entry.id);
+    if (!seen) byId.set(entry.id, { ...entry });
+    else if (entry.unit !== undefined && seen.unit === undefined)
+      seen.unit = entry.unit;
+  }
+  return [...byId.values()];
+}
+export function subjects(cause: Cause, s: Snapshot): Subject[] {
+  const named = merge([
     ...cause.lanes.map((lane) => ({ id: lane.id, name: lane.name })),
-    ...cause.groups.map((group) => ({ id: group.path, name: group.name })),
+    // A cgroup's own name is systemd's, not a reader's. `consumerName` is the
+    // one place that turns one into a name, so an event says what a card says.
+    ...cause.groups.map((group) => ({
+      id: group.path,
+      name: consumerName(group, s),
+      unit: group.name,
+    })),
     ...cause.paths.map((path) => ({ id: path, name: path })),
-  ];
-  return named.length ? named : [{ id: cause.consumer, name: cause.consumer }];
+  ]);
+  if (named.length) return named;
+  // The cause is about nothing it can name — host pressure with no lane
+  // stalled under it — so it gets one fallback subject. Where it names a
+  // scope to look at, that scope is the identity that subject carries: its
+  // path, its decoded name, and the raw unit behind it, so the change row can
+  // still show the handle its subject decoded from.
+  //
+  // This changes what the one subject is, never how many there are. `at` is
+  // not a subject and is not added to `named`: a cause with no lanes and no
+  // groups already produced exactly one row here, and it still does.
+  const at = cause.at;
+  const scope =
+    at?.kind === "group" ? s.groups.find((g) => g.path === at.path) : undefined;
+  if (scope)
+    return [{ id: scope.path, name: consumerName(scope, s), unit: scope.name }];
+  return [{ id: cause.consumer, name: cause.consumer }];
 }
 /**
  * Events come from successive snapshots and from the one cause ladder. An
@@ -172,13 +220,14 @@ export class EventLog {
     const ladder = causes(s, c);
     const live = new Set<string>();
     for (const cause of ladder) {
-      for (const subject of subjects(cause)) {
+      for (const subject of subjects(cause, s)) {
         const key = `${cause.id}\u0000${subject.id}`;
         live.add(key);
         const watch: Watch = this.watching.get(key) ?? {
           cause: cause.id,
           subject: subject.name,
           subjectId: subject.id,
+          unit: subject.unit ?? "",
           level: cause.level,
           verdictWorthy: cause.verdictWorthy,
           values: {},
@@ -188,6 +237,14 @@ export class EventLog {
         };
         watch.lastSeen = s.time;
         watch.level = cause.level;
+        // What a cgroup is called depends on the lane set, so a scope becoming
+        // a lane renames the subject mid-hold. A watch that has not opened
+        // takes the newest name and unit; one that has keeps what it reported,
+        // so its verdict and its close name the alert the way its open did.
+        if (!watch.opened) {
+          watch.subject = subject.name;
+          watch.unit = subject.unit ?? "";
+        }
         // The thresholds and the subject's own numbers belong to the event,
         // not to the settings the reader happens to hold when it is drawn.
         watch.values = subjectValues(cause, subject.id, s, c);
@@ -197,7 +254,9 @@ export class EventLog {
         watch.opened = add("alert-open", subject.name, {
           subjectId: subject.id,
           cause: cause.id,
-          names: { level: cause.level },
+          // The unit name the subject decoded from, for the drill-down; a
+          // reader who needs the raw name can still reach it.
+          names: { level: cause.level, unit: watch.unit },
           values: { ...watch.values },
         });
       }
@@ -215,7 +274,7 @@ export class EventLog {
       add("alert-close", watch.subject, {
         subjectId: watch.subjectId,
         cause: watch.cause,
-        names: { level: watch.level },
+        names: { level: watch.level, unit: watch.unit },
         values: { durationMs: watch.lastSeen - watch.firstSeen },
       });
     }
@@ -242,6 +301,10 @@ export class EventLog {
           previous: this.verdict,
           previousLevel: this.verdictLevel,
           level,
+          // The verdict names a subject, so it carries what that subject
+          // decoded from. Without it a selected Verdict row is the one change
+          // whose raw scope handle a reader cannot reach.
+          unit: lead?.unit ?? "",
         },
         values: lead ? { ...lead.values } : {},
       });

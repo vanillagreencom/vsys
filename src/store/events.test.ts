@@ -1,14 +1,16 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
+import { type Cause, causes } from "../model/verdict";
 import {
   emptySnapshot,
+  everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import { EventLog } from "./events";
+import { EventLog, subjects } from "./events";
 import { History } from "./history";
 
 /** A zero hold isolates the derivation from the flap suppression below. */
@@ -395,4 +397,219 @@ test("memory reclaim alerts one per stalled lane, not one for the scope it point
   // for something that had not itself gone wrong, and would churn them every
   // time the top holder changed.
   expect(opened.map((e) => e.subjectId).sort()).toEqual(["a", "b"]);
+});
+
+test("a change about a cgroup names it the way a card does, and keeps the unit", () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const log = new EventLog();
+  const quiet = everyCauseSnapshot(c);
+  quiet.groups = quiet.groups.map((g) =>
+    g.name === "gnome.scope"
+      ? { ...g, name: "app-Hyprland-ghostty-b95bd288.scope" }
+      : g,
+  );
+  log.advance(quiet, c);
+  const events = log.advance({ ...quiet, time: quiet.time + 1000 }, c);
+  const swap = events.find((e) => e.cause === "desktop-swap");
+  if (!swap) throw new Error("expected a desktop-swap alert");
+  // systemd's own name is not a name; the reader gets the one the cards use.
+  expect(swap.subject).toBe("ghostty");
+  expect(swap.subject).not.toContain(".scope");
+  expect(swap.subject).not.toContain("app-");
+  // The raw unit stays reachable, for a reader who needs the handle.
+  expect(swap.names.unit).toBe("app-Hyprland-ghostty-b95bd288.scope");
+  // A lane subject already reads as a name and carries no unit of its own.
+  const lane = events.find((e) => e.cause === "memory-cap");
+  expect(lane?.subject).toBe("capped");
+  expect(lane?.names.unit ?? "").toBe("");
+});
+
+test("host memory pressure with no lane stalled under it still names its scope", () => {
+  const log = started();
+  const s = emptySnapshot(2000);
+  s.system.pressure = { memory: { some: 80, full: 0, total: 0 } };
+  // A desktop scope holding swap, and no lane waiting on memory. The cause
+  // has nothing of its own to name, so it falls back to one subject.
+  s.groups = [
+    groupSnapshot({
+      path: "app.slice/gnome.scope",
+      name: "gnome.scope",
+      swap: 992,
+    }),
+  ];
+  const opened = log
+    .advance(s, c)
+    .filter((e) => e.kind === "alert-open" && e.cause === "system-memory");
+  // Still exactly one alert. `at` is where to look, not a subject, and using
+  // it here changes what the one subject is rather than how many there are.
+  expect(opened.length).toBe(1);
+  // And that one subject carries a real identity: the scope's path, the name
+  // a card would show, and the raw unit the row can open under itself. A bare
+  // consumer string left the reader with no handle at all.
+  expect(opened[0].subjectId).toBe("app.slice/gnome.scope");
+  expect(opened[0].subject).toBe("gnome");
+  expect(opened[0].names.unit).toBe("gnome.scope");
+});
+
+test("a cause that names one thing twice opens one alert carrying its unit", () => {
+  const log = started();
+  const s = emptySnapshot(2000);
+  s.system.pressure = { io: { some: 80, full: 0, total: 0 } };
+  // The top writer is a scope that is also an agent lane, so `disk` lists it
+  // as both on purpose: the lane knows the reader's name, the group knows the
+  // systemd unit. Two entries for one identity meant the first created the
+  // watch and the second could not add the unit to it.
+  s.groups = [
+    groupSnapshot({
+      path: "agents.slice/a.scope",
+      name: "a.scope",
+      writeRate: 209715200,
+    }),
+  ];
+  s.lanes = [
+    laneSnapshot({ id: "agents.slice/a.scope", name: "lane-a", pids: [40] }),
+  ];
+  s.procs = [processSnapshot({ pid: 40, build: "ld.mold" })];
+  const opened = log
+    .advance(s, c)
+    .filter((e) => e.kind === "alert-open" && e.cause === "disk");
+  expect(opened.length).toBe(1);
+  expect(opened[0].subjectId).toBe("agents.slice/a.scope");
+  expect(opened[0].names.unit).toBe("a.scope");
+});
+
+test("a verdict led by a cgroup names the unit behind its subject", () => {
+  const log = started();
+  const s = emptySnapshot(2000);
+  // The desktop swapped out is a cgroup-led cause and speaks for the machine,
+  // so the verdict it wins names a scope rather than a lane or a path. A group
+  // near its memory threshold is housekeeping and never the verdict.
+  s.groups = [
+    groupSnapshot({
+      path: "app.slice",
+      name: "app.slice",
+      swap: c.swapFloor + 1,
+    }),
+    groupSnapshot({
+      path: "app.slice/gnome.scope",
+      name: "gnome.scope",
+      swap: 992,
+    }),
+  ];
+  const events = log.advance(s, c);
+  const opened = events.find(
+    (e) => e.kind === "alert-open" && e.cause === "desktop-swap",
+  );
+  expect(opened?.names.unit).toBe("gnome.scope");
+  const verdict = events.find((e) => e.kind === "verdict");
+  expect(verdict).toBeDefined();
+  expect(verdict?.subjectId).toBe("app.slice/gnome.scope");
+  // The verdict row is a change like any other, so its raw scope handle is
+  // reachable from it too.
+  expect(verdict?.names.unit).toBe("gnome.scope");
+});
+
+test("a scope that becomes a lane while its alert waits opens under one name", () => {
+  // A real hold, since the whole defect lives inside it.
+  const held = { ...defaults(), pressureHoldSeconds: 10 };
+  const unit = "agent-confine-854045-20986.scope";
+  const path = `app.slice/${unit}`;
+  /** The desktop slice over its swap floor, held by one scope. */
+  const swapping = (time: number, lanes: boolean): Snapshot => {
+    const s = emptySnapshot(time);
+    // The slice total is the sum over its roots, and the holder is the scope
+    // under it with the most swap.
+    s.groups = [
+      groupSnapshot({
+        path: "app.slice",
+        name: held.desktopSlice,
+        swap: held.swapFloor + 1,
+      }),
+      groupSnapshot({ path, parent: "app.slice", name: unit, swap: 992 }),
+    ];
+    if (lanes) s.lanes = [laneSnapshot({ id: path, name: "confine" })];
+    return s;
+  };
+  const named = (s: Snapshot) => {
+    const cause = causes(s, held).find((x) => x.id === "desktop-swap");
+    expect(cause).toBeDefined();
+    return subjects(cause as Cause, s).map((x) => `${x.id} ${x.name}`);
+  };
+  const anonymous = swapping(0, false);
+  const renamed = swapping(5000, true);
+  // What the fixture has to move, read before and against: one subject, one
+  // identity, two names. A plant cannot catch a fixture where the scope never
+  // becomes a lane, so the rename is asserted rather than assumed.
+  expect(named(anonymous)).toEqual([`${path} agent 854045`]);
+  expect(named(renamed)).toEqual([`${path} confine`]);
+
+  const log = new EventLog();
+  const out: ReturnType<EventLog["advance"]>[] = [];
+  log.advance(anonymous, held);
+  out.push(log.advance(renamed, held));
+  // Past the hold, so the alert opens under the name the sample that opened it
+  // read, and the verdict opens with it.
+  out.push(log.advance(swapping(15000, true), held));
+  // The swap goes. The close waits out its own hold and then names the alert
+  // the way its open did.
+  const quiet = emptySnapshot(30000);
+  quiet.lanes = [laneSnapshot({ id: path, name: "confine" })];
+  out.push(log.advance(quiet, held));
+  const events = out
+    .flat()
+    .filter((x) => x.cause === "desktop-swap")
+    .map((x) => `${x.kind} ${x.subject} ${x.names.unit}`);
+  // One alert under one name from open to close, and the verdict that follows
+  // it says the same. Under the frozen name these read `agent 854045`, which
+  // is a scope the reader can no longer find: it is a lane now.
+  expect(events).toEqual([
+    `alert-open confine ${unit}`,
+    `verdict confine ${unit}`,
+    `alert-close confine ${unit}`,
+  ]);
+});
+
+test("a lane that starts writing the most while its alert waits keeps its handle", () => {
+  const held = { ...defaults(), pressureHoldSeconds: 10 };
+  const id = "agents.slice/l.scope";
+  /** Disk pressure with one lane stalling on it, and one scope writing most. */
+  const stalling = (time: number, laneWrites: boolean): Snapshot => {
+    const s = emptySnapshot(time);
+    s.system.pressure.io = { some: held.pressureAmber + 1, full: 0, total: 0 };
+    s.lanes = [laneSnapshot({ id, name: "worker", ioPressure: 90 })];
+    s.groups = [
+      groupSnapshot({ path: "other.scope", name: "other.scope", writeRate: 2 }),
+      groupSnapshot({
+        path: id,
+        parent: "agents.slice",
+        name: "l.scope",
+        writeRate: laneWrites ? 9 : 1,
+      }),
+    ];
+    return s;
+  };
+  const handles = (s: Snapshot) => {
+    const cause = causes(s, held).find((x) => x.id === "disk");
+    expect(cause).toBeDefined();
+    return subjects(cause as Cause, s)
+      .filter((x) => x.id === id)
+      .map((x) => `${x.name} ${x.unit ?? ""}`);
+  };
+  // What the fixture has to move. The lane is a subject of this cause either
+  // way; what changes is whether the cause also names it as the writing scope,
+  // which is where the raw handle comes from.
+  expect(handles(stalling(0, false))).toEqual(["worker "]);
+  expect(handles(stalling(5000, true))).toEqual(["worker l.scope"]);
+
+  const log = new EventLog();
+  log.advance(stalling(0, false), held);
+  log.advance(stalling(5000, true), held);
+  const opened = log
+    .advance(stalling(15000, true), held)
+    .filter((e) => e.kind === "alert-open" && e.subjectId === id)
+    .map((e) => e.names.unit);
+  // Frozen at the first sample of the hold, the alert opens with no handle at
+  // all, so the selected row cannot show the scope the reader would run
+  // `systemctl` against.
+  expect(opened).toEqual(["l.scope"]);
 });

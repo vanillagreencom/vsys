@@ -161,8 +161,8 @@ export function laneLinkers(s: Snapshot, lane: Lane, c: Config): number {
     (p) => members.has(p.pid) && c.linkerNames.includes(p.build ?? ""),
   ).length;
 }
-/** A scope's lane name when it has one, otherwise the unit name. */
-function consumerName(group: Group | undefined, s: Snapshot): string {
+/** A scope's lane name when it has one, otherwise the decoded unit name. */
+export function consumerName(group: Group | undefined, s: Snapshot): string {
   if (!group) return "";
   return (
     s.lanes.find((l) => l.id === group.path)?.name ?? unitLabel(group.name)
