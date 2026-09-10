@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import type { CapabilityId, Snapshot } from "../model/types";
-import { meters, topSwapHolder } from "../model/verdict";
+import { causes, meters, topSwapHolder } from "../model/verdict";
 import {
   emptySnapshot,
   everyCauseSnapshot,
@@ -414,6 +414,16 @@ test("the memory-reclaim card carries the scope its own text names", () => {
   // both open on the same row. Naming it and carrying nothing left the card
   // opening on whichever row the screen already had selected.
   expect(memory?.target).toEqual({ kind: "group", path: holder?.path ?? "" });
+  // And it points there without claiming the scope is one of the things
+  // reclaim stalled: the swap cause is about that scope and carries it as a
+  // subject, the reclaim cause only says where to look.
+  const ladder = causes(s, c);
+  expect(ladder.find((cause) => cause.id === "system-memory")?.groups).toEqual(
+    [],
+  );
+  expect(ladder.find((cause) => cause.id === "desktop-swap")?.groups).toEqual(
+    holder ? [holder] : [],
+  );
   expect(swapped?.target).toEqual(memory?.target);
   // And they name it the same way, decoded rather than as its raw unit.
   expect(memory?.detail).toContain("gnome holds the most swap");

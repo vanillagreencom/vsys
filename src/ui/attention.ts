@@ -62,9 +62,14 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
   const mounts = list(cause.paths);
   const lane: Target | undefined =
     n === 1 ? { kind: "lane", id: cause.lanes[0].id } : undefined;
-  const group: Target | undefined = cause.groups[0]
-    ? { kind: "group", path: cause.groups[0].path }
-    : undefined;
+  // Where a card whose row is a group lands. A cause states `at` when the row
+  // to open is not one of the things it affects; otherwise the first affected
+  // group is that row.
+  const group: Target | undefined =
+    cause.at ??
+    (cause.groups[0]
+      ? { kind: "group", path: cause.groups[0].path }
+      : undefined);
   const first: Target | undefined = cause.paths[0]
     ? { kind: "path", path: cause.paths[0] }
     : undefined;
