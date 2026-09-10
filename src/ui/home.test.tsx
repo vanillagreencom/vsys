@@ -270,10 +270,10 @@ test("the arrow keys reach the tiles and open the screen behind one", async () =
     const t = await mount(s, c, { width: 160, height: 30 });
     try {
       await t.press("1");
-      // Left reaches the tile region; down moves inside it, the same rule as
-      // every other region on the screen.
-      await t.press("left");
-      for (let i = 0; i < tile; i++) await t.press("down");
+      // The region key reaches the tile row; the arrows move along it, which
+      // is the axis a row of tiles has.
+      await t.press(c.keys.previous);
+      for (let i = 0; i < tile; i++) await t.press("right");
       await t.press("enter");
       expect({ tile, on: t.frame().includes(lands) }).toEqual({
         tile,
@@ -283,13 +283,29 @@ test("the arrow keys reach the tiles and open the screen behind one", async () =
       await t.close();
     }
   }
-  // Right leaves the tiles for the next region, so Enter opens a row again
-  // rather than a screen behind a tile.
+  // Left moves back along the row rather than leaving it: a tile row is
+  // horizontal, and that is the axis its own arrows have.
+  const along = await mount(s, c, { width: 160, height: 30 });
+  try {
+    await along.press("1");
+    await along.press(c.keys.previous);
+    await along.press("right");
+    await along.press("right");
+    await along.press("left");
+    await along.press("enter");
+    // Two right and one left is the second tile, which is Memory, and Memory
+    // breaks down under Resources.
+    expect(along.frame()).toContain("Groups");
+  } finally {
+    await along.close();
+  }
+  // The region key leaves the tiles, so Enter opens a row again rather than a
+  // screen behind a tile.
   const back = await mount(s, c, { width: 160, height: 30 });
   try {
     await back.press("1");
-    await back.press("left");
-    await back.press("right");
+    await back.press(c.keys.previous);
+    await back.press(c.keys.next);
     await back.press("enter");
     expect(back.frame()).toContain("lane-a");
     expect(back.frame()).not.toContain("Groups");
@@ -298,7 +314,7 @@ test("the arrow keys reach the tiles and open the screen behind one", async () =
   }
 });
 
-test("left and right move across all four Home regions, and the focused one says so", async () => {
+test("the region key moves across all four Home regions, and the focused one says so", async () => {
   const c = defaults();
   const { h, snapshot } = withChange(c);
   const s = everyCauseSnapshot(c);
@@ -321,20 +337,20 @@ test("left and right move across all four Home regions, and the focused one says
     };
     // Home opens on a concern, so the first region is the one in focus.
     expect(focusedTitle()).toBe("Needs attention");
-    await t.press("right");
+    await t.press(c.keys.next);
     expect(focusedTitle()).toBe("Recent changes");
-    await t.press("right");
+    await t.press(c.keys.next);
     expect(focusedTitle()).toBe("Busiest agents");
     // The last region holds rather than wrapping.
-    await t.press("right");
+    await t.press(c.keys.next);
     expect(focusedTitle()).toBe("Busiest agents");
     // Back the same way, and once more onto the tiles, where no list title is
     // lit at all.
-    await t.press("left");
+    await t.press(c.keys.previous);
     expect(focusedTitle()).toBe("Recent changes");
-    await t.press("left");
+    await t.press(c.keys.previous);
     expect(focusedTitle()).toBe("Needs attention");
-    await t.press("left");
+    await t.press(c.keys.previous);
     const spans = t.ui
       .captureSpans()
       .lines.flatMap((line) => line.spans)
@@ -519,16 +535,15 @@ test("Home marks one focus at a time, on every kind of row it lists", async () =
         marked: true,
       });
       // Moving onto a tile takes the focus with it. A row marked here would
-      // say one thing while Enter opened another. The tiles sit to the left of
-      // the first list, so reaching them walks left through whatever lists are
-      // between: what is asserted is the rule, not the number of presses.
-      for (let i = 0; i < 4; i++) await t.press("left");
+      // say one thing while Enter opened another. The region key steps back
+      // through whatever lists are between, and the tiles are the first region.
+      for (let i = 0; i < 4; i++) await t.press(c.keys.previous);
       expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
         kind,
         marked: false,
       });
       // And moving back off the tiles restores it.
-      await t.press("right");
+      await t.press(c.keys.next);
       expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
         kind,
         marked: true,
@@ -543,7 +558,8 @@ test("Home marks one focus at a time, on every kind of row it lists", async () =
   try {
     await t.press("1");
     expect(t.frame()).toContain("Next ");
-    await t.press("right");
+    // The region key steps back to the tiles; the arrows select within a list.
+    await t.press(c.keys.previous);
     expect(t.frame()).not.toContain("Next ");
     await t.press("y");
     expect(t.frame()).toContain("no command to copy");
@@ -643,7 +659,7 @@ test("Home opens the row the reader chose after the list moves under it", async 
     );
     try {
       await t.press("1");
-      for (let i = 0; i < region; i++) await t.press("right");
+      for (let i = 0; i < region; i++) await t.press(c.keys.next);
       for (let i = 0; i < offset; i++) await t.press("j");
       await t.press("enter");
       expect({ kind, on: reads(t.frame()) }).toEqual({
@@ -665,7 +681,7 @@ test("Home opens the row the reader chose after the list moves under it", async 
     );
     try {
       await m.press("1");
-      for (let i = 0; i < region; i++) await m.press("right");
+      for (let i = 0; i < region; i++) await m.press(c.keys.next);
       for (let i = 0; i < offset; i++) await m.press("j");
       const next = later(shifting.s);
       shifting.h.add(next);
@@ -731,7 +747,7 @@ test("a tile opens live data, not the sample the reader pinned", async () => {
     // Timeline is not one of the pinned screens, so it says which ones are.
     expect(t.frame()).toContain("Agents, Resources, Builds and Storage show");
     await t.press("1");
-    await t.press("left");
+    await t.press(c.keys.previous);
     await t.press("enter");
     // A tile drills down like a card does, so it clears the pin. Landing on
     // Resources with the pin still set would show the pinned sample beside a
@@ -1009,7 +1025,7 @@ test("up and down stay inside the region in focus", async () => {
     expect(focused()).toBe("Needs attention");
     expect(row()).toBe(first);
     // The next region is reached the one way it can be.
-    await t.press("right");
+    await t.press(c.keys.next);
     expect(focused()).toBe("Recent changes");
     for (let i = 0; i < 20; i++) await t.press("down");
     expect(focused()).toBe("Recent changes");
