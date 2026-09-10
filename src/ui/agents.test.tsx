@@ -1033,20 +1033,23 @@ test("a tile in a narrow pane marks its cut instead of stopping mid-word", async
   }
 });
 
-test("when the row cannot hold both, the address stays and the trend goes", async () => {
+test("a narrowing list gives up its readings before what names the row", async () => {
   const c = defaults();
   const s = sameWorktree(true);
   // Below the width that puts a summary beside the list, so the terminal's
-  // width is the list's width. The trend goes first because its number is
-  // already in the CPU column; the two identity columns go last, because
-  // nothing else on the row says what they say.
+  // width is the list's width.
+  //
+  // Identity outranks readings. The trend goes first, because its number is
+  // already in the CPU column beside it; then the program, which reads the
+  // same word on every row of an ordinary fleet; then the wait, which reads
+  // `0.0%` on every row that is not blocked. The pane address is identity, so
+  // it outlasts all three, and the process id is never given up at all: a row
+  // without it is a row a reader cannot pick out of six with one name.
   const rows: [number, string[], string[]][] = [
-    [140, ["Pane", "PID", "Trend"], []],
-    [130, ["Pane", "PID"], ["Trend"]],
-    // The id outlasts the address: it is on every row, and it is what tells
-    // two lanes with one name apart.
-    [115, ["PID"], ["Pane", "Trend"]],
-    [100, [], ["Pane", "PID", "Trend"]],
+    [140, ["Pane", "PID", "Program", "Trend", "Wait"], []],
+    [130, ["Pane", "PID", "Program", "Wait"], ["Trend"]],
+    [120, ["Pane", "PID", "Wait"], ["Program", "Trend"]],
+    [100, ["Pane", "PID"], ["Program", "Trend", "Wait"]],
   ];
   for (const [width, present, absent] of rows) {
     const t = await mount(s, c, { width, height: 24 });
@@ -1072,47 +1075,6 @@ test("when the row cannot hold both, the address stays and the trend goes", asyn
     }
   }
 });
-
-test("a narrowing list sheds its columns in one stated order", async () => {
-  const c = defaults();
-  const s = sameWorktree(true);
-  // Below the width that puts a summary beside the list, so the terminal's
-  // width is the list's width. The trend goes first because its number is
-  // already in the CPU column; the two identity columns go last, because
-  // nothing else on the row says what they say.
-  const rows: [number, string[], string[]][] = [
-    [140, ["Pane", "PID", "Trend"], []],
-    [130, ["Pane", "PID"], ["Trend"]],
-    // The id outlasts the address: it is on every row, and it is what tells
-    // two lanes with one name apart.
-    [115, ["PID"], ["Pane", "Trend"]],
-    [100, [], ["Pane", "PID", "Trend"]],
-  ];
-  for (const [width, present, absent] of rows) {
-    const t = await mount(s, c, { width, height: 24 });
-    try {
-      await t.press("2");
-      const frame = t.frame();
-      for (const label of present)
-        expect({ width, label, on: frame.includes(label) }).toEqual({
-          width,
-          label,
-          on: true,
-        });
-      for (const label of absent)
-        expect({ width, label, on: frame.includes(label) }).toEqual({
-          width,
-          label,
-          on: false,
-        });
-      // Whatever went, the name is still whole: that is what the floor is for.
-      expect(frame).toContain("ken-1298");
-    } finally {
-      await t.close();
-    }
-  }
-});
-
 test("two lanes with one name are told apart by the id column, not the name", async () => {
   const c = defaults();
   const s = emptySnapshot();

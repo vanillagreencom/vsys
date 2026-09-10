@@ -129,7 +129,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   },
   laneNameParts: {
     label: "Lane name parts",
-    help: "The parts that name a lane, in order. A listed pane composes nothing: a tmux pane address names no window a reader can place. Where two lanes still resolve to one name, vsys adds the working directory or the process id.",
+    help: "The parts that name a lane, in order. A listed pane composes nothing: a tmux pane address names no window a reader can place, so it selects a column of its own instead. Nothing is ever added to a name: where two lanes resolve to one, the process id beside them is what tells them apart.",
   },
   accountEnv: {
     label: "Account variables",

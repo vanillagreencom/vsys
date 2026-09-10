@@ -1,6 +1,6 @@
 # Cause ladder and verdict
 
-Covers: src/model/verdict.ts src/ui/overview.tsx
+Covers: src/model/verdict.ts
 
 One detection produces one cause. The ladder ranks the causes by their impact on the person at the keyboard, its first verdict-worthy element speaks for the machine, and every element is one attention card.
 

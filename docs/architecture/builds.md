@@ -1,6 +1,6 @@
 # Build work
 
-Covers: src/model/builds.ts src/collect/builds.ts src/collect/sccache.ts src/ui/builds.ts
+Covers: src/model/builds.ts src/collect/builds.ts src/collect/sccache.ts src/ui/builds-screen.tsx
 
 Compile and link work is counted machine wide and per lane from one classification, so the Builds screen and the Home meter cannot disagree. The build cache and the make token pools are read alongside it.
 

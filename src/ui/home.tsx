@@ -40,6 +40,7 @@ import {
   Tile,
   Tiles,
   tilesPerRow,
+  useKeepInView,
 } from "./widgets";
 
 /** The Home list mixes concerns, changes and agents; Enter opens the selected one. */
@@ -146,6 +147,8 @@ function series(
   );
 }
 
+/** The tile row's name, so a screen that has scrolled away can come back. */
+const tileRowId = "home-tiles";
 export function Home({
   snapshot: s,
   config: c,
@@ -202,8 +205,8 @@ export function Home({
   const [sort, setSort] = useState({ key: "cpu", descending: true });
   const rows = homeItems(items, s, busiest, changes, held ?? undefined, sort);
   const recent = rows.filter((r) => r.kind === "change");
-  // Null while the rows hold the selection. Left or right moves onto the
-  // tiles, up or down moves back off them, so one Enter is never ambiguous.
+  // Null while the rows hold the selection, an index while the tiles do. The
+  // region key moves between the two; the arrows move along whichever holds it.
   const [tile, setTile] = useState<number | null>(null);
   /**
    * Whether the rows hold the focus rather than the tiles. The highlight, the
@@ -241,9 +244,13 @@ export function Home({
   });
   const marked = (i: number) => rowsFocused && i === selected;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
-  useEffect(() => {
-    scroller.current?.scrollChildIntoView(`home-${selected}`);
-  }, [selected]);
+  // The tile row is a place the reader stands as much as any list row is, so
+  // it is what has to be in view while it holds the focus. Named `selected`
+  // alone, moving back to the tiles from the bottom of the agents list moved
+  // the frame not at all: the tiles stayed above the viewport, the only change
+  // was the marker disappearing, and Enter then opened another screen with
+  // nothing on this one saying so.
+  useKeepInView(scroller, tile === null ? `home-${selected}` : tileRowId);
   // Home holds four regions and the tile row is one of them. The three lists
   // are ranges over the one flat selection the render draws; the tiles keep
   // their own index, which is why they are region zero rather than rows inside
@@ -312,8 +319,13 @@ export function Home({
       onOpen(rows[selected]);
       return true;
     }
+    // A key that asks for a different order is a reader asking for a different
+    // order, so it releases the held one. Kept, the heading marked a direction
+    // the rows did not obey: `o` then `s` read `↓ Memory` over rows still in
+    // the held CPU order, with 1.0 KiB above 8.0 KiB.
     if (name === c.keys.sort) {
       const at = busiestSorts.findIndex(([, key]) => key === sort.key);
+      setHeld(null);
       setSort({
         key: busiestSorts[(at + 1) % busiestSorts.length][1],
         descending: sort.descending,
@@ -321,6 +333,7 @@ export function Home({
       return true;
     }
     if (name === c.keys.reverse) {
+      setHeld(null);
       setSort({ key: sort.key, descending: !sort.descending });
       return true;
     }
@@ -412,7 +425,7 @@ export function Home({
           {`${s.lanes.length} ${plural(s.lanes.length, "agent", "agents")} · ${s.system.cores} cores · ${items.length ? `${items.length} ${plural(items.length, "concern", "concerns")}` : "nothing needs attention"}`}
         </Line>
         <box height={1} flexShrink={0} />
-        <Tiles width={width}>
+        <Tiles width={width} id={tileRowId}>
           {gauges.map((gauge, at) => {
             const card = meterTile(gauge, s, c);
             return (
@@ -471,7 +484,11 @@ export function Home({
                     color={row.item.danger ? ui.danger : ui.warn}
                     onOpen={() => onOpen(row)}
                   >
-                    <Disclosure open={i === selected} name={row.item.title} />
+                    {/* The same question the detail below is drawn under. On
+                        its own, `selected` said open while the tiles held the
+                        focus: the row drew `▾` with no rule and nothing under
+                        it. */}
+                    <Disclosure open={marked(i)} name={row.item.title} />
                   </Row>
                   {marked(i) && (
                     <Detail indent={2}>

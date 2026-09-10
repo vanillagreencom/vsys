@@ -1,10 +1,109 @@
-import type { RGBA } from "@opentui/core";
+import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
 import type { TextProps } from "@opentui/react";
-import { Children, cloneElement, isValidElement, type ReactNode } from "react";
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+} from "react";
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
 import { type Column, fit, headerText, sortedColumns } from "./columns";
 import { levelColor, readingWeight, ui } from "./theme";
+
+/**
+ * Keeps the thing the reader is standing on where they can see it, in a box
+ * they can also scroll themselves.
+ *
+ * Asked of the drawing rather than enumerated from state. Every screen that
+ * has tried the enumeration has lost the same way: `settings-screen.tsx` grew
+ * a name each time a kind was missed, `agent.tsx` named `selected` while an
+ * arriving capture pushed the row off the screen, and Home named `selected`
+ * while moving to the tiles moved what should be on screen and re-ran nothing.
+ *
+ * There are two questions here and they have different answers.
+ *
+ * The reader moved: the target's id is not the one it was. Go to it, wherever
+ * it is. That is the whole of what a selection following its reader means.
+ *
+ * The drawing moved under a reader who did not: the id is the same and the
+ * target sits somewhere else in the content. Chase it only if it has left the
+ * screen, and only once the reader has chosen something. Without that second
+ * half, a screen still assembling itself chases its own rows and opens a line
+ * down from its own top, on the runs where its charts happen to arrive late.
+ * Without the first, a capture landing above the selected row leaves the
+ * reader pressing keys on a row that is no longer drawn.
+ *
+ * The position asked for is the target's place in the content: its screen `y`
+ * plus how far the content is scrolled. That sum is the one number the
+ * reader's own scrolling leaves alone, and these boxes do take the wheel, so
+ * without it every turn of it would read as the drawing moving.
+ *
+ * The reading is taken on a timeout because a row that has just grown does not
+ * know its size until the layout after the render that grew it.
+ */
+export function useKeepInView(
+  scroller: RefObject<ScrollBoxRenderable | null>,
+  /** The id of the child to keep in view, which may change between renders. */
+  target: string,
+) {
+  const placed = useRef<{ id: string; at: number } | null>(null);
+  const wanted = useRef(target);
+  wanted.current = target;
+  // Whether the reader has ever chosen anything on this screen. Until they
+  // have, there is nothing to keep in view: a screen drawing itself moves its
+  // own rows, and chasing that is how the agent detail opened a line down from
+  // its own top, on the runs where the charts happened to arrive late.
+  const moved = useRef(false);
+  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const place = () => {
+      const box = scroller.current;
+      const id = wanted.current;
+      const child = box?.content.findDescendantById(id);
+      if (!box || !child) return;
+      const top = box.viewport.y;
+      const seen =
+        child.y >= top && child.y + child.height <= top + box.viewport.height;
+      const at = child.y + box.scrollTop;
+      const was = placed.current;
+      placed.current = { id, at };
+      if (!was) return;
+      if (was.id !== id) {
+        moved.current = true;
+        box.scrollChildIntoView(id);
+        return;
+      }
+      if (moved.current && was.at !== at && !seen) box.scrollChildIntoView(id);
+    };
+    // The first reading has to be a settled one: read early, the target's own
+    // height is a layout behind, and a row that will be below the fold reports
+    // itself on screen. Taken as the baseline, the settled reading that
+    // followed then read as a row that had left the screen, and the detail
+    // opened a line down from its own top.
+    if (placed.current !== null) place();
+    // One reading in flight, and the render that follows does not cancel it.
+    // Cancelling was the obvious thing and it starved every reading: a reader
+    // holding a key down renders faster than a timeout fires, so the screen
+    // never followed them at all. A late reading asks the box its own question
+    // when it runs and takes the target from a ref, so it is a current one.
+    if (pending.current === null)
+      pending.current = setTimeout(() => {
+        pending.current = null;
+        place();
+      }, 0);
+  });
+  // Nothing to depend on: the unmount is the whole of the reason this runs.
+  useEffect(
+    () => () => {
+      if (pending.current !== null) clearTimeout(pending.current);
+    },
+    [],
+  );
+}
 
 /**
  * A text line in the terminal's own foreground. OpenTUI paints text white
@@ -325,10 +424,13 @@ export function tilesPerRow(count: number, width: number | undefined): number {
 export function Tiles({
   children,
   width,
+  id,
 }: {
   children: ReactNode;
   /** The panel's inner width. Omitted keeps every tile on one row. */
   width?: number;
+  /** Given when a screen has to be able to scroll the row back into view. */
+  id?: string;
 }) {
   const count = Children.count(children);
   const perRow = tilesPerRow(count, width);
@@ -349,7 +451,7 @@ export function Tiles({
     );
   });
   return (
-    <box flexDirection="column" flexShrink={0} gap={1}>
+    <box id={id} flexDirection="column" flexShrink={0} gap={1}>
       {rows.map((row, at) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: a row is its position
         <box key={`tiles-${at}`} flexDirection="row" flexShrink={0} gap={2}>
@@ -368,8 +470,8 @@ export function Tiles({
 /**
  * The block under a row that explains it: a rule down its left edge and an
  * indent after it, so it reads as part of that row rather than as the next
- * one. An indent alone is not enough at a glance, and the indent alone is what
- * this was before. The indent goes on a box, because `paddingLeft` on a text
+ * one. An indent alone is not enough at a glance: a line indented under
+ * another reads as a new top-level line as readily as a child of it. The indent goes on a box, because `paddingLeft` on a text
  * element moves nothing at all, not even its first line.
  */
 export function Detail({
