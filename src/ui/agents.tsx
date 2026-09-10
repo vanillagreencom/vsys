@@ -114,6 +114,12 @@ export const trendWidth = 12;
  * and a refresh must read none: the loaded set is keyed by lane and window,
  * so scrolling reads what scrolling revealed and nothing else.
  */
+/** What a trend read is an answer to: the store, the window and the bucket. */
+interface Question {
+  history: History;
+  windowMs: number;
+  bucket: number;
+}
 export function useLaneTrends(
   history: History,
   lanes: Lane[],
@@ -134,7 +140,11 @@ export function useLaneTrends(
   // it is read from a ref rather than from the effect's dependencies.
   const endRef = useRef(end);
   endRef.current = end;
-  const drawn = useRef(bucket);
+  // What a read is an answer to. A read carries it and hands it back, so a
+  // series that arrives after the question moved on is recognised rather than
+  // stored: the only way into `loaded` takes one of these, so an unlabelled
+  // series cannot be stored at all.
+  const wanted = useRef<Question>({ history, windowMs, bucket });
   // One judge for "has this series been asked for": the set of keys already
   // requested. It is a ref rather than state because a render between the ask
   // and the answer would otherwise see an empty cache and ask again, and it
@@ -153,10 +163,16 @@ export function useLaneTrends(
   }, []);
   const ids = lanes.map((lane) => lane.id).join("\u0000");
   useEffect(() => {
-    if (drawn.current !== bucket) {
-      drawn.current = bucket;
-      // A rolled-over bucket is a new answer for every row, so what was asked
-      // for in the last one is not what is wanted now.
+    const was = wanted.current;
+    if (
+      was.bucket !== bucket ||
+      was.windowMs !== windowMs ||
+      was.history !== history
+    ) {
+      wanted.current = { history, windowMs, bucket };
+      // A rolled-over bucket, a resized window and a replaced store each make
+      // a new answer for every row, so what was asked for under the old
+      // question is not what is wanted now.
       requested.current.clear();
     }
     const missing = (ids ? ids.split("\u0000") : []).filter((id) => {
@@ -166,23 +182,54 @@ export function useLaneTrends(
       return true;
     });
     if (!missing.length) return;
+    /**
+     * The one way a series reaches the drawn map. A read started under the
+     * previous question can still be in flight when this one begins, and it
+     * resolves whenever the disk gets to it, which can be after the newer
+     * read: stored unconditionally it would put an older window back on the
+     * screen. Cancelling in advance is the other mistake, and phase 3 already
+     * made it: every answer was discarded and the column stayed blank. So the
+     * answer is kept or dropped when it arrives, on what it is an answer to.
+     */
+    const store = (answer: {
+      asked: Question;
+      id: string;
+      samples: LaneSample[];
+    }) => {
+      if (!mounted.current) return;
+      const now = wanted.current;
+      if (
+        answer.asked.bucket !== now.bucket ||
+        answer.asked.windowMs !== now.windowMs ||
+        answer.asked.history !== now.history
+      )
+        return;
+      setLoaded((before) =>
+        new Map(before).set(
+          `${answer.id}\u0000${answer.asked.windowMs}`,
+          answer.samples,
+        ),
+      );
+    };
     // Each series lands on its own row as it arrives. Waiting for the whole
     // screen would hold every row blank for as long as the slowest read takes,
     // and one series that never answered would hold them blank for good.
     for (const id of missing) {
       void (async () => {
+        const asked = wanted.current;
         let samples: LaneSample[] = [];
         try {
-          samples = await history.laneWindow(id, endRef.current, windowMs);
+          samples = await asked.history.laneWindow(
+            id,
+            endRef.current,
+            asked.windowMs,
+          );
         } catch {
           // A series that cannot be read is a row with no trend, never a row
           // showing another lane's.
           samples = [];
         }
-        if (!mounted.current) return;
-        setLoaded((before) =>
-          new Map(before).set(`${id}\u0000${windowMs}`, samples),
-        );
+        store({ asked, id, samples });
       })();
     }
   }, [history, ids, windowMs, bucket]);

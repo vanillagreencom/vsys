@@ -6,6 +6,7 @@ import { defaults, validate } from "../config/config";
 import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
+import type { LaneSample } from "../store/lane-series";
 import { normalizeLane } from "../store/migrate";
 import {
   emptySnapshot,
@@ -16,7 +17,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { App, hints, Waiting } from "./App";
-import { findLanes, trendWidth } from "./agents";
+import { findLanes, trendMarks, trendWidth } from "./agents";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
@@ -2947,5 +2948,70 @@ test("no trend column means the store is asked for no series at all", async () =
     } finally {
       await t.close();
     }
+  }
+});
+
+test("a read from the previous bucket cannot overwrite the newer one", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 })];
+  s.groups = [groupSnapshot()];
+  const bucketMs = windows[0] / trendWidth;
+  const at = s.time + bucketMs + 1000;
+  /** A full window of samples at one reading, so the drawn shape is flat. */
+  const span = (cpu: number): LaneSample[] =>
+    Array.from({ length: trendWidth }, (_, i) => ({
+      time: at - windows[0] + (i + 0.5) * bucketMs,
+      cpu,
+      rss: null,
+      pressure: null,
+      memoryPressure: null,
+      ioPressure: null,
+    }));
+  const older = span(0);
+  const newer = span(100);
+  const quiet = trendMarks(older, at, windows[0], c.sparkline);
+  const busy = trendMarks(newer, at, windows[0], c.sparkline);
+  // The two series have to be told apart on the screen, or the assertion below
+  // holds whichever one won.
+  expect(quiet).not.toBe(busy);
+  const h = new History(c);
+  h.add(s);
+  // Every read is held, so this test decides which one answers first.
+  const held: { end: number; answer: (samples: LaneSample[]) => void }[] = [];
+  h.laneWindow = (_id: string, end: number) =>
+    new Promise<LaneSample[]>((resolve) => {
+      held.push({ end, answer: resolve });
+    });
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    expect(held.length).toBe(1);
+    // The bucket rolls while that read is still in flight, so a second read
+    // starts for the same row under a newer question.
+    await t.update({ ...s, time: at });
+    // What the fixture has to interleave, asserted before either answers: two
+    // reads outstanding for one row, the second asking for a later end than the
+    // first. A fixture with one read, or with the older resolving first, would
+    // pass without touching the case.
+    expect(held.length).toBe(2);
+    expect(held[1].end).toBeGreaterThan(held[0].end);
+    // The newer answers first, then the older. Stored on arrival rather than
+    // on what it answers, the older would land last and put its window back on
+    // the screen.
+    await act(async () => {
+      held[1].answer(newer);
+    });
+    await act(async () => {
+      held[0].answer(older);
+    });
+    // Resolving a promise draws nothing on its own; the frame is what the
+    // screen would show once it has been drawn again.
+    await t.ui.renderOnce();
+    const frame = t.frame();
+    expect(frame).toContain(busy);
+    expect(frame).not.toContain(quiet);
+  } finally {
+    await t.close();
   }
 });
