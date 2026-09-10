@@ -197,6 +197,26 @@ export function Agents({
     found >= 0
       ? found
       : Math.min(selection.index, Math.max(0, lanes.length - 1));
+  // The resolution above is only for this frame, and it has to be recorded or
+  // the next list is resolved against a lane that has gone. A departed lane
+  // leaves `selection.index` naming a row that no longer exists, and a lane
+  // arriving lower down the order makes that row number valid again: the
+  // highlight would leave the fallback for the newcomer. Writing the resolved
+  // row back makes the fallback a choice, the way a key press is one.
+  //
+  // The order of the two effects is load-bearing. This one must run first, so
+  // that a lane opened from elsewhere wins the pass it arrives in; declared
+  // after, the two write different rows on every pass and never settle, which
+  // hangs the render rather than merely picking the wrong row. Each settles by
+  // returning the current object when nothing moved.
+  useEffect(() => {
+    const id = lanes[selected]?.id ?? null;
+    setSelection((current) =>
+      current.index === selected && current.id === id
+        ? current
+        : { index: selected, id },
+    );
+  }, [lanes, selected]);
   // A lane opened from Home or from a card was never selected in this list,
   // so going back would land on the first row. Follow the open lane instead.
   useEffect(() => {

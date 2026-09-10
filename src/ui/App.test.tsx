@@ -16,6 +16,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { App, hints, Waiting } from "./App";
+import { findLanes } from "./agents";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
@@ -2476,6 +2477,31 @@ test("a lane exiting under the selection keeps one lane under highlight, pane an
     expect(selectedRow(frame)).toContain("lane-b");
     expect(frame).toContain("/repo/b");
     expect(frame).not.toContain("/repo/z");
+    // The list moves a second time: a lane arrives that sorts below the rest,
+    // which is what makes the departed lane's row number valid again.
+    const arrived = {
+      ...s,
+      lanes: [
+        ...s.lanes.slice(0, 2),
+        laneSnapshot({ id: "n", name: "lane-n", cpu: 0, cwd: "/repo/n" }),
+      ],
+    };
+    // What the fixture has to move, read before the selection is: the lane the
+    // reader was on is gone, and the newcomer holds the row number it left
+    // behind. A newcomer sorting anywhere else would prove nothing.
+    expect(findLanes(arrived.lanes, "", c).map((lane) => lane.name)).toEqual([
+      "lane-a",
+      "lane-b",
+      "lane-n",
+    ]);
+    await t.update(arrived);
+    const after = t.frame();
+    expect(after).toContain("lane-n");
+    // Still the fallback the exit resolved to, not the lane that took the row
+    // number the reader's selection used to name.
+    expect(selectedRow(after)).toContain("lane-b");
+    expect(after).toContain("/repo/b");
+    expect(after).not.toContain("/repo/n");
     await t.press("enter");
     const footer = t.frame().split("\n").at(-2) ?? "";
     // The detail's own footer: it opened, rather than Enter finding no lane.
