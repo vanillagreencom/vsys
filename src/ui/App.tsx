@@ -365,7 +365,10 @@ export function App({
         snapshot={snapshot}
         config={c}
         items={issues}
-        changes={history.events(snapshot.time, windows[windowIndex])}
+        // Everything retained, not the Timeline's current window. This
+        // section exists for the reader who was away, and a five-minute
+        // window told them nothing had changed while an hour sat in history.
+        changes={history.events(snapshot.time, c.historyHours * 3600000)}
         alertsOpened={opened}
         points={points}
         windowMs={windows[windowIndex]}

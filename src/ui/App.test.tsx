@@ -471,8 +471,11 @@ test("the Timeline change list stops at the rows the viewport has", async () => 
   try {
     await t.press("6");
     const frame = t.frame();
-    expect(frame).toContain("What changed  8 of 12, newest first");
-    expect(frame).toMatch(/Lane started\s+lane-7/);
+    // The heading counts what there is; the list says which of them it drew,
+    // in the one place that knows, rather than in two that can disagree.
+    expect(frame).toContain("What changed  12, newest first");
+    expect(frame).toContain("1\u20136 of 12");
+    expect(frame).toMatch(/Lane started\s+lane-5/);
     expect(frame).not.toContain("lane-11");
     // The cursor tiles summarise the six metrics, so a terminal too short for
     // both drops the sparkline rows rather than the change list.
@@ -1941,6 +1944,92 @@ test("a change about a cgroup reads as a name, with the unit under the selection
       .findIndex((row) => row.includes("What changed"));
     for (let i = heading + 1; i < at; i++) await t.press("j");
     expect(t.frame()).toContain("app-Hyprland-ghostty-b95bd288.scope");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the recap holds what happened while the reader was away for longer than the window", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  // A lane starts, and then half an hour passes with nothing further. The
+  // default Timeline window is five minutes, so this change is outside it.
+  const started = emptySnapshot(2000);
+  started.lanes = [laneSnapshot({ id: "a.scope", name: "lane-a" })];
+  h.add(started);
+  // The lane keeps running, so the start is the only change there is and it
+  // is half an hour old. Stopping it would put a fresh event in the window
+  // and the recap would look right for the wrong reason.
+  const later = { ...started, time: 2000 + 30 * 60000 };
+  h.add(later);
+  const t = await mount(later, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    const frame = t.frame();
+    // The section is for the reader who was away. Sourcing it from the window
+    // told them nothing had changed while the change sat in history.
+    expect(frame).not.toContain("Nothing has changed");
+    expect(frame).toContain("lane-a");
+    // And opening that row lands on it, which needs a window wide enough to
+    // hold it: the five-minute window does not contain it at all.
+    const at = t
+      .frame()
+      .split("\n")
+      .findIndex((row) => row.includes("Recent changes"));
+    expect(at).toBeGreaterThan(-1);
+    const rows = t.frame().split("\n");
+    const row = rows.findIndex((line, i) => i > at && line.includes("lane-a"));
+    expect(row).toBeGreaterThan(-1);
+    for (let i = 0; i < row - at - 1; i++) await t.press("j");
+    await t.press("enter");
+    const timeline = t.frame();
+    expect(timeline).toContain("What changed");
+    expect(selectedRow(timeline)).toContain("lane-a");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the Timeline selection stays on a row the reader can see", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(2000);
+  busy.lanes = Array.from({ length: 12 }, (_, i) =>
+    laneSnapshot({ id: `lane-${i}.scope`, name: `lane-${i}` }),
+  );
+  h.add(busy);
+  const t = await mount(busy, c, { width: 160, height: 30 }, { history: h });
+  try {
+    await t.press("6");
+    // Walk the selection past the fold. The list pages around it, so the
+    // highlighted row is drawn wherever the selection sits; a fixed slice let
+    // it walk off the end of what was drawn.
+    for (let i = 0; i < 11; i++) await t.press("j");
+    const frame = t.frame();
+    expect(selectedRow(frame)).not.toBe("");
+    expect(selectedRow(frame)).toContain("lane-11");
+    // And Enter acts on the row that is marked, not on one off-screen.
+    await t.press("enter");
+    expect(t.frame()).toContain("What changed");
+    expect(selectedRow(t.frame())).toContain("lane-11");
+  } finally {
+    await t.close();
+  }
+});
+
+test("no alerts opened reads as a count, not as a missing one", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a" })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await t.press("1");
+    // Nothing has gone wrong, so the count is zero. A zero that renders as
+    // absence cannot be told from a count vsys never took.
+    expect(t.frame()).toContain("0 alerts opened since vsys started");
   } finally {
     await t.close();
   }

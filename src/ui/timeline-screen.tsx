@@ -19,10 +19,10 @@ import { levelColor, metric, readingWeight, ui } from "./theme";
 import { eventParts } from "./timeline";
 import {
   Chart,
-  Empty,
   Field,
   gutter,
   Line,
+  List,
   nextDown,
   Row,
   Section,
@@ -183,16 +183,33 @@ export function Timeline({
     );
   };
   const changes = history.events(s.time, windowMs);
-  // A row Home asked for is selected and made the cursor, once.
+  /**
+   * A row Home asked for is selected and made the cursor, once. Home lists
+   * everything retained, so the row can be older than the window this screen
+   * is showing and absent from `changes` entirely. Widening to a window that
+   * holds it comes first, and the request is kept until it has been landed
+   * on: consuming it before finding the row is the silent no-op where the
+   * reader presses a key and the screen looks untouched.
+   */
   useEffect(() => {
     if (target === null) return;
-    onTargetUsed();
     const at = changes.findIndex((event) => event.time === target);
     if (at >= 0) {
       setRow(at);
       onCursor(changes[at].time);
+      onTargetUsed();
+      return;
     }
-  }, [target, onTargetUsed, changes, onCursor]);
+    const wider = windows.findIndex((ms) => s.time - target <= ms);
+    if (wider >= 0 && wider !== windowIndex) {
+      onWindow(wider);
+      return;
+    }
+    // Older than the widest window, so no window can hold it. Retention is
+    // capped below that width, so Home cannot list such a row; the request is
+    // still consumed rather than left to fire on every later sample.
+    onTargetUsed();
+  }, [target, onTargetUsed, changes, onCursor, onWindow, windowIndex, s.time]);
   // The header, two three-row charts with titles, the sparklines, the axis
   // and the heading come before the change list.
   // Each row takes its metric's own colour, so six sparklines one under the
@@ -212,12 +229,12 @@ export function Timeline({
   // tile block: budgeting the block on a short first-run Timeline dropped the
   // sparkline rows and left the space they would have taken empty.
   const cursorHeight = selected ? tilesHeight(rows.length, width - 4, 2) : 1;
-  const fixed = 2 + 4 + 4 + 3 + cursorHeight + 1;
+  // ...and the unit line the selected row can open under itself.
+  const fixed = 2 + 4 + 4 + 3 + cursorHeight + 1 + 1;
   // A short terminal keeps the two charts and the change list, and drops the
   // sparkline rows, which the cursor tiles still summarise.
   const short = height < fixed + rows.length + 3;
   const listHeight = Math.max(3, height - (fixed + (short ? 0 : rows.length)));
-  const visible = changes.slice(0, listHeight);
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
       <box flexDirection="row" height={1} flexShrink={0}>
@@ -313,49 +330,51 @@ export function Timeline({
       <Section
         title="What changed"
         width={width - 4}
-        count={
-          changes.length
-            ? `${visible.length < changes.length ? `${visible.length} of ` : ""}${changes.length}, newest first`
-            : undefined
-        }
+        count={changes.length ? `${changes.length}, newest first` : undefined}
       />
-      {!changes.length && (
-        <Empty text="Nothing changed in this window: no lane, cgroup or cause moved." />
-      )}
-      {visible.map((event, at) => {
-        const e = eventParts(event, c);
-        const unit = event.names.unit;
-        return (
-          // One row per event, so a long subject cannot push the rest out.
-          <box
-            key={`${event.time}-${event.kind}-${event.cause}-${event.subjectId}`}
-            flexDirection="column"
-            flexShrink={0}
-          >
-            <Row
-              selected={at === row}
-              onOpen={() => {
-                setRow(at);
-                onCursor(event.time);
-              }}
+      {/* The shared list, which pages around its own selection. Slicing the
+          first rows here instead let the selection walk off the end of what
+          was drawn, and Enter then acted on a row the reader could not see. */}
+      <List
+        items={changes}
+        selected={row}
+        height={listHeight}
+        empty="Nothing changed in this window: no lane, cgroup or cause moved."
+        render={(event, at, isSelected) => {
+          const e = eventParts(event, c);
+          const unit = event.names.unit;
+          return (
+            // One row per event, so a long subject cannot push the rest out.
+            <box
+              key={`${event.time}-${event.kind}-${event.cause}-${event.subjectId}`}
+              flexDirection="column"
+              flexShrink={0}
             >
-              <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
-              <span
-                fg={levelColor(e.level)}
-                attributes={e.level === "ok" ? ui.none : ui.bold}
+              <Row
+                selected={isSelected}
+                onOpen={() => {
+                  setRow(at);
+                  onCursor(event.time);
+                }}
               >
-                {fit(e.kind, 13)}
-              </span>
-              {safe(e.text)}
-            </Row>
-            {at === row && unit && unit !== event.subject && (
-              // The subject reads as a name; the unit it decoded from is the
-              // handle a reader needs to reach the scope itself.
-              <Field label="Unit" value={unit} width={14} />
-            )}
-          </box>
-        );
-      })}
+                <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
+                <span
+                  fg={levelColor(e.level)}
+                  attributes={e.level === "ok" ? ui.none : ui.bold}
+                >
+                  {fit(e.kind, 13)}
+                </span>
+                {safe(e.text)}
+              </Row>
+              {isSelected && unit && unit !== event.subject && (
+                // The subject reads as a name; the unit it decoded from is the
+                // handle a reader needs to reach the scope itself.
+                <Field label="Unit" value={unit} width={14} />
+              )}
+            </box>
+          );
+        }}
+      />
     </box>
   );
 }

@@ -122,7 +122,7 @@ export function Home({
   snapshot: Snapshot;
   config: Config;
   items: Attention[];
-  /** The window's changes, newest first, as the Timeline lists them. */
+  /** Every retained change, newest first, as the Timeline lists them. */
   changes: TimelineEvent[];
   /** Alerts opened since the dashboard started. */
   alertsOpened: number;
@@ -349,11 +349,10 @@ export function Home({
             <Section
               title="Recent changes"
               width={panel}
-              count={
-                alertsOpened
-                  ? `${alertsOpened} ${plural(alertsOpened, "alert", "alerts")} opened since vsys started`
-                  : undefined
-              }
+              // Zero alerts is a reading a reader can act on. Dropping the
+              // count there leaves no way to tell it from a count vsys never
+              // took, which is the same defect as a blank standing for zero.
+              count={`${alertsOpened} ${plural(alertsOpened, "alert", "alerts")} opened since vsys started`}
             />
             {!recent.length && (
               <Empty text="Nothing has changed since vsys started." />
