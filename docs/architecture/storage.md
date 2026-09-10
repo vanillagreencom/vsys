@@ -1,6 +1,6 @@
 # Storage and devices
 
-Covers: src/collect/btrfs.ts src/collect/devices.ts src/collect/mounts.ts src/collect/scratch.ts src/model/writes.ts src/ui/storage.ts src/ui/storage-screen.tsx
+Covers: src/collect/btrfs.ts src/collect/devices.ts src/collect/mounts.ts src/collect/scratch.ts src/model/writes.ts src/ui/storage-screen.tsx
 
 Storage collection reads filesystem state, device counters, drive reports and scratch sizes. A counter the kernel or a drive did not report stays unknown rather than becoming a zero.
 

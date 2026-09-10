@@ -506,12 +506,19 @@ async function settle(t: Awaited<ReturnType<typeof mount>>) {
 
 test("a capture arriving under the reader does not take the row they are on", async () => {
   let release: ((lines: string[]) => void) | null = null;
-  const t = await paned({
-    onCapture: () =>
-      new Promise<string[]>((resolve) => {
-        release = resolve;
-      }),
-  });
+  const t = await paned(
+    {
+      onCapture: () =>
+        new Promise<string[]>((resolve) => {
+          release = resolve;
+        }),
+    },
+    {},
+    // Short enough that twelve lines arriving above the row push it off the
+    // bottom. Taller, the row survives whatever the effect does, and the test
+    // would pass without proving anything.
+    24,
+  );
   try {
     await t.press("enter");
     // Down to the last row, below the terminal the capture is about to fill.

@@ -124,7 +124,6 @@ test("Settings lists a capability it could not read, with the reason", async () 
       /○ ▸ Pressure stall information\s+no PSI on this kernel/,
     );
     expect(settings).toMatch(/● Resource groups \(cgroup v2\)\s+available/);
-    expect(settings).toMatch(/● Resource groups \(cgroup v2\)\s+available/);
   } finally {
     await t.close();
   }

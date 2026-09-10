@@ -523,22 +523,31 @@ export function Agents({
   // and the name takes what is left up to a cap.
   const margins = 5;
   const stateFloor = 9;
-  // The trend is a column of the same spec, so its heading and its rows move
-  // together with every other column. It is drawn only where the name can
-  // spare the columns: a name cut back to its account tells one row from the
-  // next by nothing at all, which costs the reader more than a trend gains.
+  // What the name keeps before any optional column is drawn. Every optional
+  // column is a column of the same spec, so its heading and its rows move
+  // together with the rest; each is drawn only where the name can spare the
+  // width, because a name cut back to its account tells one row from the next
+  // by nothing at all. The order they are given up in is below.
   const nameFloor = 24;
-  // Three columns are optional, and a narrow list sheds them in this order
-  // until the name has its floor back. The trend goes first, because its own
-  // number is already in the CPU column beside it. The pane address goes next:
-  // it says more than an id, but only for lanes inside the tmux server vsys
-  // reads. The process id goes last, because it is on every row and it is what
-  // tells two lanes with one name apart. A name cut back to its account tells
-  // one row from the next by nothing at all, which is what the floor protects.
-  const optional = ["Trend", "Pane", "PID"] as const;
+  // A narrowing list sheds in this order until the name has its floor back,
+  // and identity outranks readings. The readings go first: the trend, whose own
+  // number is already in the CPU column beside it; then the program, which
+  // reads `claude` on every row of an ordinary fleet; then the wait, which
+  // reads `0.0%` on every row that is not blocked. The pane address goes after
+  // all three, because it is identity, though only for lanes inside the tmux
+  // server vsys reads.
+  //
+  // The process id is not in this set at all. It is on every row and it is the
+  // only thing that tells two lanes with one name apart, so a width at which it
+  // is gone is a width at which a reader cannot pick the lane they came for.
+  // Measured across the terminal widths 84 to 210: with the id shed-able, 37 of
+  // those 127 widths drew six lanes named `method` as rows a reader could not
+  // tell apart; with it fixed, none do, and the name still keeps its floor.
+  const optional = ["Trend", "Program", "Wait", "Pane"] as const;
   const wanted: Record<(typeof optional)[number], boolean> = {
     Trend: !narrow,
-    PID: !narrow,
+    Program: !narrow,
+    Wait: !narrow,
     // `laneNameParts` listing `pane` composes nothing into the name: `%9` is a
     // server handle a reader cannot place. It selects this column instead, so
     // a stored config keeps loading and the setting keeps its meaning.
@@ -549,15 +558,15 @@ export function Agents({
   };
   const readingsWith = (shown: Set<string>): Column[] => [
     ...(shown.has("Pane") ? [{ label: "Pane", width: 12 }] : []),
-    ...(shown.has("PID")
-      ? [{ label: "PID", width: 8, align: "right" as const }]
-      : []),
-    ...(narrow ? [] : [{ label: "Program", width: 9 }]),
+    { label: "PID", width: 8, align: "right" as const },
+    ...(shown.has("Program") ? [{ label: "Program", width: 9 }] : []),
     { label: "", width: 10 },
     { label: "CPU", width: 7, align: "right" as const },
     ...(shown.has("Trend") ? [{ label: "Trend", width: trendWidth }] : []),
     { label: "Memory", width: 10, align: "right" as const },
-    ...(narrow ? [] : [{ label: "Wait", width: 11, align: "right" as const }]),
+    ...(shown.has("Wait")
+      ? [{ label: "Wait", width: 11, align: "right" as const }]
+      : []),
   ];
   const roomWith = (shown: Set<string>) =>
     listWidth -
@@ -813,15 +822,15 @@ export function Agents({
                         {`${columnGap}${safe(cell(laneColumn("Pane"), lane.address))}`}
                       </span>
                     )}
-                    {showing.has("PID") && (
-                      // Every row, not only the ones that would collide: an id
-                      // that appears on some rows and not others reads as
-                      // arbitrary rather than as identity.
-                      <span attributes={ui.dim}>
-                        {`${columnGap}${cell(laneColumn("PID"), lane.mainPid ? String(lane.mainPid) : "")}`}
-                      </span>
-                    )}
-                    {!narrow && (
+                    {/* Every row, not only the ones that would collide: an id
+                        that appears on some rows and not others reads as
+                        arbitrary rather than as identity. And every width, so
+                        there is no width at which the rows stop being rows a
+                        reader can tell apart. */}
+                    <span attributes={ui.dim}>
+                      {`${columnGap}${cell(laneColumn("PID"), lane.mainPid ? String(lane.mainPid) : "")}`}
+                    </span>
+                    {showing.has("Program") && (
                       <span attributes={ui.dim}>
                         {`${columnGap}${safe(cell(laneColumn("Program"), lane.tool))}`}
                       </span>
@@ -849,8 +858,8 @@ export function Agents({
                       value={lane.rss}
                       text={cell(laneColumn("Memory"), amount(lane.rss, c))}
                     />
-                    {!narrow && columnGap}
-                    {!narrow && (
+                    {showing.has("Wait") && columnGap}
+                    {showing.has("Wait") && (
                       <Reading
                         value={lane.pressure}
                         text={cell(laneColumn("Wait"), share(lane.pressure))}

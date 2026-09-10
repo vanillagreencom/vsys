@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { act } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
@@ -1116,37 +1117,61 @@ function sameName(count = 6) {
   return s;
 }
 
+/**
+ * The ids the screen actually drew, read out of the id column by where its
+ * heading sits.
+ *
+ * Comparing whole rendered lines is unsound above a terminal width of 150,
+ * because the side pane draws beside the list and one physical line then
+ * carries a list row and a line of side-pane text: identical rows look
+ * different because the text beside them differs. Measured at 163 before this
+ * fix, whole lines gave 6 distinct out of 7 while the column held six rows
+ * carrying no id at all.
+ */
+function drawnIds(frame: string): string[] {
+  const lines = frame.split("\n");
+  const heading = lines.find((line) => line.includes("PID")) ?? "";
+  const at = heading.indexOf("PID");
+  if (at < 0) return [];
+  return lines
+    .filter((line) => line.includes("method"))
+    .map((line) => line.slice(Math.max(0, at - 6), at + 3).trim())
+    .filter((id) => id !== "");
+}
+
 test("no list of lane names draws two rows a reader cannot tell apart", async () => {
   const c = defaults();
   const s = sameName();
   // Home's Busiest agents, the Agents list and the Builds lanes: every screen
-  // that draws lane names, at a width where the name column alone would show
-  // six identical rows.
-  for (const [screen, marker] of [
-    ["1", "method"],
-    ["2", "method"],
-    ["4", "method"],
-  ] as const) {
-    for (const width of [120, 180]) {
+  // that draws lane names, at widths measured to reach each way the column
+  // could be lost rather than chosen for looking narrow and wide.
+  //
+  // The Agents list is the one that sheds, and its own width is not the
+  // terminal's: the side pane opens at 150 and takes a third, so a wider
+  // terminal makes the list narrower. 99 is a list too narrow to ask for the
+  // column at all; 106 is a list that asks for it and then sheds it; 163 is
+  // the widest terminal reaching that same shedding with the side pane open,
+  // and the widest of the 37 failures in the swept range 84 to 210. 120 and
+  // 180 are the two widths this test had before, kept because they are the
+  // bands where nothing sheds.
+  for (const screen of ["1", "2", "4"] as const) {
+    for (const width of [99, 106, 120, 163, 180]) {
       const t = await mount(s, c, { width, height: 40 });
       try {
         await t.press(screen);
-        const rows = t
-          .frame()
-          .split("\n")
-          .filter((line) => line.includes(marker))
-          .map((line) => line.trimEnd());
-        expect({ screen, width, rows: rows.length }).toEqual({
+        const ids = drawnIds(t.frame());
+        // Six lanes with one name and identical readings: the id is the only
+        // thing that can tell them apart, so every row carries one and no two
+        // rows carry the same.
+        expect({ screen, width, drawn: ids.length }).toEqual({
           screen,
           width,
-          rows: rows.length,
+          drawn: 6,
         });
-        expect(rows.length).toBeGreaterThan(1);
-        // Whatever the width leaves room for, two rows never read the same.
-        expect({ screen, width, distinct: new Set(rows).size }).toEqual({
+        expect({ screen, width, distinct: new Set(ids).size }).toEqual({
           screen,
           width,
-          distinct: rows.length,
+          distinct: 6,
         });
       } finally {
         await t.close();
@@ -1187,6 +1212,150 @@ test("the agent detail names the process leading the lane it opened", async () =
     await t.press("enter");
     // One lane at a time, so the identity block is where the id has to be.
     expect(t.frame()).toContain("PID 3400");
+  } finally {
+    await t.close();
+  }
+});
+
+/** Lets the settled layout reading land, which is when a scroll follows it. */
+async function settled(t: Awaited<ReturnType<typeof mount>>) {
+  await t.ui.renderOnce();
+  await act(async () => {
+    await Bun.sleep(20);
+  });
+  await t.ui.renderOnce();
+}
+
+test("moving back to the tiles brings the tiles back on screen", async () => {
+  const c = defaults();
+  const { h, snapshot } = withChange(c);
+  const s = everyCauseSnapshot(c);
+  s.time = snapshot.time;
+  s.lanes = [...s.lanes, laneSnapshot({ id: "z", name: "lane-z", cpu: 90 })];
+  // Short enough that Home does not fit whole, which is the only shape in
+  // which anything can be off screen.
+  const t = await mount(s, c, { width: 120, height: 22 }, { history: h });
+  try {
+    // A tile draws this under its number and nothing else on Home does.
+    const tilesShown = () => t.frame().includes("in use: agents");
+    await t.press("1");
+    await settled(t);
+    // Walk to the bottom of the last list, which scrolls the tiles away.
+    for (let i = 0; i < 3; i++) await t.press(c.keys.next);
+    for (let i = 0; i < 30; i++) await t.press("j");
+    await settled(t);
+    expect(tilesShown()).toBe(false);
+    // Back to the tiles. The tile row is where the reader is standing now, so
+    // it is what has to be in view: told to follow `selected` alone this moved
+    // the frame not at all, the marker simply disappeared, and Enter then
+    // opened another screen with nothing here saying so.
+    for (let i = 0; i < 3; i++) await t.press(c.keys.previous);
+    await settled(t);
+    expect(tilesShown()).toBe(true);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a sample leaves a Home reader where they scrolled to", async () => {
+  const c = defaults();
+  const { h, snapshot } = withChange(c);
+  const s = everyCauseSnapshot(c);
+  s.time = snapshot.time;
+  s.lanes = [...s.lanes, laneSnapshot({ id: "z", name: "lane-z", cpu: 90 })];
+  const t = await mount(s, c, { width: 120, height: 22 }, { history: h });
+  try {
+    const band = () => t.frame().split("\n").slice(2, 6).join("\n");
+    await t.press("1");
+    // A reader arrives at a screen that has finished drawing itself.
+    await settled(t);
+    // Down to the bottom, so there is somewhere above to scroll back to.
+    for (let i = 0; i < 3; i++) await t.press(c.keys.next);
+    for (let i = 0; i < 30; i++) await t.press("j");
+    await settled(t);
+    const standing = band();
+    // The wheel moves this box, so an effect that scrolled on every render
+    // would take the reader back to the selection on the next tick.
+    for (let i = 0; i < 6; i++) await t.wheel(40, 10, "up");
+    const wheeled = band();
+    expect(wheeled).not.toBe(standing);
+    await t.update({ ...s, time: s.time + 1000 });
+    await settled(t);
+    expect(band()).toBe(wheeled);
+  } finally {
+    await t.close();
+  }
+});
+
+test("asking for a different order gives the rows that order", async () => {
+  const c = defaults();
+  const { h, snapshot } = withChange(c);
+  const s = everyCauseSnapshot(c);
+  s.time = snapshot.time;
+  // Two agents whose CPU order and memory order disagree, so the rows say
+  // which one they are in.
+  s.lanes = [
+    laneSnapshot({ id: "hungry", name: "hungry", cpu: 90, rss: 1024 }),
+    laneSnapshot({ id: "heavy", name: "heavy", cpu: 10, rss: 8192 }),
+  ];
+  const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    const rowOf = (name: string) =>
+      t
+        .frame()
+        .split("\n")
+        .findIndex((line) => line.includes(name));
+    // Held in the CPU order it opened in.
+    await t.press(c.keys.hold);
+    expect(t.frame()).toContain("order held");
+    expect(rowOf("hungry")).toBeLessThan(rowOf("heavy"));
+    // Then a different order is asked for. The heading said `↓ Memory` over
+    // rows still in the held CPU order: a screen stating a fact about itself
+    // that its own rows deny.
+    await t.press(c.keys.sort);
+    expect(t.frame()).toContain("Memory");
+    expect(t.frame()).not.toContain("order held");
+    expect(rowOf("heavy")).toBeLessThan(rowOf("hungry"));
+    // Reversing is the same kind of asking.
+    await t.press(c.keys.hold);
+    expect(t.frame()).toContain("order held");
+    await t.press(c.keys.reverse);
+    expect(t.frame()).not.toContain("order held");
+    expect(rowOf("hungry")).toBeLessThan(rowOf("heavy"));
+  } finally {
+    await t.close();
+  }
+});
+
+test("a concern draws the open marker only when it is open", async () => {
+  const c = defaults();
+  const { h, snapshot } = withChange(c);
+  const s = everyCauseSnapshot(c);
+  s.time = snapshot.time;
+  const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    // Home opens on the first concern, which is open and says so.
+    // The verdict line names the same concern, so the row is the one carrying
+    // a marker.
+    const top = () =>
+      t
+        .frame()
+        .split("\n")
+        .find(
+          (line) =>
+            line.includes("runs outside agents.slice") &&
+            (line.includes("\u25b8") || line.includes("\u25be")),
+        ) ?? "";
+    expect(top()).toContain("▾");
+    expect(t.frame()).toContain("Next ");
+    // Off the rows and onto the tiles. Nothing is open under the concern now,
+    // and the marker used to go on saying it was: `▾` with no rule and no
+    // detail beneath it.
+    await t.press(c.keys.previous);
+    expect(top()).toContain("▸");
+    expect(t.frame()).not.toContain("Next ");
   } finally {
     await t.close();
   }
