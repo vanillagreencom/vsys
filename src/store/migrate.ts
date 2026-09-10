@@ -1,4 +1,6 @@
+import { isUnitName, unitLabel } from "../model/naming";
 import type { Lane, Snapshot } from "../model/types";
+import type { Point } from "./point";
 
 /**
  * A stored snapshot was written by whichever build was running at the time.
@@ -66,5 +68,33 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
     // empty list is the unknown value: no reading claims a missing interface.
     capabilities: s.capabilities ?? [],
     lanes: (s.lanes ?? []).map(normalizeLane),
+  };
+}
+/**
+ * Fill the fields a stored point predates. A build before `consumerName()`
+ * reached the event store wrote a cgroup subject as systemd's own name, with
+ * no unit beside it. Those points stay in the ring for a whole retention
+ * window after an upgrade, so without this step a `.scope` handle keeps
+ * reaching Home and the Timeline for `historyHours` after the code that could
+ * produce one is gone.
+ *
+ * The old subject was the unit, so it becomes the unit and the decoded name
+ * takes its place: the same two values the store records today. A subject that
+ * was never a unit name, a lane or a path, is left alone, and so is an event
+ * that already carries a unit, which makes the step idempotent.
+ */
+export function normalizePoint(p: Point): Point {
+  if (!p.events?.length) return p;
+  return {
+    ...p,
+    events: p.events.map((e) =>
+      e.names?.unit === undefined && isUnitName(e.subject)
+        ? {
+            ...e,
+            subject: unitLabel(e.subject),
+            names: { ...e.names, unit: e.subject },
+          }
+        : e,
+    ),
   };
 }

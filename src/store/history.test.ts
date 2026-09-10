@@ -332,3 +332,64 @@ test("a change aged out by a push leaves the index with its point", () => {
   expect(indexed.some((e) => e.time === 2000)).toBe(false);
   expect(indexed).toEqual(walked.slice(0, 3));
 });
+
+test("a stored event written before subjects were decoded loads with a name", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  first.add(s);
+  first.close();
+  const unit = "agent-confine-854045-20986.scope";
+  const db = new Database(f.config.sqlitePath);
+  const row = db
+    .query<{ point: string }, [number]>(
+      "SELECT point FROM samples WHERE time = ?",
+    )
+    .get(now);
+  // What an older build wrote: systemd's own handle as the subject, with no
+  // unit beside it, because the event had nowhere to keep one. A lane subject
+  // was already a name then and has to survive the load untouched.
+  const stored = {
+    ...(JSON.parse(row?.point ?? "{}") as Record<string, unknown>),
+    events: [
+      {
+        time: now,
+        kind: "alert-open",
+        subject: unit,
+        subjectId: `app.slice/${unit}`,
+        cause: "desktop-swap",
+        names: { level: "danger" },
+        values: {},
+      },
+      {
+        time: now,
+        kind: "lane-start",
+        subject: "lane-a",
+        subjectId: "a.scope",
+        cause: "",
+        names: { account: "default", slice: "agents.slice", tool: "claude" },
+        values: {},
+      },
+    ],
+  };
+  db.query("UPDATE samples SET point = ? WHERE time = ?").run(
+    JSON.stringify(stored),
+    now,
+  );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  const loaded = reopened.events(now, 3600000);
+  // The stored subject was the unit, so it becomes the unit and the decoded
+  // name takes its place: no screen shows a `.scope` handle for the whole
+  // retention window after the upgrade.
+  expect(
+    loaded.map((e) => ({ subject: e.subject, unit: e.names.unit ?? "" })),
+  ).toEqual([
+    { subject: "agent 854045", unit },
+    { subject: "lane-a", unit: "" },
+  ]);
+});

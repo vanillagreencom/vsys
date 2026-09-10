@@ -237,6 +237,14 @@ export class EventLog {
         };
         watch.lastSeen = s.time;
         watch.level = cause.level;
+        // What a cgroup is called depends on the lane set, so a scope becoming
+        // a lane renames the subject mid-hold. A watch that has not opened
+        // takes the newest name and unit; one that has keeps what it reported,
+        // so its verdict and its close name the alert the way its open did.
+        if (!watch.opened) {
+          watch.subject = subject.name;
+          watch.unit = subject.unit ?? "";
+        }
         // The thresholds and the subject's own numbers belong to the event,
         // not to the settings the reader happens to hold when it is drawn.
         watch.values = subjectValues(cause, subject.id, s, c);

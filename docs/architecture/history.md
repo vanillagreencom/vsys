@@ -6,7 +6,7 @@ The store keeps complete snapshots for replay and one point per sample for the c
 
 ## Invariants
 
-- A snapshot a previous build stored is filled with the unknown value for every field it predates before any screen reads it. `src/store/history.test.ts` checks a stored lane and a snapshot older than the capability probe.
+- A snapshot a previous build stored is filled with the unknown value for every field it predates before any screen reads it, and a stored point takes the same step: an event subject a build wrote before subjects were decoded becomes the unit it was, with the decoded name in its place. `src/store/history.test.ts` checks a stored lane, a snapshot older than the capability probe, and a stored event of the old shape.
 - Historical snapshots remain independent of live objects and callers. `src/store/archive.test.ts` checks exact reconstruction and mutation isolation.
 - Settings changes and persistence changes preserve retained incidents. `src/store/history.test.ts` checks transfer and database merging.
 - History storage rejects a database with another application's schema. `src/store/history.test.ts` checks tables and views.

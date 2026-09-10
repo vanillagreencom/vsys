@@ -136,8 +136,18 @@ const generated = (field: string): boolean =>
  * A name whose fields were not generated keeps every field, because nothing
  * marks which of them the reader can spare.
  */
+const unitSuffix = /\.(scope|service|slice|mount|socket|target)$/;
+/**
+ * Whether a string is a systemd unit name rather than a name a reader reads.
+ * The load path asks this of a subject stored by a build that kept the raw
+ * name, so it shares the suffixes `unitLabel` strips and cannot drift from
+ * them.
+ */
+export function isUnitName(name: string): boolean {
+  return unitSuffix.test(name);
+}
 export function unitLabel(name: string): string {
-  const bare = name.replace(/\.(scope|service|slice|mount|socket|target)$/, "");
+  const bare = name.replace(unitSuffix, "");
   const fields = bare.split("-");
   const desktop = fields[0] === "app";
   if (desktop) fields.shift();

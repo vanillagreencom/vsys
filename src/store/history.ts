@@ -6,7 +6,7 @@ import type { Alert, Snapshot } from "../model/types";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
 import type { LaneSample } from "./lane-series";
-import { normalizeSnapshot } from "./migrate";
+import { normalizePoint, normalizeSnapshot } from "./migrate";
 import { type Point, point } from "./point";
 
 /** Snapshots hold command lines and environment values, so only the owner may read them. */
@@ -192,8 +192,11 @@ export class History {
           .all(cutoff);
         if (rows.length > this.points.capacity)
           this.points = new Points(rows.length);
+        // A stored point was written by whichever build was running then, so
+        // it reaches the ring through the same normalising step a stored
+        // snapshot does.
         for (const row of rows)
-          this.points.push(JSON.parse(row.point) as Point);
+          this.points.push(normalizePoint(JSON.parse(row.point) as Point));
       } catch (error) {
         this.db.close();
         throw error;

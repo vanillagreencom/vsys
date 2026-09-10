@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
+import { type Cause, causes } from "../model/verdict";
 import {
   emptySnapshot,
   everyCauseSnapshot,
@@ -9,7 +10,7 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import { EventLog } from "./events";
+import { EventLog, subjects } from "./events";
 import { History } from "./history";
 
 /** A zero hold isolates the derivation from the flap suppression below. */
@@ -506,4 +507,109 @@ test("a verdict led by a cgroup names the unit behind its subject", () => {
   // The verdict row is a change like any other, so its raw scope handle is
   // reachable from it too.
   expect(verdict?.names.unit).toBe("gnome.scope");
+});
+
+test("a scope that becomes a lane while its alert waits opens under one name", () => {
+  // A real hold, since the whole defect lives inside it.
+  const held = { ...defaults(), pressureHoldSeconds: 10 };
+  const unit = "agent-confine-854045-20986.scope";
+  const path = `app.slice/${unit}`;
+  /** The desktop slice over its swap floor, held by one scope. */
+  const swapping = (time: number, lanes: boolean): Snapshot => {
+    const s = emptySnapshot(time);
+    // The slice total is the sum over its roots, and the holder is the scope
+    // under it with the most swap.
+    s.groups = [
+      groupSnapshot({
+        path: "app.slice",
+        name: held.desktopSlice,
+        swap: held.swapFloor + 1,
+      }),
+      groupSnapshot({ path, parent: "app.slice", name: unit, swap: 992 }),
+    ];
+    if (lanes) s.lanes = [laneSnapshot({ id: path, name: "confine" })];
+    return s;
+  };
+  const named = (s: Snapshot) => {
+    const cause = causes(s, held).find((x) => x.id === "desktop-swap");
+    expect(cause).toBeDefined();
+    return subjects(cause as Cause, s).map((x) => `${x.id} ${x.name}`);
+  };
+  const anonymous = swapping(0, false);
+  const renamed = swapping(5000, true);
+  // What the fixture has to move, read before and against: one subject, one
+  // identity, two names. A plant cannot catch a fixture where the scope never
+  // becomes a lane, so the rename is asserted rather than assumed.
+  expect(named(anonymous)).toEqual([`${path} agent 854045`]);
+  expect(named(renamed)).toEqual([`${path} confine`]);
+
+  const log = new EventLog();
+  const out: ReturnType<EventLog["advance"]>[] = [];
+  log.advance(anonymous, held);
+  out.push(log.advance(renamed, held));
+  // Past the hold, so the alert opens under the name the sample that opened it
+  // read, and the verdict opens with it.
+  out.push(log.advance(swapping(15000, true), held));
+  // The swap goes. The close waits out its own hold and then names the alert
+  // the way its open did.
+  const quiet = emptySnapshot(30000);
+  quiet.lanes = [laneSnapshot({ id: path, name: "confine" })];
+  out.push(log.advance(quiet, held));
+  const events = out
+    .flat()
+    .filter((x) => x.cause === "desktop-swap")
+    .map((x) => `${x.kind} ${x.subject} ${x.names.unit}`);
+  // One alert under one name from open to close, and the verdict that follows
+  // it says the same. Under the frozen name these read `agent 854045`, which
+  // is a scope the reader can no longer find: it is a lane now.
+  expect(events).toEqual([
+    `alert-open confine ${unit}`,
+    `verdict confine ${unit}`,
+    `alert-close confine ${unit}`,
+  ]);
+});
+
+test("a lane that starts writing the most while its alert waits keeps its handle", () => {
+  const held = { ...defaults(), pressureHoldSeconds: 10 };
+  const id = "agents.slice/l.scope";
+  /** Disk pressure with one lane stalling on it, and one scope writing most. */
+  const stalling = (time: number, laneWrites: boolean): Snapshot => {
+    const s = emptySnapshot(time);
+    s.system.pressure.io = { some: held.pressureAmber + 1, full: 0, total: 0 };
+    s.lanes = [laneSnapshot({ id, name: "worker", ioPressure: 90 })];
+    s.groups = [
+      groupSnapshot({ path: "other.scope", name: "other.scope", writeRate: 2 }),
+      groupSnapshot({
+        path: id,
+        parent: "agents.slice",
+        name: "l.scope",
+        writeRate: laneWrites ? 9 : 1,
+      }),
+    ];
+    return s;
+  };
+  const handles = (s: Snapshot) => {
+    const cause = causes(s, held).find((x) => x.id === "disk");
+    expect(cause).toBeDefined();
+    return subjects(cause as Cause, s)
+      .filter((x) => x.id === id)
+      .map((x) => `${x.name} ${x.unit ?? ""}`);
+  };
+  // What the fixture has to move. The lane is a subject of this cause either
+  // way; what changes is whether the cause also names it as the writing scope,
+  // which is where the raw handle comes from.
+  expect(handles(stalling(0, false))).toEqual(["worker "]);
+  expect(handles(stalling(5000, true))).toEqual(["worker l.scope"]);
+
+  const log = new EventLog();
+  log.advance(stalling(0, false), held);
+  log.advance(stalling(5000, true), held);
+  const opened = log
+    .advance(stalling(15000, true), held)
+    .filter((e) => e.kind === "alert-open" && e.subjectId === id)
+    .map((e) => e.names.unit);
+  // Frozen at the first sample of the hold, the alert opens with no handle at
+  // all, so the selected row cannot show the scope the reader would run
+  // `systemctl` against.
+  expect(opened).toEqual(["l.scope"]);
 });
