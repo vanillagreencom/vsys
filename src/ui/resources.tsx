@@ -125,6 +125,7 @@ export function Resources({
   width,
   target,
   onTargetUsed,
+  onNotice,
 }: {
   snapshot: Snapshot;
   config: Config;
@@ -133,26 +134,28 @@ export function Resources({
   /** The group path a card asked this screen to land on. */
   target: string | null;
   onTargetUsed: () => void;
+  onNotice: (text: string, level: Level) => void;
 }) {
   const [selected, setSelected] = useState(0);
   const [all, setAll] = useState(false);
   const rows = groupRows(s, all);
   // A card that names a group lands on it. An idle group is not in the rows
-  // until they are all shown, so the target opens them.
+  // until they are all shown, so the target opens them. The group is found
+  // before the request is acknowledged, because a collector refresh between
+  // the keypress and this effect can remove it; acknowledging first dropped
+  // the request in silence. The request is still consumed either way, so
+  // opening the same card twice lands twice.
   useEffect(() => {
     if (target === null) return;
-    onTargetUsed();
     const at = groupRows(s, all).findIndex((g) => g.path === target);
-    if (at >= 0) {
-      setSelected(at);
-      return;
-    }
     const hidden = s.groups.findIndex((g) => g.path === target);
-    if (hidden >= 0) {
+    if (at >= 0) setSelected(at);
+    else if (hidden >= 0) {
       setAll(true);
-      setSelected(s.groups.findIndex((g) => g.path === target));
-    }
-  }, [target, onTargetUsed, s, all]);
+      setSelected(hidden);
+    } else onNotice(`${target} is no longer in the sample`, "warn");
+    onTargetUsed();
+  }, [target, onTargetUsed, onNotice, s, all]);
   const hidden = s.groups.length - rows.length;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {

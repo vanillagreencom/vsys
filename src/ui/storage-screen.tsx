@@ -102,6 +102,7 @@ export function Storage({
   width,
   target,
   onTargetUsed,
+  onNotice,
 }: {
   snapshot: Snapshot;
   config: Config;
@@ -109,6 +110,7 @@ export function Storage({
   /** The mount, report or directory a card asked this screen to land on. */
   target: string | null;
   onTargetUsed: () => void;
+  onNotice: (text: string, level: Level) => void;
 }) {
   const [selected, setSelected] = useState(0);
   const items = storageItems(s);
@@ -116,12 +118,19 @@ export function Storage({
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`storage-${selected}`);
   }, [selected]);
+  // A card names a row and this lands on it. The row is found before the
+  // request is acknowledged, because a collector refresh between the keypress
+  // and this effect can remove the mount or directory it named. Acknowledging
+  // first dropped the request in silence, leaving a screen that looks like the
+  // reader never pressed anything. The request is still consumed either way,
+  // so opening the same card twice lands twice.
   useEffect(() => {
     if (target === null) return;
-    onTargetUsed();
     const at = storageItems(s).findIndex((item) => itemPath(item) === target);
     if (at >= 0) setSelected(at);
-  }, [target, onTargetUsed, s]);
+    else onNotice(`${target} is no longer in the sample`, "warn");
+    onTargetUsed();
+  }, [target, onTargetUsed, onNotice, s]);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setSelected((i) => nextDown(items.length, i));

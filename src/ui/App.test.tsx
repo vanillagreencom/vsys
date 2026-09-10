@@ -19,6 +19,9 @@ import { App, hints, Waiting } from "./App";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
+import { type KeyHandler, KeyProvider } from "./keys";
+import { Resources } from "./resources";
+import { Storage } from "./storage-screen";
 
 /** One mounted App over a history, with the hooks a test asserts on. */
 async function mount(
@@ -636,7 +639,7 @@ test("the copy key puts the selected card's command on the clipboard", async () 
     expect(t.written).toEqual([osc52(command ?? "")]);
     // The notice names where the text went and what silence means, because
     // OSC 52 is a request to the terminal that vsys cannot confirm.
-    expect(t.frame()).toContain("Copied to the system clipboard");
+    expect(t.frame()).toContain("Copied to the clipboard");
     expect(t.frame()).toContain("OSC 52");
     // A card with no command copies nothing rather than an empty clipboard.
     const bare = items.findIndex((item) => item.command === undefined);
@@ -1699,6 +1702,116 @@ test("a configurable numeric column reads down its last digit", async () => {
         label,
         ends: heading.indexOf(label) + label.length,
       }).toEqual({ label, ends: row.indexOf(value) + value.length });
+  } finally {
+    await t.close();
+  }
+});
+
+test("a card that names no agent opens the list, not the agent left open", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const items = attention(s, c);
+  // This card points at Agents and names no lane: several lanes wait for CPU
+  // and no one row is the answer.
+  const at = items.findIndex((item) => item.id === "system-cpu");
+  expect(at).toBeGreaterThan(-1);
+  expect(items[at].target).toBeUndefined();
+  const t = await mount(s, c, { width: 160, height: 44 });
+  const footer = () => t.frame().split("\n").at(-2) ?? "";
+  try {
+    // Open an agent and leave it by its tab rather than by going back, so the
+    // detail is still what Agents would render.
+    await t.press("2");
+    await t.press("enter");
+    expect(footer()).toContain("back");
+    expect(footer()).not.toContain("find");
+    await t.press("1");
+    for (let i = 0; i < at; i++) await t.press("j");
+    await t.press("enter");
+    // The card named the list. The agent left open would render its own
+    // detail here, which is a screen the card never pointed at.
+    expect(footer()).toContain("find");
+    expect(footer()).toContain("table");
+    expect(t.frame()).toContain("Agent");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a target whose row has gone is said out loud, not dropped", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [volumeSnapshot("/data")];
+  s.groups = [groupSnapshot({ path: "busy.scope", name: "busy.scope" })];
+  /** One screen rendered with a target, reporting what it did with it. */
+  async function landOn(screen: "storage" | "resources", target: string) {
+    const notices: [string, string][] = [];
+    let used = 0;
+    const handlers = new Set<KeyHandler>();
+    const props = {
+      snapshot: s,
+      config: c,
+      target,
+      onTargetUsed: () => {
+        used += 1;
+      },
+      onNotice: (text: string, level: string) => notices.push([text, level]),
+    };
+    const ui = await testRender(
+      <KeyProvider handlers={handlers}>
+        {screen === "storage" ? (
+          <Storage {...props} width={140} />
+        ) : (
+          <Resources {...props} width={140} height={30} />
+        )}
+      </KeyProvider>,
+      { width: 140, height: 30 },
+    );
+    try {
+      await ui.renderOnce();
+      return { used, notices, frame: ui.captureCharFrame() };
+    } finally {
+      ui.renderer.destroy();
+    }
+  }
+  // A collector refresh between the keypress and this effect can take the row
+  // the card named. The request is still consumed, so it cannot fire again on
+  // a later sample, and the reader is told rather than left on a screen that
+  // looks like they never pressed anything.
+  for (const screen of ["storage", "resources"] as const) {
+    const gone = await landOn(screen, "/gone");
+    expect({ screen, used: gone.used }).toEqual({ screen, used: 1 });
+    expect({ screen, notices: gone.notices }).toEqual({
+      screen,
+      notices: [["/gone is no longer in the sample", "warn"]],
+    });
+  }
+  // A row that is there is landed on, and says nothing.
+  const found = await landOn("storage", "/data");
+  expect(found.used).toBe(1);
+  expect(found.notices).toEqual([]);
+  expect(found.frame).toContain("/data");
+});
+
+test("the copy notice does not claim a silent terminal empties the clipboard", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const items = attention(s, c);
+  const at = items.findIndex((item) => item.command !== undefined);
+  expect(at).toBeGreaterThan(-1);
+  // The toast cuts at its own width rather than wrapping, so this is wide
+  // enough to draw the clause the assertion is about.
+  const t = await mount(s, c, { width: 200, height: 44 });
+  try {
+    await t.press("1");
+    for (let i = 0; i < at; i++) await t.press("j");
+    await t.press("y");
+    const frame = t.frame();
+    // A terminal that ignores the request leaves the clipboard alone. Saying
+    // a paste gives nothing sends the reader to paste stale text believing it
+    // is the command they just copied.
+    expect(frame).toContain("leaves the clipboard unchanged");
+    expect(frame).not.toContain("pastes nothing");
   } finally {
     await t.close();
   }

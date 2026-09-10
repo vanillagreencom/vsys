@@ -181,8 +181,10 @@ export function App({
   const shown = pinned ?? snapshot;
   const issues = attention(snapshot, c);
   const points = history.window(snapshot.time, windows[windowIndex]);
-  const notice = (text: string, level: Level = "ok") =>
-    setToast({ text, level });
+  const notice = useCallback(
+    (text: string, level: Level = "ok") => setToast({ text, level }),
+    [],
+  );
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), toastMs);
@@ -223,6 +225,10 @@ export function App({
       return;
     }
     setPinned(null);
+    // A card naming no lane points at the list. An agent left open earlier
+    // would render its own detail instead, so the card would land on a screen
+    // it never named.
+    if (view === "Agents") setLaneId(null);
     setTarget(at ?? null);
     navigate(view);
   };
@@ -236,7 +242,7 @@ export function App({
     // OSC 52 is a request to the terminal, not a write vsys can confirm, so
     // the notice says where the text was sent and what silence means.
     notice(
-      "Copied to the system clipboard through the terminal. A terminal that ignores OSC 52 pastes nothing; the command stays on screen.",
+      "Copied to the clipboard through the terminal. A terminal ignoring OSC 52 leaves the clipboard unchanged; the command stays on screen.",
     );
   };
   // vsys reads system state unless the reader turns write mode on, and an
@@ -388,6 +394,7 @@ export function App({
         width={width}
         target={target?.kind === "group" ? target.path : null}
         onTargetUsed={clearTarget}
+        onNotice={notice}
       />
     );
   else if (view === "Builds")
@@ -407,6 +414,7 @@ export function App({
         width={width - 4}
         target={target?.kind === "path" ? target.path : null}
         onTargetUsed={clearTarget}
+        onNotice={notice}
       />
     );
   else if (view === "Timeline")
