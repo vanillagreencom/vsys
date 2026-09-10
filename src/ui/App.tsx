@@ -451,7 +451,7 @@ export function App({
         height={contentHeight}
         onCursor={setCursor}
         onWindow={setWindowIndex}
-        target={target?.kind === "time" ? target.at : null}
+        target={target?.kind === "time" ? target : null}
         onTargetUsed={clearTarget}
       />
     );

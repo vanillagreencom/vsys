@@ -19,6 +19,7 @@ import { App, hints, Waiting } from "./App";
 import { attention } from "./attention";
 import { headerRowWidth, views } from "./chrome";
 import { osc52 } from "./clipboard";
+import { homeItems } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { Resources } from "./resources";
 import { Storage } from "./storage-screen";
@@ -1747,30 +1748,66 @@ test("an unstated pool size is not reported as an unreadable one", async () => {
   }
 });
 
-test("Home marks one focus at a time, and the keys follow it", async () => {
-  const c = defaults();
+test("Home marks one focus at a time, on every kind of row it lists", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  // A sample with all three row types on screen at once: concerns, a change,
+  // and agents. The rule was written at each render site, so it reached two of
+  // the three and the test that named it used only a concern.
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
   const s = everyCauseSnapshot(c);
-  const t = await mount(s, c, { width: 160, height: 44 });
+  s.time = 2000;
+  h.add(s);
+  const rows = homeItems(
+    attention(s, c),
+    s,
+    5,
+    h.events(s.time, c.historyHours * 3600000),
+  );
+  const kinds = ["concern", "change", "agent"] as const;
+  for (const kind of kinds)
+    expect({ kind, present: rows.some((row) => row.kind === kind) }).toEqual({
+      kind,
+      present: true,
+    });
+  for (const kind of kinds) {
+    const at = rows.findIndex((row) => row.kind === kind);
+    const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
+    try {
+      await t.press("1");
+      for (let i = 0; i < at; i++) await t.press("j");
+      // The rows hold the focus, so this row is marked.
+      expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
+        kind,
+        marked: true,
+      });
+      // Moving onto a tile takes the focus with it. A row marked here would
+      // say one thing while Enter opened another.
+      await t.press("right");
+      expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
+        kind,
+        marked: false,
+      });
+      // And moving back off the tiles restores it.
+      await t.press("down");
+      expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
+        kind,
+        marked: true,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+  // The selected concern's detail follows the same rule, and so does copy:
+  // while a tile holds the focus there is no row for either to act on.
+  const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
   try {
     await t.press("1");
-    // The rows hold the focus: a row is marked and its detail is under it.
-    const onRows = t.frame();
-    expect(selectedRow(onRows)).not.toBe("");
-    expect(onRows).toContain("Next ");
-    // Moving onto a tile takes the focus with it. Marking a row here would
-    // say one thing while Enter opened another.
+    expect(t.frame()).toContain("Next ");
     await t.press("right");
-    const onTile = t.frame();
-    expect(selectedRow(onTile)).toBe("");
-    expect(onTile).not.toContain("Next ");
-    // And copy has no row to act on, rather than copying the row the tiles
-    // are sitting above.
+    expect(t.frame()).not.toContain("Next ");
     await t.press("y");
     expect(t.frame()).toContain("no command to copy");
-    // Moving back off the tiles restores the row and its detail.
-    await t.press("down");
-    expect(selectedRow(t.frame())).not.toBe("");
-    expect(t.frame()).toContain("Next ");
   } finally {
     await t.close();
   }
@@ -2130,6 +2167,41 @@ test("a shorter window leaves the Timeline selection on a row that exists", asyn
     expect(selectedRow(frame)).not.toBe("");
     await t.press("enter");
     expect(t.frame()).toContain("What changed");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a Home row opens the change the reader chose, not the first at its moment", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  // Three lanes start in one sample, so all three changes carry time 2000.
+  // A timestamp names the moment, not the change.
+  const busy = emptySnapshot(2000);
+  busy.lanes = ["alpha", "beta", "gamma"].map((name) =>
+    laneSnapshot({ id: `${name}.scope`, name }),
+  );
+  h.add(busy);
+  const changes = h.events(busy.time, c.historyHours * 3600000);
+  expect(changes.length).toBe(3);
+  expect(new Set(changes.map((e) => e.time)).size).toBe(1);
+  const t = await mount(busy, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    // Open the second of the three.
+    const rows = homeItems(attention(busy, c), busy, 5, changes);
+    const at = rows.findIndex((row) => row.kind === "change");
+    expect(at).toBeGreaterThan(-1);
+    for (let i = 0; i < at + 1; i++) await t.press("j");
+    const chosen = selectedRow(t.frame());
+    expect(chosen).toContain(changes[1].subject);
+    await t.press("enter");
+    // The Timeline lands on that change, not on the first one sharing its
+    // time. Matching by time always found the first however far down the
+    // reader had moved.
+    expect(t.frame()).toContain("What changed");
+    expect(selectedRow(t.frame())).toContain(changes[1].subject);
   } finally {
     await t.close();
   }

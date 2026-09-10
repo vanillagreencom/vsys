@@ -66,7 +66,8 @@ export function homeItems(
 /** The row a Home item opens: an agent, a card's own row, or a moment. */
 export function homeTarget(row: HomeItem): Target | undefined {
   if (row.kind === "agent") return { kind: "lane", id: row.lane.id };
-  if (row.kind === "change") return { kind: "time", at: row.event.time };
+  if (row.kind === "change")
+    return { kind: "time", at: row.event.time, id: eventKey(row.event) };
   return row.item.target;
 }
 /** The history field each meter's tile charts, so the two cannot drift apart. */
@@ -162,6 +163,13 @@ export function Home({
    * one screen that already has two places a selection can sit.
    */
   const rowsFocused = tile === null;
+  /**
+   * Whether the row at `i` carries the selection marker. All three row types
+   * ask here rather than repeating the rule: a rule written at each site is a
+   * rule with a hole waiting for the next row type, and phase 2 added the
+   * third and missed it at once.
+   */
+  const marked = (i: number) => rowsFocused && i === selected;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`home-${selected}`);
@@ -304,13 +312,13 @@ export function Home({
                   flexShrink={0}
                 >
                   <Row
-                    selected={rowsFocused && i === selected}
+                    selected={marked(i)}
                     color={row.item.danger ? ui.danger : ui.warn}
                     onOpen={() => onOpen(row)}
                   >
                     {safe(row.item.title)}
                   </Row>
-                  {rowsFocused && i === selected && (
+                  {marked(i) && (
                     <box flexDirection="column" flexShrink={0} paddingLeft={2}>
                       <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                         {safe(row.item.detail)}
@@ -360,7 +368,7 @@ export function Home({
             {rows.map((row, i) =>
               row.kind === "change" ? (
                 <box id={`home-${i}`} key={eventKey(row.event)} flexShrink={0}>
-                  <Row selected={i === selected} onOpen={() => onOpen(row)}>
+                  <Row selected={marked(i)} onOpen={() => onOpen(row)}>
                     {(() => {
                       const e = eventParts(row.event, c);
                       return (
@@ -390,10 +398,7 @@ export function Home({
             {rows.map((row, i) =>
               row.kind === "agent" ? (
                 <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>
-                  <Row
-                    selected={rowsFocused && i === selected}
-                    onOpen={() => onOpen(row)}
-                  >
+                  <Row selected={marked(i)} onOpen={() => onOpen(row)}>
                     {safe(cell(nameColumn, row.lane.name))}
                     {columnGap}
                     <Bar

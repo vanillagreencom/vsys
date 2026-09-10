@@ -101,7 +101,8 @@ export function Timeline({
   onCursor: (time: number | null) => void;
   onWindow: (index: number) => void;
   /** The event time a Home row asked this screen to land on. */
-  target: number | null;
+  /** The moment a Home row asked for, and which change at that moment. */
+  target: { at: number; id: string } | null;
   onTargetUsed: () => void;
 }) {
   /**
@@ -219,7 +220,10 @@ export function Timeline({
    */
   useEffect(() => {
     if (target === null) return;
-    const at = changes.findIndex((event) => event.time === target);
+    // Found by identity, not by time: every change in one sample shares that
+    // sample's time, so matching on the time lands on the first of them
+    // whichever row the reader opened.
+    const at = changes.findIndex((event) => eventKey(event) === target.id);
     if (at >= 0) {
       // Set directly rather than through `choose`: a helper rebuilt each
       // render would be a dependency of this effect that changes every pass.
@@ -228,7 +232,7 @@ export function Timeline({
       onTargetUsed();
       return;
     }
-    const wider = windows.findIndex((ms) => s.time - target <= ms);
+    const wider = windows.findIndex((ms) => s.time - target.at <= ms);
     if (wider >= 0 && wider !== windowIndex) {
       onWindow(wider);
       return;

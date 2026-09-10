@@ -8,6 +8,7 @@ import {
 } from "../test/fixture";
 import { attention } from "./attention";
 import { homeItems, homeTarget, recentChanges } from "./home";
+import { eventKey } from "./timeline";
 
 test("Home lists every concern first, then the busiest agents, capped", () => {
   const c = defaults();
@@ -61,9 +62,17 @@ test("Home lists the newest changes first, and each opens the moment it names", 
     "change",
     "agent",
   ]);
-  // Opening one asks for that moment, not for a screen with a loose cursor.
+  // Opening one asks for that moment and for which change at it. Every change
+  // found in one sample carries that sample's time, so the time alone would
+  // name the first of them however far down the reader had moved.
   const first = rows[0];
-  expect(homeTarget(first)).toEqual({ kind: "time", at: 5000 });
+  expect(first.kind).toBe("change");
+  if (first.kind !== "change") throw new Error("no change row to open");
+  expect(homeTarget(first)).toEqual({
+    kind: "time",
+    at: 5000,
+    id: eventKey(first.event),
+  });
   expect(homeTarget(rows[3])).toEqual({ kind: "lane", id: s.lanes[0].id });
   // With no changes recorded, the section lists none rather than inventing one.
   expect(homeItems([], s, 5).some((row) => row.kind === "change")).toBe(false);
