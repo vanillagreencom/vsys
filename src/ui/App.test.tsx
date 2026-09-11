@@ -67,7 +67,14 @@ test("pinning shows the machine at the cursor on the sample views only", async (
   const latest = emptySnapshot(2000);
   latest.lanes = [laneSnapshot({ name: "after" })];
   h.add(latest);
-  const t = await mount(latest, c, undefined, { history: h });
+  const exported: number[] = [];
+  const t = await mount(latest, c, undefined, {
+    history: h,
+    onExport: async (s) => {
+      exported.push(s.time);
+      return "snapshot.json";
+    },
+  });
   try {
     await t.press("6");
     await t.press("h");
@@ -76,8 +83,13 @@ test("pinning shows the machine at the cursor on the sample views only", async (
     expect(t.frame()).toContain("◆");
     expect(t.frame()).toContain("before");
     expect(t.frame()).not.toContain("after");
+    // An export carries what the screen shows: the pinned sample here, the
+    // live one on a view that stays live.
+    await t.press("e");
     await t.press("1");
     expect(t.frame()).toContain("● live");
+    await t.press("e");
+    expect(exported).toEqual([1000, 2000]);
   } finally {
     await t.close();
   }

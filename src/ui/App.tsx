@@ -346,7 +346,12 @@ export function App({
     if (name === c.keys.help) setHelp(true);
     if (name === c.keys.window) setWindowIndex((i) => (i + 1) % windows.length);
     if (name === c.keys.exportJson || name === c.keys.exportMarkdown)
-      void onExport(shown, name === c.keys.exportJson ? "json" : "markdown")
+      // An export carries what the screen shows: the pinned sample on the
+      // views that show it, the live one everywhere else.
+      void onExport(
+        pinnable.includes(view) ? shown : snapshot,
+        name === c.keys.exportJson ? "json" : "markdown",
+      )
         .then((path) => notice(`Export saved: ${path}`))
         .catch(report);
     if (name === c.keys.pin) {
