@@ -1,3 +1,4 @@
+import { type BaseRenderable, TextBufferRenderable } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import type { Config } from "../config/config";
@@ -115,6 +116,29 @@ export function selectedRow(frame: string): string {
  * is the whole reason the rule exists.
  */
 export const isChildLine = (line: string): boolean => / │ +\S/.test(line);
+
+/**
+ * The drawn lines holding `needle` whose text is longer than the box laid out
+ * for them. The terminal cuts such a line at the box's edge, so whatever lies
+ * past it is never seen.
+ */
+export function overflowing(
+  ui: Awaited<ReturnType<typeof testRender>>,
+  needle: string,
+): string[] {
+  const cut: string[] = [];
+  const walk = (node: BaseRenderable) => {
+    if (
+      node instanceof TextBufferRenderable &&
+      node.plainText.includes(needle) &&
+      [...node.plainText].length > node.width
+    )
+      cut.push(node.plainText);
+    for (const child of node.getChildren()) walk(child);
+  };
+  walk(ui.renderer.root);
+  return cut;
+}
 
 /**
  * The headings carrying a sort arrow on a lane table's heading line, the line

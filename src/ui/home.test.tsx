@@ -11,7 +11,13 @@ import {
   groupSnapshot,
   laneSnapshot,
 } from "../test/fixture";
-import { isChildLine, mount, selectedRow, sortMarks } from "../test/harness";
+import {
+  isChildLine,
+  mount,
+  overflowing,
+  selectedRow,
+  sortMarks,
+} from "../test/harness";
 import { attention } from "./attention";
 import { osc52 } from "./clipboard";
 import type { HomeItem } from "./home";
@@ -1178,24 +1184,27 @@ test("no list of lane names draws two rows a reader cannot tell apart", async ()
   const s = sameName();
   // Every view that draws lane names, by the keys that reach it: Home's
   // Busiest agents, the Agents list, the Agents table and the Builds lanes.
-  // Each width is a different Agents list: the narrow list (99), a list that
-  // sheds its program column without the side pane (106) and with it (163),
-  // and the same two keeping it (120, 180).
+  // Each width is a different Agents list: the narrowest terminal the screens
+  // support (80), the narrow list (99), a list that sheds its program column
+  // without the side pane (106) and with it (163), and the same two keeping it
+  // (120, 180).
   const views = [["1"], ["2"], ["2", c.keys.details], ["4"]];
   for (const view of views) {
-    for (const width of [99, 106, 120, 163, 180]) {
+    for (const width of [80, 99, 106, 120, 163, 180]) {
       const t = await mount(s, c, { width, height: 40 });
       try {
         for (const key of view) await t.press(key);
         const ids = drawnIds(t.frame());
         // The id is the only thing that can tell these rows apart, so every
-        // row carries one and no two rows carry the same.
+        // row carries one and no two rows carry the same, and no row is wider
+        // than the box the screen gives it.
         expect({
           view,
           width,
           drawn: ids.length,
           distinct: new Set(ids).size,
-        }).toEqual({ view, width, drawn: 6, distinct: 6 });
+          cut: overflowing(t.ui, "method"),
+        }).toEqual({ view, width, drawn: 6, distinct: 6, cut: [] });
       } finally {
         await t.close();
       }

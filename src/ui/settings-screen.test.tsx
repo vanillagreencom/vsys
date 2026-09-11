@@ -827,8 +827,9 @@ test("the sources list opens with its last entry readable", async () => {
     // The phrase both spellings of this row share: the design pass rewrites
     // its label, and which row is selected is the claim, not its wording.
     expect(selectedRow(frame)).toContain("vsys cannot read");
-    // And what the row says those sources cost, beside their count.
-    expect(selectedRow(frame)).toContain("what they feed is blank, not zero");
+    // The count and when they failed, and no consequence: a failed
+    // notification or a scratch scan that keeps its last data blanks nothing.
+    expect(selectedRow(frame)).toContain("4 failed on the last sample");
     // The row moved up far enough for the whole list, last entry included.
     // Brought into view as a row instead, the row sits at the bottom edge and
     // every entry it opened is below it.

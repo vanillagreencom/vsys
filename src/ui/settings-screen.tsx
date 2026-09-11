@@ -535,7 +535,7 @@ export function Settings({
                       }
                       count={
                         sources.length
-                          ? `${sources.length} · what they feed is blank, not zero`
+                          ? `${sources.length} failed on the last sample`
                           : undefined
                       }
                     />
