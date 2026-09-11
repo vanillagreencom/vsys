@@ -286,6 +286,9 @@ export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
     lanes.filter((lane) =>
       [
         lane.name,
+        // The process id is a column on every row, and the one thing that
+        // tells two lanes with one name apart.
+        lane.mainPid ? String(lane.mainPid) : "",
         lane.account ?? "",
         lane.pane,
         // The address and the window are columns a reader can see, so a query
@@ -722,7 +725,7 @@ export function Agents({
             <input
               focused
               value={query}
-              placeholder="name, account, pane, branch or worktree"
+              placeholder="name, process id, account, pane, branch or worktree"
               onInput={setQuery}
               onSubmit={() => setSearching(false)}
             />

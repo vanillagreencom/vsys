@@ -65,6 +65,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
   const v = cause.values;
   const n = cause.lanes.length;
   const names = list(cause.lanes.map(laneText));
+  // Every lane, in full, for a detail that opens under a title a narrow row
+  // cuts: the title's own list stops at four.
+  const every = `${p(n, "Lane", "Lanes")}: ${cause.lanes.map(laneText).join(", ")}.`;
   const mounts = list(cause.paths);
   const lane: Target | undefined =
     n === 1 ? { kind: "lane", id: cause.lanes[0].id } : undefined;
@@ -90,9 +93,11 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane runs", "lanes run")} outside ${c.agentSlice}: ${names}`,
-        detail: trails.length
-          ? trails.map((t) => t.summary).join(" ")
-          : `${c.agentSlice} limits do not apply to these processes.`,
+        detail: `${
+          trails.length
+            ? trails.map((t) => t.summary).join(" ")
+            : `${c.agentSlice} limits do not apply to these processes.`
+        } ${every}`,
         next: `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`,
         command: shellLine([
           "systemd-run",
@@ -178,7 +183,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane has", "lanes have")} a memory limit below ${b(v.floor)}: ${names}`,
-        detail: "The limit can stop work before it finishes.",
+        detail: `The limit can stop work before it finishes. ${every}`,
         next: "Open the lane and check its effective memory.max against the parent slices.",
         command: shellLine([
           "systemctl",
@@ -195,7 +200,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `${n} ${p(n, "lane is", "lanes are")} stalling on a resource: ${names}`,
-        detail: `Highest stall share ${percent(v.worst)} of the recent window.`,
+        detail: `Highest stall share ${percent(v.worst)} of the recent window. ${every}`,
         next: "Open Agents and compare the CPU, memory and I/O pressure columns to find which resource is short.",
         view: "Agents",
         target: lane,

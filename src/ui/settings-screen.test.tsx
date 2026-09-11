@@ -700,6 +700,14 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     expect(lines[row + 1]).toContain("no PSI on this kernel");
     expect(lines[row + 1]).toContain("/proc/pressure/cpu");
     expect(lines[row + 2].trimEnd().endsWith("directory)")).toBe(true);
+    // The cost is cut on the row with its mark, and whole in the detail.
+    expect(lines[row].trimEnd().endsWith("…")).toBe(true);
+    const cost = lines
+      .slice(row + 3, row + 5)
+      .map((line) => line.slice(5).trim());
+    expect(cost.join(" ")).toBe(
+      "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
+    );
   } finally {
     await t.close();
   }

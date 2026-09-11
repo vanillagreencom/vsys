@@ -206,7 +206,7 @@ export function Help({ config: c }: { config: Config }) {
         [k.open, "open the selection"],
         [k.back, "go back"],
         [`${k.next} ${k.previous}`, "next and previous region"],
-        [k.hold, "hold a list's row order"],
+        [k.hold, "hold Busiest agents' order on Home"],
         [views.map((v) => k[viewKey(v)]).join(" "), "go to a screen"],
       ],
     ],

@@ -112,6 +112,12 @@ test("Home keeps the selected concern in view and opens its agent", async () => 
     for (let i = 0; i < cards.length - 1; i++) await t.press("down");
     expect(t.frame()).toContain("/scratch");
     expect(t.frame().split("\n")[0]).toContain("vsys");
+    // A title longer than its row is cut with the mark, not at the edge.
+    const cpu = t
+      .frame()
+      .split("\n")
+      .find((row) => row.includes("wait for CPU"));
+    expect(cpu?.trimEnd().endsWith("…")).toBe(true);
     for (let i = 0; i < cards.length - 1; i++) await t.press("up");
     await t.press("enter");
     expect(t.frame()).toContain("escaped");
@@ -817,8 +823,10 @@ test("the held order keeps its rows while their numbers keep moving", async () =
     expect(agentRows(t.frame())[0]).toContain("lane-a");
     expect(agentRows(t.frame())[0]).toContain("90.0%");
     await t.press(c.keys.hold);
-    // The section says it is holding, in the place its count sits.
+    // The section says it is holding, in the place its count sits, and no
+    // heading marks a sort the held rows do not follow.
     expect(t.frame()).toContain("Busiest agents  order held");
+    expect(sortMarks(t.frame())).toEqual([]);
     // The readings swap, so the sort would put lane-b on top.
     await t.update(twoAgents(false));
     const held = agentRows(t.frame());
@@ -857,7 +865,8 @@ test("a held order is released by anything that asks for an order", async () => 
         keys,
         held: frame.includes("order held"),
         onTop: (agentRows(frame)[0] ?? "").includes(top),
-      }).toEqual({ keys, held: false, onTop: true });
+        marks: sortMarks(frame).length,
+      }).toEqual({ keys, held: false, onTop: true, marks: 1 });
     } finally {
       await t.close();
     }
@@ -1135,6 +1144,16 @@ test("a change row cuts with a mark, at any width, and its columns line up", asy
         width,
         columns: 1,
       });
+      // Timeline draws the same changes at its own width, cut the same way.
+      await t.press("6");
+      const listed = t
+        .frame()
+        .split("\n")
+        .filter((line) => /Lane started/.test(line));
+      expect({
+        width,
+        cut: listed.map((row) => row.trimEnd().endsWith("…")),
+      }).toEqual({ width, cut: [true, true] });
     } finally {
       await t.close();
     }

@@ -49,7 +49,7 @@ These are the default keys. The footer shows the keys for the current screen, an
 | List or full table | `d` |
 | Choose table columns | `c` |
 | Sort column and direction | `s` / `r` |
-| Hold the order while the numbers move | `o` |
+| Hold Busiest agents' order on Home while the numbers move | `o` |
 | Move the time cursor | `←` `→` or `h` `l` |
 | Change the time window | `w` |
 | Show the machine at the cursor | `p` |

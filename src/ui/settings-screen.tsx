@@ -469,8 +469,12 @@ export function Settings({
         />
         {s.capabilities.map((cap) => {
           const i = index++;
+          // The row less its marker, its dot, its disclosure and its label.
+          const costWidth = width - 1 - 2 - 2 - 40;
           // One answer for the marker and the detail under it. A missing
-          // source opens on selection; one that answered opens on Enter.
+          // source opens on selection; one that answered opens on Enter. The
+          // cost is cut to the row with its mark and drawn whole in the
+          // detail.
           const opened =
             i === selected && (!cap.available || openCap === cap.id);
           return (
@@ -490,7 +494,9 @@ export function Settings({
                     name={fit(capabilityLabels[cap.id], 40)}
                   />
                   <span attributes={ui.dim}>
-                    {cap.available ? "available" : safe(capabilityLoss(cap))}
+                    {cap.available
+                      ? "available"
+                      : fit(safe(capabilityLoss(cap)), costWidth)}
                   </span>
                 </Row>
               </box>
@@ -503,6 +509,11 @@ export function Settings({
                         : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
                     )}
                   </Line>
+                  {!cap.available && (
+                    <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                      {safe(capabilityLoss(cap))}
+                    </Line>
+                  )}
                 </Detail>
               )}
             </box>

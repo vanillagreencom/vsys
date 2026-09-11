@@ -289,6 +289,9 @@ export function Timeline({
   // sparkline rows, which the cursor tiles still summarise.
   const short = height < fixed + rows.length + 3;
   const listHeight = Math.max(3, height - (fixed + (short ? 0 : rows.length)));
+  // A change row less its marker, its time and its kind, so a long subject is
+  // cut with its mark rather than at the edge.
+  const subjectWidth = width - 4 - 1 - 13 - 13;
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
       <box flexDirection="row" height={1} flexShrink={0}>
@@ -408,7 +411,7 @@ export function Timeline({
                 >
                   {fit(e.kind, 13)}
                 </span>
-                {safe(e.text)}
+                {fit(safe(e.text), subjectWidth)}
               </Row>
               {isSelected && unit && unit !== event.subject && (
                 // The subject reads as a name; the unit it decoded from is the

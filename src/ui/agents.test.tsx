@@ -31,7 +31,7 @@ import { windows } from "./timeline-screen";
 test("search matches every naming field, case-insensitively, in the sort order", () => {
   const c = defaults();
   const lanes = [
-    laneSnapshot({ id: "a", name: "alpha", cpu: 1 }),
+    laneSnapshot({ id: "a", name: "alpha", cpu: 1, mainPid: 4071 }),
     laneSnapshot({ id: "b", name: "beta", account: "Work", cpu: 2 }),
     laneSnapshot({ id: "c", name: "gamma", pane: "%7", cpu: 3 }),
     laneSnapshot({ id: "d", name: "delta", title: "Kendex", cpu: 4 }),
@@ -41,6 +41,7 @@ test("search matches every naming field, case-insensitively, in the sort order",
   ];
   const rows: [string, string[]][] = [
     ["ALPHA", ["a"]],
+    ["4071", ["a"]],
     ["work", ["b"]],
     ["%7", ["c"]],
     ["kendex", ["d"]],

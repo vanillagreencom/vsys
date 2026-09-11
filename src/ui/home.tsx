@@ -19,6 +19,7 @@ import {
   cell,
   columnGap,
   columnsWidth,
+  fit,
   pidCell,
   pidColumn,
 } from "./columns";
@@ -330,8 +331,9 @@ export function Home({
       onOpen(rows[selected]);
       return true;
     }
-    // A key that asks for a different order releases the held one, so the
-    // heading never marks an order the rows do not follow.
+    // A key that asks for a different order releases the held one. While an
+    // order is held the heading marks none, so it never names an order the
+    // rows do not follow.
     if (name === c.keys.sort) {
       const at = drawnSorts.findIndex(([, key]) => key === sort.key);
       setHeld(null);
@@ -500,8 +502,13 @@ export function Home({
                     onOpen={() => onOpen(row)}
                   >
                     {/* The same question the detail below is drawn under, so
-                        the marker says open only while the detail is drawn. */}
-                    <Disclosure open={marked(i)} name={row.item.title} />
+                        the marker says open only while the detail is drawn.
+                        The title is cut to the row with its mark, and the
+                        detail repeats what a cut can lose. */}
+                    <Disclosure
+                      open={marked(i)}
+                      name={fit(safe(row.item.title), panel - 3)}
+                    />
                   </Row>
                   {marked(i) && (
                     <Detail indent={2}>
@@ -590,11 +597,17 @@ export function Home({
             {agents.length > 0 && (
               <TableHeader
                 columns={agentColumns}
-                sort={{
-                  label:
-                    busiestSorts.find(([, key]) => key === sort.key)?.[0] ?? "",
-                  descending: sort.descending,
-                }}
+                sort={
+                  held
+                    ? undefined
+                    : {
+                        label:
+                          busiestSorts.find(
+                            ([, key]) => key === sort.key,
+                          )?.[0] ?? "",
+                        descending: sort.descending,
+                      }
+                }
               />
             )}
             {rows.map((row, i) =>

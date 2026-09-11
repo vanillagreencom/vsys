@@ -57,6 +57,10 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   expect(swapCard?.detail).toBe(
     "gnome holds 992 B. Agents hold 80.0 GiB of page cache, which the desktop cannot use.",
   );
+  // A card whose title names lanes names them again in its detail.
+  const detail = (id: string) => items.find((item) => item.id === id)?.detail;
+  expect(detail("memory-cap")).toEndWith(" Lane: capped PID 40.");
+  expect(detail("unconfined")).toEndWith(" Lane: escaped PID 40.");
   s.lanes = s.lanes.filter((l) => !l.unconfined);
   s.storage.volumes = [];
   expect(verdictLine(attention(s, c, base), s)).toBe(
@@ -96,8 +100,10 @@ test("nine stalling lanes produce one card that names them", () => {
   expect(stalls[0].title).toBe(
     "9 lanes are stalling on a resource: kendex PID 100, kendex PID 101, kendex PID 102, kendex PID 103 and 5 more",
   );
+  // The title lists four; the detail under it names every lane.
+  const every = Array.from({ length: 9 }, (_, i) => `kendex PID ${100 + i}`);
   expect(stalls[0].detail).toBe(
-    "Highest stall share 40.0% of the recent window.",
+    `Highest stall share 40.0% of the recent window. Lanes: ${every.join(", ")}.`,
   );
   expect(stalls[0].target?.kind).not.toBe("lane");
   const cause = causes(s, c).find((x) => x.id === "stalls");
