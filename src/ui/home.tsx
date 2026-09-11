@@ -46,6 +46,7 @@ import {
   Detail,
   Disclosure,
   Empty,
+  Ink,
   Line,
   Reading,
   Row,
@@ -571,12 +572,12 @@ export function Home({
                           <span attributes={ui.dim}>
                             {`${cell(timeColumn, e.time)}${columnGap}`}
                           </span>
-                          <span
-                            fg={levelColor(e.level)}
+                          <Ink
+                            color={levelColor(e.level)}
                             attributes={e.level === "ok" ? ui.none : ui.bold}
                           >
                             {cell(kindColumn, e.kind)}
-                          </span>
+                          </Ink>
                           {safe(cell(subjectColumn, e.text))}
                         </>
                       );
