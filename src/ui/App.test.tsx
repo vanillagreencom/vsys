@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
-import { defaults, validate } from "../config/config";
+import { type Config, defaults, validate } from "../config/config";
 import { History } from "../store/history";
 import {
   emptySnapshot,
@@ -125,13 +125,22 @@ test("startup stays interruptible before the first sample arrives", async () => 
 });
 
 test("the help overlay opens on its key and any key closes it", async () => {
-  // A rebound screen key, so Help names the keys the header draws.
-  const c = { ...defaults(), keys: { ...defaults().keys, home: "0" } };
+  // A rebound screen key and a rebound region key, so Help names the keys the
+  // header and the headings draw.
+  const c = {
+    ...defaults(),
+    keys: { ...defaults().keys, home: "0", scrub: "i" },
+  };
   const t = await mount(emptySnapshot(), c);
   try {
     await t.press("?");
     expect(t.frame()).toContain("next and previous region");
     expect(t.frame()).toMatch(/0 2 3 4 5 6 7\s+go to a screen/);
+    expect(t.frame()).toMatch(/t a g b\s+jump to a Home region/);
+    expect(t.frame()).toMatch(/f i x\s+jump to a Storage region/);
+    expect(t.frame()).toMatch(
+      /h l ← →\s+previous and next region, or the time cursor/,
+    );
     await t.press("2");
     expect(t.frame()).not.toContain("next and previous region");
     expect(t.frame()).toContain("Needs attention");
@@ -214,12 +223,16 @@ test("the help panel covers what it sits on, at any terminal size", async () => 
   expect(widths[0]).toBe(widths[1]);
 });
 
-/** A sample that gives every screen rows to act on. */
-function everyScreenSnapshot() {
-  const s = emptySnapshot();
+/**
+ * A sample that gives every screen rows to act on, and a row to every Home and
+ * Storage region, so each region's own key has somewhere to land.
+ */
+function everyScreen(c: Config) {
+  const s = emptySnapshot(2000);
   s.lanes = [
     laneSnapshot({ id: "a", name: "lane-a", cpu: 9, builds: { "ld.mold": 1 } }),
-    laneSnapshot({ id: "b", name: "lane-b", cpu: 1 }),
+    // An agent outside the agent slice is a concern, which Home lists first.
+    laneSnapshot({ id: "b", name: "lane-b", cpu: 1, unconfined: true }),
   ];
   s.groups = [
     groupSnapshot({ path: "busy.scope", name: "busy.scope", cpuPercent: 50 }),
@@ -230,31 +243,41 @@ function everyScreenSnapshot() {
   // have somewhere to move to.
   s.storage.scrubs = [{ path: "/data", text: "ok", problem: false }];
   s.storage.scratch = [{ path: "/tmp/x", bytes: 1, age: 0, error: null }];
-  return s;
+  // A sample before this one without the lanes, so their start is a change.
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  h.add(s);
+  return { s, h };
 }
 
 test("every screen's footer names only keys that screen handles", async () => {
   const c = defaults();
-  // Arrow pairs are movement, which the list tests already cover; every other
-  // hint is a promise that pressing that key does something on that screen.
-  const pressable = (key: string) => key !== "↑↓" && key !== "←→";
+  // A hint made of arrows is movement, which the list tests already cover;
+  // every other hint is a promise that pressing that key does something on
+  // that screen.
+  const pressable = (key: string) => !/^[↑↓←→]+$/.test(key);
   for (const view of views)
-    for (const [key] of hints[view](c).filter(([key]) => pressable(key))) {
-      const t = await mount(everyScreenSnapshot(), c, {
-        width: 160,
-        height: 40,
-      });
-      try {
-        await t.press(String(views.indexOf(view) + 1));
-        const before = t.frame();
-        await t.press(key === "return" ? "enter" : key);
-        expect({ view, key, acted: t.frame() !== before }).toEqual({
-          view,
-          key,
-          acted: true,
-        });
-      } finally {
-        await t.close();
+    for (const [hint] of hints[view](c).filter(([key]) => pressable(key))) {
+      // A hint naming several keys makes a promise per key. Those are region
+      // keys, and a region key moves nothing while its own region holds the
+      // focus, so the key listed before it moves the focus away first.
+      const keys = hint.split(" ");
+      for (const [at, key] of keys.entries()) {
+        const { s, h } = everyScreen(c);
+        const t = await mount(s, c, { width: 160, height: 40 }, { history: h });
+        try {
+          await t.press(String(views.indexOf(view) + 1));
+          if (keys.length > 1) await t.press(keys.at(at - 1) ?? "");
+          const before = t.frame();
+          await t.press(key === "return" ? "enter" : key);
+          expect({ view, key, acted: t.frame() !== before }).toEqual({
+            view,
+            key,
+            acted: true,
+          });
+        } finally {
+          await t.close();
+        }
       }
     }
 });
@@ -262,9 +285,9 @@ test("every screen's footer names only keys that screen handles", async () => {
 test("every key hint reads the binding, in the footer and in the help panel", async () => {
   const c = defaults();
   // Bindings nothing else uses, so finding them proves they were read.
-  c.keys.search = "f";
-  c.keys.details = "b";
-  c.keys.help = "g";
+  c.keys.search = "i";
+  c.keys.details = "n";
+  c.keys.help = "v";
   const s = emptySnapshot();
   s.lanes = [laneSnapshot({ name: "lane-a" })];
   s.groups = [groupSnapshot()];
@@ -272,20 +295,20 @@ test("every key hint reads the binding, in the footer and in the help panel", as
   try {
     await t.press("2");
     const footer = t.frame().split("\n").at(-2) ?? "";
-    expect(footer).toContain("f find");
-    expect(footer).toContain("b table");
+    expect(footer).toContain("i find");
+    expect(footer).toContain("n table");
     // The default bindings are gone from the hints, not merely joined by the
     // new ones.
     expect(footer).not.toContain("/ find");
-    expect(footer).toContain("g keys");
-    await t.press("g");
+    expect(footer).toContain("v keys");
+    await t.press("v");
     // The panel names the same binding beside what it does, on one row.
     const row = t
       .frame()
       .split("\n")
       .find((line) => line.includes("find an agent"));
     expect(row).toBeDefined();
-    expect(row).toContain("f");
+    expect(row).toMatch(/│\s+i\s+find an agent/);
     expect(row).not.toContain("/");
   } finally {
     await t.close();
@@ -364,6 +387,25 @@ test("the region key moves inside a screen and never between screens", async () 
     // the header at all times.
     await t.press("5");
     expect(t.frame()).toContain("Written since boot");
+  } finally {
+    await t.close();
+  }
+});
+
+test("Home's and Storage's footers list the keys that jump to their regions", async () => {
+  // Rebound region keys, so the hint is read from the bindings, and one of
+  // them named, so each key in the hint reads as printed on the keyboard.
+  const c = {
+    ...defaults(),
+    keys: { ...defaults().keys, tiles: "space", scrub: "i" },
+  };
+  const t = await mount(emptySnapshot(), c, { width: 160, height: 30 });
+  try {
+    const footer = () => t.frame().split("\n").at(-2) ?? "";
+    await t.press("1");
+    expect(footer()).toContain("Space a g b jump");
+    await t.press("5");
+    expect(footer()).toContain("f i x jump");
   } finally {
     await t.close();
   }

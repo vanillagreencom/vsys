@@ -1,6 +1,7 @@
 import { type Config, choices } from "../config/config";
 import type { Capability, CapabilityId } from "../model/types";
 import { age, bytes } from "./format";
+import { homeRegions, storageRegions } from "./regions";
 
 /**
  * What one setting is called in the list, what it means in full, and the unit
@@ -355,11 +356,22 @@ export function actionLabel(action: string): string {
   const words = action.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
+/**
+ * A key that jumps to a region is named by its screen and the region's title:
+ * `attention` alone does not say it is a key that moves the focus, or where to.
+ */
+const regionKeyLabels = new Map<string, string>([
+  ...homeRegions.map((r): [string, string] => [r.action, `Home: ${r.title}`]),
+  ...storageRegions.map((r): [string, string] => [
+    r.action,
+    `Storage: ${r.title}`,
+  ]),
+]);
 export function settingLabel(key: string): string {
-  return (
-    settingInfo[key]?.label ??
-    (key.startsWith("keys.") ? actionLabel(key.slice(5)) : key)
-  );
+  if (settingInfo[key]) return settingInfo[key].label;
+  if (!key.startsWith("keys.")) return key;
+  const action = key.slice(5);
+  return regionKeyLabels.get(action) ?? actionLabel(action);
 }
 /** The sentence under the selected row; a key binding needs none. */
 export function settingHelp(key: string): string {

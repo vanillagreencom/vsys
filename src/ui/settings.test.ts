@@ -27,6 +27,14 @@ test("every stored setting shows under a name a reader can act on", () => {
     ["exportJson", "Export json"],
     ["exportMarkdown", "Export markdown"],
     ["previous", "Previous"],
+    // A key that jumps to a region names the screen and the region it reaches.
+    ["tiles", "Home: Tiles"],
+    ["attention", "Home: Needs attention"],
+    ["changes", "Home: Recent changes"],
+    ["busiest", "Home: Busiest agents"],
+    ["filesystems", "Storage: Filesystems"],
+    ["scrub", "Storage: Scrub reports"],
+    ["scratch", "Storage: Scratch"],
   ];
   for (const [action, label] of bindings)
     expect({ action, label: settingLabel(`keys.${action}`) }).toEqual({

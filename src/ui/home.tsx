@@ -34,6 +34,7 @@ import {
 import { heldCount, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
 import {
+  homeRegions,
   regionOf,
   regionRanges,
   stepRegion,
@@ -234,9 +235,7 @@ export function Home({
     rows.flatMap((row) => (row.kind === "agent" ? [row.lane.id] : [])),
   );
   const recent = rows.filter((r) => r.kind === "change");
-  // The tile the reader moved to, null while they have chosen none. The region
-  // key moves between the tiles and the rows; the arrows move along whichever
-  // holds the focus.
+  // The tile the reader moved to, null while they have chosen none.
   const [chosenTile, setTile] = useState<number | null>(null);
   /**
    * The row to draw, resolved against the rows this render has. Following the
@@ -252,10 +251,11 @@ export function Home({
   // Home holds four regions and the tile row is one of them. The three lists
   // are ranges over the one flat selection the render draws; the tiles keep
   // their own index, which is why they are region zero rather than rows inside
-  // it. The arrows move inside the region in focus, along that region's own
-  // axis: left and right along the horizontal tile row, up and down along a
-  // vertical list. Moving between regions has its own key, so no arrow means
-  // one thing in one region and something else in the next.
+  // it. Up and down move along the list in focus and stop at its ends. Left
+  // and right step between regions as the region key does, except on the tile
+  // row, where they step between tiles first: right from the last tile enters
+  // the first list with a row, and left from the first list enters the last
+  // tile, so there each arrow undoes the other.
   const counts = [
     rows.filter((row) => row.kind === "concern").length,
     rows.filter((row) => row.kind === "change").length,
@@ -292,12 +292,24 @@ export function Home({
   // list the reader was before.
   useKeepInView(scroller, tile === null ? `home-${selected}` : tileRowId);
   const region = tile === null ? 1 + regionOf(counts, selected) : 0;
+  /** A region's heading: its title, the key that jumps to it, and its focus. */
+  const heading = (at: number) => ({
+    title: homeRegions[at].title,
+    hotkey: c.keys[homeRegions[at].action],
+    focused: region === at,
+  });
   const toList = (at: number) => {
     if (at < 0 || !ranges[at] || counts[at] === 0) return;
     setTile(null);
     choose(ranges[at][0]);
   };
-  const focus = (way: -1 | 1) => {
+  /**
+   * Moves the focus to the next region with a row, `way`. A list is entered at
+   * its first row. The tile row is entered at `entry`: the first tile for the
+   * region key, which lands on a region's start, and the last for the left
+   * arrow, which arrives at the row's right-hand end.
+   */
+  const focus = (way: -1 | 1, entry = 0) => {
     if (tile !== null) {
       // Region zero: there is nothing to its left, and its right is the first
       // list that has a row in it.
@@ -307,7 +319,7 @@ export function Home({
     const next = stepToRegion(counts, selected, way);
     // No list that way: to the left of the first one are the tiles.
     if (next === selected) {
-      if (way < 0 && gauges.length) setTile(0);
+      if (way < 0 && gauges.length) setTile(entry);
       return;
     }
     choose(next);
@@ -330,11 +342,24 @@ export function Home({
       return true;
     }
     if (name === c.keys.left || name === "left") {
-      if (tile !== null) setTile(Math.max(0, tile - 1));
+      if (tile === null) focus(-1, gauges.length - 1);
+      else setTile(Math.max(0, tile - 1));
       return true;
     }
     if (name === c.keys.right || name === "right") {
-      if (tile !== null) setTile(Math.min(gauges.length - 1, tile + 1));
+      if (tile !== null && tile < gauges.length - 1) setTile(tile + 1);
+      else focus(1);
+      return true;
+    }
+    // A region's own key lands on its first place. A list with no row has no
+    // place to land on, so its key leaves the focus where it is.
+    const jump = homeRegions.findIndex(({ action }) => name === c.keys[action]);
+    if (jump === 0) {
+      if (gauges.length) setTile(0);
+      return true;
+    }
+    if (jump > 0) {
+      toList(jump - 1);
       return true;
     }
     if (name === c.keys.open && tile !== null && gauges[tile]) {
@@ -456,7 +481,11 @@ export function Home({
             return (
               <Tile
                 key={card.label}
-                label={card.label}
+                // The tile row draws no heading, so the key that jumps to it
+                // leads the label of the tile it lands on.
+                label={
+                  at === 0 ? `${heading(0).hotkey} ${card.label}` : card.label
+                }
                 value={card.value}
                 level={card.level}
                 detail={card.detail}
@@ -488,10 +517,9 @@ export function Home({
             minWidth={0}
           >
             <Section
-              title="Needs attention"
+              {...heading(1)}
               count={items.length || undefined}
               width={panel}
-              focused={region === 1}
             />
             {!items.length && (
               <Empty text="No current problems in the data vsys can read." />
@@ -555,9 +583,8 @@ export function Home({
             minWidth={0}
           >
             <Section
-              title="Recent changes"
+              {...heading(2)}
               width={panel}
-              focused={region === 2}
               // Zero alerts is a reading a reader can act on. Dropping the
               // count there leaves no way to tell it from a count vsys never
               // took, which is the same defect as a blank standing for zero.
@@ -594,9 +621,8 @@ export function Home({
               ) : null,
             )}
             <Section
-              title="Busiest agents"
+              {...heading(3)}
               width={panel}
-              focused={region === 3}
               count={heldCount(undefined, hold.held)}
             />
             {!agents.length && (

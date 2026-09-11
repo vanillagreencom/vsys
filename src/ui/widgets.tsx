@@ -164,6 +164,7 @@ export function Section({
   width,
   marginTop = 1,
   focused = false,
+  hotkey,
 }: {
   title: string;
   count?: number | string;
@@ -176,11 +177,19 @@ export function Section({
    * out where they are.
    */
   focused?: boolean;
+  /**
+   * The key that jumps to this section, drawn dim before the title the way the
+   * tab bar draws a screen's key before its name. React keeps `key` for itself
+   * and never passes it to a component, hence the name.
+   */
+  hotkey?: string;
 }) {
-  const label = count === undefined ? title : `${title}  ${count}`;
+  const lead = hotkey === undefined ? "" : `${hotkey} `;
+  const label = `${lead}${count === undefined ? title : `${title}  ${count}`}`;
   const rule = Math.max(0, width - [...label].length - 1);
   return (
     <Line height={1} flexShrink={0} truncate marginTop={marginTop}>
+      {hotkey !== undefined && <span attributes={ui.dim}>{lead}</span>}
       <span attributes={ui.bold} fg={focused ? ui.accent : undefined}>
         {title}
       </span>

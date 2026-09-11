@@ -8,6 +8,36 @@
  * the selection counts. A region is a range over it.
  */
 
+/**
+ * A region a reader can jump to: the key action that reaches it and the title
+ * that names it. The heading, the Settings label and the help panel all read
+ * this one entry, so the name a key is listed under is the name drawn beside it.
+ */
+export interface NamedRegion {
+  action: string;
+  title: string;
+}
+/** Home's regions in the order drawn. The tile row is region zero. */
+export const homeRegions: NamedRegion[] = [
+  { action: "tiles", title: "Tiles" },
+  { action: "attention", title: "Needs attention" },
+  { action: "changes", title: "Recent changes" },
+  { action: "busiest", title: "Busiest agents" },
+];
+/** Storage's selectable lists in the order drawn. */
+export const storageRegions: NamedRegion[] = [
+  { action: "filesystems", title: "Filesystems" },
+  { action: "scrub", title: "Scrub reports" },
+  { action: "scratch", title: "Scratch" },
+];
+/** The keys that jump to `regions`, in the order drawn, one space apart. */
+export function jumpKeys(
+  regions: NamedRegion[],
+  keys: Record<string, string>,
+): string {
+  return regions.map((region) => keys[region.action]).join(" ");
+}
+
 /** The half-open row range of each region, laid out in the order given. */
 export function regionRanges(counts: number[]): [number, number][] {
   let at = 0;
