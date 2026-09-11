@@ -31,6 +31,7 @@ import {
   sortLanes,
   sparkline,
 } from "./format";
+import { heldCount, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
 import {
   regionOf,
@@ -83,10 +84,9 @@ export function homeItems(
   busiest = 5,
   changes: TimelineEvent[] = [],
   /**
-   * The row order a reader asked to keep, as lane ids. Holding the order is
-   * not freezing the data: each held id is looked up in the current sample, so
-   * the numbers keep moving while the rows stay where the reader left them.
-   * A lane that has ended drops out; one that has climbed does not push in.
+   * The Busiest agents order a reader holds, as lane ids, which `heldOrder`
+   * keeps. Busiest agents is a top list, so a lane that was not among the held
+   * rows stays out: one that has climbed does not push a held one down.
    */
   held?: string[],
   /** Which of `busiestSorts` the rows are ordered by, and which way. */
@@ -99,9 +99,13 @@ export function homeItems(
     0,
     busiest,
   );
-  const lanes = held
-    ? held.flatMap((id) => s.lanes.filter((lane) => lane.id === id))
-    : ranked;
+  const lanes = heldOrder(
+    ranked,
+    held,
+    (lane) => lane.id,
+    "leave out",
+    s.lanes,
+  );
   return [
     ...items.map((item) => ({ kind: "concern", item }) as const),
     ...changes
@@ -211,14 +215,23 @@ export function Home({
       : height - 10 - items.length * 2 - recentChanges - 2,
   );
   const gauges = meters(s, c);
-  // Null until the reader asks. Holding keeps the ids in the order they were
-  // in at that moment; it releases when Home unmounts, so nobody is left
-  // reading a stale order they forgot they asked for.
-  const [held, setHeld] = useState<string[] | null>(null);
+  // Busiest agents is the one Home list its readings order.
+  const hold = useHeldOrder();
   // Home's own sort, not the one Agents stores: the two screens draw different
   // headings, and a marker has to sit on a heading the reader can see.
   const [sort, setSort] = useState({ key: "cpu", descending: true });
-  const rows = homeItems(items, s, busiest, changes, held ?? undefined, sort);
+  const rows = homeItems(
+    items,
+    s,
+    busiest,
+    changes,
+    hold.kept("busiest"),
+    sort,
+  );
+  hold.drew(
+    "busiest",
+    rows.flatMap((row) => (row.kind === "agent" ? [row.lane.id] : [])),
+  );
   const recent = rows.filter((r) => r.kind === "change");
   // The tile the reader moved to, null while they have chosen none. The region
   // key moves between the tiles and the rows; the arrows move along whichever
@@ -336,7 +349,7 @@ export function Home({
     // rows do not follow.
     if (name === c.keys.sort) {
       const at = drawnSorts.findIndex(([, key]) => key === sort.key);
-      setHeld(null);
+      hold.release();
       setSort({
         key: drawnSorts[(at + 1) % drawnSorts.length][1],
         descending: sort.descending,
@@ -344,18 +357,12 @@ export function Home({
       return true;
     }
     if (name === c.keys.reverse) {
-      setHeld(null);
+      hold.release();
       setSort({ key: sort.key, descending: !sort.descending });
       return true;
     }
     if (name === c.keys.hold) {
-      setHeld((current) =>
-        current
-          ? null
-          : homeItems(items, s, busiest, changes, undefined, sort).flatMap(
-              (row) => (row.kind === "agent" ? [row.lane.id] : []),
-            ),
-      );
+      hold.toggle();
       return true;
     }
     if (name === c.keys.copy) {
@@ -589,7 +596,7 @@ export function Home({
               title="Busiest agents"
               width={panel}
               focused={region === 3}
-              count={held ? "order held" : undefined}
+              count={heldCount(undefined, hold.held)}
             />
             {!agents.length && (
               <Empty text="No agent is running in a watched scope." />
@@ -598,7 +605,7 @@ export function Home({
               <TableHeader
                 columns={agentColumns}
                 sort={
-                  held
+                  hold.held
                     ? undefined
                     : {
                         label:
