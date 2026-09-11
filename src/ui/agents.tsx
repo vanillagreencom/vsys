@@ -32,6 +32,7 @@ import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, textInput, ui } from "./theme";
 import {
   Bar,
+  Ink,
   Line,
   List,
   listWindow,
@@ -689,9 +690,9 @@ export function Agents({
               toggleColumn(name);
             }}
           >
-            <span fg={c.columns.includes(name) ? ui.accent : undefined}>
+            <Ink color={c.columns.includes(name) ? ui.accent : undefined}>
               {c.columns.includes(name) ? "◉ " : "○ "}
-            </span>
+            </Ink>
             {columnLabels[name] ?? name}
           </Row>
         ))}
@@ -900,9 +901,9 @@ export function Agents({
                     )}
                     {columnGap}
                     {badge ? (
-                      <span fg={levelColor(badge.level)}>
+                      <Ink color={levelColor(badge.level)}>
                         {cell(laneColumn("State"), badge.text)}
-                      </span>
+                      </Ink>
                     ) : (
                       <span attributes={ui.dim}>
                         {cell(laneColumn("State"), lane.state)}

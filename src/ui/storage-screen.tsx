@@ -16,6 +16,7 @@ import {
   Disclosure,
   Empty,
   Field,
+  Ink,
   Line,
   Reading,
   Row,
@@ -246,7 +247,7 @@ export function Storage({
           onOpen={() => setSelected(i)}
         >
           <Disclosure open={i === selected} name={fit(v.mount, 40)} />
-          {v.readOnly && <span fg={ui.danger}>read-only</span>}
+          {v.readOnly && <Ink color={ui.danger}>read-only</Ink>}
         </Row>
         {i === selected && (
           <Detail indent={4}>
@@ -294,7 +295,7 @@ export function Storage({
             text={fit(amount(x.bytes, c), 10, "right")}
           />
           <span attributes={ui.dim}>{`  ${modified} ago`}</span>
-          {x.error && <span fg={ui.warn}>{`  ${safe(x.error)}`}</span>}
+          {x.error && <Ink color={ui.warn}>{`  ${safe(x.error)}`}</Ink>}
         </Row>
       </box>
     );

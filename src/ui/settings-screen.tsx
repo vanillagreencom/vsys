@@ -26,6 +26,7 @@ import {
   Detail,
   Disclosure,
   Empty,
+  Ink,
   Line,
   nextDown,
   Row,
@@ -488,9 +489,9 @@ export function Settings({
             >
               <box id={`setting-${i}`} flexShrink={0}>
                 <Row selected={i === selected} onOpen={() => setSelected(i)}>
-                  <span fg={cap.available ? ui.ok : ui.warn}>
+                  <Ink color={cap.available ? ui.ok : ui.warn}>
                     {cap.available ? "● " : "○ "}
-                  </span>
+                  </Ink>
                   <Disclosure
                     open={opened}
                     name={fit(capabilityLabels[cap.id], 40)}

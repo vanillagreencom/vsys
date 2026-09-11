@@ -1,4 +1,9 @@
-import { type BaseRenderable, TextBufferRenderable } from "@opentui/core";
+import {
+  type BaseRenderable,
+  type RGBA,
+  TextAttributes,
+  TextBufferRenderable,
+} from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import type { Config } from "../config/config";
@@ -102,6 +107,31 @@ export async function mount(
     h.close();
   };
   return { ui, h, press, frame, wheel, click, close, written, update };
+}
+
+/**
+ * A colour as the terminal shows it in one slot. A default colour is named by
+ * its slot, since the terminal's default foreground and default background
+ * are different colours whatever value the buffer holds.
+ */
+export function shown(colour: RGBA, slot: "fg" | "bg"): string {
+  return colour.intent === "default"
+    ? `default ${slot}`
+    : `${colour.intent} ${colour.toInts().join(",")}`;
+}
+/**
+ * A captured span's glyph and cell colours as the reader sees them. OpenTUI
+ * trades a reversed cell's two colours in its buffer and also sends reverse
+ * video, so the terminal trades them again: a reversed span's glyph shows in
+ * the colour its capture holds as the background.
+ */
+export function onScreen(span: { fg: RGBA; bg: RGBA; attributes: number }): {
+  glyph: string;
+  cell: string;
+} {
+  return span.attributes & TextAttributes.INVERSE
+    ? { glyph: shown(span.bg, "bg"), cell: shown(span.fg, "fg") }
+    : { glyph: shown(span.fg, "fg"), cell: shown(span.bg, "bg") };
 }
 
 /** The row a screen marks as selected, without its marker. */

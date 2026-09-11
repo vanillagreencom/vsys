@@ -23,16 +23,23 @@ export const ui = {
   /** Selection, the active tab, a copyable command, a key hint. */
   accent: RGBA.fromIndex(6),
   /**
-   * Bright black: the grey of comments and line highlights in most schemes.
-   * It paints only what can recede without loss: behind the selected row, the
-   * rule beside nested rows, a scrollbar thumb, a placeholder. Text a reader
-   * must read never takes it, because some schemes, Solarized among them, make
-   * it the background; such text is the default foreground with `dim`.
+   * Bright black: the grey of comments in most schemes. It paints only what
+   * can recede without loss: text dragged over with the mouse, the rule beside
+   * nested rows, a scrollbar thumb, a placeholder. Text a reader must read
+   * never takes it, because some schemes, Solarized among them, make it the
+   * background; such text is the default foreground with `dim`.
    */
   quiet: RGBA.fromIndex(8),
   dim: TextAttributes.DIM,
   bold: TextAttributes.BOLD,
   none: TextAttributes.NONE,
+  /**
+   * The selected row: reverse video, bold. The terminal swaps the scheme's own
+   * text and background colours, the one pair every scheme makes readable
+   * against each other, where any numbered colour behind the row is dark in
+   * some schemes and light in others.
+   */
+  selected: TextAttributes.INVERSE | TextAttributes.BOLD,
 } as const;
 /**
  * One hue per metric family. The same quantity is drawn in the same colour on
