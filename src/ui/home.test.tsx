@@ -327,6 +327,19 @@ test("the region key moves across all four Home regions, and the focused one say
   } finally {
     await t.close();
   }
+  // With no row in any list the tiles hold the focus: no list title is lit,
+  // and the arrows and Enter act on the tiles.
+  const idle = await mount(emptySnapshot(), c, { width: 180, height: 44 });
+  try {
+    await idle.press("1");
+    expect(focusMarks(idle)).toEqual({ lit: [], rules: 0 });
+    await idle.press("right");
+    await idle.press("right");
+    await idle.press("enter");
+    expect(idle.frame()).toContain("Written since boot");
+  } finally {
+    await idle.close();
+  }
 });
 
 /** A Home with a row in every region: concerns, a recent change, agents. */

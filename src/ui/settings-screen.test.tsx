@@ -123,7 +123,8 @@ test("Settings lists a capability it could not read, with the reason", async () 
     expect(settings).not.toMatch(
       /○ ▸ Pressure stall information\s+no PSI on this kernel/,
     );
-    expect(settings).toMatch(/● Resource groups \(cgroup v2\)\s+available/);
+    // A source that answered still opens, so it carries the marker too.
+    expect(settings).toMatch(/● ▸ Resource groups \(cgroup v2\)\s+available/);
   } finally {
     await t.close();
   }
@@ -755,11 +756,13 @@ test("Enter on a readable source brings its own source line with it", async () =
     );
     expect(at).toBeGreaterThan(0);
     for (let i = 0; i < at; i++) await t.press("down");
-    // Nothing is open yet, so the source is not on the screen to begin with.
+    // Nothing is open yet, so the source is not on the screen to begin with,
+    // and the marker says closed until Enter opens it.
     expect(t.frame()).not.toContain(last.source);
+    expect(selectedRow(t.frame())).toContain("▸ Drive lifetime reports");
     await t.press("enter");
     const frame = t.frame();
-    expect(selectedRow(frame)).toContain("Drive lifetime reports");
+    expect(selectedRow(frame)).toContain("▾ Drive lifetime reports");
     // Enter is what opened this, so Enter has to be what moves the view: with
     // `openCap` outside the effect's dependencies the block grew a line and
     // nothing re-ran, leaving that line below the fold.

@@ -469,6 +469,10 @@ export function Settings({
         />
         {s.capabilities.map((cap) => {
           const i = index++;
+          // One answer for the marker and the detail under it. A missing
+          // source opens on selection; one that answered opens on Enter.
+          const opened =
+            i === selected && (!cap.available || openCap === cap.id);
           return (
             <box
               id={`block-${i}`}
@@ -481,20 +485,16 @@ export function Settings({
                   <span fg={cap.available ? ui.ok : ui.warn}>
                     {cap.available ? "● " : "○ "}
                   </span>
-                  {cap.available ? (
-                    fit(capabilityLabels[cap.id], 42)
-                  ) : (
-                    <Disclosure
-                      open={i === selected}
-                      name={fit(capabilityLabels[cap.id], 40)}
-                    />
-                  )}
+                  <Disclosure
+                    open={opened}
+                    name={fit(capabilityLabels[cap.id], 40)}
+                  />
                   <span attributes={ui.dim}>
                     {cap.available ? "available" : safe(capabilityLoss(cap))}
                   </span>
                 </Row>
               </box>
-              {i === selected && (!cap.available || openCap === cap.id) && (
+              {opened && (
                 <Detail>
                   <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                     {safe(

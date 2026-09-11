@@ -131,8 +131,13 @@ export function Storage({
   onTargetUsed: () => void;
   onNotice: (text: string, level: Level) => void;
 }) {
-  const [selected, setSelected] = useState(0);
+  const [chosen, setSelected] = useState(0);
   const items = storageItems(s);
+  // The selection held inside the rows there are: a list that shrinks under
+  // it leaves the reader on its last row, and with no rows at all nothing is
+  // selected and no region is focused.
+  const within = (index: number) => Math.min(index, items.length - 1);
+  const selected = within(chosen);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`storage-${selected}`);
@@ -158,23 +163,20 @@ export function Storage({
     items.filter((item) => item.kind === "scratch").length,
   ];
   const region = regionOf(counts, selected);
+  // With no rows there is nothing to move to, and the choice is kept for the
+  // rows that arrive.
+  const move = (to: (index: number) => number) => {
+    if (items.length) setSelected((i) => to(within(i)));
+    return true;
+  };
   useScreenKeys((name) => {
-    if (name === c.keys.down || name === "down") {
-      setSelected((i) => stepWithin(counts, i, 1));
-      return true;
-    }
-    if (name === c.keys.up || name === "up") {
-      setSelected((i) => stepWithin(counts, i, -1));
-      return true;
-    }
-    if (name === c.keys.previous) {
-      setSelected((i) => stepToRegion(counts, i, -1));
-      return true;
-    }
-    if (name === c.keys.next) {
-      setSelected((i) => stepToRegion(counts, i, 1));
-      return true;
-    }
+    if (name === c.keys.down || name === "down")
+      return move((i) => stepWithin(counts, i, 1));
+    if (name === c.keys.up || name === "up")
+      return move((i) => stepWithin(counts, i, -1));
+    if (name === c.keys.previous)
+      return move((i) => stepToRegion(counts, i, -1));
+    if (name === c.keys.next) return move((i) => stepToRegion(counts, i, 1));
     return false;
   });
   const totals = writeTotals(s, c);

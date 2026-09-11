@@ -21,18 +21,19 @@ test("regions are ranges over the one flat list the screen draws", () => {
   }
 });
 
-test("a row belongs to one region, and a row past the end still lands", () => {
-  // The region sizes, a row, and the region it belongs to. A selection left
-  // behind by a list that shrank lands in the last region that has rows.
+test("a row belongs to one region, and a row outside them to none", () => {
+  // The region sizes, a row, and the region it belongs to, or -1 for a row no
+  // region holds: past the end, before the start, or with every region empty.
   const rows: [number[], number, number][] = [
     [[2, 3, 1], 0, 0],
     [[2, 3, 1], 1, 0],
     [[2, 3, 1], 2, 1],
     [[2, 3, 1], 4, 1],
     [[2, 3, 1], 5, 2],
-    [[2, 3, 1], 99, 2],
-    [[2, 3, 0], 99, 1],
-    [[0, 0, 0], 0, 0],
+    [[2, 3, 1], 99, -1],
+    [[2, 3, 0], 99, -1],
+    [[2, 3, 1], -1, -1],
+    [[0, 0, 0], 0, -1],
   ];
   for (const row of rows) {
     const [counts, index] = row;
@@ -44,14 +45,18 @@ test("moving between regions skips the empty ones and stops at the ends", () => 
   // The region sizes, the row focus leaves, the way it moves, the region it
   // lands in, and the row it selects there. An empty region is crossed in one
   // press, because a reader cannot stand on a row that is not there; at either
-  // end the reader stays on the row they are on.
+  // end the reader stays on the row they are on; from a row no region holds,
+  // forward reaches the first row there is.
   const rows: [number[], number, -1 | 1, number, number][] = [
     [[2, 0, 1], 1, 1, 2, 2],
     [[2, 0, 1], 2, -1, 0, 0],
     [[2, 3, 2], 6, 1, 2, 6],
     [[2, 3, 1], 1, -1, 0, 1],
     [[2, 0, 0], 1, 1, 0, 1],
-    [[], 0, 1, 0, 0],
+    [[2, 3, 1], 99, 1, 0, 0],
+    [[2, 3, 1], 99, -1, -1, 99],
+    [[0, 0, 0], 0, 1, -1, 0],
+    [[], 0, 1, -1, 0],
   ];
   for (const row of rows) {
     const [counts, index, way] = row;
@@ -72,6 +77,7 @@ test("moving within a region never leaves it", () => {
     [[2, 3, 1], 4, -1, 3],
     [[2, 3, 1], 5, 1, 5],
     [[2, 3, 1], 5, -1, 5],
+    [[2, 3, 1], 99, 1, 99],
     [[0, 0], 0, 1, 0],
   ];
   for (const row of rows) {

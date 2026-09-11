@@ -250,6 +250,14 @@ test("Storage moves between its three lists with the region key", async () => {
         on: true,
       });
     }
+    // The scratch list empties under its selected row: the selection moves to
+    // the last row there is, and the region key moves on from there.
+    await t.press(c.keys.next);
+    await t.press(c.keys.next);
+    await t.update({ ...s, storage: { ...s.storage, scratch: [] } });
+    expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
+    await t.press(c.keys.previous);
+    expect(selectedRow(t.frame())).toContain("/data");
   } finally {
     await t.close();
   }

@@ -126,12 +126,12 @@ test("startup stays interruptible before the first sample arrives", async () => 
 
 test("the help overlay opens on its key and any key closes it", async () => {
   // A rebound screen key, so Help names the keys the header draws.
-  const c = { ...defaults(), keys: { ...defaults().keys, home: "h" } };
+  const c = { ...defaults(), keys: { ...defaults().keys, home: "0" } };
   const t = await mount(emptySnapshot(), c);
   try {
     await t.press("?");
     expect(t.frame()).toContain("next and previous region");
-    expect(t.frame()).toMatch(/h 2 3 4 5 6 7\s+go to a screen/);
+    expect(t.frame()).toMatch(/0 2 3 4 5 6 7\s+go to a screen/);
     await t.press("2");
     expect(t.frame()).not.toContain("next and previous region");
     expect(t.frame()).toContain("Needs attention");

@@ -219,23 +219,10 @@ export function Home({
   const [sort, setSort] = useState({ key: "cpu", descending: true });
   const rows = homeItems(items, s, busiest, changes, held ?? undefined, sort);
   const recent = rows.filter((r) => r.kind === "change");
-  // Null while the rows hold the selection, an index while the tiles do. The
-  // region key moves between the two; the arrows move along whichever holds it.
-  const [tile, setTile] = useState<number | null>(null);
-  /**
-   * Whether the rows hold the focus rather than the tiles. The highlight, the
-   * selected concern's detail and the row-only actions all read this one
-   * value, so the screen cannot mark one item while a key acts on another.
-   * A focus model for every region of every screen is #38's work; this is the
-   * one screen that already has two places a selection can sit.
-   */
-  const rowsFocused = tile === null;
-  /**
-   * Whether the row at `i` carries the selection marker. All three row types
-   * ask here rather than repeating the rule: a rule written at each site is a
-   * rule with a hole waiting for the next row type, and phase 2 added the
-   * third and missed it at once.
-   */
+  // The tile the reader moved to, null while they have chosen none. The region
+  // key moves between the tiles and the rows; the arrows move along whichever
+  // holds the focus.
+  const [chosenTile, setTile] = useState<number | null>(null);
   /**
    * The row to draw, resolved against the rows this render has. Following the
    * chosen item keeps the reader on it when a change arrives above it, and
@@ -247,21 +234,6 @@ export function Home({
     found >= 0
       ? found
       : Math.min(selection.index, Math.max(0, rows.length - 1));
-  /** Move the selection, recording the row and the item it names together. */
-  const choose = (index: number) =>
-    onSelect({ index, id: rows[index] ? homeKey(rows[index]) : null });
-  // The first row is a choice too. Home cannot seed it at construction, since
-  // its parent holds the selection and only this screen knows the rows, so it
-  // is recorded on the first render that has any.
-  useEffect(() => {
-    if (selection.id === null && rows.length) choose(selection.index);
-  });
-  const marked = (i: number) => rowsFocused && i === selected;
-  const scroller = useRef<ScrollBoxRenderable | null>(null);
-  // The tile row is a place the reader stands as much as any list row is, so
-  // it is what has to be in view while it holds the focus, however far down a
-  // list the reader was before.
-  useKeepInView(scroller, tile === null ? `home-${selected}` : tileRowId);
   // Home holds four regions and the tile row is one of them. The three lists
   // are ranges over the one flat selection the render draws; the tiles keep
   // their own index, which is why they are region zero rather than rows inside
@@ -275,6 +247,35 @@ export function Home({
     rows.filter((row) => row.kind === "agent").length,
   ];
   const ranges = regionRanges(counts);
+  // With no row in any list there is nothing else to stand on, so the tiles
+  // hold the focus until a row arrives or the reader picks a tile.
+  const tile =
+    chosenTile ?? (regionOf(counts, selected) < 0 && gauges.length ? 0 : null);
+  /**
+   * Whether the rows hold the focus rather than the tiles. The highlight, the
+   * selected concern's detail and the row-only actions all read this one
+   * value, so the screen cannot mark one item while a key acts on another.
+   */
+  const rowsFocused = tile === null;
+  /** Move the selection, recording the row and the item it names together. */
+  const choose = (index: number) =>
+    onSelect({ index, id: rows[index] ? homeKey(rows[index]) : null });
+  // The first row is a choice too. Home cannot seed it at construction, since
+  // its parent holds the selection and only this screen knows the rows, so it
+  // is recorded on the first render that has any.
+  useEffect(() => {
+    if (selection.id === null && rows.length) choose(selection.index);
+  });
+  /**
+   * Whether the row at `i` carries the selection marker. All three row types
+   * ask here rather than repeating the rule at each render site.
+   */
+  const marked = (i: number) => rowsFocused && i === selected;
+  const scroller = useRef<ScrollBoxRenderable | null>(null);
+  // The tile row is a place the reader stands as much as any list row is, so
+  // it is what has to be in view while it holds the focus, however far down a
+  // list the reader was before.
+  useKeepInView(scroller, tile === null ? `home-${selected}` : tileRowId);
   const region = tile === null ? 1 + regionOf(counts, selected) : 0;
   const toList = (at: number) => {
     if (at < 0 || !ranges[at] || counts[at] === 0) return;

@@ -35,6 +35,11 @@ test("invalid settings stop loading", () => {
     { unknown: 1 },
   ])
     expect(() => validate(value)).toThrow();
+  // A saved binding on the key a new default takes names the key and both
+  // actions, so the fix is one edit.
+  expect(() => validate({ keys: { details: "o" } })).toThrow(
+    "Keybindings must be unique: o is bound to details and hold",
+  );
 });
 test("saving linked settings preserves the link and updates its target", async () => {
   const f = fixture();
