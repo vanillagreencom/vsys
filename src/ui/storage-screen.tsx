@@ -305,7 +305,7 @@ export function Storage({
       flexGrow={1}
       minHeight={0}
       scrollY
-      verticalScrollbarOptions={scrollbar}
+      scrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
       <box flexDirection="column" flexShrink={0} paddingX={2}>

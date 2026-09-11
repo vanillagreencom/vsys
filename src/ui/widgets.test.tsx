@@ -230,7 +230,10 @@ test("a chart's gaps are painted quietly and its samples in the metric's colour"
     const sampled = spans.find((span) => span.text.includes("█"));
     expect(gap?.text).toBe("··");
     // A column with no sample recedes; one with a sample carries the metric.
-    expect(gap?.fg.equals(ui.quiet)).toBe(true);
+    // The gap is the dimmed default foreground, never bright black, which
+    // vanishes behind a selected row and in schemes that make it the
+    // background.
+    expect(gap?.fg.equals(ui.fg)).toBe(true);
     expect((gap?.attributes ?? 0) & TextAttributes.DIM).not.toBe(0);
     expect(sampled?.fg.equals(metric.cpu)).toBe(true);
     expect((sampled?.attributes ?? 0) & TextAttributes.DIM).toBe(0);
