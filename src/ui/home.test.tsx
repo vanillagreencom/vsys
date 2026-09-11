@@ -1143,43 +1143,46 @@ function sameName(count = 6) {
 }
 
 /**
- * The ids the screen drew, read out of the id column by where its heading
- * sits. Whole lines are not compared: from `wideWidth` up the side pane draws
- * beside the list, so one physical line carries a list row and side-pane text,
- * and identical rows read as different.
+ * The ids the screen drew: on each row, the digits that end where the id
+ * column's heading ends, so an id drawn off its column is not read. Whole
+ * lines are not compared: from `wideWidth` up the side pane draws beside the
+ * list, so one physical line carries a list row and side-pane text, and
+ * identical rows read as different.
  */
 function drawnIds(frame: string): string[] {
   const lines = frame.split("\n");
   const heading = lines.find((line) => line.includes("PID")) ?? "";
-  const at = heading.indexOf("PID");
-  if (at < 0) return [];
+  const end = heading.indexOf("PID") + "PID".length;
+  if (end < "PID".length) return [];
   return lines
     .filter((line) => line.includes("method"))
-    .map((line) => line.slice(Math.max(0, at - 6), at + 3).trim())
+    .map((line) => line.slice(0, end).match(/\d+$/)?.[0] ?? "")
     .filter((id) => id !== "");
 }
 
 test("no list of lane names draws two rows a reader cannot tell apart", async () => {
   const c = defaults();
   const s = sameName();
-  // Home's Busiest agents, the Agents list and the Builds lanes: every screen
-  // that draws lane names. Each width is a different Agents list: the narrow
-  // list (99), a list that sheds its program column without the side pane
-  // (106) and with it (163), and the same two keeping it (120, 180).
-  for (const screen of ["1", "2", "4"] as const) {
+  // Every view that draws lane names, by the keys that reach it: Home's
+  // Busiest agents, the Agents list, the Agents table and the Builds lanes.
+  // Each width is a different Agents list: the narrow list (99), a list that
+  // sheds its program column without the side pane (106) and with it (163),
+  // and the same two keeping it (120, 180).
+  const views = [["1"], ["2"], ["2", c.keys.details], ["4"]];
+  for (const view of views) {
     for (const width of [99, 106, 120, 163, 180]) {
       const t = await mount(s, c, { width, height: 40 });
       try {
-        await t.press(screen);
+        for (const key of view) await t.press(key);
         const ids = drawnIds(t.frame());
         // The id is the only thing that can tell these rows apart, so every
         // row carries one and no two rows carry the same.
         expect({
-          screen,
+          view,
           width,
           drawn: ids.length,
           distinct: new Set(ids).size,
-        }).toEqual({ screen, width, drawn: 6, distinct: 6 });
+        }).toEqual({ view, width, drawn: 6, distinct: 6 });
       } finally {
         await t.close();
       }

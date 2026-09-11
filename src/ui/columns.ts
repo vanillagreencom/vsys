@@ -56,6 +56,18 @@ export function fitAddress(address: string, width: number): string {
 export const cell = (column: Column, value: string): string =>
   fit(value, column.width, column.align);
 /**
+ * The process id column every lane table draws beside the name. It is the one
+ * thing that tells two lanes with one name apart, so no setting removes it and
+ * no width sheds it.
+ */
+export const pidColumn: Column = { label: "PID", width: 8, align: "right" };
+/**
+ * A lane's cell in `pidColumn`. A row that leads no process draws it blank, not
+ * as a zero nobody measured.
+ */
+export const pidCell = (pid: number): string =>
+  cell(pidColumn, pid ? String(pid) : "");
+/**
  * The heading line for a column spec. It is built from the same spec the row
  * renderer reads, so a width change cannot move one without the other.
  */

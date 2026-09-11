@@ -1056,11 +1056,15 @@ test("a configurable numeric column reads down its last digit", async () => {
       ["Blocked", "3"],
       ["sccache", "4"],
     ];
-    for (const [label, value] of ends)
-      expect({
+    // Each value is read where its heading ends, since a digit of the same
+    // value can also sit in the process id column beside the name.
+    for (const [label, value] of ends) {
+      const end = heading.indexOf(label) + label.length;
+      expect({ label, cell: row.slice(end - value.length, end) }).toEqual({
         label,
-        ends: heading.indexOf(label) + label.length,
-      }).toEqual({ label, ends: row.indexOf(value) + value.length });
+        cell: value,
+      });
+    }
   } finally {
     await t.close();
   }

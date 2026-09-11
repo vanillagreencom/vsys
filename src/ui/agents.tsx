@@ -15,6 +15,8 @@ import {
   columnGap,
   columnsWidth,
   fitAddress,
+  pidCell,
+  pidColumn,
   sortedLabel,
 } from "./columns";
 import {
@@ -568,7 +570,7 @@ export function Agents({
   );
   const readingsWith = (shown: Set<string>, pane: number): Column[] => [
     ...(shown.has("Pane") ? [{ label: "Pane", width: pane }] : []),
-    { label: "PID", width: 8, align: "right" as const },
+    pidColumn,
     ...(shown.has("Program") ? [{ label: "Program", width: 9 }] : []),
     { label: "", width: 10 },
     { label: "CPU", width: 7, align: "right" as const },
@@ -613,8 +615,16 @@ export function Agents({
     },
   ];
   const [nameColumn] = laneColumns;
-  // The table's own columns, read by its heading and by every row in it.
-  const tableColumns = c.columns.map(tableColumn);
+  // The table's own columns, read by its heading and by every row in it. The
+  // process id is not a configurable column: it is fixed after the name, or
+  // first where the name is not shown, and has no sort to click.
+  const tableCells: { name: string | null; column: Column }[] = c.columns.map(
+    (name) => ({ name, column: tableColumn(name) }),
+  );
+  tableCells.splice(c.columns.indexOf("name") + 1, 0, {
+    name: null,
+    column: pidColumn,
+  });
   const laneColumn = (label: string): Column => {
     const found = laneColumns.find((x) => x.label === label);
     if (!found) throw new Error(`No lane column named ${label}`);
@@ -744,23 +754,25 @@ export function Agents({
                   flexDirection="row"
                   gap={columnGap.length}
                 >
-                  {tableColumns.map((column, at) => {
-                    const name = c.columns[at];
-                    const sorted = c.sort === name;
+                  {tableCells.map(({ name, column }) => {
+                    const sorted = name !== null && c.sort === name;
                     return (
                       <Line
-                        key={name}
+                        key={name ?? column.label}
                         width={column.width}
                         height={1}
                         flexShrink={0}
                         truncate
                         attributes={sorted ? ui.bold : ui.dim}
-                        onMouseDown={() =>
-                          save({
-                            ...c,
-                            sort: name,
-                            descending: sorted ? !c.descending : true,
-                          })
+                        onMouseDown={
+                          name === null
+                            ? undefined
+                            : () =>
+                                save({
+                                  ...c,
+                                  sort: name,
+                                  descending: sorted ? !c.descending : true,
+                                })
                         }
                       >
                         {cell(
@@ -788,9 +800,11 @@ export function Agents({
                       onOpen(lane.id);
                     }}
                   >
-                    {tableColumns
-                      .map((column, at) =>
-                        cell(column, safe(laneValue(lane, c.columns[at], c))),
+                    {tableCells
+                      .map(({ name, column }) =>
+                        name === null
+                          ? pidCell(lane.mainPid)
+                          : cell(column, safe(laneValue(lane, name, c))),
                       )
                       .join(columnGap)}
                   </Row>
@@ -843,7 +857,7 @@ export function Agents({
                         there is no width at which the rows stop being rows a
                         reader can tell apart. */}
                     <span attributes={ui.dim}>
-                      {`${columnGap}${cell(laneColumn("PID"), lane.mainPid ? String(lane.mainPid) : "")}`}
+                      {`${columnGap}${pidCell(lane.mainPid)}`}
                     </span>
                     {showing.has("Program") && (
                       <span attributes={ui.dim}>

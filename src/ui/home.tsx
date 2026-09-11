@@ -14,7 +14,14 @@ import {
   verdictLine,
 } from "./attention";
 import { keyLabel, type View, wideWidth } from "./chrome";
-import { type Column, cell, columnGap, columnsWidth } from "./columns";
+import {
+  type Column,
+  cell,
+  columnGap,
+  columnsWidth,
+  pidCell,
+  pidColumn,
+} from "./columns";
 import {
   amount,
   bucketPeaks,
@@ -374,7 +381,7 @@ export function Home({
   // while a name that identifies nothing shows in nothing.
   const homeNameFloor = 24;
   const fixedWith = (state: boolean): Column[] => [
-    { label: "PID", width: 8, align: "right" },
+    pidColumn,
     { label: "", width: 10 },
     { label: "CPU", width: 7, align: "right" },
     { label: "Memory", width: 10, align: "right" },
@@ -400,8 +407,7 @@ export function Home({
     },
     ...fixed,
   ];
-  const [nameColumn, pidColumn, barColumn, cpuColumn, memoryColumn] =
-    agentColumns;
+  const [nameColumn, , barColumn, cpuColumn, memoryColumn] = agentColumns;
   const stateColumn = withState ? agentColumns[5] : undefined;
   // The sorts whose heading this table draws, which the sort key cycles
   // through. A sort left on a column the width has since shed moves to the
@@ -591,7 +597,7 @@ export function Home({
                   <Row selected={marked(i)} onOpen={() => onOpen(row)}>
                     {safe(cell(nameColumn, row.lane.name))}
                     <span attributes={ui.dim}>
-                      {`${columnGap}${cell(pidColumn, row.lane.mainPid ? String(row.lane.mainPid) : "")}`}
+                      {`${columnGap}${pidCell(row.lane.mainPid)}`}
                     </span>
                     {columnGap}
                     <Bar
