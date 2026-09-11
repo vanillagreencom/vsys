@@ -294,16 +294,16 @@ const incompleteReasons: Partial<Record<CapabilityId, string>> = {
  */
 const capabilityCost: Record<CapabilityId, string> = {
   cgroup2:
-    "no lane is measured at all: Agents, Resources and Builds are blank rather than zero",
+    "no resource group is read: Resources lists none, and Agents lists only agents running outside the agent slice",
   delegation:
-    "per-lane CPU and memory are blank rather than zero on Agents and Resources",
+    "group memory and memory limits, or CPU weights, are blank rather than zero on Resources and the agent detail",
   psi: "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
   "io-stat":
     "per-group disk writes are blank rather than zero, on Home and Storage",
   scrub: "Storage lists no scrub report, which is not the same as a clean one",
   smart:
     "Storage shows no drive lifetime writes, which is not the same as none written",
-  tmux: "the Agents pane column is absent and no agent's terminal can be read",
+  tmux: "a tmux pane id resolves to no address, and no agent's terminal can be read or switched to",
 };
 /** What a reader loses while this capability is missing. */
 export function capabilityLoss(cap: Capability): string {

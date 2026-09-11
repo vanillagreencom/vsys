@@ -163,13 +163,13 @@ test("the reason follows what the probe found, not the interface name", () => {
 test("every missing capability says what it costs the reader, in its own words", () => {
   // Every capability id, with a phrase its own cost line carries.
   const costs: Record<CapabilityId, string> = {
-    cgroup2: "no lane is measured at all",
-    delegation: "per-lane CPU and memory are blank",
+    cgroup2: "no resource group is read",
+    delegation: "memory limits, or CPU weights, are blank",
     psi: "every wait reading is blank",
     "io-stat": "per-group disk writes are blank",
     scrub: "Storage lists no scrub report",
     smart: "Storage shows no drive lifetime writes",
-    tmux: "the Agents pane column is absent",
+    tmux: "a tmux pane id resolves to no address",
   };
   const cap = (id: CapabilityId, available: boolean): Capability => ({
     id,

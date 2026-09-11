@@ -1221,6 +1221,26 @@ test("the Agents list marks the heading its sort is drawn under", async () => {
       await t.close();
     }
   }
+  // A save that fails leaves the list on the setting it had, as the running
+  // program keeps its config when writing it fails.
+  const refused = await mount(
+    sameWorktree(true),
+    c,
+    { width: 140, height: 24 },
+    {
+      onSave: async () => {
+        throw new Error("config not written");
+      },
+    },
+  );
+  try {
+    await refused.press("2");
+    await refused.press(c.keys.reverse);
+    expect(refused.frame()).toContain("config not written");
+    expect(sortMarks(refused.frame())).toEqual(["↓ CPU"]);
+  } finally {
+    await refused.close();
+  }
 });
 
 test("search finds a row by the address and the window it shows", async () => {
