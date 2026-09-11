@@ -22,7 +22,7 @@ export function exportSnapshot(
     ...rows.map((row) => `| ${row.map(cell).join(" | ")} |`),
   ];
   return [
-    "# vsys-view snapshot",
+    "# vsys snapshot",
     "",
     `Time: ${new Date(s.time).toISOString()}`,
     `Host: ${cell(s.system.host)}`,

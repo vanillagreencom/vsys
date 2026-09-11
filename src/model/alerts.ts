@@ -100,13 +100,7 @@ export async function notify(alerts: Alert[], c: Config): Promise<void> {
   const failures: Error[] = [];
   for (const a of alerts.filter((a) => c.notifications.includes(a.rule))) {
     const child = Bun.spawn(
-      [
-        "notify-send",
-        "--app-name=vsys-view",
-        "--",
-        `vsys-view: ${a.rule}`,
-        a.message,
-      ],
+      ["notify-send", "--app-name=vsys", "--", `vsys: ${a.rule}`, a.message],
       { stdout: "ignore", stderr: "pipe" },
     );
     const error = await new Response(child.stderr).text();

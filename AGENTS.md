@@ -1,8 +1,30 @@
 # vsys
 
-vsys is a Linux terminal dashboard for agent processes and system health. The application uses Bun, TypeScript, and OpenTUI. Collection reads system state without changing it.
+vsys is a Linux terminal dashboard for agent processes and system health, written in TypeScript on Bun with React and OpenTUI. It reads cgroup v2 and procfs without changing them, and touches the system only through a lane action the reader confirms with write mode on.
 
-Read `docs/architecture/overview.md` for the application design. Read `DEVELOPMENT.md` for local validation and CI requirements.
+## Commands
+
+- `python3 scripts/ci.py`: the full check contract — install, lint, types, tests, build. Run this before claiming a change is green.
+- `bun test src/`: the application suites alone.
+- `bun src/main.ts --once`: one JSON snapshot with no terminal, which is how to see real output from a script.
+- The repository pins its own Bun in `.bun-version` and ships it as a dependency. Where the system Bun differs, prefix with `PATH="$PWD/node_modules/.bin:$PATH"`.
+
+## Conventions
+
+- A reading that could not be taken stays unknown. Never let a failed read become a zero, and never draw a zero for a number vsys could not read.
+- The model returns numbers and identifiers. Every word and every formatted number belongs to `src/ui/`.
+- Collection reads only the settings declared in `collectionKeys` in `src/collect/settings.ts`. A new collection setting goes there, or the runtime will not rebuild the collector when it changes.
+- Nothing is appended to a lane name to make it unique. The process id is a column of its own, and prose names a lane through `laneText()`.
+- No screen names a colour value. Colour comes from the role table in `src/ui/theme.ts`.
+- Only `runEffect()` in `src/effect.ts` changes system state, and only from a command `resolveIntent()` rebuilt against the current sample.
+- Docs change in the same commit as the code they describe. Every architecture topic file carries a `Covers:` line, and a claim that something is enforced names the test that enforces it.
+
+## Read next
+
+- `docs/architecture/overview.md`: before structural work, and for the layer boundaries.
+- `docs/architecture/<topic>.md`: the subsystem you are changing. The overview indexes them.
+- `docs/decisions/INDEX.md`: before reversing a mechanism; cite a decision by ID rather than restating it.
+- `DEVELOPMENT.md`: the layout, the checks, the test strategy and the benchmarks.
 
 ## Code Review Rules
 

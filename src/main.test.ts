@@ -8,7 +8,7 @@ test("once exports structured evidence and fails visibly on source errors", asyn
   try {
     const path = join(f.root, "config.toml");
     await saveConfig(f.config, path);
-    await saveConfig(f.config, join(f.root, ".config/vsys-view/config.toml"));
+    await saveConfig(f.config, join(f.root, ".config/vsys/config.toml"));
     const run = async (extra: string[] = []) => {
       const child = Bun.spawn(
         [process.execPath, "src/main.ts", "--once", "--config", path, ...extra],
@@ -30,7 +30,7 @@ test("once exports structured evidence and fails visibly on source errors", asyn
     expect(JSON.parse(healthy.stdout).errors).toEqual([]);
     const markdown = await run(["--markdown"]);
     expect(markdown.code).toBe(0);
-    expect(markdown.stdout).toContain("# vsys-view snapshot");
+    expect(markdown.stdout).toContain("# vsys snapshot");
     f.write(join(f.config.cgroupRoot, "cpu.stat"), "usage_usec invalid");
     const failed = await run();
     expect(failed.code).toBe(2);

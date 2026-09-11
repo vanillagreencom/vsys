@@ -1,0 +1,1 @@
+- **Breaking:** the program is now `vsys`, not `vsys-view`. Move `~/.config/vsys-view/` to `~/.config/vsys/` and `~/.local/state/vsys-view/` to `~/.local/state/vsys/`.

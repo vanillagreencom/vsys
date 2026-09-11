@@ -114,7 +114,7 @@ test("time buckets preserve gaps and align alert positions with charts", () => {
 test("exports preserve evidence and neutralize terminal control characters", () => {
   const s = emptySnapshot();
   expect(JSON.parse(exportSnapshot(s, "json"))).toEqual(s);
-  expect(exportSnapshot(s, "markdown")).toContain("# vsys-view snapshot");
+  expect(exportSnapshot(s, "markdown")).toContain("# vsys snapshot");
   expect(safe("a\u001b[2J\nb")).toBe("a [2J b");
 });
 

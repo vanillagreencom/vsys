@@ -1,9 +1,9 @@
 {
-  "name": "vsys-view",
+  "name": "vsys",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "vsys-view": "src/main.ts" },
+  "bin": { "vsys": "src/main.ts" },
   "scripts": {
     "start": "bun src/main.ts",
     "lint": "biome check src scripts/*.ts",
