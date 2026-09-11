@@ -141,6 +141,30 @@ export function overflowing(
 }
 
 /**
+ * How the cell where `text` starts is drawn, on the first line holding it:
+ * `dim`, `plain`, or `missing` where no line holds the text.
+ */
+export function cellStyle(
+  ui: Awaited<ReturnType<typeof testRender>>,
+  text: string,
+  dim: number,
+): "dim" | "plain" | "missing" {
+  for (const line of ui.captureSpans().lines) {
+    const at = line.spans
+      .map((span) => span.text)
+      .join("")
+      .indexOf(text);
+    if (at < 0) continue;
+    let end = 0;
+    for (const span of line.spans) {
+      end += span.text.length;
+      if (at < end) return span.attributes & dim ? "dim" : "plain";
+    }
+  }
+  return "missing";
+}
+
+/**
  * The headings carrying a sort arrow on a lane table's heading line, the line
  * naming both `Agent` and `Memory`, as drawn: `↓ CPU`, `Agent ↑`.
  */

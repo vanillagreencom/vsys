@@ -463,8 +463,10 @@ test("the editor opens in view when the layout moves the row it edits", async ()
   const t = await mount(s, c, { width: 180, height: 30 });
   try {
     await t.press("7");
-    // Walk to the last setting. Two columns hold it on the right-hand side.
-    for (let i = 0; i < 80; i++) await t.press("j");
+    // Walk to the last setting, one press per listed row at least, since down
+    // holds at the last. Two columns hold it on the right-hand side.
+    const rows = settingItems(c, s.capabilities).length;
+    for (let i = 0; i < rows; i++) await t.press("j");
     const marker = (frame: string) => {
       const line = frame.split("\n").find((row) => row.includes("▍"));
       return line === undefined ? -1 : line.indexOf("▍");

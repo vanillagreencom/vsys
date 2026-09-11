@@ -3,7 +3,7 @@ import { testRender } from "@opentui/react/test-utils";
 import { defaults } from "../config/config";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
-import { isChildLine, mount, selectedRow } from "../test/harness";
+import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
 import { type KeyHandler, KeyProvider } from "./keys";
 import {
   itemPath,
@@ -12,6 +12,7 @@ import {
   volumeLevel,
   volumesByDevice,
 } from "./storage-screen";
+import { ui } from "./theme";
 
 test("Storage lists filesystems, then scrubs, then scratch directories, then sessions", () => {
   const s = emptySnapshot();
@@ -210,8 +211,8 @@ test("a mount's detail does not repeat the device row's error counters", async (
   }
 });
 
-test("Storage moves between its three lists with the region key", async () => {
-  const c = defaults();
+/** Two filesystems, one scrub report and two scratch directories. */
+function everyList() {
   const s = emptySnapshot();
   s.storage.volumes = [
     volumeSnapshot("/data", { device: "/dev/sda1" }),
@@ -224,24 +225,75 @@ test("Storage moves between its three lists with the region key", async () => {
     { path: "/scratch/a", bytes: 10, age: 0, error: null },
     { path: "/scratch/b", bytes: 20, age: 0, error: null },
   ];
-  const t = await mount(s, c, { width: 160, height: 44 });
+  return s;
+}
+
+test("Storage moves between its three lists with the region key and with left and right", async () => {
+  const c = defaults();
+  const s = everyList();
+  // Each pair moves between the lists the same way: forward, then back.
+  const pairs: [string, string][] = [
+    [c.keys.next, c.keys.previous],
+    ["right", "left"],
+    [c.keys.right, c.keys.left],
+  ];
+  for (const [forward, back] of pairs) {
+    const t = await mount(s, c, { width: 160, height: 44 });
+    try {
+      await t.press("5");
+      // The keys pressed, then the selected row. Down stays inside the
+      // filesystems rather than walking into the reports; forward lands on
+      // the next list's first row, and at either end the reader stays on the
+      // row they are on.
+      const steps: [string[], string][] = [
+        [[], "/data"],
+        [["down"], "/home"],
+        [[back], "/home"],
+        [Array(10).fill("down"), "/home"],
+        [[forward], "/run/btrfs-scrub/one"],
+        [[forward], "/scratch/a"],
+        [[forward], "/scratch/a"],
+        [["down", forward], "/scratch/b"],
+        [[back], "/run/btrfs-scrub/one"],
+        [[back], "/data"],
+      ];
+      for (const [keys, row] of steps) {
+        for (const key of keys) await t.press(key);
+        expect({
+          forward,
+          keys,
+          on: selectedRow(t.frame()).includes(row),
+        }).toEqual({ forward, keys, on: true });
+      }
+      // The scratch list empties under its selected row: the selection moves
+      // to the last row there is, and moving back goes on from there.
+      await t.press(forward);
+      await t.press(forward);
+      await t.update({ ...s, storage: { ...s.storage, scratch: [] } });
+      expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
+      await t.press(back);
+      expect(selectedRow(t.frame())).toContain("/data");
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("a Storage list's own key lands on its first row", async () => {
+  const c = defaults();
+  const t = await mount(everyList(), c, { width: 160, height: 44 });
   try {
     await t.press("5");
-    // The keys pressed, then the selected row. Down stays inside the
-    // filesystems rather than walking into the reports; the region key is the
-    // one way to the next list, it lands on that list's first row, and at
-    // either end it leaves the reader on the row they are on.
+    // The keys pressed, then the selected row. Each key is pressed from
+    // another list, then again from lower down its own list.
     const steps: [string[], string][] = [
-      [[], "/data"],
+      [[c.keys.scratch], "/scratch/a"],
+      [["down"], "/scratch/b"],
+      [[c.keys.scratch], "/scratch/a"],
+      [[c.keys.scrub], "/run/btrfs-scrub/one"],
+      [[c.keys.filesystems], "/data"],
       [["down"], "/home"],
-      [[c.keys.previous], "/home"],
-      [Array(10).fill("down"), "/home"],
-      [[c.keys.next], "/run/btrfs-scrub/one"],
-      [[c.keys.next], "/scratch/a"],
-      [[c.keys.next], "/scratch/a"],
-      [["down", c.keys.next], "/scratch/b"],
-      [[c.keys.previous], "/run/btrfs-scrub/one"],
-      [[c.keys.previous], "/data"],
+      [[c.keys.filesystems], "/data"],
     ];
     for (const [keys, row] of steps) {
       for (const key of keys) await t.press(key);
@@ -250,14 +302,47 @@ test("Storage moves between its three lists with the region key", async () => {
         on: true,
       });
     }
-    // The scratch list empties under its selected row: the selection moves to
-    // the last row there is, and the region key moves on from there.
-    await t.press(c.keys.next);
-    await t.press(c.keys.next);
-    await t.update({ ...s, storage: { ...s.storage, scratch: [] } });
-    expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
-    await t.press(c.keys.previous);
-    expect(selectedRow(t.frame())).toContain("/data");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a key for a Storage list with no rows changes nothing", async () => {
+  const c = defaults();
+  const s = everyList();
+  s.storage.scrubs = [];
+  const t = await mount(s, c, { width: 160, height: 44 });
+  try {
+    await t.press("5");
+    // Off the first row, so a key that moved the selection would show.
+    await t.press("down");
+    expect(selectedRow(t.frame())).toContain("/home");
+    const before = t.frame();
+    await t.press(c.keys.scrub);
+    expect(t.frame()).toBe(before);
+  } finally {
+    await t.close();
+  }
+});
+
+test("each Storage list draws the key that jumps to it, dimmed before its name", async () => {
+  // A rebound key, so what is drawn is read from the binding.
+  const c = { ...defaults(), keys: { ...defaults().keys, scrub: "i" } };
+  const t = await mount(everyList(), c, { width: 160, height: 44 });
+  try {
+    await t.press("5");
+    const names: [string, string][] = [
+      ["f", "Filesystems"],
+      ["i", "Scrub reports"],
+      ["x", "Scratch"],
+    ];
+    for (const [key, name] of names)
+      expect({ name, key: cellStyle(t.ui, `${key} ${name}`, ui.dim) }).toEqual({
+        name,
+        key: "dim",
+      });
+    // A section nobody selects in has no key to reach it.
+    expect(t.frame()).toMatch(/^ +Written since boot/m);
   } finally {
     await t.close();
   }

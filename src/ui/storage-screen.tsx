@@ -8,7 +8,13 @@ import { type WriteTotal, writeTotals } from "../model/writes";
 import { columnGap, fit } from "./columns";
 import { age, amount, gap } from "./format";
 import { useScreenKeys } from "./keys";
-import { regionOf, stepToRegion, stepWithin } from "./regions";
+import {
+  regionOf,
+  regionRanges,
+  stepToRegion,
+  stepWithin,
+  storageRegions,
+} from "./regions";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
@@ -174,10 +180,26 @@ export function Storage({
       return move((i) => stepWithin(counts, i, 1));
     if (name === c.keys.up || name === "up")
       return move((i) => stepWithin(counts, i, -1));
-    if (name === c.keys.previous)
+    // No Storage row moves sideways, so left and right step between the lists
+    // as the region key does.
+    if (name === c.keys.previous || name === c.keys.left || name === "left")
       return move((i) => stepToRegion(counts, i, -1));
-    if (name === c.keys.next) return move((i) => stepToRegion(counts, i, 1));
-    return false;
+    if (name === c.keys.next || name === c.keys.right || name === "right")
+      return move((i) => stepToRegion(counts, i, 1));
+    // A list's own key lands on its first row. A list with no row has no row
+    // to land on, so its key leaves the selection where it is.
+    const jump = storageRegions.findIndex(
+      ({ action }) => name === c.keys[action],
+    );
+    if (jump < 0) return false;
+    if (counts[jump]) setSelected(regionRanges(counts)[jump][0]);
+    return true;
+  });
+  /** A list's heading: its title, the key that jumps to it, and its focus. */
+  const heading = (at: number) => ({
+    title: storageRegions[at].title,
+    hotkey: c.keys[storageRegions[at].action],
+    focused: region === at,
   });
   const totals = writeTotals(s, c);
   const writeRows = (
@@ -326,9 +348,8 @@ export function Storage({
           `vsys runs no privileged helper, so it reads what a timer leaves in ${c.smartDir}.`,
         )}
         <Section
-          title="Filesystems"
+          {...heading(0)}
           width={width}
-          focused={region === 0}
           count={st.volumes.length || undefined}
         />
         {st.mountsAvailable === false && (
@@ -390,9 +411,8 @@ export function Storage({
           );
         })}
         <Section
-          title="Scrub reports"
+          {...heading(1)}
           width={width}
-          focused={region === 1}
           count={st.scrubs.length || undefined}
         />
         {!st.scrubs.length && (
@@ -428,9 +448,8 @@ export function Storage({
           );
         })}
         <Section
+          {...heading(2)}
           width={width}
-          title="Scratch"
-          focused={region === 2}
           count={`${scanState} · quota ${amount(c.scratchQuota, c)}`}
         />
         {!st.scratch.length && !st.sessions.length && (

@@ -2,6 +2,7 @@ import type { Config } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
 import { fit } from "./columns";
+import { homeRegions, jumpKeys, storageRegions } from "./regions";
 import { ui } from "./theme";
 import { Line, Overlay } from "./widgets";
 
@@ -166,6 +167,7 @@ export function Footer({
   statusColor,
   statusDim = false,
 }: {
+  /** A hint that names several keys lists them one space apart. */
   hints: [string, string][];
   status: string;
   statusColor?: typeof ui.fg;
@@ -176,7 +178,9 @@ export function Footer({
       <Line height={1} flexGrow={1} truncate>
         {hints.map(([key, action], i) => (
           <span key={key}>
-            <span fg={ui.accent}>{`${i ? "  " : ""}${keyLabel(key)}`}</span>
+            <span fg={ui.accent}>
+              {`${i ? "  " : ""}${key.split(" ").map(keyLabel).join(" ")}`}
+            </span>
             <span attributes={ui.dim}>{` ${action}`}</span>
           </span>
         ))}
@@ -202,10 +206,15 @@ export function Help({ config: c }: { config: Config }) {
       "Move",
       [
         [`${k.up} ${k.down} ↑ ↓`, "select"],
-        [`${k.left} ${k.right} ← →`, "move the time cursor"],
+        [
+          `${k.left} ${k.right} ← →`,
+          "previous and next region, or the time cursor",
+        ],
         [k.open, "open the selection"],
         [k.back, "go back"],
         [`${k.next} ${k.previous}`, "next and previous region"],
+        [jumpKeys(homeRegions, k), "jump to a Home region"],
+        [jumpKeys(storageRegions, k), "jump to a Storage region"],
         [k.hold, "hold Busiest agents' order on Home"],
         [views.map((v) => k[viewKey(v)]).join(" "), "go to a screen"],
       ],

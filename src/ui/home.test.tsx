@@ -12,6 +12,7 @@ import {
   laneSnapshot,
 } from "../test/fixture";
 import {
+  cellStyle,
   isChildLine,
   mount,
   overflowing,
@@ -311,33 +312,51 @@ test("the arrow keys reach the tiles and open the screen behind one", async () =
   }
 });
 
-test("the region key moves across all four Home regions, and the focused one says so", async () => {
+test("the region key and the arrows move across all four Home regions, and the focused one says so", async () => {
   const c = defaults();
-  const { s, h } = everyRegion(c);
-  const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
-  try {
-    await t.press("1");
-    // The key pressed, then the titles drawn in the accent colour, and how
-    // many rules beside a title are undimmed. Home opens on a concern; the last
-    // region holds rather than wrapping; the tiles light no list title.
-    const steps: [string | null, string[], number][] = [
-      [null, ["Needs attention"], 1],
-      [c.keys.next, ["Recent changes"], 1],
-      [c.keys.next, ["Busiest agents"], 1],
-      [c.keys.next, ["Busiest agents"], 1],
-      [c.keys.previous, ["Recent changes"], 1],
-      [c.keys.previous, ["Needs attention"], 1],
-      [c.keys.previous, [], 0],
-    ];
-    for (const [key, lit, rules] of steps) {
-      if (key) await t.press(key);
-      expect({ key, ...focusMarks(t) }).toEqual({ key, lit, rules });
+  // The forward and back keys, then the screen Enter opens once back has left
+  // the lists for the tiles. The region key lands on the first tile, CPU wait,
+  // behind which is Resources; left arrives at the last, Builds.
+  const pairs: [string, string, string][] = [
+    [c.keys.next, c.keys.previous, "Groups"],
+    ["right", "left", "Lanes building"],
+    [c.keys.right, c.keys.left, "Lanes building"],
+  ];
+  for (const [forward, back, behind] of pairs) {
+    const { s, h } = everyRegion(c);
+    const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
+    try {
+      await t.press("1");
+      // The key pressed, then the titles drawn in the accent colour, and how
+      // many rules beside a title are undimmed. Home opens on a concern; the
+      // last region holds rather than wrapping; the tiles light no list title.
+      const steps: [string | null, string[], number][] = [
+        [null, ["Needs attention"], 1],
+        [forward, ["Recent changes"], 1],
+        [forward, ["Busiest agents"], 1],
+        [forward, ["Busiest agents"], 1],
+        [back, ["Recent changes"], 1],
+        [back, ["Needs attention"], 1],
+        [back, [], 0],
+      ];
+      for (const [key, lit, rules] of steps) {
+        if (key) await t.press(key);
+        expect({ forward, key, ...focusMarks(t) }).toEqual({
+          forward,
+          key,
+          lit,
+          rules,
+        });
+      }
+      // On the tiles, Enter opens the screen behind one.
+      await t.press("enter");
+      expect({ forward, on: t.frame().includes(behind) }).toEqual({
+        forward,
+        on: true,
+      });
+    } finally {
+      await t.close();
     }
-    // On the tiles, Enter opens the screen behind one.
-    await t.press("enter");
-    expect(t.frame()).toContain("Groups");
-  } finally {
-    await t.close();
   }
   // With no row in any list the tiles hold the focus: no list title is lit,
   // and the arrows and Enter act on the tiles.
@@ -568,7 +587,7 @@ test("Home marks one focus at a time, on every kind of row it lists", async () =
   try {
     await t.press("1");
     expect(t.frame()).toContain("Next ");
-    // The region key steps back to the tiles; the arrows select within a list.
+    // The region key steps back to the tiles.
     await t.press(c.keys.previous);
     expect(t.frame()).not.toContain("Next ");
     await t.press("y");
@@ -1051,11 +1070,135 @@ test("up and down stay inside the region in focus", async () => {
     for (let i = 0; i < 20; i++) await t.press("up");
     expect(focusMarks(t).lit).toEqual(["Needs attention"]);
     expect(row()).toBe(first);
-    // The next region is reached the one way it can be.
+    // The next region is reached by a key that moves between regions.
     await t.press(c.keys.next);
     expect(focusMarks(t).lit).toEqual(["Recent changes"]);
     for (let i = 0; i < 20; i++) await t.press("down");
     expect(focusMarks(t).lit).toEqual(["Recent changes"]);
+  } finally {
+    await t.close();
+  }
+});
+
+/** Agents and nothing else: no concern and no change, so two lists are empty. */
+function agentsOnly(c: Config) {
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "slow", name: "lane-slow", cpu: 1 }),
+    laneSnapshot({ id: "busy", name: "lane-busy", cpu: 90 }),
+  ];
+  expect(attention(s, c)).toEqual([]);
+  return s;
+}
+
+test("right from the last tile enters the first list with a row, and left returns to the last tile", async () => {
+  const c = defaults();
+  const t = await mount(agentsOnly(c), c, { width: 180, height: 44 });
+  try {
+    await t.press("1");
+    expect(focusMarks(t).lit).toEqual(["Busiest agents"]);
+    // The region key lands on the first tile and right walks the row. No
+    // list title is lit while a tile holds the focus.
+    await t.press(c.keys.previous);
+    for (let i = 0; i < 3; i++) {
+      await t.press("right");
+      expect({ i, lit: focusMarks(t).lit }).toEqual({ i, lit: [] });
+    }
+    // Past the last tile, over the two empty lists, to the one with rows.
+    await t.press("right");
+    expect(focusMarks(t).lit).toEqual(["Busiest agents"]);
+    // And back to the tile right left from: the last, whose screen is Builds.
+    await t.press("left");
+    expect(focusMarks(t).lit).toEqual([]);
+    await t.press("enter");
+    expect(t.frame()).toContain("Lanes building");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a Home region's own key lands on its first place", async () => {
+  const c = defaults();
+  const { s, h } = everyRegion(c);
+  const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    const row = () => selectedRow(t.frame()).replace(/\s+/g, " ");
+    // The key, then the list title it lights. Each key is pressed from another
+    // region, then again from lower down its own list, and both times it lands
+    // on the list's first row, the row up cannot leave.
+    const lists: [string, string][] = [
+      [c.keys.busiest, "Busiest agents"],
+      [c.keys.changes, "Recent changes"],
+      [c.keys.attention, "Needs attention"],
+    ];
+    for (const [key, title] of lists) {
+      await t.press(key);
+      const landed = row();
+      await t.press("up");
+      expect({ key, lit: focusMarks(t).lit, row: row() }).toEqual({
+        key,
+        lit: [title],
+        row: landed,
+      });
+      await t.press("down");
+      await t.press(key);
+      expect({ key, lit: focusMarks(t).lit, row: row() }).toEqual({
+        key,
+        lit: [title],
+        row: landed,
+      });
+    }
+    // Left from the first list stands on the last tile; the tiles' key moves
+    // to the first, whose screen is Resources.
+    await t.press("left");
+    await t.press(c.keys.tiles);
+    expect(focusMarks(t).lit).toEqual([]);
+    await t.press("enter");
+    expect(t.frame()).toContain("Groups");
+    expect(t.frame()).not.toContain("Lanes building");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a key for a Home region with no rows changes nothing", async () => {
+  const c = defaults();
+  const t = await mount(agentsOnly(c), c, { width: 180, height: 44 });
+  try {
+    await t.press("1");
+    // Off the first row, so a key that fell through to the first row there is
+    // would show.
+    await t.press("down");
+    const before = t.frame();
+    for (const key of [c.keys.attention, c.keys.changes]) {
+      await t.press(key);
+      expect({ key, same: t.frame() === before }).toEqual({ key, same: true });
+    }
+  } finally {
+    await t.close();
+  }
+});
+
+test("each Home region draws the key that jumps to it, dimmed before its name", async () => {
+  // A rebound key, so what is drawn is read from the binding.
+  const c = { ...defaults(), keys: { ...defaults().keys, attention: "i" } };
+  const { s, h } = everyRegion(c);
+  const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    // The tile row has no heading, so its key leads the first tile's label.
+    const names: [string, string][] = [
+      ["t", "CPU wait"],
+      ["i", "Needs attention"],
+      ["g", "Recent changes"],
+      ["b", "Busiest agents"],
+    ];
+    for (const [key, name] of names)
+      expect({ name, key: cellStyle(t.ui, `${key} ${name}`, ui.dim) }).toEqual({
+        name,
+        key: "dim",
+      });
   } finally {
     await t.close();
   }

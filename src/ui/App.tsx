@@ -38,6 +38,7 @@ import {
 import { type Output, osc52 } from "./clipboard";
 import { Home, homeTarget, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
+import { homeRegions, jumpKeys, storageRegions } from "./regions";
 import { Resources } from "./resources";
 import { Settings } from "./settings-screen";
 import { Storage } from "./storage-screen";
@@ -115,6 +116,7 @@ export const hints: Record<
   Home: (c) => [
     ["↑↓←→", "select"],
     [c.keys.next, "region"],
+    [jumpKeys(homeRegions, c.keys), "jump"],
     [c.keys.open, "open"],
     [c.keys.hold, "hold order"],
     [c.keys.copy, "copy"],
@@ -150,8 +152,9 @@ export const hints: Record<
   // does here. Enter has nothing to act on, and a hint for it would be a
   // promise the screen cannot keep.
   Storage: (c) => [
-    ["↑↓", "select"],
+    ["↑↓←→", "select"],
     [c.keys.next, "region"],
+    [jumpKeys(storageRegions, c.keys), "jump"],
   ],
   Timeline: (c) => [
     ["←→", "time"],
