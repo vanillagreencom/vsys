@@ -1,0 +1,128 @@
+name: publish-aur
+
+# AUR package repositories do not pull recipe changes from this repository.
+# Publish the packaging/arch recipe whenever it or its tooling changes on main.
+# The scheduled job checks remote drift without publishing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packaging/arch/**
+      - scripts/publish-aur.sh
+      - scripts/check-aur-sync.py
+      - .github/workflows/publish-aur.yml
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: Packages to publish, space separated
+        type: string
+        default: vsys-view-git
+      dry_run:
+        description: Show what would be pushed without pushing it
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancellation can leave only part of the selected package set published.
+  group: publish-aur
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name != 'schedule'
+    # Reads this repo and writes only to the AUR, over SSH with its own key.
+    permissions:
+      contents: read
+    runs-on: ${{ vars.CI_RUNNER_2V || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # AUR clients read .SRCINFO; it must agree with the recipe they build.
+      - name: Arch recipe agrees internally
+        run: scripts/check-aur-sync.py
+
+      # Skipped for a dry run: publish-aur.sh --dry-run clones over HTTPS and
+      # needs no key, so requiring one would break the documented read-only
+      # path for anyone without the secret.
+      - name: Configure the AUR SSH key
+        if: ${{ inputs.dry_run != true }}
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          # Supply the AUR host key verified against Arch-published fingerprints.
+          # See packaging/README.md for setup. A missing key must fail publication.
+          AUR_SSH_KNOWN_HOSTS: ${{ vars.AUR_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            # A skipped publish would leave a green run with a stale AUR recipe.
+            echo "::error::AUR_SSH_PRIVATE_KEY is not set, so nothing can be published. Add the secret, or publish by hand with scripts/publish-aur.sh."
+            exit 1
+          fi
+          if [ -z "$AUR_SSH_KNOWN_HOSTS" ]; then
+            echo "::error::AUR_SSH_KNOWN_HOSTS is not set. Set it to the aur.archlinux.org host key line, verified against the fingerprints on the Arch User Repository wiki page (see packaging/README.md). Refusing to guess a host key or to accept whatever answers."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host aur.archlinux.org\n  User aur\n  IdentityFile ~/.ssh/aur\n  IdentitiesOnly yes\n' > ~/.ssh/config
+          chmod 600 ~/.ssh/config ~/.ssh/known_hosts
+          # Print the trusted fingerprint so an incorrect configuration is visible.
+          ssh-keygen -lf ~/.ssh/known_hosts
+
+      - name: Publish packaging/arch to the AUR
+        env:
+          AUR_COMMIT_NAME: ${{ vars.AUR_COMMIT_NAME }}
+          AUR_COMMIT_EMAIL: ${{ vars.AUR_COMMIT_EMAIL }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          # A push has no input values and uses the complete package set.
+          PACKAGES: ${{ inputs.packages || 'vsys-view-git' }}
+        run: |
+          set -euo pipefail
+          # Use an argv array to prevent glob expansion and reject unknown package names.
+          read -ra selected <<< "$PACKAGES"
+          for package in "${selected[@]}"; do
+            case "$package" in
+              vsys-view-git) ;;
+              *)
+                echo "::error::unknown package '$package'; expected vsys-view-git"
+                exit 1
+                ;;
+            esac
+          done
+          if [ ${#selected[@]} -eq 0 ]; then
+            echo "::error::no packages selected"
+            exit 1
+          fi
+          echo "publishing: ${selected[*]}"
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            scripts/publish-aur.sh --dry-run "${selected[@]}"
+          else
+            scripts/publish-aur.sh "${selected[@]}"
+          fi
+
+      # publish-aur.sh verifies only the packages it published.
+
+  drift:
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: read
+    runs-on: ${{ vars.CI_RUNNER_2V || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Published AUR recipe still matches this repo
+        run: scripts/check-aur-sync.py --remote

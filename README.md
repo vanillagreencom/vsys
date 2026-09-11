@@ -13,6 +13,8 @@ bun run start
 
 The project includes its Bun runtime. The system Bun installation stays separate.
 
+On Arch Linux, `yay -S vsys-view-git` installs the current `main` from the AUR, available once the first publish workflow has run. The package channel is described in [packaging](packaging/README.md).
+
 ## Features
 
 - Home: the verdict for the machine, CPU, memory, disk and build tiles with history, and one card per current problem with its next step.

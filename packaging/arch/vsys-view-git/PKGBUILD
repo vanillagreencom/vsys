@@ -1,0 +1,53 @@
+# Maintainer: VanillaGreen <brad@vanillagreen.com>
+pkgname=vsys-view-git
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc='Terminal dashboard for Linux machines that run AI agents (git)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/vanillagreencom/vsys'
+license=('MIT')
+# bun-bin is an AUR package. It provides the bun runtime the wrapper runs
+# and the bundler the build step uses.
+depends=('bun-bin')
+makedepends=('git' 'bun-bin')
+provides=('vsys-view')
+conflicts=('vsys-view')
+# node_modules ships OpenTUI's prebuilt libopentui.so; strip and debug
+# packaging must leave it alone.
+options=('!strip' '!debug')
+source=('git+https://github.com/vanillagreencom/vsys.git')
+sha256sums=('SKIP')
+
+pkgver() {
+  cd vsys
+  printf '%s.r%s.g%s' \
+    "$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -n 1)" \
+    "$(git rev-list --count HEAD)" \
+    "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$srcdir/vsys"
+  # --production leaves the dev toolchain (biome, tsc, the pinned bun package)
+  # out of node_modules: the package ships only what main.js loads at run time.
+  bun install --frozen-lockfile --production
+  bun build src/main.ts --target=bun --packages=external --outdir=dist
+}
+
+package() {
+  cd "$srcdir/vsys"
+  local lib="$pkgdir/usr/lib/vsys-view"
+  install -d "$lib"
+  install -m644 dist/main.js package.json "$lib/"
+  # Bun resolves the external packages from node_modules beside main.js.
+  cp -a node_modules "$lib/node_modules"
+  rm -rf "$lib/node_modules/.cache" "$lib/node_modules/.bin"
+  find "$lib/node_modules" -type f -name '*.so' -exec chmod 755 {} +
+
+  install -d "$pkgdir/usr/bin"
+  printf '#!/bin/sh\nexec bun /usr/lib/vsys-view/main.js "$@"\n' > "$pkgdir/usr/bin/vsys-view"
+  chmod 755 "$pkgdir/usr/bin/vsys-view"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
