@@ -82,3 +82,40 @@ test("the linkers cell stays inside its column on the rendered Builds screen", a
     await t.close();
   }
 });
+
+test("the row for unwatched build work names no process id rather than nought", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // A compiler running outside every watched cgroup, which is the only way
+  // the catch-all row appears. It stands for a set of processes rather than a
+  // lane, so it has no main process to name.
+  s.procs = [processSnapshot({ pid: 4242, build: "rustc" })];
+  // A watched lane compiling too, so the screen draws both kinds of row.
+  s.lanes = [
+    laneSnapshot({ name: "lane-a", mainPid: 3400, builds: { rustc: 1 } }),
+  ];
+  const t = await mount(s, c, { width: 160, height: 24 });
+  try {
+    await t.press("4");
+    const lines = t.frame().split("\n");
+    // Read the column by where its heading sits: the row carries a real `0`
+    // of its own in `0 linkers`, so looking for the character is not enough.
+    const at = (lines.find((line) => line.includes("PID")) ?? "").indexOf(
+      "PID",
+    );
+    expect(at).toBeGreaterThan(0);
+    const idIn = (line: string) => line.slice(at - 6, at + 3).trim();
+    const loose =
+      lines.find((line) => line.includes("outside the watched lanes")) ?? "";
+    expect(loose).not.toBe("");
+    // A zero here is a number nobody measured, drawn where a reader reads
+    // process ids. The cell is blank instead.
+    expect(idIn(loose)).toBe("");
+    // The watched lane beside it draws its own, so this is the catch-all row
+    // being blank rather than the column being absent.
+    const watched = lines.find((line) => line.includes("lane-a")) ?? "";
+    expect(idIn(watched)).toBe("3400");
+  } finally {
+    await t.close();
+  }
+});

@@ -14,6 +14,7 @@ import {
   cell,
   columnGap,
   columnsWidth,
+  fitAddress,
   sortedLabel,
 } from "./columns";
 import {
@@ -556,8 +557,20 @@ export function Agents({
       c.laneNameParts.includes("pane") &&
       lanes.some((lane) => lane.address !== ""),
   };
-  const readingsWith = (shown: Set<string>): Column[] => [
-    ...(shown.has("Pane") ? [{ label: "Pane", width: 12 }] : []),
+  // The pane column is as wide as the longest address the list holds, and
+  // never narrower than its heading. The readings are measured against the
+  // whole address, so each of them is given up before any address is cut; the
+  // column itself is given up only where even its heading's width leaves the
+  // name short of its floor. Between the two it narrows to what the name can
+  // spare, and `fitAddress` then cuts the session, never the `:window.pane`
+  // suffix that is all two agents in one session differ by.
+  const paneHeading = "Pane".length;
+  const paneLongest = Math.max(
+    paneHeading,
+    ...lanes.map((lane) => [...lane.address].length),
+  );
+  const readingsWith = (shown: Set<string>, pane: number): Column[] => [
+    ...(shown.has("Pane") ? [{ label: "Pane", width: pane }] : []),
     { label: "PID", width: 8, align: "right" as const },
     ...(shown.has("Program") ? [{ label: "Program", width: 9 }] : []),
     { label: "", width: 10 },
@@ -568,20 +581,25 @@ export function Agents({
       ? [{ label: "Wait", width: 11, align: "right" as const }]
       : []),
   ];
-  const roomWith = (shown: Set<string>) =>
+  const roomWith = (shown: Set<string>, pane = paneLongest) =>
     listWidth -
     margins -
-    columnsWidth(readingsWith(shown)) -
+    columnsWidth(readingsWith(shown, pane)) -
     columnGap.length * 2 -
     stateFloor;
   const showing = new Set(optional.filter((label) => wanted[label]));
   for (const label of optional) {
-    if (roomWith(showing) >= nameFloor) break;
+    const pane = label === "Pane" ? paneHeading : paneLongest;
+    if (roomWith(showing, pane) >= nameFloor) break;
     showing.delete(label);
   }
+  const paneWidth = Math.min(
+    paneLongest,
+    paneLongest + roomWith(showing) - nameFloor,
+  );
   const showTrend = showing.has("Trend");
-  const readings = readingsWith(showing);
-  const spare = roomWith(showing);
+  const readings = readingsWith(showing, paneWidth);
+  const spare = roomWith(showing, paneWidth);
   const measured: Column[] = [
     { label: "Agent", width: Math.max(12, Math.min(36, spare)) },
     ...readings,
@@ -819,7 +837,7 @@ export function Agents({
                     {safe(cell(nameColumn, lane.name))}
                     {showing.has("Pane") && (
                       <span attributes={ui.dim}>
-                        {`${columnGap}${safe(cell(laneColumn("Pane"), lane.address))}`}
+                        {`${columnGap}${safe(fitAddress(lane.address, laneColumn("Pane").width))}`}
                       </span>
                     )}
                     {/* Every row, not only the ones that would collide: an id

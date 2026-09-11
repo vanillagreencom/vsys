@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
+import type { Capability, CapabilityId } from "../model/types";
 import { capabilitySnapshot } from "../test/fixture";
 import {
   capabilityLine,
+  capabilityLoss,
   capabilityReason,
   settingDisplay,
   settingHelp,
@@ -156,4 +158,43 @@ test("the reason follows what the probe found, not the interface name", () => {
       detail: "cpu memory",
     }),
   ).toBe("this login session is not given cpu memory");
+});
+
+test("every missing capability says what it costs the reader, in its own words", () => {
+  // The whole point of the cost line is that it differs per source. Reached
+  // only through the rendered screen, six of the seven were never read by any
+  // assertion: returning nothing for all but `psi` left every test passing.
+  const costs: Record<CapabilityId, string> = {
+    cgroup2: "no lane is measured at all",
+    delegation: "per-lane CPU and memory are blank",
+    psi: "every wait reading is blank",
+    "io-stat": "per-group disk writes are blank",
+    scrub: "Storage lists no scrub report",
+    smart: "Storage shows no drive lifetime writes",
+    tmux: "the Agents pane column is absent",
+  };
+  const cap = (id: CapabilityId, available: boolean): Capability => ({
+    id,
+    available,
+    failure: available ? null : "absent",
+    source: `/fixture/${id}`,
+    detail: "",
+  });
+  const said = new Set<string>();
+  for (const [id, phrase] of Object.entries(costs) as [
+    CapabilityId,
+    string,
+  ][]) {
+    const loss = capabilityLoss(cap(id, false));
+    expect({ id, says: loss.includes(phrase) }).toEqual({ id, says: true });
+    // And each says something of its own: one string reused across sources
+    // would tell a reader the same thing whatever they were missing.
+    expect({ id, seen: said.has(loss) }).toEqual({ id, seen: false });
+    said.add(loss);
+    // A source that answered costs nothing, so the row carries no sentence.
+    expect({ id, whole: capabilityLoss(cap(id, true)) }).toEqual({
+      id,
+      whole: "",
+    });
+  }
 });

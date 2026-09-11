@@ -610,6 +610,61 @@ test("a listed pane part shows the resolved address as its own column", async ()
   }
 });
 
+test("two agents in one session keep what tells their addresses apart", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The ordinary case: one tmux session, two windows. The addresses differ
+  // only after the colon, and the session name is longer than a fixed-width
+  // column cut from the right could hold, so such a column drew both rows as
+  // the same session name.
+  const addresses = [
+    "development-environment:1.1",
+    "development-environment:2.1",
+  ];
+  s.lanes = addresses.map((address, i) =>
+    laneSnapshot({ id: `a${i}`, name: `lane-${i}`, pane: `%${i}`, address }),
+  );
+  s.groups = [groupSnapshot()];
+  const paneCells = (frame: string) => {
+    const lines = frame.split("\n");
+    const heading = lines.find((line) => line.includes("Pane")) ?? "";
+    const at = heading.indexOf("Pane");
+    expect(at).toBeGreaterThan(0);
+    // An address holds no blank, so the cell ends at the first one.
+    const cells = [0, 1].map(
+      (i) =>
+        (lines.find((line) => line.includes(`lane-${i}`)) ?? "")
+          .slice(at)
+          .split(" ")[0],
+    );
+    return { heading, at, cells };
+  };
+  const wide = await mount(s, c, { width: 140, height: 24 });
+  try {
+    await wide.press("2");
+    // With the width to spare, each address is drawn whole.
+    expect(paneCells(wide.frame()).cells).toEqual(addresses);
+  } finally {
+    await wide.close();
+  }
+  // Too narrow for the whole address beside a name at its floor: the column
+  // narrows and the session is what gives.
+  const narrow = await mount(s, c, { width: 105, height: 24 });
+  try {
+    await narrow.press("2");
+    const { heading, at, cells } = paneCells(narrow.frame());
+    expect(cells[0]).toContain("…");
+    expect(cells[0].endsWith(":1.1")).toBe(true);
+    expect(cells[1].endsWith(":2.1")).toBe(true);
+    expect(cells[0]).not.toBe(cells[1]);
+    // The column narrowed for the name, so the name kept its floor: the pane
+    // heading starts no nearer the name's than that floor and a gap.
+    expect(at - heading.indexOf("Agent")).toBeGreaterThanOrEqual(24 + 2);
+  } finally {
+    await narrow.close();
+  }
+});
+
 test("a lane that exits while open leaves the list on a row that exists", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -1048,7 +1103,7 @@ test("a narrowing list gives up its readings before what names the row", async (
   const rows: [number, string[], string[]][] = [
     [140, ["Pane", "PID", "Program", "Trend", "Wait"], []],
     [130, ["Pane", "PID", "Program", "Wait"], ["Trend"]],
-    [120, ["Pane", "PID", "Wait"], ["Program", "Trend"]],
+    [110, ["Pane", "PID", "Wait"], ["Program", "Trend"]],
     [100, ["Pane", "PID"], ["Program", "Trend", "Wait"]],
   ];
   for (const [width, present, absent] of rows) {
@@ -1148,7 +1203,12 @@ test("the Agents list marks the sorted heading and flips it with the direction",
       .split(/\s{2,}/)
       .filter((part) => part.includes("↑") || part.includes("↓"));
     expect(marked).toHaveLength(1);
-    expect(marked[0]).not.toContain("CPU");
+    // Which heading, not merely that it is no longer the old one. `cpu` is
+    // followed by `pressure` in the stored column order, and `Wait` is the
+    // heading that reads. Asked only that the mark had left `CPU`, any other
+    // heading satisfied it, so a mapping sending `pressure` to `State` would
+    // have marked `State` over rows sorted by wait and passed.
+    expect(marked[0]).toContain("Wait");
   } finally {
     await t.close();
   }
@@ -1188,6 +1248,55 @@ test("search finds a row by the address and the window it shows", async () => {
       expect({ query, other: frame.includes("lane-b") }).toEqual({
         query,
         other: false,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("a stored sort marks the heading its own column is drawn under", async () => {
+  // Every sort key the list draws a heading for, at a width that draws all
+  // six. Four of the six were reached by no test, so a mapping could send any
+  // of them to any heading. Then two keys at widths that shed their column: a
+  // sort on a column the list does not draw marks no heading at all, rather
+  // than lending its arrow to one that is drawn.
+  const marks: [string, number, string, boolean][] = [
+    ["name", 140, "Agent", true],
+    ["tool", 140, "Program", true],
+    ["cpu", 140, "CPU", true],
+    ["rss", 140, "Memory", true],
+    ["pressure", 140, "Wait", true],
+    ["state", 140, "State", true],
+    ["tool", 110, "Program", false],
+    ["pressure", 100, "Wait", false],
+  ];
+  for (const [key, width, label, drawn] of marks) {
+    const c = { ...defaults(), sort: key };
+    const t = await mount(sameWorktree(true), c, { width, height: 24 });
+    try {
+      await t.press("2");
+      const heading =
+        t
+          .frame()
+          .split("\n")
+          .find((line) => line.includes("Agent") && line.includes("Memory")) ??
+        "";
+      // Whether the column is drawn at this width is the row's premise, so it
+      // is read here rather than assumed from the shed order.
+      expect({ key, width, drawn: heading.includes(label) }).toEqual({
+        key,
+        width,
+        drawn,
+      });
+      const marked = heading
+        .split(/\s{2,}/)
+        .filter((part) => part.includes("↑") || part.includes("↓"));
+      const on = marked.map((part) => part.replace(/[↑↓]/g, "").trim());
+      expect({ key, width, on }).toEqual({
+        key,
+        width,
+        on: drawn ? [label] : [],
       });
     } finally {
       await t.close();

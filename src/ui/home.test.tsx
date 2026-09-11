@@ -336,12 +336,31 @@ test("the region key moves across all four Home regions, and the focused one say
       expect(lit).toHaveLength(1);
       return titles.find((title) => lit[0].text.includes(title)) ?? "";
     };
+    // Half the indicator is the rule beside the title, which stops being dim
+    // for the region in focus. Only the accent title was ever read, so the
+    // rule could have stayed dim on every region and nothing would have said
+    // so, while two documents state that it does not.
+    const brightRules = () =>
+      t.ui
+        .captureSpans()
+        .lines.filter((line) =>
+          line.spans.some((span) =>
+            titles.some((title) => span.text.includes(title)),
+          ),
+        )
+        .flatMap((line) => line.spans)
+        .filter(
+          (span) => span.text.includes("─") && (span.attributes & ui.dim) === 0,
+        );
     // Home opens on a concern, so the first region is the one in focus.
     expect(focusedTitle()).toBe("Needs attention");
+    // Exactly one rule is undimmed, and it is the one beside that title.
+    expect(brightRules()).toHaveLength(1);
     await t.press(c.keys.next);
     expect(focusedTitle()).toBe("Recent changes");
     await t.press(c.keys.next);
     expect(focusedTitle()).toBe("Busiest agents");
+    expect(brightRules()).toHaveLength(1);
     // The last region holds rather than wrapping.
     await t.press(c.keys.next);
     expect(focusedTitle()).toBe("Busiest agents");
@@ -357,6 +376,8 @@ test("the region key moves across all four Home regions, and the focused one say
       .lines.flatMap((line) => line.spans)
       .filter((span) => titles.some((title) => span.text.includes(title)));
     expect(spans.filter((span) => span.fg.equals(ui.accent))).toHaveLength(0);
+    // And no list rule is lit either, because none of the three holds it.
+    expect(brightRules()).toHaveLength(0);
     // On the tiles, Enter opens the screen behind one.
     await t.press("enter");
     expect(t.frame()).toContain("Groups");
@@ -755,12 +776,27 @@ test("no alerts opened reads as a count, not as a missing one", async () => {
   }
 });
 
-/** Two agents whose order flips the moment their CPU readings swap. */
+/**
+ * Two agents whose order flips the moment their CPU readings swap, and whose
+ * memory order disagrees with their CPU order whichever way that goes. Given
+ * one memory reading each, a memory sort could not reorder them, so a test
+ * asking whether the rows had followed the heading could not tell.
+ */
 function twoAgents(topFirst: boolean) {
   const s = emptySnapshot();
   s.lanes = [
-    laneSnapshot({ id: "a", name: "lane-a", cpu: topFirst ? 90 : 10 }),
-    laneSnapshot({ id: "b", name: "lane-b", cpu: topFirst ? 10 : 90 }),
+    laneSnapshot({
+      id: "a",
+      name: "lane-a",
+      cpu: topFirst ? 90 : 10,
+      rss: 1024,
+    }),
+    laneSnapshot({
+      id: "b",
+      name: "lane-b",
+      cpu: topFirst ? 10 : 90,
+      rss: 8192,
+    }),
   ];
   s.groups = [groupSnapshot()];
   return s;
@@ -1038,11 +1074,21 @@ test("Busiest agents sorts from its own headings, and the heading says which", a
     await t.press(c.keys.reverse);
     expect(heading()).toContain("↑ CPU");
     expect(agentRows()[0]).toContain("lane-b");
-    // The sort key moves to the next heading this screen actually draws.
+    // The sort key moves to the next heading this screen actually draws, and
+    // the rows move with it. Checked on the heading alone, sorting by a fixed
+    // key while marking a moving one passed: the screen read `↑ Memory` over
+    // rows still in CPU order and nothing said so.
     await t.press(c.keys.sort);
-    expect(heading()).toContain("Memory");
+    expect(heading()).toContain("↑ Memory");
     expect(heading()).not.toContain("CPU ↑");
     expect(heading()).not.toContain("↑ CPU");
+    // Ascending memory, so the smaller of the two is on top: the opposite of
+    // the CPU order the rows were in a moment ago.
+    expect(agentRows()[0]).toContain("lane-a");
+    await t.press(c.keys.reverse);
+    expect(heading()).toContain("↓ Memory");
+    expect(agentRows()[0]).toContain("lane-b");
+    await t.press(c.keys.reverse);
     // Round the four headings and back to where it started.
     for (let i = 0; i < 3; i++) await t.press(c.keys.sort);
     expect(heading()).toContain("↑ CPU");

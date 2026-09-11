@@ -37,6 +37,21 @@ export function fit(
     ? ellipsis
     : `${points.slice(0, width - 1).join("")}${ellipsis}`;
 }
+/**
+ * A tmux address, `session:window.pane`, padded or cut to `width` code points.
+ * Two agents in one session differ only after the colon, so a cut from the
+ * right draws both as the same session name. The session is cut instead and
+ * the `:window.pane` suffix kept whole. An address with no colon, or a width
+ * too narrow for the suffix and its ellipsis, is cut as any other text is.
+ */
+export function fitAddress(address: string, width: number): string {
+  const colon = address.lastIndexOf(":");
+  if (colon < 0 || [...address].length <= width) return fit(address, width);
+  const suffix = address.slice(colon);
+  const room = width - [...suffix].length - 1;
+  if (room < 0) return fit(address, width);
+  return `${[...address.slice(0, colon)].slice(0, room).join("")}${ellipsis}${suffix}`;
+}
 /** One cell of a row, at its column's width and side. */
 export const cell = (column: Column, value: string): string =>
   fit(value, column.width, column.align);
