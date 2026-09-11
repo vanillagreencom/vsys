@@ -102,11 +102,21 @@ export function useKeepInView(
 }
 
 /**
- * A text line in the terminal's own foreground. OpenTUI paints text white
- * unless told otherwise, so every line on screen goes through here.
+ * A text line in the terminal's own foreground. OpenTUI paints text a fixed
+ * white unless told otherwise, so every line on screen goes through here. A
+ * caller's `fg={undefined}` counts as not telling it, so the fallback is
+ * applied after the caller's props, not before. Text dragged over with the
+ * mouse is otherwise painted a fixed black on its own foreground, so a
+ * selection takes the selected row's grey.
  */
 export function Line(props: TextProps) {
-  return <text fg={ui.fg} {...props} />;
+  return (
+    <text
+      {...props}
+      fg={props.fg ?? ui.fg}
+      selectionBg={props.selectionBg ?? ui.quiet}
+    />
+  );
 }
 
 /**
@@ -276,7 +286,7 @@ export function Bar({
   return (
     <>
       <span fg={color ?? levelColor(level)}>{filled}</span>
-      <span fg={ui.quiet} attributes={ui.dim}>
+      <span fg={ui.fg} attributes={ui.dim}>
         {"─".repeat(width - filled.length)}
       </span>
     </>
@@ -292,7 +302,7 @@ export function Sparkline({ marks, color }: { marks: string; color?: RGBA }) {
       {gapRuns(marks).map((run) => (
         <span
           key={`${run.at}`}
-          fg={run.sampled ? color : ui.quiet}
+          fg={run.sampled ? color : ui.fg}
           attributes={run.sampled ? ui.none : ui.dim}
         >
           {run.text}
@@ -694,7 +704,7 @@ export function Chart({
           {gapRuns(row).map((run) => (
             <span
               key={`${run.at}`}
-              fg={run.sampled ? color : ui.quiet}
+              fg={run.sampled ? color : ui.fg}
               attributes={run.sampled ? ui.none : ui.dim}
             >
               {run.text}

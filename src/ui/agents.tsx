@@ -29,7 +29,7 @@ import {
   sparkline,
 } from "./format";
 import { useScreenKeys } from "./keys";
-import { levelColor, metric, scrollbar, ui } from "./theme";
+import { levelColor, metric, scrollbar, textInput, ui } from "./theme";
 import {
   Bar,
   Line,
@@ -723,6 +723,7 @@ export function Agents({
             marginBottom={0}
           >
             <input
+              {...textInput}
               focused
               value={query}
               placeholder="name, process id, account, pane, branch or worktree"
@@ -739,7 +740,7 @@ export function Agents({
             focused={!searching}
             scrollX
             scrollY={false}
-            horizontalScrollbarOptions={scrollbar}
+            scrollbarOptions={scrollbar}
             contentOptions={{ flexShrink: 0 }}
           >
             <box flexDirection="column" flexShrink={0}>

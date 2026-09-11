@@ -21,7 +21,7 @@ import {
   settingHelp,
   settingLabel,
 } from "./settings";
-import { scrollbar, ui } from "./theme";
+import { scrollbar, textInput, ui } from "./theme";
 import {
   Detail,
   Disclosure,
@@ -378,6 +378,7 @@ export function Settings({
           >
             <box height={1} flexShrink={0}>
               <input
+                {...textInput}
                 focused
                 value={input}
                 onInput={setInput}
@@ -437,7 +438,7 @@ export function Settings({
       minHeight={0}
       scrollY
       focused={!editing && !picking}
-      verticalScrollbarOptions={scrollbar}
+      scrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
       <box flexDirection="column" flexShrink={0} paddingX={2}>
@@ -451,6 +452,7 @@ export function Settings({
             title=" Find a setting "
           >
             <input
+              {...textInput}
               focused
               value={query}
               placeholder="name or label"
