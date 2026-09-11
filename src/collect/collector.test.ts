@@ -453,3 +453,118 @@ test("a settings change keeps the cache counts measured since vsys started", asy
     windowMs: 1000,
   });
 });
+
+/** Lanes in as many tmux panes, so one read has to serve all of them. */
+function panedFixture(f: ReturnType<typeof fixture>, count: number) {
+  for (let i = 0; i < count; i++) {
+    f.group(`agents.slice/pane-${i}.scope`, [100 + i]);
+    f.proc(100 + i, `agents.slice/pane-${i}.scope`, {
+      env: `TMUX_PANE=%${i}\0`,
+      ticks: 10,
+    });
+  }
+}
+
+test("one tmux read resolves every lane's pane, however many lanes there are", async () => {
+  const f = setup();
+  panedFixture(f, 12);
+  let reads = 0;
+  const collector = new Collector(f.config, 100, 4096, false, undefined, {
+    probe: () => null,
+    panes: async () => {
+      reads++;
+      return {
+        socket: "/tmp/tmux-1000/default",
+        byId: new Map(
+          Array.from({ length: 12 }, (_, i) => [
+            `%${i}`,
+            { address: `vsys:${i}.1`, window: `w-${i}` },
+          ]),
+        ),
+      };
+    },
+  });
+  const s = await collector.sample(1000);
+  const resolved = s.lanes.filter((lane) => lane.address !== "");
+  expect(resolved).toHaveLength(12);
+  // One call for the whole server, not one per lane.
+  expect(reads).toBe(1);
+  // The raw handle is untouched: it is what every action addresses.
+  const first = s.lanes.find((lane) => lane.pane === "%0");
+  expect(first?.address).toBe("vsys:0.1");
+  expect(first?.window).toBe("w-0");
+  // A second sample is a second read, not a cached one: panes move.
+  await collector.sample(2000);
+  expect(reads).toBe(2);
+});
+
+test("a tmux server that starts after vsys still gets its lanes addressed", async () => {
+  const f = setup();
+  panedFixture(f, 3);
+  let reads = 0;
+  // The ordinary order for this program: vsys is a dashboard for agents, and
+  // the agents, with the tmux they run in, start after it.
+  let running = false;
+  const collector = new Collector(f.config, 100, 4096, false, undefined, {
+    probe: () => ({ failure: "incomplete", detail: "no server running" }),
+    panes: async () => {
+      reads++;
+      if (!running) throw new Error("no server on /tmp/tmux-1000/default");
+      return {
+        socket: "/tmp/tmux-1000/default",
+        byId: new Map(
+          Array.from({ length: 3 }, (_, i) => [
+            `%${i}`,
+            { address: `vsys:${i}.1`, window: `w-${i}` },
+          ]),
+        ),
+      };
+    },
+  });
+  const before = await collector.sample(1000);
+  expect(before.lanes.every((lane) => lane.address === "")).toBe(true);
+  // The pane handle still arrives; only its resolution is missing.
+  expect(before.lanes.some((lane) => lane.pane.startsWith("%"))).toBe(true);
+  expect(before.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
+    false,
+  );
+  // A server that never answered is a capability with a reason, not a source
+  // the reader is told is unreadable on every tick for the life of the run.
+  expect(before.errors).toEqual([]);
+  // A server comes up. Nothing re-probes and nothing restarts.
+  running = true;
+  const after = await collector.sample(2000);
+  expect(after.lanes.filter((lane) => lane.address !== "")).toHaveLength(3);
+  expect(after.lanes.find((lane) => lane.pane === "%0")?.address).toBe(
+    "vsys:0.1",
+  );
+  expect(after.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
+    true,
+  );
+  // Gated on the startup probe this read was never attempted at all, so the
+  // count is what says the gate opened rather than the addresses arriving by
+  // some other route.
+  expect(reads).toBe(2);
+  // The first snapshot is not rewritten by what the second learned.
+  expect(before.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
+    false,
+  );
+});
+
+test("a tmux server that stops answering mid-run costs the addresses, not the sample", async () => {
+  const f = setup();
+  panedFixture(f, 2);
+  const collector = new Collector(f.config, 100, 4096, false, undefined, {
+    probe: () => null,
+    panes: async () => {
+      throw new Error("no server running on /tmp/tmux-1000/default");
+    },
+  });
+  const s = await collector.sample(1000);
+  expect(s.lanes.every((lane) => lane.address === "")).toBe(true);
+  expect(s.lanes).not.toHaveLength(0);
+  // The failure is reported as a source that could not be read, and the rest
+  // of the sample still arrives.
+  expect(s.errors.map((e) => e.source)).toContain("tmux list-panes");
+  expect(s.system.cores).toBeGreaterThan(0);
+});

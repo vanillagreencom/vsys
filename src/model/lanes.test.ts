@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
 import { groupSnapshot, processSnapshot } from "../test/fixture";
 import { effectiveMax, lanes, parentChain, processTree } from "./lanes";
@@ -276,4 +277,144 @@ test("a blocked lane counts its waiting tasks and names the resource they wait o
   ]);
   expect(on(5, 40).blockedOn).toBe("memory");
   expect(lanes([groupSnapshot(base)], procs, c)[0].blockedOn).toBeNull();
+});
+
+test("a configured pane address is the address, not a key into the server", () => {
+  const c = defaults();
+  const groups = [groupSnapshot({ path: "a.scope", name: "a.scope" })];
+  // `paneEnv` reads VSYS_PANE first, and that carries an address rather than a
+  // pane id — which is what this project's own naming test asserts wins.
+  const configured = processSnapshot({
+    pid: 1,
+    group: "a.scope",
+    tool: "claude",
+    env: { VSYS_PANE: "work:2.1" },
+  });
+  const handle = processSnapshot({
+    pid: 2,
+    group: "b.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%12" },
+  });
+  const panes = new Map([["%12", { address: "work:3.2", window: "build" }]]);
+  const [byAddress] = lanes(groups, [configured], c, 0, panes);
+  // Looked up in a map keyed by `%N` it found nothing and the row showed no
+  // address at all, for the configuration this repository documents.
+  expect({ pane: byAddress.pane, address: byAddress.address }).toEqual({
+    pane: "work:2.1",
+    address: "work:2.1",
+  });
+  // What it cannot give is a window name: only the server knows those, and it
+  // was not asked about this pane.
+  expect(byAddress.window).toBe("");
+  // A handle still resolves through the server, which is the other half.
+  const [byHandle] = lanes(
+    [groupSnapshot({ path: "b.scope", name: "b.scope" })],
+    [handle],
+    c,
+    0,
+    panes,
+  );
+  expect({ address: byHandle.address, window: byHandle.window }).toEqual({
+    address: "work:3.2",
+    window: "build",
+  });
+});
+
+test("a pane on another tmux server resolves to nothing, not to a stranger", () => {
+  const c = defaults();
+  const groups = [
+    groupSnapshot({ path: "a.scope", name: "a.scope" }),
+    groupSnapshot({ path: "b.scope", name: "b.scope" }),
+  ];
+  const path = "/tmp/tmux-1000/default";
+  // The server vsys read, named the way the collector names it: from the
+  // `TMUX` of vsys's own shell rather than written out by hand, so a test
+  // cannot agree with a lane by a spelling production does not use.
+  const socket = serverPart(`${path},4242,3`);
+  // Two lanes carrying the same handle, because `%9` is unique per server and
+  // says nothing across one. One belongs to the server vsys read; the other
+  // does not.
+  const here = processSnapshot({
+    pid: 1,
+    group: "a.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%9", TMUX: `${path},4242,0` },
+  });
+  const away = processSnapshot({
+    pid: 2,
+    group: "b.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%9", TMUX: "/tmp/tmux-1000/other,777,0" },
+  });
+  const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
+  const [mine, theirs] = lanes(groups, [here, away], c, 0, panes, socket);
+  // The lane on this server reads as it always did.
+  expect({
+    address: mine.address,
+    window: mine.window,
+    elsewhere: mine.elsewhere,
+  }).toEqual({ address: "work:1.1", window: "build", elsewhere: false });
+  // The other resolves to nothing and says why. Compared by handle alone both
+  // rows showed `work:1.1`, and a switch would have moved the reader to a pane
+  // they have never seen.
+  expect({
+    address: theirs.address,
+    window: theirs.window,
+    elsewhere: theirs.elsewhere,
+  }).toEqual({ address: "", window: "", elsewhere: true });
+  // A boundary vsys cannot see is not one it refuses at: with no server known
+  // for the read, or none for the lane, both resolve as before.
+  const [unknownServer] = lanes(groups, [away], c, 0, panes);
+  expect(unknownServer.elsewhere).toBe(false);
+  const bare = processSnapshot({
+    pid: 3,
+    group: "a.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%9" },
+  });
+  const [unknownLane] = lanes(groups, [bare], c, 0, panes, socket);
+  expect(unknownLane.elsewhere).toBe(false);
+  expect(unknownLane.address).toBe("work:1.1");
+});
+
+test("a restarted server on the same socket path is a different server", () => {
+  const c = defaults();
+  const groups = [
+    groupSnapshot({ path: "a.scope", name: "a.scope" }),
+    groupSnapshot({ path: "b.scope", name: "b.scope" }),
+  ];
+  const path = "/tmp/tmux-1000/default";
+  // Measured on this machine: every client of one server carries the same
+  // `socket,serverpid` and differs only in the session after it.
+  const socket = serverPart(`${path},4242,3`);
+  // A server that died and restarted takes the default socket path back, and
+  // hands out `%N` from one again. This process outlived its own server, so
+  // its `%9` is not the `%9` the running server holds.
+  const stale = processSnapshot({
+    pid: 1,
+    group: "a.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%9", TMUX: `${path},777,0` },
+  });
+  // Another client of the server vsys read, in a different session. The path
+  // and the pid both match, so nothing that compared equal stops doing so.
+  const sibling = processSnapshot({
+    pid: 2,
+    group: "b.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%9", TMUX: `${path},4242,7` },
+  });
+  const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
+  const [dead, live] = lanes(groups, [stale, sibling], c, 0, panes, socket);
+  // Compared by path alone the stale lane showed `work:1.1` and offered a
+  // switch, and the reader would have landed in a stranger's pane.
+  expect({ address: dead.address, elsewhere: dead.elsewhere }).toEqual({
+    address: "",
+    elsewhere: true,
+  });
+  expect({ address: live.address, elsewhere: live.elsewhere }).toEqual({
+    address: "work:1.1",
+    elsewhere: false,
+  });
 });

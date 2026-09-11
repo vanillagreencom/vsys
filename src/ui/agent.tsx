@@ -2,6 +2,7 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useRef, useState } from "react";
 import { Reader } from "../collect/io";
 import { scratchFiles } from "../collect/procs";
+import { switchCommand } from "../collect/tmux";
 import type { Config } from "../config/config";
 import {
   type LaneIntent,
@@ -48,7 +49,15 @@ import {
 } from "./widgets";
 
 /** The drill-down sections, closed until the reader opens one. */
-const sections = ["Processes", "Launch", "Open files", "Actions"] as const;
+/** How many captured lines the section shows: the tail is what is happening. */
+const terminalLines = 12;
+const sections = [
+  "Processes",
+  "Launch",
+  "Terminal",
+  "Open files",
+  "Actions",
+] as const;
 type SectionName = (typeof sections)[number];
 /**
  * The selectable lines under Details. Actions sits last, so opening it adds
@@ -57,6 +66,7 @@ type SectionName = (typeof sections)[number];
  */
 type DetailRow =
   | { kind: "section"; name: SectionName }
+  | { kind: "terminal" }
   | { kind: "action"; intent: LaneIntent };
 
 /** Who an agent is: its name, its badge, its account and where it runs. */
@@ -84,8 +94,13 @@ export function AgentIdentity({
           [
             lane.tool || "no agent program",
             `account ${lane.account ?? gap}`,
-            lane.pane ? `pane ${lane.pane}` : "",
-            lane.title ? `window ${lane.title}` : "",
+            // The address is what a reader can act on; the raw `%N` is the
+            // handle vsys acts through, and both are shown rather than one
+            // standing in for the other.
+            lane.address ? `pane ${lane.address}` : "",
+            lane.address && lane.window ? `window ${lane.window}` : "",
+            !lane.address && lane.pane ? `pane ${lane.pane}` : "",
+            lane.title ? `title ${lane.title}` : "",
           ]
             .filter(Boolean)
             .join(" · "),
@@ -199,6 +214,9 @@ export function Agent({
   windowMs,
   onCopy,
   onAct,
+  onError,
+  onCapture,
+  onSwitch,
 }: {
   lane: Lane;
   snapshot: Snapshot;
@@ -211,6 +229,19 @@ export function Agent({
   onCopy: (command: string | undefined) => void;
   /** Asks the shell for an action; the shell alone decides whether it runs. */
   onAct: (intent: LaneIntent) => void;
+  /** Where a rejected read or switch reaches the reader, as a notice. */
+  onError: (error: unknown) => void;
+  /**
+   * Reads what the agent's pane last drew. This changes nothing, so it is not
+   * an action and does not wait on write mode.
+   */
+  onCapture?: (paneId: string) => Promise<string[]>;
+  /**
+   * Moves the reader's own tmux view to that pane. Present only when vsys is
+   * itself a client of the server holding it; absent, the row hands over the
+   * command as text instead. Moving a view touches no process either way.
+   */
+  onSwitch?: (paneId: string) => Promise<void>;
 }) {
   const [files, setFiles] = useState<string[]>([]);
   const [loaded, setLoaded] = useState<{
@@ -221,10 +252,48 @@ export function Agent({
   const [seriesError, setSeriesError] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
   const [open, setOpen] = useState<Set<SectionName>>(new Set());
+  const [pane, setPane] = useState<
+    { lines: string[] } | { error: string } | null
+  >(null);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
+  const placed = useRef<number | null>(null);
+  // Asked of the drawing, not enumerated from state. Naming `selected` alone
+  // meant a capture arriving with twelve lines pushed the highlighted row off
+  // the screen while the keys still acted on it, and naming the capture beside
+  // it would have left the same hole for the next section anyone adds.
+  //
+  // What the box is asked is where the row sits in the content: its screen `y`
+  // plus how far the content is scrolled. That sum is the one number here the
+  // reader's own scrolling leaves alone, and this box takes the wheel, so an
+  // effect that could not tell the two apart would drag the reader back to the
+  // selection on every sample.
+  //
+  // A row that has just grown does not know its size until the layout after
+  // the render that grew it, so the reading that matters is the one taken on a
+  // timeout. The synchronous reading is the same question asked early, and it
+  // is worth asking only once there is a settled answer to compare it with:
+  // measured, the two disagree by a line on arrival, and taking the early one
+  // as the baseline made the settled one look like a row that had moved and
+  // opened the detail a line down.
+  //
+  // The first settled reading only records. Nothing has moved yet, and
+  // scrolling on arrival would open the detail below the identity line and the
+  // charts, which is what the reader came to read.
   useEffect(() => {
-    scroller.current?.scrollChildIntoView(`detail-${selected}`);
-  }, [selected]);
+    const place = () => {
+      const box = scroller.current;
+      const row = box?.content.findDescendantById(`detail-${selected}`);
+      if (!box || !row) return;
+      const at = row.y + box.scrollTop;
+      if (placed.current === at) return;
+      const first = placed.current === null;
+      placed.current = at;
+      if (!first) box.scrollChildIntoView(`detail-${selected}`);
+    };
+    if (placed.current !== null) place();
+    const pending = setTimeout(place, 0);
+    return () => clearTimeout(pending);
+  });
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
   useEffect(() => {
@@ -239,6 +308,33 @@ export function Agent({
       ...reader.errors.map((e) => `${e.source}: ${e.message}`),
     ]);
   }, [lane.pids, c, live]);
+  const terminalOpen = open.has("Terminal");
+  // The sample time is in the dependency list because it is the reason this
+  // reads again: a terminal that only draws what it drew when the reader
+  // opened it is not a terminal. The body has no other use for it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the sample time is the clock
+  useEffect(() => {
+    if (!terminalOpen || !onCapture || !lane.pane || lane.elsewhere) {
+      setPane(null);
+      return;
+    }
+    let current = true;
+    onCapture(lane.pane)
+      .then((lines) => {
+        if (current) setPane({ lines });
+      })
+      .catch((error: unknown) => {
+        // A pane that has gone away says so in the server's own words, which
+        // is a reader's only clue; an empty box would read as an idle agent.
+        if (current)
+          setPane({
+            error: error instanceof Error ? error.message : String(error),
+          });
+      });
+    return () => {
+      current = false;
+    };
+  }, [terminalOpen, onCapture, lane.pane, snapshot.time]);
   useEffect(() => {
     let current = true;
     setSeriesError(null);
@@ -263,7 +359,15 @@ export function Agent({
   }, [history, lane.id, snapshot.time, windowMs]);
   const target = laneTarget(lane, c);
   const rows: DetailRow[] = [
-    ...sections.map((name) => ({ kind: "section", name }) as const),
+    ...sections.flatMap((name): DetailRow[] =>
+      name === "Terminal" &&
+      terminalOpen &&
+      lane.pane &&
+      live &&
+      !lane.elsewhere
+        ? [{ kind: "section", name }, { kind: "terminal" }]
+        : [{ kind: "section", name }],
+    ),
     ...(open.has("Actions") && target
       ? laneActions.map(
           (action) =>
@@ -283,16 +387,37 @@ export function Agent({
     if (name === c.keys.open) {
       const row = rows[selected];
       if (row?.kind === "section") toggle(row.name);
+      else if (row?.kind === "terminal") goToTerminal();
       else if (row) onAct(row.intent);
       return true;
     }
     if (name === c.keys.copy) {
       const row = rows[selected];
-      onCopy(row?.kind === "action" ? row.intent.text : undefined);
+      onCopy(
+        row?.kind === "action"
+          ? row.intent.text
+          : row?.kind === "terminal"
+            ? switchCommand(lane.pane)
+            : undefined,
+      );
       return true;
     }
     return false;
   });
+  /**
+   * One row, two answers. Inside the server that holds the pane vsys moves the
+   * reader's own view; outside it there is no client to move, so the line goes
+   * to the clipboard and the row says why. No terminal is ever launched: the
+   * program that would open one differs on every desktop and does not exist on
+   * macOS, while a switch behaves the same wherever tmux runs.
+   */
+  const goToTerminal = () => {
+    // A switch rejects when the pane has gone, the server stopped or the
+    // target is not one it holds. Dropped, the reader pressed a key, nothing
+    // moved, and nothing said why.
+    if (onSwitch) void onSwitch(lane.pane).catch(onError);
+    else onCopy(switchCommand(lane.pane));
+  };
   const toggle = (name: SectionName) =>
     setOpen((current) => {
       const next = new Set(current);
@@ -388,7 +513,25 @@ export function Agent({
         ))}
         <Section title="Details" width={width - 4} />
         {rows.map((row, i) =>
-          row.kind === "action" ? (
+          row.kind === "terminal" ? (
+            <box
+              id={`detail-${i}`}
+              key="go-to-terminal"
+              flexShrink={0}
+              paddingLeft={3}
+            >
+              <Row selected={selected === i} onOpen={goToTerminal}>
+                {fit("Go to terminal", 16)}
+                <span attributes={ui.dim}>
+                  {safe(
+                    onSwitch
+                      ? `moves this terminal to ${lane.address || lane.pane}`
+                      : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
+                  )}
+                </span>
+              </Row>
+            </box>
+          ) : row.kind === "action" ? (
             <box
               id={`detail-${i}`}
               key={row.intent.action}
@@ -440,6 +583,57 @@ export function Agent({
                       {!tree.length && (
                         <Empty text="No process in this sample." />
                       )}
+                    </>
+                  )}
+                  {row.name === "Terminal" && (
+                    <>
+                      {!lane.pane && (
+                        <Empty text="This agent exported no pane address, so vsys cannot find its terminal." />
+                      )}
+                      {/* A pane holds what it holds now, so reading one inside
+                          a view of an older sample would put the present
+                          inside the past. Said here rather than blamed on the
+                          server, which is reachable. */}
+                      {/* `%9` is unique per tmux server, so the server this
+                          vsys reads holds a `%9` of its own: reading or
+                          switching would reach a stranger's pane. */}
+                      {lane.pane && lane.elsewhere && (
+                        <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
+                      )}
+                      {lane.pane && !lane.elsewhere && !live && (
+                        <Empty text="A pane is read live; this is a past sample." />
+                      )}
+                      {lane.pane && !lane.elsewhere && live && !onCapture && (
+                        <Empty text="Reading a pane needs a tmux server this vsys can reach." />
+                      )}
+                      {lane.pane &&
+                        !lane.elsewhere &&
+                        live &&
+                        onCapture &&
+                        pane === null && <Empty text="Reading the pane…" />}
+                      {pane !== null && "error" in pane && (
+                        <Empty
+                          text={`This pane could not be read: ${safe(pane.error)}`}
+                        />
+                      )}
+                      {pane !== null &&
+                        "lines" in pane &&
+                        (pane.lines.length ? (
+                          pane.lines.slice(-terminalLines).map((line, at) => (
+                            <Line
+                              // biome-ignore lint/suspicious/noArrayIndexKey: a captured line is its position
+                              key={`pane-${at}`}
+                              height={1}
+                              flexShrink={0}
+                              truncate
+                              attributes={ui.dim}
+                            >
+                              {safe(line)}
+                            </Line>
+                          ))
+                        ) : (
+                          <Empty text="This pane has drawn nothing." />
+                        ))}
                     </>
                   )}
                   {row.name === "Launch" && (

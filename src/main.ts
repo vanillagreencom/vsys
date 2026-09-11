@@ -3,8 +3,9 @@ import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { createCollector } from "./collect/collector";
+import { capturePane, insideTmux } from "./collect/tmux";
 import { configPath, loadConfig } from "./config/config";
-import { runEffect } from "./effect";
+import { runEffect, switchToPane } from "./effect";
 import { exportSnapshot } from "./model/export";
 import { Session } from "./runtime";
 import { History } from "./store/history";
@@ -105,6 +106,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     // write mode is off; reaching here means the reader turned it on and
     // confirmed this exact command against live data.
     onAction: ({ effect }) => runEffect(effect),
+    // Reading a pane and moving the reader's view touch no process, so neither
+    // is an action. The switch is offered only from inside a tmux client,
+    // because outside one there is no view to move.
+    onCapture: capturePane,
+    ...(insideTmux(process.env) ? { onSwitch: switchToPane } : {}),
     output: process.stdout,
   });
   const session = new Session(config, path, collector, history, {

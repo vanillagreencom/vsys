@@ -12,7 +12,13 @@ export function mountScreen(
   config: Config,
   actions: Pick<
     AppProps,
-    "onQuit" | "onSave" | "onExport" | "onAction" | "output"
+    | "onQuit"
+    | "onSave"
+    | "onExport"
+    | "onAction"
+    | "onCapture"
+    | "onSwitch"
+    | "output"
   >,
 ) {
   type Frame = { snapshot: Snapshot; history: History; config: Config };

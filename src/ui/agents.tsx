@@ -266,6 +266,10 @@ export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
         lane.name,
         lane.account ?? "",
         lane.pane,
+        // The address and the window are columns a reader can see, so a query
+        // typed from the screen has to find the row showing it.
+        lane.address,
+        lane.window,
         lane.title,
         lane.cwd,
         lane.branch,
@@ -311,6 +315,8 @@ export function Agents({
   onOpen,
   onCopy,
   onAct,
+  onCapture,
+  onSwitch,
 }: {
   snapshot: Snapshot;
   history: History;
@@ -325,6 +331,10 @@ export function Agents({
   onOpen: (id: string | null) => void;
   onCopy: (command: string | undefined) => void;
   onAct: (intent: LaneIntent) => void;
+  /** Reads an agent's tmux pane; the agent detail alone uses it. */
+  onCapture?: (paneId: string) => Promise<string[]>;
+  /** Moves the reader's tmux view; absent when vsys is outside that server. */
+  onSwitch?: (paneId: string) => Promise<void>;
 }) {
   /**
    * What the reader chose: the row they moved to, and the lane that row named
@@ -499,7 +509,15 @@ export function Agents({
   // spare the columns: a name cut back to its account tells one row from the
   // next by nothing at all, which costs the reader more than a trend gains.
   const nameFloor = 24;
+  // `laneNameParts` listing `pane` no longer composes anything into the name:
+  // `%9` is a server handle a reader cannot place. It selects this column
+  // instead, so a stored config keeps loading and the setting keeps meaning.
+  const showAddress =
+    !narrow &&
+    c.laneNameParts.includes("pane") &&
+    lanes.some((lane) => lane.address !== "");
   const readingsWith = (trend: boolean): Column[] => [
+    ...(showAddress ? [{ label: "Pane", width: 12 }] : []),
     ...(narrow ? [] : [{ label: "Program", width: 9 }]),
     { label: "", width: 10 },
     { label: "CPU", width: 7, align: "right" as const },
@@ -513,6 +531,9 @@ export function Agents({
     columnsWidth(readingsWith(trend)) -
     columnGap.length * 2 -
     stateFloor;
+  // When both cannot fit, the trend goes and the address stays: the address is
+  // identity nothing else on the row carries, while the trend's own number is
+  // already in the CPU column beside it.
   const showTrend = !narrow && roomWith(true) >= nameFloor;
   const readings = readingsWith(showTrend);
   const spare = roomWith(showTrend);
@@ -539,7 +560,7 @@ export function Agents({
     if (!found) throw new Error(`No lane column named ${label}`);
     return found;
   };
-  const barColumn = laneColumns[narrow ? 1 : 2];
+  const barColumn = laneColumn("");
   const listHeight = height - 3 - (searching ? 3 : 0);
   // Only the rows the list draws: the window the list computes is the window
   // the store is asked for, so the two cannot disagree.
@@ -570,6 +591,9 @@ export function Agents({
         windowMs={windowMs}
         onCopy={onCopy}
         onAct={onAct}
+        onError={onError}
+        onCapture={onCapture}
+        onSwitch={onSwitch}
       />
     ) : (
       <box paddingX={2}>
@@ -740,6 +764,11 @@ export function Agents({
                     }}
                   >
                     {safe(cell(nameColumn, lane.name))}
+                    {showAddress && (
+                      <span attributes={ui.dim}>
+                        {`${columnGap}${safe(cell(laneColumn("Pane"), lane.address))}`}
+                      </span>
+                    )}
                     {!narrow && (
                       <span attributes={ui.dim}>
                         {`${columnGap}${safe(cell(laneColumn("Program"), lane.tool))}`}

@@ -141,6 +141,24 @@ export interface Lane {
   account: string | null;
   /** tmux pane address and window title, empty when the pane exported none. */
   pane: string;
+  /**
+   * The address a reader can type, `session:window.pane`. A `%N` handle is
+   * resolved to one by the server; anything else the pane exported is already
+   * an address and stands as it is, with no window name, which only the
+   * server holds. Empty when a handle resolved to nothing: no tmux, no server
+   * answering, the pane gone, or the handle belonging to another server. It
+   * is never a reading of whether tmux is there, because a configured address
+   * fills it with no tmux at all. The lane still acts through the raw `pane`
+   * handle, which never changes.
+   */
+  address: string;
+  window: string;
+  /**
+   * The pane belongs to a tmux server this vsys is not talking to, so its
+   * handle names a different pane here. True only when both servers are known
+   * and differ.
+   */
+  elsewhere: boolean;
   title: string;
   cwd: string;
   branch: string;
@@ -208,7 +226,8 @@ export type CapabilityId =
   | "psi"
   | "io-stat"
   | "scrub"
-  | "smart";
+  | "smart"
+  | "tmux";
 /**
  * Why a source could not be used. The kinds are distinct diagnoses: a kernel
  * that never built the interface, a file the user cannot read, a file that did

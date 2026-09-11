@@ -216,6 +216,10 @@ export class ProcessCollector {
       "RUST_TEST_THREADS",
       "SHELL",
       "RUSTC_WRAPPER",
+      // Which tmux server the pane belongs to. Read here because this file
+      // is already parsed whole and filtered by this list, so one more name
+      // costs no read.
+      "TMUX",
       c.laneEnv,
       ...c.capMarkers,
       ...c.jobserverEnv,

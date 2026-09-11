@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
+import { serverPart } from "../collect/tmux";
 import type { Proc } from "./types";
 
 /**
@@ -36,6 +37,15 @@ export function accountName(
  */
 export function paneName(main: Proc | undefined, c: CollectionConfig): string {
   return firstEnv(main, c.paneEnv) ?? "";
+}
+/**
+ * The tmux server the pane belongs to, from the `TMUX` its own shell carries:
+ * the socket path and the server's own pid, which every client of that server
+ * carries alike. Empty when the process exported none, which is not a claim
+ * about which server it is.
+ */
+export function paneSocket(main: Proc | undefined): string {
+  return serverPart(firstEnv(main, ["TMUX"]));
 }
 export function windowTitle(
   main: Proc | undefined,

@@ -1,11 +1,13 @@
 import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
+import { isPaneId, type PaneAddress } from "../collect/tmux";
 import {
   accountName,
   distinctNames,
   jobserver,
   laneName,
   paneName,
+  paneSocket,
   unitLabel,
   windowTitle,
 } from "./naming";
@@ -69,6 +71,13 @@ export function lanes(
   procs: Proc[],
   c: CollectionConfig,
   cores = 0,
+  /** Every pane the tmux server holds, read once for the whole sample. */
+  panes?: Map<string, PaneAddress>,
+  /**
+   * The server those panes came from. Empty or absent means vsys does not know
+   * which server it read, and an unknown boundary is not one to refuse at.
+   */
+  socket = "",
 ): Lane[] {
   const covered = new Set<number>();
   const result: Lane[] = [];
@@ -91,6 +100,9 @@ export function lanes(
           : basename(cwd);
     const account = accountName(main, c);
     const pane = paneName(main, c);
+    // Two servers, both known, and not the same one.
+    const mine = paneSocket(main);
+    const elsewhere = socket !== "" && mine !== "" && mine !== socket;
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
@@ -120,6 +132,34 @@ export function lanes(
         id,
       account,
       pane,
+      // The resolved address is a reading, not part of the name: `%9` stays
+      // the handle every action uses, and the address is what a reader reads.
+      //
+      // The map is keyed by tmux's own `%N`, and `paneEnv` reads `VSYS_PANE`
+      // first, which this project documents and tests as holding an address
+      // like `work:2.1`. Looked up by that, every configured lane found
+      // nothing and showed no address at all. An address configured directly
+      // is already the thing a reader types, so it is carried as it stands;
+      // what it cannot give is a window name, which only the server knows.
+      address: elsewhere
+        ? ""
+        : isPaneId(pane)
+          ? (panes?.get(pane)?.address ?? "")
+          : pane,
+      window: elsewhere
+        ? ""
+        : isPaneId(pane)
+          ? (panes?.get(pane)?.window ?? "")
+          : "",
+      /**
+       * The pane belongs to a tmux server this vsys is not talking to. `%9` is
+       * unique per server, so the one this vsys read holds a `%9` of its own
+       * and reading or switching to it would reach a stranger's pane. Refused
+       * only when both servers are known and differ: an unknown one is not a
+       * boundary vsys can see, and the only route to a handle with no server
+       * is a reader setting it themselves.
+       */
+      elsewhere,
       title,
       cwd,
       branch,

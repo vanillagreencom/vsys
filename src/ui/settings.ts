@@ -269,6 +269,7 @@ export const capabilityLabels: Record<CapabilityId, string> = {
   "io-stat": "Per-group disk counters",
   scrub: "Disk scrub reports",
   smart: "Drive lifetime reports",
+  tmux: "Terminal panes (tmux)",
 };
 /** What the interface never existing means, per capability. */
 const absentReasons: Record<CapabilityId, string> = {
@@ -278,6 +279,11 @@ const absentReasons: Record<CapabilityId, string> = {
   "io-stat": "no io.stat for these resource groups",
   scrub: "no readable scrub report directory",
   smart: "no readable drive report directory",
+  tmux: "no tmux on the path",
+};
+/** What a present interface that answered with too little means, per capability. */
+const incompleteReasons: Partial<Record<CapabilityId, string>> = {
+  tmux: "tmux is installed but no server is answering",
 };
 /**
  * One cause per capability, derived from what the probe found rather than from
@@ -293,7 +299,10 @@ export function capabilityReason(cap: Capability): string {
     case "malformed":
       return `${cap.source} is not in the expected format`;
     case "incomplete":
-      return `this login session is not given ${cap.detail}`;
+      return (
+        incompleteReasons[cap.id] ??
+        `this login session is not given ${cap.detail}`
+      );
     default:
       return "";
   }

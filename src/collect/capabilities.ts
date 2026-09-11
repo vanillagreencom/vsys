@@ -8,10 +8,11 @@ import type {
 } from "../model/types";
 import { pressure } from "./io";
 import type { CollectionConfig } from "./settings";
+import { listPanesArgv } from "./tmux";
 
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
-type Outcome = { failure: CapabilityFailure; detail: string } | null;
+export type Outcome = { failure: CapabilityFailure; detail: string } | null;
 
 /**
  * The system decides the diagnosis, never the reader. An errno for a source
@@ -27,11 +28,47 @@ function classify(error: unknown): Outcome {
 }
 
 /**
+ * Whether a tmux server answers. Two separate absences: no tmux on the path at
+ * all, and a tmux that is installed with nothing running for it to read. The
+ * second is not a broken installation, so it is reported as an interface that
+ * answered without giving what the reading needs.
+ */
+export function probeTmux(argv: string[] = listPanesArgv): Outcome {
+  let result: { exitCode: number; stderr: Uint8Array };
+  try {
+    result = Bun.spawnSync(argv, {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } catch (error) {
+    // Nothing ran: Bun throws when the program is not on the path. That is the
+    // whole of what `absent` means, and it is a fact about the spawn rather
+    // than a reading of anything the program said.
+    return { failure: "absent", detail: String(error) };
+  }
+  if (result.exitCode === 0) return null;
+  // tmux ran and refused, which is never an absence however it is worded. A
+  // server that is not up says `error connecting to /tmp/tmux-1000/default
+  // (No such file or directory)`, and matching that against a pattern for a
+  // missing program told a reader who has tmux installed to go and install it.
+  return {
+    failure: "incomplete",
+    detail:
+      new TextDecoder().decode(result.stderr).trim() || "no server running",
+  };
+}
+
+/**
  * One read decides each capability. These reads happen once, when vsys starts,
  * so a permanently absent kernel interface is reported as an absence with its
  * reason rather than as a per-sample source failure on every tick.
  */
-export function probeCapabilities(c: CollectionConfig): Capability[] {
+export function probeCapabilities(
+  c: CollectionConfig,
+  /** Injected so no test spawns tmux, and so a stub can fail it on purpose. */
+  tmux: () => Outcome = probeTmux,
+): Capability[] {
   const probes: [CapabilityId, string, () => Outcome][] = [
     [
       "cgroup2",
@@ -88,6 +125,7 @@ export function probeCapabilities(c: CollectionConfig): Capability[] {
         return null;
       },
     ],
+    ["tmux", listPanesArgv.join(" "), tmux],
   ];
   return probes.map(([id, source, run]) => {
     let outcome: Outcome;

@@ -20,6 +20,8 @@ export async function mount(
     onSave: (next: Config) => Promise<void>;
     onQuit: () => void;
     onAction: (command: LaneCommand) => Promise<void>;
+    onCapture: (paneId: string) => Promise<string[]>;
+    onSwitch: (paneId: string) => Promise<void>;
     history: History;
   }> = {},
 ) {
@@ -43,6 +45,8 @@ export async function mount(
         onQuit={hooks.onQuit ?? (() => {})}
         onExport={async () => "snapshot.json"}
         onAction={hooks.onAction ?? (async () => {})}
+        onCapture={hooks.onCapture}
+        onSwitch={hooks.onSwitch}
         output={{ write: (chunk: string) => written.push(chunk) }}
       />
     );
