@@ -10,7 +10,7 @@ The screen owns one mounted React tree. Collection publishes a stable snapshot t
 - Screen: what one tab shows. Each screen is one file under `src/ui/`, named for its tab.
 - Drill-down: detail a screen shows only after the reader selects a row or opens a section: an agent's processes, a filesystem's error counters, the sources vsys cannot read.
 - Notice: a bordered box in the top-right corner that names a new serious cause and goes away by itself. The same text goes to the terminal as a desktop notification.
-- Pinned sample: the recorded sample selected by the timeline cursor. Agents, Resources, Builds and Storage show it; Home, Timeline and Settings stay live.
+- Pinned sample: the recorded sample selected by the timeline cursor. Agents, Resources, Builds and Storage show it; Home, Timeline and Settings stay live. An export carries the sample the open screen shows.
 
 ## Boundaries
 

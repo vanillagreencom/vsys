@@ -22,6 +22,7 @@ export async function mount(
     onAction: (command: LaneCommand) => Promise<void>;
     onCapture: (paneId: string) => Promise<string[]>;
     onSwitch: (paneId: string) => Promise<void>;
+    onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
     history: History;
   }> = {},
 ) {
@@ -43,7 +44,7 @@ export async function mount(
         config={c}
         onSave={hooks.onSave ?? (async () => {})}
         onQuit={hooks.onQuit ?? (() => {})}
-        onExport={async () => "snapshot.json"}
+        onExport={hooks.onExport ?? (async () => "snapshot.json")}
         onAction={hooks.onAction ?? (async () => {})}
         onCapture={hooks.onCapture}
         onSwitch={hooks.onSwitch}
