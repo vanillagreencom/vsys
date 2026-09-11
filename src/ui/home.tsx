@@ -31,7 +31,13 @@ import {
   sparkline,
 } from "./format";
 import { useScreenKeys } from "./keys";
-import { regionOf, regionRanges, stepRegion, stepWithin } from "./regions";
+import {
+  regionOf,
+  regionRanges,
+  stepRegion,
+  stepToRegion,
+  stepWithin,
+} from "./regions";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import { eventKey, eventParts } from "./timeline";
 import {
@@ -282,14 +288,13 @@ export function Home({
       if (way > 0) toList(stepRegion(counts, -1, 1));
       return;
     }
-    const here = region - 1;
-    const next = stepRegion(counts, here, way);
+    const next = stepToRegion(counts, selected, way);
     // No list that way: to the left of the first one are the tiles.
-    if (next === here) {
+    if (next === selected) {
       if (way < 0 && gauges.length) setTile(0);
       return;
     }
-    toList(next);
+    choose(next);
   };
   useScreenKeys((name) => {
     if (name === c.keys.next) {

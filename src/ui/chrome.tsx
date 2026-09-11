@@ -207,7 +207,7 @@ export function Help({ config: c }: { config: Config }) {
         [k.back, "go back"],
         [`${k.next} ${k.previous}`, "next and previous region"],
         [k.hold, "hold a list's row order"],
-        ["1 - 7", "go to a screen"],
+        [views.map((v) => k[viewKey(v)]).join(" "), "go to a screen"],
       ],
     ],
     [

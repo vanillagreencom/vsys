@@ -8,7 +8,7 @@ import { type WriteTotal, writeTotals } from "../model/writes";
 import { columnGap, fit } from "./columns";
 import { age, amount, gap } from "./format";
 import { useScreenKeys } from "./keys";
-import { regionOf, regionRanges, stepRegion, stepWithin } from "./regions";
+import { regionOf, stepToRegion, stepWithin } from "./regions";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
@@ -157,7 +157,6 @@ export function Storage({
     items.filter((item) => item.kind === "scrub").length,
     items.filter((item) => item.kind === "scratch").length,
   ];
-  const ranges = regionRanges(counts);
   const region = regionOf(counts, selected);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
@@ -169,13 +168,11 @@ export function Storage({
       return true;
     }
     if (name === c.keys.previous) {
-      setSelected(
-        (i) => ranges[stepRegion(counts, regionOf(counts, i), -1)][0],
-      );
+      setSelected((i) => stepToRegion(counts, i, -1));
       return true;
     }
     if (name === c.keys.next) {
-      setSelected((i) => ranges[stepRegion(counts, regionOf(counts, i), 1)][0]);
+      setSelected((i) => stepToRegion(counts, i, 1));
       return true;
     }
     return false;

@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { regionOf, regionRanges, stepRegion, stepWithin } from "./regions";
+import {
+  regionOf,
+  regionRanges,
+  stepRegion,
+  stepToRegion,
+  stepWithin,
+} from "./regions";
 
 test("regions are ranges over the one flat list the screen draws", () => {
   // The region sizes, and each region's half-open row range as `start-end`.
@@ -35,20 +41,23 @@ test("a row belongs to one region, and a row past the end still lands", () => {
 });
 
 test("moving between regions skips the empty ones and stops at the ends", () => {
-  // The region sizes, the region focus leaves, the way it moves, and where it
-  // lands. An empty region is crossed in one press, because a reader cannot
-  // stand on a row that is not there; the ends hold rather than wrap.
-  const rows: [number[], number, -1 | 1, number][] = [
-    [[2, 0, 1], 0, 1, 2],
-    [[2, 0, 1], 2, -1, 0],
-    [[2, 3, 1], 2, 1, 2],
-    [[2, 3, 1], 0, -1, 0],
-    [[2, 0, 0], 0, 1, 0],
-    [[], 0, 1, 0],
+  // The region sizes, the row focus leaves, the way it moves, the region it
+  // lands in, and the row it selects there. An empty region is crossed in one
+  // press, because a reader cannot stand on a row that is not there; at either
+  // end the reader stays on the row they are on.
+  const rows: [number[], number, -1 | 1, number, number][] = [
+    [[2, 0, 1], 1, 1, 2, 2],
+    [[2, 0, 1], 2, -1, 0, 0],
+    [[2, 3, 2], 6, 1, 2, 6],
+    [[2, 3, 1], 1, -1, 0, 1],
+    [[2, 0, 0], 1, 1, 0, 1],
+    [[], 0, 1, 0, 0],
   ];
   for (const row of rows) {
-    const [counts, from, way] = row;
-    expect([counts, from, way, stepRegion(counts, from, way)]).toEqual(row);
+    const [counts, index, way] = row;
+    const region = stepRegion(counts, regionOf(counts, index), way);
+    const to = stepToRegion(counts, index, way);
+    expect([counts, index, way, region, to]).toEqual(row);
   }
 });
 

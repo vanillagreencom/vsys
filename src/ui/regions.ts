@@ -47,6 +47,20 @@ export function stepRegion(
     if (counts[at] > 0) return at;
   return from;
 }
+/**
+ * The row the region key selects: the first row of the next region with rows
+ * that way, or the row it was given when there is none, so a reader at either
+ * end stays on the row they are on rather than jumping to the top of it.
+ */
+export function stepToRegion(
+  counts: number[],
+  index: number,
+  way: -1 | 1,
+): number {
+  const from = regionOf(counts, index);
+  const to = stepRegion(counts, from, way);
+  return to === from ? index : regionRanges(counts)[to][0];
+}
 /** The row above or below, without leaving the region it is in. */
 export function stepWithin(
   counts: number[],

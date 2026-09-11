@@ -229,15 +229,17 @@ test("Storage moves between its three lists with the region key", async () => {
     await t.press("5");
     // The keys pressed, then the selected row. Down stays inside the
     // filesystems rather than walking into the reports; the region key is the
-    // one way to the next list, it lands on that list's first row, and the
-    // last list holds rather than wrapping.
+    // one way to the next list, it lands on that list's first row, and at
+    // either end it leaves the reader on the row they are on.
     const steps: [string[], string][] = [
       [[], "/data"],
       [["down"], "/home"],
+      [[c.keys.previous], "/home"],
       [Array(10).fill("down"), "/home"],
       [[c.keys.next], "/run/btrfs-scrub/one"],
       [[c.keys.next], "/scratch/a"],
       [[c.keys.next], "/scratch/a"],
+      [["down", c.keys.next], "/scratch/b"],
       [[c.keys.previous], "/run/btrfs-scrub/one"],
       [[c.keys.previous], "/data"],
     ];
