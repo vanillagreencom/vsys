@@ -245,17 +245,14 @@ export function Home({
   const marked = (i: number) => rowsFocused && i === selected;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   // The tile row is a place the reader stands as much as any list row is, so
-  // it is what has to be in view while it holds the focus. Named `selected`
-  // alone, moving back to the tiles from the bottom of the agents list moved
-  // the frame not at all: the tiles stayed above the viewport, the only change
-  // was the marker disappearing, and Enter then opened another screen with
-  // nothing on this one saying so.
+  // it is what has to be in view while it holds the focus, however far down a
+  // list the reader was before.
   useKeepInView(scroller, tile === null ? `home-${selected}` : tileRowId);
   // Home holds four regions and the tile row is one of them. The three lists
   // are ranges over the one flat selection the render draws; the tiles keep
   // their own index, which is why they are region zero rather than rows inside
   // it. The arrows move inside the region in focus, along that region's own
-  // axis: left and right along the horizontal tile row, up and down down a
+  // axis: left and right along the horizontal tile row, up and down along a
   // vertical list. Moving between regions has its own key, so no arrow means
   // one thing in one region and something else in the next.
   const counts = [
@@ -319,10 +316,8 @@ export function Home({
       onOpen(rows[selected]);
       return true;
     }
-    // A key that asks for a different order is a reader asking for a different
-    // order, so it releases the held one. Kept, the heading marked a direction
-    // the rows did not obey: `o` then `s` read `↓ Memory` over rows still in
-    // the held CPU order, with 1.0 KiB above 8.0 KiB.
+    // A key that asks for a different order releases the held one, so the
+    // heading never marks an order the rows do not follow.
     if (name === c.keys.sort) {
       const at = busiestSorts.findIndex(([, key]) => key === sort.key);
       setHeld(null);
@@ -371,8 +366,8 @@ export function Home({
   const topCpu = Math.max(100, ...agents.map((r) => r.lane.cpu ?? 0));
   // The marker, the bar and the readings take fixed columns; the name has the
   // rest, and the heading reads the same spec the rows do.
-  // The id is here for the same reason it is on the Agents list: six rows
-  // reading `method` with nothing beside them name nothing at all. This table
+  // The id is here for the same reason it is on the Agents list: rows that
+  // share a name are told apart by nothing else. This table
   // shares its width with the column beside it, so when the name cannot keep
   // its floor the state goes first — a blocked or running lane already shows
   // in its numbers, while a name that identifies nothing shows in nothing.
@@ -388,8 +383,8 @@ export function Home({
     panel - 5 - columnsWidth(fixedWith(state));
   const withState = nameRoom(true) >= homeNameFloor;
   const fixed = fixedWith(withState);
-  // Three columns, so three rows scan as three rows. The subject takes what
-  // the time and the kind leave and is cut through the same helper every other
+  // The time, the kind and the subject each take a column, so the rows scan
+  // as rows. The subject takes what the time and the kind leave and is cut through the same helper every other
   // cell uses, which ends a cut with its mark instead of stopping mid-word.
   const changeColumns: Column[] = [
     { label: "", width: 11, align: "right" },
@@ -484,10 +479,8 @@ export function Home({
                     color={row.item.danger ? ui.danger : ui.warn}
                     onOpen={() => onOpen(row)}
                   >
-                    {/* The same question the detail below is drawn under. On
-                        its own, `selected` said open while the tiles held the
-                        focus: the row drew `▾` with no rule and nothing under
-                        it. */}
+                    {/* The same question the detail below is drawn under, so
+                        the marker says open only while the detail is drawn. */}
                     <Disclosure open={marked(i)} name={row.item.title} />
                   </Row>
                   {marked(i) && (

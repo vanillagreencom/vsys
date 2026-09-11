@@ -11,7 +11,7 @@ import {
   groupSnapshot,
   laneSnapshot,
 } from "../test/fixture";
-import { isChildLine, mount, selectedRow } from "../test/harness";
+import { isChildLine, mount, selectedRow, sortMarks } from "../test/harness";
 import { attention } from "./attention";
 import { osc52 } from "./clipboard";
 import type { HomeItem } from "./home";
@@ -259,46 +259,30 @@ test("the arrow keys reach the tiles and open the screen behind one", async () =
   const s = emptySnapshot();
   s.lanes = [laneSnapshot({ name: "lane-a" })];
   s.groups = [groupSnapshot()];
-  const rows: [number, string][] = [
+  const rows: [string[], string][] = [
     // CPU and Memory break down under Resources, Disk under Storage, Builds
-    // under Builds.
-    [0, "Groups"],
-    [1, "Groups"],
-    [2, "Written since boot"],
-    [3, "Lanes building"],
+    // under Builds. Left moves back one tile rather than leaving the row.
+    [[], "Groups"],
+    [["right"], "Groups"],
+    [["right", "right"], "Written since boot"],
+    [["right", "right", "right"], "Lanes building"],
+    [["right", "right", "right", "left"], "Written since boot"],
   ];
-  for (const [tile, lands] of rows) {
+  for (const [arrows, lands] of rows) {
     const t = await mount(s, c, { width: 160, height: 30 });
     try {
       await t.press("1");
-      // The region key reaches the tile row; the arrows move along it, which
-      // is the axis a row of tiles has.
+      // The region key reaches the tile row; the arrows move along it.
       await t.press(c.keys.previous);
-      for (let i = 0; i < tile; i++) await t.press("right");
+      for (const arrow of arrows) await t.press(arrow);
       await t.press("enter");
-      expect({ tile, on: t.frame().includes(lands) }).toEqual({
-        tile,
+      expect({ arrows, on: t.frame().includes(lands) }).toEqual({
+        arrows,
         on: true,
       });
     } finally {
       await t.close();
     }
-  }
-  // Left moves back along the row rather than leaving it: a tile row is
-  // horizontal, and that is the axis its own arrows have.
-  const along = await mount(s, c, { width: 160, height: 30 });
-  try {
-    await along.press("1");
-    await along.press(c.keys.previous);
-    await along.press("right");
-    await along.press("right");
-    await along.press("left");
-    await along.press("enter");
-    // Two right and one left is the second tile, which is Memory, and Memory
-    // breaks down under Resources.
-    expect(along.frame()).toContain("Groups");
-  } finally {
-    await along.close();
   }
   // The region key leaves the tiles, so Enter opens a row again rather than a
   // screen behind a tile.
@@ -317,67 +301,26 @@ test("the arrow keys reach the tiles and open the screen behind one", async () =
 
 test("the region key moves across all four Home regions, and the focused one says so", async () => {
   const c = defaults();
-  const { h, snapshot } = withChange(c);
-  const s = everyCauseSnapshot(c);
-  s.time = snapshot.time;
-  s.lanes = [...s.lanes, laneSnapshot({ id: "z", name: "lane-z", cpu: 90 })];
+  const { s, h } = everyRegion(c);
   const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
   try {
     await t.press("1");
-    // Each region's title is drawn once; the focused one is the only one that
-    // is not dim, which is what a reader reads without pressing anything.
-    const titles = ["Needs attention", "Recent changes", "Busiest agents"];
-    const focusedTitle = () => {
-      const spans = t.ui
-        .captureSpans()
-        .lines.flatMap((line) => line.spans)
-        .filter((span) => titles.some((title) => span.text.includes(title)));
-      const lit = spans.filter((span) => span.fg.equals(ui.accent));
-      expect(lit).toHaveLength(1);
-      return titles.find((title) => lit[0].text.includes(title)) ?? "";
-    };
-    // Half the indicator is the rule beside the title, which stops being dim
-    // for the region in focus. Only the accent title was ever read, so the
-    // rule could have stayed dim on every region and nothing would have said
-    // so, while two documents state that it does not.
-    const brightRules = () =>
-      t.ui
-        .captureSpans()
-        .lines.filter((line) =>
-          line.spans.some((span) =>
-            titles.some((title) => span.text.includes(title)),
-          ),
-        )
-        .flatMap((line) => line.spans)
-        .filter(
-          (span) => span.text.includes("─") && (span.attributes & ui.dim) === 0,
-        );
-    // Home opens on a concern, so the first region is the one in focus.
-    expect(focusedTitle()).toBe("Needs attention");
-    // Exactly one rule is undimmed, and it is the one beside that title.
-    expect(brightRules()).toHaveLength(1);
-    await t.press(c.keys.next);
-    expect(focusedTitle()).toBe("Recent changes");
-    await t.press(c.keys.next);
-    expect(focusedTitle()).toBe("Busiest agents");
-    expect(brightRules()).toHaveLength(1);
-    // The last region holds rather than wrapping.
-    await t.press(c.keys.next);
-    expect(focusedTitle()).toBe("Busiest agents");
-    // Back the same way, and once more onto the tiles, where no list title is
-    // lit at all.
-    await t.press(c.keys.previous);
-    expect(focusedTitle()).toBe("Recent changes");
-    await t.press(c.keys.previous);
-    expect(focusedTitle()).toBe("Needs attention");
-    await t.press(c.keys.previous);
-    const spans = t.ui
-      .captureSpans()
-      .lines.flatMap((line) => line.spans)
-      .filter((span) => titles.some((title) => span.text.includes(title)));
-    expect(spans.filter((span) => span.fg.equals(ui.accent))).toHaveLength(0);
-    // And no list rule is lit either, because none of the three holds it.
-    expect(brightRules()).toHaveLength(0);
+    // The key pressed, then the titles drawn in the accent colour, and how
+    // many rules beside a title are undimmed. Home opens on a concern; the last
+    // region holds rather than wrapping; the tiles light no list title.
+    const steps: [string | null, string[], number][] = [
+      [null, ["Needs attention"], 1],
+      [c.keys.next, ["Recent changes"], 1],
+      [c.keys.next, ["Busiest agents"], 1],
+      [c.keys.next, ["Busiest agents"], 1],
+      [c.keys.previous, ["Recent changes"], 1],
+      [c.keys.previous, ["Needs attention"], 1],
+      [c.keys.previous, [], 0],
+    ];
+    for (const [key, lit, rules] of steps) {
+      if (key) await t.press(key);
+      expect({ key, ...focusMarks(t) }).toEqual({ key, lit, rules });
+    }
     // On the tiles, Enter opens the screen behind one.
     await t.press("enter");
     expect(t.frame()).toContain("Groups");
@@ -385,6 +328,42 @@ test("the region key moves across all four Home regions, and the focused one say
     await t.close();
   }
 });
+
+/** A Home with a row in every region: concerns, a recent change, agents. */
+function everyRegion(c: Config) {
+  const { h, snapshot } = withChange(c);
+  const s = everyCauseSnapshot(c);
+  s.time = snapshot.time;
+  s.lanes = [...s.lanes, laneSnapshot({ id: "z", name: "lane-z", cpu: 90 })];
+  return { s, h };
+}
+
+const regionTitles = ["Needs attention", "Recent changes", "Busiest agents"];
+/**
+ * What says which Home region holds the focus: the region titles drawn in the
+ * accent colour, one entry per drawn span, and the count of undimmed rules on
+ * the lines that carry a title.
+ */
+function focusMarks(t: Awaited<ReturnType<typeof mount>>) {
+  const titled = t.ui
+    .captureSpans()
+    .lines.filter((line) =>
+      line.spans.some((span) =>
+        regionTitles.some((title) => span.text.includes(title)),
+      ),
+    )
+    .flatMap((line) => line.spans);
+  return {
+    lit: titled
+      .filter((span) => span.fg.equals(ui.accent))
+      .flatMap((span) =>
+        regionTitles.filter((title) => span.text.includes(title)),
+      ),
+    rules: titled.filter(
+      (span) => span.text.includes("─") && (span.attributes & ui.dim) === 0,
+    ).length,
+  };
+}
 
 /**
  * A history holding a lane start, then a quiet sample after it. The change is
@@ -525,20 +504,25 @@ test("Home marks one focus at a time, on every kind of row it lists", async () =
       present: true,
     });
   for (const kind of kinds) {
-    const at = rows.findIndex((row) => row.kind === kind);
     const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
     try {
       await t.press("1");
-      for (let i = 0; i < at; i++) await t.press("j");
+      // Each kind is a region of its own, reached by the region key.
+      const region = kinds.indexOf(kind);
+      for (let i = 0; i < region; i++) await t.press(c.keys.next);
+      expect({ kind, lit: focusMarks(t).lit }).toEqual({
+        kind,
+        lit: [regionTitles[region]],
+      });
       // The rows hold the focus, so this row is marked.
       expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
         kind,
         marked: true,
       });
       // Moving onto a tile takes the focus with it. A row marked here would
-      // say one thing while Enter opened another. The region key steps back
-      // through whatever lists are between, and the tiles are the first region.
-      for (let i = 0; i < 4; i++) await t.press(c.keys.previous);
+      // say one thing while Enter opened another. The tiles are the first
+      // region, and the region key holds there once it arrives.
+      for (let i = 0; i < kinds.length; i++) await t.press(c.keys.previous);
       expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
         kind,
         marked: false,
@@ -644,9 +628,8 @@ test("Home opens the row the reader chose after the list moves under it", async 
     },
   ];
   for (const { kind, at, later, opens, reads } of cases) {
-    // Up and down move inside one list and right moves to the next, so a row is
-    // reached by its region and its offset within it rather than by counting
-    // from the top of all three.
+    // Up and down move inside one list and the region key moves to the next,
+    // so a row is reached by its region and its offset within it.
     const region = ["concern", "change", "agent"].indexOf(kind);
     const offset = at - firstOf(kind);
     // Standing still: the presses reach the intended row, and opening it lands
@@ -777,10 +760,8 @@ test("no alerts opened reads as a count, not as a missing one", async () => {
 });
 
 /**
- * Two agents whose order flips the moment their CPU readings swap, and whose
- * memory order disagrees with their CPU order whichever way that goes. Given
- * one memory reading each, a memory sort could not reorder them, so a test
- * asking whether the rows had followed the heading could not tell.
+ * Two agents whose order flips the moment their CPU readings swap. Their
+ * memory readings differ too, so a memory sort also reorders them.
  */
 function twoAgents(topFirst: boolean) {
   const s = emptySnapshot();
@@ -802,37 +783,65 @@ function twoAgents(topFirst: boolean) {
   return s;
 }
 
+/** The Busiest agents rows of `twoAgents`, top first. */
+const agentRows = (frame: string) =>
+  frame
+    .split("\n")
+    .filter((line) => /lane-[ab]/.test(line))
+    .map((line) => line.trim());
+
 test("the held order keeps its rows while their numbers keep moving", async () => {
   const c = defaults();
-  const s = twoAgents(true);
-  const t = await mount(s, c, { width: 160, height: 30 });
+  const t = await mount(twoAgents(true), c, { width: 160, height: 30 });
   try {
     await t.press("1");
-    const agentRows = () =>
-      t
-        .frame()
-        .split("\n")
-        .filter((line) => /lane-[ab]/.test(line))
-        .map((line) => line.trim());
-    expect(agentRows()[0]).toContain("lane-a");
-    expect(agentRows()[0]).toContain("90.0%");
+    expect(agentRows(t.frame())[0]).toContain("lane-a");
+    expect(agentRows(t.frame())[0]).toContain("90.0%");
     await t.press(c.keys.hold);
     // The section says it is holding, in the place its count sits.
     expect(t.frame()).toContain("Busiest agents  order held");
     // The readings swap, so the sort would put lane-b on top.
     await t.update(twoAgents(false));
-    const held = agentRows();
+    const held = agentRows(t.frame());
     expect(held[0]).toContain("lane-a");
     expect(held[1]).toContain("lane-b");
     // Held is the order, never the data: the numbers are the new ones.
     expect(held[0]).toContain("10.0%");
     expect(held[1]).toContain("90.0%");
-    // Releasing lets the sort through again.
-    await t.press(c.keys.hold);
-    expect(t.frame()).not.toContain("order held");
-    expect(agentRows()[0]).toContain("lane-b");
   } finally {
     await t.close();
+  }
+});
+
+test("a held order is released by anything that asks for an order", async () => {
+  const c = defaults();
+  // What releases the hold, the sample that follows it, and the row the order
+  // it releases to puts on top. The held order has lane-a on top in each.
+  const releases: [string[], boolean, string][] = [
+    [[c.keys.hold], false, "lane-b"],
+    [["2", "1"], false, "lane-b"],
+    // The sort key moves to Memory, largest first.
+    [[c.keys.sort], true, "lane-b"],
+    // The reverse key turns CPU to smallest first.
+    [[c.keys.reverse], true, "lane-b"],
+  ];
+  for (const [keys, topFirst, top] of releases) {
+    const t = await mount(twoAgents(true), c, { width: 160, height: 30 });
+    try {
+      await t.press("1");
+      await t.press(c.keys.hold);
+      expect(t.frame()).toContain("order held");
+      for (const key of keys) await t.press(key);
+      await t.update(twoAgents(topFirst));
+      const frame = t.frame();
+      expect({
+        keys,
+        held: frame.includes("order held"),
+        onTop: (agentRows(frame)[0] ?? "").includes(top),
+      }).toEqual({ keys, held: false, onTop: true });
+    } finally {
+      await t.close();
+    }
   }
 });
 
@@ -899,29 +908,6 @@ test("a memory-reclaim card opens on the scope holding the swap", async () => {
   }
 });
 
-test("a held order is released by leaving the screen", async () => {
-  const c = defaults();
-  const t = await mount(twoAgents(true), c, { width: 160, height: 30 });
-  try {
-    await t.press("1");
-    await t.press(c.keys.hold);
-    expect(t.frame()).toContain("order held");
-    // Nobody is left reading an order they forgot they asked for.
-    await t.press("2");
-    await t.press("1");
-    expect(t.frame()).not.toContain("order held");
-    await t.update(twoAgents(false));
-    expect(
-      t
-        .frame()
-        .split("\n")
-        .filter((line) => /lane-[ab]/.test(line))[0],
-    ).toContain("lane-b");
-  } finally {
-    await t.close();
-  }
-});
-
 test("the copy notice does not claim a silent terminal empties the clipboard", async () => {
   const c = defaults();
   const s = everyCauseSnapshot(c);
@@ -965,35 +951,25 @@ test("a remediation command is copy text, never an action to run", async () => {
 });
 
 test("a held row that ends drops out, and one that climbs does not push in", () => {
-  const c = defaults();
   const s = twoAgents(true);
-  const held = ["a", "b"];
   // A third agent arrives at the top of the ranking.
   s.lanes = [...s.lanes, laneSnapshot({ id: "c", name: "lane-c", cpu: 99 })];
-  const rows = homeItems([], s, 5, [], held).filter(
-    (row) => row.kind === "agent",
-  );
-  expect(rows.map((row) => row.lane.id)).toEqual(["a", "b"]);
+  const agents = (held?: string[]) =>
+    homeItems([], s, 5, [], held).flatMap((row) =>
+      row.kind === "agent" ? [row.lane.id] : [],
+    );
+  expect(agents(["a", "b"])).toEqual(["a", "b"]);
+  // Without a hold the ranking decides, and the newcomer leads it.
+  expect(agents()).toEqual(["c", "a", "b"]);
   // One of the held lanes ends between samples.
   s.lanes = s.lanes.filter((lane) => lane.id !== "a");
-  expect(
-    homeItems([], s, 5, [], held)
-      .filter((row) => row.kind === "agent")
-      .map((row) => row.lane.id),
-  ).toEqual(["b"]);
-  // Without a hold the ranking decides, and the newcomer leads it.
-  expect(
-    homeItems([], twoAgents(true), 5, [])
-      .filter((row) => row.kind === "agent")
-      .map((row) => row.lane.id),
-  ).toEqual(["a", "b"]);
-  expect(c.keys.hold).toBeTruthy();
+  expect(agents(["a", "b"])).toEqual(["b"]);
 });
 
-test("a concern's detail is drawn as a child of the row it belongs to", async () => {
+test("a concern's detail is drawn as a child of its row while the row holds the focus", async () => {
   const c = defaults();
-  const s = everyCauseSnapshot(c);
-  const t = await mount(s, c, { width: 160, height: 40 });
+  const { s, h } = everyRegion(c);
+  const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
   try {
     await t.press("1");
     const lines = t.frame().split("\n");
@@ -1004,6 +980,24 @@ test("a concern's detail is drawn as a child of the row it belongs to", async ()
     expect(isChildLine(lines[row + 1])).toBe(true);
     // An unselected concern still says it has more inside it.
     expect(lines.some((line) => line.includes("▸ "))).toBe(true);
+    // The verdict line names the same concern, so the row is the one carrying
+    // a marker.
+    const top = () =>
+      t
+        .frame()
+        .split("\n")
+        .find(
+          (line) =>
+            line.includes("runs outside agents.slice") &&
+            (line.includes("▸") || line.includes("▾")),
+        ) ?? "";
+    expect(top()).toContain("▾");
+    expect(t.frame()).toContain("Next ");
+    // Off the rows and onto the tiles: nothing is open under the concern, and
+    // its marker says so.
+    await t.press(c.keys.previous);
+    expect(top()).toContain("▸");
+    expect(t.frame()).not.toContain("Next ");
   } finally {
     await t.close();
   }
@@ -1011,40 +1005,29 @@ test("a concern's detail is drawn as a child of the row it belongs to", async ()
 
 test("up and down stay inside the region in focus", async () => {
   const c = defaults();
-  const { h, snapshot } = withChange(c);
-  const s = everyCauseSnapshot(c);
-  s.time = snapshot.time;
+  const { s, h } = everyRegion(c);
   const t = await mount(s, c, { width: 180, height: 44 }, { history: h });
   try {
     await t.press("1");
-    const titles = ["Needs attention", "Recent changes", "Busiest agents"];
-    const focused = () => {
-      const lit = t.ui
-        .captureSpans()
-        .lines.flatMap((line) => line.spans)
-        .filter((span) => span.fg.equals(ui.accent))
-        .filter((span) => titles.some((title) => span.text.includes(title)));
-      return titles.find((title) => lit[0]?.text.includes(title)) ?? "";
-    };
-    expect(focused()).toBe("Needs attention");
-    // Far more presses than the region has rows: it holds at its last row
-    // rather than walking into the next region.
+    expect(focusMarks(t).lit).toEqual(["Needs attention"]);
     // Two columns put two regions on one physical line, so the row is read
     // with its runs of spaces collapsed rather than column by column.
     const row = () => selectedRow(t.frame()).replace(/\s+/g, " ");
     const first = row();
     await t.press("down");
     expect(row()).not.toBe(first);
+    // Far more presses than the region has rows: it holds at its last row
+    // rather than walking into the next region, and at its first going up.
     for (let i = 0; i < 20; i++) await t.press("down");
-    expect(focused()).toBe("Needs attention");
+    expect(focusMarks(t).lit).toEqual(["Needs attention"]);
     for (let i = 0; i < 20; i++) await t.press("up");
-    expect(focused()).toBe("Needs attention");
+    expect(focusMarks(t).lit).toEqual(["Needs attention"]);
     expect(row()).toBe(first);
     // The next region is reached the one way it can be.
     await t.press(c.keys.next);
-    expect(focused()).toBe("Recent changes");
+    expect(focusMarks(t).lit).toEqual(["Recent changes"]);
     for (let i = 0; i < 20; i++) await t.press("down");
-    expect(focused()).toBe("Recent changes");
+    expect(focusMarks(t).lit).toEqual(["Recent changes"]);
   } finally {
     await t.close();
   }
@@ -1052,46 +1035,33 @@ test("up and down stay inside the region in focus", async () => {
 
 test("Busiest agents sorts from its own headings, and the heading says which", async () => {
   const c = defaults();
-  const s = twoAgents(true);
-  const t = await mount(s, c, { width: 160, height: 30 });
+  // One Home column, wide enough to draw all four headings the sort cycles
+  // through.
+  const t = await mount(twoAgents(true), c, { width: 140, height: 30 });
   try {
     await t.press("1");
-    const heading = () =>
-      t
-        .frame()
-        .split("\n")
-        .find((line) => line.includes("Agent") && line.includes("Memory")) ??
-      "";
-    const agentRows = () =>
-      t
-        .frame()
-        .split("\n")
-        .filter((line) => /lane-[ab]/.test(line));
-    // It opens sorted by CPU, largest first, and the heading says so.
-    expect(heading()).toContain("↓ CPU");
-    expect(agentRows()[0]).toContain("lane-a");
-    // The direction flips, the marker flips with it, and the rows follow.
-    await t.press(c.keys.reverse);
-    expect(heading()).toContain("↑ CPU");
-    expect(agentRows()[0]).toContain("lane-b");
-    // The sort key moves to the next heading this screen actually draws, and
-    // the rows move with it. Checked on the heading alone, sorting by a fixed
-    // key while marking a moving one passed: the screen read `↑ Memory` over
-    // rows still in CPU order and nothing said so.
-    await t.press(c.keys.sort);
-    expect(heading()).toContain("↑ Memory");
-    expect(heading()).not.toContain("CPU ↑");
-    expect(heading()).not.toContain("↑ CPU");
-    // Ascending memory, so the smaller of the two is on top: the opposite of
-    // the CPU order the rows were in a moment ago.
-    expect(agentRows()[0]).toContain("lane-a");
-    await t.press(c.keys.reverse);
-    expect(heading()).toContain("↓ Memory");
-    expect(agentRows()[0]).toContain("lane-b");
-    await t.press(c.keys.reverse);
-    // Round the four headings and back to where it started.
-    for (let i = 0; i < 3; i++) await t.press(c.keys.sort);
-    expect(heading()).toContain("↑ CPU");
+    // The key pressed, the one heading it leaves marked, and the agent on
+    // top. lane-a has the higher CPU and the lower memory, and a tie on state
+    // falls to the lane id.
+    const steps: [string | null, string, string][] = [
+      [null, "↓ CPU", "lane-a"],
+      [c.keys.reverse, "↑ CPU", "lane-b"],
+      [c.keys.sort, "↑ Memory", "lane-a"],
+      [c.keys.reverse, "↓ Memory", "lane-b"],
+      [c.keys.reverse, "↑ Memory", "lane-a"],
+      [c.keys.sort, "Agent ↑", "lane-a"],
+      [c.keys.sort, "State ↑", "lane-a"],
+      [c.keys.sort, "↑ CPU", "lane-b"],
+    ];
+    for (const [key, heading, top] of steps) {
+      if (key) await t.press(key);
+      const frame = t.frame();
+      expect({
+        key,
+        marks: sortMarks(frame),
+        onTop: (agentRows(frame)[0] ?? "").includes(top),
+      }).toEqual({ key, marks: [heading], onTop: true });
+    }
   } finally {
     await t.close();
   }
@@ -1102,14 +1072,11 @@ test("a change row cuts with a mark, at any width, and its columns line up", asy
   const h = new History(c);
   h.add(emptySnapshot(1000));
   const change = emptySnapshot(2000);
-  // A subject longer than any column it could be given, so it has to be cut
-  // at both widths and the cut is what is under test.
-  change.lanes = [
-    laneSnapshot({
-      id: "a",
-      name: `lane-${"long-".repeat(40)}end`,
-    }),
-  ];
+  // Subjects longer than any column they could be given, so each is cut at
+  // both widths.
+  change.lanes = ["a", "b"].map((id) =>
+    laneSnapshot({ id, name: `lane-${id}-${"long-".repeat(40)}end` }),
+  );
   h.add(change);
   const latest = { ...change, time: 3000 };
   h.add(latest);
@@ -1121,33 +1088,31 @@ test("a change row cuts with a mark, at any width, and its columns line up", asy
         .frame()
         .split("\n")
         .filter((line) => /Lane started/.test(line));
-      expect(rows.length).toBeGreaterThan(0);
-      for (const row of rows) {
-        // The subject was cut, and it says so. A row that simply stopped
-        // mid-word leaves a reader guessing whether that was the whole name.
-        const upTo = row.slice(0, row.search(/\s{2,}\S*$/) + 1) || row;
-        expect({ width, tail: row.trimEnd().slice(-8) }).toEqual({
+      expect({ width, rows: rows.length }).toEqual({ width, rows: 2 });
+      // The subject was cut, and it says so. A row that simply stopped
+      // mid-word leaves a reader guessing whether that was the whole name.
+      for (const row of rows)
+        expect({ width, cut: row.trimEnd().slice(-8).includes("…") }).toEqual({
           width,
-          tail: expect.stringContaining("…") as unknown as string,
+          cut: true,
         });
-        expect(upTo.length).toBeGreaterThan(0);
-      }
-      // The kind starts at the same column on every row, which is what makes
-      // three rows scan as three rows.
+      // The kind starts at the same column on every row.
       const at = rows.map((row) => row.indexOf("Lane started"));
-      expect(new Set(at).size).toBe(1);
+      expect({ width, columns: new Set(at).size }).toEqual({
+        width,
+        columns: 1,
+      });
     } finally {
       await t.close();
     }
   }
 });
 
-/** Six lanes that resolve to one name, the shape the capture showed. */
+/** Lanes that resolve to one name, with identical readings. */
 function sameName(count = 6) {
   const s = emptySnapshot();
   // Every reading identical, so nothing but an identity column can separate
-  // them. Differing numbers would let a row look distinct while its name still
-  // named nothing.
+  // them.
   s.lanes = Array.from({ length: count }, (_, i) =>
     laneSnapshot({
       id: `lane-${i}`,
@@ -1164,15 +1129,10 @@ function sameName(count = 6) {
 }
 
 /**
- * The ids the screen actually drew, read out of the id column by where its
- * heading sits.
- *
- * Comparing whole rendered lines is unsound above a terminal width of 150,
- * because the side pane draws beside the list and one physical line then
- * carries a list row and a line of side-pane text: identical rows look
- * different because the text beside them differs. Measured at 163 before this
- * fix, whole lines gave 6 distinct out of 7 while the column held six rows
- * carrying no id at all.
+ * The ids the screen drew, read out of the id column by where its heading
+ * sits. Whole lines are not compared: from `wideWidth` up the side pane draws
+ * beside the list, so one physical line carries a list row and side-pane text,
+ * and identical rows read as different.
  */
 function drawnIds(frame: string): string[] {
   const lines = frame.split("\n");
@@ -1189,36 +1149,23 @@ test("no list of lane names draws two rows a reader cannot tell apart", async ()
   const c = defaults();
   const s = sameName();
   // Home's Busiest agents, the Agents list and the Builds lanes: every screen
-  // that draws lane names, at widths measured to reach each way the column
-  // could be lost rather than chosen for looking narrow and wide.
-  //
-  // The Agents list is the one that sheds, and its own width is not the
-  // terminal's: the side pane opens at 150 and takes a third, so a wider
-  // terminal makes the list narrower. 99 is a list too narrow to ask for the
-  // column at all; 106 is a list that asks for it and then sheds it; 163 is
-  // the widest terminal reaching that same shedding with the side pane open,
-  // and the widest of the 37 failures in the swept range 84 to 210. 120 and
-  // 180 are the two widths this test had before, kept because they are the
-  // bands where nothing sheds.
+  // that draws lane names. Each width is a different Agents list: the narrow
+  // list (99), a list that sheds its program column without the side pane
+  // (106) and with it (163), and the same two keeping it (120, 180).
   for (const screen of ["1", "2", "4"] as const) {
     for (const width of [99, 106, 120, 163, 180]) {
       const t = await mount(s, c, { width, height: 40 });
       try {
         await t.press(screen);
         const ids = drawnIds(t.frame());
-        // Six lanes with one name and identical readings: the id is the only
-        // thing that can tell them apart, so every row carries one and no two
-        // rows carry the same.
-        expect({ screen, width, drawn: ids.length }).toEqual({
+        // The id is the only thing that can tell these rows apart, so every
+        // row carries one and no two rows carry the same.
+        expect({
           screen,
           width,
-          drawn: 6,
-        });
-        expect({ screen, width, distinct: new Set(ids).size }).toEqual({
-          screen,
-          width,
-          distinct: 6,
-        });
+          drawn: ids.length,
+          distinct: new Set(ids).size,
+        }).toEqual({ screen, width, drawn: 6, distinct: 6 });
       } finally {
         await t.close();
       }
@@ -1249,20 +1196,6 @@ test("Home keeps the name readable rather than the state column", async () => {
   }
 });
 
-test("the agent detail names the process leading the lane it opened", async () => {
-  const c = defaults();
-  const s = sameName();
-  const t = await mount(s, c, { width: 160, height: 40 });
-  try {
-    await t.press("2");
-    await t.press("enter");
-    // One lane at a time, so the identity block is where the id has to be.
-    expect(t.frame()).toContain("PID 3400");
-  } finally {
-    await t.close();
-  }
-});
-
 /** Lets the settled layout reading land, which is when a scroll follows it. */
 async function settled(t: Awaited<ReturnType<typeof mount>>) {
   await t.ui.renderOnce();
@@ -1274,10 +1207,7 @@ async function settled(t: Awaited<ReturnType<typeof mount>>) {
 
 test("moving back to the tiles brings the tiles back on screen", async () => {
   const c = defaults();
-  const { h, snapshot } = withChange(c);
-  const s = everyCauseSnapshot(c);
-  s.time = snapshot.time;
-  s.lanes = [...s.lanes, laneSnapshot({ id: "z", name: "lane-z", cpu: 90 })];
+  const { s, h } = everyRegion(c);
   // Short enough that Home does not fit whole, which is the only shape in
   // which anything can be off screen.
   const t = await mount(s, c, { width: 120, height: 22 }, { history: h });
@@ -1291,10 +1221,8 @@ test("moving back to the tiles brings the tiles back on screen", async () => {
     for (let i = 0; i < 30; i++) await t.press("j");
     await settled(t);
     expect(tilesShown()).toBe(false);
-    // Back to the tiles. The tile row is where the reader is standing now, so
-    // it is what has to be in view: told to follow `selected` alone this moved
-    // the frame not at all, the marker simply disappeared, and Enter then
-    // opened another screen with nothing here saying so.
+    // Back to the tiles. The tile row holds the focus now, so it is what has
+    // to be in view.
     for (let i = 0; i < 3; i++) await t.press(c.keys.previous);
     await settled(t);
     expect(tilesShown()).toBe(true);
@@ -1305,10 +1233,7 @@ test("moving back to the tiles brings the tiles back on screen", async () => {
 
 test("a sample leaves a Home reader where they scrolled to", async () => {
   const c = defaults();
-  const { h, snapshot } = withChange(c);
-  const s = everyCauseSnapshot(c);
-  s.time = snapshot.time;
-  s.lanes = [...s.lanes, laneSnapshot({ id: "z", name: "lane-z", cpu: 90 })];
+  const { s, h } = everyRegion(c);
   const t = await mount(s, c, { width: 120, height: 22 }, { history: h });
   try {
     const band = () => t.frame().split("\n").slice(2, 6).join("\n");
@@ -1328,80 +1253,6 @@ test("a sample leaves a Home reader where they scrolled to", async () => {
     await t.update({ ...s, time: s.time + 1000 });
     await settled(t);
     expect(band()).toBe(wheeled);
-  } finally {
-    await t.close();
-  }
-});
-
-test("asking for a different order gives the rows that order", async () => {
-  const c = defaults();
-  const { h, snapshot } = withChange(c);
-  const s = everyCauseSnapshot(c);
-  s.time = snapshot.time;
-  // Two agents whose CPU order and memory order disagree, so the rows say
-  // which one they are in.
-  s.lanes = [
-    laneSnapshot({ id: "hungry", name: "hungry", cpu: 90, rss: 1024 }),
-    laneSnapshot({ id: "heavy", name: "heavy", cpu: 10, rss: 8192 }),
-  ];
-  const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
-  try {
-    await t.press("1");
-    const rowOf = (name: string) =>
-      t
-        .frame()
-        .split("\n")
-        .findIndex((line) => line.includes(name));
-    // Held in the CPU order it opened in.
-    await t.press(c.keys.hold);
-    expect(t.frame()).toContain("order held");
-    expect(rowOf("hungry")).toBeLessThan(rowOf("heavy"));
-    // Then a different order is asked for. The heading said `↓ Memory` over
-    // rows still in the held CPU order: a screen stating a fact about itself
-    // that its own rows deny.
-    await t.press(c.keys.sort);
-    expect(t.frame()).toContain("Memory");
-    expect(t.frame()).not.toContain("order held");
-    expect(rowOf("heavy")).toBeLessThan(rowOf("hungry"));
-    // Reversing is the same kind of asking.
-    await t.press(c.keys.hold);
-    expect(t.frame()).toContain("order held");
-    await t.press(c.keys.reverse);
-    expect(t.frame()).not.toContain("order held");
-    expect(rowOf("hungry")).toBeLessThan(rowOf("heavy"));
-  } finally {
-    await t.close();
-  }
-});
-
-test("a concern draws the open marker only when it is open", async () => {
-  const c = defaults();
-  const { h, snapshot } = withChange(c);
-  const s = everyCauseSnapshot(c);
-  s.time = snapshot.time;
-  const t = await mount(s, c, { width: 160, height: 44 }, { history: h });
-  try {
-    await t.press("1");
-    // Home opens on the first concern, which is open and says so.
-    // The verdict line names the same concern, so the row is the one carrying
-    // a marker.
-    const top = () =>
-      t
-        .frame()
-        .split("\n")
-        .find(
-          (line) =>
-            line.includes("runs outside agents.slice") &&
-            (line.includes("\u25b8") || line.includes("\u25be")),
-        ) ?? "";
-    expect(top()).toContain("▾");
-    expect(t.frame()).toContain("Next ");
-    // Off the rows and onto the tiles. Nothing is open under the concern now,
-    // and the marker used to go on saying it was: `▾` with no rule and no
-    // detail beneath it.
-    await t.press(c.keys.previous);
-    expect(top()).toContain("▸");
-    expect(t.frame()).not.toContain("Next ");
   } finally {
     await t.close();
   }

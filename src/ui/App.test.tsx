@@ -224,8 +224,8 @@ function everyScreenSnapshot() {
     groupSnapshot({ path: "idle.scope", name: "idle.scope" }),
   ];
   s.storage.volumes = [volumeSnapshot("/data")];
-  // Storage moves between its three lists, so it needs more than one of them
-  // to have somewhere to move to.
+  // Storage moves between its lists, so it needs more than one of them to
+  // have somewhere to move to.
   s.storage.scrubs = [{ path: "/data", text: "ok", problem: false }];
   s.storage.scratch = [{ path: "/tmp/x", bytes: 1, age: 0, error: null }];
   return s;

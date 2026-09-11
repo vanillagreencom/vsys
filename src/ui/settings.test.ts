@@ -161,9 +161,7 @@ test("the reason follows what the probe found, not the interface name", () => {
 });
 
 test("every missing capability says what it costs the reader, in its own words", () => {
-  // The whole point of the cost line is that it differs per source. Reached
-  // only through the rendered screen, six of the seven were never read by any
-  // assertion: returning nothing for all but `psi` left every test passing.
+  // Every capability id, with a phrase its own cost line carries.
   const costs: Record<CapabilityId, string> = {
     cgroup2: "no lane is measured at all",
     delegation: "per-lane CPU and memory are blank",

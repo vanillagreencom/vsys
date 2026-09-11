@@ -514,9 +514,8 @@ test("a capture arriving under the reader does not take the row they are on", as
         }),
     },
     {},
-    // Short enough that twelve lines arriving above the row push it off the
-    // bottom. Taller, the row survives whatever the effect does, and the test
-    // would pass without proving anything.
+    // Short enough that the capture's lines, arriving above the row, push it
+    // off the bottom. Taller, the row stays on screen whatever the effect does.
     24,
   );
   try {

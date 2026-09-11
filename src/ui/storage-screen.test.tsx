@@ -227,25 +227,27 @@ test("Storage moves between its three lists with the region key", async () => {
   const t = await mount(s, c, { width: 160, height: 44 });
   try {
     await t.press("5");
-    expect(selectedRow(t.frame())).toContain("/data");
-    // Down stays inside the filesystems rather than walking into the reports.
-    await t.press("down");
-    expect(selectedRow(t.frame())).toContain("/home");
-    for (let i = 0; i < 10; i++) await t.press("down");
-    expect(selectedRow(t.frame())).toContain("/home");
-    // The region key is the one way to the next list, and it lands on its
-    // first row.
-    await t.press(c.keys.next);
-    expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
-    await t.press(c.keys.next);
-    expect(selectedRow(t.frame())).toContain("/scratch/a");
-    // The last list holds rather than wrapping.
-    await t.press(c.keys.next);
-    expect(selectedRow(t.frame())).toContain("/scratch/a");
-    await t.press(c.keys.previous);
-    expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
-    await t.press(c.keys.previous);
-    expect(selectedRow(t.frame())).toContain("/data");
+    // The keys pressed, then the selected row. Down stays inside the
+    // filesystems rather than walking into the reports; the region key is the
+    // one way to the next list, it lands on that list's first row, and the
+    // last list holds rather than wrapping.
+    const steps: [string[], string][] = [
+      [[], "/data"],
+      [["down"], "/home"],
+      [Array(10).fill("down"), "/home"],
+      [[c.keys.next], "/run/btrfs-scrub/one"],
+      [[c.keys.next], "/scratch/a"],
+      [[c.keys.next], "/scratch/a"],
+      [[c.keys.previous], "/run/btrfs-scrub/one"],
+      [[c.keys.previous], "/data"],
+    ];
+    for (const [keys, row] of steps) {
+      for (const key of keys) await t.press(key);
+      expect({ keys, on: selectedRow(t.frame()).includes(row) }).toEqual({
+        keys,
+        on: true,
+      });
+    }
   } finally {
     await t.close();
   }

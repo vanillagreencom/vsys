@@ -12,7 +12,7 @@ import {
   groupSnapshot,
   laneSnapshot,
 } from "../test/fixture";
-import { mount, selectedRow } from "../test/harness";
+import { mount, selectedRow, sortMarks } from "../test/harness";
 import {
   columnLabels,
   findLanes,
@@ -614,9 +614,8 @@ test("two agents in one session keep what tells their addresses apart", async ()
   const c = defaults();
   const s = emptySnapshot();
   // The ordinary case: one tmux session, two windows. The addresses differ
-  // only after the colon, and the session name is longer than a fixed-width
-  // column cut from the right could hold, so such a column drew both rows as
-  // the same session name.
+  // only after the colon, and the session name is too long for a column that
+  // cuts from the right to reach it.
   const addresses = [
     "development-environment:1.1",
     "development-environment:2.1",
@@ -1099,7 +1098,7 @@ test("a narrowing list gives up its readings before what names the row", async (
   // same word on every row of an ordinary fleet; then the wait, which reads
   // `0.0%` on every row that is not blocked. The pane address is identity, so
   // it outlasts all three, and the process id is never given up at all: a row
-  // without it is a row a reader cannot pick out of six with one name.
+  // without it cannot be told from another with the same name.
   const rows: [number, string[], string[]][] = [
     [140, ["Pane", "PID", "Program", "Trend", "Wait"], []],
     [130, ["Pane", "PID", "Program", "Wait"], ["Trend"]],
@@ -1111,18 +1110,13 @@ test("a narrowing list gives up its readings before what names the row", async (
     try {
       await t.press("2");
       const frame = t.frame();
-      for (const label of present)
-        expect({ width, label, on: frame.includes(label) }).toEqual({
-          width,
-          label,
-          on: true,
-        });
-      for (const label of absent)
-        expect({ width, label, on: frame.includes(label) }).toEqual({
-          width,
-          label,
-          on: false,
-        });
+      // Every label that should be drawn and is not, and every label that
+      // should be gone and is drawn.
+      expect({
+        width,
+        missing: present.filter((label) => !frame.includes(label)),
+        kept: absent.filter((label) => frame.includes(label)),
+      }).toEqual({ width, missing: [], kept: [] });
       // Whatever went, the name is still whole: that is what the floor is for.
       expect(frame).toContain("ken-1298");
     } finally {
@@ -1130,87 +1124,102 @@ test("a narrowing list gives up its readings before what names the row", async (
     }
   }
 });
-test("two lanes with one name are told apart by the id column, not the name", async () => {
+
+test("every lane carries its id in a column, and two with one name differ by it alone", async () => {
   const c = defaults();
   const s = emptySnapshot();
   // The same account, program and worktree: nothing in a name can separate
-  // these two, and nothing is appended to try.
+  // the first two, and nothing is appended to try. The third shares its name
+  // with nobody and carries its id all the same: an id on some rows and not
+  // others reads as arbitrary.
   s.lanes = [
     laneSnapshot({ id: "a", name: "ken-1298", mainPid: 4071, cpu: 20 }),
     laneSnapshot({ id: "b", name: "ken-1298", mainPid: 9152, cpu: 10 }),
+    laneSnapshot({ id: "c", name: "lonely", mainPid: 1234, cpu: 5 }),
   ];
   s.groups = [groupSnapshot()];
   const t = await mount(s, c, { width: 140, height: 24 });
   try {
     await t.press("2");
     const frame = t.frame();
-    const rows = frame.split("\n").filter((line) => line.includes("ken-1298"));
+    const lines = frame.split("\n");
+    const rows = lines.filter((line) => line.includes("ken-1298"));
     expect(rows).toHaveLength(2);
-    // Every row carries its id, whether or not it shares a name.
-    expect(rows[0]).toContain("4071");
-    expect(rows[1]).toContain("9152");
     // The name is the name: no row appends an id to it.
     expect(frame).not.toContain("ken-1298 PID");
     expect(frame).toMatch(/Agent\s+PID\s+Program/);
-    // The id is a column, so it scans: both ids sit at the same offset.
-    const at = (line: string) => line.indexOf("4071") + line.indexOf("9152");
-    expect(rows[0].indexOf("4071")).toBe(rows[1].indexOf("9152"));
-    expect(at(rows[0])).toBeGreaterThan(0);
+    // Every id ends where its heading does, so the ids scan as one column.
+    const heading = lines.find((line) => /Agent\s+PID/.test(line)) ?? "";
+    const end = heading.indexOf("PID") + "PID".length;
+    const lonely = lines.find((line) => line.includes("lonely")) ?? "";
+    const cells: [string, string][] = [
+      [rows[0], "4071"],
+      [rows[1], "9152"],
+      [lonely, "1234"],
+    ];
+    expect(cells.map(([row, id]) => row.indexOf(id) + id.length)).toEqual([
+      end,
+      end,
+      end,
+    ]);
   } finally {
     await t.close();
   }
 });
 
-test("the id column is drawn for a lane that shares its name with nobody", async () => {
+test("the Agents list marks the heading its sort is drawn under", async () => {
   const c = defaults();
-  const s = emptySnapshot();
-  s.lanes = [laneSnapshot({ id: "a", name: "lonely", mainPid: 1234 })];
-  s.groups = [groupSnapshot()];
-  const t = await mount(s, c, { width: 140, height: 24 });
-  try {
-    await t.press("2");
-    const row =
-      t
-        .frame()
-        .split("\n")
-        .find((line) => line.includes("lonely")) ?? "";
-    // An id that appeared only where two rows collided would read as
-    // arbitrary; it is on every row or it is on none.
-    expect(row).toContain("1234");
-  } finally {
-    await t.close();
-  }
-});
-
-test("the Agents list marks the sorted heading and flips it with the direction", async () => {
-  const c = defaults();
-  const s = sameWorktree(true);
-  const t = await mount(s, c, { width: 140, height: 24 });
-  try {
-    await t.press("2");
-    const heading = () =>
-      t
-        .frame()
-        .split("\n")
-        .find((line) => line.includes("Agent") && line.includes("Memory")) ??
-      "";
-    expect(heading()).toContain("↓ CPU");
-    await t.press(c.keys.reverse);
-    expect(heading()).toContain("↑ CPU");
-    // The heading moves with the sort key, and only one heading carries it.
-    await t.press(c.keys.sort);
-    const marked = heading()
-      .split(/\s{2,}/)
-      .filter((part) => part.includes("↑") || part.includes("↓"));
-    expect(marked).toHaveLength(1);
-    // Which heading, not merely that it is no longer the old one. `cpu` is
-    // followed by `pressure` in the stored column order, and `Wait` is the
-    // heading that reads. Asked only that the mark had left `CPU`, any other
-    // heading satisfied it, so a mapping sending `pressure` to `State` would
-    // have marked `State` over rows sorted by wait and passed.
-    expect(marked[0]).toContain("Wait");
-  } finally {
-    await t.close();
+  // The stored sort key, the list's width, the keys then pressed, the heading
+  // the key reads, and that heading as marked. Every key the list draws a
+  // heading for; then the reverse and sort keys moving the mark, where `cpu`
+  // is followed by `pressure` in the stored column order and `Wait` is its
+  // heading; then two keys at widths that shed their column, where the sort
+  // marks no heading rather than lending its arrow to one that is drawn.
+  const rows: [string, number, string[], string, string][] = [
+    ["name", 140, [], "Agent", "Agent ↓"],
+    ["tool", 140, [], "Program", "Program ↓"],
+    ["cpu", 140, [], "CPU", "↓ CPU"],
+    ["rss", 140, [], "Memory", "↓ Memory"],
+    ["pressure", 140, [], "Wait", "↓ Wait"],
+    ["state", 140, [], "State", "State ↓"],
+    ["cpu", 140, [c.keys.reverse], "CPU", "↑ CPU"],
+    ["cpu", 140, [c.keys.reverse, c.keys.sort], "Wait", "↑ Wait"],
+    ["tool", 110, [], "Program", ""],
+    ["pressure", 100, [], "Wait", ""],
+  ];
+  for (const [sort, width, keys, label, mark] of rows) {
+    const t = await mount(
+      sameWorktree(true),
+      { ...c, sort },
+      { width, height: 24 },
+    );
+    try {
+      await t.press("2");
+      for (const key of keys) await t.press(key);
+      const frame = t.frame();
+      const heading =
+        frame
+          .split("\n")
+          .find((line) => line.includes("Agent") && line.includes("Memory")) ??
+        "";
+      // Whether the column is drawn at this width is the row's premise, so it
+      // is read here rather than assumed from the shed order.
+      expect({
+        sort,
+        width,
+        keys,
+        drawn: heading.includes(label),
+        marks: sortMarks(frame),
+      }).toEqual({
+        sort,
+        width,
+        keys,
+        drawn: mark !== "",
+        marks: mark ? [mark] : [],
+      });
+    } finally {
+      await t.close();
+    }
   }
 });
 
@@ -1248,55 +1257,6 @@ test("search finds a row by the address and the window it shows", async () => {
       expect({ query, other: frame.includes("lane-b") }).toEqual({
         query,
         other: false,
-      });
-    } finally {
-      await t.close();
-    }
-  }
-});
-
-test("a stored sort marks the heading its own column is drawn under", async () => {
-  // Every sort key the list draws a heading for, at a width that draws all
-  // six. Four of the six were reached by no test, so a mapping could send any
-  // of them to any heading. Then two keys at widths that shed their column: a
-  // sort on a column the list does not draw marks no heading at all, rather
-  // than lending its arrow to one that is drawn.
-  const marks: [string, number, string, boolean][] = [
-    ["name", 140, "Agent", true],
-    ["tool", 140, "Program", true],
-    ["cpu", 140, "CPU", true],
-    ["rss", 140, "Memory", true],
-    ["pressure", 140, "Wait", true],
-    ["state", 140, "State", true],
-    ["tool", 110, "Program", false],
-    ["pressure", 100, "Wait", false],
-  ];
-  for (const [key, width, label, drawn] of marks) {
-    const c = { ...defaults(), sort: key };
-    const t = await mount(sameWorktree(true), c, { width, height: 24 });
-    try {
-      await t.press("2");
-      const heading =
-        t
-          .frame()
-          .split("\n")
-          .find((line) => line.includes("Agent") && line.includes("Memory")) ??
-        "";
-      // Whether the column is drawn at this width is the row's premise, so it
-      // is read here rather than assumed from the shed order.
-      expect({ key, width, drawn: heading.includes(label) }).toEqual({
-        key,
-        width,
-        drawn,
-      });
-      const marked = heading
-        .split(/\s{2,}/)
-        .filter((part) => part.includes("↑") || part.includes("↓"));
-      const on = marked.map((part) => part.replace(/[↑↓]/g, "").trim());
-      expect({ key, width, on }).toEqual({
-        key,
-        width,
-        on: drawn ? [label] : [],
       });
     } finally {
       await t.close();

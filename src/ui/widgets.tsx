@@ -18,11 +18,9 @@ import { levelColor, readingWeight, ui } from "./theme";
  * Keeps the thing the reader is standing on where they can see it, in a box
  * they can also scroll themselves.
  *
- * Asked of the drawing rather than enumerated from state. Every screen that
- * has tried the enumeration has lost the same way: `settings-screen.tsx` grew
- * a name each time a kind was missed, `agent.tsx` named `selected` while an
- * arriving capture pushed the row off the screen, and Home named `selected`
- * while moving to the tiles moved what should be on screen and re-ran nothing.
+ * Asked of the drawing rather than enumerated from state: a list of the state
+ * that can move a row misses whatever moves it next, such as a capture arriving
+ * above the selected row or the focus moving from a list to the tiles.
  *
  * There are two questions here and they have different answers.
  *
@@ -55,8 +53,7 @@ export function useKeepInView(
   wanted.current = target;
   // Whether the reader has ever chosen anything on this screen. Until they
   // have, there is nothing to keep in view: a screen drawing itself moves its
-  // own rows, and chasing that is how the agent detail opened a line down from
-  // its own top, on the runs where the charts happened to arrive late.
+  // own rows, and chasing them opens the screen part-way down.
   const moved = useRef(false);
   const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -81,15 +78,14 @@ export function useKeepInView(
     };
     // The first reading has to be a settled one: read early, the target's own
     // height is a layout behind, and a row that will be below the fold reports
-    // itself on screen. Taken as the baseline, the settled reading that
-    // followed then read as a row that had left the screen, and the detail
-    // opened a line down from its own top.
+    // itself on screen. Taken as the baseline, that early reading makes the
+    // settled one look like a row that has left the screen.
     if (placed.current !== null) place();
-    // One reading in flight, and the render that follows does not cancel it.
-    // Cancelling was the obvious thing and it starved every reading: a reader
-    // holding a key down renders faster than a timeout fires, so the screen
-    // never followed them at all. A late reading asks the box its own question
-    // when it runs and takes the target from a ref, so it is a current one.
+    // One reading in flight, and the render that follows does not cancel it: a
+    // reader holding a key down renders faster than a timeout fires, so a
+    // render that cancelled would starve every reading. A late reading asks the
+    // box its own question when it runs and takes the target from a ref, so it
+    // is a current one.
     if (pending.current === null)
       pending.current = setTimeout(() => {
         pending.current = null;
@@ -471,8 +467,9 @@ export function Tiles({
  * The block under a row that explains it: a rule down its left edge and an
  * indent after it, so it reads as part of that row rather than as the next
  * one. An indent alone is not enough at a glance: a line indented under
- * another reads as a new top-level line as readily as a child of it. The indent goes on a box, because `paddingLeft` on a text
- * element moves nothing at all, not even its first line.
+ * another reads as a new top-level line as readily as a child of it. The
+ * indent goes on a box, because `paddingLeft` on a text element moves nothing
+ * at all, not even its first line.
  */
 export function Detail({
   children,

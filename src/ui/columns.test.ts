@@ -32,7 +32,7 @@ test("an address is cut in its session, and keeps the window and pane whole", ()
     ["development:1.1", 16, "development:1.1 "],
     ["development:1.1", 15, "development:1.1"],
     // Two agents in one session differ only after the colon, so that is the
-    // part kept. A cut from the right drew both of these as `development…`.
+    // part kept.
     ["development:1.1", 12, "develop…:1.1"],
     ["development:2.1", 12, "develop…:2.1"],
     ["development:10.12", 12, "devel…:10.12"],
@@ -108,18 +108,26 @@ test("a spec of one column has no gap to count", () => {
 });
 
 test("a sorted heading puts its arrow where the column's own values end", () => {
-  const wait = { label: "Wait", width: 11, align: "right" as const };
-  const agent = { label: "Agent", width: 20 };
-  // A right-aligned column's digits end at its right edge, so an arrow after
-  // the word would push the heading past them. It leads instead.
-  expect(sortedLabel(wait, true, true)).toBe("↓ Wait");
-  expect(sortedLabel(wait, true, false)).toBe("↑ Wait");
-  // A text column reads left to right and its values start at its left edge,
-  // so the arrow follows the word it belongs to. Both branches drawn the same
-  // way passed every test there was.
-  expect(sortedLabel(agent, true, true)).toBe("Agent ↓");
-  expect(sortedLabel(agent, true, false)).toBe("Agent ↑");
-  // A heading nobody is sorting by carries no arrow at all.
-  expect(sortedLabel(wait, false, true)).toBe("Wait");
-  expect(sortedLabel(agent, false, false)).toBe("Agent");
+  const wait: Column = { label: "Wait", width: 11, align: "right" };
+  const agent: Column = { label: "Agent", width: 20 };
+  // A right-aligned column's digits end at its right edge, so its arrow leads
+  // and the heading still ends there. A text column's values start at its left
+  // edge, so its arrow follows the word. A heading nobody sorts by has none.
+  const rows: [Column, boolean, boolean, string][] = [
+    [wait, true, true, "↓ Wait"],
+    [wait, true, false, "↑ Wait"],
+    [agent, true, true, "Agent ↓"],
+    [agent, true, false, "Agent ↑"],
+    [wait, false, true, "Wait"],
+    [agent, false, false, "Agent"],
+  ];
+  for (const row of rows) {
+    const [column, sorted, descending] = row;
+    expect([
+      column,
+      sorted,
+      descending,
+      sortedLabel(column, sorted, descending),
+    ]).toEqual(row);
+  }
 });

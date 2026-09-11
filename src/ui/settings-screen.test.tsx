@@ -687,8 +687,7 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     expect(isChildLine(lines[row + 1])).toBe(true);
     expect(isChildLine(lines[row + 2])).toBe(true);
     // Where the rule and the text start, not merely that a rule precedes the
-    // text. `isChildLine` takes any indent of one column or more, so a detail
-    // block shifted six columns right would pass each check above.
+    // text: `isChildLine` takes any indent of one column or more.
     const textAt = (line: string) => {
       const rule = line.indexOf("│");
       return rule + 1 + line.slice(rule + 1).search(/\S/);
@@ -696,9 +695,7 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     expect(lines[row + 1].indexOf("│")).toBe(2);
     expect(textAt(lines[row + 1])).toBe(5);
     expect(textAt(lines[row + 2])).toBe(5);
-    // And what the drill-down says in the place it names the cause. The
-    // phrase moved here from the row and the assertion on it did not move
-    // with it: any wording, or none, passed.
+    // And what the drill-down says in the place it names the cause.
     expect(lines[row + 1]).toContain("no PSI on this kernel");
     expect(lines[row + 1]).toContain("/proc/pressure/cpu");
     expect(lines[row + 2].trimEnd().endsWith("directory)")).toBe(true);
@@ -827,9 +824,7 @@ test("the sources list opens with its last entry readable", async () => {
     // The phrase both spellings of this row share: the design pass rewrites
     // its label, and which row is selected is the claim, not its wording.
     expect(selectedRow(frame)).toContain("vsys cannot read");
-    // And what the row says those sources cost. Its count was pinned and its
-    // sentence was not, so the row could read `4` alone and pass: the sentence
-    // is the whole of why the row says anything beyond a number.
+    // And what the row says those sources cost, beside their count.
     expect(selectedRow(frame)).toContain("what they feed is blank, not zero");
     // The row moved up far enough for the whole list, last entry included.
     // Brought into view as a row instead, the row sits at the bottom edge and

@@ -115,3 +115,18 @@ export function selectedRow(frame: string): string {
  * is the whole reason the rule exists.
  */
 export const isChildLine = (line: string): boolean => / │ +\S/.test(line);
+
+/**
+ * The headings carrying a sort arrow on a lane table's heading line, the line
+ * naming both `Agent` and `Memory`, as drawn: `↓ CPU`, `Agent ↑`.
+ */
+export function sortMarks(frame: string): string[] {
+  const heading =
+    frame
+      .split("\n")
+      .find((line) => line.includes("Agent") && line.includes("Memory")) ?? "";
+  return heading
+    .split(/\s{2,}/)
+    .filter((part) => /[↑↓]/.test(part))
+    .map((part) => part.trim());
+}

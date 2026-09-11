@@ -541,9 +541,6 @@ export function Agents({
   // The process id is not in this set at all. It is on every row and it is the
   // only thing that tells two lanes with one name apart, so a width at which it
   // is gone is a width at which a reader cannot pick the lane they came for.
-  // Measured across the terminal widths 84 to 210: with the id shed-able, 37 of
-  // those 127 widths drew six lanes named `method` as rows a reader could not
-  // tell apart; with it fixed, none do, and the name still keeps its floor.
   const optional = ["Trend", "Program", "Wait", "Pane"] as const;
   const wanted: Record<(typeof optional)[number], boolean> = {
     Trend: !narrow,
