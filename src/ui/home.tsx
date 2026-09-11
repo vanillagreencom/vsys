@@ -51,8 +51,9 @@ export type HomeItem =
 /**
  * The columns `Busiest agents` sorts by, in the order the sort key cycles
  * through them, each with the lane field it reads. Home sorts its own four
- * headings rather than the whole Agents column set: a heading a screen does
- * not draw cannot show a reader which way it is sorted.
+ * headings rather than the whole Agents column set, and the key skips any of
+ * them the table does not draw: a heading a screen does not draw cannot show a
+ * reader which way it is sorted.
  */
 export const busiestSorts: [string, string][] = [
   ["CPU", "cpu"],
@@ -319,10 +320,10 @@ export function Home({
     // A key that asks for a different order releases the held one, so the
     // heading never marks an order the rows do not follow.
     if (name === c.keys.sort) {
-      const at = busiestSorts.findIndex(([, key]) => key === sort.key);
+      const at = drawnSorts.findIndex(([, key]) => key === sort.key);
       setHeld(null);
       setSort({
-        key: busiestSorts[(at + 1) % busiestSorts.length][1],
+        key: drawnSorts[(at + 1) % drawnSorts.length][1],
         descending: sort.descending,
       });
       return true;
@@ -367,10 +368,10 @@ export function Home({
   // The marker, the bar and the readings take fixed columns; the name has the
   // rest, and the heading reads the same spec the rows do.
   // The id is here for the same reason it is on the Agents list: rows that
-  // share a name are told apart by nothing else. This table
-  // shares its width with the column beside it, so when the name cannot keep
-  // its floor the state goes first — a blocked or running lane already shows
-  // in its numbers, while a name that identifies nothing shows in nothing.
+  // share a name are told apart by nothing else. This table shares its width
+  // with the column beside it, so when the name cannot keep its floor the
+  // state goes first — a blocked or running lane already shows in its numbers,
+  // while a name that identifies nothing shows in nothing.
   const homeNameFloor = 24;
   const fixedWith = (state: boolean): Column[] => [
     { label: "PID", width: 8, align: "right" },
@@ -384,8 +385,9 @@ export function Home({
   const withState = nameRoom(true) >= homeNameFloor;
   const fixed = fixedWith(withState);
   // The time, the kind and the subject each take a column, so the rows scan
-  // as rows. The subject takes what the time and the kind leave and is cut through the same helper every other
-  // cell uses, which ends a cut with its mark instead of stopping mid-word.
+  // as rows. The subject takes what the time and the kind leave and is cut
+  // through the same helper every other cell uses, which ends a cut with its
+  // mark instead of stopping mid-word.
   const changeColumns: Column[] = [
     { label: "", width: 11, align: "right" },
     { label: "", width: 13 },
@@ -401,6 +403,12 @@ export function Home({
   const [nameColumn, pidColumn, barColumn, cpuColumn, memoryColumn] =
     agentColumns;
   const stateColumn = withState ? agentColumns[5] : undefined;
+  // The sorts whose heading this table draws, which the sort key cycles
+  // through. A sort left on a column the width has since shed moves to the
+  // first of them on the next press.
+  const drawnSorts = busiestSorts.filter(([label]) =>
+    agentColumns.some((column) => column.label === label),
+  );
   return (
     <scrollbox
       ref={scroller}

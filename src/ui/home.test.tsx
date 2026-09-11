@@ -1065,6 +1065,20 @@ test("Busiest agents sorts from its own headings, and the heading says which", a
   } finally {
     await t.close();
   }
+  // Two Home columns leave no room for State, so a full cycle of the sort key
+  // passes over it and every press lands on a heading that is drawn.
+  const shed = await mount(twoAgents(true), c, { width: 160, height: 30 });
+  try {
+    await shed.press("1");
+    const marks: string[][] = [];
+    for (let i = 0; i < 3; i++) {
+      await shed.press(c.keys.sort);
+      marks.push(sortMarks(shed.frame()));
+    }
+    expect(marks).toEqual([["↓ Memory"], ["Agent ↓"], ["↓ CPU"]]);
+  } finally {
+    await shed.close();
+  }
 });
 
 test("a change row cuts with a mark, at any width, and its columns line up", async () => {
