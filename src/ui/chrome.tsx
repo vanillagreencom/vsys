@@ -205,7 +205,9 @@ export function Help({ config: c }: { config: Config }) {
         [`${k.left} ${k.right} ← →`, "move the time cursor"],
         [k.open, "open the selection"],
         [k.back, "go back"],
-        [`${k.next} ${k.previous}`, "next and previous tab"],
+        [`${k.next} ${k.previous}`, "next and previous region"],
+        [k.hold, "hold Busiest agents' order on Home"],
+        [views.map((v) => k[viewKey(v)]).join(" "), "go to a screen"],
       ],
     ],
     [

@@ -169,3 +169,11 @@ export function unitLabel(name: string): string {
   }
   return words.join(" ");
 }
+/**
+ * A lane named in text: its name, then the process leading it. A table carries
+ * the id in a column of its own, but a sentence has none, so two lanes with one
+ * name would read as one. A lane that leads no process is its name alone.
+ */
+export function laneText(lane: { name: string; mainPid: number }): string {
+  return lane.mainPid ? `${lane.name} PID ${lane.mainPid}` : lane.name;
+}

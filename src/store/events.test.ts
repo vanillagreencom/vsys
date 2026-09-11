@@ -47,7 +47,7 @@ test("a lane start and stop name the account and the slice", () => {
   );
   const start = log.advance(running, c).filter((e) => e.kind === "lane-start");
   expect(start).toHaveLength(2);
-  expect(start[0].subject).toBe("lane-a");
+  expect(start[0].subject).toBe("lane-a PID 40");
   expect(start[0].names).toMatchObject({
     account: "work",
     slice: "agents.slice",
@@ -58,7 +58,7 @@ test("a lane start and stop name the account and the slice", () => {
     .advance(emptySnapshot(3000), c)
     .filter((e) => e.kind === "lane-stop");
   expect(stop).toHaveLength(2);
-  expect(stop[0].subject).toBe("lane-a");
+  expect(stop[0].subject).toBe("lane-a PID 40");
   expect(stop[0].names.slice).toBe("agents.slice");
   expect(stop[0].values.age).toBe(30);
 });
@@ -106,7 +106,7 @@ test("an alert closes with the time it stayed open", () => {
   firing.lanes = [laneSnapshot({ name: "escaped", unconfined: true })];
   const opened = log.advance(firing, c).find((e) => e.kind === "alert-open");
   expect(opened?.cause).toBe("unconfined");
-  expect(opened?.subject).toBe("escaped");
+  expect(opened?.subject).toBe("escaped PID 40");
   expect(opened?.names.level).toBe("danger");
   const repeat = emptySnapshot(3000);
   repeat.lanes = firing.lanes;
@@ -197,8 +197,8 @@ test("a second subject on one cause opens and closes on its own", () => {
   const out = log.advance(second, c);
   const opened = out.find((e) => e.kind === "alert-open");
   const closed = out.find((e) => e.kind === "alert-close");
-  expect(opened?.subject).toBe("agent-b");
-  expect(closed?.subject).toBe("agent-a");
+  expect(opened?.subject).toBe("agent-b PID 40");
+  expect(closed?.subject).toBe("agent-a PID 40");
   expect(closed?.cause).toBe("unconfined");
 });
 /** Counts the alert transitions over a run of samples driven by `pressure`. */
@@ -241,11 +241,14 @@ test("two lanes escaping at once are two alerts, not one", () => {
   const opened = log
     .advance(both, c)
     .filter((e) => e.kind === "alert-open" && e.cause === "unconfined");
-  expect(opened.map((e) => e.subject).sort()).toEqual(["agent-a", "agent-b"]);
+  expect(opened.map((e) => e.subject).sort()).toEqual([
+    "agent-a PID 40",
+    "agent-b PID 40",
+  ]);
   const gone = emptySnapshot(3000);
   gone.lanes = [both.lanes[0]];
   const closed = log.advance(gone, c).filter((e) => e.kind === "alert-close");
-  expect(closed.map((e) => e.subject)).toEqual(["agent-b"]);
+  expect(closed.map((e) => e.subject)).toEqual(["agent-b PID 40"]);
 });
 test("the verdict holds while its alert waits out the close", () => {
   const held = defaults();
@@ -364,12 +367,19 @@ test("two lanes sharing a display name keep separate identities", () => {
   const log = started();
   const twins = emptySnapshot(2000);
   twins.lanes = [
-    laneSnapshot({ id: "a.scope", name: "kendex" }),
-    laneSnapshot({ id: "b.scope", name: "kendex" }),
+    laneSnapshot({ id: "a.scope", name: "kendex", mainPid: 4071 }),
+    laneSnapshot({ id: "b.scope", name: "kendex", mainPid: 9152 }),
   ];
+  // A change row is text with no id column, so each subject names its process
+  // when the lane starts and when it stops.
+  const named = ["kendex PID 4071", "kendex PID 9152"];
   const started2 = log.advance(twins, c).filter((e) => e.kind === "lane-start");
-  expect(started2.map((e) => e.subject)).toEqual(["kendex", "kendex"]);
+  expect(started2.map((e) => e.subject)).toEqual(named);
   expect(started2.map((e) => e.subjectId)).toEqual(["a.scope", "b.scope"]);
+  const stopped = log
+    .advance(emptySnapshot(3000), c)
+    .filter((e) => e.kind === "lane-stop");
+  expect(stopped.map((e) => e.subject)).toEqual(named);
 });
 
 test("memory reclaim alerts one per stalled lane, not one for the scope it points at", () => {
@@ -420,7 +430,7 @@ test("a change about a cgroup names it the way a card does, and keeps the unit",
   expect(swap.names.unit).toBe("app-Hyprland-ghostty-b95bd288.scope");
   // A lane subject already reads as a name and carries no unit of its own.
   const lane = events.find((e) => e.cause === "memory-cap");
-  expect(lane?.subject).toBe("capped");
+  expect(lane?.subject).toBe("capped PID 40");
   expect(lane?.names.unit ?? "").toBe("");
 });
 
@@ -541,7 +551,7 @@ test("a scope that becomes a lane while its alert waits opens under one name", (
   // identity, two names. A plant cannot catch a fixture where the scope never
   // becomes a lane, so the rename is asserted rather than assumed.
   expect(named(anonymous)).toEqual([`${path} agent 854045`]);
-  expect(named(renamed)).toEqual([`${path} confine`]);
+  expect(named(renamed)).toEqual([`${path} confine PID 40`]);
 
   const log = new EventLog();
   const out: ReturnType<EventLog["advance"]>[] = [];
@@ -563,9 +573,9 @@ test("a scope that becomes a lane while its alert waits opens under one name", (
   // it says the same. Under the frozen name these read `agent 854045`, which
   // is a scope the reader can no longer find: it is a lane now.
   expect(events).toEqual([
-    `alert-open confine ${unit}`,
-    `verdict confine ${unit}`,
-    `alert-close confine ${unit}`,
+    `alert-open confine PID 40 ${unit}`,
+    `verdict confine PID 40 ${unit}`,
+    `alert-close confine PID 40 ${unit}`,
   ]);
 });
 
@@ -598,8 +608,8 @@ test("a lane that starts writing the most while its alert waits keeps its handle
   // What the fixture has to move. The lane is a subject of this cause either
   // way; what changes is whether the cause also names it as the writing scope,
   // which is where the raw handle comes from.
-  expect(handles(stalling(0, false))).toEqual(["worker "]);
-  expect(handles(stalling(5000, true))).toEqual(["worker l.scope"]);
+  expect(handles(stalling(0, false))).toEqual(["worker PID 40 "]);
+  expect(handles(stalling(5000, true))).toEqual(["worker PID 40 l.scope"]);
 
   const log = new EventLog();
   log.advance(stalling(0, false), held);

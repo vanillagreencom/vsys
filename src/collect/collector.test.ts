@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { defaults } from "../config/config";
 import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherTrail } from "../model/launcher";
+import { laneText } from "../model/naming";
 import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
 import { buildKind, toolName } from "./builds";
@@ -428,7 +429,7 @@ test("build process environments carry the wrapper and the make token pool", asy
     MAKEFLAGS: " -j16 --jobserver-auth=fifo:/tmp/GMfifo1",
   });
   expect(s.sccache?.hits).toBe(8);
-  expect(bypassedLanes(s)).toEqual([s.lanes[0].name]);
+  expect(bypassedLanes(s)).toEqual([laneText(s.lanes[0])]);
   expect(jobservers(s, f.config)).toEqual([
     { fifo: "/tmp/GMfifo1", total: 16, inUse: 1 },
   ]);

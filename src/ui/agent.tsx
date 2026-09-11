@@ -36,6 +36,8 @@ import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Chart,
+  Detail,
+  Disclosure,
   Empty,
   Field,
   gutter,
@@ -46,6 +48,7 @@ import {
   Sparkline,
   Tile,
   Tiles,
+  useKeepInView,
 } from "./widgets";
 
 /** The drill-down sections, closed until the reader opens one. */
@@ -256,44 +259,9 @@ export function Agent({
     { lines: string[] } | { error: string } | null
   >(null);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
-  const placed = useRef<number | null>(null);
-  // Asked of the drawing, not enumerated from state. Naming `selected` alone
-  // meant a capture arriving with twelve lines pushed the highlighted row off
-  // the screen while the keys still acted on it, and naming the capture beside
-  // it would have left the same hole for the next section anyone adds.
-  //
-  // What the box is asked is where the row sits in the content: its screen `y`
-  // plus how far the content is scrolled. That sum is the one number here the
-  // reader's own scrolling leaves alone, and this box takes the wheel, so an
-  // effect that could not tell the two apart would drag the reader back to the
-  // selection on every sample.
-  //
-  // A row that has just grown does not know its size until the layout after
-  // the render that grew it, so the reading that matters is the one taken on a
-  // timeout. The synchronous reading is the same question asked early, and it
-  // is worth asking only once there is a settled answer to compare it with:
-  // measured, the two disagree by a line on arrival, and taking the early one
-  // as the baseline made the settled one look like a row that had moved and
-  // opened the detail a line down.
-  //
-  // The first settled reading only records. Nothing has moved yet, and
-  // scrolling on arrival would open the detail below the identity line and the
-  // charts, which is what the reader came to read.
-  useEffect(() => {
-    const place = () => {
-      const box = scroller.current;
-      const row = box?.content.findDescendantById(`detail-${selected}`);
-      if (!box || !row) return;
-      const at = row.y + box.scrollTop;
-      if (placed.current === at) return;
-      const first = placed.current === null;
-      placed.current = at;
-      if (!first) box.scrollChildIntoView(`detail-${selected}`);
-    };
-    if (placed.current !== null) place();
-    const pending = setTimeout(place, 0);
-    return () => clearTimeout(pending);
-  });
+  // The sections open and close and the pane fills asynchronously, so what sits
+  // above the selected row moves without the selection moving.
+  useKeepInView(scroller, `detail-${selected}`);
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
   useEffect(() => {
@@ -555,19 +523,14 @@ export function Agent({
               flexShrink={0}
             >
               <Row selected={selected === i} onOpen={() => toggle(row.name)}>
-                <span fg={ui.accent}>{open.has(row.name) ? "▾ " : "▸ "}</span>
-                {row.name}
-                {count(row.name) !== undefined && (
-                  <span attributes={ui.dim}>{`  ${count(row.name)}`}</span>
-                )}
+                <Disclosure
+                  open={open.has(row.name)}
+                  name={row.name}
+                  count={count(row.name)}
+                />
               </Row>
               {open.has(row.name) && (
-                <box
-                  flexDirection="column"
-                  flexShrink={0}
-                  paddingLeft={3}
-                  paddingBottom={1}
-                >
+                <Detail>
                   {row.name === "Processes" && (
                     <>
                       <Line height={1} truncate attributes={ui.dim}>
@@ -702,7 +665,7 @@ export function Agent({
                           : `Write mode is off · ${keyLabel(c.keys.copy)} copies the selected command`}
                       </Line>
                     ))}
-                </box>
+                </Detail>
               )}
             </box>
           ),

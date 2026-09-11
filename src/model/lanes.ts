@@ -3,7 +3,6 @@ import type { CollectionConfig } from "../collect/settings";
 import { isPaneId, type PaneAddress } from "../collect/tmux";
 import {
   accountName,
-  distinctNames,
   jobserver,
   laneName,
   paneName,
@@ -120,8 +119,9 @@ export function lanes(
       id,
       // No pane part: `%9` is a server-global tmux handle, not a name, and a
       // reader cannot tell which window it belongs to. It stays on the lane as
-      // the handle it is, and `distinguish` separates lanes by what a reader
-      // already recognises.
+      // the handle it is. Nothing is appended to make a name unique either:
+      // an id that appears on some rows and not others reads as arbitrary, so
+      // the process id is a column of its own on every row instead.
       name:
         laneName({ account, tool, title, workspace: derived || null }, [
           ...c.laneNameParts,
@@ -245,25 +245,8 @@ export function lanes(
       procs.filter((p) => p.group === proc.group),
     );
   }
-  distinguish(result);
   return result;
 }
-/**
- * Two lanes that resolve to one name tell the reader nothing about which is
- * which. The working directory separates most of them; the process id always
- * can, and the lane id is unique by construction.
- */
-export function distinguish(lanes: Lane[]): void {
-  const names = distinctNames(lanes, (l) => l.name, [
-    (l) => (l.cwd ? basename(l.cwd) : ""),
-    (l) => (l.mainPid ? `PID ${l.mainPid}` : ""),
-    (l) => l.id,
-  ]);
-  lanes.forEach((lane, i) => {
-    lane.name = names[i];
-  });
-}
-
 /** Parent IDs can disappear between samples; cycles terminate explicitly. */
 export function parentChain(proc: Proc, all: Proc[]): Proc[] {
   const byPid = new Map(all.map((p) => [p.pid, p]));

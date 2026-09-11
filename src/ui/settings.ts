@@ -129,7 +129,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   },
   laneNameParts: {
     label: "Lane name parts",
-    help: "The parts that name a lane, in order. A listed pane composes nothing: a tmux pane address names no window a reader can place. Where two lanes still resolve to one name, vsys adds the working directory or the process id.",
+    help: "The parts that name a lane, in order. A listed pane composes nothing: a tmux pane address names no window a reader can place, so it selects a column of its own instead. Nothing is ever added to a name: where two lanes resolve to one, the process id beside them is what tells them apart.",
   },
   accountEnv: {
     label: "Account variables",
@@ -285,6 +285,30 @@ const absentReasons: Record<CapabilityId, string> = {
 const incompleteReasons: Partial<Record<CapabilityId, string>> = {
   tmux: "tmux is installed but no server is answering",
 };
+/**
+ * What is missing from the screens while a capability is not available. A
+ * reader cannot act on "no PSI on this kernel"; they can act on knowing that
+ * every wait reading is blank rather than zero, and where those readings are.
+ * Blank and zero are different answers, and a dashboard that shows zero for a
+ * number it could not read is lying.
+ */
+const capabilityCost: Record<CapabilityId, string> = {
+  cgroup2:
+    "no resource group is read: Resources lists none, and Agents lists only agents running outside the agent slice",
+  delegation:
+    "group memory and memory limits, or CPU weights, are blank rather than zero on Resources and the agent detail",
+  psi: "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
+  "io-stat":
+    "per-group disk writes are blank rather than zero, on Home and Storage",
+  scrub: "Storage lists no scrub report, which is not the same as a clean one",
+  smart:
+    "Storage shows no drive lifetime writes, which is not the same as none written",
+  tmux: "a tmux pane id resolves to no address, and no agent's terminal can be read or switched to",
+};
+/** What a reader loses while this capability is missing. */
+export function capabilityLoss(cap: Capability): string {
+  return cap.available ? "" : capabilityCost[cap.id];
+}
 /**
  * One cause per capability, derived from what the probe found rather than from
  * the identifier alone. A present file that cannot be read or does not parse

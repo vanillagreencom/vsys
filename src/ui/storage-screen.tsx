@@ -8,14 +8,15 @@ import { type WriteTotal, writeTotals } from "../model/writes";
 import { columnGap, fit } from "./columns";
 import { age, amount, gap } from "./format";
 import { useScreenKeys } from "./keys";
+import { regionOf, stepToRegion, stepWithin } from "./regions";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
   Detail,
+  Disclosure,
   Empty,
   Field,
   Line,
-  nextDown,
   Reading,
   Row,
   Section,
@@ -130,8 +131,13 @@ export function Storage({
   onTargetUsed: () => void;
   onNotice: (text: string, level: Level) => void;
 }) {
-  const [selected, setSelected] = useState(0);
+  const [chosen, setSelected] = useState(0);
   const items = storageItems(s);
+  // The selection held inside the rows there are: a list that shrinks under
+  // it leaves the reader on its last row, and with no rows at all nothing is
+  // selected and no region is focused.
+  const within = (index: number) => Math.min(index, items.length - 1);
+  const selected = within(chosen);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     scroller.current?.scrollChildIntoView(`storage-${selected}`);
@@ -149,15 +155,28 @@ export function Storage({
     else onNotice(`${target} is no longer in the sample`, "warn");
     onTargetUsed();
   }, [target, onTargetUsed, onNotice, s]);
+  // Storage's three lists are three regions of one flat selection, in the
+  // order they are drawn: filesystems, scrub reports, scratch directories.
+  const counts = [
+    items.filter((item) => item.kind === "volume").length,
+    items.filter((item) => item.kind === "scrub").length,
+    items.filter((item) => item.kind === "scratch").length,
+  ];
+  const region = regionOf(counts, selected);
+  // With no rows there is nothing to move to, and the choice is kept for the
+  // rows that arrive.
+  const move = (to: (index: number) => number) => {
+    if (items.length) setSelected((i) => to(within(i)));
+    return true;
+  };
   useScreenKeys((name) => {
-    if (name === c.keys.down || name === "down") {
-      setSelected((i) => nextDown(items.length, i));
-      return true;
-    }
-    if (name === c.keys.up || name === "up") {
-      setSelected((i) => Math.max(0, i - 1));
-      return true;
-    }
+    if (name === c.keys.down || name === "down")
+      return move((i) => stepWithin(counts, i, 1));
+    if (name === c.keys.up || name === "up")
+      return move((i) => stepWithin(counts, i, -1));
+    if (name === c.keys.previous)
+      return move((i) => stepToRegion(counts, i, -1));
+    if (name === c.keys.next) return move((i) => stepToRegion(counts, i, 1));
     return false;
   });
   const totals = writeTotals(s, c);
@@ -226,17 +245,16 @@ export function Storage({
           color={levelColor(level)}
           onOpen={() => setSelected(i)}
         >
-          {"  "}
-          {safe(fit(v.mount, 40))}
+          <Disclosure open={i === selected} name={fit(v.mount, 40)} />
           {v.readOnly && <span fg={ui.danger}>read-only</span>}
         </Row>
         {i === selected && (
-          <box flexDirection="column" flexShrink={0} paddingLeft={4}>
+          <Detail indent={4}>
             {/* The device row above names the device and its error counters
                 once for every mount grouped under it, and subvolumes of one
                 filesystem share both. The options are the mount's own. */}
             <Field label="Options" value={v.options.join(", ")} />
-          </box>
+          </Detail>
         )}
       </box>
     );
@@ -310,6 +328,7 @@ export function Storage({
         <Section
           title="Filesystems"
           width={width}
+          focused={region === 0}
           count={st.volumes.length || undefined}
         />
         {st.mountsAvailable === false && (
@@ -373,6 +392,7 @@ export function Storage({
         <Section
           title="Scrub reports"
           width={width}
+          focused={region === 1}
           count={st.scrubs.length || undefined}
         />
         {!st.scrubs.length && (
@@ -410,6 +430,7 @@ export function Storage({
         <Section
           width={width}
           title="Scratch"
+          focused={region === 2}
           count={`${scanState} · quota ${amount(c.scratchQuota, c)}`}
         />
         {!st.scratch.length && !st.sessions.length && (

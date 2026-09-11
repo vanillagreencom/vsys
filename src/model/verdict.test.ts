@@ -44,7 +44,10 @@ test("severity ranks the ladder and housekeeping never leads it", () => {
   const s = healthy();
   s.system.pressure.io = { some: 70, full: 40, total: 0 };
   s.groups = [g("a.scope", "a.scope", { writeRate: 200 })];
-  s.lanes = [laneSnapshot({ name: "kendex hclaude", unconfined: true })];
+  // A lane leading no process is named by its name alone.
+  s.lanes = [
+    laneSnapshot({ name: "kendex hclaude", mainPid: 0, unconfined: true }),
+  ];
   const ladder = causes(s, c);
   expect(ladder.map((cause) => cause.id)).toEqual(["unconfined", "disk"]);
   expect(ladder[0]).toMatchObject({
@@ -107,7 +110,7 @@ test("a saturated disk names the writing scope and carries its numbers", () => {
   expect(ladder[0]).toMatchObject({
     id: "disk",
     level: "danger",
-    consumer: "lane-510341",
+    consumer: "lane-510341 PID 40",
     values: { some: 70, full: 41, writeRate: 200, linkers: 1, stalling: 1 },
   });
   // Storage stallers join the disk card; only the CPU one stays generic.
@@ -188,7 +191,7 @@ test("four meters carry exact numbers and the biggest consumer", () => {
   expect(cpu).toEqual({
     id: "cpu",
     level: "ok",
-    consumer: "lane-a",
+    consumer: "lane-a PID 40",
     values: { system: 1, agents: 11.8, desktop: 40, top: 30 },
   });
   // "largest" always means the largest memory scope; the swap holder is its
@@ -216,7 +219,7 @@ test("four meters carry exact numbers and the biggest consumer", () => {
   expect(builds).toEqual({
     id: "builds",
     level: "ok",
-    consumer: "lane-a",
+    consumer: "lane-a PID 40",
     values: { builds: 2, linkers: 1, cores: 32, lanes: 1 },
   });
 });
@@ -261,6 +264,11 @@ test("the cause order table is the ladder's own tie order", () => {
     "memory-high",
     "scratch",
   ]);
+  // A cause that names a lane names it in text, its process id included.
+  const lanes = ["unconfined", "memory-cap", "system-cpu"].map(
+    (id) => ladder.find((cause) => cause.id === id)?.consumer,
+  );
+  expect(lanes).toEqual(["escaped PID 40", "capped PID 40", "escaped PID 40"]);
   // Within one severity the table alone decides, so those ranks only rise.
   const danger = ladder
     .filter((cause) => cause.level === "danger")

@@ -13,6 +13,7 @@ import { columnGap, fit } from "./columns";
 import { useScreenKeys } from "./keys";
 import {
   capabilityLabels,
+  capabilityLoss,
   capabilityReason,
   editorKind,
   settingDisplay,
@@ -21,7 +22,15 @@ import {
   settingLabel,
 } from "./settings";
 import { scrollbar, ui } from "./theme";
-import { Detail, Empty, Line, nextDown, Row, Section } from "./widgets";
+import {
+  Detail,
+  Disclosure,
+  Empty,
+  Line,
+  nextDown,
+  Row,
+  Section,
+} from "./widgets";
 
 /**
  * A selectable line on Settings: a probed capability, a stored value, or the
@@ -460,6 +469,14 @@ export function Settings({
         />
         {s.capabilities.map((cap) => {
           const i = index++;
+          // The row less its marker, its dot, its disclosure and its label.
+          const costWidth = width - 1 - 2 - 2 - 40;
+          // One answer for the marker and the detail under it. A missing
+          // source opens on selection; one that answered opens on Enter. The
+          // cost is cut to the row with its mark and drawn whole in the
+          // detail.
+          const opened =
+            i === selected && (!cap.available || openCap === cap.id);
           return (
             <box
               id={`block-${i}`}
@@ -472,13 +489,18 @@ export function Settings({
                   <span fg={cap.available ? ui.ok : ui.warn}>
                     {cap.available ? "● " : "○ "}
                   </span>
-                  {fit(capabilityLabels[cap.id], 42)}
+                  <Disclosure
+                    open={opened}
+                    name={fit(capabilityLabels[cap.id], 40)}
+                  />
                   <span attributes={ui.dim}>
-                    {cap.available ? "available" : safe(capabilityReason(cap))}
+                    {cap.available
+                      ? "available"
+                      : fit(safe(capabilityLoss(cap)), costWidth)}
                   </span>
                 </Row>
               </box>
-              {i === selected && (!cap.available || openCap === cap.id) && (
+              {opened && (
                 <Detail>
                   <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                     {safe(
@@ -487,6 +509,11 @@ export function Settings({
                         : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
                     )}
                   </Line>
+                  {!cap.available && (
+                    <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                      {safe(capabilityLoss(cap))}
+                    </Line>
+                  )}
                 </Detail>
               )}
             </box>
@@ -506,10 +533,23 @@ export function Settings({
                     color={sources.length ? ui.warn : undefined}
                     onOpen={() => setSourcesOpen((v) => !v)}
                   >
-                    <span fg={ui.accent}>{sourcesOpen ? "▾ " : "▸ "}</span>
-                    {sources.length
-                      ? `${sources.length} ${sources.length === 1 ? "source" : "sources"} vsys cannot read`
-                      : "Every source was read"}
+                    {/* Two columns stand in for the capability rows' own
+                        dot, so this row's marker lines up with theirs
+                        rather than sitting two columns to their left. */}
+                    {"  "}
+                    <Disclosure
+                      open={sourcesOpen}
+                      name={
+                        sources.length
+                          ? "Sources vsys cannot read"
+                          : "Every source was read"
+                      }
+                      count={
+                        sources.length
+                          ? `${sources.length} failed on the last sample`
+                          : undefined
+                      }
+                    />
                   </Row>
                 </box>
                 {sourcesOpen && (

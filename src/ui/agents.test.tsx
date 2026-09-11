@@ -12,7 +12,7 @@ import {
   groupSnapshot,
   laneSnapshot,
 } from "../test/fixture";
-import { mount, selectedRow } from "../test/harness";
+import { mount, selectedRow, sortMarks } from "../test/harness";
 import {
   columnLabels,
   findLanes,
@@ -31,7 +31,7 @@ import { windows } from "./timeline-screen";
 test("search matches every naming field, case-insensitively, in the sort order", () => {
   const c = defaults();
   const lanes = [
-    laneSnapshot({ id: "a", name: "alpha", cpu: 1 }),
+    laneSnapshot({ id: "a", name: "alpha", cpu: 1, mainPid: 4071 }),
     laneSnapshot({ id: "b", name: "beta", account: "Work", cpu: 2 }),
     laneSnapshot({ id: "c", name: "gamma", pane: "%7", cpu: 3 }),
     laneSnapshot({ id: "d", name: "delta", title: "Kendex", cpu: 4 }),
@@ -41,6 +41,7 @@ test("search matches every naming field, case-insensitively, in the sort order",
   ];
   const rows: [string, string[]][] = [
     ["ALPHA", ["a"]],
+    ["4071", ["a"]],
     ["work", ["b"]],
     ["%7", ["c"]],
     ["kendex", ["d"]],
@@ -429,7 +430,7 @@ test("a series that never answers does not blank the other rows", async () => {
       : await real(id, end, durationMs);
   // Wide enough for the trend, narrow enough to keep the side pane away, so a
   // row is the only place its lane's name appears.
-  const t = await mount(s, c, { width: 120, height: 24 }, { history: h });
+  const t = await mount(s, c, { width: 140, height: 24 }, { history: h });
   try {
     await t.press("2");
     await t.update({ ...s, time: s.time + 1000 });
@@ -607,6 +608,60 @@ test("a listed pane part shows the resolved address as its own column", async ()
     expect(frame).not.toContain("%9");
   } finally {
     await t.close();
+  }
+});
+
+test("two agents in one session keep what tells their addresses apart", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The ordinary case: one tmux session, two windows. The addresses differ
+  // only after the colon, and the session name is too long for a column that
+  // cuts from the right to reach it.
+  const addresses = [
+    "development-environment:1.1",
+    "development-environment:2.1",
+  ];
+  s.lanes = addresses.map((address, i) =>
+    laneSnapshot({ id: `a${i}`, name: `lane-${i}`, pane: `%${i}`, address }),
+  );
+  s.groups = [groupSnapshot()];
+  const paneCells = (frame: string) => {
+    const lines = frame.split("\n");
+    const heading = lines.find((line) => line.includes("Pane")) ?? "";
+    const at = heading.indexOf("Pane");
+    expect(at).toBeGreaterThan(0);
+    // An address holds no blank, so the cell ends at the first one.
+    const cells = [0, 1].map(
+      (i) =>
+        (lines.find((line) => line.includes(`lane-${i}`)) ?? "")
+          .slice(at)
+          .split(" ")[0],
+    );
+    return { heading, at, cells };
+  };
+  const wide = await mount(s, c, { width: 140, height: 24 });
+  try {
+    await wide.press("2");
+    // With the width to spare, each address is drawn whole.
+    expect(paneCells(wide.frame()).cells).toEqual(addresses);
+  } finally {
+    await wide.close();
+  }
+  // Too narrow for the whole address beside a name at its floor: the column
+  // narrows and the session is what gives.
+  const narrow = await mount(s, c, { width: 105, height: 24 });
+  try {
+    await narrow.press("2");
+    const { heading, at, cells } = paneCells(narrow.frame());
+    expect(cells[0]).toContain("…");
+    expect(cells[0].endsWith(":1.1")).toBe(true);
+    expect(cells[1].endsWith(":2.1")).toBe(true);
+    expect(cells[0]).not.toBe(cells[1]);
+    // The column narrowed for the name, so the name kept its floor: the pane
+    // heading starts no nearer the name's than that floor and a gap.
+    expect(at - heading.indexOf("Agent")).toBeGreaterThanOrEqual(24 + 2);
+  } finally {
+    await narrow.close();
   }
 });
 
@@ -1002,11 +1057,15 @@ test("a configurable numeric column reads down its last digit", async () => {
       ["Blocked", "3"],
       ["sccache", "4"],
     ];
-    for (const [label, value] of ends)
-      expect({
+    // Each value is read where its heading ends, since a digit of the same
+    // value can also sit in the process id column beside the name.
+    for (const [label, value] of ends) {
+      const end = heading.indexOf(label) + label.length;
+      expect({ label, cell: row.slice(end - value.length, end) }).toEqual({
         label,
-        ends: heading.indexOf(label) + label.length,
-      }).toEqual({ label, ends: row.indexOf(value) + value.length });
+        cell: value,
+      });
+    }
   } finally {
     await t.close();
   }
@@ -1033,30 +1092,159 @@ test("a tile in a narrow pane marks its cut instead of stopping mid-word", async
   }
 });
 
-test("when the row cannot hold both, the address stays and the trend goes", async () => {
+test("a narrowing list gives up its readings before what names the row", async () => {
   const c = defaults();
   const s = sameWorktree(true);
-  // Wide enough for the name, the address and the trend together.
-  const wide = await mount(s, c, { width: 200, height: 24 });
-  try {
-    await wide.press("2");
-    expect(wide.frame()).toContain("Pane");
-    expect(wide.frame()).toContain("Trend");
-  } finally {
-    await wide.close();
+  // Below the width that puts a summary beside the list, so the terminal's
+  // width is the list's width.
+  //
+  // Identity outranks readings. The trend goes first, because its number is
+  // already in the CPU column beside it; then the program, which reads the
+  // same word on every row of an ordinary fleet; then the wait, which reads
+  // `0.0%` on every row that is not blocked. The pane address is identity, so
+  // it outlasts all three, and the process id is never given up at all: a row
+  // without it cannot be told from another with the same name.
+  const rows: [number, string[], string[]][] = [
+    [140, ["Pane", "PID", "Program", "Trend", "Wait"], []],
+    [130, ["Pane", "PID", "Program", "Wait"], ["Trend"]],
+    [110, ["Pane", "PID", "Wait"], ["Program", "Trend"]],
+    [100, ["Pane", "PID"], ["Program", "Trend", "Wait"]],
+  ];
+  for (const [width, present, absent] of rows) {
+    const t = await mount(s, c, { width, height: 24 });
+    try {
+      await t.press("2");
+      const frame = t.frame();
+      // Every label that should be drawn and is not, and every label that
+      // should be gone and is drawn.
+      expect({
+        width,
+        missing: present.filter((label) => !frame.includes(label)),
+        kept: absent.filter((label) => frame.includes(label)),
+      }).toEqual({ width, missing: [], kept: [] });
+      // Whatever went, the name is still whole: that is what the floor is for.
+      expect(frame).toContain("ken-1298");
+    } finally {
+      await t.close();
+    }
   }
-  // Narrower: one of the two has to go, and it is not the one that says which
-  // agent this is.
-  const tight = await mount(s, c, { width: 180, height: 24 });
+});
+
+test("every lane carries its id in a column, and two with one name differ by it alone", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The same account, program and worktree: nothing in a name can separate
+  // the first two, and nothing is appended to try. The third shares its name
+  // with nobody and carries its id all the same: an id on some rows and not
+  // others reads as arbitrary.
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "ken-1298", mainPid: 4071, cpu: 20 }),
+    laneSnapshot({ id: "b", name: "ken-1298", mainPid: 9152, cpu: 10 }),
+    laneSnapshot({ id: "c", name: "lonely", mainPid: 1234, cpu: 5 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 140, height: 24 });
   try {
-    await tight.press("2");
-    expect(tight.frame()).toContain("Pane");
-    expect(tight.frame()).toContain("vsys:1.1");
-    expect(tight.frame()).not.toContain("Trend");
-    // The name is still whole, which is what the floor is there to protect.
-    expect(tight.frame()).toContain("ken-1298");
+    await t.press("2");
+    const frame = t.frame();
+    const lines = frame.split("\n");
+    const rows = lines.filter((line) => line.includes("ken-1298"));
+    expect(rows).toHaveLength(2);
+    // The name is the name: no row appends an id to it.
+    expect(frame).not.toContain("ken-1298 PID");
+    expect(frame).toMatch(/Agent\s+PID\s+Program/);
+    // Every id ends where its heading does, so the ids scan as one column.
+    const heading = lines.find((line) => /Agent\s+PID/.test(line)) ?? "";
+    const end = heading.indexOf("PID") + "PID".length;
+    const lonely = lines.find((line) => line.includes("lonely")) ?? "";
+    const cells: [string, string][] = [
+      [rows[0], "4071"],
+      [rows[1], "9152"],
+      [lonely, "1234"],
+    ];
+    expect(cells.map(([row, id]) => row.indexOf(id) + id.length)).toEqual([
+      end,
+      end,
+      end,
+    ]);
   } finally {
-    await tight.close();
+    await t.close();
+  }
+});
+
+test("the Agents list marks the heading its sort is drawn under", async () => {
+  const c = defaults();
+  // The stored sort key, the list's width, the keys then pressed, the heading
+  // the key reads, and that heading as marked. Every key the list draws a
+  // heading for; then the reverse and sort keys moving the mark, where `cpu`
+  // is followed by `pressure` in the stored column order and `Wait` is its
+  // heading; then two keys at widths that shed their column, where the sort
+  // marks no heading rather than lending its arrow to one that is drawn.
+  const rows: [string, number, string[], string, string][] = [
+    ["name", 140, [], "Agent", "Agent ↓"],
+    ["tool", 140, [], "Program", "Program ↓"],
+    ["cpu", 140, [], "CPU", "↓ CPU"],
+    ["rss", 140, [], "Memory", "↓ Memory"],
+    ["pressure", 140, [], "Wait", "↓ Wait"],
+    ["state", 140, [], "State", "State ↓"],
+    ["cpu", 140, [c.keys.reverse], "CPU", "↑ CPU"],
+    ["cpu", 140, [c.keys.reverse, c.keys.sort], "Wait", "↑ Wait"],
+    ["tool", 110, [], "Program", ""],
+    ["pressure", 100, [], "Wait", ""],
+  ];
+  for (const [sort, width, keys, label, mark] of rows) {
+    const t = await mount(
+      sameWorktree(true),
+      { ...c, sort },
+      { width, height: 24 },
+    );
+    try {
+      await t.press("2");
+      for (const key of keys) await t.press(key);
+      const frame = t.frame();
+      const heading =
+        frame
+          .split("\n")
+          .find((line) => line.includes("Agent") && line.includes("Memory")) ??
+        "";
+      // Whether the column is drawn at this width is the row's premise, so it
+      // is read here rather than assumed from the shed order.
+      expect({
+        sort,
+        width,
+        keys,
+        drawn: heading.includes(label),
+        marks: sortMarks(frame),
+      }).toEqual({
+        sort,
+        width,
+        keys,
+        drawn: mark !== "",
+        marks: mark ? [mark] : [],
+      });
+    } finally {
+      await t.close();
+    }
+  }
+  // A save that fails leaves the list on the setting it had, as the running
+  // program keeps its config when writing it fails.
+  const refused = await mount(
+    sameWorktree(true),
+    c,
+    { width: 140, height: 24 },
+    {
+      onSave: async () => {
+        throw new Error("config not written");
+      },
+    },
+  );
+  try {
+    await refused.press("2");
+    await refused.press(c.keys.reverse);
+    expect(refused.frame()).toContain("config not written");
+    expect(sortMarks(refused.frame())).toEqual(["↓ CPU"]);
+  } finally {
+    await refused.close();
   }
 });
 

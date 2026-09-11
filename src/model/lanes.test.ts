@@ -74,7 +74,7 @@ test("two agents in one worktree under different accounts get different names", 
   expect([a.account, a.pane, b.title]).toEqual([".2claude", "%3", "review"]);
 });
 
-test("lanes that resolve to one name are separated by what a reader recognises", () => {
+test("a name carries no disambiguator, and what separates two is on the lane", () => {
   const c = defaults();
   const same = (n: number, pane: string, cwd = "/repo/kendex") =>
     processSnapshot({
@@ -100,17 +100,22 @@ test("lanes that resolve to one name are separated by what a reader recognises",
     ".2claude claude one",
     ".2claude claude two",
   ]);
-  // One worktree and two panes: the pane addresses differ but name nothing a
-  // reader can place, so the process id separates them instead.
-  const byPid = lanes(groups, [same(1, "%17"), same(2, "%21")], c);
-  expect(byPid.map((l) => l.name)).toEqual([
-    ".2claude claude kendex PID 1",
-    ".2claude claude kendex PID 2",
+  // One worktree and two panes: nothing about the two names differs, and
+  // nothing is appended to make one. An id on some rows and not others reads
+  // as arbitrary; the screens carry it in a column of its own instead.
+  const same2 = lanes(groups, [same(1, "%17"), same(2, "%21")], c);
+  expect(same2.map((l) => l.name)).toEqual([
+    ".2claude claude kendex",
+    ".2claude claude kendex",
   ]);
-  // The pane address is kept as the handle, on the lane, out of the name.
-  expect(byPid.map((l) => l.pane)).toEqual(["%17", "%21"]);
-  for (const lane of byPid) expect(lane.name).not.toContain("%");
-  expect(new Set(byPid.map((l) => l.name)).size).toBe(byPid.length);
+  for (const lane of same2) {
+    expect(lane.name).not.toContain("PID");
+    expect(lane.name).not.toContain("%");
+  }
+  // What tells them apart is on the lane for a column to draw: the process
+  // that leads each one, and the pane handle it acts through.
+  expect(same2.map((l) => l.mainPid)).toEqual([1, 2]);
+  expect(same2.map((l) => l.pane)).toEqual(["%17", "%21"]);
 });
 
 test("a lane reports its cgroup, its charged resources and its effective caps", () => {

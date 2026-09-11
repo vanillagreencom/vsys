@@ -1,10 +1,105 @@
-import type { RGBA } from "@opentui/core";
+import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
 import type { TextProps } from "@opentui/react";
-import { Children, cloneElement, isValidElement, type ReactNode } from "react";
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+} from "react";
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
-import { type Column, fit, headerText } from "./columns";
+import { type Column, fit, headerText, sortedColumns } from "./columns";
 import { levelColor, readingWeight, ui } from "./theme";
+
+/**
+ * Keeps the thing the reader is standing on where they can see it, in a box
+ * they can also scroll themselves.
+ *
+ * Asked of the drawing rather than enumerated from state: a list of the state
+ * that can move a row misses whatever moves it next, such as a capture arriving
+ * above the selected row or the focus moving from a list to the tiles.
+ *
+ * There are two questions here and they have different answers.
+ *
+ * The reader moved: the target's id is not the one it was. Go to it, wherever
+ * it is. That is the whole of what a selection following its reader means.
+ *
+ * The drawing moved under a reader who did not: the id is the same and the
+ * target sits somewhere else in the content. Chase it only if it has left the
+ * screen, and only once the reader has chosen something. Without that second
+ * half, a screen still assembling itself chases its own rows and opens a line
+ * down from its own top, on the runs where its charts happen to arrive late.
+ * Without the first, a capture landing above the selected row leaves the
+ * reader pressing keys on a row that is no longer drawn.
+ *
+ * The position asked for is the target's place in the content: its screen `y`
+ * plus how far the content is scrolled. That sum is the one number the
+ * reader's own scrolling leaves alone, and these boxes do take the wheel, so
+ * without it every turn of it would read as the drawing moving.
+ *
+ * The reading is taken on a timeout because a row that has just grown does not
+ * know its size until the layout after the render that grew it.
+ */
+export function useKeepInView(
+  scroller: RefObject<ScrollBoxRenderable | null>,
+  /** The id of the child to keep in view, which may change between renders. */
+  target: string,
+) {
+  const placed = useRef<{ id: string; at: number } | null>(null);
+  const wanted = useRef(target);
+  wanted.current = target;
+  // Whether the reader has ever chosen anything on this screen. Until they
+  // have, there is nothing to keep in view: a screen drawing itself moves its
+  // own rows, and chasing them opens the screen part-way down.
+  const moved = useRef(false);
+  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const place = () => {
+      const box = scroller.current;
+      const id = wanted.current;
+      const child = box?.content.findDescendantById(id);
+      if (!box || !child) return;
+      const top = box.viewport.y;
+      const seen =
+        child.y >= top && child.y + child.height <= top + box.viewport.height;
+      const at = child.y + box.scrollTop;
+      const was = placed.current;
+      placed.current = { id, at };
+      if (!was) return;
+      if (was.id !== id) {
+        moved.current = true;
+        box.scrollChildIntoView(id);
+        return;
+      }
+      if (moved.current && was.at !== at && !seen) box.scrollChildIntoView(id);
+    };
+    // The first reading has to be a settled one: read early, the target's own
+    // height is a layout behind, and a row that will be below the fold reports
+    // itself on screen. Taken as the baseline, that early reading makes the
+    // settled one look like a row that has left the screen.
+    if (placed.current !== null) place();
+    // One reading in flight, and the render that follows does not cancel it: a
+    // reader holding a key down renders faster than a timeout fires, so a
+    // render that cancelled would starve every reading. A late reading asks the
+    // box its own question when it runs and takes the target from a ref, so it
+    // is a current one.
+    if (pending.current === null)
+      pending.current = setTimeout(() => {
+        pending.current = null;
+        place();
+      }, 0);
+  });
+  // Nothing to depend on: the unmount is the whole of the reason this runs.
+  useEffect(
+    () => () => {
+      if (pending.current !== null) clearTimeout(pending.current);
+    },
+    [],
+  );
+}
 
 /**
  * A text line in the terminal's own foreground. OpenTUI paints text white
@@ -24,21 +119,54 @@ export function Section({
   count,
   width,
   marginTop = 1,
+  focused = false,
 }: {
   title: string;
   count?: number | string;
   /** The panel's inner width, which the rule runs to. */
   width: number;
   marginTop?: number;
+  /**
+   * The region the arrows are moving inside. Its title takes the accent colour
+   * and its rule stops being dim, so a reader never has to press a key to find
+   * out where they are.
+   */
+  focused?: boolean;
 }) {
   const label = count === undefined ? title : `${title}  ${count}`;
   const rule = Math.max(0, width - [...label].length - 1);
   return (
     <Line height={1} flexShrink={0} truncate marginTop={marginTop}>
-      <span attributes={ui.bold}>{title}</span>
+      <span attributes={ui.bold} fg={focused ? ui.accent : undefined}>
+        {title}
+      </span>
       {count !== undefined && <span attributes={ui.dim}>{`  ${count}`}</span>}
-      <span attributes={ui.dim}>{` ${"─".repeat(rule)}`}</span>
+      <span attributes={focused ? ui.none : ui.dim}>
+        {` ${"─".repeat(rule)}`}
+      </span>
     </Line>
+  );
+}
+/**
+ * The one marker for a row that has more inside it: closed, open, and how much
+ * is in there. It is drawn whether or not anything is open, so a reader can see
+ * what is worth opening without opening it.
+ */
+export function Disclosure({
+  open,
+  name,
+  count,
+}: {
+  open: boolean;
+  name: string;
+  count?: number | string;
+}) {
+  return (
+    <>
+      <span fg={ui.accent}>{open ? "▾ " : "▸ "}</span>
+      {safe(name)}
+      {count !== undefined && <span attributes={ui.dim}>{`  ${count}`}</span>}
+    </>
   );
 }
 /**
@@ -46,10 +174,21 @@ export function Section({
  * width changed in one place moves both. The selection marker takes the first
  * column of every row, so the heading starts one column in.
  */
-export function TableHeader({ columns }: { columns: Column[] }) {
+export function TableHeader({
+  columns,
+  sort,
+}: {
+  columns: Column[];
+  /**
+   * The heading the rows are sorted by, and which way. Without it a reader
+   * has to remember what they pressed; with it the answer is on the screen
+   * where the sorting shows.
+   */
+  sort?: { label: string; descending: boolean };
+}) {
   return (
     <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
-      {` ${headerText(columns)}`}
+      {` ${headerText(sortedColumns(columns, sort))}`}
     </Line>
   );
 }
@@ -281,10 +420,13 @@ export function tilesPerRow(count: number, width: number | undefined): number {
 export function Tiles({
   children,
   width,
+  id,
 }: {
   children: ReactNode;
   /** The panel's inner width. Omitted keeps every tile on one row. */
   width?: number;
+  /** Given when a screen has to be able to scroll the row back into view. */
+  id?: string;
 }) {
   const count = Children.count(children);
   const perRow = tilesPerRow(count, width);
@@ -305,7 +447,7 @@ export function Tiles({
     );
   });
   return (
-    <box flexDirection="column" flexShrink={0} gap={1}>
+    <box id={id} flexDirection="column" flexShrink={0} gap={1}>
       {rows.map((row, at) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: a row is its position
         <box key={`tiles-${at}`} flexDirection="row" flexShrink={0} gap={2}>
@@ -322,10 +464,12 @@ export function Tiles({
 }
 
 /**
- * The block under a row that explains it, indented so it reads as part of that
- * row rather than as the next one. The indent goes on a box: `paddingLeft` on
- * a text element moves nothing at all, so a detail written that way sits at the
- * same margin as the row above it and its wrapped lines run the full width.
+ * The block under a row that explains it: a rule down its left edge and an
+ * indent after it, so it reads as part of that row rather than as the next
+ * one. An indent alone is not enough at a glance: a line indented under
+ * another reads as a new top-level line as readily as a child of it. The
+ * indent goes on a box, because `paddingLeft` on a text element moves nothing
+ * at all, not even its first line.
  */
 export function Detail({
   children,
@@ -334,8 +478,16 @@ export function Detail({
   children: ReactNode;
   indent?: number;
 }) {
+  // The rule is a box's own left border, so it runs the full height of
+  // whatever is inside without anyone counting lines.
   return (
-    <box flexDirection="column" flexShrink={0} paddingLeft={indent}>
+    <box
+      flexDirection="column"
+      flexShrink={0}
+      border={["left"]}
+      borderColor={ui.quiet}
+      paddingLeft={indent - 1}
+    >
       {children}
     </box>
   );

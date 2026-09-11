@@ -1,3 +1,4 @@
+import { type BaseRenderable, TextBufferRenderable } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import type { Config } from "../config/config";
@@ -36,13 +37,20 @@ export async function mount(
   let publish: ((next: Snapshot) => void) | null = null;
   function Mounted() {
     const [current, setCurrent] = useState(s);
+    // A saved setting comes back as the config the screens read once the save
+    // succeeds, the way the running program's session hands it back. Without
+    // that, a key that saves is a key whose effect no test can see.
+    const [config, setConfig] = useState(c);
     publish = setCurrent;
     return (
       <App
         snapshot={current}
         history={h}
-        config={c}
-        onSave={hooks.onSave ?? (async () => {})}
+        config={config}
+        onSave={async (next) => {
+          await hooks.onSave?.(next);
+          setConfig(next);
+        }}
         onQuit={hooks.onQuit ?? (() => {})}
         onExport={hooks.onExport ?? (async () => "snapshot.json")}
         onAction={hooks.onAction ?? (async () => {})}
@@ -66,7 +74,9 @@ export async function mount(
         // A lone escape waits for the rest of a sequence before it is a key.
         ui.mockInput.pressEscape();
         await Bun.sleep(50);
-      } else if (["up", "down", "left", "right"].includes(key))
+      } else if (key === "tab") ui.mockInput.pressTab();
+      else if (key === "shift+tab") ui.mockInput.pressTab({ shift: true });
+      else if (["up", "down", "left", "right"].includes(key))
         ui.mockInput.pressArrow(key as "up" | "down" | "left" | "right");
       else ui.mockInput.pressKey(key);
     });
@@ -98,4 +108,49 @@ export async function mount(
 export function selectedRow(frame: string): string {
   const line = frame.split("\n").find((row) => row.includes("▍"));
   return (line ?? "").replace("▍", "").trim();
+}
+
+/**
+ * A line drawn as a child of the row above it: the rule at its left, then the
+ * indent, then its text. An indent alone reads as a new top-level line, which
+ * is the whole reason the rule exists.
+ */
+export const isChildLine = (line: string): boolean => / │ +\S/.test(line);
+
+/**
+ * The drawn lines holding `needle` whose text is longer than the box laid out
+ * for them. The terminal cuts such a line at the box's edge, so whatever lies
+ * past it is never seen.
+ */
+export function overflowing(
+  ui: Awaited<ReturnType<typeof testRender>>,
+  needle: string,
+): string[] {
+  const cut: string[] = [];
+  const walk = (node: BaseRenderable) => {
+    if (
+      node instanceof TextBufferRenderable &&
+      node.plainText.includes(needle) &&
+      [...node.plainText].length > node.width
+    )
+      cut.push(node.plainText);
+    for (const child of node.getChildren()) walk(child);
+  };
+  walk(ui.renderer.root);
+  return cut;
+}
+
+/**
+ * The headings carrying a sort arrow on a lane table's heading line, the line
+ * naming both `Agent` and `Memory`, as drawn: `↓ CPU`, `Agent ↑`.
+ */
+export function sortMarks(frame: string): string[] {
+  const heading =
+    frame
+      .split("\n")
+      .find((line) => line.includes("Agent") && line.includes("Memory")) ?? "";
+  return heading
+    .split(/\s{2,}/)
+    .filter((part) => /[↑↓]/.test(part))
+    .map((part) => part.trim());
 }

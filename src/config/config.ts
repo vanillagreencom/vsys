@@ -222,6 +222,7 @@ export function defaults(): Config {
       sort: "s",
       reverse: "r",
       pin: "p",
+      hold: "o",
       window: "w",
       copy: "y",
       exportJson: "e",
@@ -335,8 +336,19 @@ export function validate(value: unknown): Config {
     if (c.keys[action] === "ctrl+c" && action !== "quit")
       throw new Error("ctrl+c is reserved for quitting");
   }
-  if (new Set(Object.values(c.keys)).size !== Object.keys(c.keys).length)
-    throw new Error("Keybindings must be unique");
+  // A clash names the key and every action on it, so a saved binding that a
+  // new default collides with is one edit to fix.
+  const actions = new Map<string, string[]>();
+  for (const [action, key] of Object.entries(c.keys))
+    actions.set(key, [...(actions.get(key) ?? []), action]);
+  const clashes = [...actions]
+    .filter(([, on]) => on.length > 1)
+    .map(
+      ([key, on]) =>
+        `${key} is bound to ${on.slice(0, -1).join(", ")} and ${on.at(-1)}`,
+    );
+  if (clashes.length)
+    throw new Error(`Keybindings must be unique: ${clashes.join("; ")}`);
   return c;
 }
 

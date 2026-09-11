@@ -7,7 +7,15 @@ import type { Snapshot } from "../model/types";
 import { meters } from "../model/verdict";
 import { meterTile } from "./attention";
 import { keyLabel } from "./chrome";
-import { type Column, cell, columnGap, columnsWidth, fit } from "./columns";
+import {
+  type Column,
+  cell,
+  columnGap,
+  columnsWidth,
+  fit,
+  pidCell,
+  pidColumn,
+} from "./columns";
 import { age, bytes, count, gap, percent, share } from "./format";
 import { useScreenKeys } from "./keys";
 import { metric, ui } from "./theme";
@@ -50,19 +58,35 @@ export function Builds({
   const [processes, setProcesses] = useState(false);
   const summary = buildsSummary(s, c);
   const rows = summary.rows;
-  const fixed: Column[] = [
+  // The id for the same reason every other lane list carries one: two lanes
+  // that resolve to one name are told apart by a column, never by a suffix on
+  // the name. The catch-all row for work outside every lane leads no process,
+  // so its cell is blank rather than a made-up zero.
+  //
+  // The name keeps its floor and the id is never given up, so a narrow screen
+  // narrows the linkers column instead, and drops it where even its heading
+  // would leave the name short.
+  const nameFloor = 12;
+  const core: Column[] = [
+    pidColumn,
     { label: "", width: 10 },
     { label: "Building", width: 14, align: "right" as const },
-    { label: "Linkers", width: 30 },
   ];
+  const linkersRoom =
+    width - 5 - columnsWidth(core) - columnGap.length - nameFloor;
+  const linkerColumn: Column | undefined =
+    linkersRoom >= "Linkers".length
+      ? { label: "Linkers", width: Math.min(30, linkersRoom) }
+      : undefined;
+  const fixed = linkerColumn ? [...core, linkerColumn] : core;
   const buildColumns: Column[] = [
     {
       label: "Lane",
-      width: Math.max(12, Math.min(40, width - 5 - columnsWidth(fixed))),
+      width: Math.max(nameFloor, Math.min(40, width - 5 - columnsWidth(fixed))),
     },
     ...fixed,
   ];
-  const [nameColumn, barColumn, countColumn, linkerColumn] = buildColumns;
+  const [nameColumn, , barColumn, countColumn] = buildColumns;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setSelected((i) => nextDown(rows.length, i));
@@ -183,6 +207,9 @@ export function Builds({
               }}
             >
               {safe(cell(nameColumn, row.name || "outside the watched lanes"))}
+              <span attributes={ui.dim}>
+                {`${columnGap}${pidCell(row.mainPid)}`}
+              </span>
               {columnGap}
               <Bar
                 value={row.builds}
@@ -198,13 +225,14 @@ export function Builds({
                   `${row.builds} ${row.builds === 1 ? "process" : "processes"}`,
                 )}
               />
-              {columnGap}
-              <span attributes={ui.dim}>
-                {cell(
-                  linkerColumn,
-                  `${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`,
-                )}
-              </span>
+              {linkerColumn && (
+                <span attributes={ui.dim}>
+                  {`${columnGap}${cell(
+                    linkerColumn,
+                    `${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`,
+                  )}`}
+                </span>
+              )}
             </Row>
           )}
         />

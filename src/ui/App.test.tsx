@@ -125,13 +125,15 @@ test("startup stays interruptible before the first sample arrives", async () => 
 });
 
 test("the help overlay opens on its key and any key closes it", async () => {
-  const c = defaults();
+  // A rebound screen key, so Help names the keys the header draws.
+  const c = { ...defaults(), keys: { ...defaults().keys, home: "0" } };
   const t = await mount(emptySnapshot(), c);
   try {
     await t.press("?");
-    expect(t.frame()).toContain("next and previous tab");
+    expect(t.frame()).toContain("next and previous region");
+    expect(t.frame()).toMatch(/0 2 3 4 5 6 7\s+go to a screen/);
     await t.press("2");
-    expect(t.frame()).not.toContain("next and previous tab");
+    expect(t.frame()).not.toContain("next and previous region");
     expect(t.frame()).toContain("Needs attention");
   } finally {
     await t.close();
@@ -148,8 +150,10 @@ test("a narrow terminal gives the tabs their own row and drops the wait column",
     const frame = wide.frame();
     expect(frame.split("\n")[0]).toContain("2 Agents");
     // The heading names the column, so the cell carries only the reading.
+    // The sorted column carries its direction, and on a numeric column the
+    // arrow leads so the heading still ends where the digits do.
     expect(frame).toMatch(
-      /Agent\s+Program\s+CPU\s+Trend\s+Memory\s+Wait\s+State/,
+      /Agent\s+PID\s+Program\s+↓ CPU\s+Trend\s+Memory\s+Wait\s+State/,
     );
     expect(frame).toContain("12.0%");
   } finally {
@@ -222,6 +226,10 @@ function everyScreenSnapshot() {
     groupSnapshot({ path: "idle.scope", name: "idle.scope" }),
   ];
   s.storage.volumes = [volumeSnapshot("/data")];
+  // Storage moves between its lists, so it needs more than one of them to
+  // have somewhere to move to.
+  s.storage.scrubs = [{ path: "/data", text: "ok", problem: false }];
+  s.storage.scratch = [{ path: "/tmp/x", bytes: 1, age: 0, error: null }];
   return s;
 }
 
@@ -331,5 +339,32 @@ test("the header lays out on the row its own predicate promised", async () => {
     expect(lines[1]).toContain("Settings");
   } finally {
     await tight.close();
+  }
+});
+
+test("the region key moves inside a screen and never between screens", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a" })];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 30 });
+  try {
+    await t.press("2");
+    expect(t.frame()).toContain("sorted by");
+    // A screen with one region has nowhere to move to, and the key does not
+    // fall through to the shell and change the screen underneath the reader.
+    for (const key of ["tab", "shift+tab"]) {
+      await t.press(key);
+      expect({ key, on: t.frame().includes("sorted by") }).toEqual({
+        key,
+        on: true,
+      });
+    }
+    // The number keys are how a screen is reached, and they are printed across
+    // the header at all times.
+    await t.press("5");
+    expect(t.frame()).toContain("Written since boot");
+  } finally {
+    await t.close();
   }
 });

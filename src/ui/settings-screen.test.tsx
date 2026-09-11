@@ -5,7 +5,7 @@ import { choices, defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
-import { mount, selectedRow } from "../test/harness";
+import { isChildLine, mount, selectedRow } from "../test/harness";
 import { settingGroups, settingHelp } from "./settings";
 import { settingItems, sourceCounts } from "./settings-screen";
 
@@ -114,10 +114,17 @@ test("Settings lists a capability it could not read, with the reason", async () 
     await t.press("7");
     const settings = t.frame();
     expect(settings).toContain("Data sources  1 not available");
+    // The marker says there is more here before the reader presses anything,
+    // and the row says what the missing source costs rather than naming the
+    // kernel interface it could not find.
     expect(settings).toMatch(
-      /○ Pressure stall information\s+no PSI on this kernel/,
+      /○ ▸ Pressure stall information\s+every wait reading is blank rather than zero/,
     );
-    expect(settings).toMatch(/● Resource groups \(cgroup v2\)\s+available/);
+    expect(settings).not.toMatch(
+      /○ ▸ Pressure stall information\s+no PSI on this kernel/,
+    );
+    // A source that answered still opens, so it carries the marker too.
+    expect(settings).toMatch(/● ▸ Resource groups \(cgroup v2\)\s+available/);
   } finally {
     await t.close();
   }
@@ -169,7 +176,8 @@ test("Settings reports the running program while a past sample is pinned", async
     await t.press("p");
     expect(t.frame()).toContain("show ");
     await t.press("7");
-    expect(t.frame()).toContain("no PSI on this kernel");
+    // The probe describes the running program, so the row is the live one.
+    expect(t.frame()).toContain("every wait reading is blank rather than zero");
   } finally {
     await t.close();
   }
@@ -668,16 +676,38 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     );
     for (let i = 0; i < at; i++) await t.press("down");
     const lines = t.frame().split("\n");
-    const row = lines.findIndex((line) => line.includes("▍○ Pressure"));
+    const row = lines.findIndex((line) => line.includes("▍○ ▾ Pressure"));
     expect(row).toBeGreaterThan(-1);
     // The screen's own margin is two columns and the detail adds three, so a
     // detail line starts at column five. The second line is the one that
     // matters: padding on a text element leaves every wrapped line at the
     // margin, which reads as the next row rather than as part of this one.
-    expect(lines[row + 1].startsWith("     ")).toBe(true);
-    expect(lines[row + 1].slice(5).startsWith(" ")).toBe(false);
-    expect(lines[row + 2].startsWith("     ")).toBe(true);
-    expect(lines[row + 2].slice(5).startsWith(" ")).toBe(false);
+    // The row itself carries no rule; both of its continuation lines do, and
+    // the wrapped one is the line an indent alone never reached.
+    expect(isChildLine(lines[row])).toBe(false);
+    expect(isChildLine(lines[row + 1])).toBe(true);
+    expect(isChildLine(lines[row + 2])).toBe(true);
+    // Where the rule and the text start, not merely that a rule precedes the
+    // text: `isChildLine` takes any indent of one column or more.
+    const textAt = (line: string) => {
+      const rule = line.indexOf("│");
+      return rule + 1 + line.slice(rule + 1).search(/\S/);
+    };
+    expect(lines[row + 1].indexOf("│")).toBe(2);
+    expect(textAt(lines[row + 1])).toBe(5);
+    expect(textAt(lines[row + 2])).toBe(5);
+    // And what the drill-down says in the place it names the cause.
+    expect(lines[row + 1]).toContain("no PSI on this kernel");
+    expect(lines[row + 1]).toContain("/proc/pressure/cpu");
+    expect(lines[row + 2].trimEnd().endsWith("directory)")).toBe(true);
+    // The cost is cut on the row with its mark, and whole in the detail.
+    expect(lines[row].trimEnd().endsWith("…")).toBe(true);
+    const cost = lines
+      .slice(row + 3, row + 5)
+      .map((line) => line.slice(5).trim());
+    expect(cost.join(" ")).toBe(
+      "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
+    );
   } finally {
     await t.close();
   }
@@ -734,11 +764,13 @@ test("Enter on a readable source brings its own source line with it", async () =
     );
     expect(at).toBeGreaterThan(0);
     for (let i = 0; i < at; i++) await t.press("down");
-    // Nothing is open yet, so the source is not on the screen to begin with.
+    // Nothing is open yet, so the source is not on the screen to begin with,
+    // and the marker says closed until Enter opens it.
     expect(t.frame()).not.toContain(last.source);
+    expect(selectedRow(t.frame())).toContain("▸ Drive lifetime reports");
     await t.press("enter");
     const frame = t.frame();
-    expect(selectedRow(frame)).toContain("Drive lifetime reports");
+    expect(selectedRow(frame)).toContain("▾ Drive lifetime reports");
     // Enter is what opened this, so Enter has to be what moves the view: with
     // `openCap` outside the effect's dependencies the block grew a line and
     // nothing re-ran, leaving that line below the fold.
@@ -803,6 +835,9 @@ test("the sources list opens with its last entry readable", async () => {
     // The phrase both spellings of this row share: the design pass rewrites
     // its label, and which row is selected is the claim, not its wording.
     expect(selectedRow(frame)).toContain("vsys cannot read");
+    // The count and when they failed, and no consequence: a failed
+    // notification or a scratch scan that keeps its last data blanks nothing.
+    expect(selectedRow(frame)).toContain("4 failed on the last sample");
     // The row moved up far enough for the whole list, last entry included.
     // Brought into view as a row instead, the row sits at the bottom edge and
     // every entry it opened is below it.

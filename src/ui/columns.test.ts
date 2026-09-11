@@ -5,7 +5,9 @@ import {
   columnGap,
   columnsWidth,
   fit,
+  fitAddress,
   headerText,
+  sortedLabel,
 } from "./columns";
 
 test("a value is padded or cut to its width, and a cut is marked", () => {
@@ -22,6 +24,33 @@ test("a value is padded or cut to its width, and a cut is marked", () => {
     expect([...fit(text, width)].length).toBe(Math.max(0, width));
   }
   expect(fit("42", 6, "right")).toBe("    42");
+});
+
+test("an address is cut in its session, and keeps the window and pane whole", () => {
+  const rows: [string, number, string][] = [
+    // Room for the whole address: padded like any other cell.
+    ["development:1.1", 16, "development:1.1 "],
+    ["development:1.1", 15, "development:1.1"],
+    // Two agents in one session differ only after the colon, so that is the
+    // part kept.
+    ["development:1.1", 12, "develop…:1.1"],
+    ["development:2.1", 12, "develop…:2.1"],
+    ["development:10.12", 12, "devel…:10.12"],
+    // Only the session given up, and the ellipsis still marks it.
+    ["development:1.1", 5, "…:1.1"],
+    // Too narrow for the suffix and its mark, or no suffix to keep: a plain
+    // cut, as any other text gets.
+    ["development:1.1", 4, "dev…"],
+    ["work-session", 6, "work-…"],
+    // A session name holding a character outside the basic plane is cut
+    // between characters, never through one.
+    ["🙂🙂🙂🙂:1.1", 7, "🙂🙂…:1.1"],
+  ];
+  for (const [address, width, expected] of rows) {
+    const got = fitAddress(address, width);
+    expect({ address, width, got }).toEqual({ address, width, got: expected });
+    expect([...got].length).toBe(width);
+  }
 });
 
 test("a cut falls between characters, never through one", () => {
@@ -76,4 +105,29 @@ test("the heading is built from the same spec its rows read", () => {
 test("a spec of one column has no gap to count", () => {
   expect(columnsWidth([{ label: "One", width: 4 }])).toBe(4);
   expect(columnsWidth([])).toBe(0);
+});
+
+test("a sorted heading puts its arrow where the column's own values end", () => {
+  const wait: Column = { label: "Wait", width: 11, align: "right" };
+  const agent: Column = { label: "Agent", width: 20 };
+  // A right-aligned column's digits end at its right edge, so its arrow leads
+  // and the heading still ends there. A text column's values start at its left
+  // edge, so its arrow follows the word. A heading nobody sorts by has none.
+  const rows: [Column, boolean, boolean, string][] = [
+    [wait, true, true, "↓ Wait"],
+    [wait, true, false, "↑ Wait"],
+    [agent, true, true, "Agent ↓"],
+    [agent, true, false, "Agent ↑"],
+    [wait, false, true, "Wait"],
+    [agent, false, false, "Agent"],
+  ];
+  for (const row of rows) {
+    const [column, sorted, descending] = row;
+    expect([
+      column,
+      sorted,
+      descending,
+      sortedLabel(column, sorted, descending),
+    ]).toEqual(row);
+  }
 });

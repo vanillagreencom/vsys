@@ -28,7 +28,7 @@ The project includes its Bun runtime. The system Bun installation stays separate
 
 ## How it works
 
-Home opens first. Its first line is the verdict: healthy, or the worst current cause. Select a card under Needs attention to read its detail, its next step and a command, press `y` to copy that command, then press Enter to open the agent or the screen it points at. Agents lists every lane; a lane name joins the account, the agent and the workspace, so two agents in one worktree stay apart. Where that is still not enough, vsys adds the working directory or the process id, so no two rows carry the same name. The tmux pane address stays on the agent detail as the handle `tmux switch-client` takes, not in the name. Open a lane to compare its use with its limits and to unfold its processes. Timeline shows the last five minutes to the last day, and lists what changed and why: lanes starting and stopping, processes moving between cgroups, alerts opening and closing with how long they lasted, and each new verdict. Settings names the system interfaces vsys probed at start and the sources it could not read.
+Home opens first. Its first line is the verdict: healthy, or the worst current cause. Select a card under Needs attention to read its detail, its next step and a command, press `y` to copy that command, then press Enter to open the agent or the screen it points at. Agents lists every lane; a lane name joins the account, the agent and the workspace, so two agents in one worktree stay apart. Where that is still not enough, nothing is added to the name: every list of lane names carries the process id in a column beside it, so two rows reading the same name are still two rows a reader can tell apart. The tmux pane address stays on the agent detail as the handle `tmux switch-client` takes, not in the name. Open a lane to compare its use with its limits and to unfold its processes. Timeline shows the last five minutes to the last day, and lists what changed and why: lanes starting and stopping, processes moving between cgroups, alerts opening and closing with how long they lasted, and each new verdict. Settings names the system interfaces vsys probed at start and the sources it could not read.
 
 The dashboard uses the terminal's own sixteen colours. Red is serious, yellow is a warning, and the accent colour marks the selection and the active tab.
 
@@ -41,7 +41,7 @@ These are the default keys. The footer shows the keys for the current screen, an
 | Action | Key |
 | --- | --- |
 | Open a screen | `1` to `7`, or click its tab |
-| Next or previous screen | `Tab` / `Shift+Tab` |
+| Next or previous region | `Tab` / `Shift+Tab` |
 | Select a row | `↑` `↓` or `k` `j` |
 | Open the selection, or unfold a section | `Enter` |
 | Back to the list | `Esc` |
@@ -49,6 +49,7 @@ These are the default keys. The footer shows the keys for the current screen, an
 | List or full table | `d` |
 | Choose table columns | `c` |
 | Sort column and direction | `s` / `r` |
+| Hold Busiest agents' order on Home while the numbers move | `o` |
 | Move the time cursor | `←` `→` or `h` `l` |
 | Change the time window | `w` |
 | Show the machine at the cursor | `p` |

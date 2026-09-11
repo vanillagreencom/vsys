@@ -9,7 +9,16 @@ import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
 import { Agent, AgentSummary } from "./agent";
 import { narrowWidth, wideWidth } from "./chrome";
-import { type Column, cell, columnGap, columnsWidth } from "./columns";
+import {
+  type Column,
+  cell,
+  columnGap,
+  columnsWidth,
+  fitAddress,
+  pidCell,
+  pidColumn,
+  sortedLabel,
+} from "./columns";
 import {
   amount,
   blockedText,
@@ -106,6 +115,19 @@ export function tableColumn(name: string): Column {
     align: Object.hasOwn(numericColumns, name) ? "right" : undefined,
   };
 }
+/**
+ * The list heading a stored sort column appears under. The table draws every
+ * column, so it needs no table; the list draws a few, and a sort on one it
+ * does not draw simply marks no heading.
+ */
+const listHeading: Record<string, string> = {
+  name: "Agent",
+  tool: "Program",
+  cpu: "CPU",
+  rss: "Memory",
+  pressure: "Wait",
+  state: "State",
+};
 /** The columns a row's trend sparkline takes. */
 export const trendWidth = 12;
 /**
@@ -264,6 +286,9 @@ export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
     lanes.filter((lane) =>
       [
         lane.name,
+        // The process id is a column on every row, and the one thing that
+        // tells two lanes with one name apart.
+        lane.mainPid ? String(lane.mainPid) : "",
         lane.account ?? "",
         lane.pane,
         // The address and the window are columns a reader can see, so a query
@@ -504,39 +529,79 @@ export function Agents({
   // and the name takes what is left up to a cap.
   const margins = 5;
   const stateFloor = 9;
-  // The trend is a column of the same spec, so its heading and its rows move
-  // together with every other column. It is drawn only where the name can
-  // spare the columns: a name cut back to its account tells one row from the
-  // next by nothing at all, which costs the reader more than a trend gains.
+  // What the name keeps before any optional column is drawn. Every optional
+  // column is a column of the same spec, so its heading and its rows move
+  // together with the rest; each is drawn only where the name can spare the
+  // width, because a name cut back to its account tells one row from the next
+  // by nothing at all. The order they are given up in is below.
   const nameFloor = 24;
-  // `laneNameParts` listing `pane` no longer composes anything into the name:
-  // `%9` is a server handle a reader cannot place. It selects this column
-  // instead, so a stored config keeps loading and the setting keeps meaning.
-  const showAddress =
-    !narrow &&
-    c.laneNameParts.includes("pane") &&
-    lanes.some((lane) => lane.address !== "");
-  const readingsWith = (trend: boolean): Column[] => [
-    ...(showAddress ? [{ label: "Pane", width: 12 }] : []),
-    ...(narrow ? [] : [{ label: "Program", width: 9 }]),
+  // A narrowing list sheds in this order until the name has its floor back,
+  // and identity outranks readings. The readings go first: the trend, whose own
+  // number is already in the CPU column beside it; then the program, which
+  // reads `claude` on every row of an ordinary fleet; then the wait, which
+  // reads `0.0%` on every row that is not blocked. The pane address goes after
+  // all three, because it is identity, though only for lanes inside the tmux
+  // server vsys reads.
+  //
+  // The process id is not in this set at all. It is on every row and it is the
+  // only thing that tells two lanes with one name apart, so a width at which it
+  // is gone is a width at which a reader cannot pick the lane they came for.
+  const optional = ["Trend", "Program", "Wait", "Pane"] as const;
+  const wanted: Record<(typeof optional)[number], boolean> = {
+    Trend: !narrow,
+    Program: !narrow,
+    Wait: !narrow,
+    // `laneNameParts` listing `pane` composes nothing into the name: `%9` is a
+    // server handle a reader cannot place. It selects this column instead, so
+    // a stored config keeps loading and the setting keeps its meaning.
+    Pane:
+      !narrow &&
+      c.laneNameParts.includes("pane") &&
+      lanes.some((lane) => lane.address !== ""),
+  };
+  // The pane column is as wide as the longest address the list holds, and
+  // never narrower than its heading. The readings are measured against the
+  // whole address, so each of them is given up before any address is cut; the
+  // column itself is given up only where even its heading's width leaves the
+  // name short of its floor. Between the two it narrows to what the name can
+  // spare, and `fitAddress` then cuts the session, never the `:window.pane`
+  // suffix that is all two agents in one session differ by.
+  const paneHeading = "Pane".length;
+  const paneLongest = Math.max(
+    paneHeading,
+    ...lanes.map((lane) => [...lane.address].length),
+  );
+  const readingsWith = (shown: Set<string>, pane: number): Column[] => [
+    ...(shown.has("Pane") ? [{ label: "Pane", width: pane }] : []),
+    pidColumn,
+    ...(shown.has("Program") ? [{ label: "Program", width: 9 }] : []),
     { label: "", width: 10 },
     { label: "CPU", width: 7, align: "right" as const },
-    ...(trend ? [{ label: "Trend", width: trendWidth }] : []),
+    ...(shown.has("Trend") ? [{ label: "Trend", width: trendWidth }] : []),
     { label: "Memory", width: 10, align: "right" as const },
-    ...(narrow ? [] : [{ label: "Wait", width: 11, align: "right" as const }]),
+    ...(shown.has("Wait")
+      ? [{ label: "Wait", width: 11, align: "right" as const }]
+      : []),
   ];
-  const roomWith = (trend: boolean) =>
+  const roomWith = (shown: Set<string>, pane = paneLongest) =>
     listWidth -
     margins -
-    columnsWidth(readingsWith(trend)) -
+    columnsWidth(readingsWith(shown, pane)) -
     columnGap.length * 2 -
     stateFloor;
-  // When both cannot fit, the trend goes and the address stays: the address is
-  // identity nothing else on the row carries, while the trend's own number is
-  // already in the CPU column beside it.
-  const showTrend = !narrow && roomWith(true) >= nameFloor;
-  const readings = readingsWith(showTrend);
-  const spare = roomWith(showTrend);
+  const showing = new Set(optional.filter((label) => wanted[label]));
+  for (const label of optional) {
+    const pane = label === "Pane" ? paneHeading : paneLongest;
+    if (roomWith(showing, pane) >= nameFloor) break;
+    showing.delete(label);
+  }
+  const paneWidth = Math.min(
+    paneLongest,
+    paneLongest + roomWith(showing) - nameFloor,
+  );
+  const showTrend = showing.has("Trend");
+  const readings = readingsWith(showing, paneWidth);
+  const spare = roomWith(showing, paneWidth);
   const measured: Column[] = [
     { label: "Agent", width: Math.max(12, Math.min(36, spare)) },
     ...readings,
@@ -553,8 +618,16 @@ export function Agents({
     },
   ];
   const [nameColumn] = laneColumns;
-  // The table's own columns, read by its heading and by every row in it.
-  const tableColumns = c.columns.map(tableColumn);
+  // The table's own columns, read by its heading and by every row in it. The
+  // process id is not a configurable column: it is fixed after the name, or
+  // first where the name is not shown, and has no sort to click.
+  const tableCells: { name: string | null; column: Column }[] = c.columns.map(
+    (name) => ({ name, column: tableColumn(name) }),
+  );
+  tableCells.splice(c.columns.indexOf("name") + 1, 0, {
+    name: null,
+    column: pidColumn,
+  });
   const laneColumn = (label: string): Column => {
     const found = laneColumns.find((x) => x.label === label);
     if (!found) throw new Error(`No lane column named ${label}`);
@@ -652,7 +725,7 @@ export function Agents({
             <input
               focused
               value={query}
-              placeholder="name, account, pane, branch or worktree"
+              placeholder="name, process id, account, pane, branch or worktree"
               onInput={setQuery}
               onSubmit={() => setSearching(false)}
             />
@@ -684,28 +757,30 @@ export function Agents({
                   flexDirection="row"
                   gap={columnGap.length}
                 >
-                  {tableColumns.map((column, at) => {
-                    const name = c.columns[at];
-                    const sorted = c.sort === name;
+                  {tableCells.map(({ name, column }) => {
+                    const sorted = name !== null && c.sort === name;
                     return (
                       <Line
-                        key={name}
+                        key={name ?? column.label}
                         width={column.width}
                         height={1}
                         flexShrink={0}
                         truncate
                         attributes={sorted ? ui.bold : ui.dim}
-                        onMouseDown={() =>
-                          save({
-                            ...c,
-                            sort: name,
-                            descending: sorted ? !c.descending : true,
-                          })
+                        onMouseDown={
+                          name === null
+                            ? undefined
+                            : () =>
+                                save({
+                                  ...c,
+                                  sort: name,
+                                  descending: sorted ? !c.descending : true,
+                                })
                         }
                       >
                         {cell(
                           column,
-                          `${column.label}${sorted ? (c.descending ? " ↓" : " ↑") : ""}`,
+                          sortedLabel(column, sorted, c.descending),
                         )}
                       </Line>
                     );
@@ -728,9 +803,11 @@ export function Agents({
                       onOpen(lane.id);
                     }}
                   >
-                    {tableColumns
-                      .map((column, at) =>
-                        cell(column, safe(laneValue(lane, c.columns[at], c))),
+                    {tableCells
+                      .map(({ name, column }) =>
+                        name === null
+                          ? pidCell(lane.mainPid)
+                          : cell(column, safe(laneValue(lane, name, c))),
                       )
                       .join(columnGap)}
                   </Row>
@@ -740,7 +817,15 @@ export function Agents({
           </scrollbox>
         ) : (
           <>
-            {lanes.length > 0 && <TableHeader columns={laneColumns} />}
+            {lanes.length > 0 && (
+              <TableHeader
+                columns={laneColumns}
+                sort={{
+                  label: listHeading[c.sort] ?? "",
+                  descending: c.descending,
+                }}
+              />
+            )}
             <List
               items={lanes}
               selected={selected}
@@ -764,12 +849,20 @@ export function Agents({
                     }}
                   >
                     {safe(cell(nameColumn, lane.name))}
-                    {showAddress && (
+                    {showing.has("Pane") && (
                       <span attributes={ui.dim}>
-                        {`${columnGap}${safe(cell(laneColumn("Pane"), lane.address))}`}
+                        {`${columnGap}${safe(fitAddress(lane.address, laneColumn("Pane").width))}`}
                       </span>
                     )}
-                    {!narrow && (
+                    {/* Every row, not only the ones that would collide: an id
+                        that appears on some rows and not others reads as
+                        arbitrary rather than as identity. And every width, so
+                        there is no width at which the rows stop being rows a
+                        reader can tell apart. */}
+                    <span attributes={ui.dim}>
+                      {`${columnGap}${pidCell(lane.mainPid)}`}
+                    </span>
+                    {showing.has("Program") && (
                       <span attributes={ui.dim}>
                         {`${columnGap}${safe(cell(laneColumn("Program"), lane.tool))}`}
                       </span>
@@ -797,8 +890,8 @@ export function Agents({
                       value={lane.rss}
                       text={cell(laneColumn("Memory"), amount(lane.rss, c))}
                     />
-                    {!narrow && columnGap}
-                    {!narrow && (
+                    {showing.has("Wait") && columnGap}
+                    {showing.has("Wait") && (
                       <Reading
                         value={lane.pressure}
                         text={cell(laneColumn("Wait"), share(lane.pressure))}

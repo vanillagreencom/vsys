@@ -6,7 +6,7 @@ import type { LaneCommand } from "../model/actions";
 import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
-import { mount, selectedRow } from "../test/harness";
+import { isChildLine, mount, selectedRow } from "../test/harness";
 import { osc52 } from "./clipboard";
 
 test("agent detail names the account, the charged resources, the limits and the block", async () => {
@@ -506,12 +506,18 @@ async function settle(t: Awaited<ReturnType<typeof mount>>) {
 
 test("a capture arriving under the reader does not take the row they are on", async () => {
   let release: ((lines: string[]) => void) | null = null;
-  const t = await paned({
-    onCapture: () =>
-      new Promise<string[]>((resolve) => {
-        release = resolve;
-      }),
-  });
+  const t = await paned(
+    {
+      onCapture: () =>
+        new Promise<string[]>((resolve) => {
+          release = resolve;
+        }),
+    },
+    {},
+    // Short enough that the capture's lines, arriving above the row, push it
+    // off the bottom. Taller, the row stays on screen whatever the effect does.
+    24,
+  );
   try {
     await t.press("enter");
     // Down to the last row, below the terminal the capture is about to fill.
@@ -585,6 +591,28 @@ test("the detail opens at the top, not part-way down at its first section", asyn
     const frame = t.frame();
     expect(frame).toContain("account default");
     expect(frame).toContain("PID 40");
+  } finally {
+    await t.close();
+  }
+});
+
+test("an open section is drawn as a child of its own row", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot()];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 160, height: 45 });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    // Closed, the row still says there is something inside it.
+    expect(t.frame()).toContain("▸ Processes");
+    await t.press("enter");
+    const lines = t.frame().split("\n");
+    const row = lines.findIndex((line) => line.includes("▾ Processes"));
+    expect(row).toBeGreaterThan(-1);
+    expect(isChildLine(lines[row])).toBe(false);
+    expect(isChildLine(lines[row + 1])).toBe(true);
   } finally {
     await t.close();
   }

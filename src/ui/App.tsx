@@ -113,9 +113,10 @@ export const hints: Record<
   (c: Config) => [string, string][]
 > = {
   Home: (c) => [
-    ["↑↓", "select"],
-    ["←→", "tiles"],
+    ["↑↓←→", "select"],
+    [c.keys.next, "region"],
     [c.keys.open, "open"],
+    [c.keys.hold, "hold order"],
     [c.keys.copy, "copy"],
   ],
   Agents: (c) => [
@@ -145,9 +146,13 @@ export const hints: Record<
     [c.keys.open, "processes"],
   ],
   // A Storage row shows its detail under the selection, so moving the
-  // selection is the whole of what the reader does here and Enter has nothing
-  // to act on. A hint for it would be a promise the screen cannot keep.
-  Storage: () => [["↑↓", "select"]],
+  // selection and moving between its lists are the whole of what the reader
+  // does here. Enter has nothing to act on, and a hint for it would be a
+  // promise the screen cannot keep.
+  Storage: (c) => [
+    ["↑↓", "select"],
+    [c.keys.next, "region"],
+  ],
   Timeline: (c) => [
     ["←→", "time"],
     [c.keys.window, "window"],
@@ -339,10 +344,6 @@ export function App({
         navigate(v);
         return;
       }
-    const at = views.indexOf(view);
-    if (name === c.keys.next) navigate(views[(at + 1) % views.length]);
-    if (name === c.keys.previous)
-      navigate(views[(at + views.length - 1) % views.length]);
     if (name === c.keys.help) setHelp(true);
     if (name === c.keys.window) setWindowIndex((i) => (i + 1) % windows.length);
     if (name === c.keys.exportJson || name === c.keys.exportMarkdown)
