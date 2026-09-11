@@ -50,7 +50,7 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   const s = everyCauseSnapshot(c);
   const items = attention(s, c, base);
   expect(verdictLine(items, s)).toBe(
-    "Danger: 1 lane runs outside agents.slice: escaped",
+    "Danger: 1 lane runs outside agents.slice: escaped PID 40",
   );
   const swapCard = items.find((item) => item.id === "desktop-swap");
   expect(swapCard?.title).toBe("Desktop swapped out: 512.0 MiB in app.slice");
@@ -60,7 +60,7 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   s.lanes = s.lanes.filter((l) => !l.unconfined);
   s.storage.volumes = [];
   expect(verdictLine(attention(s, c, base), s)).toBe(
-    "Slow: Disk I/O saturated: writer writing 200.0 MiB/s",
+    "Slow: Disk I/O saturated: writer PID 40 writing 200.0 MiB/s",
   );
   s.system.pressure.io = { some: 1, full: 0, total: 0 };
   expect(verdictLine(attention(s, c, base), s)).toBe(
@@ -84,17 +84,24 @@ test("nine stalling lanes produce one card that names them", () => {
   const c = defaults();
   const s = emptySnapshot();
   s.lanes = Array.from({ length: 9 }, (_, i) =>
-    laneSnapshot({ id: `lane-${i}`, name: `kendex-${i}`, ioPressure: 40 }),
+    laneSnapshot({
+      id: `lane-${i}`,
+      name: "kendex",
+      mainPid: 100 + i,
+      ioPressure: 40,
+    }),
   );
   const stalls = attention(s, c, base).filter((item) => item.id === "stalls");
   expect(stalls).toHaveLength(1);
   expect(stalls[0].title).toBe(
-    "9 lanes are stalling on a resource: kendex-0, kendex-1, kendex-2, kendex-3 and 5 more",
+    "9 lanes are stalling on a resource: kendex PID 100, kendex PID 101, kendex PID 102, kendex PID 103 and 5 more",
   );
   expect(stalls[0].detail).toBe(
     "Highest stall share 40.0% of the recent window.",
   );
   expect(stalls[0].target?.kind).not.toBe("lane");
+  const cause = causes(s, c).find((x) => x.id === "stalls");
+  expect(cause?.consumer).toBe("kendex PID 100");
 });
 
 test("unconfined lanes are one card that states the launcher conclusion", () => {
@@ -129,7 +136,7 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
   const card = attention(s, c, base).find((item) => item.id === "unconfined");
   if (!card) throw new Error("Expected one unconfined card");
   expect(card.title).toBe(
-    "2 lanes run outside agents.slice: kendex hclaude, kendex nclaude",
+    "2 lanes run outside agents.slice: kendex hclaude PID 40, kendex nclaude PID 40",
   );
   expect(card.detail).toContain("shadowed");
   expect(card.detail).toContain("/home/user/.shadow/bin");
@@ -167,10 +174,10 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
   const card = attention(s, c, base).find((item) => item.id === "disk");
   if (!card) throw new Error("Expected a disk card");
   expect(card.title).toBe(
-    "Disk I/O saturated: lane-510341 writing 200.0 MiB/s",
+    "Disk I/O saturated: lane-510341 PID 40 writing 200.0 MiB/s",
   );
   expect(card.detail).toBe(
-    "Tasks stalled on storage 70.0% of the recent window, 41.0% of it with nothing else to run, with 2 linkers running in that lane. Waiting on storage: lane-510341, waiter.",
+    "Tasks stalled on storage 70.0% of the recent window, 41.0% of it with nothing else to run, with 2 linkers running in that lane. Waiting on storage: lane-510341 PID 40, waiter PID 40.",
   );
   expect(card.command).toBe(`cat ${c.cgroupRoot}/a/510341.scope/io.stat`);
   expect(card.danger).toBe(true);

@@ -113,7 +113,7 @@ test("an empty compiler wrapper names the lane that bypasses the cache", () => {
   find(20).env = { RUSTC_WRAPPER: "/usr/bin/sccache" };
   // An unreadable environment is not evidence of a bypass.
   Object.assign(find(30), { env: { RUSTC_WRAPPER: "" }, envAvailable: false });
-  expect(bypassedLanes(s)).toEqual(["lane-a"]);
+  expect(bypassedLanes(s)).toEqual(["lane-a PID 40"]);
   const reading: Sccache = {
     available: true,
     hits: 90,
@@ -126,7 +126,7 @@ test("an empty compiler wrapper names the lane that bypasses the cache", () => {
   expect(cache.available).toBe(true);
   expect(cache.sinceStart?.rate).toBeCloseTo(90);
   expect(cache.recent?.rate).toBeCloseTo(75);
-  expect(cache.bypassed).toEqual(["lane-a"]);
+  expect(cache.bypassed).toEqual(["lane-a PID 40"]);
 });
 
 test("a cache that served nothing has no hit rate and no reading is unavailable", () => {

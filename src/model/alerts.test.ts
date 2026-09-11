@@ -100,6 +100,16 @@ test("each alert condition emits its own rule and clears before rearming", () =>
     expect(engine.evaluate(emptySnapshot(), defaults())).toEqual([]);
     expect(engine.evaluate(s, defaults()).map((a) => a.rule)).toEqual([rule]);
   }
+  // Two capped lanes with one name read as two in the alert text.
+  const twins = emptySnapshot();
+  twins.lanes = [4071, 9152].map((mainPid) =>
+    laneSnapshot({ id: `${mainPid}`, name: "ken", mainPid, dangerous: true }),
+  );
+  const said = new AlertEngine().evaluate(twins, defaults());
+  expect(said.map((a) => a.message.split(" has ")[0])).toEqual([
+    "ken PID 4071",
+    "ken PID 9152",
+  ]);
 });
 test("pressure holds for elapsed seconds and resets when samples recover", () => {
   const engine = new AlertEngine();

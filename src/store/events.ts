@@ -1,5 +1,6 @@
 import type { Config } from "../config/config";
 import { escaped, lanePressure } from "../model/lanes";
+import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
 import {
   type Cause,
@@ -110,7 +111,7 @@ function merge(entries: Subject[]): Subject[] {
 }
 export function subjects(cause: Cause, s: Snapshot): Subject[] {
   const named = merge([
-    ...cause.lanes.map((lane) => ({ id: lane.id, name: lane.name })),
+    ...cause.lanes.map((lane) => ({ id: lane.id, name: laneText(lane) })),
     // A cgroup's own name is systemd's, not a reader's. `consumerName` is the
     // one place that turns one into a name, so an event says what a card says.
     ...cause.groups.map((group) => ({
@@ -177,7 +178,7 @@ export class EventLog {
     };
     for (const lane of s.lanes)
       if (previous && !previous.lanes.some((old) => old.id === lane.id))
-        add("lane-start", lane.name, {
+        add("lane-start", laneText(lane), {
           subjectId: lane.id,
           // An unreadable account stays empty; the UI says it is unavailable.
           names: {
@@ -189,7 +190,7 @@ export class EventLog {
         });
     for (const lane of previous?.lanes ?? [])
       if (!s.lanes.some((live) => live.id === lane.id))
-        add("lane-stop", lane.name, {
+        add("lane-stop", laneText(lane), {
           subjectId: lane.id,
           names: { account: lane.account ?? "", slice: sliceOf(lane.cgroup) },
           values: { age: lane.age },

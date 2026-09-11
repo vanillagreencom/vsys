@@ -1,6 +1,6 @@
 import type { Config } from "../config/config";
 import { launcherTrail } from "../model/launcher";
-import { unitLabel } from "../model/naming";
+import { laneText, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
@@ -64,7 +64,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
   const b = (n: number | null | undefined) => bytes(n, c);
   const v = cause.values;
   const n = cause.lanes.length;
-  const names = list(cause.lanes.map((l) => l.name));
+  const names = list(cause.lanes.map(laneText));
   const mounts = list(cause.paths);
   const lane: Target | undefined =
     n === 1 ? { kind: "lane", id: cause.lanes[0].id } : undefined;

@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
-import { jobserver } from "./naming";
+import { jobserver, laneText } from "./naming";
 import type { Proc, Sccache, SccacheDelta, Snapshot } from "./types";
 import { buildLoad } from "./verdict";
 
@@ -48,12 +48,16 @@ export function hitRate(hits: number, misses: number): number | null {
 function rates(d: SccacheDelta | null): Rates | null {
   return d === null ? null : { ...d, rate: hitRate(d.hits, d.misses) };
 }
-/** The lane that owns a PID, so every build process is attributed once. */
+/**
+ * The lane that owns a PID, so every build process is attributed once, with
+ * the name it takes in text.
+ */
 function laneOwners(s: Snapshot): Map<number, { id: string; name: string }> {
   const owners = new Map<number, { id: string; name: string }>();
   for (const lane of s.lanes)
     for (const pid of lane.pids)
-      if (!owners.has(pid)) owners.set(pid, { id: lane.id, name: lane.name });
+      if (!owners.has(pid))
+        owners.set(pid, { id: lane.id, name: laneText(lane) });
   return owners;
 }
 /** One row from build kinds counted by kind, or none when it holds no slot. */

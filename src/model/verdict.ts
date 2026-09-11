@@ -1,7 +1,7 @@
 import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
 import { inSlice, lanePressure } from "./lanes";
-import { unitLabel } from "./naming";
+import { laneText, unitLabel } from "./naming";
 import type { Group, Lane, Snapshot, Volume } from "./types";
 
 export type Level = "ok" | "warn" | "danger";
@@ -164,10 +164,12 @@ export function laneLinkers(s: Snapshot, lane: Lane, c: Config): number {
 /** A scope's lane name when it has one, otherwise the decoded unit name. */
 export function consumerName(group: Group | undefined, s: Snapshot): string {
   if (!group) return "";
-  return (
-    s.lanes.find((l) => l.id === group.path)?.name ?? unitLabel(group.name)
-  );
+  const lane = s.lanes.find((l) => l.id === group.path);
+  return lane ? laneText(lane) : unitLabel(group.name);
 }
+/** A lane named in text, or nothing when there is no lane to name. */
+const laneOrNone = (lane: Lane | undefined): string =>
+  lane ? laneText(lane) : "";
 function busiest(lanes: Lane[]): Lane | undefined {
   return [...lanes].sort((a, b) => (b.cpu ?? 0) - (a.cpu ?? 0))[0];
 }
@@ -215,7 +217,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (escaped.length)
     add("unconfined", "danger", {
       lanes: escaped,
-      consumer: escaped[0].name,
+      consumer: laneText(escaped[0]),
       values: { lanes: escaped.length },
     });
   const readOnly = s.storage.volumes.filter((v) => v.readOnly);
@@ -283,14 +285,14 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (capped.length)
     add("memory-cap", "danger", {
       lanes: capped,
-      consumer: capped[0].name,
+      consumer: laneText(capped[0]),
       values: { lanes: capped.length, floor: c.memoryFloor },
     });
   if (loose.length) {
     const worst = Math.max(...loose.map((l) => lanePressure(l) ?? 0));
     add("stalls", worst > c.pressureRed ? "danger" : "warn", {
       lanes: loose,
-      consumer: loose[0].name,
+      consumer: laneText(loose[0]),
       values: { lanes: loose.length, worst },
     });
   }
@@ -304,7 +306,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (cpuFired)
     add("system-cpu", "warn", {
       lanes: owned("cpu"),
-      consumer: busiest(s.lanes)?.name ?? "",
+      consumer: laneOrNone(busiest(s.lanes)),
       values: { some: cpu },
     });
   const near = s.groups.filter(
@@ -366,7 +368,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     {
       id: "cpu",
       level: gauge(cpu, c.pressureRed, c.pressureAmber),
-      consumer: top?.name ?? "",
+      consumer: laneOrNone(top),
       values: {
         // The stall percentage the level grades on, so the meter shows its cause.
         system: cpu,
@@ -403,7 +405,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     {
       id: "builds",
       level: gauge(load.builds, s.system.cores * 2, s.system.cores),
-      consumer: top?.name ?? "",
+      consumer: laneOrNone(top),
       values: {
         builds: load.builds,
         linkers: load.linkers,

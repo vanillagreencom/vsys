@@ -1,6 +1,7 @@
 import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
 import { escaped } from "./lanes";
+import { laneText } from "./naming";
 import type { Alert, Rule, Snapshot } from "./types";
 
 /** Rules emit transitions, with sustained pressure measured in wall time. */
@@ -37,7 +38,7 @@ export class AlertEngine {
         "memory-cap",
         l.id,
         l.dangerous,
-        `${l.name} has a memory cap below ${c.memoryFloor} bytes`,
+        `${laneText(l)} has a memory cap below ${c.memoryFloor} bytes`,
       );
     }
     for (const g of s.groups) {

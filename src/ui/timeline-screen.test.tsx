@@ -377,7 +377,7 @@ test("a row opened with the keyboard keeps its change when one arrives above it"
     await t.update(second);
     const after = h.events(second.time, c.historyHours * 3600000);
     expect(after.length).toBe(2);
-    expect(after[0].subject).toBe("beta");
+    expect(after[0].subject).toBe("beta PID 40");
     // The highlight, the cursor and the sample the pin key acts on all still
     // name the row the reader chose, rather than the highlight jumping to the
     // new top row while the cursor stayed behind.
