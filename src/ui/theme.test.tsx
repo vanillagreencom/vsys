@@ -14,7 +14,7 @@ import {
   everyCauseSnapshot,
   laneSnapshot,
 } from "../test/fixture";
-import { mount } from "../test/harness";
+import { mount, onScreen, shown } from "../test/harness";
 import { App } from "./App";
 import { levelColor, metric, palette, readingWeight, ui } from "./theme";
 
@@ -52,8 +52,13 @@ test("the screen uses the terminal's own colours and marks selection in the acce
     const heading = spans.find((span) => span.text.includes("2 agents"));
     expect(host?.fg.intent).toBe("default");
     expect(host?.bg.intent).toBe("default");
-    expect(marker?.fg.equals(RGBA.fromIndex(6))).toBe(true);
-    expect(escaped?.fg.equals(RGBA.fromIndex(1))).toBe(true);
+    // The marker sits on a reversed row, so it is read as the reader sees it.
+    expect(marker && onScreen(marker).glyph).toBe(
+      shown(RGBA.fromIndex(6), "fg"),
+    );
+    expect(escaped && onScreen(escaped).glyph).toBe(
+      shown(RGBA.fromIndex(1), "fg"),
+    );
     expect((heading?.attributes ?? 0) & TextAttributes.BOLD).not.toBe(0);
     // No visible span carries a colour outside the sixteen the terminal owns.
     for (const span of spans.filter((span) => span.text.trim())) {
@@ -134,7 +139,8 @@ test("every colour a screen paints is a terminal colour from the role table", as
         if (!span.text.trim()) continue;
         if (!known(span.fg)) strangers.push(`${at} fg`);
         // Text in its own background colour is on the screen and unreadable.
-        if (span.fg.equals(span.bg)) strangers.push(`${at} fg is bg`);
+        const seen = onScreen(span);
+        if (seen.glyph === seen.cell) strangers.push(`${at} fg is bg`);
       }
   };
   try {

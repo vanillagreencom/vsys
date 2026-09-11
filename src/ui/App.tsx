@@ -126,6 +126,7 @@ export const hints: Record<
     [c.keys.open, "open"],
     [c.keys.search, "find"],
     [c.keys.details, "table"],
+    [c.keys.hold, "hold order"],
   ],
   Agent: (c) => [
     ["↑↓", "select"],
@@ -146,6 +147,7 @@ export const hints: Record<
   Builds: (c) => [
     ["↑↓", "select"],
     [c.keys.open, "processes"],
+    [c.keys.hold, "hold order"],
   ],
   // A Storage row shows its detail under the selection, so moving the
   // selection and moving between its lists are the whole of what the reader

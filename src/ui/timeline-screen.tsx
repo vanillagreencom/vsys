@@ -22,6 +22,7 @@ import {
   Chart,
   Field,
   gutter,
+  Ink,
   Line,
   List,
   nextDown,
@@ -405,12 +406,12 @@ export function Timeline({
             <box key={eventKey(event)} flexDirection="column" flexShrink={0}>
               <Row selected={isSelected} onOpen={() => open(at, event)}>
                 <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
-                <span
-                  fg={levelColor(e.level)}
+                <Ink
+                  color={levelColor(e.level)}
                   attributes={e.level === "ok" ? ui.none : ui.bold}
                 >
                   {fit(e.kind, 13)}
-                </span>
+                </Ink>
                 {fit(safe(e.text), subjectWidth)}
               </Row>
               {isSelected && unit && unit !== event.subject && (

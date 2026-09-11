@@ -28,10 +28,12 @@ import {
   sortLanes,
   sparkline,
 } from "./format";
+import { heldLabel, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, scrollbar, textInput, ui } from "./theme";
 import {
   Bar,
+  Ink,
   Line,
   List,
   listWindow,
@@ -377,7 +379,20 @@ export function Agents({
   const [table, setTable] = useState(false);
   const [chooser, setChooser] = useState(false);
   const [column, setColumn] = useState(0);
-  const lanes = findLanes(s.lanes, query, c);
+  // Every lane is on this list, so a lane that starts while the order is held
+  // is appended rather than hidden: a list that hides a live agent tells the
+  // reader it is not running. The list and the table draw this one order.
+  const hold = useHeldOrder();
+  const lanes = heldOrder(
+    findLanes(s.lanes, query, c),
+    hold.kept("agents"),
+    (lane) => lane.id,
+    "append",
+  );
+  hold.drew(
+    "agents",
+    lanes.map((lane) => lane.id),
+  );
   const open = laneId === null ? null : s.lanes.find((l) => l.id === laneId);
   /** Move the selection, recording the row and the lane it names together. */
   const choose = (index: number) =>
@@ -500,7 +515,10 @@ export function Agents({
       setChooser(false);
       return true;
     }
+    // A key that asks for an order releases the held one, and while an order
+    // is held no heading is marked, so none names an order the rows ignore.
     if (name === c.keys.sort) {
+      hold.release();
       save({
         ...c,
         sort: columns[
@@ -511,7 +529,12 @@ export function Agents({
       return true;
     }
     if (name === c.keys.reverse) {
+      hold.release();
       save({ ...c, descending: !c.descending });
+      return true;
+    }
+    if (name === c.keys.hold) {
+      hold.toggle();
       return true;
     }
     return false;
@@ -689,9 +712,9 @@ export function Agents({
               toggleColumn(name);
             }}
           >
-            <span fg={c.columns.includes(name) ? ui.accent : undefined}>
+            <Ink color={c.columns.includes(name) ? ui.accent : undefined}>
               {c.columns.includes(name) ? "◉ " : "○ "}
-            </span>
+            </Ink>
             {columnLabels[name] ?? name}
           </Row>
         ))}
@@ -708,7 +731,7 @@ export function Agents({
             attributes={ui.bold}
           >{`${lanes.length} ${lanes.length === 1 ? "agent" : "agents"}`}</span>
           <span attributes={ui.dim}>
-            {`  sorted by ${sortLabel}${query ? `  matching "${safe(query)}"` : ""}`}
+            {`  ${hold.held ? heldLabel : `sorted by ${sortLabel}`}${query ? `  matching "${safe(query)}"` : ""}`}
           </span>
         </Line>
         <box height={1} flexShrink={0} />
@@ -759,7 +782,10 @@ export function Agents({
                   gap={columnGap.length}
                 >
                   {tableCells.map(({ name, column }) => {
-                    const sorted = name !== null && c.sort === name;
+                    // A click reads the heading as drawn: while the order is
+                    // held none is marked, so any heading sorts largest first.
+                    const sorted =
+                      name !== null && c.sort === name && !hold.held;
                     return (
                       <Line
                         key={name ?? column.label}
@@ -771,12 +797,14 @@ export function Agents({
                         onMouseDown={
                           name === null
                             ? undefined
-                            : () =>
+                            : () => {
+                                hold.release();
                                 save({
                                   ...c,
                                   sort: name,
                                   descending: sorted ? !c.descending : true,
-                                })
+                                });
+                              }
                         }
                       >
                         {cell(
@@ -821,10 +849,14 @@ export function Agents({
             {lanes.length > 0 && (
               <TableHeader
                 columns={laneColumns}
-                sort={{
-                  label: listHeading[c.sort] ?? "",
-                  descending: c.descending,
-                }}
+                sort={
+                  hold.held
+                    ? undefined
+                    : {
+                        label: listHeading[c.sort] ?? "",
+                        descending: c.descending,
+                      }
+                }
               />
             )}
             <List
@@ -900,9 +932,9 @@ export function Agents({
                     )}
                     {columnGap}
                     {badge ? (
-                      <span fg={levelColor(badge.level)}>
+                      <Ink color={levelColor(badge.level)}>
                         {cell(laneColumn("State"), badge.text)}
-                      </span>
+                      </Ink>
                     ) : (
                       <span attributes={ui.dim}>
                         {cell(laneColumn("State"), lane.state)}

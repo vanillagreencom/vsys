@@ -3,9 +3,11 @@ import type { TextProps } from "@opentui/react";
 import {
   Children,
   cloneElement,
+  createContext,
   isValidElement,
   type ReactNode,
   type RefObject,
+  useContext,
   useEffect,
   useRef,
 } from "react";
@@ -13,6 +15,38 @@ import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
 import { type Column, fit, headerText, sortedColumns } from "./columns";
 import { levelColor, readingWeight, ui } from "./theme";
+
+/**
+ * The colour of the band a selected row is drawn as, while the row is
+ * selected and has a colour of its own. `Row` provides it; `Ink`, `Bar` and
+ * `Sparkline` read it.
+ */
+const Band = createContext<RGBA | undefined>(undefined);
+/**
+ * The colour a word or a mark on a row is drawn in. On a selected row's band
+ * of one colour, a word in that same colour would vanish into it, so it takes
+ * the band's text colour, the one the row's own words take.
+ */
+function useInk(colour: RGBA | undefined): RGBA | undefined {
+  const band = useContext(Band);
+  return band && colour?.equals(band) ? ui.fg : colour;
+}
+/** A coloured word on a row, which stays readable when the row is selected. */
+export function Ink({
+  color,
+  attributes,
+  children,
+}: {
+  color?: RGBA;
+  attributes?: number;
+  children: ReactNode;
+}) {
+  return (
+    <span fg={useInk(color)} attributes={attributes}>
+      {children}
+    </span>
+  );
+}
 
 /**
  * Keeps the thing the reader is standing on where they can see it, in a box
@@ -292,9 +326,10 @@ export function Bar({
   color?: RGBA;
 }) {
   const filled = bar(value, max, width);
+  const ink = useInk(color ?? levelColor(level));
   return (
     <>
-      <span fg={color ?? levelColor(level)}>{filled}</span>
+      <span fg={ink}>{filled}</span>
       <span fg={ui.fg} attributes={ui.dim}>
         {"─".repeat(width - filled.length)}
       </span>
@@ -306,12 +341,13 @@ export function Bar({
  * has not filled yet reads as waiting rather than as lost data.
  */
 export function Sparkline({ marks, color }: { marks: string; color?: RGBA }) {
+  const ink = useInk(color);
   return (
     <>
       {gapRuns(marks).map((run) => (
         <span
           key={`${run.at}`}
-          fg={run.sampled ? color : ui.fg}
+          fg={run.sampled ? ink : ui.fg}
           attributes={run.sampled ? ui.none : ui.dim}
         >
           {run.text}
@@ -384,8 +420,8 @@ export function Tile({
         height={1}
         width="100%"
         truncate
-        bg={selected ? ui.quiet : undefined}
-        attributes={selected ? ui.bold : ui.dim}
+        bg={selected ? ui.bg : undefined}
+        attributes={selected ? ui.selected : ui.dim}
       >
         {sized(label)}
       </Line>
@@ -513,8 +549,20 @@ export function Detail({
 }
 
 /**
- * One selectable line. The selected line is painted behind and keeps its
- * marker: in a list thirty rows deep a marker alone is easy to lose.
+ * One selectable line. The selected line is drawn in reverse video and keeps
+ * its marker: in a list thirty rows deep a marker alone is easy to lose.
+ *
+ * OpenTUI trades a reversed cell's two colours in its buffer and also sends
+ * reverse video, so the terminal trades them again. The terminal's two
+ * default colours, which go out by slot rather than by value, come out
+ * reversed, and a numbered colour comes out where it was named. A plain row
+ * therefore reads as the scheme's background colour on a band of its text
+ * colour, and a bar or a coloured word on it keeps its colour. A row in one
+ * colour names that colour as its background, which comes out as a band of
+ * that colour, and a word or a mark on it in that same colour is drawn
+ * through `Ink` so it does not vanish into the band. The background must be
+ * opaque: behind a transparent one OpenTUI fills a coloured word's cell with
+ * the word's own colour, and the word vanishes.
  */
 export function Row({
   selected,
@@ -533,13 +581,15 @@ export function Row({
       width="100%"
       flexShrink={0}
       truncate
-      fg={color}
-      bg={selected ? ui.quiet : undefined}
-      attributes={selected ? ui.bold : ui.none}
+      fg={selected && color ? ui.fg : color}
+      bg={selected ? (color ?? ui.bg) : undefined}
+      attributes={selected ? ui.selected : ui.none}
       onMouseDown={onOpen}
     >
       <span fg={ui.accent}>{selected ? "▍" : " "}</span>
-      {children}
+      <Band.Provider value={selected ? color : undefined}>
+        {children}
+      </Band.Provider>
     </Line>
   );
 }

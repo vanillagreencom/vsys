@@ -215,7 +215,7 @@ export function Help({ config: c }: { config: Config }) {
         [`${k.next} ${k.previous}`, "next and previous region"],
         [jumpKeys(homeRegions, k), "jump to a Home region"],
         [jumpKeys(storageRegions, k), "jump to a Storage region"],
-        [k.hold, "hold Busiest agents' order on Home"],
+        [k.hold, "hold the order of a list whose rows move"],
         [views.map((v) => k[viewKey(v)]).join(" "), "go to a screen"],
       ],
     ],

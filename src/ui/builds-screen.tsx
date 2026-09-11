@@ -17,6 +17,7 @@ import {
   pidColumn,
 } from "./columns";
 import { age, bytes, count, gap, percent, share } from "./format";
+import { heldCount, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
 import { metric, ui } from "./theme";
 import {
@@ -57,7 +58,20 @@ export function Builds({
   const [selected, setSelected] = useState(0);
   const [processes, setProcesses] = useState(false);
   const summary = buildsSummary(s, c);
-  const rows = summary.rows;
+  // One key holds both lists. Each is every row there is, every lane building
+  // and every build process of the selected lane, so a row that starts while
+  // the order is held is appended rather than hidden.
+  const hold = useHeldOrder();
+  const rows = heldOrder(
+    summary.rows,
+    hold.kept("lanes"),
+    (row) => row.id,
+    "append",
+  );
+  hold.drew(
+    "lanes",
+    rows.map((row) => row.id),
+  );
   // The id for the same reason every other lane list carries one: two lanes
   // that resolve to one name are told apart by a column, never by a suffix on
   // the name. The catch-all row for work outside every lane leads no process,
@@ -104,20 +118,33 @@ export function Builds({
       setProcesses(false);
       return true;
     }
+    if (name === c.keys.hold) {
+      hold.toggle();
+      return true;
+    }
     return false;
   });
   const current = rows[Math.min(selected, rows.length - 1)];
   const lane = current ? s.lanes.find((l) => l.id === current.id) : undefined;
   const owned = new Set(s.lanes.flatMap((l) => l.pids));
-  const procs = current
-    ? s.procs
-        .filter(
-          (p) =>
-            compileOrLink(p.build, c.compilerNames, c.linkerNames) &&
-            (current.id ? lane?.pids.includes(p.pid) : !owned.has(p.pid)),
-        )
-        .sort((a, b) => (b.cpuPercent ?? 0) - (a.cpuPercent ?? 0))
-    : [];
+  const procs = heldOrder(
+    current
+      ? s.procs
+          .filter(
+            (p) =>
+              compileOrLink(p.build, c.compilerNames, c.linkerNames) &&
+              (current.id ? lane?.pids.includes(p.pid) : !owned.has(p.pid)),
+          )
+          .sort((a, b) => (b.cpuPercent ?? 0) - (a.cpuPercent ?? 0))
+      : [],
+    hold.kept("processes"),
+    (p) => String(p.pid),
+    "append",
+  );
+  hold.drew(
+    "processes",
+    procs.map((p) => String(p.pid)),
+  );
   const cache = summary.cache;
   const meter = meters(s, c).find((m) => m.id === "builds");
   if (!meter) throw new Error("The verdict model has no builds meter");
@@ -181,7 +208,7 @@ export function Builds({
       <Section
         title="Lanes building"
         width={width}
-        count={rows.length || undefined}
+        count={heldCount(rows.length || undefined, hold.held)}
       />
       {rows.length > 0 && <TableHeader columns={buildColumns} />}
       {!rows.length && (
@@ -242,7 +269,7 @@ export function Builds({
           <Section
             title={`Processes in ${current.name || "no watched lane"}`}
             width={width}
-            count={procs.length}
+            count={heldCount(procs.length, hold.held)}
             marginTop={0}
           />
           <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
