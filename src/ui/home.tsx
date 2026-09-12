@@ -13,7 +13,14 @@ import {
   verdictItem,
   verdictLine,
 } from "./attention";
-import { keyLabel, type View, wideWidth } from "./chrome";
+import {
+  detailIndent,
+  keyLabel,
+  panelWidth,
+  screenPad,
+  type View,
+  wideWidth,
+} from "./chrome";
 import {
   type Column,
   cell,
@@ -403,7 +410,7 @@ export function Home({
   });
   const lead = verdictItem(items);
   const level: Level = lead ? (lead.danger ? "danger" : "warn") : "ok";
-  const panel = columns ? Math.floor((width - 3) / 2) : width;
+  const panel = panelWidth(width);
   // A tile row shares its width between the tiles on it, two columns apart,
   // so the chart is as wide as the tile that carries it however many that is.
   const perRow = tilesPerRow(gauges.length, width);
@@ -465,7 +472,7 @@ export function Home({
       scrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
-      <box flexDirection="column" flexShrink={0} paddingX={2}>
+      <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
         <Line flexShrink={0} wrapMode="word">
           <span fg={levelColor(level)} attributes={ui.bold}>
             {safe(verdictLine(items, s))}
@@ -547,7 +554,7 @@ export function Home({
                     />
                   </Row>
                   {marked(i) && (
-                    <Detail indent={2}>
+                    <Detail indent={detailIndent}>
                       <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                         {safe(row.item.detail)}
                       </Line>

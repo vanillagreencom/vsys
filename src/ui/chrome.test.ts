@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
 import { defaults, validate } from "../config/config";
 import {
+  detailIndent,
+  detailWidth,
   headerMarker,
   headerRowWidth,
   keyLabel,
+  panelWidth,
+  screenPad,
+  screenWidth,
   tabsFitOneRow,
   viewKey,
   views,
@@ -76,4 +81,18 @@ test("the fit predicate measures the row the header draws", () => {
 test("every view is bound to a key the settings name", () => {
   const c = defaults();
   for (const view of views) expect(c.keys[viewKey(view)]).toBeTruthy();
+});
+
+test("a card's detail is measured through every column it is drawn behind", () => {
+  // The terminal row, less the padding a screen draws inside, less the rule
+  // and indent of the block the detail sits in. Each term is the constant the
+  // renderer itself uses, so the measurement cannot drift from the drawing.
+  expect(screenWidth(80)).toBe(80 - screenPad * 2);
+  expect(detailWidth(80)).toBe(panelWidth(screenWidth(80)) - detailIndent);
+  expect(detailWidth(80)).toBe(74);
+  // Two panels share a wide row, so a wider terminal is not a wider card.
+  expect(detailWidth(160)).toBe(74);
+  expect(detailWidth(200)).toBe(94);
+  // A terminal too narrow to measure still leaves a column to write into.
+  expect(detailWidth(10)).toBe(20);
 });

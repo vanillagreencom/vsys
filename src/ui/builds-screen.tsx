@@ -6,7 +6,7 @@ import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
 import { meters } from "../model/verdict";
 import { meterTile } from "./attention";
-import { keyLabel } from "./chrome";
+import { keyLabel, screenPad } from "./chrome";
 import {
   type Column,
   cell,
@@ -151,7 +151,7 @@ export function Builds({
   const total = meterTile(meter, s, c);
   const topBuilds = Math.max(1, ...rows.map((r) => r.builds));
   return (
-    <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
+    <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={width}>
         <Tile
           key="Compile and link"

@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { defaults } from "../config/config";
 import { bypassedLanes, jobservers } from "../model/builds";
-import { launcherTrail } from "../model/launcher";
+import { launcherCopy, launcherTrail } from "../model/launcher";
 import { laneText } from "../model/naming";
 import type { Proc } from "../model/types";
 import { fixture } from "../test/fixture";
@@ -400,7 +400,9 @@ test("an escaped agent's own environment reaches the launcher trail", async () =
   });
   const trail = launcherTrail(agent as Proc, s.procs, f.config, ["/usr/bin"]);
   expect(trail.conclusion).toBe("shadowed");
-  expect(trail.summary).toContain("/shadow/bin");
+  expect(trail.prefix).toEqual(["/shadow/bin"]);
+  const [copy] = launcherCopy([agent as Proc], s.procs, f.config, ["/usr/bin"]);
+  expect(copy.conclusion).toContain("/shadow/bin");
 });
 
 test("build process environments carry the wrapper and the make token pool", async () => {

@@ -325,3 +325,52 @@ export function everyCauseSnapshot(c: Config): Snapshot {
   s.storage.scratch = [{ path: "/scratch", bytes, age: 0, error: null }];
   return s;
 }
+/**
+ * A machine whose agents all started outside the agent slice: `lanes` lanes
+ * of `perLane` processes each, spread over `scopes` scopes, all descended
+ * from one ancestor that repeats itself.
+ */
+export function escapedSnapshot(o: {
+  lanes: number;
+  perLane?: number;
+  scopes?: number;
+  env?: Record<string, string>;
+}): Snapshot {
+  const per = o.perLane ?? 1;
+  const scopes = o.scopes ?? 2;
+  const s = emptySnapshot();
+  s.lanes = Array.from({ length: o.lanes }, (_, i) =>
+    laneSnapshot({
+      id: `lane-${i}`,
+      name: `kendex agent-${i}`,
+      mainPid: 1000 + i * per,
+      pids: Array.from({ length: per }, (_, n) => 1000 + i * per + n),
+      unconfined: true,
+    }),
+  );
+  const root = (pid: number, ppid: number, start: number) =>
+    processSnapshot({
+      pid,
+      ppid,
+      start,
+      comm: "systemd",
+      group: "/init.scope",
+      tool: null,
+    });
+  s.procs = [
+    root(1, 0, 0),
+    root(2, 1, 5),
+    ...s.lanes.flatMap((lane, i) =>
+      lane.pids.map((pid) =>
+        processSnapshot({
+          pid,
+          ppid: 2,
+          start: 10,
+          group: `/user.slice/tmux-spawn-${i % scopes}.scope`,
+          env: o.env ?? { PATH: "/usr/bin" },
+        }),
+      ),
+    ),
+  ];
+  return s;
+}

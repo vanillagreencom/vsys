@@ -5,6 +5,7 @@ import { safe } from "../model/export";
 import type { Scratch, Snapshot, Volume } from "../model/types";
 import type { Level } from "../model/verdict";
 import { type WriteTotal, writeTotals } from "../model/writes";
+import { screenPad } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { age, amount, gap } from "./format";
 import { useScreenKeys } from "./keys";
@@ -331,7 +332,7 @@ export function Storage({
       scrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
-      <box flexDirection="column" flexShrink={0} paddingX={2}>
+      <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
         <Section title="Written since boot" width={width} marginTop={0} />
         {writeRows(totals.slices, true, "by slice")}
         <box height={1} flexShrink={0} />
