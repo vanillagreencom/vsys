@@ -1,6 +1,6 @@
 # vsys
 
-vsys is a Linux terminal dashboard for people who run several AI agents and AI coding tools. It shows how those processes use CPU, memory, storage, and other system resources.
+vsys is a Linux terminal dashboard for people who run several AI agents or AI coding tools on one machine. It shows each agent with its Linux control group, systemd slice, build processes, and resource use.
 
 ![A tour of the vsys screens](docs/media/vsys-tour.gif)
 
@@ -24,19 +24,20 @@ vsys requires Linux with cgroup v2. It does not run on macOS or Windows.
 
 ## Features
 
-- Shows CPU, memory, disk, and build activity.
-- Lists each watched agent and its resource use.
-- Shows the processes, open files, and terminal output for an agent.
-- Shows Linux resource groups and their limits.
-- Tracks compilers, linkers, build cache use, and make jobs.
-- Shows filesystem space, disk writes, scrub reports, and scratch directories.
-- Records changes and resource history for later review.
-- Exports the current data as JSON or Markdown.
-- Can freeze, resume, or stop an agent after you enable write mode and confirm the action.
+- Lists each watched agent with its tool, account, worktree or branch, process ID, and tmux pane.
+- Shows CPU, memory, swap, cache, disk I/O, task counts, resource pressure, and cgroup limits for each agent.
+- Shows systemd slices and cgroups as a tree with their resource use and limits.
+- Finds agents that run outside the configured agent slice or inherit a memory limit below the configured floor.
+- Attributes compiler and linker processes to each agent, and shows active build jobs, GNU make job slots, and sccache use.
+- Breaks disk writes down by systemd slice and storage device, and shows filesystem space, Btrfs errors, scrub reports, drive lifetime writes, and scratch directory sizes.
+- Records agent starts, stops, cgroup moves, resource alerts, and system resource history.
+- Shows an agent's process tree, launch command, open files, and tmux output.
+- Lets you change which slices, agent tools, build tools, resource thresholds, and columns it tracks.
+- Can freeze, thaw, or stop an agent's systemd scope after you enable write mode and confirm the action.
 
 ## How it works
 
-vsys reads Linux cgroup v2 and process files with your user permissions. It groups watched agent processes and shows their resource use. It refreshes the dashboard as the system changes. It keeps history in memory unless you enable saved history. It changes an agent only when write mode is on and you confirm the action.
+vsys reads Linux cgroup v2, process files, and configured system reports with your user permissions. It finds configured AI tools and watched systemd scopes. It groups their processes by cgroup and records resource use over time. It reads compiler, linker, build cache, and GNU make data from the same processes. It can freeze, thaw, or stop a systemd scope only when write mode is on and you confirm the action.
 
 ## Settings
 
