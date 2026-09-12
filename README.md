@@ -29,7 +29,7 @@ vsys requires Linux with cgroup v2. It does not run on macOS or Windows.
 - Shows systemd slices and cgroups as a tree with their resource use and limits.
 - Finds agents that run outside the configured agent slice or inherit a memory limit below the configured floor.
 - Attributes compiler and linker processes to each agent, and shows active build jobs, GNU make job slots, and sccache use.
-- Breaks disk writes down by systemd slice and storage device, and shows filesystem space, Btrfs errors, scrub reports, drive lifetime writes, and scratch directory sizes.
+- Breaks disk writes down by systemd slice and storage device, and shows filesystem space, Btrfs errors, damaged files, scrub reports, drive lifetime writes, and scratch directory sizes.
 - Records agent starts, stops, cgroup moves, resource alerts, and system resource history.
 - Shows an agent's process tree, launch command, open files, and tmux output.
 - Lets you change which slices, agent tools, build tools, resource thresholds, and columns it tracks.
@@ -54,6 +54,16 @@ Settings are in `~/.config/vsys/config.toml`. You can edit them from the Setting
 | `writeMode` | Allows freeze, resume, and stop actions. It is off by default. |
 
 Run `vsys --help` for command options.
+
+## Storage checks
+
+Storage says whether a filesystem's data is damaged, and when the disk was last checked. A filesystem that nothing has checked is never shown as healthy. The error counter alone cannot tell you: it counts reads that failed, so it stays still while nothing reads the damaged part.
+
+Open a filesystem to see the damaged files. Each damaged block is listed with every file name that uses it, and one command that deletes them all together. Build output is marked as safe to delete and rebuild. Other files need a backup or a snapshot.
+
+vsys deletes nothing. It copies the command to your clipboard for you to run.
+
+The check reports come from a privileged timer, one file for each filesystem. See [the storage architecture](docs/architecture/storage.md) for the format a report must have.
 
 ## Development
 

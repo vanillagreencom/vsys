@@ -73,6 +73,14 @@ export interface Volume {
   delta: Record<string, number>;
   sinceStart: Record<string, number>;
   countersAvailable?: boolean;
+  /**
+   * When the filesystem's corruption counter last grew, remembered across the
+   * history window and across restarts. Null while vsys has never seen it
+   * grow, which is not the same as no damage.
+   */
+  lastErrorAt?: number | null;
+  /** How far the counter grew then. */
+  lastErrorSize?: number | null;
 }
 export interface Scratch {
   path: string;
@@ -81,10 +89,32 @@ export interface Scratch {
   modifiedAt?: number | null;
   error: string | null;
 }
+/**
+ * One damaged block address from a scrub report, with every path it is
+ * reachable under. The address is the unit of damage, not the file: one extent
+ * can carry several names, and removing the first leaves the damage on disk.
+ * No path means free space or a file already deleted.
+ */
+export interface DamagedAddress {
+  logical: number;
+  paths: string[];
+}
 export interface Scrub {
   path: string;
   text: string;
   problem: boolean;
+  /** False where the output could not be read, which is never a clean result. */
+  readable?: boolean;
+  /** The filesystem the report names, matched to a Btrfs filesystem id. */
+  fsid?: string | null;
+  startedAt?: number | null;
+  status?: string | null;
+  uncorrectable?: number | null;
+  /**
+   * Damaged block addresses with the paths still on disk. Null where the
+   * report carries no damaged-file section, which says nothing about files.
+   */
+  addresses?: DamagedAddress[] | null;
 }
 /** A block device with its lifetime writes, when SMART output is readable. */
 export interface Device {

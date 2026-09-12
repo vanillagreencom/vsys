@@ -7,6 +7,7 @@ import { age, amount, gap, share } from "./format";
 const phrases: Record<CauseId, string> = {
   unconfined: "an agent ran outside the agent slice",
   "read-only": "a mount turned read-only",
+  "damaged-files": "a check found damaged files",
   "device-errors": "device error counters grew",
   disk: "storage stalled tasks",
   "desktop-swap": "the desktop swapped out",
@@ -17,6 +18,7 @@ const phrases: Record<CauseId, string> = {
   "system-cpu": "tasks waited for CPU",
   "memory-high": "a group neared its memory threshold",
   scrub: "a scrub reported a problem",
+  unchecked: "a filesystem went unchecked for damage",
   scratch: "scratch data passed its quota",
 };
 export function causePhrase(cause: CauseId | ""): string {

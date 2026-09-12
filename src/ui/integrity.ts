@@ -1,0 +1,86 @@
+import {
+  type DamagedGroup,
+  damageCounts,
+  type Integrity,
+} from "../model/integrity";
+import { shellLine } from "../model/shell";
+import { age, count } from "./format";
+
+/**
+ * What one filesystem's integrity state says in words. Every state but
+ * `healthy` says something is wrong or unknown, so a filesystem nothing has
+ * checked never reads as one that has been checked and found sound.
+ */
+export function integrityWords(item: Integrity): string {
+  switch (item.state) {
+    case "damaged": {
+      const n = damageCounts(item);
+      return n.files
+        ? `Damaged files found: ${count(n.files, "file")}${n.other ? "" : ", all build output"}`
+        : "Damaged data found";
+    }
+    case "new-errors":
+      return "New errors since last check";
+    case "never-checked":
+      return "Never checked";
+    case "stale":
+      return `Not checked in ${age(item.checkAge ?? 0)}`;
+    case "checking":
+      return "Checking now";
+    case "unknown":
+      return "Damage state unknown";
+    case "healthy":
+      return "Healthy";
+  }
+}
+/**
+ * The line a reader gets without opening anything. It always carries both
+ * times, because "when was the last corruption" and "has anything checked the
+ * disk since" is one question and needs one answer.
+ */
+export function integrityLine(item: Integrity): string {
+  return [
+    integrityWords(item),
+    `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago`}`,
+    `last new error ${item.errorAge === null ? "none recorded" : `${age(item.errorAge)} ago`}`,
+  ].join(" · ");
+}
+/**
+ * Why a filesystem lists no damaged address. The three reasons are different
+ * facts, and one of them is that nothing has looked: the sentence never lets
+ * an absent list read as a check that found nothing.
+ */
+export function noDamageText(item: Integrity): string {
+  if (!item.scrub)
+    return "No check has reported on this filesystem, so no file is named.";
+  if (item.scrub.addresses === null || item.scrub.addresses === undefined)
+    return "The report carries no damaged-file section, so it names no file. That is not a report of none.";
+  return "No damaged address is left on this filesystem.";
+}
+/** What the reader should do with one damaged address. */
+export function damageAdvice(group: DamagedGroup): string {
+  if (group.kind === "build") return "safe to delete and rebuild";
+  if (group.kind === "other") return "restore from a backup or a snapshot";
+  return "free space or already deleted, clears on the next check";
+}
+/**
+ * The command that removes one damaged address. Every path of the address goes
+ * in one line: a Cargo build script writes one extent under two names, and
+ * removing the first leaves the damage on disk for the next check to find
+ * again, which reads as a delete that worked and fixed nothing.
+ */
+export function deleteCommand(group: DamagedGroup): string | undefined {
+  return group.paths.length
+    ? shellLine(["rm", "-f", ...group.paths])
+    : undefined;
+}
+/** One line that removes every damaged path a rebuild would replace. */
+export function rebuildCommand(item: Integrity): string | undefined {
+  const paths = item.groups
+    .filter((group) => group.kind === "build")
+    .flatMap((group) => group.paths);
+  return paths.length ? shellLine(["rm", "-f", ...paths]) : undefined;
+}
+/** Why a flat counter is not a healthy disk, in one sentence. */
+export const counterSentence =
+  "The counter counts reads that failed their checksum, not files. Every read of the same damaged block counts again, and a block nothing reads never counts at all.";

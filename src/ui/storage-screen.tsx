@@ -2,12 +2,27 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
+import {
+  damageCounts,
+  type Integrity,
+  integrity,
+  integrityLevel,
+  volumesByDevice,
+} from "../model/integrity";
 import type { Scratch, Snapshot, Volume } from "../model/types";
 import type { Level } from "../model/verdict";
 import { type WriteTotal, writeTotals } from "../model/writes";
-import { screenPad } from "./chrome";
+import { keyLabel, screenPad } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { age, amount, gap } from "./format";
+import {
+  counterSentence,
+  damageAdvice,
+  deleteCommand,
+  integrityLine,
+  noDamageText,
+  rebuildCommand,
+} from "./integrity";
 import { useScreenKeys } from "./keys";
 import {
   regionOf,
@@ -32,21 +47,27 @@ import {
 
 /** Everything the reader can select on Storage, top to bottom. */
 export type StorageItem =
+  | { kind: "filesystem"; id: string }
   | { kind: "volume"; volume: Volume }
   | { kind: "scrub"; path: string }
   | { kind: "scratch"; scratch: Scratch; session: boolean };
 /** The path each selectable row stands for, which a card can name. */
 export function itemPath(item: StorageItem): string {
+  // A filesystem is named by its identity, never by one of its mounts: a card
+  // naming a mount means that mount's row, and the two would collide.
+  if (item.kind === "filesystem") return item.id;
   if (item.kind === "volume") return item.volume.mount;
   return item.kind === "scrub" ? item.path : item.scratch.path;
 }
 export function storageItems(s: Snapshot): StorageItem[] {
   return [
-    // Grouped by device, because that is the order the rows are drawn in and
-    // the selection counts them as it draws them.
-    ...volumesByDevice(s.storage.volumes).flatMap((group) =>
-      group.volumes.map((volume) => ({ kind: "volume", volume }) as const),
-    ),
+    // Grouped by filesystem, because that is the order the rows are drawn in
+    // and the selection counts them as it draws them. Each filesystem states
+    // its integrity once, above the mounts that share it.
+    ...volumesByDevice(s.storage.volumes).flatMap((group) => [
+      { kind: "filesystem", id: group.id } as const,
+      ...group.volumes.map((volume) => ({ kind: "volume", volume }) as const),
+    ]),
     ...s.storage.scrubs.map(
       (scrub) => ({ kind: "scrub", path: scrub.path }) as const,
     ),
@@ -57,48 +78,6 @@ export function storageItems(s: Snapshot): StorageItem[] {
       (scratch) => ({ kind: "scratch", scratch, session: true }) as const,
     ),
   ];
-}
-/**
- * Btrfs subvolumes of one filesystem each mount separately and each report the
- * whole device's free space, so seven rows repeat one long device name and one
- * free-space figure. The device is named once and its mounts sit under it.
- */
-export interface DeviceVolumes {
-  /** The identity the group was formed on: the filesystem id where resolved. */
-  id: string;
-  /** The device a reader would type, taken from the group's first mount. */
-  device: string;
-  volumes: Volume[];
-}
-/**
- * What identifies the filesystem a mount belongs to. The collector resolves a
- * Btrfs filesystem id per mount, and that is the identity the counters are
- * keyed by. The mount source is not: one filesystem reached through a mapper
- * alias, a canonical path or a second member device carries three different
- * source strings and would split into three headings, each repeating the one
- * free-space figure this grouping exists to state once. The source is the
- * fallback for a mount whose filesystem id could not be resolved.
- */
-const filesystemKey = (v: Volume): string => v.fsid ?? v.device;
-export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
-  const order: string[] = [];
-  const byDevice = new Map<string, Volume[]>();
-  for (const volume of volumes) {
-    const key = filesystemKey(volume);
-    const group = byDevice.get(key);
-    if (group) group.push(volume);
-    else {
-      byDevice.set(key, [volume]);
-      order.push(key);
-    }
-  }
-  return order.map((key) => {
-    const volumes = byDevice.get(key) ?? [];
-    // The heading names the device a reader would type. The identity stays
-    // beside it, because two filesystems can report one device string and
-    // only the id tells the groups apart.
-    return { id: key, device: volumes[0]?.device ?? key, volumes };
-  });
 }
 export function volumeLevel(v: Volume, freeFloor: number): Level {
   if (v.readOnly || Object.values(v.delta).some((n) => n > 0)) return "danger";
@@ -130,6 +109,7 @@ export function Storage({
   target,
   onTargetUsed,
   onNotice,
+  onCopy,
 }: {
   snapshot: Snapshot;
   config: Config;
@@ -138,6 +118,8 @@ export function Storage({
   target: string | null;
   onTargetUsed: () => void;
   onNotice: (text: string, level: Level) => void;
+  /** Undefined text tells the shell the selected row carries no command. */
+  onCopy: (command: string | undefined) => void;
 }) {
   const [chosen, setSelected] = useState(0);
   const items = storageItems(s);
@@ -166,7 +148,10 @@ export function Storage({
   // Storage's three lists are three regions of one flat selection, in the
   // order they are drawn: filesystems, scrub reports, scratch directories.
   const counts = [
-    items.filter((item) => item.kind === "volume").length,
+    // A filesystem's integrity row and its mount rows are one region: they are
+    // drawn together and the reader walks them with one pair of arrows.
+    items.filter((item) => item.kind === "filesystem" || item.kind === "volume")
+      .length,
     items.filter((item) => item.kind === "scrub").length,
     items.filter((item) => item.kind === "scratch").length,
   ];
@@ -188,6 +173,23 @@ export function Storage({
       return move((i) => stepToRegion(counts, i, -1));
     if (name === c.keys.next || name === c.keys.right || name === "right")
       return move((i) => stepToRegion(counts, i, 1));
+    // Only the filesystem row carries a command, and only where the last
+    // check found build output to remove. Every other row copies nothing,
+    // which the shell says rather than copying something the reader did not
+    // select.
+    if (name === c.keys.copy) {
+      const item = items[selected];
+      const group =
+        item?.kind === "filesystem"
+          ? volumesByDevice(s.storage.volumes).find((g) => g.id === item.id)
+          : undefined;
+      onCopy(
+        group
+          ? rebuildCommand(integrity(group, s.storage.scrubs, s.time, c))
+          : undefined,
+      );
+      return true;
+    }
     // A list's own key lands on its first row. A list with no row has no row
     // to land on, so its key leaves the selection where it is.
     const jump = storageRegions.findIndex(
@@ -254,6 +256,100 @@ export function Storage({
     c.scratchQuota,
     ...[...st.scratch, ...st.sessions].map((x) => x.bytes ?? 0),
   );
+  /**
+   * One filesystem's integrity, in plain words with both of its times. What
+   * the check found sits one level down, and the raw counters and the raw
+   * report text one level below that: a reader asking "is my data damaged"
+   * gets the answer without opening anything.
+   */
+  const integrityRow = (item: Integrity, first: Volume) => {
+    const i = next();
+    const level = integrityLevel(item.state);
+    const counts = damageCounts(item);
+    const rebuild = rebuildCommand(item);
+    return (
+      <box
+        id={`storage-${i}`}
+        key={`integrity-${item.id}`}
+        flexDirection="column"
+        flexShrink={0}
+      >
+        <Row
+          selected={i === selected}
+          color={level === "ok" ? undefined : levelColor(level)}
+          onOpen={() => setSelected(i)}
+        >
+          <Disclosure
+            open={i === selected}
+            name={integrityLine(item)}
+            count={counts.files || undefined}
+          />
+        </Row>
+        {i === selected && (
+          <Detail indent={4}>
+            {/* The headline reading is what the last check found. The
+                lifetime counter is a different quantity and sits below it. */}
+            <Field
+              label="Blocks found"
+              width={16}
+              value={
+                item.blocks === null
+                  ? `${gap}: the last report counted none`
+                  : `${item.blocks} by the last full check`
+              }
+            />
+            {item.groups.length === 0 && <Empty text={noDamageText(item)} />}
+            {item.groups.map((group) => {
+              const command = deleteCommand(group);
+              return (
+                <box
+                  key={group.logical}
+                  flexDirection="column"
+                  flexShrink={0}
+                  marginTop={1}
+                >
+                  <Line height={1} flexShrink={0} truncate>
+                    <span attributes={ui.dim}>{fit("block", 16)}</span>
+                    {`${group.logical}  `}
+                    <span fg={group.kind === "other" ? ui.danger : undefined}>
+                      {damageAdvice(group)}
+                    </span>
+                  </Line>
+                  {group.paths.map((path) => (
+                    <Line key={path} flexShrink={0} wrapMode="word">
+                      {`      ${safe(path)}`}
+                    </Line>
+                  ))}
+                  {command && (
+                    <Line
+                      flexShrink={0}
+                      wrapMode="word"
+                      fg={ui.accent}
+                    >{`      ${safe(command)}`}</Line>
+                  )}
+                </box>
+              );
+            })}
+            {rebuild && (
+              <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                {`${keyLabel(c.keys.copy)} copies one line that removes every build-output path above.`}
+              </Line>
+            )}
+            <box height={1} flexShrink={0} />
+            <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+              {counterSentence}
+            </Line>
+            <Field label="Counter" width={16} value={errorText(first)} />
+            {item.scrub && (
+              <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                {safe(item.scrub.text)}
+              </Line>
+            )}
+          </Detail>
+        )}
+      </box>
+    );
+  };
   const volumeRow = (v: Volume) => {
     const i = next();
     const level = volumeLevel(v, c.freeFloor);
@@ -360,7 +456,9 @@ export function Storage({
         {st.mountsAvailable !== false && !st.volumes.length && (
           <Empty text="No watched Btrfs mount." />
         )}
-        {volumesByDevice(st.volumes).map(({ id, device, volumes }) => {
+        {volumesByDevice(st.volumes).map((group) => {
+          const { id, device, volumes } = group;
+          const state = integrity(group, st.scrubs, s.time, c);
           // Subvolumes of one filesystem each report the whole device's free
           // space, so the device states it once and its mounts carry only what
           // differs between them. `statfs` is attempted per mount, so one
@@ -373,11 +471,16 @@ export function Storage({
             first.total !== null && first.free !== null
               ? first.total - first.free
               : null;
-          const worst: Level = volumes.some(
-            (v) => volumeLevel(v, c.freeFloor) === "danger",
-          )
-            ? "danger"
-            : "ok";
+          // The heading's colour is the worse of what its mounts report and
+          // what the filesystem's integrity says, so damage found by a check
+          // colours the heading even while every mount reads normally.
+          const worst: Level =
+            volumes.some((v) => volumeLevel(v, c.freeFloor) === "danger") ||
+            integrityLevel(state.state) === "danger"
+              ? "danger"
+              : integrityLevel(state.state) === "warn"
+                ? "warn"
+                : "ok";
           return (
             <box key={id} flexDirection="column" flexShrink={0}>
               <Line height={1} flexShrink={0} truncate>
@@ -394,20 +497,7 @@ export function Storage({
                   {`  ${volumes.length} ${volumes.length === 1 ? "mount" : "mounts"}`}
                 </span>
               </Line>
-              {/* The row above fills a hundred-column terminal with its fixed
-                  columns, so the counters got none and were cut away whole.
-                  They are the reading behind the row's colour and the only
-                  copy of it, so they wrap on a line of their own, once per
-                  device, where a narrow terminal can still show them. */}
-              <Line
-                flexShrink={0}
-                wrapMode="word"
-                paddingLeft={2}
-                fg={worst === "danger" ? ui.danger : undefined}
-                attributes={worst === "danger" ? ui.none : ui.dim}
-              >
-                {safe(errorText(first))}
-              </Line>
+              {integrityRow(state, first)}
               {volumes.map(volumeRow)}
             </box>
           );

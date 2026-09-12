@@ -1,0 +1,1 @@
+- Storage says whether a filesystem's data is damaged, names the damaged files with a delete command per block address, and says when the disk was last checked. An unchecked one never reads healthy.

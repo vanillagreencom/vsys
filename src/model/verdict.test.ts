@@ -253,6 +253,7 @@ test("the cause order table is the ladder's own tie order", () => {
   expect(ladder.map((cause) => cause.id)).toEqual([
     "unconfined",
     "read-only",
+    "damaged-files",
     "device-errors",
     "disk",
     "desktop-swap",
@@ -262,6 +263,7 @@ test("the cause order table is the ladder's own tie order", () => {
     "system-memory",
     "system-cpu",
     "memory-high",
+    "unchecked",
     "scratch",
   ]);
   // A cause that names a lane names it in text, its process id included.

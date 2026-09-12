@@ -13,7 +13,7 @@ export interface SettingInfo {
   label: string;
   help: string;
   /** The unit a stored number is written in, so its value can carry it. */
-  unit?: "bytes" | "ms" | "seconds" | "hours" | "percent";
+  unit?: "bytes" | "ms" | "seconds" | "hours" | "days" | "percent";
 }
 export const settingInfo: Record<string, SettingInfo> = {
   refreshMs: {
@@ -174,6 +174,19 @@ export const settingInfo: Record<string, SettingInfo> = {
     label: "Drive reports",
     help: "The directory a privileged timer leaves smartctl reports in.",
   },
+  errorMemoryPath: {
+    label: "Error memory",
+    help: "Where the time of each filesystem's last new error is kept, so it outlives the history window and a restart.",
+  },
+  scrubMaxAgeDays: {
+    label: "Check age limit",
+    help: "A filesystem checked longer ago than this stops reading as healthy.",
+    unit: "days",
+  },
+  buildOutputGlobs: {
+    label: "Build output paths",
+    help: "Damaged files matching these are named as safe to delete and rebuild.",
+  },
   columns: {
     label: "Table columns",
     help: "The columns of the Agents table, in display order.",
@@ -217,6 +230,7 @@ export const settingGroups: [string, string[]][] = [
       "swapFloor",
       "freeFloor",
       "scratchQuota",
+      "scrubMaxAgeDays",
     ],
   ],
   [
@@ -256,6 +270,8 @@ export const settingGroups: [string, string[]][] = [
       "btrfsMounts",
       "scrubDir",
       "smartDir",
+      "errorMemoryPath",
+      "buildOutputGlobs",
       "scratchDirs",
       "scratchRefreshMs",
     ],
@@ -415,6 +431,8 @@ export function settingDisplay(key: string, value: unknown, c: Config): string {
         return `${value}s`;
       case "hours":
         return `${value}h`;
+      case "days":
+        return `${value}d`;
       case "percent":
         return `${value}%`;
     }

@@ -107,6 +107,12 @@ export interface Config {
   btrfsMounts: string[];
   scrubDir: string;
   smartDir: string;
+  /** Where the last corruption growth per filesystem is remembered. */
+  errorMemoryPath: string;
+  /** A filesystem unchecked for longer than this stops reading as healthy. */
+  scrubMaxAgeDays: number;
+  /** Paths matching these are build output a reader can delete and rebuild. */
+  buildOutputGlobs: string[];
   columns: string[];
   sort: string;
   descending: boolean;
@@ -191,6 +197,14 @@ export function defaults(): Config {
     btrfsMounts: [],
     scrubDir: "/run/btrfs-scrub",
     smartDir: "/run/smartctl",
+    errorMemoryPath: join(
+      homedir(),
+      ".local/state/vsys/filesystem-errors.json",
+    ),
+    // A weekly timer that misses one run is eight days late on the day after
+    // the run it missed, so eight days is where a weekly schedule trips.
+    scrubMaxAgeDays: 8,
+    buildOutputGlobs: ["**/target/**", "**/node_modules/**", "**/.cache/**"],
     columns: [...columns],
     sort: "cpu",
     descending: true,
@@ -274,6 +288,7 @@ export function validate(value: unknown): Config {
     "pressureHoldSeconds",
     "scratchQuota",
     "scratchRefreshMs",
+    "scrubMaxAgeDays",
   ] as const) {
     if (!Number.isFinite(c[key]) || c[key] < 0)
       throw new Error(`${key} must be finite and nonnegative`);
@@ -307,8 +322,12 @@ export function validate(value: unknown): Config {
     "sysBlockRoot",
     "scrubDir",
     "smartDir",
+    "errorMemoryPath",
   ] as const)
     if (!isAbsolute(c[key])) throw new Error(`${key} must be absolute`);
+  // Zero days would call every filesystem stale the moment its scrub ends.
+  if (c.scrubMaxAgeDays <= 0)
+    throw new Error("Scrub age limit must be greater than zero days");
   if (
     c.scratchDirs.some((p) => !isAbsolute(p)) ||
     c.btrfsMounts.some((p) => !isAbsolute(p))

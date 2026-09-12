@@ -1,5 +1,6 @@
 import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
+import { damageCounts, integrities } from "./integrity";
 import { inSlice, lanePressure } from "./lanes";
 import { laneText, unitLabel } from "./naming";
 import type { Group, Lane, Snapshot, Volume } from "./types";
@@ -9,6 +10,7 @@ export type Level = "ok" | "warn" | "danger";
 export type CauseId =
   | "unconfined"
   | "read-only"
+  | "damaged-files"
   | "device-errors"
   | "disk"
   | "desktop-swap"
@@ -19,6 +21,7 @@ export type CauseId =
   | "system-cpu"
   | "memory-high"
   | "scrub"
+  | "unchecked"
   | "scratch";
 /**
  * The order that breaks a tie between two causes of one severity, worst first.
@@ -29,17 +32,19 @@ export type CauseId =
 export const causeOrder: Record<CauseId, number> = {
   unconfined: 0,
   "read-only": 1,
-  "device-errors": 2,
-  disk: 3,
-  "desktop-swap": 4,
-  "free-space": 5,
-  "memory-cap": 6,
-  stalls: 7,
-  "system-memory": 8,
-  "system-cpu": 9,
-  "memory-high": 10,
-  scrub: 11,
-  scratch: 12,
+  "damaged-files": 2,
+  "device-errors": 3,
+  disk: 4,
+  "desktop-swap": 5,
+  "free-space": 6,
+  "memory-cap": 7,
+  stalls: 8,
+  "system-memory": 9,
+  "system-cpu": 10,
+  "memory-high": 11,
+  scrub: 12,
+  unchecked: 13,
+  scratch: 14,
 };
 export function causeRank(id: CauseId): number {
   return causeOrder[id];
@@ -226,6 +231,27 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       paths: readOnly.map((v) => v.mount),
       consumer: readOnly[0].mount,
     });
+  // One reading per filesystem, shared by the damage card, the unchecked card
+  // and Storage, so the three never disagree about one filesystem's state.
+  const filesystems = integrities(s, c);
+  const damaged = filesystems.filter((item) => item.state === "damaged");
+  if (damaged.length) {
+    const counts = damaged.map(damageCounts);
+    add("damaged-files", "danger", {
+      paths: damaged.map((item) => item.mounts[0] ?? item.device),
+      // The card opens the filesystem's integrity row, which is not one of
+      // the mounts it names: the damage belongs to the filesystem.
+      at: { kind: "path", path: damaged[0].id },
+      consumer: damaged[0].mounts[0] ?? damaged[0].device,
+      values: {
+        filesystems: damaged.length,
+        files: counts.reduce((sum, n) => sum + n.files, 0),
+        build: counts.reduce((sum, n) => sum + n.build, 0),
+        other: counts.reduce((sum, n) => sum + n.other, 0),
+        blocks: damaged[0].blocks,
+      },
+    });
+  }
   const failing = s.storage.volumes.filter((v) =>
     Object.values(v.delta).some((n) => n > 0),
   );
@@ -318,11 +344,36 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       consumer: near[0].name,
       verdictWorthy: false,
     });
-  const scrubs = s.storage.scrubs.filter((scrub) => scrub.problem);
+  // A report the damage card already speaks for is not a second card: it names
+  // the filesystem and the files, where this one can only name a file path.
+  const spoken = new Set(
+    damaged.flatMap((item) => (item.scrub ? [item.scrub.path] : [])),
+  );
+  const scrubs = s.storage.scrubs.filter(
+    (scrub) => scrub.problem && !spoken.has(scrub.path),
+  );
   if (scrubs.length)
     add("scrub", "danger", {
       paths: scrubs.map((scrub) => scrub.path),
       consumer: scrubs[0].path,
+    });
+  // A filesystem nothing has checked cannot report that it is undamaged, so
+  // silence about it is the reading this card refuses to give.
+  const unchecked = filesystems.filter(
+    (item) => item.state === "never-checked" || item.state === "stale",
+  );
+  if (unchecked.length)
+    add("unchecked", "warn", {
+      paths: unchecked.map((item) => item.mounts[0] ?? item.device),
+      at: { kind: "path", path: unchecked[0].id },
+      consumer: unchecked[0].mounts[0] ?? unchecked[0].device,
+      values: {
+        filesystems: unchecked.length,
+        never: unchecked.filter((item) => item.state === "never-checked")
+          .length,
+        oldest: Math.max(...unchecked.map((item) => item.checkAge ?? 0)),
+        limit: c.scrubMaxAgeDays,
+      },
     });
   const large = s.storage.scratch.filter(
     (scratch) => scratch.bytes !== null && scratch.bytes > c.scratchQuota,

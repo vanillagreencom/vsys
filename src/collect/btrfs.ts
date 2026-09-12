@@ -1,10 +1,12 @@
-import { readdir, realpath, statfs } from "node:fs/promises";
+import { readdir, realpath, stat, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { Storage, Volume } from "../model/types";
+import type { Scrub, Storage, Volume } from "../model/types";
 import { collectDevices } from "./devices";
+import { ErrorMemory } from "./errors";
 import { pairs, type Reader } from "./io";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
+import { parseScrub } from "./scrub";
 import type { CollectionConfig } from "./settings";
 
 /** Either a mount restriction or a superblock restriction makes a mount read-only. */
@@ -29,6 +31,14 @@ export function scrubProblem(raw: string): boolean {
   const count = raw.match(/Error summary:\s*(\d+)/i);
   if (count) return Number(count[1]) > 0;
   if (/Error summary:\s+no errors found/i.test(raw)) return false;
+  // The counted-error lines under the summary, which carry the reading when
+  // the summary itself names error kinds rather than a total.
+  const corrected = raw.match(/^\s*Corrected:\s+(\d+)/im);
+  const uncorrectable = raw.match(/^\s*Uncorrectable:\s+(\d+)/im);
+  if (corrected || uncorrectable)
+    return (
+      Number(corrected?.[1] ?? 0) > 0 || Number(uncorrectable?.[1] ?? 0) > 0
+    );
   const stats = [
     ...raw.matchAll(
       /(?:read|csum|verify|super|malloc|uncorrectable|corrected)_errors[=:]\s*(\d+)/g,
@@ -38,13 +48,68 @@ export function scrubProblem(raw: string): boolean {
   throw new Error("Unrecognized scrub result");
 }
 
+/**
+ * The paths of a damaged address that are still on disk. A path vsys cannot
+ * stat is kept: an unreadable directory is not proof the file is gone, and
+ * dropping it would tell the reader to delete less than the address holds.
+ */
+async function present(paths: string[]): Promise<string[]> {
+  const kept = await Promise.all(
+    paths.map(async (path) => {
+      try {
+        await stat(path);
+        return path;
+      } catch (e) {
+        return (e as NodeJS.ErrnoException).code === "ENOENT" ? null : path;
+      }
+    }),
+  );
+  return kept.filter((path): path is string => path !== null);
+}
+/**
+ * The corruption counter for a whole filesystem: the sum over its devices,
+ * which is what a reader means by "this filesystem found damage". Null while
+ * any device failed to report, because a missing counter is not a zero.
+ */
+export function corruptionTotal(
+  errors: Record<string, number>,
+  available: boolean,
+): number | null {
+  if (!available) return null;
+  const raised = Object.entries(errors).filter(([kind]) =>
+    kind.endsWith("/corruption_errs"),
+  );
+  return raised.length
+    ? raised.reduce((sum, [, value]) => sum + value, 0)
+    : null;
+}
+
 /** Counter baselines belong to a filesystem/device, not a mount alias. */
 export class StorageCollector {
   private initial = new Map<string, number>();
   private last = new Map<string, number>();
   private scratch = new ScratchCollector();
+  private memory: ErrorMemory | null = null;
+  private memoryPath = "";
   close(): void {
     this.scratch.close();
+  }
+  /**
+   * The remembered growth times, reloaded when the configured path changes. A
+   * file that cannot be read leaves the memory empty rather than stopping
+   * collection: an unknown last-error time is still better than a wrong one.
+   */
+  private errorMemory(r: Reader, path: string): ErrorMemory {
+    if (!this.memory || this.memoryPath !== path) {
+      this.memory = new ErrorMemory(path);
+      this.memoryPath = path;
+      try {
+        this.memory.load();
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") r.error(path, e);
+      }
+    }
+    return this.memory;
   }
   async collect(
     r: Reader,
@@ -62,6 +127,11 @@ export class StorageCollector {
       scrubs: [],
     };
     const devices = new Map<string, string>();
+    const memory = this.errorMemory(r, c.errorMemoryPath);
+    const growth = new Map<
+      string,
+      { at: number | null; size: number | null }
+    >();
     const counters = new Map<
       string,
       {
@@ -133,6 +203,20 @@ export class StorageCollector {
         }
       }
       counters.set(fsid, values);
+      // The counter a reader asks about is the filesystem's, so growth is
+      // remembered per filesystem rather than per device: a second member
+      // device reporting the same damage is one event, not two.
+      const corruption = corruptionTotal(
+        values.errors,
+        values.countersAvailable,
+      );
+      if (corruption !== null)
+        growth.set(fsid, memory.observe(fsid, corruption, time));
+    }
+    try {
+      memory.save();
+    } catch (e) {
+      r.error(c.errorMemoryPath, e);
     }
     for (const mount of btrfsMounts(mountInfo ?? []).filter(
       (m) => !c.btrfsMounts.length || c.btrfsMounts.includes(m.mount),
@@ -166,11 +250,14 @@ export class StorageCollector {
       } catch (e) {
         r.error(mount.mount, e);
       }
+      const seen = fsid ? growth.get(fsid) : undefined;
       storage.volumes.push({
         ...mount,
         fsid,
         free,
         total,
+        lastErrorAt: seen?.at ?? null,
+        lastErrorSize: seen?.size ?? null,
         ...((fsid ? counters.get(fsid) : undefined) ?? {
           errors: {},
           delta: {},
@@ -185,11 +272,37 @@ export class StorageCollector {
         const path = join(c.scrubDir, entry.name);
         const text = r.text(path);
         if (text === null) continue;
+        const report = parseScrub(text);
+        // A path the report named can be gone: the reader deleted the file
+        // this screen told them to delete. Only what is still on disk is
+        // listed, so the list empties as the work is done.
+        const addresses =
+          report.addresses === null
+            ? null
+            : await Promise.all(
+                report.addresses.map(async (address) => ({
+                  logical: address.logical,
+                  paths: await present(address.paths),
+                })),
+              );
+        const found: Omit<Scrub, "problem" | "readable"> = {
+          path,
+          text,
+          fsid: report.uuid,
+          startedAt: report.startedAt,
+          status: report.status,
+          uncorrectable: report.uncorrectable,
+          addresses,
+        };
         try {
-          storage.scrubs.push({ path, text, problem: scrubProblem(text) });
+          storage.scrubs.push({
+            ...found,
+            readable: true,
+            problem: scrubProblem(text),
+          });
         } catch (e) {
           r.error(path, e);
-          storage.scrubs.push({ path, text, problem: true });
+          storage.scrubs.push({ ...found, readable: false, problem: true });
         }
       }
     } catch (e) {

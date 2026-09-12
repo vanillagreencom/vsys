@@ -30,6 +30,7 @@ export function fixture() {
   config.sysBlockRoot = join(root, "block");
   config.scrubDir = join(root, "scrub");
   config.smartDir = join(root, "smart");
+  config.errorMemoryPath = join(root, "state/filesystem-errors.json");
   config.scratchDirs = [];
   config.sqlitePath = join(root, "history.db");
   const write = (path: string, text: string) => {
@@ -320,8 +321,33 @@ export function everyCauseSnapshot(c: Config): Snapshot {
     volumeSnapshot("/bad", { delta: { "x/corruption_errs": 1 } }),
     volumeSnapshot("/full", { free: 5, total: 100 }),
   ];
+  // A filesystem whose last check found damage, and one nothing has checked:
+  // the mounts above carry no report, so they raise the unchecked cause.
+  s.storage.volumes.push(volumeSnapshot("/damaged", { fsid: "damaged-fs" }));
   const bytes = c.scratchQuota + 1;
-  s.storage.scrubs = [{ path: "/scrub", text: "errors", problem: true }];
+  s.storage.scrubs = [
+    { path: "/scrub", text: "errors", problem: true },
+    {
+      path: "/scrub-damaged",
+      text: "Error summary: csum=26",
+      problem: true,
+      readable: true,
+      fsid: "damaged-fs",
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 26,
+      addresses: [
+        {
+          logical: 953118621696,
+          paths: [
+            "/repo/target/debug/build/glib-sys/build-script-build",
+            "/repo/target/debug/build/glib-sys/build_script_build-c664",
+          ],
+        },
+        { logical: 1597612883968, paths: ["/home/reader/letter.txt"] },
+      ],
+    },
+  ];
   s.storage.scratch = [{ path: "/scratch", bytes, age: 0, error: null }];
   return s;
 }

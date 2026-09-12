@@ -1,17 +1,13 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { defaults } from "../config/config";
+import { volumesByDevice } from "../model/integrity";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
+import { osc52 } from "./clipboard";
 import { type KeyHandler, KeyProvider } from "./keys";
-import {
-  itemPath,
-  Storage,
-  storageItems,
-  volumeLevel,
-  volumesByDevice,
-} from "./storage-screen";
+import { itemPath, Storage, storageItems, volumeLevel } from "./storage-screen";
 import { ui } from "./theme";
 
 test("Storage lists filesystems, then scrubs, then scratch directories, then sessions", () => {
@@ -21,6 +17,7 @@ test("Storage lists filesystems, then scrubs, then scratch directories, then ses
   s.storage.scratch = [{ path: "/tmp/x", bytes: 1, age: 0, error: null }];
   s.storage.sessions = [{ path: "/tmp/s", bytes: 1, age: 0, error: null }];
   expect(storageItems(s).map((item) => item.kind)).toEqual([
+    "filesystem",
     "volume",
     "scrub",
     "scratch",
@@ -174,6 +171,9 @@ test("a filesystem's detail is drawn as a child of its row", async () => {
   const t = await mount(s, c, { width: 160, height: 40 });
   try {
     await t.press("5");
+    // The filesystem's integrity row is the first of the region; its mount
+    // sits under it.
+    await t.press("down");
     const lines = t.frame().split("\n");
     const row = lines.findIndex((line) => line.includes("▾ /data"));
     expect(row).toBeGreaterThan(-1);
@@ -197,15 +197,21 @@ test("a mount's detail does not repeat the device row's error counters", async (
       options: ["rw", "subvol=@data"],
     }),
   ];
-  const t = await mount(s, c, { width: 140, height: 30 });
+  const t = await mount(s, c, { width: 140, height: 40 });
   try {
     await t.press("5");
-    const frame = t.frame();
-    // The device row states the counters once for every mount grouped under
-    // it. The mount below it carries only what differs between mounts.
-    expect(frame.split("corruption 3").length - 1).toBe(1);
-    expect(frame).toContain("subvol=@data");
-    expect(frame).not.toContain("Errors");
+    // The filesystem's integrity row opens first. The lifetime counter is one
+    // level under it, stated once for every mount grouped under it.
+    const opened = t.frame();
+    expect(opened.split("corruption 3").length - 1).toBe(1);
+    expect(opened).toContain("counts reads that failed their checksum");
+    // The mount below carries only what differs between mounts, and no copy
+    // of the counter the filesystem above already stated.
+    await t.press("down");
+    const mounted = t.frame();
+    expect(mounted).toContain("subvol=@data");
+    expect(mounted).not.toContain("corruption 3");
+    expect(mounted).not.toContain("Errors");
   } finally {
     await t.close();
   }
@@ -245,17 +251,19 @@ test("Storage moves between its three lists with the region key and with left an
       // filesystems rather than walking into the reports; forward lands on
       // the next list's first row, and at either end the reader stays on the
       // row they are on.
+      // The filesystems region holds each filesystem's integrity row and the
+      // mounts under it, so its first row is an integrity line.
       const steps: [string[], string][] = [
-        [[], "/data"],
-        [["down"], "/home"],
-        [[back], "/home"],
+        [[], "Never checked"],
+        [["down"], "/data"],
+        [[back], "/data"],
         [Array(10).fill("down"), "/home"],
         [[forward], "/run/btrfs-scrub/one"],
         [[forward], "/scratch/a"],
         [[forward], "/scratch/a"],
         [["down", forward], "/scratch/b"],
         [[back], "/run/btrfs-scrub/one"],
-        [[back], "/data"],
+        [[back], "Never checked"],
       ];
       for (const [keys, row] of steps) {
         for (const key of keys) await t.press(key);
@@ -272,7 +280,7 @@ test("Storage moves between its three lists with the region key and with left an
       await t.update({ ...s, storage: { ...s.storage, scratch: [] } });
       expect(selectedRow(t.frame())).toContain("/run/btrfs-scrub/one");
       await t.press(back);
-      expect(selectedRow(t.frame())).toContain("/data");
+      expect(selectedRow(t.frame())).toContain("Never checked");
     } finally {
       await t.close();
     }
@@ -291,9 +299,9 @@ test("a Storage list's own key lands on its first row", async () => {
       [["down"], "/scratch/b"],
       [[c.keys.scratch], "/scratch/a"],
       [[c.keys.scrub], "/run/btrfs-scrub/one"],
-      [[c.keys.filesystems], "/data"],
-      [["down"], "/home"],
-      [[c.keys.filesystems], "/data"],
+      [[c.keys.filesystems], "Never checked"],
+      [["down"], "/data"],
+      [[c.keys.filesystems], "Never checked"],
     ];
     for (const [keys, row] of steps) {
       for (const key of keys) await t.press(key);
@@ -316,7 +324,7 @@ test("a key for a Storage list with no rows changes nothing", async () => {
     await t.press("5");
     // Off the first row, so a key that moved the selection would show.
     await t.press("down");
-    expect(selectedRow(t.frame())).toContain("/home");
+    expect(selectedRow(t.frame())).toContain("/data");
     const before = t.frame();
     await t.press(c.keys.scrub);
     expect(t.frame()).toBe(before);
@@ -390,7 +398,14 @@ test("a device's mounts are listed together even when they arrive interleaved", 
     volumeSnapshot("/b", { device: "/dev/two", fsid: "two" }),
     volumeSnapshot("/c", { device: "/dev/one", fsid: "one" }),
   ];
-  expect(storageItems(s).map(itemPath)).toEqual(["/a", "/c", "/b"]);
+  // Each filesystem states its identity once, above the mounts under it.
+  expect(storageItems(s).map(itemPath)).toEqual([
+    "one",
+    "/a",
+    "/c",
+    "two",
+    "/b",
+  ]);
   // And the rows are drawn in that same order, which is what makes the two
   // agree rather than agreeing by coincidence.
   expect(
@@ -461,6 +476,7 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
         used += 1;
       },
       onNotice: (text: string, level: string) => notices.push([text, level]),
+      onCopy: () => {},
     };
     const ui = await testRender(
       <KeyProvider handlers={handlers}>
@@ -487,4 +503,120 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
   expect(found.used).toBe(1);
   expect(found.notices).toEqual([]);
   expect(found.frame).toContain("/data");
+});
+
+/** A filesystem whose last check found damage under two names and one letter. */
+function damagedSnapshot(time: number) {
+  const s = emptySnapshot(time);
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      device: "/dev/nvme0n1p2",
+      fsid: "fs",
+      errors: { "1/corruption_errs": 1390 },
+      countersAvailable: true,
+      lastErrorAt: time - 31 * 3600000,
+      lastErrorSize: 26,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/root.result",
+      text: "Error summary:    csum=26",
+      problem: true,
+      readable: true,
+      fsid: "fs",
+      startedAt: time - 3600000,
+      status: "finished",
+      uncorrectable: 26,
+      addresses: [
+        {
+          logical: 953118621696,
+          paths: [
+            "/r/target/debug/build-script-build",
+            "/r/target/debug/bsb-c664",
+          ],
+        },
+        { logical: 1597612883968, paths: ["/home/reader/letter.txt"] },
+        { logical: 1597612883969, paths: [] },
+      ],
+    },
+  ];
+  return s;
+}
+
+test("a damaged filesystem names its files, grouped by address, with what to do", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const s = damagedSnapshot(time);
+  const t = await mount(s, c, { width: 160, height: 60 });
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    // The line itself, before anything is opened.
+    expect(frame).toContain("Damaged files found: 3 files");
+    expect(frame).toContain("last full check 1.0h ago");
+    expect(frame).toContain("last new error 31.0h ago");
+    // Both names of the first address, and one command that removes both.
+    expect(frame).toContain("/r/target/debug/build-script-build");
+    expect(frame).toContain("/r/target/debug/bsb-c664");
+    expect(frame).toContain(
+      "rm -f /r/target/debug/build-script-build /r/target/debug/bsb-c664",
+    );
+    expect(frame).toContain("safe to delete and rebuild");
+    // The letter is not build output, so it is never offered as a rebuild.
+    expect(frame).toContain("restore from a backup or a snapshot");
+    expect(frame).toContain("free space or already deleted");
+    // The counter is explained where it is shown, one level under the line.
+    expect(frame).toContain("counts reads that failed their checksum");
+    expect(frame).toContain("corruption 1390");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a deleted file leaves the list and the filesystem stops reading damaged", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const s = damagedSnapshot(time);
+  const t = await mount(s, c, { width: 160, height: 60 });
+  try {
+    await t.press("5");
+    expect(t.frame()).toContain("/home/reader/letter.txt");
+    // The next sample carries the report with nothing left on disk under it,
+    // which is what the collector produces once the reader deletes the files.
+    const cleared = damagedSnapshot(time + 1000);
+    cleared.storage.scrubs[0].addresses = [];
+    cleared.storage.scrubs[0].uncorrectable = 0;
+    cleared.storage.scrubs[0].problem = false;
+    await t.update(cleared);
+    const frame = t.frame();
+    expect(frame).not.toContain("/home/reader/letter.txt");
+    // The check that found nothing ran after the counter last grew, so the
+    // filesystem has been read end to end since the last error.
+    expect(frame).toContain("Healthy");
+    expect(frame).toContain("No damaged address is left on this filesystem.");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the copy key on a filesystem copies one line that removes its build output", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const t = await mount(damagedSnapshot(time), c, { width: 160, height: 60 });
+  try {
+    await t.press("5");
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([
+      osc52(
+        "rm -f /r/target/debug/build-script-build /r/target/debug/bsb-c664",
+      ),
+    ]);
+    // A mount row carries no command of its own, so nothing more is copied.
+    await t.press("down");
+    await t.press(c.keys.copy);
+    expect(t.written.length).toBe(1);
+  } finally {
+    await t.close();
+  }
 });

@@ -37,6 +37,7 @@ export const collectionKeys = [
   "btrfsMounts",
   "scrubDir",
   "smartDir",
+  "errorMemoryPath",
 ] as const;
 /**
  * The settings a collection function may read. Every entry point collection

@@ -245,7 +245,13 @@ test("read-only mounts and device errors are one card each, not one per mount", 
   const bad = { readOnly: true, delta: { "x/corruption_errs": 1 } };
   s.storage.volumes = [volumeSnapshot("/a", bad), volumeSnapshot("/b", bad)];
   const items = attention(s, defaults(), { basePath: base });
-  expect(items.map((item) => item.id)).toEqual(["read-only", "device-errors"]);
+  // Nothing has checked either mount for damage, so the unchecked card is
+  // there too; the point here is that neither cause draws one card per mount.
+  expect(items.map((item) => item.id)).toEqual([
+    "read-only",
+    "device-errors",
+    "unchecked",
+  ]);
   expect(items[0].title).toBe("2 mounts are read-only: /a, /b");
 });
 

@@ -159,6 +159,7 @@ export const hints: Record<
     ["↑↓←→", "select"],
     [c.keys.next, "region"],
     [jumpKeys(storageRegions, c.keys), "jump"],
+    [c.keys.copy, "copy"],
   ],
   Timeline: (c) => [
     ["←→", "time"],
@@ -473,6 +474,7 @@ export function App({
         target={target?.kind === "path" ? target.path : null}
         onTargetUsed={clearTarget}
         onNotice={notice}
+        onCopy={copy}
       />
     );
   else if (view === "Timeline")

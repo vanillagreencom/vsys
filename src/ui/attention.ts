@@ -6,6 +6,7 @@ import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
 import { capLines, fit, wrapLines } from "./columns";
 import {
+  age,
   amount,
   bytes,
   count,
@@ -217,6 +218,43 @@ function copy(
         view: "Storage",
         target: first,
       };
+    case "damaged-files": {
+      const files = v.files ?? 0;
+      const other = v.other ?? 0;
+      const build = v.build ?? 0;
+      // A block count vsys did not read is left out rather than shown as zero.
+      const repaired =
+        v.blocks === null || v.blocks === undefined
+          ? ""
+          : `The last check could not repair ${count(v.blocks, "block")}. `;
+      return {
+        word: "Danger",
+        title: files
+          ? `Damaged files on ${mounts}: ${count(files, "file")}${other ? "" : ", all build output"}`
+          : `Damaged data on ${mounts}`,
+        detail: files
+          ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.`
+          : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+        next: files
+          ? "Open Storage, open the filesystem, and delete every path listed under each damaged address before rebuilding."
+          : "Open Storage and check the filesystem again; an address with no file clears on the next check.",
+        view: "Storage",
+        target: cause.at ?? first,
+      };
+    }
+    case "unchecked": {
+      const never = v.never ?? 0;
+      return {
+        word: "Unknown",
+        title: never
+          ? `${count(never, "filesystem")} never checked for damage: ${mounts}`
+          : `${paths} ${p(paths, "filesystem has", "filesystems have")} not been checked in ${age(v.oldest ?? 0)}: ${mounts}`,
+        detail: `The error counter counts failed reads, not damaged files, so it stays flat while nothing reads the damage. Only a full check reads every block. The limit is ${count(v.limit, "day")}.`,
+        next: "Run a check on each filesystem, or install the timer that writes a report into the report directory.",
+        view: "Storage",
+        target: cause.at ?? first,
+      };
+    }
     case "device-errors":
       return {
         word: "Danger",
