@@ -31,6 +31,7 @@ import {
   Header,
   Help,
   keyLabel,
+  screenWidth,
   tabsFitOneRow,
   type View,
   viewKey,
@@ -407,7 +408,7 @@ export function App({
         points={points}
         windowMs={windows[windowIndex]}
         selection={homeSelection}
-        width={width - 4}
+        width={screenWidth(width)}
         height={contentHeight}
         onSelect={setHomeSelection}
         onCopy={copy}
@@ -460,7 +461,7 @@ export function App({
         snapshot={shown}
         config={c}
         height={contentHeight}
-        width={width - 4}
+        width={screenWidth(width)}
       />
     );
   else if (view === "Storage")
@@ -468,7 +469,7 @@ export function App({
       <Storage
         snapshot={shown}
         config={c}
-        width={width - 4}
+        width={screenWidth(width)}
         target={target?.kind === "path" ? target.path : null}
         onTargetUsed={clearTarget}
         onNotice={notice}
@@ -496,7 +497,7 @@ export function App({
       <Settings
         snapshot={snapshot}
         config={c}
-        width={width - 4}
+        width={screenWidth(width)}
         onSave={onSave}
         onNotice={notice}
       />

@@ -116,48 +116,68 @@ export const columnsWidth = (columns: Column[]): number =>
   columns.reduce((total, column) => total + column.width, 0) +
   columnGap.length * Math.max(0, columns.length - 1);
 /**
- * The rows `text` draws into at `width`, wrapped between words the way the
- * renderer wraps it. A word wider than the column is broken, because a column
- * that cannot hold it has nowhere else to put it.
+ * One row of wrapped text and the offset in the whole it ends at, so a caller
+ * cutting the text cuts the text rather than rebuilding it from rows: a word
+ * too wide for the column is broken across rows, and rejoining those rows
+ * with a blank puts a blank inside a word that never held one.
  */
-export function wrapLines(text: string, width: number): string[] {
-  if (width <= 0) return text === "" ? [] : [text];
-  const rows: string[] = [];
-  let row = "";
-  for (const word of text.split(" ").filter((part) => part !== "")) {
-    const next = row === "" ? word : `${row} ${word}`;
-    if ([...next].length <= width) {
-      row = next;
+function wrapRows(
+  text: string,
+  width: number,
+): { text: string; end: number }[] {
+  if (width < 1)
+    throw new Error(`Cannot wrap text into ${width} columns: needs at least 1`);
+  const points = [...text];
+  const rows: { text: string; end: number }[] = [];
+  const row = (from: number, to: number) => {
+    rows.push({ text: points.slice(from, to).join(""), end: to });
+  };
+  let at = 0;
+  while (at < points.length) {
+    while (points[at] === " ") at++;
+    if (at >= points.length) break;
+    const edge = at + width;
+    if (edge >= points.length) {
+      row(at, points.length);
+      break;
+    }
+    if (points[edge] === " ") {
+      row(at, edge);
+      at = edge;
       continue;
     }
-    if (row !== "") rows.push(row);
-    row = word;
-    while ([...row].length > width) {
-      rows.push([...row].slice(0, width).join(""));
-      row = [...row].slice(width).join("");
+    let space = edge;
+    while (space > at && points[space - 1] !== " ") space--;
+    // A word wider than the column has nowhere to break, so it is broken at
+    // the column: the row before it would otherwise be empty.
+    if (space > at) {
+      row(at, space - 1);
+      at = space;
+    } else {
+      row(at, edge);
+      at = edge;
     }
   }
-  if (row !== "") rows.push(row);
   return rows;
 }
+/** The rows `text` draws into at `width`, wrapped the way the renderer wraps it. */
+export const wrapLines = (text: string, width: number): string[] =>
+  wrapRows(text, width).map((r) => r.text);
 /**
  * `text` cut to the rows it is allowed at `width`, ending in the mark. The
  * cut is marked for the same reason a cut cell is: text that stops without
  * one reads as text that ended.
  */
 export function capLines(text: string, width: number, lines: number): string {
-  if (lines < 1 || width <= 0) return "";
-  const rows = wrapLines(text, width);
+  if (lines < 1)
+    throw new Error(`Cannot cut text to ${lines} rows: needs at least 1`);
+  const rows = wrapRows(text, width);
   if (rows.length <= lines) return text;
-  const kept = rows.slice(0, lines);
-  const last = [...kept[lines - 1]];
-  kept[lines - 1] = `${(
-    last.length > width - 1
-      ? last
-          .slice(0, width - 1)
-          .join("")
-          .trimEnd()
-      : last.join("")
-  ).replace(/[,.]$/, "")}${ellipsis}`;
-  return kept.join(" ");
+  const last = rows[lines - 1];
+  const tail = [...last.text];
+  while (tail.length && /[\s,.]/.test(tail[tail.length - 1])) tail.pop();
+  // The mark draws a column of its own, so the row gives one up to carry it.
+  while (tail.length + 1 > width) tail.pop();
+  const head = [...text].slice(0, last.end - [...last.text].length).join("");
+  return `${head}${tail.join("")}${ellipsis}`;
 }

@@ -54,9 +54,14 @@ export interface Attention {
 type Copy = Omit<Attention, "id" | "danger" | "headline" | "verdictWorthy"> & {
   word: string;
   headline?: string;
+  /**
+   * The end of the detail the budget may not cut: the lane list a cut title
+   * needs under it. Absent on a card whose detail names no lane.
+   */
+  keep?: string;
 };
 /** The names a title lists before it stops counting and says how many remain. */
-export const listLimit = 4;
+const listLimit = 4;
 const list = (names: string[], limit = listLimit): string =>
   names.length > limit
     ? `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`
@@ -67,43 +72,52 @@ const list = (names: string[], limit = listLimit): string =>
  * and a detail that grows with the number of affected lanes or processes
  * pushes both off a terminal of ordinary height.
  */
-export const detailLines = 6;
+const detailLines = 6;
 /** The rows of that budget the list of affected lanes may take. */
-export const laneLines = 2;
+const laneLines = 2;
 /** The width card copy is measured at when the caller is not a screen. */
 const defaultDetailWidth = 80;
+/** The sentences of a detail, joined in the order they are written. */
+const join = (parts: string[]): string =>
+  parts.filter((part) => part !== "").join(" ");
 /**
- * A detail built from a lead that grows with the machine and a tail that must
- * survive it. The lead is cut until the two together hold the budget, so the
- * lane names a cut title lost are still under it however many processes or
- * sentences the lead found.
+ * The detail a card draws: the first of the ways it offers of writing itself
+ * that holds the budget, else the last one with its lead cut. A caller lists
+ * its candidates best first, so the order a card gives ground in is written
+ * where a reader of the copy can see it. The cut never falls in `keep`, the
+ * lane names the cut title above the card lost.
  */
-function detailText(lead: string, tail: string, width: number): string {
-  const room = detailLines - wrapLines(tail, width).length;
-  for (let budget = room; budget >= 1; budget--) {
-    const text = `${capLines(lead, width, budget)} ${tail}`;
-    if (wrapLines(text, width).length <= detailLines) return text;
-  }
-  return tail;
+function fitDetail(candidates: string[], keep: string, width: number): string {
+  const rows = (text: string) => wrapLines(text, width).length;
+  const fits = candidates.find((text) => rows(text) <= detailLines);
+  if (fits) return fits;
+  const last = candidates[candidates.length - 1];
+  if (keep === "") return capLines(last, width, detailLines);
+  if (!last.endsWith(keep))
+    throw new Error("A card's protected sentence must end its detail");
+  const lead = last.slice(0, last.length - keep.length).trimEnd();
+  return join([
+    capLines(lead, width, Math.max(1, detailLines - rows(keep))),
+    keep,
+  ]);
 }
 /**
  * Every affected lane, for a detail that opens under a title a narrow row
- * cuts. It names at least as many lanes as the title's own list, so a cut row
- * never loses a name the detail drops as well.
+ * cuts. It names at least as many lanes as the title's own list, and writes
+ * the list whole rather than name fewer, so a cut row never loses a name the
+ * detail drops as well.
  */
 function laneSentence(names: string[], width: number): string {
   const head = `${p(names.length, "Lane", "Lanes")}: `;
   const whole = `${head}${names.join(", ")}.`;
   if (wrapLines(whole, width).length <= laneLines) return whole;
+  const floor = Math.min(names.length, listLimit);
   const shortened = (keep: number) =>
     `${head}${names.slice(0, keep).join(", ")} and ${names.length - keep} more.`;
-  let keep = names.length - 1;
-  while (
-    keep > listLimit &&
-    wrapLines(shortened(keep), width).length > laneLines
-  )
-    keep--;
-  return shortened(keep);
+  for (let keep = names.length - 1; keep >= floor; keep--)
+    if (wrapLines(shortened(keep), width).length <= laneLines)
+      return shortened(keep);
+  return names.length > floor ? shortened(floor) : whole;
 }
 
 /** Every word and every formatted number the Overview shows lives here. */
@@ -148,13 +162,29 @@ function copy(
         escaped.length > n
           ? `The title counts ${n} ${p(n, "lane", "lanes")}; these sentences count the ${escaped.length} processes in ${p(n, "it", "them")}.`
           : "";
-      const trails = groups.length
-        ? groups.join(" ")
-        : `${c.agentSlice} limits do not apply to these processes.`;
+      const said = groups.map((g) => g.conclusion);
+      // What a narrow panel gives up, in order: the ancestor chains, then the
+      // reconciliation, then a conclusion at a time from the last. The first
+      // conclusion and the lane list are what the card exists to say.
+      const ladder = [
+        join([...groups.map((g) => `${g.conclusion}${g.started}`), why, every]),
+        join([...said, why, every]),
+        join([...said, every]),
+        ...said
+          .slice(1)
+          .reverse()
+          .map((_, i) => join([...said.slice(0, said.length - 1 - i), every])),
+      ];
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane runs", "lanes run")} outside ${c.agentSlice}: ${names}`,
-        detail: detailText(trails, `${why} ${every}`.trim(), width),
+        detail: groups.length
+          ? fitDetail(ladder, every, width)
+          : join([
+              `${c.agentSlice} limits do not apply to these processes.`,
+              every,
+            ]),
+        keep: every,
         next: `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`,
         command: shellLine([
           "systemd-run",
@@ -240,11 +270,8 @@ function copy(
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane has", "lanes have")} a memory limit below ${b(v.floor)}: ${names}`,
-        detail: detailText(
-          "The limit can stop work before it finishes.",
-          every,
-          width,
-        ),
+        detail: join(["The limit can stop work before it finishes.", every]),
+        keep: every,
         next: "Open the lane and check its effective memory.max against the parent slices.",
         command: shellLine([
           "systemctl",
@@ -261,11 +288,11 @@ function copy(
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `${n} ${p(n, "lane is", "lanes are")} stalling on a resource: ${names}`,
-        detail: detailText(
+        detail: join([
           `Highest stall share ${percent(v.worst)} of the recent window.`,
           every,
-          width,
-        ),
+        ]),
+        keep: every,
         next: "Open Agents and compare the CPU, memory and I/O pressure columns to find which resource is short.",
         view: "Agents",
         target: lane,
@@ -330,14 +357,20 @@ export function attention(
   const basePath = o.basePath ?? (process.env.PATH ?? "").split(":");
   const width = o.width ?? defaultDetailWidth;
   return causes(s, c).map((cause) => {
-    const { word, headline, ...rest } = copy(cause, s, c, basePath, width);
+    const { word, headline, keep, ...rest } = copy(
+      cause,
+      s,
+      c,
+      basePath,
+      width,
+    );
     return {
       id: cause.id,
       danger: cause.level === "danger",
       verdictWorthy: cause.verdictWorthy,
       headline: headline ?? `${word}: ${rest.title}`,
       ...rest,
-      detail: capLines(rest.detail, width, detailLines),
+      detail: fitDetail([rest.detail], keep ?? "", width),
     };
   });
 }

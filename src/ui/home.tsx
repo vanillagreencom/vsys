@@ -13,7 +13,13 @@ import {
   verdictItem,
   verdictLine,
 } from "./attention";
-import { keyLabel, panelWidth, type View, wideWidth } from "./chrome";
+import {
+  keyLabel,
+  panelWidth,
+  screenPad,
+  type View,
+  wideWidth,
+} from "./chrome";
 import {
   type Column,
   cell,
@@ -465,7 +471,7 @@ export function Home({
       scrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
-      <box flexDirection="column" flexShrink={0} paddingX={2}>
+      <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
         <Line flexShrink={0} wrapMode="word">
           <span fg={levelColor(level)} attributes={ui.bold}>
             {safe(verdictLine(items, s))}

@@ -26,7 +26,7 @@ export type CauseId =
  * currently reporting reads the same table rather than a live position. The
  * record covers the union, so a new cause cannot be added without a rank.
  */
-const causeOrder: Record<CauseId, number> = {
+export const causeOrder: Record<CauseId, number> = {
   unconfined: 0,
   "read-only": 1,
   "device-errors": 2,

@@ -145,6 +145,8 @@ test("text wraps between words, and a word wider than the column is broken", () 
   expect(wrapLines("abcdefghij k", 4)).toEqual(["abcd", "efgh", "ij k"]);
   // Code points, not UTF-16 units: an emoji is one column here, never two.
   expect(wrapLines("😀😀😀 x", 3)).toEqual(["😀😀😀", "x"]);
+  // A column narrower than one character is a caller's mistake, not a wrap.
+  expect(() => wrapLines("x", 0)).toThrow("needs at least 1");
 });
 
 test("a capped text ends in the mark and fits the rows it was given", () => {
@@ -156,6 +158,20 @@ test("a capped text ends in the mark and fits the rows it was given", () => {
   // The mark replaces the punctuation that ended the kept text, so a cut
   // sentence never reads as one that stopped on its own.
   expect(capLines("alpha, beta, gamma", 7, 1)).toBe("alpha…");
-  expect(capLines(text, 0, 3)).toBe("");
-  expect(capLines(text, 9, 0)).toBe("");
+  // A last row filling its width gives a column up to the mark rather than
+  // spilling one row further than it was given.
+  const full = capLines("alpha beta gamma delta", 10, 1);
+  expect(full).toBe("alpha bet…");
+  expect(wrapLines(full, 10).length).toBe(1);
+  // A cut text is the text, cut: a unit name too wide for the column is not
+  // rebuilt with the blank its wrapped rows were divided by.
+  const unit = "app-org.gnome.Terminal-9f2c4a1b.service holds it";
+  expect(capLines(unit, 20, 2)).toBe(
+    "app-org.gnome.Terminal-9f2c4a1b.service…",
+  );
+  expect(capLines(`x ${unit}`, 20, 3)).toBe(
+    "x app-org.gnome.Terminal-9f2c4a1b.service…",
+  );
+  expect(wrapLines(capLines(`x ${unit}`, 20, 3), 20)).toHaveLength(3);
+  expect(() => capLines(text, 9, 0)).toThrow("needs at least 1");
 });

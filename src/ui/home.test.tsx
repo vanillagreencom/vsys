@@ -7,10 +7,10 @@ import type { TimelineEvent } from "../store/events";
 import { History } from "../store/history";
 import {
   emptySnapshot,
+  escapedSnapshot,
   everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
-  processSnapshot,
 } from "../test/fixture";
 import {
   cellStyle,
@@ -1462,29 +1462,10 @@ test("a sample leaves a Home reader where they scrolled to", async () => {
 
 test("an open card keeps its next step and its command on an ordinary screen", async () => {
   const c = defaults();
-  const s = emptySnapshot();
   // A machine whose agents were all started outside the agent slice: the card
   // has a sentence's worth of trail for each of two scopes and a lane list
   // that grows with every one of them.
-  s.lanes = Array.from({ length: 24 }, (_, i) =>
-    laneSnapshot({
-      id: `lane-${i}`,
-      name: `kendex agent-${i}`,
-      mainPid: 1000 + i * 3,
-      pids: [1000 + i * 3, 1001 + i * 3, 1002 + i * 3],
-      unconfined: true,
-    }),
-  );
-  s.procs = s.lanes.flatMap((lane, i) =>
-    lane.pids.map((pid) =>
-      processSnapshot({
-        pid,
-        ppid: 1,
-        group: `/user.slice/tmux-spawn-${i % 2}.scope`,
-        env: { PATH: "/usr/bin" },
-      }),
-    ),
-  );
+  const s = escapedSnapshot({ lanes: 5, perLane: 2 });
   for (const size of [
     { width: 80, height: 32 },
     { width: 160, height: 36 },
@@ -1492,16 +1473,27 @@ test("an open card keeps its next step and its command on an ordinary screen", a
     const t = await mount(s, c, size);
     try {
       await t.ui.renderOnce();
-      const frame = t.frame();
+      const rows = t.frame().split("\n");
+      const card = rows.findIndex((row) => row.includes("▾"));
+      const next = rows.findIndex((row) => row.includes("Next "));
+      const copied = rows.findIndex((row) =>
+        row.includes("systemd-run --user --slice=agents.slice"),
+      );
       // The two lines the reader acts on are the two a detail must not push
       // off the screen, however many processes escaped.
-      expect(frame).toContain("Next ");
-      expect(frame).toContain("Copy ");
-      expect(frame).toContain("systemd-run --user --slice=agents.slice");
-      // The detail says its piece once and stops, marked where it stopped.
-      expect(frame).toContain("Launched bare");
-      expect(frame).toContain("…");
-      expect(frame.split("Launched bare").length).toBeLessThanOrEqual(3);
+      expect(card).toBeGreaterThan(0);
+      expect(next).toBeGreaterThan(card);
+      expect(copied).toBeGreaterThan(next);
+      // The detail between the card and its next step draws six rows, which
+      // is what leaves room for the two lines under it.
+      expect(next - card - 1).toBe(6);
+      // In those six rows it names both scopes once each, and still holds the
+      // lane names the cut title above it lost.
+      const detail = rows.slice(card + 1, next).join(" ");
+      expect(detail.split("Launched bare")).toHaveLength(3);
+      expect(detail).toContain("tmux-spawn-0.scope");
+      expect(detail).toContain("tmux-spawn-1.scope");
+      expect(detail).toContain("Lanes: kendex agent-0 PID 1000");
     } finally {
       await t.close();
     }
