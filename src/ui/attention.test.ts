@@ -561,11 +561,25 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
   expect(detail(200)).not.toContain("tmux-spawn-11.scope");
   expect(detail(200)).toContain("And 5 more cgroups not written here.");
   // The first conclusion stays whole with its scope, so a card is never left
-  // with no conclusion at all, and one dropped scope is one, not one scopes.
+  // with no conclusion at all, and what it keeps it keeps whole rather than
+  // as the head of a sentence the cut took the rest of.
   expect(detail(56)).toContain(
     "is set on PID 1000 in the scope tmux-spawn-0.scope.",
   );
+  expect(detail(56).split("Launched bare")).toHaveLength(2);
+  expect(detail(56)).not.toMatch(/Launched bare[^.]*…/);
   expect(detail(56)).toContain("And 11 more cgroups not written here.");
+  // Two groups in one cgroup leave nothing to count when one goes, and the
+  // count that says nothing writes nothing, not a blank where it would sit.
+  const shared = escapedSnapshot({ lanes: 2, scopes: 1 });
+  shared.procs[2].env = { CARGO_BUILD_JOBS: "16" };
+  const merged =
+    attention(shared, c, { basePath: base, width: 44 }).find(
+      (item) => item.id === "unconfined",
+    )?.detail ?? "";
+  expect(merged).toContain("The launcher was shadowed");
+  expect(merged).not.toContain("more cgroup");
+  expect(merged).not.toContain("  ");
   expect(
     attention(escapedSnapshot({ lanes: 2, scopes: 2 }), c, {
       basePath: base,

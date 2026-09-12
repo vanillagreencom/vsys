@@ -175,7 +175,8 @@ export function capLines(text: string, width: number, lines: number): string {
   if (rows.length <= lines) return text;
   const last = rows[lines - 1];
   const tail = [...last.text];
-  while (tail.length && /[\s,.]/.test(tail[tail.length - 1])) tail.pop();
+  // The row a cut ends on is never the last, so it never ends on a blank.
+  while (tail.length && /[,.]/.test(tail[tail.length - 1])) tail.pop();
   // The mark draws a column of its own, so the row gives one up to carry it.
   while (tail.length + 1 > width) tail.pop();
   const head = [...text].slice(0, last.end - [...last.text].length).join("");
