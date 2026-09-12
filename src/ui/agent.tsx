@@ -606,12 +606,18 @@ export function Agent({
                       {readable && live && onCapture && pane === null && (
                         <Empty text="Reading the pane…" />
                       )}
-                      {pane !== null && "error" in pane && (
+                      {/* Gated like every message above it. The capture is the
+                          lane as it stood when the read ran, and the effect
+                          clears it a commit later than the answer changes, so
+                          ungated it draws under the refusal that replaced it. */}
+                      {readable && live && pane !== null && "error" in pane && (
                         <Empty
                           text={`This pane could not be read: ${safe(pane.error)}`}
                         />
                       )}
-                      {pane !== null &&
+                      {readable &&
+                        live &&
+                        pane !== null &&
                         "lines" in pane &&
                         (pane.lines.length ? (
                           pane.lines.slice(-terminalLines).map((line, at) => (
