@@ -65,18 +65,21 @@ work="$(mktemp -d)"
 chmod 700 "$work"
 trap 'rm -rf "$work"' EXIT
 
-# Reach the AUR through GIT_SSH_COMMAND. Never write ~/.ssh: this script runs
-# on a maintainer's own machine as well as in CI, and a config written there
-# would replace the one they already have.
+# Reach the AUR through GIT_SSH_COMMAND. Never read or write ~/.ssh: this
+# script runs on a maintainer's own machine as well as in CI, and a config or
+# known_hosts written there would change what they already have.
 if [ -n "${AUR_SSH_KEY_FILE:-}" ]; then
-	key="$AUR_SSH_KEY_FILE"
-	[ -f "$key" ] || fail "AUR_SSH_KEY_FILE names no file: ${key}"
+	[ -f "$AUR_SSH_KEY_FILE" ] || fail "AUR_SSH_KEY_FILE names no file: ${AUR_SSH_KEY_FILE}"
+	# Absolute: the script changes directory before it pushes.
+	key="$(realpath "$AUR_SSH_KEY_FILE")"
 else
 	key="${work}/aur_key"
 	printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$key"
 	chmod 600 "$key"
 fi
-export GIT_SSH_COMMAND="ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o User=aur"
+known_hosts="${repo_root}/packaging/aur-known-hosts"
+[ -f "$known_hosts" ] || fail "No pinned host keys at ${known_hosts}"
+export GIT_SSH_COMMAND="ssh -i '${key}' -o IdentitiesOnly=yes -o UserKnownHostsFile='${known_hosts}' -o StrictHostKeyChecking=yes -o User=aur"
 git clone "ssh://aur@aur.archlinux.org/${pkgname}.git" "${work}/pkg"
 cp "$recipe" "${work}/pkg/PKGBUILD"
 cd "${work}/pkg"

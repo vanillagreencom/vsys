@@ -24,7 +24,9 @@
 
 | Name | Use |
 | --- | --- |
-| `AUR_SSH_PRIVATE_KEY` | Pushes to `ssh://aur@aur.archlinux.org/vsys.git` and `/vsys-git.git` |
+| `AUR_SSH_PRIVATE_KEY` | The AUR key's contents, used by CI to push to `ssh://aur@aur.archlinux.org/vsys.git` and `/vsys-git.git` |
+
+Running the publish script by hand takes `AUR_SSH_KEY_FILE` instead, the path to a key already on disk, so no private key is copied anywhere. The script verifies the AUR against the host keys pinned in `packaging/aur-known-hosts` and reads and writes nothing under `~/.ssh`.
 
 ## AUR packages
 
@@ -35,7 +37,7 @@
 Both AUR packages are created by their first push, so bootstrap each one with the same script CI runs. It pins the version, fills in the published checksums, and refuses to push a recipe that still carries a `SKIP` placeholder.
 
 ```sh
-export AUR_SSH_PRIVATE_KEY="$(cat ~/.ssh/vgs_aur_rsa)"
+export AUR_SSH_KEY_FILE=~/.ssh/vgs_aur_rsa
 packaging/publish-aur.sh vsys-git       # any time
 packaging/publish-aur.sh vsys 0.9.0     # only once the release is published
 ```
