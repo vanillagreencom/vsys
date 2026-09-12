@@ -123,3 +123,19 @@ test("a count with anything after it is not a count", () => {
   ).toBeNull();
   expect(parseScrub("  Uncorrectable:  26\n").uncorrectable).toBe(26);
 });
+
+test("an address-shaped line above the section is prose, not damage", () => {
+  // The helper's own prose sits above the heading. A line shaped like an
+  // address up there must not become a file the reader is told to delete.
+  const report = parseScrub(`btrfs scrub finished: /
+Status:           finished
+logical 111:
+  /home/reader/notes.txt
+Damaged files: 1 damaged block address from the kernel log.
+logical 222:
+  /repo/target/debug/x
+`);
+  expect(report.addresses).toEqual([
+    { logical: 222, paths: ["/repo/target/debug/x"] },
+  ]);
+});

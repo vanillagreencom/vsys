@@ -74,13 +74,13 @@ export function parseScrub(raw: string): ScrubReport {
   const lines = raw.split("\n");
   // The section heading is prose, so its presence is the only thing read from
   // it. Everything under it is anchored on the address heading instead.
-  const damaged = lines.some((line) => /^Damaged files:/.test(line));
-  let addresses: DamagedAddress[] | null = damaged ? [] : null;
+  const opened = lines.findIndex((line) => /^Damaged files:/.test(line));
+  let addresses: DamagedAddress[] | null = opened < 0 ? null : [];
   let current: DamagedAddress | null = null;
-  // Only a report that opened the section holds addresses. Without it a prose
-  // line shaped like an address would become damage with a delete command,
-  // where the contract says a report with no section names no file at all.
-  for (const line of damaged ? lines : []) {
+  // Only the lines under the section heading hold addresses. Anything above
+  // it is the report's own prose, and a prose line shaped like an address
+  // would otherwise become damage with a delete command attached.
+  for (const line of opened < 0 ? [] : lines.slice(opened + 1)) {
     const heading = line.match(/^logical (\d+):\s*$/);
     if (heading) {
       current = { logical: Number(heading[1]), paths: [] };
