@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build"
+        description: "Existing tag to build, as v<version>"
         required: true
 
 permissions:
@@ -23,8 +23,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check the tag shape
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::Tag must look like v<version>, got '$TAG'"; exit 1 ;;
+          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.TAG }}
           persist-credentials: false
       - name: Create the draft release
         env:
@@ -33,7 +40,8 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; reusing it."
           else
-            gh release create "$TAG" --draft --title "$TAG" --notes "See CHANGELOG.md for the entries in this release."
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" \
+              --notes "See CHANGELOG.md for the entries in this release."
           fi
 
   build:
@@ -54,6 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.TAG }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
@@ -61,7 +70,7 @@ jobs:
       - name: Check that package.json matches the tag
         run: |
           want="${TAG#v}"
-          have=$(node -p "require('./package.json').version" 2>/dev/null || bun -e "console.log(require('./package.json').version)")
+          have=$(bun -e 'console.log(require("./package.json").version)')
           if [ "$want" != "$have" ]; then
             echo "::error::Tag $TAG expects package.json version $want, found $have"
             exit 1
@@ -94,6 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.TAG }}
           persist-credentials: false
       - name: Combine the checksums
         env:
@@ -103,7 +113,7 @@ jobs:
           gh release download "$TAG" --pattern '*.sha256' --dir .
           cat ./*.sha256 | sort -k2 > ../SHA256SUMS
           cd .. && cat SHA256SUMS
-          test -s SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 2
           gh release upload "$TAG" SHA256SUMS --clobber
       - name: Publish
         env:
@@ -119,9 +129,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.TAG }}
           persist-credentials: false
       - name: Install the packaging tools
-        run: pacman -Sy --noconfirm --needed git openssh pacman-contrib
+        run: pacman -Sy --noconfirm --needed git openssh curl pacman-contrib
       - name: Publish vsys to the AUR
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}

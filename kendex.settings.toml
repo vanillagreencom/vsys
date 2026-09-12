@@ -249,7 +249,7 @@ COMMIT_GUARDS_CHANGELOG_PATHS = "changelog.d/*/*.md"
 # Paths whose change obliges a changelog entry, checked by the commit-msg
 # lane. These are the paths a release ships: the application, its build and
 # release scripts, the packaging recipes and the installer.
-COMMIT_GUARDS_CHANGELOG_REQUIRED_PATHS = "src/*;scripts/*;packaging/*;install.sh"
+COMMIT_GUARDS_CHANGELOG_REQUIRED_PATHS = "src/* scripts/* packaging/* install.sh"
 
 # The markdown lanes judge every tracked markdown file, not only the files a
 # commit touches.

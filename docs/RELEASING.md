@@ -32,11 +32,12 @@
 
 `packaging/vsys-git/PKGBUILD` builds from `main` with Bun. Its `pkgver()` derives a version from `git describe`, so it needs no edit per release. `.github/workflows/aur-git.yml` pushes it when `main` moves.
 
-Publish a new AUR package once by hand before CI can update it:
+Both AUR packages are created by their first push, so bootstrap each one with the same script CI runs. It pins the version, fills in the published checksums, and refuses to push a recipe that still carries a `SKIP` placeholder.
 
 ```sh
-git clone ssh://aur@aur.archlinux.org/vsys.git
-cp packaging/vsys/PKGBUILD vsys/
-cd vsys && makepkg --printsrcinfo > .SRCINFO
-git add PKGBUILD .SRCINFO && git commit -m "Initial import" && git push
+export AUR_SSH_PRIVATE_KEY="$(cat ~/.ssh/vgs_aur_rsa)"
+packaging/publish-aur.sh vsys-git       # any time
+packaging/publish-aur.sh vsys 0.9.0     # only once the release is published
 ```
+
+Bootstrap `vsys` only after its GitHub Release exists, because the script reads `SHA256SUMS` from it.
