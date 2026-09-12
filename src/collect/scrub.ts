@@ -49,8 +49,10 @@ export function stated(raw: string, name: string): number {
 }
 const number = (raw: string, name: string): number | null => {
   const text = field(raw, name);
-  if (text === null) return null;
-  const value = Number(text.match(/^\d+/)?.[0]);
+  // The whole field must be the count. Reading its leading digits would take
+  // "0 (invalid)" as a zero and report a malformed result as clean.
+  if (text === null || !/^\d+$/.test(text)) return null;
+  const value = Number(text);
   return Number.isFinite(value) ? value : null;
 };
 /**

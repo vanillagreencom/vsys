@@ -114,3 +114,12 @@ logical 953118621696:
 `);
   expect(report.addresses).toBeNull();
 });
+
+test("a count with anything after it is not a count", () => {
+  // Reading the leading digits would take this as a zero and call a
+  // malformed result clean.
+  expect(
+    parseScrub("  Uncorrectable:  0 (invalid)\n").uncorrectable,
+  ).toBeNull();
+  expect(parseScrub("  Uncorrectable:  26\n").uncorrectable).toBe(26);
+});
