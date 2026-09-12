@@ -259,3 +259,16 @@ test("an address written since the check is never offered as a delete", () => {
   ]);
   expect(deleteCommand(stable.groups[0])).toBe("rm -f /r/target/a /r/target/b");
 });
+
+test("a check that has not finished counted nothing, and its report is not blamed", () => {
+  // A running check is a different fact from a report that omitted its count.
+  const running = state([report({ status: "running", uncorrectable: 26 })]);
+  expect(blocksText(running)).toBe("not available: the check has not finished");
+  expect(noDamageText(running)).toBe(
+    "The check has not finished, so it has named no file yet.",
+  );
+  // A finished report that carried no count is still that.
+  expect(blocksText(state([report({ uncorrectable: null })]))).toBe(
+    "not available: the report carried no count",
+  );
+});

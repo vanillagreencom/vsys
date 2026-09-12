@@ -477,6 +477,7 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
       },
       onNotice: (text: string, level: string) => notices.push([text, level]),
       onCopy: () => {},
+      live: true,
     };
     const ui = await testRender(
       <KeyProvider handlers={handlers}>
@@ -595,6 +596,28 @@ test("a deleted file leaves the list and the filesystem stops reading damaged", 
     // filesystem has been read end to end since the last error.
     expect(frame).toContain("Healthy");
     expect(frame).toContain("No damaged address is left on this filesystem.");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a pinned sample offers no delete command, because its files may have moved on", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const t = await mount(damagedSnapshot(time), c, { width: 160, height: 60 });
+  try {
+    await t.press("5");
+    // Pin, then ask for the command. The paths were checked against the
+    // sample that was pinned, and a block freed and reused since then is a
+    // healthy file now.
+    await t.press(c.keys.pin);
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([]);
+    expect(t.frame()).toContain("the files it names may have changed");
+    // Live again, and the command is there.
+    await t.press(c.keys.pin);
+    await t.press(c.keys.copy);
+    expect(t.written).toHaveLength(1);
   } finally {
     await t.close();
   }

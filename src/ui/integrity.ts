@@ -53,6 +53,9 @@ export function integrityLine(item: Integrity): string {
 export function blocksText(item: Integrity): string {
   if (!item.scrub) return `${gap}: no check has reported on this filesystem`;
   if (!item.readable) return `${gap}: the report could not be read`;
+  // A check still running, or one that stopped early, has counted nothing
+  // yet. Saying its report carried no count would blame the report for that.
+  if (!item.complete) return `${gap}: the check has not finished`;
   if (item.blocks === null || item.blocks === undefined)
     return `${gap}: the report carried no count`;
   return `${item.blocks} by the last full check`;
@@ -67,6 +70,8 @@ export function noDamageText(item: Integrity): string {
     return "No check has reported on this filesystem, so no file is named.";
   if (!item.readable)
     return "The report could not be read, so nothing in it names a file.";
+  if (!item.complete)
+    return "The check has not finished, so it has named no file yet.";
   if (item.scrub.addresses === null || item.scrub.addresses === undefined)
     return "The report carries no damaged-file section, so it names no file. That is not a report of none.";
   return "No damaged address is left on this filesystem.";

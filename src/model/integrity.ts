@@ -127,6 +127,12 @@ export interface Integrity {
    * nothing from it and the words say that rather than reporting none.
    */
   readable: boolean;
+  /**
+   * Whether a check finished. Only a finished one has a result, so the fields
+   * above carry nothing from a running or half-written report, and the words
+   * say the check has not finished rather than that it counted nothing.
+   */
+  complete: boolean;
 }
 const level: Record<IntegrityState, Level> = {
   damaged: "danger",
@@ -256,6 +262,7 @@ export function integrity(
     groups,
     scrub,
     readable,
+    complete,
   };
 }
 /** One integrity reading per filesystem, in the order Storage draws them. */

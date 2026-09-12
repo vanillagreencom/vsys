@@ -111,6 +111,7 @@ export function Storage({
   onTargetUsed,
   onNotice,
   onCopy,
+  live,
 }: {
   snapshot: Snapshot;
   config: Config;
@@ -121,6 +122,8 @@ export function Storage({
   onNotice: (text: string, level: Level) => void;
   /** Undefined text tells the shell the selected row carries no command. */
   onCopy: (command: string | undefined) => void;
+  /** False while a pinned sample is shown, which is not the disk as it is. */
+  live: boolean;
 }) {
   const [chosen, setSelected] = useState(0);
   const items = storageItems(s);
@@ -179,6 +182,17 @@ export function Storage({
     // which the shell says rather than copying something the reader did not
     // select.
     if (name === c.keys.copy) {
+      // A delete command is built from paths checked against the sample it
+      // came from. On a pinned sample those checks are as old as the sample:
+      // a path freed and reused since then is a healthy file now, and the
+      // line would remove it.
+      if (!live) {
+        onNotice(
+          `Pinned sample · the files it names may have changed · ${keyLabel(c.keys.pin)} shows live data`,
+          "warn",
+        );
+        return true;
+      }
       const item = items[selected];
       const group =
         item?.kind === "filesystem"
