@@ -1,5 +1,6 @@
 import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
+import { damageCounts, integrities } from "./integrity";
 import { inSlice, lanePressure } from "./lanes";
 import { laneText, unitLabel } from "./naming";
 import type { Group, Lane, Snapshot, Volume } from "./types";
@@ -9,6 +10,8 @@ export type Level = "ok" | "warn" | "danger";
 export type CauseId =
   | "unconfined"
   | "read-only"
+  | "damaged-files"
+  | "new-errors"
   | "device-errors"
   | "disk"
   | "desktop-swap"
@@ -19,6 +22,8 @@ export type CauseId =
   | "system-cpu"
   | "memory-high"
   | "scrub"
+  | "unchecked"
+  | "integrity-unknown"
   | "scratch";
 /**
  * The order that breaks a tie between two causes of one severity, worst first.
@@ -29,17 +34,21 @@ export type CauseId =
 export const causeOrder: Record<CauseId, number> = {
   unconfined: 0,
   "read-only": 1,
-  "device-errors": 2,
-  disk: 3,
-  "desktop-swap": 4,
-  "free-space": 5,
-  "memory-cap": 6,
-  stalls: 7,
-  "system-memory": 8,
-  "system-cpu": 9,
-  "memory-high": 10,
-  scrub: 11,
-  scratch: 12,
+  "damaged-files": 2,
+  "new-errors": 3,
+  "device-errors": 4,
+  disk: 5,
+  "desktop-swap": 6,
+  "free-space": 7,
+  "memory-cap": 8,
+  stalls: 9,
+  "system-memory": 10,
+  "system-cpu": 11,
+  "memory-high": 12,
+  scrub: 13,
+  unchecked: 14,
+  "integrity-unknown": 15,
+  scratch: 16,
 };
 export function causeRank(id: CauseId): number {
   return causeOrder[id];
@@ -226,6 +235,64 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       paths: readOnly.map((v) => v.mount),
       consumer: readOnly[0].mount,
     });
+  // One reading per filesystem, shared by the damage card, the unchecked card
+  // and Storage, so the three never disagree about one filesystem's state.
+  const filesystems = integrities(s, c);
+  const damaged = filesystems.filter((item) => item.state === "damaged");
+  if (damaged.length) {
+    const counts = damaged.map(damageCounts);
+    // The card counts damage across every filesystem it names, so its block
+    // count must too. One filesystem whose report carried no count leaves the
+    // total unknown rather than a sum that silently omits it.
+    const blocks = damaged.every((item) => item.blocks !== null)
+      ? damaged.reduce((sum, item) => sum + (item.blocks ?? 0), 0)
+      : null;
+    add("damaged-files", "danger", {
+      paths: damaged.map((item) => item.mounts[0] ?? item.device),
+      // The card opens the filesystem's integrity row, which is not one of
+      // the mounts it names: the damage belongs to the filesystem.
+      at: { kind: "path", path: damaged[0].id },
+      consumer: damaged[0].mounts[0] ?? damaged[0].device,
+      values: {
+        filesystems: damaged.length,
+        files: counts.reduce((sum, n) => sum + n.files, 0),
+        build: counts.reduce((sum, n) => sum + n.build, 0),
+        other: counts.reduce((sum, n) => sum + n.other, 0),
+        blocks,
+        // An address written since the check, or one outside build output,
+        // is not one a delete step may sweep up.
+        changed: damaged.filter((item) =>
+          item.groups.some((group) => group.changed),
+        ).length,
+      },
+    });
+  }
+  // The counter grew and nothing has read the filesystem since, so no check
+  // has confirmed what that growth cost. This is the reading that was missing.
+  const grown = filesystems.filter((item) => item.state === "new-errors");
+  if (grown.length)
+    add("new-errors", "danger", {
+      paths: grown.map((item) => item.mounts[0] ?? item.device),
+      at: { kind: "path", path: grown[0].id },
+      consumer: grown[0].mounts[0] ?? grown[0].device,
+      // One filesystem's numbers describe one filesystem. Naming several and
+      // showing the first one's growth would present its count and its ages
+      // as the whole cause's.
+      values:
+        grown.length === 1
+          ? {
+              filesystems: 1,
+              size: grown[0].errorSize,
+              since: grown[0].errorAge,
+              checked: grown[0].checkAge,
+            }
+          : {
+              filesystems: grown.length,
+              size: null,
+              since: null,
+              checked: null,
+            },
+    });
   const failing = s.storage.volumes.filter((v) =>
     Object.values(v.delta).some((n) => n > 0),
   );
@@ -318,11 +385,46 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       consumer: near[0].name,
       verdictWorthy: false,
     });
-  const scrubs = s.storage.scrubs.filter((scrub) => scrub.problem);
+  // A report the damage card already speaks for is not a second card: it names
+  // the filesystem and the files, where this one can only name a file path.
+  const spoken = new Set(
+    damaged.flatMap((item) => (item.scrub ? [item.scrub.path] : [])),
+  );
+  const scrubs = s.storage.scrubs.filter(
+    (scrub) => scrub.problem && !spoken.has(scrub.path),
+  );
   if (scrubs.length)
     add("scrub", "danger", {
       paths: scrubs.map((scrub) => scrub.path),
       consumer: scrubs[0].path,
+    });
+  // A filesystem nothing has checked cannot report that it is undamaged, so
+  // silence about it is the reading this card refuses to give.
+  const unchecked = filesystems.filter(
+    (item) => item.state === "never-checked" || item.state === "stale",
+  );
+  if (unchecked.length)
+    add("unchecked", "warn", {
+      paths: unchecked.map((item) => item.mounts[0] ?? item.device),
+      at: { kind: "path", path: unchecked[0].id },
+      consumer: unchecked[0].mounts[0] ?? unchecked[0].device,
+      values: {
+        filesystems: unchecked.length,
+        never: unchecked.filter((item) => item.state === "never-checked")
+          .length,
+        oldest: Math.max(...unchecked.map((item) => item.checkAge ?? 0)),
+        limit: c.scrubMaxAgeDays,
+      },
+    });
+  // A filesystem whose state vsys could not read is not one it can pass over
+  // in silence: Storage says the state is unknown, and so must the verdict.
+  const opaque = filesystems.filter((item) => item.state === "unknown");
+  if (opaque.length)
+    add("integrity-unknown", "warn", {
+      paths: opaque.map((item) => item.mounts[0] ?? item.device),
+      at: { kind: "path", path: opaque[0].id },
+      consumer: opaque[0].mounts[0] ?? opaque[0].device,
+      values: { filesystems: opaque.length },
     });
   const large = s.storage.scratch.filter(
     (scratch) => scratch.bytes !== null && scratch.bytes > c.scratchQuota,

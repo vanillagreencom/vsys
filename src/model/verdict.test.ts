@@ -8,7 +8,8 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import type { Group, Snapshot } from "./types";
+import { type IntegrityState, integrities } from "./integrity";
+import type { Group, Scrub, Snapshot, Volume } from "./types";
 import {
   buildLoad,
   causeRank,
@@ -253,6 +254,8 @@ test("the cause order table is the ladder's own tie order", () => {
   expect(ladder.map((cause) => cause.id)).toEqual([
     "unconfined",
     "read-only",
+    "damaged-files",
+    "new-errors",
     "device-errors",
     "disk",
     "desktop-swap",
@@ -262,6 +265,8 @@ test("the cause order table is the ladder's own tie order", () => {
     "system-memory",
     "system-cpu",
     "memory-high",
+    "unchecked",
+    "integrity-unknown",
     "scratch",
   ]);
   // A cause that names a lane names it in text, its process id included.
@@ -274,4 +279,158 @@ test("the cause order table is the ladder's own tie order", () => {
     .filter((cause) => cause.level === "danger")
     .map((cause) => causeRank(cause.id));
   expect(danger).toEqual([...danger].sort((a, b) => a - b));
+});
+
+test("the damage card counts blocks across every filesystem it names", () => {
+  const c = defaults();
+  const damaged = (fsid: string, mount: string, blocks: number | null) => ({
+    volume: volumeSnapshot(mount, {
+      fsid,
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    scrub: {
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: 500,
+      status: "finished",
+      uncorrectable: blocks,
+      addresses: [{ logical: 1, paths: [`/r/target/${fsid}`] }],
+    },
+  });
+  const build = (rows: ReturnType<typeof damaged>[]) => {
+    const s = emptySnapshot();
+    s.storage.volumes = rows.map((row) => row.volume);
+    s.storage.scrubs = rows.map((row) => row.scrub);
+    return causes(s, c).find((cause) => cause.id === "damaged-files");
+  };
+  // Two filesystems, both counted, so the card states their total.
+  expect(
+    build([damaged("a", "/a", 26), damaged("b", "/b", 9)])?.values.blocks,
+  ).toBe(35);
+  // One report carried no count, so the total is unknown rather than a sum
+  // that quietly leaves that filesystem out.
+  expect(
+    build([damaged("a", "/a", 26), damaged("b", "/b", null)])?.values.blocks,
+  ).toBeNull();
+});
+
+test("every integrity state but healthy and checking reaches the verdict", () => {
+  const c = defaults();
+  const report = (fsid: string, over: Partial<Scrub> = {}): Scrub => ({
+    path: `/run/btrfs-scrub/${fsid}.result`,
+    text: "Error summary: no errors found",
+    problem: false,
+    readable: true,
+    fsid,
+    startedAt: 1000 - 3600000,
+    status: "finished",
+    uncorrectable: 0,
+    corrected: 0,
+    addresses: [],
+    ...over,
+  });
+  const volume = (fsid: string, over: Partial<Volume> = {}) =>
+    volumeSnapshot(`/${fsid}`, {
+      fsid,
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+      ...over,
+    });
+  // One filesystem per state, each in its own snapshot so one cause cannot
+  // stand in for another.
+  const rows: [IntegrityState, Volume, Scrub[]][] = [
+    [
+      "damaged",
+      volume("a"),
+      [report("a", { problem: true, uncorrectable: 26 })],
+    ],
+    [
+      "new-errors",
+      volume("b", { lastErrorAt: 1000 - 1000, lastErrorSize: 26 }),
+      [report("b")],
+    ],
+    ["never-checked", volume("c"), []],
+    [
+      "stale",
+      volume("d"),
+      [report("d", { startedAt: 1000 - (c.scrubMaxAgeDays + 1) * 86400000 })],
+    ],
+    ["unknown", volume("e"), [report("e", { readable: false, problem: true })]],
+  ];
+  for (const [state, v, scrubs] of rows) {
+    const s = emptySnapshot();
+    s.storage.volumes = [v];
+    s.storage.scrubs = scrubs;
+    expect({ state, integrity: integrities(s, c)[0].state }).toEqual({
+      state,
+      integrity: state,
+    });
+    // The ladder speaks for it, so Home cannot read Healthy while Storage
+    // reads anything else.
+    const ladder = causes(s, c);
+    expect({ state, causes: ladder.length > 0 }).toEqual({
+      state,
+      causes: true,
+    });
+    expect({
+      state,
+      verdict: ladder.some((cause) => cause.verdictWorthy),
+    }).toEqual({ state, verdict: true });
+  }
+  // A filesystem that was checked and found sound raises nothing at all.
+  const well = emptySnapshot();
+  well.storage.volumes = [volume("f")];
+  well.storage.scrubs = [report("f")];
+  expect(integrities(well, c)[0].state).toBe("healthy");
+  expect(causes(well, c)).toEqual([]);
+});
+
+test("a cause naming several filesystems carries no one filesystem's numbers", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const grown = (fsid: string, size: number) => {
+    s.storage.volumes.push(
+      volumeSnapshot(`/${fsid}`, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+        lastErrorAt: s.time - 1000,
+        lastErrorSize: size,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: no errors found",
+      problem: false,
+      readable: true,
+      fsid,
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    });
+  };
+  const values = () =>
+    causes(s, c).find((cause) => cause.id === "new-errors")?.values;
+  grown("a", 26);
+  expect(values()).toEqual({
+    filesystems: 1,
+    size: 26,
+    since: 1,
+    checked: 3600,
+  });
+  // A second filesystem, and the first one's growth no longer stands for the
+  // cause: an event carrying 26 would name two filesystems and one's count.
+  grown("b", 9);
+  expect(values()).toEqual({
+    filesystems: 2,
+    size: null,
+    since: null,
+    checked: null,
+  });
 });

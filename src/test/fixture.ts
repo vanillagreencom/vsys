@@ -30,6 +30,7 @@ export function fixture() {
   config.sysBlockRoot = join(root, "block");
   config.scrubDir = join(root, "scrub");
   config.smartDir = join(root, "smart");
+  config.errorMemoryPath = join(root, "state/filesystem-errors.json");
   config.scratchDirs = [];
   config.sqlitePath = join(root, "history.db");
   const write = (path: string, text: string) => {
@@ -321,8 +322,74 @@ export function everyCauseSnapshot(c: Config): Snapshot {
     volumeSnapshot("/bad", { delta: { "x/corruption_errs": 1 } }),
     volumeSnapshot("/full", { free: 5, total: 100 }),
   ];
+  // One filesystem per storage-integrity state: damage found, errors since
+  // the last check, a state that could not be read, and the mounts above,
+  // which carry no report at all and so read as never checked.
+  const counters = { "1/corruption_errs": 1 };
+  s.storage.volumes.push(
+    volumeSnapshot("/damaged", { fsid: "damaged-fs" }),
+    volumeSnapshot("/grown", {
+      fsid: "grown-fs",
+      errors: counters,
+      countersAvailable: true,
+      lastErrorAt: s.time - 1000,
+      lastErrorSize: 26,
+    }),
+    volumeSnapshot("/opaque", {
+      fsid: "opaque-fs",
+      errors: counters,
+      countersAvailable: true,
+    }),
+  );
   const bytes = c.scratchQuota + 1;
-  s.storage.scrubs = [{ path: "/scrub", text: "errors", problem: true }];
+  s.storage.scrubs = [
+    { path: "/scrub", text: "errors", problem: true },
+    {
+      path: "/scrub-damaged",
+      text: "Error summary: csum=26",
+      problem: true,
+      readable: true,
+      fsid: "damaged-fs",
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 26,
+      corrected: 0,
+      addresses: [
+        {
+          logical: 953118621696,
+          paths: [
+            "/repo/target/debug/build/glib-sys/build-script-build",
+            "/repo/target/debug/build/glib-sys/build_script_build-c664",
+          ],
+        },
+        { logical: 1597612883968, paths: ["/home/reader/letter.txt"] },
+      ],
+    },
+    {
+      path: "/scrub-grown",
+      text: "Error summary: no errors found",
+      problem: false,
+      readable: true,
+      fsid: "grown-fs",
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    },
+    {
+      path: "/scrub-opaque",
+      text: "something no parser knows",
+      problem: true,
+      readable: false,
+      fsid: "opaque-fs",
+      startedAt: null,
+      status: null,
+      uncorrectable: null,
+      corrected: null,
+      addresses: null,
+    },
+  ];
   s.storage.scratch = [{ path: "/scratch", bytes, age: 0, error: null }];
   return s;
 }

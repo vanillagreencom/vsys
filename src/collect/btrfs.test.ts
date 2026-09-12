@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+} from "node:fs";
 import { join } from "node:path";
 import { point } from "../store/point";
 import { emptySnapshot, fixture } from "../test/fixture";
@@ -85,6 +91,104 @@ test("aborted scrub stays a problem even when no errors were counted", () => {
     ),
   ).toBe(true);
 });
+test("a report is matched to its filesystem and lists only files still there", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+  const root = join(f.config.btrfsRoot, uuid);
+  mkdirSync(join(root, "devices"), { recursive: true });
+  symlinkSync("/sys/devices/test", join(root, "devices/test"));
+  f.write(
+    join(root, "devinfo/1/error_stats"),
+    "corruption_errs 26\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0",
+  );
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  const kept = join(f.root, "target/debug/build-script-build");
+  const gone = join(f.root, "target/debug/build_script_build-c664");
+  f.write(kept, "");
+  f.write(gone, "");
+  f.write(
+    join(f.config.scrubDir, "root.result"),
+    `btrfs scrub finished, csum=26: /
+UUID:             ${uuid}
+Scrub started:    Fri Sep 11 13:25:54 2026
+Status:           finished
+Error summary:    csum=26
+  Corrected:      0
+  Uncorrectable:  26
+
+Damaged files: 1 damaged block address from the kernel log.
+logical 953118621696:
+  ${kept}
+  ${gone}
+`,
+  );
+  // Both files were last written before the check began, so each name still
+  // stands for what the check read.
+  const checked = Date.parse("Fri Sep 11 13:25:54 2026");
+  for (const path of [kept, gone])
+    utimesSync(path, new Date(checked - 60000), new Date(checked - 60000));
+  const r = new Reader();
+  const collector = new StorageCollector();
+  const first = await collector.collect(r, f.config, 1000);
+  expect(first.scrubs[0].fsid).toBe(uuid);
+  expect(first.scrubs[0].uncorrectable).toBe(26);
+  expect(first.scrubs[0].addresses).toEqual([
+    { logical: 953118621696, paths: [kept, gone], changed: [] },
+  ]);
+  // One of them is written again after the check. The block it sat in can
+  // have been freed and reused, so that name no longer proves what was read.
+  utimesSync(kept, new Date(checked + 60000), new Date(checked + 60000));
+  const rewritten = await collector.collect(r, f.config, 1500);
+  expect(rewritten.scrubs[0].addresses).toEqual([
+    { logical: 953118621696, paths: [kept, gone], changed: [kept] },
+  ]);
+  utimesSync(kept, new Date(checked - 60000), new Date(checked - 60000));
+  // The reader deletes one of the two names. It leaves the list; the name
+  // still on disk stays, because the damage is still there.
+  unlinkSync(gone);
+  const second = await collector.collect(r, f.config, 2000);
+  expect(second.scrubs[0].addresses).toEqual([
+    { logical: 953118621696, paths: [kept], changed: [] },
+  ]);
+  expect(r.errors).toEqual([]);
+});
+
+test("the last new error outlives the process that observed it", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const root = join(f.config.btrfsRoot, "fsid");
+  mkdirSync(join(root, "devices"), { recursive: true });
+  symlinkSync("/sys/devices/test", join(root, "devices/test"));
+  const file = join(root, "devinfo/1/error_stats");
+  const counters = (corruption: number) =>
+    `corruption_errs ${corruption}\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0`;
+  f.write(file, counters(1364));
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  const r = new Reader();
+  const first = new StorageCollector();
+  // A counter already above zero says damage happened, not when.
+  expect((await first.collect(r, f.config, 1000)).volumes[0].lastErrorAt).toBe(
+    null,
+  );
+  f.write(file, counters(1390));
+  const grown = await first.collect(r, f.config, 5000);
+  expect(grown.volumes[0].lastErrorAt).toBe(5000);
+  expect(grown.volumes[0].lastErrorSize).toBe(26);
+  // A restart, and a sample a day and a half later: past the history window
+  // and past the process that saw the growth.
+  const later = await new StorageCollector().collect(r, f.config, 135000000);
+  expect(later.volumes[0].lastErrorAt).toBe(5000);
+  expect(later.volumes[0].lastErrorSize).toBe(26);
+  expect(r.errors).toEqual([]);
+});
+
 test("device mapper aliases resolve to filesystem counters", async () => {
   const f = fixture();
   fixtures.push(f);
@@ -109,4 +213,66 @@ test("device mapper aliases resolve to filesystem counters", async () => {
   expect(s.volumes[0].fsid).toBe("fsid");
   expect(s.volumes[0].errors["1/corruption_errs"]).toBe(2);
   expect(r.errors).toEqual([]);
+});
+
+test("an unreadable report stays a report rather than vanishing", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const path = join(f.config.scrubDir, "root.result");
+  f.write(path, "");
+  chmodSync(path, 0o000);
+  const r = new Reader();
+  const storage = await new StorageCollector().collect(r, f.config, 1000);
+  chmodSync(path, 0o600);
+  // Losing the row would take its problem card with it and leave the reader
+  // with no sign that a check had run at all.
+  expect(storage.scrubs).toEqual([
+    {
+      path,
+      text: "",
+      readable: false,
+      problem: true,
+      fsid: null,
+      startedAt: null,
+      status: null,
+      uncorrectable: null,
+      corrected: null,
+      addresses: null,
+    },
+  ]);
+  expect(r.errors.map((e) => e.source)).toEqual([path]);
+});
+
+test("a report stating a count twice cannot report clean", () => {
+  // A per-device listing: one device found nothing, another found damage.
+  // Reading the first would let that zero speak for the whole filesystem.
+  expect(() =>
+    scrubProblem(`Status:           finished
+  Corrected:      0
+  Uncorrectable:  0
+  Corrected:      0
+  Uncorrectable:  26
+`),
+  ).toThrow();
+  // Stated once, the count is the reading, in both directions.
+  expect(
+    scrubProblem(
+      "Status: finished\n  Corrected:      0\n  Uncorrectable:  0\n",
+    ),
+  ).toBe(false);
+  expect(
+    scrubProblem(
+      "Status: finished\n  Corrected:      5\n  Uncorrectable:  0\n",
+    ),
+  ).toBe(true);
+});
+
+test("a count the report carries but cannot state cannot report clean", () => {
+  // The label is there once, and its value is not a number. Defaulting that
+  // to zero would call a malformed result clean.
+  expect(() =>
+    scrubProblem(
+      "Status: finished\n  Corrected:      0\n  Uncorrectable:  invalid\n",
+    ),
+  ).toThrow();
 });

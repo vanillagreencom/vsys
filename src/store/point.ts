@@ -1,3 +1,4 @@
+import { corruptionTotal } from "../collect/btrfs";
 import type { Config } from "../config/config";
 import { escaped } from "../model/lanes";
 import type { Alert, Snapshot } from "../model/types";
@@ -38,19 +39,16 @@ export function point(
     s.storage.mountsAvailable === false ? null : 0;
   for (const v of s.storage.volumes) {
     if (corruption === null) break;
-    if (
-      !v.fsid ||
-      v.countersAvailable === false ||
-      !Object.keys(v.errors).some((key) => key.endsWith("/corruption_errs"))
-    ) {
+    const total = v.fsid
+      ? corruptionTotal(v.errors, v.countersAvailable !== false)
+      : null;
+    if (total === null) {
       corruption = null;
       break;
     }
-    if (seen.has(v.fsid)) continue;
-    seen.add(v.fsid);
-    corruption += Object.entries(v.errors)
-      .filter(([key]) => key.endsWith("corruption_errs"))
-      .reduce((sum, [, value]) => sum + value, 0);
+    if (seen.has(v.fsid as string)) continue;
+    seen.add(v.fsid as string);
+    corruption += total;
   }
   const total = s.system.memory.MemTotal;
   const available = s.system.memory.MemAvailable;

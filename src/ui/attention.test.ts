@@ -245,7 +245,13 @@ test("read-only mounts and device errors are one card each, not one per mount", 
   const bad = { readOnly: true, delta: { "x/corruption_errs": 1 } };
   s.storage.volumes = [volumeSnapshot("/a", bad), volumeSnapshot("/b", bad)];
   const items = attention(s, defaults(), { basePath: base });
-  expect(items.map((item) => item.id)).toEqual(["read-only", "device-errors"]);
+  // Nothing has checked either mount for damage, so the unchecked card is
+  // there too; the point here is that neither cause draws one card per mount.
+  expect(items.map((item) => item.id)).toEqual([
+    "read-only",
+    "device-errors",
+    "unchecked",
+  ]);
   expect(items[0].title).toBe("2 mounts are read-only: /a, /b");
 });
 
@@ -648,4 +654,143 @@ test("the lane sentence stops rather than growing with the machine", () => {
     "1 group of processes: 1 bare. Lane: kendex vsys/issue-1234 kendex…",
   );
   expect(wrapLines(single?.detail ?? "", 24)).toHaveLength(3);
+});
+
+test("a storage card never tells the reader to delete data a rebuild cannot replace", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const scrub = (
+    addresses: { logical: number; paths: string[]; changed?: string[] }[],
+  ) => ({
+    path: "/run/btrfs-scrub/root.result",
+    text: "Error summary: csum=1",
+    problem: true,
+    readable: true,
+    fsid: "fs",
+    startedAt: s.time - 1000,
+    status: "finished",
+    uncorrectable: 1,
+    addresses,
+  });
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  // Every damaged address is build output, so deleting all of them is safe.
+  s.storage.scrubs = [scrub([{ logical: 1, paths: ["/r/target/a"] }])];
+  const build = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(build?.next).toContain("delete every path listed");
+  // One address holds a file only a backup restores, and the step changes.
+  s.storage.scrubs = [
+    scrub([
+      { logical: 1, paths: ["/r/target/a"] },
+      { logical: 2, paths: ["/home/r/letter.txt"] },
+    ]),
+  ];
+  const mixed = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(mixed?.next).toContain("Delete only the addresses it marks as build");
+  expect(mixed?.next).not.toContain("delete every path");
+  // All build output, but one address was written since the check, so that
+  // one carries no command either and the step cannot say delete everything.
+  s.storage.scrubs = [
+    scrub([
+      { logical: 1, paths: ["/r/target/a"] },
+      { logical: 2, paths: ["/r/target/b"], changed: ["/r/target/b"] },
+    ]),
+  ];
+  const stale = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(stale?.next).toContain("Delete only the addresses it marks as build");
+});
+
+test("an unchecked card counts never-checked filesystems apart from stale ones", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const checked = (fsid: string, mount: string, startedAt: number | null) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 0 },
+        countersAvailable: true,
+      }),
+    );
+    if (startedAt !== null)
+      s.storage.scrubs.push({
+        path: `/run/btrfs-scrub/${fsid}.result`,
+        text: "Error summary: no errors found",
+        problem: false,
+        readable: true,
+        fsid,
+        startedAt,
+        status: "finished",
+        uncorrectable: 0,
+        addresses: [],
+      });
+  };
+  // One never checked, one checked long enough ago to be stale.
+  checked("never", "/a", null);
+  checked("old", "/b", s.time - 40 * 86400000);
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "unchecked",
+  );
+  // The title cannot call both of them never checked: a timer did check one.
+  expect(card?.title).toBe(
+    "2 filesystems unchecked for damage, 1 of them never: /a, /b",
+  );
+  // Both alone still read as what they are.
+  const alone = emptySnapshot();
+  alone.storage.volumes = [volumeSnapshot("/only", { fsid: "only" })];
+  expect(
+    attention(alone, c, { basePath: base }).find(
+      (item) => item.id === "unchecked",
+    )?.title,
+  ).toBe("1 filesystem never checked for damage: /only");
+});
+
+test("a card naming several filesystems shows no one filesystem's numbers", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const grown = (fsid: string, size: number) => {
+    s.storage.volumes.push(
+      volumeSnapshot(`/${fsid}`, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+        lastErrorAt: s.time - 1000,
+        lastErrorSize: size,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: no errors found",
+      problem: false,
+      readable: true,
+      fsid,
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    });
+  };
+  grown("a", 26);
+  const one = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
+  expect(one?.detail).toContain("26 failed reads");
+  // A second filesystem, and the first one's count no longer speaks for both.
+  grown("b", 9);
+  const two = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
+  expect(two?.detail).not.toContain("26");
+  expect(two?.detail).toContain("Open each one for its own times");
 });

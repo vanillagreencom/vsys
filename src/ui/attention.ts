@@ -6,6 +6,7 @@ import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
 import { capLines, fit, wrapLines } from "./columns";
 import {
+  age,
   amount,
   bytes,
   count,
@@ -217,6 +218,85 @@ function copy(
         view: "Storage",
         target: first,
       };
+    case "damaged-files": {
+      const files = v.files ?? 0;
+      const other = v.other ?? 0;
+      const build = v.build ?? 0;
+      // A block count vsys did not read is left out rather than shown as zero.
+      const repaired =
+        v.blocks === null || v.blocks === undefined
+          ? ""
+          : `The last check could not repair ${count(v.blocks, "block")}. `;
+      return {
+        word: "Danger",
+        title: files
+          ? `Damaged files on ${mounts}: ${count(files, "file")}${other ? "" : ", all build output"}`
+          : `Damaged data on ${mounts}`,
+        detail: [
+          files
+            ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.`
+            : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+        ],
+        // The step never says to delete everything listed: an address holding
+        // data a rebuild cannot replace is restored, not removed, and a card
+        // that blurs the two invites the reader to delete their own files.
+        next: !files
+          ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
+          : other || v.changed
+            ? "Open Storage and open the filesystem. Delete only the addresses it marks as build output, and leave the rest to a backup or a snapshot."
+            : "Open Storage, open the filesystem, and delete every path listed under each damaged address before rebuilding.",
+        view: "Storage",
+        target: cause.at ?? first,
+      };
+    }
+    case "new-errors":
+      return {
+        word: "Danger",
+        title: `New errors on ${mounts} since the last check`,
+        // The numbers belong to one filesystem. Naming several gives the
+        // sentence without them rather than one filesystem's as the whole.
+        detail: [
+          paths === 1
+            ? `The counter grew${v.since == null ? "" : ` ${age(v.since)} ago`}${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}, and the last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
+            : "Each of these counters grew after the last check that read its filesystem end to end, so no check has said what the damage cost. Open each one for its own times.",
+        ],
+        next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
+        view: "Storage",
+        target: cause.at ?? first,
+        headline: `Danger: new errors on ${mounts}, unchecked since`,
+      };
+    case "integrity-unknown":
+      return {
+        word: "Unknown",
+        title: `${paths} ${p(paths, "filesystem cannot", "filesystems cannot")} report whether ${p(paths, "its", "their")} data is sound: ${mounts}`,
+        detail: [
+          "A check report, or a counter the state depends on, could not be read. The filesystem is not reported healthy on a reading vsys does not have.",
+        ],
+        next: "Open Storage and read the report under that filesystem, then check the report directory and the error memory file.",
+        view: "Storage",
+        target: cause.at ?? first,
+      };
+    case "unchecked": {
+      const never = v.never ?? 0;
+      return {
+        word: "Unknown",
+        // One card can name filesystems in both states. Where it does, the
+        // title counts them apart rather than calling every one of them never
+        // checked, which would misstate the ones a timer did check.
+        title:
+          never === paths
+            ? `${count(never, "filesystem")} never checked for damage: ${mounts}`
+            : never === 0
+              ? `${paths} ${p(paths, "filesystem has", "filesystems have")} not been checked in ${age(v.oldest ?? 0)}: ${mounts}`
+              : `${count(paths, "filesystem")} unchecked for damage, ${never} of them never: ${mounts}`,
+        detail: [
+          `The error counter counts failed reads, not damaged files, so it stays flat while nothing reads the damage. Only a full check reads every block. The limit is ${count(v.limit, "day")}.`,
+        ],
+        next: "Run a check on each filesystem, or install the timer that writes a report into the report directory.",
+        view: "Storage",
+        target: cause.at ?? first,
+      };
+    }
     case "device-errors":
       return {
         word: "Danger",

@@ -11,6 +11,8 @@ One detection produces one cause. The ladder ranks the causes worst first, its f
 - A cause's `lanes`, `groups` and `paths` are its subjects, and each becomes its own alert. `at` names where a card should land without claiming that row went wrong, so a cause pointing at a scope does not open an alert for it.
 - `consumerName()` is the one place a cgroup becomes a name a reader reads: the lane name where the group is a lane, otherwise the decoded unit name.
 - `sliceSum()` totals a slice from its root groups, and the ladder, the meters and the history point all read it.
+- `integrities()` in `src/model/integrity.ts` is the one reading of whether a filesystem's data is damaged. Four causes read it, one per non-ok state, and so does Storage, so a card and a line cannot disagree about one filesystem.
+- A report the damaged-files cause already speaks for raises no second card of its own: that cause names the filesystem and its files, where the scrub cause can only name a report path.
 
 ## Invariants
 
@@ -25,3 +27,4 @@ One detection produces one cause. The ladder ranks the causes worst first, its f
 9. One cause produces one attention card whatever the number of lanes, and every card ends with a next step of its own. `src/ui/attention.test.ts` checks nine stalling lanes and every card kind.
 10. Source read failures are not a machine problem and raise no card. `src/ui/attention.test.ts` checks them.
 11. A recorded event alone does not become a current concern. `src/ui/attention.test.ts` checks resolved events and missing source data.
+12. Every integrity state but healthy and checking raises a card, so Home can never read healthy while Storage reads otherwise about the same filesystem. `src/model/verdict.test.ts` drives one snapshot per state through the ladder and checks that a filesystem checked and found sound raises nothing.
