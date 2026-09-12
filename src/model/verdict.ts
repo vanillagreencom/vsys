@@ -11,6 +11,7 @@ export type CauseId =
   | "unconfined"
   | "read-only"
   | "damaged-files"
+  | "new-errors"
   | "device-errors"
   | "disk"
   | "desktop-swap"
@@ -22,6 +23,7 @@ export type CauseId =
   | "memory-high"
   | "scrub"
   | "unchecked"
+  | "integrity-unknown"
   | "scratch";
 /**
  * The order that breaks a tie between two causes of one severity, worst first.
@@ -33,18 +35,20 @@ export const causeOrder: Record<CauseId, number> = {
   unconfined: 0,
   "read-only": 1,
   "damaged-files": 2,
-  "device-errors": 3,
-  disk: 4,
-  "desktop-swap": 5,
-  "free-space": 6,
-  "memory-cap": 7,
-  stalls: 8,
-  "system-memory": 9,
-  "system-cpu": 10,
-  "memory-high": 11,
-  scrub: 12,
-  unchecked: 13,
-  scratch: 14,
+  "new-errors": 3,
+  "device-errors": 4,
+  disk: 5,
+  "desktop-swap": 6,
+  "free-space": 7,
+  "memory-cap": 8,
+  stalls: 9,
+  "system-memory": 10,
+  "system-cpu": 11,
+  "memory-high": 12,
+  scrub: 13,
+  unchecked: 14,
+  "integrity-unknown": 15,
+  scratch: 16,
 };
 export function causeRank(id: CauseId): number {
   return causeOrder[id];
@@ -263,6 +267,21 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       },
     });
   }
+  // The counter grew and nothing has read the filesystem since, so no check
+  // has confirmed what that growth cost. This is the reading that was missing.
+  const grown = filesystems.filter((item) => item.state === "new-errors");
+  if (grown.length)
+    add("new-errors", "danger", {
+      paths: grown.map((item) => item.mounts[0] ?? item.device),
+      at: { kind: "path", path: grown[0].id },
+      consumer: grown[0].mounts[0] ?? grown[0].device,
+      values: {
+        filesystems: grown.length,
+        size: grown[0].errorSize,
+        since: grown[0].errorAge,
+        checked: grown[0].checkAge,
+      },
+    });
   const failing = s.storage.volumes.filter((v) =>
     Object.values(v.delta).some((n) => n > 0),
   );
@@ -385,6 +404,16 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         oldest: Math.max(...unchecked.map((item) => item.checkAge ?? 0)),
         limit: c.scrubMaxAgeDays,
       },
+    });
+  // A filesystem whose state vsys could not read is not one it can pass over
+  // in silence: Storage says the state is unknown, and so must the verdict.
+  const opaque = filesystems.filter((item) => item.state === "unknown");
+  if (opaque.length)
+    add("integrity-unknown", "warn", {
+      paths: opaque.map((item) => item.mounts[0] ?? item.device),
+      at: { kind: "path", path: opaque[0].id },
+      consumer: opaque[0].mounts[0] ?? opaque[0].device,
+      values: { filesystems: opaque.length },
     });
   const large = s.storage.scratch.filter(
     (scratch) => scratch.bytes !== null && scratch.bytes > c.scratchQuota,

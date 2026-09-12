@@ -247,6 +247,26 @@ function copy(
         target: cause.at ?? first,
       };
     }
+    case "new-errors":
+      return {
+        word: "Danger",
+        title: `New errors on ${mounts} since the last check`,
+        detail: `The counter grew ${v.since === null ? "" : `${age(v.since)} ago`}${v.size === null || v.size === undefined ? "" : ` by ${count(v.size, "failed read")}`}, and the last full check ran ${v.checked === null || v.checked === undefined ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`,
+        next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
+        view: "Storage",
+        target: cause.at ?? first,
+        headline: `Danger: new errors on ${mounts}, unchecked since`,
+      };
+    case "integrity-unknown":
+      return {
+        word: "Unknown",
+        title: `${paths} ${p(paths, "filesystem cannot", "filesystems cannot")} report whether ${p(paths, "its", "their")} data is sound: ${mounts}`,
+        detail:
+          "A check report, or a counter the state depends on, could not be read. The filesystem is not reported healthy on a reading vsys does not have.",
+        next: "Open Storage and read the report under that filesystem, then check the report directory and the error memory file.",
+        view: "Storage",
+        target: cause.at ?? first,
+      };
     case "unchecked": {
       const never = v.never ?? 0;
       return {

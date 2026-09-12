@@ -266,3 +266,13 @@ test("a report stating a count twice cannot report clean", () => {
     ),
   ).toBe(true);
 });
+
+test("a count the report carries but cannot state cannot report clean", () => {
+  // The label is there once, and its value is not a number. Defaulting that
+  // to zero would call a malformed result clean.
+  expect(() =>
+    scrubProblem(
+      "Status: finished\n  Corrected:      0\n  Uncorrectable:  invalid\n",
+    ),
+  ).toThrow();
+});

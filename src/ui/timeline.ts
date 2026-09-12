@@ -8,6 +8,7 @@ const phrases: Record<CauseId, string> = {
   unconfined: "an agent ran outside the agent slice",
   "read-only": "a mount turned read-only",
   "damaged-files": "a check found damaged files",
+  "new-errors": "errors appeared after the last check",
   "device-errors": "device error counters grew",
   disk: "storage stalled tasks",
   "desktop-swap": "the desktop swapped out",
@@ -19,6 +20,8 @@ const phrases: Record<CauseId, string> = {
   "memory-high": "a group neared its memory threshold",
   scrub: "a scrub reported a problem",
   unchecked: "a filesystem went unchecked for damage",
+  "integrity-unknown":
+    "a filesystem could not report whether its data is sound",
   scratch: "scratch data passed its quota",
 };
 export function causePhrase(cause: CauseId | ""): string {

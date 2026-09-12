@@ -6,7 +6,7 @@ import { ErrorMemory } from "./errors";
 import { pairs, type Reader } from "./io";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
-import { parseScrub, stated } from "./scrub";
+import { counted, parseScrub, stated } from "./scrub";
 import type { CollectionConfig } from "./settings";
 
 /** Either a mount restriction or a superblock restriction makes a mount read-only. */
@@ -30,12 +30,12 @@ export function scrubProblem(raw: string): boolean {
   // report carries them. A label it states more than once, as a per-device
   // listing does, holds no single count: reading the first would let one
   // device's zero speak for a filesystem another device found damage on.
-  const counted = ["Corrected", "Uncorrectable"].filter(
+  const labels = ["Corrected", "Uncorrectable"].filter(
     (name) => stated(raw, name) > 0,
   );
-  if (counted.some((name) => stated(raw, name) > 1))
-    throw new Error("Scrub result states a count more than once");
-  if (counted.length) {
+  if (labels.some((name) => !counted(raw, name)))
+    throw new Error("Scrub result states a count it does not carry");
+  if (labels.length) {
     const report = parseScrub(raw);
     return (report.corrected ?? 0) > 0 || (report.uncorrectable ?? 0) > 0;
   }

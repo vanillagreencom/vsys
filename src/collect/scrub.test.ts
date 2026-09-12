@@ -102,3 +102,15 @@ test("a field the report states twice holds no single reading", () => {
   expect(twice.corrected).toBeNull();
   expect(twice.status).toBe("finished");
 });
+
+test("an address-shaped line outside the section names no file", () => {
+  // The older format carries no damaged-file section. A prose line shaped
+  // like an address must not become damage with a delete command attached.
+  const report = parseScrub(`btrfs scrub finished: /
+Status:           finished
+Error summary:    no errors found
+logical 953118621696:
+  /repo/target/debug/x
+`);
+  expect(report.addresses).toBeNull();
+});

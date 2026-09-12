@@ -53,6 +53,14 @@ const number = (raw: string, name: string): number | null => {
   const value = Number(text.match(/^\d+/)?.[0]);
   return Number.isFinite(value) ? value : null;
 };
+/**
+ * Whether a labelled count is a reading. A label the report states more than
+ * once, or states with something that is not a number, carries no count, and
+ * a caller defaulting that to zero would call a malformed report clean.
+ */
+export function counted(raw: string, name: string): boolean {
+  return stated(raw, name) === 1 && number(raw, name) !== null;
+}
 
 /**
  * Read a report. Unknown text is not an error here: `scrubProblem` is what
@@ -67,7 +75,10 @@ export function parseScrub(raw: string): ScrubReport {
   const damaged = lines.some((line) => /^Damaged files:/.test(line));
   let addresses: DamagedAddress[] | null = damaged ? [] : null;
   let current: DamagedAddress | null = null;
-  for (const line of lines) {
+  // Only a report that opened the section holds addresses. Without it a prose
+  // line shaped like an address would become damage with a delete command,
+  // where the contract says a report with no section names no file at all.
+  for (const line of damaged ? lines : []) {
     const heading = line.match(/^logical (\d+):\s*$/);
     if (heading) {
       current = { logical: Number(heading[1]), paths: [] };

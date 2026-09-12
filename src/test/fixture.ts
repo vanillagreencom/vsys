@@ -321,9 +321,25 @@ export function everyCauseSnapshot(c: Config): Snapshot {
     volumeSnapshot("/bad", { delta: { "x/corruption_errs": 1 } }),
     volumeSnapshot("/full", { free: 5, total: 100 }),
   ];
-  // A filesystem whose last check found damage, and one nothing has checked:
-  // the mounts above carry no report, so they raise the unchecked cause.
-  s.storage.volumes.push(volumeSnapshot("/damaged", { fsid: "damaged-fs" }));
+  // One filesystem per storage-integrity state: damage found, errors since
+  // the last check, a state that could not be read, and the mounts above,
+  // which carry no report at all and so read as never checked.
+  const counters = { "1/corruption_errs": 1 };
+  s.storage.volumes.push(
+    volumeSnapshot("/damaged", { fsid: "damaged-fs" }),
+    volumeSnapshot("/grown", {
+      fsid: "grown-fs",
+      errors: counters,
+      countersAvailable: true,
+      lastErrorAt: s.time - 1000,
+      lastErrorSize: 26,
+    }),
+    volumeSnapshot("/opaque", {
+      fsid: "opaque-fs",
+      errors: counters,
+      countersAvailable: true,
+    }),
+  );
   const bytes = c.scratchQuota + 1;
   s.storage.scrubs = [
     { path: "/scrub", text: "errors", problem: true },
@@ -336,6 +352,7 @@ export function everyCauseSnapshot(c: Config): Snapshot {
       startedAt: s.time - 3600000,
       status: "finished",
       uncorrectable: 26,
+      corrected: 0,
       addresses: [
         {
           logical: 953118621696,
@@ -346,6 +363,30 @@ export function everyCauseSnapshot(c: Config): Snapshot {
         },
         { logical: 1597612883968, paths: ["/home/reader/letter.txt"] },
       ],
+    },
+    {
+      path: "/scrub-grown",
+      text: "Error summary: no errors found",
+      problem: false,
+      readable: true,
+      fsid: "grown-fs",
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    },
+    {
+      path: "/scrub-opaque",
+      text: "something no parser knows",
+      problem: true,
+      readable: false,
+      fsid: "opaque-fs",
+      startedAt: null,
+      status: null,
+      uncorrectable: null,
+      corrected: null,
+      addresses: null,
     },
   ];
   s.storage.scratch = [{ path: "/scratch", bytes, age: 0, error: null }];
