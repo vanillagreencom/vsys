@@ -31,9 +31,9 @@ test("notification settings select rules and pass messages as literal arguments"
       .map((line) => JSON.parse(line));
     expect(calls).toEqual([
       [
-        "--app-name=vsys-view",
+        "--app-name=vsys",
         "--",
-        "vsys-view: btrfs-ro",
+        "vsys: btrfs-ro",
         "literal; $(touch must-not-exist)",
       ],
     ]);

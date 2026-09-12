@@ -179,7 +179,7 @@ export class History {
           );
         } else if (application !== 0x56535953 || version !== 1) {
           throw new Error(
-            "SQLite path is not a supported vsys-view history database",
+            "SQLite path is not a supported vsys history database",
           );
         }
         this.db.exec("PRAGMA journal_mode=WAL");

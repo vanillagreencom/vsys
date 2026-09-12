@@ -120,13 +120,13 @@ export interface Config {
   writeMode: boolean;
   keys: Record<string, string>;
 }
-export const configPath = join(homedir(), ".config/vsys-view/config.toml");
+export const configPath = join(homedir(), ".config/vsys/config.toml");
 export function defaults(): Config {
   return {
     refreshMs: 1000,
     historyHours: 24,
     persistence: false,
-    sqlitePath: join(homedir(), ".local/state/vsys-view/history.db"),
+    sqlitePath: join(homedir(), ".local/state/vsys/history.db"),
     cgroupRoot: `/sys/fs/cgroup/user.slice/user-${process.getuid?.() ?? 1000}.slice/user@${process.getuid?.() ?? 1000}.service`,
     cgroupTop: "/sys/fs/cgroup",
     procRoot: "/proc",

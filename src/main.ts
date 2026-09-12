@@ -24,12 +24,12 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   });
   if (values.help) {
     console.log(
-      "vsys-view [--once] [--markdown] [--config PATH]\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
+      "vsys [--once] [--markdown] [--config PATH]\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
     );
     return;
   }
   if (process.platform !== "linux")
-    throw new Error("vsys-view requires Linux with cgroup v2");
+    throw new Error("vsys requires Linux with cgroup v2");
   if (values.markdown && !values.once)
     throw new Error("--markdown requires --once");
   if (values.config === "") throw new Error("Config path cannot be empty");
@@ -85,7 +85,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
     if (errors.length) {
-      console.error(`vsys-view shutdown: ${errors.map(String).join("; ")}`);
+      console.error(`vsys shutdown: ${errors.map(String).join("; ")}`);
       process.exitCode = 1;
     }
   }
@@ -94,7 +94,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     onSave: (next) => session.configure(next),
     onExport: async (snapshot, format) => {
       const file = resolve(
-        `vsys-view-${new Date(snapshot.time).toISOString().replaceAll(":", "-")}-${crypto.randomUUID()}.${format === "json" ? "json" : "md"}`,
+        `vsys-${new Date(snapshot.time).toISOString().replaceAll(":", "-")}-${crypto.randomUUID()}.${format === "json" ? "json" : "md"}`,
       );
       await writeFile(file, exportSnapshot(snapshot, format), {
         flag: "wx",
@@ -117,9 +117,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     frame: screen.update,
     error: (error) => {
       stop();
-      console.error(
-        `vsys-view: ${error instanceof Error ? error.message : error}`,
-      );
+      console.error(`vsys: ${error instanceof Error ? error.message : error}`);
       process.exitCode = 1;
     },
   });
@@ -130,6 +128,6 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
 if (import.meta.main)
   main().catch((error) => {
-    console.error(`vsys-view: ${error.message}`);
+    console.error(`vsys: ${error.message}`);
     process.exitCode = 1;
   });

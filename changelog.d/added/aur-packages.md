@@ -1,0 +1,1 @@
+- Arch Linux users can install `vsys` from the AUR, or `vsys-git` to track the main branch.

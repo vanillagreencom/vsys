@@ -1,0 +1,7 @@
+# byte-ceiling exclusion list — pattern<TAB>reason (gitignore-style against the
+# repo-relative path; ** crosses /).
+#
+# Named INDIVIDUALLY, never by a tree wildcard, so a future large file under the
+# same directory still has to be looked at before it can arrive.
+
+docs/media/vsys-tour.gif	the README's screen tour — a 15-frame recording of all seven screens at 2288x1432, which is the only look a reader gets at vsys before installing it

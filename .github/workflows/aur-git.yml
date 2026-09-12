@@ -1,0 +1,33 @@
+name: AUR vsys-git
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "packaging/vsys-git/**"
+      - "package.json"
+      - "bun.lock"
+      - ".bun-version"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aur:
+    name: Update vsys-git
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the packaging tools
+        run: pacman -Sy --noconfirm --needed git openssh pacman-contrib
+      - name: Publish vsys-git to the AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: packaging/publish-aur.sh vsys-git

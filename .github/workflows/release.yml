@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, as v<version>"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  create:
+    name: Draft the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check the tag shape
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::Tag must look like v<version>, got '$TAG'"; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; reusing it."
+          else
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" \
+              --notes "See CHANGELOG.md for the entries in this release."
+          fi
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: create
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - name: Check that package.json matches the tag
+        run: |
+          want="${TAG#v}"
+          have=$(bun -e 'console.log(require("./package.json").version)')
+          if [ "$want" != "$have" ]; then
+            echo "::error::Tag $TAG expects package.json version $want, found $have"
+            exit 1
+          fi
+      - name: Build the standalone binary
+        run: |
+          bun install --frozen-lockfile
+          bun build src/main.ts --compile --outfile vsys
+          ./vsys --help >/dev/null
+      - name: Pack the archive
+        run: |
+          asset="vsys-${TAG}-linux-${{ matrix.arch }}.tar.gz"
+          mkdir -p stage
+          cp vsys LICENSE README.md stage/
+          tar -czf "$asset" -C stage vsys LICENSE README.md
+          sha256sum "$asset" > "${asset}.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+      - name: Upload the archive to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ASSET" "${ASSET}.sha256" --clobber
+
+  publish:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: Combine the checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p sums && cd sums
+          gh release download "$TAG" --pattern '*.sha256' --dir .
+          cat ./*.sha256 | sort -k2 > ../SHA256SUMS
+          cd .. && cat SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 2
+          gh release upload "$TAG" SHA256SUMS --clobber
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --draft=false --latest
+
+  aur:
+    name: Update the AUR package
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: Install the packaging tools
+        run: pacman -Sy --noconfirm --needed git openssh curl pacman-contrib
+      - name: Publish vsys to the AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: packaging/publish-aur.sh vsys "${TAG#v}"
