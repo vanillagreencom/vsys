@@ -8,7 +8,7 @@ import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
 import { Agent, AgentSummary } from "./agent";
-import { narrowWidth, wideWidth } from "./chrome";
+import { narrowWidth, screenPad, wideWidth } from "./chrome";
 import {
   type Column,
   cell,
@@ -692,13 +692,13 @@ export function Agents({
         onSwitch={onSwitch}
       />
     ) : (
-      <box paddingX={2}>
+      <box paddingX={screenPad}>
         <Line attributes={ui.dim}>This agent is no longer in the sample.</Line>
       </box>
     );
   if (chooser)
     return (
-      <box flexDirection="column" paddingX={2}>
+      <box flexDirection="column" paddingX={screenPad}>
         <Line height={1} truncate attributes={ui.dim}>
           {`Table columns · ${c.keys.open} shows or hides · ${c.keys.back} done`}
         </Line>
@@ -724,7 +724,13 @@ export function Agents({
   const sortLabel = `${columnLabels[c.sort] ?? c.sort} ${c.descending ? "↓" : "↑"}`;
   const topCpu = Math.max(100, ...lanes.map((l) => l.cpu ?? 0));
   return (
-    <box flexDirection="row" flexGrow={1} minHeight={0} paddingX={2} gap={3}>
+    <box
+      flexDirection="row"
+      flexGrow={1}
+      minHeight={0}
+      paddingX={screenPad}
+      gap={3}
+    >
       <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
         <Line height={1} flexShrink={0} truncate>
           <span

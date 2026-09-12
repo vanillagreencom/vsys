@@ -8,7 +8,7 @@ import {
 import { safe } from "../model/export";
 import type { Capability, CapabilityId, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
-import { keyLabel, wideWidth } from "./chrome";
+import { keyLabel, screenPad, wideWidth } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { useScreenKeys } from "./keys";
 import {
@@ -442,7 +442,7 @@ export function Settings({
       scrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
-      <box flexDirection="column" flexShrink={0} paddingX={2}>
+      <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
         {searching && (
           <box
             height={3}

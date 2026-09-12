@@ -26,10 +26,12 @@ import { attention, type Target, verdictItem } from "./attention";
 import { Builds } from "./builds-screen";
 import {
   Confirm,
+  detailWidth,
   Footer,
   Header,
   Help,
   keyLabel,
+  screenWidth,
   tabsFitOneRow,
   type View,
   viewKey,
@@ -208,7 +210,7 @@ export function App({
   const handlers = useRef(new Set<KeyHandler>()).current;
   const { width, height } = useTerminalDimensions();
   const shown = pinned ?? snapshot;
-  const issues = attention(snapshot, c);
+  const issues = attention(snapshot, c, { width: detailWidth(width) });
   const points = history.window(snapshot.time, windows[windowIndex]);
   const notice = useCallback(
     (text: string, level: Level = "ok") => setToast({ text, level }),
@@ -406,7 +408,7 @@ export function App({
         points={points}
         windowMs={windows[windowIndex]}
         selection={homeSelection}
-        width={width - 4}
+        width={screenWidth(width)}
         height={contentHeight}
         onSelect={setHomeSelection}
         onCopy={copy}
@@ -459,7 +461,7 @@ export function App({
         snapshot={shown}
         config={c}
         height={contentHeight}
-        width={width - 4}
+        width={screenWidth(width)}
       />
     );
   else if (view === "Storage")
@@ -467,7 +469,7 @@ export function App({
       <Storage
         snapshot={shown}
         config={c}
-        width={width - 4}
+        width={screenWidth(width)}
         target={target?.kind === "path" ? target.path : null}
         onTargetUsed={clearTarget}
         onNotice={notice}
@@ -495,7 +497,7 @@ export function App({
       <Settings
         snapshot={snapshot}
         config={c}
-        width={width - 4}
+        width={screenWidth(width)}
         onSave={onSave}
         onNotice={notice}
       />

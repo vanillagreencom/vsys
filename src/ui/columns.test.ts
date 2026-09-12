@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   type Column,
+  capLines,
   cell,
   columnGap,
   columnsWidth,
@@ -8,6 +9,7 @@ import {
   fitAddress,
   headerText,
   sortedLabel,
+  wrapLines,
 } from "./columns";
 
 test("a value is padded or cut to its width, and a cut is marked", () => {
@@ -130,4 +132,46 @@ test("a sorted heading puts its arrow where the column's own values end", () => 
       sortedLabel(column, sorted, descending),
     ]).toEqual(row);
   }
+});
+
+test("text wraps between words, and a word wider than the column is broken", () => {
+  expect(wrapLines("one two three four", 9)).toEqual([
+    "one two",
+    "three",
+    "four",
+  ]);
+  expect(wrapLines("", 10)).toEqual([]);
+  // A word with nowhere to break is broken at the column, not left to overrun.
+  expect(wrapLines("abcdefghij k", 4)).toEqual(["abcd", "efgh", "ij k"]);
+  // Code points, not UTF-16 units: an emoji is one column here, never two.
+  expect(wrapLines("😀😀😀 x", 3)).toEqual(["😀😀😀", "x"]);
+  // A column narrower than one character is a caller's mistake, not a wrap.
+  expect(() => wrapLines("x", 0)).toThrow("needs at least 1");
+});
+
+test("a capped text ends in the mark and fits the rows it was given", () => {
+  const text = "one two three four five six seven eight nine ten";
+  expect(capLines(text, 9, 6)).toBe(text);
+  const cut = capLines(text, 9, 2);
+  expect(cut).toBe("one two three…");
+  expect(wrapLines(cut, 9).length).toBe(2);
+  // The mark replaces the punctuation that ended the kept text, so a cut
+  // sentence never reads as one that stopped on its own.
+  expect(capLines("alpha, beta, gamma", 7, 1)).toBe("alpha…");
+  // A last row filling its width gives a column up to the mark rather than
+  // spilling one row further than it was given.
+  const full = capLines("alpha beta gamma delta", 10, 1);
+  expect(full).toBe("alpha bet…");
+  expect(wrapLines(full, 10).length).toBe(1);
+  // A cut text is the text, cut: a unit name too wide for the column is not
+  // rebuilt with the blank its wrapped rows were divided by.
+  const unit = "app-org.gnome.Terminal-9f2c4a1b.service holds it";
+  expect(capLines(unit, 20, 2)).toBe(
+    "app-org.gnome.Terminal-9f2c4a1b.service…",
+  );
+  expect(capLines(`x ${unit}`, 20, 3)).toBe(
+    "x app-org.gnome.Terminal-9f2c4a1b.service…",
+  );
+  expect(wrapLines(capLines(`x ${unit}`, 20, 3), 20)).toHaveLength(3);
+  expect(() => capLines(text, 9, 0)).toThrow("needs at least 1");
 });

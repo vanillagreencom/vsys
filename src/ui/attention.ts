@@ -1,9 +1,10 @@
 import type { Config } from "../config/config";
-import { launcherTrail } from "../model/launcher";
+import { launcherCopy, launcherTally } from "../model/launcher";
 import { laneText, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
+import { capLines, fit, wrapLines } from "./columns";
 import {
   amount,
   bytes,
@@ -50,24 +51,92 @@ export interface Attention {
   verdictWorthy: boolean;
 }
 /** The severity word, the sentence, and anything the headline says instead. */
-type Copy = Omit<Attention, "id" | "danger" | "headline" | "verdictWorthy"> & {
+type Copy = Omit<
+  Attention,
+  "id" | "danger" | "headline" | "verdictWorthy" | "detail"
+> & {
   word: string;
   headline?: string;
+  /** The ways this card offers of writing its detail, best first. */
+  detail: string[];
+  /** The sentence the detail ends with and gives up last: the lane names a
+   * cut title needs under it. Absent on a card that names no lane. */
+  keep?: string;
 };
-const list = (names: string[], limit = 4): string =>
+/** The names a title lists before it stops counting and says how many remain. */
+const listLimit = 4;
+const list = (names: string[], limit = listLimit): string =>
   names.length > limit
     ? `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`
     : names.join(", ");
+/**
+ * The rows a card's detail draws. A card the reader opens to learn what to do
+ * must leave `Next` and the command on the screen with it, and a detail that
+ * grows with the machine pushes both off a terminal of ordinary height.
+ */
+const detailLines = 6;
+/** The rows of that budget the list of affected lanes may take. */
+const laneLines = 2;
+/** The width card copy is measured at when the caller is not a screen. */
+const defaultDetailWidth = 80;
+/** The sentences of a detail, joined in the order they are written. */
+const join = (parts: string[]): string =>
+  parts.filter((part) => part !== "").join(" ");
+/**
+ * The detail a card draws: the first of the leads it offers that holds the
+ * budget beside `keep`, which is written after it. A caller lists its leads
+ * best first, so the order a card gives ground in reads where the copy is
+ * written. When none is short enough the shortest is cut to what `keep`
+ * leaves, and `keep` itself is cut last, so the budget holds at every width.
+ */
+function fitDetail(leads: string[], keep: string, width: number): string {
+  const rows = (text: string) => wrapLines(text, width).length;
+  const fits = leads.find((lead) => rows(join([lead, keep])) <= detailLines);
+  if (fits !== undefined) return join([fits, keep]);
+  const last = leads[leads.length - 1] ?? "";
+  if (keep === "") return capLines(last, width, detailLines);
+  const kept = capLines(keep, width, detailLines - 1);
+  return join([capLines(last, width, detailLines - rows(kept)), kept]);
+}
+/**
+ * Every affected lane, behind the head its card writes, for a detail that
+ * opens under a title a narrow row cut. What it cannot fit it counts.
+ */
+function laneSentence(names: string[], width: number, head: string): string {
+  const whole = `${head}${names.join(", ")}.`;
+  if (wrapLines(whole, width).length <= laneLines) return whole;
+  // One name is the whole sentence, and there is no second name to count, so
+  // it is cut with the mark rather than followed by a count of nothing.
+  if (names.length === 1) return capLines(whole, width, laneLines);
+  const shortened = (keep: number) =>
+    `${head}${names.slice(0, keep).join(", ")} and ${names.length - keep} more.`;
+  for (let keep = names.length - 1; keep >= 1; keep--)
+    if (wrapLines(shortened(keep), width).length <= laneLines)
+      return shortened(keep);
+  // Not even one name fits beside the count of the rest. The name gives way
+  // and the count stays: the names are on the screen Enter opens, the count
+  // of how many there are is only here.
+  const rest = ` and ${names.length - 1} more.`;
+  const named = (room: number) => `${fit(`${head}${names[0]}`, room)}${rest}`;
+  let room = laneLines * width - [...rest].length;
+  while (room > 1 && wrapLines(named(room), width).length > laneLines) room--;
+  return named(room);
+}
 
 /** Every word and every formatted number the Overview shows lives here. */
-function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
+function copy(
+  cause: Cause,
+  s: Snapshot,
+  c: Config,
+  basePath: string[],
+  width: number,
+): Copy {
   const b = (n: number | null | undefined) => bytes(n, c);
   const v = cause.values;
   const n = cause.lanes.length;
-  const names = list(cause.lanes.map(laneText));
-  // Every lane, in full, for a detail that opens under a title a narrow row
-  // cuts: the title's own list stops at four.
-  const every = `${p(n, "Lane", "Lanes")}: ${cause.lanes.map(laneText).join(", ")}.`;
+  const laneNames = cause.lanes.map(laneText);
+  const names = list(laneNames);
+  const every = laneSentence(laneNames, width, `${p(n, "Lane", "Lanes")}: `);
   const mounts = list(cause.paths);
   const lane: Target | undefined =
     n === 1 ? { kind: "lane", id: cause.lanes[0].id } : undefined;
@@ -85,19 +154,47 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
   const paths = cause.paths.length;
   switch (cause.id) {
     case "unconfined": {
-      const trails = s.procs
-        .filter(
-          (x) => x.tool && cause.lanes.some((l) => l.pids.includes(x.pid)),
-        )
-        .map((x) => launcherTrail(x, s.procs, c, basePath));
+      const escaped = s.procs.filter(
+        (x) => x.tool && cause.lanes.some((l) => l.pids.includes(x.pid)),
+      );
+      const groups = launcherCopy(escaped, s.procs, c, basePath);
+      const said = groups.map((g) => g.conclusion);
+      const processHead = `${escaped.length} processes in ${n} ${p(n, "lane", "lanes")}: `;
+      // What a narrow panel gives up, in order: the ancestor chains, then a
+      // conclusion at a time from the last. The first conclusion and the lane
+      // sentence are what the card exists to say. Every conclusion given up is
+      // counted, including one whose cgroup another conclusion still names.
+      const rungs = [
+        join(groups.map((g) => `${g.conclusion}${g.started}`)),
+        join(said),
+      ];
+      for (let kept = said.length - 1; kept >= 1; kept--) {
+        const gone = said.length - kept;
+        rungs.push(
+          join([
+            ...said.slice(0, kept),
+            `And ${gone} more ${p(gone, "group", "groups")} of processes not written here.`,
+          ]),
+        );
+      }
+      // At the floor a panel can be, one whole conclusion and the count of
+      // what went do not fit in the rows left beside the lane sentence. The
+      // last rung states every conclusion as a count instead, so what the
+      // card shows there is whole rather than a sentence the cut ended.
+      rungs.push(launcherTally(groups));
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane runs", "lanes run")} outside ${c.agentSlice}: ${names}`,
-        detail: `${
-          trails.length
-            ? trails.map((t) => t.summary).join(" ")
-            : `${c.agentSlice} limits do not apply to these processes.`
-        } ${every}`,
+        detail: groups.length
+          ? rungs
+          : [`${c.agentSlice} limits do not apply to these processes.`],
+        // The title counts lanes and the sentences above count processes, so
+        // the sentence naming the lanes states both counts rather than leave
+        // a reader to doubt either.
+        keep:
+          escaped.length > n
+            ? laneSentence(laneNames, width, processHead)
+            : every,
         next: `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`,
         command: shellLine([
           "systemd-run",
@@ -115,7 +212,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Danger",
         title: `${paths} ${p(paths, "mount is", "mounts are")} read-only: ${mounts}`,
-        detail: "Programs cannot save changes on these mounts.",
+        detail: ["Programs cannot save changes on these mounts."],
         next: "Open Storage, then check the kernel log for the error that forced the mount read-only.",
         view: "Storage",
         target: first,
@@ -124,7 +221,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Danger",
         title: `New device errors on ${mounts}`,
-        detail: `Error counters on ${cause.consumer} increased since the previous sample.`,
+        detail: [
+          `Error counters on ${cause.consumer} increased since the previous sample.`,
+        ],
         next: "Open Storage and read the per-device counters before writing more data to these devices.",
         view: "Storage",
         target: first,
@@ -138,7 +237,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `Disk I/O ${cause.level === "danger" ? "saturated" : "stalling tasks"}: ${cause.consumer} writing ${b(v.writeRate)}/s`,
-        detail: `Tasks stalled on storage ${percent(v.some)} of the recent window, ${percent(v.full)} of it with nothing else to run${v.linkers ? `, with ${count(v.linkers, "linker")} running in that lane` : ""}.${v.stalling ? ` Waiting on storage: ${names}.` : ""}`,
+        detail: [
+          `Tasks stalled on storage ${percent(v.some)} of the recent window, ${percent(v.full)} of it with nothing else to run${v.linkers ? `, with ${count(v.linkers, "linker")} running in that lane` : ""}.${v.stalling ? ` Waiting on storage: ${names}.` : ""}`,
+        ],
         next: writer
           ? "Lower the build job count for that lane until the stall percentage falls."
           : "Open Resources and find what is writing in that scope, then reduce its work.",
@@ -159,7 +260,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
         word: "Slow",
         headline: `Slow: desktop swapped out, agents hold ${b(v.cache)} of page cache`,
         title: `Desktop swapped out: ${b(v.swap)} in ${c.desktopSlice}`,
-        detail: `${cause.consumer ? `${cause.consumer} holds ${b(v.holder)}. ` : ""}Agents hold ${b(v.cache)} of page cache, which the desktop cannot use.`,
+        detail: [
+          `${cause.consumer ? `${cause.consumer} holds ${b(v.holder)}. ` : ""}Agents hold ${b(v.cache)} of page cache, which the desktop cannot use.`,
+        ],
         next: "Reduce concurrent build work, or cap the agent slice memory so the desktop keeps its pages.",
         command: shellLine([
           "cat",
@@ -172,7 +275,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Danger",
         title: `${cause.consumer} has ${b(v.free)} free of ${b(v.total)}`,
-        detail: `Free space is below the configured floor of ${b(c.freeFloor)}.`,
+        detail: [
+          `Free space is below the configured floor of ${b(c.freeFloor)}.`,
+        ],
         next: "Open Storage and remove build output or scratch data from that filesystem.",
         view: "Storage",
         target: cause.consumer
@@ -183,7 +288,8 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane has", "lanes have")} a memory limit below ${b(v.floor)}: ${names}`,
-        detail: `The limit can stop work before it finishes. ${every}`,
+        detail: ["The limit can stop work before it finishes."],
+        keep: every,
         next: "Open the lane and check its effective memory.max against the parent slices.",
         command: shellLine([
           "systemctl",
@@ -200,7 +306,10 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `${n} ${p(n, "lane is", "lanes are")} stalling on a resource: ${names}`,
-        detail: `Highest stall share ${percent(v.worst)} of the recent window. ${every}`,
+        detail: [
+          `Highest stall share ${percent(v.worst)} of the recent window.`,
+        ],
+        keep: every,
         next: "Open Agents and compare the CPU, memory and I/O pressure columns to find which resource is short.",
         view: "Agents",
         target: lane,
@@ -209,7 +318,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Slow",
         title: `Memory reclaim stalls tasks ${percent(v.some)} of the recent window`,
-        detail: `${cause.consumer ? `${cause.consumer} holds the most swap.` : "No scope holds swap yet, so reclaim is dropping page cache."}${n ? ` Waiting on memory: ${names}.` : ""}`,
+        detail: [
+          `${cause.consumer ? `${cause.consumer} holds the most swap.` : "No scope holds swap yet, so reclaim is dropping page cache."}${n ? ` Waiting on memory: ${names}.` : ""}`,
+        ],
         next: "Open Resources and reduce the work in the group with the largest memory use.",
         view: "Resources",
         target: group,
@@ -218,7 +329,9 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Slow",
         title: `Tasks wait for CPU ${percent(v.some)} of the recent window${cause.consumer ? `, busiest lane ${cause.consumer}` : ""}`,
-        detail: `${cause.consumer ? `${cause.consumer} is the busiest lane.` : "No lane is running, so the load is outside the watched slices."}${n ? ` Waiting on CPU: ${names}.` : ""}`,
+        detail: [
+          `${cause.consumer ? `${cause.consumer} is the busiest lane.` : "No lane is running, so the load is outside the watched slices."}${n ? ` Waiting on CPU: ${names}.` : ""}`,
+        ],
         next: "Open Agents and sort by CPU to find the lane to pause.",
         view: "Agents",
       };
@@ -227,7 +340,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Busy",
         title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => unitLabel(g.name)))}`,
-        detail: "Memory reclaim can slow every task in these groups.",
+        detail: ["Memory reclaim can slow every task in these groups."],
         next: "Open Resources and raise memory.high, or reduce the work running there.",
         view: "Resources",
         target: group,
@@ -237,7 +350,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Danger",
         title: `${paths} filesystem ${p(paths, "scrub reports a problem", "scrubs report problems")}`,
-        detail: mounts,
+        detail: [mounts],
         next: "Open Storage and read the scrub report.",
         view: "Storage",
         target: first,
@@ -246,7 +359,7 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Busy",
         title: `${paths} scratch ${p(paths, "directory exceeds", "directories exceed")} the quota: ${mounts}`,
-        detail: `Largest ${b(v.largest)} against a quota of ${b(v.quota)}.`,
+        detail: [`Largest ${b(v.largest)} against a quota of ${b(v.quota)}.`],
         next: "Open Storage and remove the scratch directories that finished work no longer needs.",
         view: "Storage",
         target: first,
@@ -260,16 +373,25 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
 export function attention(
   s: Snapshot,
   c: Config,
-  basePath: string[] = (process.env.PATH ?? "").split(":"),
+  o: { basePath?: string[]; width?: number } = {},
 ): Attention[] {
+  const basePath = o.basePath ?? (process.env.PATH ?? "").split(":");
+  const width = o.width ?? defaultDetailWidth;
   return causes(s, c).map((cause) => {
-    const { word, headline, ...rest } = copy(cause, s, c, basePath);
+    const { word, headline, keep, ...rest } = copy(
+      cause,
+      s,
+      c,
+      basePath,
+      width,
+    );
     return {
       id: cause.id,
       danger: cause.level === "danger",
       verdictWorthy: cause.verdictWorthy,
       headline: headline ?? `${word}: ${rest.title}`,
       ...rest,
+      detail: fitDetail(rest.detail, keep ?? "", width),
     };
   });
 }

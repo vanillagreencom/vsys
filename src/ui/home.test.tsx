@@ -7,6 +7,7 @@ import type { TimelineEvent } from "../store/events";
 import { History } from "../store/history";
 import {
   emptySnapshot,
+  escapedSnapshot,
   everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
@@ -35,7 +36,7 @@ test("Home lists every concern first, then the busiest agents, capped", () => {
       laneSnapshot({ id: `x${i}`, name: `x${i}`, cpu: 100 + i }),
     ),
   ];
-  const items = attention(s, c, ["/usr/bin"]);
+  const items = attention(s, c, { basePath: ["/usr/bin"] });
   const rows = homeItems(items, s);
   expect(rows.slice(0, items.length).every((r) => r.kind === "concern")).toBe(
     true,
@@ -987,7 +988,7 @@ test("a remediation command is copy text, never an action to run", async () => {
     await t.ui.renderOnce();
     // The card offers the command as something to copy. Nothing on this screen
     // runs it, which is what keeps a read-only dashboard read-only.
-    const item = attention(s, c, ["/usr/bin"]).find(
+    const item = attention(s, c, { basePath: ["/usr/bin"] }).find(
       (i) => i.command !== undefined,
     );
     expect(item?.command).toBeDefined();
@@ -1456,5 +1457,45 @@ test("a sample leaves a Home reader where they scrolled to", async () => {
     expect(band()).toBe(wheeled);
   } finally {
     await t.close();
+  }
+});
+
+test("an open card keeps its next step and its command on an ordinary screen", async () => {
+  const c = defaults();
+  // A machine whose agents were all started outside the agent slice: the card
+  // has a sentence's worth of trail for each of two scopes and a lane list
+  // that grows with every one of them.
+  const s = escapedSnapshot({ lanes: 5, perLane: 2 });
+  for (const size of [
+    { width: 80, height: 32 },
+    { width: 160, height: 36 },
+  ]) {
+    const t = await mount(s, c, size);
+    try {
+      await t.ui.renderOnce();
+      const rows = t.frame().split("\n");
+      const card = rows.findIndex((row) => row.includes("▾"));
+      const next = rows.findIndex((row) => row.includes("Next "));
+      const copied = rows.findIndex((row) =>
+        row.includes("systemd-run --user --slice=agents.slice"),
+      );
+      // The two lines the reader acts on are the two a detail must not push
+      // off the screen, however many processes escaped.
+      expect(card).toBeGreaterThan(0);
+      expect(next).toBeGreaterThan(card);
+      expect(copied).toBeGreaterThan(next);
+      // The detail between the card and its next step draws six rows, which
+      // is what leaves room for the two lines under it.
+      expect(next - card - 1).toBe(6);
+      // In those six rows it names both scopes once each, and still holds the
+      // lane names the cut title above it lost.
+      const detail = rows.slice(card + 1, next).join(" ");
+      expect(detail.split("Launched bare")).toHaveLength(3);
+      expect(detail).toContain("tmux-spawn-0.scope");
+      expect(detail).toContain("tmux-spawn-1.scope");
+      expect(detail).toContain("10 processes in 5 lanes: kendex agent-0 PID");
+    } finally {
+      await t.close();
+    }
   }
 });

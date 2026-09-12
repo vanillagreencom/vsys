@@ -38,6 +38,23 @@ export const viewKey = (view: View): string => view.toLowerCase();
 export const narrowWidth = 100;
 /** The width at or above which a screen can hold two columns side by side. */
 export const wideWidth = 150;
+/** The columns a screen's own padding takes from each side of the terminal. */
+export const screenPad = 2;
+/** The columns a screen draws into: the terminal row less that padding. */
+export const screenWidth = (width: number): number => width - screenPad * 2;
+/** The columns one of Home's panels has, which is the whole row when narrow. */
+export const panelWidth = (width: number): number =>
+  width >= wideWidth ? Math.floor((width - 3) / 2) : width;
+/** The columns a `Detail` block gives up to its rule and the indent after it. */
+export const detailIndent = 2;
+/**
+ * The columns a card's detail draws into, from the terminal width: the screen
+ * padding, then the panel it sits in, then the rule and indent of the block
+ * that draws it. Card copy is measured here, so the words a card writes and
+ * the room it has to write them cannot disagree.
+ */
+export const detailWidth = (width: number): number =>
+  Math.max(20, panelWidth(screenWidth(width)) - detailIndent);
 /** The columns each tab takes: its key, a space, and that view's own name. */
 const tabWidths = (c: Config): number[] =>
   views.map((v) => [...c.keys[viewKey(v)]].length + 1 + [...v].length);

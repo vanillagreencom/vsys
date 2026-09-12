@@ -16,7 +16,7 @@ import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
 import { laneBadge, laneLevel } from "./agents";
-import { keyLabel } from "./chrome";
+import { keyLabel, screenPad } from "./chrome";
 import { fit } from "./columns";
 import {
   age,
@@ -447,7 +447,7 @@ export function Agent({
       scrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
-      <box flexDirection="column" flexShrink={0} paddingX={2}>
+      <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
         <AgentIdentity lane={lane} snapshot={snapshot} config={c} />
         <box height={1} flexShrink={0} />
         <AgentTiles lane={lane} config={c} width={width - 4} />
