@@ -160,13 +160,18 @@ export interface Lane {
    */
   elsewhere: boolean;
   /**
-   * This lane's pane is the pane vsys is drawing in. Reading it would show
-   * vsys's own screen inside itself, one copy deeper on every sample, and
-   * switching to it would move a reader who is already there. Matched on the
-   * `%N` handle and on the resolved address alike, because a lane carries
-   * whichever of the two its own environment held.
+   * Whether this lane's pane is the pane vsys is drawing in. Reading that one
+   * would show vsys's own screen inside itself, one copy deeper on every
+   * sample, and switching to it would move a reader who is already there.
+   *
+   * Three answers, because vsys cannot always find out and an answer it
+   * cannot give read as `no` opens the capture this exists to close. Only `no`
+   * permits a read, a switch or a copied command. Matched on the `%N` handle
+   * and on the resolved address alike, since a lane carries whichever its own
+   * environment held; the address is the form vsys can fail to decide, because
+   * only the pane map says which pane an address names.
    */
-  self: boolean;
+  self: "yes" | "no" | "unknown";
   title: string;
   cwd: string;
   branch: string;

@@ -278,10 +278,12 @@ export function Agent({
   }, [lane.pids, c, live]);
   const terminalOpen = open.has("Terminal");
   // A pane vsys could read: the lane has one, it belongs to the server vsys
-  // talks to, and it is not the pane vsys is drawing in. One answer for the
-  // effect below and for every message the section draws, so a term added
-  // here can never close the messages while leaving the read open.
-  const readable = Boolean(lane.pane) && !lane.elsewhere && !lane.self;
+  // talks to, and vsys settled that it is not the pane it draws in. One answer
+  // for the effect below and for every message the section draws, so a term
+  // added here can never close the messages while leaving the read open. The
+  // own-pane question is read as the one answer that permits a read, never as
+  // the absence of `yes`: `unknown` is a pane vsys may be drawing in.
+  const readable = Boolean(lane.pane) && !lane.elsewhere && lane.self === "no";
   // The sample time is in the dependency list because it is the reason this
   // reads again: a terminal that only draws what it drew when the reader
   // opened it is not a terminal. The body has no other use for it.
@@ -369,9 +371,10 @@ export function Agent({
       onCopy(
         row?.kind === "action"
           ? row.intent.text
-          : // A switch to the pane the reader is in moves nothing, so there is
-            // no command to hand them.
-            row?.kind === "terminal" && !lane.self
+          : // A switch to the pane the reader is in moves nothing, and one to
+            // a pane that may be it is a move vsys cannot promise, so neither
+            // gets a command to hand them.
+            row?.kind === "terminal" && lane.self === "no"
             ? switchCommand(lane.pane)
             : undefined,
       );
@@ -389,7 +392,9 @@ export function Agent({
   const goToTerminal = () => {
     // tmux moves a client to the pane it is already in by doing nothing, so
     // the row states that instead of asking for a move that cannot happen.
-    if (lane.self) return;
+    // A pane vsys could not decide about is left alone for the same reason:
+    // it may be that pane, and vsys cannot say which move it is asking for.
+    if (lane.self !== "no") return;
     // A switch rejects when the pane has gone, the server stopped or the
     // target is not one it holds. Dropped, the reader pressed a key, nothing
     // moved, and nothing said why.
@@ -502,11 +507,13 @@ export function Agent({
                 {fit("Go to terminal", 16)}
                 <span attributes={ui.dim}>
                   {safe(
-                    lane.self
+                    lane.self === "yes"
                       ? "this is the terminal you are reading in"
-                      : onSwitch
-                        ? `moves this terminal to ${lane.address || lane.pane}`
-                        : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
+                      : lane.self === "unknown"
+                        ? "vsys cannot tell whether this is the terminal you are reading in"
+                        : onSwitch
+                          ? `moves this terminal to ${lane.address || lane.pane}`
+                          : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
                   )}
                 </span>
               </Row>
@@ -576,8 +583,15 @@ export function Agent({
                           only: `self` was read when the sample was taken, and
                           the vsys that took an older one may have been drawing
                           somewhere else entirely. */}
-                      {lane.self && live && (
+                      {lane.self === "yes" && live && (
                         <Empty text="vsys is drawing in this pane, so what it holds is this screen." />
+                      )}
+                      {/* vsys could not compare this lane's address against
+                          its own pane. Claiming it draws in this one would be
+                          evidence vsys does not have, and reading it is the
+                          mistake the whole section exists to avoid. */}
+                      {lane.self === "unknown" && live && (
+                        <Empty text="vsys cannot tell whether this pane is its own, so it is not reading it." />
                       )}
                       {/* A pane holds what it holds now, so reading one inside
                           a view of an older sample would put the present

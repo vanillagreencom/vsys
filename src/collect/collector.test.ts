@@ -513,8 +513,8 @@ test("one tmux read resolves every lane's pane, however many lanes there are", a
   expect(first?.window).toBe("w-0");
   // The one lane the Terminal section may never capture, marked from the same
   // read. Its neighbour is an agent and is read as always.
-  expect(first?.self).toBe(true);
-  expect(s.lanes.find((lane) => lane.pane === "%1")?.self).toBe(false);
+  expect(first?.self).toBe("yes");
+  expect(s.lanes.find((lane) => lane.pane === "%1")?.self).toBe("no");
   // A second sample is a second read, not a cached one: panes move.
   await collector.sample(2000);
   expect(reads).toBe(2);
@@ -561,8 +561,8 @@ test("a tmux server that starts after vsys still gets its lanes addressed", asyn
   // that failed, every lane came back unmarked, and the Terminal section drew
   // vsys's own screen inside itself for that sample: the capture is a separate
   // spawn that does not depend on this read at all.
-  expect(before.lanes.find((lane) => lane.pane === "%0")?.self).toBe(true);
-  expect(before.lanes.find((lane) => lane.pane === "%1")?.self).toBe(false);
+  expect(before.lanes.find((lane) => lane.pane === "%0")?.self).toBe("yes");
+  expect(before.lanes.find((lane) => lane.pane === "%1")?.self).toBe("no");
   expect(before.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
     false,
   );

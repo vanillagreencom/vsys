@@ -384,7 +384,7 @@ test("the pane vsys is drawing in is named, never captured into itself", async (
   const own = await paned(hooks, {
     pane: "%146",
     address: "vsys:2.1",
-    self: true,
+    self: "yes",
   });
   try {
     await own.press("enter");
@@ -416,6 +416,38 @@ test("the pane vsys is drawing in is named, never captured into itself", async (
     expect(own.written.join("")).toBe("");
   } finally {
     await own.close();
+  }
+  // The third answer. vsys draws in a pane, this lane names one by address,
+  // and the read that says which pane vsys's own handle is did not arrive, so
+  // the two cannot be compared. Read anyway, this is the same capture as the
+  // first case, which is why the undecided answer may not fall through to the
+  // one that permits a read.
+  const undecided = await paned(hooks, {
+    pane: "vsys:2.1",
+    address: "vsys:2.1",
+    self: "unknown",
+  });
+  try {
+    await undecided.press("enter");
+    expect(asked).toEqual([]);
+    expect(undecided.frame()).toContain(
+      "vsys cannot tell whether this pane is its own",
+    );
+    // Said in its own words. Borrowing the settled answer's line would put a
+    // claim on the screen that vsys has no evidence for.
+    expect(undecided.frame()).not.toContain("vsys is drawing in this pane");
+    await undecided.press("j");
+    const row = selectedRow(undecided.frame());
+    expect(row).toContain("Go to terminal");
+    expect(row).toContain("cannot tell whether this is the terminal");
+    // A move vsys cannot promise is not offered, and nothing is copied for it.
+    await undecided.press("enter");
+    expect(switched).toEqual([]);
+    await undecided.press(undecided.config.keys.copy);
+    expect(undecided.frame()).toContain("no command to copy");
+    expect(undecided.written.join("")).toBe("");
+  } finally {
+    await undecided.close();
   }
   // The control: every other pane is still read, and still switched to.
   const other = await paned(hooks, { pane: "%12", address: "work:1.1" });
@@ -521,7 +553,7 @@ test("a past sample of vsys's own pane is named as past, not as this screen", as
   // Marked when the sample was taken. A later run of vsys draws in whichever
   // pane it was started from, so the mark is true of that moment alone.
   s.lanes = [
-    laneSnapshot({ id: "a", name: "lane-a", pane: "%146", self: true }),
+    laneSnapshot({ id: "a", name: "lane-a", pane: "%146", self: "yes" }),
   ];
   s.groups = [groupSnapshot()];
   const captured: string[] = [];

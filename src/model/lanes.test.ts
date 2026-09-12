@@ -3,6 +3,7 @@ import { type PaneAddress, serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
 import { groupSnapshot, processSnapshot } from "../test/fixture";
 import { effectiveMax, lanes, parentChain, processTree } from "./lanes";
+import type { Lane } from "./types";
 
 /** What one tmux read gave, defaulting to a vsys that draws in no pane. */
 const tmuxRead = (byId: Map<string, PaneAddress>, socket = "", own = "") => ({
@@ -445,7 +446,7 @@ test("a restarted server on the same socket path is a different server", () => {
 
 test("the pane vsys draws in is marked on the lane, in either form it carries", () => {
   const c = defaults();
-  const groups = ["a", "b", "d"].map((n) =>
+  const groups = ["a", "b", "d", "e"].map((n) =>
     groupSnapshot({ path: `${n}.scope`, name: `${n}.scope` }),
   );
   const path = "/tmp/tmux-1000/default";
@@ -467,49 +468,49 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
   const rows: {
     row: string;
     env: Record<string, string>;
-    self: boolean;
+    self: Lane["self"];
     elsewhere: boolean;
     address: string;
   }[] = [
     {
       row: "handle, vsys's own server",
       env: { TMUX: ours, TMUX_PANE: "%146" },
-      self: true,
+      self: "yes",
       elsewhere: false,
       address: "vsys:2.1",
     },
     {
       row: "address, vsys's own server",
       env: { TMUX: ours, VSYS_PANE: "vsys:2.1" },
-      self: true,
+      self: "yes",
       elsewhere: false,
       address: "vsys:2.1",
     },
     {
       row: "handle, another server",
       env: { TMUX: "/tmp/tmux-1000/other,777,0", TMUX_PANE: "%146" },
-      self: false,
+      self: "no",
       elsewhere: true,
       address: "",
     },
     {
       row: "address, another server",
       env: { TMUX: "/tmp/tmux-1000/other,777,0", VSYS_PANE: "vsys:2.1" },
-      self: false,
+      self: "no",
       elsewhere: true,
       address: "",
     },
     {
       row: "handle, no server",
       env: { TMUX_PANE: "%146" },
-      self: true,
+      self: "yes",
       elsewhere: false,
       address: "vsys:2.1",
     },
     {
       row: "address, no server",
       env: { VSYS_PANE: "vsys:2.1" },
-      self: true,
+      self: "yes",
       elsewhere: false,
       address: "vsys:2.1",
     },
@@ -554,33 +555,47 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
     tool: "claude",
     env: { ...env, TMUX_PANE: "%12" },
   });
-  const read = lanes(groups, [byHandle, byAddress, other], c, 0, {
+  // The same in the address form. With the map in hand vsys knows its own
+  // address, so an address that is not it is a settled `no` rather than the
+  // undecided answer the failed read gives below.
+  const otherAddress = processSnapshot({
+    pid: 4,
+    group: "e.scope",
+    tool: "claude",
+    env: { ...env, VSYS_PANE: "work:1.1" },
+  });
+  const lot = [byHandle, byAddress, other, otherAddress];
+  const read = lanes(groups, lot, c, 0, {
     socket,
     own: "%146",
     byId: panes,
   });
-  expect(read.map((lane) => lane.self)).toEqual([true, true, false]);
+  expect(read.map((lane) => lane.self)).toEqual(["yes", "yes", "no", "no"]);
   // Outside tmux vsys occupies no pane, so no lane is its own screen and every
-  // one of them is still readable.
-  const outside = lanes(groups, [byHandle, byAddress, other], c, 0, {
+  // one of them is still readable. Nothing is undecided either: a vsys that
+  // draws in no pane has no comparison left to fail.
+  const outside = lanes(groups, lot, c, 0, {
     socket,
     own: "",
     byId: panes,
   });
-  expect(outside.map((lane) => lane.self)).toEqual([false, false, false]);
-  // A `list-panes` that failed leaves no map. The handle form still holds,
-  // because it is read from vsys's own environment and compared against the
-  // server vsys's own `TMUX` names: the sample loses the addresses, not the
-  // one lane the Terminal section may never capture.
-  const refused = lanes(groups, [byHandle, byAddress], c, 0, {
+  expect(outside.map((lane) => lane.self)).toEqual(["no", "no", "no", "no"]);
+  // A `list-panes` that failed leaves no map. The handle form is still
+  // decided, because vsys's own handle comes from its own environment and
+  // compares directly. The address form is not: only the map says which pane
+  // `vsys:2.1` is, so vsys cannot tell whether this lane holds the pane it
+  // draws in, and it says that rather than `no`. Answering `no` is what let
+  // the capture run against vsys's own pane on the sample after a failed read.
+  // The third lane is the reason only the address form goes undecided: a
+  // handle that is not vsys's own is settled without the map too, so a failed
+  // read does not cost the reader every terminal on the machine.
+  const refused = lanes(groups, [byHandle, byAddress, other], c, 0, {
     socket,
     own: "%146",
     byId: new Map(),
   });
-  expect(refused.map((lane) => lane.self)).toEqual([true, false]);
-  // The address form is the half that genuinely needs the server: only the
-  // map says which pane `vsys:2.1` is, so without it that lane is read as an
-  // agent's, which is the direction that shows a reader too little rather
-  // than the wrong thing.
+  expect(refused.map((lane) => lane.self)).toEqual(["yes", "unknown", "no"]);
+  // The lane keeps the address the reader configured either way: the map is
+  // what vsys lost, not what the reader typed.
   expect(refused[1]?.pane).toBe("vsys:2.1");
 });

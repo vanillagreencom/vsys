@@ -127,21 +127,25 @@ export function lanes(
     const elsewhere = server === "other";
     // A lane carries whichever form its own environment held, so the pane vsys
     // draws in is compared in both: the `%N` handle from `TMUX_PANE`, and the
-    // `session:window.pane` address a reader puts in `VSYS_PANE`. The guard
-    // answers which pane the command will reach, not which server the lane's
+    // `session:window.pane` address a reader puts in `VSYS_PANE`. The question
+    // is which pane the command will reach, not which server the lane's
     // process sat on: `capture-pane` and `switch-client` are spawned in vsys's
     // own environment, so tmux resolves the target against vsys's own server
     // and a pane string that matches addresses vsys's own pane whatever server
-    // handed it out. Only a lane known to be on another server is refused, and
-    // `elsewhere` already leaves that one neither read nor offered a switch.
-    // The cost is a lane on an unknown server whose string collides with
-    // vsys's own: it is told vsys draws in it, which need not be true of that
-    // lane's process. That is the safe answer, because the capture the message
-    // replaces would have drawn vsys's own screen.
-    const self =
-      pane !== "" &&
-      server !== "other" &&
-      (pane === tmux?.own || (ownAddress !== "" && pane === ownAddress));
+    // handed it out. A lane known to be on another server is answered `no`
+    // because `elsewhere` already leaves it neither read nor offered a switch.
+    // `unknown` is what vsys owes when it cannot decide: it draws in a pane,
+    // the lane names one by address, and the map saying which pane vsys's own
+    // handle is did not arrive. That case may not answer `no`, which every
+    // consumer reads as licence to run the capture against the pane.
+    const self: Lane["self"] =
+      pane === "" || server === "other"
+        ? "no"
+        : pane === tmux?.own || (ownAddress !== "" && pane === ownAddress)
+          ? "yes"
+          : tmux?.own && !isPaneId(pane) && ownAddress === ""
+            ? "unknown"
+            : "no";
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
@@ -200,11 +204,6 @@ export function lanes(
        * is a reader setting it themselves.
        */
       elsewhere,
-      /**
-       * This lane's pane is the one vsys is drawing in, so reading it would
-       * put vsys's own screen inside itself and switching to it would move a
-       * reader who is already there.
-       */
       self,
       title,
       cwd,
