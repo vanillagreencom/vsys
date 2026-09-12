@@ -4,7 +4,7 @@ import {
   type Integrity,
 } from "../model/integrity";
 import { shellLine } from "../model/shell";
-import { age, count } from "./format";
+import { age, count, gap } from "./format";
 
 /**
  * What one filesystem's integrity state says in words. Every state but
@@ -44,6 +44,17 @@ export function integrityLine(item: Integrity): string {
     `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago`}`,
     `last new error ${item.errorAge === null ? "none recorded" : `${age(item.errorAge)} ago`}`,
   ].join(" · ");
+}
+/**
+ * The headline reading: what the last check found. A count vsys did not read
+ * never becomes a zero, and the two reasons it can be missing are different
+ * facts: nothing has checked, or the check's report omitted the count.
+ */
+export function blocksText(item: Integrity): string {
+  if (!item.scrub) return `${gap}: no check has reported on this filesystem`;
+  if (item.blocks === null || item.blocks === undefined)
+    return `${gap}: the report carried no count`;
+  return `${item.blocks} by the last full check`;
 }
 /**
  * Why a filesystem lists no damaged address. The three reasons are different

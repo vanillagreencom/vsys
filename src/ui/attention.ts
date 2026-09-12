@@ -235,9 +235,14 @@ function copy(
         detail: files
           ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.`
           : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
-        next: files
-          ? "Open Storage, open the filesystem, and delete every path listed under each damaged address before rebuilding."
-          : "Open Storage and check the filesystem again; an address with no file clears on the next check.",
+        // The step never says to delete everything listed: an address holding
+        // data a rebuild cannot replace is restored, not removed, and a card
+        // that blurs the two invites the reader to delete their own files.
+        next: !files
+          ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
+          : other
+            ? "Open Storage and open the filesystem. Delete only the addresses marked as build output, and restore the rest from a backup or a snapshot."
+            : "Open Storage, open the filesystem, and delete every path listed under each damaged address before rebuilding.",
         view: "Storage",
         target: cause.at ?? first,
       };
@@ -246,9 +251,15 @@ function copy(
       const never = v.never ?? 0;
       return {
         word: "Unknown",
-        title: never
-          ? `${count(never, "filesystem")} never checked for damage: ${mounts}`
-          : `${paths} ${p(paths, "filesystem has", "filesystems have")} not been checked in ${age(v.oldest ?? 0)}: ${mounts}`,
+        // One card can name filesystems in both states. Where it does, the
+        // title counts them apart rather than calling every one of them never
+        // checked, which would misstate the ones a timer did check.
+        title:
+          never === paths
+            ? `${count(never, "filesystem")} never checked for damage: ${mounts}`
+            : never === 0
+              ? `${paths} ${p(paths, "filesystem has", "filesystems have")} not been checked in ${age(v.oldest ?? 0)}: ${mounts}`
+              : `${count(paths, "filesystem")} unchecked for damage, ${never} of them never: ${mounts}`,
         detail: `The error counter counts failed reads, not damaged files, so it stays flat while nothing reads the damage. Only a full check reads every block. The limit is ${count(v.limit, "day")}.`,
         next: "Run a check on each filesystem, or install the timer that writes a report into the report directory.",
         view: "Storage",

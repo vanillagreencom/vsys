@@ -4,6 +4,7 @@ import { integrity, volumesByDevice } from "../model/integrity";
 import type { Scrub } from "../model/types";
 import { volumeSnapshot } from "../test/fixture";
 import {
+  blocksText,
   damageAdvice,
   deleteCommand,
   integrityLine,
@@ -153,4 +154,18 @@ test("an absent damaged-file list never reads as a check that found none", () =>
   expect(noDamageText(state([report()]))).toBe(
     "No damaged address is left on this filesystem.",
   );
+});
+
+test("a block count vsys did not read never reads as a count of none", () => {
+  // Three different facts, told apart, because a zero here would say the last
+  // check looked and found nothing.
+  expect(blocksText(state([]))).toBe(
+    "not available: no check has reported on this filesystem",
+  );
+  expect(blocksText(state([report({ uncorrectable: null })]))).toBe(
+    "not available: the report carried no count",
+  );
+  expect(
+    blocksText(state([report({ uncorrectable: 26, problem: true })])),
+  ).toBe("26 by the last full check");
 });

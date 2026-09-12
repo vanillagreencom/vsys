@@ -195,10 +195,14 @@ export function integrity(
                 ? "never-checked"
                 : stopped
                   ? "unknown"
-                  : checkAge !== null && checkAge > c.scrubMaxAgeDays * 86400000
-                    ? "stale"
-                    : counter === null
-                      ? "unknown"
+                  : // A report carrying no start time dates no check, so it
+                    // cannot say the filesystem was read end to end recently.
+                    // Neither can a filesystem whose counter is unreadable say
+                    // nothing has failed since.
+                    checkAge === null || counter === null
+                    ? "unknown"
+                    : checkAge > c.scrubMaxAgeDays * 86400000
+                      ? "stale"
                       : "healthy";
   return {
     id: group.id,

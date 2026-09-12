@@ -105,3 +105,20 @@ test("a state file that is not what it claims is refused, not half read", () => 
   memory.load();
   expect(memory.observe("fs", 3, 9000).at).toBe(5000);
 });
+
+test("a write that failed is tried again rather than dropped", () => {
+  const path = statePath();
+  const memory = new ErrorMemory(path);
+  memory.observe("fs", 10, 1000);
+  memory.observe("fs", 36, 5000);
+  // A state directory that cannot be created: the one place the remembered
+  // time lives is unwritable, and the reading must not be discarded with it.
+  mkdirSync(dirname(dirname(path)), { recursive: true });
+  writeFileSync(dirname(path), "");
+  expect(() => memory.save()).toThrow();
+  rmSync(dirname(path));
+  memory.save();
+  const second = new ErrorMemory(path);
+  second.load();
+  expect(second.observe("fs", 36, 9000).at).toBe(5000);
+});

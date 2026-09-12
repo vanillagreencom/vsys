@@ -76,10 +76,14 @@ export class ErrorMemory {
     }
     return record;
   }
-  /** Written whole and moved into place, so an interrupted write loses nothing. */
+  /**
+   * Written whole and moved into place, so an interrupted write loses nothing.
+   * A write that failed leaves the memory dirty, so the next sample tries
+   * again: a full disk or a read-only state directory would otherwise discard
+   * the one reading this class exists to keep.
+   */
   save(): void {
     if (!this.dirty) return;
-    this.dirty = false;
     mkdirSync(dirname(this.path), { recursive: true });
     const temp = `${this.path}.${process.pid}.tmp`;
     writeFileSync(
@@ -90,5 +94,6 @@ export class ErrorMemory {
       },
     );
     renameSync(temp, this.path);
+    this.dirty = false;
   }
 }

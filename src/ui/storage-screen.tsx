@@ -16,6 +16,7 @@ import { keyLabel, screenPad } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { age, amount, gap } from "./format";
 import {
+  blocksText,
   counterSentence,
   damageAdvice,
   deleteCommand,
@@ -289,15 +290,7 @@ export function Storage({
           <Detail indent={4}>
             {/* The headline reading is what the last check found. The
                 lifetime counter is a different quantity and sits below it. */}
-            <Field
-              label="Blocks found"
-              width={16}
-              value={
-                item.blocks === null
-                  ? `${gap}: the last report counted none`
-                  : `${item.blocks} by the last full check`
-              }
-            />
+            <Field label="Blocks found" width={16} value={blocksText(item)} />
             {item.groups.length === 0 && <Empty text={noDamageText(item)} />}
             {item.groups.map((group) => {
               const command = deleteCommand(group);

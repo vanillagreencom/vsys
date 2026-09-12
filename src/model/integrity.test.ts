@@ -138,6 +138,14 @@ test("every integrity state, and which reading produces it", () => {
       "unknown",
     ],
     [
+      // A report with no start time dates no check, so it cannot say the
+      // filesystem was read end to end recently.
+      "a readable report carrying no start time",
+      filesystem(),
+      [report({ startedAt: null })],
+      "unknown",
+    ],
+    [
       "output vsys could not read",
       filesystem(),
       [report({ readable: false, problem: true })],
