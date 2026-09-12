@@ -275,12 +275,23 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       paths: grown.map((item) => item.mounts[0] ?? item.device),
       at: { kind: "path", path: grown[0].id },
       consumer: grown[0].mounts[0] ?? grown[0].device,
-      values: {
-        filesystems: grown.length,
-        size: grown[0].errorSize,
-        since: grown[0].errorAge,
-        checked: grown[0].checkAge,
-      },
+      // One filesystem's numbers describe one filesystem. Naming several and
+      // showing the first one's growth would present its count and its ages
+      // as the whole cause's.
+      values:
+        grown.length === 1
+          ? {
+              filesystems: 1,
+              size: grown[0].errorSize,
+              since: grown[0].errorAge,
+              checked: grown[0].checkAge,
+            }
+          : {
+              filesystems: grown.length,
+              size: null,
+              since: null,
+              checked: null,
+            },
     });
   const failing = s.storage.volumes.filter((v) =>
     Object.values(v.delta).some((n) => n > 0),

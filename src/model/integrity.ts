@@ -178,7 +178,11 @@ export function integrity(
   // parsed out of otherwise unreadable text would put a delete command under a
   // headline saying the state is unknown, which is two claims at once.
   const readable = !scrub || scrub.readable !== false;
-  const groups: DamagedGroup[] = (readable ? (scrub?.addresses ?? []) : []).map(
+  // Only a finished check has a result. A running or half-written report can
+  // carry addresses, and standing behind those would put a delete command
+  // under a check that has not said what it found.
+  const complete = readable && scrub?.status === "finished";
+  const groups: DamagedGroup[] = (complete ? (scrub?.addresses ?? []) : []).map(
     (address) => ({
       logical: address.logical,
       paths: address.paths,
@@ -204,14 +208,14 @@ export function integrity(
   // seen, leaves the state unknown: a list of the ways a check can stop early
   // would call each new word a completed check, which is the wrong way to be
   // wrong about whether the disk was read.
-  const finished = scrub?.status === "finished" && scrub.readable !== false;
+  const finished = complete;
   const checkedAt = finished ? (scrub?.startedAt ?? null) : null;
   const checkAge = checkedAt === null ? null : Math.max(0, time - checkedAt);
   const errorAge = errorAt == null ? null : Math.max(0, time - errorAt);
   const state: IntegrityState =
     scrub && scrub.readable === false
       ? "unknown"
-      : groups.length || (scrub?.uncorrectable ?? 0) > 0
+      : groups.length || (finished && (scrub?.uncorrectable ?? 0) > 0)
         ? "damaged"
         : // A check that repaired every error it found left no damage behind,
           // so a report counting no uncorrectable block is not damage however
@@ -247,7 +251,7 @@ export function integrity(
     errorAge: errorAge === null ? null : errorAge / 1000,
     errorKnown,
     errorSize: errorSize ?? null,
-    blocks: readable ? (scrub?.uncorrectable ?? null) : null,
+    blocks: complete ? (scrub?.uncorrectable ?? null) : null,
     counter,
     groups,
     scrub,

@@ -746,3 +746,39 @@ test("an unchecked card counts never-checked filesystems apart from stale ones",
     attention(alone, c, base).find((item) => item.id === "unchecked")?.title,
   ).toBe("1 filesystem never checked for damage: /only");
 });
+
+test("a card naming several filesystems shows no one filesystem's numbers", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const grown = (fsid: string, size: number) => {
+    s.storage.volumes.push(
+      volumeSnapshot(`/${fsid}`, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+        lastErrorAt: s.time - 1000,
+        lastErrorSize: size,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: no errors found",
+      problem: false,
+      readable: true,
+      fsid,
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    });
+  };
+  grown("a", 26);
+  const one = attention(s, c, base).find((item) => item.id === "new-errors");
+  expect(one?.detail).toContain("26 failed reads");
+  // A second filesystem, and the first one's count no longer speaks for both.
+  grown("b", 9);
+  const two = attention(s, c, base).find((item) => item.id === "new-errors");
+  expect(two?.detail).not.toContain("26");
+  expect(two?.detail).toContain("Open each one for its own times");
+});

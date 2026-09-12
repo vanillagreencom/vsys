@@ -226,3 +226,20 @@ test("a reboot does not hide the errors counted after it", () => {
   read.load();
   expect(read.observe("fs", 26, 9000).at).toBe(7000);
 });
+
+test("a growth time that was never written is not reported as durable", () => {
+  const path = statePath();
+  const memory = new ErrorMemory(path);
+  memory.observe("fs", 10, 1000);
+  memory.observe("fs", 36, 5000);
+  // The state directory cannot be created, so the growth lives only here.
+  mkdirSync(dirname(dirname(path)), { recursive: true });
+  writeFileSync(dirname(path), "");
+  expect(() => memory.save()).toThrow();
+  memory.failed();
+  expect(memory.available).toBe(false);
+  // Once a write lands, what this process holds survives it and stands again.
+  rmSync(dirname(path));
+  memory.save();
+  expect(memory.available).toBe(true);
+});

@@ -335,3 +335,40 @@ test("a report names its filesystem however it spells the identity", () => {
   const shouted = report({ fsid: "FS", problem: true, uncorrectable: 4 });
   expect(integrity(filesystem(), [shouted], now, c).blocks).toBe(4);
 });
+
+test("a check that has not finished offers no damaged file to act on", () => {
+  const c = defaults();
+  // A running check can already have written addresses. Standing behind them
+  // would put a delete command under a check that has not said what it found.
+  const running = integrity(
+    filesystem(),
+    [
+      report({
+        status: "running",
+        problem: true,
+        uncorrectable: 26,
+        addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+      }),
+    ],
+    now,
+    c,
+  );
+  expect(running.state).toBe("checking");
+  expect(running.groups).toEqual([]);
+  expect(running.blocks).toBeNull();
+  // The same report, finished, is a result.
+  const done = integrity(
+    filesystem(),
+    [
+      report({
+        problem: true,
+        uncorrectable: 26,
+        addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+      }),
+    ],
+    now,
+    c,
+  );
+  expect(done.state).toBe("damaged");
+  expect(done.groups).toHaveLength(1);
+});

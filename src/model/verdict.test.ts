@@ -388,3 +388,49 @@ test("every integrity state but healthy and checking reaches the verdict", () =>
   expect(integrities(well, c)[0].state).toBe("healthy");
   expect(causes(well, c)).toEqual([]);
 });
+
+test("a cause naming several filesystems carries no one filesystem's numbers", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const grown = (fsid: string, size: number) => {
+    s.storage.volumes.push(
+      volumeSnapshot(`/${fsid}`, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+        lastErrorAt: s.time - 1000,
+        lastErrorSize: size,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: no errors found",
+      problem: false,
+      readable: true,
+      fsid,
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    });
+  };
+  const values = () =>
+    causes(s, c).find((cause) => cause.id === "new-errors")?.values;
+  grown("a", 26);
+  expect(values()).toEqual({
+    filesystems: 1,
+    size: 26,
+    since: 1,
+    checked: 3600,
+  });
+  // A second filesystem, and the first one's growth no longer stands for the
+  // cause: an event carrying 26 would name two filesystems and one's count.
+  grown("b", 9);
+  expect(values()).toEqual({
+    filesystems: 2,
+    size: null,
+    since: null,
+    checked: null,
+  });
+});

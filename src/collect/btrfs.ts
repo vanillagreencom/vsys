@@ -240,6 +240,9 @@ export class StorageCollector {
     try {
       memory.save();
     } catch (e) {
+      // The growth times this sample holds live only in this process until a
+      // write succeeds, so nothing downstream may read them as durable.
+      memory.failed();
       r.error(c.errorMemoryPath, e);
     }
     for (const mount of btrfsMounts(mountInfo ?? []).filter(

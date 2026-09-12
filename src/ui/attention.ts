@@ -251,7 +251,12 @@ function copy(
       return {
         word: "Danger",
         title: `New errors on ${mounts} since the last check`,
-        detail: `The counter grew ${v.since === null ? "" : `${age(v.since)} ago`}${v.size === null || v.size === undefined ? "" : ` by ${count(v.size, "failed read")}`}, and the last full check ran ${v.checked === null || v.checked === undefined ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`,
+        // The numbers belong to one filesystem. Naming several gives the
+        // sentence without them rather than one filesystem's as the whole.
+        detail:
+          paths === 1
+            ? `The counter grew${v.since == null ? "" : ` ${age(v.since)} ago`}${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}, and the last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
+            : `Each of these counters grew after the last check that read its filesystem end to end, so no check has said what the damage cost. Open each one for its own times.`,
         next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
         view: "Storage",
         target: cause.at ?? first,

@@ -36,6 +36,8 @@ export class ErrorMemory {
    * not, and everything downstream must say so rather than report no errors.
    */
   available = true;
+  /** Whether the file on disk could be read. A write never overwrites one that could not. */
+  readable = true;
   constructor(private readonly path: string) {}
   /**
    * A missing or unreadable file starts empty and the caller reports the
@@ -48,8 +50,10 @@ export class ErrorMemory {
     try {
       this.read();
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.readable = false;
         this.available = false;
+      }
       throw e;
     }
   }
@@ -111,7 +115,7 @@ export class ErrorMemory {
     // A file that could not be read is never overwritten: the baselines this
     // process holds would replace a record a person can still repair, and
     // would turn an unknown last-error time into a confident one.
-    if (!this.dirty || !this.available) return;
+    if (!this.dirty || !this.readable) return;
     // Two vsys processes watching one host each hold the map they loaded, and
     // the one that renames last would otherwise drop the other's newer growth
     // time. Merging the file as it stands now keeps the later of the two.
@@ -131,6 +135,12 @@ export class ErrorMemory {
     );
     renameSync(temp, this.path);
     this.dirty = false;
+    // What this process holds now survives it, so its readings stand again.
+    this.available = this.readable;
+  }
+  /** A write that did not happen leaves the memory unbacked until one does. */
+  failed(): void {
+    this.available = false;
   }
   /**
    * Fold what is on disk now into what this process holds. A growth time is
@@ -149,7 +159,7 @@ export class ErrorMemory {
       // own records stand. One that exists and cannot be read is refused the
       // same way our own unreadable load is: it may hold a growth time this
       // process never saw.
-      return other.available;
+      return other.readable;
     }
     for (const [fsid, theirs] of stored) {
       const mine = this.records.get(fsid);
