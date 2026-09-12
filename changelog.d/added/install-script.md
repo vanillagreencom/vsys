@@ -1,1 +1,0 @@
-- Install vsys without a clone: one `curl … | bash` line from the README puts a verified standalone binary in `~/.local/bin`. A download that fails its checksum is not installed.
