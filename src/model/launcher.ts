@@ -111,7 +111,7 @@ function groupSentence(
         ? `The launcher was shadowed: ${first.caps.join(" and ")} ${
             first.caps.length > 1 ? "are" : "is"
           } set, but ${many} ${n === 1 ? "sits" : "sit"} in ${where}.${path}`
-        : `Launched bare: none of ${c.capMarkers.join(", ")} is set on ${many} in ${where}.`;
+        : `Launched bare: none of ${c.capMarkers.join(", ")} is set on ${many} in ${where}.${path}`;
   return { conclusion, started, kind: first.conclusion };
 }
 /**

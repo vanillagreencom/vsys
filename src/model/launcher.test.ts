@@ -163,6 +163,22 @@ test("a group is the processes agreeing on all four facts its sentence states", 
   expect(paths[0].conclusion).toContain("PATH starts with /a/bin");
   expect(paths[1].conclusion).toContain("3 processes sit in");
   expect(paths[1].conclusion).toContain("PATH starts with /b/bin");
+  // A bare group is split by its prefix too, so its sentence writes it: two
+  // wrappers in one cgroup otherwise read as one sentence twice.
+  const wrapped = fleet(1, 2, { PATH: "/w/bin:/usr/bin" });
+  const plain = fleet(1, 3, { PATH: "/usr/bin" });
+  const bare = launcherCopy(
+    [...wrapped.escaped, ...plain.escaped],
+    [...wrapped.procs, ...plain.escaped],
+    c,
+    base,
+  );
+  expect(bare).toHaveLength(2);
+  expect(bare[0].conclusion).toContain(
+    "is set on 2 processes in the scope tmux-spawn-0.scope. " +
+      "PATH starts with /w/bin, which the login shell does not have.",
+  );
+  expect(bare[1].conclusion).toEndWith("in the scope tmux-spawn-0.scope.");
   // Two slices holding a scope of one unit name are two places, and one PATH
   // entry holding a comma is one entry: the key keeps both apart.
   const twin = fleet(1, 1).escaped[0];
