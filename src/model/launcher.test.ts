@@ -141,9 +141,11 @@ test("a group is the processes agreeing on all four facts its sentence states", 
     base,
   );
   expect(markers).toHaveLength(2);
-  expect(markers[0].conclusion).toContain("CARGO_BUILD_JOBS is set, but PID");
+  expect(markers[0].conclusion).toContain(
+    "CARGO_BUILD_JOBS is set, but PID 1000 sits in",
+  );
   expect(markers[1].conclusion).toContain(
-    "RUST_TEST_THREADS and CARGO_BUILD_JOBS are set, but PID",
+    "RUST_TEST_THREADS and CARGO_BUILD_JOBS are set, but PID 1000 sits in",
   );
   // One scope, one marker set, two PATH prefixes: two sentences again,
   // because the prefix is what tells the reader which launcher ran.

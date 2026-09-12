@@ -496,12 +496,14 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
   // Lanes stalling with no saturated disk under them, so the crowded machine
   // raises the causes everyCauseSnapshot cannot raise beside a disk cause.
   for (const lane of crowded.lanes) lane.ioPressure = 40;
+  // Twelve scopes are twelve conclusions, which no width holds: the machine
+  // that makes the cut run rather than only the cards that fit without it.
+  const scattered = escapedSnapshot({ lanes: 12, scopes: 12 });
   let cut = 0;
   const measured = new Set<string>();
-  for (const s of [everyCauseSnapshot(c), crowded])
+  for (const s of [everyCauseSnapshot(c), crowded, scattered])
     for (const width of [38, 120]) {
       const items = attention(s, c, { basePath: base, width });
-      expect(items.length).toBeGreaterThan(1);
       for (const item of items) {
         measured.add(item.id);
         // Six rows, written out: a budget checked against the constant it is
@@ -514,6 +516,13 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
           expect(item.detail).toContain(name);
       }
     }
+  // A card that writes no ladder of its own is cut by the same budget: a
+  // stalling machine on a panel at the floor is one.
+  const narrow = attention(crowded, c, { basePath: base, width: 20 }).find(
+    (item) => item.id === "stalls",
+  );
+  expect(narrow?.detail).toContain("…");
+  expect(narrow?.detail).toContain("Lanes: kendex agent-0 PID 1000");
   // Every cause the ladder can report was measured, read from the ladder's
   // own table rather than a list kept here: a cause added without a fixture
   // is a cause whose detail nothing measures.
