@@ -6,6 +6,7 @@ import { distinctNames, unitLabel } from "../model/naming";
 import type { Group, Snapshot } from "../model/types";
 import { type Level, meters } from "../model/verdict";
 import { meterTile } from "./attention";
+import { screenPad } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import { amount, bytes, gap, percent, share } from "./format";
 import { useScreenKeys } from "./keys";
@@ -212,7 +213,7 @@ export function Resources({
   // four detail fields with their own margin.
   const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - 5;
   return (
-    <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
+    <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={inner}>
         {tiles.map((tile) => (
           <Tile

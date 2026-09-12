@@ -1493,7 +1493,7 @@ test("an open card keeps its next step and its command on an ordinary screen", a
       expect(detail.split("Launched bare")).toHaveLength(3);
       expect(detail).toContain("tmux-spawn-0.scope");
       expect(detail).toContain("tmux-spawn-1.scope");
-      expect(detail).toContain("Lanes: kendex agent-0 PID 1000");
+      expect(detail).toContain("10 processes in 5 lanes: kendex agent-0 PID");
     } finally {
       await t.close();
     }

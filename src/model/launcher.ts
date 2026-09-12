@@ -20,8 +20,10 @@ export interface LauncherTrail {
   pid: number;
   /** The configured confinement markers set on that process. */
   caps: string[];
-  /** The scope or cgroup it sits in, named as prose. */
-  where: string;
+  /** The unit name of the scope it sits in, null outside any scope. */
+  scope: string | null;
+  /** The cgroup path it sits in, which names the place when the scope does not. */
+  group: string;
   /** PATH entries ahead of the first the login shell also has. */
   prefix: string[];
   /** Each ancestor as its command and cgroup, nearest first. */
@@ -33,6 +35,8 @@ export interface LauncherSentence {
   conclusion: string;
   /** The ancestors of one named process, or nothing when it has none. */
   started: string;
+  /** The scope or cgroup the sentence names, for a caller counting places. */
+  where: string;
 }
 /** Entries before the first one the login shell also has were prepended. */
 export function pathPrefix(path: string, base: string[]): string[] {
@@ -65,7 +69,8 @@ export function launcherTrail(
           : "bare",
     pid: proc.pid,
     caps,
-    where: scope ? `the scope ${scope}` : `the cgroup ${proc.group}`,
+    scope,
+    group: proc.group,
     prefix: proc.env.PATH ? pathPrefix(proc.env.PATH, basePath) : [],
     chain: collapse(
       parentChain(proc, procs).map(
@@ -86,6 +91,9 @@ function groupSentence(
   const first = trails[0];
   const n = trails.length;
   const many = n === 1 ? `PID ${first.pid}` : `${n} processes`;
+  const where = first.scope
+    ? `the scope ${first.scope}`
+    : `the cgroup ${first.group}`;
   const started = first.chain.length
     ? ` Started from PID ${first.pid}: ${first.chain.join(", ")}.`
     : "";
@@ -94,13 +102,13 @@ function groupSentence(
     : "";
   const conclusion =
     first.conclusion === "unknown"
-      ? `Cannot read the environment of ${many} in ${first.where}, so the launcher is unknown.`
+      ? `Cannot read the environment of ${many} in ${where}, so the launcher is unknown.`
       : first.conclusion === "shadowed"
         ? `The launcher was shadowed: ${first.caps.join(" and ")} ${
             first.caps.length > 1 ? "are" : "is"
-          } set, but ${many} ${n === 1 ? "sits" : "sit"} in ${first.where}.${path}`
-        : `Launched bare: none of ${c.capMarkers.join(", ")} is set on ${many} in ${first.where}.`;
-  return { conclusion, started };
+          } set, but ${many} ${n === 1 ? "sits" : "sit"} in ${where}.${path}`
+        : `Launched bare: none of ${c.capMarkers.join(", ")} is set on ${many} in ${where}.`;
+  return { conclusion, started, where: first.scope ?? first.group };
 }
 /**
  * One sentence per group rather than one per process. A lane holds many
@@ -121,7 +129,7 @@ export function launcherCopy(
     const trail = launcherTrail(proc, all, c, basePath);
     const key = [
       trail.conclusion,
-      trail.where,
+      trail.scope ?? trail.group,
       trail.caps.join(","),
       trail.prefix.join(","),
     ].join("|");

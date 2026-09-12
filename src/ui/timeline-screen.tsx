@@ -5,6 +5,7 @@ import type { Snapshot } from "../model/types";
 import type { TimelineEvent } from "../store/events";
 import type { History } from "../store/history";
 import { changed, type Point } from "../store/point";
+import { screenPad } from "./chrome";
 import { fit } from "./columns";
 import {
   bucketPeaks,
@@ -294,7 +295,7 @@ export function Timeline({
   // cut with its mark rather than at the edge.
   const subjectWidth = width - 4 - 1 - 13 - 13;
   return (
-    <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={2}>
+    <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <box flexDirection="row" height={1} flexShrink={0}>
         <Line height={1} flexShrink={0} attributes={ui.dim}>
           {"Last "}

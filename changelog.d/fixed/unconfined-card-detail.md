@@ -1,1 +1,1 @@
-- The card for agents outside the agent slice writes one sentence per group of processes that agree on how they started, not one per process, and every card's detail stops at six rows.
+- The card for agents outside the agent slice writes one sentence per group of processes that started alike, counts what it cannot fit, and stops at six rows so its next step stays on screen.

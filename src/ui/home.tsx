@@ -14,6 +14,7 @@ import {
   verdictLine,
 } from "./attention";
 import {
+  detailIndent,
   keyLabel,
   panelWidth,
   screenPad,
@@ -553,7 +554,7 @@ export function Home({
                     />
                   </Row>
                   {marked(i) && (
-                    <Detail indent={2}>
+                    <Detail indent={detailIndent}>
                       <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                         {safe(row.item.detail)}
                       </Line>

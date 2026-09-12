@@ -116,10 +116,10 @@ export const columnsWidth = (columns: Column[]): number =>
   columns.reduce((total, column) => total + column.width, 0) +
   columnGap.length * Math.max(0, columns.length - 1);
 /**
- * One row of wrapped text and the offset in the whole it ends at, so a caller
- * cutting the text cuts the text rather than rebuilding it from rows: a word
- * too wide for the column is broken across rows, and rejoining those rows
- * with a blank puts a blank inside a word that never held one.
+ * One row of wrapped text and the offset it ends at, so a caller cutting the
+ * text cuts the text rather than rebuilding it from rows: a word too wide for
+ * the column is broken across rows, and rejoining those rows with a blank
+ * puts a blank inside a word that never held one.
  */
 function wrapRows(
   text: string,
@@ -164,9 +164,9 @@ function wrapRows(
 export const wrapLines = (text: string, width: number): string[] =>
   wrapRows(text, width).map((r) => r.text);
 /**
- * `text` cut to the rows it is allowed at `width`, ending in the mark. The
- * cut is marked for the same reason a cut cell is: text that stops without
- * one reads as text that ended.
+ * `text` cut to the rows it is allowed at `width`, ending in the mark, which
+ * it carries for the same reason a cut cell does: text that stops without one
+ * reads as text that ended.
  */
 export function capLines(text: string, width: number, lines: number): string {
   if (lines < 1)

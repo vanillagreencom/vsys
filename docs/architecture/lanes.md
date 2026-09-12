@@ -14,7 +14,7 @@ A lane is a watched scope, or a group an agent or a resource alarm made worth wa
 - `isPaneId` decides one thing: whether a value is `%N` and can be looked up in the pane map. A reader who configured an address instead already has what they would type, so it stands as the address and carries no window name, which only the server holds.
 - A handle is resolved only against the server it belongs to. The lane carries the `TMUX` value its own shell exported, and a handle whose server is known to differ resolves to nothing rather than naming a stranger's pane.
 - `scopeMain()` in `src/model/scopes.ts` picks a scope's main process: the oldest member whose parent sits outside the scope.
-- `launcherTrail()` in `src/model/launcher.ts` reads the facts of one process and states no prose. `launcherCopy()` writes the prose a card draws, and is the only place that writes it: it groups the trails by the four facts a sentence states, and gives each group a conclusion and an ancestor clause the card can drop on its own.
+- `launcherTrail()` in `src/model/launcher.ts` reads the facts of one process and states no prose: the scope it names is the unit name, not a phrase. `launcherCopy()` writes the prose a card draws, and is the only place that writes it: it groups the trails by the four facts a sentence states, and gives each group a conclusion, an ancestor clause the card can drop on its own, and the place it names for a card counting what it dropped.
 
 ## Invariants
 

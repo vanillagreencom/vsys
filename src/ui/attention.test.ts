@@ -473,17 +473,19 @@ test("the unconfined card writes one sentence per conclusion, not per process", 
   expect(card.detail).toContain("6 processes in the scope tmux-spawn-1.scope");
   // The marker list is named once per group, never once per process.
   expect(card.detail.split("RUST_TEST_THREADS")).toHaveLength(3);
-  // And the two counts the card shows are reconciled where the reader reads
-  // them, because a lane holds many processes.
-  expect(card.detail).toContain(
-    "The title counts 2 lanes; these sentences count the 12 processes in them.",
+  // The title counts lanes and the sentences count processes, so the sentence
+  // naming the lanes states both counts and reconciles them.
+  expect(card.detail).toEndWith(
+    "12 processes in 2 lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1006.",
   );
-  // One process per lane is the boundary: the counts agree, so there is
-  // nothing to reconcile and the card says nothing about them.
+  // One process per lane is the boundary: the counts agree, so the sentence
+  // states the lanes alone.
   const even = attention(escapedFleet(2, 1), c, { basePath: base }).find(
     (item) => item.id === "unconfined",
   );
-  expect(even?.detail).not.toContain("The title counts");
+  expect(even?.detail).toEndWith(
+    "Lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1001.",
+  );
 });
 
 test("a card's detail is cut to its line budget at the width it is drawn at", () => {
@@ -501,8 +503,9 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
   const scattered = escapedSnapshot({ lanes: 12, scopes: 12 });
   let cut = 0;
   const measured = new Set<string>();
+  // The floor detailWidth allows, an ordinary panel, and a wide one.
   for (const s of [everyCauseSnapshot(c), crowded, scattered])
-    for (const width of [38, 120]) {
+    for (const width of [20, 38, 120]) {
       const items = attention(s, c, { basePath: base, width });
       for (const item of items) {
         measured.add(item.id);
@@ -510,19 +513,26 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
         // built from passes whatever that constant is raised to.
         expect(wrapLines(item.detail, width).length).toBeLessThanOrEqual(6);
         if (item.detail.includes("…")) cut++;
-        // What the cut title lost is still whole in the detail: the lane list
-        // names at least the lanes the title itself listed.
-        for (const name of item.title.match(/kendex agent-\d+ PID \d+/g) ?? [])
-          expect(item.detail).toContain(name);
       }
     }
-  // A card that writes no ladder of its own is cut by the same budget: a
-  // stalling machine on a panel at the floor is one.
-  const narrow = attention(crowded, c, { basePath: base, width: 20 }).find(
-    (item) => item.id === "stalls",
+  // A card that writes no ladder of its own is cut by the same budget: the
+  // disk card on a panel at the floor is one.
+  const narrow = attention(everyCauseSnapshot(c), c, {
+    basePath: base,
+    width: 20,
+  }).find((item) => item.id === "disk");
+  expect(narrow?.detail).toEndWith("…");
+  expect(narrow?.detail).toContain("Tasks stalled on storage");
+  // A lane whose name alone overruns the budget is cut with its mark: even
+  // the sentence the detail gives up last cannot push the card past six rows.
+  const long = escapedSnapshot({ lanes: 2 });
+  for (const lane of long.lanes)
+    lane.name = `${"kendex vsys/issue-1234 ".repeat(5)}hclaude`;
+  const tight = attention(long, c, { basePath: base, width: 20 }).find(
+    (item) => item.id === "unconfined",
   );
-  expect(narrow?.detail).toContain("…");
-  expect(narrow?.detail).toContain("Lanes: kendex agent-0 PID 1000");
+  expect(tight?.detail).toEndWith("…");
+  expect(wrapLines(tight?.detail ?? "", 20).length).toBeLessThanOrEqual(6);
   // Every cause the ladder can report was measured, read from the ladder's
   // own table rather than a list kept here: a cause added without a fixture
   // is a cause whose detail nothing measures.
@@ -532,48 +542,50 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
   expect(cut).toBeGreaterThan(0);
 });
 
-test("a narrow card gives up the chain, then the arithmetic, never the scope", () => {
+test("a narrow card gives up the chain, then a conclusion, and counts both", () => {
   const c = defaults();
-  const s = escapedFleet(6, 2);
+  const s = escapedSnapshot({ lanes: 12, scopes: 12 });
   const detail = (width: number) =>
     attention(s, c, { basePath: base, width }).find(
       (item) => item.id === "unconfined",
     )?.detail ?? "";
-  // Wide enough for everything: both conclusions, both chains, the count
-  // reconciliation and the lane list.
-  expect(detail(200)).toContain("Started from PID");
-  expect(detail(200)).toContain("The title counts");
+  // Wide enough for the ancestors of every conclusion.
+  expect(detail(400)).toContain("Started from PID");
+  expect(detail(400)).not.toContain("not written here");
   // Narrower, the ancestors go first. They are the part of the card the
   // reader can read again on the screen Enter opens.
-  expect(detail(80)).not.toContain("Started from PID");
-  expect(detail(80)).toContain("The title counts");
-  // Narrower still, the arithmetic goes and both conclusions stay, because a
-  // conclusion names a scope, which is what the reader acts on.
-  expect(detail(74)).not.toContain("The title counts");
-  expect(detail(74)).toContain("tmux-spawn-0.scope");
-  expect(detail(74)).toContain("tmux-spawn-1.scope");
-  // Then a conclusion at a time, from the last. The first one stays whole
-  // with its scope, so a card is never left with no conclusion at all.
-  expect(detail(56)).not.toContain("tmux-spawn-1.scope");
+  expect(detail(300)).not.toContain("Started from PID");
+  expect(detail(300)).toContain("tmux-spawn-11.scope");
+  // Then a conclusion at a time, from the last, and what goes is counted the
+  // way the title counts the lanes it stopped at.
+  expect(detail(200)).not.toContain("tmux-spawn-11.scope");
+  expect(detail(200)).toContain("And 5 more cgroups not written here.");
+  // The first conclusion stays whole with its scope, so a card is never left
+  // with no conclusion at all, and one dropped scope is one, not one scopes.
   expect(detail(56)).toContain(
-    "is set on 6 processes in the scope tmux-spawn-0.scope.",
+    "is set on PID 1000 in the scope tmux-spawn-0.scope.",
   );
-  expect(detail(20)).toContain("Launched bare");
+  expect(detail(56)).toContain("And 11 more cgroups not written here.");
+  expect(
+    attention(escapedSnapshot({ lanes: 2, scopes: 2 }), c, {
+      basePath: base,
+      width: 44,
+    }).find((item) => item.id === "unconfined")?.detail,
+  ).toContain("And 1 more cgroup not written here.");
 });
 
-test("the lane list of a card stops rather than growing with the machine", () => {
+test("the lane sentence stops rather than growing with the machine", () => {
   const c = defaults();
   const s = escapedFleet(57, 1);
   const card = attention(s, c, { basePath: base, width: 60 }).find(
     (item) => item.id === "unconfined",
   );
   if (!card) throw new Error("Expected one unconfined card");
-  // The sentence stops at the lanes it has room for and says how many it did
-  // not name, and it never names fewer than the title's own list.
+  // It stops at the lanes it has room for and says how many it did not name.
   const lanes = card.detail.slice(card.detail.lastIndexOf("Lanes: "));
   expect(lanes).toBe(
     "Lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1001, " +
-      "kendex agent-2 PID 1002, kendex agent-3 PID 1003 and 53 more.",
+      "kendex agent-2 PID 1002 and 54 more.",
   );
   // A wider panel is more room for the same sentence, not more sentences.
   const wide = attention(s, c, { basePath: base, width: 160 }).find(
@@ -582,14 +594,11 @@ test("the lane list of a card stops rather than growing with the machine", () =>
   const wider = wide?.detail.slice(wide.detail.lastIndexOf("Lanes: ")) ?? "";
   expect(wrapLines(wider, 160)).toHaveLength(2);
   expect(wider.split(", ").length).toBeGreaterThan(lanes.split(", ").length);
-  // Four lanes or fewer are written whole even where they do not fit, because
-  // the title named them and the detail under it may not name fewer.
+  // A panel too narrow for four names names fewer and still counts the rest,
+  // because the budget holds before the list does.
   const four = attention(escapedFleet(4, 1), c, {
     basePath: base,
     width: 24,
   }).find((item) => item.id === "unconfined");
-  expect(four?.detail).toEndWith(
-    "Lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1001, " +
-      "kendex agent-2 PID 1002, kendex agent-3 PID 1003.",
-  );
+  expect(four?.detail).toEndWith("Lanes: kendex agent-0 PID 1000 and 3 more.");
 });
