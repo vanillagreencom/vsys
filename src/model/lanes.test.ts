@@ -457,15 +457,13 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
   ]);
   const ours = `${path},4242,0`;
   // The two forms a lane carries vsys's own pane, against the three things a
-  // lane can say about its server. One rule decides every row: neither form
-  // names the server it belongs to, so the mark rests on the lane naming the
-  // server vsys is attached to. Every fresh server hands out `%146`, and a
-  // second server holds a session named `vsys` with a window 2 and a pane 1
-  // as readily, so a lane naming none agrees with vsys's own by coincidence
-  // as easily as by fact and the reader would be told the wrong reason.
-  // The address the lane resolves to is a separate question: an unknown
-  // server is not a boundary, and only the claim about vsys's own screen
-  // needs the evidence.
+  // lane can say about its server. One rule decides every row: the capture
+  // and the switch run against vsys's own server, so a pane string matching
+  // vsys's own reaches vsys's own pane whatever server handed it out, and the
+  // mark is made unless the lane is known to be on another server. The lane
+  // that names none is marked for that reason, not refused for naming none.
+  // The address the lane resolves to is a separate question: only a lane on a
+  // known other server resolves to nothing.
   const rows: {
     row: string;
     env: Record<string, string>;
@@ -504,14 +502,14 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
     {
       row: "handle, no server",
       env: { TMUX_PANE: "%146" },
-      self: false,
+      self: true,
       elsewhere: false,
       address: "vsys:2.1",
     },
     {
       row: "address, no server",
       env: { VSYS_PANE: "vsys:2.1" },
-      self: false,
+      self: true,
       elsewhere: false,
       address: "vsys:2.1",
     },

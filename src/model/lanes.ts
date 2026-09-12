@@ -114,9 +114,9 @@ export function lanes(
     const mine = paneSocket(main);
     /**
      * What the lane says about its tmux server, against the one vsys read.
-     * Three states, not two booleans: a side that names no server is neither
-     * a match nor a boundary, and reading that case off the complement of
-     * either answer gets it wrong.
+     * Naming no server is its own state, neither a match nor a boundary:
+     * `elsewhere` refuses only a server known to differ, and the own-pane mark
+     * below asks only that the lane is not on one.
      */
     const server =
       socket === "" || mine === ""
@@ -127,15 +127,20 @@ export function lanes(
     const elsewhere = server === "other";
     // A lane carries whichever form its own environment held, so the pane vsys
     // draws in is compared in both: the `%N` handle from `TMUX_PANE`, and the
-    // `session:window.pane` address a reader puts in `VSYS_PANE`. Neither form
-    // names the server it belongs to. Every fresh server hands out `%1`, and
-    // `vsys:2.1` is a session name and two indexes that a second server holds
-    // as readily. So both rest on the lane naming the server vsys is attached
-    // to: a pane a reader set by hand on a lane naming no server would
-    // otherwise be called the reader's own screen by coincidence.
+    // `session:window.pane` address a reader puts in `VSYS_PANE`. The guard
+    // answers which pane the command will reach, not which server the lane's
+    // process sat on: `capture-pane` and `switch-client` are spawned in vsys's
+    // own environment, so tmux resolves the target against vsys's own server
+    // and a pane string that matches addresses vsys's own pane whatever server
+    // handed it out. Only a lane known to be on another server is refused, and
+    // `elsewhere` already leaves that one neither read nor offered a switch.
+    // The cost is a lane on an unknown server whose string collides with
+    // vsys's own: it is told vsys draws in it, which need not be true of that
+    // lane's process. That is the safe answer, because the capture the message
+    // replaces would have drawn vsys's own screen.
     const self =
       pane !== "" &&
-      server === "same" &&
+      server !== "other" &&
       (pane === tmux?.own || (ownAddress !== "" && pane === ownAddress));
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
