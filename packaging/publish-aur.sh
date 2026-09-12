@@ -50,6 +50,8 @@ fi
 # Derive the -git version from this checkout, matching the recipe's pkgver().
 if [ -z "$pkgver" ]; then
 	cd "$repo_root"
+	git rev-parse --git-dir >/dev/null 2>&1 ||
+		fail "${repo_root} is not a git checkout, so ${pkgname} has no revision to describe"
 	if described=$(git describe --long --tags --abbrev=7 2>/dev/null); then
 		pkgver=$(printf '%s' "$described" | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g')
 	else

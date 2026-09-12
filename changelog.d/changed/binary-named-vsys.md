@@ -1,1 +1,0 @@
-- **Breaking:** the program is now `vsys`. Move `~/.config/vsys-view/` to `~/.config/vsys/`, move `~/.local/state/vsys-view/` to `~/.local/state/vsys/`, and repoint `sqlitePath` in your config.
