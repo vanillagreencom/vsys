@@ -12,7 +12,7 @@ import { ProcessCollector } from "./procs";
 import { SccacheCollector } from "./sccache";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
-import { type PaneSet, readPanes } from "./tmux";
+import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
 
 /**
  * Reading the tmux server: the probe that decides the capability, and the one
@@ -158,7 +158,12 @@ export class Collector {
     // measured on this machine, a refused `list-panes` costs 1.06 ms at the
     // median against 1.26 ms for one that answers, so asking is cheaper than
     // asking twice.
-    let panes: PaneSet | undefined;
+    //
+    // The pane vsys draws in is in vsys's own environment, not in the
+    // server's answer, so it stands whether or not one came: a sample that
+    // lost the addresses must not lose the one lane the Terminal section may
+    // never capture, which is vsys's own screen.
+    let panes = ownPaneSet();
     if (this.tmux && this.tmuxOnPath)
       try {
         panes = await this.tmux.panes();
@@ -186,7 +191,7 @@ export class Collector {
       groups,
       procs,
       storage,
-      lanes: lanes(groups, procs, c, system.cores, panes?.byId, panes?.socket),
+      lanes: lanes(groups, procs, c, system.cores, panes),
       alerts: [],
       errors: r.errors,
       ...(sccache ? { sccache } : {}),

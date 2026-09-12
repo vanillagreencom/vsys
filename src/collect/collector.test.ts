@@ -457,12 +457,26 @@ test("a settings change keeps the cache counts measured since vsys started", asy
   });
 });
 
+/** Puts back what a test borrowed from vsys's own environment. */
+function restoreEnv(tmux: string | undefined, pane: string | undefined) {
+  if (tmux === undefined) delete process.env.TMUX;
+  else process.env.TMUX = tmux;
+  if (pane === undefined) delete process.env.TMUX_PANE;
+  else process.env.TMUX_PANE = pane;
+}
+/**
+ * The tmux server these lanes and the stubs below belong to, as the collector
+ * names it: the socket path and the server's pid, without the session that
+ * differs between clients. Written once so a lane and the read that resolves
+ * it cannot disagree by a spelling.
+ */
+const paneServer = "/tmp/tmux-1000/default,4242";
 /** Lanes in as many tmux panes, so one read has to serve all of them. */
 function panedFixture(f: ReturnType<typeof fixture>, count: number) {
   for (let i = 0; i < count; i++) {
     f.group(`agents.slice/pane-${i}.scope`, [100 + i]);
     f.proc(100 + i, `agents.slice/pane-${i}.scope`, {
-      env: `TMUX_PANE=%${i}\0`,
+      env: `TMUX_PANE=%${i}\0TMUX=${paneServer},${i}\0`,
       ticks: 10,
     });
   }
@@ -477,7 +491,10 @@ test("one tmux read resolves every lane's pane, however many lanes there are", a
     panes: async () => {
       reads++;
       return {
-        socket: "/tmp/tmux-1000/default",
+        socket: paneServer,
+        // vsys draws in the first of these panes, which makes that lane its
+        // own screen and every other lane an agent's.
+        own: "%0",
         byId: new Map(
           Array.from({ length: 12 }, (_, i) => [
             `%${i}`,
@@ -496,6 +513,10 @@ test("one tmux read resolves every lane's pane, however many lanes there are", a
   const first = s.lanes.find((lane) => lane.pane === "%0");
   expect(first?.address).toBe("vsys:0.1");
   expect(first?.window).toBe("w-0");
+  // The one lane the Terminal section may never capture, marked from the same
+  // read. Its neighbour is an agent and is read as always.
+  expect(first?.self).toBe("yes");
+  expect(s.lanes.find((lane) => lane.pane === "%1")?.self).toBe("no");
   // A second sample is a second read, not a cached one: panes move.
   await collector.sample(2000);
   expect(reads).toBe(2);
@@ -514,7 +535,8 @@ test("a tmux server that starts after vsys still gets its lanes addressed", asyn
       reads++;
       if (!running) throw new Error("no server on /tmp/tmux-1000/default");
       return {
-        socket: "/tmp/tmux-1000/default",
+        socket: paneServer,
+        own: "%0",
         byId: new Map(
           Array.from({ length: 3 }, (_, i) => [
             `%${i}`,
@@ -524,10 +546,25 @@ test("a tmux server that starts after vsys still gets its lanes addressed", asyn
       };
     },
   });
-  const before = await collector.sample(1000);
+  // vsys's own pane and server are in vsys's own environment, which is where
+  // the collector reads them when no server answers. Set here rather than
+  // taken from the machine running the suite, which has panes of its own.
+  const priorTmux = process.env.TMUX;
+  const priorPane = process.env.TMUX_PANE;
+  process.env.TMUX = `${paneServer},9`;
+  process.env.TMUX_PANE = "%0";
+  const before = await collector
+    .sample(1000)
+    .finally(() => restoreEnv(priorTmux, priorPane));
   expect(before.lanes.every((lane) => lane.address === "")).toBe(true);
   // The pane handle still arrives; only its resolution is missing.
   expect(before.lanes.some((lane) => lane.pane.startsWith("%"))).toBe(true);
+  // And the lane holding vsys's own pane is still marked. Carried in the read
+  // that failed, every lane came back unmarked, and the Terminal section drew
+  // vsys's own screen inside itself for that sample: the capture is a separate
+  // spawn that does not depend on this read at all.
+  expect(before.lanes.find((lane) => lane.pane === "%0")?.self).toBe("yes");
+  expect(before.lanes.find((lane) => lane.pane === "%1")?.self).toBe("no");
   expect(before.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
     false,
   );

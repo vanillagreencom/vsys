@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
-import { isPaneId, type PaneAddress } from "../collect/tmux";
+import { isPaneId, type PaneSet } from "../collect/tmux";
 import {
   accountName,
   jobserver,
@@ -70,14 +70,26 @@ export function lanes(
   procs: Proc[],
   c: CollectionConfig,
   cores = 0,
-  /** Every pane the tmux server holds, read once for the whole sample. */
-  panes?: Map<string, PaneAddress>,
   /**
-   * The server those panes came from. Empty or absent means vsys does not know
-   * which server it read, and an unknown boundary is not one to refuse at.
+   * What one tmux read gave for the whole sample: every pane the server holds,
+   * which server that was, and which pane vsys draws in. The three arrive
+   * together because they are only meaningful together — a handle resolves
+   * against the server it came from, and vsys's own pane is one of that
+   * server's. Absent when no server answered.
    */
-  socket = "",
+  tmux?: PaneSet,
 ): Lane[] {
+  const panes = tmux?.byId;
+  /**
+   * The server those panes came from. Empty means vsys does not know which
+   * server it read, and an unknown boundary is not one to refuse at.
+   */
+  const socket = tmux?.socket ?? "";
+  /**
+   * The address of the pane vsys draws in, so a lane carrying an address
+   * rather than a handle can still be recognised as that pane.
+   */
+  const ownAddress = tmux?.own ? (panes?.get(tmux.own)?.address ?? "") : "";
   const covered = new Set<number>();
   const result: Lane[] = [];
   const byPid = new Map(procs.map((p) => [p.pid, p]));
@@ -99,9 +111,41 @@ export function lanes(
           : basename(cwd);
     const account = accountName(main, c);
     const pane = paneName(main, c);
-    // Two servers, both known, and not the same one.
     const mine = paneSocket(main);
-    const elsewhere = socket !== "" && mine !== "" && mine !== socket;
+    /**
+     * What the lane says about its tmux server, against the one vsys read.
+     * Naming no server is its own state, neither a match nor a boundary:
+     * `elsewhere` refuses only a server known to differ, and the own-pane mark
+     * below asks only that the lane is not on one.
+     */
+    const server =
+      socket === "" || mine === ""
+        ? "unknown"
+        : mine === socket
+          ? "same"
+          : "other";
+    const elsewhere = server === "other";
+    // A lane carries whichever form its own environment held, so the pane vsys
+    // draws in is compared in both: the `%N` handle from `TMUX_PANE`, and the
+    // `session:window.pane` address a reader puts in `VSYS_PANE`. The question
+    // is which pane the command will reach, not which server the lane's
+    // process sat on: `capture-pane` and `switch-client` are spawned in vsys's
+    // own environment, so tmux resolves the target against vsys's own server
+    // and a pane string that matches addresses vsys's own pane whatever server
+    // handed it out. A lane known to be on another server is answered `no`
+    // because `elsewhere` already leaves it neither read nor offered a switch.
+    // `unknown` is what vsys owes when it cannot decide: it draws in a pane,
+    // the lane names one by address, and the map saying which pane vsys's own
+    // handle is did not arrive. That case may not answer `no`, which every
+    // consumer reads as licence to run the capture against the pane.
+    const self: Lane["self"] =
+      pane === "" || server === "other"
+        ? "no"
+        : pane === tmux?.own || (ownAddress !== "" && pane === ownAddress)
+          ? "yes"
+          : tmux?.own && !isPaneId(pane) && ownAddress === ""
+            ? "unknown"
+            : "no";
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
@@ -160,6 +204,7 @@ export function lanes(
        * is a reader setting it themselves.
        */
       elsewhere,
+      self,
       title,
       cwd,
       branch,

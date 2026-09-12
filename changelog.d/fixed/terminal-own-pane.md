@@ -1,0 +1,1 @@
+- The Terminal section no longer captures the pane vsys draws in, which showed the detail page inside itself, and its `Go to terminal` row no longer offers a move to the pane the reader is in.
