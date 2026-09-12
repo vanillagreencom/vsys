@@ -104,7 +104,10 @@ function fitDetail(leads: string[], keep: string, width: number): string {
  */
 function laneSentence(names: string[], width: number, head: string): string {
   const whole = `${head}${names.join(", ")}.`;
-  if (wrapLines(whole, width).length <= laneLines) return whole;
+  // One name too long for the rows it has is written whole and cut by the
+  // budget: there is no second name to count.
+  if (names.length === 1 || wrapLines(whole, width).length <= laneLines)
+    return whole;
   const shortened = (keep: number) =>
     `${head}${names.slice(0, keep).join(", ")} and ${names.length - keep} more.`;
   for (let keep = names.length - 1; keep >= 1; keep--)
@@ -150,26 +153,23 @@ function copy(
       const groups = launcherCopy(escaped, s.procs, c, basePath);
       const said = groups.map((g) => g.conclusion);
       const processHead = `${escaped.length} processes in ${n} ${p(n, "lane", "lanes")}: `;
-      // The cgroups the kept conclusions leave unwritten, counted the way the
-      // title counts the lanes it stopped at, so a dropped rung is marked. A
-      // scope is a cgroup, so the word holds for a process outside one too.
-      const unwritten = (kept: number) => {
-        const named = new Set(groups.slice(0, kept).map((g) => g.where));
-        const rest = groups.slice(kept).map((g) => g.where);
-        const places = new Set(rest.filter((w) => !named.has(w))).size;
-        return places
-          ? `And ${places} more ${p(places, "cgroup", "cgroups")} not written here.`
-          : "";
-      };
       // What a narrow panel gives up, in order: the ancestor chains, then a
-      // conclusion at a time from the last, each drop counted. The first
-      // conclusion and the lane sentence are what the card exists to say.
+      // conclusion at a time from the last. The first conclusion and the lane
+      // sentence are what the card exists to say. Every conclusion given up is
+      // counted, including one whose cgroup another conclusion still names.
       const rungs = [
         join(groups.map((g) => `${g.conclusion}${g.started}`)),
         join(said),
       ];
-      for (let kept = said.length - 1; kept >= 1; kept--)
-        rungs.push(join([...said.slice(0, kept), unwritten(kept)]));
+      for (let kept = said.length - 1; kept >= 1; kept--) {
+        const gone = said.length - kept;
+        rungs.push(
+          join([
+            ...said.slice(0, kept),
+            `And ${gone} more ${p(gone, "group", "groups")} of processes not written here.`,
+          ]),
+        );
+      }
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane runs", "lanes run")} outside ${c.agentSlice}: ${names}`,

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { escapedSnapshot, processSnapshot } from "../test/fixture";
 import { launcherCopy, launcherTrail, pathPrefix } from "./launcher";
+import type { Proc } from "./types";
 
 const base = ["/usr/local/bin", "/usr/bin", "/bin"];
 
@@ -162,4 +163,29 @@ test("a group is the processes agreeing on all four facts its sentence states", 
   expect(paths[0].conclusion).toContain("PATH starts with /a/bin");
   expect(paths[1].conclusion).toContain("3 processes sit in");
   expect(paths[1].conclusion).toContain("PATH starts with /b/bin");
+  // Two slices holding a scope of one unit name are two places, and one PATH
+  // entry holding a comma is one entry: the key keeps both apart.
+  const twin = fleet(1, 1).escaped[0];
+  const apart = (a: Proc, b: Proc) => launcherCopy([a, b], [a, b], c, base);
+  const elsewhere = { ...twin, pid: 9, group: "/b.slice/tmux-spawn-0.scope" };
+  expect(apart(twin, elsewhere)).toHaveLength(2);
+  const path = (pid: number, PATH: string) => ({ ...twin, pid, env: { PATH } });
+  expect(
+    apart(path(8, "/a,/b:/usr/bin"), path(7, "/a:/b:/usr/bin")),
+  ).toHaveLength(2);
+});
+
+test("the example chain comes from a member that still has its ancestors", () => {
+  const c = defaults();
+  const { procs, escaped } = fleet(1, 3);
+  // The first process of the group lost its parent between samples; a card
+  // that took its example from that process alone would name no ancestors.
+  escaped[0].ppid = 99999;
+  const [sentence] = launcherCopy(escaped, procs, c, base);
+  expect(sentence.started).toBe(
+    " Started from PID 1001: systemd in init.scope.",
+  );
+  // A group whose members all lost their parents says nothing about them.
+  for (const proc of escaped) proc.ppid = 99999;
+  expect(launcherCopy(escaped, procs, c, base)[0].started).toBe("");
 });

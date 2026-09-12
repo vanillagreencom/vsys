@@ -559,7 +559,9 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
   // Then a conclusion at a time, from the last, and what goes is counted the
   // way the title counts the lanes it stopped at.
   expect(detail(200)).not.toContain("tmux-spawn-11.scope");
-  expect(detail(200)).toContain("And 5 more cgroups not written here.");
+  expect(detail(200)).toContain(
+    "And 5 more groups of processes not written here.",
+  );
   // The first conclusion stays whole with its scope, so a card is never left
   // with no conclusion at all, and what it keeps it keeps whole rather than
   // as the head of a sentence the cut took the rest of.
@@ -568,9 +570,11 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
   );
   expect(detail(56).split("Launched bare")).toHaveLength(2);
   expect(detail(56)).not.toMatch(/Launched bare[^.]*…/);
-  expect(detail(56)).toContain("And 11 more cgroups not written here.");
-  // Two groups in one cgroup leave nothing to count when one goes, and the
-  // count that says nothing writes nothing, not a blank where it would sit.
+  expect(detail(56)).toContain(
+    "And 11 more groups of processes not written here.",
+  );
+  // Two groups in one cgroup: the one given up is counted even though the one
+  // kept still names that cgroup, and one group is one, not one groups.
   const shared = escapedSnapshot({ lanes: 2, scopes: 1 });
   shared.procs[2].env = { CARGO_BUILD_JOBS: "16" };
   const merged =
@@ -578,14 +582,14 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
       (item) => item.id === "unconfined",
     )?.detail ?? "";
   expect(merged).toContain("The launcher was shadowed");
-  expect(merged).not.toContain("more cgroup");
+  expect(merged).toContain("And 1 more group of processes not written here.");
   expect(merged).not.toContain("  ");
   expect(
     attention(escapedSnapshot({ lanes: 2, scopes: 2 }), c, {
       basePath: base,
       width: 44,
     }).find((item) => item.id === "unconfined")?.detail,
-  ).toContain("And 1 more cgroup not written here.");
+  ).toContain("And 1 more group of processes not written here.");
 });
 
 test("the lane sentence stops rather than growing with the machine", () => {
@@ -615,4 +619,13 @@ test("the lane sentence stops rather than growing with the machine", () => {
     width: 24,
   }).find((item) => item.id === "unconfined");
   expect(four?.detail).toEndWith("Lanes: kendex agent-0 PID 1000 and 3 more.");
+  // One lane has no second name to count, so a name too long for the rows it
+  // has is written whole and cut by the budget, never counted as 0 more.
+  const alone = escapedSnapshot({ lanes: 1 });
+  alone.lanes[0].name = `${"kendex vsys/issue-1234 ".repeat(3)}hclaude`;
+  const single = attention(alone, c, { basePath: base, width: 24 }).find(
+    (item) => item.id === "unconfined",
+  );
+  expect(single?.detail).not.toContain("and 0 more");
+  expect(single?.detail).toContain("Lane: kendex vsys/issue-1234");
 });

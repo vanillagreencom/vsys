@@ -35,8 +35,6 @@ export interface LauncherSentence {
   conclusion: string;
   /** The ancestors of one named process, or nothing when it has none. */
   started: string;
-  /** The scope or cgroup the sentence names, for a caller counting places. */
-  where: string;
 }
 /** Entries before the first one the login shell also has were prepended. */
 export function pathPrefix(path: string, base: string[]): string[] {
@@ -94,8 +92,12 @@ function groupSentence(
   const where = first.scope
     ? `the scope ${first.scope}`
     : `the cgroup ${first.group}`;
-  const started = first.chain.length
-    ? ` Started from PID ${first.pid}: ${first.chain.join(", ")}.`
+  // The example names its own PID, and is a member whose ancestors are still
+  // in the sample: the first process of a group may have lost its parent
+  // between samples while its neighbours still hold theirs.
+  const example = trails.find((t) => t.chain.length) ?? first;
+  const started = example.chain.length
+    ? ` Started from PID ${example.pid}: ${example.chain.join(", ")}.`
     : "";
   const path = first.prefix.length
     ? ` PATH starts with ${first.prefix.join(", ")}, which the login shell does not have.`
@@ -108,7 +110,7 @@ function groupSentence(
             first.caps.length > 1 ? "are" : "is"
           } set, but ${many} ${n === 1 ? "sits" : "sit"} in ${where}.${path}`
         : `Launched bare: none of ${c.capMarkers.join(", ")} is set on ${many} in ${where}.`;
-  return { conclusion, started, where: first.scope ?? first.group };
+  return { conclusion, started };
 }
 /**
  * One sentence per group rather than one per process. A lane holds many
@@ -127,12 +129,15 @@ export function launcherCopy(
   const groups = new Map<string, LauncherTrail[]>();
   for (const proc of procs) {
     const trail = launcherTrail(proc, all, c, basePath);
-    const key = [
+    // The whole cgroup path, and the arrays as arrays: two scopes of one unit
+    // name under different slices are two places, and one entry holding a
+    // comma is not two entries.
+    const key = JSON.stringify([
       trail.conclusion,
-      trail.scope ?? trail.group,
-      trail.caps.join(","),
-      trail.prefix.join(","),
-    ].join("|");
+      trail.group,
+      trail.caps,
+      trail.prefix,
+    ]);
     const held = groups.get(key);
     if (held) held.push(trail);
     else groups.set(key, [trail]);
