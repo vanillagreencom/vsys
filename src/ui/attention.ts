@@ -1,5 +1,5 @@
 import type { Config } from "../config/config";
-import { launcherCopy } from "../model/launcher";
+import { launcherCopy, launcherTally } from "../model/launcher";
 import { laneText, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
@@ -170,6 +170,11 @@ function copy(
           ]),
         );
       }
+      // At the floor a panel can be, one whole conclusion and the count of
+      // what went do not fit in the rows left beside the lane sentence. The
+      // last rung states every conclusion as a count instead, so what the
+      // card shows there is whole rather than a sentence the cut ended.
+      rungs.push(launcherTally(groups));
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane runs", "lanes run")} outside ${c.agentSlice}: ${names}`,

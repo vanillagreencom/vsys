@@ -35,6 +35,8 @@ export interface LauncherSentence {
   conclusion: string;
   /** The ancestors of one named process, or nothing when it has none. */
   started: string;
+  /** What the sentence concluded, for a card counting conclusions by kind. */
+  kind: LauncherConclusion;
 }
 /** Entries before the first one the login shell also has were prepended. */
 export function pathPrefix(path: string, base: string[]): string[] {
@@ -110,7 +112,7 @@ function groupSentence(
             first.caps.length > 1 ? "are" : "is"
           } set, but ${many} ${n === 1 ? "sits" : "sit"} in ${where}.${path}`
         : `Launched bare: none of ${c.capMarkers.join(", ")} is set on ${many} in ${where}.`;
-  return { conclusion, started };
+  return { conclusion, started, kind: first.conclusion };
 }
 /**
  * One sentence per group rather than one per process. A lane holds many
@@ -143,4 +145,20 @@ export function launcherCopy(
     else groups.set(key, [trail]);
   }
   return [...groups.values()].map((trails) => groupSentence(trails, c));
+}
+/**
+ * Every group as a count per conclusion, for a card too narrow to write one
+ * sentence out: at the floor a panel can be, one conclusion and the count of
+ * the groups left unwritten do not fit together in the rows a card has. This
+ * is what it can say there with nothing cut, and it is the same three words
+ * the sentences use.
+ */
+export function launcherTally(sentences: LauncherSentence[]): string {
+  const kinds: LauncherConclusion[] = ["bare", "shadowed", "unknown"];
+  const found = kinds
+    .map((kind) => [kind, sentences.filter((x) => x.kind === kind).length])
+    .filter(([, n]) => n)
+    .map(([kind, n]) => `${n} ${kind}`);
+  const n = sentences.length;
+  return `${n} ${n === 1 ? "group" : "groups"} of processes: ${found.join(", ")}.`;
 }

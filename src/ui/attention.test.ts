@@ -590,6 +590,20 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
       width: 44,
     }).find((item) => item.id === "unconfined")?.detail,
   ).toContain("And 1 more group of processes not written here.");
+  // At the floor a panel can be, one whole conclusion and the count of what
+  // went do not fit in the rows beside the lane sentence, so the card counts
+  // every conclusion instead. Nothing it shows there is cut.
+  expect(detail(20)).toBe(
+    "12 groups of processes: 12 bare. " +
+      "Lanes: kendex agent-0 PID 1000 and 11 more.",
+  );
+  expect(wrapLines(detail(20), 20)).toHaveLength(5);
+  // Each kind is counted under the name the sentences give it.
+  expect(
+    attention(shared, c, { basePath: base, width: 20 }).find(
+      (item) => item.id === "unconfined",
+    )?.detail,
+  ).toStartWith("2 groups of processes: 1 bare, 1 shadowed.");
 });
 
 test("the lane sentence stops rather than growing with the machine", () => {
