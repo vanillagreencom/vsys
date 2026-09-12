@@ -73,6 +73,10 @@ export function noDamageText(item: Integrity): string {
 }
 /** What the reader should do with one damaged address. */
 export function damageAdvice(group: DamagedGroup): string {
+  // A name written since the check no longer proves what was read, so no
+  // advice sends the reader at it with a delete.
+  if (group.changed)
+    return "written since the check: look before you remove anything";
   if (group.kind === "build") return "safe to delete and rebuild";
   if (group.kind === "other") return "restore from a backup or a snapshot";
   return "free space or already deleted, clears on the next check";
@@ -89,14 +93,14 @@ export function damageAdvice(group: DamagedGroup): string {
  * restored from a backup rather than deleted.
  */
 export function deleteCommand(group: DamagedGroup): string | undefined {
-  return group.kind === "build" && group.paths.length
+  return group.kind === "build" && !group.changed && group.paths.length
     ? shellLine(["rm", "-f", ...group.paths])
     : undefined;
 }
 /** One line that removes every damaged path a rebuild would replace. */
 export function rebuildCommand(item: Integrity): string | undefined {
   const paths = item.groups
-    .filter((group) => group.kind === "build")
+    .filter((group) => group.kind === "build" && !group.changed)
     .flatMap((group) => group.paths);
   return paths.length ? shellLine(["rm", "-f", ...paths]) : undefined;
 }

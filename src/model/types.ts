@@ -103,6 +103,11 @@ export interface Scratch {
 export interface DamagedAddress {
   logical: number;
   paths: string[];
+  /**
+   * The paths above that were written since the check began, so the name no
+   * longer proves what the check read. Absent where nothing was compared.
+   */
+  changed?: string[];
 }
 export interface Scrub {
   path: string;

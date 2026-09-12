@@ -79,6 +79,13 @@ export interface DamagedGroup {
   logical: number;
   paths: string[];
   kind: DamageKind;
+  /**
+   * True where a path under this address was written after the check began.
+   * The check resolved these names as it ended, so a block freed and reused
+   * since then resolves to an unrelated file: the name no longer proves what
+   * was read, and no command offers to remove it.
+   */
+  changed: boolean;
 }
 /**
  * A filesystem's integrity state, worst first. Every state but `healthy` and
@@ -171,6 +178,7 @@ export function integrity(
       logical: address.logical,
       paths: address.paths,
       kind: classify(address.paths, c),
+      changed: (address.changed ?? []).length > 0,
     }),
   );
   const counted = group.volumes.find((v) => v.countersAvailable !== false);

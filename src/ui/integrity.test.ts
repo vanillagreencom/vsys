@@ -225,3 +225,37 @@ test("nothing parsed from unreadable output is reported as a reading", () => {
     "The report could not be read, so nothing in it names a file.",
   );
 });
+
+test("an address written since the check is never offered as a delete", () => {
+  const changed = state([
+    report({
+      problem: true,
+      addresses: [
+        {
+          logical: 1,
+          paths: ["/r/target/a", "/r/target/b"],
+          changed: ["/r/target/b"],
+        },
+      ],
+    }),
+  ]);
+  // The file is still named, because dropping it would hide damage. Nothing
+  // offers to remove it: the block can have been freed and reused, and the
+  // name may now be a healthy file.
+  expect(changed.groups[0].paths).toEqual(["/r/target/a", "/r/target/b"]);
+  expect(damageAdvice(changed.groups[0])).toBe(
+    "written since the check: look before you remove anything",
+  );
+  expect(deleteCommand(changed.groups[0])).toBeUndefined();
+  expect(rebuildCommand(changed)).toBeUndefined();
+  // The same address with nothing written since keeps its command.
+  const stable = state([
+    report({
+      problem: true,
+      addresses: [
+        { logical: 1, paths: ["/r/target/a", "/r/target/b"], changed: [] },
+      ],
+    }),
+  ]);
+  expect(deleteCommand(stable.groups[0])).toBe("rm -f /r/target/a /r/target/b");
+});

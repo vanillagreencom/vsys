@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+} from "node:fs";
 import { join } from "node:path";
 import { point } from "../store/point";
 import { emptySnapshot, fixture } from "../test/fixture";
@@ -120,20 +126,33 @@ logical 953118621696:
   ${gone}
 `,
   );
+  // Both files were last written before the check began, so each name still
+  // stands for what the check read.
+  const checked = Date.parse("Fri Sep 11 13:25:54 2026");
+  for (const path of [kept, gone])
+    utimesSync(path, new Date(checked - 60000), new Date(checked - 60000));
   const r = new Reader();
   const collector = new StorageCollector();
   const first = await collector.collect(r, f.config, 1000);
   expect(first.scrubs[0].fsid).toBe(uuid);
   expect(first.scrubs[0].uncorrectable).toBe(26);
   expect(first.scrubs[0].addresses).toEqual([
-    { logical: 953118621696, paths: [kept, gone] },
+    { logical: 953118621696, paths: [kept, gone], changed: [] },
   ]);
+  // One of them is written again after the check. The block it sat in can
+  // have been freed and reused, so that name no longer proves what was read.
+  utimesSync(kept, new Date(checked + 60000), new Date(checked + 60000));
+  const rewritten = await collector.collect(r, f.config, 1500);
+  expect(rewritten.scrubs[0].addresses).toEqual([
+    { logical: 953118621696, paths: [kept, gone], changed: [kept] },
+  ]);
+  utimesSync(kept, new Date(checked - 60000), new Date(checked - 60000));
   // The reader deletes one of the two names. It leaves the list; the name
   // still on disk stays, because the damage is still there.
   unlinkSync(gone);
   const second = await collector.collect(r, f.config, 2000);
   expect(second.scrubs[0].addresses).toEqual([
-    { logical: 953118621696, paths: [kept] },
+    { logical: 953118621696, paths: [kept], changed: [] },
   ]);
   expect(r.errors).toEqual([]);
 });
@@ -194,4 +213,32 @@ test("device mapper aliases resolve to filesystem counters", async () => {
   expect(s.volumes[0].fsid).toBe("fsid");
   expect(s.volumes[0].errors["1/corruption_errs"]).toBe(2);
   expect(r.errors).toEqual([]);
+});
+
+test("an unreadable report stays a report rather than vanishing", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const path = join(f.config.scrubDir, "root.result");
+  f.write(path, "");
+  chmodSync(path, 0o000);
+  const r = new Reader();
+  const storage = await new StorageCollector().collect(r, f.config, 1000);
+  chmodSync(path, 0o600);
+  // Losing the row would take its problem card with it and leave the reader
+  // with no sign that a check had run at all.
+  expect(storage.scrubs).toEqual([
+    {
+      path,
+      text: "",
+      readable: false,
+      problem: true,
+      fsid: null,
+      startedAt: null,
+      status: null,
+      uncorrectable: null,
+      corrected: null,
+      addresses: null,
+    },
+  ]);
+  expect(r.errors.map((e) => e.source)).toEqual([path]);
 });
