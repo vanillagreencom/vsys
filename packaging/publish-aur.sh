@@ -22,8 +22,8 @@ fail() {
 }
 
 [ -f "$recipe" ] || fail "No recipe at ${recipe}"
-if [ -z "${AUR_SSH_PRIVATE_KEY:-}" ]; then
-	fail "AUR_SSH_PRIVATE_KEY is not set"
+if [ -z "${AUR_SSH_PRIVATE_KEY:-}" ] && [ -z "${AUR_SSH_KEY_FILE:-}" ]; then
+	fail "Set AUR_SSH_PRIVATE_KEY (CI) or AUR_SSH_KEY_FILE (a maintainer's own key)"
 fi
 
 # A fixed-version package ships checksums, so it may never be published from
@@ -42,7 +42,8 @@ if [ "$(id -u)" -eq 0 ]; then
 	id -u builder >/dev/null 2>&1 || useradd -m builder
 	chown -R builder "$repo_root"
 	exec runuser -u builder -- env \
-		AUR_SSH_PRIVATE_KEY="$AUR_SSH_PRIVATE_KEY" \
+		AUR_SSH_PRIVATE_KEY="${AUR_SSH_PRIVATE_KEY:-}" \
+		AUR_SSH_KEY_FILE="${AUR_SSH_KEY_FILE:-}" \
 		HOME=/home/builder \
 		"${BASH_SOURCE[0]}" "$@"
 fi
@@ -60,19 +61,22 @@ if [ -z "$pkgver" ]; then
 	echo "Derived ${pkgname} pkgver ${pkgver} from the checkout."
 fi
 
-mkdir -p "${HOME}/.ssh"
-printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "${HOME}/.ssh/aur"
-chmod 600 "${HOME}/.ssh/aur"
-cat > "${HOME}/.ssh/config" <<EOF
-Host aur.archlinux.org
-    User aur
-    IdentityFile ${HOME}/.ssh/aur
-    IdentitiesOnly yes
-    StrictHostKeyChecking accept-new
-EOF
-
 work="$(mktemp -d)"
+chmod 700 "$work"
 trap 'rm -rf "$work"' EXIT
+
+# Reach the AUR through GIT_SSH_COMMAND. Never write ~/.ssh: this script runs
+# on a maintainer's own machine as well as in CI, and a config written there
+# would replace the one they already have.
+if [ -n "${AUR_SSH_KEY_FILE:-}" ]; then
+	key="$AUR_SSH_KEY_FILE"
+	[ -f "$key" ] || fail "AUR_SSH_KEY_FILE names no file: ${key}"
+else
+	key="${work}/aur_key"
+	printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$key"
+	chmod 600 "$key"
+fi
+export GIT_SSH_COMMAND="ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o User=aur"
 git clone "ssh://aur@aur.archlinux.org/${pkgname}.git" "${work}/pkg"
 cp "$recipe" "${work}/pkg/PKGBUILD"
 cd "${work}/pkg"
@@ -118,5 +122,7 @@ if git diff --cached --quiet; then
 	exit 0
 fi
 git commit -m "${pkgname} ${pkgver}"
-git push origin master
+# The AUR serves master. An empty clone starts on whatever init.defaultBranch
+# says, so push the commit rather than a local branch name.
+git push origin HEAD:master
 echo "Pushed ${pkgname} ${pkgver} to the AUR."
