@@ -379,75 +379,65 @@ test("the pane vsys is drawing in is named, never captured into itself", async (
       switched.push(paneId);
     },
   };
-  // The shell vsys runs in is an agent lane like any other, and the pane it
-  // holds is the pane vsys is drawing on.
-  const own = await paned(hooks, {
-    pane: "%146",
-    address: "vsys:2.1",
-    self: "yes",
-  });
-  try {
-    await own.press("enter");
-    // Read, the capture would be this screen, and the sample after it would
-    // hold that screen holding this one.
-    expect(asked).toEqual([]);
-    expect(own.frame()).toContain("vsys is drawing in this pane");
-    // One explanation and no other: a section that also says it is reading
-    // leaves the reader waiting on a capture that is never coming.
-    for (const other of [
-      "Reading the pane",
-      "A pane is read live",
-      "needs a tmux server this vsys can reach",
-    ])
-      expect(own.frame()).not.toContain(other);
-    await own.update({ ...own.snapshot, time: own.snapshot.time + 1000 });
-    expect(asked).toEqual([]);
-    await own.press("j");
-    const row = selectedRow(own.frame());
-    expect(row).toContain("Go to terminal");
-    expect(row).toContain("this is the terminal you are reading in");
-    // Nothing to move: tmux answers a switch to the client's own pane by
-    // doing nothing, while the row claimed it had moved the reader.
-    await own.press("enter");
-    expect(switched).toEqual([]);
-    // And nothing to copy either, for the same reason.
-    await own.press(own.config.keys.copy);
-    expect(own.frame()).toContain("no command to copy");
-    expect(own.written.join("")).toBe("");
-  } finally {
-    await own.close();
-  }
-  // The third answer. vsys draws in a pane, this lane names one by address,
-  // and the read that says which pane vsys's own handle is did not arrive, so
-  // the two cannot be compared. Read anyway, this is the same capture as the
-  // first case, which is why the undecided answer may not fall through to the
-  // one that permits a read.
-  const undecided = await paned(hooks, {
-    pane: "vsys:2.1",
-    address: "vsys:2.1",
-    self: "unknown",
-  });
-  try {
-    await undecided.press("enter");
-    expect(asked).toEqual([]);
-    expect(undecided.frame()).toContain(
+  // The two answers that permit nothing. The first is the shell vsys runs in,
+  // an agent lane like any other, whose pane is the one vsys draws on. The
+  // second is the pane vsys could not decide about: it draws in one, the lane
+  // names one by address, and the read saying which pane vsys's own handle is
+  // did not arrive. Read either and the capture is this screen, and the
+  // sample after it holds that screen holding this one.
+  //
+  // The name, what the lane carries, the line the section draws, the line the
+  // row draws, and what the section may not say alongside it.
+  type Row = [string, Parameters<typeof paned>[1], string, string, string[]];
+  const refusals: Row[] = [
+    [
+      "vsys's own pane",
+      { pane: "%146", address: "vsys:2.1", self: "yes" },
+      "vsys is drawing in this pane",
+      "this is the terminal you are reading in",
+      // One explanation and no other: a section that also says it is reading
+      // leaves the reader waiting on a capture that is never coming.
+      [
+        "Reading the pane",
+        "A pane is read live",
+        "needs a tmux server this vsys can reach",
+      ],
+    ],
+    [
+      "a pane vsys could not decide about",
+      { pane: "vsys:2.1", address: "vsys:2.1", self: "unknown" },
       "vsys cannot tell whether this pane is its own",
-    );
-    // Said in its own words. Borrowing the settled answer's line would put a
-    // claim on the screen that vsys has no evidence for.
-    expect(undecided.frame()).not.toContain("vsys is drawing in this pane");
-    await undecided.press("j");
-    const row = selectedRow(undecided.frame());
-    expect(row).toContain("Go to terminal");
-    expect(row).toContain("cannot tell whether this is the terminal");
-    // A move vsys cannot promise is not offered, and nothing is copied for it.
-    await undecided.press("enter");
-    expect(switched).toEqual([]);
-    await undecided.press(undecided.config.keys.copy);
-    expect(undecided.frame()).toContain("no command to copy");
-    expect(undecided.written.join("")).toBe("");
-  } finally {
-    await undecided.close();
+      "cannot tell whether this is the terminal",
+      // Said in its own words. Borrowing the settled answer's line would put
+      // a claim on the screen that vsys has no evidence for.
+      ["vsys is drawing in this pane"],
+    ],
+  ];
+  for (const [name, lane, says, rowSays, absent] of refusals) {
+    const t = await paned(hooks, lane);
+    try {
+      await t.press("enter");
+      expect([name, asked]).toEqual([name, []]);
+      expect(t.frame()).toContain(says);
+      for (const other of absent) expect(t.frame()).not.toContain(other);
+      // A new sample is a fresh chance to capture, which it may not take.
+      await t.update({ ...t.snapshot, time: t.snapshot.time + 1000 });
+      expect([name, asked]).toEqual([name, []]);
+      await t.press("j");
+      const row = selectedRow(t.frame());
+      expect(row).toContain("Go to terminal");
+      expect(row).toContain(rowSays);
+      // Nothing to move: tmux answers a switch to the client's own pane by
+      // doing nothing, and a move vsys cannot promise is not offered either.
+      // Nothing to copy, for the same reason.
+      await t.press("enter");
+      expect([name, switched]).toEqual([name, []]);
+      await t.press(t.config.keys.copy);
+      expect(t.frame()).toContain("no command to copy");
+      expect(t.written.join("")).toBe("");
+    } finally {
+      await t.close();
+    }
   }
   // The control: every other pane is still read, and still switched to.
   const other = await paned(hooks, { pane: "%12", address: "work:1.1" });

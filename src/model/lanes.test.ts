@@ -457,6 +457,13 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
     ["%12", { address: "work:1.1", window: "build" }],
   ]);
   const ours = `${path},4242,0`;
+  const theirs = "/tmp/tmux-1000/other,777,0";
+  /** vsys's own pane, in the two forms a lane can carry it. */
+  const own = "%146";
+  const ownAt = "vsys:2.1";
+  const agent = (pid: number, scope: string, env: Record<string, string>) =>
+    processSnapshot({ pid, group: `${scope}.scope`, tool: "claude", env });
+  const asRead = { socket, own, byId: panes };
   // The two forms a lane carries vsys's own pane, against the three things a
   // lane can say about its server. One rule decides every row: the capture
   // and the switch run against vsys's own server, so a pane string matching
@@ -465,120 +472,48 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
   // that names none is marked for that reason, not refused for naming none.
   // The address the lane resolves to is a separate question: only a lane on a
   // known other server resolves to nothing.
-  const rows: {
-    row: string;
-    env: Record<string, string>;
-    self: Lane["self"];
-    elsewhere: boolean;
-    address: string;
-  }[] = [
-    {
-      row: "handle, vsys's own server",
-      env: { TMUX: ours, TMUX_PANE: "%146" },
-      self: "yes",
-      elsewhere: false,
-      address: "vsys:2.1",
-    },
-    {
-      row: "address, vsys's own server",
-      env: { TMUX: ours, VSYS_PANE: "vsys:2.1" },
-      self: "yes",
-      elsewhere: false,
-      address: "vsys:2.1",
-    },
-    {
-      row: "handle, another server",
-      env: { TMUX: "/tmp/tmux-1000/other,777,0", TMUX_PANE: "%146" },
-      self: "no",
-      elsewhere: true,
-      address: "",
-    },
-    {
-      row: "address, another server",
-      env: { TMUX: "/tmp/tmux-1000/other,777,0", VSYS_PANE: "vsys:2.1" },
-      self: "no",
-      elsewhere: true,
-      address: "",
-    },
-    {
-      row: "handle, no server",
-      env: { TMUX_PANE: "%146" },
-      self: "yes",
-      elsewhere: false,
-      address: "vsys:2.1",
-    },
-    {
-      row: "address, no server",
-      env: { VSYS_PANE: "vsys:2.1" },
-      self: "yes",
-      elsewhere: false,
-      address: "vsys:2.1",
-    },
+  // The row's name, the lane's own environment, then the three it earns:
+  // whether it is vsys's own pane, whether it is on another server, and the
+  // address it resolves to. `ours` and `theirs` name the server it sat on.
+  type Row = [string, Record<string, string>, Lane["self"], boolean, string];
+  const rows: Row[] = [
+    ["handle, ours", { TMUX: ours, TMUX_PANE: own }, "yes", false, ownAt],
+    ["address, ours", { TMUX: ours, VSYS_PANE: ownAt }, "yes", false, ownAt],
+    ["handle, theirs", { TMUX: theirs, TMUX_PANE: own }, "no", true, ""],
+    ["address, theirs", { TMUX: theirs, VSYS_PANE: ownAt }, "no", true, ""],
+    ["handle, no server", { TMUX_PANE: own }, "yes", false, ownAt],
+    ["address, no server", { VSYS_PANE: ownAt }, "yes", false, ownAt],
   ];
-  for (const { row, env, ...want } of rows) {
-    const [lane] = lanes(
-      groups,
-      [processSnapshot({ pid: 1, group: "a.scope", tool: "claude", env })],
-      c,
-      0,
-      { socket, own: "%146", byId: panes },
-    );
+  for (const [row, env, self, elsewhere, address] of rows) {
+    const [lane] = lanes(groups, [agent(1, "a", env)], c, 0, asRead);
     expect({
       row,
       self: lane.self,
       elsewhere: lane.elsewhere,
       address: lane.address,
-    }).toEqual({ row, ...want });
+    }).toEqual({ row, self, elsewhere, address });
   }
   const env = { TMUX: ours };
   // The shell vsys runs in, which is an agent lane like any other: it exports
   // the handle tmux gave it.
-  const byHandle = processSnapshot({
-    pid: 1,
-    group: "a.scope",
-    tool: "claude",
-    env: { ...env, TMUX_PANE: "%146" },
-  });
+  const byHandle = agent(1, "a", { ...env, TMUX_PANE: own });
   // A reader who configured `VSYS_PANE` carries the same pane as an address,
   // and a comparison against the handle alone would not recognise it.
-  const byAddress = processSnapshot({
-    pid: 2,
-    group: "b.scope",
-    tool: "claude",
-    env: { ...env, VSYS_PANE: "vsys:2.1" },
-  });
+  const byAddress = agent(2, "b", { ...env, VSYS_PANE: ownAt });
   // A pane on vsys's own server that is not the one vsys draws in: the server
   // matching is what the mark rests on, never what it is.
-  const other = processSnapshot({
-    pid: 3,
-    group: "d.scope",
-    tool: "claude",
-    env: { ...env, TMUX_PANE: "%12" },
-  });
+  const other = agent(3, "d", { ...env, TMUX_PANE: "%12" });
   // The same in the address form. With the map in hand vsys knows its own
   // address, so an address that is not it is a settled `no` rather than the
   // undecided answer the failed read gives below.
-  const otherAddress = processSnapshot({
-    pid: 4,
-    group: "e.scope",
-    tool: "claude",
-    env: { ...env, VSYS_PANE: "work:1.1" },
-  });
+  const otherAddress = agent(4, "e", { ...env, VSYS_PANE: "work:1.1" });
   const lot = [byHandle, byAddress, other, otherAddress];
-  const read = lanes(groups, lot, c, 0, {
-    socket,
-    own: "%146",
-    byId: panes,
-  });
+  const read = lanes(groups, lot, c, 0, asRead);
   expect(read.map((lane) => lane.self)).toEqual(["yes", "yes", "no", "no"]);
   // Outside tmux vsys occupies no pane, so no lane is its own screen and every
   // one of them is still readable. Nothing is undecided either: a vsys that
   // draws in no pane has no comparison left to fail.
-  const outside = lanes(groups, lot, c, 0, {
-    socket,
-    own: "",
-    byId: panes,
-  });
+  const outside = lanes(groups, lot, c, 0, { ...asRead, own: "" });
   expect(outside.map((lane) => lane.self)).toEqual(["no", "no", "no", "no"]);
   // A `list-panes` that failed leaves no map. The handle form is still
   // decided, because vsys's own handle comes from its own environment and
@@ -590,12 +525,11 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
   // handle that is not vsys's own is settled without the map too, so a failed
   // read does not cost the reader every terminal on the machine.
   const refused = lanes(groups, [byHandle, byAddress, other], c, 0, {
-    socket,
-    own: "%146",
+    ...asRead,
     byId: new Map(),
   });
   expect(refused.map((lane) => lane.self)).toEqual(["yes", "unknown", "no"]);
   // The lane keeps the address the reader configured either way: the map is
   // what vsys lost, not what the reader typed.
-  expect(refused[1]?.pane).toBe("vsys:2.1");
+  expect(refused[1]?.pane).toBe(ownAt);
 });
