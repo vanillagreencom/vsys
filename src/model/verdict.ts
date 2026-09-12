@@ -237,6 +237,12 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   const damaged = filesystems.filter((item) => item.state === "damaged");
   if (damaged.length) {
     const counts = damaged.map(damageCounts);
+    // The card counts damage across every filesystem it names, so its block
+    // count must too. One filesystem whose report carried no count leaves the
+    // total unknown rather than a sum that silently omits it.
+    const blocks = damaged.every((item) => item.blocks !== null)
+      ? damaged.reduce((sum, item) => sum + (item.blocks ?? 0), 0)
+      : null;
     add("damaged-files", "danger", {
       paths: damaged.map((item) => item.mounts[0] ?? item.device),
       // The card opens the filesystem's integrity row, which is not one of
@@ -248,7 +254,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         files: counts.reduce((sum, n) => sum + n.files, 0),
         build: counts.reduce((sum, n) => sum + n.build, 0),
         other: counts.reduce((sum, n) => sum + n.other, 0),
-        blocks: damaged[0].blocks,
+        blocks,
       },
     });
   }

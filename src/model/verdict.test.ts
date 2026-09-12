@@ -277,3 +277,40 @@ test("the cause order table is the ladder's own tie order", () => {
     .map((cause) => causeRank(cause.id));
   expect(danger).toEqual([...danger].sort((a, b) => a - b));
 });
+
+test("the damage card counts blocks across every filesystem it names", () => {
+  const c = defaults();
+  const damaged = (fsid: string, mount: string, blocks: number | null) => ({
+    volume: volumeSnapshot(mount, {
+      fsid,
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    scrub: {
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: 500,
+      status: "finished",
+      uncorrectable: blocks,
+      addresses: [{ logical: 1, paths: [`/r/target/${fsid}`] }],
+    },
+  });
+  const build = (rows: ReturnType<typeof damaged>[]) => {
+    const s = emptySnapshot();
+    s.storage.volumes = rows.map((row) => row.volume);
+    s.storage.scrubs = rows.map((row) => row.scrub);
+    return causes(s, c).find((cause) => cause.id === "damaged-files");
+  };
+  // Two filesystems, both counted, so the card states their total.
+  expect(
+    build([damaged("a", "/a", 26), damaged("b", "/b", 9)])?.values.blocks,
+  ).toBe(35);
+  // One report carried no count, so the total is unknown rather than a sum
+  // that quietly leaves that filesystem out.
+  expect(
+    build([damaged("a", "/a", 26), damaged("b", "/b", null)])?.values.blocks,
+  ).toBeNull();
+});
