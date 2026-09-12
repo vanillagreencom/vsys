@@ -207,3 +207,21 @@ test("an unreadable record of past growth is not a record of no errors", () => {
     "last new error none recorded",
   );
 });
+
+test("nothing parsed from unreadable output is reported as a reading", () => {
+  // The report happens to carry a count and an address-shaped line, but its
+  // output as a whole could not be read, so neither is a reading.
+  const item = state([
+    report({
+      readable: false,
+      problem: true,
+      uncorrectable: 26,
+      addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+    }),
+  ]);
+  expect(integrityWords(item)).toBe("Damage state unknown");
+  expect(blocksText(item)).toBe("not available: the report could not be read");
+  expect(noDamageText(item)).toBe(
+    "The report could not be read, so nothing in it names a file.",
+  );
+});

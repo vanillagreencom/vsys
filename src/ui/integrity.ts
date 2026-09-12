@@ -52,6 +52,7 @@ export function integrityLine(item: Integrity): string {
  */
 export function blocksText(item: Integrity): string {
   if (!item.scrub) return `${gap}: no check has reported on this filesystem`;
+  if (!item.readable) return `${gap}: the report could not be read`;
   if (item.blocks === null || item.blocks === undefined)
     return `${gap}: the report carried no count`;
   return `${item.blocks} by the last full check`;
@@ -64,6 +65,8 @@ export function blocksText(item: Integrity): string {
 export function noDamageText(item: Integrity): string {
   if (!item.scrub)
     return "No check has reported on this filesystem, so no file is named.";
+  if (!item.readable)
+    return "The report could not be read, so nothing in it names a file.";
   if (item.scrub.addresses === null || item.scrub.addresses === undefined)
     return "The report carries no damaged-file section, so it names no file. That is not a report of none.";
   return "No damaged address is left on this filesystem.";

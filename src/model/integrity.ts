@@ -114,6 +114,12 @@ export interface Integrity {
   groups: DamagedGroup[];
   /** The report the state was read from, for the raw text one level down. */
   scrub: Scrub | null;
+  /**
+   * False where a report exists but its output could not be read. Nothing
+   * parsed out of such a report is a reading, so the fields above carry
+   * nothing from it and the words say that rather than reporting none.
+   */
+  readable: boolean;
 }
 const level: Record<IntegrityState, Level> = {
   damaged: "danger",
@@ -224,10 +230,11 @@ export function integrity(
     errorAge: errorAge === null ? null : errorAge / 1000,
     errorKnown,
     errorSize: errorSize ?? null,
-    blocks: scrub?.uncorrectable ?? null,
+    blocks: readable ? (scrub?.uncorrectable ?? null) : null,
     counter,
     groups,
     scrub,
+    readable,
   };
 }
 /** One integrity reading per filesystem, in the order Storage draws them. */
