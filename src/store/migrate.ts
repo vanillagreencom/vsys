@@ -17,6 +17,7 @@ function laneUnknowns(): Lane {
     address: "",
     window: "",
     elsewhere: false,
+    self: false,
     title: "",
     cwd: "",
     branch: "",

@@ -1,8 +1,15 @@
 import { expect, test } from "bun:test";
-import { serverPart } from "../collect/tmux";
+import { type PaneAddress, serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
 import { groupSnapshot, processSnapshot } from "../test/fixture";
 import { effectiveMax, lanes, parentChain, processTree } from "./lanes";
+
+/** What one tmux read gave, defaulting to a vsys that draws in no pane. */
+const tmuxRead = (byId: Map<string, PaneAddress>, socket = "", own = "") => ({
+  socket,
+  own,
+  byId,
+});
 
 test("process trees keep children under their own parent despite PID order", () => {
   const a = processSnapshot({ pid: 40, ppid: 1, start: 10 });
@@ -302,7 +309,7 @@ test("a configured pane address is the address, not a key into the server", () =
     env: { TMUX_PANE: "%12" },
   });
   const panes = new Map([["%12", { address: "work:3.2", window: "build" }]]);
-  const [byAddress] = lanes(groups, [configured], c, 0, panes);
+  const [byAddress] = lanes(groups, [configured], c, 0, tmuxRead(panes));
   // Looked up in a map keyed by `%N` it found nothing and the row showed no
   // address at all, for the configuration this repository documents.
   expect({ pane: byAddress.pane, address: byAddress.address }).toEqual({
@@ -318,7 +325,7 @@ test("a configured pane address is the address, not a key into the server", () =
     [handle],
     c,
     0,
-    panes,
+    tmuxRead(panes),
   );
   expect({ address: byHandle.address, window: byHandle.window }).toEqual({
     address: "work:3.2",
@@ -353,7 +360,13 @@ test("a pane on another tmux server resolves to nothing, not to a stranger", () 
     env: { TMUX_PANE: "%9", TMUX: "/tmp/tmux-1000/other,777,0" },
   });
   const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
-  const [mine, theirs] = lanes(groups, [here, away], c, 0, panes, socket);
+  const [mine, theirs] = lanes(
+    groups,
+    [here, away],
+    c,
+    0,
+    tmuxRead(panes, socket),
+  );
   // The lane on this server reads as it always did.
   expect({
     address: mine.address,
@@ -370,7 +383,7 @@ test("a pane on another tmux server resolves to nothing, not to a stranger", () 
   }).toEqual({ address: "", window: "", elsewhere: true });
   // A boundary vsys cannot see is not one it refuses at: with no server known
   // for the read, or none for the lane, both resolve as before.
-  const [unknownServer] = lanes(groups, [away], c, 0, panes);
+  const [unknownServer] = lanes(groups, [away], c, 0, tmuxRead(panes));
   expect(unknownServer.elsewhere).toBe(false);
   const bare = processSnapshot({
     pid: 3,
@@ -378,7 +391,7 @@ test("a pane on another tmux server resolves to nothing, not to a stranger", () 
     tool: "claude",
     env: { TMUX_PANE: "%9" },
   });
-  const [unknownLane] = lanes(groups, [bare], c, 0, panes, socket);
+  const [unknownLane] = lanes(groups, [bare], c, 0, tmuxRead(panes, socket));
   expect(unknownLane.elsewhere).toBe(false);
   expect(unknownLane.address).toBe("work:1.1");
 });
@@ -411,7 +424,13 @@ test("a restarted server on the same socket path is a different server", () => {
     env: { TMUX_PANE: "%9", TMUX: `${path},4242,7` },
   });
   const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
-  const [dead, live] = lanes(groups, [stale, sibling], c, 0, panes, socket);
+  const [dead, live] = lanes(
+    groups,
+    [stale, sibling],
+    c,
+    0,
+    tmuxRead(panes, socket),
+  );
   // Compared by path alone the stale lane showed `work:1.1` and offered a
   // switch, and the reader would have landed in a stranger's pane.
   expect({ address: dead.address, elsewhere: dead.elsewhere }).toEqual({
@@ -421,5 +440,73 @@ test("a restarted server on the same socket path is a different server", () => {
   expect({ address: live.address, elsewhere: live.elsewhere }).toEqual({
     address: "work:1.1",
     elsewhere: false,
+  });
+});
+
+test("the pane vsys draws in is marked on the lane, in either form it carries", () => {
+  const c = defaults();
+  const groups = ["a", "b", "d"].map((n) =>
+    groupSnapshot({ path: `${n}.scope`, name: `${n}.scope` }),
+  );
+  const path = "/tmp/tmux-1000/default";
+  const socket = serverPart(`${path},4242,3`);
+  // vsys draws in `%146`, which this server calls `vsys:2.1`.
+  const panes = new Map([
+    ["%146", { address: "vsys:2.1", window: "vsys" }],
+    ["%12", { address: "work:1.1", window: "build" }],
+  ]);
+  const env = { TMUX: `${path},4242,0` };
+  // The shell vsys runs in, which is an agent lane like any other: it exports
+  // the handle tmux gave it.
+  const byHandle = processSnapshot({
+    pid: 1,
+    group: "a.scope",
+    tool: "claude",
+    env: { ...env, TMUX_PANE: "%146" },
+  });
+  // A reader who configured `VSYS_PANE` carries the same pane as an address,
+  // and a comparison against the handle alone would not recognise it.
+  const byAddress = processSnapshot({
+    pid: 2,
+    group: "b.scope",
+    tool: "claude",
+    env: { ...env, VSYS_PANE: "vsys:2.1" },
+  });
+  const other = processSnapshot({
+    pid: 3,
+    group: "d.scope",
+    tool: "claude",
+    env: { ...env, TMUX_PANE: "%12" },
+  });
+  const read = lanes(groups, [byHandle, byAddress, other], c, 0, {
+    socket,
+    own: "%146",
+    byId: panes,
+  });
+  expect(read.map((lane) => lane.self)).toEqual([true, true, false]);
+  // Outside tmux vsys occupies no pane, so no lane is its own screen and every
+  // one of them is still readable.
+  const outside = lanes(groups, [byHandle, byAddress, other], c, 0, {
+    socket,
+    own: "",
+    byId: panes,
+  });
+  expect(outside.map((lane) => lane.self)).toEqual([false, false, false]);
+  // `%146` on another server is another pane: it is refused as elsewhere, and
+  // never as the screen the reader is looking at.
+  const stranger = processSnapshot({
+    pid: 4,
+    group: "a.scope",
+    tool: "claude",
+    env: { TMUX: "/tmp/tmux-1000/other,777,0", TMUX_PANE: "%146" },
+  });
+  const [away] = lanes(groups, [stranger], c, 0, {
+    socket,
+    own: "%146",
+    byId: panes,
+  });
+  expect({ self: away.self, elsewhere: away.elsewhere }).toEqual({
+    self: false,
+    elsewhere: true,
   });
 });

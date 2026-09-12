@@ -186,7 +186,7 @@ export class Collector {
       groups,
       procs,
       storage,
-      lanes: lanes(groups, procs, c, system.cores, panes?.byId, panes?.socket),
+      lanes: lanes(groups, procs, c, system.cores, panes),
       alerts: [],
       errors: r.errors,
       ...(sccache ? { sccache } : {}),

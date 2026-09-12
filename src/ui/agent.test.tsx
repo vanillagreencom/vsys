@@ -367,6 +367,62 @@ test("the switch is offered only when vsys shares the tmux server", async () => 
   }
 });
 
+test("the pane vsys is drawing in is named, never captured into itself", async () => {
+  const asked: string[] = [];
+  const switched: string[] = [];
+  const hooks = {
+    onCapture: async (paneId: string) => {
+      asked.push(paneId);
+      return ["$ bun run start", "agents  resources"];
+    },
+    onSwitch: async (paneId: string) => {
+      switched.push(paneId);
+    },
+  };
+  // The shell vsys runs in is an agent lane like any other, and the pane it
+  // holds is the pane vsys is drawing on.
+  const own = await paned(hooks, {
+    pane: "%146",
+    address: "vsys:2.1",
+    self: true,
+  });
+  try {
+    await own.press("enter");
+    // Read, the capture would be this screen, and the sample after it would
+    // hold that screen holding this one.
+    expect(asked).toEqual([]);
+    expect(own.frame()).toContain("vsys is drawing in this pane");
+    await own.update({ ...own.snapshot, time: own.snapshot.time + 1000 });
+    expect(asked).toEqual([]);
+    await own.press("j");
+    const row = selectedRow(own.frame());
+    expect(row).toContain("Go to terminal");
+    expect(row).toContain("this is the terminal you are reading in");
+    // Nothing to move: tmux answers a switch to the client's own pane by
+    // doing nothing, while the row claimed it had moved the reader.
+    await own.press("enter");
+    expect(switched).toEqual([]);
+    // And nothing to copy either, for the same reason.
+    await own.press(own.config.keys.copy);
+    expect(own.frame()).toContain("no command to copy");
+    expect(own.written.join("")).toBe("");
+  } finally {
+    await own.close();
+  }
+  // The control: every other pane is still read, and still switched to.
+  const other = await paned(hooks, { pane: "%12", address: "work:1.1" });
+  try {
+    await other.press("enter");
+    expect(asked).toEqual(["%12"]);
+    expect(other.frame()).toContain("bun run start");
+    await other.press("j");
+    await other.press("enter");
+    expect(switched).toEqual(["%12"]);
+  } finally {
+    await other.close();
+  }
+});
+
 test("an agent with no pane offers no terminal and no way to reach one", async () => {
   const t = await paned(
     { onCapture: async () => ["output"] },

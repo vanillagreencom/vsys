@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
-import { isPaneId, type PaneAddress } from "../collect/tmux";
+import { isPaneId, type PaneSet } from "../collect/tmux";
 import {
   accountName,
   jobserver,
@@ -70,14 +70,26 @@ export function lanes(
   procs: Proc[],
   c: CollectionConfig,
   cores = 0,
-  /** Every pane the tmux server holds, read once for the whole sample. */
-  panes?: Map<string, PaneAddress>,
   /**
-   * The server those panes came from. Empty or absent means vsys does not know
-   * which server it read, and an unknown boundary is not one to refuse at.
+   * What one tmux read gave for the whole sample: every pane the server holds,
+   * which server that was, and which pane vsys draws in. The three arrive
+   * together because they are only meaningful together — a handle resolves
+   * against the server it came from, and vsys's own pane is one of that
+   * server's. Absent when no server answered.
    */
-  socket = "",
+  tmux?: PaneSet,
 ): Lane[] {
+  const panes = tmux?.byId;
+  /**
+   * The server those panes came from. Empty means vsys does not know which
+   * server it read, and an unknown boundary is not one to refuse at.
+   */
+  const socket = tmux?.socket ?? "";
+  /**
+   * The address of the pane vsys draws in, so a lane carrying an address
+   * rather than a handle can still be recognised as that pane.
+   */
+  const ownAddress = tmux?.own ? (panes?.get(tmux.own)?.address ?? "") : "";
   const covered = new Set<number>();
   const result: Lane[] = [];
   const byPid = new Map(procs.map((p) => [p.pid, p]));
@@ -102,6 +114,13 @@ export function lanes(
     // Two servers, both known, and not the same one.
     const mine = paneSocket(main);
     const elsewhere = socket !== "" && mine !== "" && mine !== socket;
+    // A lane carries whichever form its own environment held, so the pane vsys
+    // draws in is compared in both: the `%N` handle from `TMUX_PANE`, and the
+    // `session:window.pane` address a reader puts in `VSYS_PANE`.
+    const self =
+      pane !== "" &&
+      !elsewhere &&
+      (pane === tmux?.own || (ownAddress !== "" && pane === ownAddress));
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
@@ -160,6 +179,12 @@ export function lanes(
        * is a reader setting it themselves.
        */
       elsewhere,
+      /**
+       * This lane's pane is the one vsys is drawing in, so reading it would
+       * put vsys's own screen inside itself and switching to it would move a
+       * reader who is already there.
+       */
+      self,
       title,
       cwd,
       branch,

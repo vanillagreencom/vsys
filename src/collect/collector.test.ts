@@ -476,6 +476,7 @@ test("one tmux read resolves every lane's pane, however many lanes there are", a
       reads++;
       return {
         socket: "/tmp/tmux-1000/default",
+        own: "",
         byId: new Map(
           Array.from({ length: 12 }, (_, i) => [
             `%${i}`,
@@ -513,6 +514,7 @@ test("a tmux server that starts after vsys still gets its lanes addressed", asyn
       if (!running) throw new Error("no server on /tmp/tmux-1000/default");
       return {
         socket: "/tmp/tmux-1000/default",
+        own: "",
         byId: new Map(
           Array.from({ length: 3 }, (_, i) => [
             `%${i}`,

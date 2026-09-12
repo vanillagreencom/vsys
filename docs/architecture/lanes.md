@@ -13,6 +13,7 @@ A lane is a watched scope, or a group an agent or a resource alarm made worth wa
 - A tmux pane id such as `%9` is unique only within one server, so the lane keeps it as the handle `tmux switch-client -t` takes and never as a name. One `tmux list-panes` per sample resolves every lane at once into a `session:window.pane` address.
 - `isPaneId` decides one thing: whether a value is `%N` and can be looked up in the pane map. A reader who configured an address instead already has what they would type, so it stands as the address and carries no window name, which only the server holds.
 - A handle is resolved only against the server it belongs to. The lane carries the `TMUX` value its own shell exported, and a handle whose server is known to differ resolves to nothing rather than naming a stranger's pane.
+- One pane on that server is vsys's own, the one it draws in. `lanes()` marks the lane holding it, matching the `%N` handle from `TMUX_PANE` and the address a reader put in `VSYS_PANE` alike, so that pane's lane can be told apart from the agents it sits beside.
 - `scopeMain()` in `src/model/scopes.ts` picks a scope's main process: the oldest member whose parent sits outside the scope.
 
 ## Invariants
@@ -32,3 +33,4 @@ A lane is a watched scope, or a group an agent or a resource alarm made worth wa
 13. Each new escaped agent emits its own alert even inside an already alarmed scope, and every rule clears before it rearms. `src/model/alerts.test.ts` checks process identity and rearming.
 14. One tmux read resolves every lane's pane whatever the number of lanes, and a server that stops answering costs the addresses rather than the sample. `src/collect/collector.test.ts` counts the reads and fails one on purpose.
 15. A configured pane address is a target tmux accepts rather than one vsys refuses, and a pane on another server resolves to nothing. `src/model/lanes.test.ts` and `src/collect/tmux.test.ts` check both, including a restarted server on one socket path.
+16. The lane holding the pane vsys draws in is marked as its own in both forms a lane can carry it, and only on the server vsys read. `src/model/lanes.test.ts` checks a handle, an address, a vsys outside tmux and the same handle on another server.

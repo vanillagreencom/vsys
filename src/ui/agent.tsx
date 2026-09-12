@@ -282,7 +282,13 @@ export function Agent({
   // opened it is not a terminal. The body has no other use for it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the sample time is the clock
   useEffect(() => {
-    if (!terminalOpen || !onCapture || !lane.pane || lane.elsewhere) {
+    if (
+      !terminalOpen ||
+      !onCapture ||
+      !lane.pane ||
+      lane.elsewhere ||
+      lane.self
+    ) {
       setPane(null);
       return;
     }
@@ -326,6 +332,9 @@ export function Agent({
     };
   }, [history, lane.id, snapshot.time, windowMs]);
   const target = laneTarget(lane, c);
+  // A pane vsys could read: the lane has one, it belongs to the server vsys
+  // talks to, and it is not the pane vsys is drawing in.
+  const readable = Boolean(lane.pane) && !lane.elsewhere && !lane.self;
   const rows: DetailRow[] = [
     ...sections.flatMap((name): DetailRow[] =>
       name === "Terminal" &&
@@ -364,7 +373,9 @@ export function Agent({
       onCopy(
         row?.kind === "action"
           ? row.intent.text
-          : row?.kind === "terminal"
+          : // A switch to the pane the reader is in moves nothing, so there is
+            // no command to hand them.
+            row?.kind === "terminal" && !lane.self
             ? switchCommand(lane.pane)
             : undefined,
       );
@@ -380,6 +391,9 @@ export function Agent({
    * macOS, while a switch behaves the same wherever tmux runs.
    */
   const goToTerminal = () => {
+    // tmux moves a client to the pane it is already in by doing nothing, so
+    // the row states that instead of asking for a move that cannot happen.
+    if (lane.self) return;
     // A switch rejects when the pane has gone, the server stopped or the
     // target is not one it holds. Dropped, the reader pressed a key, nothing
     // moved, and nothing said why.
@@ -492,9 +506,11 @@ export function Agent({
                 {fit("Go to terminal", 16)}
                 <span attributes={ui.dim}>
                   {safe(
-                    onSwitch
-                      ? `moves this terminal to ${lane.address || lane.pane}`
-                      : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
+                    lane.self
+                      ? "this is the terminal you are reading in"
+                      : onSwitch
+                        ? `moves this terminal to ${lane.address || lane.pane}`
+                        : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
                   )}
                 </span>
               </Row>
@@ -553,27 +569,30 @@ export function Agent({
                       {!lane.pane && (
                         <Empty text="This agent exported no pane address, so vsys cannot find its terminal." />
                       )}
-                      {/* A pane holds what it holds now, so reading one inside
-                          a view of an older sample would put the present
-                          inside the past. Said here rather than blamed on the
-                          server, which is reachable. */}
                       {/* `%9` is unique per tmux server, so the server this
                           vsys reads holds a `%9` of its own: reading or
                           switching would reach a stranger's pane. */}
                       {lane.pane && lane.elsewhere && (
                         <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
                       )}
-                      {lane.pane && !lane.elsewhere && !live && (
+                      {/* Reading it would draw this screen inside itself, and
+                          one copy deeper on every sample after that. */}
+                      {lane.pane && !lane.elsewhere && lane.self && (
+                        <Empty text="vsys is drawing in this pane, so what it holds is this screen." />
+                      )}
+                      {/* A pane holds what it holds now, so reading one inside
+                          a view of an older sample would put the present
+                          inside the past. Said here rather than blamed on the
+                          server, which is reachable. */}
+                      {readable && !live && (
                         <Empty text="A pane is read live; this is a past sample." />
                       )}
-                      {lane.pane && !lane.elsewhere && live && !onCapture && (
+                      {readable && live && !onCapture && (
                         <Empty text="Reading a pane needs a tmux server this vsys can reach." />
                       )}
-                      {lane.pane &&
-                        !lane.elsewhere &&
-                        live &&
-                        onCapture &&
-                        pane === null && <Empty text="Reading the pane…" />}
+                      {readable && live && onCapture && pane === null && (
+                        <Empty text="Reading the pane…" />
+                      )}
                       {pane !== null && "error" in pane && (
                         <Empty
                           text={`This pane could not be read: ${safe(pane.error)}`}

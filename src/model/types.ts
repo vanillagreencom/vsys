@@ -159,6 +159,14 @@ export interface Lane {
    * and differ.
    */
   elsewhere: boolean;
+  /**
+   * This lane's pane is the pane vsys is drawing in. Reading it would show
+   * vsys's own screen inside itself, one copy deeper on every sample, and
+   * switching to it would move a reader who is already there. Matched on the
+   * `%N` handle and on the resolved address alike, because a lane carries
+   * whichever of the two its own environment held.
+   */
+  self: boolean;
   title: string;
   cwd: string;
   branch: string;
