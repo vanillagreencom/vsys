@@ -12,7 +12,8 @@ Storage collection reads filesystem state, device counters, drive reports and sc
 - Btrfs subvolumes of one filesystem mount separately and each reports the whole device's free space and error counters, so Storage groups them under their device and a mount row carries only what differs between mounts.
 - The filesystem, not the mount and not the device, is the unit of integrity. `volumesByDevice` in `src/model/integrity.ts` forms that group, and the cause ladder, the Storage line and the drill-down all read the one `integrity()` reading per group.
 - The error counter counts reads that failed their checksum, not damaged files. It cannot move while nothing reads the damage, so a flat counter is never on its own a statement that the filesystem is sound. Only a completed check is.
-- The time of a filesystem's last counter growth is kept in `errorMemoryPath`, outside the history window and outside the process. A counter reading zero after a reboot is a new baseline, never a repair.
+- The time of a filesystem's last counter growth is kept in `errorMemoryPath`, outside the history window and outside the process. A counter reading zero after a reboot is a new baseline, never a repair. A write folds in the file as it stands, so two vsys processes watching one host keep the later growth time rather than the one that renamed last.
+- A check that corrected every error it found left no damage behind. Corrected errors still raise a report card; they are not a damaged filesystem.
 
 ## The check report format
 

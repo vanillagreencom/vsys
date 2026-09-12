@@ -115,6 +115,7 @@ export interface Scrub {
   startedAt?: number | null;
   status?: string | null;
   uncorrectable?: number | null;
+  corrected?: number | null;
   /**
    * Damaged block addresses with the paths still on disk. Null where the
    * report carries no damaged-file section, which says nothing about files.

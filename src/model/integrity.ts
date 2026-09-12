@@ -202,7 +202,14 @@ export function integrity(
       ? "unknown"
       : groups.length || (scrub?.uncorrectable ?? 0) > 0
         ? "damaged"
-        : scrub?.problem && !running && !stopped
+        : // A check that repaired every error it found left no damage behind,
+          // so a report counting no uncorrectable block is not damage however
+          // many errors it corrected. A problem report whose count vsys could
+          // not read says nothing either way, and reads as damage.
+          scrub?.problem &&
+            !running &&
+            !stopped &&
+            (scrub.uncorrectable === null || scrub.uncorrectable === undefined)
           ? "damaged"
           : errorAt != null && (checkedAt === null || errorAt > checkedAt)
             ? "new-errors"

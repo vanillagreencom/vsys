@@ -146,3 +146,48 @@ test("a memory that could not be read says so and is never overwritten", () => {
   expect(() => fresh.load()).toThrow();
   expect(fresh.available).toBe(true);
 });
+
+test("a second process writing the same file loses neither growth time", () => {
+  const path = statePath();
+  const first = new ErrorMemory(path);
+  const second = new ErrorMemory(path);
+  // Both sample the same host and both start from the same baseline.
+  first.observe("one", 10, 1000);
+  second.observe("one", 10, 1000);
+  first.observe("two", 5, 1000);
+  second.observe("two", 5, 1000);
+  // Each sees growth on a different filesystem, and the one that saw the
+  // earlier growth renames last.
+  second.observe("two", 8, 6000);
+  first.observe("one", 36, 4000);
+  second.save();
+  first.save();
+  const read = new ErrorMemory(path);
+  read.load();
+  expect(read.observe("one", 36, 9000)).toEqual({
+    counter: 36,
+    at: 4000,
+    size: 26,
+  });
+  expect(read.observe("two", 8, 9000)).toEqual({
+    counter: 8,
+    at: 6000,
+    size: 3,
+  });
+});
+
+test("a growth time on disk is never replaced by an older one", () => {
+  const path = statePath();
+  const stale = new ErrorMemory(path);
+  stale.observe("fs", 10, 1000);
+  stale.observe("fs", 20, 2000);
+  const fresh = new ErrorMemory(path);
+  fresh.observe("fs", 10, 1000);
+  fresh.observe("fs", 30, 8000);
+  fresh.save();
+  // The process holding the older reading writes last.
+  stale.save();
+  const read = new ErrorMemory(path);
+  read.load();
+  expect(read.observe("fs", 30, 9000).at).toBe(8000);
+});

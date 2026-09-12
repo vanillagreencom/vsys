@@ -281,3 +281,26 @@ test("an unreadable record of past growth cannot report a healthy filesystem", (
   // turns on the record and on nothing else here.
   expect(integrity(filesystem(), [report()], now, c).state).toBe("healthy");
 });
+
+test("a check that repaired every error it found leaves no damage", () => {
+  const c = defaults();
+  // Btrfs rebuilt the bad copies from a good one. The data is intact, so the
+  // filesystem does not read as damaged, however many errors were corrected.
+  const corrected = integrity(
+    filesystem(),
+    [report({ problem: true, corrected: 5, uncorrectable: 0 })],
+    now,
+    c,
+  );
+  expect(corrected.state).toBe("healthy");
+  // A problem report whose uncorrectable count vsys could not read says
+  // nothing either way, so it stays damage.
+  expect(
+    integrity(
+      filesystem(),
+      [report({ problem: true, uncorrectable: null })],
+      now,
+      c,
+    ).state,
+  ).toBe("damaged");
+});

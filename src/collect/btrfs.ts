@@ -293,6 +293,7 @@ export class StorageCollector {
           startedAt: report.startedAt,
           status: report.status,
           uncorrectable: report.uncorrectable,
+          corrected: report.corrected,
           addresses,
         };
         try {

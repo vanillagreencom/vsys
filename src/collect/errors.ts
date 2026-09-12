@@ -102,6 +102,14 @@ export class ErrorMemory {
     // process holds would replace a record a person can still repair, and
     // would turn an unknown last-error time into a confident one.
     if (!this.dirty || !this.available) return;
+    // Two vsys processes watching one host each hold the map they loaded, and
+    // the one that renames last would otherwise drop the other's newer growth
+    // time. Merging the file as it stands now keeps the later of the two.
+    // A refusal is raised rather than returned: the caller reports it, the
+    // memory stays dirty, and the next sample tries again. Returning quietly
+    // would drop the reading with no word anywhere.
+    if (!this.merge())
+      throw new Error(`Error memory on disk could not be read: ${this.path}`);
     mkdirSync(dirname(this.path), { recursive: true });
     const temp = `${this.path}.${process.pid}.tmp`;
     writeFileSync(
@@ -113,5 +121,39 @@ export class ErrorMemory {
     );
     renameSync(temp, this.path);
     this.dirty = false;
+  }
+  /**
+   * Fold what is on disk now into what this process holds. A growth time is
+   * only ever later than the one before it, and a counter only rises until a
+   * reboot resets both processes alike, so the newer of each wins and neither
+   * process loses what the other saw.
+   */
+  private merge(): boolean {
+    let stored: Map<string, ErrorRecord>;
+    const other = new ErrorMemory(this.path);
+    try {
+      other.load();
+      stored = other.records;
+    } catch {
+      // A file that is merely absent is the first write, and this process's
+      // own records stand. One that exists and cannot be read is refused the
+      // same way our own unreadable load is: it may hold a growth time this
+      // process never saw.
+      return other.available;
+    }
+    for (const [fsid, theirs] of stored) {
+      const mine = this.records.get(fsid);
+      if (!mine) {
+        this.records.set(fsid, theirs);
+        continue;
+      }
+      const newer = (theirs.at ?? -1) > (mine.at ?? -1) ? theirs : mine;
+      this.records.set(fsid, {
+        counter: Math.max(mine.counter, theirs.counter),
+        at: newer.at,
+        size: newer.size,
+      });
+    }
+    return true;
   }
 }
