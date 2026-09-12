@@ -255,7 +255,7 @@ export function Agent({
   const [seriesError, setSeriesError] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
   const [open, setOpen] = useState<Set<SectionName>>(new Set());
-  const [pane, setPane] = useState<
+  const [captured, setCaptured] = useState<
     { lines: string[] } | { error: string } | null
   >(null);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
@@ -278,31 +278,34 @@ export function Agent({
   }, [lane.pids, c, live]);
   const terminalOpen = open.has("Terminal");
   // A pane vsys could read: the lane has one, it belongs to the server vsys
-  // talks to, and vsys settled that it is not the pane it draws in. One answer
-  // for the effect below and for every message the section draws, so a term
-  // added here can never close the messages while leaving the read open. The
-  // own-pane question is read as the one answer that permits a read, never as
-  // the absence of `yes`: `unknown` is a pane vsys may be drawing in.
+  // talks to, and vsys settled it is not the pane it draws in, which is read
+  // as the one answer permitting a read rather than the absence of `yes`,
+  // since `unknown` is a pane vsys may be drawing in. One answer for the
+  // effect below and for every message the section draws, the captured text
+  // included, so a term added here can never close the messages while leaving
+  // the read open. The text needs it because the effect clears it a commit
+  // after the answer changes: raw, it draws under the refusal replacing it.
   const readable = Boolean(lane.pane) && !lane.elsewhere && lane.self === "no";
+  const pane = readable && live ? captured : null;
   // The sample time is in the dependency list because it is the reason this
   // reads again: a terminal that only draws what it drew when the reader
   // opened it is not a terminal. The body has no other use for it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the sample time is the clock
   useEffect(() => {
     if (!terminalOpen || !onCapture || !readable) {
-      setPane(null);
+      setCaptured(null);
       return;
     }
     let current = true;
     onCapture(lane.pane)
       .then((lines) => {
-        if (current) setPane({ lines });
+        if (current) setCaptured({ lines });
       })
       .catch((error: unknown) => {
         // A pane that has gone away says so in the server's own words, which
         // is a reader's only clue; an empty box would read as an idle agent.
         if (current)
-          setPane({
+          setCaptured({
             error: error instanceof Error ? error.message : String(error),
           });
       });
@@ -606,18 +609,12 @@ export function Agent({
                       {readable && live && onCapture && pane === null && (
                         <Empty text="Reading the pane…" />
                       )}
-                      {/* Gated like every message above it. The capture is the
-                          lane as it stood when the read ran, and the effect
-                          clears it a commit later than the answer changes, so
-                          ungated it draws under the refusal that replaced it. */}
-                      {readable && live && pane !== null && "error" in pane && (
+                      {pane !== null && "error" in pane && (
                         <Empty
                           text={`This pane could not be read: ${safe(pane.error)}`}
                         />
                       )}
-                      {readable &&
-                        live &&
-                        pane !== null &&
+                      {pane !== null &&
                         "lines" in pane &&
                         (pane.lines.length ? (
                           pane.lines.slice(-terminalLines).map((line, at) => (
