@@ -4,7 +4,7 @@ import { laneText, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
-import { capLines, wrapLines } from "./columns";
+import { capLines, fit, wrapLines } from "./columns";
 import {
   amount,
   bytes,
@@ -104,16 +104,23 @@ function fitDetail(leads: string[], keep: string, width: number): string {
  */
 function laneSentence(names: string[], width: number, head: string): string {
   const whole = `${head}${names.join(", ")}.`;
-  // One name too long for the rows it has is written whole and cut by the
-  // budget: there is no second name to count.
-  if (names.length === 1 || wrapLines(whole, width).length <= laneLines)
-    return whole;
+  if (wrapLines(whole, width).length <= laneLines) return whole;
+  // One name is the whole sentence, and there is no second name to count, so
+  // it is cut with the mark rather than followed by a count of nothing.
+  if (names.length === 1) return capLines(whole, width, laneLines);
   const shortened = (keep: number) =>
     `${head}${names.slice(0, keep).join(", ")} and ${names.length - keep} more.`;
   for (let keep = names.length - 1; keep >= 1; keep--)
     if (wrapLines(shortened(keep), width).length <= laneLines)
       return shortened(keep);
-  return shortened(1);
+  // Not even one name fits beside the count of the rest. The name gives way
+  // and the count stays: the names are on the screen Enter opens, the count
+  // of how many there are is only here.
+  const rest = ` and ${names.length - 1} more.`;
+  const named = (room: number) => `${fit(`${head}${names[0]}`, room)}${rest}`;
+  let room = laneLines * width - [...rest].length;
+  while (room > 1 && wrapLines(named(room), width).length > laneLines) room--;
+  return named(room);
 }
 
 /** Every word and every formatted number the Overview shows lives here. */

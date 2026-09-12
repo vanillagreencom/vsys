@@ -523,16 +523,19 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
   }).find((item) => item.id === "disk");
   expect(narrow?.detail).toEndWith("…");
   expect(narrow?.detail).toContain("Tasks stalled on storage");
-  // A lane whose name alone overruns the budget is cut with its mark: even
-  // the sentence the detail gives up last cannot push the card past six rows.
+  // A lane whose name alone overruns the rows the sentence has: the name is
+  // cut with its mark, and both counts the card promises are whole, because
+  // the names are on the screen Enter opens and the counts are only here.
   const long = escapedSnapshot({ lanes: 2 });
   for (const lane of long.lanes)
     lane.name = `${"kendex vsys/issue-1234 ".repeat(5)}hclaude`;
   const tight = attention(long, c, { basePath: base, width: 20 }).find(
     (item) => item.id === "unconfined",
   );
-  expect(tight?.detail).toEndWith("…");
-  expect(wrapLines(tight?.detail ?? "", 20).length).toBeLessThanOrEqual(6);
+  expect(tight?.detail).toBe(
+    "2 groups of processes: 2 bare. Lanes: kendex vsys/is… and 1 more.",
+  );
+  expect(wrapLines(tight?.detail ?? "", 20)).toHaveLength(4);
   // Every cause the ladder can report was measured, read from the ladder's
   // own table rather than a list kept here: a cause added without a fixture
   // is a cause whose detail nothing measures.
@@ -594,10 +597,9 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
   // went do not fit in the rows beside the lane sentence, so the card counts
   // every conclusion instead. Nothing it shows there is cut.
   expect(detail(20)).toBe(
-    "12 groups of processes: 12 bare. " +
-      "Lanes: kendex agent-0 PID 1000 and 11 more.",
+    "12 groups of processes: 12 bare. Lanes: kendex agent-… and 11 more.",
   );
-  expect(wrapLines(detail(20), 20)).toHaveLength(5);
+  expect(wrapLines(detail(20), 20)).toHaveLength(4);
   // Each kind is counted under the name the sentences give it.
   expect(
     attention(shared, c, { basePath: base, width: 20 }).find(
@@ -641,5 +643,9 @@ test("the lane sentence stops rather than growing with the machine", () => {
     (item) => item.id === "unconfined",
   );
   expect(single?.detail).not.toContain("and 0 more");
-  expect(single?.detail).toContain("Lane: kendex vsys/issue-1234");
+  // The name is cut to the rows the sentence has, marked where it stopped.
+  expect(single?.detail).toBe(
+    "1 group of processes: 1 bare. Lane: kendex vsys/issue-1234 kendex…",
+  );
+  expect(wrapLines(single?.detail ?? "", 24)).toHaveLength(3);
 });
