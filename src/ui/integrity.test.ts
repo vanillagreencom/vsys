@@ -169,3 +169,41 @@ test("a block count vsys did not read never reads as a count of none", () => {
     blocksText(state([report({ uncorrectable: 26, problem: true })])),
   ).toBe("26 by the last full check");
 });
+
+test("only an address a rebuild replaces is offered as a delete", () => {
+  const item = state([
+    report({
+      problem: true,
+      addresses: [
+        { logical: 1, paths: ["/r/target/a"] },
+        { logical: 2, paths: ["/home/r/letter.txt"] },
+      ],
+    }),
+  ]);
+  expect(deleteCommand(item.groups[0])).toBe("rm -f /r/target/a");
+  // The letter is restored from a backup, so no line offers to remove it.
+  expect(damageAdvice(item.groups[1])).toBe(
+    "restore from a backup or a snapshot",
+  );
+  expect(deleteCommand(item.groups[1])).toBeUndefined();
+});
+
+test("an unreadable record of past growth is not a record of no errors", () => {
+  const unreadable = integrity(
+    volumesByDevice([
+      volumeSnapshot("/", {
+        fsid: "fs",
+        errors: { "1/corruption_errs": 1390 },
+        countersAvailable: true,
+        lastErrorKnown: false,
+      }),
+    ])[0],
+    [report()],
+    now,
+    c,
+  );
+  expect(integrityLine(unreadable)).toContain("last new error not available");
+  expect(integrityLine(state([report()]))).toContain(
+    "last new error none recorded",
+  );
+});

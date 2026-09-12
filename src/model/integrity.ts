@@ -103,6 +103,8 @@ export interface Integrity {
   checkAge: number | null;
   /** Seconds since the counter last grew, null while no growth was observed. */
   errorAge: number | null;
+  /** False where the record of past growth could not be read at all. */
+  errorKnown: boolean;
   /** How far the counter grew that time. */
   errorSize: number | null;
   /** Uncorrectable blocks the last scrub counted. */
@@ -154,11 +156,17 @@ export function integrity(
   c: Config,
 ): Integrity {
   const scrub = reportFor(group.id, scrubs);
-  const groups: DamagedGroup[] = (scrub?.addresses ?? []).map((address) => ({
-    logical: address.logical,
-    paths: address.paths,
-    kind: classify(address.paths, c),
-  }));
+  // Output vsys could not read names no file it can stand behind. An address
+  // parsed out of otherwise unreadable text would put a delete command under a
+  // headline saying the state is unknown, which is two claims at once.
+  const readable = !scrub || scrub.readable !== false;
+  const groups: DamagedGroup[] = (readable ? (scrub?.addresses ?? []) : []).map(
+    (address) => ({
+      logical: address.logical,
+      paths: address.paths,
+      kind: classify(address.paths, c),
+    }),
+  );
   const counted = group.volumes.find((v) => v.countersAvailable !== false);
   const counter = counted
     ? corruptionTotal(counted.errors, counted.countersAvailable !== false)
@@ -168,6 +176,9 @@ export function integrity(
   const grew = group.volumes.find((v) => v.lastErrorAt != null);
   const errorAt = grew?.lastErrorAt;
   const errorSize = grew?.lastErrorSize;
+  // The record of past growth failed to load, so "no error recorded" is a
+  // reading vsys does not have rather than a reading of none.
+  const errorKnown = group.volumes.every((v) => v.lastErrorKnown !== false);
   // A report whose status the helper did not write is treated as finished:
   // the file exists because a scrub ended, and calling it a running scrub
   // would leave a stale report reading "checking" forever.
@@ -197,9 +208,9 @@ export function integrity(
                   ? "unknown"
                   : // A report carrying no start time dates no check, so it
                     // cannot say the filesystem was read end to end recently.
-                    // Neither can a filesystem whose counter is unreadable say
-                    // nothing has failed since.
-                    checkAge === null || counter === null
+                    // Neither can a filesystem whose counter, or whose record
+                    // of past growth, is unreadable say nothing failed since.
+                    checkAge === null || counter === null || !errorKnown
                     ? "unknown"
                     : checkAge > c.scrubMaxAgeDays * 86400000
                       ? "stale"
@@ -211,6 +222,7 @@ export function integrity(
     state,
     checkAge: checkAge === null ? null : checkAge / 1000,
     errorAge: errorAge === null ? null : errorAge / 1000,
+    errorKnown,
     errorSize: errorSize ?? null,
     blocks: scrub?.uncorrectable ?? null,
     counter,

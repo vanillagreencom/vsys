@@ -258,6 +258,7 @@ export class StorageCollector {
         total,
         lastErrorAt: seen?.at ?? null,
         lastErrorSize: seen?.size ?? null,
+        lastErrorKnown: memory.available,
         ...((fsid ? counters.get(fsid) : undefined) ?? {
           errors: {},
           delta: {},

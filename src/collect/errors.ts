@@ -24,6 +24,12 @@ export class ErrorMemory {
   private records = new Map<string, ErrorRecord>();
   private loaded = false;
   private dirty = false;
+  /**
+   * False once a read failed for any reason but the file not being there. A
+   * missing file is an empty memory, which is a reading; unreadable text is
+   * not, and everything downstream must say so rather than report no errors.
+   */
+  available = true;
   constructor(private readonly path: string) {}
   /**
    * A missing or unreadable file starts empty and the caller reports the
@@ -33,6 +39,15 @@ export class ErrorMemory {
   load(): void {
     if (this.loaded) return;
     this.loaded = true;
+    try {
+      this.read();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+        this.available = false;
+      throw e;
+    }
+  }
+  private read(): void {
     const raw = readFileSync(this.path, "utf8");
     const value = JSON.parse(raw) as Record<string, unknown>;
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -83,7 +98,10 @@ export class ErrorMemory {
    * the one reading this class exists to keep.
    */
   save(): void {
-    if (!this.dirty) return;
+    // A file that could not be read is never overwritten: the baselines this
+    // process holds would replace a record a person can still repair, and
+    // would turn an unknown last-error time into a confident one.
+    if (!this.dirty || !this.available) return;
     mkdirSync(dirname(this.path), { recursive: true });
     const temp = `${this.path}.${process.pid}.tmp`;
     writeFileSync(

@@ -245,3 +245,39 @@ test("a report names a filesystem by its own identity, not by arriving first", (
   });
   expect(integrity(filesystem(), [mine, newer], now, c).blocks).toBe(4);
 });
+
+test("output vsys could not read names no file and offers no delete", () => {
+  const c = defaults();
+  // Text that failed the readable check but still carries a parseable
+  // address. Standing behind that address would put a delete command under a
+  // headline saying the state is unknown.
+  const item = integrity(
+    filesystem(),
+    [
+      report({
+        readable: false,
+        problem: true,
+        addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+      }),
+    ],
+    now,
+    c,
+  );
+  expect(item.state).toBe("unknown");
+  expect(item.groups).toEqual([]);
+});
+
+test("an unreadable record of past growth cannot report a healthy filesystem", () => {
+  const c = defaults();
+  const item = integrity(
+    filesystem({ lastErrorKnown: false }),
+    [report()],
+    now,
+    c,
+  );
+  expect(item.state).toBe("unknown");
+  expect(item.errorKnown).toBe(false);
+  // The same filesystem with a record that loaded reads healthy, so the state
+  // turns on the record and on nothing else here.
+  expect(integrity(filesystem(), [report()], now, c).state).toBe("healthy");
+});

@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ErrorMemory } from "./errors";
@@ -121,4 +127,22 @@ test("a write that failed is tried again rather than dropped", () => {
   const second = new ErrorMemory(path);
   second.load();
   expect(second.observe("fs", 36, 9000).at).toBe(5000);
+});
+
+test("a memory that could not be read says so and is never overwritten", () => {
+  const path = statePath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "not json");
+  const memory = new ErrorMemory(path);
+  expect(() => memory.load()).toThrow();
+  expect(memory.available).toBe(false);
+  memory.observe("fs", 1390, 1000);
+  memory.save();
+  // The file a person can still repair stands, rather than being replaced by
+  // this process's fresh baselines.
+  expect(readFileSync(path, "utf8")).toBe("not json");
+  // A file that is merely absent is an empty memory, which is a reading.
+  const fresh = new ErrorMemory(statePath());
+  expect(() => fresh.load()).toThrow();
+  expect(fresh.available).toBe(true);
 });

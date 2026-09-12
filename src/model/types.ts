@@ -81,6 +81,11 @@ export interface Volume {
   lastErrorAt?: number | null;
   /** How far the counter grew then. */
   lastErrorSize?: number | null;
+  /**
+   * False where the record of past growth could not be read, so a null
+   * `lastErrorAt` is a reading vsys does not have rather than one of none.
+   */
+  lastErrorKnown?: boolean;
 }
 export interface Scratch {
   path: string;

@@ -42,7 +42,7 @@ export function integrityLine(item: Integrity): string {
   return [
     integrityWords(item),
     `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago`}`,
-    `last new error ${item.errorAge === null ? "none recorded" : `${age(item.errorAge)} ago`}`,
+    `last new error ${errorTime(item)}`,
   ].join(" · ");
 }
 /**
@@ -75,13 +75,18 @@ export function damageAdvice(group: DamagedGroup): string {
   return "free space or already deleted, clears on the next check";
 }
 /**
- * The command that removes one damaged address. Every path of the address goes
- * in one line: a Cargo build script writes one extent under two names, and
- * removing the first leaves the damage on disk for the next check to find
- * again, which reads as a delete that worked and fixed nothing.
+ * The command that removes one damaged address, offered only for an address a
+ * rebuild replaces. Every path of such an address goes in one line: a Cargo
+ * build script writes one extent under two names, and removing the first
+ * leaves the damage on disk for the next check to find again, which reads as a
+ * delete that worked and fixed nothing.
+ *
+ * An address holding anything else gets no command at all. A line a reader can
+ * copy is a line a reader will run, and the data under that address is
+ * restored from a backup rather than deleted.
  */
 export function deleteCommand(group: DamagedGroup): string | undefined {
-  return group.paths.length
+  return group.kind === "build" && group.paths.length
     ? shellLine(["rm", "-f", ...group.paths])
     : undefined;
 }
@@ -92,6 +97,14 @@ export function rebuildCommand(item: Integrity): string | undefined {
     .flatMap((group) => group.paths);
   return paths.length ? shellLine(["rm", "-f", ...paths]) : undefined;
 }
+/**
+ * What the line says about a time vsys could not read. An unreadable record is
+ * not an absence of errors, so the two never share a word.
+ */
+const errorTime = (item: Integrity): string => {
+  if (!item.errorKnown) return gap;
+  return item.errorAge === null ? "none recorded" : `${age(item.errorAge)} ago`;
+};
 /** Why a flat counter is not a healthy disk, in one sentence. */
 export const counterSentence =
   "The counter counts reads that failed their checksum, not files. Every read of the same damaged block counts again, and a block nothing reads never counts at all.";
