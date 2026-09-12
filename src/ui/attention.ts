@@ -232,9 +232,11 @@ function copy(
         title: files
           ? `Damaged files on ${mounts}: ${count(files, "file")}${other ? "" : ", all build output"}`
           : `Damaged data on ${mounts}`,
-        detail: files
-          ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.`
-          : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+        detail: [
+          files
+            ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.`
+            : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+        ],
         // The step never says to delete everything listed: an address holding
         // data a rebuild cannot replace is restored, not removed, and a card
         // that blurs the two invites the reader to delete their own files.
@@ -253,10 +255,11 @@ function copy(
         title: `New errors on ${mounts} since the last check`,
         // The numbers belong to one filesystem. Naming several gives the
         // sentence without them rather than one filesystem's as the whole.
-        detail:
+        detail: [
           paths === 1
             ? `The counter grew${v.since == null ? "" : ` ${age(v.since)} ago`}${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}, and the last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
-            : `Each of these counters grew after the last check that read its filesystem end to end, so no check has said what the damage cost. Open each one for its own times.`,
+            : "Each of these counters grew after the last check that read its filesystem end to end, so no check has said what the damage cost. Open each one for its own times.",
+        ],
         next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
         view: "Storage",
         target: cause.at ?? first,
@@ -266,8 +269,9 @@ function copy(
       return {
         word: "Unknown",
         title: `${paths} ${p(paths, "filesystem cannot", "filesystems cannot")} report whether ${p(paths, "its", "their")} data is sound: ${mounts}`,
-        detail:
+        detail: [
           "A check report, or a counter the state depends on, could not be read. The filesystem is not reported healthy on a reading vsys does not have.",
+        ],
         next: "Open Storage and read the report under that filesystem, then check the report directory and the error memory file.",
         view: "Storage",
         target: cause.at ?? first,
@@ -285,7 +289,9 @@ function copy(
             : never === 0
               ? `${paths} ${p(paths, "filesystem has", "filesystems have")} not been checked in ${age(v.oldest ?? 0)}: ${mounts}`
               : `${count(paths, "filesystem")} unchecked for damage, ${never} of them never: ${mounts}`,
-        detail: `The error counter counts failed reads, not damaged files, so it stays flat while nothing reads the damage. Only a full check reads every block. The limit is ${count(v.limit, "day")}.`,
+        detail: [
+          `The error counter counts failed reads, not damaged files, so it stays flat while nothing reads the damage. Only a full check reads every block. The limit is ${count(v.limit, "day")}.`,
+        ],
         next: "Run a check on each filesystem, or install the timer that writes a report into the report directory.",
         view: "Storage",
         target: cause.at ?? first,

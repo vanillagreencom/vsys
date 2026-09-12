@@ -654,6 +654,8 @@ test("the lane sentence stops rather than growing with the machine", () => {
     "1 group of processes: 1 bare. Lane: kendex vsys/issue-1234 kendex…",
   );
   expect(wrapLines(single?.detail ?? "", 24)).toHaveLength(3);
+});
+
 test("a storage card never tells the reader to delete data a rebuild cannot replace", () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -679,7 +681,9 @@ test("a storage card never tells the reader to delete data a rebuild cannot repl
   ];
   // Every damaged address is build output, so deleting all of them is safe.
   s.storage.scrubs = [scrub([{ logical: 1, paths: ["/r/target/a"] }])];
-  const build = attention(s, c, { basePath: base }).find((i) => i.id === "damaged-files");
+  const build = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
   expect(build?.next).toContain("delete every path listed");
   // One address holds a file only a backup restores, and the step changes.
   s.storage.scrubs = [
@@ -688,11 +692,9 @@ test("a storage card never tells the reader to delete data a rebuild cannot repl
       { logical: 2, paths: ["/home/r/letter.txt"] },
     ]),
   ];
-  const mixed = attention(s, c, { basePath: base }).find((i) => i.id === "damaged-files");
-  expect(mixed?.next).toContain(
-    "Delete only the addresses marked as build output",
+  const mixed = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
   );
-  const mixed = attention(s, c, { basePath: base }).find((i) => i.id === "damaged-files");
   expect(mixed?.next).toContain("Delete only the addresses it marks as build");
   expect(mixed?.next).not.toContain("delete every path");
   // All build output, but one address was written since the check, so that
@@ -703,7 +705,9 @@ test("a storage card never tells the reader to delete data a rebuild cannot repl
       { logical: 2, paths: ["/r/target/b"], changed: ["/r/target/b"] },
     ]),
   ];
-  const stale = attention(s, c, base).find((i) => i.id === "damaged-files");
+  const stale = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
   expect(stale?.next).toContain("Delete only the addresses it marks as build");
 });
 
@@ -734,7 +738,9 @@ test("an unchecked card counts never-checked filesystems apart from stale ones",
   // One never checked, one checked long enough ago to be stale.
   checked("never", "/a", null);
   checked("old", "/b", s.time - 40 * 86400000);
-  const card = attention(s, c, { basePath: base }).find((item) => item.id === "unchecked");
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "unchecked",
+  );
   // The title cannot call both of them never checked: a timer did check one.
   expect(card?.title).toBe(
     "2 filesystems unchecked for damage, 1 of them never: /a, /b",
@@ -743,7 +749,9 @@ test("an unchecked card counts never-checked filesystems apart from stale ones",
   const alone = emptySnapshot();
   alone.storage.volumes = [volumeSnapshot("/only", { fsid: "only" })];
   expect(
-    attention(alone, c, base).find((item) => item.id === "unchecked")?.title,
+    attention(alone, c, { basePath: base }).find(
+      (item) => item.id === "unchecked",
+    )?.title,
   ).toBe("1 filesystem never checked for damage: /only");
 });
 
@@ -774,11 +782,15 @@ test("a card naming several filesystems shows no one filesystem's numbers", () =
     });
   };
   grown("a", 26);
-  const one = attention(s, c, base).find((item) => item.id === "new-errors");
+  const one = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
   expect(one?.detail).toContain("26 failed reads");
   // A second filesystem, and the first one's count no longer speaks for both.
   grown("b", 9);
-  const two = attention(s, c, base).find((item) => item.id === "new-errors");
+  const two = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
   expect(two?.detail).not.toContain("26");
   expect(two?.detail).toContain("Open each one for its own times");
 });
