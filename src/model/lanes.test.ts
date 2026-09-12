@@ -455,7 +455,83 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
     ["%146", { address: "vsys:2.1", window: "vsys" }],
     ["%12", { address: "work:1.1", window: "build" }],
   ]);
-  const env = { TMUX: `${path},4242,0` };
+  const ours = `${path},4242,0`;
+  // The two forms a lane carries vsys's own pane, against the three things a
+  // lane can say about its server. One rule decides every row: neither form
+  // names the server it belongs to, so the mark rests on the lane naming the
+  // server vsys is attached to. Every fresh server hands out `%146`, and a
+  // second server holds a session named `vsys` with a window 2 and a pane 1
+  // as readily, so a lane naming none agrees with vsys's own by coincidence
+  // as easily as by fact and the reader would be told the wrong reason.
+  // The address the lane resolves to is a separate question: an unknown
+  // server is not a boundary, and only the claim about vsys's own screen
+  // needs the evidence.
+  const rows: {
+    row: string;
+    env: Record<string, string>;
+    self: boolean;
+    elsewhere: boolean;
+    address: string;
+  }[] = [
+    {
+      row: "handle, vsys's own server",
+      env: { TMUX: ours, TMUX_PANE: "%146" },
+      self: true,
+      elsewhere: false,
+      address: "vsys:2.1",
+    },
+    {
+      row: "address, vsys's own server",
+      env: { TMUX: ours, VSYS_PANE: "vsys:2.1" },
+      self: true,
+      elsewhere: false,
+      address: "vsys:2.1",
+    },
+    {
+      row: "handle, another server",
+      env: { TMUX: "/tmp/tmux-1000/other,777,0", TMUX_PANE: "%146" },
+      self: false,
+      elsewhere: true,
+      address: "",
+    },
+    {
+      row: "address, another server",
+      env: { TMUX: "/tmp/tmux-1000/other,777,0", VSYS_PANE: "vsys:2.1" },
+      self: false,
+      elsewhere: true,
+      address: "",
+    },
+    {
+      row: "handle, no server",
+      env: { TMUX_PANE: "%146" },
+      self: false,
+      elsewhere: false,
+      address: "vsys:2.1",
+    },
+    {
+      row: "address, no server",
+      env: { VSYS_PANE: "vsys:2.1" },
+      self: false,
+      elsewhere: false,
+      address: "vsys:2.1",
+    },
+  ];
+  for (const { row, env, ...want } of rows) {
+    const [lane] = lanes(
+      groups,
+      [processSnapshot({ pid: 1, group: "a.scope", tool: "claude", env })],
+      c,
+      0,
+      { socket, own: "%146", byId: panes },
+    );
+    expect({
+      row,
+      self: lane.self,
+      elsewhere: lane.elsewhere,
+      address: lane.address,
+    }).toEqual({ row, ...want });
+  }
+  const env = { TMUX: ours };
   // The shell vsys runs in, which is an agent lane like any other: it exports
   // the handle tmux gave it.
   const byHandle = processSnapshot({
@@ -472,6 +548,8 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
     tool: "claude",
     env: { ...env, VSYS_PANE: "vsys:2.1" },
   });
+  // A pane on vsys's own server that is not the one vsys draws in: the server
+  // matching is what the mark rests on, never what it is.
   const other = processSnapshot({
     pid: 3,
     group: "d.scope",
@@ -492,46 +570,6 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
     byId: panes,
   });
   expect(outside.map((lane) => lane.self)).toEqual([false, false, false]);
-  // `%146` on another server is another pane: it is refused as elsewhere, and
-  // never as the screen the reader is looking at.
-  const stranger = processSnapshot({
-    pid: 4,
-    group: "a.scope",
-    tool: "claude",
-    env: { TMUX: "/tmp/tmux-1000/other,777,0", TMUX_PANE: "%146" },
-  });
-  const [away] = lanes(groups, [stranger], c, 0, {
-    socket,
-    own: "%146",
-    byId: panes,
-  });
-  expect({ self: away.self, elsewhere: away.elsewhere }).toEqual({
-    self: false,
-    elsewhere: true,
-  });
-  // A lane naming no server at all is not vsys's own either. `%1` is handed
-  // out from one by every fresh server, so a handle a reader set by hand and
-  // vsys's own handle agree by coincidence as easily as by fact, and the
-  // reader would be told the wrong reason with no way to tell it from the
-  // true one. The address it resolves to is unchanged: an unknown server is
-  // not a boundary, and only the claim about vsys's own screen needs the
-  // evidence.
-  const bare = processSnapshot({
-    pid: 5,
-    group: "a.scope",
-    tool: "claude",
-    env: { TMUX_PANE: "%146" },
-  });
-  const [unknownServer] = lanes(groups, [bare], c, 0, {
-    socket,
-    own: "%146",
-    byId: panes,
-  });
-  expect({
-    self: unknownServer.self,
-    elsewhere: unknownServer.elsewhere,
-    address: unknownServer.address,
-  }).toEqual({ self: false, elsewhere: false, address: "vsys:2.1" });
   // A `list-panes` that failed leaves no map. The handle form still holds,
   // because it is read from vsys's own environment and compared against the
   // server vsys's own `TMUX` names: the sample loses the addresses, not the

@@ -142,6 +142,19 @@ export interface PaneSet {
   own: string;
   byId: Map<string, PaneAddress>;
 }
+/**
+ * The half of a `PaneSet` that comes from vsys's own environment rather than
+ * from a server: which server vsys is attached to, and which pane it draws in.
+ * Both stand whether or not a read answered, so the path that lost the read
+ * builds them here rather than spelling the same two fields a second way.
+ */
+export const ownPaneSet = (
+  env: Record<string, string | undefined> = process.env,
+): PaneSet => ({
+  socket: serverSocket(env),
+  own: ownPane(env),
+  byId: new Map(),
+});
 /** What a tmux read answers with, so a test can stand in for a server. */
 export type Ask = (argv: string[]) => Promise<string>;
 /**
@@ -154,11 +167,7 @@ export async function readPanes(
   ask: Ask = run,
   env: Record<string, string | undefined> = process.env,
 ): Promise<PaneSet> {
-  return {
-    socket: serverSocket(env),
-    own: ownPane(env),
-    byId: parsePanes(await ask(listPanesArgv)),
-  };
+  return { ...ownPaneSet(env), byId: parsePanes(await ask(listPanesArgv)) };
 }
 /** The last lines that pane drew. A pane that has gone away throws its reason. */
 export async function capturePane(

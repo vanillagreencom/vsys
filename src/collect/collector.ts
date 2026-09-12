@@ -12,7 +12,7 @@ import { ProcessCollector } from "./procs";
 import { SccacheCollector } from "./sccache";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
-import { ownPane, type PaneSet, readPanes, serverSocket } from "./tmux";
+import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
 
 /**
  * Reading the tmux server: the probe that decides the capability, and the one
@@ -163,11 +163,7 @@ export class Collector {
     // server's answer, so it stands whether or not one came: a sample that
     // lost the addresses must not lose the one lane the Terminal section may
     // never capture, which is vsys's own screen.
-    let panes: PaneSet = {
-      socket: serverSocket(),
-      own: ownPane(process.env),
-      byId: new Map(),
-    };
+    let panes = ownPaneSet();
     if (this.tmux && this.tmuxOnPath)
       try {
         panes = await this.tmux.panes();

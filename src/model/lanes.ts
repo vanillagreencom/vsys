@@ -111,25 +111,32 @@ export function lanes(
           : basename(cwd);
     const account = accountName(main, c);
     const pane = paneName(main, c);
-    // Two servers, both known, and not the same one.
     const mine = paneSocket(main);
-    const elsewhere = socket !== "" && mine !== "" && mine !== socket;
-    // Two servers, both known, and the same one. A handle means nothing
-    // across servers, so matching vsys's own rests on the lane naming the
-    // server vsys is attached to, never on the lane naming none: a bare `%1`
-    // a reader set by hand would otherwise collide with vsys's own pane on
-    // any fresh server and be called the reader's own screen.
-    const here = socket !== "" && mine === socket;
+    /**
+     * What the lane says about its tmux server, against the one vsys read.
+     * Three states, not two booleans: a side that names no server is neither
+     * a match nor a boundary, and reading that case off the complement of
+     * either answer gets it wrong.
+     */
+    const server =
+      socket === "" || mine === ""
+        ? "unknown"
+        : mine === socket
+          ? "same"
+          : "other";
+    const elsewhere = server === "other";
     // A lane carries whichever form its own environment held, so the pane vsys
     // draws in is compared in both: the `%N` handle from `TMUX_PANE`, and the
-    // `session:window.pane` address a reader puts in `VSYS_PANE`. An address
-    // already names a session and a window this server holds, so it carries
-    // its own evidence of which server it belongs to.
+    // `session:window.pane` address a reader puts in `VSYS_PANE`. Neither form
+    // names the server it belongs to. Every fresh server hands out `%1`, and
+    // `vsys:2.1` is a session name and two indexes that a second server holds
+    // as readily. So both rest on the lane naming the server vsys is attached
+    // to: a pane a reader set by hand on a lane naming no server would
+    // otherwise be called the reader's own screen by coincidence.
     const self =
       pane !== "" &&
-      !elsewhere &&
-      ((here && pane === tmux?.own) ||
-        (ownAddress !== "" && pane === ownAddress));
+      server === "same" &&
+      (pane === tmux?.own || (ownAddress !== "" && pane === ownAddress));
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
