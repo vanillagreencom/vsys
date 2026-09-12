@@ -21,12 +21,15 @@ jobs:
     timeout-minutes: 15
     container: archlinux:base-devel
     steps:
+      # Before the checkout: without git in the container, actions/checkout
+      # falls back to a source tarball with no .git, and pkgver() has no
+      # revision to describe.
+      - name: Install the packaging tools
+        run: pacman -Sy --noconfirm --needed git openssh curl pacman-contrib
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Install the packaging tools
-        run: pacman -Sy --noconfirm --needed git openssh pacman-contrib
       - name: Publish vsys-git to the AUR
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
