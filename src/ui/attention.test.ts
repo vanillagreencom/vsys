@@ -10,7 +10,15 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import { attention, meterTile, unread, verdictLine } from "./attention";
+import {
+  attention,
+  detailLines,
+  laneLines,
+  meterTile,
+  unread,
+  verdictLine,
+} from "./attention";
+import { wrapLines } from "./columns";
 
 const base = ["/usr/bin", "/bin"];
 test("overview promotes active problems and does not call past events current", () => {
@@ -19,10 +27,10 @@ test("overview promotes active problems and does not call past events current", 
   s.alerts = [
     { rule: "memory-cap", subject: "old", message: "past event", time: 0 },
   ];
-  expect(attention(s, c, base)).toEqual([]);
+  expect(attention(s, c, { basePath: base })).toEqual([]);
   expect(verdictLine([], s)).toBe("Healthy");
   s.lanes = [laneSnapshot({ dangerous: true })];
-  const problems = attention(s, c, base);
+  const problems = attention(s, c, { basePath: base });
   expect(problems).toHaveLength(1);
   expect(problems[0].target).toEqual({ kind: "lane", id: s.lanes[0].id });
   expect(problems[0].danger).toBe(true);
@@ -30,7 +38,7 @@ test("overview promotes active problems and does not call past events current", 
 
 test("every card kind ends with a next step of its own", () => {
   const c = defaults();
-  const items = attention(everyCauseSnapshot(c), c, base);
+  const items = attention(everyCauseSnapshot(c), c, { basePath: base });
   expect(items.length).toBeGreaterThan(10);
   for (const item of items) {
     expect(item.next.length).toBeGreaterThan(20);
@@ -48,7 +56,7 @@ test("every card kind ends with a next step of its own", () => {
 test("the verdict is the worst cause, formatted with its numbers", () => {
   const c = defaults();
   const s = everyCauseSnapshot(c);
-  const items = attention(s, c, base);
+  const items = attention(s, c, { basePath: base });
   expect(verdictLine(items, s)).toBe(
     "Danger: 1 lane runs outside agents.slice: escaped PID 40",
   );
@@ -63,11 +71,11 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   expect(detail("unconfined")).toEndWith(" Lane: escaped PID 40.");
   s.lanes = s.lanes.filter((l) => !l.unconfined);
   s.storage.volumes = [];
-  expect(verdictLine(attention(s, c, base), s)).toBe(
+  expect(verdictLine(attention(s, c, { basePath: base }), s)).toBe(
     "Slow: Disk I/O saturated: writer PID 40 writing 200.0 MiB/s",
   );
   s.system.pressure.io = { some: 1, full: 0, total: 0 };
-  expect(verdictLine(attention(s, c, base), s)).toBe(
+  expect(verdictLine(attention(s, c, { basePath: base }), s)).toBe(
     "Slow: desktop swapped out, agents hold 80.0 GiB of page cache",
   );
   // A scratch overage is a card, but it never speaks for the machine.
@@ -75,7 +83,7 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   idle.storage.scratch = [
     { path: "/scratch", bytes: c.scratchQuota + 1, age: 0, error: null },
   ];
-  const housekeeping = attention(idle, c, base);
+  const housekeeping = attention(idle, c, { basePath: base });
   expect(housekeeping.map((item) => item.verdictWorthy)).toEqual([false]);
   expect(verdictLine(housekeeping, idle)).toBe("Healthy");
   idle.system.pressure = {};
@@ -95,7 +103,9 @@ test("nine stalling lanes produce one card that names them", () => {
       ioPressure: 40,
     }),
   );
-  const stalls = attention(s, c, base).filter((item) => item.id === "stalls");
+  const stalls = attention(s, c, { basePath: base }).filter(
+    (item) => item.id === "stalls",
+  );
   expect(stalls).toHaveLength(1);
   expect(stalls[0].title).toBe(
     "9 lanes are stalling on a resource: kendex PID 100, kendex PID 101, kendex PID 102, kendex PID 103 and 5 more",
@@ -139,7 +149,9 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
       env: {},
     }),
   ];
-  const card = attention(s, c, base).find((item) => item.id === "unconfined");
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "unconfined",
+  );
   if (!card) throw new Error("Expected one unconfined card");
   expect(card.title).toBe(
     "2 lanes run outside agents.slice: kendex hclaude PID 40, kendex nclaude PID 40",
@@ -152,9 +164,11 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
   );
   expect(card.target?.kind).not.toBe("lane");
   // The marker list is configuration, so a different marker changes the verdict.
-  const other = attention(s, { ...c, capMarkers: ["MAKEFLAGS"] }, base).find(
-    (item) => item.id === "unconfined",
-  );
+  const other = attention(
+    s,
+    { ...c, capMarkers: ["MAKEFLAGS"] },
+    { basePath: base },
+  ).find((item) => item.id === "unconfined");
   expect(other?.detail).not.toContain("shadowed");
 });
 
@@ -177,7 +191,9 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
     processSnapshot({ pid: 1, build: "ld.mold" }),
     processSnapshot({ pid: 2, build: "mold" }),
   ];
-  const card = attention(s, c, base).find((item) => item.id === "disk");
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "disk",
+  );
   if (!card) throw new Error("Expected a disk card");
   expect(card.title).toBe(
     "Disk I/O saturated: lane-510341 PID 40 writing 200.0 MiB/s",
@@ -188,13 +204,15 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
   expect(card.command).toBe(`cat ${c.cgroupRoot}/a/510341.scope/io.stat`);
   expect(card.danger).toBe(true);
   // One card, not a second generic stalls card, and it opens the writer lane.
-  expect(attention(s, c, base).map((item) => item.id)).toEqual(["disk"]);
+  expect(attention(s, c, { basePath: base }).map((item) => item.id)).toEqual([
+    "disk",
+  ]);
   expect(card.target).toEqual({ kind: "lane", id: "a/510341.scope" });
   expect(card.view).toBe("Agents");
   expect(card.next).toContain("build job count for that lane");
   // A desktop scope that is not a lane sends the reader to Resources instead.
   s.groups[0].path = "app.slice/gnome.scope";
-  const scope = attention(s, c, base)[0];
+  const scope = attention(s, c, { basePath: base })[0];
   expect(scope.view).toBe("Resources");
   expect(scope.target?.kind).not.toBe("lane");
   expect(scope.next).toContain("what is writing in that scope");
@@ -225,14 +243,14 @@ test("source read failures are not a machine problem and raise no card", () => {
     { source: "/proc/1", message: "permission denied" },
     { source: "/proc/2", message: "permission denied" },
   ];
-  expect(attention(s, c, base)).toEqual([]);
+  expect(attention(s, c, { basePath: base })).toEqual([]);
 });
 
 test("read-only mounts and device errors are one card each, not one per mount", () => {
   const s = emptySnapshot();
   const bad = { readOnly: true, delta: { "x/corruption_errs": 1 } };
   s.storage.volumes = [volumeSnapshot("/a", bad), volumeSnapshot("/b", bad)];
-  const items = attention(s, defaults(), base);
+  const items = attention(s, defaults(), { basePath: base });
   expect(items.map((item) => item.id)).toEqual(["read-only", "device-errors"]);
   expect(items[0].title).toBe("2 mounts are read-only: /a, /b");
 });
@@ -368,7 +386,7 @@ test("a snapshot stored before the probe reads plainly and never claims a cause"
 test("a card that names one row carries it, and a card naming none carries nothing", () => {
   const c = defaults();
   const s = everyCauseSnapshot(c);
-  const items = attention(s, c, base);
+  const items = attention(s, c, { basePath: base });
   const target = (id: string) => items.find((item) => item.id === id)?.target;
   // Each card points at the thing its own sentence names.
   expect(target("scratch")).toEqual({ kind: "path", path: "/scratch" });
@@ -403,11 +421,13 @@ test("no card offers a command with an unresolved value in it", () => {
     groupSnapshot({ path: "w.scope", name: "w.scope", writeRate: 209715200 }),
   ];
   s.lanes = [laneSnapshot({ id: "waiter", name: "waiter", ioPressure: 30 })];
-  const disk = attention(s, c, base).find((item) => item.id === "disk");
+  const disk = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "disk",
+  );
   expect(disk?.command).toBe(`cat ${c.cgroupRoot}/w.scope/io.stat`);
   // A command is text the reader is invited to copy and run, so an optional
   // value interpolated into one would reach them as the word "undefined".
-  for (const item of attention(everyCauseSnapshot(c), c, base)) {
+  for (const item of attention(everyCauseSnapshot(c), c, { basePath: base })) {
     expect(item.command ?? "").not.toContain("undefined");
     expect(item.command ?? "").not.toContain("null");
   }
@@ -418,7 +438,7 @@ test("the memory-reclaim card carries the scope its own text names", () => {
   const s = everyCauseSnapshot(c);
   const holder = topSwapHolder(s.groups, c);
   expect(holder).toBeDefined();
-  const items = attention(s, c, base);
+  const items = attention(s, c, { basePath: base });
   const memory = items.find((item) => item.id === "system-memory");
   const swapped = items.find((item) => item.id === "desktop-swap");
   expect(memory).toBeDefined();
@@ -441,4 +461,120 @@ test("the memory-reclaim card carries the scope its own text names", () => {
   // And they name it the same way, decoded rather than as its raw unit.
   expect(memory?.detail).toContain("gnome holds the most swap");
   expect(memory?.detail).not.toContain(".scope");
+});
+
+/** The escaped processes of one machine: many per lane, over two scopes. */
+function escapedFleet(lanes: number, perLane: number) {
+  const s = emptySnapshot();
+  s.lanes = Array.from({ length: lanes }, (_, i) =>
+    laneSnapshot({
+      id: `lane-${i}`,
+      name: `kendex agent-${i}`,
+      mainPid: 1000 + i * perLane,
+      pids: Array.from({ length: perLane }, (_, n) => 1000 + i * perLane + n),
+      unconfined: true,
+    }),
+  );
+  const root = processSnapshot({
+    pid: 1,
+    ppid: 0,
+    start: 0,
+    comm: "systemd",
+    group: "/init.scope",
+    tool: null,
+  });
+  s.procs = [
+    root,
+    ...s.lanes.flatMap((lane, i) =>
+      lane.pids.map((pid) =>
+        processSnapshot({
+          pid,
+          ppid: 1,
+          start: 10,
+          group: `/user.slice/tmux-spawn-${i % 2}.scope`,
+          env: { PATH: "/usr/bin" },
+        }),
+      ),
+    ),
+  ];
+  return s;
+}
+
+test("the unconfined card writes one sentence per conclusion, not per process", () => {
+  const c = defaults();
+  const s = escapedFleet(2, 6);
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "unconfined",
+  );
+  if (!card) throw new Error("Expected one unconfined card");
+  // Twelve processes over two scopes are two sentences, each naming its scope
+  // once with the count of processes in it.
+  expect(card.detail.split("Launched bare")).toHaveLength(3);
+  expect(card.detail).toContain("6 processes in the scope tmux-spawn-0.scope");
+  expect(card.detail).toContain("6 processes in the scope tmux-spawn-1.scope");
+  // The marker list is named once per group, never once per process.
+  expect(card.detail.split("RUST_TEST_THREADS")).toHaveLength(3);
+  // The chain is given once per group, for an example the reader can find.
+  expect(card.detail.split("Started from PID")).toHaveLength(3);
+  // And the two counts the card shows are reconciled where the reader reads
+  // them, because a lane holds many processes.
+  expect(card.detail).toContain(
+    "The title counts 2 lanes; these sentences count the 12 processes in them.",
+  );
+});
+
+test("a card's detail is cut to its line budget at the width it is drawn at", () => {
+  const c = defaults();
+  const s = escapedFleet(30, 4);
+  s.system.pressure = {
+    cpu: { some: 90, full: 0, total: 0 },
+    memory: { some: 80, full: 0, total: 0 },
+    io: { some: 70, full: 41, total: 0 },
+  };
+  for (const width of [38, 120]) {
+    const items = attention(s, c, { basePath: base, width });
+    expect(items.length).toBeGreaterThan(1);
+    for (const item of items)
+      expect(wrapLines(item.detail, width).length).toBeLessThanOrEqual(
+        detailLines,
+      );
+    // What the cut title lost is still whole in the detail: the lane list
+    // names at least the lanes the title itself listed.
+    for (const item of items) {
+      const named = item.title.match(/kendex agent-\d+ PID \d+/g) ?? [];
+      for (const name of named) expect(item.detail).toContain(name);
+    }
+  }
+});
+
+test("the lane list of a card stops rather than growing with the machine", () => {
+  const c = defaults();
+  const s = escapedFleet(57, 1);
+  const card = attention(s, c, { basePath: base, width: 60 }).find(
+    (item) => item.id === "unconfined",
+  );
+  if (!card) throw new Error("Expected one unconfined card");
+  // The sentence stops at the lanes it has room for and says how many it did
+  // not name, and it never names fewer than the title's own list.
+  const lanes = card.detail.slice(card.detail.lastIndexOf("Lanes: "));
+  expect(lanes).toBe(
+    "Lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1001, " +
+      "kendex agent-2 PID 1002, kendex agent-3 PID 1003 and 53 more.",
+  );
+  expect(wrapLines(card.detail, 60).length).toBeLessThanOrEqual(detailLines);
+  // A wider panel is more room for the same sentence, not more sentences.
+  const wide = attention(s, c, { basePath: base, width: 160 }).find(
+    (item) => item.id === "unconfined",
+  );
+  const wider = wide?.detail.slice(wide.detail.lastIndexOf("Lanes: ")) ?? "";
+  expect(wrapLines(wider, 160).length).toBeLessThanOrEqual(laneLines);
+  expect(wider.split(", ").length).toBeGreaterThan(lanes.split(", ").length);
+  // A list that fits is written whole, with no count of what was dropped.
+  const few = attention(escapedFleet(2, 1), c, {
+    basePath: base,
+    width: 60,
+  }).find((item) => item.id === "unconfined");
+  expect(few?.detail).toEndWith(
+    "Lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1001.",
+  );
 });

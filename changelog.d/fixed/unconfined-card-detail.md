@@ -1,0 +1,1 @@
+- The card for agents outside the agent slice writes one sentence per launcher conclusion and scope, not one per process, and every card's detail stops at six lines so its next step stays on screen.

@@ -115,3 +115,49 @@ export const sortedLabel = (
 export const columnsWidth = (columns: Column[]): number =>
   columns.reduce((total, column) => total + column.width, 0) +
   columnGap.length * Math.max(0, columns.length - 1);
+/**
+ * The rows `text` draws into at `width`, wrapped between words the way the
+ * renderer wraps it. A word wider than the column is broken, because a column
+ * that cannot hold it has nowhere else to put it.
+ */
+export function wrapLines(text: string, width: number): string[] {
+  if (width <= 0) return text === "" ? [] : [text];
+  const rows: string[] = [];
+  let row = "";
+  for (const word of text.split(" ").filter((part) => part !== "")) {
+    const next = row === "" ? word : `${row} ${word}`;
+    if ([...next].length <= width) {
+      row = next;
+      continue;
+    }
+    if (row !== "") rows.push(row);
+    row = word;
+    while ([...row].length > width) {
+      rows.push([...row].slice(0, width).join(""));
+      row = [...row].slice(width).join("");
+    }
+  }
+  if (row !== "") rows.push(row);
+  return rows;
+}
+/**
+ * `text` cut to the rows it is allowed at `width`, ending in the mark. The
+ * cut is marked for the same reason a cut cell is: text that stops without
+ * one reads as text that ended.
+ */
+export function capLines(text: string, width: number, lines: number): string {
+  if (lines < 1 || width <= 0) return "";
+  const rows = wrapLines(text, width);
+  if (rows.length <= lines) return text;
+  const kept = rows.slice(0, lines);
+  const last = [...kept[lines - 1]];
+  kept[lines - 1] = `${(
+    last.length > width - 1
+      ? last
+          .slice(0, width - 1)
+          .join("")
+          .trimEnd()
+      : last.join("")
+  ).replace(/[,.]$/, "")}${ellipsis}`;
+  return kept.join(" ");
+}

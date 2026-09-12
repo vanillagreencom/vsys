@@ -1,9 +1,10 @@
 import type { Config } from "../config/config";
-import { launcherTrail } from "../model/launcher";
+import { launcherCopy } from "../model/launcher";
 import { laneText, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
+import { capLines, wrapLines } from "./columns";
 import {
   amount,
   bytes,
@@ -54,20 +55,71 @@ type Copy = Omit<Attention, "id" | "danger" | "headline" | "verdictWorthy"> & {
   word: string;
   headline?: string;
 };
-const list = (names: string[], limit = 4): string =>
+/** The names a title lists before it stops counting and says how many remain. */
+export const listLimit = 4;
+const list = (names: string[], limit = listLimit): string =>
   names.length > limit
     ? `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`
     : names.join(", ");
+/**
+ * The rows a card's detail draws before it is cut. A card the reader opens to
+ * learn what to do must leave `Next` and the command on the screen with it,
+ * and a detail that grows with the number of affected lanes or processes
+ * pushes both off a terminal of ordinary height.
+ */
+export const detailLines = 6;
+/** The rows of that budget the list of affected lanes may take. */
+export const laneLines = 2;
+/** The width card copy is measured at when the caller is not a screen. */
+const defaultDetailWidth = 80;
+/**
+ * A detail built from a lead that grows with the machine and a tail that must
+ * survive it. The lead is cut until the two together hold the budget, so the
+ * lane names a cut title lost are still under it however many processes or
+ * sentences the lead found.
+ */
+function detailText(lead: string, tail: string, width: number): string {
+  const room = detailLines - wrapLines(tail, width).length;
+  for (let budget = room; budget >= 1; budget--) {
+    const text = `${capLines(lead, width, budget)} ${tail}`;
+    if (wrapLines(text, width).length <= detailLines) return text;
+  }
+  return tail;
+}
+/**
+ * Every affected lane, for a detail that opens under a title a narrow row
+ * cuts. It names at least as many lanes as the title's own list, so a cut row
+ * never loses a name the detail drops as well.
+ */
+function laneSentence(names: string[], width: number): string {
+  const head = `${p(names.length, "Lane", "Lanes")}: `;
+  const whole = `${head}${names.join(", ")}.`;
+  if (wrapLines(whole, width).length <= laneLines) return whole;
+  const shortened = (keep: number) =>
+    `${head}${names.slice(0, keep).join(", ")} and ${names.length - keep} more.`;
+  let keep = names.length - 1;
+  while (
+    keep > listLimit &&
+    wrapLines(shortened(keep), width).length > laneLines
+  )
+    keep--;
+  return shortened(keep);
+}
 
 /** Every word and every formatted number the Overview shows lives here. */
-function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
+function copy(
+  cause: Cause,
+  s: Snapshot,
+  c: Config,
+  basePath: string[],
+  width: number,
+): Copy {
   const b = (n: number | null | undefined) => bytes(n, c);
   const v = cause.values;
   const n = cause.lanes.length;
-  const names = list(cause.lanes.map(laneText));
-  // Every lane, in full, for a detail that opens under a title a narrow row
-  // cuts: the title's own list stops at four.
-  const every = `${p(n, "Lane", "Lanes")}: ${cause.lanes.map(laneText).join(", ")}.`;
+  const laneNames = cause.lanes.map(laneText);
+  const names = list(laneNames);
+  const every = laneSentence(laneNames, width);
   const mounts = list(cause.paths);
   const lane: Target | undefined =
     n === 1 ? { kind: "lane", id: cause.lanes[0].id } : undefined;
@@ -85,19 +137,24 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
   const paths = cause.paths.length;
   switch (cause.id) {
     case "unconfined": {
-      const trails = s.procs
-        .filter(
-          (x) => x.tool && cause.lanes.some((l) => l.pids.includes(x.pid)),
-        )
-        .map((x) => launcherTrail(x, s.procs, c, basePath));
+      const escaped = s.procs.filter(
+        (x) => x.tool && cause.lanes.some((l) => l.pids.includes(x.pid)),
+      );
+      const groups = launcherCopy(escaped, s.procs, c, basePath);
+      // The title counts lanes and these sentences count processes, so a
+      // reader who finds more of one than the other is told why rather than
+      // left to doubt both numbers.
+      const why =
+        escaped.length > n
+          ? `The title counts ${n} ${p(n, "lane", "lanes")}; these sentences count the ${escaped.length} processes in ${p(n, "it", "them")}.`
+          : "";
+      const trails = groups.length
+        ? groups.join(" ")
+        : `${c.agentSlice} limits do not apply to these processes.`;
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane runs", "lanes run")} outside ${c.agentSlice}: ${names}`,
-        detail: `${
-          trails.length
-            ? trails.map((t) => t.summary).join(" ")
-            : `${c.agentSlice} limits do not apply to these processes.`
-        } ${every}`,
+        detail: detailText(trails, `${why} ${every}`.trim(), width),
         next: `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`,
         command: shellLine([
           "systemd-run",
@@ -183,7 +240,11 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane has", "lanes have")} a memory limit below ${b(v.floor)}: ${names}`,
-        detail: `The limit can stop work before it finishes. ${every}`,
+        detail: detailText(
+          "The limit can stop work before it finishes.",
+          every,
+          width,
+        ),
         next: "Open the lane and check its effective memory.max against the parent slices.",
         command: shellLine([
           "systemctl",
@@ -200,7 +261,11 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `${n} ${p(n, "lane is", "lanes are")} stalling on a resource: ${names}`,
-        detail: `Highest stall share ${percent(v.worst)} of the recent window. ${every}`,
+        detail: detailText(
+          `Highest stall share ${percent(v.worst)} of the recent window.`,
+          every,
+          width,
+        ),
         next: "Open Agents and compare the CPU, memory and I/O pressure columns to find which resource is short.",
         view: "Agents",
         target: lane,
@@ -260,16 +325,19 @@ function copy(cause: Cause, s: Snapshot, c: Config, basePath: string[]): Copy {
 export function attention(
   s: Snapshot,
   c: Config,
-  basePath: string[] = (process.env.PATH ?? "").split(":"),
+  o: { basePath?: string[]; width?: number } = {},
 ): Attention[] {
+  const basePath = o.basePath ?? (process.env.PATH ?? "").split(":");
+  const width = o.width ?? defaultDetailWidth;
   return causes(s, c).map((cause) => {
-    const { word, headline, ...rest } = copy(cause, s, c, basePath);
+    const { word, headline, ...rest } = copy(cause, s, c, basePath, width);
     return {
       id: cause.id,
       danger: cause.level === "danger",
       verdictWorthy: cause.verdictWorthy,
       headline: headline ?? `${word}: ${rest.title}`,
       ...rest,
+      detail: capLines(rest.detail, width, detailLines),
     };
   });
 }

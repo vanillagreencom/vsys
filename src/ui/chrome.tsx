@@ -38,6 +38,16 @@ export const viewKey = (view: View): string => view.toLowerCase();
 export const narrowWidth = 100;
 /** The width at or above which a screen can hold two columns side by side. */
 export const wideWidth = 150;
+/** The columns one of Home's panels has, which is the whole row when narrow. */
+export const panelWidth = (width: number): number =>
+  width >= wideWidth ? Math.floor((width - 3) / 2) : width;
+/**
+ * The columns a card's detail draws into: its panel less the rule down the
+ * left edge and the indent after it. Card copy is measured here so the words
+ * a card writes and the room it has to write them cannot disagree.
+ */
+export const detailWidth = (width: number): number =>
+  Math.max(20, panelWidth(width) - 2);
 /** The columns each tab takes: its key, a space, and that view's own name. */
 const tabWidths = (c: Config): number[] =>
   views.map((v) => [...c.keys[viewKey(v)]].length + 1 + [...v].length);

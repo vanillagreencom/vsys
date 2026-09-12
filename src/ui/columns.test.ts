@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   type Column,
+  capLines,
   cell,
   columnGap,
   columnsWidth,
@@ -8,6 +9,7 @@ import {
   fitAddress,
   headerText,
   sortedLabel,
+  wrapLines,
 } from "./columns";
 
 test("a value is padded or cut to its width, and a cut is marked", () => {
@@ -130,4 +132,30 @@ test("a sorted heading puts its arrow where the column's own values end", () => 
       sortedLabel(column, sorted, descending),
     ]).toEqual(row);
   }
+});
+
+test("text wraps between words, and a word wider than the column is broken", () => {
+  expect(wrapLines("one two three four", 9)).toEqual([
+    "one two",
+    "three",
+    "four",
+  ]);
+  expect(wrapLines("", 10)).toEqual([]);
+  // A word with nowhere to break is broken at the column, not left to overrun.
+  expect(wrapLines("abcdefghij k", 4)).toEqual(["abcd", "efgh", "ij k"]);
+  // Code points, not UTF-16 units: an emoji is one column here, never two.
+  expect(wrapLines("😀😀😀 x", 3)).toEqual(["😀😀😀", "x"]);
+});
+
+test("a capped text ends in the mark and fits the rows it was given", () => {
+  const text = "one two three four five six seven eight nine ten";
+  expect(capLines(text, 9, 6)).toBe(text);
+  const cut = capLines(text, 9, 2);
+  expect(cut).toBe("one two three…");
+  expect(wrapLines(cut, 9).length).toBe(2);
+  // The mark replaces the punctuation that ended the kept text, so a cut
+  // sentence never reads as one that stopped on its own.
+  expect(capLines("alpha, beta, gamma", 7, 1)).toBe("alpha…");
+  expect(capLines(text, 0, 3)).toBe("");
+  expect(capLines(text, 9, 0)).toBe("");
 });

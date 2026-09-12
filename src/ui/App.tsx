@@ -26,6 +26,7 @@ import { attention, type Target, verdictItem } from "./attention";
 import { Builds } from "./builds-screen";
 import {
   Confirm,
+  detailWidth,
   Footer,
   Header,
   Help,
@@ -208,7 +209,7 @@ export function App({
   const handlers = useRef(new Set<KeyHandler>()).current;
   const { width, height } = useTerminalDimensions();
   const shown = pinned ?? snapshot;
-  const issues = attention(snapshot, c);
+  const issues = attention(snapshot, c, { width: detailWidth(width) });
   const points = history.window(snapshot.time, windows[windowIndex]);
   const notice = useCallback(
     (text: string, level: Level = "ok") => setToast({ text, level }),
