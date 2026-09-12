@@ -392,6 +392,14 @@ test("the pane vsys is drawing in is named, never captured into itself", async (
     // hold that screen holding this one.
     expect(asked).toEqual([]);
     expect(own.frame()).toContain("vsys is drawing in this pane");
+    // One explanation and no other: a section that also says it is reading
+    // leaves the reader waiting on a capture that is never coming.
+    for (const other of [
+      "Reading the pane",
+      "A pane is read live",
+      "needs a tmux server this vsys can reach",
+    ])
+      expect(own.frame()).not.toContain(other);
     await own.update({ ...own.snapshot, time: own.snapshot.time + 1000 });
     expect(asked).toEqual([]);
     await own.press("j");
@@ -502,6 +510,66 @@ test("a pinned sample offers no terminal capture and no switch", async () => {
     await t.press("j");
     await t.press("enter");
     expect(switched).toEqual([]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a past sample of vsys's own pane is named as past, not as this screen", async () => {
+  const c = defaults();
+  const s = emptySnapshot(1000);
+  // Marked when the sample was taken. A later run of vsys draws in whichever
+  // pane it was started from, so the mark is true of that moment alone.
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", pane: "%146", self: true }),
+  ];
+  s.groups = [groupSnapshot()];
+  const captured: string[] = [];
+  const h = new History(c);
+  h.add(s);
+  const later = { ...s, time: 2000 };
+  h.add(later);
+  const openTerminal = async (t: Awaited<ReturnType<typeof mount>>) => {
+    for (let i = 0; i < 12; i++) {
+      if (selectedRow(t.frame()).includes("Terminal")) break;
+      await t.press("j");
+    }
+    expect(selectedRow(t.frame())).toContain("Terminal");
+    await t.press("enter");
+  };
+  const t = await mount(
+    later,
+    c,
+    { width: 160, height: 40 },
+    {
+      history: h,
+      onCapture: async (paneId: string) => {
+        captured.push(paneId);
+        return ["live output"];
+      },
+    },
+  );
+  try {
+    await t.press("2");
+    await t.press("enter");
+    await openTerminal(t);
+    // Live, the sample says what it is: the screen the reader is looking at.
+    expect(t.frame()).toContain("vsys is drawing in this pane");
+    await t.press("escape");
+    await t.press("6");
+    await t.press("left");
+    await t.press(c.keys.pin);
+    expect(t.frame()).toContain("Agents, Resources, Builds and Storage show");
+    await t.press("2");
+    await t.press("enter");
+    await openTerminal(t);
+    const frame = t.frame();
+    // Pinned, that claim would be about a moment this vsys did not draw, so
+    // the section says which moment it is showing instead.
+    expect(frame).toContain("A pane is read live; this is a past sample.");
+    expect(frame).not.toContain("vsys is drawing in this pane");
+    // Past or present, its pane is never read.
+    expect(captured).toEqual([]);
   } finally {
     await t.close();
   }

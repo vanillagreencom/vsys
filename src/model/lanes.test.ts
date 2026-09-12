@@ -509,4 +509,42 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
     self: false,
     elsewhere: true,
   });
+  // A lane naming no server at all is not vsys's own either. `%1` is handed
+  // out from one by every fresh server, so a handle a reader set by hand and
+  // vsys's own handle agree by coincidence as easily as by fact, and the
+  // reader would be told the wrong reason with no way to tell it from the
+  // true one. The address it resolves to is unchanged: an unknown server is
+  // not a boundary, and only the claim about vsys's own screen needs the
+  // evidence.
+  const bare = processSnapshot({
+    pid: 5,
+    group: "a.scope",
+    tool: "claude",
+    env: { TMUX_PANE: "%146" },
+  });
+  const [unknownServer] = lanes(groups, [bare], c, 0, {
+    socket,
+    own: "%146",
+    byId: panes,
+  });
+  expect({
+    self: unknownServer.self,
+    elsewhere: unknownServer.elsewhere,
+    address: unknownServer.address,
+  }).toEqual({ self: false, elsewhere: false, address: "vsys:2.1" });
+  // A `list-panes` that failed leaves no map. The handle form still holds,
+  // because it is read from vsys's own environment and compared against the
+  // server vsys's own `TMUX` names: the sample loses the addresses, not the
+  // one lane the Terminal section may never capture.
+  const refused = lanes(groups, [byHandle, byAddress], c, 0, {
+    socket,
+    own: "%146",
+    byId: new Map(),
+  });
+  expect(refused.map((lane) => lane.self)).toEqual([true, false]);
+  // The address form is the half that genuinely needs the server: only the
+  // map says which pane `vsys:2.1` is, so without it that lane is read as an
+  // agent's, which is the direction that shows a reader too little rather
+  // than the wrong thing.
+  expect(refused[1]?.pane).toBe("vsys:2.1");
 });

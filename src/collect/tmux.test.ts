@@ -5,9 +5,11 @@ import {
   capturePaneArgv,
   insideTmux,
   isPaneId,
+  ownPane,
   paneFormat,
   paneLines,
   parsePanes,
+  readPanes,
   switchClientArgv,
   switchCommand,
 } from "./tmux";
@@ -103,6 +105,28 @@ test("vsys can move the reader's view only from inside a tmux client", () => {
   // A pane id in the environment is not a client: an agent's own pane says
   // nothing about which server vsys itself is attached to.
   expect(insideTmux({ TMUX_PANE: "%9" })).toBe(false);
+});
+
+test("the pane vsys draws in is the one tmux exported into vsys's own shell", async () => {
+  // tmux sets `TMUX_PANE` in every pane it owns, so this is vsys's own pane
+  // and not any agent's.
+  expect(ownPane({ TMUX_PANE: "%146" })).toBe("%146");
+  // `VSYS_PANE` is what a reader sets on an agent to say where that agent
+  // sits. It says nothing about vsys, so reading it here would mark whichever
+  // lane a reader had configured as vsys's own screen.
+  expect(ownPane({ VSYS_PANE: "vsys:2.1" })).toBe("");
+  expect(ownPane({})).toBe("");
+  // What the collector is handed each sample carries all three answers from
+  // one read: the server, vsys's own pane, and the panes to resolve against.
+  const read = await readPanes(async () => "%146\tvsys:2.1\tvsys\n", {
+    TMUX: "/tmp/tmux-1000/default,4242,0",
+    TMUX_PANE: "%146",
+  });
+  expect({ socket: read.socket, own: read.own }).toEqual({
+    socket: "/tmp/tmux-1000/default,4242",
+    own: "%146",
+  });
+  expect(read.byId.get("%146")?.address).toBe("vsys:2.1");
 });
 
 test("a configured address is a target tmux accepts, not one vsys refuses", async () => {

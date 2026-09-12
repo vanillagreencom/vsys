@@ -128,7 +128,9 @@ async function run(argv: string[]): Promise<string> {
  * it resolved against panes that are not its own. Empty when vsys is outside
  * tmux, which means the default socket rather than a known one.
  */
-export const serverSocket = (): string => serverPart(process.env.TMUX);
+export const serverSocket = (
+  env: Record<string, string | undefined> = process.env,
+): string => serverPart(env.TMUX);
 /** The `socket,serverpid` of a `TMUX` value, and "" when there is none. */
 export const serverPart = (tmux: string | null | undefined): string =>
   (tmux ?? "").split(",").slice(0, 2).join(",");
@@ -140,16 +142,24 @@ export interface PaneSet {
   own: string;
   byId: Map<string, PaneAddress>;
 }
-/** Every pane the server holds, in one call however many lanes ask for one. */
-export async function readPanes(): Promise<PaneSet> {
-  return {
-    socket: serverSocket(),
-    own: ownPane(process.env),
-    byId: parsePanes(await run(listPanesArgv)),
-  };
-}
 /** What a tmux read answers with, so a test can stand in for a server. */
 export type Ask = (argv: string[]) => Promise<string>;
+/**
+ * Every pane the server holds, in one call however many lanes ask for one,
+ * with the server and the pane vsys draws in read from the same environment.
+ * The server and the environment are arguments so a test can assert what this
+ * carries without a running tmux and without the machine's own panes.
+ */
+export async function readPanes(
+  ask: Ask = run,
+  env: Record<string, string | undefined> = process.env,
+): Promise<PaneSet> {
+  return {
+    socket: serverSocket(env),
+    own: ownPane(env),
+    byId: parsePanes(await ask(listPanesArgv)),
+  };
+}
 /** The last lines that pane drew. A pane that has gone away throws its reason. */
 export async function capturePane(
   target: string,

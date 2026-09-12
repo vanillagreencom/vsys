@@ -277,18 +277,17 @@ export function Agent({
     ]);
   }, [lane.pids, c, live]);
   const terminalOpen = open.has("Terminal");
+  // A pane vsys could read: the lane has one, it belongs to the server vsys
+  // talks to, and it is not the pane vsys is drawing in. One answer for the
+  // effect below and for every message the section draws, so a term added
+  // here can never close the messages while leaving the read open.
+  const readable = Boolean(lane.pane) && !lane.elsewhere && !lane.self;
   // The sample time is in the dependency list because it is the reason this
   // reads again: a terminal that only draws what it drew when the reader
   // opened it is not a terminal. The body has no other use for it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the sample time is the clock
   useEffect(() => {
-    if (
-      !terminalOpen ||
-      !onCapture ||
-      !lane.pane ||
-      lane.elsewhere ||
-      lane.self
-    ) {
+    if (!terminalOpen || !onCapture || !readable) {
       setPane(null);
       return;
     }
@@ -308,7 +307,7 @@ export function Agent({
     return () => {
       current = false;
     };
-  }, [terminalOpen, onCapture, lane.pane, snapshot.time]);
+  }, [terminalOpen, onCapture, readable, lane.pane, snapshot.time]);
   useEffect(() => {
     let current = true;
     setSeriesError(null);
@@ -332,9 +331,6 @@ export function Agent({
     };
   }, [history, lane.id, snapshot.time, windowMs]);
   const target = laneTarget(lane, c);
-  // A pane vsys could read: the lane has one, it belongs to the server vsys
-  // talks to, and it is not the pane vsys is drawing in.
-  const readable = Boolean(lane.pane) && !lane.elsewhere && !lane.self;
   const rows: DetailRow[] = [
     ...sections.flatMap((name): DetailRow[] =>
       name === "Terminal" &&
@@ -576,15 +572,18 @@ export function Agent({
                         <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
                       )}
                       {/* Reading it would draw this screen inside itself, and
-                          one copy deeper on every sample after that. */}
-                      {lane.pane && !lane.elsewhere && lane.self && (
+                          one copy deeper on every sample after that. Live
+                          only: `self` was read when the sample was taken, and
+                          the vsys that took an older one may have been drawing
+                          somewhere else entirely. */}
+                      {lane.self && live && (
                         <Empty text="vsys is drawing in this pane, so what it holds is this screen." />
                       )}
                       {/* A pane holds what it holds now, so reading one inside
                           a view of an older sample would put the present
                           inside the past. Said here rather than blamed on the
                           server, which is reachable. */}
-                      {readable && !live && (
+                      {lane.pane && !lane.elsewhere && !live && (
                         <Empty text="A pane is read live; this is a past sample." />
                       )}
                       {readable && live && !onCapture && (

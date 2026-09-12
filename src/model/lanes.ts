@@ -114,13 +114,22 @@ export function lanes(
     // Two servers, both known, and not the same one.
     const mine = paneSocket(main);
     const elsewhere = socket !== "" && mine !== "" && mine !== socket;
+    // Two servers, both known, and the same one. A handle means nothing
+    // across servers, so matching vsys's own rests on the lane naming the
+    // server vsys is attached to, never on the lane naming none: a bare `%1`
+    // a reader set by hand would otherwise collide with vsys's own pane on
+    // any fresh server and be called the reader's own screen.
+    const here = socket !== "" && mine === socket;
     // A lane carries whichever form its own environment held, so the pane vsys
     // draws in is compared in both: the `%N` handle from `TMUX_PANE`, and the
-    // `session:window.pane` address a reader puts in `VSYS_PANE`.
+    // `session:window.pane` address a reader puts in `VSYS_PANE`. An address
+    // already names a session and a window this server holds, so it carries
+    // its own evidence of which server it belongs to.
     const self =
       pane !== "" &&
       !elsewhere &&
-      (pane === tmux?.own || (ownAddress !== "" && pane === ownAddress));
+      ((here && pane === tmux?.own) ||
+        (ownAddress !== "" && pane === ownAddress));
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
