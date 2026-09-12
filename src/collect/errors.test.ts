@@ -28,11 +28,13 @@ test("a counter already above zero establishes a baseline and claims no time", (
     counter: 1390,
     at: null,
     size: null,
+    seen: 1000,
   });
   expect(memory.observe("fs", 1390, 2000)).toEqual({
     counter: 1390,
     at: null,
     size: null,
+    seen: 2000,
   });
 });
 
@@ -43,12 +45,14 @@ test("growth records when the counter grew and by how much", () => {
     counter: 36,
     at: 5000,
     size: 26,
+    seen: 5000,
   });
   // A later sample that finds no growth keeps the time of the growth it saw.
   expect(memory.observe("fs", 36, 9000)).toEqual({
     counter: 36,
     at: 5000,
     size: 26,
+    seen: 9000,
   });
 });
 
@@ -61,12 +65,14 @@ test("a counter reset moves the baseline and never reads as a repair", () => {
     counter: 0,
     at: 5000,
     size: 26,
+    seen: 9000,
   });
   // And growth from the new baseline is measured against it, not against 36.
   expect(memory.observe("fs", 2, 12000)).toEqual({
     counter: 2,
     at: 12000,
     size: 2,
+    seen: 12000,
   });
 });
 
@@ -93,6 +99,7 @@ test("what was remembered survives a restart", () => {
     counter: 36,
     at: 5000,
     size: 26,
+    seen: 90000000,
   });
 });
 
@@ -168,11 +175,13 @@ test("a second process writing the same file loses neither growth time", () => {
     counter: 36,
     at: 4000,
     size: 26,
+    seen: 9000,
   });
   expect(read.observe("two", 8, 9000)).toEqual({
     counter: 8,
     at: 6000,
     size: 3,
+    seen: 9000,
   });
 });
 
@@ -190,4 +199,30 @@ test("a growth time on disk is never replaced by an older one", () => {
   const read = new ErrorMemory(path);
   read.load();
   expect(read.observe("fs", 30, 9000).at).toBe(8000);
+});
+
+test("a reboot does not hide the errors counted after it", () => {
+  const path = statePath();
+  const before = new ErrorMemory(path);
+  before.observe("fs", 1364, 1000);
+  before.observe("fs", 1390, 2000);
+  before.save();
+  // The machine reboots and the kernel counters start again from zero.
+  const after = new ErrorMemory(path);
+  after.load();
+  after.observe("fs", 0, 5000);
+  after.save();
+  // Damage counted after the reboot is far below the old high-water mark. It
+  // is still new growth, and saying otherwise is the reading this whole
+  // feature exists to prevent.
+  expect(after.observe("fs", 26, 7000)).toEqual({
+    counter: 26,
+    at: 7000,
+    size: 26,
+    seen: 7000,
+  });
+  after.save();
+  const read = new ErrorMemory(path);
+  read.load();
+  expect(read.observe("fs", 26, 9000).at).toBe(7000);
 });

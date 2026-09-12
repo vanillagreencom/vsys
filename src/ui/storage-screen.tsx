@@ -518,8 +518,14 @@ export function Storage({
                 onOpen={() => setSelected(i)}
               >
                 {safe(scrub.path)}
+                {/* A file vsys could not read reported nothing at all, and
+                    saying it reported a problem puts words in it. */}
                 <span attributes={scrub.problem ? ui.none : ui.dim}>
-                  {scrub.problem ? "  problem reported" : "  clean"}
+                  {scrub.readable === false
+                    ? "  could not be read"
+                    : scrub.problem
+                      ? "  problem reported"
+                      : "  clean"}
                 </span>
               </Row>
               {i === selected && (

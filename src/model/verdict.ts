@@ -255,6 +255,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         build: counts.reduce((sum, n) => sum + n.build, 0),
         other: counts.reduce((sum, n) => sum + n.other, 0),
         blocks,
+        // An address written since the check, or one outside build output,
+        // is not one a delete step may sweep up.
+        changed: damaged.filter((item) =>
+          item.groups.some((group) => group.changed),
+        ).length,
       },
     });
   }

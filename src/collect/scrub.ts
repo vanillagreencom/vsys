@@ -28,8 +28,17 @@ export interface ScrubReport {
   addresses: DamagedAddress[] | null;
 }
 
-const field = (raw: string, name: string): string | null =>
-  raw.match(new RegExp(`^\\s*${name}:[ \\t]+(.*\\S)`, "m"))?.[1] ?? null;
+/**
+ * One labelled field. A report stating the same label twice, as a per-device
+ * listing does, holds no single reading for it, and taking the first would
+ * report one device's count as the filesystem's.
+ */
+const field = (raw: string, name: string): string | null => {
+  const found = [
+    ...raw.matchAll(new RegExp(`^\\s*${name}:[ \\t]+(.*\\S)`, "gm")),
+  ];
+  return found.length === 1 ? found[0][1] : null;
+};
 const number = (raw: string, name: string): number | null => {
   const text = field(raw, name);
   if (text === null) return null;

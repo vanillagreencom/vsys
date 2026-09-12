@@ -304,3 +304,34 @@ test("a check that repaired every error it found leaves no damage", () => {
     ).state,
   ).toBe("damaged");
 });
+
+test("only a check that says it finished counts as a check", () => {
+  const c = defaults();
+  // Every other status word, including one nothing has enumerated, leaves the
+  // state unknown rather than standing in for a completed check.
+  for (const status of [
+    "failed",
+    "aborted",
+    "cancelled",
+    "interrupted",
+    "not started",
+    "something new",
+    null,
+  ])
+    expect({
+      status,
+      state: integrity(filesystem(), [report({ status })], now, c).state,
+    }).toEqual({ status, state: "unknown" });
+  expect(
+    integrity(filesystem(), [report({ status: "running" })], now, c).state,
+  ).toBe("checking");
+  expect(
+    integrity(filesystem(), [report({ status: "finished" })], now, c).state,
+  ).toBe("healthy");
+});
+
+test("a report names its filesystem however it spells the identity", () => {
+  const c = defaults();
+  const shouted = report({ fsid: "FS", problem: true, uncorrectable: 4 });
+  expect(integrity(filesystem(), [shouted], now, c).blocks).toBe(4);
+});

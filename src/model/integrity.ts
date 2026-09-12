@@ -151,7 +151,12 @@ function classify(paths: string[], c: Config): DamageKind {
 }
 /** The newest report naming this filesystem, or none where no report does. */
 function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
-  const matching = scrubs.filter((scrub) => scrub.fsid && scrub.fsid === id);
+  // A filesystem id is a UUID, and a report writing it in capitals names the
+  // same filesystem. Matching on the spelling would read as never checked.
+  const key = id.toLowerCase();
+  const matching = scrubs.filter(
+    (scrub) => scrub.fsid && scrub.fsid.toLowerCase() === key,
+  );
   return (
     [...matching].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0] ??
     null
@@ -193,16 +198,14 @@ export function integrity(
   // The record of past growth failed to load, so "no error recorded" is a
   // reading vsys does not have rather than a reading of none.
   const errorKnown = group.volumes.every((v) => v.lastErrorKnown !== false);
-  // A report whose status the helper did not write is treated as finished:
-  // the file exists because a scrub ended, and calling it a running scrub
-  // would leave a stale report reading "checking" forever.
   const running = scrub?.status === "running";
-  // A scrub that stopped early checked part of the filesystem, so it is not a
-  // full check and its time is not a last-checked time.
-  const stopped = /^(aborted|cancell?ed|interrupted)$/.test(
-    scrub?.status ?? "",
-  );
-  const checkedAt = running || stopped ? null : (scrub?.startedAt ?? null);
+  // Only a check that says it finished read the filesystem end to end. Every
+  // other word, including one the helper did not write and one vsys has never
+  // seen, leaves the state unknown: a list of the ways a check can stop early
+  // would call each new word a completed check, which is the wrong way to be
+  // wrong about whether the disk was read.
+  const finished = scrub?.status === "finished" && scrub.readable !== false;
+  const checkedAt = finished ? (scrub?.startedAt ?? null) : null;
   const checkAge = checkedAt === null ? null : Math.max(0, time - checkedAt);
   const errorAge = errorAt == null ? null : Math.max(0, time - errorAt);
   const state: IntegrityState =
@@ -215,8 +218,7 @@ export function integrity(
           // many errors it corrected. A problem report whose count vsys could
           // not read says nothing either way, and reads as damage.
           scrub?.problem &&
-            !running &&
-            !stopped &&
+            finished &&
             (scrub.uncorrectable === null || scrub.uncorrectable === undefined)
           ? "damaged"
           : errorAt != null && (checkedAt === null || errorAt > checkedAt)
@@ -225,7 +227,7 @@ export function integrity(
               ? "checking"
               : scrub === null
                 ? "never-checked"
-                : stopped
+                : !finished
                   ? "unknown"
                   : // A report carrying no start time dates no check, so it
                     // cannot say the filesystem was read end to end recently.

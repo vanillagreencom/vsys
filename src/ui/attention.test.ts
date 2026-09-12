@@ -657,7 +657,9 @@ test("the lane sentence stops rather than growing with the machine", () => {
 test("a storage card never tells the reader to delete data a rebuild cannot replace", () => {
   const c = defaults();
   const s = emptySnapshot();
-  const scrub = (addresses: { logical: number; paths: string[] }[]) => ({
+  const scrub = (
+    addresses: { logical: number; paths: string[]; changed?: string[] }[],
+  ) => ({
     path: "/run/btrfs-scrub/root.result",
     text: "Error summary: csum=1",
     problem: true,
@@ -690,7 +692,19 @@ test("a storage card never tells the reader to delete data a rebuild cannot repl
   expect(mixed?.next).toContain(
     "Delete only the addresses marked as build output",
   );
+  const mixed = attention(s, c, { basePath: base }).find((i) => i.id === "damaged-files");
+  expect(mixed?.next).toContain("Delete only the addresses it marks as build");
   expect(mixed?.next).not.toContain("delete every path");
+  // All build output, but one address was written since the check, so that
+  // one carries no command either and the step cannot say delete everything.
+  s.storage.scrubs = [
+    scrub([
+      { logical: 1, paths: ["/r/target/a"] },
+      { logical: 2, paths: ["/r/target/b"], changed: ["/r/target/b"] },
+    ]),
+  ];
+  const stale = attention(s, c, base).find((i) => i.id === "damaged-files");
+  expect(stale?.next).toContain("Delete only the addresses it marks as build");
 });
 
 test("an unchecked card counts never-checked filesystems apart from stale ones", () => {

@@ -14,6 +14,12 @@ export interface ErrorRecord {
   at: number | null;
   /** How far it grew that time. */
   size: number | null;
+  /**
+   * When this reading was taken. A record is one observation of one counter,
+   * so a merge takes the later reading whole rather than mixing a counter
+   * from one with a growth time from another.
+   */
+  seen: number;
 }
 
 /**
@@ -62,6 +68,10 @@ export class ErrorMemory {
         at: typeof r.at === "number" && Number.isFinite(r.at) ? r.at : null,
         size:
           typeof r.size === "number" && Number.isFinite(r.size) ? r.size : null,
+        // A record written before this field existed loses every merge to a
+        // reading taken now, which is the reading that is current.
+        seen:
+          typeof r.seen === "number" && Number.isFinite(r.seen) ? r.seen : 0,
       });
     }
     this.records = read;
@@ -76,10 +86,10 @@ export class ErrorMemory {
     const seen = this.records.get(fsid);
     const record: ErrorRecord =
       seen === undefined
-        ? { counter, at: null, size: null }
+        ? { counter, at: null, size: null, seen: time }
         : counter > seen.counter
-          ? { counter, at: time, size: counter - seen.counter }
-          : { ...seen, counter };
+          ? { counter, at: time, size: counter - seen.counter, seen: time }
+          : { ...seen, counter, seen: time };
     if (
       !seen ||
       seen.counter !== record.counter ||
@@ -147,12 +157,11 @@ export class ErrorMemory {
         this.records.set(fsid, theirs);
         continue;
       }
-      const newer = (theirs.at ?? -1) > (mine.at ?? -1) ? theirs : mine;
-      this.records.set(fsid, {
-        counter: Math.max(mine.counter, theirs.counter),
-        at: newer.at,
-        size: newer.size,
-      });
+      // The later reading wins whole. Mixing them would pair one process's
+      // counter with another's growth time: taking the higher counter, in
+      // particular, restores a pre-reboot high-water mark and hides every
+      // error counted after the reboot until the counter passes it again.
+      if (theirs.seen > mine.seen) this.records.set(fsid, theirs);
     }
     return true;
   }

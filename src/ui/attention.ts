@@ -240,8 +240,8 @@ function copy(
         // that blurs the two invites the reader to delete their own files.
         next: !files
           ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
-          : other
-            ? "Open Storage and open the filesystem. Delete only the addresses marked as build output, and restore the rest from a backup or a snapshot."
+          : other || v.changed
+            ? "Open Storage and open the filesystem. Delete only the addresses it marks as build output, and leave the rest to a backup or a snapshot."
             : "Open Storage, open the filesystem, and delete every path listed under each damaged address before rebuilding.",
         view: "Storage",
         target: cause.at ?? first,

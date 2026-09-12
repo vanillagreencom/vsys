@@ -88,3 +88,17 @@ test("fields the report did not carry stay null rather than becoming zero", () =
   // A start time that is not a time is unread, never the epoch.
   expect(parseScrub("Scrub started:    never\n").startedAt).toBeNull();
 });
+
+test("a field the report states twice holds no single reading", () => {
+  // A per-device listing repeats the label. Taking the first would report one
+  // device's count as the whole filesystem's.
+  const twice = parseScrub(`Status:           finished
+  Corrected:      0
+  Uncorrectable:  26
+  Corrected:      0
+  Uncorrectable:  9
+`);
+  expect(twice.uncorrectable).toBeNull();
+  expect(twice.corrected).toBeNull();
+  expect(twice.status).toBe("finished");
+});

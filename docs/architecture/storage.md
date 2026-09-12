@@ -20,7 +20,7 @@ Storage collection reads filesystem state, device counters, drive reports and sc
 A privileged timer runs the check and writes one report per filesystem into `scrubDir`. vsys reads that file and runs nothing privileged of its own, so the file is a contract between the two. The helper on the owner's host is shipped by their dotfiles, not by vsys.
 
 - `UUID:` names the filesystem. It is the directory name under `btrfsRoot`, and it is how a report is matched to the filesystem it speaks for. A report whose UUID matches nothing is listed as a report and speaks for no filesystem.
-- `Scrub started:`, `Status:`, `Corrected:` and `Uncorrectable:` carry the times and the counts. A field the report omits stays unread rather than becoming a zero.
+- `Scrub started:`, `Status:`, `Corrected:` and `Uncorrectable:` carry the times and the counts. A field the report omits stays unread rather than becoming a zero, and so does one it states twice: a per-device listing holds no single reading for the filesystem. `Status: finished` is the only word that says the filesystem was read end to end; every other word leaves the state unknown.
 - A `Damaged files:` section, when present, is followed by a `logical <address>:` heading per damaged block address and its resolved paths, each indented two spaces. An address with no path carries one parenthesised line saying so.
 - The address, not the file, is the unit: one extent can be reachable under several names, and removing the first leaves the damage on disk for the next check to report again. Every path of an address is listed under it, and the copy command removes all of them together.
 - Every other line is prose the helper may reword. The parser anchors on the labelled fields and on the address heading alone.
