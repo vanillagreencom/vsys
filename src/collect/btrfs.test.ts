@@ -242,3 +242,27 @@ test("an unreadable report stays a report rather than vanishing", async () => {
   ]);
   expect(r.errors.map((e) => e.source)).toEqual([path]);
 });
+
+test("a report stating a count twice cannot report clean", () => {
+  // A per-device listing: one device found nothing, another found damage.
+  // Reading the first would let that zero speak for the whole filesystem.
+  expect(() =>
+    scrubProblem(`Status:           finished
+  Corrected:      0
+  Uncorrectable:  0
+  Corrected:      0
+  Uncorrectable:  26
+`),
+  ).toThrow();
+  // Stated once, the count is the reading, in both directions.
+  expect(
+    scrubProblem(
+      "Status: finished\n  Corrected:      0\n  Uncorrectable:  0\n",
+    ),
+  ).toBe(false);
+  expect(
+    scrubProblem(
+      "Status: finished\n  Corrected:      5\n  Uncorrectable:  0\n",
+    ),
+  ).toBe(true);
+});

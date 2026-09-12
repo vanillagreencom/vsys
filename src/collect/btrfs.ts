@@ -6,7 +6,7 @@ import { ErrorMemory } from "./errors";
 import { pairs, type Reader } from "./io";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
-import { parseScrub } from "./scrub";
+import { parseScrub, stated } from "./scrub";
 import type { CollectionConfig } from "./settings";
 
 /** Either a mount restriction or a superblock restriction makes a mount read-only. */
@@ -26,19 +26,23 @@ export function btrfsMounts(
 /** Reject unknown scrub output instead of calling it healthy. */
 export function scrubProblem(raw: string): boolean {
   if (/\b(aborted|canceled|cancelled|failed)\b/i.test(raw)) return true;
-  if (/\buncorrectable\b/i.test(raw) && !/Uncorrectable:\s+0\b/i.test(raw))
-    return true;
+  // The counted-error lines under the summary are the reading wherever the
+  // report carries them. A label it states more than once, as a per-device
+  // listing does, holds no single count: reading the first would let one
+  // device's zero speak for a filesystem another device found damage on.
+  const counted = ["Corrected", "Uncorrectable"].filter(
+    (name) => stated(raw, name) > 0,
+  );
+  if (counted.some((name) => stated(raw, name) > 1))
+    throw new Error("Scrub result states a count more than once");
+  if (counted.length) {
+    const report = parseScrub(raw);
+    return (report.corrected ?? 0) > 0 || (report.uncorrectable ?? 0) > 0;
+  }
+  if (/\buncorrectable\b/i.test(raw)) return true;
   const count = raw.match(/Error summary:\s*(\d+)/i);
   if (count) return Number(count[1]) > 0;
   if (/Error summary:\s+no errors found/i.test(raw)) return false;
-  // The counted-error lines under the summary, which carry the reading when
-  // the summary itself names error kinds rather than a total.
-  const corrected = raw.match(/^\s*Corrected:\s+(\d+)/im);
-  const uncorrectable = raw.match(/^\s*Uncorrectable:\s+(\d+)/im);
-  if (corrected || uncorrectable)
-    return (
-      Number(corrected?.[1] ?? 0) > 0 || Number(uncorrectable?.[1] ?? 0) > 0
-    );
   const stats = [
     ...raw.matchAll(
       /(?:read|csum|verify|super|malloc|uncorrectable|corrected)_errors[=:]\s*(\d+)/g,

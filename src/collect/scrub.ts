@@ -39,6 +39,14 @@ const field = (raw: string, name: string): string | null => {
   ];
   return found.length === 1 ? found[0][1] : null;
 };
+/**
+ * How many times the report states a labelled field. None is a field the
+ * report does not carry; more than one is a report that holds no single
+ * reading for it, and the two are different facts to the caller.
+ */
+export function stated(raw: string, name: string): number {
+  return (raw.match(new RegExp(`^\\s*${name}:`, "gm")) ?? []).length;
+}
 const number = (raw: string, name: string): number | null => {
   const text = field(raw, name);
   if (text === null) return null;
