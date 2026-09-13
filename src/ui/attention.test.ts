@@ -11,10 +11,37 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import { attention, meterTile, unread, verdictLine } from "./attention";
+import {
+  type Attention,
+  attention,
+  cardDetail,
+  meterTile,
+  unread,
+  verdictLine,
+} from "./attention";
 import { wrapLines } from "./columns";
 
 const base = ["/usr/bin", "/bin"];
+/**
+ * Everything a card has to say, as one string: its best way of writing the
+ * description and the sentence naming the lanes, with no room taken off it.
+ * The checks about the words a card writes read this; the checks about the
+ * rows it has fit it against a room with `cardDetail`.
+ */
+const said = (item?: Attention): string =>
+  [...(item?.ways[0] ?? []), item?.keep ?? ""]
+    .filter((part) => part !== "")
+    .join(" ");
+/** The rows the description had before the room a card sits in decided it. */
+const sixRows = 6;
+/** A description fitted to a stated room, as the screen fits it. */
+const fitted = (item: Attention | undefined, width: number, rows = sixRows) =>
+  item === undefined ? [] : cardDetail(item, width, rows);
+/** The rows those paragraphs draw: their own, their breaks, and the blank
+ * above the action lines. */
+const drawnRows = (parts: string[], width: number) =>
+  parts.reduce((rows, part) => rows + wrapLines(part, width).length, 0) +
+  parts.length;
 test("overview promotes active problems and does not call past events current", () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -37,12 +64,12 @@ test("every card kind ends with a next step of its own", () => {
   for (const item of items) {
     expect(item.next.length).toBeGreaterThan(20);
     expect(item.next).not.toBe(item.title);
-    expect(item.next).not.toBe(item.detail);
-    const text = [item.title, item.detail, item.headline];
+    expect(item.next).not.toBe(said(item));
+    const text = [item.title, said(item), item.headline];
     expect(text.every((line) => line.length > 0)).toBe(true);
   }
   // Every cause appears once, so no card text repeats anywhere in the list.
-  const text = items.flatMap((item) => [item.title, item.detail, item.next]);
+  const text = items.flatMap((item) => [item.title, said(item), item.next]);
   expect(new Set(text).size).toBe(text.length);
   expect(new Set(items.map((item) => item.id)).size).toBe(items.length);
 });
@@ -56,11 +83,11 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   );
   const swapCard = items.find((item) => item.id === "desktop-swap");
   expect(swapCard?.title).toBe("Desktop swapped out: 512.0 MiB in app.slice");
-  expect(swapCard?.detail).toBe(
+  expect(said(swapCard)).toBe(
     "gnome holds 992 B. Agents hold 80.0 GiB of page cache, which the desktop cannot use.",
   );
   // A card whose title names lanes names them again in its detail.
-  const detail = (id: string) => items.find((item) => item.id === id)?.detail;
+  const detail = (id: string) => said(items.find((item) => item.id === id));
   expect(detail("memory-cap")).toEndWith(" Lane: capped PID 40.");
   expect(detail("unconfined")).toEndWith(" Lane: escaped PID 40.");
   s.lanes = s.lanes.filter((l) => !l.unconfined);
@@ -106,7 +133,7 @@ test("nine stalling lanes produce one card that names them", () => {
   );
   // The title lists four; the detail under it names every lane.
   const every = Array.from({ length: 9 }, (_, i) => `kendex PID ${100 + i}`);
-  expect(stalls[0].detail).toBe(
+  expect(said(stalls[0])).toBe(
     `Highest stall share 40.0% of the recent window. Lanes: ${every.join(", ")}.`,
   );
   expect(stalls[0].target?.kind).not.toBe("lane");
@@ -150,9 +177,9 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
   expect(card.title).toBe(
     "2 lanes run outside agents.slice: kendex hclaude PID 40, kendex nclaude PID 40",
   );
-  expect(card.detail).toContain("shadowed");
-  expect(card.detail).toContain("/home/user/.shadow/bin");
-  expect(card.detail).toContain("Launched bare");
+  expect(said(card)).toContain("shadowed");
+  expect(said(card)).toContain("/home/user/.shadow/bin");
+  expect(said(card)).toContain("Launched bare");
   expect(card.command).toBe(
     "systemd-run --user --slice=agents.slice --scope -- claude",
   );
@@ -163,7 +190,7 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
     { ...c, capMarkers: ["MAKEFLAGS"] },
     { basePath: base },
   ).find((item) => item.id === "unconfined");
-  expect(other?.detail).not.toContain("shadowed");
+  expect(said(other)).not.toContain("shadowed");
 });
 
 test("a saturated disk card names the lane, its linkers and a read command", () => {
@@ -192,7 +219,7 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
   expect(card.title).toBe(
     "Disk I/O saturated: lane-510341 PID 40 writing 200.0 MiB/s",
   );
-  expect(card.detail).toBe(
+  expect(said(card)).toBe(
     "Tasks stalled on storage 70.0% of the recent window, 41.0% of it with nothing else to run, with 2 linkers running in that lane. Waiting on storage: lane-510341 PID 40, waiter PID 40.",
   );
   expect(card.command).toBe(`cat ${c.cgroupRoot}/a/510341.scope/io.stat`);
@@ -459,8 +486,8 @@ test("the memory-reclaim card carries the scope its own text names", () => {
   );
   expect(swapped?.target).toEqual(memory?.target);
   // And they name it the same way, decoded rather than as its raw unit.
-  expect(memory?.detail).toContain("gnome holds the most swap");
-  expect(memory?.detail).not.toContain(".scope");
+  expect(said(memory)).toContain("gnome holds the most swap");
+  expect(said(memory)).not.toContain(".scope");
 });
 
 const escapedFleet = (lanes: number, perLane = 1) =>
@@ -474,14 +501,14 @@ test("the unconfined card writes one sentence per conclusion, not per process", 
   if (!card) throw new Error("Expected one unconfined card");
   // Twelve processes over two scopes are two sentences, each naming its scope
   // once with the count of processes in it.
-  expect(card.detail.split("Launched bare")).toHaveLength(3);
-  expect(card.detail).toContain("6 processes in the scope tmux-spawn-0.scope");
-  expect(card.detail).toContain("6 processes in the scope tmux-spawn-1.scope");
+  expect(said(card).split("Launched bare")).toHaveLength(3);
+  expect(said(card)).toContain("6 processes in the scope tmux-spawn-0.scope");
+  expect(said(card)).toContain("6 processes in the scope tmux-spawn-1.scope");
   // The marker list is named once per group, never once per process.
-  expect(card.detail.split("RUST_TEST_THREADS")).toHaveLength(3);
+  expect(said(card).split("RUST_TEST_THREADS")).toHaveLength(3);
   // The title counts lanes and the sentences count processes, so the sentence
   // naming the lanes states both counts and reconciles them.
-  expect(card.detail).toEndWith(
+  expect(said(card)).toEndWith(
     "12 processes in 2 lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1006.",
   );
   // One process per lane is the boundary: the counts agree, so the sentence
@@ -489,12 +516,12 @@ test("the unconfined card writes one sentence per conclusion, not per process", 
   const even = attention(escapedFleet(2, 1), c, { basePath: base }).find(
     (item) => item.id === "unconfined",
   );
-  expect(even?.detail).toEndWith(
+  expect(said(even)).toEndWith(
     "Lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1001.",
   );
 });
 
-test("a card's detail is cut to its line budget at the width it is drawn at", () => {
+test("a card's description holds the rows the screen gives it", () => {
   const c = defaults();
   const crowded = escapedFleet(30, 4);
   crowded.system.pressure = {
@@ -515,20 +542,44 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
       const items = attention(s, c, { basePath: base, width });
       for (const item of items) {
         measured.add(item.id);
-        // Six rows, written out: a budget checked against the constant it is
-        // built from passes whatever that constant is raised to.
-        expect(wrapLines(item.detail, width).length).toBeLessThanOrEqual(6);
-        if (item.detail.includes("…")) cut++;
+        // Every room from the one a card is given on a crowded screen up to
+        // one no card needs, written out rather than read from the production
+        // rule the fitting used.
+        for (const rows of [4, sixRows, 12]) {
+          const drawn = fitted(item, width, rows);
+          // The floor is what a card writes however short the room, and it is
+          // the card's own: one row of the first thing it says and the blank
+          // above the action lines, plus, where the card names lanes, the two
+          // rows that sentence is written to and the break above it.
+          const floor = item.keep === "" ? 2 : 5;
+          expect(drawnRows(drawn, width)).toBeLessThanOrEqual(
+            Math.max(rows, floor),
+          );
+          if (drawn.join(" ").includes("…")) cut++;
+        }
+        // Asked for a room under its floor, a card writes that floor. A card
+        // naming no lane, which every storage card is, holds one row of the
+        // first thing it says and the blank above the action lines; one that
+        // names lanes holds that sentence too, at the rows it needs.
+        const atFloor = drawnRows(fitted(item, width, 1), width);
+        if (item.keep === "") expect(atFloor).toBe(2);
+        else expect(atFloor).toBeLessThanOrEqual(5);
+        // Given the rows its best way of writing itself needs, a card writes
+        // that way: every paragraph of its own, nothing given up, nothing cut.
+        const whole = [...item.ways[0], item.keep].filter((p) => p !== "");
+        expect(fitted(item, width, drawnRows(whole, width))).toEqual(whole);
       }
     }
   // A card that writes no ladder of its own is cut by the same budget: the
   // disk card on a panel at the floor is one.
-  const narrow = attention(everyCauseSnapshot(c), c, {
-    basePath: base,
-    width: 20,
-  }).find((item) => item.id === "disk");
-  expect(narrow?.detail).toEndWith("…");
-  expect(narrow?.detail).toContain("Tasks stalled on storage");
+  const narrow = fitted(
+    attention(everyCauseSnapshot(c), c, { basePath: base, width: 20 }).find(
+      (item) => item.id === "disk",
+    ),
+    20,
+  ).join(" ");
+  expect(narrow).toEndWith("…");
+  expect(narrow).toContain("Tasks stalled on storage");
   // A lane whose name alone overruns the rows the sentence has: the name is
   // cut with its mark, and both counts the card promises are whole, because
   // the names are on the screen Enter opens and the counts are only here.
@@ -538,10 +589,25 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
   const tight = attention(long, c, { basePath: base, width: 20 }).find(
     (item) => item.id === "unconfined",
   );
-  expect(tight?.detail).toBe(
-    "2 groups of processes: 2 bare. Lanes: kendex vsys/is… and 1 more.",
-  );
-  expect(wrapLines(tight?.detail ?? "", 20)).toHaveLength(4);
+  expect(fitted(tight, 20)).toEqual([
+    "2 groups of processes: 2 bare.",
+    "Lanes: kendex vsys/is… and 1 more.",
+  ]);
+  // The rung between every idea apart and everything in one: the conclusions
+  // join into one paragraph and the sentence naming the lanes stays a
+  // paragraph of its own, which is what a card gives up last.
+  expect(
+    fitted(
+      attention(crowded, c, { basePath: base, width: 38 }).find(
+        (item) => item.id === "unconfined",
+      ),
+      38,
+      12,
+    ),
+  ).toEqual([
+    "Launched bare: none of RUST_TEST_THREADS, CARGO_BUILD_JOBS is set on 60 processes in the scope tmux-spawn-0.scope. Launched bare: none of RUST_TEST_THREADS, CARGO_BUILD_JOBS is set on 60 processes in the scope tmux-spawn-1.scope.",
+    "120 processes in 30 lanes: kendex agent-0 PID 1000 and 29 more.",
+  ]);
   // Every cause the ladder can report was measured, read from the ladder's
   // own table rather than a list kept here: a cause added without a fixture
   // is a cause whose detail nothing measures.
@@ -551,25 +617,30 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
   expect(cut).toBeGreaterThan(0);
 });
 
-test("a narrow card gives up the chain, then a conclusion, and counts both", () => {
+test("a card short of room gives up the chain, then a conclusion, and counts both", () => {
   const c = defaults();
   const s = escapedSnapshot({ lanes: 12, scopes: 12 });
+  // One room throughout, so what changes down this test is the width and the
+  // order the card gives ground in, never the rows it was handed.
   const detail = (width: number) =>
-    attention(s, c, { basePath: base, width }).find(
-      (item) => item.id === "unconfined",
-    )?.detail ?? "";
+    fitted(
+      attention(s, c, { basePath: base, width }).find(
+        (item) => item.id === "unconfined",
+      ),
+      width,
+    ).join(" ");
   // Wide enough for the ancestors of every conclusion.
-  expect(detail(400)).toContain("Started from PID");
-  expect(detail(400)).not.toContain("not written here");
+  expect(detail(600)).toContain("Started from PID");
+  expect(detail(600)).not.toContain("not written here");
   // Narrower, the ancestors go first. They are the part of the card the
   // reader can read again on the screen Enter opens.
-  expect(detail(300)).not.toContain("Started from PID");
-  expect(detail(300)).toContain("tmux-spawn-11.scope");
+  expect(detail(400)).not.toContain("Started from PID");
+  expect(detail(400)).toContain("tmux-spawn-11.scope");
   // Then a conclusion at a time, from the last, and what goes is counted the
   // way the title counts the lanes it stopped at.
-  expect(detail(200)).not.toContain("tmux-spawn-11.scope");
-  expect(detail(200)).toContain(
-    "And 5 more groups of processes not written here.",
+  expect(detail(300)).not.toContain("tmux-spawn-11.scope");
+  expect(detail(300)).toContain(
+    "And 2 more groups of processes not written here.",
   );
   // The first conclusion stays whole with its scope, so a card is never left
   // with no conclusion at all, and what it keeps it keeps whole rather than
@@ -586,18 +657,23 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
   // kept still names that cgroup, and one group is one, not one groups.
   const shared = escapedSnapshot({ lanes: 2, scopes: 1 });
   shared.procs[2].env = { CARGO_BUILD_JOBS: "16" };
-  const merged =
+  const merged = fitted(
     attention(shared, c, { basePath: base, width: 44 }).find(
       (item) => item.id === "unconfined",
-    )?.detail ?? "";
+    ),
+    44,
+  ).join(" ");
   expect(merged).toContain("The launcher was shadowed");
   expect(merged).toContain("And 1 more group of processes not written here.");
   expect(merged).not.toContain("  ");
   expect(
-    attention(escapedSnapshot({ lanes: 2, scopes: 2 }), c, {
-      basePath: base,
-      width: 44,
-    }).find((item) => item.id === "unconfined")?.detail,
+    fitted(
+      attention(escapedSnapshot({ lanes: 2, scopes: 2 }), c, {
+        basePath: base,
+        width: 44,
+      }).find((item) => item.id === "unconfined"),
+      44,
+    ).join(" "),
   ).toContain("And 1 more group of processes not written here.");
   // At the floor a panel can be, one whole conclusion and the count of what
   // went do not fit in the rows beside the lane sentence, so the card counts
@@ -605,13 +681,34 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
   expect(detail(20)).toBe(
     "12 groups of processes: 12 bare. Lanes: kendex agent-… and 11 more.",
   );
-  expect(wrapLines(detail(20), 20)).toHaveLength(4);
   // Each kind is counted under the name the sentences give it.
   expect(
-    attention(shared, c, { basePath: base, width: 20 }).find(
-      (item) => item.id === "unconfined",
-    )?.detail,
+    fitted(
+      attention(shared, c, { basePath: base, width: 20 }).find(
+        (item) => item.id === "unconfined",
+      ),
+      20,
+    ).join(" "),
   ).toStartWith("2 groups of processes: 1 bare, 1 shadowed.");
+});
+
+test("a card cut to the bone still says one thing and names the lanes", () => {
+  const c = defaults();
+  // Written for a wide panel and fitted into a narrow one, so the sentence
+  // naming the lanes needs more rows than the room has. No caller does this
+  // today; `cardDetail` is exported, and a screen must not raise.
+  const wide = attention(escapedFleet(6, 1), c, {
+    basePath: base,
+    width: 120,
+  }).find((item) => item.id === "unconfined");
+  if (!wide) throw new Error("Expected one unconfined card");
+  const cut = cardDetail(wide, 20, 4);
+  // One paragraph, because every break is given up first, and the lane names
+  // are still at the end of it: the row kept back for the first thing the
+  // card says is what leaves both of them on the screen.
+  expect(cut).toHaveLength(1);
+  expect(cut[0]).toStartWith("2 groups of");
+  expect(cut[0]).toContain("Lanes: kendex agent-0 PID 1000");
 });
 
 test("the lane sentence stops rather than growing with the machine", () => {
@@ -622,7 +719,7 @@ test("the lane sentence stops rather than growing with the machine", () => {
   );
   if (!card) throw new Error("Expected one unconfined card");
   // It stops at the lanes it has room for and says how many it did not name.
-  const lanes = card.detail.slice(card.detail.lastIndexOf("Lanes: "));
+  const lanes = said(card).slice(said(card).lastIndexOf("Lanes: "));
   expect(lanes).toBe(
     "Lanes: kendex agent-0 PID 1000, kendex agent-1 PID 1001, " +
       "kendex agent-2 PID 1002 and 54 more.",
@@ -631,7 +728,7 @@ test("the lane sentence stops rather than growing with the machine", () => {
   const wide = attention(s, c, { basePath: base, width: 160 }).find(
     (item) => item.id === "unconfined",
   );
-  const wider = wide?.detail.slice(wide.detail.lastIndexOf("Lanes: ")) ?? "";
+  const wider = said(wide).slice(said(wide).lastIndexOf("Lanes: "));
   expect(wrapLines(wider, 160)).toHaveLength(2);
   expect(wider.split(", ").length).toBeGreaterThan(lanes.split(", ").length);
   // A panel too narrow for four names names fewer and still counts the rest,
@@ -640,7 +737,7 @@ test("the lane sentence stops rather than growing with the machine", () => {
     basePath: base,
     width: 24,
   }).find((item) => item.id === "unconfined");
-  expect(four?.detail).toEndWith("Lanes: kendex agent-0 PID 1000 and 3 more.");
+  expect(said(four)).toEndWith("Lanes: kendex agent-0 PID 1000 and 3 more.");
   // One lane has no second name to count, so a name too long for the rows it
   // has is written whole and cut by the budget, never counted as 0 more.
   const alone = escapedSnapshot({ lanes: 1 });
@@ -648,12 +745,12 @@ test("the lane sentence stops rather than growing with the machine", () => {
   const single = attention(alone, c, { basePath: base, width: 24 }).find(
     (item) => item.id === "unconfined",
   );
-  expect(single?.detail).not.toContain("and 0 more");
+  expect(said(single)).not.toContain("and 0 more");
   // The name is cut to the rows the sentence has, marked where it stopped.
-  expect(single?.detail).toBe(
-    "1 group of processes: 1 bare. Lane: kendex vsys/issue-1234 kendex…",
-  );
-  expect(wrapLines(single?.detail ?? "", 24)).toHaveLength(3);
+  expect(fitted(single, 24)).toEqual([
+    "1 group of processes: 1 bare.",
+    "Lane: kendex vsys/issue-1234 kendex…",
+  ]);
 });
 
 test("a storage card never tells the reader to delete data a rebuild cannot replace", () => {
@@ -785,12 +882,12 @@ test("a card naming several filesystems shows no one filesystem's numbers", () =
   const one = attention(s, c, { basePath: base }).find(
     (item) => item.id === "new-errors",
   );
-  expect(one?.detail).toContain("26 failed reads");
+  expect(said(one)).toContain("26 failed reads");
   // A second filesystem, and the first one's count no longer speaks for both.
   grown("b", 9);
   const two = attention(s, c, { basePath: base }).find(
     (item) => item.id === "new-errors",
   );
-  expect(two?.detail).not.toContain("26");
-  expect(two?.detail).toContain("Open each one for its own times");
+  expect(said(two)).not.toContain("26");
+  expect(said(two)).toContain("Open each one for its own times");
 });

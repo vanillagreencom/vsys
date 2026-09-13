@@ -570,6 +570,13 @@ test("a damaged filesystem names its files, grouped by address, with what to do"
     // The counter is explained where it is shown, one level under the line.
     expect(frame).toContain("counts reads that failed their checksum");
     expect(frame).toContain("corruption 1390");
+    // The report's own words are a third idea under the counter, so a blank
+    // row of the same block stands between them: the rule runs down it and no
+    // word does.
+    const rows = frame.split("\n");
+    const counter = rows.findIndex((row) => row.includes("corruption 1390"));
+    expect(rows[counter + 1].trim()).toBe("│");
+    expect(rows[counter + 2]).toContain("Error summary:    csum=26");
   } finally {
     await t.close();
   }

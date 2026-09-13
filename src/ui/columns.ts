@@ -166,11 +166,12 @@ export const wrapLines = (text: string, width: number): string[] =>
 /**
  * `text` cut to the rows it is allowed at `width`, ending in the mark, which
  * it carries for the same reason a cut cell does: text that stops without one
- * reads as text that ended.
+ * reads as text that ended. No rows is no text: a caller that has run out of
+ * room is answered rather than raised at, because every caller of this is on
+ * a path that draws a screen.
  */
 export function capLines(text: string, width: number, lines: number): string {
-  if (lines < 1)
-    throw new Error(`Cannot cut text to ${lines} rows: needs at least 1`);
+  if (lines < 1) return "";
   const rows = wrapRows(text, width);
   if (rows.length <= lines) return text;
   const last = rows[lines - 1];

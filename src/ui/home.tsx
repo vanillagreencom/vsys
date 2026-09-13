@@ -1,4 +1,4 @@
-import type { ScrollBoxRenderable } from "@opentui/core";
+import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
@@ -8,14 +8,17 @@ import type { TimelineEvent } from "../store/events";
 import type { Point } from "../store/point";
 import {
   type Attention,
+  cardDetail,
   meterTile,
   type Target,
   verdictItem,
   verdictLine,
 } from "./attention";
 import {
-  detailIndent,
+  detailRows,
+  headingRows,
   keyLabel,
+  listRows,
   panelWidth,
   screenPad,
   type View,
@@ -29,6 +32,7 @@ import {
   fit,
   pidCell,
   pidColumn,
+  wrapLines,
 } from "./columns";
 import {
   amount,
@@ -63,10 +67,17 @@ import {
   TableHeader,
   Tile,
   Tiles,
+  tileLines,
+  tilesHeight,
   tilesPerRow,
   useKeepInView,
 } from "./widgets";
 
+/** What an open card writes before the step to take, and before the command. */
+const nextLabel = "Next ";
+const copyLabel = "Copy ";
+/** The one line under those naming the keys that reach them. */
+const keysRows = 1;
 /** The Home list mixes concerns, changes and agents; Enter opens the selected one. */
 export type HomeItem =
   | { kind: "concern"; item: Attention }
@@ -187,6 +198,7 @@ export function Home({
   windowMs,
   selection,
   width,
+  cardWidth,
   height,
   onSelect,
   onOpen,
@@ -205,6 +217,8 @@ export function Home({
   /** The row the reader chose, and the item that row named. */
   selection: { index: number; id: string | null };
   width: number;
+  /** The columns an open card's copy is written and drawn at: `detailWidth`. */
+  cardWidth: number;
   height: number;
   onSelect: (selection: { index: number; id: string | null }) => void;
   onOpen: (item: HomeItem) => void;
@@ -213,17 +227,70 @@ export function Home({
   /** Undefined when the selected row carries no command, which the shell says. */
   onCopy: (command: string | undefined) => void;
 }) {
-  // The verdict, the tiles and the two section headings come before the rows;
-  // side by side the agents have the column to themselves, stacked they share
-  // it with the concerns.
   const columns = width >= wideWidth;
+  const gauges = meters(s, c);
+  // What this screen draws above its lists, measured rather than guessed: the
+  // verdict at the rows it wraps to here, and the tile row at the rows a tile
+  // takes. `listRows` and `detailRows` take it from there, so the rows a list
+  // has and the rows an open card has come from one place.
+  const verdict = verdictLine(items, s);
+  const above = wrapLines(verdict, width).length;
+  const tiles = tilesHeight(gauges.length, width, tileLines);
+  const room = { screen: height, verdict: above, tiles };
+  // The agents list has what its own heading leaves; side by side it has the
+  // column to itself, stacked it shares one with the concerns and the changes.
   const busiest = Math.max(
     3,
-    columns
-      ? height - 10 - recentChanges - 2
-      : height - 10 - items.length * 2 - recentChanges - 2,
+    listRows(room) -
+      recentChanges -
+      headingRows -
+      (columns ? 0 : items.length * 2),
   );
-  const gauges = meters(s, c);
+  // Every line a card draws is wrapped here and drawn one row per row, so what
+  // a line costs has one owner: the rows this counts and the rows the screen
+  // draws are the same rows. Nothing under the card's title is left to the
+  // renderer's own wrapping, which charges a row of its own for a line that
+  // ends on the last column.
+  const lines = (label: string, text: string) =>
+    wrapLines(`${label}${text}`, cardWidth);
+  /**
+   * One of those lines, drawn a wrapped row at a time under the word that
+   * leads it. The word is dim on the first row and the rest of the line takes
+   * the colour its kind is drawn in.
+   */
+  const action = (
+    label: string,
+    text: string,
+    colour: RGBA | undefined,
+    top = 0,
+  ) =>
+    lines(label, text).map((line, at) => (
+      <Line
+        // biome-ignore lint/suspicious/noArrayIndexKey: a row is its place
+        key={at}
+        height={1}
+        flexShrink={0}
+        truncate
+        marginTop={at === 0 ? top : 0}
+      >
+        {at === 0 && <span attributes={ui.dim}>{label}</span>}
+        <span fg={colour}>
+          {safe(at === 0 ? line.slice(label.length) : line)}
+        </span>
+      </Line>
+    ));
+  // The lines under the description: what to do next, the command it offers,
+  // and the one line naming the keys that reach them.
+  const actions = (item: Attention) =>
+    lines(nextLabel, item.next).length +
+    (item.command === undefined ? 0 : lines(copyLabel, item.command).length) +
+    keysRows;
+  const described = (item: Attention) =>
+    cardDetail(
+      item,
+      cardWidth,
+      detailRows({ ...room, actions: actions(item) }),
+    );
   // Busiest agents is the one Home list its readings order.
   const hold = useHeldOrder();
   // Home's own sort, not the one Agents stores: the two screens draw different
@@ -475,7 +542,7 @@ export function Home({
       <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
         <Line flexShrink={0} wrapMode="word">
           <span fg={levelColor(level)} attributes={ui.bold}>
-            {safe(verdictLine(items, s))}
+            {safe(verdict)}
           </span>
         </Line>
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
@@ -554,20 +621,34 @@ export function Home({
                     />
                   </Row>
                   {marked(i) && (
-                    <Detail indent={detailIndent}>
-                      <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                        {safe(row.item.detail)}
-                      </Line>
-                      <Line flexShrink={0} wrapMode="word">
-                        <span attributes={ui.dim}>Next </span>
-                        {safe(row.item.next)}
-                      </Line>
-                      {row.item.command !== undefined && (
-                        <Line flexShrink={0} wrapMode="word">
-                          <span attributes={ui.dim}>Copy </span>
-                          <span fg={ui.accent}>{safe(row.item.command)}</span>
-                        </Line>
+                    <Detail>
+                      {/* One paragraph per idea, every one after the first
+                          under a blank row that says a new idea starts here.
+                          Each paragraph is drawn a wrapped row at a time, so
+                          the rows it takes are the rows it was measured at. */}
+                      {described(row.item).map((part, at) =>
+                        wrapLines(part, cardWidth).map((line, row) => (
+                          <Line
+                            // biome-ignore lint/suspicious/noArrayIndexKey: a row is its place
+                            key={`${at}-${row}`}
+                            height={1}
+                            flexShrink={0}
+                            truncate
+                            attributes={ui.dim}
+                            marginTop={at > 0 && row === 0 ? 1 : 0}
+                          >
+                            {safe(line)}
+                          </Line>
+                        )),
                       )}
+                      {/* The blank row the confirm dialog draws above its key
+                          line, here between the description and everything
+                          the reader can act on: `Next`, the command, and the
+                          keys that reach them. One row, out of the same
+                          budget, so the action lines sit where they sat. */}
+                      {action(nextLabel, row.item.next, undefined, 1)}
+                      {row.item.command !== undefined &&
+                        action(copyLabel, row.item.command, ui.accent)}
                       <Line
                         height={1}
                         flexShrink={0}

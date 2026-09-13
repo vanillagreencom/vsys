@@ -1,0 +1,1 @@
+- An open concern card writes as much as the screen has room for, measured from what is drawn around it, instead of a fixed six rows. Its key line no longer falls off the bottom.

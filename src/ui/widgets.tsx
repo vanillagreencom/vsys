@@ -443,6 +443,12 @@ export function Tile({
     </box>
   );
 }
+/**
+ * The rows one tile draws: its label, its number, its chart and the line of
+ * context under it. A caller sizing what sits below a tile row reads this
+ * rather than counting the elements again.
+ */
+export const tileLines = 4;
 /** The rows a tile row occupies, so a caller can budget the space it takes. */
 export function tilesHeight(
   count: number,
@@ -519,6 +525,21 @@ export function Tiles({
 }
 
 /**
+ * The column an expansion's rule stands in, counted from the left edge of the
+ * row it opened. A row spends its first column on the selection marker, so
+ * this is one past where the row's own text begins: the rule falls between
+ * that text and the copy under it, which is what says the copy is inside the
+ * row rather than beside it.
+ */
+const detailRule = 2;
+/**
+ * The columns from that same edge to an expansion's copy: the rule, then one
+ * blank. Every expansion in the app reads this one number, and so does the
+ * width its copy is measured at, so the room a screen writes into and the room
+ * it draws into cannot disagree.
+ */
+export const detailIndent = detailRule + 2;
+/**
  * The block under a row that explains it: a rule down its left edge and an
  * indent after it, so it reads as part of that row rather than as the next
  * one. An indent alone is not enough at a glance: a line indented under
@@ -526,22 +547,19 @@ export function Tiles({
  * indent goes on a box, because `paddingLeft` on a text element moves nothing
  * at all, not even its first line.
  */
-export function Detail({
-  children,
-  indent = 3,
-}: {
-  children: ReactNode;
-  indent?: number;
-}) {
+export function Detail({ children }: { children: ReactNode }) {
   // The rule is a box's own left border, so it runs the full height of
-  // whatever is inside without anyone counting lines.
+  // whatever is inside without anyone counting lines. That border is a column
+  // of the box, which is why the padding after it is one short of the blank
+  // the copy sits behind.
   return (
     <box
       flexDirection="column"
       flexShrink={0}
+      marginLeft={detailRule}
       border={["left"]}
       borderColor={ui.quiet}
-      paddingLeft={indent - 1}
+      paddingLeft={detailIndent - detailRule - 1}
     >
       {children}
     </box>

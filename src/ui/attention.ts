@@ -39,7 +39,17 @@ export interface Attention {
   /** The verdict line when this cause tops the ladder. */
   headline: string;
   title: string;
-  detail: string;
+  /**
+   * The ways this card can write its description, best first, each of them the
+   * paragraphs that way draws, one per idea. The screen picks one against the
+   * rows it has: `cardDetail`.
+   */
+  ways: string[][];
+  /**
+   * The sentence the description ends with and gives up last: the lane names a
+   * cut title needs under it. Empty on a card that names no lane.
+   */
+  keep: string;
   /** What the reader should do next, in words. */
   next: string;
   /** Read-only text to copy, built from configured names. */
@@ -54,15 +64,17 @@ export interface Attention {
 /** The severity word, the sentence, and anything the headline says instead. */
 type Copy = Omit<
   Attention,
-  "id" | "danger" | "headline" | "verdictWorthy" | "detail"
+  "id" | "danger" | "headline" | "verdictWorthy" | "ways" | "keep"
 > & {
   word: string;
   headline?: string;
-  /** The ways this card offers of writing its detail, best first. */
-  detail: string[];
-  /** The sentence the detail ends with and gives up last: the lane names a
-   * cut title needs under it. Absent on a card that names no lane. */
+  /** `Attention.keep`, absent on a card that names no lane. */
   keep?: string;
+  /**
+   * `Attention.ways`, with a way of one paragraph written as that paragraph:
+   * most causes have one sentence to say and say it plainly here.
+   */
+  ways: (string | string[])[];
 };
 /** The names a title lists before it stops counting and says how many remain. */
 const listLimit = 4;
@@ -70,34 +82,95 @@ const list = (names: string[], limit = listLimit): string =>
   names.length > limit
     ? `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`
     : names.join(", ");
-/**
- * The rows a card's detail draws. A card the reader opens to learn what to do
- * must leave `Next` and the command on the screen with it, and a detail that
- * grows with the machine pushes both off a terminal of ordinary height.
- */
-const detailLines = 6;
-/** The rows of that budget the list of affected lanes may take. */
+/** The rows the list of affected lanes may take. */
 const laneLines = 2;
 /** The width card copy is measured at when the caller is not a screen. */
 const defaultDetailWidth = 80;
 /** The sentences of a detail, joined in the order they are written. */
 const join = (parts: string[]): string =>
   parts.filter((part) => part !== "").join(" ");
+/** The blank row a description ends with, above the action lines. */
+const blockGap = 1;
 /**
- * The detail a card draws: the first of the leads it offers that holds the
- * budget beside `keep`, which is written after it. A caller lists its leads
- * best first, so the order a card gives ground in reads where the copy is
- * written. When none is short enough the shortest is cut to what `keep`
- * leaves, and `keep` itself is cut last, so the budget holds at every width.
+ * The rows the paragraphs of a description draw at `width`: their own, and the
+ * blank row between each pair of them. Both come out of the room the card has,
+ * so a break a card takes is a row it cannot also spend on a fact.
  */
-function fitDetail(leads: string[], keep: string, width: number): string {
-  const rows = (text: string) => wrapLines(text, width).length;
-  const fits = leads.find((lead) => rows(join([lead, keep])) <= detailLines);
-  if (fits !== undefined) return join([fits, keep]);
-  const last = leads[leads.length - 1] ?? "";
-  if (keep === "") return capLines(last, width, detailLines);
-  const kept = capLines(keep, width, detailLines - 1);
-  return join([capLines(last, width, detailLines - rows(kept)), kept]);
+function blockRows(parts: string[], width: number): number {
+  const text = parts.reduce(
+    (rows, part) => rows + wrapLines(part, width).length,
+    0,
+  );
+  return text + (parts.length - 1);
+}
+/**
+ * The ways of writing one lead beside `keep`, most separated first: every idea
+ * a paragraph of its own, then the lead's own ideas in one paragraph, then the
+ * whole detail in one. A break costs the same row a fact does, so a card walks
+ * this list before it moves to a shorter lead: it gives up a break before it
+ * gives up a fact.
+ */
+function breakdowns(lead: string[], keep: string): string[][] {
+  const parts = [...lead, keep].filter((part) => part !== "");
+  const ways = [parts];
+  if (lead.filter((part) => part !== "").length > 1 && keep !== "")
+    ways.push([join(lead), keep]);
+  if (parts.length > 1) ways.push([join(parts)]);
+  return ways;
+}
+/**
+ * The rows a description never goes below, however short the terminal is: one
+ * row of the first thing the card has to say, and the sentence naming the
+ * lanes at the rows that sentence is written to. Under this a card would say
+ * nothing a reader could act on, so it draws taller than its room and the list
+ * it sits in scrolls.
+ */
+function floorRows(keep: string): number {
+  return 1 + (keep === "" ? 0 : 1 + laneLines);
+}
+/**
+ * The description a card writes in the rows it has: the first way of writing
+ * the first of the leads it offers that holds those rows beside the sentence
+ * naming the lanes, which is written after it. A card lists its ways best
+ * first, so the order it gives ground in reads where the copy is written, and
+ * that order runs only where the room is genuinely short. When no way is short
+ * enough the last is cut to what the lane sentence leaves, and that sentence
+ * is cut last. `detailRows` in `src/ui/chrome.tsx` is where `rows` comes from.
+ */
+function fitDetail(
+  leads: string[][],
+  keep: string,
+  width: number,
+  rows: number,
+): string[] {
+  // The rows the paragraphs have: the room, less the blank above the action
+  // lines, and never less than the floor.
+  const room = Math.max(rows - blockGap, floorRows(keep));
+  for (const lead of leads)
+    for (const way of breakdowns(lead, keep))
+      if (blockRows(way, width) <= room) return way;
+  // Below every way it has: one paragraph, every break given up, cut to the
+  // rows there are.
+  const text = room;
+  const last = join(leads[leads.length - 1] ?? []);
+  if (keep === "") return [capLines(last, width, text)];
+  // The cut falls on the lead rather than on the end of the joined sentence,
+  // so `keep` survives it: it is the lane names the cut title needs under it.
+  const kept = capLines(keep, width, text - 1);
+  const rows2 = wrapLines(kept, width).length;
+  return [join([capLines(last, width, text - rows2), kept])];
+}
+/**
+ * The description an open card draws in the rows the screen leaves it, blank
+ * rows included: the way of writing it that holds them, or the shortest way
+ * cut to fit where nothing else will.
+ */
+export function cardDetail(
+  card: Attention,
+  width: number,
+  rows: number,
+): string[] {
+  return fitDetail(card.ways, card.keep, width, rows);
 }
 /**
  * Every affected lane, behind the head its card writes, for a detail that
@@ -165,28 +238,23 @@ function copy(
       // conclusion at a time from the last. The first conclusion and the lane
       // sentence are what the card exists to say. Every conclusion given up is
       // counted, including one whose cgroup another conclusion still names.
-      const rungs = [
-        join(groups.map((g) => `${g.conclusion}${g.started}`)),
-        join(said),
-      ];
+      const rungs = [groups.map((g) => `${g.conclusion}${g.started}`), said];
       for (let kept = said.length - 1; kept >= 1; kept--) {
         const gone = said.length - kept;
-        rungs.push(
-          join([
-            ...said.slice(0, kept),
-            `And ${gone} more ${p(gone, "group", "groups")} of processes not written here.`,
-          ]),
-        );
+        rungs.push([
+          ...said.slice(0, kept),
+          `And ${gone} more ${p(gone, "group", "groups")} of processes not written here.`,
+        ]);
       }
       // At the floor a panel can be, one whole conclusion and the count of
       // what went do not fit in the rows left beside the lane sentence. The
       // last rung states every conclusion as a count instead, so what the
       // card shows there is whole rather than a sentence the cut ended.
-      rungs.push(launcherTally(groups));
+      rungs.push([launcherTally(groups)]);
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane runs", "lanes run")} outside ${c.agentSlice}: ${names}`,
-        detail: groups.length
+        ways: groups.length
           ? rungs
           : [`${c.agentSlice} limits do not apply to these processes.`],
         // The title counts lanes and the sentences above count processes, so
@@ -213,7 +281,7 @@ function copy(
       return {
         word: "Danger",
         title: `${paths} ${p(paths, "mount is", "mounts are")} read-only: ${mounts}`,
-        detail: ["Programs cannot save changes on these mounts."],
+        ways: ["Programs cannot save changes on these mounts."],
         next: "Open Storage, then check the kernel log for the error that forced the mount read-only.",
         view: "Storage",
         target: first,
@@ -232,7 +300,7 @@ function copy(
         title: files
           ? `Damaged files on ${mounts}: ${count(files, "file")}${other ? "" : ", all build output"}`
           : `Damaged data on ${mounts}`,
-        detail: [
+        ways: [
           files
             ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.`
             : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
@@ -255,7 +323,7 @@ function copy(
         title: `New errors on ${mounts} since the last check`,
         // The numbers belong to one filesystem. Naming several gives the
         // sentence without them rather than one filesystem's as the whole.
-        detail: [
+        ways: [
           paths === 1
             ? `The counter grew${v.since == null ? "" : ` ${age(v.since)} ago`}${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}, and the last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
             : "Each of these counters grew after the last check that read its filesystem end to end, so no check has said what the damage cost. Open each one for its own times.",
@@ -269,7 +337,7 @@ function copy(
       return {
         word: "Unknown",
         title: `${paths} ${p(paths, "filesystem cannot", "filesystems cannot")} report whether ${p(paths, "its", "their")} data is sound: ${mounts}`,
-        detail: [
+        ways: [
           "A check report, or a counter the state depends on, could not be read. The filesystem is not reported healthy on a reading vsys does not have.",
         ],
         next: "Open Storage and read the report under that filesystem, then check the report directory and the error memory file.",
@@ -289,7 +357,7 @@ function copy(
             : never === 0
               ? `${paths} ${p(paths, "filesystem has", "filesystems have")} not been checked in ${age(v.oldest ?? 0)}: ${mounts}`
               : `${count(paths, "filesystem")} unchecked for damage, ${never} of them never: ${mounts}`,
-        detail: [
+        ways: [
           `The error counter counts failed reads, not damaged files, so it stays flat while nothing reads the damage. Only a full check reads every block. The limit is ${count(v.limit, "day")}.`,
         ],
         next: "Run a check on each filesystem, or install the timer that writes a report into the report directory.",
@@ -301,7 +369,7 @@ function copy(
       return {
         word: "Danger",
         title: `New device errors on ${mounts}`,
-        detail: [
+        ways: [
           `Error counters on ${cause.consumer} increased since the previous sample.`,
         ],
         next: "Open Storage and read the per-device counters before writing more data to these devices.",
@@ -317,7 +385,7 @@ function copy(
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `Disk I/O ${cause.level === "danger" ? "saturated" : "stalling tasks"}: ${cause.consumer} writing ${b(v.writeRate)}/s`,
-        detail: [
+        ways: [
           `Tasks stalled on storage ${percent(v.some)} of the recent window, ${percent(v.full)} of it with nothing else to run${v.linkers ? `, with ${count(v.linkers, "linker")} running in that lane` : ""}.${v.stalling ? ` Waiting on storage: ${names}.` : ""}`,
         ],
         next: writer
@@ -340,7 +408,7 @@ function copy(
         word: "Slow",
         headline: `Slow: desktop swapped out, agents hold ${b(v.cache)} of page cache`,
         title: `Desktop swapped out: ${b(v.swap)} in ${c.desktopSlice}`,
-        detail: [
+        ways: [
           `${cause.consumer ? `${cause.consumer} holds ${b(v.holder)}. ` : ""}Agents hold ${b(v.cache)} of page cache, which the desktop cannot use.`,
         ],
         next: "Reduce concurrent build work, or cap the agent slice memory so the desktop keeps its pages.",
@@ -355,7 +423,7 @@ function copy(
       return {
         word: "Danger",
         title: `${cause.consumer} has ${b(v.free)} free of ${b(v.total)}`,
-        detail: [
+        ways: [
           `Free space is below the configured floor of ${b(c.freeFloor)}.`,
         ],
         next: "Open Storage and remove build output or scratch data from that filesystem.",
@@ -368,7 +436,7 @@ function copy(
       return {
         word: "Danger",
         title: `${n} ${p(n, "lane has", "lanes have")} a memory limit below ${b(v.floor)}: ${names}`,
-        detail: ["The limit can stop work before it finishes."],
+        ways: ["The limit can stop work before it finishes."],
         keep: every,
         next: "Open the lane and check its effective memory.max against the parent slices.",
         command: shellLine([
@@ -386,9 +454,7 @@ function copy(
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
         title: `${n} ${p(n, "lane is", "lanes are")} stalling on a resource: ${names}`,
-        detail: [
-          `Highest stall share ${percent(v.worst)} of the recent window.`,
-        ],
+        ways: [`Highest stall share ${percent(v.worst)} of the recent window.`],
         keep: every,
         next: "Open Agents and compare the CPU, memory and I/O pressure columns to find which resource is short.",
         view: "Agents",
@@ -398,7 +464,7 @@ function copy(
       return {
         word: "Slow",
         title: `Memory reclaim stalls tasks ${percent(v.some)} of the recent window`,
-        detail: [
+        ways: [
           `${cause.consumer ? `${cause.consumer} holds the most swap.` : "No scope holds swap yet, so reclaim is dropping page cache."}${n ? ` Waiting on memory: ${names}.` : ""}`,
         ],
         next: "Open Resources and reduce the work in the group with the largest memory use.",
@@ -409,7 +475,7 @@ function copy(
       return {
         word: "Slow",
         title: `Tasks wait for CPU ${percent(v.some)} of the recent window${cause.consumer ? `, busiest lane ${cause.consumer}` : ""}`,
-        detail: [
+        ways: [
           `${cause.consumer ? `${cause.consumer} is the busiest lane.` : "No lane is running, so the load is outside the watched slices."}${n ? ` Waiting on CPU: ${names}.` : ""}`,
         ],
         next: "Open Agents and sort by CPU to find the lane to pause.",
@@ -420,7 +486,7 @@ function copy(
       return {
         word: "Busy",
         title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => unitLabel(g.name)))}`,
-        detail: ["Memory reclaim can slow every task in these groups."],
+        ways: ["Memory reclaim can slow every task in these groups."],
         next: "Open Resources and raise memory.high, or reduce the work running there.",
         view: "Resources",
         target: group,
@@ -430,7 +496,7 @@ function copy(
       return {
         word: "Danger",
         title: `${paths} filesystem ${p(paths, "scrub reports a problem", "scrubs report problems")}`,
-        detail: [mounts],
+        ways: [mounts],
         next: "Open Storage and read the scrub report.",
         view: "Storage",
         target: first,
@@ -439,7 +505,7 @@ function copy(
       return {
         word: "Busy",
         title: `${paths} scratch ${p(paths, "directory exceeds", "directories exceed")} the quota: ${mounts}`,
-        detail: [`Largest ${b(v.largest)} against a quota of ${b(v.quota)}.`],
+        ways: [`Largest ${b(v.largest)} against a quota of ${b(v.quota)}.`],
         next: "Open Storage and remove the scratch directories that finished work no longer needs.",
         view: "Storage",
         target: first,
@@ -458,7 +524,7 @@ export function attention(
   const basePath = o.basePath ?? (process.env.PATH ?? "").split(":");
   const width = o.width ?? defaultDetailWidth;
   return causes(s, c).map((cause) => {
-    const { word, headline, keep, ...rest } = copy(
+    const { word, headline, ways, keep, ...card } = copy(
       cause,
       s,
       c,
@@ -469,9 +535,11 @@ export function attention(
       id: cause.id,
       danger: cause.level === "danger",
       verdictWorthy: cause.verdictWorthy,
-      headline: headline ?? `${word}: ${rest.title}`,
-      ...rest,
-      detail: fitDetail(rest.detail, keep ?? "", width),
+      headline: headline ?? `${word}: ${card.title}`,
+      keep: keep ?? "",
+      ...card,
+      // A way written as one paragraph is that paragraph on its own.
+      ways: ways.map((way) => (typeof way === "string" ? [way] : way)),
     };
   });
 }

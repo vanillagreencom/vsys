@@ -410,3 +410,59 @@ test("Home's and Storage's footers list the keys that jump to their regions", as
     await t.close();
   }
 });
+
+test("every row expansion starts its copy in one column, right of its row", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const t = await mount(s, c, { width: 120, height: 45 });
+  try {
+    // The selected row and the first line of what it opened, read off the
+    // drawn frame: where the row's own text starts, and where the copy does.
+    const opened = (screen: string) => {
+      const rows = t.frame().split("\n");
+      const at = rows.findIndex((row) => row.includes("▍"));
+      expect(at).toBeGreaterThan(-1);
+      const marker = rows[at].indexOf("▍");
+      const rule = rows[at + 1].indexOf("│");
+      expect(`${screen}: ${rule > -1}`).toBe(`${screen}: true`);
+      return {
+        row: marker + 1 + rows[at].slice(marker + 1).search(/\S/),
+        rule,
+        copy: rule + 1 + rows[at + 1].slice(rule + 1).search(/\S/),
+      };
+    };
+    // Home opens on its worst concern, and Storage on its first filesystem,
+    // so both draw an expansion as soon as the reader arrives.
+    await t.press("1");
+    const home = opened("Home");
+    await t.press("5");
+    const storage = opened("Storage");
+    // A capability and an agent's section each open on the key that opens a
+    // row.
+    await t.press("7");
+    await t.press("enter");
+    const settings = opened("Settings");
+    await t.press("2");
+    await t.press("enter");
+    await t.press("enter");
+    const agent = opened("the agent detail");
+    // One shape on all four: the copy starts in the same column, and that
+    // column is right of where the row's own text starts, so the nesting
+    // shows without counting anything.
+    const seen = [home, storage, settings, agent];
+    expect(seen.map((one) => one.copy)).toEqual([
+      home.copy,
+      home.copy,
+      home.copy,
+      home.copy,
+    ]);
+    // The rule stands between the two, which is what draws the nesting: a
+    // rule left of the row's own text would read as a bracket beside it.
+    for (const one of seen) {
+      expect(one.rule).toBeGreaterThan(one.row);
+      expect(one.copy).toBeGreaterThan(one.rule);
+    }
+  } finally {
+    await t.close();
+  }
+});

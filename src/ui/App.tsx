@@ -410,6 +410,7 @@ export function App({
         windowMs={windows[windowIndex]}
         selection={homeSelection}
         width={screenWidth(width)}
+        cardWidth={detailWidth(width)}
         height={contentHeight}
         onSelect={setHomeSelection}
         onCopy={copy}

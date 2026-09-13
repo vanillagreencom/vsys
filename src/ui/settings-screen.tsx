@@ -512,8 +512,15 @@ export function Settings({
                         : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
                     )}
                   </Line>
+                  {/* What the reading costs is a second idea, not more of the
+                      reason above it, so it starts after a blank row. */}
                   {!cap.available && (
-                    <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                    <Line
+                      flexShrink={0}
+                      wrapMode="word"
+                      marginTop={1}
+                      attributes={ui.dim}
+                    >
                       {safe(capabilityLoss(cap))}
                     </Line>
                   )}

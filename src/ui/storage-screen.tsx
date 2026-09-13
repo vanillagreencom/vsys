@@ -301,7 +301,7 @@ export function Storage({
           />
         </Row>
         {i === selected && (
-          <Detail indent={4}>
+          <Detail>
             {/* The headline reading is what the last check found. The
                 lifetime counter is a different quantity and sits below it. */}
             <Field label="Blocks found" width={16} value={blocksText(item)} />
@@ -347,8 +347,15 @@ export function Storage({
               {counterSentence}
             </Line>
             <Field label="Counter" width={16} value={errorText(first)} />
+            {/* The report's own words are a third idea under the counter and
+                the sentence explaining it, so they start after a blank row. */}
             {item.scrub && (
-              <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+              <Line
+                flexShrink={0}
+                wrapMode="word"
+                marginTop={1}
+                attributes={ui.dim}
+              >
                 {safe(item.scrub.text)}
               </Line>
             )}
@@ -376,7 +383,7 @@ export function Storage({
           {v.readOnly && <Ink color={ui.danger}>read-only</Ink>}
         </Row>
         {i === selected && (
-          <Detail indent={4}>
+          <Detail>
             {/* The device row above names the device and its error counters
                 once for every mount grouped under it, and subvolumes of one
                 filesystem share both. The options are the mount's own. */}
@@ -543,7 +550,7 @@ export function Storage({
                 </span>
               </Row>
               {i === selected && (
-                <Detail indent={2}>
+                <Detail>
                   <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                     {safe(scrub.text)}
                   </Line>

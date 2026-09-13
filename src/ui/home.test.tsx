@@ -21,6 +21,7 @@ import {
   sortMarks,
 } from "../test/harness";
 import { attention } from "./attention";
+import { panelWidth, screenPad, screenWidth } from "./chrome";
 import { osc52 } from "./clipboard";
 import type { HomeItem } from "./home";
 import { homeItems, homeTarget, recentChanges } from "./home";
@@ -1460,12 +1461,15 @@ test("a sample leaves a Home reader where they scrolled to", async () => {
   }
 });
 
-test("an open card keeps its next step and its command on an ordinary screen", async () => {
+test("an open card writes what its room holds, and every action line shows", async () => {
   const c = defaults();
   // A machine whose agents were all started outside the agent slice: the card
-  // has a sentence's worth of trail for each of two scopes and a lane list
-  // that grows with every one of them.
+  // has a conclusion and a trail for each of two scopes and a lane list that
+  // grows with every one of them, which is more than a short screen holds.
   const s = escapedSnapshot({ lanes: 5, perLane: 2 });
+  // The rows a card writes into are the rows its screen has left, so a wide
+  // screen with short chrome above the list writes more than a narrow one.
+  const seen: Record<string, string[]> = {};
   for (const size of [
     { width: 80, height: 32 },
     { width: 160, height: 36 },
@@ -1479,21 +1483,191 @@ test("an open card keeps its next step and its command on an ordinary screen", a
       const copied = rows.findIndex((row) =>
         row.includes("systemd-run --user --slice=agents.slice"),
       );
-      // The two lines the reader acts on are the two a detail must not push
-      // off the screen, however many processes escaped.
+      const hint = rows.findIndex((row) => row.includes("opens Agents"));
+      const footer = rows.findIndex((row) => row.includes("Tab region"));
+      // Every line the reader acts on is on the screen, in order, above the
+      // footer: what a description may take is what those lines leave.
       expect(card).toBeGreaterThan(0);
       expect(next).toBeGreaterThan(card);
       expect(copied).toBeGreaterThan(next);
-      // The detail between the card and its next step draws six rows, which
-      // is what leaves room for the two lines under it.
-      expect(next - card - 1).toBe(6);
-      // In those six rows it names both scopes once each, and still holds the
-      // lane names the cut title above it lost.
-      const detail = rows.slice(card + 1, next).join(" ");
-      expect(detail.split("Launched bare")).toHaveLength(3);
-      expect(detail).toContain("tmux-spawn-0.scope");
-      expect(detail).toContain("tmux-spawn-1.scope");
-      expect(detail).toContain("10 processes in 5 lanes: kendex agent-0 PID");
+      expect(hint).toBe(copied + 1);
+      expect(footer).toBeGreaterThan(hint);
+      // A wide screen draws a second column beside the card, so every row is
+      // read only as far as the panel the card sits in.
+      const panel = screenPad + panelWidth(screenWidth(size.width));
+      const words = (row: string) =>
+        row.slice(0, panel).replace("│", "").trim();
+      const drawn = rows.slice(card + 1, next).map(words);
+      // The last row of the description is the blank above the action lines:
+      // the rule of the block runs down it and no word does.
+      expect(drawn[drawn.length - 1]).toBe("");
+      // Nothing the card writes is cut, at either size.
+      expect(drawn.join(" ")).not.toContain("…");
+      seen[`${size.width}x${size.height}`] = drawn;
+    } finally {
+      await t.close();
+    }
+  }
+  // The tall screen holds every paragraph the card's data has: a conclusion
+  // and its trail for each scope, then the sentence naming the lanes, each
+  // its own paragraph with a blank row between them.
+  const tall = seen["160x36"].join(" ").replace(/\s+/g, " ");
+  expect(tall.split("Launched bare")).toHaveLength(3);
+  expect(tall).toContain("tmux-spawn-0.scope. Started from PID 1000");
+  expect(tall).toContain("tmux-spawn-1.scope. Started from PID 1002");
+  expect(tall).toContain("10 processes in 5 lanes: kendex agent-0 PID 1000");
+  expect(seen["160x36"].filter((row) => row === "")).toHaveLength(3);
+  // The short screen spends twelve of its rows on the verdict, the tiles and
+  // the headings above the list, so the card gives ground the way it is
+  // written to: the trails go, then a conclusion, counted where it stood.
+  const short = seen["80x32"].join(" ").replace(/\s+/g, " ");
+  expect(short).not.toContain("Started from PID");
+  expect(short.split("Launched bare")).toHaveLength(2);
+  expect(short).toContain("And 1 more group of processes not written here.");
+  expect(short).toContain("10 processes in 5 lanes: kendex agent-0 PID 1000");
+  expect(seen["80x32"].length).toBeLessThan(seen["160x36"].length);
+});
+
+test("an open card breaks its detail into paragraphs, one per idea", async () => {
+  const c = defaults();
+  // A card whose detail is two ideas: what the memory limit does, and the lane
+  // it is set on. Each holds one row at either size, so the row between them
+  // is the break rather than a wrapped sentence.
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ dangerous: true })];
+  for (const size of [
+    { width: 80, height: 32 },
+    { width: 160, height: 36 },
+  ]) {
+    const t = await mount(s, c, size);
+    try {
+      await t.ui.renderOnce();
+      const rows = t.frame().split("\n");
+      const card = rows.findIndex((row) => row.includes("▾"));
+      const next = rows.findIndex((row) => row.includes("Next "));
+      expect(card).toBeGreaterThan(0);
+      // A wide screen draws a second column beside the card, so every row is
+      // read only as far as the panel the card sits in.
+      const panel = screenPad + panelWidth(screenWidth(size.width));
+      const words = (row: string) =>
+        row.slice(0, panel).replace("│", "").trim();
+      const drawn = rows.slice(card + 1, next).map(words);
+      // Idea, break, idea, break: the rule of the block runs down every row of
+      // it, so a row of the detail carrying no word is a break.
+      expect(drawn.map((row) => row === "")).toEqual([
+        false,
+        true,
+        false,
+        true,
+      ]);
+      expect(drawn[0]).toBe("The limit can stop work before it finishes.");
+      expect(drawn[2]).toBe("Lane: lane-a PID 40.");
+      // The breaks are rows of the same budget, so a card that spends two of
+      // them is still inside it.
+      expect(next - card - 1).toBeLessThanOrEqual(6);
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("a screen too short for every fact counts what the card gave up", async () => {
+  const c = defaults();
+  const s = escapedSnapshot({ lanes: 5, perLane: 2 });
+  const open = async (size: { width: number; height: number }) => {
+    const t = await mount(s, c, size);
+    try {
+      await t.ui.renderOnce();
+      const rows = t.frame().split("\n");
+      const card = rows.findIndex((row) => row.includes("▾"));
+      const next = rows.findIndex((row) => row.includes("Next "));
+      const copied = rows.findIndex((row) =>
+        row.includes("systemd-run --user --slice=agents.slice"),
+      );
+      const footer = rows.findIndex((row) => row.includes("Tab region"));
+      const panel = screenPad + panelWidth(screenWidth(size.width));
+      return {
+        next,
+        copied,
+        footer,
+        detail: rows
+          .slice(card + 1, next)
+          .map((row) => row.slice(0, panel).replace("│", "").trim())
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim(),
+      };
+    } finally {
+      await t.close();
+    }
+  };
+  // Short enough that the card cannot write both conclusions: it keeps the
+  // first whole and counts the group it gave up, and the reader still has the
+  // step to take and the command under it.
+  const short = await open({ width: 160, height: 24 });
+  expect(short.detail.split("Launched bare")).toHaveLength(2);
+  expect(short.detail).toContain(
+    "And 1 more group of processes not written here.",
+  );
+  expect(short.detail).not.toContain("…");
+  expect(short.copied).toBeGreaterThan(short.next);
+  expect(short.footer).toBeGreaterThan(short.copied);
+  // Shorter still, below what any way of writing the description takes: the
+  // floor holds, so the card counts every conclusion and names the lanes
+  // rather than saying nothing, and the two lines to act on stay on screen.
+  const tiny = await open({ width: 160, height: 22 });
+  expect(tiny.detail).toBe(
+    "2 groups of processes: 2 bare. 10 processes in 5 lanes: kendex agent-0 " +
+      "PID 1000, kendex agent-1 PID 1002, kendex agent-2 PID 1004, kendex " +
+      "agent-3 PID 1006 and 1 more.",
+  );
+  expect(tiny.copied).toBeGreaterThan(tiny.next);
+  expect(tiny.footer).toBeGreaterThan(tiny.copied);
+});
+
+test("a card draws the rows it was measured for, at every width", async () => {
+  const c = defaults();
+  const s = escapedSnapshot({ lanes: 5, perLane: 2 });
+  // Widths across the range a panel can be, at heights the room reaches, and
+  // the heights that lost the key line while the action lines were measured
+  // without the words drawn in front of them.
+  const sizes = [
+    ...[64, 76, 88, 100, 120, 130].flatMap((width) =>
+      [35, 60].map((height) => ({ width, height })),
+    ),
+    ...[30, 31, 32, 33, 34].map((height) => ({ width: 100, height })),
+  ];
+  for (const size of sizes) {
+    const t = await mount(s, c, size);
+    try {
+      await t.ui.renderOnce();
+      const rows = t.frame().split("\n");
+      const card = rows.findIndex((row) => row.includes("▾"));
+      const next = rows.findIndex((row) => row.includes("Next "));
+      const copied = rows.findIndex((row) =>
+        row.includes("systemd-run --user --slice=agents.slice"),
+      );
+      const hint = rows.findIndex((row) => row.includes("opens Agents"));
+      const at = `${size.width}x${size.height}`;
+      // The line naming the keys is the last of the card and the first to fall
+      // off the screen when a row is spent that nothing counted.
+      expect(`${at}: ${hint > copied && copied > next && next > card}`).toBe(
+        `${at}: true`,
+      );
+      const panel = screenPad + panelWidth(screenWidth(size.width));
+      const drawn = rows
+        .slice(card + 1, next)
+        .map((row) => row.slice(0, panel).replace("│", "").trim());
+      // One blank row per paragraph: the break above each one after the first,
+      // and the row above the action lines. A row the renderer added for
+      // itself would stand here as a blank nothing was charged for.
+      const blanks = drawn.filter((row) => row === "").length;
+      const paragraphs = drawn.filter(
+        (row, i) => row !== "" && (i === 0 || drawn[i - 1] === ""),
+      ).length;
+      expect(`${at}: ${blanks} blanks, ${paragraphs} paragraphs`).toBe(
+        `${at}: ${paragraphs} blanks, ${paragraphs} paragraphs`,
+      );
     } finally {
       await t.close();
     }

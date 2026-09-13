@@ -680,12 +680,13 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     const lines = t.frame().split("\n");
     const row = lines.findIndex((line) => line.includes("▍○ ▾ Pressure"));
     expect(row).toBeGreaterThan(-1);
-    // The screen's own margin is two columns and the detail adds three, so a
-    // detail line starts at column five. The second line is the one that
-    // matters: padding on a text element leaves every wrapped line at the
-    // margin, which reads as the next row rather than as part of this one.
-    // The row itself carries no rule; both of its continuation lines do, and
-    // the wrapped one is the line an indent alone never reached.
+    // The screen's own margin is two columns and the one indent every
+    // expansion reads adds four, so a detail line starts at column six. The
+    // second line is the one that matters: padding on a text element leaves
+    // every wrapped line at the margin, which reads as the next row rather
+    // than as part of this one. The row itself carries no rule; both of its
+    // continuation lines do, and the wrapped one is the line an indent alone
+    // never reached.
     expect(isChildLine(lines[row])).toBe(false);
     expect(isChildLine(lines[row + 1])).toBe(true);
     expect(isChildLine(lines[row + 2])).toBe(true);
@@ -695,18 +696,22 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
       const rule = line.indexOf("│");
       return rule + 1 + line.slice(rule + 1).search(/\S/);
     };
-    expect(lines[row + 1].indexOf("│")).toBe(2);
-    expect(textAt(lines[row + 1])).toBe(5);
-    expect(textAt(lines[row + 2])).toBe(5);
+    expect(lines[row + 1].indexOf("│")).toBe(4);
+    expect(textAt(lines[row + 1])).toBe(6);
+    expect(textAt(lines[row + 2])).toBe(6);
     // And what the drill-down says in the place it names the cause.
     expect(lines[row + 1]).toContain("no PSI on this kernel");
     expect(lines[row + 1]).toContain("/proc/pressure/cpu");
     expect(lines[row + 2].trimEnd().endsWith("directory)")).toBe(true);
     // The cost is cut on the row with its mark, and whole in the detail.
     expect(lines[row].trimEnd().endsWith("…")).toBe(true);
+    // What the missing reading costs is a second idea, so a blank row of the
+    // same block separates it from the reason: the rule runs down that row
+    // and no word does, which is why `isChildLine` does not answer it.
+    expect(lines[row + 3].trim()).toBe("│");
     const cost = lines
-      .slice(row + 3, row + 5)
-      .map((line) => line.slice(5).trim());
+      .slice(row + 4, row + 6)
+      .map((line) => line.slice(6).trim());
     expect(cost.join(" ")).toBe(
       "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
     );

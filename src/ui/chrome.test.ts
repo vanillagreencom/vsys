@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults, validate } from "../config/config";
 import {
-  detailIndent,
+  detailRows,
   detailWidth,
   headerMarker,
   headerRowWidth,
@@ -13,6 +13,7 @@ import {
   viewKey,
   views,
 } from "./chrome";
+import { detailIndent } from "./widgets";
 
 test("a key reads as it is printed on the keyboard", () => {
   const rows: [string, string][] = [
@@ -89,10 +90,26 @@ test("a card's detail is measured through every column it is drawn behind", () =
   // renderer itself uses, so the measurement cannot drift from the drawing.
   expect(screenWidth(80)).toBe(80 - screenPad * 2);
   expect(detailWidth(80)).toBe(panelWidth(screenWidth(80)) - detailIndent);
-  expect(detailWidth(80)).toBe(74);
+  expect(detailWidth(80)).toBe(72);
   // Two panels share a wide row, so a wider terminal is not a wider card.
-  expect(detailWidth(160)).toBe(74);
-  expect(detailWidth(200)).toBe(94);
+  expect(detailWidth(160)).toBe(72);
+  expect(detailWidth(200)).toBe(92);
   // A terminal too narrow to measure still leaves a column to write into.
   expect(detailWidth(10)).toBe(20);
+});
+
+test("a card's rows are what the screen leaves above it and below it", () => {
+  // A thirty-row screen whose verdict fits one row, whose tile row takes nine,
+  // and whose card writes four lines under its description. Ten rows are left: the thirty less the row the scroll box keeps, the line counting
+  // agents and concerns, the blank under it, the nine of tiles, the two of the
+  // heading, the card's own title and those four lines. Written out, so a term
+  // dropped from the arithmetic fails here rather than passing whatever it is.
+  const room = { screen: 30, verdict: 1, tiles: 9, actions: 4 };
+  expect(detailRows(room)).toBe(10);
+  // Every row the screen gains is a row the description gains, and every row
+  // something else takes is one it loses.
+  expect(detailRows({ ...room, screen: 31 })).toBe(11);
+  expect(detailRows({ ...room, verdict: 3 })).toBe(8);
+  expect(detailRows({ ...room, tiles: 4 })).toBe(15);
+  expect(detailRows({ ...room, actions: 5 })).toBe(9);
 });

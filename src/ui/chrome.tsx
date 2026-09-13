@@ -4,7 +4,7 @@ import { safe } from "../model/export";
 import { fit } from "./columns";
 import { homeRegions, jumpKeys, storageRegions } from "./regions";
 import { ui } from "./theme";
-import { Line, Overlay } from "./widgets";
+import { detailIndent, Line, Overlay } from "./widgets";
 
 export const views = [
   "Home",
@@ -45,8 +45,6 @@ export const screenWidth = (width: number): number => width - screenPad * 2;
 /** The columns one of Home's panels has, which is the whole row when narrow. */
 export const panelWidth = (width: number): number =>
   width >= wideWidth ? Math.floor((width - 3) / 2) : width;
-/** The columns a `Detail` block gives up to its rule and the indent after it. */
-export const detailIndent = 2;
 /**
  * The columns a card's detail draws into, from the terminal width: the screen
  * padding, then the panel it sits in, then the rule and indent of the block
@@ -55,6 +53,54 @@ export const detailIndent = 2;
  */
 export const detailWidth = (width: number): number =>
   Math.max(20, panelWidth(screenWidth(width)) - detailIndent);
+/** The line under the verdict counting the agents, the cores and the concerns. */
+const countRow = 1;
+/** The blank row between that line and the tile row. */
+const blankRow = 1;
+/** A section heading: the blank row it opens with, then the heading itself. */
+export const headingRows = 2;
+/** The row an open card's title takes above its description. */
+const titleRow = 1;
+/**
+ * The row the scroll box a screen draws into keeps for the bar under its
+ * content. The box is the height its screen has; what it shows is one row
+ * less, and a card sized to the box loses its last line off the bottom.
+ */
+const scrollRow = 1;
+/**
+ * The rows a list on Home has: the screen's own rows, less the row the scroll
+ * box keeps and everything Home draws above a list — the verdict, the line
+ * counting agents and concerns, the blank under it, the tile row, and the
+ * heading over the list itself. `screen` is the rows the shell leaves the
+ * screen; `verdict` and `tiles` are the rows those two draw at the width they
+ * are drawn at.
+ */
+export const listRows = (o: {
+  screen: number;
+  verdict: number;
+  tiles: number;
+}): number =>
+  o.screen -
+  scrollRow -
+  o.verdict -
+  countRow -
+  blankRow -
+  o.tiles -
+  headingRows;
+/**
+ * The rows a card's description may take, from the room the card actually has:
+ * what the list leaves, less the card's own title and the rows its action
+ * lines take under it. What is left is the description, blank rows and all: no
+ * number here states how many rows that is. The list scrolls the card the
+ * reader opened into view, so the room that card has is the list's.
+ */
+export const detailRows = (o: {
+  screen: number;
+  verdict: number;
+  tiles: number;
+  /** The rows of `Next`, the command and the line naming the keys. */
+  actions: number;
+}): number => listRows(o) - titleRow - o.actions;
 /** The columns each tab takes: its key, a space, and that view's own name. */
 const tabWidths = (c: Config): number[] =>
   views.map((v) => [...c.keys[viewKey(v)]].length + 1 + [...v].length);
