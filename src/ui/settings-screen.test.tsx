@@ -680,9 +680,9 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     const lines = t.frame().split("\n");
     const row = lines.findIndex((line) => line.includes("▍○ ▾ Pressure"));
     expect(row).toBeGreaterThan(-1);
-    // The screen's own margin is two columns and the detail adds three, so a
-    // detail line starts at column five. The second line is the one that
-    // matters: padding on a text element leaves every wrapped line at the
+    // The screen's own margin is two columns and the one indent every
+    // expansion reads adds four, so a detail line starts at column six. The
+    // second line is the one that matters: padding on a text element leaves every wrapped line at the
     // margin, which reads as the next row rather than as part of this one.
     // The row itself carries no rule; both of its continuation lines do, and
     // the wrapped one is the line an indent alone never reached.
@@ -695,9 +695,9 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
       const rule = line.indexOf("│");
       return rule + 1 + line.slice(rule + 1).search(/\S/);
     };
-    expect(lines[row + 1].indexOf("│")).toBe(2);
-    expect(textAt(lines[row + 1])).toBe(5);
-    expect(textAt(lines[row + 2])).toBe(5);
+    expect(lines[row + 1].indexOf("│")).toBe(4);
+    expect(textAt(lines[row + 1])).toBe(6);
+    expect(textAt(lines[row + 2])).toBe(6);
     // And what the drill-down says in the place it names the cause.
     expect(lines[row + 1]).toContain("no PSI on this kernel");
     expect(lines[row + 1]).toContain("/proc/pressure/cpu");
@@ -710,7 +710,7 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     expect(lines[row + 3].trim()).toBe("│");
     const cost = lines
       .slice(row + 4, row + 6)
-      .map((line) => line.slice(5).trim());
+      .map((line) => line.slice(6).trim());
     expect(cost.join(" ")).toBe(
       "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
     );

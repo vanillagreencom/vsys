@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { defaults, validate } from "../config/config";
 import {
-  detailIndent,
   detailWidth,
   headerMarker,
   headerRowWidth,
@@ -13,6 +12,7 @@ import {
   viewKey,
   views,
 } from "./chrome";
+import { detailIndent } from "./widgets";
 
 test("a key reads as it is printed on the keyboard", () => {
   const rows: [string, string][] = [
@@ -89,10 +89,10 @@ test("a card's detail is measured through every column it is drawn behind", () =
   // renderer itself uses, so the measurement cannot drift from the drawing.
   expect(screenWidth(80)).toBe(80 - screenPad * 2);
   expect(detailWidth(80)).toBe(panelWidth(screenWidth(80)) - detailIndent);
-  expect(detailWidth(80)).toBe(74);
+  expect(detailWidth(80)).toBe(72);
   // Two panels share a wide row, so a wider terminal is not a wider card.
-  expect(detailWidth(160)).toBe(74);
-  expect(detailWidth(200)).toBe(94);
+  expect(detailWidth(160)).toBe(72);
+  expect(detailWidth(200)).toBe(92);
   // A terminal too narrow to measure still leaves a column to write into.
   expect(detailWidth(10)).toBe(20);
 });

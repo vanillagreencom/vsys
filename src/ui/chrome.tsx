@@ -4,7 +4,7 @@ import { safe } from "../model/export";
 import { fit } from "./columns";
 import { homeRegions, jumpKeys, storageRegions } from "./regions";
 import { ui } from "./theme";
-import { Line, Overlay } from "./widgets";
+import { detailIndent, Line, Overlay } from "./widgets";
 
 export const views = [
   "Home",
@@ -45,8 +45,6 @@ export const screenWidth = (width: number): number => width - screenPad * 2;
 /** The columns one of Home's panels has, which is the whole row when narrow. */
 export const panelWidth = (width: number): number =>
   width >= wideWidth ? Math.floor((width - 3) / 2) : width;
-/** The columns a `Detail` block gives up to its rule and the indent after it. */
-export const detailIndent = 2;
 /**
  * The columns a card's detail draws into, from the terminal width: the screen
  * padding, then the panel it sits in, then the rule and indent of the block

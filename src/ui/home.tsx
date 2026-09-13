@@ -14,7 +14,6 @@ import {
   verdictLine,
 } from "./attention";
 import {
-  detailIndent,
   keyLabel,
   panelWidth,
   screenPad,
@@ -554,7 +553,7 @@ export function Home({
                     />
                   </Row>
                   {marked(i) && (
-                    <Detail indent={detailIndent}>
+                    <Detail>
                       {/* One paragraph per idea, every one after the first
                           under a blank row that says a new idea starts here.
                           Those rows come out of the same budget the detail's
