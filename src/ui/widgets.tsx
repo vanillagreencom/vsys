@@ -443,6 +443,12 @@ export function Tile({
     </box>
   );
 }
+/**
+ * The rows one tile draws: its label, its number, its chart and the line of
+ * context under it. A caller sizing what sits below a tile row reads this
+ * rather than counting the elements again.
+ */
+export const tileLines = 4;
 /** The rows a tile row occupies, so a caller can budget the space it takes. */
 export function tilesHeight(
   count: number,

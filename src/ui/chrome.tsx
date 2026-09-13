@@ -53,6 +53,48 @@ export const panelWidth = (width: number): number =>
  */
 export const detailWidth = (width: number): number =>
   Math.max(20, panelWidth(screenWidth(width)) - detailIndent);
+/** The line under the verdict counting the agents, the cores and the concerns. */
+const countRow = 1;
+/** The blank row between that line and the tile row. */
+const blankRow = 1;
+/** A section heading: the blank row it opens with, then the heading itself. */
+const headingRows = 2;
+/** The row an open card's title takes above its description. */
+const titleRow = 1;
+/**
+ * The row the scroll box a screen draws into keeps for the bar under its
+ * content. The box is the height its screen has; what it shows is one row
+ * less, and a card sized to the box loses its last line off the bottom.
+ */
+const scrollRow = 1;
+/**
+ * The rows a card's description may take, from the room the card actually has.
+ * Home draws the verdict, the line counting agents and concerns, a blank row,
+ * the tile row and the heading over the list before it reaches the card, and
+ * the card spends a row on its own title and the rows its action lines take
+ * under it. What is left is the description, blank rows and all: no number
+ * here states how many rows that is.
+ *
+ * `screen` is the rows the shell leaves the screen, `verdict` and `tiles` the
+ * rows those two draw at the width they are drawn at, and `actions` the rows
+ * of `Next`, the command and the line naming the keys. The list scrolls the
+ * card the reader opened into view, so the room that card has is the list's.
+ */
+export const detailRows = (o: {
+  screen: number;
+  verdict: number;
+  tiles: number;
+  actions: number;
+}): number =>
+  o.screen -
+  scrollRow -
+  o.verdict -
+  countRow -
+  blankRow -
+  o.tiles -
+  headingRows -
+  titleRow -
+  o.actions;
 /** The columns each tab takes: its key, a space, and that view's own name. */
 const tabWidths = (c: Config): number[] =>
   views.map((v) => [...c.keys[viewKey(v)]].length + 1 + [...v].length);

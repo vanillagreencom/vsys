@@ -11,16 +11,37 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
-import { attention, meterTile, unread, verdictLine } from "./attention";
+import {
+  type Attention,
+  attention,
+  cardDetail,
+  meterTile,
+  unread,
+  verdictLine,
+} from "./attention";
 import { wrapLines } from "./columns";
 
 const base = ["/usr/bin", "/bin"];
 /**
- * A detail as one string, for the checks that are about the words a card
- * writes rather than the paragraphs it breaks them into.
+ * Everything a card has to say, as one string: its best way of writing the
+ * description and the sentence naming the lanes, with no room taken off it.
+ * The checks about the words a card writes read this; the checks about the
+ * rows it has fit it against a room with `cardDetail`.
  */
-const said = (item?: { detail: string[] }): string =>
-  item?.detail.join(" ") ?? "";
+const said = (item?: Attention): string =>
+  [...(item?.ways[0] ?? []), item?.lanes ?? ""]
+    .filter((part) => part !== "")
+    .join(" ");
+/** The rows the description had before the room a card sits in decided it. */
+const sixRows = 6;
+/** A description fitted to a stated room, as the screen fits it. */
+const fitted = (item: Attention | undefined, width: number, rows = sixRows) =>
+  item === undefined ? [] : cardDetail(item, width, rows);
+/** The rows those paragraphs draw: their own, their breaks, and the blank
+ * above the action lines. */
+const drawnRows = (parts: string[], width: number) =>
+  parts.reduce((rows, part) => rows + wrapLines(part, width).length, 0) +
+  parts.length;
 test("overview promotes active problems and does not call past events current", () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -500,7 +521,7 @@ test("the unconfined card writes one sentence per conclusion, not per process", 
   );
 });
 
-test("a card's detail is cut to its line budget at the width it is drawn at", () => {
+test("a card's description holds the rows the screen gives it", () => {
   const c = defaults();
   const crowded = escapedFleet(30, 4);
   crowded.system.pressure = {
@@ -521,28 +542,35 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
       const items = attention(s, c, { basePath: base, width });
       for (const item of items) {
         measured.add(item.id);
-        // Six rows, written out: a budget checked against the constant it is
-        // built from passes whatever that constant is raised to. The rows are
-        // the paragraphs, the blank row between each pair of them and the one
-        // above the action lines, counted here rather than read from the
-        // production rule the fitting used.
-        const drawn =
-          item.detail.reduce(
-            (rows, part) => rows + wrapLines(part, width).length,
-            0,
-          ) + item.detail.length;
-        expect(drawn).toBeLessThanOrEqual(6);
-        if (said(item).includes("…")) cut++;
+        // Every room from the one a card is given on a crowded screen up to
+        // one no card needs, written out rather than read from the production
+        // rule the fitting used.
+        for (const rows of [4, sixRows, 12]) {
+          const drawn = fitted(item, width, rows);
+          // The floor is what a card writes however short the room: one row of
+          // the first thing it says, the two the lane sentence is written to,
+          // the break between them and the blank above the action lines.
+          expect(drawnRows(drawn, width)).toBeLessThanOrEqual(
+            Math.max(rows, 5),
+          );
+          if (drawn.join(" ").includes("…")) cut++;
+        }
+        // Given the rows its best way of writing itself needs, a card writes
+        // that way: every paragraph of its own, nothing given up, nothing cut.
+        const whole = [...item.ways[0], item.lanes].filter((p) => p !== "");
+        expect(fitted(item, width, drawnRows(whole, width))).toEqual(whole);
       }
     }
   // A card that writes no ladder of its own is cut by the same budget: the
   // disk card on a panel at the floor is one.
-  const narrow = attention(everyCauseSnapshot(c), c, {
-    basePath: base,
-    width: 20,
-  }).find((item) => item.id === "disk");
-  expect(said(narrow)).toEndWith("…");
-  expect(said(narrow)).toContain("Tasks stalled on storage");
+  const narrow = fitted(
+    attention(everyCauseSnapshot(c), c, { basePath: base, width: 20 }).find(
+      (item) => item.id === "disk",
+    ),
+    20,
+  ).join(" ");
+  expect(narrow).toEndWith("…");
+  expect(narrow).toContain("Tasks stalled on storage");
   // A lane whose name alone overruns the rows the sentence has: the name is
   // cut with its mark, and both counts the card promises are whole, because
   // the names are on the screen Enter opens and the counts are only here.
@@ -552,7 +580,7 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
   const tight = attention(long, c, { basePath: base, width: 20 }).find(
     (item) => item.id === "unconfined",
   );
-  expect(tight?.detail).toEqual([
+  expect(fitted(tight, 20)).toEqual([
     "2 groups of processes: 2 bare.",
     "Lanes: kendex vsys/is… and 1 more.",
   ]);
@@ -565,15 +593,18 @@ test("a card's detail is cut to its line budget at the width it is drawn at", ()
   expect(cut).toBeGreaterThan(0);
 });
 
-test("a narrow card gives up the chain, then a conclusion, and counts both", () => {
+test("a card short of room gives up the chain, then a conclusion, and counts both", () => {
   const c = defaults();
   const s = escapedSnapshot({ lanes: 12, scopes: 12 });
+  // One room throughout, so what changes down this test is the width and the
+  // order the card gives ground in, never the rows it was handed.
   const detail = (width: number) =>
-    said(
+    fitted(
       attention(s, c, { basePath: base, width }).find(
         (item) => item.id === "unconfined",
       ),
-    );
+      width,
+    ).join(" ");
   // Wide enough for the ancestors of every conclusion.
   expect(detail(600)).toContain("Started from PID");
   expect(detail(600)).not.toContain("not written here");
@@ -602,21 +633,23 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
   // kept still names that cgroup, and one group is one, not one groups.
   const shared = escapedSnapshot({ lanes: 2, scopes: 1 });
   shared.procs[2].env = { CARGO_BUILD_JOBS: "16" };
-  const merged = said(
+  const merged = fitted(
     attention(shared, c, { basePath: base, width: 44 }).find(
       (item) => item.id === "unconfined",
     ),
-  );
+    44,
+  ).join(" ");
   expect(merged).toContain("The launcher was shadowed");
   expect(merged).toContain("And 1 more group of processes not written here.");
   expect(merged).not.toContain("  ");
   expect(
-    said(
+    fitted(
       attention(escapedSnapshot({ lanes: 2, scopes: 2 }), c, {
         basePath: base,
         width: 44,
       }).find((item) => item.id === "unconfined"),
-    ),
+      44,
+    ).join(" "),
   ).toContain("And 1 more group of processes not written here.");
   // At the floor a panel can be, one whole conclusion and the count of what
   // went do not fit in the rows beside the lane sentence, so the card counts
@@ -626,11 +659,12 @@ test("a narrow card gives up the chain, then a conclusion, and counts both", () 
   );
   // Each kind is counted under the name the sentences give it.
   expect(
-    said(
+    fitted(
       attention(shared, c, { basePath: base, width: 20 }).find(
         (item) => item.id === "unconfined",
       ),
-    ),
+      20,
+    ).join(" "),
   ).toStartWith("2 groups of processes: 1 bare, 1 shadowed.");
 });
 
@@ -670,7 +704,7 @@ test("the lane sentence stops rather than growing with the machine", () => {
   );
   expect(said(single)).not.toContain("and 0 more");
   // The name is cut to the rows the sentence has, marked where it stopped.
-  expect(single?.detail).toEqual([
+  expect(fitted(single, 24)).toEqual([
     "1 group of processes: 1 bare.",
     "Lane: kendex vsys/issue-1234 kendex…",
   ]);

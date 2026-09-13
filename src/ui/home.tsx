@@ -8,12 +8,14 @@ import type { TimelineEvent } from "../store/events";
 import type { Point } from "../store/point";
 import {
   type Attention,
+  cardDetail,
   meterTile,
   type Target,
   verdictItem,
   verdictLine,
 } from "./attention";
 import {
+  detailRows,
   keyLabel,
   panelWidth,
   screenPad,
@@ -28,6 +30,7 @@ import {
   fit,
   pidCell,
   pidColumn,
+  wrapLines,
 } from "./columns";
 import {
   amount,
@@ -62,6 +65,8 @@ import {
   TableHeader,
   Tile,
   Tiles,
+  tileLines,
+  tilesHeight,
   tilesPerRow,
   useKeepInView,
 } from "./widgets";
@@ -186,6 +191,7 @@ export function Home({
   windowMs,
   selection,
   width,
+  cardWidth,
   height,
   onSelect,
   onOpen,
@@ -204,6 +210,8 @@ export function Home({
   /** The row the reader chose, and the item that row named. */
   selection: { index: number; id: string | null };
   width: number;
+  /** The columns an open card's copy is written and drawn at: `detailWidth`. */
+  cardWidth: number;
   height: number;
   onSelect: (selection: { index: number; id: string | null }) => void;
   onOpen: (item: HomeItem) => void;
@@ -223,6 +231,32 @@ export function Home({
       : height - 10 - items.length * 2 - recentChanges - 2,
   );
   const gauges = meters(s, c);
+  // The room an open card has, measured from what this screen draws above it
+  // rather than from a number chosen for it: the verdict at the rows it wraps
+  // to here, and the tile row at the rows a tile takes. `detailRows` takes it
+  // from there through the heading, the card's title and the lines below.
+  const verdict = verdictLine(items, s);
+  const above = wrapLines(verdict, width).length;
+  const tiles = tilesHeight(gauges.length, width, tileLines);
+  // The lines a card draws under its description, at the width they are drawn
+  // at: what to do next, the command it offers, and the line naming the keys.
+  const actions = (item: Attention) =>
+    wrapLines(item.next, cardWidth).length +
+    (item.command === undefined
+      ? 0
+      : wrapLines(item.command, cardWidth).length) +
+    1;
+  const described = (item: Attention) =>
+    cardDetail(
+      item,
+      cardWidth,
+      detailRows({
+        screen: height,
+        verdict: above,
+        tiles,
+        actions: actions(item),
+      }),
+    );
   // Busiest agents is the one Home list its readings order.
   const hold = useHeldOrder();
   // Home's own sort, not the one Agents stores: the two screens draw different
@@ -474,7 +508,7 @@ export function Home({
       <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
         <Line flexShrink={0} wrapMode="word">
           <span fg={levelColor(level)} attributes={ui.bold}>
-            {safe(verdictLine(items, s))}
+            {safe(verdict)}
           </span>
         </Line>
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
@@ -559,7 +593,7 @@ export function Home({
                           Those rows come out of the same budget the detail's
                           own sentences do, so `Next` below sits where it sat
                           before the card broke its copy up. */}
-                      {row.item.detail.map((part, at) => (
+                      {described(row.item).map((part, at) => (
                         <Line
                           // biome-ignore lint/suspicious/noArrayIndexKey: a paragraph is its place in the detail
                           key={at}

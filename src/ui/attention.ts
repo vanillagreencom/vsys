@@ -39,8 +39,17 @@ export interface Attention {
   /** The verdict line when this cause tops the ladder. */
   headline: string;
   title: string;
-  /** The detail as the paragraphs it is drawn in, one per idea. */
-  detail: string[];
+  /**
+   * The ways this card can write its description, best first, each of them the
+   * paragraphs that way draws, one per idea. The screen picks one against the
+   * rows it has: `cardDetail`.
+   */
+  ways: string[][];
+  /**
+   * The sentence the description ends with and gives up last: the lane names a
+   * cut title needs under it. Empty on a card that names no lane.
+   */
+  lanes: string;
   /** What the reader should do next, in words. */
   next: string;
   /** Read-only text to copy, built from configured names. */
@@ -55,17 +64,13 @@ export interface Attention {
 /** The severity word, the sentence, and anything the headline says instead. */
 type Copy = Omit<
   Attention,
-  "id" | "danger" | "headline" | "verdictWorthy" | "detail"
+  "id" | "danger" | "headline" | "verdictWorthy" | "ways" | "lanes"
 > & {
   word: string;
   headline?: string;
-  /**
-   * The ways this card offers of writing its detail, best first. Each is the
-   * paragraphs that way draws, one per idea.
-   */
+  /** The ways of writing the description, best first, as `Attention.ways`. */
   detail: string[][];
-  /** The sentence the detail ends with and gives up last: the lane names a
-   * cut title needs under it. Absent on a card that names no lane. */
+  /** `Attention.lanes`, absent on a card that names no lane. */
   keep?: string;
 };
 /** The names a title lists before it stops counting and says how many remain. */
@@ -74,16 +79,7 @@ const list = (names: string[], limit = listLimit): string =>
   names.length > limit
     ? `${names.slice(0, limit).join(", ")} and ${names.length - limit} more`
     : names.join(", ");
-/**
- * The rows a card's detail draws, every blank row in it included. A card the
- * reader opens to learn what to do must leave `Next` and the command on the
- * screen with it, and a detail that grows with the machine pushes both off a
- * terminal of ordinary height.
- */
-const detailLines = 6;
-/** The row of that budget the blank between the detail and the action lines takes. */
-const actionGap = 1;
-/** The rows of that budget the list of affected lanes may take. */
+/** The rows the list of affected lanes may take. */
 const laneLines = 2;
 /** The width card copy is measured at when the caller is not a screen. */
 const defaultDetailWidth = 80;
@@ -91,18 +87,20 @@ const defaultDetailWidth = 80;
 const join = (parts: string[]): string =>
   parts.filter((part) => part !== "").join(" ");
 /**
- * The rows a detail draws at `width`: its paragraphs, the blank row between
- * each pair of them, and the blank row separating the whole from the action
- * lines under it. Every one of those rows comes out of one budget, so a break
- * a card takes is a row it cannot also spend on a fact.
+ * The rows a description draws at `width`: its paragraphs, the blank row
+ * between each pair of them, and the blank row separating the whole from the
+ * action lines under it. Every one of those rows comes out of the room the
+ * card has, so a break a card takes is a row it cannot also spend on a fact.
  */
-function detailRows(parts: string[], width: number): number {
+function blockRows(parts: string[], width: number): number {
   const text = parts.reduce(
     (rows, part) => rows + wrapLines(part, width).length,
     0,
   );
-  return text + (parts.length - 1) + actionGap;
+  return text + (parts.length - 1) + blockGap;
 }
+/** The blank row a description ends with, above the action lines. */
+const blockGap = 1;
 /**
  * The ways of writing one lead beside `keep`, most separated first: every idea
  * a paragraph of its own, then the lead's own ideas in one paragraph, then the
@@ -119,27 +117,56 @@ function breakdowns(lead: string[], keep: string): string[][] {
   return ways;
 }
 /**
- * The detail a card draws: the first way of writing the first of the leads it
- * offers that holds the budget beside `keep`, which is written after it. A
- * caller lists its leads best first, so the order a card gives ground in reads
- * where the copy is written. When no way is short enough the last lead is cut
- * to what `keep` leaves, and `keep` itself is cut last, so the budget holds at
- * every width.
+ * The rows a description never goes below, however short the terminal is: one
+ * row of the first thing the card has to say, and the sentence naming the
+ * lanes at the rows that sentence is written to. Under this a card would say
+ * nothing a reader could act on, so it draws taller than its room and the list
+ * it sits in scrolls.
  */
-function fitDetail(leads: string[][], keep: string, width: number): string[] {
+function floorRows(keep: string): number {
+  return 1 + (keep === "" ? 0 : 1 + laneLines) + blockGap;
+}
+/**
+ * The description a card writes in the rows it has: the first way of writing
+ * the first of the leads it offers that holds those rows beside the sentence
+ * naming the lanes, which is written after it. A card lists its ways best
+ * first, so the order it gives ground in reads where the copy is written, and
+ * that order runs only where the room is genuinely short. When no way is short
+ * enough the last is cut to what the lane sentence leaves, and that sentence
+ * is cut last. `detailRows` in `src/ui/chrome.tsx` is where `rows` comes from.
+ */
+function fitDetail(
+  leads: string[][],
+  keep: string,
+  width: number,
+  rows: number,
+): string[] {
+  const room = Math.max(rows, floorRows(keep));
   for (const lead of leads)
     for (const way of breakdowns(lead, keep))
-      if (detailRows(way, width) <= detailLines) return way;
+      if (blockRows(way, width) <= room) return way;
   // The floor: one paragraph, because every break is already given up, and
   // the rows left once the blank above the action lines is paid.
-  const room = detailLines - actionGap;
+  const text = room - blockGap;
   const last = join(leads[leads.length - 1] ?? []);
-  if (keep === "") return [capLines(last, width, room)];
+  if (keep === "") return [capLines(last, width, text)];
   // The cut falls on the lead rather than on the end of the joined sentence,
   // so `keep` survives it: it is the lane names the cut title needs under it.
-  const kept = capLines(keep, width, room - 1);
-  const rows = wrapLines(kept, width).length;
-  return [join([capLines(last, width, room - rows), kept])];
+  const kept = capLines(keep, width, text - 1);
+  const rows2 = wrapLines(kept, width).length;
+  return [join([capLines(last, width, text - rows2), kept])];
+}
+/**
+ * The description an open card draws in the rows the screen leaves it, blank
+ * rows included: the way of writing it that holds them, or the shortest way
+ * cut to fit where nothing else will.
+ */
+export function cardDetail(
+  card: Attention,
+  width: number,
+  rows: number,
+): string[] {
+  return fitDetail(card.ways, card.lanes, width, rows);
 }
 /**
  * Every affected lane, behind the head its card writes, for a detail that
@@ -520,13 +547,15 @@ export function attention(
       basePath,
       width,
     );
+    const { detail, ...card } = rest;
     return {
       id: cause.id,
       danger: cause.level === "danger",
       verdictWorthy: cause.verdictWorthy,
-      headline: headline ?? `${word}: ${rest.title}`,
-      ...rest,
-      detail: fitDetail(rest.detail, keep ?? "", width),
+      headline: headline ?? `${word}: ${card.title}`,
+      ...card,
+      ways: detail,
+      lanes: keep ?? "",
     };
   });
 }
