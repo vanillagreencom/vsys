@@ -29,7 +29,7 @@ const base = ["/usr/bin", "/bin"];
  * rows it has fit it against a room with `cardDetail`.
  */
 const said = (item?: Attention): string =>
-  [...(item?.ways[0] ?? []), item?.lanes ?? ""]
+  [...(item?.ways[0] ?? []), item?.keep ?? ""]
     .filter((part) => part !== "")
     .join(" ");
 /** The rows the description had before the room a card sits in decided it. */
@@ -557,7 +557,7 @@ test("a card's description holds the rows the screen gives it", () => {
         }
         // Given the rows its best way of writing itself needs, a card writes
         // that way: every paragraph of its own, nothing given up, nothing cut.
-        const whole = [...item.ways[0], item.lanes].filter((p) => p !== "");
+        const whole = [...item.ways[0], item.keep].filter((p) => p !== "");
         expect(fitted(item, width, drawnRows(whole, width))).toEqual(whole);
       }
     }

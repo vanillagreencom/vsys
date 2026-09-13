@@ -1624,3 +1624,52 @@ test("a screen too short for every fact counts what the card gave up", async () 
   expect(tiny.copied).toBeGreaterThan(tiny.next);
   expect(tiny.footer).toBeGreaterThan(tiny.copied);
 });
+
+test("a card draws the rows it was measured for, at every width", async () => {
+  const c = defaults();
+  const s = escapedSnapshot({ lanes: 5, perLane: 2 });
+  // Widths across the range a panel can be, at heights the room reaches, and
+  // the heights that lost the key line while the action lines were measured
+  // without the words drawn in front of them.
+  const sizes = [
+    ...[64, 76, 88, 100, 120, 130].flatMap((width) =>
+      [35, 60].map((height) => ({ width, height })),
+    ),
+    ...[30, 31, 32, 33, 34].map((height) => ({ width: 100, height })),
+  ];
+  for (const size of sizes) {
+    const t = await mount(s, c, size);
+    try {
+      await t.ui.renderOnce();
+      const rows = t.frame().split("\n");
+      const card = rows.findIndex((row) => row.includes("▾"));
+      const next = rows.findIndex((row) => row.includes("Next "));
+      const copied = rows.findIndex((row) =>
+        row.includes("systemd-run --user --slice=agents.slice"),
+      );
+      const hint = rows.findIndex((row) => row.includes("opens Agents"));
+      const at = `${size.width}x${size.height}`;
+      // The line naming the keys is the last of the card and the first to fall
+      // off the screen when a row is spent that nothing counted.
+      expect(`${at}: ${hint > copied && copied > next && next > card}`).toBe(
+        `${at}: true`,
+      );
+      const panel = screenPad + panelWidth(screenWidth(size.width));
+      const drawn = rows
+        .slice(card + 1, next)
+        .map((row) => row.slice(0, panel).replace("│", "").trim());
+      // One blank row per paragraph: the break above each one after the first,
+      // and the row above the action lines. A row the renderer added for
+      // itself would stand here as a blank nothing was charged for.
+      const blanks = drawn.filter((row) => row === "").length;
+      const paragraphs = drawn.filter(
+        (row, i) => row !== "" && (i === 0 || drawn[i - 1] === ""),
+      ).length;
+      expect(`${at}: ${blanks} blanks, ${paragraphs} paragraphs`).toBe(
+        `${at}: ${paragraphs} blanks, ${paragraphs} paragraphs`,
+      );
+    } finally {
+      await t.close();
+    }
+  }
+});

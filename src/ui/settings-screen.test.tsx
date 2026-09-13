@@ -682,10 +682,11 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     expect(row).toBeGreaterThan(-1);
     // The screen's own margin is two columns and the one indent every
     // expansion reads adds four, so a detail line starts at column six. The
-    // second line is the one that matters: padding on a text element leaves every wrapped line at the
-    // margin, which reads as the next row rather than as part of this one.
-    // The row itself carries no rule; both of its continuation lines do, and
-    // the wrapped one is the line an indent alone never reached.
+    // second line is the one that matters: padding on a text element leaves
+    // every wrapped line at the margin, which reads as the next row rather
+    // than as part of this one. The row itself carries no rule; both of its
+    // continuation lines do, and the wrapped one is the line an indent alone
+    // never reached.
     expect(isChildLine(lines[row])).toBe(false);
     expect(isChildLine(lines[row + 1])).toBe(true);
     expect(isChildLine(lines[row + 2])).toBe(true);
