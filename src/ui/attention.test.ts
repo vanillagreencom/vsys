@@ -547,14 +547,23 @@ test("a card's description holds the rows the screen gives it", () => {
         // rule the fitting used.
         for (const rows of [4, sixRows, 12]) {
           const drawn = fitted(item, width, rows);
-          // The floor is what a card writes however short the room: one row of
-          // the first thing it says, the two the lane sentence is written to,
-          // the break between them and the blank above the action lines.
+          // The floor is what a card writes however short the room, and it is
+          // the card's own: one row of the first thing it says and the blank
+          // above the action lines, plus, where the card names lanes, the two
+          // rows that sentence is written to and the break above it.
+          const floor = item.keep === "" ? 2 : 5;
           expect(drawnRows(drawn, width)).toBeLessThanOrEqual(
-            Math.max(rows, 5),
+            Math.max(rows, floor),
           );
           if (drawn.join(" ").includes("…")) cut++;
         }
+        // Asked for a room under its floor, a card writes that floor. A card
+        // naming no lane, which every storage card is, holds one row of the
+        // first thing it says and the blank above the action lines; one that
+        // names lanes holds that sentence too, at the rows it needs.
+        const atFloor = drawnRows(fitted(item, width, 1), width);
+        if (item.keep === "") expect(atFloor).toBe(2);
+        else expect(atFloor).toBeLessThanOrEqual(5);
         // Given the rows its best way of writing itself needs, a card writes
         // that way: every paragraph of its own, nothing given up, nothing cut.
         const whole = [...item.ways[0], item.keep].filter((p) => p !== "");
@@ -583,6 +592,21 @@ test("a card's description holds the rows the screen gives it", () => {
   expect(fitted(tight, 20)).toEqual([
     "2 groups of processes: 2 bare.",
     "Lanes: kendex vsys/is… and 1 more.",
+  ]);
+  // The rung between every idea apart and everything in one: the conclusions
+  // join into one paragraph and the sentence naming the lanes stays a
+  // paragraph of its own, which is what a card gives up last.
+  expect(
+    fitted(
+      attention(crowded, c, { basePath: base, width: 38 }).find(
+        (item) => item.id === "unconfined",
+      ),
+      38,
+      12,
+    ),
+  ).toEqual([
+    "Launched bare: none of RUST_TEST_THREADS, CARGO_BUILD_JOBS is set on 60 processes in the scope tmux-spawn-0.scope. Launched bare: none of RUST_TEST_THREADS, CARGO_BUILD_JOBS is set on 60 processes in the scope tmux-spawn-1.scope.",
+    "120 processes in 30 lanes: kendex agent-0 PID 1000 and 29 more.",
   ]);
   // Every cause the ladder can report was measured, read from the ladder's
   // own table rather than a list kept here: a cause added without a fixture
@@ -666,6 +690,25 @@ test("a card short of room gives up the chain, then a conclusion, and counts bot
       20,
     ).join(" "),
   ).toStartWith("2 groups of processes: 1 bare, 1 shadowed.");
+});
+
+test("a card cut to the bone still says one thing and names the lanes", () => {
+  const c = defaults();
+  // Written for a wide panel and fitted into a narrow one, so the sentence
+  // naming the lanes needs more rows than the room has. No caller does this
+  // today; `cardDetail` is exported, and a screen must not raise.
+  const wide = attention(escapedFleet(6, 1), c, {
+    basePath: base,
+    width: 120,
+  }).find((item) => item.id === "unconfined");
+  if (!wide) throw new Error("Expected one unconfined card");
+  const cut = cardDetail(wide, 20, 4);
+  // One paragraph, because every break is given up first, and the lane names
+  // are still at the end of it: the row kept back for the first thing the
+  // card says is what leaves both of them on the screen.
+  expect(cut).toHaveLength(1);
+  expect(cut[0]).toStartWith("2 groups of");
+  expect(cut[0]).toContain("Lanes: kendex agent-0 PID 1000");
 });
 
 test("the lane sentence stops rather than growing with the machine", () => {

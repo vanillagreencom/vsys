@@ -173,5 +173,7 @@ test("a capped text ends in the mark and fits the rows it was given", () => {
     "x app-org.gnome.Terminal-9f2c4a1b.service…",
   );
   expect(wrapLines(capLines(`x ${unit}`, 20, 3), 20)).toHaveLength(3);
-  expect(() => capLines(text, 9, 0)).toThrow("needs at least 1");
+  // No rows is no text. A screen with nothing left to draw into is answered,
+  // not raised at.
+  expect(capLines(text, 9, 0)).toBe("");
 });
