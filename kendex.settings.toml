@@ -270,17 +270,19 @@ ORCH_STATE_DIR = "tmp"
 # not carry. An entry does nothing when git carries every path under it, and
 # links the untracked children when it does not. The harness trees are
 # committed whole, so a worktree gets them from its own branch.
-WORKTREE_BASE_DIR = "~/dev-data/.worktrees/vsys"
+WORKTREE_BASE_DIR = "~/dev/.worktrees/vsys"
 WORKTREE_COPIES = ".kendex-lock.json"
 WORKTREE_DEFAULT_BRANCH = "main"
 WORKTREE_MKDIRS = "tmp"
+# .cache: the Linear skill's cache. One copy per checkout, shared by every worktree,
+# so a worktree's first sync is incremental; a fleet lane starts from a seeded copy.
 # node_modules: scripts/ci.py and the package scripts run the pinned Bun,
 # biome and tsc from this store. The link shares the main checkout's real
 # install (bun — bun.lock), so a dependency change is made with the branch
 # checked out in the MAIN checkout, where `bun install` rebuilds the store,
 # never in a linked worktree, whose install would write through the link.
 # .gitignore's `node_modules/` pattern covers the symlink.
-WORKTREE_SYMLINKS = ".env.local node_modules"
+WORKTREE_SYMLINKS = ".env.local .cache node_modules"
 
 # Nothing needs one: the CLAUDE.md shims kendex writes beside each AGENTS.md
 # are tracked files, so they arrive through git, and naming one here would
