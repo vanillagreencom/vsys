@@ -21,6 +21,7 @@ import {
   sortMarks,
 } from "../test/harness";
 import { attention } from "./attention";
+import { panelWidth, screenPad, screenWidth } from "./chrome";
 import { osc52 } from "./clipboard";
 import type { HomeItem } from "./home";
 import { homeItems, homeTarget, recentChanges } from "./home";
@@ -1487,13 +1488,78 @@ test("an open card keeps its next step and its command on an ordinary screen", a
       // The detail between the card and its next step draws six rows, which
       // is what leaves room for the two lines under it.
       expect(next - card - 1).toBe(6);
-      // In those six rows it names both scopes once each, and still holds the
-      // lane names the cut title above it lost.
-      const detail = rows.slice(card + 1, next).join(" ");
-      expect(detail.split("Launched bare")).toHaveLength(3);
+      // The last of the six is the blank row that says the description has
+      // ended: the rule of the block runs down it, and no word does. A wide
+      // screen draws a second column beside the card, so every row is read
+      // only as far as the panel the card sits in.
+      const panel = screenPad + panelWidth(screenWidth(size.width));
+      const words = (row: string) =>
+        row.slice(0, panel).replace("│", "").trim();
+      const drawn = rows.slice(card + 1, next);
+      expect(drawn.map((row) => words(row) === "")).toEqual([
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+      ]);
+      // In the five rows left it names a scope, counts the group it gave up
+      // for the blank row, and still holds the lane names the cut title lost.
+      const detail = drawn.map(words).join(" ");
+      expect(detail.split("Launched bare")).toHaveLength(2);
       expect(detail).toContain("tmux-spawn-0.scope");
-      expect(detail).toContain("tmux-spawn-1.scope");
+      expect(detail).toContain("And 1 more group of processes not written");
       expect(detail).toContain("10 processes in 5 lanes: kendex agent-0 PID");
+      // Every row the open card draws is a row the screen has: the key hint
+      // is its last, and it is drawn above the footer rather than under it.
+      const hint = rows.findIndex((row) => row.includes("opens Agents"));
+      const footer = rows.findIndex((row) => row.includes("Tab region"));
+      expect(hint).toBe(copied + 1);
+      expect(footer).toBeGreaterThan(hint);
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("an open card breaks its detail into paragraphs, one per idea", async () => {
+  const c = defaults();
+  // A card whose detail is two ideas: what the memory limit does, and the lane
+  // it is set on. Each holds one row at either size, so the row between them
+  // is the break rather than a wrapped sentence.
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ dangerous: true })];
+  for (const size of [
+    { width: 80, height: 32 },
+    { width: 160, height: 36 },
+  ]) {
+    const t = await mount(s, c, size);
+    try {
+      await t.ui.renderOnce();
+      const rows = t.frame().split("\n");
+      const card = rows.findIndex((row) => row.includes("▾"));
+      const next = rows.findIndex((row) => row.includes("Next "));
+      expect(card).toBeGreaterThan(0);
+      // A wide screen draws a second column beside the card, so every row is
+      // read only as far as the panel the card sits in.
+      const panel = screenPad + panelWidth(screenWidth(size.width));
+      const words = (row: string) =>
+        row.slice(0, panel).replace("│", "").trim();
+      const drawn = rows.slice(card + 1, next).map(words);
+      // Idea, break, idea, break: the rule of the block runs down every row of
+      // it, so a row of the detail carrying no word is a break.
+      expect(drawn.map((row) => row === "")).toEqual([
+        false,
+        true,
+        false,
+        true,
+      ]);
+      expect(drawn[0]).toBe("The limit can stop work before it finishes.");
+      expect(drawn[2]).toBe("Lane: lane-a PID 40.");
+      // The breaks are rows of the same budget, so a card that spends two of
+      // them is still inside it.
+      expect(next - card - 1).toBeLessThanOrEqual(6);
     } finally {
       await t.close();
     }

@@ -347,8 +347,15 @@ export function Storage({
               {counterSentence}
             </Line>
             <Field label="Counter" width={16} value={errorText(first)} />
+            {/* The report's own words are a third idea under the counter and
+                the sentence explaining it, so they start after a blank row. */}
             {item.scrub && (
-              <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+              <Line
+                flexShrink={0}
+                wrapMode="word"
+                marginTop={1}
+                attributes={ui.dim}
+              >
                 {safe(item.scrub.text)}
               </Line>
             )}

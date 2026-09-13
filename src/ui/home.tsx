@@ -555,10 +555,29 @@ export function Home({
                   </Row>
                   {marked(i) && (
                     <Detail indent={detailIndent}>
-                      <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                        {safe(row.item.detail)}
-                      </Line>
-                      <Line flexShrink={0} wrapMode="word">
+                      {/* One paragraph per idea, every one after the first
+                          under a blank row that says a new idea starts here.
+                          Those rows come out of the same budget the detail's
+                          own sentences do, so `Next` below sits where it sat
+                          before the card broke its copy up. */}
+                      {row.item.detail.map((part, at) => (
+                        <Line
+                          // biome-ignore lint/suspicious/noArrayIndexKey: a paragraph is its place in the detail
+                          key={at}
+                          flexShrink={0}
+                          wrapMode="word"
+                          attributes={ui.dim}
+                          marginTop={at === 0 ? 0 : 1}
+                        >
+                          {safe(part)}
+                        </Line>
+                      ))}
+                      {/* The blank row the confirm dialog draws above its key
+                          line, here between the description and everything
+                          the reader can act on: `Next`, the command, and the
+                          keys that reach them. One row, out of the same
+                          budget, so the action lines sit where they sat. */}
+                      <Line flexShrink={0} wrapMode="word" marginTop={1}>
                         <span attributes={ui.dim}>Next </span>
                         {safe(row.item.next)}
                       </Line>

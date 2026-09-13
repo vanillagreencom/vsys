@@ -704,8 +704,12 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     expect(lines[row + 2].trimEnd().endsWith("directory)")).toBe(true);
     // The cost is cut on the row with its mark, and whole in the detail.
     expect(lines[row].trimEnd().endsWith("…")).toBe(true);
+    // What the missing reading costs is a second idea, so a blank row of the
+    // same block separates it from the reason: the rule runs down that row
+    // and no word does, which is why `isChildLine` does not answer it.
+    expect(lines[row + 3].trim()).toBe("│");
     const cost = lines
-      .slice(row + 3, row + 5)
+      .slice(row + 4, row + 6)
       .map((line) => line.slice(5).trim());
     expect(cost.join(" ")).toBe(
       "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
