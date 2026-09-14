@@ -64,6 +64,13 @@ interface PaneTarget {
    * `%0` sits in another window. Set only for that form.
    */
   handle?: string;
+  /**
+   * The window part of a target whose pane component is neither an index nor
+   * a handle, with `window` above holding tmux's other reading, the whole
+   * rest as one name. Which of the two tmux takes turns on whether this names
+   * a window the server holds, so only the map can decide it.
+   */
+  split?: string;
 }
 /** tmux's exact-match prefix. Every match below is exact, so it is dropped. */
 const bare = (name: string): string => name.replace(/^=/, "");
@@ -108,14 +115,24 @@ function parseTarget(target: string): PaneTarget | null {
   // that window and pane index exist. Where either is missing tmux resolves
   // something else — that window's active pane, or a window truly named
   // `v1.2` — and this parser matches nothing, so the answer is undecided.
-  const split = dot > 0 && (/^\d+$/.test(tail) || isPaneId(tail));
-  const window = split ? body.slice(0, dot) : body;
   // A handle in the pane component names its pane whatever window stands
   // beside it, so it is answered before the window is looked at.
-  if (split && isPaneId(tail))
-    return { session, window, pane: "", handle: canonHandle(tail) };
-  if (!exact && selector(window)) return null;
-  return { session, window, pane: split ? tail : "" };
+  if (dot > 0 && isPaneId(tail))
+    return {
+      session,
+      window: body.slice(0, dot),
+      pane: "",
+      handle: canonHandle(tail),
+    };
+  if (dot > 0 && /^\d+$/.test(tail))
+    return { session, window: body.slice(0, dot), pane: tail };
+  if (!exact && selector(body)) return null;
+  // Neither an index nor a handle after the last dot. `window` carries tmux's
+  // retry, the whole rest as one name, and `split` the window part it would
+  // have used; the caller picks between them against the map.
+  return dot > 0
+    ? { session, window: body, pane: "", split: body.slice(0, dot) }
+    : { session, window: body, pane: "" };
 }
 function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
   const at = parseTarget(pane.address);
@@ -139,9 +156,11 @@ function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
  *
  * Empty when the map cannot say: a target naming no session, a session or
  * window this map does not hold, a name tmux would match as a pattern or a
- * prefix, which is matched here as neither, or a window part tmux reads as a
+ * prefix, which is matched here as neither, a window part tmux reads as a
  * selector rather than a name, such as a bare `+`, which may also be some
- * window's literal name.
+ * window's literal name, or a pane component that is neither an index nor a
+ * handle while the window part beside it names a window the map holds, where
+ * tmux stays in that window and resolves something this map does not carry.
  */
 export function targetPanes(
   target: string,
@@ -151,6 +170,17 @@ export function targetPanes(
   const parsed = parseTarget(target);
   if (!parsed) return new Set();
   if (parsed.handle) return new Set([parsed.handle]);
+  // tmux takes the split reading whenever the window part names a window the
+  // server holds, and resolves the pane component inside it — a selector such
+  // as `{last}` or `top`, or that window's active pane for anything it does
+  // not know. None of that is in this map, so the answer is undecided. Only
+  // where no such window exists does tmux retry the whole rest as one name,
+  // which is what `window` carries and what resolves a window named `my.app`.
+  if (parsed.split !== undefined) {
+    const probe = { session: parsed.session, window: parsed.split, pane: "" };
+    for (const [, pane] of panes)
+      if (namesPane(probe, pane)) return new Set<string>();
+  }
   const found = new Set<string>();
   for (const [id, pane] of panes) if (namesPane(parsed, pane)) found.add(id);
   return found;

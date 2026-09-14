@@ -118,6 +118,34 @@ test("a target resolves to the panes it names, in every spelling tmux accepts", 
   expect([...targetPanes("tst:v1.2", parsePanes("%1\ttst:1.0\tv1.2"))]).toEqual(
     [],
   );
+  // Measured on tmux 3.4: which of the two readings tmux takes turns on the
+  // window part, not on the pane component. Where the window part names a
+  // window the server holds, tmux stays in it and resolves the pane component
+  // there — `{last}`, `top` and `+` are its own selectors, and anything it
+  // does not know falls to that window's active pane. None of that is in this
+  // map, so each is undecided rather than a pane in some other window.
+  const inWindow = parsePanes(
+    ["%0\ttst:0.0\tbuild", "%1\ttst:0.1\tbuild", "%2\ttst:1.0\tbuild.app"].join(
+      "\n",
+    ),
+  );
+  for (const suffix of ["{last}", "top", "+", "app"])
+    expect({
+      suffix,
+      named: [...targetPanes(`tst:build.${suffix}`, inWindow)],
+    }).toEqual({ suffix, named: [] });
+  // `app` is in that list because the hazard is not the selector list: a
+  // window literally named `build.app` sits in this map and tmux still reaches
+  // `build`, so matching the whole rest would name a pane tmux never reaches.
+  //
+  // Where the window part names no window, tmux retries the whole rest as one
+  // name, and so does this. That retry is what keeps `vsys:my.app` resolving.
+  expect([
+    ...targetPanes(
+      "tst:nosuch.{last}",
+      parsePanes("%3\ttst:2.0\tnosuch.{last}"),
+    ),
+  ]).toEqual(["%3"]);
 });
 
 test("captured pane text cannot move the cursor, repaint or write the clipboard", () => {

@@ -589,6 +589,18 @@ test("vsys's own pane is marked however the lane's target spells it", () => {
   // The exact-match prefix names that window in tmux and here alike, so it
   // stays decided and the lane keeps its terminal.
   expect(ownPaneMark("vsys:=+", "%1", false, relative, null)).toBe("no");
+  // A special pane suffix beside a window literally named for the whole
+  // string. tmux stays in `build`, where vsys's own pane sits, so naming the
+  // other window's pane and answering `no` would run the capture into vsys's
+  // own screen.
+  const suffix = new Map([
+    ["%0", { address: "tst:0.0", window: "build" }],
+    ["%1", { address: "tst:0.1", window: "build" }],
+    ["%2", { address: "tst:1.0", window: "build.{last}" }],
+  ]);
+  expect(ownPaneMark("tst:build.{last}", "%0", false, suffix, null)).toBe(
+    "unknown",
+  );
 });
 
 test("the pane vsys draws in is marked on the lane, in either form it carries", () => {
