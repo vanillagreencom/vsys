@@ -52,11 +52,7 @@ export const switchCommand = (target: string) =>
  */
 export const isPaneId = (value: string): boolean => /^%\d+$/.test(value);
 
-/**
- * A pane target split into the parts tmux matches a pane on: the session, the
- * window by its index or by its name, and the pane index a target may leave
- * out.
- */
+/** What tmux matches a pane on. The window matches by index or by name. */
 interface PaneTarget {
   session: string;
   window: string;
@@ -66,9 +62,8 @@ interface PaneTarget {
 /** tmux's exact-match prefix. Every match below is exact, so it is dropped. */
 const bare = (name: string): string => name.replace(/^=/, "");
 /**
- * A target as the three parts a pane is matched on. Null when the target
- * names no session: no address in the map carries one either, and which
- * session tmux would supply in its place is not something the map says.
+ * Null when the target names no session: no address in the map carries one
+ * either, and which session tmux would supply is not something the map says.
  */
 function parseTarget(target: string): PaneTarget | null {
   const colon = target.indexOf(":");
@@ -82,7 +77,6 @@ function parseTarget(target: string): PaneTarget | null {
     ? { session, window: rest.slice(0, dot), pane: rest.slice(dot + 1) }
     : { session, window: rest, pane: "" };
 }
-/** Whether a target names this pane, by the window's index or by its name. */
 function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
   const colon = pane.address.indexOf(":");
   const dot = pane.address.lastIndexOf(".");
@@ -101,16 +95,13 @@ function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
  * forces the exact match every comparison here already makes. A handle names
  * itself and needs no map.
  *
- * A set rather than one handle, because a target carrying no pane index names
- * every pane of its window and only the server knows which of them tmux would
- * pick. A caller asking whether a target is one particular pane is answered
- * by a set that leaves that pane out, and left undecided by a set holding it
- * beside others.
+ * A set, because a target carrying no pane index names every pane of its
+ * window and only the server knows which of them tmux would pick.
  *
  * Empty when the map cannot say: a target naming no session, a session or
  * window this map does not hold, or a name tmux would match as a pattern or a
- * prefix, which is matched here as neither. Empty is never the answer that a
- * target is some other pane, which is the answer that permits a capture.
+ * prefix, which is matched here as neither. Empty is never read as naming some
+ * other pane, which is the answer that permits a capture.
  */
 export function targetPanes(
   target: string,

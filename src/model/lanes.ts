@@ -92,7 +92,6 @@ export function lanes(
    * server it read, and an unknown boundary is not one to refuse at.
    */
   const socket = tmux?.socket ?? "";
-  /** The handle of the pane vsys draws in, empty when it draws in none. */
   const own = tmux?.own ?? "";
   const covered = new Set<number>();
   const result: Lane[] = [];
@@ -116,18 +115,11 @@ export function lanes(
     const account = accountName(main, c);
     const pane = paneName(main, c);
     const mine = paneSocket(main);
-    /**
-     * The panes the lane's target names on the server vsys read. A handle
-     * names itself with no map at all; every other spelling is resolved
-     * through the map, so the mark below rests on which pane the target
-     * reaches rather than on how the reader spelled it.
-     */
     const named = pane === "" ? new Set<string>() : targetPanes(pane, panes);
     /**
-     * The lane's own shell sits in the pane vsys draws in. Read from
-     * `TMUX_PANE` alone, which tmux set, rather than from the configured list,
-     * which holds whatever target the reader chose: a handle compares to
-     * another handle, so this stands when the map cannot resolve that target.
+     * Read from `TMUX_PANE` alone rather than the configured list, which holds
+     * whatever target the reader chose: a handle compares to a handle, so this
+     * stands when the map cannot resolve that target.
      */
     const inOwn = own !== "" && firstEnv(main, ["TMUX_PANE"]) === own;
     /**
@@ -143,29 +135,21 @@ export function lanes(
           ? "same"
           : "other";
     const elsewhere = server === "other";
-    // Which pane the command will reach, not how the lane spelled it and not
-    // which server the lane's process sat on: `capture-pane` and
-    // `switch-client` are spawned in vsys's own environment, so tmux resolves
-    // the target against vsys's own server and a target naming vsys's own pane
-    // reaches it whatever server handed the string out. A lane known to be on
-    // another server is answered `no` because `elsewhere` already leaves it
-    // neither read nor offered a switch.
+    // Which pane the command will reach, not which server the lane's process
+    // sat on: `capture-pane` and `switch-client` are spawned in vsys's own
+    // environment, so a target naming vsys's own pane reaches it whatever
+    // server handed the string out. A lane on a server known to differ is `no`
+    // because `elsewhere` already leaves it neither read nor offered a switch.
     //
-    // The target is answered by the set of panes it names. A set holding only
-    // vsys's own pane is `yes`. A set that leaves vsys's own pane out is `no`,
-    // which is the only answer that permits a capture and so the only one that
-    // needs the map to have spoken. Everything else is undecided, and vsys
-    // says so rather than answering `no`: an undecided lane costs its reader
-    // one terminal, and `no` in its place costs the capture that draws vsys's
-    // screen inside itself, one copy deeper on every sample.
-    //
-    // Two undecided cases are settled by the lane's own `TMUX_PANE` instead.
-    // A target tmux would resolve to the window's active pane names several,
-    // and a target the map could not resolve at all names none; in both, a
-    // lane whose own shell sits in vsys's pane is answered `yes`. That reads
-    // the shell rather than the target, so it can refuse a lane whose reader
-    // pointed `VSYS_PANE` at some other pane. It fails toward the message,
-    // never toward the capture.
+    // `no` is the only answer that permits a capture, so it is the only one
+    // the map has to have spoken for: anything undecided says so instead,
+    // costing its reader one terminal where `no` would cost the capture that
+    // draws vsys's screen inside itself, one copy deeper on every sample.
+    // `inOwn` settles the two undecided shapes — a window target naming
+    // several panes, and a target the map could not resolve — by reading the
+    // lane's own shell rather than its target, which is why it can refuse a
+    // lane whose reader pointed `VSYS_PANE` elsewhere. It fails toward the
+    // message, never toward the capture.
     const self: Lane["self"] =
       pane === "" || own === "" || server === "other"
         ? "no"
