@@ -550,6 +550,17 @@ test("vsys's own pane is marked however the lane's target spells it", () => {
   // nothing resolved to compare, and is still `no` because a vsys that draws
   // in no pane has no screen to nest and nothing to collide with.
   expect(ownPaneMark("vsys:bui.1", "", false, panes, null)).toBe("no");
+  // A read that came back with the window's other pane but not vsys's own row,
+  // which is what a vsys drawing in a tmux popup gets. A window-shaped target
+  // names that window, and tmux would send the capture to whichever pane is
+  // active there, which may be vsys's own. The map never said where vsys
+  // draws, so it cannot rule that out and may not answer `no`.
+  const partial = new Map([["%99", { address: "vsys:2.2", window: "build" }]]);
+  expect(ownPaneMark("vsys:2", "%146", false, partial, null)).toBe("unknown");
+  // A handle target is settled against vsys's own handle with no map at all,
+  // so the same partial read still answers `no` and the guard above cannot be
+  // widened into one that refuses every lane after a partial read.
+  expect(ownPaneMark("%99", "%146", false, partial, null)).toBe("no");
 });
 
 test("the pane vsys draws in is marked on the lane, in either form it carries", () => {

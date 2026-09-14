@@ -90,7 +90,12 @@ export function ownPaneMark(
 ): Lane["self"] {
   if (target === "" || own === "" || elsewhere) return "no";
   const named = targetPanes(target, panes);
-  if (named.size > 0 && !named.has(own)) return "no";
+  // `no` permits the capture, so it needs the map to have spoken about vsys's
+  // own pane. A handle target is compared against vsys's own handle directly
+  // and needs no map entry; every other target does, and a listing that came
+  // back without vsys's own row settles nothing about the panes beside it.
+  if (named.size > 0 && !named.has(own) && (isPaneId(target) || panes.has(own)))
+    return "no";
   return (named.size === 1 && named.has(own)) || handle === own
     ? "yes"
     : "unknown";

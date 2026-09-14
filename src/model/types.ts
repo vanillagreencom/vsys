@@ -209,9 +209,9 @@ export interface Lane {
    * cannot give read as `no` opens the capture this exists to close. Only `no`
    * permits a read, a switch or a copied command, and it is the one answer the
    * pane map must have spoken for: the lane's target resolves to the set of
-   * panes it names, and a set leaving vsys's own pane out is `no`. A target
-   * the map cannot settle is decided by the handle in the lane's own
-   * environment, or left undecided.
+   * panes it names, and a set leaving vsys's own pane out is `no` where the
+   * map named that pane. A target the map cannot settle is decided by the
+   * handle in the lane's own environment, or left undecided.
    */
   self: "yes" | "no" | "unknown";
   title: string;
