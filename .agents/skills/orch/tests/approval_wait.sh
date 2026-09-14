@@ -46,6 +46,17 @@ git -C "$TMP_ROOT/repo" config user.name Test
 #   "Review Bot" run (older failure + newer terminal run, plus an unrelated
 #   "Other Check") on headsha1 only; success_stale publishes it on oldsha
 #   only, so the current-head query finds nothing.
+#   Automatic-review target set: `api repos/owner/repo` answers the default
+#   branch (STUB_DEFAULT_BRANCH, or a 500 under STUB_DEFAULT_BRANCH_MODE=fail);
+#   `api repos/*/rulesets` and its detail answer ruleset 1 carrying the
+#   copilot_code_review rule — STUB_RULESET_INCLUDE / STUB_RULESET_EXCLUDE are
+#   its space-separated ref_name conditions and STUB_RULESET_DETAIL_MODE=fail
+#   fails its detail read; STUB_RULESET2_INCLUDE / STUB_RULESET2_EXCLUDE give
+#   ruleset 2, walked first, a rule of its own. STUB_RULESETS_MODE=none drops
+#   the rule; fail, denied, not_found and rate_limited fail the listing with a
+#   500, a 403, a 404 and a rate-limited 403; paged moves ruleset 1 to a second
+#   page that only --paginate reads. Every `pr view` payload carries
+#   STUB_BASE_REF.
 #   Commit statuses: `api repos/*/commits/<sha>/status` (combined status)
 #   answers likewise — STUB_STATUS_MODE=success_at_head/pending_at_head/
 #   failure_at_head/error_at_head publishes a "Review Bot" context (older
@@ -65,6 +76,22 @@ _stub_auth_ok() {
   fi
   [[ "${STUB_GH_DENY_KEYRING:-0}" == "1" ]] && return 1
   return 0
+}
+
+# A JSON array from space-separated words, for the ruleset ref_name conditions.
+_stub_json_array() { # WORDS
+  local out="" word
+  for word in $1; do
+    [[ -n "$out" ]] && out+=","
+    out+="\"$word\""
+  done
+  printf '[%s]' "$out"
+}
+
+# A ruleset detail carrying the copilot_code_review rule beside a deletion rule.
+_stub_copilot_ruleset() { # ID INCLUDE_WORDS EXCLUDE_WORDS
+  printf '{"id":%s,"target":"branch","enforcement":"active","conditions":{"ref_name":{"include":%s,"exclude":%s}},"rules":[{"type":"deletion"},{"type":"copilot_code_review","parameters":{"review_on_push":true,"review_draft_pull_requests":false}}]}\n' \
+    "$1" "$(_stub_json_array "$2")" "$(_stub_json_array "$3")"
 }
 
 _bump_count() {
@@ -102,6 +129,57 @@ case "${1:-}" in
     if [[ "${2:-}" == "user" ]]; then
       _stub_auth_ok || { echo "HTTP 401: Bad credentials" >&2; exit 1; }
       echo "test-user"
+      exit 0
+    fi
+    # Repository metadata: approval-wait reads only .default_branch, through
+    # gh's own -q filter, so the stub answers with the branch name.
+    if [[ "${2:-}" == "repos/owner/repo" ]]; then
+      _stub_auth_ok || { echo "HTTP 401: Bad credentials" >&2; exit 1; }
+      if [[ "${STUB_DEFAULT_BRANCH_MODE:-ok}" == "fail" ]]; then
+        echo "HTTP 500: Internal Server Error" >&2
+        exit 1
+      fi
+      printf '%s\n' "${STUB_DEFAULT_BRANCH:-main}"
+      exit 0
+    fi
+    # Ruleset listing: no rules or conditions, exactly as GitHub's does. The
+    # copilot_code_review rule lives on ruleset 1 alone, behind a tag ruleset, an
+    # inactive branch ruleset and a branch ruleset with only a deletion rule, so
+    # the walk must filter and step past all three to find it.
+    if [[ "${2:-}" == repos/*/rulesets ]]; then
+      _stub_auth_ok || { echo "HTTP 401: Bad credentials" >&2; exit 1; }
+      case "${STUB_RULESETS_MODE:-copilot}" in
+        fail) echo "HTTP 500: Internal Server Error" >&2; exit 1 ;;
+        denied) echo "HTTP 403: Resource not accessible by integration" >&2; exit 1 ;;
+        not_found) echo "HTTP 404: Not Found" >&2; exit 1 ;;
+        rate_limited) echo "HTTP 403: API rate limit exceeded for installation ID 1." >&2; exit 1 ;;
+        none) echo '[{"id":2,"target":"branch","enforcement":"active"}]' ;;
+        paged)
+          echo '[{"id":3,"target":"tag","enforcement":"active"},{"id":2,"target":"branch","enforcement":"active"}]'
+          if [[ " $* " == *" --paginate "* ]]; then
+            echo '[{"id":1,"target":"branch","enforcement":"active"}]'
+          fi
+          ;;
+        *) echo '[{"id":3,"target":"tag","enforcement":"active"},{"id":4,"target":"branch","enforcement":"evaluate"},{"id":2,"target":"branch","enforcement":"active"},{"id":1,"target":"branch","enforcement":"active"}]' ;;
+      esac
+      exit 0
+    fi
+    if [[ "${2:-}" == repos/*/rulesets/* ]]; then
+      _stub_auth_ok || { echo "HTTP 401: Bad credentials" >&2; exit 1; }
+      ruleset_id="${2##*/}"
+      if [[ "$ruleset_id" == "2" && -n "${STUB_RULESET2_INCLUDE:-}" ]]; then
+        _stub_copilot_ruleset 2 "$STUB_RULESET2_INCLUDE" "${STUB_RULESET2_EXCLUDE:-}"
+        exit 0
+      fi
+      if [[ "$ruleset_id" != "1" ]]; then
+        printf '{"id":%s,"target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~ALL"],"exclude":[]}},"rules":[{"type":"deletion"}]}\n' "$ruleset_id"
+        exit 0
+      fi
+      if [[ "${STUB_RULESET_DETAIL_MODE:-ok}" == "fail" ]]; then
+        echo "HTTP 500: Internal Server Error" >&2
+        exit 1
+      fi
+      _stub_copilot_ruleset 1 "${STUB_RULESET_INCLUDE:-~DEFAULT_BRANCH}" "${STUB_RULESET_EXCLUDE:-}"
       exit 0
     fi
     if [[ "${2:-}" == repos/*/pulls/*/reviews ]]; then
@@ -277,22 +355,22 @@ case "${1:-}" in
         fi
         case "$mode" in
           approved_decision)
-            echo '{"reviewDecision":"APPROVED","headRefOid":"headsha1","latestReviews":[{"author":{"login":"reviewer1"},"state":"APPROVED"}]}'
+            echo '{"reviewDecision":"APPROVED","headRefOid":"headsha1","baseRefName":"'"${STUB_BASE_REF:-main}"'","latestReviews":[{"author":{"login":"reviewer1"},"state":"APPROVED"}]}'
             ;;
           approved_latest)
-            echo '{"reviewDecision":"","headRefOid":"headsha1","latestReviews":[{"author":{"login":"reviewer1"},"state":"APPROVED"},{"author":{"login":"colleague"},"state":"COMMENTED"}]}'
+            echo '{"reviewDecision":"","headRefOid":"headsha1","baseRefName":"'"${STUB_BASE_REF:-main}"'","latestReviews":[{"author":{"login":"reviewer1"},"state":"APPROVED"},{"author":{"login":"colleague"},"state":"COMMENTED"}]}'
             ;;
           changes)
-            echo '{"reviewDecision":"","headRefOid":"headsha1","latestReviews":[{"author":{"login":"reviewer1"},"state":"CHANGES_REQUESTED"},{"author":{"login":"colleague"},"state":"APPROVED"}]}'
+            echo '{"reviewDecision":"","headRefOid":"headsha1","baseRefName":"'"${STUB_BASE_REF:-main}"'","latestReviews":[{"author":{"login":"reviewer1"},"state":"CHANGES_REQUESTED"},{"author":{"login":"colleague"},"state":"APPROVED"}]}'
             ;;
           commented_only)
-            echo '{"reviewDecision":"","headRefOid":"headsha1","latestReviews":[{"author":{"login":"reviewer1"},"state":"COMMENTED"}]}'
+            echo '{"reviewDecision":"","headRefOid":"headsha1","baseRefName":"'"${STUB_BASE_REF:-main}"'","latestReviews":[{"author":{"login":"reviewer1"},"state":"COMMENTED"}]}'
             ;;
           required_pending)
-            echo '{"reviewDecision":"REVIEW_REQUIRED","headRefOid":"headsha1","latestReviews":[{"author":{"login":"colleague"},"state":"APPROVED"}]}'
+            echo '{"reviewDecision":"REVIEW_REQUIRED","headRefOid":"headsha1","baseRefName":"'"${STUB_BASE_REF:-main}"'","latestReviews":[{"author":{"login":"colleague"},"state":"APPROVED"}]}'
             ;;
           none|*)
-            echo '{"reviewDecision":"","headRefOid":"headsha1","latestReviews":[]}'
+            echo '{"reviewDecision":"","headRefOid":"headsha1","baseRefName":"'"${STUB_BASE_REF:-main}"'","latestReviews":[]}'
             ;;
         esac
         exit 0
@@ -310,7 +388,7 @@ case "${1:-}" in
             head="headsha2"
           fi
         fi
-        printf '{"headRefOid":"%s","author":{"login":"pr-author"}}\n' "$head"
+        printf '{"headRefOid":"%s","author":{"login":"pr-author"},"baseRefName":"%s"}\n' "$head" "${STUB_BASE_REF:-main}"
         exit 0
       fi
     fi
@@ -347,7 +425,8 @@ run_wait() {
   [[ -z "$env_list" ]] || IFS=',' read -ra env_args <<<"$env_list"
   set +e
   OUT=$(cd "$TMP_ROOT/repo" && PATH="$TMP_ROOT/bin:$PATH" \
-    env ${env_args[@]+"${env_args[@]}"} \
+    env -u GH_REPO -u PR_REVIEW_GATE -u PR_APPROVAL_GATE \
+        -u REVIEW_GATE_MODE -u REVIEW_GATE_SETTINGS_FILE ${env_args[@]+"${env_args[@]}"} \
         STUB_APPROVAL_COUNT_FILE="$RUN/approval-polls" \
         STUB_REVIEWS_COUNT_FILE="$RUN/review-polls" \
         STUB_HEAD_COUNT_FILE="$RUN/head-polls" \
@@ -373,7 +452,10 @@ count_lines() { # FILE — 0 when it was never written
 #   status_queries                  combined-status reads the stub served
 #   marker_posts                    commit-status POSTs the stub received
 #   outage_marker                   whether the JSON carries that field
+#   target_patterns   auto_review_targets joined, so a row compares as one word
 #   transient_errors_seen           transient_api_errors >= 1
+#   text_repo the repo field on the plain result's first line
+#   error_line  first line of the JSON error, spaces encoded as +
 observe() {
   local got="" token name
   for token in $1; do
@@ -383,12 +465,17 @@ observe() {
       early) got="$got early=$(json '.elapsed_seconds < 3')" ;;
       spent) got="$got spent=$(json '.elapsed_seconds >= 3')" ;;
       stdout) got="$got stdout=$([[ -n "$OUT" ]] && echo line || echo empty)" ;;
+      text_status) got="$got text_status=$(sed -n '1s/^approval-wait: result status=\([^ ]*\).*$/\1/p' <<<"$OUT")" ;;
+      text_repo) got="$got text_repo=$(sed -n '1s/^approval-wait: result .* repo=\([^ ]*\).*$/\1/p' <<<"$OUT")" ;;
+      error_line) got="$got error_line=$(json '.error | split("\n")[0]' | tr ' ' '+')" ;;
+      stderr_line) got="$got stderr_line=$(sed -n '1p' "$RUN/stderr" | tr ' ' '+')" ;;
       approval_polls) got="$got approval_polls=$(cat "$RUN/approval-polls" 2>/dev/null || echo 0)" ;;
       review_polls) got="$got review_polls=$(cat "$RUN/review-polls" 2>/dev/null || echo 0)" ;;
       status_queries) got="$got status_queries=$(count_lines "$RUN/status-queries")" ;;
       marker_posts) got="$got marker_posts=$(count_lines "$RUN/marker-posts")" ;;
       outage_marker) got="$got outage_marker=$(json 'has("outage_marker")')" ;;
       transient_errors_seen) got="$got transient_errors_seen=$(json '.transient_api_errors >= 1')" ;;
+      target_patterns) got="$got target_patterns=$(json '.auto_review_targets | join(",")')" ;;
       *) got="$got $name=$(json ".$name")" ;;
     esac
   done
@@ -490,6 +577,40 @@ table "$REVIEW" \
   'a head that moved in the last-poll to emit window falls back to timeout||STUB_REVIEWS_MODE=none,STUB_CONFIRM_HEAD=headsha2,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=timeout' \
   'a proceed posts no commit status and emits no outage marker||STUB_REVIEWS_MODE=none,PR_REVIEW_ON_TIMEOUT=proceed,PR_REVIEW_OUTAGE_CONTEXT=kendex-reviewer-outage|rc=0 status=proceeded marker_posts=0 outage_marker=false'
 
+echo "=== the automatic-review target set decides whether silence is a timeout or unreviewable ==="
+# The automatic reviewer is armed by any active branch ruleset carrying a
+# copilot_code_review rule; a base draws one when such a ruleset includes it
+# and that same ruleset does not exclude it. A base outside that set can never
+# draw one, so silence there is "unreviewable" (exit 1) under either on-timeout
+# policy, never the fail-open "proceeded" — while the same silence on a covered
+# base still proceeds. A reviewer that engaged is a timeout wherever the base
+# sits, and a target set that could not be read or judged is a timeout too: only
+# a listing denied as a permission, or one with no ruleset carrying the rule,
+# lets the default branch stand in, and a glob pattern is never matched.
+# The patterns and the listing answers are shaped input, one asserted row per
+# shape.
+table "$REVIEW" \
+  'an untargeted base under proceed is unreviewable, not proceeded||STUB_REVIEWS_MODE=none,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=unreviewable base_ref=stack-base auto_review_targeted=false auto_review_target_source=ruleset target_patterns=~DEFAULT_BRANCH' \
+  'an untargeted base under block is unreviewable, not a timeout||STUB_REVIEWS_MODE=none,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=block|rc=1 status=unreviewable' \
+  'control: the same silence on the targeted base still proceeds||STUB_REVIEWS_MODE=none,STUB_BASE_REF=main,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 status=proceeded auto_review_targeted=true' \
+  'a reviewer engaged on an untargeted base is a timeout, not unreviewable||STUB_REVIEWS_MODE=none,STUB_CHECKS_MODE=failure_at_head,PR_REVIEW_CHECK=Review Bot,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=timeout' \
+  'approval mode reads the same base and reaches the same verdict|1 1 3 --json|STUB_APPROVAL_MODE=none,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=unreviewable base_ref=stack-base' \
+  'a ~ALL ruleset covers a stacked base||STUB_REVIEWS_MODE=none,STUB_RULESET_INCLUDE=~ALL,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 status=proceeded auto_review_targeted=true target_patterns=~ALL' \
+  'a ref pattern is matched as the full literal ref||STUB_REVIEWS_MODE=none,STUB_RULESET_INCLUDE=refs/heads/stack-base,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 status=proceeded auto_review_targeted=true' \
+  'an exclude pattern beats the include||STUB_REVIEWS_MODE=none,STUB_RULESET_INCLUDE=~ALL,STUB_RULESET_EXCLUDE=refs/heads/stack-base,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=unreviewable auto_review_targeted=false' \
+  'a base any one Copilot ruleset covers is targeted, over the union of includes||STUB_REVIEWS_MODE=none,STUB_RULESET2_INCLUDE=~DEFAULT_BRANCH,STUB_RULESET_INCLUDE=refs/heads/stack-base,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 status=proceeded auto_review_targeted=true target_patterns=~DEFAULT_BRANCH,refs/heads/stack-base' \
+  "an exclude narrows only its own ruleset, not another's include||STUB_REVIEWS_MODE=none,STUB_RULESET2_INCLUDE=~ALL,STUB_RULESET2_EXCLUDE=refs/heads/stack-base,STUB_RULESET_INCLUDE=refs/heads/stack-base,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 status=proceeded auto_review_targeted=true" \
+  'a Copilot ruleset on a later listing page is read||STUB_REVIEWS_MODE=none,STUB_RULESETS_MODE=paged,STUB_RULESET_INCLUDE=refs/heads/stack-base,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 status=proceeded auto_review_target_source=ruleset' \
+  'a glob pattern leaves the set unresolved, since GitHub does not match * across /||STUB_REVIEWS_MODE=none,STUB_RULESET_INCLUDE=refs/heads/release/*,STUB_BASE_REF=release/foo/bar,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=timeout auto_review_target_source=unresolved' \
+  'no ruleset carries the rule, so the default branch is the whole set||STUB_REVIEWS_MODE=none,STUB_RULESETS_MODE=none,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=unreviewable auto_review_target_source=default_branch target_patterns=~DEFAULT_BRANCH' \
+  'a listing denied with 403 falls back to the default branch||STUB_REVIEWS_MODE=none,STUB_RULESETS_MODE=denied,STUB_BASE_REF=main,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 status=proceeded auto_review_target_source=default_branch' \
+  'a listing answered 404 falls back to the default branch||STUB_REVIEWS_MODE=none,STUB_RULESETS_MODE=not_found,STUB_BASE_REF=main,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 status=proceeded auto_review_target_source=default_branch' \
+  'a rate-limited 403 listing is unresolved, not a denial||STUB_REVIEWS_MODE=none,STUB_RULESETS_MODE=rate_limited,STUB_BASE_REF=main,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=timeout auto_review_target_source=unresolved' \
+  'any other listing failure is unresolved, not the default branch||STUB_REVIEWS_MODE=none,STUB_RULESETS_MODE=fail,STUB_BASE_REF=main,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=timeout auto_review_target_source=unresolved' \
+  'a failed ruleset detail read is unresolved||STUB_REVIEWS_MODE=none,STUB_RULESET_DETAIL_MODE=fail,STUB_BASE_REF=main,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=timeout auto_review_target_source=unresolved' \
+  'a denied listing with no readable default branch is unresolved||STUB_REVIEWS_MODE=none,STUB_RULESETS_MODE=denied,STUB_DEFAULT_BRANCH_MODE=fail,STUB_BASE_REF=main,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=timeout auto_review_target_source=unresolved target_patterns=' \
+  'a ruleset naming ~DEFAULT_BRANCH with no readable default branch is unresolved||STUB_REVIEWS_MODE=none,STUB_DEFAULT_BRANCH_MODE=fail,STUB_BASE_REF=stack-base,PR_REVIEW_ON_TIMEOUT=proceed|rc=1 status=timeout auto_review_target_source=unresolved'
+
 echo "=== transient GitHub API failures are retried inside the budget and counted ==="
 # A 5xx or 429 from the reviews listing, or from the approval-mode pr view, is
 # absorbed with backoff and reported as transient_api_errors on the eventual
@@ -502,6 +623,19 @@ table "$REVIEW" \
   'a 404 is terminal at once with no transient count||STUB_REVIEWS_MODE=http_404|rc=1 status=error transient_api_errors=null early=true' \
   'approval-mode pr view 503s then an approval is approved with the count|1 1 3 --json|STUB_APPROVAL_MODE=approved_after_503|rc=0 status=approved transient_api_errors=2'
 
+echo "=== the verdict names the repository it read ==="
+# `gh repo view` answers for the working directory and ignores GH_REPO, so a
+# wait launched from this checkout for another repository's PR read this
+# checkout's same-numbered PR. GH_REPO decides; a value that is not owner/name
+# is refused before any review read, never sent to an API path that cannot
+# hold it. The refusal names the rejected value in its diagnostic and leaves
+# the result's repo empty, so nothing reads an unvalidated candidate as the
+# repository the verdict is about.
+table "$APPROVAL" \
+  'GH_REPO names the repository, over the checkout gh repo view answers for||GH_REPO=other/elsewhere,STUB_APPROVAL_MODE=approved_decision|rc=0 status=approved repo=other/elsewhere' \
+  'GH_REPO unset names the checkout||STUB_APPROVAL_MODE=approved_decision|rc=0 status=approved repo=owner/repo' \
+  'a GH_REPO that is not owner/name is refused||GH_REPO=elsewhere,STUB_APPROVAL_MODE=approved_decision|rc=1 status=error repo= error_line=approval-wait:+repo-shape+repo=elsewhere'
+
 echo "=== text mode prints a result line for every branch the emitter has ==="
 # The line's wording is not a contract anything parses; what holds is that no
 # terminal status leaves stdout empty, with the same exit code as --json. The
@@ -509,20 +643,22 @@ echo "=== text mode prints a result line for every branch the emitter has ==="
 # reviewed, so each branch is a row.
 TEXT_REVIEW='1 1 3 --mode review'
 table '1 1 3' \
-  'approval: approved||STUB_APPROVAL_MODE=approved_decision|rc=0 stdout=line' \
-  'approval: changes requested||STUB_APPROVAL_MODE=changes|rc=1 stdout=line' \
-  'approval: comments||STUB_APPROVAL_MODE=none,STUB_THREADS_UNRESOLVED=2|rc=1 stdout=line' \
-  'approval: timeout||STUB_APPROVAL_MODE=none|rc=1 stdout=line' \
-  'approval: error||GH_TOKEN=bad-token,STUB_GH_DENY_KEYRING=1|rc=3 stdout=line' \
-  'approval: proceeded||STUB_APPROVAL_MODE=none,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 stdout=line' \
-  "review: reviewed via a review object|$TEXT_REVIEW|STUB_REVIEWS_MODE=commented_at_head|rc=0 stdout=line" \
-  "review: reviewed via a check-run|$TEXT_REVIEW|STUB_REVIEWS_MODE=none,STUB_CHECKS_MODE=success_at_head,PR_REVIEW_CHECK=Review Bot|rc=0 stdout=line" \
-  "review: reviewed via a commit status|$TEXT_REVIEW|STUB_REVIEWS_MODE=none,STUB_STATUS_MODE=success_at_head,PR_REVIEW_CHECK=Review Bot|rc=0 stdout=line" \
-  "review: changes requested|$TEXT_REVIEW|STUB_REVIEWS_MODE=changes_standing|rc=1 stdout=line" \
-  "review: comments|$TEXT_REVIEW|STUB_REVIEWS_MODE=commented_at_head,STUB_THREADS_UNRESOLVED=2|rc=1 stdout=line" \
-  "review: timeout|$TEXT_REVIEW|STUB_REVIEWS_MODE=none|rc=1 stdout=line" \
-  "review: error|$TEXT_REVIEW|GH_TOKEN=bad-token,STUB_GH_DENY_KEYRING=1|rc=3 stdout=line" \
-  "review: proceeded|$TEXT_REVIEW|STUB_REVIEWS_MODE=none,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 stdout=line"
+  'approval: approved||STUB_APPROVAL_MODE=approved_decision|rc=0 text_status=approved' \
+  'approval: changes requested||STUB_APPROVAL_MODE=changes|rc=1 text_status=changes_requested' \
+  'approval: comments||STUB_APPROVAL_MODE=none,STUB_THREADS_UNRESOLVED=2|rc=1 text_status=comments' \
+  'approval: timeout||STUB_APPROVAL_MODE=none|rc=1 text_status=timeout' \
+  'approval: error||GH_TOKEN=bad-token,STUB_GH_DENY_KEYRING=1|rc=3 text_status=error' \
+  'approval: proceeded||STUB_APPROVAL_MODE=none,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 text_status=proceeded' \
+  "review: reviewed via a review object|$TEXT_REVIEW|STUB_REVIEWS_MODE=commented_at_head|rc=0 text_status=reviewed" \
+  "review: reviewed via a check-run|$TEXT_REVIEW|STUB_REVIEWS_MODE=none,STUB_CHECKS_MODE=success_at_head,PR_REVIEW_CHECK=Review Bot|rc=0 text_status=reviewed" \
+  "review: reviewed via a commit status|$TEXT_REVIEW|STUB_REVIEWS_MODE=none,STUB_STATUS_MODE=success_at_head,PR_REVIEW_CHECK=Review Bot|rc=0 text_status=reviewed" \
+  "review: changes requested|$TEXT_REVIEW|STUB_REVIEWS_MODE=changes_standing|rc=1 text_status=changes_requested" \
+  "review: comments|$TEXT_REVIEW|STUB_REVIEWS_MODE=commented_at_head,STUB_THREADS_UNRESOLVED=2|rc=1 text_status=comments" \
+  "review: timeout|$TEXT_REVIEW|STUB_REVIEWS_MODE=none|rc=1 text_status=timeout" \
+  "review: error|$TEXT_REVIEW|GH_TOKEN=bad-token,STUB_GH_DENY_KEYRING=1|rc=3 text_status=error" \
+  "review: proceeded|$TEXT_REVIEW|STUB_REVIEWS_MODE=none,PR_REVIEW_ON_TIMEOUT=proceed|rc=0 text_status=proceeded" \
+  "review: unreviewable|$TEXT_REVIEW|STUB_REVIEWS_MODE=none,STUB_BASE_REF=stack-base|rc=1 text_status=unreviewable" \
+  'the result line names the repository it read||GH_REPO=other/elsewhere,STUB_APPROVAL_MODE=approved_decision|rc=0 text_status=approved text_repo=other/elsewhere'
 
 echo "=== PR_REVIEW_WAIT_SECS: an absent max_wait positional resolves through orch-env ==="
 # Process env beats kendex.settings.toml [env], and an explicit positional
@@ -545,6 +681,21 @@ for row in "${waitsecs_rows[@]}"; do
   run_wait "$env" $args
   assert_eq "$(observe "$expect")" "$expect" "waitsecs: $label" "$RUN/stderr"
 done
+rm -f "$TMP_ROOT/repo/kendex.settings.toml"
+
+echo "=== an absent --mode uses the project's reviewer gate ==="
+printf '[env]\nPR_REVIEW_GATE = "review"\n' >"$TMP_ROOT/repo/kendex.settings.toml"
+table "$APPROVAL" \
+  'the settings-file review mode accepts a reviewed head||STUB_REVIEWS_MODE=commented_at_head|rc=0 status=reviewed mode=review' \
+  'an explicit approval mode still needs approval|1 1 3 --json --mode approval|STUB_REVIEWS_MODE=commented_at_head|rc=1 status=timeout' \
+  'a disabled gate has no verdict to wait for||PR_REVIEW_GATE=off|rc=2 stdout=empty stderr_line=approval-wait:+gate-off+mode=off'
+printf '%s\n' 'echo private-env-loaded' >"$TMP_ROOT/repo/.env.local"
+table "$APPROVAL" \
+  'private env output does not corrupt the resolved mode||STUB_REVIEWS_MODE=commented_at_head|rc=0 status=reviewed mode=review stderr_line=private-env-loaded'
+rm -f "$TMP_ROOT/repo/.env.local"
+printf 'PR_REVIEW_GATE = "approval"\n' >>"$TMP_ROOT/repo/kendex.settings.toml"
+table "$APPROVAL" \
+  'a settings parse failure cannot select a default||STUB_APPROVAL_MODE=approved_decision|rc=2 stdout=empty stderr_line=review-gate-error=settings-duplicate+value=PR_REVIEW_GATE'
 rm -f "$TMP_ROOT/repo/kendex.settings.toml"
 
 echo "=== a failed emit_result never reports a successful gate ==="

@@ -15,9 +15,44 @@
 # artifact_content_gates is the single entry point; the individual gates below
 # are its steps and are not called directly by review-artifact-check.
 #
+# Rejection details start with `review-artifact-check: <code> key=value ...`.
+# English explanation follows that line. emit_unavailable retains the JSON
+# result protocol even when jq cannot encode it, and the EXIT trap below names
+# the status of an abort that produced no result at all.
 # Sourced by: review-artifact-check.
 
 set -euo pipefail
+
+# Whether the check has already described its outcome — a JSON result on
+# stdout, or a keyed line on stderr. `finish` records a described exit, and
+# every emitter records its own write, because errexit can end the script at
+# the emitter itself (a broken jq makes `emit` return nonzero) after the
+# fallback result has already landed on stdout. An exit that left this at 0 is
+# an abort nothing described: errexit ends the script where a helper died, and
+# its bare status beside an empty stdout reads to a caller like a rejection.
+review_artifact_reported=0
+finish() {
+  review_artifact_reported=1
+  exit "$1"
+}
+# printf and arithmetic only, since a fork is what tends to have failed. BEST
+# EFFORT, AND THE LIMIT IS BASH'S: the EXIT trap runs for a helper that ran and
+# exited nonzero and for a command substitution that could not fork, but NOT
+# for a simple command that cannot fork — the poll loop's `sleep` under real
+# fork exhaustion — where bash ends the shell with status 127 and runs no trap,
+# so the exit status is the contract and this line is the courtesy.
+#
+# It is therefore PRESENT on stderr, never promised first. The stable-first-line
+# contract covers the refusals the check authors at a decision point, which it
+# writes before anything else; a trap that runs AFTER the command that failed
+# cannot outrun that command's own diagnostic, and must not claim to.
+review_artifact_exit_report() {
+  local status="$1"
+  (( status != 0 )) || return 0
+  (( review_artifact_reported == 0 )) || return 0
+  printf 'review-artifact-check: exit=%s\n' "$status" >&2
+  printf 'The check ended without a result. No artifact was accepted or rejected.\n' >&2
+}
 
 # Last-resort emitter: no jq, no substitution, nothing that can fail. It lives
 # here rather than in review-artifact-check because the error channel below is
@@ -26,7 +61,7 @@ set -euo pipefail
 # the status a legitimate rejection uses, so a caller reading .ok got an empty
 # parse and a caller reading the status read "artifact rejected".
 emit_unavailable() {
-  local detail="${1:-review-artifact-check could not run, so no artifact could be validated}"
+  local detail="${1:-The artifact check could not run.}" dependency="${2:-unknown}"
   # The detail is interpolated into a JSON literal with no encoder available —
   # by design, since this runs when jq or mktemp has already failed — so it is
   # made safe by REMOVING what JSON cannot carry raw, never by escaping it in
@@ -38,7 +73,8 @@ emit_unavailable() {
   detail="${detail//\"/}"
   detail="${detail//[[:cntrl:]]/ }"
   while [[ "$detail" == *"  "* ]]; do detail="${detail//  / }"; done
-  printf '{"ok":false,"path":null,"reason":"invalid","detail":"%s"}\n' "$detail"
+  printf '{"ok":false,"path":null,"reason":"invalid","detail":"review-artifact-check: unavailable dependency=%s\\n%s"}\n' "$dependency" "$detail"
+  review_artifact_reported=1
 }
 
 # jq's stderr lands here and is read only when the gate's exit status says the
@@ -58,14 +94,15 @@ case "$review_artifact_gate_tmp_root" in
   *) review_artifact_gate_tmp_root="./$review_artifact_gate_tmp_root" ;;
 esac
 review_artifact_gate_err="$(mktemp "$review_artifact_gate_tmp_root/review-artifact-check.XXXXXX" 2>/dev/null)" || {
-  emit_unavailable "review-artifact-check could not create its temporary error channel (mktemp failed; check TMPDIR and free space), so no artifact could be validated"
+  emit_unavailable "The check could not create its temporary error channel. Check TMPDIR and free space." mktemp
   exit 1
 }
 review_artifact_gate_cleanup() { rm -f "$review_artifact_gate_err"; }
 # INT/TERM as well as EXIT: this orchestrator arms backgrounded --wait
 # watchdogs on every round and kills them at their deadline, and an untrapped
-# signal leaks the file.
-trap 'review_artifact_gate_cleanup' EXIT
+# signal leaks the file. The report comes before the cleanup, whose `rm` is the
+# external command a fork-starved run cannot start.
+trap 'review_artifact_exit_report "$?"; review_artifact_gate_cleanup' EXIT
 trap 'review_artifact_gate_cleanup; exit 130' INT
 trap 'review_artifact_gate_cleanup; exit 143' TERM
 
@@ -138,7 +175,8 @@ review_artifact_measurement_suppressed=""
 # ride on stdout.
 gate_filter() {
   local file="$1" program="$2" out rc=0
-  out="$(jq -r "$program" "$file" 2>"$review_artifact_gate_err")" || rc=$?
+  shift 2
+  out="$(jq -r "$@" "$program" "$file" 2>"$review_artifact_gate_err")" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     return "$rc"
   fi
@@ -151,7 +189,7 @@ gate_filter() {
 gate_failure_detail() {
   local rc="$1" err=""
   err="$(tr '\n\t' '  ' < "$review_artifact_gate_err" 2>/dev/null || printf '')"
-  printf 'gate could not run: jq exited %s%s' "$rc" "${err:+: $err}"
+  printf 'review-artifact-check: gate_failed jq_exit=%s\n%s' "$rc" "$err"
 }
 
 # disposition_allows_fallback
@@ -175,9 +213,9 @@ self_reports_no_review() {
     (.qa_metadata? // {}) as $qa
     | if (($qa | type) == "object") then
         if ($qa.review_performed == false)
-          then "qa_metadata.review_performed is false — the artifact states no review happened, which no verdict overrides"
+          then "review-artifact-check: no_review review_performed=false\nThe artifact states that no review happened."
         elif ((($qa.reason // "") | tostring) | test("no[ _-]?(scope|review)|not[ _-]?reviewed"; "i"))
-          then "qa_metadata.reason admits no review happened: \"\($qa.reason)\""
+          then "review-artifact-check: no_review review_reason=\($qa.reason | @json)\nThe reason states that no review happened."
         else "" end
       else "" end
   '
@@ -196,16 +234,16 @@ self_reports_no_review() {
 qa_shaped_incomplete() {
   gate_filter "$1" '
     # gate:qa-shape
-    def shape($k): if (has($k) | not) then "\($k)[] is absent"
+    def shape($k): if (has($k) | not) then "\($k)=absent"
       else (.[$k] | type) as $t
         | if $t == "array" then empty
-          elif $t == "null" then "\($k)[] is null"
-          else "\($k)[] is \($t), not an array" end
+          elif $t == "null" then "\($k)=null"
+          else "\($k)=\($t)" end
       end ;
     if ((.qa_metadata? | type) == "object") then
       ( [ shape("blockers"), shape("suggestions") ] ) as $bad
       | if ($bad | length) > 0
-        then "\($bad | join("; ")) — declaring qa_metadata commits the artifact to both finding"
+        then "review-artifact-check: finding_arrays \($bad | join(" "))\nDeclaring qa_metadata commits the artifact to both finding"
              + " arrays, empty ones included: a review with nothing to say writes []. An artifact"
              + " with no qa_metadata does not have to carry them."
         else "" end
@@ -259,7 +297,7 @@ finding_item_detail() {
                      and (($item | type) == "object")
                      and ($item.category != null)
                      and ((["fix","issue"] | index($item.category | tostring)) == null)
-                  then ["category(not fix|issue)"] else [] end )
+                  then ["category:enum"] else [] end )
                 as $badcat
               # A present-but-blank impact is as unroutable as a missing one:
               # the filing bar adjudicates its text.
@@ -268,7 +306,7 @@ finding_item_detail() {
                      and ($item.category == "issue")
                      and ($item.impact != null)
                      and ((($item.impact | type) != "string") or (($item.impact | tostring | gsub("\\s";"")) == ""))
-                  then ["impact(blank)"] else [] end )
+                  then ["impact:blank"] else [] end )
                 as $blankimpact
               # priority in 1..4, estimate in 1..5 per review-finding.md — a present
               # but non-numeric or out-of-range value is unusable, not just the
@@ -280,7 +318,7 @@ finding_item_detail() {
                            {f:"estimate", v:$item.estimate, lo:1, hi:5} ]
                          | map(select(.v != null
                              and (((.v | type) != "number") or (.v < .lo) or (.v > .hi))))
-                         | map("\(.f)(not \(.lo)..\(.hi))") )
+                         | map("\(.f):range[\(.lo),\(.hi)]") )
                   else [] end )
                 as $badnum
               | ($missing + $badcat + $blankimpact + $badnum) as $problems
@@ -291,8 +329,8 @@ finding_item_detail() {
               # priority stops at 4 — so the same agent reaches for `priority: 5`
               # or a plausible-but-wrong field name again.
               | if ($problems | length) > 0
-                then "\($arr)[\($i)]: missing/invalid \($problems | join(", "))"
-                     + " — every blockers[]/suggestions[] item requires:"
+                then "review-artifact-check: finding_item path=\($arr)[\($i)] missing=\($missing | join(",")) invalid=\(($badcat + $blankimpact + $badnum) | join(","))"
+                     + "\nEvery blockers[]/suggestions[] item requires:"
                      + " id, title, location (path plus symbol, no line numbers),"
                      + " description, recommendation, priority (integer 1-4),"
                      + " estimate (1-5); suggestions also category (fix|issue),"
@@ -321,12 +359,17 @@ finding_item_detail() {
 # block stays above the measurement block — an ordering the suppression needs,
 # not one any other gate's outcome depends on.)
 artifact_content_gates() {
-  local file="$1" rc out declared=""
+  local file="$1" rc out current_head declared=""
   review_artifact_reason=""
   review_artifact_detail=""
   review_artifact_disposition=""
   review_artifact_measurement_failed=""
   review_artifact_measurement_suppressed=""
+
+  current_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null)" || { reject_terminal "invalid" "review-artifact-check: head_read worktree=$worktree"; return 1; }
+  if out="$(gate_filter "$file" 'select(.head != $head or .dirty_paths != []) | "review-artifact-check: moving_tree head=\(.head | @json) expected=\($head) dirty_paths=\(.dirty_paths | @json)\nRepeat the review after development finishes."' --arg head "$current_head")"; then
+    [[ -z "$out" ]] || { reject_terminal "moving_tree" "$out"; return 1; }
+  else rc=$?; reject_torn_write "invalid" "$(gate_failure_detail "$rc")"; return 1; fi
 
   # A gate that could not run at all is the torn-read shape the lib header
   # names, so it is the one failure that may still be answered by a sibling.
@@ -376,7 +419,7 @@ artifact_content_gates() {
   fi
   case "$out" in
     invalid:*)
-      reject_terminal "invalid_declaration" "${out#invalid:} — $REVIEW_DECLARATION_BAR"
+      reject_terminal "invalid_declaration" "${out#invalid:}"$'\n'"$REVIEW_DECLARATION_BAR"
       return 1
       ;;
     declared:*)
@@ -397,7 +440,7 @@ artifact_content_gates() {
   fi
   if [[ -n "$out" ]]; then
     if [[ -z "$declared" ]]; then
-      reject_terminal "zero_sample" "$out — $REVIEW_ZERO_SAMPLE_REMEDY"
+      reject_terminal "zero_sample" "$out"$'\n'"$REVIEW_ZERO_SAMPLE_REMEDY"
       return 1
     fi
     review_artifact_measurement_suppressed="$out"

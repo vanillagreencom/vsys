@@ -153,6 +153,14 @@ source = "kendex"
 [hooks.task-completed-check]
 source = "kendex"
 
+[hooks.lane-mail-check]
+source = "kendex"
+harnesses = [
+    "claude",
+    "codex",
+    "pi",
+]
+
 [commands.code-scrub]
 source = "kendex"
 

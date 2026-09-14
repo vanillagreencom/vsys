@@ -2,8 +2,9 @@
 # `worktree create --reuse/--restack --replay`, the policy-blocked twin of the
 # rebase engine: ordered plain cherry-picks that must leave the same rebased
 # history, pause into the same guarded state with the same controls, and
-# record the same pinned push authorization. One table, a row per scenario,
-# on the same step vocabulary and renderer as worktree_create_restack.sh.
+# record the same pinned push authorization and the same rebase map. One
+# table, a row per scenario, on the same step vocabulary and renderer as
+# worktree_create_restack.sh.
 # Every row's command runs behind a PATH shim that fails any git invocation
 # carrying a `rebase` argument, so rebase porcelain anywhere under the tool
 # reds the row: passing execution policies that reject `git rebase` is the
@@ -14,6 +15,8 @@ set -euo pipefail
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/messages.sh
+source "$TEST_DIR/lib/messages.sh"
 WORKTREE_SCRIPT="${WORKTREE_SCRIPT:-$(cd "$TEST_DIR/.." && pwd)/scripts/worktree}"
 TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -68,6 +71,7 @@ ROOT=""
 MAIN=""
 WT=""
 PRE=""        # the branch tip the world was built with, before any tool step
+PRE1=""       # that tip's parent
 BASE=""       # origin/main at the end of the fixture
 END=""        # HEAD at the end of the fixture
 EXTERNAL=""   # a commit an outsider pushed to the remote branch
@@ -219,10 +223,13 @@ build() {
   shift
   MAIN="$ROOT/main"
   WT="$ROOT/trees/$ISSUE"
-  PRE="" BASE="" END="" EXTERNAL=""
+  PRE="" PRE1="" BASE="" END="" EXTERNAL=""
   for word in "$@"; do
     step "$word"
-    [[ -n "$PRE" ]] || PRE="$(git -C "$WT" rev-parse HEAD)"
+    if [[ -z "$PRE" ]]; then
+      PRE="$(git -C "$WT" rev-parse HEAD)"
+      PRE1="$(git -C "$WT" rev-parse -q --verify 'HEAD~1' 2>/dev/null || true)"
+    fi
   done
   BASE="$(git -C "$MAIN" rev-parse origin/main)"
   END="$(git -C "$WT" rev-parse HEAD)"
@@ -249,11 +256,19 @@ oid_name() {
 # own contract. A literal semicolon is escaped before the lines are joined
 # on it.
 alias_text() {
+  local head head1
+  head="$(git -C "$WT" rev-parse HEAD)"
+  head1="$(git -C "$WT" rev-parse -q --verify 'HEAD~1' 2>/dev/null || printf 'NONE')"
+  message_records |
   sed \
     -e "s|$WT|<wt>|g" \
     -e "s|$ROOT|<root>|g" \
     -e "s|$WORKTREE_SCRIPT|<worktree>|g" \
+    -e "s|$head1|<head~1>|g" \
+    -e "s|$head|<head>|g" \
+    -e "s|${PRE1:-NONE}|<pre~1>|g" \
     -e "s|$PRE|<pre>|g" \
+    -e "s|$END|<end>|g" \
     -e "s|$BASE|<base>|g" \
     -e "s|${EXTERNAL:-NONE}|<external>|g" \
     -e '/^To <root>\/origin\.git$/d' \
@@ -319,9 +334,9 @@ state() {
     printf '%s:%s,' "$name" "${body%%$'\n'*}"
   done)"
   ref="$(git -C "$WT" rev-parse -q --verify "refs/heads/$ISSUE" 2>/dev/null || true)"
-  printf 'engine=%s branch=%s head=%s ref=%s ahead=%s dirty=%s tree=%s restack=%s remote=%s' \
+  printf 'engine=%s branch=%s head=%s ref=%s ahead=%s dirty=%s tree=%s restack=%s remote=%s map=%s' \
     "$engine" "${branch:-detached}" "$(worktree_head)" "$(oid_name "$ref")" "${ahead:--}" \
-    "${dirty:--}" "${tree%,}" "$(restack_keys)" "$(oid_name "$(remote_oid)")"
+    "${dirty:--}" "${tree%,}" "$(restack_keys)" "$(oid_name "$(remote_oid)")" "$(restack_map)"
 }
 
 # The command runs from the main checkout behind the no-rebase shim.
@@ -337,25 +352,70 @@ run() {
 # --- the expected text ----------------------------------------------------------
 # Each spec word expands to the tool's whole message for that terminal path.
 
+# The map a completed replay appends to the worktree's own git dir for
+# orch/scripts/worktree-push to consume. Absent is the answer for every path
+# that rewrote nothing, so every row pins it.
+restack_map() {
+  local path=""
+  path="$(git -C "$WT" rev-parse --git-path kendex-rebase-map 2>/dev/null)" || { printf -- '-'; return; }
+  [[ "$path" == /* ]] || path="$WT/$path"
+  if [[ ! -e "$path" ]]; then printf -- '-'; return; fi
+  alias_text <"$path"
+}
+
+# The map lines one replay reports, by shape. The same text appears twice: on
+# stderr under the replay's count record, and under that replay's own hop in
+# the pending map file the worktree's git dir carries. A shape's leading digit
+# is how many pre-replay commits the count record names.
+map_lines() {
+  case "$1" in
+    -) printf -- '-' ;;
+    1) printf 'rebase-map: <pre> <head>' ;;
+    2d) printf 'rebase-map: <pre~1> dropped;rebase-map: <pre> <head>' ;;
+    # Not a hop: the write-ahead record a rewrite leaves until its map is
+    # durable or the rewrite is unwound, naming the head it started from.
+    unmapped) printf 'rebase-unmapped: <pre>' ;;
+    unmapped-head) printf 'rebase-unmapped: <head>' ;;
+    unmapped-head1) printf 'rebase-unmapped: <head~1>' ;;
+    *) printf 'UNKNOWN-MAP-SPEC:%s' "$1" ;;
+  esac
+}
+
+# The map file's whole content: a '+'-joined list of hop shapes, each opening
+# with its own boundary line, which worktree-push applies in order.
+map_file_text() {
+  local spec="$1"
+  case "$spec" in
+    -) printf -- '-' ;;
+    *+*) printf '%s;%s' "$(map_file_text "${spec%%+*}")" "$(map_file_text "${spec#*+}")" ;;
+    unmapped*) map_lines "$spec" ;;
+    *) printf 'rebase-hop:;%s' "$(map_lines "$spec")" ;;
+  esac
+}
+
 restore_lines() {
   printf '%s' "To restore the pre-restack branch: <worktree> restack abort \"<wt>\";Recorded branch: topic"
 }
 
 err_text() {
-  local spec="$1"
+  local spec="$1" shape=""
   case "$spec" in
     *+*) printf '%s;%s' "$(err_text "${spec%%+*}")" "$(err_text "${spec#*+}")" ;;
     -) printf '' ;;
-    skip-rebase) printf '%s' "→ origin/main already contained in topic\; skipping rebase" ;;
-    dirty) printf '%s' "Error: <wt> has uncommitted changes\; refusing to replay over them.;Commit or discard them, then retry." ;;
-    merges) printf '%s' "Error: The replay range origin/main..topic in <wt> contains merge commits, which an ordered cherry-pick replay cannot represent.;Use the rebase engine (<worktree> create topic --reuse) or reconcile the merge manually." ;;
-    aborted) printf '%s' "Error: Cherry-pick replay onto origin/main failed for <wt> (conflicts).;Conflicting files:;  file.txt;The replay was aborted\; the worktree is back on its pre-replay state with no conflicts left to resolve.;Recovery options:;  1. Redo the replay and stop in the conflict state to resolve it:;       <worktree> create topic --restack --replay;  2. Discard local divergence and recreate fresh from origin/main:;       <worktree> remove topic && <worktree> create topic" ;;
-    paused) printf '%s' "Error: Cherry-pick replay onto origin/main stopped on conflicts in <wt>.;Conflicting files:;  file.txt;The replay is paused in the worktree so the conflicts can be resolved:;  1. Edit each conflicting file to remove the conflict markers.;  2. git -C \"<wt>\" add <file>    (each resolved file);  3. <worktree> restack continue \"<wt>\"    (repeat if it stops again);     If the resolved commit is empty: <worktree> restack skip \"<wt>\";To back out instead: <worktree> restack abort \"<wt>\"" ;;
-    refusal:*) printf '%s' "Error: Restack state for <wt> is ${spec#refusal:}\; refusing to run a rebase control command.;Only an exact paused state created by 'worktree create <ID> --restack' can be continued, skipped, or aborted." ;;
-    unreattachable) printf '%s' "  git:...;  git:<file.txt>;Error: Could not reattach <wt> to 'topic'\; the recorded restack state was preserved.;A 'rebase --quit' or 'cherry-pick --quit' leaves the conflicted index in place: stage or discard the paths Git names above.;Then re-run: <worktree> restack abort \"<wt>\"" ;;
-    remote-moved) printf '%s' "Error: Remote 'origin/topic' changed while the supported restack was paused\; refusing to continue or skip.;Abort the guarded restack before reconciling the moved remote." ;;
-    lease-rejected) printf '%s' "Error: Push rejected. Remote 'origin/topic' may have changed since the force-with-lease expectation\; fetch and rebase/merge before retrying." ;;
-    bare-flag) printf '%s' "Error: --replay selects the restack engine for --reuse/--restack\; combine it with one of them." ;;
+    map:*)
+      shape="${spec#map:}"
+      printf 'worktree-rebase-count: %s;%s' "${shape%%[a-z]*}" "$(map_lines "$shape")"
+      ;;
+    skip-rebase) printf 'worktree-rebase-skipped: topic' ;;
+    dirty) printf 'worktree-replay-dirty: <wt>' ;;
+    merges) printf 'worktree-replay-merges: <wt>' ;;
+    aborted) printf 'worktree-replay-failed: <wt>' ;;
+    paused) printf 'worktree-replay-conflicts: <wt>' ;;
+    refusal:*) printf 'worktree-restack-state: path=<wt> reason=%s' "${spec#refusal:}" ;;
+    unreattachable) printf 'worktree-restack-reattach-failed: <wt>' ;;
+    remote-moved) printf 'worktree-restack-remote-moved: origin/topic' ;;
+    lease-rejected) printf 'worktree-push-rejected: origin/topic' ;;
+    bare-flag) printf 'worktree-replay-mode-required: --replay' ;;
     *) printf 'UNKNOWN-ERR-SPEC:%s' "$spec" ;;
   esac
 }
@@ -364,34 +424,34 @@ out_text() {
   case "$1" in
     -) printf '' ;;
     wt) printf '<wt>' ;;
-    completed) printf 'Completed guarded restack for topic: <wt>' ;;
-    aborted) printf 'Aborted guarded restack and restored topic: <wt>' ;;
-    cleared) printf 'No restack was paused\; cleared the recorded restack state for topic: <wt>' ;;
+    completed) printf 'worktree-restack-complete: <wt>' ;;
+    aborted) printf 'worktree-restack-aborted: <wt>' ;;
+    cleared) printf 'worktree-restack-cleared: <wt>' ;;
     *) printf 'UNKNOWN-OUT-SPEC:%s' "$1" ;;
   esac
 }
 
 # --- the rows ---------------------------------------------------------------------
 # label|fixture|command|rc|out|err|state
-ROWS='a clean replay rewrites the branch onto the moved base and authorizes its exact head|clean|create topic --reuse --replay|0|wt|-|engine=none branch=topic head=rebased ref=head ahead=1 dirty=- tree=feature.txt:feature,file.txt:orig,main-advanced.txt:advanced,other.txt:orig restack=remote:origin,branch:topic,expected:pre,authorized:head remote=pre
-push after a clean replay publishes the head with the original lease|clean replay|push topic|0|-|skip-rebase|engine=none branch=topic head=end ref=end ahead=1 dirty=- tree=feature.txt:feature,file.txt:orig,main-advanced.txt:advanced,other.txt:orig restack=- remote=end
-a dirty tree is refused before any mutation|clean dirty|create topic --reuse --replay|1|-|dirty|engine=none branch=topic head=pre ref=pre ahead=1 dirty= M file.txt tree=feature.txt:feature,file.txt:orig,other.txt:orig restack=- remote=pre
-a merge commit in the range is refused and routed to the rebase engine|clean merge|create topic --reuse --replay|1|-|merges|engine=none branch=topic head=end ref=end ahead=3 dirty=- tree=feature.txt:feature,file.txt:orig,other.txt:orig,side.txt:side restack=- remote=pre
---reuse --replay over a conflict aborts back to the pre-replay branch and names both recovery paths|conflict|create topic --reuse --replay|1|-|aborted|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:feature,other.txt:orig restack=- remote=-
---restack --replay over a published branch pauses the sequencer with a bound token and the branch unmoved|conflict publish|create topic --restack --replay|1|-|paused|engine=replay branch=detached head=base ref=pre ahead=0 dirty=UU file.txt tree=file.txt:main-side,other.txt:orig restack=remote:origin,branch:topic,expected:pre,orig:pre,base:base,pending:true,token:bound,mode:replay remote=pre
---restack --replay over an unpublished branch pauses with no remote lease|conflict|create topic --restack --replay|1|-|paused|engine=replay branch=detached head=base ref=pre ahead=0 dirty=UU file.txt tree=file.txt:main-side,other.txt:orig restack=remote:origin,branch:topic,expected:-,orig:pre,base:base,pending:true,token:bound,mode:replay remote=-
-continue completes the resolved replay and authorizes its exact head|conflict publish restack-replay resolve|restack continue topic|0|completed|-|engine=none branch=topic head=rebased ref=head ahead=1 dirty=- tree=file.txt:resolved,other.txt:orig restack=remote:origin,branch:topic,expected:pre,authorized:head remote=pre
-push after a completed replay publishes the rewritten head|conflict publish restack-replay resolve continue|push topic|0|-|skip-rebase|engine=none branch=topic head=end ref=end ahead=1 dirty=- tree=file.txt:resolved,other.txt:orig restack=- remote=end
-skip drops the represented commit and replays the refresh-only commit|merged restack-replay|restack skip topic|0|completed|-|engine=none branch=topic head=rebased ref=head ahead=1 dirty=- tree=file.txt:already merged plus main follow-up,other.txt:orig,refresh-only.txt:refresh only restack=remote:origin,branch:topic,expected:pre,authorized:head remote=pre
-abort restores the pre-replay branch and clears the record|conflict restack-replay|restack abort topic|0|aborted|-|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:feature,other.txt:orig restack=- remote=-
-continue with HEAD checked out onto the branch is refused|conflict second restack-replay raw-checkout|restack continue topic|1|-|refusal:not the replay recorded by the worktree tool|engine=replay branch=topic head=end ref=end ahead=2 dirty=- tree=file.txt:feature,other.txt:orig,second.txt:second restack=remote:origin,branch:topic,expected:-,orig:end,base:base,pending:true,token:bound,mode:replay remote=-
-abort with HEAD checked out onto the branch restores it|conflict second restack-replay raw-checkout|restack abort topic|0|aborted|-|engine=none branch=topic head=end ref=end ahead=2 dirty=- tree=file.txt:feature,other.txt:orig,second.txt:second restack=- remote=-
-abort after a hand cherry-pick quit refuses to force the checkout over the unmerged index|conflict restack-replay raw-quit|restack abort topic|1|-|unreattachable|engine=none branch=detached head=base ref=pre ahead=0 dirty=UU file.txt tree=file.txt:main-side,other.txt:orig restack=remote:origin,branch:topic,expected:-,orig:pre,base:base,pending:true,token:unbound,mode:replay remote=-
-abort after a hand cherry-pick abort clears the orphaned record and reattaches the branch|conflict restack-replay raw-abort|restack abort topic|0|cleared|-|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:feature,other.txt:orig restack=- remote=-
-remote movement while paused refuses continue and leaves the replay paused|conflict publish restack-replay resolve move-remote|restack continue topic|1|-|remote-moved|engine=replay branch=detached head=base ref=pre ahead=0 dirty=M  file.txt tree=file.txt:main-side,other.txt:orig restack=remote:origin,branch:topic,expected:pre,orig:pre,base:base,pending:true,token:bound,mode:replay remote=external
-abort stays available after remote movement|conflict publish restack-replay resolve move-remote|restack abort topic|0|aborted|-|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:feature,other.txt:orig restack=- remote=external
-remote movement after authorization fails the exact lease|clean replay move-remote|push topic|1|-|skip-rebase+lease-rejected|engine=none branch=topic head=end ref=end ahead=1 dirty=- tree=feature.txt:feature,file.txt:orig,main-advanced.txt:advanced,other.txt:orig restack=remote:origin,branch:topic,expected:pre,authorized:end remote=external
---replay without an engine to modify is refused|plain|create topic --replay|1|-|bare-flag|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:orig,fix.txt:fix,other.txt:orig restack=- remote=-
+ROWS='a clean replay rewrites the branch onto the moved base and authorizes its exact head|clean|create topic --reuse --replay|0|wt|map:1|engine=none branch=topic head=rebased ref=head ahead=1 dirty=- tree=feature.txt:feature,file.txt:orig,main-advanced.txt:advanced,other.txt:orig restack=remote:origin,branch:topic,expected:pre,authorized:head remote=pre map=1
+push after a clean replay publishes the head with the original lease|clean replay|push topic|0|-|skip-rebase|engine=none branch=topic head=end ref=end ahead=1 dirty=- tree=feature.txt:feature,file.txt:orig,main-advanced.txt:advanced,other.txt:orig restack=- remote=end map=1
+a dirty tree is refused before any mutation|clean dirty|create topic --reuse --replay|1|-|dirty|engine=none branch=topic head=pre ref=pre ahead=1 dirty= M file.txt tree=feature.txt:feature,file.txt:orig,other.txt:orig restack=- remote=pre map=-
+a merge commit in the range is refused and routed to the rebase engine|clean merge|create topic --reuse --replay|1|-|merges|engine=none branch=topic head=end ref=end ahead=3 dirty=- tree=feature.txt:feature,file.txt:orig,other.txt:orig,side.txt:side restack=- remote=pre map=-
+--reuse --replay over a conflict aborts back to the pre-replay branch and names both recovery paths|conflict|create topic --reuse --replay|1|-|aborted|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:feature,other.txt:orig restack=- remote=- map=-
+--restack --replay over a published branch pauses the sequencer with a bound token and the branch unmoved|conflict publish|create topic --restack --replay|1|-|paused|engine=replay branch=detached head=base ref=pre ahead=0 dirty=UU file.txt tree=file.txt:main-side,other.txt:orig restack=remote:origin,branch:topic,expected:pre,orig:pre,base:base,pending:true,token:bound,mode:replay remote=pre map=unmapped
+--restack --replay over an unpublished branch pauses with no remote lease|conflict|create topic --restack --replay|1|-|paused|engine=replay branch=detached head=base ref=pre ahead=0 dirty=UU file.txt tree=file.txt:main-side,other.txt:orig restack=remote:origin,branch:topic,expected:-,orig:pre,base:base,pending:true,token:bound,mode:replay remote=- map=unmapped
+continue completes the resolved replay and authorizes its exact head|conflict publish restack-replay resolve|restack continue topic|0|completed|map:1|engine=none branch=topic head=rebased ref=head ahead=1 dirty=- tree=file.txt:resolved,other.txt:orig restack=remote:origin,branch:topic,expected:pre,authorized:head remote=pre map=1
+push after a completed replay publishes the rewritten head|conflict publish restack-replay resolve continue|push topic|0|-|skip-rebase|engine=none branch=topic head=end ref=end ahead=1 dirty=- tree=file.txt:resolved,other.txt:orig restack=- remote=end map=1
+skip drops the represented commit and replays the refresh-only commit|merged restack-replay|restack skip topic|0|completed|map:2d|engine=none branch=topic head=rebased ref=head ahead=1 dirty=- tree=file.txt:already merged plus main follow-up,other.txt:orig,refresh-only.txt:refresh only restack=remote:origin,branch:topic,expected:pre,authorized:head remote=pre map=2d
+abort restores the pre-replay branch and clears the record|conflict restack-replay|restack abort topic|0|aborted|-|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:feature,other.txt:orig restack=- remote=- map=-
+continue with HEAD checked out onto the branch is refused|conflict second restack-replay raw-checkout|restack continue topic|1|-|refusal:replay-mismatch|engine=replay branch=topic head=end ref=end ahead=2 dirty=- tree=file.txt:feature,other.txt:orig,second.txt:second restack=remote:origin,branch:topic,expected:-,orig:end,base:base,pending:true,token:bound,mode:replay remote=- map=unmapped-head
+abort with HEAD checked out onto the branch restores it|conflict second restack-replay raw-checkout|restack abort topic|0|aborted|-|engine=none branch=topic head=end ref=end ahead=2 dirty=- tree=file.txt:feature,other.txt:orig,second.txt:second restack=- remote=- map=-
+abort after a hand cherry-pick quit refuses to force the checkout over the unmerged index|conflict restack-replay raw-quit|restack abort topic|1|-|unreattachable|engine=none branch=detached head=base ref=pre ahead=0 dirty=UU file.txt tree=file.txt:main-side,other.txt:orig restack=remote:origin,branch:topic,expected:-,orig:pre,base:base,pending:true,token:unbound,mode:replay remote=- map=unmapped
+abort after a hand cherry-pick abort clears the orphaned record and reattaches the branch|conflict restack-replay raw-abort|restack abort topic|0|cleared|-|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:feature,other.txt:orig restack=- remote=- map=-
+remote movement while paused refuses continue and leaves the replay paused|conflict publish restack-replay resolve move-remote|restack continue topic|1|-|remote-moved|engine=replay branch=detached head=base ref=pre ahead=0 dirty=M  file.txt tree=file.txt:main-side,other.txt:orig restack=remote:origin,branch:topic,expected:pre,orig:pre,base:base,pending:true,token:bound,mode:replay remote=external map=unmapped
+abort stays available after remote movement|conflict publish restack-replay resolve move-remote|restack abort topic|0|aborted|-|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:feature,other.txt:orig restack=- remote=external map=-
+remote movement after authorization fails the exact lease|clean replay move-remote|push topic|1|-|skip-rebase+lease-rejected|engine=none branch=topic head=end ref=end ahead=1 dirty=- tree=feature.txt:feature,file.txt:orig,main-advanced.txt:advanced,other.txt:orig restack=remote:origin,branch:topic,expected:pre,authorized:end remote=external map=1
+--replay without an engine to modify is refused|plain|create topic --replay|1|-|bare-flag|engine=none branch=topic head=pre ref=pre ahead=1 dirty=- tree=file.txt:orig,fix.txt:fix,other.txt:orig restack=- remote=- map=-
 '
 
 echo "=== worktree create --replay (the policy-blocked restack engine) ==="
@@ -405,6 +465,9 @@ while IFS= read -r row; do
   n=$((n + 1))
   # shellcheck disable=SC2086
   build "row-$n" $fixture
+  # The state column's trailing map= carries a hop-shape list, expanded here
+  # from the same renderer the err column's map: spec draws its lines from.
+  want_state="${want_state% map=*} map=$(map_file_text "${want_state##* map=}")"
   # A rendering aid for writing rows: prints what each row produces instead of
   # asserting it. A run that asserted no row is refused after the loop.
   if [[ "${WORKTREE_TABLE_PROBE:-}" == 1 ]]; then

@@ -5,15 +5,27 @@
 # nothing into <project>/kendex.settings.toml. What an install writes, and
 # when, is kendex's docs/authoring/settings.md. Comments here are one-line
 # intent + landmines; full key reference: orch README.md / DEVELOPMENT.md.
+# Fleet handoff default: tmp/handoffs/OVERSEER-HANDOFF.md (workflows/oversee.md).
 
 # Directory orch keeps its per-issue workflow state in; the `--state-dir`
 # flag wins where both are set.
 ORCH_STATE_DIR = "tmp"
 
+# Absolute consumer base checkouts, space-separated in refresh order; empty disables the train.
+ORCH_CONSUMER_REPOS = ""
+
+# Overseer watcher baselines and lane claims. Empty uses
+# <project-root>/tmp/oversee-watch. The overseer's host owns persistence.
+OVERSEE_WATCH_STATE_DIR = ""
+
 # Path to the worktree CLI `open-terminal` drives. Empty resolves the
 # installed worktree skill's `scripts/worktree`; a value that is not
 # executable stops the launch with that path named.
 WORKTREE_CLI = ""
+
+# Host provider used by lane-host. Existing launchers keep their local behavior.
+# A script path opts in; credentials alone never select a remote host.
+ORCH_LANE_HOST = "local"
 
 # Reviewer merge gate: "approval" needs a GitHub approval; "review" needs a
 # non-author review of the current head plus zero unresolved threads (for
@@ -74,17 +86,32 @@ ORCH_TMUX_VERIFY_SECS = "15"
 # covers layouts discovery cannot reach.
 # ORCH_LANE_ALIASES = "eclaude=work,mclaude=overflow"
 
+# Launch lanes never listed, measured or picked; lanes retired from a UTC date.
+# Each is named by its directory name or alias, never a path.
+# ORCH_LANE_EXCLUDE = "sclaude"
+# ORCH_LANE_RETIRE = "nclaude=YYYY-MM-DD"
+
+# Seconds a per-host cached lane usage figure is reused; 0 fetches every run.
+# ORCH_LANES_USAGE_TTL = "60"
+
 # Path globs that add the needs-perf-test QA signal to review routing.
 # QA_PERF_PATHS = "src/hot/* engine/src/*"
 
 # Max concurrent lanes the overseer keeps in flight.
 ORCH_OVERSEER_LANES = "3"
 
-# Submit-time size check (branch-size-check, submit-pr.md § 1.2).
-# Render-mirror roots, blank separated. A path under one of them drops out
-# of the count only when what remains after the root names a source changed
-# in the same diff; a render whose source did not change is counted.
+# Branch size measurement: branch-size-check --help.
+# Size alone never refuses work.
+# Render-mirror roots, blank separated. A path under one of
+# them drops out of the count only when what remains after the root names a
+# source changed in the same diff; a render whose source did not change is
+# counted.
 # ORCH_SIZE_RENDER_ROOTS = ".agents .claude .codex .pi"
+# Extra test-path globs, blank separated, added to the built-in test rule
+# (test/, tests/, __tests__/, tests.rs, *test_util.rs, *.test.*, *.spec.*).
+# A glob matches the whole repository-relative path; `*` spans `/` and every
+# character but `*` and `?` is literal. Empty, the built-in rule stands alone.
+# ORCH_SIZE_TEST_PATHS = "scripts/check-*.py"
 
 # Hours before an In Progress / In Review item counts as started-stale in
 # reconcile-work-items sweeps.

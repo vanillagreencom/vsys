@@ -42,6 +42,10 @@ Before a fix returns, grep for every other reader of the field, caller of the he
 
 Note anything a fix revealed about deeper problems, and cite the decision ID or rule behind every skip.
 
+### 2.1 Reflect
+
+Follow [dev SKILL.md § Reflect](../SKILL.md#reflect). Complete every repository edit from reflection before validation.
+
 ---
 
 ## 3. Validate And Commit
@@ -52,25 +56,27 @@ Follow [dev-implement.md § 5. Validate](./dev-implement.md#5-validate) from the
 
 ```bash
 git -C [WORKTREE_PATH] add -A
-git -C [WORKTREE_PATH] commit -m "[PREFIX]([ISSUE_ID]): [MESSAGE]"
+git -C [WORKTREE_PATH] commit -m "[PREFIX]([ISSUE_ID]): [SUMMARY]" -m "[REVIEW_LABEL]"
 ```
 
-| Source | Commit Message |
-|--------|----------------|
-| `pr-review` | "Address PR review - [brief description]" |
-| `pr-comments` | "Address PR comments - [brief description]" |
-| `qa-review` | "Address QA review - [brief description]" |
-| `review` | "Address review - [brief description]" |
-| `local-review` | "Address local pre-PR review - [brief description]" |
+The header is the first `-m` alone: `[PREFIX]` is a Conventional Commits type such as `fix`, `test` or `docs`, and `[SUMMARY]` states the fix. The repository's commit-msg hook (commit-guards where installed) judges that line's shape and length. The review label is the body, the second `-m`:
+
+| Source | Review Label |
+|--------|--------------|
+| `pr-review` | "Address PR review" |
+| `pr-comments` | "Address PR comments" |
+| `qa-review` | "Address QA review" |
+| `review` | "Address review" |
+| `local-review` | "Address local pre-PR review" |
 | `suggestions` | "Address review suggestions" |
 
-Append `[validate: FAILING_CHECK]` when validation failures remain.
+When validation failures remain, add `[validate: FAILING_CHECK]` to the body as a further `-m`, never to the header.
 
 ---
 
 ## 4. Reflect
 
-Follow [dev SKILL.md § Reflect](../SKILL.md#reflect).
+Reflection is complete in § 2.1. Make no repository edit here.
 
 ---
 
@@ -78,8 +84,10 @@ Follow [dev SKILL.md § Reflect](../SKILL.md#reflect).
 
 Write the artifact first, per [dev SKILL.md § Round Contract](../SKILL.md#round-contract):
 
+If the validation list misses a rule, write `tmp/proposed-rule-[ISSUE_ID].md` with a `### Proposed Rules` heading and the proposal as one bullet. Append `--summary-file tmp/proposed-rule-[ISSUE_ID].md` to the command below. Omit the file and flag when there is no proposal.
+
 ```bash
-.agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind fix --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [HEAD_SHA_AFTER_COMMIT] --validate [pass|"FAILING: check1,check2"] [--validate-note [TEXT]] --item [N] [DECISION] [REASONING] [--item ...]
+.agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind fix --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [HEAD_SHA_AFTER_COMMIT] --validate [pass|"FAILING: check1,check2"] [--validate-note [TEXT]] --no-summary [--summary-file tmp/proposed-rule-[ISSUE_ID].md] --item [N] [DECISION] [REASONING] [--item ...]
 ```
 
 One `--item N DECISION REASONING` per **delegated** item — Applied, Skipped, and Blocked alike; the artifact must cover exactly the delegated set, `N` being the item's `#[N]` number (value shapes: `dev-return-write --help`; keep `REASONING` free of backticks). `--commit` is HEAD after the commit, or the prior HEAD when no commit was needed.
@@ -95,4 +103,5 @@ One `--item N DECISION REASONING` per **delegated** item — Applied, Skipped, a
 
 Commits: [SHAS or "none"]
 Validate: [pass or "FAILING: check1, check2"]
+Proposed rule: [proposal or "none"]
 </output_format>

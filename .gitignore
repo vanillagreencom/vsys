@@ -25,3 +25,8 @@ docs/*-local.md
 # Python bytecode caches, written beside any script this repo runs with python3
 __pycache__/
 *.pyc
+# kendex:local-state begin
+/tmp/
+/.kendex-lock.json
+/.cache/
+# kendex:local-state end

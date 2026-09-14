@@ -1,7 +1,7 @@
 #!/bin/bash
 # Linear Attachment Library
-# Download side: caches files/images from uploads.linear.app URLs found in
-# issue descriptions and comment bodies.
+# Download side: caches files/images from issue attachments, issue descriptions,
+# and comment bodies.
 # Upload side: fileUpload mutation + storage PUT for --attach flags
 # (see "Upload path" section below).
 #
@@ -48,6 +48,32 @@ attach_ensure_dir() {
     [[ -f "$ATTACH_MANIFEST" ]] || echo '{}' > "$ATTACH_MANIFEST"
 }
 
+# Give issue attachments a portable title. A downloaded cache file keeps the
+# title recorded for its source artifact when another issue attaches it.
+attach_issue_title() {
+    local path="$1" canonical_dir canonical_path cached_title=""
+    local repo_root="${PROJECT_ROOT:-$ATTACH_CACHE_PROJECT_ROOT}"
+    canonical_dir=$(cd "$(dirname -- "$path")" && pwd -P) || return 1
+    local filename
+    filename=$(basename -- "$path") || return 1
+    canonical_path="$canonical_dir/$filename"
+    if [[ -f "$ATTACH_MANIFEST" ]]; then
+        # The manifest keeps the .cache symlink spelling from the download.
+        # Its path must match the same spelling returned to the caller.
+        cached_title=$(jq -r --arg path "$path" \
+            '[to_entries[].value | select(.local_path == $path) |
+              (.repo_path // .filename) | select(type == "string" and length > 0 and (startswith("/") | not))] |
+              first // empty' "$ATTACH_MANIFEST") || return 1
+    fi
+    if [[ -n "$cached_title" ]]; then
+        printf '%s\n' "$cached_title"
+    elif [[ "$canonical_path" == "$repo_root/"* ]]; then
+        printf '%s\n' "${canonical_path#"$repo_root/"}"
+    else
+        basename -- "$path"
+    fi
+}
+
 # Extract all uploads.linear.app URLs from text
 # Usage: attach_extract_urls "markdown text"
 # Returns one URL per line
@@ -55,12 +81,58 @@ attach_extract_urls() {
     local text="$1"
     # Match markdown image/link syntax and bare URLs (ERE for macOS compat)
     # grep returns 1 on no match — guard with || true to avoid set -e abort
-    echo "$text" | grep -oE 'https://uploads\.linear\.app/[^[:space:])"]+' | sort -u || true
+    echo "$text" | grep -oE 'https://uploads\.linear\.app/[^[:space:])>"]+' | sort -u || true
 }
 
-# Extract URLs from all cached issues and comments
+# Read issue attachment objects as a separate paginated connection. Nesting
+# this connection in the issues query would multiply Linear's query cost.
+attach_issue_object_urls() {
+    local query='
+    query SyncIssueAttachments($first: Int, $after: String) {
+        attachments(first: $first, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes { url title issue { identifier } }
+        }
+    }'
+    local cursor="null" page=0 result nodes all_nodes="[]"
+    while true; do
+        if ! result=$(graphql_query "$query" "{\"first\": 250, \"after\": $cursor}"); then
+            echo 'Linear attachments: query_failed=1' >&2
+            return 1
+        fi
+        if ! nodes=$(jq -e '.attachments.nodes | arrays' <<<"$result"); then
+            echo 'Linear attachments: connection_missing=1' >&2
+            return 1
+        fi
+        all_nodes=$(printf '%s\n%s\n' "$all_nodes" "$nodes" | jq -s 'add') || return 1
+        page=$((page + 1))
+        local has_next
+        has_next=$(jq -r '.attachments.pageInfo.hasNextPage' <<<"$result") || return 1
+        case "$has_next" in
+        false) break ;;
+        true) ;;
+        *) echo 'Linear attachments: page_info_missing=1' >&2; return 1 ;;
+        esac
+        if (( page >= 400 )); then
+            echo "Linear attachments: page_limit=$page" >&2
+            return 1
+        fi
+        if ! cursor=$(jq -c '.attachments.pageInfo.endCursor' <<<"$result"); then
+            echo 'Linear attachments: cursor_parse_failed=1' >&2
+            return 1
+        fi
+        if [[ "$cursor" == "null" || "$cursor" == '""' ]]; then
+            echo 'Linear attachments: cursor_missing=1' >&2
+            return 1
+        fi
+    done
+    jq '[.[] | select(.issue.identifier != null and (.url | startswith("https://uploads.linear.app/"))) |
+        {url, source: .issue.identifier, context: "attachment", filename: .title}]' <<<"$all_nodes"
+}
+
+# Extract URLs from all cached issues and comments and live issue attachments.
 # Usage: attach_extract_all_urls
-# Returns JSON: [{"url": "...", "source": "CC-XXX", "context": "description|comment"}]
+# Returns JSON: [{"url": "...", "source": "CC-XXX", "context": "description|comment|attachment"}]
 attach_extract_all_urls() {
     local cache_dir="$ATTACH_CACHE_PROJECT_ROOT/.cache/linear"
     local issues_file="$cache_dir/issues.json"
@@ -75,7 +147,7 @@ attach_extract_all_urls() {
     local desc_urls
     desc_urls=$(jq -r '.[] | select(.description != null and .description != "") |
         .identifier as $id |
-        .description | capture("(?<url>https://uploads\\.linear\\.app/[^\\s)\"]+)"; "g") |
+        .description | capture("(?<url>https://uploads\\.linear\\.app/[^\\s)>\"]+)"; "g") |
         {url: .url, source: $id, context: "description"}' "$issues_file" 2>/dev/null || true)
 
     if [[ -n "$desc_urls" ]]; then
@@ -89,14 +161,18 @@ attach_extract_all_urls() {
         issue_id=$(basename "$comment_file" .json)
         local comment_urls
         comment_urls=$(jq -r --arg id "$issue_id" '.[] | select(.body != null and .body != "") |
-            .body | capture("(?<url>https://uploads\\.linear\\.app/[^\\s)\"]+)"; "g") |
+            .body | capture("(?<url>https://uploads\\.linear\\.app/[^\\s)>\"]+)"; "g") |
             {url: .url, source: $id, context: "comment"}' "$comment_file" 2>/dev/null || true)
         if [[ -n "$comment_urls" ]]; then
             results=$(echo "$results" "$(echo "$comment_urls" | jq -s '.')" | jq -s 'add | unique_by(.url)')
         fi
     done
 
-    echo "$results"
+    local issue_objects
+    issue_objects=$(attach_issue_object_urls) || return 1
+    issue_objects=$(jq --slurpfile issues "$issues_file" \
+        '[.[] | select(.source | IN($issues[0][].identifier))]' <<<"$issue_objects") || return 1
+    printf '%s\n%s\n' "$results" "$issue_objects" | jq -s 'add | group_by(.url) | map((map(select(.context == "attachment")) | first) // .[0])'
 }
 
 # Get short hash for URL (first 12 chars of sha256)
@@ -104,13 +180,30 @@ attach_url_hash() {
     printf '%s' "$1" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-12
 }
 
+# Add an attachment object's path to a file downloaded from a text link.
+attach_record_title() {
+    local url="$1" source="$2" title="$3"
+    [[ -n "$title" ]] || return 0
+    local name
+    name=$(basename -- "$title")
+    (
+        flock 203
+        jq --arg url "$url" --arg source "$source" --arg title "$title" --arg name "$name" \
+            'if has($url) then .[$url] |= (. + {source: $source, context: "attachment", filename: $name,
+              repo_path: (if ($title | contains("/")) then $title else null end)}) else . end' \
+            "$ATTACH_MANIFEST" > "$ATTACH_MANIFEST.tmp"
+        mv "$ATTACH_MANIFEST.tmp" "$ATTACH_MANIFEST"
+    ) 203>"$ATTACH_MANIFEST.lock"
+}
+
 # Download a single file from uploads.linear.app
-# Usage: attach_download_url "https://uploads.linear.app/..." "CC-XXX" "description"
-# Returns JSON: {"url": "...", "local_path": "...", "filename": "...", ...} or empty on failure
+# Usage: attach_download_url "https://uploads.linear.app/..." "CC-XXX" "description" [title]
+# Records the download in the manifest; returns a status for downloaded or cached.
 attach_download_url() {
     local url="$1"
     local source_id="${2:-unknown}"
     local context="${3:-unknown}"
+    local title="${4:-}"
 
     attach_ensure_dir
 
@@ -149,6 +242,7 @@ attach_download_url() {
     # Extract filename from URL, falling back to Content-Disposition header
     local filename
     filename=$(basename "$url" | sed 's/?.*//')
+    if [[ -n "$title" ]]; then filename=$(basename -- "$title"); fi
     # If filename is a UUID, try to get a better name from headers
     if [[ "$filename" =~ ^[0-9a-f-]+$ ]]; then
         local cd_filename
@@ -181,6 +275,7 @@ attach_download_url() {
         --argjson size "$file_size" \
         --arg source "$source_id" \
         --arg ctx "$context" \
+        --arg repo_path "$title" \
         --arg ts "$(date -Iseconds)" \
         '{
             local_path: $path,
@@ -189,6 +284,7 @@ attach_download_url() {
             size: $size,
             source: $source,
             context: $ctx,
+            repo_path: (if ($repo_path | contains("/")) then $repo_path else null end),
             downloaded_at: $ts
         }')
 
@@ -211,9 +307,9 @@ attach_sync() {
     attach_ensure_dir
 
     local all_urls
-    all_urls=$(attach_extract_all_urls)
+    all_urls=$(attach_extract_all_urls) || return 1
     local total
-    total=$(echo "$all_urls" | jq 'length')
+    total=$(echo "$all_urls" | jq 'length') || return 1
 
     if (( total == 0 )); then
         [[ "$quiet" == "false" ]] && echo "No attachment URLs found" >&2
@@ -227,22 +323,26 @@ attach_sync() {
     local fail_count=0
 
     for (( i=0; i<total; i++ )); do
-        local url source context
+        local url source context title
         url=$(echo "$all_urls" | jq -r ".[$i].url")
         source=$(echo "$all_urls" | jq -r ".[$i].source")
         context=$(echo "$all_urls" | jq -r ".[$i].context")
+        title=$(echo "$all_urls" | jq -r ".[$i].filename // empty")
 
         # Check if already cached
         local existing_path
         existing_path=$(jq -r --arg url "$url" '.[$url].local_path // empty' "$ATTACH_MANIFEST" 2>/dev/null)
         if [[ -n "$existing_path" && -f "$existing_path" ]]; then
+            if [[ "$context" == "attachment" ]]; then
+                attach_record_title "$url" "$source" "$title" || return 1
+            fi
             continue
         fi
 
         (( new_count++ )) || true
 
         local rc=0
-        attach_download_url "$url" "$source" "$context" || rc=$?
+        attach_download_url "$url" "$source" "$context" "$title" || rc=$?
         if (( rc == 0 )); then
             (( download_count++ )) || true
         elif (( rc == 1 )); then
@@ -250,6 +350,11 @@ attach_sync() {
         fi
         # rc 2 = already cached (skip)
     done
+
+    if (( fail_count > 0 )); then
+        echo "Linear attachments: download_failed=$fail_count" >&2
+        return 1
+    fi
 
     if [[ "$quiet" == "false" ]]; then
         if (( new_count > 0 )); then

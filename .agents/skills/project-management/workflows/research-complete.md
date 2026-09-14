@@ -6,12 +6,6 @@ Link completed research to the issues it unblocks, analyze its impact, record th
 
 ## 1. Read the Research
 
-Commit any uncommitted files under `[RESEARCH_DOCS_PATH]/[ISSUE_ID]/`:
-
-```bash
-git add [RESEARCH_DOCS_PATH]/[ISSUE_ID]/ && git commit -m "chore([ISSUE_ID]): Add research findings"
-```
-
 This workflow updates labels, descriptions, and issue state, so it reconciles before its first cache read:
 
 ```bash
@@ -19,9 +13,7 @@ This workflow updates labels, descriptions, and issue state, so it reconciles be
 .agents/skills/linear/scripts/linear.sh cache issues get [ISSUE_ID]
 ```
 
-Read `[RESEARCH_DOCS_PATH]/[ISSUE_ID]/findings.md` and summarize the key findings. If it is missing, route back to `research-issue.md § 2. Prepare Assets` to run the research — never ask the user to execute it externally.
-
-Capture the researcher metadata from `raw-exa.json` (`.metadata`: `researchMode`, `type`, `queryCount`, `sourceCount`, `uniqueSourceCount`, `elapsedMs`, `rawOutputPath`). Treat `agent:researcher` as the producer unless the issue history says otherwise.
+Bind `RESEARCH_SOURCE_ISSUE` to `[ISSUE_ID]`, `FINDINGS_REF` to `[RESEARCH_DOCS_PATH]/[ISSUE_ID]/findings.md`, and `METADATA_REF` to `[RESEARCH_DOCS_PATH]/[ISSUE_ID]/raw-exa.json`. Resolve both references with that source issue through [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) before reading either; bind their readable files as `FINDINGS_READ_PATH` and `METADATA_READ_PATH`. If a required input has no local copy or attachment, route back to `research-issue.md § 2. Prepare Assets`. Read `FINDINGS_READ_PATH` and summarize the findings. Capture `.metadata` from `METADATA_READ_PATH`: `researchMode`, `type`, `queryCount`, `sourceCount`, `uniqueSourceCount`, `elapsedMs`, `rawOutputPath`. Treat `agent:researcher` as the producer unless the issue history says otherwise. Apply the shared publication rule to the research issue, including the bound files and cited research inputs.
 
 ## 2. Domain Labels
 
@@ -41,10 +33,10 @@ Issue labels only, validated per [labels.md](../references/labels.md) § Validat
 
 **Skip if** the `.blocks` array is empty (self-initiated spike).
 
-For each blocked issue and, recursively, its children (`cache issues children [BLOCKED_ISSUE_ID] --recursive --format=safe | jq -r '.[].id'`): read the current description, skip when the findings path is already present, and otherwise put the research reference at the top. `--recursive` returns three levels; walk a deeper tree per [dependencies.md](../references/dependencies.md) § Reading a Full Subtree.
+For each blocked issue and, recursively, its children (`cache issues children [BLOCKED_ISSUE_ID] --recursive --format=safe | jq -r '.[].id'`): read the current description and put the research reference at the top when absent. Apply [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) even when the reference already exists. `--recursive` returns three levels; walk a deeper tree per [dependencies.md](../references/dependencies.md) § Reading a Full Subtree.
 
 ```markdown
-**Research**: [RESEARCH_DOCS_PATH]/[ISSUE_ID]/findings.md
+**Research**: [FINDINGS_REF]
 ```
 
 With several references, convert to a bulleted list under one `**Research**:` header, still at the top, each line noting its topic.
@@ -63,7 +55,7 @@ Delegate to the domain agent:
 
 Worktree: [WORKTREE_PATH]
 
-Read: [RESEARCH_DOCS_PATH]/[ISSUE_ID]/findings.md
+Read: [FINDINGS_READ_PATH]
 
 Report with tables:
 
@@ -91,7 +83,7 @@ Fill `Worktree:` from `git -C "[DIR]" rev-parse --show-toplevel`.
 
 Worktree: [WORKTREE_PATH]
 
-Read: [RESEARCH_DOCS_PATH]/[ISSUE_ID]/findings.md
+Read: [FINDINGS_READ_PATH]
 
 Domain reports: [summaries]
 
@@ -111,7 +103,7 @@ Initiative-level scope escalates to § 5.3 the same way as § 5.1.
 
 `$FEATURE_NAME` is the issue title without the `Research:` prefix. `$ORIGIN_ISSUE` is the single entry in `.blocks` (fetch its id, title, and project); with zero or several blocked issues it is null.
 
-Run `⤵ workflows/roadmap-plan.md $FEATURE_NAME @[RESEARCH_DOCS_PATH]/[ISSUE_ID]/findings.md --origin-issue $ORIGIN_ISSUE`, then `⤵ workflows/roadmap-create.md @[PLAN_PATH]`. § 6 then handles only the decision record and the doc updates.
+Run `⤵ workflows/roadmap-plan.md $FEATURE_NAME @[FINDINGS_REF] --source-issue [RESEARCH_SOURCE_ISSUE] --origin-issue $ORIGIN_ISSUE`, then execute its returned `CREATE_COMMAND` unchanged. § 6 then handles only the decision record and the doc updates.
 
 ## 6. Complete
 
@@ -157,7 +149,7 @@ Agent-reported refactors go into the audit input as standalone items in step 7 b
 
 ### 6.5 Update the Blocked Issues
 
-For each blocked issue, keeping the Research and Decision references, the effort rollup, and the dependency lines:
+For each blocked issue, keeping the Research, Artifacts, and Decision references, the effort rollup, and the dependency lines:
 
 - **Children were created** → apply [parent-issue-template.md](../templates/parent-issue-template.md): replace `## Requirements` with `## Sub-Issues` and `## Context`, and remove every implementation-level requirement. Set the parent's agent label to the project's multi-agent label when the children span 2+ agent domains (compute the final set, replace only the agent category, preflight, update), and clear the parent's estimate.
 - **No children** → replace the vague summary with the concrete scope from the decision (1-2 sentences), add `## Requirements` with one bullet per deliverable, and add `## Context` with the key constraints and cross-references.

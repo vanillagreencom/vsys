@@ -6,8 +6,10 @@ set -euo pipefail
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/messages.sh
+source "$TEST_DIR/lib/messages.sh"
 WORKTREE_PACKAGE_DIR="$(cd "$TEST_DIR/.." && pwd)"
-WORKTREE_SCRIPT="$WORKTREE_PACKAGE_DIR/scripts/worktree"
+WORKTREE_SCRIPT="${WORKTREE_SCRIPT:-$WORKTREE_PACKAGE_DIR/scripts/worktree}"
 TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -79,7 +81,39 @@ step() {
         'WORKTREE_RELATIVE_SYMLINKS=".claude/POINTER.md=../AGENTS.md"' >"$MAIN/.env.local"
       (cd "$MAIN" && "$WORKTREE_SCRIPT" fix-links "$WT") >/dev/null
       ;;
+    # An unreconciled rebase map in the worktree's private git dir: the only
+    # record of a rewrite, which removal would delete while keeping the
+    # branch the rewrite produced.
+    unreconciled-map)
+      MAP_FILE="$(git -C "$WT" rev-parse --absolute-git-dir)/kendex-rebase-map"
+      printf 'rebase-unmapped: %s\n' "$(git -C "$WT" rev-parse HEAD)" >"$MAP_FILE"
+      ;;
+    # The worktree directory gone while its registration stands: what git's
+    # own non-transactional deletion leaves behind, and what a later remove
+    # meets. Its private git dir, and anything in it, is still there until the
+    # registration removal.
+    vanished) rm -rf -- "${WT:?}" ;;
+    vanished-sibling-map)
+      git -C "$MAIN" worktree add -q -b sibling "$ROOT/trees/sibling" main
+      SIBLING_GIT_DIR="$(git -C "$ROOT/trees/sibling" rev-parse --absolute-git-dir)"
+      printf 'rebase-unmapped: %s\n' "$(git -C "$MAIN" rev-parse HEAD)" >"$ROOT/sibling-map"
+      cp "$ROOT/sibling-map" "$SIBLING_GIT_DIR/kendex-rebase-map"
+      rm -rf -- "$ROOT/trees/sibling"
+      ;;
+    # A symlink TO the worktree. Its own canonical form is the path git
+    # recorded; nothing built from its parent and its own basename is.
+    alias) ln -s "$WT" "$ROOT/alias" ;;
     lock) git -C "$MAIN" worktree lock "$WT" --reason "session guard: owner=topic" ;;
+    empty-lock) git -C "$MAIN" worktree lock "$WT" ;;
+    own-lease | foreign-lease)
+      local owner=TOPIC
+      [[ "$1" != foreign-lease ]] || owner=another-session
+      "$WORKTREE_PACKAGE_DIR/scripts/worktree-session-guard" claim "$WT" --owner "$owner" >/dev/null
+      ;;
+    lock-record)
+      LOCK_FILE="$(git -C "$WT" rev-parse --absolute-git-dir)/locked"
+      cp "$LOCK_FILE" "$ROOT/lock-copy"
+      ;;
     unlock) git -C "$MAIN" worktree unlock "$WT" ;;
     # git itself refuses the removal after every precheck passed: the lock
     # precheck is a racy diagnostic, and only "nothing is stripped before git
@@ -112,6 +146,9 @@ build() {
   MAIN="$ROOT/main"
   WT="$ROOT/trees/topic"
   ROW_PATH="$TMP_ROOT/bin:$PATH"
+  MAP_FILE=""
+  SIBLING_GIT_DIR=""
+  LOCK_FILE=""
   for word in "$@"; do step "$word"; done
 }
 
@@ -138,39 +175,59 @@ remove_state() {
   git -C "$MAIN" show-ref --verify --quiet refs/heads/topic && branch=present
   dirs="$(find "$ROOT/trees" -mindepth 1 -maxdepth 1 2>/dev/null | sed 's|.*/||' | sort | paste -s -d ',' - || true)"
   printf 'worktree=%s/%s branch=%s dirs=%s links=%s' "$worktree" "$live" "$branch" "${dirs:--}" "$(link_targets)"
+  if [[ -n "$SIBLING_GIT_DIR" ]]; then
+    local sibling=absent map=missing
+    git -C "$MAIN" worktree list --porcelain | grep -xF "worktree $ROOT/trees/sibling" >/dev/null && sibling=registered
+    cmp -s "$ROOT/sibling-map" "$SIBLING_GIT_DIR/kendex-rebase-map" && map=intact
+    printf ' sibling=%s/%s' "$sibling" "$map"
+  fi
+  if [[ -n "$LOCK_FILE" ]]; then
+    local lock=changed
+    cmp -s "$ROOT/lock-copy" "$LOCK_FILE" && lock=intact
+    printf ' lock=%s' "$lock"
+  fi
 }
 
 REAL_GIT_BIN="$(command -v git)"
+MAP_FILE=""
 
 run_remove() {
   local -a argv
   local rc=0
+  local i
   read -r -a argv <<<"$1"
+  for i in "${!argv[@]}"; do
+    [[ "${argv[i]}" == @alias ]] && argv[i]="$ROOT/alias"
+  done
   (cd "$MAIN" && PATH="$ROW_PATH" REAL_GIT_BIN="$REAL_GIT_BIN" \
     "$WORKTREE_SCRIPT" remove "${argv[@]}" >"$ROOT/out" 2>"$ROOT/err") || rc=$?
   printf 'rc=%s out=%s err=%s %s' "$rc" \
-    "$(sed -e "s|$WT|<wt>|g" -e "s|$WORKTREE_SCRIPT|<worktree>|g" -e '/^Usage: /q' "$ROOT/out" | paste -s -d ';' -)" \
-    "$(sed -e "s|$WT|<wt>|g" -e "s|$MAIN|<main>|g" -e "s|$WORKTREE_SCRIPT|<worktree>|g" "$ROOT/err" | paste -s -d ';' -)" \
+    "$(message_records <"$ROOT/out" | sed -e "s|$WT|<wt>|g" -e "s|$WORKTREE_SCRIPT|<worktree>|g" -e '/^Usage: /q' | paste -s -d ';' -)" \
+    "$(message_records <"$ROOT/err" | sed -e "s|${MAP_FILE:-NONE}|<map>|g" -e "s|$ROOT/alias|<alias>|g" -e "s|$WT|<wt>|g" -e "s|$MAIN|<main>|g" -e "s|$WORKTREE_SCRIPT|<worktree>|g" | paste -s -d ';' -)" \
     "$(remove_state)"
 }
 
 locked_block() {
-  printf '%s' "Error: <wt> is a locked worktree; refusing to remove it.;  Worktree: <wt>;  Lock reason: session guard: owner=topic;Nothing in the worktree was modified.;A lock usually means a live session owns this worktree; confirm it is finished first.;To release the lock and retry:;  git -C \"<main>\" worktree unlock \"<wt>\""
+  printf '%s' 'worktree-worktree-locked: <wt>'
 }
 
 refused_block() {
-  printf '%s' "Error: Git could not remove the worktree; preserving it for manual recovery: <wt>;  git: simulated worktree removal failure;  Branch: topic (not deleted);Nothing was removed before Git ran, so a refusal made before deletion started (a lock, for example) leaves the worktree exactly as it was.;Git's deletion is not atomic: if it failed partway through, the worktree may be partially removed — inspect its contents before retrying, and restore links with: <worktree> fix-links \"<wt>\""
+  printf '%s' 'worktree-remove-failed: <wt>'
+}
+
+map_block() {
+  printf '%s' 'worktree-remove-rebase-map: <map>'
 }
 
 unmerged_block() {
-  printf '%s' "Error: Removed worktree but could not delete local branch 'topic'.;  Remaining branch: topic;  Worktree path removed/pruned: <wt>;  Not merged into main, and no pull request merged into main carries this branch name;  After verifying it is safe, delete manually with: git -C \"<main>\" branch -D \"topic\""
+  printf '%s' 'worktree-branch-delete-failed: topic'
 }
 
 remove_out() {
   case "$1" in
     -) printf '' ;;
-    removed) printf 'Removed: <wt>' ;;
-    usage) printf 'Usage: worktree remove [ID|/path]' ;;
+    removed) printf 'worktree-removed: <wt>' ;;
+    usage) printf 'worktree-help: remove' ;;
     *) printf 'UNKNOWN-OUT-SPEC:%s' "$1" ;;
   esac
 }
@@ -178,11 +235,14 @@ remove_out() {
 remove_err() {
   case "$1" in
     -) printf '' ;;
-    deleted) printf "Deleted branch 'topic' — merged into main." ;;
-    unknown-option) printf '%s' "Error: unknown option '--bogus' for remove;Run: <worktree> remove --help" ;;
+    deleted) printf "worktree-branch-deleted: topic" ;;
+    released+deleted) printf '%s' 'worktree-lease-released: path=<wt> owner=TOPIC;worktree-branch-deleted: topic' ;;
+    unknown-option) printf '%s' "worktree-remove-option-unknown: --bogus" ;;
     unmerged) unmerged_block ;;
     locked) locked_block ;;
     refused) refused_block ;;
+    held-map) map_block ;;
+    unidentified) printf '%s' 'worktree-remove-unidentified: <alias>' ;;
     *) printf 'UNKNOWN-ERR-SPEC:%s' "$1" ;;
   esac
 }
@@ -199,6 +259,18 @@ an unmerged branch: the worktree goes, the branch stays, the diagnostic names th
 a locked worktree is refused with its owner and the unlock command, links intact|tree links lock|TOPIC|1|-|locked|worktree=registered/yes branch=present dirs=topic links=LINKS
 the same worktree unlocked is removed|tree links lock unlock|TOPIC|0|removed|deleted|worktree=absent/no branch=absent dirs=- links=-
 a removal git refuses after every precheck leaves the worktree, branch and links intact|tree links git-refuses|TOPIC|1|-|refused|worktree=registered/yes branch=present dirs=topic links=LINKS
+a worktree still holding an unreconciled rebase map is refused, tree and branch intact|tree commit links unreconciled-map|TOPIC|1|-|held-map|worktree=registered/yes branch=present dirs=topic links=LINKS
+the same refusal reaches it through a symlink, which removal accepts and would follow|tree commit links unreconciled-map alias|@alias|1|-|held-map|worktree=registered/yes branch=present dirs=topic links=LINKS
+the same refusal covers a worktree whose directory is already gone|tree commit unreconciled-map vanished|TOPIC|1|-|held-map|worktree=registered/no branch=present dirs=- links=-
+an address that resolves to no registration refuses removal|tree commit unreconciled-map alias vanished|@alias|1|-|unidentified|worktree=registered/no branch=present dirs=- links=-
+an absent worktree with an unmerged branch names the kept branch|tree commit vanished|TOPIC|1|removed|unmerged|worktree=absent/no branch=present dirs=- links=-
+an absent worktree with a merged branch deletes the branch|tree vanished|TOPIC|0|removed|deleted|worktree=absent/no branch=absent dirs=- links=-
+removing a live target preserves an absent sibling registration and its map|tree vanished-sibling-map|TOPIC|0|removed|deleted|worktree=absent/no branch=absent dirs=- links=- sibling=registered/intact
+removing an absent target preserves an absent sibling registration and its map|tree vanished-sibling-map vanished|TOPIC|0|removed|deleted|worktree=absent/no branch=absent dirs=- links=- sibling=registered/intact
+an absent locked worktree keeps its registration, branch and lock|tree lock lock-record vanished|TOPIC|1|-|locked|worktree=registered/no branch=present dirs=- links=- lock=intact
+an absent worktree with an empty native lock stays registered|tree empty-lock lock-record vanished|TOPIC|1|-|locked|worktree=registered/no branch=present dirs=- links=- lock=intact
+an absent worktree with a foreign lease keeps its registration, branch and lease|tree foreign-lease lock-record vanished|TOPIC|1|-|locked|worktree=registered/no branch=present dirs=- links=- lock=intact
+an absent worktree releases its own lease and is removed|tree own-lease vanished|TOPIC|0|removed|released+deleted|worktree=absent/no branch=absent dirs=- links=-
 '
 
 echo "=== worktree remove ==="

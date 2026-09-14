@@ -17,9 +17,6 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
-WRITE_BIN="$REPO_ROOT/skills/orch/scripts/dev-round-write"
-RETURN_WRITE="$REPO_ROOT/skills/orch/scripts/dev-return-write"
-CHECK="$REPO_ROOT/skills/orch/scripts/dev-artifact-check"
 STATE="$REPO_ROOT/skills/orch/scripts/workflow-state"
 # shellcheck source=lib/growth-state.sh
 source "$TEST_DIR/lib/growth-state.sh"
@@ -27,6 +24,39 @@ source "$TEST_DIR/lib/growth-state.sh"
 source "$TEST_DIR/lib/waiter-assertions.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+mkdir -p "$TMP_ROOT/linear/scripts" "$TMP_ROOT/bin"
+# The size owner reads the issue through its sibling Linear CLI. This stand-in
+# supplies the same raw cache row on Bash 3.2 test runners.
+cat > "$TMP_ROOT/linear/scripts/linear.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+row="$(jq -c --arg id "$4" '.[] | select(.identifier == $id)' .cache/linear/issues.json)"
+[[ -n "$row" ]] || exit 1
+jq -n --argjson issue "$row" '{issue: $issue}'
+SH
+cat > "$TMP_ROOT/bin/gh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+jq -r --arg id "issue-$3" '.[] | select(.identifier == $id) | .description' .cache/linear/issues.json
+SH
+chmod +x "$TMP_ROOT/linear/scripts/linear.sh" "$TMP_ROOT/bin/gh"
+export PATH="$TMP_ROOT/bin:$PATH"
+LIVE_SCRIPTS="$(copy_scripts live)"
+WRITE_BIN="$LIVE_SCRIPTS/dev-round-write"
+RETURN_WRITE="$LIVE_SCRIPTS/dev-return-write"
+CHECK="$LIVE_SCRIPTS/dev-artifact-check"
+
+write_allowance() {
+  local repo="$1" issue="$2" line="$3"
+  mkdir -p "$repo/.cache/linear"
+  if [[ ! -f "$repo/.cache/linear/issues.json" ]]; then
+    printf '[]\n' > "$repo/.cache/linear/issues.json"
+  fi
+  jq --arg id "$issue" --arg body "$line" \
+    '[.[] | select(.identifier != $id)] + [{identifier: $id, description: $body}]' \
+    "$repo/.cache/linear/issues.json" > "$repo/.cache/linear/next.json"
+  mv "$repo/.cache/linear/next.json" "$repo/.cache/linear/issues.json"
+}
 
 # new_repo NAME ISSUE... — a committed git repo with growth state for each
 # ISSUE; prints its path.
@@ -39,7 +69,11 @@ new_repo() {
   git -C "$d" config user.name Test
   git -C "$d" config commit.gpgsign false
   git -C "$d" commit -q --allow-empty -m base
-  for issue in "$@"; do init_growth_state "$STATE" "$d" "$issue" seed 1000000 >/dev/null; done
+  printf '.cache/\n' >> "$(git -C "$d" rev-parse --path-format=absolute --git-path info/exclude)"
+  for issue in "$@"; do
+    init_growth_state "$STATE" "$d" "$issue" seed 1000000 >/dev/null
+    write_allowance "$d" "$issue" '**Expected delta**: 1000000 lines, 1000000 test lines'
+  done
   printf '%s' "$d"
 }
 
@@ -74,7 +108,7 @@ rec() { jq -r "$1" "$OUT" 2>/dev/null || echo UNPARSEABLE; }
 observe() {
   local got="" token name value needle
   for token in $1; do
-    name="${token%%=*}"
+    name="${token%=*}"
     case "$name" in
       rc) value="$RC" ;;
       out) value="$OUT" ;;
@@ -213,19 +247,19 @@ table \
   "no --item: an empty delegated set is not a fix round|--worktree $WT --issue i --round-id 1-1|rc=2" \
   "missing --worktree|--issue i --round-id 1-1 --item 1 t $OKR|rc=2" \
   "a nonexistent --worktree|--worktree $TMP_ROOT/nope --issue i --round-id 1-1 --item 1 t $OKR|rc=2" \
-  "a worktree with no HEAD commit|--worktree $NOHEAD --issue i --round-id 1-1 --item 1 t $OKR|rc=2 stderr~no+resolvable+HEAD+commit=true" \
+  "a worktree with no HEAD commit|--worktree $NOHEAD --issue i --round-id 1-1 --item 1 t $OKR|rc=2 stderr~dev-round-write:+missing-head+worktree=$NOHEAD=true" \
   "missing --issue|--worktree $WT --round-id 1-1 --item 1 t $OKR|rc=2" \
   "missing --round-id|--worktree $WT --issue i --item 1 t $OKR|rc=2" \
-  "a path-unsafe --issue|--worktree $WT --issue a/b --round-id 1-1 --item 1 t $OKR|rc=2 stderr~must+match=true" \
+  "a path-unsafe --issue|--worktree $WT --issue a/b --round-id 1-1 --item 1 t $OKR|rc=2 stderr~dev-round-write:+invalid-id+arg1=--issue+arg2=a/b=true" \
   "a path-traversal --round-id|--worktree $WT --issue i --round-id .. --item 1 t $OKR|rc=2" \
   "a non-numeric --item N|--worktree $WT --issue i --round-id 1-1 --item x t $OKR|rc=2" \
   "a leading-zero --item N is not a canonical integer|--worktree $WT --issue i --round-id 1-1 --item 01 t $OKR|rc=2" \
   "an empty --item TEXT|--worktree $WT --issue i --round-id 1-1 --item 1 EMPTY $OKR|rc=2" \
   "a whitespace-only --item TEXT|--worktree $WT --issue i --round-id 1-1 --item 1 SPACES $OKR|rc=2" \
-  "an --item TEXT that is one of the writer's own flags: a forgotten value|--worktree $WT --issue i --round-id 1-1 --item 1 --worktree $OKR|rc=2 stderr~got+flag+'--worktree'=true" \
+  "an --item TEXT that is one of the writer's own flags: a forgotten value|--worktree $WT --issue i --round-id 1-1 --item 1 --worktree $OKR|rc=2 stderr~dev-round-write:+text-flag+text=--worktree+n=1=true" \
   "--item with too few arguments|--worktree $WT --issue i --round-id 1-1 --item 1|rc=2" \
   "a duplicate item number: a set, not a list|--worktree $WT --issue i --round-id 1-1 --item 1 a $OKR --item 1 b $OKR|rc=2" \
-  "a duplicate --issue: no silent last-wins|--worktree $WT --issue i --issue j --round-id 1-1 --item 1 t $OKR|rc=2 stderr~--issue+supplied+more+than+once=true" \
+  "a duplicate --issue: no silent last-wins|--worktree $WT --issue i --issue j --round-id 1-1 --item 1 t $OKR|rc=2 stderr~dev-round-write:+duplicate+arg1=--issue=true" \
   "an unknown argument|--worktree $WT --issue i --round-id 1-1 --item 1 t $OKR --bogus|rc=2"
 assert_eq "$([[ -f "$WT/tmp/dev-round-i-1-1.json" ]] && echo yes || echo no)" "no" "failed invocations write nothing"
 run_write -h
@@ -237,6 +271,7 @@ LINKED_MAIN="$(new_repo linked-main)"
 LINKED="$TMP_ROOT/linked-wt"
 git -C "$LINKED_MAIN" worktree add -q -b linked "$LINKED"
 init_growth_state "$STATE" "$LINKED" issue-826 seed 1000000 >/dev/null
+write_allowance "$LINKED" issue-826 '**Expected delta**: 1000000 lines, 1000000 test lines'
 run_write --worktree "$LINKED" --issue issue-826 --round-id 30-30 --item 1 linked "$OK_REACH"
 assert_eq "$(observe "rc=0 written=yes") main_side=$([[ -e "$LINKED_MAIN/.git/kendex" ]] && echo yes || echo no)" "rc=0 written=yes main_side=no" "a linked worktree keeps its round record in its own tmp/" "$ERR"
 SYMLINK_RECORD="$LINKED/tmp/dev-round-issue-826-31-31.json"
@@ -248,46 +283,54 @@ run_write --worktree "$LINKED" --issue issue-826 --round-id 31-31 --item 1 symli
 assert_eq "$(observe "rc=2")" "rc=2" "a record path that is a symlink is refused" "$ERR"
 rm -f "$SYMLINK_RECORD"
 
-echo "=== the size tripwire refuses a fix round past twice the baseline ==="
-# A pre-push branch whose diffstat passes twice the recorded baseline is
-# refused with both numbers and the rule, before and after its first push.
-# The control removes the gate call from a private copy of the writer and the
-# set-once guard from a copy of the checker, and both mutants let the
-# oversized round through and overwrite the baseline.
-GW="$(new_repo growth-wt)"
+echo "=== fix rounds record size without refusing ==="
+GW="$(new_repo growth-wt KEN-GROWTH)"
 git -C "$GW" switch -q -c growth
-printf 'one\ntwo\n' > "$GW/change.txt"
-git -C "$GW" add change.txt
+printf 'one\ntwo\nthree\nfour\nfive\n' > "$GW/change.txt"
+mkdir -p "$GW/tests"
+printf 'one\ntwo\n' > "$GW/tests/new.sh"
+git -C "$GW" add change.txt tests/new.sh
 git -C "$GW" commit -q -m implementation
-init_growth_state "$STATE" "$GW" KEN-GROWTH 1-1 2 >/dev/null
-printf 'three\nfour\n' >> "$GW/change.txt"
-git -C "$GW" add change.txt
-git -C "$GW" commit -q -m at-limit
-run_write --worktree "$GW" --issue KEN-GROWTH --round-id 2-2 --item 1 at-limit "$OK_REACH"
-assert_eq "$(observe "rc=0 written=yes")" "rc=0 written=yes" "a round at exactly twice the baseline is accepted" "$ERR"
-printf 'five\n' >> "$GW/change.txt"
-git -C "$GW" add change.txt
-git -C "$GW" commit -q -m over-limit
-run_write --worktree "$GW" --issue KEN-GROWTH --round-id 3-3 --item 1 over-limit "$OK_REACH"
-E="rc=3 stderr~branch+diffstat+is+5+lines=true stderr~baseline+is+2+lines=true stderr~2x=true"
-assert_eq "$(observe "$E")" "$E" "a pre-push round past twice the baseline is refused with both numbers and the rule" "$ERR"
-git init -q --bare "$TMP_ROOT/growth-remote.git"
-git -C "$GW" remote add origin "$TMP_ROOT/growth-remote.git"
-git -C "$GW" push -q origin main growth
-run_write --worktree "$GW" --issue KEN-GROWTH --round-id 4-4 --item 1 after-push "$OK_REACH"
-assert_eq "$(observe "rc=3")" "rc=3" "the same oversized branch is refused after its first push" "$ERR"
-MUTANT_SCRIPTS="$(copy_scripts tripwire-mutant)"
+size_rows=(
+  'pass|**Expected delta**: 5 lines, 2 test lines|0|pass|5|2'
+  'production|**Expected delta**: 4 lines, 2 test lines|0|over|4|2'
+  'test|**Expected delta**: 5 lines, 1 test lines|0|over|5|1'
+  'both|**Expected delta**: 4 lines, 1 test lines|0|over|4|1'
+  'unsized|No size field here.|0|allowance_missing|null|null'
+  'malformed|**Expected delta**: about 4 lines|3|||'
+)
+for row in "${size_rows[@]}"; do
+  IFS='|' read -r label line code verdict allowance test_allowance <<<"$row"
+  write_allowance "$GW" KEN-GROWTH "$line"
+  run_write --worktree "$GW" --issue KEN-GROWTH --round-id "$label" --item 1 size "$OK_REACH"
+  if [[ "$code" == 0 ]]; then
+    E="rc=0 written=yes .size_check.verdict=$verdict .size_check.production_lines=5 .size_check.test_lines=2 .size_check.production_allowance=$allowance .size_check.test_allowance=$test_allowance"
+  else
+    E="rc=3 written=no stderr~branch-size-check:+invalid-delta+issue=KEN-GROWTH=true"
+  fi
+  assert_eq "$(observe "$E")" "$E" "$label records the measured verdict or reports malformed input" "$ERR"
+  if [[ "$code" == 0 && "$RC" == 0 ]]; then
+    assert_eq "$(rec '.size_check')" "$("$STATE" --state-dir "$GW/tmp" get KEN-GROWTH '.pr.size_check')" "$label keeps the same report in the round and workflow state"
+  fi
+done
+
+# Restore a refusal for measured over and unsized results in the writer.
+MUTANT_SCRIPTS="$(copy_scripts size-refusal-mutant)"
 MUTANT_WRITE="$MUTANT_SCRIPTS/dev-round-write"
-MUTANT_CHECK="$MUTANT_SCRIPTS/dev-artifact-check"
-assert_eq "$(grep -Fc 'run_size_tripwire "$worktree" "$issue" "$cut"' "$MUTANT_WRITE"),$(grep -Fc 'if (.pr.baseline_lines // null) == null' "$MUTANT_CHECK")" "1,1" "control: exactly one live gate call and one set-once guard to remove"
-sed -i.bak 's|^run_size_tripwire "$worktree" "$issue" "$cut"$|: # tripwire removed by must-fail control|' "$MUTANT_WRITE"
-sed -i.bak 's/if (.pr.baseline_lines \/\/ null) == null/if true/' "$MUTANT_CHECK"
-assert_eq "$([[ "$(grep -Fc 'run_size_tripwire "$worktree" "$issue" "$cut"' "$MUTANT_WRITE")" == 0 ]] && ! cmp -s "$MUTANT_WRITE" "$WRITE_BIN" && echo yes || echo no)" "yes" "control: the gate is removed from the private copy alone"
-"$STATE" --state-dir "$GW/tmp" set KEN-GROWTH dev_round_id 5-5 >/dev/null
-env ORCH_STATE_DIR="$GW/tmp" "$MUTANT_WRITE" --worktree "$GW" --issue KEN-GROWTH --round-id 5-5 --item 1 mutant "$OK_REACH" >/dev/null
-"$RETURN_WRITE" --worktree "$GW" --kind implement --issue KEN-GROWTH --round-id 6-6 --branch growth --commit "$(git -C "$GW" rev-parse HEAD)" --validate pass >/dev/null
-env ORCH_STATE_DIR="$GW/tmp" "$MUTANT_CHECK" --worktree "$GW" --issue KEN-GROWTH --round-id 6-6 >/dev/null
-assert_eq "$([[ -f "$GW/tmp/dev-round-KEN-GROWTH-5-5.json" ]] && echo yes || echo no),$("$STATE" --state-dir "$GW/tmp" get KEN-GROWTH .pr.baseline_lines)" "yes,5" "control: without the gate and the guard the oversized round is written and the baseline overwritten"
+assert_eq "$(grep -Fc 'if (( measured != 0 )); then' "$MUTANT_WRITE")" "1" "control finds the result handler"
+sed -i.bak '/^if (( measured != 0 )); then/i\
+[[ "$BRANCH_ALLOWANCE_STATUS" == pass ]] || exit 3
+' "$MUTANT_WRITE"
+assert_eq "$([[ ! -L "$MUTANT_WRITE" ]] && ! cmp -s "$MUTANT_WRITE" "$WRITE_BIN" && echo changed)" "changed" "control changes the private writer"
+LIVE_WRITE="$WRITE_BIN"
+WRITE_BIN="$MUTANT_WRITE"
+for row in 'over|**Expected delta**: 4 lines' 'missing|No size field.'; do
+  IFS='|' read -r label line <<<"$row"
+  write_allowance "$GW" KEN-GROWTH "$line"
+  run_write --worktree "$GW" --issue KEN-GROWTH --round-id "control-$label" --item 1 size "$OK_REACH"
+  assert_eq "$(observe 'rc=3 written=no')" 'rc=3 written=no' "control: $label refuses the report-and-continue case" "$ERR"
+done
+WRITE_BIN="$LIVE_WRITE"
 
 echo "=== a record the reader cannot use fails acceptance closed ==="
 # A record removed after delegation, a non-string base_sha, an empty path

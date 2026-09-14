@@ -30,4 +30,6 @@ Use this cycle only for a `conflicting` queue-wait verdict. A base conflict is n
    [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/worktree-push --worktree [WT_PATH] --issue [ISSUE]
    ```
 
+   This step is not skippable and no other push replaces it: the restack in step 2 rewrote every branch commit, and this command is the only thing that reconciles the SHAs workflow state recorded before it. A non-zero exit hands back, because republishing `Fixed in <sha>` replies or a closing comment over unreconciled SHAs publishes commits the branch no longer has. What it reconciles from and what its summary lines mean are in `worktree-push --help`.
+
 4. The head changed. Re-confirm the gate mode, then return to `merge-pr.md` § 5 step 1 to read the new exact head before re-arming it and starting a new wait.

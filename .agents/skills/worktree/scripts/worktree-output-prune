@@ -1,0 +1,738 @@
+#!/usr/bin/env python3
+"""Prune regenerable build output from one worktree, keeping every source file.
+
+Called per worktree by `worktree cleanup --targets-only` through
+lib/output-prune.sh, which owns flag parsing, the session-guard lease and the
+rendering of the records this engine emits. Build output is written by a
+compiler or a package manager and holds no user work, so an uncommitted-work
+check protects nothing here and none is made; HEAD is pinned instead, because a
+checkout swapped under a running prune is a different repository.
+
+stdout protocol: one `<stream>\\t<key>\\t<value>` record per line, per output path,
+unit or summary. `stream` is `out` or `err` and says where the caller renders the
+record, so a record kind this engine gains needs no change there. A unit whose
+path carries a control byte would split or mis-field its own record and is kept
+unpruned instead. Values are `key=value` pairs; the caller prefixes the worktree
+path. Nothing is written to stderr: a free-form line
+there reached the operator ahead of the records the caller renders afterwards, so
+the one line that needed English carries it as its own last field instead.
+
+Exit status is this worktree's verdict:
+  0  inspection complete — every unit was pruned, reported eligible, or kept
+     with a reason
+  1  the inspection could not complete. Under --apply the run may be partial:
+     a unit whose delete raised is named by a prune-failed record, the units
+     pruned before it keep their own records, and the sweep stopped there. Read
+     the records to see how far it got, then inspect the worktree.
+  6  HEAD moved during the run; nothing was deleted, because this returns
+     before the apply loop
+"""
+import argparse
+import contextlib
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Dict, FrozenSet, List, NamedTuple, Optional, Tuple
+
+try:
+    import fcntl
+except ImportError:  # A platform without Unix advisory locks cannot hold a build lock.
+    fcntl = None
+
+INSPECTION_INCOMPLETE = 1
+HEAD_MOVED = 6
+
+
+class Output(NamedTuple):
+    """One build directory an ecosystem owns, relative to the worktree.
+
+    `lock` names the lock file that marks an independently prunable unit inside
+    the directory: each directory holding one is its own unit, the lock is held
+    while that unit is pruned and is the one file left behind, so a build
+    waiting on it resumes against the same inode. `None` means the directory
+    itself is one unit and is removed whole; with no lock to hold, the
+    live-holder probe is the only evidence a build is running there, and a
+    platform without that probe keeps the directory.
+    """
+
+    path: str
+    lock: Optional[str]
+
+
+class Layout(NamedTuple):
+    """One ecosystem. A new ecosystem is a new row in LAYOUTS and nothing else.
+
+    A row supplies the marker file that identifies a repository as this
+    ecosystem, the lock files one of which must be in scope for that marker —
+    in its own directory or an ancestor's, empty when the marker alone
+    identifies it — and the output directories the ecosystem owns.
+    """
+
+    name: str
+    marker: str
+    siblings: Tuple[str, ...]
+    outputs: Tuple[Output, ...]
+
+
+# Every output path here is written by a tool this catalog's repositories run:
+# cargo writes target/, npm and pnpm write node_modules/, and Next.js writes
+# .next/ in the kendex.ai checkout.
+LAYOUTS = (
+    Layout(
+        name="cargo",
+        marker="Cargo.toml",
+        siblings=(),
+        outputs=(Output(path="target", lock=".cargo-lock"),),
+    ),
+    Layout(
+        name="javascript",
+        marker="package.json",
+        siblings=(
+            "package-lock.json",
+            "npm-shrinkwrap.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lockb",
+            "bun.lock",
+        ),
+        outputs=(
+            Output(path="node_modules", lock=None),
+            Output(path=".next", lock=None),
+        ),
+    ),
+)
+
+
+class Unit(NamedTuple):
+    """One independently prunable directory and the lock that guards it."""
+
+    ecosystem: str
+    directory: Path
+    lock: Optional[Path]
+
+
+class Links(NamedTuple):
+    """One inode as the sweep has seen it: links found, size, and its own count."""
+
+    here: int
+    blocks: int
+    nlink: int
+    directory: bool
+
+
+class Tally(NamedTuple):
+    """One unit's measurement: its newest modification time and its inodes."""
+
+    newest_mtime: float
+    inodes: Dict[Tuple[int, int], Links]
+
+
+class InspectionIncomplete(RuntimeError):
+    """A fact the engine refuses to assume, as a record token plus detail."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
+def reportable(text: str) -> bool:
+    """Whether a record can carry this text.
+
+    A record is one line of tab-separated fields, so a path holding a control
+    byte would split or mis-field its own record. Such a path is never pruned
+    either: a deletion nobody can read about is what the byte report exists to
+    prevent.
+    """
+    return all(ord(character) >= 0x20 for character in text)
+
+
+def one_line(text: str) -> str:
+    """English detail a record can carry: whitespace collapsed, so a message
+    holding a newline cannot split the line it travels on. It is the last field
+    of its record, which is why spaces in it are unambiguous."""
+    return " ".join(text.split()) or "no detail"
+
+
+def emit(stream: str, key: str, **fields: object) -> None:
+    value = " ".join("%s=%s" % (name.replace("_", "-"), text) for name, text in fields.items())
+    # Every path reaching here has been through reportable() at the point it was
+    # derived. This is that invariant rather than a second check: it refuses the
+    # worktree instead of letting a split record out, and it holds for a route
+    # added later that forgets to ask — which is how the package-root walk put
+    # paths beyond the one call site that did.
+    if not reportable(value):
+        # Naming the key, never the bytes: echoing the offending value would put
+        # the control byte into this very record, which is the thing it breaks.
+        raise InspectionIncomplete(
+            "unreportable-record", "a value of the %s record carries a control byte" % key
+        )
+    sys.stdout.write("%s\t%s\t%s\n" % (stream, key, value))
+    sys.stdout.flush()
+
+
+def git(worktree: Path, *args: str) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    # A pre-commit hook exports these, and they point every call at the
+    # repository the hook is running in; -C overrides none of them.
+    for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        env.pop(name, None)
+    return subprocess.run(
+        ["git", "-C", str(worktree), *args],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def head_unchanged(worktree: Path, expected: str) -> bool:
+    head = git(worktree, "rev-parse", "HEAD")
+    if head.returncode:
+        raise InspectionIncomplete("head-unreadable", head.stderr.strip())
+    return head.stdout.strip() == expected
+
+
+def tracks_content(worktree: Path, relative_path: str) -> bool:
+    """True when git tracks a file under `relative_path`.
+
+    The layout table is data a maintainer extends, and this is what keeps that
+    safe: a row naming a path some repository commits is kept instead of
+    deleting committed source.
+
+    :(literal) because the argument is a path, not a pattern. git reads a bare
+    pathspec as a glob, and Next.js names route directories app/[slug] in
+    ordinary scaffolding. Measured on git 2.55: a bare pathspec still finds a
+    glob-named directory's own tracked descendants, because the directory-prefix
+    match git tries first is literal — what it adds is the reverse, matching a
+    tracked path elsewhere that wildmatches the whole pathspec, which would keep
+    this directory under a reason that is not true of it. :(literal) disables
+    the wildcards and leaves the directory-prefix match, which the two rows for
+    tracked descendants pin.
+    """
+    listed = git(worktree, "ls-files", "-z", "--", ":(literal)" + relative_path)
+    if listed.returncode:
+        raise InspectionIncomplete("tracked-files-unreadable", listed.stderr.strip())
+    return bool(listed.stdout)
+
+
+def holds_lock(directory: Path, layout: Layout) -> bool:
+    """Whether one of the layout's lock files sits in this directory."""
+    return any((directory / sibling).is_file() for sibling in layout.siblings)
+
+
+def identifies(directory: Path, layout: Layout, lock_in_scope: bool) -> bool:
+    """Whether this directory is a root of the layout.
+
+    A marker alone identifies an ecosystem whose row names no lock file, Cargo
+    being the one. Where a row does name them, one must be in scope: in this
+    directory or in an ancestor. A workspace writes its lock file once, at the
+    workspace root, so apps/web/package.json is identified by the root's lock and
+    its node_modules and .next are reclaimed. A marker with no lock file anywhere
+    above it is still refused — something has to identify the ecosystem.
+    """
+    if not (directory / layout.marker).is_file():
+        return False
+    return not layout.siblings or lock_in_scope
+
+
+def package_roots(worktree: Path) -> Tuple[Tuple[Path, Layout], ...]:
+    """Every directory under the worktree a layout identifies, with that layout.
+
+    A repository's manifest does not have to sit at its root. This one installs
+    its UI with `npm ci --prefix ui`, so ui/package.json and ui/node_modules are
+    where the JavaScript output is, and a root-only test reclaims none of it. The
+    walk prunes at .git, at every dotted directory, and at the first segment of
+    every output path any layout owns, so it never descends into build output
+    looking for a manifest and, following no symlink, never leaves the worktree.
+    One directory can be two roots when it carries two markers; each contributes
+    its own layout's outputs.
+
+    A directory holding a .git entry is another repository's to sweep and is
+    skipped, reported rather than passed over. The outer index tracks a submodule
+    as a gitlink and knows nothing of the files inside it, so the tracked check
+    would read every one of them as untracked and an apply would delete source the
+    nested repository commits. Reclaiming nothing in there is the direction this
+    mode has to fail in; sweeping it would have to be asked for on its own terms.
+    """
+    pruned = {".git"}
+    for layout in LAYOUTS:
+        for output in layout.outputs:
+            pruned.add(output.path.split("/", 1)[0])
+    found: List[Tuple[Path, Layout]] = []
+    # Which layouts have a lock file in scope at each directory walked. os.walk
+    # descends pre-order, so a directory's parent has always been recorded by the
+    # time it is reached, and the lock a workspace root holds carries down to
+    # every package under it. The top directory's parent is outside the worktree
+    # and absent, which reads as nothing in scope.
+    in_scope: Dict[Path, FrozenSet[str]] = {}
+    for parent, dirs, _files in os.walk(worktree, followlinks=False, onerror=walk_error):
+        dirs[:] = sorted(name for name in dirs if name not in pruned and not name.startswith("."))
+        here = Path(parent)
+        # The worktree's own root carries a .git file, so only its descendants are
+        # tested: each one holding a .git entry is a repository of its own.
+        nested = [name for name in dirs if (here / name / ".git").exists()]
+        if nested:
+            dirs[:] = [name for name in dirs if name not in nested]
+            for name in nested:
+                shown = relative(worktree, here / name)
+                if reportable(shown):
+                    emit("err", "nested-repository", root=shown)
+                else:
+                    emit("err", "nested-repository", reason="unreportable-root-name")
+        inherited = in_scope.get(here.parent, frozenset())
+        in_scope[here] = inherited | frozenset(
+            layout.name for layout in LAYOUTS if holds_lock(here, layout)
+        )
+        for layout in LAYOUTS:
+            if identifies(here, layout, layout.name in in_scope[here]):
+                found.append((here, layout))
+    return tuple(found)
+
+
+def walk_error(error: OSError) -> None:
+    raise error
+
+
+def survey(unit: Unit, collect: bool) -> Optional[Tally]:
+    """The newest modification time under the unit, and what a prune would free.
+
+    `collect` says whether to tally inodes as well as time. The retention pass
+    wants the time alone; the pass that reports bytes wants both, and running one
+    traversal either way keeps a single walk of the verb.
+
+    What the prune keeps is never tallied: a lock-bearing unit keeps its own
+    directory and its lock, so a profile a previous prune already emptied reports
+    nothing rather than the cost of the shell left standing.
+
+    None says a name vanished from under the walk. os.walk's onerror covers a
+    listdir that fails; the lstat of a name it has already reported is outside
+    that reach, and a build unlinking an artifact between the two is ordinary on
+    the machine this mode exists for. One unit racing is that unit's keep, never
+    the end of the worktree's sweep.
+    """
+    inodes: Dict[Tuple[int, int], Links] = {}
+
+    def tally(info: os.stat_result) -> None:
+        key = (info.st_dev, info.st_ino)
+        seen = inodes.get(key)
+        if seen is None:
+            inodes[key] = Links(
+                here=1,
+                blocks=info.st_blocks * 512,
+                nlink=info.st_nlink,
+                directory=stat.S_ISDIR(info.st_mode),
+            )
+        else:
+            inodes[key] = seen._replace(here=seen.here + 1)
+
+    try:
+        root = unit.directory.lstat()
+        newest = root.st_mtime
+        if collect and unit.lock is None:
+            tally(root)
+        for parent, dirs, files in os.walk(unit.directory, followlinks=False, onerror=walk_error):
+            newest = max(newest, os.lstat(parent).st_mtime)
+            for name in dirs + files:
+                path = Path(parent) / name
+                info = path.lstat()
+                newest = max(newest, info.st_mtime)
+                if collect and path != unit.lock:
+                    tally(info)
+        return Tally(newest_mtime=newest, inodes=inodes)
+    except FileNotFoundError:
+        return None
+
+
+class Ledger:
+    """Blocks per inode across the sweep, each attributed to one unit.
+
+    A hardlinked file is freed only when its last link goes. pnpm installs by
+    hardlinking from a global store, so a node_modules tree can be almost
+    entirely links whose twins live outside the worktree: deleting it frees
+    nothing, and reporting its size as reclaimable would be the wrong number for
+    the one decision this report informs. An inode therefore counts only once the
+    sweep has seen every link st_nlink reports, and it counts for the first unit
+    that saw it, so an inode two units share is not counted twice in the total.
+
+    Only units that survived every check are absorbed, so a link sitting in a
+    unit this sweep keeps holds its inode back from the units it does prune.
+
+    A directory's st_nlink counts its entries rather than hardlinks to it, so
+    directories count on sight.
+    """
+
+    def __init__(self) -> None:
+        self._seen: Dict[Tuple[int, int], Links] = {}
+        self._owner: Dict[Tuple[int, int], Path] = {}
+
+    def absorb(self, unit: Unit, tally: Tally) -> None:
+        for key, links in tally.inodes.items():
+            seen = self._seen.get(key)
+            if seen is None:
+                self._seen[key] = links
+                self._owner[key] = unit.directory
+            else:
+                self._seen[key] = seen._replace(here=seen.here + links.here)
+
+    def totals(self) -> Dict[Path, int]:
+        """Reclaimable bytes per owning unit, in one pass over the inodes."""
+        out: Dict[Path, int] = {}
+        for key, links in self._seen.items():
+            if links.directory or links.here >= links.nlink:
+                owner = self._owner[key]
+                out[owner] = out.get(owner, 0) + links.blocks
+        return out
+
+
+def process_holders() -> Tuple[Tuple[str, ...], int]:
+    """Absolute paths held by another process of this user, and a skip count.
+
+    A path is held when a process has it as its working directory, is executing
+    a binary from it, or has a file under it open on a descriptor. The kernel
+    hides a process's /proc entry from an ordinary
+    peer only when that process is non-dumpable or setuid; no compiler or
+    package manager is either, so such a process is counted and reported rather
+    than inspected. Other users' processes are outside this probe: they cannot
+    write into this user's worktree under ordinary permissions.
+    """
+    holders: List[str] = []
+    skipped = 0
+    own = os.getpid()
+    uid = os.getuid()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == own:
+            continue
+        targets: List[str] = []
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            for link in [entry / "cwd", entry / "exe", *(entry / "fd").iterdir()]:
+                try:
+                    targets.append(os.readlink(link))
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+        except PermissionError:
+            skipped += 1
+            continue
+        except (FileNotFoundError, ProcessLookupError, NotADirectoryError):
+            continue
+        for target in targets:
+            # An unlinked file an active build still writes through keeps the
+            # marker; the path it names is the one that matters.
+            if target.endswith(" (deleted)"):
+                target = target[: -len(" (deleted)")]
+            if target.startswith("/"):
+                holders.append(target)
+    return tuple(holders), skipped
+
+
+def held_under(holders: Tuple[str, ...], directory: Path) -> bool:
+    prefix = str(directory) + os.sep
+    return any(held == str(directory) or held.startswith(prefix) for held in holders)
+
+
+class Profiles(NamedTuple):
+    """Prunable profile directories, and the symlinked candidates refused.
+
+    A symlinked profile or a symlinked lock is never pruned — the tree it points
+    at may be shared — and never refused in silence either: discover reports each
+    one, because a path kept without a reason is the silent keep this mode's
+    report exists to end.
+    """
+
+    units: Tuple[Tuple[Path, Path], ...]
+    symlinked: Tuple[Path, ...]
+
+
+def lock_units(root: Path, lock_name: str) -> Profiles:
+    """Directories under `root`, one and two levels down, holding `lock_name`.
+
+    Two levels because a cross-compiled profile sits at
+    target/<triple>/<profile> while a host profile sits at target/<profile>.
+    Holding the lock is what makes a directory a candidate: a symlinked
+    directory without one is no more a profile than an ordinary directory
+    without one, and neither is reported.
+    """
+    units: List[Tuple[Path, Path]] = []
+    symlinked: List[Path] = []
+
+    def consider(directory: Path) -> bool:
+        """True when the directory is a candidate, prunable or refused."""
+        lock = directory / lock_name
+        if not lock.is_file():
+            return False
+        if directory.is_symlink() or lock.is_symlink():
+            symlinked.append(directory)
+        else:
+            units.append((directory, lock))
+        return True
+
+    for depth1 in sorted(root.iterdir()):
+        if not depth1.is_dir():
+            continue
+        if consider(depth1) or depth1.is_symlink():
+            continue
+        for depth2 in sorted(depth1.iterdir()):
+            if not depth2.is_dir():
+                continue
+            consider(depth2)
+    return Profiles(units=tuple(units), symlinked=tuple(symlinked))
+
+
+def prune(unit: Unit) -> None:
+    if unit.lock is None:
+        shutil.rmtree(unit.directory)
+        return
+    for child in unit.directory.iterdir():
+        if child == unit.lock:
+            continue
+        if child.is_symlink() or not child.is_dir():
+            child.unlink()
+        else:
+            shutil.rmtree(child)
+
+
+def relative(worktree: Path, directory: Path) -> str:
+    return directory.relative_to(worktree).as_posix()
+
+
+def keep(worktree: Path, unit: Unit, reason: str) -> None:
+    emit(
+        "err",
+        "kept",
+        ecosystem=unit.ecosystem,
+        output=relative(worktree, unit.directory),
+        reason=reason,
+    )
+
+
+def discover(worktree: Path) -> Tuple[Unit, ...]:
+    """Every prunable unit in the worktree, reporting each path it keeps."""
+    roots = package_roots(worktree)
+    if not roots:
+        emit("err", "no-layout", reason="no-ecosystem-marker")
+        return ()
+    units: List[Unit] = []
+    for root, layout in roots:
+        if not reportable(relative(worktree, root)):
+            # The path cannot appear in its own refusal, so the record names
+            # only what it can. Nothing under this root is inspected, which is
+            # what keeps a lock-free output there from being deleted ahead of a
+            # record that could not have described it.
+            emit("err", "kept", ecosystem=layout.name, reason="unreportable-root-name")
+            continue
+        for output in layout.outputs:
+            path = root / output.path
+            shown = relative(worktree, path)
+            kept = None
+            if path.is_symlink():
+                kept = "symlink"
+            elif not path.exists():
+                continue
+            elif not path.is_dir():
+                kept = "not-a-directory"
+            # A resolved worktree root plus a resolved output path differ only
+            # through a symlinked ancestor, which a nested root can have.
+            elif path.resolve() != path:
+                kept = "outside-worktree"
+            elif tracks_content(worktree, shown):
+                kept = "tracked"
+            if kept is not None:
+                emit("err", "kept", ecosystem=layout.name, output=shown, reason=kept)
+                continue
+            if output.lock is None:
+                units.append(Unit(layout.name, path, None))
+                continue
+            profiles = lock_units(path, output.lock)
+            for directory in profiles.symlinked:
+                refused = relative(worktree, directory)
+                if not reportable(refused):
+                    emit("err", "kept", ecosystem=layout.name,
+                         reason="unreportable-unit-name")
+                    continue
+                emit("err", "kept", ecosystem=layout.name, output=refused, reason="symlink")
+            if not profiles.units:
+                if not profiles.symlinked:
+                    emit("err", "kept", ecosystem=layout.name, output=shown,
+                         reason="no-lock-unit")
+                continue
+            for directory, lock in profiles.units:
+                if not reportable(relative(worktree, directory)):
+                    emit("err", "kept", ecosystem=layout.name, output=shown,
+                         reason="unreportable-unit-name")
+                    continue
+                units.append(Unit(layout.name, directory, lock))
+    return tuple(units)
+
+
+def hold_lock(stack: contextlib.ExitStack, unit: Unit) -> Optional[str]:
+    """Take the unit's lock, or name the reason the unit cannot be pruned."""
+    descriptor = os.open(unit.lock, os.O_RDWR | os.O_NOFOLLOW)
+    stack.callback(os.close, descriptor)
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        raise InspectionIncomplete("lock-not-regular", "build lock is not a regular file: %s" % unit.lock)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return "lock-held"
+    # The build that just released the lock may have replaced the file. A prune
+    # under the old inode would let the next build proceed unguarded.
+    if os.fstat(descriptor).st_ino != unit.lock.stat().st_ino:
+        return "lock-replaced"
+    return None
+
+
+def run(worktree: Path, head: str, older_than_days: int, apply_prune: bool) -> int:
+    if not head_unchanged(worktree, head):
+        return HEAD_MOVED
+    cutoff = time.time() - older_than_days * 86400
+    aged: List[Unit] = []
+    for unit in discover(worktree):
+        measured = survey(unit, collect=False)
+        if measured is None or measured.newest_mtime > cutoff:
+            keep(worktree, unit, "changed" if measured is None else "recent")
+            continue
+        aged.append(unit)
+
+    probe_available = Path("/proc/self").exists()
+    uninspected = 0
+    total = 0
+    pruned = 0
+    with contextlib.ExitStack() as stack:
+        locked: List[Unit] = []
+        for unit in aged:
+            if unit.lock is None:
+                locked.append(unit)
+                continue
+            reason = hold_lock(stack, unit)
+            if reason is not None:
+                keep(worktree, unit, reason)
+                continue
+            locked.append(unit)
+
+        # Locks first: a build starting now blocks on one already held, so for a
+        # locked unit this scan reads a settled set of processes. A lock-free
+        # unit has no such lock, so this answer is only a point in time for it
+        # and the apply loop scans again just before it deletes.
+        holders: Tuple[str, ...] = ()
+        if probe_available:
+            holders, uninspected = process_holders()
+        idle: List[Unit] = []
+        for unit in locked:
+            if not probe_available and unit.lock is None:
+                keep(worktree, unit, "holder-probe-unavailable")
+                continue
+            if held_under(holders, unit.directory):
+                keep(worktree, unit, "live-holder")
+                continue
+            idle.append(unit)
+
+        if not head_unchanged(worktree, head):
+            return HEAD_MOVED
+        if apply_prune and not shutil.rmtree.avoids_symlink_attacks:
+            raise InspectionIncomplete(
+                "unsafe-deletion", "symlink-safe recursive deletion is unavailable"
+            )
+        # The re-measurement under the lock is also the one that tallies bytes,
+        # so only a unit that survived every check reaches the ledger and the
+        # figures are whole before the first record goes out.
+        ledger = Ledger()
+        settled: List[Unit] = []
+        for unit in idle:
+            tally = survey(unit, collect=True)
+            if tally is None or tally.newest_mtime > cutoff:
+                keep(worktree, unit, "changed")
+                continue
+            ledger.absorb(unit, tally)
+            settled.append(unit)
+        reclaimable = ledger.totals()
+        for unit in settled:
+            output = relative(worktree, unit.directory)
+            reclaimed = reclaimable.get(unit.directory, 0)
+            if not apply_prune:
+                total += reclaimed
+                pruned += 1
+                emit("out", "eligible", ecosystem=unit.ecosystem, output=output, bytes=reclaimed)
+                continue
+            # A locked unit needs no second scan: the lock it already holds is
+            # what makes the first scan's answer keep. A lock-free unit has
+            # nothing a starting writer would block on, so that answer can be
+            # stale by now and the scan is taken again here. This narrows the
+            # window to the gap between this scan and the first unlink; it does
+            # not close it, and nothing can while the output has no observable
+            # lock.
+            if probe_available and unit.lock is None:
+                fresh, fresh_uninspected = process_holders()
+                uninspected = max(uninspected, fresh_uninspected)
+                if held_under(fresh, unit.directory):
+                    keep(worktree, unit, "live-holder")
+                    continue
+            total += reclaimed
+            pruned += 1
+            try:
+                prune(unit)
+            except OSError:
+                # Name the unit before the failure leaves this loop. The sweep
+                # stops here, which is the conservative direction on a delete
+                # path, and the operator is left with a half-removed directory
+                # that otherwise appeared in no record at all.
+                emit("err", "prune-failed", ecosystem=unit.ecosystem, output=output)
+                raise
+            emit("out", "pruned", ecosystem=unit.ecosystem, output=output, bytes=reclaimed)
+
+    emit(
+        "out",
+        "summary",
+        mode="apply" if apply_prune else "preview",
+        units=pruned,
+        bytes=total,
+        uninspected_processes=uninspected,
+    )
+    return 0
+
+
+def positive_days(text: str) -> int:
+    days = int(text)
+    if days < 1:
+        raise argparse.ArgumentTypeError("retention must be at least one day")
+    return days
+
+
+def main(argv: Tuple[str, ...]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--worktree", required=True, type=Path)
+    parser.add_argument("--head", required=True)
+    parser.add_argument("--older-than-days", required=True, type=positive_days)
+    parser.add_argument("--apply", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        if fcntl is None:
+            raise InspectionIncomplete(
+                "locking-unavailable", "Unix advisory file locking is unavailable"
+            )
+        if not hasattr(os, "O_NOFOLLOW"):
+            raise InspectionIncomplete(
+                "nofollow-unavailable", "symlink-safe lock opening is unavailable"
+            )
+        worktree = args.worktree.resolve(strict=True)
+        if worktree != args.worktree.absolute():
+            raise InspectionIncomplete(
+                "worktree-symlinked", "worktree path resolves through a symlink: %s" % worktree
+            )
+        return run(worktree, args.head, args.older_than_days, args.apply)
+    except InspectionIncomplete as error:
+        emit("err", "incomplete", reason=error.reason, detail=one_line(error.detail))
+        return INSPECTION_INCOMPLETE
+    except OSError as error:
+        emit("err", "incomplete", reason="filesystem-error", detail=one_line(str(error)))
+        return INSPECTION_INCOMPLETE
+
+
+if __name__ == "__main__":
+    sys.exit(main(tuple(sys.argv[1:])))

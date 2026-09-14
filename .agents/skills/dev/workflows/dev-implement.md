@@ -66,6 +66,8 @@ Read the issue description — `.description` from the cache read above, or `gh 
 
 Cited research, decision, and context files are mandatory reading; how the research applies is yours to decide. Evaluate it against existing patterns and architecture docs, updating those docs when it changes documented patterns, and add anything project-specific worth persisting to `kendex.toml`. Reference an already-recorded decision (`.agents/skills/decider/scripts/decisions search --issue [RESEARCH_ISSUE_ID]`) rather than duplicating it; record a new one only for a decision your evaluation newly reveals.
 
+For a missing planning or research path in a Linear brief, follow [linear SKILL.md § Resolve a cited artifact](../../linear/SKILL.md#resolve-a-cited-artifact) before classifying the context as missing.
+
 ### 2.3 Evaluate Feasibility
 
 Check your domain's code before planning: do the required APIs and types exist, is another domain's work a prerequisite, is an existing issue blocking? Search prior decisions with `.agents/skills/decider/scripts/decisions search "[RELEVANT_KEYWORDS]"` and read the full decision file rather than the index summary — never implement an approach a decision explicitly rejects, and report back with the reference if the issue description contradicts one. Optimization work with no `baseline` label takes the label now, before any code change.
@@ -134,9 +136,11 @@ Implement per your domain expertise and run quality gates before completion.
 
 Before writing a refusal, a validator, a lock, a retry, or a test, read [dev SKILL.md § Engineering Rules](../SKILL.md#engineering-rules).
 
-- **Scope growing?** Linear: `linear.sh issues create --state "Backlog" --project "[PARENT_PROJECT]" --parent [PARENT_ID] --labels "[VALIDATED_LABELS]" --description-file [BODY_FILE]` — the parent's project, `Backlog`, and the complete label set (your own `agent:*` label plus every category the project requires) validated against the live inventory. The body follows project-management's [issue-description-template.md](../../project-management/templates/issue-description-template.md), whose `Reached by:` line names what in this implementation run arrives at the discovered work. GitHub and ad-hoc report the discovered scope in § 9 instead; never create issues without orchestrator approval.
+- **Scope growing?** Report the discovered scope in § 9 for every tracker; never create issues here. Follow [skill-rules.md § Coordination](../../orch/references/skill-rules.md#coordination) for issue creation.
 - **Work outside scope?** Note it under Discovered Work in § 9.
 - **Need deeper research?** Add the `needs-research` label, pause, report.
+
+For every callee whose call the change deletes, run `git grep -n -F --untracked --exclude-standard -e <callee> --`, then apply [code-quality § Cleanup](../../code-quality/SKILL.md#cleanup).
 
 ### 4.3 Update Documentation And Decisions
 
@@ -144,25 +148,42 @@ Update docs when the implementation changes a documented API or architecture.
 
 **Skip decision recording if** no alternatives were considered and no trade-offs made. Otherwise follow the decider skill's create-decision workflow: `.agents/skills/decider/scripts/decisions next-id`, a template from `templates/decision-entry.md`, the file per `schemas/decision-format.md`, the INDEX.md row per `templates/index-row.md`, `// REVISIT(DXXX):` markers in code where applicable, and the decision ID cited in the § 9 summary.
 
+### 4.4 Reflect
+
+Follow [dev SKILL.md § Reflect](../SKILL.md#reflect). Complete every repository edit from reflection before validation.
+
 ---
 
 ## 5. Validate
 
-Before deterministic validation, run `git grep -n -F --untracked --exclude-standard -e <callee> --` for every callee whose call the change deletes, then apply [code-quality § Cleanup](../../code-quality/SKILL.md#cleanup); the build and tests below validate every deletion.
+The validation gate is this complete list:
 
-Deterministic gates first — every finding is fixed here, never carried into review. Preflight runs when installed (`test -x .agents/skills/preflight/scripts/preflight`); the doc-limits gate runs when installed (`test -x .agents/skills/doc-limits/scripts/doc-limits`):
+- The affected suite passes. It consists of installed preflight and doc-limits gates, the delegation's required verification commands in their § 2.4 normalized form, and Visual QA under the current workflow's rule below.
+- One must-fail control per changed behavioral surface with a test turns that surface's test red once, or carries the statement [code-quality § Tests](../../code-quality/SKILL.md#tests) takes in its place where no production edit reddens the test. A workflow sentence has no test and adds no control. A production gate or guard change keeps the per-rule control that [code-quality § Prove Your Guards](../../code-quality/SKILL.md#prove-your-guards) requires inside this item.
+- The command that `.agents/skills/orch/scripts/orch-env DEV_VALIDATE_CMD ""` prints passes once against the round's final worktree contents. An empty value is a validation failure named `DEV_VALIDATE_CMD`, with the note `DEV_VALIDATE_CMD is empty; set it in kendex.settings.toml [env] to the project's full test, lint and typecheck command`. Run nothing in its place.
+- After the dev agent returns its local result, the orchestrator gets green CI and a passing review gate. The dev agent does not claim or reproduce these downstream results.
+
+For a test-only PR whose validation runs longer than 30 minutes and fails, run the failed target alone once under load. Record both results in `--validate-note` with the prefix `Test-only validation ceiling:`. Report the result and do not extend validation.
+
+Any other validation failure ends the round. Record the failing result in the artifact and return it without another validation run.
+
+Run no proof, rerun, receipt, isolation step, or approval step outside this list. If an agent believes the list misses a rule, it records the proposal once under `### Proposed Rules` in the completion summary and in the matching return line. The orchestrator puts it once in the PR body. Neither role performs the proposed rule.
+
+Run preflight when installed (`test -x .agents/skills/preflight/scripts/preflight`):
 
 ```bash
 .agents/skills/preflight/scripts/preflight --repo [WORKTREE_PATH]
 ```
 
+Run doc-limits when installed (`test -x .agents/skills/doc-limits/scripts/doc-limits`):
+
 ```bash
 .agents/skills/doc-limits/scripts/doc-limits
 ```
 
-Run the project's full validation once before completion. Its successful result is recorded in the completion artifact for submit to reuse on the same commit. The command is the one `.agents/skills/orch/scripts/orch-env DEV_VALIDATE_CMD ""` prints, run from the worktree root, plus the delegation's required verification commands in their § 2.4 normalized form. An empty value is a validation failure named `DEV_VALIDATE_CMD`, with the note `DEV_VALIDATE_CMD is empty; set it in kendex.settings.toml [env] to the project's full test, lint and typecheck command`; run nothing in its place, and never substitute a documented or guessed command. Failure handling and long-running runs: [dev SKILL.md § Validation](../SKILL.md#validation).
+Run the delegation's required verification commands, then the project's full validation command. Record the full validation result in the completion artifact for submit to reuse on the same contents. Long-running runs: [dev SKILL.md § Validation](../SKILL.md#validation).
 
-A script written only to produce a number for the issue is not committed; put its result in the PR body. Every check, guard, assertion, or test this change adds or modifies must have a must-fail control that runs red once ([code-quality § Prove Your Guards](../../code-quality/SKILL.md#prove-your-guards)); an uncommitted measurement is not a check the change adds or modifies.
+A script written only to produce a number for the issue is not committed; report its result in the return for the orchestrator to put in the PR body. An uncommitted measurement is not a check the change adds or modifies.
 
 **Visual QA** — **skip if** the issue has no `design` label. Otherwise use the project's visual QA skills to confirm what your change affects renders correctly, not the full checklist. Do NOT capture golden baselines.
 
@@ -170,7 +191,7 @@ A script written only to produce a number for the issue is not committed; put it
 
 ## 6. Reflect
 
-Follow [dev SKILL.md § Reflect](../SKILL.md#reflect).
+Reflection is complete in § 4.4. Make no repository edit here.
 
 ---
 
@@ -182,7 +203,7 @@ git -C [WORKTREE_PATH] commit -m "[PREFIX]([ISSUE_ID]): [DESCRIPTION]"
 git -C [WORKTREE_PATH] log -1 --oneline
 ```
 
-Use the CURRENT sub-issue ID when bundled, not the parent's. Never stage lock files the project gitignores — stage specific files by name. Append `[validate: FAILING_CHECK]` when validation failures remain.
+Use the CURRENT sub-issue ID when bundled, not the parent's. Never stage lock files the project gitignores — stage specific files by name. When validation failures remain, add `[validate: FAILING_CHECK]` to the body as a second `-m`, never to the header.
 
 ---
 
@@ -231,6 +252,9 @@ Always required. Linear posts it to the issue you implemented: write `tmp/comple
 
 ### Handoff Notes
 [What the next agent in this bundle needs for its current-scope work: struct changes, API contracts, file locations]
+
+### Proposed Rules
+- [Rule the validation list is missing]
 ```
 
 Omit any section that has nothing in it. Discovered Work is backlog work beyond this scope; Handoff Notes are for the next agent only, with no aspirational suggestions.
@@ -257,7 +281,7 @@ With every applicable section above complete, write the artifact per [dev SKILL.
 .agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind implement --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [HEAD_SHA_AFTER_COMMIT] --validate [pass|"FAILING: check1,check2"] [--validate-note [TEXT]] [--qa-label [LABEL]]...
 ```
 
-One `--qa-label` per § 8 signal, none if nothing triggered. GitHub and ad-hoc rounds append `--no-summary --summary-file tmp/completion-summary-[ISSUE_ID].md`. Bundled rounds add `--bundled` and one `--item` per sub-issue — § 11.
+One `--qa-label` per § 8 signal, none if nothing triggered. Every single round appends `--summary-file tmp/completion-summary-[ISSUE_ID].md`; GitHub and ad-hoc rounds also append `--no-summary`. Bundled rounds add `--bundled` and one `--item` per sub-issue — § 11.
 
 **Issue state.** A bundled Linear sub-issue is marked Done (`linear.sh issues update [ISSUE_ID] --state "Done"`) and aggregated by the parent session in § 11. The worktree's top-level managed issue is NOT — it stays In Progress or In Review until the PR merges. GitHub and ad-hoc issues close through the PR body or merge, never here.
 
@@ -268,6 +292,7 @@ Branch: [BRANCH_NAME]
 Commit: [SHA]
 QA: [signals or "none"]
 Validate: [pass or "FAILING: check1, check2"]
+Proposed rule: [proposal or "none"]
 Summary: [ISSUE_ID] ✓
 </output_format>
 
@@ -292,12 +317,15 @@ Summary: [ISSUE_ID] ✓
    ↳ [SUB_ISSUE_2] ✓ | blocked by: [SUB_ISSUE_1]
       ↳ [SUB_ISSUE_3] ✓  ← nested
    Files: N | Commits: N | QA: [LABELS]
+
+   ### Proposed Rules
+   - [Rule the validation list is missing]
    ```
 
 3. **Write the artifact**, keyed to the Parent ID, with that group's `Round ID:` when the bundle was delegated in groups:
 
    ```bash
-   .agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind implement --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [LAST_SUBISSUE_HEAD_SHA] --validate [pass|"FAILING: check1,check2"] [--validate-note [TEXT]] --bundled --item [N] [DECISION] [REASONING] [--item ...] [--qa-label [LABEL]]...
+   .agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind implement --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [LAST_SUBISSUE_HEAD_SHA] --validate [pass|"FAILING: check1,check2"] [--validate-note [TEXT]] --summary-file tmp/bundle-summary-[PARENT_ID].md --bundled --item [N] [DECISION] [REASONING] [--item ...] [--qa-label [LABEL]]...
    ```
 
    `--bundled` requires one `--item` per sub-issue result — `DECISION` is Applied, Skipped, or Blocked and `REASONING` non-empty plain text with no backticks — populated from the sub-issue tree. `--commit` is the last sub-issue's HEAD.
@@ -310,5 +338,6 @@ Summary: [ISSUE_ID] ✓
    Branch: [BRANCH]
    Commits: [COUNT] ([SHAS])
    QA: [AGGREGATED_SIGNALS or "none"]
+   Proposed rule: [proposal or "none"]
    Summaries: [all issue IDs ✓]
    </output_format>

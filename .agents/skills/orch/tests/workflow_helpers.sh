@@ -135,7 +135,11 @@ assert_eq "$("$GC" issue-from-branch "$issue_repo")" "issue-369" "git-context ke
 iso_ts="$("$GC" timestamp iso)"
 assert_eq "$([[ "$iso_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && echo ok)" "ok" \
   "git-context timestamp iso prints an RFC-3339 UTC instant"
-assert_eq "$("$GC" timestamp bogus 2>/dev/null; echo $?)" "2" "git-context rejects an unknown timestamp format"
+timestamp_rc=0
+"$GC" timestamp bogus >/dev/null 2>"$TMP_ROOT/timestamp.err" || timestamp_rc=$?
+assert_eq "$timestamp_rc" "2" "git-context rejects an unknown timestamp format"
+assert_eq "$(sed -n '1p' "$TMP_ROOT/timestamp.err")" "git-context: timestamp-format format=bogus" \
+  "git-context identifies the rejected format"
 
 echo
 echo "=== ordering contracts ==="
@@ -268,7 +272,7 @@ echo "=== frozen cross-skill contracts ==="
 # are owned elsewhere, so a signature change here silently breaks every review.
 reviewer_skill="$REPO_ROOT/skills/reviewer/SKILL.md"
 if [[ -f "$reviewer_skill" ]]; then
-  assert_file_contains "$reviewer_skill" '.agents/skills/orch/scripts/review-artifact-check --file [ARTIFACT_PATH]' \
+  assert_file_contains "$reviewer_skill" '.agents/skills/orch/scripts/review-artifact-check --file [ARTIFACT_PATH] [WORKTREE_PATH]' \
     "reviewer skill self-validates through the frozen review-artifact-check --file contract"
 else
   # Skipping on absence would retire the only check on this frozen signature the

@@ -2,7 +2,7 @@
 description: Exa-powered research specialist for producing evidence-backed findings reports from project research prompts. Use for research issues, technology investigations, vendor/library comparisons, architectural option analysis, and current-state web research.
 tags: research
 mode: subagent
-model: openai/gpt-6-astra
+model: openai/gpt-5.6-sol
 color: "#a855f7"
 options:
   reasoningEffort: high

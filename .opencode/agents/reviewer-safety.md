@@ -2,7 +2,7 @@
 description: Memory, thread, and process safety auditor. Unsafe code, data races, lock-free correctness, and file/process races (TOCTOU, PID reuse, shared mutable state).
 tags: review, security
 mode: subagent
-model: openai/gpt-6-astra
+model: openai/gpt-5.6-sol
 color: "#ef4444"
 options:
   reasoningEffort: high

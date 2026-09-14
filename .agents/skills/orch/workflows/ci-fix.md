@@ -97,7 +97,7 @@ Worktree: [WORKTREE_PATH]
 2. Fix the issue, editing files under `[WORKTREE_PATH]` by absolute path.
 3. Run the project's validation command from `[WORKTREE_PATH]`.
 4. If the target failure is fixed but OTHER failures remain: still commit, and note them in the message.
-5. Stage and commit: `git -C [WORKTREE_PATH] add -A`, then `git -C [WORKTREE_PATH] commit -m "fix([ISSUE_ID]): [DESCRIPTION]"`, appending `[validate: FAILING_CHECK]` to the message when other failures remain.
+5. Stage and commit: `git -C [WORKTREE_PATH] add -A`, then `git -C [WORKTREE_PATH] commit -m "fix([ISSUE_ID]): [DESCRIPTION]"`, adding `-m "[validate: FAILING_CHECK]"` as the body, never to the header, when other failures remain.
 6. Push: `git -C [WORKTREE_PATH] push`.
 
 Report: what was fixed, the validate status, and any unrelated failures.
@@ -153,6 +153,7 @@ Re-confirm the review gate at the new head **before** waiting on CI, on every re
 
 - `approved` / `reviewed` / `proceeded` → wait for CI. `proceeded` is returned to the caller, not persisted here; it is a LOCAL verdict — orch posts no status.
 - `comments` / `changes_requested` → new feedback on the fix push. Managed: return it to the caller's review-gate handling. Standalone: run that triage pass, then re-run this step.
+- `unreviewable` → this PR's base draws no automatic review ([references/gates.md](../references/gates.md) § Stacked pull requests). Request one with `gh pr edit [PR_NUMBER] --add-reviewer @copilot` and re-run this step once. If it repeats, `auto-recommended` records `ci-gate-unreviewable`; under `ask`, hand back the unconfirmed gate. Never treat it as a met gate.
 - `timeout` → no exact-head evidence yet; a missing or red CI run here is not a fix failure. Re-run this step once. If it repeats, `auto-recommended` records `ci-gate-unconfirmed`; under `ask`, hand back the unconfirmed gate.
 
 ```bash

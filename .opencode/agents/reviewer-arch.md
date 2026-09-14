@@ -2,7 +2,7 @@
 description: Architecture reviewer for design reviews, module boundary validation, spec/proposal review, and technical debt assessment.
 tags: review
 mode: subagent
-model: openai/gpt-6-astra
+model: openai/gpt-5.6-sol
 color: "#eab308"
 options:
   reasoningEffort: high

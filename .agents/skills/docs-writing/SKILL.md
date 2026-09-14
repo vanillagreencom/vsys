@@ -1,7 +1,7 @@
 ---
 name: docs-writing
-description: "Load to write, rewrite, or review any markdown file a repository owns: README, DEVELOPMENT, architecture docs, reference docs, SKILL.md and AGENTS.md."
-summary: "One writing standard for every markdown file a repo owns, a directive list and a template per file type, and the blank-page rewrite workflow."
+description: "Load to write, rewrite, or review repository markdown or documentation HTML: README, DEVELOPMENT, architecture docs, reference docs, SKILL.md and AGENTS.md."
+summary: "Writing rules and templates for repository markdown and documentation HTML, with a blank-page rewrite workflow."
 license: MIT
 user-invocable: true
 dependencies:
@@ -19,7 +19,7 @@ tags: [docs]
 
 A repository's markdown holds what the code cannot show: invariants, layer boundaries, decisions with their reason, conventions that differ from tool defaults, and pointers to canonical code and to the test that proves a claim. Everything else lives in the code, the tests, and git history.
 
-This skill governs every markdown file the repository owns. It states one writing standard, then what each file type is for and what it must not carry.
+This skill governs repository markdown and documentation HTML. It states one writing standard, then what each file type is for and what it must not carry.
 
 Two exclusions hold in every file: a list a declaration file or a checker already holds is not copied into prose, and a claim that a checker enforces something names the checker.
 
@@ -98,6 +98,17 @@ Read by an agent or maintainer looking up one value. Any lookup document: `refer
 - Excluded: rationale, and narrative that defines nothing.
 - A file under `references/` exists only where a named workflow loads it on demand.
 
+### Documentation HTML
+
+Read from `docs/` in a browser. Apply the standard, repository writing rules and companion markdown's file type. Website pages served from a web root or built by a bundler are excluded.
+
+- One offline file: `<title>`, one `<h1>`, `<h2>` sections and tables. No framework, build step, external scripts or stylesheets.
+- Diagram each flow, topology or lifecycle with inline SVG, `role="img"` and a sentence in `aria-label`. Use the markdown's terms. Prose adds only what the diagram cannot show.
+- Define each unfamiliar term once, at first use, with a hover tooltip such as `<span class="term" title="…">`. Use one plain sentence.
+- Keep pictures and tables in HTML, decisions and costs in markdown. Link both ways and commit the pair together. Declare `<!-- Covers: companion.md -->` for `doc-drift-check`.
+- Related pages share `<nav class="tabs">` links. Mark the current page with `class="here"`.
+- Follow [doc-limits policy](../doc-limits/references/policy.md) and verify relative `href` targets with `md-refs`.
+
 ### `SKILL.md`, `workflows/*.md`, `agents/*.md`
 
 Read by an agent on every load.
@@ -139,7 +150,7 @@ The `changelog-entries` lane owns the shape. Follow the repository's `changelog.
 
 ## Format
 
-- Docs change in the same commit as the code they describe. The `doc-drift-check` hook shows unchanged covering docs to the user as a notice; it does not block a stop.
+- Docs change in the same commit as the code they describe. The `doc-drift-check` hook names the unchanged covering docs to the agent and blocks that stop once per set.
 - One paragraph per line, one list item per line, no hard wraps inside either. Blank lines separate paragraphs, list blocks, headings, and fences. Tables and fenced code stay as written. The commit-guards `md-format` lane enforces it and `md-reflow` converts a file once.
 - Every relative link, `<path>.md § Heading` or `<path>.md#anchor` citation, and decision ID resolves. The `md-refs` lane checks them.
 - Agent-loaded markdown carries no history. The `prose` lane checks it.
@@ -150,4 +161,4 @@ The `changelog-entries` lane owns the shape. Follow the repository's `changelog.
 
 Rewrite from a blank page, never by editing the old text: [workflows/rewrite.md](workflows/rewrite.md).
 
-Templates: [README.md](templates/README.md), [DEVELOPMENT.md](templates/DEVELOPMENT.md), [overview.md](templates/overview.md), [topic.md](templates/topic.md), [reference.md](templates/reference.md), [agent-SKILL.md](templates/agent-SKILL.md), [root-AGENTS.md](templates/root-AGENTS.md), [nested-AGENTS.md](templates/nested-AGENTS.md).
+Templates: [README.md](templates/README.md), [DEVELOPMENT.md](templates/DEVELOPMENT.md), [overview.md](templates/overview.md), [topic.md](templates/topic.md), [reference.md](templates/reference.md), [document.html](templates/document.html), [agent-SKILL.md](templates/agent-SKILL.md), [root-AGENTS.md](templates/root-AGENTS.md), [nested-AGENTS.md](templates/nested-AGENTS.md).

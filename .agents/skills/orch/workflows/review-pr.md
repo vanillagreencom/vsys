@@ -54,6 +54,14 @@ A failed check omits the path and carries `- decision index lookup failed for [D
 
 ## 2. Prepare Reviewers
 
+Refresh the size report for the current `HEAD` on each entry to this section:
+
+```bash
+.agents/skills/orch/scripts/branch-size-check --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --json
+```
+
+On a nonzero exit, report the failure and stop. Read the resulting `pr.size_check` report. Its verdict and counts inform the reviewer's or orchestrator's cut decision under [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow). They do not gate review.
+
 `[AGENTS]` is the caller's `agents` context when provided, otherwise every `reviewer-*` agent this harness exposes. Do not hardcode a count or a list. Where the harness exposes `reviewer-error`, a diff owning a subprocess, a transport (stream, socket, SSE), or a teardown path always carries it: relevance never drops it from the panel. With no reviewers available, skip to § 5 with verdict `pass`.
 
 Resolve the reviewer mode per [references/skill-rules.md § Agent Lifecycle](../references/skill-rules.md#agent-lifecycle):
@@ -160,10 +168,10 @@ Execute the exact command printed after `wait:` and repeat it per its exit code 
 
 ```bash
 .agents/skills/orch/scripts/workflow-state get [ISSUE_ID] .review_delegated_at
-.agents/skills/orch/scripts/review-artifact-check --file "$EXTERNAL_OUTPUT" [REVIEW_DELEGATED_AT_FROM_PREVIOUS_COMMAND]
+.agents/skills/orch/scripts/review-artifact-check --file "$EXTERNAL_OUTPUT" [WORKTREE_PATH] [REVIEW_DELEGATED_AT_FROM_PREVIOUS_COMMAND]
 ```
 
-`ok == true` → append the path to `json_paths`; `reason == "valid_undermeasured"` → report its `measurement_failed` string — and `measurement_suppressed` when present — beside the path; never present the external pass as clean. `ok == false`, or any non-zero exit, → report the `reason` (and `detail` when present) and continue: external review is advisory, never blocking, and never substitutes a pass. A detached run that has already exited non-zero, or an artifact that does not validate, is **resolved** right then as `external: failed — [REASON]` (the script's exit class, or the check's `reason`) and leaves `OUTSTANDING` in § 3.1.
+`ok == true` → append the path to `json_paths`; `reason == "valid_undermeasured"` → report its `measurement_failed` string — and `measurement_suppressed` when present — beside the path; never present the external pass as clean. `ok == false`, including `moving_tree`, or any non-zero exit, → report the `reason` (and `detail` when present) and continue: external review is advisory, never blocking, and never substitutes a pass. A detached run that has already exited non-zero, or an artifact that does not validate, is **resolved** right then as `external: failed — [REASON]` (the script's exit class, or the check's `reason`) and leaves `OUTSTANDING` in § 3.1.
 
 ## 3. Collect Results
 
@@ -190,7 +198,7 @@ Wave mode uses this combined write instead, then shuts that reviewer's session d
 .agents/skills/orch/scripts/workflow-state update [ISSUE_ID] '.json_paths += ["[PATH]"] | .review_wave_done += ["[AGENT]"]'
 ```
 
-`ok == false` after a return means the return is **incomplete**, whatever its `File:` path or message body claims. Send that agent **exactly one** re-delegation:
+`ok == false`, including `moving_tree`, after a return means the return is **incomplete**, whatever its `File:` path or message body claims. Send that agent **exactly one** re-delegation. A `moving_tree` refusal requires a new review after development finishes, with a new starting snapshot:
 
 > Your review return is incomplete: `review-artifact-check` reports `[reason]`[ — `[detail]`] for `[WORKTREE_PATH]/tmp/review-[AGENT]-*.json`. Write your full review JSON to `[WORKTREE_PATH]/tmp/review-[AGENT]-YYYYMMDD-HHMMSS.json` using your harness file-write tool (not shell redirection), following every required field of `review-finding.md`, then return `Verdict:` and `File:` again.
 
@@ -199,6 +207,8 @@ Still `ok == false` after that, or the § 3.2 deadline reached → mark the agen
 ### 3.2 Watchdog
 
 **No wait here is unclocked: while any agent this workflow delegated has not completed (§ 3.1), a wake source for it is armed.** An agent's wake source is one backgrounded `review-artifact-check [WORKTREE_PATH] [AGENT] [REVIEW_DELEGATED_AT] --wait [SECS]` whose `[SECS]` expires at the earliest row of the table below still pending for it, which is that agent's deadline once no row above it remains; the external lane's is the `wait:` command § 2.2 prints. Arm them with the delegation batch, and re-arm after every action below, a status ping included — a reply promising completion extends nothing without a re-armed clock. A re-arm that follows a rejected artifact (§ 3.1) waits for one newer than that rejection: its `[REVIEW_DELEGATED_AT]` is strictly greater than the rejected artifact's mtime.
+
+**A wake source that ends without a verdict is replaced once, and only once.** `review-artifact-check` answers with a result on stdout at exit 0 or 1; a keyed refusal at exit 2, or any other status, means it stopped clocking that agent before the agent finished, so the deadline rows below are no longer armed for it and a replacement goes up immediately. That replacement is the last one: the probe failures behind this state persist — a `stat` that cannot answer, a machine out of processes — so a second wake source ending the same way is an environment failure, not a reviewer to keep waiting on. Stop and report it, naming the status and the keyed line if one arrived, rather than arming a third or marking the agent `unresponsive`, which would blame the reviewer for a broken probe.
 
 Sweep the filesystem on every wake. Per-agent deadline from `review_delegated_at`: 25 minutes for an agent whose name contains `perf`, 15 minutes for every other agent. The external lane's printed deadline is absolute Unix epoch seconds; compare it with `date +%s`. If no deadline metadata prints, use 2 × `SECOND_OPINION_TIMEOUT` plus 3 minutes, with 1080 seconds as the timeout default. It is not a messageable agent, so the ping row and its early end never apply to it.
 
@@ -443,7 +453,7 @@ Discovered Work bullets matching `^-\s+(handoff_to_submit_pr|handoff_to_merge_pr
 
 Nothing clears the bar → § 9. Otherwise build the audit-input file per `.agents/skills/project-management/schemas/audit-issues-input.md` at `[WORKTREE_PATH]/tmp/audit-review-YYYYMMDD-HHMMSS.json` with `source: "review"`. Each escalated item's `origin` comes from its `outcome`: `"skipped"` → `origin: "skipped"`; `"blocked"` or no `outcome` field → `origin: "escalated"`. Set `tracker.type` to the resolved `TRACKER`, plus `tracker.repository` for GitHub items.
 
-**Run Workflow**: `⤵ .agents/skills/project-management/workflows/audit-issues.md --issues [FILE_PATH] § 1-9 → § 8 tail`. audit-issues is a primary-session wrapper holding the interactive approval gate: run it in this session, never delegated to a subagent; the only delegable part is the `tpm-audit.md` analysis, which audit-issues spawns itself.
+Apply [skill-rules.md § Coordination](../references/skill-rules.md#coordination) before this call. **Run Workflow**: `⤵ .agents/skills/project-management/workflows/audit-issues.md --issues [FILE_PATH] § 1-9 → § 8 tail`. A non-delegated primary session runs this wrapper itself; the only delegable part is the `tpm-audit.md` analysis, which audit-issues spawns itself.
 
 Record each created issue:
 

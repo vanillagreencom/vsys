@@ -2,7 +2,7 @@
 description: "Fast reconnaissance agent for exploring codebases, finding files by pattern, searching keywords, answering architecture questions, and returning compressed cited context or report artifacts. Specify thoroughness: quick, medium, or very thorough."
 tags: research
 mode: subagent
-model: openai/gpt-6-astra
+model: openai/gpt-5.6-sol
 color: "#06b6d4"
 options:
   reasoningEffort: high

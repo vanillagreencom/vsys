@@ -4,7 +4,7 @@ Execute an approved roadmap plan: resolve existing work, create the project, cre
 
 ## 1. Load the Plan
 
-`roadmap create @[plan-file]`. Without a plan file, error: "Requires a plan file from `workflows/roadmap-plan.md`."
+`roadmap create @[plan-file] [--source-issue [ISSUE_ID]]`. Read the optional source issue from the invocation before opening the plan. Without a plan file, error: "Requires a plan file from `workflows/roadmap-plan.md`."
 
 This workflow creates and cancels issues, so it reconciles before the § 3.1 initiatives read and every cache read after it:
 
@@ -12,9 +12,11 @@ This workflow creates and cancels issues, so it reconciles before the § 3.1 ini
 .agents/skills/linear/scripts/linear.sh sync --reconcile
 ```
 
-Read the markdown for `FEATURE` and its `**Plan data**` path, then read that JSON as `TPM_OUTPUT`. A plan whose JSON is missing or unreadable halts: re-run `roadmap plan`.
+Resolve the plan through [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts), using the invocation's source issue when the local file is absent. Keep its repository reference as `PLAN_PATH` and its readable file as `PLAN_READ_PATH`. Read that markdown for `FEATURE` and its `**Plan data**` reference, then resolve the companion JSON with the same source issue and read it as `TPM_OUTPUT`. A plan whose JSON remains missing or unreadable halts: re-run `roadmap plan`. With no source issue, a local plan still loads as before.
 
 From `TPM_OUTPUT` take `project_placement`, `organized_issues[]`, `cross_project_findings`, `hierarchy_recommendation`, `architecture_gaps[]`, and `context`.
+
+For a cited research/spec input, use `context.research_path` as the reference and `context.research_source_issue` as its source under the shared Planning artifacts rule. Keep resolved files for this checkout's reads and uploads; keep the reference fields unchanged for § 4 issue text.
 
 ---
 
@@ -150,13 +152,7 @@ Use `blocked_by` for a real dependency and `related` for an informational link. 
 
 Confirm every issue landed in the project, the parent/child structure matches the plan, dependencies are set, and project relations exist. Report discrepancies; do not auto-fix them.
 
-Archive the plan:
-
-```bash
-mkdir -p docs/roadmaps/archived
-mv [PLAN_PATH] docs/roadmaps/archived/roadmap-[FEATURE]-$(date +%Y%m%d).md
-mv [JSON_PATH] docs/roadmaps/archived/roadmap-[FEATURE]-$(date +%Y%m%d).json
-```
+Apply [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) to every issue created or updated by this workflow, including § 2 actions. Verify that the plan markdown, its JSON, and cited research/spec inputs are attached. Keep the repository files at their cited paths; moving them would break the plan's companion-file reference.
 
 <output_format>
 
@@ -176,7 +172,7 @@ mv [JSON_PATH] docs/roadmaps/archived/roadmap-[FEATURE]-$(date +%Y%m%d).json
 | Issue | Expected | Actual |
 |-------|----------|--------|
 
-**Plan archived**: docs/roadmaps/archived/roadmap-[FEATURE]-YYYYMMDD.md
+**Plan attached**: [ISSUE_IDS]
 </output_format>
 
 ## 6. Return State

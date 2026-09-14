@@ -8,7 +8,7 @@ A CLI for GitHub pull requests, reviews and CI results. Coding agents can read P
 kendex add vanillagreencom/kendex --skill github
 ```
 
-Requires authenticated `gh` and `jq`. The `op` CLI is required only for credentials stored as 1Password references.
+Requires authenticated `gh`, `jq` and `perl`; every time-bounded subprocess starts through perl. The `op` CLI is required only for credentials stored as 1Password references.
 
 ## Features
 
@@ -40,3 +40,5 @@ Set non-secret defaults in `kendex.settings.toml` under `[env]`; keep tokens in 
 | `KENDEX_GITHUB_GIT_HTTPS_FALLBACK` | `auto`, `never` or `always` for `git-https-auth` | `auto` |
 
 The three timeouts are read to one decimal place; `0` means no bound, and a finer figure is refused rather than rounded.
+
+Auto-detect builds and tests a Rust workspace on its `agent` Cargo profile when the root manifest declares `[profile.agent]` and `python3` with `tomllib` is on the host; otherwise it keeps `--release`.

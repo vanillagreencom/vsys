@@ -11,6 +11,8 @@
 # the worktree CLI, GUI terminal, and gh so nothing external is launched.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
+# shellcheck source=lib/shared-skill-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
@@ -86,6 +88,7 @@ make_ot_repo() {
   mkdir -p "$repo/scripts/lib"
   cp "$SRC_OT" "$repo/scripts/open-terminal"
   cp "$SRC_LIB_DIR"/*.sh "$repo/scripts/lib/"
+  orch_fixture_shared_libs "$repo"
   chmod +x "$repo/scripts/open-terminal"
   git -C "$repo" init -q
   if [[ -n "$settings" ]]; then
@@ -106,14 +109,14 @@ c1a_out=$(PATH="$BIN:$PATH" WORKTREE_CLI="$STUB" "$OT_A" --ghostty --cmd 'echo {
 c1a_code=$?
 set -e
 assert_eq "$c1a_code" "0" "default pattern: lowercase input accepted"
-assert_contains "$c1a_out" "Opened terminal 'CC-737'" "default pattern: cc-737 normalizes to CC-737"
+assert_contains "$c1a_out" "open-terminal: terminal-opened item=CC-737" "default pattern: cc-737 normalizes to CC-737"
 
 set +e
 c1b_out=$(PATH="$BIN:$PATH" WORKTREE_CLI="$STUB" "$OT_A" --ghostty --cmd 'echo {item}' CC-737 2>"$TMP_ROOT/c1b.err")
 c1b_code=$?
 set -e
 assert_eq "$c1b_code" "0" "default pattern: uppercase input accepted"
-assert_contains "$c1b_out" "Opened terminal 'CC-737'" "default pattern: CC-737 stays CC-737"
+assert_contains "$c1b_out" "open-terminal: terminal-opened item=CC-737" "default pattern: CC-737 stays CC-737"
 
 # Repo B: project settings force an UNRELATED uppercase pattern. A parent-env
 # GH_ISSUE_PATTERN of cc-[0-9]+ must win over it and drive lowercase
@@ -128,14 +131,14 @@ c2a_out=$(GH_ISSUE_PATTERN='cc-[0-9]+' PATH="$BIN:$PATH" WORKTREE_CLI="$STUB" "$
 c2a_code=$?
 set -e
 assert_eq "$c2a_code" "0" "lowercase pattern (parent env wins over settings): uppercase input accepted"
-assert_contains "$c2a_out" "Opened terminal 'cc-737'" "lowercase pattern: CC-737 normalizes to cc-737"
+assert_contains "$c2a_out" "open-terminal: terminal-opened item=cc-737" "lowercase pattern: CC-737 normalizes to cc-737"
 
 set +e
 c2b_out=$(GH_ISSUE_PATTERN='cc-[0-9]+' PATH="$BIN:$PATH" WORKTREE_CLI="$STUB" "$OT_B" --ghostty --cmd 'echo {item}' cc-737 2>"$TMP_ROOT/c2b.err")
 c2b_code=$?
 set -e
 assert_eq "$c2b_code" "0" "lowercase pattern: lowercase input accepted"
-assert_contains "$c2b_out" "Opened terminal 'cc-737'" "lowercase pattern: cc-737 stays cc-737"
+assert_contains "$c2b_out" "open-terminal: terminal-opened item=cc-737" "lowercase pattern: cc-737 stays cc-737"
 
 # Case 3: an id that matches no case of the default pattern is rejected.
 set +e
@@ -143,7 +146,8 @@ c3_out=$(PATH="$BIN:$PATH" WORKTREE_CLI="$STUB" "$OT_A" --ghostty --cmd 'echo {i
 c3_code=$?
 set -e
 assert_eq "$c3_code" "1" "invalid id exits nonzero"
-assert_contains "$(cat "$TMP_ROOT/c3.err")" "Error: invalid issue id" "invalid id reports a clear error"
+c3_error="$(grep '^open-terminal: issue-invalid ' "$TMP_ROOT/c3.err" || true)"
+assert_eq "$c3_error" "open-terminal: issue-invalid item=12ab" "invalid id reports a clear error"
 
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"

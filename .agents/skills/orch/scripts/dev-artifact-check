@@ -43,7 +43,6 @@
 
 set -euo pipefail
 
-PROG="dev-artifact-check"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/branch-growth.sh
 source "$SCRIPT_DIR/lib/branch-growth.sh"
@@ -52,13 +51,42 @@ ID_GRAMMAR='^[A-Za-z0-9._-]+$'
 # --expect-items is a comma-separated list of item numbers.
 EXPECT_GRAMMAR='^[0-9]+(,[0-9]+)*$'
 scratch_files=()
+# Set by `finish` at every exit whose outcome this script already described —
+# the JSON result on stdout, or a keyed line on stderr. An exit that did not
+# reach `finish` is an abort no site described, and `on_exit` names its status
+# so a caller can tell an unwatched round from a rejected one.
+REPORTED=0
 
-cleanup_scratch() {
+on_exit() {
+  local status=$?
+  # BEST EFFORT, AND THE LIMIT IS BASH'S: this trap runs for a helper that ran
+  # and exited nonzero and for a command substitution that could not fork, but
+  # NOT for a simple command that cannot fork — the poll loop's `sleep` under
+  # real fork exhaustion — where bash ends the shell with status 127 and runs
+  # no trap, so the exit status is the contract and this line is the courtesy.
+  #
+  # It is therefore PRESENT on stderr, never promised first. The stable-first-
+  # line contract covers the refusals this script authors at a decision point,
+  # which it writes before anything else; a trap that runs AFTER the command
+  # that failed cannot outrun that command's own diagnostic, and must not claim
+  # to. --help says the same, and the suite pins presence, not position.
+  #
+  # The report comes before the cleanup, not after: `rm` is the external
+  # command, and the run this backstop exists for is the one where no external
+  # command can start. `message` is printf and case alone.
+  if (( status != 0 )) && (( REPORTED == 0 )); then
+    message exit "$status" >&2
+  fi
   if (( ${#scratch_files[@]} > 0 )); then
     rm -f -- "${scratch_files[@]}"
   fi
 }
-trap cleanup_scratch EXIT
+trap on_exit EXIT
+
+finish() {
+  REPORTED=1
+  exit "$1"
+}
 
 # The per-harness backgrounding paragraph under --wait is an intentional twin
 # of review-artifact-check's: each --help is self-contained, so edit both.
@@ -87,8 +115,8 @@ additionally REQUIRES --expect-items-from-round and exits 2 without it: its
 delegated set and authorized additions live in the round record, and omitting
 the flag would check neither. Implement rounds write no round record and stay
 flagless.
-An accepted round-mode implement receipt sets workflow state pr.baseline_lines
-only when that field is null. File mode: validates one explicit JSON file (round_id checked only when --round-id
+An accepted round-mode implement receipt does not set a fix-round size limit.
+The round's cut_comparison owns the cut comparison. File mode: validates one explicit JSON file (round_id checked only when --round-id
 is supplied). It is a test/parity affordance — round-trip checks and known-path
 artifacts — with no production caller; the orch workflows always use round mode.
 There is one identity model (round id); the mtime freshness gate and the old
@@ -110,10 +138,9 @@ additions probe, and an adds[] path beginning with '-' or carrying a space,
 tab, newline, carriage return, form feed or vertical tab. Never recreate the
 record after delegation and never downgrade to --expect-items; mint a fresh
 round.
-A record carrying "cut": true was written by dev-round-write --cut, the round
-that runs while the branch is over its size tripwire. Its receipt is accepted
-only when the branch came back to twice workflow state pr.baseline_lines: over
-that cap is reason=cut_not_shrunk, and a cap that cannot be measured at all is
+A record carrying "cut": true was written by dev-round-write --cut. Acceptance
+uses its recorded allowance, or its production and test counts when unsized.
+Exceeding that comparison is reason=cut_not_shrunk; a failed measurement is
 reason=cut_unmeasurable. Every other gate applies unchanged.
 Protected-addition scope, and what the gate does once a rebase orphans base_sha:
 skills/orch/schemas/dev-round.md § Protected additions.
@@ -170,13 +197,12 @@ reason meanings when ok=false:
               the protected-addition classifier produced no valid JSON array.
   cut_not_shrunk
               the round record declares a cut ("cut": true) but the branch is
-              still above twice workflow state pr.baseline_lines. A cut is the
-              one round allowed to start over that cap, so this is where it is
-              held to bringing the branch back under it (KEN-1165).
+              still above its recorded cut_comparison. A fresh retry preserves
+              that comparison through dev-round-write --cut-from-round.
   cut_unmeasurable
-              a declared cut whose cap could not be measured — an unreadable or
-              invalid pr.baseline_lines, or a branch git could not diff against
-              its base. A cut is never accepted on an unmeasured branch.
+              a declared cut whose recorded comparison could not be read, or a
+              branch git could not diff against its base. A cut is never
+              accepted on an unmeasured branch.
   incomplete  items[] fails the applicable rule — exact-set (with --expect-items)
               or non-empty-well-formed (kind fix OR bundled==true). kind implement
               without bundled keeps allowing items: [].
@@ -186,27 +212,168 @@ commit object but is not an ancestor of the current HEAD — the signature of a
 receipt orphaned by a later rebase (kendex#994). Expected after a legitimate
 rebase; the orchestrator decides what it means for the round.
 
-Exit 0 when a valid artifact was found, 1 otherwise, 2 on usage error.
+Exit 0 when a valid artifact was found, 1 otherwise, 2 on usage error or when a
+probe this check runs could not answer (the verdict was unreadable). A status 2
+refusal IS stderr's first line, and stays first by construction: every probe
+read whose failure becomes a refusal silences its own diagnostic, so nothing a
+helper wrote can precede the keyed line.
+
+Any status outside 0, 1 and 2 is an abort: no result was produced, and under
+--wait the round is no longer watched. stderr then CARRIES `dev-artifact-check:
+exit=STATUS`, but not as its first line — the EXIT trap runs after the command
+that failed, so that command's own diagnostic, and bash's `fork: retry` lines,
+print ahead of it. It is written at all only where bash reaches the trap: a
+helper that ran and exited nonzero, or a command substitution that could not
+fork (status 254). A SIMPLE command that cannot fork, which is the poll loop's
+`sleep` under real fork exhaustion, ends the shell with a bare status (127 on
+bash 5) and no keyed line anywhere. Judge an unwatched round on the status,
+never on the line.
 EOF
 }
 
+# Callers preserve positional values for this diagnostic catalog.
+message() {
+  local _message_key="$1"
+  shift
+  case "$_message_key" in
+    missing-value)
+      printf 'dev-artifact-check: missing-value arg1=%s\n' "$1"
+      printf '%s\n' "$1 requires a value"
+      ;;
+    required)
+      printf 'dev-artifact-check: required arg1=%s\n' "$1"
+      printf '%s\n' "$1 is required (non-empty)"
+      ;;
+    invalid-id)
+      printf 'dev-artifact-check: invalid-id arg1=%s arg2=%s\n' "$1" "$2"
+      printf '%s\n' "$1 '$2' must match ${ID_GRAMMAR} with no '..' (path-safe: no '/' or whitespace)"
+      ;;
+    missing-file-path)
+      printf 'dev-artifact-check: missing-file-path option=%s\n' "--file"
+      printf '%s\n' "--file requires a non-empty path"
+      ;;
+    round-mode-required)
+      printf 'dev-artifact-check: round-mode-required option=%s\n' "--expect-items-from-round"
+      printf '%s\n' "--expect-items-from-round requires round mode (there is no worktree/issue/round to resolve a round record from)"
+      ;;
+    unknown-file-argument)
+      printf 'dev-artifact-check: unknown-file-argument arg1=%s\n' "$1"
+      printf '%s\n' "unknown --file argument: $1"
+      ;;
+    unknown-argument)
+      printf 'dev-artifact-check: unknown-argument arg1=%s\n' "$1"
+      printf '%s\n' "unknown argument: $1"
+      ;;
+    missing-worktree)
+      printf 'dev-artifact-check: missing-worktree option=%s\n' "--worktree"
+      printf '%s\n' "--worktree is required"
+      ;;
+    not-directory)
+      printf 'dev-artifact-check: not-directory worktree=%s\n' "$worktree"
+      printf '%s\n' "--worktree path '$worktree' is not a directory"
+      ;;
+    file-mode-required)
+      printf 'dev-artifact-check: file-mode-required option=%s\n' "--expect-items"
+      printf '%s\n' "--expect-items is only allowed with --file; round mode requires --expect-items-from-round so the delegated set and its protected additions cannot be bypassed"
+      ;;
+    item-source-conflict)
+      printf 'dev-artifact-check: item-source-conflict option=%s\n' "--expect-items"
+      printf '%s\n' "--expect-items and --expect-items-from-round are mutually exclusive: one expected-set source"
+      ;;
+    round-missing)
+      printf 'dev-artifact-check: round-missing round-record=%s\n' "$round_record"
+      printf '%s\n' "round record $round_record not found — was dev-round-write run when the round was stamped?"
+      ;;
+    round-json)
+      printf 'dev-artifact-check: round-json round-record=%s\n' "$round_record"
+      printf '%s\n' "round record $round_record is not parseable JSON"
+      ;;
+    round-mismatch)
+      printf 'dev-artifact-check: round-mismatch round-record=%s round-id=%s\n' "$round_record" "$round_id"
+      printf '%s\n' "round record $round_record does not carry internal round_id '$round_id' — not this round's record"
+      ;;
+    round-schema)
+      printf 'dev-artifact-check: round-schema round-record=%s issue=%s\n' "$round_record" "$issue"
+      printf '%s\n' "round record $round_record fails the dev-round schema (schema_version 2, issue '$issue', base_sha of exactly 40 lowercase hex, unique repository-relative adds[] whose paths carry no ASCII whitespace and do not begin with '-', a cut that is missing, null or boolean, non-empty items[] of unique integer n + non-empty text) — see skills/orch/schemas/dev-round.md"
+      ;;
+    expected-round-required)
+      printf 'dev-artifact-check: expected-round-required file=%s\n' "$file"
+      printf '%s\n' "round-mode receipt $file is kind fix: pass --expect-items-from-round so the delegated item set and its protected additions are checked"
+      ;;
+    invalid-item-numbers)
+      printf 'dev-artifact-check: invalid-item-numbers expect-items=%s\n' "$expect_items"
+      printf '%s\n' "--expect-items must be comma-separated item numbers, got '$expect_items'"
+      ;;
+    invalid-wait)
+      printf 'dev-artifact-check: invalid-wait wait-secs=%s\n' "$wait_secs"
+      printf '%s\n' "--wait must be a non-negative integer (seconds), got '$wait_secs'"
+      ;;
+    invalid-interval)
+      printf 'dev-artifact-check: invalid-interval interval=%s\n' "$interval"
+      printf '%s\n' "--interval must be a positive integer (seconds), got '$interval'"
+      ;;
+    base-orphaned)
+      printf 'dev-artifact-check: base-orphaned sha=%s repo=%s\n' "$base_sha" "$repo"
+      printf 'The round base is no longer an ancestor of HEAD. Additions cannot be attributed to this round.\n'
+      ;;
+    commit-missing)
+      printf 'dev-artifact-check: commit-missing sha=%s repo=%s\n' "$commit" "$repo"
+      printf 'The artifact commit is not a commit object in this repository.\n'
+      ;;
+    commit-orphaned)
+      printf 'dev-artifact-check: commit-orphaned sha=%s repo=%s\n' "$commit" "$repo"
+      printf 'The artifact commit is no longer an ancestor of HEAD.\n'
+      ;;
+    comparison-failed)
+      printf 'dev-artifact-check: comparison-failed repo=%s\n' "$repo"
+      printf 'The round base could not be compared with HEAD.\n'
+      ;;
+    classifier-failed)
+      printf 'dev-artifact-check: classifier-failed repo=%s\n' "$repo"
+      printf 'The protected-addition classifier returned no valid result.\n'
+      ;;
+    unapproved-additions)
+      printf 'dev-artifact-check: unapproved-additions paths=%s\n' "$refused_additions"
+      printf 'The round added files outside its declared additions.\n'
+      ;;
+    cut-unmeasurable)
+      printf 'dev-artifact-check: cut-unmeasurable repo=%s\n' "$repo"
+      printf '%s\n' "$BRANCH_GROWTH_ERROR"
+      ;;
+    cut-oversized)
+      printf 'dev-artifact-check: cut-oversized classes=%s production=%s allowance=%s tests=%s test-allowance=%s\n' \
+        "$BRANCH_ALLOWANCE_CLASSES" "$BRANCH_ALLOWANCE_PRODUCTION" \
+        "$BRANCH_ALLOWANCE_PRODUCTION_LIMIT" "$BRANCH_ALLOWANCE_TESTS" "$BRANCH_ALLOWANCE_TEST_LIMIT"
+      printf 'The cut round exceeds its recorded size comparison.\n'
+      ;;
+    verdict-unreadable)
+      printf 'dev-artifact-check: verdict-unreadable file=%s\n' "$file"
+      printf 'The emitted artifact verdict could not be read.\n'
+      ;;
+    exit)
+      printf 'dev-artifact-check: exit=%s\n' "$1"
+      printf 'The check ended without a result. No verdict was reached for this round.\n'
+      ;;
+  esac
+}
+
 die() {
-  printf '%s: %s\n' "$PROG" "$1" >&2
-  exit 2
+  message "$@" >&2
+  finish 2
 }
 
 need() {
   # $1 = flag name, $2 = current argc ($#). A value option needs at least 2 args.
-  (( $2 >= 2 )) || die "$1 requires a value"
+  (( $2 >= 2 )) || die missing-value "$@"
 }
 
 # Validate a path-forming token (--issue / --round-id): non-empty, matches the
 # path-safe grammar, and contains no '..'. Shared verbatim with dev-return-write.
 check_id_token() {
   # $1 = flag name, $2 = value.
-  [[ -n "$2" ]] || die "$1 is required (non-empty)"
+  [[ -n "$2" ]] || die required "$@"
   [[ "$2" =~ $ID_GRAMMAR && "$2" != *..* ]] \
-    || die "$1 '$2' must match ${ID_GRAMMAR} with no '..' (path-safe: no '/' or whitespace)"
+    || die invalid-id "$@"
 }
 
 # `validate` and `validate_note` are surfaced here, not just stored in the file:
@@ -235,6 +402,10 @@ emit() {
   else
     verdict="retry"
   fi
+  # Silenced for POSITION, not to hide anything. Every probe read whose failure
+  # becomes a keyed refusal swallows its own diagnostic, because the refusal is
+  # documented as stderr's first line and a diagnostic written before it would
+  # push it to second. The cause is not lost: the refusal names it.
   jq -n --argjson ok "$ok" --arg path "$path" --arg reason "$reason" --arg warning "$warning" \
     --arg hint "$hint" --arg verdict "$verdict" \
     --argjson files "$files" --argjson validate "${validate:-null}" --argjson validate_note "${validate_note:-null}" \
@@ -242,7 +413,7 @@ emit() {
       warning: (if $warning == "" then null else $warning end),
       hint: (if $hint == "" then null else $hint end),
       files: $files,
-      validate: $validate, validate_note: $validate_note}'
+      validate: $validate, validate_note: $validate_note}' 2>/dev/null
 }
 
 # The artifact's internal round_id must equal the expected token. Guards against
@@ -382,8 +553,7 @@ collect_unapproved_additions() {
     return 2
   fi
   if ! git -C "$repo" merge-base --is-ancestor "$base_sha" HEAD >/dev/null 2>&1; then
-    printf '%s: round base %s is not an ancestor of HEAD in %s (orphaned by a rebase?); no comparison can attribute an addition to this round once its base is off the branch\n' \
-      "$PROG" "$base_sha" "$repo" >&2
+    message base-orphaned >&2
     printf '[]\n' > "$result" || return 3
     # 4, not 0: a gate that did not run and a gate that cleared the round are
     # the same empty file, and only the caller can refuse on the difference.
@@ -456,13 +626,13 @@ validate_artifact() {
   fi
   if [[ -n "$commit" ]]; then
     if [[ "$(git -C "$repo" cat-file -t "$commit" 2>/dev/null)" != "commit" ]]; then
-      printf '%s: artifact commit %s: no such object in the repo at %s\n' "$PROG" "$commit" "$repo" >&2
+      message commit-missing >&2
       emit false "$file" "commit_unresolvable"
       return 1
     fi
     if ! git -C "$repo" merge-base --is-ancestor "$commit" HEAD >/dev/null 2>&1; then
       warning="commit_unreachable"
-      printf '%s: artifact commit %s resolves but is not an ancestor of HEAD in %s (orphaned by a rebase?)\n' "$PROG" "$commit" "$repo" >&2
+      message commit-orphaned >&2
     fi
   fi
   if [[ -n "$round_record" ]]; then
@@ -486,13 +656,13 @@ validate_artifact() {
     fi
     if (( additions_rc == 2 )); then
       [[ -n "$refused_file" ]] && rm -f -- "$refused_file"
-      printf '%s: could not compare fix-round base to HEAD in %s\n' "$PROG" "$repo" >&2
+      message comparison-failed >&2
       emit false "$file" "comparison_failed"
       return 1
     fi
     if (( additions_rc != 0 )); then
       [[ -n "$refused_file" ]] && rm -f -- "$refused_file"
-      printf '%s: protected-addition classifier produced no valid result in %s\n' "$PROG" "$repo" >&2
+      message classifier-failed >&2
       emit false "$file" "classifier_failed"
       return 1
     fi
@@ -503,26 +673,21 @@ validate_artifact() {
     fi
     rm -f -- "$refused_file"
     if [[ "$refused_additions" != "[]" ]]; then
-      printf '%s: fix round added files absent from its Adds line: %s\n' \
-        "$PROG" "$(jq -r 'join(", ")' <<<"$refused_additions")" >&2
+      message unapproved-additions >&2
       emit false "$file" "unapproved_additions" "" "" "$refused_additions"
       return 1
     fi
-    # A cut round (dev-round-write --cut) is the one round dev-round-write lets
-    # start over the size tripwire, because the branch being oversized is what
-    # it was delegated to fix. The tripwire moves here rather than being
-    # dropped: the cut's receipt is accepted only if the branch actually came
-    # back to the cap, so declaring a round a cut is a way to run one, never a
-    # way to grow the branch past the limit unchecked.
+    # A declared cut keeps the comparison recorded when it was delegated.
     if jq -e '.cut? == true' "$round_record" >/dev/null 2>&1; then
-      if ! measure_size_tripwire "$repo" "${issue:-}" "$SCRIPT_DIR"; then
-        printf '%s: cut round: %s\n' "$PROG" "$BRANCH_GROWTH_ERROR" >&2
+      local measured=0
+      branch_allowance_check "$repo" "${issue:-}" "$SCRIPT_DIR" "$round_record" || measured=$?
+      if (( measured != 0 )); then
+        message cut-unmeasurable >&2
         emit false "$file" "cut_unmeasurable"
         return 1
       fi
-      if (( BRANCH_GROWTH_CURRENT > BRANCH_GROWTH_LIMIT )); then
-        printf '%s: cut round did not shrink the branch: diffstat is %s lines against a cap of %s (baseline %s)\n' \
-          "$PROG" "$BRANCH_GROWTH_CURRENT" "$BRANCH_GROWTH_LIMIT" "$BRANCH_GROWTH_BASELINE" >&2
+      if [[ "$BRANCH_ALLOWANCE_STATUS" == over ]]; then
+        message cut-oversized >&2
         emit false "$file" "cut_not_shrunk"
         return 1
       fi
@@ -568,7 +733,7 @@ validate_artifact() {
 # validates --expect-items once and runs the check. -h/--help prints usage. ---
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
-  exit 0
+  finish 0
 fi
 
 file=""
@@ -584,17 +749,17 @@ interval=5
 if [[ "${1:-}" == "--file" ]]; then
   shift
   file="${1:-}"
-  [[ -n "$file" && "$file" != --* ]] || die "--file requires a non-empty path"
+  [[ -n "$file" && "$file" != --* ]] || die missing-file-path "$@"
   shift
   while (( $# > 0 )); do
     case "$1" in
       --round-id)     need "$1" $#; want_round="$2"; shift 2 ;;
       --expect-items) need "$1" $#; expect_items="$2"; shift 2 ;;
       --expect-items-from-round)
-        die "--expect-items-from-round requires round mode (there is no worktree/issue/round to resolve a round record from)" ;;
+        die round-mode-required "$@" ;;
       --wait)         need "$1" $#; wait_secs="$2"; shift 2 ;;
       --interval)     need "$1" $#; interval="$2"; shift 2 ;;
-      *) die "unknown --file argument: $1" ;;
+      *) die unknown-file-argument "$@" ;;
     esac
   done
 elif [[ "${1:-}" == --* ]]; then
@@ -611,13 +776,13 @@ elif [[ "${1:-}" == --* ]]; then
       --expect-items-from-round) expect_from_round=true; shift ;;
       --wait)         need "$1" $#; wait_secs="$2"; shift 2 ;;
       --interval)     need "$1" $#; interval="$2"; shift 2 ;;
-      *) die "unknown argument: $1" ;;
+      *) die unknown-argument "$@" ;;
     esac
   done
-  [[ -n "$worktree" ]] || die "--worktree is required"
-  [[ -d "$worktree" ]] || die "--worktree path '$worktree' is not a directory"
+  [[ -n "$worktree" ]] || die missing-worktree "$@"
+  [[ -d "$worktree" ]] || die not-directory "$@"
   [[ -z "$expect_items" ]] \
-    || die "--expect-items is only allowed with --file; round mode requires --expect-items-from-round so the delegated set and its protected additions cannot be bypassed"
+    || die file-mode-required "$@"
   check_id_token --issue "$issue"
   check_id_token --round-id "$round_id"
   want_round="$round_id"
@@ -630,16 +795,16 @@ elif [[ "${1:-}" == --* ]]; then
   # a silent downgrade to the weaker fix/bundled fallback gate.
   if [[ "$expect_from_round" == "true" ]]; then
     [[ -z "$expect_items" ]] \
-      || die "--expect-items and --expect-items-from-round are mutually exclusive: one expected-set source"
+      || die item-source-conflict "$@"
     round_record="$worktree/tmp/dev-round-$issue-$round_id.json"
     [[ -f "$round_record" && ! -L "$round_record" ]] \
-      || die "round record $round_record not found — was dev-round-write run when the round was stamped?"
+      || die round-missing "$@"
     jq empty "$round_record" >/dev/null 2>&1 \
-      || die "round record $round_record is not parseable JSON"
+      || die round-json "$@"
     jq -e --arg want "$round_id" '
       ((.round_id? | type) == "string") and (.round_id == $want)
     ' "$round_record" >/dev/null 2>&1 \
-      || die "round record $round_record does not carry internal round_id '$round_id' — not this round's record"
+      || die round-mismatch "$@"
     # Full record schema, not just the token: a record dev-round-write could
     # not have written (wrong issue, missing schema_version, ill-typed or
     # empty items/text) is no source of truth for the expected set.
@@ -665,14 +830,14 @@ elif [[ "${1:-}" == --* ]]; then
             and ((.text | gsub("[[:space:]]"; "")) != ""))
       and (([.items[].n] | length) == ([.items[].n] | unique | length))
     ' "$round_record" >/dev/null 2>&1 \
-      || die "round record $round_record fails the dev-round schema (schema_version 2, issue '$issue', base_sha of exactly 40 lowercase hex, unique repository-relative adds[] whose paths carry no ASCII whitespace and do not begin with '-', a cut that is missing, null or boolean, non-empty items[] of unique integer n + non-empty text) — see skills/orch/schemas/dev-round.md"
+      || die round-schema "$@"
     expect_items="$(jq -r '[.items[].n | tostring] | join(",")' "$round_record")"
   fi
 else
   # Neither --file nor round mode → usage error. One identity model (round id);
   # the legacy positional mode was removed with its only caller.
   usage >&2
-  exit 2
+  finish 2
 fi
 
 # Round mode checks a fix receipt against its round record or not at all.
@@ -685,30 +850,19 @@ fi
 require_round_record_flag() {
   [[ "$round_mode" == "true" && "$expect_from_round" != "true" && -f "$file" ]] || return 0
   if jq -e '(.kind? // "") == "fix"' "$file" >/dev/null 2>&1; then
-    die "round-mode receipt $file is kind fix: pass --expect-items-from-round so the delegated item set and its protected additions are checked"
+    die expected-round-required
   fi
 }
 
 check_once() {
-  local out rc=0 verdict kind
+  local out rc=0 verdict
   require_round_record_flag
   out="$(validate_artifact "$file" "$want_round" "$expect_items" "$repo" "$round_record")" || rc=$?
   if (( rc == 0 )); then
-    verdict="$(jq -r '.verdict' <<<"$out")" || {
-      printf '%s: could not read the emitted artifact verdict\n' "$PROG" >&2
+    verdict="$(jq -r '.verdict' <<<"$out" 2>/dev/null)" || {
+      message verdict-unreadable >&2
       return 2
     }
-    kind="$(jq -r '.kind' "$file")"
-    if [[ "$verdict" == "accept" && "$round_mode" == "true" && "$kind" == "implement" ]]; then
-      if ! "$SCRIPT_DIR/workflow-state" update "$issue" --slurpfile receipt "$file" '
-        .pr = (.pr // {})
-        | if (.pr.baseline_lines // null) == null
-          then .pr.baseline_lines = $receipt[0].baseline_lines else . end
-      '; then
-        out="$(emit false "$file" invalid)"
-        rc=1
-      fi
-    fi
   fi
   printf '%s\n' "$out"
   return "$rc"
@@ -717,10 +871,10 @@ check_once() {
 # Shared tail: --expect-items grammar (both modes), then validate — once, or,
 # with --wait, repeatedly until the verdict leaves "wait" or the deadline lands.
 if [[ -n "$expect_items" && ! "$expect_items" =~ $EXPECT_GRAMMAR ]]; then
-  die "--expect-items must be comma-separated item numbers, got '$expect_items'"
+  die invalid-item-numbers "$@"
 fi
-[[ "$wait_secs" =~ ^[0-9]+$ ]] || die "--wait must be a non-negative integer (seconds), got '$wait_secs'"
-[[ "$interval" =~ ^[1-9][0-9]*$ ]] || die "--interval must be a positive integer (seconds), got '$interval'"
+[[ "$wait_secs" =~ ^[0-9]+$ ]] || die invalid-wait "$@"
+[[ "$interval" =~ ^[1-9][0-9]*$ ]] || die invalid-interval "$@"
 if (( wait_secs > 0 )); then
   # Blocking watchdog: only "wait" (no artifact yet) keeps polling; the first
   # accept/retry verdict returns immediately, so an armed background invocation
@@ -730,11 +884,21 @@ if (( wait_secs > 0 )); then
   while :; do
     rc=0
     out="$(check_once)" || rc=$?
-    (( rc != 2 )) || exit 2
-    verdict="$(jq -r '.verdict // "wait"' <<<"$out" 2>/dev/null || printf 'wait')"
+    (( rc != 2 )) || finish 2
+    # A failed jq, or a check_once that aborted part-way and left output no
+    # verdict can be read from, is the probe breaking — never this round's
+    # answer. Reading either as "wait" would keep the watchdog polling over a
+    # probe that no longer works, and the round it was armed for would go
+    # untimed with nothing said. It refuses here instead, on the same keyed
+    # line and status check_once uses for its own unreadable verdict.
+    verdict="$(jq -r '.verdict // "wait"' <<<"$out" 2>/dev/null)" || verdict=""
+    if [[ -z "$verdict" ]]; then
+      message verdict-unreadable >&2
+      finish 2
+    fi
     if [[ "$verdict" != "wait" ]] || (( $(date +%s) >= deadline )); then
       printf '%s\n' "$out"
-      exit "$rc"
+      finish "$rc"
     fi
     remaining=$(( deadline - $(date +%s) ))
     sleep_for="$interval"
@@ -743,6 +907,24 @@ if (( wait_secs > 0 )); then
     sleep "$sleep_for"
   done
 fi
+# Single-shot mode, which is acceptance Check A on every orchestrator wake, is
+# guarded exactly as the --wait loop above guards each poll. A check_once that
+# aborted part-way returns a rejection status with nothing on stdout, and
+# passing that straight to `finish` would report a rejection the caller can
+# read no verdict from, with no keyed line either. An ordinary rejection that
+# does carry a readable verdict stays an ordinary rejection.
 rc=0
-check_once || rc=$?
+out="$(check_once)" || rc=$?
+(( rc != 2 )) || finish 2
+if (( rc == 0 || rc == 1 )); then
+  verdict="$(jq -r '.verdict // "wait"' <<<"$out" 2>/dev/null)" || verdict=""
+  if [[ -z "$verdict" ]]; then
+    message verdict-unreadable >&2
+    finish 2
+  fi
+  printf '%s\n' "$out"
+  finish "$rc"
+fi
+# Any other status is an abort this tail cannot describe: leave REPORTED clear
+# so on_exit names it.
 exit "$rc"

@@ -58,7 +58,7 @@ The cache is `.cache/linear` under the physical worktree root ([README.md](READM
 
 `LINEAR_TEAM` has no default. With it unset every write refuses before any API call; reads drop the team filter. `--team <name>` overrides per call only on `issues create`, `projects create`, `cycles create`, and `labels create`. Run `auth-check --strict` before the first mutation in a project.
 
-`LINEAR_API_KEY` belongs in `.env.local`; non-secret defaults in committed `kendex.settings.toml` `[env]`. A key from project files beats one inherited from the environment, and `auth-check` warns (fingerprints only) when it shadows a differing inherited key.
+`LINEAR_API_KEY` belongs in the project's private env file, `.env.local` unless `KENDEX_ENV_FILE` names another; non-secret defaults in committed `kendex.settings.toml` `[env]`. The kendex app's Customize tab writes both. A key from project files beats one inherited from the environment, and `auth-check` warns (fingerprints only) when it shadows a differing inherited key.
 
 ## Shared label maintenance
 
@@ -79,6 +79,19 @@ Where `LINEAR_AGENT_LABELS` declares a taxonomy, `issues create` refuses before 
 ## Attachments
 
 `issues create`, `issues update`, and `comments create` take a repeatable `--attach <path>`. Images embed as markdown in the description/body. On `issues update` without `--description`, the embed appends to the existing description rather than replacing it. Other files become Linear attachments on issues, or markdown links on comments (comments have no attachment surface). An unreadable path refuses before any API call; an attachment failure after a successful issue write reports `partial: true` and exits non-zero.
+
+### Resolve a cited artifact
+
+Read a cited repository path when it exists. When it is absent, reconcile the tracker before looking up attachments, even if the workflow's general cache is fresh. If reconciliation fails, stop and report the sync failure; do not treat it as a missing attachment.
+
+```bash
+linear.sh sync --reconcile
+linear.sh cache attachments list [ISSUE_ID]
+```
+
+Match the original cited repository path against `repo_path`, scoped to that issue or the research/source issue its brief explicitly names. For attachments with no `repo_path`, accept a filename match only when it is unique within that issue. Use an attachment URL in the brief to select the matching `url` when references collide. Read the matching `local_path` under `.cache/linear/attachments/`; keep the repository path as the tracker reference. Resolve companion files, such as a plan's JSON or research metadata, the same way. Do not write a machine's cache path into an issue or delegation for another checkout.
+
+No match leaves the calling workflow's missing-file behavior unchanged. Multiple matches without a distinguishing reference require clarification. A matched attachment whose local file is unreadable is a download failure; report it instead of treating the research as absent. Consumers without attachments keep reading repository files as before.
 
 ## Blocked Label vs Issue Relations
 

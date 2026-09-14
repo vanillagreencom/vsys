@@ -11,6 +11,11 @@
 # mode, and an unstubbed launch would open a real window per row.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
+# Every lane this suite measures lives under LANES_HOME; an inherited lane
+# setting would point discovery at the operator's real accounts.
+unset ORCH_LANE_DIRS ORCH_LANE_ALIASES ORCH_LANE_EXCLUDE ORCH_LANE_RETIRE ORCH_LANES_USAGE_TTL CODEX_HOME
+# shellcheck source=lib/shared-skill-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
 OPEN_TERMINAL="$SCRIPTS_DIR/open-terminal"
@@ -61,7 +66,8 @@ case "${1:-}" in
   list-panes)
     i=1; while [[ "$i" -le "$n" ]]; do echo "$OT_TMUX_SERVER_PID %$i"; i=$((i + 1)); done ;;
   list-windows) echo "1" ;;
-  display-message) echo "stub" ;;
+  display-message) echo 0 ;;
+  load-buffer) cat "${!#}" >> "$OT_TMUX_LOG" ;;
 esac
 exit 0
 STUBEOF
@@ -191,6 +197,8 @@ counted() {
 #   out_lanes     the lanes the launch output names, in order
 #   summary       the batch summary's lane attribution, the one fact only the
 #                 summary carries: `spread=N` distinct lanes, or `lane=NAME`
+#   refused       the first field of the lane-refused line, or none
+#   failed        the first field of the lane-resolution-failed line, or none
 observe() {
   local got="" token name value
   for token in $1; do
@@ -207,13 +215,24 @@ observe() {
       claim_pane) value="$(cat "$RUN"/state/claims/*.claim 2>/dev/null | cut -f2 || true)" ;;
       out_lanes) value="$(lane_names "$OUT")" ;;
       summary)
-        if grep -qE 'across [0-9]+ lanes' <<<"$OUT"; then
-          value="spread=$(grep -oE 'across [0-9]+ lanes' <<<"$OUT" | head -1 | grep -oE '[0-9]+')"
-        elif grep -q 'on lane CLAUDE_CONFIG_DIR=' <<<"$OUT"; then
-          value="lane=$(lane_names "$(grep -o 'on lane CLAUDE_CONFIG_DIR=[^ ]*' <<<"$OUT" | head -1)")"
+        local summary_line lane_count
+        summary_line="$(grep '^open-terminal: summary ' <<<"$OUT" || true)"
+        lane_count="$(awk '{for (i=1;i<=NF;i++) if ($i ~ /^lanes=/) print substr($i,7)}' <<<"$summary_line")"
+        if [[ "${lane_count:-0}" -gt 1 ]]; then
+          value="spread=$lane_count"
+        elif [[ "$summary_line" == *' lane=CLAUDE_CONFIG_DIR='* ]]; then
+          value="lane=$(lane_names "$summary_line")"
         else
           value=none
         fi
+        ;;
+      refused)
+        value="$(awk '$1 == "open-terminal:" && $2 == "lane-refused" { print $3; exit }' <<<"$OUT")"
+        value="${value:-none}"
+        ;;
+      failed)
+        value="$(awk '$1 == "open-terminal:" && $2 == "lane-resolution-failed" { print $3; exit }' <<<"$OUT")"
+        value="${value:-none}"
         ;;
       *) value=UNKNOWN_FIELD ;;
     esac
@@ -241,11 +260,20 @@ echo "=== a lane is resolved before anything launches ==="
 # account is full" after spawning worktrees has already done the expensive
 # half. An explicit --lane that is not a directory is a typo, not a config
 # dir; one carrying the claim record's field separator can never be counted.
+# A named lane ORCH_LANE_EXCLUDE or ORCH_LANE_RETIRE covers is refused, by
+# alias or by path alike, and an excluded lane's alias before a same-named cwd
+# directory can stand in for it. A lanes check that fails for another reason
+# (a malformed setting) is reported as that failure, never as a covered lane.
 table \
   "--help exits 0 outside a git repository|cwd=$NOREPO|--help|rc=0 stdout=line" \
   'no lane under the threshold: nothing launched, no worktree created||--harness claude --lane auto --lane-max-pct 15 --cmd true CC-1|rc=1 launched=nolog creates=nolog' \
   'an explicit --lane that is not a directory is refused||--harness claude --lane /nonexistent/lane CC-1|rc=1 launched=nolog' \
-  'an unknown --lane alias is refused|ORCH_LANE_ALIASES=eclaude=work|--harness claude --lane nosuchlane --cmd true CC-1|rc=1 launched=nolog'
+  'an unknown --lane alias is refused|ORCH_LANE_ALIASES=eclaude=work|--harness claude --lane nosuchlane --cmd true CC-1|rc=1 launched=nolog' \
+  'a retired lane named by its alias is refused before anything launches|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_RETIRE=eclaude=2000-01-01|--harness claude --lane work --cmd true CC-1|rc=1 launched=nolog refused=lane=work' \
+  "an excluded lane named by its config dir is refused before anything launches|ORCH_LANE_EXCLUDE=eclaude|--harness claude --lane $H/.eclaude --cmd true CC-1|rc=1 launched=nolog refused=lane=$H/.eclaude" \
+  "an excluded lane's alias is refused even beside a same-named cwd directory|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_EXCLUDE=eclaude;cwd=$COLLIDE|--harness claude --lane work --cmd true CC-1|rc=1 launched=nolog refused=lane=work" \
+  "an excluded lane's alias with no same-named directory is refused, not unknown|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_EXCLUDE=eclaude;cwd=$BARE|--harness claude --lane work --cmd true CC-1|rc=1 launched=nolog refused=lane=work" \
+  "a named lane whose check fails on a malformed setting is a resolution failure, not a refusal|ORCH_LANES_USAGE_TTL=soon|--harness claude --lane $H/.eclaude --cmd true CC-1|rc=1 launched=nolog refused=none failed=exit=1"
 
 # The separator-bearing path cannot ride through a table row's word split.
 run_ot "" --harness claude --lane "$TABBED" --cmd true CC-21
@@ -283,7 +311,7 @@ table \
   'a claimed window whose launch failed still moves the next item off that lane|OT_TMUX_FAIL=send-keys|--harness claude --lane auto --cmd true CC-8 CC-9|launched=2 claim_lanes=claude,eclaude out_lanes=claude,eclaude' \
   'a third item returning to a used lane still reports two distinct lanes||--harness claude --lane auto --cmd true CC-12 CC-13 CC-14|launched=3 summary=spread=2' \
   "a re-picked lane carrying a separator stops the batch after the first launch|LANES_HOME=$TABHOME;FIXTURE_DIR=$TABFIX|--harness claude --lane auto --cmd true CC-22 CC-23|rc=1 launched=1 claims=1" \
-  "a re-pick that cannot place its item stops the batch after the first launch|ORCH_LANES_FETCH_CMD=$TMP_ROOT/fetch-flaky;FLAKY_COUNT=$TMP_ROOT/flaky-count;FLAKY_OK=3|--harness claude --lane auto --cmd true CC-6 CC-7|rc=1 launched=1 claims=1" \
+  "a re-pick that cannot place its item stops the batch after the first launch|ORCH_LANES_FETCH_CMD=$TMP_ROOT/fetch-flaky;FLAKY_COUNT=$TMP_ROOT/flaky-count;FLAKY_OK=3;ORCH_LANES_USAGE_TTL=0|--harness claude --lane auto --cmd true CC-6 CC-7|rc=1 launched=1 claims=1" \
   "a lane picked for an item another session owns is not one the batch ran on|WORKTREE_CLI=$OWNED_STUB;OWNED_COUNT=$TMP_ROOT/owned-count;OWNED_ROOT=$TMP_ROOT|--harness claude --lane auto --cmd true CC-17 CC-18|launched=1 summary=lane=claude"
 
 # A claims path that is not a directory is a misconfiguration, not an empty
@@ -306,6 +334,7 @@ SCRIPTREPO="$TMP_ROOT/scriptrepo"; CALLERREPO="$TMP_ROOT/callerrepo"
 mkdir -p "$SCRIPTREPO/scripts/lib" "$CALLERREPO"
 cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTREPO/scripts/"
 cp "$SCRIPTS_DIR/lib"/*.sh "$SCRIPTREPO/scripts/lib/"
+orch_fixture_shared_libs "$SCRIPTREPO"
 chmod +x "$SCRIPTREPO/scripts/open-terminal" "$SCRIPTREPO/scripts/lanes"
 git -C "$SCRIPTREPO" init -q; git -C "$CALLERREPO" init -q
 ( cd "$CALLERREPO" && LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" GH_ISSUE_PATTERN='[A-Z]+-[0-9]+' \
@@ -314,6 +343,69 @@ git -C "$SCRIPTREPO" init -q; git -C "$CALLERREPO" init -q
   "$SCRIPTREPO/scripts/open-terminal" --harness claude --lane auto --cmd true CC-20 ) >/dev/null 2>&1
 assert_eq "caller=$(ls -1 "$CALLERREPO"/tmp/oversee-watch/claims 2>/dev/null | wc -l | tr -d '[:space:]') script=$(ls -1 "$SCRIPTREPO"/tmp/oversee-watch/claims 2>/dev/null | wc -l | tr -d '[:space:]')" \
   "caller=1 script=0" "the claim lands in the caller checkout, where lanes reads it, never under the script's"
+
+# The repository the launch line renders splits the same way. The resolver's
+# first rung, `gh repo view`, answers for the caller's cwd, so its origin-remote
+# fallback must read the caller's checkout too — reading the script's would
+# brief the lane on whichever repository the kendex install happens to sit in.
+# gh exits 1 here, which is the rung that answers nothing.
+git -C "$SCRIPTREPO" remote add origin git@github.com:script-owner/script-repo.git
+git -C "$CALLERREPO" remote add origin git@github.com:caller-owner/caller-repo.git
+REPO_LOG="$TMP_ROOT/caller.repo.tmux.log"
+( cd "$CALLERREPO" && LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" GH_ISSUE_PATTERN='[A-Z]+-[0-9]+' \
+  TMUX=stub,1,0 OT_TMUX_LOG="$REPO_LOG" OT_TMUX_SERVER_PID="$$" OT_TMUX_PANES="$TMP_ROOT/caller.repo.panes" \
+  OT_WT_LOG="$TMP_ROOT/caller.repo.worktree.log" PATH="$OT_STUB_BIN:$PATH" WORKTREE_CLI="$OT_STUB_BIN/worktree" \
+  "$SCRIPTREPO/scripts/open-terminal" --harness claude --lane auto --cmd 'true {repo}' CC-21 ) >/dev/null 2>&1
+assert_eq "caller=$(grep -c 'caller-owner/caller-repo' "$REPO_LOG" || true) script=$(grep -c 'script-owner/script-repo' "$REPO_LOG" || true)" \
+  "caller=1 script=0" "the launch line names the caller checkout's repository, never the script checkout's"
+
+echo "=== a GH_REPO the resolver refuses never reaches the launch line ==="
+# The resolver returns status 2 for a value that is not owner/name and PRINTS
+# it anyway, so the value is on stdout whether it was accepted or rejected.
+# resolve_repo is where that distinction is kept: a consumer reading the
+# output without the status types a quote-bearing GH_REPO into the pane shell
+# that runs the rendered line. gh-repo-resolve.test.sh pins the refusal; this
+# pins what open-terminal does with it.
+BAD_REPO="o/r';id;'"
+
+# The mutant: a resolve_repo that reads the output and drops the status.
+MUTREPO="$TMP_ROOT/mutrepo"
+mkdir -p "$MUTREPO/scripts/lib"
+cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$MUTREPO/scripts/"
+cp "$SCRIPTS_DIR/lib"/*.sh "$MUTREPO/scripts/lib/"
+orch_fixture_shared_libs "$MUTREPO"
+chmod +x "$MUTREPO/scripts/open-terminal" "$MUTREPO/scripts/lanes"
+assert_eq "$(grep -Fc '[[ "$resolve_status" -eq 0 ]] || return 0' "$MUTREPO/scripts/open-terminal")" "1" \
+  "control finds exactly one live status check"
+# `#` as the delimiter: the line the control rewrites carries `||`.
+sed -i.bak 's#\[\[ "$resolve_status" -eq 0 \]\] || return 0#[[ "$resolve_status" -eq 0 ]] || :#' \
+  "$MUTREPO/scripts/open-terminal"
+assert_eq "$(grep -Fc '[[ "$resolve_status" -eq 0 ]] || return 0' "$MUTREPO/scripts/open-terminal")" "0" \
+  "control applied the mutation"
+
+# run_bad_repo SCRIPT NAME — one launch under the refused GH_REPO, from a
+# caller checkout of its own so the claim store starts empty. Prints
+# `launched=<n> rejected=<n>`: the windows opened, and the tmux lines carrying
+# the refused value. Both halves matter — a run that launched nothing would
+# report rejected=0 for the wrong reason.
+run_bad_repo() {
+  local script="$1" name="$2"
+  local caller="$TMP_ROOT/$name-caller" log="$TMP_ROOT/$name.tmux.log"
+  mkdir -p "$caller"
+  git -C "$caller" init -q
+  ( cd "$caller" && LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" GH_ISSUE_PATTERN='[A-Z]+-[0-9]+' \
+    GH_REPO="$BAD_REPO" TMUX=stub,1,0 OT_TMUX_LOG="$log" OT_TMUX_SERVER_PID="$$" \
+    OT_TMUX_PANES="$TMP_ROOT/$name.panes" OT_WT_LOG="$TMP_ROOT/$name.worktree.log" \
+    PATH="$OT_STUB_BIN:$PATH" WORKTREE_CLI="$OT_STUB_BIN/worktree" \
+    "$script" --harness claude --lane auto --cmd 'true {repo}' CC-30 ) >/dev/null 2>&1
+  printf 'launched=%s rejected=%s' \
+    "$(grep -c '^new-window' "$log" || true)" "$(grep -cF "$BAD_REPO" "$log" || true)"
+}
+
+assert_eq "$(run_bad_repo "$SCRIPTREPO/scripts/open-terminal" refused)" "launched=1 rejected=0" \
+  "a GH_REPO the resolver refuses renders no repository into the launch line"
+assert_eq "$(run_bad_repo "$MUTREPO/scripts/open-terminal" accepted)" "launched=1 rejected=1" \
+  "must-fail control: a resolve_repo that drops the status types the refused value into the pane"
 
 # Hermeticity proof: every window the launch rows created went through the
 # stub. No new-window line anywhere means a real tmux server took the calls.
