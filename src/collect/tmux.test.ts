@@ -105,6 +105,19 @@ test("a target resolves to the panes it names, in every spelling tmux accepts", 
   // A map that never arrived names nothing by address, which is not the same
   // as naming some other pane.
   expect([...targetPanes("vsys:2.1", new Map())]).toEqual([]);
+  // A window whose own name ends in a dot and digits, the other branch of the
+  // split rule from `vsys:my.app` above. Measured against tmux 3.4: where
+  // window `v1` holds pane index 2, `tst:v1.2` reaches that pane and not the
+  // window named `v1.2`, because the split is tmux's first reading.
+  const split = parsePanes(["%2\ttst:0.2\tv1", "%3\ttst:1.0\tv1.2"].join("\n"));
+  expect([...targetPanes("tst:v1.2", split)]).toEqual(["%2"]);
+  // The same target where no window `v1` exists. tmux retries the whole rest
+  // as a window name and reaches the `v1.2` window; this names nothing, which
+  // leaves the caller undecided and refuses the read rather than sending it to
+  // a pane tmux would not have reached.
+  expect([...targetPanes("tst:v1.2", parsePanes("%1\ttst:1.0\tv1.2"))]).toEqual(
+    [],
+  );
 });
 
 test("captured pane text cannot move the cursor, repaint or write the clipboard", () => {
