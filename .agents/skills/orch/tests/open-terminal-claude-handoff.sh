@@ -116,6 +116,7 @@ STUB="$TMP_ROOT/worktree-stub"
 cat > "$STUB" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "\$*" >> "\$OT_WORKTREE_LOG"
 if [[ "\${1:-}" == "create" ]]; then
   d="$TMP_ROOT/wt/\${2:-unknown}"
   mkdir -p "\$d"
@@ -200,7 +201,7 @@ screen() {
 # --- harness -----------------------------------------------------------------
 
 # run MODE ENV FLAGS SCREENS — one launch. MODE is gui, github (gui, the
-# github tracker), tmux or tmux-codex; the GUI modes clear TMUX so the suite
+# github tracker), custom commands, tmux or tmux-codex; the GUI modes clear TMUX so the suite
 # reads the same inside and outside a tmux session; ENV a comma-separated list of
 # VAR=value pairs or `-`; FLAGS the --launch-flags value or `-` for none;
 # SCREENS the comma-separated captures the tmux stub serves in order, or `-`.
@@ -214,10 +215,12 @@ run() {
   ERR="$RUN/stderr"
   CAP="$RUN/capture"
   OT_TMUX_LOG="$RUN/tmux-log"
+  OT_WORKTREE_LOG="$RUN/worktree-log"
   OT_TMUX_COUNT="$RUN/tmux-count"
   OT_TMUX_CAPTURES="$RUN/screens"
   : > "$OT_TMUX_LOG"
-  export OT_TMUX_LOG OT_TMUX_COUNT OT_TMUX_CAPTURES
+  : > "$OT_WORKTREE_LOG"
+  export OT_TMUX_LOG OT_TMUX_COUNT OT_TMUX_CAPTURES OT_WORKTREE_LOG
   if [[ "$screens" != - ]]; then
     IFS=',' read -ra names <<<"$screens"
     for name in "${names[@]}"; do screen "$name" > "$RUN/screens/$((++i))"; done
@@ -225,6 +228,10 @@ run() {
   case "$mode" in
     gui) envs=(TMUX=); args=(--ghostty --harness claude) ;;
     github) envs=(TMUX=); args=(--tracker github --repo acme/widgets --ghostty --harness claude) ;;
+    custom) envs=(TMUX=); args=(--ghostty --cmd "claude 'Read the agent\\'s brief'") ;;
+    custom-tmux) envs=(TMUX=stub,1,0); args=(--tmux --cmd "claude 'Read the agent\\'s brief'") ;;
+    custom-double) envs=(TMUX=); args=(--ghostty --cmd 'claude "Read the agent brief') ;;
+    custom-portable) envs=(TMUX=stub,1,0); args=(--tmux --cmd "claude 'Read the agent'\\''s brief'") ;;
     tmux) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1); args=(--tmux --harness claude) ;;
     tmux-codex) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1); args=(--tmux --harness codex) ;;
     *) echo "run: unknown mode $mode" >&2; exit 1 ;;
@@ -257,6 +264,7 @@ wait_capture() {
 #   rc              exit status
 #   out~<text>      whether stdout carries <text>
 #   stderr~<text>   whether stderr carries <text>
+#   stderr1~<text>  whether the first stderr line equals <text>
 #   launched        whether the GUI terminal stub was invoked
 #   cmd~<text>      whether the captured GUI command carries <text>, or
 #                   `nocapture` when the stub was never invoked
@@ -265,6 +273,7 @@ wait_capture() {
 #   resends         how many tmux calls re-sent the brief
 #   fullresends     how many of those were exactly the brief, nothing more
 #   enters          how many bare Enters were sent
+#   creates         how many worktree creates ran
 observe() {
   local got="" token name value needle
   set -f
@@ -275,6 +284,7 @@ observe() {
       rc) value="$RC" ;;
       out~*) value="$(grep -qF -- "$needle" <<<"$OUT" && echo true || echo false)" ;;
       stderr~*) value="$(grep -qF -- "$needle" "$ERR" && echo true || echo false)" ;;
+      stderr1~*) value="$(sed -n '1p' "$ERR")"; [[ "$value" == "$needle" ]] && value=true || value=false ;;
       launched) value="$(wait_capture && echo true || echo false)" ;;
       cmd~*) if wait_capture; then value="$(grep -qF -- "$needle" "$CAP" && echo true || echo false)"; else value=nocapture; fi ;;
       tail) if wait_capture; then value="$(cat "$CAP")"; value="${value##*&& }"; value="${value// /+}"; else value=nocapture; fi ;;
@@ -282,6 +292,7 @@ observe() {
       resends) value="$(grep -cF -- "$RESEND" "$OT_TMUX_LOG" || true)" ;;
       fullresends) value="$(grep -cFx -- "$RESEND" "$OT_TMUX_LOG" || true)" ;;
       enters) value="$(grep -c 'send-keys -t %7 Enter$' "$OT_TMUX_LOG" || true)" ;;
+      creates) value="$(grep -c '^create ' "$OT_WORKTREE_LOG" || true)" ;;
       *) echo "observe: unknown field $name" >&2; exit 1 ;;
     esac
     got="$got $name=$value"
@@ -345,7 +356,16 @@ launch_table \
   "an unflagged launch renders no model, effort or permission default, and warns it will stall unattended|gui|-|-|-|rc=0 tail=claude+-n+CC-737+'$BRIEFN' stderr~open-terminal:+permission-prompt+flags==true" \
   "a prompting override still launches, rendered as given, and warns loudly|gui|-|--permission-mode plan|-|rc=0 cmd~'--permission-mode'+'plan'+'$BRIEFN'=true stderr~open-terminal:+permission-prompt+flags=--permission-mode+plan=true" \
   "metacharacter launch flags refuse to launch, naming the option, and nothing runs|gui|-|--flag; touch $TMP_ROOT/pwned|-|rc=1 stderr~open-terminal:+flags-invalid+option=--launch-flags+value=--flag;+touch+$TMP_ROOT/pwned=true launched=false" \
+  "a backslash cannot escape an apostrophe inside a single-quoted GUI brief|custom|-|-|-|rc=1 stderr1~open-terminal:+cmd-unbalanced-quote+item=CC-737=true creates=0 launched=false" \
+  "the same unbalanced brief refuses before a tmux worktree or window|custom-tmux|-|-|-|rc=1 stderr1~open-terminal:+cmd-unbalanced-quote+item=CC-737=true creates=0 log~new-window=false" \
+  "an unbalanced double-quoted custom brief is refused at the same boundary|custom-double|-|-|-|rc=1 stderr1~open-terminal:+cmd-unbalanced-quote+item=CC-737=true creates=0 launched=false" \
+  "the portable apostrophe spelling stays balanced and reaches the pane shell|custom-portable|-|-|-|rc=0 creates=1 log~new-window=true stderr~open-terminal:+cmd-unbalanced-quote=false" \
   "a broken tmux-only verify setting does not abort a GUI launch, which never reads it|gui|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false"
+
+assert_eq "$(grep -Fc 'cmd_has_unbalanced_quote "$cmd" &&' "$SRC_OT")" 1 'control locates the command quote guard'
+mutant quote-guard-removed open-terminal 's/cmd_has_unbalanced_quote "$cmd" &&/false \&\&/' 'the command quote guard'
+launch_table "control: without the quote guard the apostrophe command creates a tmux worktree and window|custom-tmux|-|-|-|rc=0 creates=1 log~new-window=true stderr~open-terminal:+cmd-unbalanced-quote=false"
+unmutate
 
 # The rendered line is executed by a shell in the launch directory, so a
 # bracketed model id is glob syntax there. With the tokens unquoted, a single

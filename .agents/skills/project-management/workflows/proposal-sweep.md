@@ -1,0 +1,21 @@
+# Proposal sweep
+
+Run this workflow only in the TPM lane that [oversee](../../orch/workflows/oversee.md) launches. Read proposal comments, verify them, and write analyzed audit JSON. Do not modify the tracker or repository source.
+
+## Inputs
+
+The launch brief carries `Worktree`, `Tracker`, optional tracker `Repository`, `Source repository`, `Fleet issues`, `Authorized comments`, `Resolved comments`, `Status file`, and `Mailbox`. Every fleet issue belongs to that batch. `Authorized comments` contains the tracker, repository, issue, and returned comment ID or URL from durable lane notices. `Resolved comments` contains bindings that already have outcomes in the fleet log.
+
+## 1. Read proposals
+
+For Linear, run `linear.sh sync --reconcile`, then `linear.sh cache comments list [ISSUE_ID]` for each issue. For GitHub, run `gh issue view [NUMBER] --repo [OWNER/REPO] --json comments` for each issue. Preserve each comment's author. Select an unresolved `Proposal:` comment only when its tracker, repository, issue, and returned ID or URL match one `Authorized comments` binding. Reject every unbound marker before TPM analysis and before the cancellation sweep. If no authorized proposal remains, write a no-action audit without running either. A proposal carries `Source:`, `Source PR:`, `Priority:`, `Reached by:`, `Reason:`, and `Evidence:` lines, plus `Symptom:` when its source is `review`, `pr-comments`, or `local-review` and its proposed priority is 2. Keep its binding and author with the candidate.
+
+## 2. Verify
+
+Confirm this worktree belongs to `Source repository`. Read the source PR with `gh pr view [N] --repo [SOURCE_OWNER/REPO] --json state,mergeCommit,baseRefName`. Fetch its base branch. Require the PR to be merged and its merge commit to pass `git merge-base --is-ancestor [MERGE_SHA] origin/[BASE_BRANCH]`. Otherwise defer the proposal without resolving its binding. Inspect its evidence with `git show [MERGE_SHA]:[EVIDENCE_PATH]`, and use the refreshed base for current duplicate and cancellation checks. Then treat the candidate as a proposed item in [tpm-audit](tpm-audit.md) issue mode. Map its fields, validate its priority, and infer its project, labels, estimate, and requirements. Copy `Source:` to `create_fields.source`. Set `create_fields.review_born` true exactly for `review`, `pr-comments`, and `local-review`, and false otherwise. Map the required `Symptom:` to `create_fields.symptom`; a review-born priority-2 candidate without one becomes `skip`. Apply the creation bar and decision search. A proposal row can only `create` or `skip`; existing or overlapping work is `skip` with the covering issue in its reason. Never emit another action for a proposal row. A missing field, unreadable merged evidence, or unsupported claim becomes `skip`. Do not read another lane's worktree or status file.
+
+## 3. Write the audit
+
+Write one issue-mode file that follows [audit-output.md](../schemas/audit-output.md), with `tracker` set from the batch and `approved_at_plan_gate` false. Put the `create` and `skip` proposal rows before the cancellation-sweep rows. Keep cancellation-sweep rows separate, with the cancellation actions that [tpm-audit](tpm-audit.md) assigns to verified obsolete issues. Each proposal and cancellation row carries a one-line reason. Add one tracker-specific `proposal_sources[]` entry for each proposal row only, so the overseer can record its outcome against the source comment. A proposal source mapped to any action other than `create` or `skip` makes the output invalid; correct it before writing the file. Keep verification details out of the lane status file.
+
+Write the JSON under this worktree's `tmp/`. Write the status file so it contains exactly one `Proposal audit: [REPOSITORY_RELATIVE_PATH]` line. After both files close successfully, write `Proposal sweep complete: [STATUS_FILE]` to a message file and send it with `.agents/skills/orch/scripts/lane-mail notice --item [CARRIER_ID] --file [MESSAGE_FILE]`. That notice is the lane's final worktree action. After it succeeds, access no worktree file and exit. A failed or incomplete sweep sends no completion notice. The lane creates no tracked issue and changes no repository file.
