@@ -437,6 +437,28 @@ test("build process environments carry the wrapper and the make token pool", asy
   ]);
 });
 
+test("the pane handle is collected even when the pane setting is narrowed", async () => {
+  const f = setup();
+  // A reader who narrows the setting to the variable they set themselves. The
+  // own-pane mark compares the handle tmux exported against vsys's own, so the
+  // collector names that handle for itself rather than inheriting it from a
+  // list a reader is free to edit.
+  f.config.paneEnv = ["VSYS_PANE"];
+  f.group("agents.slice/c.scope", [60]);
+  f.proc(60, "agents.slice/c.scope", {
+    comm: "claude",
+    command: ["/usr/bin/claude"],
+    env: "TMUX_PANE=%7\0VSYS_PANE=vsys:2.1\0SECRET=hidden\0",
+  });
+  const collector = new Collector(f.config, 100, 4096);
+  const s = await collector.sample(1000);
+  expect(s.errors).toEqual([]);
+  expect(s.procs.find((p) => p.pid === 60)?.env).toEqual({
+    TMUX_PANE: "%7",
+    VSYS_PANE: "vsys:2.1",
+  });
+});
+
 test("a settings change keeps the cache counts measured since vsys started", async () => {
   const f = setup();
   let hits = 100;

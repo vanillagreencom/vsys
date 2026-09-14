@@ -51,13 +51,15 @@ test("a pane resolves to its session, window and pane, and a partial line is dro
 
 test("a target resolves to the panes it names, in every spelling tmux accepts", () => {
   // One server. `vsys:2` holds a single pane; `vsys:3` is split in two; the
-  // window name `build` is used again in another session.
+  // window name `build` is used again in another session; and `vsys:4` is
+  // named with a dot in it, which a pane index would otherwise be read out of.
   const panes = parsePanes(
     [
       "%13\tvsys:2.1\tbuild",
       "%30\tvsys:3.1\teditor",
       "%31\tvsys:3.2\teditor",
       "%40\twork:1.1\tbuild",
+      "%50\tvsys:4.1\tmy.app",
     ].join("\n"),
   );
   // The target, and the handles it names. Sorted, because the answer is a set
@@ -80,6 +82,10 @@ test("a target resolves to the panes it names, in every spelling tmux accepts", 
     ["vsys:3", ["%30", "%31"]],
     ["vsys:editor", ["%30", "%31"]],
     ["vsys:editor.2", ["%31"]],
+    // A dotted window name is the name, not a window and a pane index: the
+    // text after the last dot is `app`, and a pane index is digits.
+    ["vsys:my.app", ["%50"]],
+    ["vsys:my.app.1", ["%50"]],
     // A window name is only a name inside its own session.
     ["work:build.1", ["%40"]],
     ["work:1", ["%40"]],

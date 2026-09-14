@@ -78,14 +78,12 @@ function parseTarget(target: string): PaneTarget | null {
     : { session, window: rest, pane: "" };
 }
 function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
-  const colon = pane.address.indexOf(":");
-  const dot = pane.address.lastIndexOf(".");
-  if (colon < 0 || dot < colon) return false;
+  const at = parseTarget(pane.address);
+  if (!at || at.pane === "") return false;
   return (
-    target.session === pane.address.slice(0, colon) &&
-    (target.window === pane.address.slice(colon + 1, dot) ||
-      target.window === pane.window) &&
-    (target.pane === "" || target.pane === pane.address.slice(dot + 1))
+    target.session === at.session &&
+    (target.window === at.window || target.window === pane.window) &&
+    (target.pane === "" || target.pane === at.pane)
   );
 }
 /**

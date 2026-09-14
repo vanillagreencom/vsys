@@ -70,6 +70,38 @@ export function blockedOn(
   if ((io ?? 0) <= 0 && (memory ?? 0) <= 0) return null;
   return (io ?? 0) >= (memory ?? 0) ? "io" : "memory";
 }
+/**
+ * Whether a lane's pane is the pane vsys draws in.
+ *
+ * Which pane the command will reach, not which server the lane's process sat
+ * on: `capture-pane` and `switch-client` are spawned in vsys's own
+ * environment, so a target naming vsys's own pane reaches it whatever server
+ * handed the string out. A lane on a server known to differ is `no` because
+ * `elsewhere` already leaves it neither read nor offered a switch.
+ *
+ * `no` is the only answer that permits a capture, so it is the only one the
+ * map has to have spoken for: anything undecided says so instead, costing its
+ * reader one terminal where `no` would cost the capture that draws vsys's
+ * screen inside itself, one copy deeper on every sample. The lane's own handle
+ * settles the two undecided shapes — a window target naming several panes, and
+ * a target the map could not resolve — which is why it can refuse a lane whose
+ * reader pointed `VSYS_PANE` elsewhere. It fails toward the message, never
+ * toward the capture.
+ */
+export function ownPaneMark(
+  target: string,
+  own: string,
+  elsewhere: boolean,
+  panes: Map<string, PaneAddress>,
+  handle: string | null,
+): Lane["self"] {
+  if (target === "" || own === "" || elsewhere) return "no";
+  const named = targetPanes(target, panes);
+  if (named.size > 0 && !named.has(own)) return "no";
+  return (named.size === 1 && named.has(own)) || handle === own
+    ? "yes"
+    : "unknown";
+}
 /** Alarmed scopes stay visible even when their slice is not watched. */
 export function lanes(
   groups: Group[],
@@ -115,13 +147,6 @@ export function lanes(
     const account = accountName(main, c);
     const pane = paneName(main, c);
     const mine = paneSocket(main);
-    const named = pane === "" ? new Set<string>() : targetPanes(pane, panes);
-    /**
-     * Read from `TMUX_PANE` alone rather than the configured list, which holds
-     * whatever target the reader chose: a handle compares to a handle, so this
-     * stands when the map cannot resolve that target.
-     */
-    const inOwn = own !== "" && firstEnv(main, ["TMUX_PANE"]) === own;
     /**
      * What the lane says about its tmux server, against the one vsys read.
      * Naming no server is its own state, neither a match nor a boundary:
@@ -135,29 +160,10 @@ export function lanes(
           ? "same"
           : "other";
     const elsewhere = server === "other";
-    // Which pane the command will reach, not which server the lane's process
-    // sat on: `capture-pane` and `switch-client` are spawned in vsys's own
-    // environment, so a target naming vsys's own pane reaches it whatever
-    // server handed the string out. A lane on a server known to differ is `no`
-    // because `elsewhere` already leaves it neither read nor offered a switch.
-    //
-    // `no` is the only answer that permits a capture, so it is the only one
-    // the map has to have spoken for: anything undecided says so instead,
-    // costing its reader one terminal where `no` would cost the capture that
-    // draws vsys's screen inside itself, one copy deeper on every sample.
-    // `inOwn` settles the two undecided shapes — a window target naming
-    // several panes, and a target the map could not resolve — by reading the
-    // lane's own shell rather than its target, which is why it can refuse a
-    // lane whose reader pointed `VSYS_PANE` elsewhere. It fails toward the
-    // message, never toward the capture.
-    const self: Lane["self"] =
-      pane === "" || own === "" || server === "other"
-        ? "no"
-        : named.size > 0 && !named.has(own)
-          ? "no"
-          : named.size === 1 || inOwn
-            ? "yes"
-            : "unknown";
+    // `TMUX_PANE` alone, never the configured list, which holds whatever
+    // target the reader chose: a handle compares to a handle.
+    const handle = firstEnv(main, ["TMUX_PANE"]);
+    const self = ownPaneMark(pane, own, elsewhere, panes, handle);
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =

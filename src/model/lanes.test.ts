@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { type PaneAddress, serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
 import { groupSnapshot, processSnapshot } from "../test/fixture";
-import { effectiveMax, lanes, parentChain, processTree } from "./lanes";
+import {
+  effectiveMax,
+  lanes,
+  ownPaneMark,
+  parentChain,
+  processTree,
+} from "./lanes";
 import type { Lane } from "./types";
 
 /** What one tmux read gave, defaulting to a vsys that draws in no pane. */
@@ -539,6 +545,11 @@ test("vsys's own pane is marked however the lane's target spells it", () => {
   expect(
     mark({ TMUX: "/tmp/tmux-1000/other,777,0", VSYS_PANE: "vsys:build.1" }),
   ).toBe("no");
+  // A vsys drawing in no pane, holding a target the map cannot resolve. Every
+  // lane above reaches `no` through a target the map did resolve; this one has
+  // nothing resolved to compare, and is still `no` because a vsys that draws
+  // in no pane has no screen to nest and nothing to collide with.
+  expect(ownPaneMark("vsys:bui.1", "", false, panes, null)).toBe("no");
 });
 
 test("the pane vsys draws in is marked on the lane, in either form it carries", () => {
