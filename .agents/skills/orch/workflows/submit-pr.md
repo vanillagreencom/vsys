@@ -2,6 +2,8 @@
 
 Run a local pre-PR review, push, create or update the PR, triage review comments, wait for the reviewer-gate verdict, verify CI, and confirm the merge gates. The review gate (§ 4) runs before CI verification (§ 5).
 
+Run every long waiter below through [Waiter launch](../references/waiter-launch.md): detach with `setsid`, poll its completion file, then route the recorded exit and result. The waiter commands below are arguments to that launch, except `approval-wait --resolve-mode`, which runs directly.
+
 | Command | Behavior |
 |---------|----------|
 | `submit-pr` | Submit the current branch as a PR |
@@ -35,19 +37,9 @@ git -C "[WORKTREE_PATH]" status --porcelain
 git -C "[WORKTREE_PATH]" diff "origin/[BASE_BRANCH_FROM_PREVIOUS_COMMAND]"...HEAD --stat
 ```
 
-Stop before pushing when the branch is empty (detached HEAD), equals the base branch, the working tree is dirty, or the committed diff against the base is empty. Then run `.agents/skills/preflight/scripts/preflight --base "origin/[BASE_BRANCH_FROM_PREVIOUS_COMMAND]" --repo [WORKTREE_PATH]` when installed. Reuse a successful full-validation result for the current commit from an accepted dev completion artifact or this submit session. Otherwise run the project's `DEV_VALIDATE_CMD`, resolved as in [dev-implement.md § 5. Validate](../../dev/workflows/dev-implement.md#5-validate). A changed commit needs a new result. Either check failing blocks the push. In managed lifecycle, return the failed preflight to the caller so the dev agent can normalize the branch and clean the worktree. Never create a PR from dirty or detached state.
+Stop before pushing when the branch is empty (detached HEAD), equals the base branch, the working tree is dirty, or the committed diff against the base is empty. Then run `.agents/skills/preflight/scripts/preflight --base "origin/[BASE_BRANCH_FROM_PREVIOUS_COMMAND]" --repo [WORKTREE_PATH]` when installed. Reuse a successful full-validation result for the current commit from an accepted dev completion artifact or this submit session. A failing dev validation artifact blocks submission and is reported without another validation run. When no dev result exists, run the project's `DEV_VALIDATE_CMD`, resolved as in [dev-implement.md § 5. Validate](../../dev/workflows/dev-implement.md#5-validate). A changed commit needs a new result. Either check failing blocks the push. In managed lifecycle, return the failed preflight to the caller so the dev agent can normalize the branch and clean the worktree. Never create a PR from dirty or detached state.
 
-### 1.2 Size Check
-
-The branch's added lines are measured against the allowance its issue states, once, before the push. The fix-round tripwire runs at round mint against the branch's own first commit, so a branch already grown when the PR opened never meets it.
-
-```bash
-.agents/skills/orch/scripts/branch-size-check --worktree "[WORKTREE_PATH]" --issue [ISSUE_ID]
-```
-
-Exit 0 continues. Exit 3 is a refusal, not a warning: it names the count and the allowance. Cut the branch back to the Done-when and re-run it; the cut is a round like any other, the size tripwire in [references/finding-disposition.md](../references/finding-disposition.md). Adding a size-ratchet exclusion or deleting comments is not a cut. Exit 2 is a usage or environment failure whose message names the cause; report it, never push past it. An `**Expected delta**` line the check cannot parse is one such cause, corrected on the issue. When the issue states no allowance the check judges nothing, exits 0 and reports the counts; carry them into the PR body under `## Size` for the reviewer, never invent an allowance. The verdict lands in workflow state `pr.size_check`, bound to the base and head it measured; § 1.3 re-runs it after any commit it adds.
-
-### 1.3 Local Pre-PR Review
+### 1.2 Local Pre-PR Review
 
 Drain what a review bot would surface before the PR exists.
 
@@ -69,18 +61,20 @@ Execute the exact command printed after `wait:` and repeat it per its exit code 
 Use the epoch output as `LOCAL_STARTED_AT`:
 
 ```bash
-.agents/skills/orch/scripts/review-artifact-check --file "$LOCAL_OUTPUT" [LOCAL_STARTED_AT]
+.agents/skills/orch/scripts/review-artifact-check --file "$LOCAL_OUTPUT" [WORKTREE_PATH] [LOCAL_STARTED_AT]
 ```
 
 `ok == true` → route the findings below; `reason == "valid_undermeasured"` → report its `measurement_failed` string (and `measurement_suppressed` when present) with the findings; never treat the local pass as clean. `ok == false`, or any non-zero exit, → report the `reason` and its `detail` and continue to § 2. Local review is advisory, never a submission blocker, and none of those outcomes is a pass.
 
-Route the findings per the `review-finding` schema. Disposition every finding per [references/finding-disposition.md](../references/finding-disposition.md) § Decision flow, Step 0 first, and only what survives it enters the fix set. No blockers and no `category: "fix"` or `category: "issue"` suggestions → § 2. Otherwise delegate any blockers and fix-category suggestions: `⤵ workflows/dev-fix.md § 1-3 → § 1.3 tail` with context `worktree`, `lifecycle: "managed"`, `issue_id`, `items` (blockers plus fix-category suggestions), `source: local-review`. `category: "issue"` suggestions and the fix round's escalated items that clear the filing bar ([references/finding-disposition.md](../references/finding-disposition.md)) build an audit-input file at `tmp/audit-local-review-YYYYMMDD-HHMMSS.json` per `.agents/skills/project-management/schemas/audit-issues-input.md` with `source: "local-review"`, then go through `⤵ .agents/skills/project-management/workflows/audit-issues.md --issues [FILE_PATH] § 1-9`, each escalated item taking the `origin` its `outcome` maps to in [`review-pr.md`](review-pr.md) § 8, with the created IDs listed in the PR body.
+Route the findings per the `review-finding` schema. Disposition every finding per [references/finding-disposition.md](../references/finding-disposition.md) § Decision flow, Step 0 first, and only what survives it enters the fix set. No blockers and no `category: "fix"` or `category: "issue"` suggestions → § 2. Otherwise delegate any blockers and fix-category suggestions: `⤵ workflows/dev-fix.md § 1-3 → § 1.2 tail` with context `worktree`, `lifecycle: "managed"`, `issue_id`, `items` (blockers plus fix-category suggestions), `source: local-review`. `category: "issue"` suggestions and the fix round's escalated items that clear the filing bar ([references/finding-disposition.md](../references/finding-disposition.md)) build an audit-input file at `tmp/audit-local-review-YYYYMMDD-HHMMSS.json` per `.agents/skills/project-management/schemas/audit-issues-input.md` with `source: "local-review"`, then apply [skill-rules.md § Coordination](../references/skill-rules.md#coordination) before `⤵ .agents/skills/project-management/workflows/audit-issues.md --issues [FILE_PATH] § 1-9`, each escalated item taking the `origin` its `outcome` maps to in [`review-pr.md`](review-pr.md) § 8, with the created IDs listed in the PR body.
 
-**The loop is bounded at one confirming pass.** If dev-fix applied commits, run the review once more over the updated diff, then re-run the § 1.2 command and route its exit as § 1.2 does, and only then → § 2 regardless of what the review found. If nothing was applied, → § 2.
+**The loop is bounded at one confirming pass.** If dev-fix applied commits, run the review once more over the updated diff, then → § 2 regardless of what the review found. If nothing was applied, → § 2.
 
 ---
 
 ## 2. Push And Submit
+
+When a cut follows the last review pass, set the existing `pre_delegate_sha` workflow-state boundary to the cut commit's parent, route exactly once through [review-pr.md § Bounded Re-Review](review-pr.md#bounded-re-review) before push, and keep the cut in a commit whose parent contains everything it deletes. Before every push, run `env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/pr-view-json "[WORKTREE_PATH]" --json number,state,autoMergeRequest` and record whether `autoMergeRequest` is armed; after § 6.1 confirms all merge gates, an armed standalone submit enters [merge-pr.md](merge-pr.md) from its entry point, while an armed managed submit returns that recorded decision with its final result so the caller's merge stage owns the canonical lifecycle.
 
 1. **Push**:
 
@@ -89,6 +83,14 @@ Route the findings per the `review-finding` schema. Disposition every finding pe
    ```
 
    The push auto-rebases onto the updated base and reconciles every SHA workflow state records. Route its exit code and its `sha-reconcile:` line by `worktree-push --help`, which owns the reconciliation and repair contract.
+
+   Measure the pushed branch before constructing publication text. The issue's optional `**Expected delta**` line supplies the comparison.
+
+   ```bash
+   .agents/skills/orch/scripts/branch-size-check --worktree "[WORKTREE_PATH]" --issue [ISSUE_ID]
+   ```
+
+   Every measured verdict exits 0 and continues. The report lands in `pr.size_check`, bound to its base and head. Carry its counts, allowances or `unsized`, and verdict into the PR body's `## Size` section. A reviewer or the orchestrator decides whether to cut under [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow). Exit 3 means malformed `**Expected delta**` text; exit 2 means a usage or environment failure. Report either failure and stop before creating or updating the PR.
 
    Regenerate any already-drafted publication text from the reconciled state, and resolve every SHA sourced from a review or QA artifact (e.g. a perf QA `benchmark_commit`) through `.rebase_map` before publishing it — follow the chain until no key matches. Publishing an unreconciled pre-rebase SHA is forbidden.
 
@@ -121,13 +123,16 @@ Route the findings per the `review-finding` schema. Disposition every finding pe
    [Results from the QA agents that ran — project-configurable.]
 
    ## Size
-   [The § 1.2 counts, only when the issue states no allowance.]
+   [The pr.size_check production and test counts, allowances or unsized, and verdict: pass, over, or allowance_missing.]
+
+   ## Proposed rules
+   [Each string in workflow state `pr_comment_review.proposed_rules`.]
 
    ## Test Plan
    [validation steps]
    ```
 
-   Omit empty sections. Decision paths come only from `decisions search --issue [ISSUE_ID]`, each verified with `test -f [DECISION_FILE_PATH]` (one command per path) and omitted on failure. Every published SHA must be post-reconciliation.
+   Omit empty sections. Include each proposed rule once and do not perform it. Decision paths come only from `decisions search --issue [ISSUE_ID]`, each verified with `test -f [DECISION_FILE_PATH]` (one command per path) and omitted on failure. Every published SHA must be post-reconciliation.
 
 4. **Create or update the PR.** Never defer, queue, or gate CI behind bot review activity.
 
@@ -218,6 +223,7 @@ For `off`, skip the wait and go to § 5 — the internal review, CI, and comment
    | `reviewed` | Clear the review-wait budget, then → step 2 |
    | `proceeded` | Reviewer-down degrade under `PR_REVIEW_ON_TIMEOUT=proceed`. Clear the review-wait budget, record `pr_approval.reviewer_down` (below), then → step 2. CI and gate 3 still apply in full. Orch posts no status and manufactures no review evidence |
    | `changes_requested` or `comments` | Run the triage pass, then the Restart check |
+   | `unreviewable` | No automatic reviewer targets this PR's base ([references/gates.md](../references/gates.md) § Stacked pull requests). Run `gh pr edit [PR_NUMBER] --add-reviewer @copilot` once, then the Restart check. If the wait returns `unreviewable` again, `auto-recommended` records `review-gate-unreviewable`; `ask` presents `Force merge` \| `Keep waiting` \| `Stop here`, with `Stop here` recommended |
    | `timeout` | `auto-recommended` logs `Keep waiting` and enters the Restart check; `ask` presents `Force merge` \| `Keep waiting` \| `Stop here`, with `Keep waiting` recommended |
    | `error` | Re-run step 1 once. If it repeats, `auto-recommended` records `review-gate-read-failed`; `ask` presents `Keep waiting` \| `Stop here`, with `Keep waiting` recommended |
 
@@ -279,6 +285,8 @@ After any fix-up push: push → the Restart check, and on a restart wait for a N
 | `status=complete`, `verdict=none` | Repo has no CI configured. Record `ci: none` in workflow state and → § 6 |
 | `status=complete`, `verdict=fail` | → § 5.1 |
 | `status=timeout` or `status=error` | Re-run once. If it repeats, `auto-recommended` records `ci-status-unconfirmed`; `ask` presents `Skip CI` \| `Retry` \| `Abort`, with `Retry` recommended |
+
+A PR already green when the wait started reaches the first row, never this one: `ci-wait --help` pairs `verdict=pass` with `status=complete` alone.
 
 ### 5.1 CI Failure Recovery
 
@@ -343,7 +351,7 @@ Re-run the gate-3 command once. If threads remain and the external-round cap is 
 
 **Skip if** the repository is `vanillagreencom/kendex`, where these files are the product, or `MERGE_READY = true`, where the gates already cleared the merge.
 
-When the diff touches no product code, only harness renders, settings, or prose, an unmet gate has nothing left to judge. Whether to merge past it anyway is a question orch poses and never answers. Under `auto-recommended` orch takes the recommended `Continue through the gates` and moves on; under `ask` a person or the overseer answers.
+When the diff touches no product code, only harness renders, settings, or prose, an unmet gate has nothing left to judge. Whether to merge past it anyway is a question orch poses and never answers. Under `auto-recommended` orch takes the recommended `Continue through the gates` and moves on; under `ask` the user answers. An overseer relays the question to the user and never answers it, as `oversee.md` § Held merges requires.
 
 Ask once, naming what the diff touches and which gate is unmet: `Admin-merge past the unmet gate` | `Continue through the gates`, with `Continue through the gates` recommended. Both the reason and the answer go in the PR body under `## Merge decision`. An admin answer invokes `⤵ workflows/merge-pr.md [PR_NUMBER] § 1-7` with `merge_mode: admin`. Anything else continues to § 6.3.
 

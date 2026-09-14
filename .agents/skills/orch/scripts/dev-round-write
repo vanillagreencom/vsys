@@ -20,7 +20,7 @@
 # Usage:
 #   dev-round-write --worktree PATH --issue ID --round-id RID \
 #     (--item N TEXT REACH [--item N TEXT REACH]... | --items-file JSON_PATH) \
-#     [--adds "PATH [PATH...]"] [--cut]
+#     [--adds "PATH [PATH...]"] [--cut | --cut-from-round PATH]
 #
 # One --item per delegated review item: N is the item's delegated number (the
 # `#[N]` in the formatted items — a set, so duplicates are rejected; canonical
@@ -48,14 +48,9 @@
 # Protected-addition scope: skills/orch/schemas/dev-round.md § Protected additions.
 # The writer records HEAD as the comparison base used at acceptance.
 #
-# --cut declares the round a branch cut. A cut is the one
-# round that must run while the branch is over its size tripwire — refusing to
-# record it is what left the cut with no record, and so no way to accept its
-# receipt. The declaration skips the OVER-LIMIT REFUSAL and nothing else: the
-# branch is still measured, an unreadable baseline still refuses, and the item
-# set is recorded and checked as on any other round. The over-limit check moves
-# to acceptance, where dev-artifact-check refuses the cut's receipt unless the
-# branch came back under the cap.
+# --cut declares a branch cut. Acceptance compares the resulting branch with
+# this round's recorded allowance, or its recorded counts when unsized.
+# --cut-from-round retries a cut with the earlier round's comparison.
 #
 # Record schema — canonical source of truth: skills/orch/schemas/dev-round.md
 #   {
@@ -65,15 +60,16 @@
 #     "base_sha": "[HEAD_AT_DELEGATION]",    // required, full commit id
 #     "adds": ["tools/allowed-file"],        // required, protected additions
 #     "cut": false,                          // required, true for a declared cut
+#     "size_check": {"verdict": "pass", "…": "…"}, // branch-size-check record
+#     "cut_comparison": null,              // comparison report for a cut
 #     "items": [{"n": 1, "text": "…", "reach": "…"}]
 #   }
 #
 # It is a sanctioned single-command invocation. Writes the record, then prints
-# its path. All usage/validation errors exit 2; an oversized branch exits 3.
+# its path. Usage/validation errors exit 2; a malformed allowance exits 3.
 
 set -euo pipefail
 
-PROG="dev-round-write"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=lib/branch-growth.sh
@@ -83,8 +79,132 @@ source "$SCRIPT_DIR/lib/branch-growth.sh"
 # whitespace, so a value can never escape the tmp/ directory. Shared verbatim
 # with dev-return-write and dev-artifact-check.
 ID_GRAMMAR='^[A-Za-z0-9._-]+$'
+# Callers preserve positional values for this diagnostic catalog.
+message() {
+  local _message_key="$1"
+  shift
+  case "$_message_key" in
+    missing-value)
+      printf 'dev-round-write: missing-value arg1=%s\n' "$1"
+      printf '%s\n' "$1 requires a value"
+      ;;
+    flag-value)
+      printf 'dev-round-write: flag-value arg1=%s arg2=%s\n' "$1" "$3"
+      printf '%s\n' "$1 requires a value, got flag '$3' (value missing?)"
+      ;;
+    duplicate)
+      printf 'dev-round-write: duplicate arg1=%s\n' "$1"
+      printf '%s\n' "$1 supplied more than once"
+      ;;
+    required)
+      printf 'dev-round-write: required arg1=%s\n' "$1"
+      printf '%s\n' "$1 is required (non-empty)"
+      ;;
+    invalid-id)
+      printf 'dev-round-write: invalid-id arg1=%s arg2=%s\n' "$1" "$2"
+      printf '%s\n' "$1 '$2' must match ${ID_GRAMMAR} with no '..' (path-safe: no '/' or whitespace)"
+      ;;
+    missing-reach)
+      printf 'dev-round-write: missing-reach n=%s\n' "$n"
+      printf '%s\n' "item $n has no reach: name the shipped producer, user action, or fixture that reaches the finding — an item with no reach is a 'Declined:' reply, not a fix"
+      ;;
+    reach-flag)
+      printf 'dev-round-write: reach-flag n=%s reach=%s\n' "$n" "$reach"
+      printf '%s\n' "item $n reach must name a producer, got flag '$reach' (value missing?)"
+      ;;
+    reach-refused)
+      printf 'dev-round-write: reach-refused n=%s reach=%s\n' "$n" "$reach"
+      printf '%s\n' "item $n reach '$reach' is on the refusal list: name a command a person runs, a file a shipped writer emits, or a test in the tree — an item with no reach is a 'Declined:' reply, not a fix"
+      ;;
+    item-arguments)
+      printf 'dev-round-write: item-arguments option=%s\n' "--item"
+      printf '%s\n' "--item requires exactly 3 arguments: N TEXT REACH — REACH names the shipped producer, user action, or fixture that reaches the finding, and an item with no reach is a 'Declined:' reply, not a fix"
+      ;;
+    item-number)
+      printf 'dev-round-write: item-number n=%s\n' "$n"
+      printf '%s\n' "--item N must be a non-negative integer with no leading zeros, got '$n'"
+      ;;
+    duplicate-item)
+      printf 'dev-round-write: duplicate-item n=%s\n' "$n"
+      printf '%s\n' "duplicate --item number $n: the delegated items form a set"
+      ;;
+    empty-text)
+      printf 'dev-round-write: empty-text n=%s\n' "$n"
+      printf '%s\n' "--item TEXT must contain non-whitespace text (item $n)"
+      ;;
+    text-flag)
+      printf 'dev-round-write: text-flag text=%s n=%s\n' "$text" "$n"
+      printf '%s\n' "--item TEXT must be the item's formatted block, got flag '$text' (item $n; value missing?)"
+      ;;
+    unknown-argument)
+      printf 'dev-round-write: unknown-argument arg1=%s\n' "$1"
+      printf '%s\n' "unknown argument: $1"
+      ;;
+    missing-worktree)
+      printf 'dev-round-write: missing-worktree option=%s\n' "--worktree"
+      printf '%s\n' "--worktree is required"
+      ;;
+    not-directory)
+      printf 'dev-round-write: not-directory worktree=%s\n' "$worktree"
+      printf '%s\n' "--worktree path '$worktree' is not a directory"
+      ;;
+    missing-head)
+      printf 'dev-round-write: missing-head worktree=%s\n' "$worktree"
+      printf '%s\n' "worktree '$worktree' has no resolvable HEAD commit to record as the round base"
+      ;;
+    item-source-conflict)
+      printf 'dev-round-write: item-source-conflict option=%s\n' "--item"
+      printf '%s\n' "--item and --items-file are mutually exclusive: provide one item source"
+      ;;
+    missing-items-path)
+      printf 'dev-round-write: missing-items-path option=%s\n' "--items-file"
+      printf '%s\n' "--items-file requires a non-empty path"
+      ;;
+    missing-items-file)
+      printf 'dev-round-write: missing-items-file items-file=%s\n' "$items_file"
+      printf '%s\n' "--items-file path '$items_file' does not exist"
+      ;;
+    invalid-json)
+      printf 'dev-round-write: invalid-json items-file=%s\n' "$items_file"
+      printf '%s\n' "--items-file '$items_file' is not parseable JSON"
+      ;;
+    invalid-items)
+      printf 'dev-round-write: invalid-items items-file=%s\n' "$items_file"
+      printf '%s\n' "--items-file '$items_file' must be a non-empty JSON array of {n, text, reach} — integer n >= 0, unique, non-empty text, non-empty reach naming the producer that reaches the finding"
+      ;;
+    missing-items)
+      printf 'dev-round-write: missing-items option=%s\n' "--item"
+      printf '%s\n' "at least one --item (or --items-file) is required: a fix round with no delegated items has nothing to persist"
+      ;;
+    adds-encode)
+      printf 'dev-round-write: adds-encode adds=%s\n' "$adds"
+      printf '%s\n' "--adds '$adds' could not be recorded as a path list"
+      ;;
+    invalid-adds)
+      printf 'dev-round-write: invalid-adds adds=%s\n' "$adds"
+      printf '%s\n' "--adds '$adds' must be unique repository-relative paths with no empty, '.', or '..' components"
+      ;;
+    record-symlink)
+      printf 'dev-round-write: record-symlink issue=%s round-id=%s\n' "$issue" "$round_id"
+      printf '%s\n' "round $issue/$round_id record path must not be a symlink"
+      ;;
+    record-conflict)
+      printf 'dev-round-write: record-conflict out=%s\n' "$out"
+      printf '%s\n' "round record $out already exists with different content — a changed delegation needs a NEW round id"
+      ;;
+    record-race)
+      printf 'dev-round-write: record-race out=%s\n' "$out"
+      printf '%s\n' "round record $out raced with different content — mint a NEW round id"
+      ;;
+    growth-unmeasured)
+      printf 'dev-round-write: growth-unmeasured worktree=%s issue=%s\n' "$worktree" "$issue"
+      printf '%s\n' "$BRANCH_GROWTH_ERROR"
+      ;;
+  esac
+}
+
 die() {
-  printf '%s: %s\n' "$PROG" "$1" >&2
+  message "$@" >&2
   exit 2
 }
 
@@ -93,7 +213,7 @@ usage() {
 Usage:
   dev-round-write --worktree PATH --issue ID --round-id RID \
     (--item N TEXT REACH [--item N TEXT REACH]... | --items-file JSON_PATH) \
-    [--adds "PATH [PATH...]"] [--cut]
+    [--adds "PATH [PATH...]"] [--cut | --cut-from-round PATH]
 
 Persists the round's delegated item set to PATH/tmp/dev-round-ID-RID.json
 (atomically) and prints that path. One --item per delegated review
@@ -124,17 +244,14 @@ as one. Absolute, traversing, empty-component, and duplicate paths are
 rejected.
 The record captures the worktree's current HEAD as base_sha; a worktree with
 no resolvable HEAD is rejected.
-Before the record is written, the branch's additions plus deletions must be
-at most twice workflow state pr.baseline_lines. Full implementation acceptance
-sets it; a null or invalid value refuses before the record is written.
-An oversized branch exits 3 and must be cut before another fix round.
---cut declares the round that cut: it skips the over-limit refusal and nothing
-else, so the cut gets a record like any other round. The branch is still
-measured, and an unreadable or non-positive pr.baseline_lines still exits 2 —
-that is an environment failure, not a verdict about the branch's size. The
-over-limit check moves to acceptance: dev-artifact-check refuses a cut round's
-receipt unless the branch came back to the cap, so a round declared a cut that
-grows the branch cannot be accepted.
+Before writing the round, branch-size-check measures additions and records
+its report in size_check. Over-allowance and unsized branches continue.
+A malformed Expected delta exits 3; a read or measurement failure exits 2.
+--cut declares a cut. dev-artifact-check checks the result against the round's
+recorded allowance, or its recorded production and test counts when unsized.
+--cut-from-round PATH declares a cut retry using the earlier round's comparison.
+size_check always records the current report; cut_comparison preserves the cut
+target across retries.
 --issue / --round-id must match
 ^[A-Za-z0-9._-]+$ with no '..'. Canonical schema:
 skills/orch/schemas/dev-round.md.
@@ -145,30 +262,30 @@ EOF
 # legitimate prose that merely begins with '--'.
 is_own_flag() {
   case "$1" in
-    --worktree|--issue|--round-id|--item|--items-file|--adds|--cut|-h|--help) return 0 ;;
+    --worktree|--issue|--round-id|--item|--items-file|--adds|--cut|--cut-from-round|-h|--help) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 need() {
   # $1 = flag name, $2 = current argc ($#), $3 = the would-be value.
-  (( $2 >= 2 )) || die "$1 requires a value"
+  (( $2 >= 2 )) || die missing-value "$@"
   if is_own_flag "$3"; then
-    die "$1 requires a value, got flag '$3' (value missing?)"
+    die flag-value "$@"
   fi
 }
 
 no_dup() {
   # $1 = flag name, $2 = its presence boolean. A single-valued flag supplied
   # twice would silently last-win.
-  [[ "$2" == "false" ]] || die "$1 supplied more than once"
+  [[ "$2" == "false" ]] || die duplicate "$@"
 }
 
 check_id_token() {
   # $1 = flag name, $2 = value.
-  [[ -n "$2" ]] || die "$1 is required (non-empty)"
+  [[ -n "$2" ]] || die required "$@"
   [[ "$2" =~ $ID_GRAMMAR && "$2" != *..* ]] \
-    || die "$1 '$2' must match ${ID_GRAMMAR} with no '..' (path-safe: no '/' or whitespace)"
+    || die invalid-id "$@"
 }
 
 # --- The reach bar ---
@@ -187,42 +304,14 @@ check_reach() {
   # $1 = the item's number (for the diagnostic), $2 = the reach value.
   local n="$1" reach="$2" lower pattern
   [[ -n "${reach//[[:space:]]/}" ]] \
-    || die "item $n has no reach: name the shipped producer, user action, or fixture that reaches the finding — an item with no reach is a 'Declined:' reply, not a fix"
-  if is_own_flag "$reach"; then die "item $n reach must name a producer, got flag '$reach' (value missing?)"; fi
+    || die missing-reach "$@"
+  if is_own_flag "$reach"; then die reach-flag "$@"; fi
   lower="$(printf '%s' "$reach" | tr '[:upper:]' '[:lower:]')"
   for pattern in "${REACH_REFUSALS[@]}"; do
     if [[ "$lower" == $pattern ]]; then
-      die "item $n reach '$reach' is on the refusal list: name a command a person runs, a file a shipped writer emits, or a test in the tree — an item with no reach is a 'Declined:' reply, not a fix"
+      die reach-refused "$@"
     fi
   done
-}
-
-run_size_tripwire() {
-  # $3 is the declared-cut flag, so the call site reads as the gate it is.
-  local worktree="$1" issue="$2" declared_cut="$3"
-
-  # Every round is measured, cut or not. An unreadable or non-positive
-  # pr.baseline_lines is an environment failure that has nothing to do with the
-  # branch's size, and a cut that skipped it would surface the failure only
-  # after a whole round had been minted, delegated and worked against a record
-  # that is immutable by then.
-  if ! measure_size_tripwire "$worktree" "$issue" "$SCRIPT_DIR"; then
-    printf '%s: %s\n' "$PROG" "$BRANCH_GROWTH_ERROR" >&2
-    exit 2
-  fi
-
-  # The over-limit refusal is the whole of what a declared cut skips. A cut is
-  # the one round that must run while the branch is over the tripwire —
-  # refusing it here is what left a cut with no record and no way to accept its
-  # receipt. The check is not dropped, it moves: dev-artifact-check
-  # refuses this round's receipt unless the branch came back under the cap.
-  [[ "$declared_cut" != "true" ]] || return 0
-
-  if (( BRANCH_GROWTH_CURRENT > BRANCH_GROWTH_LIMIT )); then
-    printf '%s: fix round refused: branch diffstat is %s lines; baseline is %s lines; fix rounds stop past 2x that baseline, so cut the branch to %s lines or fewer\n' \
-      "$PROG" "$BRANCH_GROWTH_CURRENT" "$BRANCH_GROWTH_BASELINE" "$BRANCH_GROWTH_LIMIT" >&2
-    exit 3
-  fi
 }
 
 worktree=""
@@ -231,6 +320,8 @@ round_id=""
 items_file=""
 adds=""
 cut=false
+cut_from_round=""
+cut_from_round_given=false
 item_n=()
 item_text=()
 item_reach=()
@@ -249,26 +340,27 @@ while (( $# > 0 )); do
     --items-file) need "$1" $# "${2:-}"; no_dup "$1" "$items_file_given"; items_file_given=true; items_file="$2"; shift 2 ;;
     --adds) need "$1" $# "${2:-}"; no_dup "$1" "$adds_given"; adds_given=true; adds="$2"; shift 2 ;;
     --cut) cut=true; shift ;;
+    --cut-from-round) need "$1" $# "${2:-}"; no_dup "$1" "$cut_from_round_given"; cut_from_round_given=true; cut=true; cut_from_round="$2"; shift 2 ;;
     --item)
       # Consumes exactly 3 args: N TEXT REACH.
       if (( $# < 4 )); then
-        die "--item requires exactly 3 arguments: N TEXT REACH — REACH names the shipped producer, user action, or fixture that reaches the finding, and an item with no reach is a 'Declined:' reply, not a fix"
+        die item-arguments "$@"
       fi
       n="$2"; text="$3"; reach="$4"
       # Canonical integer only: '01' would survive a bare digits check but is
       # not a JSON number and would make jq --argjson fail downstream.
       if ! [[ "$n" =~ ^(0|[1-9][0-9]*)$ ]]; then
-        die "--item N must be a non-negative integer with no leading zeros, got '$n'"
+        die item-number "$@"
       fi
       case "$seen_n" in
-        *" $n "*) die "duplicate --item number $n: the delegated items form a set" ;;
+        *" $n "*) die duplicate-item "$@" ;;
       esac
       # An empty or whitespace-only text records nothing recoverable; a text
       # that is one of this script's own flags is a forgotten value.
       [[ -n "${text//[[:space:]]/}" ]] \
-        || die "--item TEXT must contain non-whitespace text (item $n)"
+        || die empty-text "$@"
       if is_own_flag "$text"; then
-        die "--item TEXT must be the item's formatted block, got flag '$text' (item $n; value missing?)"
+        die text-flag "$@"
       fi
       check_reach "$n" "$reach"
       seen_n="$seen_n$n "
@@ -278,28 +370,46 @@ while (( $# > 0 )); do
       shift 4
       ;;
     -h|--help) usage; exit 0 ;;
-    *) die "unknown argument: $1" ;;
+    *) die unknown-argument "$@" ;;
   esac
 done
 
-[[ -n "$worktree" ]] || die "--worktree is required"
-[[ -d "$worktree" ]] || die "--worktree path '$worktree' is not a directory"
+[[ -n "$worktree" ]] || die missing-worktree "$@"
+[[ -d "$worktree" ]] || die not-directory "$@"
 check_id_token --issue "$issue"
 check_id_token --round-id "$round_id"
 base_sha="$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" \
-  || die "worktree '$worktree' has no resolvable HEAD commit to record as the round base"
+  || die missing-head "$@"
 
-run_size_tripwire "$worktree" "$issue" "$cut"
+measured=0
+branch_allowance_check "$worktree" "$issue" "$SCRIPT_DIR" || measured=$?
+if (( measured != 0 )); then
+  message growth-unmeasured >&2
+  exit "$measured"
+fi
+size_check="$BRANCH_ALLOWANCE_RECORD"
+cut_comparison=null
+if [[ "$cut" == true ]]; then
+  if [[ "$cut_from_round_given" == true ]]; then
+    [[ -n "$cut_from_round" ]] || die required --cut-from-round
+    branch_allowance_check "$worktree" "$issue" "$SCRIPT_DIR" "$cut_from_round" || {
+      measured=$?
+      message growth-unmeasured >&2
+      exit "$measured"
+    }
+  fi
+  cut_comparison="$BRANCH_ALLOWANCE_RECORD"
+fi
 
 # --- Exactly one item source: inline --item xor --items-file ---
 if [[ "$items_file_given" == "true" ]] && (( ${#item_n[@]} > 0 )); then
-  die "--item and --items-file are mutually exclusive: provide one item source"
+  die item-source-conflict "$@"
 fi
 if [[ "$items_file_given" == "true" ]]; then
-  [[ -n "$items_file" ]] || die "--items-file requires a non-empty path"
-  [[ -f "$items_file" ]] || die "--items-file path '$items_file' does not exist"
+  [[ -n "$items_file" ]] || die missing-items-path "$@"
+  [[ -f "$items_file" ]] || die missing-items-file "$@"
   jq empty "$items_file" >/dev/null 2>&1 \
-    || die "--items-file '$items_file' is not parseable JSON"
+    || die invalid-json "$@"
   # Same rules as inline --item, enforced on the file: a non-empty array whose
   # every element carries an integer n >= 0 (unique — the numbers form a set),
   # a non-empty, non-whitespace text string, and a non-empty reach string.
@@ -314,7 +424,7 @@ if [[ "$items_file_given" == "true" ]]; then
           and ((.reach | gsub("[[:space:]]"; "")) != ""))
     and (([.[].n] | length) == ([.[].n] | unique | length))
   ' "$items_file" >/dev/null 2>&1 \
-    || die "--items-file '$items_file' must be a non-empty JSON array of {n, text, reach} — integer n >= 0, unique, non-empty text, non-empty reach naming the producer that reaches the finding"
+    || die invalid-items "$@"
   # The same refusal list the inline route enforces: a file route that skipped
   # it would be the way around the check.
   for (( i = 0, items_count="$(jq 'length' "$items_file")"; i < items_count; i++ )); do
@@ -324,7 +434,7 @@ if [[ "$items_file_given" == "true" ]]; then
   items_json="$(jq 'map({n: .n, text: .text, reach: .reach})' "$items_file")"
 else
   (( ${#item_n[@]} > 0 )) \
-    || die "at least one --item (or --items-file) is required: a fix round with no delegated items has nothing to persist"
+    || die missing-items "$@"
   # --- Build the items array deterministically with jq ---
   items_json="$(
     for i in "${!item_n[@]}"; do
@@ -350,7 +460,7 @@ adds_json='[]'
 if [[ "$adds_given" == "true" ]]; then
   read -r -a adds_paths <<< "$adds"
   adds_json="$(printf '%s\0' ${adds_paths[@]+"${adds_paths[@]}"} | jq -Rsc 'split("\u0000")[:-1]')" \
-    || die "--adds '$adds' could not be recorded as a path list"
+    || die adds-encode "$@"
   jq -e '
     (length > 0)
     and all(.[];
@@ -358,7 +468,7 @@ if [[ "$adds_given" == "true" ]]; then
           and (split("/") | all(. != "" and . != "." and . != "..")))
     and (length == (unique | length))
   ' <<<"$adds_json" >/dev/null 2>&1 \
-    || die "--adds '$adds' must be unique repository-relative paths with no empty, '.', or '..' components"
+    || die invalid-adds "$@"
 fi
 
 # --- Compute the absolute, round-scoped out path ---
@@ -369,7 +479,7 @@ out="$out_dir/dev-round-$issue-$round_id.json"
 out_exists=false
 [[ -e "$out" || -L "$out" ]] && out_exists=true
 [[ ! -L "$out" ]] \
-  || die "round $issue/$round_id record path must not be a symlink"
+  || die record-symlink "$@"
 
 # --- Write atomically: build a same-directory temporary file, then link it. ---
 tmp="$(mktemp "$out_dir/.dev-round-$issue.XXXXXX")"
@@ -382,6 +492,8 @@ jq -n \
   --arg base_sha "$base_sha" \
   --argjson adds "$adds_json" \
   --argjson cut "$cut" \
+  --argjson size_check "$size_check" \
+  --argjson cut_comparison "$cut_comparison" \
   --argjson items "$items_json" \
   '{
      schema_version: $schema_version,
@@ -390,6 +502,8 @@ jq -n \
      base_sha: $base_sha,
      adds: $adds,
      cut: $cut,
+     size_check: $size_check,
+     cut_comparison: $cut_comparison,
      items: $items
    }' > "$tmp"
 
@@ -408,10 +522,10 @@ jq -n \
 # identical retry is idempotent and a divergent one refuses.
 if [[ "$out_exists" == "true" ]]; then
   cmp -s "$tmp" "$out" \
-    || die "round record $out already exists with different content — a changed delegation needs a NEW round id"
+    || die record-conflict "$@"
 elif ! ln "$tmp" "$out" 2>/dev/null; then
   cmp -s "$tmp" "$out" \
-    || die "round record $out raced with different content — mint a NEW round id"
+    || die record-race "$@"
 fi
 
 rm -f "$tmp"

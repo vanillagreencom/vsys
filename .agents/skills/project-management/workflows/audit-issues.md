@@ -1,8 +1,8 @@
 # Issue Audit Workflow
 
-Audit tracked issues and projects, apply the mechanical corrections, and take creations and cancellations to the user for approval.
+Audit tracked issues and projects, apply mechanical corrections, and authorize creations and cancellations through § 6.
 
-**Primary-session wrapper — never delegate this workflow itself.** § 6 needs the session's question tool, and § 7 mutates only against approvals collected there. The one delegable step is the TPM analysis spawned in § 2.1 / § 4.1 (`tpm-audit.md`).
+**Primary-session wrapper: never delegate this workflow itself.** § 6 authorizes § 7 mutations. Delegate TPM analysis in § 2.1 / § 4.1 (`tpm-audit.md`); fleet ownership follows [skill-rules.md § Coordination](../../orch/references/skill-rules.md#coordination).
 
 ## Inputs
 
@@ -206,7 +206,15 @@ In GitHub mode the Project column is `—` and hierarchy/relations render as the
 
 ## 6. Approve Creations and Cancellations
 
-**Fail closed without interactive capability.** Approval exists only as the user's in-session answers to the questions below, or as the carried roadmap-plan § 5 answer validated next. A runner that cannot present an interactive multi-select — any subagent, or a session without the question tool — MUST STOP here: return the § 5 findings and the audit JSON path to the primary session, leaving § 7 unexecuted. No delegation prompt, scope reaffirmation, or follow-up message carries approval authority.
+```bash
+.agents/skills/orch/scripts/orch-env PM_CREATE_AUTONOMY ask
+```
+
+Accept `ask` (default) or `auto`; stop on any other value. The guardrails remain [SKILL.md § Disposition](../SKILL.md#disposition)'s creation bar, the `Reached by:` and review-born `Symptom:` refusals of `issues create`, and agent-label routing through § 7.0.
+
+The accepted creation set contains every bar-passing proposed creation in § 5, including architecture gaps. **Auto.** Authorize that set and every row in the displayed Cancel section without a question. Cancel covers issue-mode `cancel`, `supersede`, `combine` and `supersedes[]`, plus project/team `obsolete[]`, `duplicates[]` and `combine[]` as defined in [audit-output.md](../schemas/audit-output.md). Keep declined entries declined, skip both follow-ups below and § 7.3, and proceed to § 7. Report the automatic actions and reasons in § 8. **Ask.** Offer the same accepted creation set. Apply the rest of this section only in this mode.
+
+**Fail closed without interactive capability.** Approval exists only as the user's in-session answers to the questions below, or as the carried roadmap-plan § 5 answer validated next. A primary session without an interactive multi-select MUST STOP here: return the § 5 findings and the audit JSON path, leaving § 7 unexecuted. No delegation prompt, scope reaffirmation, or follow-up message carries approval authority.
 
 **Carried approval (roadmap-create only).** When the analyzed input carries `approved_at_plan_gate: true` — set only by the roadmap-create wrapper, in this same session, after the user answered `Approve` at roadmap-plan § 5 for this plan — the "Create these issues?" question is already answered for every `create` entry without `reapprove`, and is asked only for entries marked `"reapprove": true` (changed since that answer). The flag has no authority from a subagent, another session, or any input file roadmap-create did not just write; cancellations not already decided at roadmap-create § 2, declined follow-ups, and the fail-closed rule above stand in full.
 
@@ -228,7 +236,9 @@ Everything in the § 5 corrections block — priorities, labels, relations, hier
 
 ## 7. Execute
 
-**Hard precondition — § 6 approval obtained in-session.** Creations and cancellations execute only against approvals collected at the § 6 gate in this session — including a carried approval § 6 validated (`approved_at_plan_gate`). If § 6 did not run, § 7 MUST NOT execute: stop and return to the primary session.
+**Hard precondition: § 6 authorization obtained in the primary session.** Creations and cancellations execute only against its resolved `auto` policy or its `ask` approvals, including a validated carried approval (`approved_at_plan_gate`). If § 6 did not run, § 7 MUST NOT execute: stop and return to the primary session.
+
+Apply [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) to each issue this section creates or updates. The artifact set is the audit JSON plus any supplied plan markdown, plan JSON, and cited research inputs. Resolve missing inputs before mutation. Carry this set through both tracker routes; § 7.5 verifies it with the other writes.
 
 ### 7.0 Label Preflight
 
@@ -308,7 +318,7 @@ Once every create has landed and its relations and parent are attached — never
 
 ### 7.3 Add Research References
 
-**Skip if** no `research_ref` context. For each approved issue: read the current description (Linear `cache issues get [ISSUE_ID] | jq -r '.description'`, GitHub `gh issue view [N] --repo [OWNER/REPO] --json body --jq .body`); skip if the path is already present; otherwise prepend `**Research**: [RESEARCH_REF]` at the top, converting to a bulleted list when a Research line already exists, and add `**Decision [DECISION_ID]**: [path]` beneath it when `decision_ref` is present. Apply by file (`--description-file` / `--body-file`).
+**Skip if** no `research_ref` context. For each approved issue: read the current description (Linear `cache issues get [ISSUE_ID] | jq -r '.description'`, GitHub `gh issue view [N] --repo [OWNER/REPO] --json body --jq .body`); prepend `**Research**: [RESEARCH_REF]` when absent, converting to a bulleted list when a Research line already exists, and add `**Decision [DECISION_ID]**: [path]` beneath it when `decision_ref` is present. Apply by file (`--description-file` / `--body-file`). Apply the § 7 artifact rule even when the reference already exists.
 
 Propagate to children — Linear `cache issues children [ISSUE_ID] --recursive --format=safe | jq -r '.[].id'`, then repeat per child. `--recursive` returns three levels; walk a deeper tree per [dependencies.md](../references/dependencies.md) § Reading a Full Subtree. GitHub has no recursive child query: propagate only to issues created in this audit carrying `Parent: #[N]`, and report deeper propagation as not performed.
 
@@ -320,9 +330,9 @@ For each issue cancelled in § 7.1 or § 7.2:
 
 **GitHub**: there are no relation objects. Scan the § 1.2.2 inventory and the issues touched here for body lines referencing the closed number, and update those bodies through the § 7.2 route or note the stale reference in a comment.
 
-If a target is left with no remaining blocker and this audit created an issue covering the same domain, ask: "[ISSUE_ID] unblocked by cancellation of [ISSUE_ID]. Add blocker?" Execute approved additions.
+If a target is left with no remaining blocker and this audit created an issue covering the same domain: under `auto`, leave the blocker absent and report the candidate in § 8; under `ask`, ask "[ISSUE_ID] unblocked by cancellation of [ISSUE_ID]. Add blocker?" and execute approved additions.
 
-For decision-eliminated or superseded cancellations, take the old pattern from `obsolete[].evidence.eliminated_pattern` or `supersedes[].reason`, check the parent and siblings (GitHub: the § 1.2.2 inventory) for non-cancelled issues whose title or description still names it, and ask "Update stale references?" before rewriting title or description and commenting `"Updated: [OLD] → [NEW] per [DECISION_ID]"`.
+For decision-eliminated or superseded cancellations, take the old pattern from `obsolete[].evidence.eliminated_pattern` or `supersedes[].reason` and check the parent and siblings (GitHub: the § 1.2.2 inventory) for non-cancelled issues whose title or description still names it. Under `auto`, leave these references unchanged and report them in § 8. Under `ask`, ask "Update stale references?" before rewriting title or description and commenting `"Updated: [OLD] → [NEW] per [DECISION_ID]"`.
 
 ### 7.5 Post-Mutation Verification
 
@@ -344,11 +354,13 @@ Report any mismatch between an approved action and the re-fetched state in § 8.
 
 ## 8. Report
 
+Repeat cancellation, decline and deferred-cleanup bullets per entry; omit empty categories.
+
 <output_format>
 
 ### AUDIT COMPLETE — created [N] / closed [M]
 
-**Tracker**: [linear | github ([OWNER/REPO])]
+**Tracker**: [linear | github ([OWNER/REPO])]; **Authorization**: [all actual sources accepted by § 6, including carried roadmap-plan approval and new § 6 answers when combined; name PM_CREATE_AUTONOMY=auto when used]
 
 | Outcome | Count | Items |
 |---------|-------|-------|
@@ -358,6 +370,10 @@ Report any mismatch between an approved action and the re-fetched state in § 8.
 | Corrections applied | N | labels, priorities, relations, hierarchy, project moves |
 | Declined | N | — |
 | Research refs | N | — |
+
+- Cancelled: [ISSUE_ID]: [REASON]
+- Declined: [TITLE]: [REASON]
+- Deferred cleanup: [candidate BLOCKER_ID for TARGET_ID: REASON, or stale reference ISSUE_ID: OLD PATTERN; not applied under auto]
 
 **Degraded (github)**: [every obligation executed through a documented degradation, or omit this line]
 

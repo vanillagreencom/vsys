@@ -2,7 +2,7 @@
 description: Silent failure and error handling reviewer. Detects fail-open paths, swallowed errors, wrong-cause diagnostics, and inadequate error propagation.
 tags: review, debugging
 mode: subagent
-model: openai/gpt-6-astra
+model: openai/gpt-5.6-sol
 color: "#f97316"
 options:
   reasoningEffort: high

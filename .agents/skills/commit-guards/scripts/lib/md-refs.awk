@@ -1,16 +1,23 @@
-# md-refs.awk — what a markdown file cites, what it defines, and whether the
-# citations land. Runs over the line stream md-blocks.awk emits in `lines`
-# mode, so fenced code, indented code and front matter never reach it. POSIX
-# awk, no gawk extensions.
+# md-refs parses the verdict protocol: V<TAB>source<TAB>line<TAB>rule<TAB>value,
+# plus N<TAB>judged-count. Rule names are enums; values name the input and target.
+# md-refs.awk — what a document cites, what it defines, and whether the
+# citations land. Markdown modes read the line stream md-blocks.awk emits,
+# so fenced code, indented code and front matter never reach them. HTML
+# modes read document bytes directly. POSIX awk, no gawk extensions.
 #
 #   -v mode=index -v src=PATH
 #       H<TAB>src<TAB>slug<TAB>line<TAB>heading text, lower-cased and trimmed
 #       I<TAB>src<TAB>id<TAB>line          an explicit <a id="..."> or <a name="...">
 #       F<TAB>src                          the file was indexed (it may hold no heading)
+#   -v mode=html-index -v src=PATH
+#       I records from quoted id and name attributes; F for the indexed file
+#   -v mode=html-refs -v src=PATH
+#       L records from quoted relative href attributes
 #   -v mode=refs -v src=PATH [-v id_prefix=D -v id_width=3]
 #       L<TAB>src<TAB>line<TAB>destination<TAB>raw   a link or reference definition
 #       C<TAB>src<TAB>line<TAB>path<TAB>kind<TAB>value<TAB>raw   a code-span citation;
-#                                        kind is path, section or anchor
+#                                        kind is section, anchor, prefix-section
+#                                        or content
 #       D<TAB>src<TAB>line<TAB>id<TAB>section   a decision ID, with the heading
 #                                        the citation names after § or empty
 #   -v mode=refs -v grammar=text -v src=PATH [-v id_prefix=D -v id_width=3]
@@ -20,12 +27,16 @@
 #       `<path>.md § Heading` citation and a decision ID carrying one:
 #       outside markdown a link, a bare path and a bare ID are prose, and a
 #       heading with prose after it is the § rule's.
-#   -v mode=resolve -v phase=targets|verdict -v tracked=FILE
-#         [-v headings=FILE -v dec_dir=DIR -v dec_judge=0|1 -v id_prefix=D]
-#       reads the refs records; `targets` prints each tracked markdown path a
-#       heading citation needs indexed, `verdict` prints
-#       V<TAB>src<TAB>line<TAB>message per dead reference and a final
-#       N<TAB>count of references judged
+#   -v mode=resolve -v phase=targets|contents|verdict -v tracked=FILE
+#         [-v headings=FILE -v contents=FILE -v dec_dir=DIR -v dec_judge=0|1
+#          -v id_prefix=D]
+#       reads the refs records; `targets` prints each tracked document path a
+#       heading citation needs indexed, `contents` prints
+#       target<TAB>phrase for each content citation whose path resolves, and
+#       `verdict` prints V<TAB>src<TAB>line<TAB>rule<TAB>value per dead
+#       reference and a final N<TAB>count of references judged. The caller
+#       answers the `contents` pairs with P<TAB>target<TAB>phrase records for
+#       the phrases it found, which `verdict` reads back from `contents`.
 #
 # Loaded beside md-slug.awk, which holds the text reductions this file calls
 # (split_spans, slugify) and reads PRINTABLE, CONTROLS and ESCAPABLE from the
@@ -114,6 +125,72 @@ function is_local(dest) {
   return 1
 }
 
+# Documentation HTML is a file opened from disk. Read quoted href and id
+# attributes from tags, including tags split across lines. A name defines an
+# anchor only on an a element. CSS and prose are outside tags; comments cannot
+# supply links or anchors.
+function html_attrs(tag, start_line,   rest, lead, key, quote, value, end, anchor_tag) {
+  rest = tag
+  anchor_tag = (tolower(tag) ~ /^<a[ \t\r\n\/>]/)
+  while (match(rest, /(^|[ \t\r\n])[A-Za-z_:][A-Za-z0-9_:.-]*[ \t\r\n]*=[ \t\r\n]*["']/)) {
+    lead = substr(rest, RSTART, RLENGTH)
+    key = lead
+    sub(/^[ \t\r\n]*/, "", key)
+    sub(/[ \t\r\n]*=.*/, "", key)
+    key = tolower(key)
+    quote = substr(lead, length(lead), 1)
+    rest = substr(rest, RSTART + RLENGTH)
+    end = index(rest, quote)
+    if (end == 0) break
+    value = substr(rest, 1, end - 1)
+    # Tabs and newlines delimit the L/I record stream.
+    if (value ~ /[\t\n]/ && ((mode == "html-refs" && key == "href") ||
+        (mode == "html-index" && (key == "id" || (key == "name" && anchor_tag))))) {
+      printf "md-refs: html-separator=%s:%d:%s\n", src, start_line, key > "/dev/stderr"
+      exit 2
+    }
+    if (mode == "html-refs" && key == "href" && is_local(value))
+      printf "L\t%s\t%d\t%s\t%s\n", src, start_line, value, "href=" quote value quote
+    if (mode == "html-index" && (key == "id" || (key == "name" && anchor_tag)))
+      printf "I\t%s\t%s\t%d\n", src, value, start_line
+    rest = substr(rest, end + 1)
+  }
+}
+
+function html_tags(s,   open, i, c, tag) {
+  while (s != "") {
+    if (HTML_TAG == "") {
+      open = index(s, "<")
+      if (open == 0) return
+      s = substr(s, open)
+      HTML_LINE = NR
+      HTML_QUOTE = ""
+      HTML_COMMENT = 0
+    }
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1)
+      HTML_TAG = HTML_TAG c
+      if (substr(HTML_TAG, 1, 4) == "<!--") HTML_COMMENT = 1
+      if (HTML_COMMENT) {
+        if (substr(HTML_TAG, length(HTML_TAG) - 2, 3) != "-->") continue
+      } else {
+        if (HTML_QUOTE != "") {
+          if (c == HTML_QUOTE) HTML_QUOTE = ""
+          continue
+        }
+        if (c == "\"" || c == "'") { HTML_QUOTE = c; continue }
+        if (c != ">") continue
+      }
+      tag = HTML_TAG
+      HTML_TAG = ""
+      if (!HTML_COMMENT && substr(tag, 1, 2) != "<!") html_attrs(tag, HTML_LINE)
+      break
+    }
+    if (i > length(s)) { HTML_TAG = HTML_TAG "\n"; return }
+    s = substr(s, i + 1)
+  }
+}
+
 function emit_links(s, original,   i, j, k, dest, raw, tail, path) {
   i = 1
   while (1) {
@@ -143,8 +220,8 @@ function emit_links(s, original,   i, j, k, dest, raw, tail, path) {
 }
 
 # A path alone in a code span is a file being named, not cited: a default
-# value, a file a skill writes, a convention. Only the § and # forms point a
-# reader at a place in a file, so only they are judged.
+# value, a file a skill writes, a convention. Only the §, :: and # forms point
+# a reader at a place in a file, so only they are judged.
 function emit_citation(span,   path, rest, i) {
   i = index(span, SECTION_SEP)
   if (i > 0) {
@@ -152,6 +229,15 @@ function emit_citation(span,   path, rest, i) {
     rest = rtrim(substr(span, i + length(SECTION_SEP)))
     if (path ~ /^[A-Za-z0-9._\/-]*\.md$/ && rest != "") printf "C\t%s\t%d\t%s\tsection\t%s\t%s\n", src, line_no, path, rest, span
     return
+  }
+  i = index(span, "::")
+  if (i > 1) {
+    path = substr(span, 1, i - 1)
+    rest = substr(span, i + 2)
+    if (path ~ /^[A-Za-z0-9._\/-]+$/ && index(path, "/") > 0 && rest != "") {
+      printf "C\t%s\t%d\t%s\tcontent\t%s\t%s\n", src, line_no, path, rest, span
+      return
+    }
   }
   i = index(span, "#")
   if (i > 0) {
@@ -281,6 +367,21 @@ function load_tracked(   line, d, rec, id) {
   close(tracked)
 }
 
+# The phrases the caller found, keyed target+phrase. A pair absent here is a
+# phrase its cited file does not hold.
+function load_contents(   line, i, rest, t) {
+  if (contents == "") return
+  while ((getline line < contents) > 0) {
+    if (substr(line, 1, 2) != "P\t") continue
+    rest = substr(line, 3)
+    i = index(rest, "\t")
+    if (i == 0) continue
+    t = substr(rest, 1, i - 1)
+    found[t SUBSEP substr(rest, i + 1)] = 1
+  }
+  close(contents)
+}
+
 function load_headings(   line, f) {
   if (headings == "") return
   while ((getline line < headings) > 0) {
@@ -314,9 +415,14 @@ function has_section_prefix(target, value,   key, prefix, name, tail, number) {
   return 0
 }
 
-function fail(msg) { if (phase == "verdict") printf "V\t%s\t%d\t%s\n", src_path, line_no, msg }
+function fail(rule, value) { if (phase == "verdict") printf "V\t%s\t%d\t%s\t%s\n", src_path, line_no, rule, value }
 
 function want_target(t) { if (phase == "targets" && !(t in wanted)) { wanted[t] = 1; print t } }
+
+function want_content(t, phrase,   key) {
+  key = t SUBSEP phrase
+  if (phase == "contents" && !(key in asked)) { asked[key] = 1; printf "%s\t%s\n", t, phrase }
+}
 
 BEGIN {
   SECTION_SEP = " § "
@@ -328,20 +434,22 @@ BEGIN {
   for (i = 1; i <= 31; i++) CONTROLS = CONTROLS sprintf("%c", i)
   CONTROLS = CONTROLS sprintf("%c", 127)
   if (mode == "resolve") {
-    if (phase != "targets" && phase != "verdict") {
-      printf "md-refs.awk: phase must be targets or verdict (got '%s')\n", phase > "/dev/stderr"
+    if (phase != "targets" && phase != "contents" && phase != "verdict") {
+      printf "md-refs: phase=%s\n  Expected targets, contents or verdict.\n", phase > "/dev/stderr"
       exit 2
     }
     load_tracked()
-    if (phase == "verdict") load_headings()
+    if (phase == "verdict") { load_headings(); load_contents() }
     judged = 0
-  } else if (mode == "index") {
+  } else if (mode == "index" || mode == "html-index") {
     printf "F\t%s\n", src
-  } else if (mode != "refs") {
-    printf "md-refs.awk: mode must be index, refs or resolve (got '%s')\n", mode > "/dev/stderr"
+  } else if (mode != "refs" && mode != "html-refs") {
+    printf "md-refs: mode=%s\n  Expected index, refs, html-index, html-refs or resolve.\n", mode > "/dev/stderr"
     exit 2
   }
 }
+
+mode == "html-refs" || mode == "html-index" { html_tags($0); next }
 
 mode == "index" {
   split($0, f, "\t")
@@ -397,12 +505,12 @@ mode == "resolve" {
     if (path == "") target = src_path
     else target = resolve_from(dir_of(src_path), path)
     judged++
-    if (ESCAPED) { fail(raw ": the link climbs above the repository root"); next }
-    if (!(target in tracked_set) && !(target in dirs)) { fail(raw ": no tracked file or directory at " target); next }
+    if (ESCAPED) { fail("link-escape", raw); next }
+    if (!(target in tracked_set) && !(target in dirs)) { fail("link-target", raw ":" target); next }
     if (anchor == "") next
-    if (target !~ /\.md$/) { fail(raw ": an anchor into a file that is not markdown"); next }
+    if (target !~ /\.(md|html)$/) { fail("anchor-type", raw ":" target); next }
     want_target(target)
-    if (!((target "#" anchor) in slugs)) fail(raw ": " target " has no heading or explicit anchor #" anchor)
+    if (!((target "#" anchor) in slugs)) fail("anchor-missing", raw ":" target ":" anchor)
     next
   }
   if (kind == "C") {
@@ -415,34 +523,44 @@ mode == "resolve" {
     if (ESCAPED || !(target in tracked_set)) {
       target = normalize(path)
       if (ESCAPED || !(target in tracked_set)) {
-        fail("`" raw "`: no tracked file at " path " beside " src_path " or at the repository root")
+        fail("citation-target", raw ":" path ":" src_path)
         next
       }
     }
+    if (ckind == "content") {
+      want_content(target, value)
+      if (!((target SUBSEP value) in found)) fail("phrase-missing", raw ":" target ":" value)
+      next
+    }
     want_target(target)
     if (ckind == "section") {
-      if (!((target "#" tolower(value)) in texts)) fail("`" raw "`: " target " has no heading '" value "'")
+      if (!((target "#" tolower(value)) in texts)) fail("heading-missing", raw ":" target ":" value)
     } else if (ckind == "prefix-section") {
-      if (!has_section_prefix(target, value)) fail(raw ": " target " has no heading at the start of '" value "'")
-    } else if (!((target "#" value) in slugs)) fail("`" raw "`: " target " has no heading or explicit anchor #" value)
+      if (!has_section_prefix(target, value)) fail("heading-prefix", raw ":" target ":" value)
+    } else if (!((target "#" value) in slugs)) fail("anchor-missing", "`" raw "`:" target ":" value)
     next
   }
   if (kind == "D") {
     if (!dec_judge) next
     judged++
-    if (!(f[4] in decisions)) { fail(f[4] ": no tracked decision file " dec_dir "/" f[4] "-*.md"); next }
+    if (!(f[4] in decisions)) { fail("decision-missing", f[4] ":" dec_dir "/" f[4] "-*.md"); next }
     if (f[5] == "") next
     if (!(f[4] in decfile)) {
-      fail(f[4] SECTION_SEP f[5] ": no tracked markdown file " dec_dir "/" f[4] "-*.md to read a heading from")
+      fail("decision-markdown", f[4] SECTION_SEP f[5] ":" dec_dir "/" f[4] "-*.md")
       next
     }
     want_target(decfile[f[4]])
     if (!has_section_prefix(decfile[f[4]], f[5])) \
-      fail(f[4] SECTION_SEP f[5] ": " decfile[f[4]] " has no heading at the start of '" f[5] "'")
+      fail("heading-prefix", f[4] SECTION_SEP f[5] ":" decfile[f[4]] ":" f[5])
     next
   }
 }
 
 END {
+  if ((mode == "html-refs" || mode == "html-index") && HTML_TAG != "") {
+    state = HTML_COMMENT ? "comment" : (HTML_QUOTE != "" ? "quote" : "tag")
+    printf "md-refs: html-unclosed=%s:%d:%s\n", src, HTML_LINE, state > "/dev/stderr"
+    exit 2
+  }
   if (mode == "resolve" && phase == "verdict") printf "N\t%d\n", judged
 }

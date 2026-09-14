@@ -2,7 +2,7 @@
 description: Rust engineer for performance-critical systems. Use for zero-allocation hot paths, lock-free algorithms, SIMD optimization, and systems programming.
 tags: performance
 mode: subagent
-model: openai/gpt-6-astra
+model: openai/gpt-5.6-sol
 color: "#f97316"
 options:
   reasoningEffort: high

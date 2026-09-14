@@ -5,7 +5,10 @@
 # fix commit in the same call — including when the network push itself fails,
 # because the rebase (and its map) happens before the push. A map the wrapper
 # cannot record is reported, with the replayed transcript as its only
-# surviving copy; nothing may leave stale SHAs silently.
+# surviving copy; nothing may leave stale SHAs silently. A completed restack
+# leaves its own map in the worktree instead of on a stream, so that file is
+# consumed and deleted before the push, and its hop is applied before the
+# push's own so a record moved twice ends on the final SHA.
 
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
@@ -25,6 +28,16 @@ source "$TEST_DIR/lib/growth-state.sh"
 # scripts print the resolved path.
 TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+mkdir -p "$TMP_ROOT/linear/scripts"
+cat > "$TMP_ROOT/linear/scripts/linear.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+row="$(jq -c --arg id "$4" '.[] | select(.identifier == $id)' .cache/linear/issues.json)"
+[[ -n "$row" ]] || exit 1
+jq -n --argjson issue "$row" '{issue: $issue}'
+SH
+chmod +x "$TMP_ROOT/linear/scripts/linear.sh"
+ROUND_WRITE_BIN="$(copy_scripts live)/dev-round-write"
 
 PASS=0
 FAIL=0
@@ -57,13 +70,22 @@ round_write() {
 }
 
 # Stub worktree script: prints STUB_PUSH_STDOUT, exits STUB_PUSH_EXIT, and
-# logs its argv so pass-through flags can be asserted.
+# logs its argv so pass-through flags can be asserted. It also does what the
+# real push does with a map it derives: appends it to the worktree's map file
+# as its own hop, which is the channel worktree-push reconciles from. A stub
+# that only printed would exercise a transcript nothing reads.
 stub="$TMP_ROOT/worktree-stub"
 cat >"$stub" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${STUB_ARGS_LOG:-/dev/null}"
 if [[ -n "${STUB_PUSH_STDOUT:-}" ]]; then
   printf '%s\n' "$STUB_PUSH_STDOUT"
+  stub_map="$(printf '%s\n' "$STUB_PUSH_STDOUT" | grep '^rebase-map: ' || true)"
+  if [[ -n "$stub_map" && -n "${2:-}" ]]; then
+    stub_file="$(git -C "$2" rev-parse --git-path kendex-rebase-map)"
+    [[ "$stub_file" == /* ]] || stub_file="$2/$stub_file"
+    printf 'rebase-hop:\n%s\n' "$stub_map" >>"$stub_file"
+  fi
 fi
 exit "${STUB_PUSH_EXIT:-0}"
 EOF
@@ -81,12 +103,19 @@ wt="$TMP_ROOT/wt"
 git init -q -b main "$wt"
 mkdir -p "$wt/tmp"
 
+# The worktree-private file every rewrite records its map in. It outlives the
+# run that wrote it by design, so each block starts from a clean one: a record
+# left by the block above would refuse the next block's push before it ran.
+restack_map_file="$(git -C "$wt" rev-parse --git-path kendex-rebase-map)"
+[[ "$restack_map_file" == /* ]] || restack_map_file="$wt/$restack_map_file"
+
 # Fresh state with recorded fix commits on both surfaces: a short prefix of
 # OLD_A in fixed_items; in pr_comment_review.fixes one prefix of OLD_B
 # (mapped to dropped) and one longer prefix of OLD_A (mapped to a real SHA),
 # so both the rewrite and the dropped-marking paths run on .fixes.
 reset_state() {
   local work="$1"
+  rm -f "$restack_map_file"
   rm -rf "$work"
   mkdir -p "$work"
   (cd "$work" \
@@ -117,8 +146,9 @@ reset_state "$work"
 before="$(state_json "$work")"
 STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1 --set-upstream
 assert_eq "$RUN_RC" "0" "map-less push exits 0"
-assert_contains "$(cat "$run_out")" "→ pushed" "push stdout is replayed"
+assert_eq "$(cat "$run_out")" "→ pushed" "push stdout is replayed"
 assert_eq "$(grep -c 'sha-reconcile:' "$run_out" || true)" "0" "no reconcile line without a map"
+assert_eq "$(grep -c 'restack-reconcile:' "$run_out" || true)" "0" "no restack-hop line without a pending restack map"
 assert_eq "$(state_json "$work")" "$before" "state is untouched without a map"
 
 echo
@@ -159,7 +189,7 @@ RUN_RC=0
   "$PUSH" --worktree "$wt" --issue KEN-1 --state-dir "$work/tmp" "--sate-dir=$TMP_ROOT/elsewhere") \
   >"$run_out" 2>"$run_err" || RUN_RC=$?
 assert_eq "$RUN_RC" "1" "the real push refuses a transposed owned flag through this wrapper"
-assert_contains "$(cat "$run_err")" "unknown option '--sate-dir=$TMP_ROOT/elsewhere' for push" "push's own diagnostic reaches the caller"
+assert_contains "$(cat "$run_err")" "--sate-dir=$TMP_ROOT/elsewhere" "push's own diagnostic reaches the caller"
 assert_eq "$(state_json "$work")" "$typo_before" "a push that printed no map rewrites nothing"
 
 echo
@@ -176,7 +206,7 @@ assert_eq "$(state_json "$work" | jq -r ".rebase_map[\"$OLD_B\"]")" "dropped" "d
 assert_eq "$(state_json "$work" | jq -r '.fixed_items[0].commit')" "${NEW_A:0:7}" "fixed_items short SHA rewritten, truncated to recorded length"
 assert_eq "$(state_json "$work" | jq -r '.pr_comment_review.fixes[0].commit')" "dropped:${OLD_B:0:8}" "dropped mapping marks the recorded commit unpublishable"
 assert_eq "$(state_json "$work" | jq -r '.pr_comment_review.fixes[1].commit')" "${NEW_A:0:10}" "pr_comment_review.fixes SHA rewritten, truncated to recorded length"
-assert_contains "$(cat "$run_out")" "sha-reconcile: rebase_map +2, fixed_items 1 rewritten, pr_comment_review.fixes 2 rewritten" "reconcile summary reports what changed"
+assert_eq "$(grep '^sha-reconcile:' "$run_out")" "sha-reconcile: map_entries=2 fixed_items=1 pr_fixes=2" "reconcile summary reports what changed"
 
 echo
 echo "=== a second push chains through the already-rewritten SHA ==="
@@ -186,6 +216,189 @@ assert_eq "$RUN_RC" "0" "second mapped push exits 0"
 assert_eq "$(state_json "$work" | jq -r '.rebase_map | length')" "3" "second map merges into rebase_map"
 assert_eq "$(state_json "$work" | jq -r '.fixed_items[0].commit')" "${NEW_A2:0:7}" "already-rewritten SHA follows the new mapping"
 assert_eq "$(state_json "$work" | jq -r '.pr_comment_review.fixes[0].commit')" "dropped:${OLD_B:0:8}" "a dropped-marked commit stays marked across pushes"
+
+echo
+echo "=== a restack's pending map is consumed before the push, and chains into it ==="
+
+work="$TMP_ROOT/work-restack"
+reset_state "$work"
+printf 'rebase-hop:\nrebase-map: %s %s\nrebase-map: %s dropped\n' "$OLD_A" "$NEW_A" "$OLD_B" >"$restack_map_file"
+STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
+assert_eq "$RUN_RC" "0" "a consumed restack map exits 0"
+assert_eq "$(grep '^restack-reconcile:' "$run_out")" "restack-reconcile: map_entries=2 fixed_items=1 pr_fixes=2" \
+  "the restack hop reports under its own key"
+assert_eq "$(grep -c '^sha-reconcile:' "$run_out" || true)" "0" \
+  "a push that printed no map of its own reports no push hop"
+assert_eq "$(state_json "$work" | jq -r ".rebase_map[\"$OLD_A\"]")" "$NEW_A" "the restack hop is recorded in rebase_map"
+assert_eq "$(state_json "$work" | jq -r '.fixed_items[0].commit')" "${NEW_A:0:7}" "the restack hop rewrites the recorded fix SHA"
+assert_eq "$(state_json "$work" | jq -r '.pr_comment_review.fixes[0].commit')" "dropped:${OLD_B:0:8}" \
+  "a dropped restack mapping marks the recorded commit unpublishable"
+assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "absent" \
+  "the file is deleted once its mappings are in workflow state"
+
+# Both hops in one call. Each reconciliation compares a record against its
+# original value, so only applying the restack hop first carries the record
+# from OLD_A through NEW_A to NEW_A2; one merged map would leave it at NEW_A.
+work="$TMP_ROOT/work-restack-chain"
+reset_state "$work"
+printf 'rebase-hop:\nrebase-map: %s %s\n' "$OLD_A" "$NEW_A" >"$restack_map_file"
+STUB_PUSH_STDOUT="rebase-map: $NEW_A $NEW_A2" run_push "$work" --worktree "$wt" --issue KEN-1
+assert_eq "$RUN_RC" "0" "both hops in one call exit 0"
+assert_eq "$(grep '^restack-reconcile:' "$run_out")" "restack-reconcile: map_entries=1 fixed_items=1 pr_fixes=1" \
+  "the restack hop reports first"
+assert_eq "$(grep '^sha-reconcile:' "$run_out")" "sha-reconcile: map_entries=1 fixed_items=1 pr_fixes=1" \
+  "the push hop reports second"
+assert_eq "$(state_json "$work" | jq -r '.fixed_items[0].commit')" "${NEW_A2:0:7}" \
+  "the record follows both hops to the final SHA"
+assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "absent" "the chained call deletes the file too"
+
+# Two restacks before one push: one file, two hops. Read as one map, both would
+# be compared against the record's pre-hop SHA and it would stop at NEW_A, a
+# commit the second restack rewrote away and no branch has. Each hop is its own
+# reconciliation, so the record arrives at the SHA the branch actually carries.
+work="$TMP_ROOT/work-restack-twice"
+reset_state "$work"
+printf 'rebase-hop:\nrebase-map: %s %s\nrebase-hop:\nrebase-map: %s %s\n' \
+  "$OLD_A" "$NEW_A" "$NEW_A" "$NEW_A2" >"$restack_map_file"
+STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
+assert_eq "$RUN_RC" "0" "a file holding two restack hops exits 0"
+assert_eq "$(grep -c '^restack-reconcile:' "$run_out")" "2" "each hop reports its own summary line"
+assert_eq "$(state_json "$work" | jq -r '.fixed_items[0].commit')" "${NEW_A2:0:7}" \
+  "the record follows both restack hops to the SHA the branch carries"
+assert_eq "$(state_json "$work" | jq -r '.pr_comment_review.fixes[1].commit')" "${NEW_A2:0:10}" \
+  "and so does the longer prefix recorded on the other surface"
+assert_eq "$(state_json "$work" | jq -r '.rebase_map | length')" "2" "both hops merge into rebase_map"
+assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "absent" \
+  "the file is deleted once every hop is recorded"
+
+# A file the wrapper cannot turn into a mapping is the writer's own defect, and
+# deleting it would lose the only record of a rewrite that already happened.
+work="$TMP_ROOT/work-restack-junk"
+reset_state "$work"
+junk_before="$(state_json "$work")"
+printf 'not a map line\n' >"$restack_map_file"
+: >"$args_log"
+STUB_ARGS_LOG="$args_log" STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
+assert_eq "$RUN_RC" "1" "a restack map file that is not a hop record refuses"
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: restack-map-grammar file=$restack_map_file hops_applied=0" \
+  "the refusal names the file whose grammar it could not apply, and that no hop landed"
+assert_eq "$([[ -s "$args_log" ]] && echo ran || echo no)" "no" "the refusal lands before the push"
+assert_eq "$(state_json "$work")" "$junk_before" "the refused run leaves workflow state alone"
+assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "present" "the unconsumed file is left in place"
+
+# Hops are written at their boundary, so a valid hop before a malformed one is
+# already in workflow state when the refusal lands. The refusal reports how
+# many landed: telling the operator nothing did would send them to re-apply
+# work that is done.
+work="$TMP_ROOT/work-restack-partial"
+reset_state "$work"
+printf 'rebase-hop:\nrebase-map: %s %s\nrebase-hop:\nnot a map line\n' "$OLD_A" "$NEW_A" >"$restack_map_file"
+: >"$args_log"
+STUB_ARGS_LOG="$args_log" STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
+assert_eq "$RUN_RC" "1" "a malformed hop after a valid one refuses"
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: restack-map-grammar file=$restack_map_file hops_applied=1" \
+  "the refusal reports the hop that did land"
+assert_eq "$(state_json "$work" | jq -r '.fixed_items[0].commit')" "${NEW_A:0:7}" \
+  "and that hop is in workflow state, as the count says"
+assert_eq "$([[ -s "$args_log" ]] && echo ran || echo no)" "no" "the refusal still lands before the push"
+assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "present" \
+  "the whole file is kept, the applied hop included"
+
+# No record at all. The restack already made recorded SHAs stale wherever they
+# were written, so this refuses before the push and keeps the file; the message
+# is the one for an absent record, not the one for a record that could not be
+# written, because there is nothing here to repair.
+work="$TMP_ROOT/work-restack-nostate"
+rm -f "$restack_map_file"
+rm -rf "$work" && mkdir -p "$work"
+printf 'rebase-hop:\nrebase-map: %s %s\n' "$OLD_A" "$NEW_A" >"$restack_map_file"
+: >"$args_log"
+STUB_ARGS_LOG="$args_log" STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
+assert_eq "$RUN_RC" "1" "a restack map with no record to move refuses"
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: restack-map-nostate issue=KEN-1 state=$work/tmp/workflow-state-KEN-1.json file=$restack_map_file" \
+  "the refusal names the absent record, not a write that failed"
+assert_contains "$(cat "$run_err")" "Init the record and re-run, or remove the map file." \
+  "and sends the operator at the record, not at repairing one that does not exist"
+assert_eq "$([[ -s "$args_log" ]] && echo ran || echo no)" "no" "the unrecordable map refuses before the push"
+assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "present" "the unrecorded file is left in place"
+
+# A rebase that rewrote the branch without a derivable map is recorded in the
+# same file. No mapping repairs that rewrite, so this refuses under its own key
+# before any hop is applied rather than under the grammar refusal, which would
+# be a correct refusal carrying the wrong cause.
+work="$TMP_ROOT/work-restack-unmapped"
+reset_state "$work"
+unmapped_before="$(state_json "$work")"
+printf 'rebase-hop:\nrebase-map: %s %s\nrebase-unmapped: %s\n' "$OLD_A" "$NEW_A" "$OLD_B" >"$restack_map_file"
+: >"$args_log"
+STUB_ARGS_LOG="$args_log" STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
+assert_eq "$RUN_RC" "1" "a recorded unmapped rewrite refuses"
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: rebase-unmapped head=$OLD_B file=$restack_map_file" \
+  "the refusal names the head the rewrite started from, under its own key"
+assert_eq "$(grep -c '^restack-reconcile:' "$run_out" || true)" "0" \
+  "no hop is applied while the unmapped rewrite stands"
+assert_eq "$(state_json "$work")" "$unmapped_before" "workflow state is left alone"
+assert_eq "$([[ -s "$args_log" ]] && echo ran || echo no)" "no" "the refusal lands before the push"
+assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "present" \
+  "the whole file is kept for the operator to read"
+rm -f "$restack_map_file"
+
+# A record that exists but cannot be written: the hop is not recorded, and the
+# refusal says so under its own key with the count of what did land. chmod mode
+# bits do not bind root, so the denial is probed and the case skipped visibly
+# where it cannot take effect.
+work="$TMP_ROOT/work-restack-unwritable"
+reset_state "$work"
+unwritable_before="$(state_json "$work")"
+printf 'rebase-hop:\nrebase-map: %s %s\n' "$OLD_A" "$NEW_A" >"$restack_map_file"
+chmod a-w "$work/tmp"
+if touch "$work/tmp/.write-probe" 2>/dev/null; then
+  rm -f "$work/tmp/.write-probe"
+  chmod u+w "$work/tmp"
+  rm -f "$restack_map_file"
+  printf '  skip  %s\n' "unwritable-state case: chmod a-w does not deny writes here (running as root?)"
+else
+  : >"$args_log"
+  STUB_ARGS_LOG="$args_log" STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
+  chmod u+w "$work/tmp"
+  assert_eq "$RUN_RC" "1" "a hop that cannot be written refuses"
+  assert_eq "$(grep '^worktree-push:' "$run_err")" \
+    "worktree-push: restack-map-write issue=KEN-1 state=$work/tmp/workflow-state-KEN-1.json file=$restack_map_file hops_applied=0" \
+    "the refusal names the unwritten hop and that none landed before it"
+  assert_eq "$(state_json "$work")" "$unwritable_before" "the unwritable state is left untouched"
+  assert_eq "$([[ -s "$args_log" ]] && echo ran || echo no)" "no" "the unwritten hop refuses before the push"
+  assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "present" "the unrecorded file is kept"
+  rm -f "$restack_map_file"
+fi
+
+# A consumed file that cannot be deleted would be read again by a later run,
+# so the call fails rather than reporting success over a file it still owns.
+# chmod mode bits do not bind root, so the denial is probed and the case
+# skipped visibly where it cannot take effect.
+work="$TMP_ROOT/work-restack-stuck"
+reset_state "$work"
+printf 'rebase-hop:\nrebase-map: %s %s\n' "$OLD_A" "$NEW_A" >"$restack_map_file"
+restack_map_dir="$(dirname "$restack_map_file")"
+chmod a-w "$restack_map_dir"
+if touch "$restack_map_dir/.write-probe" 2>/dev/null; then
+  rm -f "$restack_map_dir/.write-probe"
+  chmod u+w "$restack_map_dir"
+  rm -f "$restack_map_file"
+  printf '  skip  %s\n' "undeletable-map case: chmod a-w does not deny writes here (running as root?)"
+else
+  : >"$args_log"
+  STUB_ARGS_LOG="$args_log" STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
+  chmod u+w "$restack_map_dir"
+  assert_eq "$RUN_RC" "1" "a consumed file that cannot be deleted fails the call"
+  assert_eq "$(grep '^worktree-push:' "$run_err")" "worktree-push: restack-map-clear file=$restack_map_file" \
+    "the failure names the file a later run would read again"
+  assert_eq "$([[ -s "$args_log" ]] && echo ran || echo no)" "no" "the undeletable file refuses before the push"
+  rm -f "$restack_map_file"
+fi
 
 echo
 echo "=== a live fix round refuses the push before anything is rebased ==="
@@ -202,6 +415,10 @@ git -C "$live_wt" config commit.gpgsign false
 git -C "$live_wt" commit -q --allow-empty -m delegation-base
 live_old="$(git -C "$live_wt" rev-parse HEAD)"
 init_growth_state "$STATE" "$live_wt" KEN-LIVE seed 1000000
+mkdir -p "$live_wt/.cache/linear"
+printf '[{"identifier":"KEN-LIVE","description":"**Expected delta**: 1000000 lines, 1000000 test lines"}]\n' \
+  > "$live_wt/.cache/linear/issues.json"
+printf '.cache/\n' >> "$(git -C "$live_wt" rev-parse --path-format=absolute --git-path info/exclude)"
 "$ROUND_WRITE" --worktree "$live_wt" --issue KEN-LIVE --round-id 1-1 --item 1 live "tools/guard on a staged render" >/dev/null
 git -C "$live_wt" commit -q --allow-empty -m round-fix
 live_head="$(git -C "$live_wt" rev-parse HEAD)"
@@ -216,7 +433,7 @@ live_args="$TMP_ROOT/live-args.log"
 STUB_ARGS_LOG="$live_args" STUB_PUSH_STDOUT="rebase-map: $live_old $live_head" \
   run_push "$live_state" --worktree "$live_wt" --issue KEN-LIVE
 assert_eq "$RUN_RC" "1" "a live round record refuses the push"
-assert_contains "$(cat "$run_err")" "is live in" "the refusal names the live round"
+assert_eq "$(grep '^worktree-push:' "$run_err")" "worktree-push: live-round round=1-1 worktree=$live_wt" "the refusal names the live round"
 assert_eq "$([[ -s "$live_args" ]] && echo ran || echo no)" "no" \
   "the refusal lands before the push: the pushed-through command never ran"
 assert_eq "$(cat "$live_state/tmp/workflow-state-KEN-LIVE.json" | jq -r '.rebase_map // "none"')" "none" \
@@ -299,7 +516,7 @@ rm -f "$live_wt/tmp/dev-return-KEN-LIVE-1-1.json"
 STUB_ARGS_LOG="$check_args" run_push "$live_state" --check-live-round \
   --worktree "$live_wt" --issue KEN-LIVE
 assert_eq "$RUN_RC" "3" "a live round answers 3, distinct from every other refusal"
-assert_contains "$(cat "$run_err")" "is live in" "the check names the live round"
+assert_eq "$(grep '^worktree-push:' "$run_err")" "worktree-push: live-round round=1-1 worktree=$live_wt" "the check names the live round"
 assert_eq "$([[ -s "$check_args" ]] && echo ran || echo no)" "no" \
   "the live answer still pushes nothing"
 
@@ -351,15 +568,15 @@ assert_eq "$(check_rc env "$check_stub")" "0" \
   "control: an honest stub answering no round permits the rebase"
 assert_eq "$(check_rc env STUB_EXISTS=fail "$check_stub")" "1" \
   "an exists that fails hands back rather than permitting"
-assert_contains "$(cat "$check_err")" "could not resolve the workflow state" \
+assert_eq "$(grep '^worktree-push:' "$check_err")" "worktree-push: state-resolve issue=KEN-LIVE exit=7" \
   "and hands back through the arm that names the failed exists"
 assert_eq "$(check_rc env STUB_EXISTS_JSON='{"path":"/x","exists":"maybe"}' "$check_stub")" "1" \
   "an answer that is neither yes nor no hands back"
-assert_contains "$(cat "$check_err")" "unexpected exists --json answer" \
+assert_eq "$(grep '^worktree-push:' "$check_err")" 'worktree-push: state-answer issue=KEN-LIVE answer={"path":"/x","exists":"maybe"}' \
   "and hands back through the arm that names the malformed answer"
 assert_eq "$(check_rc env STUB_GET=fail "$check_stub")" "1" \
   "a round read that fails hands back rather than permitting"
-assert_contains "$(cat "$check_err")" "could not read the active dev round" \
+assert_eq "$(grep '^worktree-push:' "$check_err")" "worktree-push: round-read issue=KEN-LIVE" \
   "and hands back through the arm that names the failed round read"
 
 # Check mode forwards nothing to the push, so an argument it cannot honour
@@ -367,7 +584,7 @@ assert_contains "$(cat "$check_err")" "could not read the active dev round" \
 # for. A mistyped --state-dir is the case: refuse instead of permitting.
 assert_eq "$(check_rc "$REPO_ROOT/skills/orch/scripts/worktree-push" --sate-dir=/nowhere)" "1" \
   "an argument check mode cannot honour refuses rather than permits"
-assert_contains "$(cat "$check_err")" "'--sate-dir=/nowhere' would be ignored rather than honoured" \
+assert_eq "$(grep '^worktree-push:' "$check_err")" "worktree-push: check-argument argument=--sate-dir=/nowhere" \
   "and the refusal names the argument it could not honour"
 
 echo
@@ -387,38 +604,45 @@ echo "=== a map the wrapper cannot record is reported, never swallowed ==="
 # exact failure mode the wrapper exists to close, so the call fails, names the
 # consequence, and replays the map's own lines in the transcript.
 work="$TMP_ROOT/work-nostate"
+rm -f "$restack_map_file"
 rm -rf "$work" && mkdir -p "$work"
 STUB_PUSH_STDOUT="rebase-map: $OLD_A $NEW_A" run_push "$work" --worktree "$wt" --issue KEN-1
 assert_eq "$RUN_RC" "1" "missing state file fails the call"
-assert_contains "$(cat "$run_err")" "NOT recorded" "missing state names the unreconciled-SHA consequence"
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: restack-map-nostate issue=KEN-1 state=$work/tmp/workflow-state-KEN-1.json file=$restack_map_file push-exit=0" \
+  "missing state names the unreconciled-SHA consequence"
 work="$TMP_ROOT/work-badmap"
 reset_state "$work"
 STUB_PUSH_STDOUT="rebase-map: not-a-sha $NEW_A" run_push "$work" --worktree "$wt" --issue KEN-1
 assert_eq "$RUN_RC" "1" "unparseable map line fails the call"
-assert_contains "$(cat "$run_err")" "NOT reconciled" "unparseable map names the unreconciled-SHA consequence"
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: map-sha field=old sha=not-a-sha file=$restack_map_file hops_applied=0 push-exit=0" \
+  "unparseable map names the unreconciled-SHA consequence"
 
 # An unparseable map on a FAILED push keeps the push's exit code — exit 1
 # must never dress a failed push as a landed one.
 reset_state "$work"
 STUB_PUSH_STDOUT="rebase-map: not-a-sha $NEW_A" STUB_PUSH_EXIT=7 run_push "$work" --worktree "$wt" --issue KEN-1
 assert_eq "$RUN_RC" "7" "unparseable map on a failed push keeps the push's exit code"
-assert_contains "$(cat "$run_err")" "NOT reconciled" "the failed-push parse error still names the consequence"
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: map-sha field=old sha=not-a-sha file=$restack_map_file hops_applied=0 push-exit=7" \
+  "the failed-push parse error still names the consequence"
 
 echo
-echo "=== a repaired state and a re-run do not reconcile the stranded map ==="
+echo "=== a repaired state and a re-run reconcile the map the failure kept ==="
 
-# The header contract and the failure diagnostic once told the operator to
-# repair state and re-run. The sidecar that made that true is gone: the rebase
-# already happened, so the retry's push prints no map, reconciles nothing, and
-# exits 0 over the same stale record. Both surfaces must say so, or a stale
-# SHA gets published in the belief the retry fixed it.
+# The map is not in the transcript, it is in the worktree's map file, and a
+# failed reconcile keeps that file. So repairing the state and re-running IS
+# the repair here: the kept hop is consumed before the retry's own push, which
+# rebases nothing and prints nothing of its own.
 work="$TMP_ROOT/work-rerun"
+rm -f "$restack_map_file"
 rm -rf "$work" && mkdir -p "$work"
 STUB_PUSH_STDOUT="rebase-map: $OLD_A $NEW_A" run_push "$work" --worktree "$wt" --issue KEN-1
 assert_eq "$RUN_RC" "1" "the run that cannot record its map fails"
-assert_contains "$(cat "$run_err")" "Re-running this command does NOT repair them" \
-  "the diagnostic denies that a bare re-run repairs the record"
-assert_contains "$(cat "$run_err")" "workflow-state update" "the diagnostic names the manual repair"
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: restack-map-nostate issue=KEN-1 state=$work/tmp/workflow-state-KEN-1.json file=$restack_map_file push-exit=0" \
+  "the diagnostic identifies the stranded map"
 
 # Repair the state exactly as an operator would, then re-run.
 (cd "$work" \
@@ -426,32 +650,12 @@ assert_contains "$(cat "$run_err")" "workflow-state update" "the diagnostic name
   && "$STATE" append KEN-1 fixed_items "{\"description\":\"fix\",\"commit\":\"${OLD_A:0:7}\",\"source\":\"pr-review\"}")
 STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
 assert_eq "$RUN_RC" "0" "the re-run reports success"
-assert_eq "$(state_json "$work" | jq -r '.fixed_items[0].commit')" "${OLD_A:0:7}" \
-  "the re-run leaves the stale SHA stale, so it is not the repair"
-assert_eq "$(state_json "$work" | jq -r '.rebase_map | length')" "0" \
-  "the stranded map never reaches workflow state on the re-run"
-
-# `--help` prints the leading comment block, so the exit-code table is a
-# runtime surface and its recovery instruction is held to the same truth.
-help_out="$("$PUSH" --help)"
-assert_contains "$help_out" "re-running does not repair them" \
-  "the exit-code table denies that a re-run repairs the record"
-assert_contains "$help_out" "workflow-state update" "the exit-code table names the manual repair"
-
-# Exit 1 covers two families and they want opposite repairs. The refusals
-# asserted below (bad arguments, a state that does not resolve or does not
-# match) exit before the push, so for them the sentences above are all false --
-# nothing was rebased, no map was printed, and correcting the arguments and
-# re-running IS the repair. Each family carries its own row or the split rots
-# back into one sentence that misdirects half the operators who read it.
-assert_contains "$help_out" "the run refused before the push" \
-  "the exit-code table carries a row for the family where the push never ran"
-assert_contains "$help_out" "Nothing was pushed and nothing was rebased" \
-  "the never-ran row denies the rebase the post-push row asserts"
-assert_contains "$help_out" "there is nothing to hand-apply" \
-  "the never-ran row sends the operator back through the command instead of workflow-state"
-assert_eq "$(grep -cE '^ *1 \(' <<<"$help_out")" "2" \
-  "the exit-1 families are two rows, not one"
+assert_eq "$(state_json "$work" | jq -r '.fixed_items[0].commit')" "${NEW_A:0:7}" \
+  "the re-run reconciles the SHA the failed run could not"
+assert_eq "$(state_json "$work" | jq -r ".rebase_map[\"$OLD_A\"]")" "$NEW_A" \
+  "the kept map reaches workflow state on the re-run"
+assert_eq "$([[ -e "$restack_map_file" ]] && echo present || echo absent)" "absent" \
+  "and the file goes once its hop is recorded"
 
 echo
 echo "=== the arguments must match the state they would rewrite ==="
@@ -463,12 +667,13 @@ echo "=== the arguments must match the state they would rewrite ==="
 mismatch_args_log="$TMP_ROOT/mismatch-args.log"
 
 work="$TMP_ROOT/work-mismatch"
+rm -f "$restack_map_file"
 rm -rf "$work" && mkdir -p "$work/tmp"
 printf '%s\n' '{"issue_id":"KEN-9","worktree":"","fixed_items":[],"pr_comment_review":{"fixes":[]}}' >"$work/tmp/workflow-state-KEN-1.json"
 : >"$mismatch_args_log"
 STUB_ARGS_LOG="$mismatch_args_log" STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
 assert_eq "$RUN_RC" "1" "a state recording another issue id refuses"
-assert_contains "$(cat "$run_err")" "refusing to rewrite another issue" "the issue mismatch is named"
+assert_eq "$(grep '^worktree-push:' "$run_err")" "worktree-push: issue-mismatch issue=KEN-1 recorded=KEN-9" "the issue mismatch is named"
 # BSD wc right-aligns its count in a fixed-width field, so `$(wc -l <f)` reads
 # "       0" on macOS and "0" on GNU; every count below is compared as a
 # string, so the blanks come off at the measurement.
@@ -477,20 +682,21 @@ assert_eq "$(wc -l <"$mismatch_args_log" | tr -d ' ')" "0" "the push never ran a
 other_wt="$TMP_ROOT/other-wt"
 mkdir -p "$other_wt"
 work="$TMP_ROOT/work-wt-mismatch"
+rm -f "$restack_map_file"
 rm -rf "$work" && mkdir -p "$work"
 (cd "$work" && "$STATE" init KEN-1 --agent generalist --worktree "$other_wt" --branch ken-1 >/dev/null)
 : >"$mismatch_args_log"
 STUB_ARGS_LOG="$mismatch_args_log" STUB_PUSH_STDOUT="→ pushed" run_push "$work" --worktree "$wt" --issue KEN-1
 assert_eq "$RUN_RC" "1" "a state recording another worktree refuses"
-assert_contains "$(cat "$run_err")" "refusing to rewrite another worktree" "the worktree mismatch is named"
+assert_eq "$(grep '^worktree-push:' "$run_err")" "worktree-push: worktree-mismatch issue=KEN-1 recorded=$other_wt worktree=$wt" "the worktree mismatch is named"
 assert_eq "$(wc -l <"$mismatch_args_log" | tr -d ' ')" "0" "the push never ran against a mismatched worktree"
 
 echo
 echo "=== a dying stdout cannot lose the map ==="
 
-# The map is parsed and persisted before the transcript replay, so even a
-# full stdout (every print fails) leaves the mapping recorded in state.
-# /dev/full is Linux-only; on hosts without it the case is skipped visibly.
+# The map arrives as a hop in the worktree's map file, so a full stdout (every
+# print fails) costs the transcript and nothing else: the mapping still reaches
+# state. /dev/full is Linux-only; on hosts without it the case is skipped visibly.
 if [[ -e /dev/full && -w /dev/full ]]; then
   work="$TMP_ROOT/work-devfull"
   reset_state "$work"
@@ -506,8 +712,9 @@ fi
 echo
 echo "=== a parse failure still shows the map in the transcript ==="
 
-# The completed rebase cannot regenerate the map, so the replayed transcript
-# is its only surviving copy — valid lines beside the malformed one included.
+# The transcript is replayed for the caller and never read, so a map file this
+# cannot parse still shows what the push reported — the malformed line beside
+# the valid ones.
 work="$TMP_ROOT/work-parsefail-replay"
 reset_state "$work"
 map_out="rebase-map: $OLD_A $NEW_A
@@ -516,6 +723,10 @@ STUB_PUSH_STDOUT="$map_out" run_push "$work" --worktree "$wt" --issue KEN-1
 assert_eq "$RUN_RC" "1" "a malformed line beside a valid one still fails the call"
 assert_contains "$(cat "$run_out")" "rebase-map: $OLD_A $NEW_A" "the valid map line survives in the replayed transcript"
 assert_contains "$(cat "$run_out")" "rebase-map: not-a-sha $NEW_A2" "the malformed map line survives in the replayed transcript"
+# Once, not twice: this is the failure path, and the diagnostic must not print
+# the transcript a second time over a record the caller is reading.
+assert_eq "$(grep -c "^rebase-map: $OLD_A $NEW_A\$" "$run_out")" "1" \
+  "and each record appears once, the diagnostic replaying nothing of its own"
 
 echo
 echo "=== an unwritable state directory fails the landed push loudly ==="
@@ -538,7 +749,9 @@ else
   STUB_PUSH_STDOUT="rebase-map: $OLD_A $NEW_A" run_push "$work" --worktree "$wt" --issue KEN-1
   chmod u+w "$work/tmp"
   assert_eq "$RUN_RC" "1" "a failed state write fails the landed push"
-  assert_contains "$(cat "$run_err")" "NOT recorded" "the failure names the unreconciled SHAs"
+  assert_eq "$(grep '^worktree-push:' "$run_err")" \
+    "worktree-push: restack-map-write issue=KEN-1 state=$work/tmp/workflow-state-KEN-1.json file=$restack_map_file hops_applied=0 push-exit=0" \
+    "the failure names the unreconciled SHAs"
   assert_eq "$(state_json "$work")" "$before" "the unwritable state is left untouched"
   assert_contains "$(cat "$run_out")" "rebase-map: $OLD_A $NEW_A" "the map's own lines survive in the replayed transcript"
 fi
@@ -551,6 +764,7 @@ echo "=== a bare-numeric key resolves to its exact file, never to issue-N ==="
 # same way: with no state under that key the rebase map has nowhere to land,
 # which is a loud failure — never a silent bind to the issue-7 record.
 work="$TMP_ROOT/work-numeric"
+rm -f "$restack_map_file"
 mkdir -p "$work"
 git -C "$wt" config user.email test@example.com
 git -C "$wt" config user.name Test
@@ -568,7 +782,8 @@ STUB_ARGS_LOG="$numeric_args_log" STUB_PUSH_STDOUT="rebase-map: $numeric_old $nu
 assert_eq "$RUN_RC" "1" "a bare-numeric issue whose state does not exist fails the landed push"
 assert_eq "$(wc -l <"$numeric_args_log" | tr -d ' ')" "1" \
   "the push itself ran — the failure is reconciliation, not a pre-push refusal"
-assert_contains "$(cat "$run_err")" "State file not found: tmp/workflow-state-7.json" \
+assert_eq "$(grep '^worktree-push:' "$run_err")" \
+  "worktree-push: restack-map-nostate issue=7 state=$work/tmp/workflow-state-7.json file=$restack_map_file push-exit=0" \
   "the failure names the exact key it resolved, not the issue-7 file"
 assert_eq "$(jq -r '.fixed_items[0].commit' "$work/tmp/workflow-state-issue-7.json")" "${numeric_old:0:7}" \
   "the issue-7 record is left alone by a bare-numeric call"

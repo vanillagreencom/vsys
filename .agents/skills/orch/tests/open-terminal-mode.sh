@@ -14,6 +14,8 @@
 # then a failure so no lane goes further), gh, and the worktree CLI.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
+# shellcheck source=lib/shared-skill-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
@@ -109,6 +111,7 @@ stage() {
   mkdir -p "$1/scripts/lib"
   cp "$2" "$1/scripts/open-terminal"
   cp "$SRC_LIB_DIR"/*.sh "$1/scripts/lib/"
+  orch_fixture_shared_libs "$1"
   chmod +x "$1/scripts/open-terminal"
   git -C "$1" init -q
 }
@@ -162,7 +165,7 @@ run() {
   TMUX_LOG_TEXT="$(cat "$tmux_log")"
 }
 
-WARNING="Warning: --ghostty overrides tmux auto-detection"
+WARNING='open-terminal: mode-override option=--ghostty detected=tmux'
 
 # One row per (where, flag) pair: the launcher it must reach and whether the
 # override warning is due. `refused` is --tmux outside tmux, which open_tmux
@@ -199,12 +202,12 @@ check_mode_rows() {
         ;;
       refused)
         assert_eq "$RC" "1" "$desc -> the item fails"
-        assert_contains "$ERR" "Error: not inside tmux" "$desc -> named as not inside tmux"
+        assert_contains "$ERR" "open-terminal: tmux-missing item=CC-1" "$desc -> named as not inside tmux"
         assert_eq "$TERM_LOG_TEXT" "" "$desc -> no GUI terminal opens in its place"
         ;;
     esac
     if [[ "$warn" == "warn" ]]; then
-      assert_contains "$ERR" "$WARNING" "$desc -> warns that the flag overrides auto-detection"
+      assert_eq "${ERR%%$'\n'*}" "$WARNING" "$desc -> warns that the flag overrides auto-detection"
     else
       assert_not_contains "$ERR" "$WARNING" "$desc -> no override warning"
     fi

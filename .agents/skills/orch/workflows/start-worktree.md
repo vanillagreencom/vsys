@@ -47,14 +47,22 @@ The full session from inside a worktree: implement → review → submit → fin
    .agents/skills/orch/scripts/base-freshness [WORKTREE_PATH]
    ```
 
-   - Exit 0 → § 2.
-   - Exit 4 → rebase through the supported reuse path, then re-run the gate; it must exit 0 before § 2:
+   - Exit 0 → step 6.
+   - Exit 4 → rebase through the supported reuse path, then re-run the gate; it must exit 0 before step 6:
 
      ```bash
      .agents/skills/worktree/scripts/worktree create [ISSUE_ID] --reuse
      ```
 
    - Exit 1, or a reuse that cannot complete → report the divergence and stop. Never review on an unverified base.
+
+6. **Record branch size before delegation.** Run the size report on this branch:
+
+   ```bash
+   .agents/skills/orch/scripts/branch-size-check --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --json
+   ```
+
+   Read the JSON verdict and the command exit. Every measured verdict (`pass`, `over`, `allowance_missing`) exits 0, records `pr.size_check`, and continues to § 2. The issue's `**Expected delta**` line is optional. Exit 3 means a malformed line; exit 2 means a usage or environment failure. Either failure stops the workflow. A fleet launch follows this same step.
 
 ## 2. Implement
 

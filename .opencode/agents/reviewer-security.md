@@ -2,7 +2,7 @@
 description: Application security reviewer. Auth logic, input handling, trust/ownership gating, path containment, and secret exposure.
 tags: review, security
 mode: subagent
-model: openai/gpt-6-astra
+model: openai/gpt-5.6-sol
 color: "#ef4444"
 options:
   reasoningEffort: high

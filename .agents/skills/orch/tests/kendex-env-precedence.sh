@@ -185,22 +185,22 @@ s6_case() { # NAME CONTENT EXPECT_SUBSTRING [EXPORT_ASSIGNMENT]
     FAIL=$((FAIL + 1)); printf '  FAIL  scenario 6: %s fails the load (code=%s err=%s)\n' "$name" "$code" "$err"
   fi
 }
-s6_case "a duplicate key inside [env]" $'[env]\nDUP = "a"\nDUP = "b"' "DUP is assigned more than once in [env]"
+s6_case "a duplicate key inside [env]" $'[env]\nDUP = "a"\nDUP = "b"' "kendex-env: duplicate-key file=$PROJ6/kendex.settings.toml key=DUP"
 # The malformed-file checks run BEFORE the parent-env skip: a parent export
 # of the same key must not turn a refused file into a loadable one.
-s6_case "a duplicate key the parent also exports" $'[env]\nDUP = "a"\nDUP = "b"' "DUP is assigned more than once in [env]" "DUP=parent-value"
+s6_case "a duplicate key the parent also exports" $'[env]\nDUP = "a"\nDUP = "b"' "kendex-env: duplicate-key file=$PROJ6/kendex.settings.toml key=DUP" "DUP=parent-value"
 # `seen` spans the whole file, not one section run: re-entering [env]
 # through another table is the same ambiguity as two adjacent lines.
-s6_case "a duplicate split across re-entered [env] sections" $'[env]\nDUP = "a"\n[other]\nX = "x"\n[env]\nDUP = "b"' "DUP is assigned more than once in [env]"
-s6_case "a single-quoted value" $'[env]\nSQ = \x27sv\x27' "unsupported syntax for SQ"
-s6_case "an array value" $'[env]\nARR = ["a", "b"]' "unsupported syntax for ARR"
-s6_case "a backslash in the value" $'[env]\nBS = "a\\b"' "unsupported syntax for BS"
-s6_case "an unquoted value" $'[env]\nUNQ = bare' "unsupported syntax for UNQ"
+s6_case "a duplicate split across re-entered [env] sections" $'[env]\nDUP = "a"\n[other]\nX = "x"\n[env]\nDUP = "b"' "kendex-env: duplicate-key file=$PROJ6/kendex.settings.toml key=DUP"
+s6_case "a single-quoted value" $'[env]\nSQ = \x27sv\x27' "kendex-env: value-syntax file=$PROJ6/kendex.settings.toml key=SQ"
+s6_case "an array value" $'[env]\nARR = ["a", "b"]' "kendex-env: value-syntax file=$PROJ6/kendex.settings.toml key=ARR"
+s6_case "a backslash in the value" $'[env]\nBS = "a\\b"' "kendex-env: value-syntax file=$PROJ6/kendex.settings.toml key=BS"
+s6_case "an unquoted value" $'[env]\nUNQ = bare' "kendex-env: value-syntax file=$PROJ6/kendex.settings.toml key=UNQ"
 # Headers are held to the same fail-loud standard: a `[`-leading line the
 # reader cannot parse hides ([env] with a trailing comment) or leaks (a
 # quoted foreign header after [env]) whole tables if it passes as content.
-s6_case "a commented [env] header" $'[env] # comment\nHIDDEN = "x"' "unsupported table header shape"
-s6_case "a quoted foreign header after [env]" $'[env]\nGOOD = "y"\n["notes"]\nLEAK = "z"' "unsupported table header shape"
+s6_case "a commented [env] header" $'[env] # comment\nHIDDEN = "x"' "kendex-env: table-header file=$PROJ6/kendex.settings.toml lineno="
+s6_case "a quoted foreign header after [env]" $'[env]\nGOOD = "y"\n["notes"]\nLEAK = "z"' "kendex-env: table-header file=$PROJ6/kendex.settings.toml lineno="
 # Scenario 8: a source is skipped only when ABSENT. A present-but-unusable
 # source (directory, dangling symlink, unreadable file) fails the load
 # loud, naming the path — silently treating it as absent would let a
@@ -228,9 +228,9 @@ s8_case() { # NAME STAGE EXPECT_SUBSTRING — STAGE runs inside the project dir
     FAIL=$((FAIL + 1)); printf '  FAIL  scenario 8: %s fails the load and names the path\n        code=%s stderr: %s\n' "$name" "$code" "$err"
   fi
 }
-s8_case "a DIRECTORY at .env.local" 'mkdir .env.local' ".env.local: source exists but is not a regular file"
-s8_case "a DANGLING SYMLINK at kendex.settings.toml" 'ln -s missing.toml kendex.settings.toml' "kendex.settings.toml: source is a symlink that does not resolve"
-s8_case "a DIRECTORY at .kendex/settings.toml" 'mkdir -p .kendex/settings.toml' "settings.toml: source exists but is not a regular file"
+s8_case "a DIRECTORY at .env.local" 'mkdir .env.local' "kendex-env: not-file arg1=$TMP_ROOT/proj8/.env.local"
+s8_case "a DANGLING SYMLINK at kendex.settings.toml" 'ln -s missing.toml kendex.settings.toml' "kendex-env: unresolved-link arg1=$TMP_ROOT/proj8/kendex.settings.toml"
+s8_case "a DIRECTORY at .kendex/settings.toml" 'mkdir -p .kendex/settings.toml' "kendex-env: not-file arg1=$TMP_ROOT/proj8/.kendex/settings.toml"
 # A .env.local whose contents RUN and fail: the load must carry that status
 # out, never swallow it and resolve on the layers below. The body has to be
 # parseable — a syntax error aborts the whole subshell on its own, so it
@@ -241,7 +241,7 @@ s8_case "a FAILING .env.local command" 'printf "no_such_cmd_xyz\n" > .env.local'
 if [ "$(id -u)" -eq 0 ]; then
   printf '  skip  scenario 8: unreadable-source pin needs a non-root reader (chmod 000 cannot deny root)\n'
 else
-  s8_case "an UNREADABLE kendex.settings.toml" 'printf "[env]\nX = \"y\"\n" > kendex.settings.toml && chmod 000 kendex.settings.toml' "kendex.settings.toml: source exists but is unreadable"
+  s8_case "an UNREADABLE kendex.settings.toml" 'printf "[env]\nX = \"y\"\n" > kendex.settings.toml && chmod 000 kendex.settings.toml' "kendex-env: unreadable arg1=$TMP_ROOT/proj8/kendex.settings.toml"
 fi
 
 # Scenario 9: the per-line path forks no subshell. A wrapper delegating to
@@ -280,6 +280,231 @@ set -e
 assert_eq "$s9_code" "0" "scenario 9 loads without error"
 assert_eq "$s9_out" "7|v1|v2" "scenario 9: every kendex_trim call the loader makes is visible in its own shell, none lost to a command substitution"
 assert_eq "$(sort -u "$S9_LEVELS" | paste -sd, -)" "0" "scenario 9: every kendex_trim call runs at the loader's own subshell depth, none inside a fork"
+
+# Scenario 10: which private env file the loader reads. .env.local unless
+# KENDEX_ENV_FILE names another, and the named path never leaves the
+# project — a private env file is SOURCED, so a path the project did not
+# mean to name runs somebody else's file in this shell.
+#
+# The app writes the same key when a person names a private file, so this
+# is where the two sides meet: it also pins that a value the app writes,
+# single-quoted, comes back out byte for byte.
+PROJ10="$TMP_ROOT/proj10"
+mkdir -p "$PROJ10"
+printf '%s\n' "SECRET='kept-local'" > "$PROJ10/.env.local"
+# The second line is exactly what the app writes for a value carrying the
+# characters a shell would otherwise act on. Written through %s so this
+# file's own printf leaves the backslash alone.
+printf '%s\n' "SECRET='kept-chosen'" "LITERAL='a b#c\"d\\e'" > "$PROJ10/.env.secrets"
+
+s10_load() { # SETTINGS_BODY NAME -> the SECRET the loader exports
+  (
+    unset -v SECRET LITERAL KENDEX_ENV_FILE
+    printf '%s' "$1" > "$PROJ10/kendex.settings.toml"
+    # shellcheck source=/dev/null
+    source "$LIB"
+    kendex_load_project_env "$PROJ10" >/dev/null 2>&1 || { echo "REFUSED"; exit 0; }
+    printf '%s|%s\n' "${SECRET:-}" "${LITERAL:-}"
+  )
+}
+
+assert_eq "$(s10_load '')" "kept-local|" "scenario 10: no key names .env.local"
+assert_eq \
+  "$(s10_load '[env]
+KENDEX_ENV_FILE = ".env.secrets"
+')" \
+  'kept-chosen|a b#c"d\e' \
+  "scenario 10: KENDEX_ENV_FILE names the file, and a single-quoted value reads back byte for byte"
+
+# Every spelling that could reach outside the project fails the load loud
+# rather than resolving on the default: a source the project did not mean
+# to name is one this shell would run.
+s10_refuses() { # PATH NAME
+  local err code
+  set +e
+  err=$(
+    unset -v KENDEX_ENV_FILE
+    printf '[env]\nKENDEX_ENV_FILE = "%s"\n' "$1" > "$PROJ10/kendex.settings.toml"
+    # shellcheck source=/dev/null
+    source "$LIB"
+    kendex_load_project_env "$PROJ10" 2>&1 >/dev/null
+  )
+  code=$?
+  set -e
+  if [[ "$code" -ne 0 && "$err" == *"kendex-env: private-env-path arg1=$1"* ]]; then
+    PASS=$((PASS + 1)); printf '  ok    scenario 10: %s fails the load and names the path\n' "$2"
+  else
+    FAIL=$((FAIL + 1)); printf '  FAIL  scenario 10: %s fails the load and names the path\n        code=%s stderr: %s\n' "$2" "$code" "$err"
+  fi
+}
+s10_refuses "/etc/passwd" "an ABSOLUTE path"
+s10_refuses "../outside.env" "a LEADING .. segment"
+s10_refuses "a/../../outside.env" "a NESTED .. segment"
+s10_refuses "C:keys.env" "a DRIVE COLON"
+
+# Spelling is only half the guarantee. A name with no `..` in it reads a
+# file anywhere at all when a directory on the way is a link out of the
+# project, and this loader SOURCES what it opens.
+s10_link_refuses() { # NAME REASON — plants the shape, then expects the named refusal
+  local err code
+  set +e
+  err=$(
+    unset -v KENDEX_ENV_FILE
+    printf '[env]\nKENDEX_ENV_FILE = "%s"\n' "$1" > "$PROJ10/kendex.settings.toml"
+    # shellcheck source=/dev/null
+    source "$LIB"
+    kendex_load_project_env "$PROJ10" 2>&1 >/dev/null
+  )
+  code=$?
+  set -e
+  if [[ "$code" -ne 0 && "$err" == *"kendex-env: $2 arg1=$1"* ]]; then
+    PASS=$((PASS + 1)); printf '  ok    scenario 10: %s fails the load as %s\n' "$1" "$2"
+  else
+    FAIL=$((FAIL + 1)); printf '  FAIL  scenario 10: %s fails the load as %s\n        code=%s stderr: %s\n' "$1" "$2" "$code" "$err"
+  fi
+}
+
+OUTSIDE10="$TMP_ROOT/outside10"
+mkdir -p "$OUTSIDE10"
+printf '%s\n' "SECRET='not-this-project'" > "$OUTSIDE10/stolen.env"
+ln -s "$OUTSIDE10" "$PROJ10/linked"
+s10_link_refuses "linked/stolen.env" "private-env-outside"
+
+# The file ITSELF being a link is the project's own layout and still
+# loads: a git worktree links .env.local back to its main checkout so
+# every worktree shares one credential file, and refusing that would stop
+# every package in every worktree. The line the guard draws is the
+# configured NAME reaching out, not the directory's own contents.
+printf '%s\n' "SECRET='kept-through-link'" > "$OUTSIDE10/shared.env"
+ln -s "$OUTSIDE10/shared.env" "$PROJ10/linked.env"
+assert_eq \
+  "$(s10_load '[env]
+KENDEX_ENV_FILE = "linked.env"
+')" \
+  'kept-through-link|' \
+  "scenario 10: a LINKED private file is the project's own layout and loads"
+
+# A directory inside the project is not a way out, so a nested private
+# file still loads: the check refuses an escape, not a subdirectory.
+mkdir -p "$PROJ10/keys"
+printf '%s\n' "SECRET='kept-nested'" > "$PROJ10/keys/private.env"
+assert_eq \
+  "$(s10_load '[env]
+KENDEX_ENV_FILE = "keys/private.env"
+')" \
+  'kept-nested|' \
+  "scenario 10: a nested private file inside the project still loads"
+
+# A component that exists as a regular file blocks the path: nothing can
+# be created under it. Climbing past it would call the path contained and
+# then read as absent, so the credential would silently never load.
+printf 'X=1\n' > "$PROJ10/blocking"
+s10_link_refuses "blocking/private.env" "private-env-blocked"
+
+# The default is held to the same rule, in both directions: a linked
+# .env.local loads, and a .env.local reached through a linked directory
+# does not. The guard is about the path, never about which of the two
+# named the file.
+PROJ10B="$TMP_ROOT/proj10b"
+mkdir -p "$PROJ10B"
+ln -s "$OUTSIDE10/shared.env" "$PROJ10B/.env.local"
+s10b_default=$(
+  unset -v SECRET KENDEX_ENV_FILE
+  # shellcheck source=/dev/null
+  source "$LIB"
+  kendex_load_project_env "$PROJ10B" >/dev/null 2>&1
+  printf '%s\n' "${SECRET:-}"
+)
+assert_eq "$s10b_default" "kept-through-link" \
+  "scenario 10: a LINKED .env.local is the project's own layout and loads"
+
+# A backslash never reaches that check: the settings grammar refuses the
+# value first, and refusing it twice would say the grammar was optional.
+# Pinned here so the two refusals stay told apart.
+set +e
+s10_backslash=$(
+  unset -v KENDEX_ENV_FILE
+  printf '[env]\nKENDEX_ENV_FILE = "keys\\local.env"\n' > "$PROJ10/kendex.settings.toml"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  kendex_load_project_env "$PROJ10" 2>&1 >/dev/null
+)
+set -e
+case "$s10_backslash" in
+  *"kendex-env: value-syntax"*"key=KENDEX_ENV_FILE"*)
+    PASS=$((PASS + 1)); printf '  ok    scenario 10: a BACKSLASH fails on the value grammar, before the path check\n' ;;
+  *)
+    FAIL=$((FAIL + 1)); printf '  FAIL  scenario 10: a BACKSLASH fails on the value grammar, before the path check\n        stderr: %s\n' "$s10_backslash" ;;
+esac
+
+# The caller's environment outranks the project's answer here as it does
+# everywhere else: an exported KENDEX_ENV_FILE decides which file loads.
+printf '[env]\nKENDEX_ENV_FILE = ".env.secrets"\n' > "$PROJ10/kendex.settings.toml"
+s10_parent=$(
+  unset -v SECRET
+  export KENDEX_ENV_FILE=.env.local
+  # shellcheck source=/dev/null
+  source "$LIB"
+  kendex_load_project_env "$PROJ10" >/dev/null 2>&1
+  printf '%s\n' "${SECRET:-}"
+)
+assert_eq "$s10_parent" "kept-local" "scenario 10: an exported KENDEX_ENV_FILE outranks the project's"
+
+# A project can print while its private env file loads. Consumers parse stdout.
+PROJ11="$TMP_ROOT/proj11"
+mkdir -p "$PROJ11/accounts"
+git -C "$PROJ11" init -q
+printf '%s\n' 'echo env-file-output' 'KENDEX_STDOUT_TEST=private-value' > "$PROJ11/.env.local"
+cp -R "${LIB%/lib/*}" "$PROJ11/scripts"
+NOISY_LIB="$PROJ11/scripts/lib/kendex-env.sh"
+[[ -f "$NOISY_LIB" && ! -L "$NOISY_LIB" ]] || exit 1
+redirect_count=$(grep -Fxc '  source "$file" >&2' "$NOISY_LIB") || exit 1
+assert_eq "$redirect_count" "1" "stdout control finds one redirected source"
+[[ "$redirect_count" == 1 ]] || exit 1
+sed -i.bak 's/^  source "\$file" >&2$/  source "$file"/' "$NOISY_LIB"
+if cmp -s "$NOISY_LIB.bak" "$NOISY_LIB"; then
+  echo "stdout control did not change the loader" >&2
+  exit 1
+fi
+
+for variant in production mutant; do
+  scripts="${LIB%/lib/*}"
+  expected_stdout=""
+  expected_stderr="env-file-output"
+  expected_json="array"
+  expected_parse=pass
+  expected_value="private-value"
+  if [[ "$variant" == mutant ]]; then
+    scripts="$PROJ11/scripts"
+    expected_stdout="env-file-output"
+    expected_stderr=""
+    expected_json=""
+    expected_parse=fail
+    expected_value=$'env-file-output\nprivate-value'
+  fi
+  (
+    unset KENDEX_ENV_FILE KENDEX_STDOUT_TEST CODEX_HOME
+    unset ORCH_LANE_DIRS ORCH_LANE_ALIASES ORCH_LANE_EXCLUDE ORCH_LANE_RETIRE
+    export LANES_HOME="$PROJ11/accounts" OVERSEE_WATCH_STATE_DIR="$PROJ11/state"
+    cd "$PROJ11"
+    # shellcheck source=/dev/null
+    source "$scripts/lib/kendex-env.sh"
+    kendex_load_project_env "$PROJ11" > "$PROJ11/out" 2> "$PROJ11/err"
+    "$scripts/orch-env" KENDEX_STDOUT_TEST default > "$PROJ11/value" 2> "$PROJ11/value-err"
+    # Finish the writer before jq can reject the mutant's first line.
+    "$scripts/lanes" list --json > "$PROJ11/lanes-out" 2> "$PROJ11/lanes-err"
+    parse_status=pass
+    jq -r type < "$PROJ11/lanes-out" > "$PROJ11/json" 2> "$PROJ11/jq-err" || parse_status=fail
+    printf '%s\n' "$parse_status" > "$PROJ11/parse-status"
+  )
+  assert_eq "$(cat "$PROJ11/out")" "$expected_stdout" "$variant: loader stdout"
+  assert_eq "$(cat "$PROJ11/err")" "$expected_stderr" "$variant: loader stderr"
+  assert_eq "$(cat "$PROJ11/value")" "$expected_value" "$variant: orch-env returns only its value"
+  assert_eq "$(cat "$PROJ11/value-err")" "$expected_stderr" "$variant: orch-env preserves env messages"
+  assert_eq "$(cat "$PROJ11/parse-status")" "$expected_parse" "$variant: lanes JSON parse status"
+  assert_eq "$(cat "$PROJ11/json")" "$expected_json" "$variant: lanes JSON type"
+  assert_eq "$(cat "$PROJ11/lanes-err")" "$expected_stderr" "$variant: lanes preserves env messages"
+done
 
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"

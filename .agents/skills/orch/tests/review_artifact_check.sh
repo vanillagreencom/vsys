@@ -19,6 +19,7 @@ CHECK="$REPO_ROOT/skills/orch/scripts/review-artifact-check"
 source "$TEST_DIR/lib/waiter-assertions.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+source "$TEST_DIR/lib/review-artifact-fixture.sh"
 
 DELEG=1750000000
 BEFORE=$((DELEG - 100))
@@ -68,6 +69,10 @@ body() {
     chain_zero) printf '{"verdict":"pass","summary":"mutation: killed 0/0","blockers":[],"suggestions":[],"qa_metadata":{}}' ;;
     item_bad) printf '{"verdict":"pass","blockers":[],"suggestions":[{"title":"t","location":"l","detail":"x","severity":"low"}],"qa_metadata":{}}' ;;
     item_ok) printf '{"verdict":"pass","blockers":[],"suggestions":[{"id":1,"title":"t","location":"l","description":"d","recommendation":"r","priority":3,"estimate":2,"category":"issue","impact":"nightly importers hit it on every run"}],"qa_metadata":{}}' ;;
+    tree_dirty) printf '{"verdict":"pass","head":"%s","dirty_paths":["src/changed.rs"]}' "$REVIEW_FIXTURE_HEAD" ;;
+    tree_head) printf '{"verdict":"pass","head":"previous-commit","dirty_paths":[]}' ;;
+    tree_nohead) printf '{"verdict":"pass","dirty_paths":[]}' ;;
+    tree_nopaths) printf '{"verdict":"pass","head":"%s"}' "$REVIEW_FIXTURE_HEAD" ;;
     *) echo "body: unknown name $1" >&2; exit 1 ;;
   esac
 }
@@ -83,7 +88,8 @@ stage() {
   local spec="$1" items item file when name mtime
   RUN="$TMP_ROOT/runs/$((++RUN_SEQ))"
   WT="$RUN/wt"
-  mkdir -p "$WT/tmp"
+  mkdir -p "$WT" "$TMP_ROOT/storage/$RUN_SEQ"
+  ln -s "$TMP_ROOT/storage/$RUN_SEQ" "$WT/tmp"
   F="$WT/tmp/review-external-F.json"
   [[ -n "$spec" ]] || return 0
   IFS=';' read -ra items <<<"$spec"
@@ -91,6 +97,7 @@ stage() {
     file="${item%%@*}"; when="${item#*@}"; when="${when%%=*}"; name="${item#*=}"
     [[ "$file" != F ]] || file="review-external-F"
     body "$name" > "$WT/tmp/$file.json"
+    case "$name" in tree_*|notjson) ;; *) review_fixture_stamp "$WT/tmp/$file.json" ;; esac
     case "$when" in
       before) mtime=$BEFORE ;; at) mtime=$DELEG ;; after) mtime=$AFTER ;; later) mtime=$LATER ;; later2) mtime=$LATER2 ;;
       none) continue ;;
@@ -103,12 +110,16 @@ stage() {
 # run_check ARGS... — runs the check with %W, %F and %D in ARGS replaced by
 # the staged worktree, the --file target and the delegation boundary; OUT is
 # the JSON, RC the exit, ERR the stderr file.
+# SHIM_PATH, when set, is prepended to PATH for the run: the probe-failure case
+# shadows one helper at a time so a row fails the probe it names and no other.
+SHIM_PATH=""
 run_check() {
   local args=() a
   for a in "$@"; do a="${a//%W/$WT}"; a="${a//%F/$F}"; a="${a//%D/$DELEG}"; args+=("$a"); done
+  if [[ "${args[0]:-}" == --file ]] && (( ${#args[@]} >= 2 )); then args=(--file "${args[1]}" "$WT" "${args[@]:2}"); fi
   ERR="$RUN/stderr"
   set +e
-  OUT=$("$CHECK" ${args[@]+"${args[@]}"} 2>"$ERR")
+  OUT=$(PATH="${SHIM_PATH:+$SHIM_PATH:}$PATH" "$CHECK" ${args[@]+"${args[@]}"} 2>"$ERR")
   RC=$?
   set -e
 }
@@ -122,11 +133,14 @@ json() { jq -r "$@" <<<"$OUT" 2>/dev/null || echo UNPARSEABLE; }
 #   path            the reported path with the staged worktree's tmp/ prefix
 #                   removed, or null; a path anywhere else prints whole and
 #                   fails the row
-#   detail~<text>   whether the detail names <text> (`+` reads as a space):
-#                   the detail is what the rejected reviewer acts on, and
-#                   which shape it saw lives nowhere else
-#   detail_present  whether a detail is a non-empty string
+#   detail~key:value whether the first detail line carries key=value
+#   diagnostic      the stable diagnostic code
+#   stdout_nonempty whether help wrote a response
 #   stdout~<text>   whether stdout carries <text>
+#   stderr_abort    the status named by the EXIT trap's keyed line ANYWHERE on
+#                   stderr, or `absent`. Position is not asserted: the trap runs
+#                   after the command that failed, so that command's own
+#                   diagnostic precedes it
 #   stderr          `line` when anything was written there, else `empty`
 observe() {
   local got="" token name value needle
@@ -135,9 +149,23 @@ observe() {
     case "$name" in
       rc) value="$RC" ;;
       path) value="$(json --arg tmp "$WT/tmp/" '.path | if . == null then "null" else ltrimstr($tmp) end')" ;;
-      detail~*) needle="${name#detail~}"; value="$(json '.detail // ""' | grep -qF -- "${needle//+/ }" && echo true || echo false)" ;;
-      detail_present) value="$(json '(.detail | type) == "string" and .detail != ""')" ;;
+      detail~*) needle="${name#detail~}"; value="$(json --arg needle "${needle/:/=}" '(.detail // "" | split("\n")[0] | split(" ")) | index($needle) != null')" ;;
+      diagnostic) value="$(json '.detail // "" | split("\n")[0] | split(" ")[1]')" ;;
+      stdout_nonempty) value="$([[ -n "$OUT" ]] && echo true || echo false)" ;;
       stdout~*) needle="${name#stdout~}"; value="$(grep -qF -- "${needle//+/ }" <<<"$OUT" && echo true || echo false)" ;;
+      stderr_code|stderr~*)
+        IFS= read -r value < "$ERR" || value=""
+        if [[ "$name" == stderr_code ]]; then
+          value="${value#review-artifact-check: }"; value="${value%% *}"
+        else
+          needle="${name#stderr~}"; needle="${needle//%W/$WT}"
+          value="$([[ " $value " == *" ${needle/:/=} "* ]] && echo true || echo false)"
+        fi ;;
+      stderr_abort)
+        value="$(grep -o 'review-artifact-check: exit=[0-9][0-9]*' "$ERR" 2>/dev/null || printf '')"
+        value="${value#review-artifact-check: exit=}"
+        value="${value:-absent}"
+        ;;
       stderr) value="$([[ -s "$ERR" ]] && echo line || echo empty)" ;;
       *) value="$(json "if has(\"$name\") then .$name else \"ABSENT\" end")" ;;
     esac
@@ -163,6 +191,11 @@ table() {
 GLOB='%W reviewer-quality %D'
 Q=review-reviewer-quality
 
+for mode in '--file %F' '%W external %D'; do table \
+    "dirty starting tree|F@after=tree_dirty|$mode|rc=1 ok=false reason=moving_tree" \
+    "different starting head|F@after=tree_head|$mode|rc=1 ok=false reason=moving_tree" \
+    "missing starting head|F@after=tree_nohead|$mode|rc=1 ok=false reason=moving_tree" \
+    "missing dirty paths|F@after=tree_nopaths|$mode|rc=1 ok=false reason=moving_tree"; done
 echo "=== glob mode resolves the newest fresh artifact of the agent ==="
 # Another agent's file does not count; an artifact older than the boundary is
 # stale; a fresh one without a verdict is invalid and named; a fresh valid one
@@ -186,7 +219,7 @@ table \
   "an old mtime validates without a boundary|F@before=pass|--file %F|rc=0 ok=true reason=valid" \
   "an mtime before the boundary is stale|F@before=pass|--file %F %D|rc=1 ok=false path=review-external-F.json reason=stale" \
   "an mtime after the boundary is fresh|F@after=pass|--file %F %D|rc=0 ok=true reason=valid" \
-  "an mtime equal to the boundary is fresh|F@at=pass|--file %F %D|reason=valid" \
+  "an mtime equal to the boundary is fresh|F@at=pass|--file %F %D|rc=0 reason=valid" \
   "fresh but without a verdict is invalid|F@after=noverdict|--file %F %D|rc=1 reason=invalid" \
   "a missing file with a boundary is missing|F@none=pass|--file %W/tmp/nope.json %D|rc=1 reason=missing" \
   "a missing file|F@none=pass|--file %W/tmp/nope.json|rc=1 ok=false path=null reason=missing" \
@@ -204,8 +237,8 @@ table \
   "review_performed=false|F@after=noreview|--file %F|rc=1 ok=false path=review-external-F.json reason=no_review" \
   "a no-review reason alone|F@none=noreview_reason|--file %F|rc=1 reason=no_review" \
   "review_performed=false alone, arrays present, is still no_review|F@none=noreview_flag|--file %F|rc=1 reason=no_review" \
-  "empty qa_metadata with the arrays validates|F@none=qa_ok|--file %F|reason=valid" \
-  "review_performed=true validates|F@none=performed|--file %F|reason=valid" \
+  "empty qa_metadata with the arrays validates|F@none=qa_ok|--file %F|rc=0 reason=valid" \
+  "review_performed=true validates|F@none=performed|--file %F|rc=0 reason=valid" \
   "glob: a fresh no-review artifact is refused and named|$E-1@after=noreview|%W reviewer-ext %D|rc=1 path=$E-1.json reason=no_review" \
   "glob: terminal, an older fresh valid sibling does not rescue it|$E-0@after=qa_ok_noq;$E-1@later=noreview|%W reviewer-ext %D|rc=1 path=$E-1.json reason=no_review" \
   "glob control: a stale no-review artifact does not block a fresh valid one|$E-0@after=qa_ok_noq;$E-1@before=noreview|%W reviewer-ext %D|rc=0 path=$E-0.json reason=valid"
@@ -221,19 +254,17 @@ table \
   "qa-shaped without the arrays is incomplete and named|F@none=qa_inc_agent|--file %F|rc=1 ok=false path=review-external-F.json reason=incomplete" \
   "a non-array blockers|F@none=inc_type|--file %F|rc=1 reason=incomplete" \
   "missing suggestions alone|F@none=inc_sugg|--file %F|rc=1 reason=incomplete" \
-  "questions[] is not required|F@none=qa_ok_noq|--file %F|reason=valid" \
+  "questions[] is not required|F@none=qa_ok_noq|--file %F|rc=0 reason=valid" \
   "glob: a fresh qa-shaped incomplete artifact is refused and named|$I-1@after=qa_inc|%W reviewer-inc %D|rc=1 path=$I-1.json reason=incomplete" \
   "glob: terminal, an older fresh complete sibling does not rescue it|$I-0@after=qa_ok_noq;$I-1@later=qa_inc|%W reviewer-inc %D|rc=1 path=$I-1.json" \
   "glob control: a stale incomplete artifact does not block a fresh complete one|$I-0@after=qa_ok_noq;$I-1@before=qa_inc|%W reviewer-inc %D|rc=0 path=$I-0.json"
 trunc_src='{"agent":"r","verdict":"pass","summary":"s","blockers":[{"id":1,"title":"t","location":"l","description":"d","recommendation":"r","priority":1,"estimate":1}],"suggestions":[],"qa_metadata":{"x":1}}'
-trunc_bad=""
 stage ""
 for pct in 20 40 60 80 90 95 99; do
   printf '%s' "${trunc_src:0:$(( ${#trunc_src} * pct / 100 ))}" > "$WT/tmp/trunc-$pct.json"
   run_check --file "$WT/tmp/trunc-$pct.json"
-  [[ "$(json .reason)" == "invalid" ]] || trunc_bad="$trunc_bad ${pct}%:$(json .reason)"
+  assert_eq "$(observe "rc=1 reason=invalid")" "rc=1 reason=invalid" "prefix truncation at $pct percent fails before content gates"
 done
-assert_eq "$trunc_bad" "" "every prefix truncation is rejected as invalid before any content gate"
 
 echo "=== a qa-shaped artifact must carry usable finding items, and the detail says which ==="
 # Items need id, title, location, description, recommendation, priority
@@ -241,52 +272,52 @@ echo "=== a qa-shaped artifact must carry usable finding items, and the detail s
 # detail names the first offending item and field. Artifacts without
 # qa_metadata keep the tolerant shape. A missing array, a null one and a
 # wrong-typed one are three different things the agent did and the detail
-# says which, and what an empty review writes. Every rejection in the chain
+# says which, and each wrong type has its own value. Every rejection in the chain
 # names its cause. In glob mode a malformed-item artifact is refused
 # terminally, and a STALE one does not block a fresh well-formed one.
 T=review-reviewer-item
 table \
-  "the issue's malformed suggestion is incomplete, the detail names the item and the missing category|F@none=issue_bad|--file %F|rc=1 ok=false path=review-external-F.json reason=incomplete detail~suggestions[0]=true detail~missing/invalid+id,+description,+recommendation,+priority,+estimate,+category=true" \
-  "a fully compliant artifact is valid and carries no detail key|F@none=compliant|--file %F|ok=true reason=valid detail=ABSENT" \
-  "a suggestion missing only category|F@none=nocat|--file %F|rc=1 reason=incomplete detail~missing/invalid+category=true" \
+  "the issue's malformed suggestion is incomplete, the detail names the item and the missing category|F@none=issue_bad|--file %F|rc=1 ok=false path=review-external-F.json reason=incomplete detail~path:suggestions[0]=true detail~missing:id,description,recommendation,priority,estimate,category=true" \
+  "a fully compliant artifact is valid and carries no detail key|F@none=compliant|--file %F|rc=0 ok=true reason=valid detail=ABSENT" \
+  "a suggestion missing only category|F@none=nocat|--file %F|rc=1 reason=incomplete detail~missing:category=true" \
   "a category outside fix and issue|F@none=badcatval|--file %F|rc=1 reason=incomplete" \
-  "a blocker missing a base field, named|F@none=badblk|--file %F|rc=1 reason=incomplete detail~blockers[0]=true detail~missing/invalid+description=true" \
-  "a blocker without category is valid|F@none=okblk|--file %F|reason=valid" \
-  "a priority outside 1..4, named|F@none=badpri|--file %F|rc=1 reason=incomplete detail~missing/invalid+priority=true" \
-  "a string estimate, named|F@none=badest|--file %F|rc=1 reason=incomplete detail~missing/invalid+estimate(not+1..5)=true" \
-  "a blocker priority below the range, named on its array|F@none=badblkpri|--file %F|rc=1 detail~blockers[0]=true" \
-  "the boundary values priority 4 and estimate 5 are valid|F@none=okbound|--file %F|reason=valid" \
-  "malformed items without qa_metadata stay tolerant|F@none=noqa_bad|--file %F|reason=valid" \
-  "arrays lost: the detail names both arrays as absent and the exempt shape|F@none=qa_inc|--file %F|ok=false reason=incomplete detail~blockers[]+is+absent=true detail~suggestions[]+is+absent=true detail~no+qa_metadata=true" \
-  "a null blockers is reported as null, and what an empty review writes|F@none=null_blockers|--file %F|rc=1 reason=incomplete detail~blockers[]+is+null=true detail~writes+[]=true" \
-  "a missing blockers is reported as absent, and the present suggestions is not|F@none=inc_blk|--file %F|rc=1 reason=incomplete detail~blockers[]+is+absent=true detail~suggestions[]+is+absent=false" \
-  "an object blockers is reported by type|F@none=obj_blockers|--file %F|rc=1 reason=incomplete detail~blockers[]+is+object,+not+an+array=true detail~writes+[]=true" \
-  "a string blockers is reported by type|F@none=str_blockers|--file %F|rc=1 reason=incomplete detail~blockers[]+is+string,+not+an+array=true detail~writes+[]=true" \
-  "a number blockers is reported by type|F@none=num_blockers|--file %F|rc=1 reason=incomplete detail~blockers[]+is+number,+not+an+array=true detail~writes+[]=true" \
-  "a null suggestions is reported on its own|F@none=null_sugg|--file %F|detail~suggestions[]+is+null=true" \
-  "a wrong-typed suggestions is reported on its own|F@none=str_sugg|--file %F|detail~suggestions[]+is+string,+not+an+array=true" \
-  "chain: a missing verdict names its cause|F@none=chain_noverdict|--file %F|ok=false detail_present=true" \
-  "chain: a no-review admission names its cause|F@none=chain_noreview|--file %F|ok=false detail_present=true" \
-  "chain: a malformed finding item names its cause|F@none=chain_item|--file %F|ok=false detail_present=true" \
-  "chain: a bad measurement declaration names its cause|F@none=chain_decl|--file %F|ok=false detail_present=true" \
-  "chain: a zero-sample measurement names its cause|F@none=chain_zero|--file %F|ok=false detail_present=true" \
-  "glob missing names the glob that matched nothing||%W ghost-agent 0|reason=missing detail~review-ghost-agent-=true" \
-  "glob stale names the mtime against the boundary|review-staleonly-1@before=pass|%W staleonly %D|reason=stale detail~predates+the+boundary=true" \
-  "file missing names the path||--file %W/definitely-not-here.json|reason=missing detail~no+file+at=true" \
-  "file stale names the mtime against the boundary|F@before=pass|--file %F %D|reason=stale detail~predates+the+boundary=true" \
-  "glob: a fresh malformed-item artifact is refused and named|$T-1@after=item_bad|%W reviewer-item %D|rc=1 path=$T-1.json reason=incomplete detail~suggestions[0]=true" \
+  "a blocker missing a base field, named|F@none=badblk|--file %F|rc=1 reason=incomplete detail~path:blockers[0]=true detail~missing:description=true" \
+  "a blocker without category is valid|F@none=okblk|--file %F|rc=0 reason=valid" \
+  "a priority outside 1..4, named|F@none=badpri|--file %F|rc=1 reason=incomplete detail~invalid:priority:range[1,4]=true" \
+  "a string estimate, named|F@none=badest|--file %F|rc=1 reason=incomplete detail~invalid:estimate:range[1,5]=true" \
+  "a blocker priority below the range, named on its array|F@none=badblkpri|--file %F|rc=1 detail~path:blockers[0]=true" \
+  "the boundary values priority 4 and estimate 5 are valid|F@none=okbound|--file %F|rc=0 reason=valid" \
+  "malformed items without qa_metadata stay tolerant|F@none=noqa_bad|--file %F|rc=0 reason=valid" \
+  "arrays lost: the detail names both arrays as absent|F@none=qa_inc|--file %F|rc=1 ok=false reason=incomplete detail~blockers:absent=true detail~suggestions:absent=true" \
+  "a null blockers is reported as null|F@none=null_blockers|--file %F|rc=1 reason=incomplete detail~blockers:null=true" \
+  "a missing blockers is reported as absent, and the present suggestions is not|F@none=inc_blk|--file %F|rc=1 reason=incomplete detail~blockers:absent=true detail~suggestions:absent=false" \
+  "an object blockers is reported by type|F@none=obj_blockers|--file %F|rc=1 reason=incomplete detail~blockers:object=true" \
+  "a string blockers is reported by type|F@none=str_blockers|--file %F|rc=1 reason=incomplete detail~blockers:string=true" \
+  "a number blockers is reported by type|F@none=num_blockers|--file %F|rc=1 reason=incomplete detail~blockers:number=true" \
+  "a null suggestions is reported on its own|F@none=null_sugg|--file %F|rc=1 detail~suggestions:null=true" \
+  "a wrong-typed suggestions is reported on its own|F@none=str_sugg|--file %F|rc=1 detail~suggestions:string=true" \
+  "chain: a missing verdict names its cause|F@none=chain_noverdict|--file %F|rc=1 ok=false diagnostic=verdict" \
+  "chain: a no-review admission names its cause|F@none=chain_noreview|--file %F|rc=1 ok=false diagnostic=no_review" \
+  "chain: a malformed finding item names its cause|F@none=chain_item|--file %F|rc=1 ok=false diagnostic=finding_item" \
+  "chain: a bad measurement declaration names its cause|F@none=chain_decl|--file %F|rc=1 ok=false diagnostic=measurement_declaration" \
+  "chain: a zero-sample measurement names its cause|F@none=chain_zero|--file %F|rc=1 ok=false diagnostic=zero_sample" \
+  "glob missing names the glob that matched nothing||%W ghost-agent 0|rc=1 reason=missing diagnostic=missing_glob" \
+  "glob stale names the mtime against the boundary|review-staleonly-1@before=pass|%W staleonly %D|rc=1 reason=stale detail~mtime:1749999900=true detail~delegated_at:1750000000=true" \
+  "file missing names the path||--file %W/definitely-not-here.json|rc=1 reason=missing diagnostic=missing" \
+  "file stale names the mtime against the boundary|F@before=pass|--file %F %D|rc=1 reason=stale detail~mtime:1749999900=true detail~delegated_at:1750000000=true" \
+  "glob: a fresh malformed-item artifact is refused and named|$T-1@after=item_bad|%W reviewer-item %D|rc=1 path=$T-1.json reason=incomplete detail~path:suggestions[0]=true" \
   "glob: terminal, an older fresh well-formed sibling does not rescue it|$T-0@after=item_ok;$T-1@later=item_bad|%W reviewer-item %D|rc=1 path=$T-1.json reason=incomplete" \
   "glob control: a stale malformed-item artifact does not block a fresh well-formed one|$T-0@after=item_ok;$T-1@before=item_bad|%W reviewer-item %D|rc=0 path=$T-0.json"
 
 echo "=== usage errors ==="
 table \
-  "missing arguments|F@none=pass|%W reviewer-quality|rc=2" \
-  "a non-numeric delegated_at|F@none=pass|%W reviewer-quality not-a-number|rc=2" \
-  "a nonexistent worktree||%W/does-not-exist reviewer-quality %D|rc=2" \
-  "--file with no path||--file|rc=2" \
-  "--file with a non-numeric boundary|F@none=pass|--file %F not-a-number|rc=2" \
-  "--file with too many arguments|F@none=pass|--file %F %D extra-arg|rc=2" \
-  "a non-integer --wait|F@none=pass|%W waitrev 0 --wait nope|rc=2" \
+  "missing arguments|F@none=pass|%W reviewer-quality|rc=2 stderr_code=usage stderr~argc:2=true" \
+  "a non-numeric delegated_at|F@none=pass|%W reviewer-quality not-a-number|rc=2 stderr_code=delegated_at stderr~value:not-a-number=true" \
+  "a nonexistent worktree||%W/does-not-exist reviewer-quality %D|rc=2 stderr_code=worktree stderr~path:%W/does-not-exist=true" \
+  "--file with no path||--file|rc=2 stderr_code=usage stderr~argc:1=true" \
+  "--file with a non-numeric boundary|F@none=pass|--file %F not-a-number|rc=2 stderr_code=delegated_at stderr~value:not-a-number=true" \
+  "--file with too many arguments|F@none=pass|--file %F %D extra-arg|rc=2 stderr_code=usage stderr~argc:5=true" \
+  "a non-integer --wait|F@none=pass|%W waitrev 0 --wait nope|rc=2 stderr_code=wait stderr~value:nope=true" \
   "the bare three-positional contract still validates|review-waitrev-1@after=qa_ok|%W waitrev 0|rc=0"
 
 echo "=== --wait blocks until an artifact lands or the deadline ==="
@@ -296,7 +327,7 @@ echo "=== --wait blocks until an artifact lands or the deadline ==="
 # ending it instantly.
 stage ""
 start_epoch="$(date +%s)"
-( sleep 2; body qa_ok > "$WT/tmp/review-waitrev-20260101-000001.json" ) &
+( sleep 2; body qa_ok > "$WT/tmp/review-waitrev-20260101-000001.json"; review_fixture_stamp "$WT/tmp/review-waitrev-20260101-000001.json" ) &
 writer_pid=$!
 run_check %W waitrev 0 --wait 20 --interval 1
 wait "$writer_pid" 2>/dev/null || true
@@ -307,7 +338,7 @@ run_check %W ghostrev 0 --wait 2 --interval 1
 assert_eq "$(observe "rc=1 reason=missing")" "rc=1 reason=missing" "--wait at the deadline with nothing landed is missing" "$ERR"
 stage "review-cyc-20200101-000000@before=qa_ok"
 now_epoch="$(date +%s)"
-( sleep 2; body qa_ok > "$WT/tmp/review-cyc-20990101-000000.json" ) &
+( sleep 2; body qa_ok > "$WT/tmp/review-cyc-20990101-000000.json"; review_fixture_stamp "$WT/tmp/review-cyc-20990101-000000.json" ) &
 writer_pid=$!
 run_check %W cyc "$now_epoch" --wait 20 --interval 1
 elapsed=$(( $(date +%s) - now_epoch ))
@@ -319,11 +350,78 @@ echo "=== -h and --help answer before any temp-file initialization ==="
 # lib is sourced, so --help prints under an unusable TMPDIR too.
 stage ""
 run_check --help
-assert_eq "$(observe "rc=0 stderr=empty stdout~Usage:=true stdout~zero_sample=true stdout~measurement_failed=true")" "rc=0 stderr=empty stdout~Usage:=true stdout~zero_sample=true stdout~measurement_failed=true" "--help exits 0 on stdout alone with the reason vocabulary and the declaration contract"
+assert_eq "$(observe "rc=0 stderr=empty stdout_nonempty=true stdout~zero_sample=true stdout~measurement_failed=true")" "rc=0 stderr=empty stdout_nonempty=true stdout~zero_sample=true stdout~measurement_failed=true" "--help exits 0 on stdout alone with the reason vocabulary and the declaration contract"
 run_check -h
-assert_eq "$(observe "rc=0 stdout~Usage:=true")" "rc=0 stdout~Usage:=true" "-h prints usage"
+assert_eq "$(observe "rc=0 stdout_nonempty=true")" "rc=0 stdout_nonempty=true" "-h prints usage"
 TMPDIR="$TMP_ROOT/does-not-exist/nope" run_check --help
-assert_eq "$(observe "rc=0 stdout~Usage:=true")" "rc=0 stdout~Usage:=true" "--help still prints the contract under an unusable TMPDIR"
+assert_eq "$(observe "rc=0 stdout_nonempty=true")" "rc=0 stdout_nonempty=true" "--help still prints the contract under an unusable TMPDIR"
+
+echo "=== a probe that fails mid-wait is named, never left silent ==="
+# WHAT THE ROWS PLANT: a helper that RAN and exited nonzero, which is where
+# errexit ends the script and where bash does reach the EXIT trap. That is not
+# fork exhaustion, and no row here claims to be: when a SIMPLE command cannot
+# fork, bash ends the shell with status 127 and runs no trap, so no keyed line
+# lands and none can be pinned. On the reachable path the helper produced no
+# result, and its bare status beside an empty stdout would read to the caller
+# like a rejection; the EXIT trap names that status on a keyed line instead.
+#
+# The stat row is the one helper failure that used to become a VALUE rather
+# than a status: an unreadable mtime read as 0, which made a fresh valid
+# artifact `stale`, which is a reason --wait keeps polling on. It stages a
+# fresh valid artifact and a real boundary, so nothing but the broken stat can
+# produce `stale` here. Its inverse is the genuinely older artifact in the glob
+# table above, which still reads `stale` with a working stat.
+#
+# The jq row is the probe that ALREADY answers: a jq the check cannot run is a
+# parseable rejection on stdout, exit 1, and no keyed line over it.
+PROBE_SHIMS="$TMP_ROOT/probe-shims"
+for probe_cmd in sleep jq stat; do
+  mkdir -p "$PROBE_SHIMS/$probe_cmd"
+  printf '#!/usr/bin/env bash\nexit 254\n' > "$PROBE_SHIMS/$probe_cmd/$probe_cmd"
+  chmod +x "$PROBE_SHIMS/$probe_cmd/$probe_cmd"
+done
+# A sleep that SPEAKS before it dies, which is what a real one does. The silent
+# shims above leave the keyed line first by accident of their silence; this one
+# is the honest case, and the row on it is why no row asserts the trap's line
+# is first.
+mkdir -p "$PROBE_SHIMS/noisy-sleep"
+cat > "$PROBE_SHIMS/noisy-sleep/sleep" <<'SHIM'
+#!/usr/bin/env bash
+printf 'sleep: cannot continue\n' >&2
+exit 254
+SHIM
+chmod +x "$PROBE_SHIMS/noisy-sleep/sleep"
+# The same treatment for the probe whose failure becomes a REFUSAL rather than
+# an abort. That refusal is documented as stderr's first line, which only holds
+# because file_mtime silences both stat spellings; a stat that speaks before it
+# dies is what tells the two apart, and the silent shim cannot.
+mkdir -p "$PROBE_SHIMS/noisy-stat"
+cat > "$PROBE_SHIMS/noisy-stat/stat" <<'SHIM'
+#!/usr/bin/env bash
+printf 'stat: cannot read file system information\n' >&2
+exit 254
+SHIM
+chmod +x "$PROBE_SHIMS/noisy-stat/stat"
+probe_table() {
+  local row label probe spec args expect
+  for row in "$@"; do
+    IFS='|' read -r label probe spec args expect <<<"$row"
+    stage "$spec"
+    SHIM_PATH="$PROBE_SHIMS/$probe"
+    # shellcheck disable=SC2086
+    run_check $args
+    SHIM_PATH=""
+    assert_eq "$(observe "$expect")" "$expect" "$label" "$ERR"
+  done
+}
+WAITING='%W proberev 0 --wait 20 --interval 1'
+probe_table \
+  "a sleep that cannot run ends the wait with its own status, keyed|sleep||$WAITING|rc=254 stderr_abort=254 stdout_nonempty=false" \
+  "a sleep that speaks first still gets its status keyed|noisy-sleep||$WAITING|rc=254 stderr_code=sleep: stderr_abort=254" \
+  "a jq that cannot run already answers, and takes no keyed line|jq||$WAITING|rc=1 stderr=empty ok=false reason=invalid" \
+  "an unreadable mtime refuses, never calls a fresh artifact stale|stat|review-freshrev-1@after=qa_ok|%W freshrev %D --wait 20 --interval 1|rc=2 stderr_code=mtime stdout_nonempty=false" \
+  "a stat that speaks first is still not ahead of the refusal|noisy-stat|review-freshrev-1@after=qa_ok|%W freshrev %D --wait 20 --interval 1|rc=2 stderr_code=mtime stdout_nonempty=false" \
+  "the same holds without --wait|noisy-stat|review-freshrev-1@after=qa_ok|%W freshrev %D|rc=2 stderr_code=mtime stdout_nonempty=false"
 
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"

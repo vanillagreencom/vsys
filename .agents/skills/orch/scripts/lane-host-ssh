@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Static SSH lane hosts. Use --help for configuration and the command contract."""
+
+import argparse
+import io
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+
+
+def notice(key, **values):
+    """Print a stable diagnostic without file contents or credentials."""
+    print("lane-host-ssh: " + key + "".join(f" {k}={v}" for k, v in values.items()), file=sys.stderr)
+
+
+def remote(row, script, *args, data=None, accept=()):
+    """Run Bash through SSH; quote every argument for the remote login shell."""
+    command = shlex.join(["bash", "-c", "set -euo pipefail\n" + script, "lane-host-ssh", *args])
+    result = subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", "--", row["target"], command],
+                            input=data if data is not None else b"", stdout=subprocess.PIPE)
+    if result.returncode != 0 and result.returncode not in accept:
+        notice("remote-failed", target=row["target"], exit=result.returncode)
+        raise SystemExit(result.returncode if result.returncode > 0 else 1)
+    return result
+
+
+def put(row, path, data):
+    """Transfer file bytes on stdin with private permissions.
+
+    The bytes land in a temporary file beside the target and are renamed over
+    it only once the count the sender declared has arrived. A local process
+    that dies mid-feed closes the stream, which the remote `cat` reads as an
+    ordinary end of input, so the count is what tells a whole transfer from a
+    truncated one and the rename is what keeps a reader from meeting either.
+    """
+    remote(row, '''umask 077
+mkdir -p -- "$(dirname -- "$1")"
+staged="$1.kendex-put.$$"
+cat > "$staged"
+case "$staged" in /*) permission_path="$staged" ;; *) permission_path="./$staged" ;; esac
+chmod 600 "$permission_path"
+arrived=$(wc -c < "$staged")
+if [ "$((arrived + 0))" -ne "$2" ]; then
+  rm -f -- "$staged"
+  printf 'lane-host-ssh: put-short expected=%s arrived=%s\\n' "$2" "$((arrived + 0))" >&2
+  exit 1
+fi
+mv -f -- "$staged" "$1"''', path, str(len(data)), data=data)
+
+
+def worktree(row, *args):
+    """Keep path resolution and ownership in the installed worktree command."""
+    return remote(row, 'cd -- "$1"; shift; exec .agents/skills/worktree/scripts/worktree "$@"',
+                  row["clone"], *args, accept=(75,) if args[0] == "create" else ())
+
+
+def create_flags(row, item, reuse_requested):
+    """Ask the installed worktree owner whether reuse has a target."""
+    if not reuse_requested:
+        return []
+    present = worktree(row, "exists", item).stdout
+    if present == b"true\n":
+        return ["--reuse"]
+    if present == b"false\n":
+        return []
+    notice("worktree-exists-invalid", item=item)
+    raise SystemExit(1)
+
+
+def install(row):
+    """Install the clone's declared packages before worktree setup."""
+    remote(row, '''cd -- "$1"
+if test -f kendex.toml; then
+  kendex update-pi --leave >&2
+  kendex refresh --yes --leave >&2
+fi''', row["clone"])
+
+
+def create(row, args, source):
+    """Prepare the clone and account, then acquire the worktree through its owner."""
+    result = remote(row, '''if test -f "$1/.git/lane-host-item"; then
+  owner=$(cat -- "$1/.git/lane-host-item") || exit 1
+  if test "$owner" != "$3"; then exit 75; fi
+fi
+if test -d "$1/.git"; then
+  origin=$(git -C "$1" remote get-url origin) || exit 1
+  actual=$(gh repo view "$origin" --json nameWithOwner --jq .nameWithOwner) || exit 1
+  if test "$actual" != "$2"; then
+    printf 'lane-host-ssh: origin-mismatch expected=%s actual=%s\n' "$2" "$actual" >&2
+    exit 1
+  fi
+  printf existing
+else
+  gh repo clone "$2" "$1" >&2
+  printf new
+fi''', row["clone"], args.repo, args.item)
+    if result.stdout == b"existing":
+        ready = remote(row, '''if test -x "$1/.agents/skills/orch/scripts/sync-base" &&
+   test -x "$1/.agents/skills/worktree/scripts/worktree"; then printf ready; exit 0; fi
+worktrees=$(git -C "$1" worktree list --porcelain) || exit 1
+if [[ "$worktrees" == *$'\nworktree '* ]]; then exit 75; fi
+dirty=$(git -C "$1" status --porcelain --untracked-files=no) || exit 1; if [[ -n "$dirty" ]]; then printf 'lane-host-ssh: bootstrap-dirty path=%s\n' "$1" >&2; exit 3; fi
+test -f "$1/kendex.toml" || exit 1
+printf bootstrap''', row["clone"]).stdout
+        if ready == b"bootstrap":
+            install(row)
+        elif ready != b"ready":
+            notice("bootstrap-state-invalid", item=args.item)
+            raise SystemExit(1)
+        remote(row, '''test -x "$1/.agents/skills/worktree/scripts/worktree"
+exec "$1/.agents/skills/orch/scripts/sync-base" "$1" >&2''', row["clone"])
+        made = worktree(row, "create", args.item,
+                        *create_flags(row, args.item, args.relaunch or args.reuse))
+        if made.returncode:
+            raise SystemExit(made.returncode)
+    env_file = source / ".env.local"
+    put(row, row["clone"] + "/.env.local", env_file.read_bytes() if env_file.exists() else b"")
+    cache = source / ".cache/linear"
+    if result.stdout == b"new" and cache.is_dir():
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz", dereference=True) as tar:
+            # Linear owns these cache files; locks are local to each machine.
+            def unlocked(info):
+                return None if info.name.endswith(".lock") else info
+            tar.add(cache, arcname="linear", filter=unlocked)
+        remote(row, 'mkdir -p -- "$1/.cache"; tar -xzf - -C "$1/.cache"',
+               row["clone"], data=archive.getvalue())
+    install(row)
+    account = Path(args.account)
+    remote_account = row["account"]
+    if args.harness == "claude":
+        put(row, remote_account + "/setup-token", (account / "setup-token").read_bytes())
+        prefix = "exec " + shlex.join(["bash", "-c",
+            'CLAUDE_CODE_OAUTH_TOKEN=$(< "$1") && export CLAUDE_CODE_OAUTH_TOKEN && exec bash -lc "$2"',
+            "lane-host", remote_account + "/setup-token"])
+    else:
+        put(row, remote_account + "/auth.json", (account / "auth.json").read_bytes())
+        name = "CODEX_HOME" if args.harness == "codex" else "PI_CODING_AGENT_DIR"
+        prefix = "exec env " + shlex.quote(name + "=" + remote_account) + " bash -lc"
+    # An existing clone acquires ownership before shared files change. Run
+    # setup again after preparation so its links, copies and identity are current.
+    flags = ["--reuse"] if result.stdout == b"existing" else create_flags(row, args.item, args.relaunch or args.reuse)
+    made = worktree(row, "create", args.item, *flags)
+    if made.returncode:
+        raise SystemExit(made.returncode)
+    path = worktree(row, "path", args.item).stdout.decode().strip()
+    if not path or "\n" in path or "\t" in path:
+        notice("worktree-path-invalid", item=args.item)
+        raise SystemExit(1)
+    # The item marker is local to this clone, never the per-machine install ledger.
+    remote(row, 'printf "%s\\n" "$2" > "$1/.git/lane-host-item"', row["clone"], args.item)
+    print(f"ssh-target={row['target']}\tpath={path}\tremote-prefix={prefix}")
+
+
+def archive_tmp(row, item, worktree_path):
+    """Preserve remaining lane records locally before close removes their worktree."""
+    data = remote(row, '''paths=()
+for base in "$1" "$2"; do
+  candidate="$base/tmp"
+  if test -e "$candidate" || test -L "$candidate"; then
+    paths+=("${candidate#/}")
+  fi
+done
+if test "${#paths[@]}" -eq 0; then exit 0; fi
+exec tar -chzf - -C / -- "${paths[@]}"''', row["clone"], worktree_path).stdout
+    if not data:
+        return
+    fleet = Path(os.environ.get("FLEET_DIR") or str(Path.home() / ".fleet")).expanduser()
+    directory = fleet / "archive" / row["repo"].rsplit("/", 1)[-1] / item
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix=f"tmp-{time.time_ns()}-", suffix=".tgz", dir=directory, delete=False) as archive:
+            archive.write(data)
+            archive.flush()
+            os.fsync(archive.fileno())
+            kept = archive.name
+    except OSError as error:
+        notice("archive-write-failed", path=directory, cause=type(error).__name__)
+        raise SystemExit(1) from None
+    print(f"kept={kept}", flush=True)
+
+
+def main():
+    """Dispatch the provider protocol against an explicit per-item inventory."""
+    parser = argparse.ArgumentParser(description="""One static SSH host and clone per item.
+LANE_HOST_SSH_INVENTORY names a JSON array for this repository. Each row has string fields:
+repo (OWNER/REPO), item, target (SSH destination), clone (absolute remote clone
+path), account (absolute remote harness config directory). Each target/clone
+pair and each item occurs once. SSH keys and host verification use your SSH config.
+LANE_HOST_SSH_SOURCE names the local source clone (default: current directory).
+create copies its .env.local and, for a fresh clone, .cache/linear without locks.
+An existing clone must have an origin for the configured repository. Its base
+branch is fast-forwarded before setup; local changes or divergence stop create.
+Claude reads ACCOUNT/setup-token; Codex and Pi read ACCOUNT/auth.json. Bytes
+travel on stdin. cat exits 2 for a path that is not there. put stages beside
+the target and renames only once the byte count the sender declared has
+arrived, so a transfer cut short replaces nothing and exits 1. Prepare the host with Git, gh, Bash, kendex and the harness first.
+The control machine requires Python 3.8 or later.
+create returns ssh-target, path and remote-prefix as tab-separated key=value
+fields. Existing ownership exits 75; --reuse and --relaunch pass --reuse to the
+worktree command when the target exists; a missing target uses plain create.
+close refuses dirty clones or worktrees with exit 3 and keeps the static host.
+An absent or different item marker refuses close with exit 75
+before worktree lookup. Before worktree removal, close archives remaining clone/tmp
+and worktree/tmp directories under FLEET_DIR/archive/REPO/ITEM/tmp-STAMP.tgz
+(FLEET_DIR defaults to ~/.fleet) and prints kept=PATH. A failed archive stops
+close. An already removed worktree's tmp cannot be recovered. No remaining tmp
+means no archive and no kept line. Archives contain paths relative to / and
+follow symlinks, so linked records remain in the archive after their target is gone.
+list prints repo/item, state, age, name as tab-separated fields. Age is '-' for
+static hosts. touch probes SSH; static hosts have no idle expiry.
+""", formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="verb", required=True)
+    make = sub.add_parser("create")
+    for field in ("item", "repo", "account"):
+        make.add_argument("--" + field, required=True)
+    make.add_argument("--harness", required=True, choices=("claude", "codex", "pi"))
+    make.add_argument("--relaunch", action="store_true")
+    make.add_argument("--reuse", action="store_true")
+    for verb in ("cat", "put", "touch", "close"):
+        action = sub.add_parser(verb)
+        action.add_argument("--item", required=True)
+        if verb in ("cat", "put"):
+            action.add_argument("path")
+    sub.add_parser("list")
+    args = parser.parse_args()
+    inventory = os.environ.get("LANE_HOST_SSH_INVENTORY", "")
+    if not inventory:
+        notice("inventory-required", variable="LANE_HOST_SSH_INVENTORY")
+        raise SystemExit(2)
+    with open(inventory, encoding="utf-8") as stream:
+        rows = json.load(stream)
+    fields = ("repo", "item", "target", "clone", "account")
+    if not isinstance(rows, list) or any(
+        not isinstance(row, dict) or any(not isinstance(row.get(k), str) or not row[k]
+        or any(c in row[k] for c in "\t\r\n") for k in fields) for row in rows
+    ):
+        notice("inventory-fields", path=inventory)
+        raise SystemExit(2)
+    if len({r["item"] for r in rows}) != len(rows) or len({(r["target"], r["clone"]) for r in rows}) != len(rows):
+        notice("inventory-duplicate", path=inventory)
+        raise SystemExit(2)
+    if any(not r["clone"].startswith("/") or not r["account"].startswith("/") for r in rows):
+        notice("inventory-path", path=inventory)
+        raise SystemExit(2)
+    if len({r["repo"] for r in rows}) > 1:
+        notice("inventory-repo", path=inventory)
+        raise SystemExit(2)
+    if args.verb == "list":
+        for row in rows:
+            state = remote(row, 'if test -f "$1/.git/lane-host-item"; then printf hosted; else printf available; fi', row["clone"])
+            print(f"{row['repo']}/{row['item']}\t{state.stdout.decode()}\t-\t{row['target']}")
+        return
+    matches = [row for row in rows if row["item"] == args.item]
+    if not matches:
+        notice("item-unconfigured", item=args.item)
+        raise SystemExit(2)
+    row = matches[0]
+    if args.verb == "create":
+        if row["repo"] != args.repo:
+            notice("repo-mismatch", item=args.item, repo=args.repo)
+            raise SystemExit(2)
+        create(row, args, Path(os.environ.get("LANE_HOST_SSH_SOURCE", os.getcwd())))
+    elif args.verb == "cat":
+        # A file that is not there exits 2, which is the caller's one reading
+        # of "the lane has not written this yet"; every other read failure
+        # keeps its own status so the caller refuses rather than reads empty.
+        read = remote(row, 'test -e "$1" || exit 2\ncat -- "$1"', args.path, accept=(2,))
+        if read.returncode == 2:
+            raise SystemExit(2)
+        sys.stdout.buffer.write(read.stdout)
+    elif args.verb == "put":
+        put(row, args.path, sys.stdin.buffer.read())
+    elif args.verb == "touch":
+        remote(row, "true")
+    elif args.verb == "close":
+        owned = remote(row, '''if ! test -f "$1/.git/lane-host-item"; then exit 75; fi
+owner=$(cat -- "$1/.git/lane-host-item") || exit 1
+if test "$owner" != "$2"; then exit 75; fi''', row["clone"], args.item, accept=(75,))
+        if owned.returncode == 75:
+            notice("close-unowned", item=args.item)
+            raise SystemExit(75)
+        path = worktree(row, "path", args.item).stdout.decode().strip()
+        result = remote(row, '''for dir in "$1" "$2"; do
+  if test "$dir" = "$2" && ! test -e "$dir" && ! test -L "$dir"; then continue; fi
+  dirty=$(git -C "$dir" status --porcelain) || exit 1
+  if test -n "$dirty"; then printf '%s\\n' "$dir"; exit 3; fi
+done
+if test -e "$2" || test -L "$2"; then printf present; else printf absent; fi''', row["clone"], path, accept=(3,))
+        if result.returncode == 3:
+            notice("close-refused", path=result.stdout.decode().strip())
+            raise SystemExit(3)
+        archive_tmp(row, args.item, path)
+        if result.stdout == b"present":
+            worktree(row, "remove", args.item)
+        remote(row, 'rm -f -- "$1/.git/lane-host-item"', row["clone"])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, tarfile.TarError) as error:
+        notice("operation-failed", cause=type(error).__name__, path=getattr(error, "filename", None))
+        raise SystemExit(1) from None

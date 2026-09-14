@@ -29,9 +29,10 @@ Two greens do NOT mean a review happened. Under `REVIEW_GATE_MODE = "off"` the p
 | `changes-requested` | `failure` | A reviewer objects. Red means objection, never a build failure. |
 | `untracked-claim` | `failure` | A disposition reply that claims tracking and names no issue fails the gate. |
 | `unreasoned-decline` | `failure` | A decline whose reason strips to nothing against the label vocabulary fails the gate. |
+| `suppressed-findings` | `failure` | A review body at the commit the gate relies on — the head, or the carry base once carry supplies the evidence — carries a `Suppressed comments (N)` block: findings that never became threads. The status names the count and the file:line list. It has no dedicated settings key, and while enforcement is on nothing disables it; `REVIEW_GATE_MODE = "off"` reaches it only by disabling the whole gate. An entry clears when the PR author answers it in an issue comment carrying a line `Dispositions at <sha>` that names this head, plus a line per entry opening with the entry's own `file:line` token — bare as the status prints it or bold as the review body does — followed by `Fixed in <sha>`, `Declined: <reason>` or `Tracked: <ID>`. That marker is the only thing that binds the comment to the head. The whole term clears when that commit carries no such block. |
 | (exit 2, no verdict) | *unchanged* | A read failed or config is invalid. Take NO action; retry next pass. |
 
-Pending text names the head; which sources open the gate is [references/settings.md](references/settings.md) § Reading the pending status. How the two failure verdicts parse a reply is `DEVELOPMENT.md` § Tracking-claim parsing and § Decline parsing; what to write instead is orch's `references/finding-disposition.md`.
+Pending text names the head; which sources open the gate is [references/settings.md](references/settings.md) § Reading the pending status. How the reply-parsing failure verdicts read a reply is `DEVELOPMENT.md` § Tracking-claim parsing and § Decline parsing, and how `suppressed-findings` reads a body is § Suppressed-finding parsing; what to write instead is orch's `references/finding-disposition.md`.
 
 # Working in a consumer repo
 
@@ -49,7 +50,7 @@ git ls-files '.github/workflows/*.yml' '.github/workflows/*.yaml' \
 .agents/skills/review-gate/scripts/validate.sh; echo "exit $?"
 ```
 
-`validate.sh` prints one verdict line per check and every `FAIL` line names its own fix. Exit 0 = clean, 1 = findings, 2 = the check could not run at all (bad arguments, not a git repository, a missing file it derives checks from). Fix that first; a 2 is never a pass. Run it after every step below.
+`validate.sh` prints one verdict record per check: `ok` or `FAIL`, then `check=CODE value=VALUE`. Indented lines explain the result and the repair. Exit 0 = clean, 1 = findings, 2 = the check could not run at all (bad arguments, not a git repository, a missing file it derives checks from). Fix that first; a 2 is never a pass. Run it after every step below.
 
 ## 2. Adopt, when nothing is wired
 
@@ -95,6 +96,8 @@ Keys a repo decides: [references/adoption.md](references/adoption.md) § Keys a 
 ## 4. Operations
 
 **Watching one or many PRs without stalling.** Never key a hand-rolled monitor on gate-state transitions. Run `.agents/skills/review-gate/scripts/pr-watch.sh` (optionally `--heal`) on the harness's wake-up mechanism: silence + exit 0 means nothing needs you; attention lines name exactly what does. See [Watching PRs as an agent](references/adoption.md#watching-prs-as-an-agent-pr-watch).
+
+**A pull request drew no automatic review.** The automatic reviewer is armed by a branch ruleset, and a base outside that ruleset's target set never draws one. Request the review by hand with `gh pr edit <PR#> --add-reviewer @copilot`. The target set, the ruleset parameters, and the fallbacks when the manual request draws nothing: [references/automatic-review.md](references/automatic-review.md).
 
 **Reviewers are down / nothing is reviewing.** Run the internal review loop: fix findings, resolve every thread, then post the override status with a real reason. It cannot bypass an objection or an open thread.
 

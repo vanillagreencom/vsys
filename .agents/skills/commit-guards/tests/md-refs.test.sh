@@ -16,7 +16,7 @@ set -euo pipefail
 set -f
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="$(cd "$TEST_DIR/.." && pwd)"
-MDR="$SKILL_DIR/scripts/md-refs"
+MDR="${MD_REFS_UNDER_TEST:-$SKILL_DIR/scripts/md-refs}"
 # shellcheck source=lib/harness.bash
 . "$TEST_DIR/lib/harness.bash"
 # Hermetic: a leaked setting would mask every row below.
@@ -37,7 +37,7 @@ assert_eq() { # LABEL EXPECT ACTUAL
 }
 
 # One line for a run in the row's repository: the exit status, then every
-# line printed, in order, joined by ';'. ENVS is a comma-separated list of
+# stable record printed, in order, joined by ';'. ENVS is a comma-separated list of
 # assignments; ARGS are passed through.
 R=""
 run() { # ENVS ARGS
@@ -45,6 +45,13 @@ run() { # ENVS ARGS
   [ -z "$1" ] || IFS=',' read -ra envs <<<"$1"
   # shellcheck disable=SC2086
   out="$(cd "$R" && env ${envs[@]+"${envs[@]}"} "$MDR" $2 2>&1)" || rc=$?
+  out="$(printf '%s\n' "$out" | LC_ALL=C awk '
+    /^[a-z][a-z-]*: [a-z-]+=/ { print; next }
+    /^[[:space:]]*dependency-order-control:/ {
+      sub(/^[[:space:]]*/, "")
+      print
+    }
+  ')"
   printf 'rc=%s%s' "$rc" "${out:+ $(printf '%s\n' "$out" | LC_ALL=C paste -sd ';' -)}"
 }
 
@@ -78,32 +85,37 @@ world_numbered() { repo "$1"; put guide.md '# Guide\n\n## 1. Install\n\n### 1.1.
 world_parens() { repo "$1"; put guide.md '# Guide\n\n## 1\n\n## Install\n'; put 'guide(foo).md' '# Guide\n\n## Install\n'; }
 world_text() { repo "$1"; put guide.md '# Guide\n\n## snake_case\n\n## Install\n\n## 2.\n\n## 3)\n\n## 4.1.\n\n## Use *tools*\n'; }
 world_code() { repo "$1"; put guide.md '# Guide\n\n## `snake_case`\n'; }
+# The content-citation world: one tracked source file carrying a test name,
+# and a binary one at a path a citation can name.
+world_content() {
+  repo "$1"
+  put src/ui/home.test.ts 'test("checks the footer", () => {});\ntest("ranks the ladder", () => {});\n'
+  put assets/pic.png '\001\0000\002 checks the footer\n'
+}
 # The source-carrier world: two documents to cite into, no source file yet.
 world_src() { repo "$1"; put docs/architecture/plugins.md '# Plugins\n\n## Invariants\n'; put AGENTS.md '# A\n\n## Rules\n'; }
 world_src_dec() { world_src "$1"; put docs/decisions/D008-scope.md '# D008\n\n## Scope\n'; }
 
-# The lines the judge prints, as functions of what a row put in.
-REMEDY="  remedies: point the reference at a tracked file, a heading it has, or a recorded decision, or delete it"
-ERR="::error::md-refs: "
-DEC_NO="decision IDs not judged (docs/decisions is not tracked)"
-DEC_YES="decision IDs judged against docs/decisions"
-PATHS_DEFAULT="AGENTS.md */AGENTS.md CLAUDE.md */CLAUDE.md SKILL.md */SKILL.md workflows/*.md */workflows/*.md agents/*.md */agents/*.md docs/architecture/*.md"
-NOTHING_STAGED="md-refs: OK — nothing staged to judge (COMMIT_GUARDS_MD_SCOPE=touched judges the files a commit touches); run with --all, or set COMMIT_GUARDS_MD_SCOPE=all once this repository's markdown is reflowed"
-dead() { printf 'md-refs FAIL dead reference: %s:%s: %s;%s' "$1" "$2" "$3" "$REMEDY"; } # PATH LINE MESSAGE
-skip() { printf 'md-refs: not measured: %s — %s' "$1" "$2"; } # PATH REASON
-unmeasured() { printf '; %s matched path(s) not measured' "$1"; } # N
-clean() { printf 'md-refs: OK — %s reference(s) resolve in %s tracked markdown file(s) and %s source file(s); %s%s' "$1" "$2" "${3:-0}" "${4:-$DEC_NO}" "${5-}"; } # JUDGED MD [SRC] [DEC-NOTE] [UNMEASURED]
-failed() { printf 'md-refs: %s dead reference(s) among %s in %s tracked markdown file(s) and %s source file(s); %s%s' "$1" "$2" "$3" "${4:-0}" "${5:-$DEC_NO}" "${6-}"; } # DEAD JUDGED MD [SRC] [DEC-NOTE] [UNMEASURED]
-# A verdict naming no measurable file echoes both settings' values.
-nomatch() { printf 'md-refs: OK — no tracked markdown file(s) to judge (COMMIT_GUARDS_MD_REFS_PATHS %s; COMMIT_GUARDS_MD_REFS_SOURCE_PATHS %s)' "$1" "$2"; } # MD-GLOBS SRC-GLOBS
-# The messages a reference dies with, each taking the quoted reference.
-untracked() { printf '%s: no tracked file or directory at %s' "$1" "$2"; } # RAW TARGET
-noslug() { printf '%s: %s has no heading or explicit anchor #%s' "$1" "$2" "$3"; } # RAW TARGET ANCHOR
-notext() { printf '`%s`: %s has no heading '"'"'%s'"'" "$1" "$2" "$3"; } # SPAN TARGET HEADING
-nocite() { printf '`%s`: no tracked file at %s beside %s or at the repository root' "$1" "$2" "$3"; } # SPAN PATH SRC
-noprefix() { printf '%s: %s has no heading at the start of '"'"'%s'"'" "$1" "$2" "$3"; } # RAW TARGET VALUE
-climbs() { printf '%s: the link climbs above the repository root' "$1"; } # RAW
-nodecision() { printf '%s: no tracked decision file docs/decisions/%s-*.md' "$1" "$1"; } # ID
+# Expected records retain caller, target, rule and every scan count.
+ERR="md-refs: "
+DEC_NO="0:docs/decisions"
+DEC_YES="1:docs/decisions"
+PATHS_DEFAULT="AGENTS.md */AGENTS.md CLAUDE.md */CLAUDE.md SKILL.md */SKILL.md workflows/*.md */workflows/*.md agents/*.md */agents/*.md docs/architecture/*.md docs/*.html"
+NOTHING_STAGED="md-refs: staged-count=0"
+dead() { printf 'md-refs: %s=%s:%s:%s' "${3%%=*}" "$1" "$2" "${3#*=}"; } # PATH LINE RULE=VALUE
+skip() { printf 'md-refs: unmeasured=%s:%s' "$1" "$2"; } # PATH CODE
+unmeasured() { printf '%s' "$1"; } # N
+clean() { printf 'md-refs: summary=violations=0 references=%s markdown=%s sources=%s decisions=%s skipped=%s' "$1" "$2" "${3:-0}" "${4:-$DEC_NO}" "${5:-0}"; } # JUDGED MD [SRC] [DECISION] [SKIPPED]
+failed() { printf 'md-refs: summary=violations=%s references=%s markdown=%s sources=%s decisions=%s skipped=%s' "$1" "$2" "$3" "${4:-0}" "${5:-$DEC_NO}" "${6:-0}"; } # DEAD JUDGED MD [SRC] [DECISION] [SKIPPED]
+nomatch() { printf 'md-refs: no-match=%s;%s' "$1" "$2"; } # MD-GLOBS SRC-GLOBS
+untracked() { printf 'link-target=%s:%s' "$1" "$2"; } # RAW TARGET
+noslug() { printf 'anchor-missing=%s:%s:%s' "$1" "$2" "$3"; } # RAW TARGET ANCHOR
+notext() { printf 'heading-missing=%s:%s:%s' "$1" "$2" "$3"; } # SPAN TARGET HEADING
+nocite() { printf 'citation-target=%s:%s:%s' "$1" "$2" "$3"; } # SPAN PATH SRC
+nophrase() { printf 'phrase-missing=%s:%s:%s' "$1" "$2" "$3"; } # SPAN TARGET PHRASE
+noprefix() { printf 'heading-prefix=%s:%s:%s' "$1" "$2" "$3"; } # RAW TARGET VALUE
+climbs() { printf 'link-escape=%s' "$1"; } # RAW
+nodecision() { printf 'decision-missing=%s:docs/decisions/%s-*.md' "$1" "$1"; } # ID
 
 # Table one: AGENTS.md holds CONTENT in WORLD, judged with --all under ENVS.
 ROW=0
@@ -136,7 +148,7 @@ cite_rows \
   "a link climbing above the root fails|refs||[a](../etc/passwd)\n|rc=1 $(dead AGENTS.md 1 "$(climbs '](../etc/passwd)')");$(failed 1 1 3)" \
   "a bare #anchor after a climbing link is judged on its own and lands|refs||# Root\n\n[a](../x.md) [b](#root)\n|rc=1 $(dead AGENTS.md 3 "$(climbs '](../x.md)')");$(failed 1 2 3)" \
   "control: a dead bare #anchor after a climbing link is named for what it is|refs||# Root\n\n[a](../x.md) [b](#gone)\n|rc=1 $(dead AGENTS.md 3 "$(climbs '](../x.md)')");$(dead AGENTS.md 3 "$(noslug '](#gone)' AGENTS.md gone)");$(failed 2 2 3)" \
-  "an anchor into a file that is not markdown fails|refs||[a](pic.png#view)\n|rc=1 $(dead AGENTS.md 1 '](pic.png#view): an anchor into a file that is not markdown');$(failed 1 1 3)" \
+  "an anchor into a file that is not markdown fails|refs||[a](pic.png#view)\n|rc=1 $(dead AGENTS.md 1 'anchor-type=](pic.png#view):pic.png');$(failed 1 1 3)" \
   "a scheme, a mailto and a leading slash are not judged|refs||[a](https://x/y.md#z) [b](mailto:x@y.z) [c](/abs/nope.md)\n|rc=0 $(clean 0 3)" \
   "a reference definition is judged, quoted whole|refs||[label]: docs/nope.md\n|rc=1 $(dead AGENTS.md 1 "$(untracked '[label]: docs/nope.md' docs/nope.md)");$(failed 1 1 3)" \
   "a link in fenced code is not read|refs||\`\`\`\n[a](docs/nope.md)\n\`\`\`\n|rc=0 $(clean 0 3)" \
@@ -153,10 +165,24 @@ cite_rows \
   "a § citation matches a heading case-insensitively|refs||See \`docs/architecture/overview.md § the ONE idea\`.\n|rc=0 $(clean 1 3)" \
   "control: a § citation naming no heading fails|refs||See \`docs/architecture/overview.md § Nope\`.\n|rc=1 $(dead AGENTS.md 1 "$(notext 'docs/architecture/overview.md § Nope' docs/architecture/overview.md Nope)");$(failed 1 1 3)" \
   "a #anchor citation matches a slug|refs||See \`docs/architecture/overview.md#fish--chips-v2-code\`.\n|rc=0 $(clean 1 3)" \
-  "control: a #anchor citation naming no slug fails|refs||See \`docs/architecture/overview.md#nope\`.\n|rc=1 $(dead AGENTS.md 1 "\`docs/architecture/overview.md#nope\`: docs/architecture/overview.md has no heading or explicit anchor #nope");$(failed 1 1 3)" \
+  "control: a #anchor citation naming no slug fails|refs||See \`docs/architecture/overview.md#nope\`.\n|rc=1 $(dead AGENTS.md 1 "anchor-missing=\`docs/architecture/overview.md#nope\`:docs/architecture/overview.md:nope");$(failed 1 1 3)" \
   "a root-relative citation resolves at the root|refs||See \`docs/guide.md § Guide\`.\n|rc=0 $(clean 1 3)" \
   "a code span that is not a path shape is not a citation|refs||Run \`md-format --all\`, see \`*.md\`, \`changelog.d/<section>/<name>.md\`, \`foo.md:12\`.\n|rc=0 $(clean 0 3)" \
   "a citation in a fence is not read|refs||\`\`\`\n\`docs/nope.md § X\`\n\`\`\`\n|rc=0 $(clean 0 3)"
+
+echo "=== content citations: <path>::<phrase>, the file holds the phrase ==="
+cite_rows \
+  "a content citation whose file holds the phrase resolves, and the verdict counts it|content||See \`src/ui/home.test.ts::checks the footer\`.\n|rc=0 $(clean 1 1 1)" \
+  "control: the same citation fails once the phrase is not in the file|content||See \`src/ui/home.test.ts::checks the header\`.\n|rc=1 $(dead AGENTS.md 1 "$(nophrase 'src/ui/home.test.ts::checks the header' src/ui/home.test.ts 'checks the header')");$(failed 1 1 1 1)" \
+  "a content citation whose path is not tracked fails, naming the path and where it looked|content||See \`src/ui/overview.test.ts::checks the footer\`.\n|rc=1 $(dead AGENTS.md 1 "$(nocite 'src/ui/overview.test.ts::checks the footer' src/ui/overview.test.ts AGENTS.md)");$(failed 1 1 1 1)" \
+  "a phrase is a literal substring, punctuation and spacing included|content||See \`src/ui/home.test.ts::test(\"ranks the ladder\"\`.\n|rc=0 $(clean 1 1 1)" \
+  "a module path is not a content citation: the text before :: carries no /|content||\`Command::new\`, \`process::Hardened\` and \`ui::intro\` name no file.\n|rc=0 $(clean 0 1 1)" \
+  "a leading :: is a continuation, not a citation|content||See \`src/ui/home.test.ts::checks the footer\` and \`::ranks the ladder\`.\n|rc=0 $(clean 1 1 1)" \
+  "an empty phrase is prose|content||The suffix is \`src/ui/home.test.ts::\`.\n|rc=0 $(clean 0 1 1)" \
+  "a bare path beside a content citation stays a name|content||\`src/ui/gone.test.ts\` moved; see \`src/ui/home.test.ts::checks the footer\`.\n|rc=0 $(clean 1 1 1)" \
+  "a content citation in fenced code is not read|content||\`\`\`\n\`src/ui/home.test.ts::checks the header\`\n\`\`\`\n|rc=0 $(clean 0 1 1)" \
+  "a content citation resolves beside the citing file before the root|content||See \`ui/home.test.ts::checks the footer\`.\n|rc=1 $(dead AGENTS.md 1 "$(nocite 'ui/home.test.ts::checks the footer' ui/home.test.ts AGENTS.md)");$(failed 1 1 1 1)" \
+  "a content citation into binary content is exit 2, naming the target|content||See \`assets/pic.png::checks the footer\`.\n|rc=2 ${ERR}target-binary=assets/pic.png"
 
 echo "=== decision IDs: judged only where the decisions directory is tracked ==="
 cite_rows \
@@ -169,9 +195,9 @@ cite_rows \
   "under another scheme the D-prefixed text is not an ID|dec|DECISION_ID_PREFIX=ADR-,DECISION_ID_WIDTH=4|Decided in D042.\n|rc=0 $(clean 0 3 0 "$DEC_YES")" \
   "DECISION_ID_PREFIX and DECISION_ID_WIDTH select the scheme|dec|DECISION_ID_PREFIX=ADR-,DECISION_ID_WIDTH=4|Decided in ADR-0007.\n|rc=1 $(dead AGENTS.md 1 "$(nodecision ADR-0007)");$(failed 1 1 3 0 "$DEC_YES")" \
   "control: the same ID passes once its file is tracked|adr|DECISION_ID_PREFIX=ADR-,DECISION_ID_WIDTH=4|Decided in ADR-0007.\n|rc=0 $(clean 1 3 0 "$DEC_YES")" \
-  "DECISIONS_DIR moves the directory, and the verdict names it|dec|DECISIONS_DIR=elsewhere|Decided in D001.\n|rc=0 $(clean 0 3 0 'decision IDs not judged (elsewhere is not tracked)')" \
-  "a zero width is exit 2, quoting the value|dec|DECISION_ID_WIDTH=0|Decided in D001.\n|rc=2 ${ERR}DECISION_ID_WIDTH must be a positive integer, got '0'" \
-  "a prefix outside letters, digits, '_' and '-' is exit 2, quoting the value|dec|DECISION_ID_PREFIX=a.b|Decided in D001.\n|rc=2 ${ERR}DECISION_ID_PREFIX must be letters, digits, '_' or '-', got 'a.b'"
+  "DECISIONS_DIR moves the directory, and the verdict names it|dec|DECISIONS_DIR=elsewhere|Decided in D001.\n|rc=0 $(clean 0 3 0 '0:elsewhere')" \
+  "a zero width is exit 2, quoting the value|dec|DECISION_ID_WIDTH=0|Decided in D001.\n|rc=2 ${ERR}positive-integer=DECISION_ID_WIDTH:0" \
+  "a prefix outside letters, digits, '_' and '-' is exit 2, quoting the value|dec|DECISION_ID_PREFIX=a.b|Decided in D001.\n|rc=2 ${ERR}decision-prefix=a.b"
 
 echo "=== a link followed by a section name resolves the heading prefix ==="
 cite_rows \
@@ -225,6 +251,163 @@ run_rows() { # label | fixture | envs | args | expect
   done
 }
 
+echo "=== documentation HTML relative links and ids ==="
+fx_html_ok() {
+  repo "${1:-html-ok}"
+  put docs/references/guide.md '# Guide\n'
+  put docs/references/other.html '<h2 id="target">Target</h2>\n'
+  put docs/references/guide.html '<h1 id="home">Guide</h1>\n<a href="guide.md">Markdown</a><a href="other.html#target">Other</a><a href="#home">Here</a><a href="https://example.com/x">Web</a>\n'
+}
+fx_html_dead() {
+  repo "${1:-html-dead}"
+  put docs/references/guide.html '<a href="gone.md">Gone</a>\n'
+}
+fx_html_anchor() {
+  repo "${1:-html-anchor}"
+  put docs/references/other.html "<h2 title=\"The id='ghost' identifies the row\">Target</h2>\\n"
+  put docs/references/guide.html '<a href="other.html#ghost">Other</a>\n'
+}
+fx_html_quoted_gt() {
+  repo "${1:-quoted-gt}"
+  put docs/references/guide.html '<a title="2 > 1" href="gone.md">Gone</a>\n'
+}
+fx_html_comment_gt() {
+  repo comment-gt
+  put docs/references/guide.html '<!-- A note > <a href="gone.md"> -->\n<h1>Guide</h1>\n'
+}
+fx_html_meta_name() {
+  repo "${1:-meta-name}"
+  put docs/references/guide.html '<meta name="viewport" content="width=device-width">\n<a href="#viewport">View</a>\n'
+}
+fx_html_a_name() { repo a-name; put docs/references/guide.html '<a name="section"></a>\n<a href="#section">Section</a>\n'; }
+fx_html_meta_id() { repo meta-id; put docs/references/guide.html '<meta id="viewport" content="width=device-width">\n<a href="#viewport">View</a>\n'; }
+fx_html_separator() { # KIND [NAME]
+  repo "${2:-html-separator-$1}"
+  case "$1" in
+    href | href-tab)
+      put docs/references/go '# Go\n'
+      [ "$1" = href ] && sep='\n' || sep='\t'
+      put docs/references/guide.html "<a href=\"go${sep}ne.md\">Gone</a>\\n"
+      ;;
+    id) put docs/references/guide.html '<h2 id="ghost\nrest">Ghost</h2>\n<a href="#ghost">Go</a>\n' ;;
+    id-tab) put docs/references/guide.html '<h2 id="ghost\trest">Ghost</h2>\n<a href="#ghost">Go</a>\n' ;;
+    name) put docs/references/guide.html '<a name="ghost\nrest"></a>\n<a href="#ghost">Go</a>\n' ;;
+    name-tab) put docs/references/guide.html '<a name="ghost\trest"></a>\n<a href="#ghost">Go</a>\n' ;;
+    case-href) put docs/references/guide.html '<a HREF="gone.md">Gone</a>\n' ;;
+    case-id) put docs/references/guide.html '<h2 Id="MiXeD">Title</h2>\n<a href="#MiXeD">Go</a>\n' ;;
+    case-name) put docs/references/guide.html '<a NaMe="MiXeD"></a>\n<a href="#MiXeD">Go</a>\n' ;;
+    unclosed-quote) put docs/references/guide.html '<a title="open\n<a href="gone.md">Gone</a>\n' ;;
+    unclosed-quote-index) put AGENTS.md '[go](docs/references/guide.html#ghost)\n'; put docs/references/guide.html '<a title="open\n<a href="gone.md">Gone</a>\n' ;;
+    unclosed-tag) put docs/references/guide.html '<a href="gone.md"\n' ;;
+    unclosed-comment) put docs/references/guide.html '<!-- open > <a href="gone.md">\n' ;;
+    clean)
+      put docs/references/go '# Go\n'
+      put docs/references/guide.html '<h2 id="ghost">Ghost</h2>\n<a name="named"></a>\n<a href="go">File</a><a href="#ghost">Id</a><a href="#named">Name</a>\n'
+      ;;
+  esac
+}
+run_rows \
+  "documentation HTML href values resolve beside the page, including local ids|fx_html_ok||--all|rc=0 $(clean 3 2 2)" \
+  "control: a broken relative HTML href fails|fx_html_dead||--all|rc=1 $(dead docs/references/guide.html 1 "$(untracked 'href="gone.md"' docs/references/gone.md)");$(failed 1 1 1 1)" \
+  "control: an id inside another attribute is not an anchor|fx_html_anchor||--all|rc=1 $(dead docs/references/guide.html 1 "$(noslug 'href="other.html#ghost"' docs/references/other.html ghost)");$(failed 1 1 2 2)" \
+  "the shipped settings preserve valid HTML links|fx_html_ok html-settings-ok|COMMIT_GUARDS_SETTINGS_FILE=$SKILL_DIR/kendex.settings.toml.example|--all|rc=0 $(clean 3 2 2)" \
+  "control: the shipped settings reject a broken HTML href|fx_html_dead html-settings-dead|COMMIT_GUARDS_SETTINGS_FILE=$SKILL_DIR/kendex.settings.toml.example|--all|rc=1 $(dead docs/references/guide.html 1 "$(untracked 'href="gone.md"' docs/references/gone.md)");$(failed 1 1 1 1)" \
+  "control: a quoted greater-than sign cannot hide a broken href|fx_html_quoted_gt||--all|rc=1 $(dead docs/references/guide.html 1 "$(untracked 'href="gone.md"' docs/references/gone.md)");$(failed 1 1 1 1)" \
+  "a greater-than sign inside a comment cannot expose a fake href|fx_html_comment_gt||--all|rc=0 $(clean 0 1 1)" \
+  "control: metadata name does not create a browser anchor|fx_html_meta_name||--all|rc=1 $(dead docs/references/guide.html 2 "$(noslug 'href="#viewport"' docs/references/guide.html viewport)");$(failed 1 1 1 1)" \
+  "an a name creates a browser anchor|fx_html_a_name||--all|rc=0 $(clean 1 1 1)" \
+  "an id on any element creates a browser anchor|fx_html_meta_id||--all|rc=0 $(clean 1 1 1)" \
+  "control: a newline in href refuses before a record is emitted|fx_html_separator href||--all|rc=2 ${ERR}html-separator=docs/references/guide.html:1:href;${ERR}reference-read=docs/references/guide.html:2" \
+  "a tab in href refuses before a record is emitted|fx_html_separator href-tab||--all|rc=2 ${ERR}html-separator=docs/references/guide.html:1:href;${ERR}reference-read=docs/references/guide.html:2" \
+  "a newline in id refuses before a record is emitted|fx_html_separator id||--all|rc=2 ${ERR}html-separator=docs/references/guide.html:1:id;${ERR}headings-exit=docs/references/guide.html:2" \
+  "a tab in id refuses before a record is emitted|fx_html_separator id-tab||--all|rc=2 ${ERR}html-separator=docs/references/guide.html:1:id;${ERR}headings-exit=docs/references/guide.html:2" \
+  "a newline in a name refuses before a record is emitted|fx_html_separator name||--all|rc=2 ${ERR}html-separator=docs/references/guide.html:1:name;${ERR}headings-exit=docs/references/guide.html:2" \
+  "a tab in a name refuses before a record is emitted|fx_html_separator name-tab||--all|rc=2 ${ERR}html-separator=docs/references/guide.html:1:name;${ERR}headings-exit=docs/references/guide.html:2" \
+  "ordinary href, id and a name values still resolve|fx_html_separator clean||--all|rc=0 $(clean 3 1 1)" \
+  "control: uppercase HREF to a missing file fails|fx_html_separator case-href||--all|rc=1 $(dead docs/references/guide.html 1 "$(untracked 'href="gone.md"' docs/references/gone.md)");$(failed 1 1 1 1)" \
+  "mixed-case Id keeps its value and resolves|fx_html_separator case-id||--all|rc=0 $(clean 1 1 1)" \
+  "mixed-case NaMe on a link keeps its value and resolves|fx_html_separator case-name||--all|rc=0 $(clean 1 1 1)" \
+  "control: unfinished quoted HTML tag refuses in reference mode|fx_html_separator unclosed-quote||--all|rc=2 ${ERR}html-unclosed=docs/references/guide.html:1:quote;${ERR}reference-read=docs/references/guide.html:2" \
+  "unfinished HTML tag refuses in reference mode|fx_html_separator unclosed-tag||--all|rc=2 ${ERR}html-unclosed=docs/references/guide.html:1:tag;${ERR}reference-read=docs/references/guide.html:2" \
+  "unfinished HTML comment refuses in reference mode|fx_html_separator unclosed-comment||--all|rc=2 ${ERR}html-unclosed=docs/references/guide.html:1:comment;${ERR}reference-read=docs/references/guide.html:2" \
+  "unfinished quoted HTML tag refuses in index mode|fx_html_separator unclosed-quote-index|COMMIT_GUARDS_MD_REFS_PATHS=AGENTS.md|--all|rc=2 ${ERR}html-unclosed=docs/references/guide.html:1:quote;${ERR}headings-exit=docs/references/guide.html:2"
+
+case_mutant_dir="$TMP/key-case-mutant/scripts"
+mkdir -p "$case_mutant_dir"
+cp "$SKILL_DIR/scripts/md-refs" "$case_mutant_dir/md-refs"
+cp -R "$SKILL_DIR/scripts/lib" "$case_mutant_dir/lib"
+[ "$(grep -Fc 'key = tolower(key)' "$SKILL_DIR/scripts/lib/md-refs.awk")" -eq 1 ]
+sed '/^    key = tolower(key)$/d' "$SKILL_DIR/scripts/lib/md-refs.awk" >"$case_mutant_dir/lib/md-refs.awk"
+! cmp -s -- "$SKILL_DIR/scripts/lib/md-refs.awk" "$case_mutant_dir/lib/md-refs.awk"
+case_mutant_row="control: uppercase attribute key|fx_html_separator case-href key-case-mutant-case||--all|rc=1 $(dead docs/references/guide.html 1 "$(untracked 'href="gone.md"' docs/references/gone.md)");$(failed 1 1 1 1)"
+case_mutant_output=$(MDR="$case_mutant_dir/md-refs" run_rows "$case_mutant_row")
+if [[ "$case_mutant_output" == *'FAIL  control: uppercase attribute key'* ]] &&
+  [[ "$case_mutant_output" == *"got:  rc=0 $(clean 0 1 1)"* ]]; then
+  PASS=$((PASS + 1))
+  printf '  ok    control: removing key normalization reddens uppercase HREF\n'
+else
+  FAIL=$((FAIL + 1))
+  printf '  FAIL  control: removing key normalization did not redden uppercase HREF\n%s\n' "$case_mutant_output"
+fi
+
+separator_mutant_dir="$TMP/separator-mutant/scripts"
+mkdir -p "$separator_mutant_dir"
+cp "$SKILL_DIR/scripts/md-refs" "$separator_mutant_dir/md-refs"
+cp -R "$SKILL_DIR/scripts/lib" "$separator_mutant_dir/lib"
+[ "$(grep -Fc 'if (value ~ /[\t\n]/' "$SKILL_DIR/scripts/lib/md-refs.awk")" -eq 1 ]
+sed '/^    if (value ~ /,/^    }$/d' "$SKILL_DIR/scripts/lib/md-refs.awk" >"$separator_mutant_dir/lib/md-refs.awk"
+! cmp -s -- "$SKILL_DIR/scripts/lib/md-refs.awk" "$separator_mutant_dir/lib/md-refs.awk"
+separator_mutant_row="control: separator refusal|fx_html_separator href separator-mutant-case||--all|rc=2 ${ERR}html-separator=docs/references/guide.html:1:href;${ERR}reference-read=docs/references/guide.html:2"
+separator_mutant_output=$(MDR="$separator_mutant_dir/md-refs" run_rows "$separator_mutant_row")
+if [[ "$separator_mutant_output" == *'FAIL  control: separator refusal'* ]] &&
+  [[ "$separator_mutant_output" == *"got:  rc=0 $(clean 1 1 1)"* ]]; then
+  PASS=$((PASS + 1))
+  printf '  ok    control: removing separator refusal reddens the href row\n'
+else
+  FAIL=$((FAIL + 1))
+  printf '  FAIL  control: removing separator refusal did not redden the href row\n%s\n' "$separator_mutant_output"
+fi
+
+name_mutant_dir="$TMP/attribute-mutant/scripts"
+mkdir -p "$name_mutant_dir"
+cp "$SKILL_DIR/scripts/md-refs" "$name_mutant_dir/md-refs"
+cp -R "$SKILL_DIR/scripts/lib" "$name_mutant_dir/lib"
+[ "$(grep -Fc '[A-Za-z_:][A-Za-z0-9_:.-]*' "$SKILL_DIR/scripts/lib/md-refs.awk")" -eq 1 ]
+sed 's/\[A-Za-z_:\]\[A-Za-z0-9_:.-\]\*/(href|id|name)/' "$SKILL_DIR/scripts/lib/md-refs.awk" >"$name_mutant_dir/lib/md-refs.awk"
+! cmp -s -- "$SKILL_DIR/scripts/lib/md-refs.awk" "$name_mutant_dir/lib/md-refs.awk"
+name_mutant_row="control: quoted attribute value|fx_html_anchor attribute-mutant-case||--all|rc=1 $(dead docs/references/guide.html 1 "$(noslug 'href="other.html#ghost"' docs/references/other.html ghost)");$(failed 1 1 2 2)"
+name_mutant_output=$(MDR="$name_mutant_dir/md-refs" run_rows "$name_mutant_row")
+if [[ "$name_mutant_output" == *'FAIL  control: quoted attribute value'* ]] &&
+  [[ "$name_mutant_output" == *"got:  rc=0 $(clean 1 2 2)"* ]]; then
+  PASS=$((PASS + 1))
+  printf '  ok    control: scanning only wanted keys reddens the quoted-value row\n'
+else
+  FAIL=$((FAIL + 1))
+  printf '  FAIL  control: scanning only wanted keys did not redden the quoted-value row\n%s\n' "$name_mutant_output"
+fi
+
+mutant_dir="$TMP/unclosed-html-mutant/scripts"
+mkdir -p "$mutant_dir/lib"
+cp "$SKILL_DIR/scripts/md-refs" "$mutant_dir/md-refs"
+set +f
+for lib in "$SKILL_DIR"/scripts/lib/*; do
+  [ "${lib##*/}" = md-refs.awk ] || ln -s "$lib" "$mutant_dir/lib/${lib##*/}"
+done
+set -f
+[ "$(grep -Fc 'if ((mode == "html-refs" || mode == "html-index") && HTML_TAG != "")' "$SKILL_DIR/scripts/lib/md-refs.awk")" -eq 1 ]
+sed '/^  if ((mode == "html-refs" || mode == "html-index") && HTML_TAG != "") {$/,/^  }$/d' "$SKILL_DIR/scripts/lib/md-refs.awk" >"$mutant_dir/lib/md-refs.awk"
+! cmp -s -- "$SKILL_DIR/scripts/lib/md-refs.awk" "$mutant_dir/lib/md-refs.awk"
+mutant_row="control: unfinished HTML|fx_html_separator unclosed-quote unclosed-mutant-case||--all|rc=2 ${ERR}html-unclosed=docs/references/guide.html:1:quote;${ERR}reference-read=docs/references/guide.html:2"
+mutant_output=$(MDR="$mutant_dir/md-refs" run_rows "$mutant_row")
+if [[ "$mutant_output" == *'FAIL  control: unfinished HTML'* ]] &&
+  [[ "$mutant_output" == *"got:  rc=0 $(clean 0 1 1)"* ]]; then
+  PASS=$((PASS + 1))
+  printf '  ok    control: removing EOF refusal reddens the unfinished-tag row\n'
+else
+  FAIL=$((FAIL + 1))
+  printf '  FAIL  control: removing EOF refusal did not redden the unfinished-tag row\n%s\n' "$mutant_output"
+fi
+
 echo "=== links and citations resolve relative to the citing file ==="
 fx_nested_links() { world_refs nested-links; put docs/architecture/topic.md '[up](../guide.md) [sib](overview.md#the-one-idea) [down](../../skills/x/SKILL.md)\n'; put AGENTS.md 'Clean.\n'; }
 fx_nested_wrong() { world_refs nested-wrong; put docs/architecture/topic.md '[wrong](guide.md)\n'; put AGENTS.md 'Clean.\n'; }
@@ -277,7 +460,7 @@ fx_no_scheme() { world_src no-scheme; put scripts/link.sh "$SH"'# See AGENTS.md 
 fx_unclosed() { world_src "$1"; put src/broken.c '/* AGENTS.md \302\247 Gone\nint main(void) { return 0; }\n'; }
 fx_symlink_src() { world_src symlink-src; put target.sh "$SH"'# AGENTS.md \302\247 Gone\ntrue\n'; ln -s target.sh "$R/link.sh"; git -C "$R" add link.sh; }
 fx_newline_src() { world_src newline-src; put "one"$'\n'"two.sh" "$SH"'# AGENTS.md \302\247 Gone\ntrue\n'; }
-UNCLOSED="$(skip src/broken.c 'comment text could not be extracted: a block comment opened at line 1 is never closed ');md-refs: scan incomplete — 1 carrier(s) could not be read$(unmeasured 1)"
+UNCLOSED="md-refs: extraction=src/broken.c:unclosed-block:1;$(skip src/broken.c extraction);md-refs: incomplete=files=1 skipped=1"
 run_rows \
   "a citation in comment text resolves|fx_comment_ok comment-ok||--all|rc=0 $(clean 1 2 1)" \
   "a comment citing a heading the target does not have is dead, the heading read to the end of the line|fx_comment_dead||--all|rc=1 $(dead bin/helper.sh 2 "$(noprefix 'docs/architecture/plugins.md § Gone, not this file.' docs/architecture/plugins.md 'Gone, not this file.')");$(failed 1 1 2 1)" \
@@ -289,7 +472,7 @@ run_rows \
   "a decision citing a heading it does not have is dead|fx_dec_dead||--all|rc=1 $(dead scripts/smoke.sh 2 "$(noprefix 'D008 § Reach.' docs/decisions/D008-scope.md 'Reach.')");$(failed 1 1 2 1 "$DEC_YES")" \
   "a bare decision ID in a comment is prose, not a citation, beside the § one it is|fx_dec_bare||--all|rc=0 $(clean 1 2 1 "$DEC_YES")" \
   "a text file the attributes mark undiffable is still read|fx_undiffable||--all|rc=1 $(dead icon.svg 1 "$(noprefix 'AGENTS.md § Gone' AGENTS.md Gone)");$(failed 1 1 2 1)" \
-  "a binary blob at a source path is named, never counted clean|fx_binary||--all|rc=0 $(skip blob.h 'binary content, not source');$(clean 0 2 0 "$DEC_NO" "$(unmeasured 1)")" \
+  "a binary blob at a source path is named, never counted clean|fx_binary||--all|rc=0 $(skip blob.h binary);$(clean 0 2 0 "$DEC_NO" "$(unmeasured 1)")" \
   "a URL is prose, not a citation into this repository|fx_url||--all|rc=0 $(clean 0 2 1)" \
   "a decision ID inside a URL is prose too, with the directory tracked|fx_url_id||--all|rc=0 $(clean 0 2 1 "$DEC_YES")" \
   "a path in a URL query is prose wherever it sits in the URL|fx_url_query||--all|rc=0 $(clean 0 2 1)" \
@@ -297,9 +480,9 @@ run_rows \
   "control: the same path without the scheme is judged|fx_no_scheme||--all|rc=1 $(dead scripts/link.sh 2 "$(noprefix 'AGENTS.md § Gone for more.' AGENTS.md 'Gone for more.')");$(failed 1 1 2 1)" \
   "a carrier the extractor cannot read is exit 2, never a clean verdict|fx_unclosed unclosed||--all|rc=2 $UNCLOSED" \
   "an unreadable carrier beats the empty-set fast path|fx_unclosed unclosed-empty|COMMIT_GUARDS_MD_REFS_PATHS=no/such/*.md|--all|rc=2 $UNCLOSED" \
-  "a symlink at a source path is named, and its target still judged|fx_symlink_src||--all|rc=1 $(skip link.sh 'tracked as a symlink, not source');$(dead target.sh 2 "$(noprefix 'AGENTS.md § Gone' AGENTS.md Gone)");$(failed 1 1 2 1 "$DEC_NO" "$(unmeasured 1)")" \
-  "a path holding a newline is named, never quietly passed|fx_newline_src||--all|rc=0 $(skip "\$'one\\ntwo.sh'" 'the path holds a newline, which the carrier list cannot separate');$(clean 0 2 0 "$DEC_NO" "$(unmeasured 1)")" \
-  "an empty source path list is refused|fx_comment_ok empty-list|COMMIT_GUARDS_MD_REFS_SOURCE_PATHS=|--all|rc=2 ${ERR}COMMIT_GUARDS_MD_REFS_SOURCE_PATHS names no path — name at least one, or drop this check from COMMIT_GUARDS_CHECKS"
+  "a symlink at a source path is named, and its target still judged|fx_symlink_src||--all|rc=1 $(skip link.sh symlink);$(dead target.sh 2 "$(noprefix 'AGENTS.md § Gone' AGENTS.md Gone)");$(failed 1 1 2 1 "$DEC_NO" "$(unmeasured 1)")" \
+  "a path holding a newline is named, never quietly passed|fx_newline_src||--all|rc=0 $(skip "one?two.sh" path-newline);$(clean 0 2 0 "$DEC_NO" "$(unmeasured 1)")" \
+  "an empty source path list is refused|fx_comment_ok empty-list|COMMIT_GUARDS_MD_REFS_SOURCE_PATHS=|--all|rc=2 ${ERR}glob-empty=COMMIT_GUARDS_MD_REFS_SOURCE_PATHS"
 
 echo "=== scopes: touched, --staged, --all ==="
 seeded() { repo "$1"; put ok.md '# OK\n'; put AGENTS.md '[dead](nope.md)\n'; commit seed; } # NAME — a committed dead link, nothing staged
@@ -325,38 +508,76 @@ run_rows \
 
 echo "=== refusals and unmeasured paths ==="
 fx_open_fence() { repo "$1"; put AGENTS.md 'Para\n\n```\nopen\n'; }
+# A committed document, so HEAD names a commit and a range flag resolves. The
+# range it names is empty, which is the state the trigger below used to exit
+# on before any scope flag was judged.
+fx_committed_ref() { repo "$1"; put AGENTS.md 'Clean.\n'; git -C "$R" commit -qm seed; }
+fx_awk_exit() {
+  repo "$1"
+  put AGENTS.md 'Clean.\n'
+  mkdir -p "$R/shim"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" mode=lines "*) echo "dependency-order-control: block-exit" >&2; exit 7 ;; esac\nexec %q "$@"\n' "$(command -v awk)" >"$R/shim/awk"
+  chmod +x "$R/shim/awk"
+}
 fx_symlink_doc() { repo symlink-doc; put notes/target.md 'clean\n'; ln -s notes/target.md "$R/AGENTS.md"; git -C "$R" add -A; }
 run_rows \
-  "an unterminated fence is exit 2, naming the line|fx_open_fence open-fence||--all|rc=2 ${ERR}AGENTS.md:3: an unterminated fence — the file cannot be read past it; close the construct" \
-  "a symlink at a scoped path is named as unmeasured|fx_symlink_doc||--all|rc=0 $(skip AGENTS.md 'tracked as a symlink, not markdown');md-refs: OK — nothing measurable to judge$(unmeasured 1)" \
-  "--staged and --all are exclusive|fx_open_fence both-flags||--staged --all|rc=2 ${ERR}--staged and --all are exclusive" \
-  "an unknown flag is exit 2, quoting it|fx_open_fence unknown-flag||--no-such-flag|rc=2 ${ERR}unknown argument '--no-such-flag' (see --help)" \
-  "a scope outside touched and all is exit 2, quoting it|fx_open_fence bad-scope|COMMIT_GUARDS_MD_SCOPE=weird||rc=2 ${ERR}COMMIT_GUARDS_MD_SCOPE must be 'touched' or 'all', got 'weird'"
+  "an unterminated fence is exit 2, naming the line|fx_open_fence open-fence||--all|rc=2 ${ERR}fence-unclosed=AGENTS.md:3" \
+  "an AWK exit without a refusal record reports its status before the dependency cause|fx_awk_exit awk-exit|PATH=$TMP/awk-exit/shim:$PATH|--all|rc=2 ${ERR}block-exit=AGENTS.md:7;dependency-order-control: block-exit" \
+  "a symlink at a scoped path is named as unmeasured|fx_symlink_doc||--all|rc=0 $(skip AGENTS.md symlink);md-refs: unmeasured-count=$(unmeasured 1)" \
+  "--staged and --all are exclusive|fx_open_fence both-flags||--staged --all|rc=2 ${ERR}scope-flags=--staged,--all" \
+  "a range beside --all is refused before the range trigger can exit on an empty range|fx_committed_ref range-and-all||--all --base HEAD|rc=2 ${ERR}scope-flags=--all,--base HEAD" \
+  "two range flags name two scopes, so the contradiction is refused|fx_committed_ref two-ranges||--base HEAD --against HEAD|rc=2 ${ERR}scope-flags=--base HEAD,--against HEAD" \
+  "control: --all alone performs the scan those refusals protect|fx_committed_ref all-alone||--all|rc=0 $(clean 0 1)" \
+  "an unknown flag is exit 2, quoting it|fx_open_fence unknown-flag||--no-such-flag|rc=2 ${ERR}argument=--no-such-flag" \
+  "a scope outside touched and all is exit 2, quoting it|fx_open_fence bad-scope|COMMIT_GUARDS_MD_SCOPE=weird||rc=2 ${ERR}scope=weird"
 # The usage text carries a '|', which a row cannot: its first line and the
 # exit status, beside the table.
-assert_eq "--help prints usage at exit 0" "rc=0 usage: md-refs [--staged | --all]" "$(run '' --help | sed -n 1p | LC_ALL=C cut -d';' -f1)"
+assert_eq "--help prints usage at exit 0" "rc=0 md-refs: usage=md-refs" "$(run '' --help | sed -n 1p | LC_ALL=C cut -d';' -f1)"
 
 echo "=== the skill's own shipped markdown resolves ==="
-fx_shipped() { # the four shipped documents beside the consumer files they cite by directory
+fx_shipped() { # the four shipped documents beside what they cite: consumer files by directory, and the one script a `::` citation reads for its phrase
   local doc
   repo "$1"
-  mkdir -p "$R/skills/commit-guards"
+  mkdir -p "$R/skills/commit-guards/scripts/lib"
   for doc in SKILL.md README.md CHECKS.md DEVELOPMENT.md; do
     cp "$SKILL_DIR/$doc" "$R/skills/commit-guards/$doc"
   done
+  # A content citation is answered by the file's bytes, so this is the real
+  # script, not a shim: a stand-in would hold no phrase to find.
+  cp "$SKILL_DIR/scripts/lib/commit-changes.sh" "$R/skills/commit-guards/scripts/lib/commit-changes.sh"
   put changelog.d/README.md '# changelog.d\n'
   put .claude/CLAUDE.md '@AGENTS.md\n'
 }
 # The shipped documents' own reference count is theirs to change: the pin is
 # the verdict over the two, then the four, files read, with N for that count.
-counted() { LC_ALL=C sed -e 's/OK — [0-9][0-9]* /OK — N /' -e 's/among [0-9][0-9]* /among N /'; }
+counted() { LC_ALL=C sed 's/references=[0-9][0-9]*/references=N/'; }
 fx_shipped shipped
-assert_eq "the shipped SKILL.md's references resolve (beside the fixture's CLAUDE.md shim)" "rc=0 $(clean N 2)" "$(run '' --all | counted)"
-assert_eq "and so do README.md, CHECKS.md and DEVELOPMENT.md when named" "rc=0 $(clean N 4)" "$(run 'COMMIT_GUARDS_MD_REFS_PATHS=*/commit-guards/*.md' --all | counted)"
+assert_eq "the shipped SKILL.md's references resolve (beside the fixture's CLAUDE.md shim)" "rc=0 $(clean N 2 1)" "$(run '' --all | counted)"
+assert_eq "and so do README.md, CHECKS.md and DEVELOPMENT.md when named, the content citation among them" "rc=0 $(clean N 4 1)" "$(run 'COMMIT_GUARDS_MD_REFS_PATHS=*/commit-guards/*.md' --all | counted)"
 fx_shipped shipped-planted
 put skills/commit-guards/SKILL.md "$(cat "$SKILL_DIR/SKILL.md")"'\n\nSee [gone](nowhere.md).\n'
 assert_eq "control: a planted dead link in the shipped SKILL.md fails, at the line it was planted on" \
-  "rc=1 $(dead skills/commit-guards/SKILL.md "$(($(wc -l <"$SKILL_DIR/SKILL.md") + 2))" "$(untracked '](nowhere.md)' skills/commit-guards/nowhere.md)");$(failed 1 N 2)" "$(run '' --all | counted)"
+  "rc=1 $(dead skills/commit-guards/SKILL.md "$(($(wc -l <"$SKILL_DIR/SKILL.md") + 2))" "$(untracked '](nowhere.md)' skills/commit-guards/nowhere.md)");$(failed 1 N 2 1)" "$(run '' --all | counted)"
+
+if [ "${MD_REFS_MUTANT_RUN:-}" != 1 ]; then
+  mkdir -p "$TMP/scripts"
+  ln -s "$SKILL_DIR/scripts/lib" "$TMP/scripts/lib"
+  mutant="$TMP/scripts/md-refs"
+  [ "$(grep -Fc -- '-v mode=html-refs' "$MDR")" -eq 1 ]
+  sed 's/-v mode=html-refs/-v mode=html-index/' "$MDR" >"$mutant"
+  [ ! -L "$MDR" ] && ! cmp -s -- "$MDR" "$mutant"
+  chmod +x "$mutant"
+  mutant_rc=0
+  MD_REFS_MUTANT_RUN=1 MD_REFS_UNDER_TEST="$mutant" bash "$0" >"$TMP/md-refs-mutant.out" 2>&1 || mutant_rc=$?
+  if [ "$mutant_rc" -eq 1 ] && grep -F 'FAIL  control: a broken relative HTML href fails' "$TMP/md-refs-mutant.out" >/dev/null &&
+    grep -F 'FAIL  control: the shipped settings reject a broken HTML href' "$TMP/md-refs-mutant.out" >/dev/null; then
+    PASS=$((PASS + 1))
+    printf '  ok    control: disabling HTML href extraction makes its dead-link row fail\n'
+  else
+    FAIL=$((FAIL + 1))
+    printf '  FAIL  control: HTML href extraction mutant did not redden the row\n'
+  fi
+fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

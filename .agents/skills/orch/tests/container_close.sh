@@ -260,7 +260,7 @@ rc=0; out="$(cd "$CALLER_ONE" && PATH="$TMP_ROOT/bin-nogh" "$SCRIPT" "$SANDBOX" 
 assert_eq "$rc" "0" "a missing gh still closes the container"
 assert_eq "$out" "closed PARENT-1" "a missing gh prints the close"
 assert_contains "$FAKE_LINEAR_ROOT/summary.body" "CHILD-1 ✓ one — PR lookup failed" "a missing gh records a token distinct from unavailable"
-assert_contains "$TMP_ROOT/gh-missing.err" "gh is not installed" "a missing gh names its permanent cause on stderr"
+assert_contains "$TMP_ROOT/gh-missing.err" "container-close: gh-missing child-id=CHILD-1" "a missing gh names its permanent cause on stderr"
 
 reset_state
 printf '%s\n' '[{"id":"CHILD-1","title":{"bad":true},"state":"Done","state_type":"completed"}]' > "$FAKE_LINEAR_ROOT/children.json"
@@ -288,12 +288,27 @@ touch "$FAKE_LINEAR_ROOT/release.complete"
 wait "$pid_one"; wait "$pid_two"
 assert_eq "$(cat "$TMP_ROOT/race-one.out"):$(cat "$TMP_ROOT/race-two.out")" "closed PARENT-1:closed PARENT-1" "lock loser re-evaluates after the owner releases"
 assert_eq "$(wc -l < "$FAKE_LINEAR_ROOT/complete.calls" | tr -d ' ')" "1" "shared lock allows one parent mutation"
+[[ -f "$SANDBOX/tmp/container-close.lock" ]] && ok "repository lock remains for later closers" || fail "repository lock remains for later closers"
+[[ ! -e "$SANDBOX/tmp/container-close-PARENT-1.lock" ]] && ok "parent lock does not remain" || fail "parent lock does not remain"
+
+exec 8>>"$SANDBOX/tmp/container-close.lock"
+flock 8
+"$WAIT_MUTANT" "$CALLER_TWO" PARENT-2 > "$TMP_ROOT/other-parent.out" 2>"$TMP_ROOT/other-parent.err"
+assert_eq "$(cat "$TMP_ROOT/other-parent.out")" "deferred" "a different parent waits on the repository lock"
+LOCK_MUTANT="$SANDBOX/skills/orch/scripts/container-close-parent-lock-mutant"
+assert_eq "$(grep -Fc 'LOCK_FILE="$MAIN_REPO_ROOT/tmp/container-close.lock"' "$SCRIPT")" "1" "lock control finds the repository lock"
+sed 's|LOCK_FILE="$MAIN_REPO_ROOT/tmp/container-close.lock"|LOCK_FILE="$MAIN_REPO_ROOT/tmp/container-close-$PARENT_ID.lock"|' "$SCRIPT" > "$LOCK_MUTANT"
+chmod +x "$LOCK_MUTANT"
+rc=0; "$LOCK_MUTANT" "$CALLER_TWO" PARENT-2 > "$TMP_ROOT/other-parent-mutant.out" 2>"$TMP_ROOT/other-parent-mutant.err" || rc=$?
+[[ "$rc" -ne 0 || "$(cat "$TMP_ROOT/other-parent-mutant.out")" != deferred ]] && ok "control: parent lock skips the repository lock" || fail "control: parent lock skips the repository lock"
+flock -u 8
+exec 8>&-
 
 reset_state
 printf '%s\n' '[{"id":"CHILD-1","title":"one","state":"Done","state_type":"completed"}]' > "$FAKE_LINEAR_ROOT/children.json"
 rc=0; FLOCK_TEST_RC=74 "$SCRIPT" "$SANDBOX" PARENT-1 >/dev/null 2>"$TMP_ROOT/flock-error.err" || rc=$?
 assert_eq "$rc" "1" "operational flock error fails instead of deferring"
-assert_contains "$TMP_ROOT/flock-error.err" "cannot acquire lock for PARENT-1: flock exited 74" "operational flock error reports its status"
+assert_contains "$TMP_ROOT/flock-error.err" "container-close: lock-failed parent-id=PARENT-1 lock-rc=74" "operational flock error reports its status"
 [[ ! -e "$FAKE_LINEAR_ROOT/linear.calls" ]] && ok "operational flock error stops before Linear access" || fail "operational flock error stops before Linear access"
 
 MERGE_WORKFLOW="$REPO_ROOT/skills/orch/workflows/merge-pr.md"
@@ -301,6 +316,10 @@ grep -Fq 'scripts/container-close [MAIN_REPO_ROOT] [PARENT_ID]' "$MERGE_WORKFLOW
 grep -Fq 'with every stderr diagnostic from the helper' "$MERGE_WORKFLOW" && ok "merge-pr preserves closed diagnostics" || fail "merge-pr preserves closed diagnostics"
 grep -Fq 'A bare `deferred` means the 120-second lock wait expired' "$MERGE_WORKFLOW" && ok "merge-pr documents the lock timeout" || fail "merge-pr documents the lock timeout"
 grep -Fq 'closure for [ISSUE] has not propagated; rerun merge-pr' "$MERGE_WORKFLOW" && ok "merge-pr reruns when current issue remains pending" || fail "merge-pr reruns when current issue remains pending"
+
+rc=0
+"$SCRIPT" >/dev/null 2>"$TMP_ROOT/arguments.err" || rc=$?
+assert_eq "$rc:$(sed -n '1p' "$TMP_ROOT/arguments.err")" "2:container-close: invalid-arguments count=0" "missing operands identify the argument count"
 
 printf 'container-close: %d pass, %d fail\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -31,9 +31,10 @@ Get the issue → dev implements → review → dev fixes blockers → re-review
 - **Review must converge**, by [references/finding-disposition.md](references/finding-disposition.md):
   - Every finding runs its [§ Decision flow](references/finding-disposition.md#decision-flow), Step 0 first, and ends as one of the reply forms that section sets out.
   - A defect class recurring across rounds → its [§ Recurrence](references/finding-disposition.md#recurrence), never patched per comment, for a rule restated in prose or a table as much as for code.
-  - A defect in code the issue's Done-when does not need, or a PR past its size tripwire → a cut, not a fix round. A round whose only findings are scope or wording asks ends the review: reply, resolve, push nothing, merge through the gate. `--admin` requires the explicit consumer-only answer in `submit-pr.md` § 6.2.
-- **Ask the user only about product or experience.** Scope expansion beyond the issue and revisiting a recorded decision always ask, whatever `ORCH_DECISION_MODE` says. Merge asks unless `ORCH_MERGE_AUTONOMY=auto`, which merges without asking only when every merge gate is green.
+  - A defect in code the issue's Done-when does not need, or a PR whose reviewer or orchestrator chooses a cut from its size report → a cut round. A round whose only findings are scope or wording asks ends the review: reply, resolve, push nothing, merge through the gate. `--admin` requires the explicit consumer-only answer in `submit-pr.md` § 6.2.
+- **Ask the user only about product or experience.** Scope expansion beyond the issue and revisiting a recorded decision always ask, whatever `ORCH_DECISION_MODE` says. Merge asks unless `ORCH_MERGE_AUTONOMY=auto`, which merges without asking only when every merge gate is green. In a lane every ask gate is `lane-mail`, never the harness question tool: [references/skill-rules.md](references/skill-rules.md) § Coordination.
 - **Post-PR autonomy.** After a PR exists, `ORCH_DECISION_MODE=auto-recommended` takes and logs the continuing option while a bounded wait, retry, or triage round remains. `ask` presents the listed choice. `workflow-state head-budget take` owns automatic retry spending, starting the count over on a changed head for review-wait only. At a cap, `workflow-state post-pr-stop record` atomically persists the named stop and renders its matching Markdown comment; the workflow posts that file to the PR and returns the stored stop. A nested caller uses `record-if-empty` so a precise upstream stop wins. Every continuing action clears the stop with `workflow-state update`. Initialize the resolved state key before these transitions. `ORCH_MERGE_AUTONOMY` controls merge consent only.
+- **The overseer reads results.** It accepts a lane's green suite, validation command, and CI without reproducing them. It gives no separate grant to prepare, commit, push, or merge, and uses no shared validation slot. A green lane with existing user merge authorization arms auto-merge itself without a grant, then owns its merge wait to a terminal verdict as `workflows/merge-pr.md` requires. It accepts a dev agent's test-only validation-ceiling report and does not extend validation. The overseer never sends model or account instructions to a lane. The lane's model is fixed at launch, and the lane launches no lanes.
 - **Acceptance is artifact-based.** A round closes on a validated on-disk artifact plus git/tracker state, never on a return message.
 
 ## Commands
@@ -80,7 +81,7 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 | `worktree-push` | Push an issue worktree via `worktree push`, reconciling rebased SHAs in workflow state (`.rebase_map`, `fixed_items`, `pr_comment_review.fixes`) in the same call; `--check-live-round` answers whether a fix round is in flight and pushes nothing |
 | `dev-round-write` | Persist a fix round's delegated item set at stamp time; `--cut` records the round that cuts an oversized branch |
 | `dev-artifact-check` | Validate a dev round's completion artifact by round id |
-| `branch-size-check` | Measure the branch's added production, test and render-mirror lines before the push, against the allowance the issue's `**Expected delta**` line states. Exit 3 refuses. `--help` |
+| `branch-size-check` | Report added production, test and render-mirror lines against the issue's optional `**Expected delta**`. Size never refuses; malformed allowance text exits 3. `--help` |
 | `approval-wait` | Poll the reviewer gate; `--resolve-mode` prints the effective gate mode |
 | `ci-wait` | Block until CI completes on a PR |
 | `queue-wait` | Blocking merge-queue / auto-merge waiter and verdict producer |
@@ -88,6 +89,8 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 | `spawn-adapter` | Resolve Codex spawn parameters (`spawn`) and the runtime thread budget (`slots`) |
 | `open-terminal` | Terminal handoff; model, effort, and permission flags via `--launch-flags` |
 | `lanes` | Enumerate harness auth lanes; `pick` prints the launch env prefix for the least-loaded qualifying lane, exit 3 when none qualifies; `context` reports each live lane's context use |
+| `lane-host` | Resolve or call the configured host provider; protocol: [schemas/lane-host.md](schemas/lane-host.md). Static SSH reference: `lane-host-ssh --help` |
+| `lane-mail` | The lane-to-overseer mailbox. A lane runs `ask`, `notice`, `wait` and `inbox`; the overseer runs `send`, `drain` and `pending`, adding `--root` and `--host` for a lane on another host |
 | `reconcile-work-items` | Read-only tracker sweep (parked containers, items stale past `RECONCILE_STALE_HOURS`, Done items with unchecked boxes). Exit 1 on findings |
 | `oversee-watch` | Block until the fleet needs the overseer, then print one wake carrying every event the pass found |
 
@@ -97,17 +100,17 @@ Every script takes `--help` bar `pr-view-json` and `resolve-base-branch`, whose 
 
 **`workflow-state`.** Run it with no arguments for the action reference. State keys are normalized issue IDs: `issue-N` for GitHub, `PROJ-123` for Linear.
 
-**A queued merge is waited out in the lane**, never detached and never handed back armed: `merge-pr.md` § 5 step 1 blocks on `queue-wait` and routes the verdict it prints (`queue-wait --help` § Verdicts).
+**A queued merge is waited out in the lane**: `merge-pr.md` § 5 step 1 uses [Waiter launch](references/waiter-launch.md) and routes the recorded verdict (`queue-wait --help` § Verdicts). The lane stays active until it can finish the post-merge work.
 
 ## Configuration
 
-Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.local` holds secrets and personal overrides. Keys: [README.md](README.md) § Settings; review-gate keys in [references/gates.md](references/gates.md); lane keys in `lanes --help` and `open-terminal --help`. System dependencies: `jq`; `bash` 3.2; `flock` (util-linux).
+Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.local` holds secrets and personal overrides. Keys: [README.md](README.md) § Settings; review-gate keys in [references/gates.md](references/gates.md); lane keys in `lanes --help` and `open-terminal --help`. System dependencies: `jq`; `bash` 3.2; `flock` and `setsid` (util-linux).
 
 ---
 
 ## Runtime Notes
 
-> If you are running in **Codex**: `approval required by policy, but AskForApproval is set to Never` flags the command's SHAPE. Never retry it, never wait for approval; rewrite it per [references/codex-runtime.md](references/codex-runtime.md). Polling loops → the orch waiters `.agents/skills/orch/scripts/ci-wait`, `approval-wait`, `queue-wait`, never `github.sh` subcommands. Merge-pr's queue wait is one blocking `queue-wait` call, which is what this classifier accepts: run it once and stay on it until it returns. Spawn generated agents through `scripts/spawn-adapter` with `fork_context: false`, then `send_input` a `DELEGATION:`-prefixed `<delegation_format>`.
+> If you are running in **Codex**: `approval required by policy, but AskForApproval is set to Never` flags the command's SHAPE. Never retry it, never wait for approval; rewrite it per [references/codex-runtime.md](references/codex-runtime.md). Run long waiters through [Waiter launch](references/waiter-launch.md); CI waiting uses `.agents/skills/orch/scripts/ci-wait`. Spawn generated agents through `scripts/spawn-adapter` with `fork_context: false`, then `send_input` a `DELEGATION:`-prefixed `<delegation_format>`.
 
 > If you are running in **OpenCode**: store the `task_id` returned by `functions.task` in workflow state (`child_sessions[agent].agent_id`, `review_agent_ids[reviewer-name]`) and re-delegate with `functions.task(task_id=<stored_id>)`. Spawn fresh only when no ID is stored, one resume attempt failed, or the task is confirmed dead.
 
@@ -139,6 +142,8 @@ An `ISSUE_ID` starting with `issue-` is GitHub (`TRACKER=github`, issue number `
 
 Durable data lives in workflow state through the `workflow-state` CLI only (`set-git-head`/`set-now`, never inline substitution). Location: `<state-dir>/workflow-state-[ID].json`, where `<state-dir>` is the `--state-dir` flag, then `$ORCH_STATE_DIR`, then `tmp/`.
 
+For workflow state, use the preceding location rule; other temporary session state, including handoffs, lane status, and reviews, defaults to the repository's `tmp/`, which kendex's managed ignore block covers in every consumer, while `docs/` holds tracked repository content and never receives a kendex ignore rule.
+
 After compaction, resume from the step after the last completed one: read workflow state, re-send delegations by stored ID, respawn only an agent silent through one idle cycle. Never repeat completed actions.
 
 ### Review Pipeline
@@ -147,4 +152,4 @@ After compaction, resume from the step after the last completed one: read workfl
 
 **Disposition.** Classify each suggestion per [references/finding-disposition.md](references/finding-disposition.md): apply in-PR, file as a tracked issue, or decline with one line. The filing bar lives there.
 
-**Issue audit pipeline.** Collect every follow-up that clears the filing bar (`category=issue` suggestions, escalated blockers, dev "deliberately left out" lists, gaps noticed) into audit input (schema in `project-management/schemas/`) and delegate to TPM, with dependency fields populated when order is known. Never file directly.
+**Issue audit pipeline.** Collect every follow-up that clears the filing bar (`category=issue` suggestions, escalated blockers, dev "deliberately left out" lists, gaps noticed) into audit input (schema in `project-management/schemas/`), with dependency fields populated when order is known. Apply [skill-rules.md § Coordination](references/skill-rules.md#coordination) before issue creation or the TPM audit.

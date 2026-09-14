@@ -9,14 +9,24 @@
 #                       past the ceiling arrives the same way a new one does,
 #                       so the staged lane judges both.
 #   --base REF          files added, changed, or type-changed since the
-#                       merge-base with REF (CI on a PR)
-#   --all               every tracked file (full sweep)
+#                       merge-base with REF (CI on a PR): three dots, so it
+#                       answers what this branch ADDS over a shared ancestor
+#   --against REF       the same files between REF's own tree and HEAD: two
+#                       dots, so it answers what landing this WOULD DO TO
+#                       REF. Where REF is an ancestor of HEAD the two agree;
+#                       where the two have diverged they do not, and only
+#                       this one measures the effect on REF
+#   --all               every tracked file (full sweep), each oversized one
+#                       held to its row in the byte baseline
 #
 # Sizes are OBJECT sizes (`git cat-file -s` of each diff blob): the bytes that
 # enter history, filters applied, independent of worktree state. The source
 # blob is the tighten-only baseline for an existing oversized file. Renames
 # are detected, so moving an existing large file is not an addition; a copy
-# is one. Exit codes: 0 clean; 1 violations; 2 usage/config/collection error.
+# is one. A sweep has no second tree and so no source blob: its prior is the
+# declared baseline (path<TAB>bytes), and a row looser than its file or naming
+# no oversized file fails, so the declaration only tightens. Exit codes:
+# 0 clean; 1 violations; 2 usage/config/collection error.
 set -euo pipefail
 
 GG_BOOT="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd; printf x)"
@@ -30,21 +40,36 @@ source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/settings.sh"
 
 usage() {
+  gg_message usage "$GG_CHECK" "Command usage follows."
   cat <<'EOF'
-usage: byte-ceiling [--staged | --base REF | --all] [--excludes FILE]
+usage: byte-ceiling [--staged | --base REF | --against REF | --all] [--excludes FILE] [--baseline FILE]
 
 Tracked files a change puts over the byte ceiling fail. An existing file
 already over the ceiling may stay the same size or shrink, but may not grow.
 --staged (default) checks the staged additions and changes; --base REF checks
-additions and changes since the merge-base with REF; --all sweeps every
-tracked file. Lockfiles are exempt built-in; declared asset trees live in the
-excludes list.
+additions and changes since the merge-base with REF; --against REF checks
+them between REF's own tree and HEAD; --all sweeps every tracked file.
+Lockfiles are exempt built-in; declared asset trees live in the excludes list.
+
+--base and --against differ only where REF and HEAD have diverged, and there
+the difference decides. --base asks what this branch adds over the ancestor
+the two share, which is the question CI asks of a pull request. --against
+asks what putting HEAD where REF is would do to REF, which is the question a
+push asks. A file already over the ceiling at the shared ancestor, smaller at
+REF and larger at HEAD, is a shrink to the first question and growth to the
+second.
+
+--all has no prior tree, so it holds each oversized file to its row in the
+baseline (path<TAB>bytes, read from the index): a file at its row passes, one
+past it or with no row fails, and a row larger than its file or naming no
+oversized file fails. An absent baseline is empty.
 
 Configuration (env > .env.local > .kendex/settings.toml >
 kendex.settings.toml [env] > default):
   COMMIT_GUARDS_BYTE_CEILING_KB   ceiling in KB        (default 200)
   COMMIT_GUARDS_BYTE_EXCLUDES     exclusion-list path  (default tools/byte-ceiling-excludes)
-Flag --excludes overrides the path setting.
+  COMMIT_GUARDS_BYTE_BASELINE     --all baseline path  (default tools/byte-ceiling-baseline)
+Flags --excludes and --baseline override the path settings.
 
 Exit codes: 0 clean; 1 violations; 2 usage/config/collection error.
 EOF
@@ -53,12 +78,13 @@ EOF
 MODE="staged"
 BASE_REF=""
 EXCLUDES_OPT=""
+BASELINE_OPT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --staged) MODE="staged" ;;
     --all) MODE="all" ;;
     --base)
-      [ $# -ge 2 ] || gg_config_error "--base requires a ref"
+      [ $# -ge 2 ] || gg_fail argument-missing "--base" "--base requires a ref"
       shift
       MODE="base"
       BASE_REF="$1"
@@ -67,17 +93,33 @@ while [ $# -gt 0 ]; do
       MODE="base"
       BASE_REF="${1#--base=}"
       ;;
+    --against)
+      [ $# -ge 2 ] || gg_fail argument-missing "--against" "--against requires a ref"
+      shift
+      MODE="against"
+      BASE_REF="$1"
+      ;;
+    --against=*)
+      MODE="against"
+      BASE_REF="${1#--against=}"
+      ;;
     --excludes)
-      [ $# -ge 2 ] || gg_config_error "--excludes requires a path"
+      [ $# -ge 2 ] || gg_fail argument-missing "--excludes" "--excludes requires a path"
       shift
       EXCLUDES_OPT="$1"
       ;;
     --excludes=*) EXCLUDES_OPT="${1#--excludes=}" ;;
+    --baseline)
+      [ $# -ge 2 ] || gg_fail argument-missing "--baseline" "--baseline requires a path"
+      shift
+      BASELINE_OPT="$1"
+      ;;
+    --baseline=*) BASELINE_OPT="${1#--baseline=}" ;;
     -h | --help)
       usage
       exit 0
       ;;
-    *) gg_config_error "unknown argument '$1' (see --help)" ;;
+    *) gg_fail argument-unknown "$1" "unknown argument '$1' (see --help)" ;;
   esac
   shift
 done
@@ -90,6 +132,13 @@ CEILING_BYTES=$((CEILING_KB * 1024))
 
 EXCLUDES_FILE="$(gg_resolve_path "$EXCLUDES_OPT" COMMIT_GUARDS_BYTE_EXCLUDES "tools/byte-ceiling-excludes" excludes)" || exit 2
 gg_load_excludes "$EXCLUDES_FILE"
+
+# Only the sweep reads the baseline: every other scope takes its prior from
+# the diff's own source blob.
+BASELINE_FILE=""
+if [ "$MODE" = "all" ]; then
+  BASELINE_FILE="$(gg_resolve_path "$BASELINE_OPT" COMMIT_GUARDS_BYTE_BASELINE "tools/byte-ceiling-baseline" baseline)" || exit 2
+fi
 
 # Generated whole-file by package managers: size is not a design signal.
 LOCKFILE_BASENAMES="Cargo.lock package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb flake.lock poetry.lock uv.lock Pipfile.lock Gemfile.lock composer.lock go.sum gradle.lockfile packages.lock.json Package.resolved"
@@ -128,17 +177,39 @@ case "$MODE" in
     # the ceiling. The index modes refuse an unresolved merge rather than
     # measure around it.
     gg_require_merged_index
-    git -c diff.renames=true diff --cached --raw --no-abbrev -z --find-renames=100% --diff-filter=AMT >"$GG_TMP/raw.z" || gg_collection_error "git diff --cached failed collecting staged additions and changes"
+    git -c diff.renames=true diff --cached --raw --no-abbrev -z --find-renames=100% --diff-filter=AMT >"$GG_TMP/raw.z" 2>"$GG_TMP/dependency.err" || gg_fail_cause staged-collect "$?" "$GG_TMP/dependency.err" "git diff --cached failed collecting staged additions and changes"
     ;;
   base)
-    git rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null || gg_config_error "--base ref '$BASE_REF' does not name a commit"
-    git -c diff.renames=true diff --raw --no-abbrev -z --find-renames=100% --diff-filter=AMT "$BASE_REF...HEAD" >"$GG_TMP/raw.z" || gg_collection_error "git diff $BASE_REF...HEAD failed collecting additions and changes (no merge base?)"
+    git rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null 2>"$GG_TMP/dependency.err" || gg_fail_cause base-ref "$BASE_REF" "$GG_TMP/dependency.err" "--base ref '$BASE_REF' does not name a commit"
+    # Three dots: the merge base, so the source blob is the one the two
+    # share. What this branch ADDS.
+    git -c diff.renames=true diff --raw --no-abbrev -z --find-renames=100% --diff-filter=AMT "$BASE_REF...HEAD" >"$GG_TMP/raw.z" 2>"$GG_TMP/dependency.err" || gg_fail_cause base-collect "$BASE_REF:$?" "$GG_TMP/dependency.err" "git diff $BASE_REF...HEAD failed collecting additions and changes (no merge base?)"
+    ;;
+  against)
+    git rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null 2>"$GG_TMP/dependency.err" || gg_fail_cause against-ref "$BASE_REF" "$GG_TMP/dependency.err" "--against ref '$BASE_REF' does not name a commit"
+    # Two dots: REF's OWN tree, so the source blob is the one REF holds
+    # rather than the one it shares with HEAD. What landing this would DO to
+    # REF, which is the only reading under which the tighten-only baseline
+    # is REF's own file. Where the two have diverged, a file over the
+    # ceiling at the shared ancestor, smaller at REF and larger at HEAD, is
+    # a shrink to three dots and growth to this.
+    git -c diff.renames=true diff --raw --no-abbrev -z --find-renames=100% --diff-filter=AMT "$BASE_REF..HEAD" >"$GG_TMP/raw.z" 2>"$GG_TMP/dependency.err" || gg_fail_cause against-collect "$BASE_REF:$?" "$GG_TMP/dependency.err" "git diff $BASE_REF..HEAD failed collecting additions and changes"
     ;;
   all)
     # ls-files -s emits one record per STAGE for an unmerged path, so the
     # walk below would size two or three rival blobs as separate files.
     gg_require_merged_index
-    git ls-files -sz >"$GG_TMP/files.z" || gg_collection_error "git ls-files failed"
+    # Index only: a row can only hold a file, so an unstaged edit or a
+    # never-staged file must not hold the swept index to rows it does not
+    # carry.
+    baseline_status=0
+    gg_policy_content "$BASELINE_FILE" >"$GG_TMP/baseline.tsv" || baseline_status=$?
+    case "$baseline_status" in
+      0) gg_validate_baseline "$GG_TMP/baseline.tsv" "$BASELINE_FILE" ;;
+      1) : >"$GG_TMP/baseline.tsv" ;;
+      *) gg_fail baseline-read "$BASELINE_FILE:$baseline_status" "could not read the baseline $BASELINE_FILE (exit $baseline_status, cause above)" ;;
+    esac
+    git ls-files -sz >"$GG_TMP/files.z" 2>"$GG_TMP/dependency.err" || gg_fail_cause index-read "$?" "$GG_TMP/dependency.err" "git ls-files failed"
     while IFS= read -r -d '' rec; do
       # Record shape: "<mode> <sha> <stage>\t<path>".
       mode="${rec%% *}"
@@ -168,12 +239,29 @@ if [ "$MODE" != "all" ]; then
     esac
     case "$dstsha" in
       *[!0]*) ;;
-      *) gg_collection_error "'$f' has no destination blob in the diff record — cannot measure it" ;;
+      *) gg_fail blob-missing "$f" "'$f' has no destination blob in the diff record — cannot measure it" ;;
     esac
     emit_candidate "$dstsha" "$srcsha" "$srcmode" "$f"
   done <"$GG_TMP/raw.z"
 fi
 
+# Rows are validated one path and one size per line, so a tracked path holding
+# a tab or a newline never equals a row path and meets no row.
+baseline_row() { # PATH — the row's bytes on stdout; 1 when no row names PATH
+  local row_path row_bytes
+  while IFS="$GG_TAB" read -r row_path row_bytes || [ -n "$row_path" ]; do
+    if [ "$row_path" = "$1" ]; then
+      printf '%s' "$row_bytes"
+      return 0
+    fi
+  done <"$GG_TMP/baseline.tsv"
+  return 1
+}
+
+NL=$'\n'
+# The row paths an oversized file met, newline-delimited: a row path holds no
+# newline, and Bash 3.2 has no associative array.
+matched_rows=""
 checked=0
 violations=0
 while IFS= read -r -d '' sha \
@@ -182,35 +270,64 @@ while IFS= read -r -d '' sha \
   && IFS= read -r -d '' f; do
   is_lockfile "$f" && continue
   gg_is_excluded "$f" && continue
-  size="$(git cat-file -s "$sha")" || gg_collection_error "cannot read blob $sha for '$f' — its size is unmeasurable, refusing to skip it"
+  size="$(git cat-file -s "$sha" 2>"$GG_TMP/dependency.err")" || gg_fail_cause blob-size "$f:$sha" "$GG_TMP/dependency.err" "cannot read blob $sha for '$f' — its size is unmeasurable, refusing to skip it"
   checked=$((checked + 1))
   if [ "$size" -gt "$CEILING_BYTES" ]; then
     prior_size=""
-    if gg_mode_is_regular "$srcmode"; then
-      prior_size="$(git cat-file -s "$srcsha")" || gg_collection_error "cannot read prior blob $srcsha for '$f' — its size is unmeasurable, refusing to skip it"
+    if [ "$MODE" = "all" ]; then
+      if prior_size="$(baseline_row "$f")"; then
+        matched_rows="$matched_rows$f$NL"
+      else
+        prior_size=""
+      fi
+    elif gg_mode_is_regular "$srcmode"; then
+      prior_size="$(git cat-file -s "$srcsha" 2>"$GG_TMP/dependency.err")" || gg_fail_cause prior-size "$f:$srcsha" "$GG_TMP/dependency.err" "cannot read prior blob $srcsha for '$f' — its size is unmeasurable, refusing to skip it"
     fi
     if [ -n "$prior_size" ] && [ "$prior_size" -gt "$CEILING_BYTES" ] && [ "$size" -le "$prior_size" ]; then
+      # A source blob is the file's own past, so a shrink is progress. A row
+      # is a declaration, and one left above its file would let the file grow
+      # back to the row unjudged.
+      if [ "$MODE" != "all" ] || [ "$size" -eq "$prior_size" ]; then
+        continue
+      fi
+      gg_message baseline-loose "$f:$prior_size:$size" "The baseline row allows more bytes than the file holds."
+      echo "  remedy: lower the row in $BASELINE_FILE to $size, or remove it once the file is under the ceiling"
+      violations=$((violations + 1))
       continue
     fi
     kb=$(((size + 1023) / 1024))
     if [ -n "$prior_size" ] && [ "$prior_size" -gt "$CEILING_BYTES" ]; then
-      echo "byte-ceiling FAIL oversized file grew: $f — $prior_size -> $size bytes (~$kb KB), ceiling $CEILING_KB KB"
+      gg_message grew "$f:$prior_size:$size:$kb:$CEILING_KB" "The oversized file grew beyond its baseline."
     else
-      echo "byte-ceiling FAIL oversized file: $f — $size bytes (~$kb KB) > ceiling $CEILING_KB KB"
+      gg_message oversized "$f:$size:$kb:$CEILING_KB" "The file exceeds the byte ceiling."
     fi
     echo "  remedies: keep big artifacts out of the repo (asset store, Git LFS, build-time generation); a file that genuinely belongs gets a row in $EXCLUDES_FILE with its reason"
     violations=$((violations + 1))
   fi
 done <"$GG_TMP/candidates.z"
 
+# A row no oversized file met holds nothing today, and would let a file
+# re-added at that path return to the row's size.
+if [ "$MODE" = "all" ]; then
+  while IFS="$GG_TAB" read -r row_path row_bytes || [ -n "$row_path" ]; do
+    case "$NL$matched_rows" in
+      *"$NL$row_path$NL"*) continue ;;
+    esac
+    gg_message baseline-stale "$row_path:$row_bytes" "No oversized file the sweep judges is at this path."
+    echo "  remedy: remove the row from $BASELINE_FILE"
+    violations=$((violations + 1))
+  done <"$GG_TMP/baseline.tsv"
+fi
+
 case "$MODE" in
   staged) SCOPE_DESC="staged file(s)" ;;
   base) SCOPE_DESC="file(s) added or changed since $BASE_REF" ;;
+  against) SCOPE_DESC="file(s) this change alters in $BASE_REF" ;;
   all) SCOPE_DESC="tracked file(s) (full sweep)" ;;
 esac
 
 if [ "$violations" -gt 0 ]; then
-  echo "byte-ceiling: $violations violation(s) — ceiling $CEILING_KB KB, $checked $SCOPE_DESC checked"
+  gg_message result "$violations:$checked:$CEILING_KB:$MODE:$BASE_REF" "Checked $checked $SCOPE_DESC; violations found."
   exit 1
 fi
-echo "byte-ceiling: OK — $checked $SCOPE_DESC checked, ceiling $CEILING_KB KB"
+gg_message result "0:$checked:$CEILING_KB:$MODE:$BASE_REF" "Checked $checked $SCOPE_DESC; no oversized files."

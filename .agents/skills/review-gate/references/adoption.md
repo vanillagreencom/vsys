@@ -42,7 +42,7 @@ Recommended split: cheap fast checks (lint, typecheck, unit) run on every push u
         run: .agents/skills/review-gate/scripts/validate.sh
 ```
 
-One verdict line per check; exit 0 clean, 1 findings, 2 the check could not run. It answers repo-own questions only — the engine is installed and runnable here, the committed `REVIEW_GATE_*` values are legal, the carry-forward exclusions still match tracked paths, and the adopted workflow still meets this template's contract. It re-runs no engine test suite: the selftest and the wrapper suites are the ENGINE's proofs and run in the kendex repo on every change to it.
+Each check emits an `ok` or `FAIL` record with `check=CODE value=VALUE`. Indented lines give the explanation and repair. Exit 0 means clean, 1 means findings, and 2 means the check could not run. It answers repo-own questions only — the engine is installed and runnable here, the committed `REVIEW_GATE_*` values are legal, the carry-forward exclusions still match tracked paths, and the adopted workflow still meets this template's contract. It re-runs no engine test suite: the selftest and the wrapper suites are the ENGINE's proofs and run in the kendex repo on every change to it.
 
 Value rules come from the engine, not from a copy of it: the settings half calls `review-predicate.sh --check-config`, which resolves and validates every key and exits without reading any evidence or needing a PR.
 
@@ -96,7 +96,7 @@ Concrete per-consumer values are tracked on the org adoption issue, not here. Ev
 | `REVIEW_GATE_REVIEW_OBJECT_TRUSTED_LOGINS` | Empty = any non-author. List logins to restrict — do that wherever outside collaborators can review. |
 | `REVIEW_GATE_REVIEW_OBJECT_MIN_STATE` | `any` counts COMMENTED reviews (for bots that never APPROVE); `approved` requires an APPROVED verdict. |
 | `REVIEW_GATE_COMMENT_REVIEWERS` | Only for a comment-form reviewer: `login:binding-prefix`. |
-| `REVIEW_GATE_SHA_PREFIX_FLOOR` | Only where a comment-form reviewer binds by SHA prefix. |
+| `REVIEW_GATE_SHA_PREFIX_FLOOR` | Shortest SHA prefix accepted by both binding readers: comment-form reviewer evidence, and the author's suppressed-finding disposition comment. |
 | `REVIEW_GATE_OVERRIDE_CONTEXT` | The operator override status context. |
 | `REVIEW_GATE_STATUS_PUBLISHER_REJECT` | Set `github-actions[bot]` wherever PR workflows hold `statuses: write`. Requires the override to be posted by a non-Actions identity (operator PAT). Empty disables. |
 | `REVIEW_GATE_REVIEW_OBJECT_ERROR_PATTERNS` | Default closes the errored-auto-review gap; override where a repo's reviewer words its attestation differently; empty is an explicit opt-out. |
@@ -110,15 +110,14 @@ Concrete per-consumer values are tracked on the org adoption issue, not here. Ev
 
 | Verdict line | What to do |
 |---|---|
-| assigns REVIEW_GATE_* key(s) the engine never reads | Fix the spelling against [settings.md](settings.md). The written value is being ignored. |
-| a committed setting is not legal | The indented `::error` under it is the engine's own diagnosis; it names the key and the legal values. |
-| carry-exclude … matches no tracked path | Fix the glob, or declare it in `REVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC` when it guards paths that do not exist yet. |
-| carry-exclude … anchored with a leading '/' | Drop the anchor: compare filenames are repository-relative. |
-| prophylactic declaration … | Reconcile the ledger — every declaration names an active exclusion that still matches nothing. |
-| no tracked workflow … runs review-writer.sh | Adopt (§ What an adoption PR contains), or `git add` the workflow: Actions runs only what is committed. |
-| has diverged from the shipped template | Re-copy `templates/review-gate-writer.yml` over the adopted file. The template carries no per-repo values, so a copy that differs is a copy someone edited; the line named under the verdict says where. Keep only the `check_run` opt-in's two trigger lines if that opt-in is on. |
-| could not be read | A committed value the loader refuses — the indented diagnostic names the key and the shape it rejected. Fix the assignment; an unreadable value is never an empty one. |
-| is not executable / does not parse | Re-run `kendex refresh` and commit the result. |
+| `settings-unknown` | Fix the spelling against [settings.md](settings.md). The written value is being ignored. |
+| `settings-values` | Read the indented engine diagnostic. Its first record identifies the setting error; the following lines explain the accepted values. A nested `predicate-pattern` record means the path pattern uses an unsupported anchor or metacharacter. |
+| `carry-unmatched` | Fix the glob, or declare it in `REVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC` when it guards paths that do not exist yet. |
+| `carry-declaration-matched` or `carry-declaration-missing` | Reconcile the ledger — every declaration names an active exclusion that still matches nothing. |
+| `workflow-count` | Adopt (§ What an adoption PR contains), or `git add` the workflow: Actions runs only what is committed. |
+| `workflow-equality` | Re-copy `templates/review-gate-writer.yml` over the adopted file. The template carries no per-repo values, so a copy that differs is a copy someone edited; the line named under the verdict says where. Keep only the `check_run` opt-in's two trigger lines if that opt-in is on. |
+| `carry-load` | Read the nested `settings-unreadable` or `settings-syntax` diagnostic. It names the key and the shape the loader rejected. Fix the assignment; an unreadable value is never an empty one. |
+| `runtime-mode` or `runtime-syntax` | Re-run `kendex refresh` and commit the result. |
 
 ## Migrating a v1 consumer (rerun/sweep-era wiring)
 

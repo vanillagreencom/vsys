@@ -1,6 +1,6 @@
 # doc-limits
 
-A byte-size check for repository documents. It limits the Markdown that agents read and reports documents that exceed their path class.
+A byte-size check for repository documents. It limits the Markdown that agents read and HTML references under `docs/`, and reports documents that exceed their path class.
 
 ## Install
 
@@ -8,7 +8,7 @@ A byte-size check for repository documents. It limits the Markdown that agents r
 kendex add vanillagreencom/kendex --skill doc-limits
 ```
 
-Requires Git, Bash, jq, the commit-guards skill and standard POSIX tools. Bash 3.2 is supported. The commit-guards pre-commit hook runs the installed check.
+Requires Git, Bash, jq, the commit-guards skill and standard POSIX tools. Bash 3.2 is supported. The commit-guards pre-commit and pre-push hooks run the installed check.
 
 ## Features
 
@@ -19,7 +19,7 @@ Requires Git, Bash, jq, the commit-guards skill and standard POSIX tools. Bash 3
 
 ## How it works
 
-The checker selects tracked Markdown documents. It selects each document's first matching size class. It compares the byte count with that limit and reports every oversized document. The check leaves the files and index unchanged.
+The checker selects tracked Markdown documents and HTML files under `docs/`. It selects each document's first matching size class. It compares the byte count with that limit and reports every oversized document. The check leaves the files and index unchanged.
 
 ## Settings
 

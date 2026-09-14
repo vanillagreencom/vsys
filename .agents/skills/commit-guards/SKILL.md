@@ -12,21 +12,24 @@ metadata:
   version: "1.0.0"
 tags: [automation]
 repo-effects:
-  summary: "Arms git pre-commit and commit-msg hooks, so every commit in this repository runs the guard chain, for everyone who commits here, not only for kendex."
+  summary: "Arms git pre-commit, commit-msg and pre-push hooks, so every commit in this repository runs the guard chain and every push runs it over the branch, for everyone who commits or pushes here, not only for kendex."
   writes:
     - ".git/hooks/kendex-guards"
     - ".git/hooks/pre-commit"
     - ".git/hooks/commit-msg"
+    - ".git/hooks/pre-push"
   installer: "scripts/install-git-hooks"
   uninstaller: "scripts/install-git-hooks --uninstall"
-  removal: "kendex guard uninstall, or any kendex CLI verb that drops the package (remove, an apply or refresh that takes it away, marketplace unsubscribe --remove-packages) runs the uninstaller before the files go; it drops only the helper and one marked line, leaving any hook you wrote. Deleting the package any other way leaves shims that exec scripts which are gone and fail every commit closed"
+  checker: "scripts/install-git-hooks --check"
+  removal: "kendex guard uninstall, or any kendex CLI verb that drops the package (remove, an apply or refresh that takes it away, marketplace unsubscribe --remove-packages) runs the uninstaller before the files go; it drops only the helper and one marked line, leaving any hook you wrote. Deleting the package any other way leaves shims that exec scripts which are gone and fail every commit and every push closed"
   companions:
     - "doc-limits"
     - "preflight"
     - "bot-instructions"
   notes:
-    - "A missing companion is announced and skipped, as is a repo-local doc-limits that rejects --staged and preflight on a first commit; every other companion or guard failure blocks the commit, a bot-instructions check that finds a stale render included."
-    - "Both hooks block on nonzero results; Git's no-verify flag bypasses both for one commit."
+    - "A missing companion is announced and skipped, as is preflight on a first commit; every other companion or guard failure blocks the commit, a bot-instructions check that finds a stale render included."
+    - "Every hook blocks on a nonzero result; Git's no-verify flag bypasses the commit hooks for one commit and the pre-push hook for one push."
+    - "Git runs no hook when it replays a commit, so a rebase or a cherry-pick can carry a violation onto a branch unseen; the pre-push hook is where that branch is judged."
     - "Git does not clone hooks; arm every clone once."
 ---
 
@@ -38,7 +41,7 @@ repo-effects:
 .agents/skills/commit-guards/scripts/commit-guards all --base origin/main # the same batch over a branch's changes (CI)
 .agents/skills/commit-guards/scripts/commit-guards todo-ban     # one check by name, flags pass through
 .agents/skills/commit-guards/scripts/md-reflow PATH...          # rewrite markdown to the format md-format judges
-.agents/skills/commit-guards/scripts/install-git-hooks          # arm the git pre-commit/commit-msg shims
+.agents/skills/commit-guards/scripts/install-git-hooks          # arm the git pre-commit/commit-msg/pre-push shims
 .agents/skills/commit-guards/scripts/install-git-hooks --check  # read-only: are the shims still armed?
 ```
 
@@ -53,7 +56,7 @@ repo-effects:
 | **changelog-entries** | Each `COMMIT_GUARDS_CHANGELOG_PATHS` fragment is one Markdown list item in a Keep a Changelog section and at most `COMMIT_GUARDS_CHANGELOG_CAP` characters. |
 | **prose** | A history reference in Markdown named by `COMMIT_GUARDS_PROSE_PATHS` fails; `COMMIT_GUARDS_CHECKS` controls whether the lane runs. |
 | **md-format** | A hard-wrapped paragraph or list item, a missing blank line around a heading, fence or list, or a trailing-double-space break in Markdown named by `COMMIT_GUARDS_MD_PATHS` fails; `md-reflow` is the remedy. |
-| **md-refs** | A relative link, a link followed by `§` and a heading prefix, a `<path>.md § Heading` or `<path>.md#anchor` code-span citation, or a decision ID in Markdown named by `COMMIT_GUARDS_MD_REFS_PATHS` that lands on no tracked file, heading or decision fails. The `§` citation is judged the same way in the comment text of a source file named by `COMMIT_GUARDS_MD_REFS_SOURCE_PATHS`, and in a TOML file's string literals, its quoted keys included. |
+| **md-refs** | A dead relative link, section, content citation or decision reference in selected Markdown fails. In selected HTML, a relative `href` must resolve to a tracked path and any fragment must name an anchor. The defaults include documentation HTML under `docs/`. `COMMIT_GUARDS_MD_REFS_PATHS` selects documents; `COMMIT_GUARDS_MD_REFS_SOURCE_PATHS` selects source comments and TOML strings for `§` citations. The supported forms are in [CHECKS.md § md-refs](CHECKS.md#md-refs). |
 | **comments** | A history reference in the comment text of a source file named by `COMMIT_GUARDS_COMMENT_PATHS` fails: an issue id (`GH_ISSUE_PATTERN`), `#NNN`, or a date. Optional audit; see [CHECKS.md § comments](CHECKS.md#comments). |
 | **commit-msg** | The header must be `type(scope)!: subject` within `COMMIT_GUARDS_SUBJECT_MAX`; a commit touching `COMMIT_GUARDS_CHANGELOG_REQUIRED_PATHS` also owes a changelog entry or `[no-changelog]`. |
 
@@ -67,6 +70,12 @@ Run `scripts/install-git-hooks [--repo PATH]` to arm the shims.
 
 Pre-commit order: `doc-limits --staged` when installed -> `preflight --staged` when installed -> `bot-instructions check --staged` when installed -> `commit-guards all --staged` -> `COMMIT_GUARDS_PRE_COMMIT_LOCAL` when configured. `commit-msg` runs the message gate.
 
+`pre-push` runs doc-limits over the pushed tree and then the batch over what each pushed branch would do to the remote, so a state a replay carried in — a rebase, a cherry-pick, an autosquash, none of which run a commit hook — is judged before the branch leaves the machine. What a ref line deposits decides whether it is judged, so `git push origin HEAD` is judged like any other branch push; a deletion and a line landing on a tag or a note are skipped, and a line the lane cannot read is refused. Two refusals keep the verdict about the thing being pushed, since every range scope there ends at HEAD, every scan not handed a range reads the index, and every lane reads its tracked policy from the index: a branch whose tip is not HEAD, and an index holding content HEAD does not. Neither consults untracked files or unstaged edits.
+
+The batch runs the enabled checks less the ones this scope leaves nothing for. A check this run hands no scope, whose configured scope then selects from the staged diff, opens no file at push — nothing is staged, which the refusal above makes certain — so it is withheld and named rather than counted clean. Where a range can be established the markdown lanes are handed it under their default `touched` scope, and judge what the branch changed, so a malformed document or a broken reference that a replay carried in **is** caught. Where none can be, the whole tree is the scope and those lanes are withheld: that sweep is absolute rather than ratcheted, so imposing it would refuse every push in a repository holding markdown that predates the guard, and choosing it is `COMMIT_GUARDS_MD_SCOPE=all`, the project's call. A project that has chosen it keeps it under every scope — a range is narrower than that sweep, so the batch hands such a lane `--all` rather than the range, and a document the range never touched still fails. Which lanes read that setting at all is taken off their own scripts rather than listed, and what it resolves to is asked of the setting's owner.
+
+What the scope rests on: the remote oid git puts on a ref line is read from the destination itself, and it is the only destination-bound evidence a pre-push hook gets. Where it is there, the batch is asked what landing HEAD at that oid would **do** to it (`--against`, two dots) rather than what the branch adds over the ancestor the two share — on a force-pushed branch those differ, and only the first is what the destination receives. Where the oid is absent — every branch's first push — the scope is a best-effort local one taken from this repository's refs for the remote, which record a past fetch. After a `git remote set-url` those refs still describe the previous repository, so an oversized file can read there as pre-existing. Where no boundary can be established at all — a push by direct URL, a push URL those refs do not describe, a branch nothing of which has reached the remote — the scope is the whole tree, where an oversized file is held to its row in the byte baseline: a repository carrying a file that was already oversized when it adopted the package, with no row for it, has such a push refused, and a baseline row, the excludes list or the bypass is the way past. Scope details: [DEVELOPMENT.md § The pre-push lane](DEVELOPMENT.md#the-pre-push-lane).
+
 Arming and disarming apply to the whole repository. Disarm before removing the skill. Ownership and layering: [README.md § Git hooks](README.md#git-hooks); install mechanics: [DEVELOPMENT.md § Git hook install contract](DEVELOPMENT.md#git-hook-install-contract).
 
 ## Configuration
@@ -75,10 +84,11 @@ Exclude immutable first-party sources, including applied SQL migrations, from th
 
 | Key | Default | Meaning |
 |---|---|---|
-| `COMMIT_GUARDS_CHECKS` | `todo-ban byte-ceiling suppression-ban conflict-markers changelog-entries prose md-format md-refs` | Batch check list (`commit-msg` never batches). |
+| `COMMIT_GUARDS_CHECKS` | `todo-ban byte-ceiling suppression-ban conflict-markers changelog-entries prose md-format md-refs` | Batch check list (`commit-msg` never batches). Under `--skip-unscoped` a caller that stages nothing withholds the checks it hands no scope whose configured scope reads only the staged diff. |
 | `COMMIT_GUARDS_TODO_EXCLUDES` | `tools/todo-ban-excludes` | todo-ban exclusion list. |
 | `COMMIT_GUARDS_BYTE_CEILING_KB` | `200` | Byte ceiling in KB. |
 | `COMMIT_GUARDS_BYTE_EXCLUDES` | `tools/byte-ceiling-excludes` | byte-ceiling exclusion list (declared asset trees). |
+| `COMMIT_GUARDS_BYTE_BASELINE` | `tools/byte-ceiling-baseline` | byte-ceiling `--all` baseline: the object size each legacy oversized file is held to. |
 | `COMMIT_GUARDS_SUPPRESSION_EXCLUDES` | `tools/suppression-ban-excludes` | suppression-ban exclusion list. |
 | `COMMIT_GUARDS_SUPPRESSION_BASELINE` | `tools/suppression-baseline.tsv` | Bare-allow ratchet baseline. |
 | `COMMIT_GUARDS_CONFLICT_EXCLUDES` | `tools/conflict-markers-excludes` | conflict-markers exclusion list. |
@@ -88,10 +98,10 @@ Exclude immutable first-party sources, including applied SQL migrations, from th
 | `COMMIT_GUARDS_CHANGELOG_REQUIRED_PATHS` | *(empty)* | Globs whose change obliges a changelog entry, judged by `commit-msg`; empty switches the rule off. |
 | `COMMIT_GUARDS_PROSE_PATHS` | `SKILL.md */SKILL.md AGENTS.md */AGENTS.md CLAUDE.md */CLAUDE.md workflows/*.md */workflows/*.md agents/*.md */agents/*.md docs/architecture/*.md` | Space-separated globs naming the markdown the prose lane scans, matched against the full repo-relative path (`*` crosses `/`). |
 | `COMMIT_GUARDS_MD_PATHS` | `*.md` | Globs naming the markdown md-format and md-reflow take under `--all`. |
-| `COMMIT_GUARDS_MD_REFS_PATHS` | the `COMMIT_GUARDS_PROSE_PATHS` default | Globs naming the markdown md-refs judges under `--all`. |
+| `COMMIT_GUARDS_MD_REFS_PATHS` | `PATHS_DEFAULT` in `scripts/md-refs` | Globs naming the Markdown and HTML documents md-refs judges. |
 | `COMMIT_GUARDS_MD_REFS_SOURCE_PATHS` | the `COMMIT_GUARDS_COMMENT_PATHS` default | Globs naming the source files md-refs reads for `§` citations in comment text. |
 | `COMMIT_GUARDS_MD_EXCLUDES` | `tools/md-excludes` | Exclusion list both markdown lanes honour in every scope, and md-reflow under `--staged` and `--all`. |
-| `COMMIT_GUARDS_MD_SCOPE` | `touched` | With neither flag, `touched` runs md-format on staged files and md-refs on all configured documents when anything is staged; `all` checks every matching file. |
+| `COMMIT_GUARDS_MD_SCOPE` | `touched` | With no scope flag, `touched` runs md-format on staged files and md-refs on all configured documents when anything is staged; `all` checks every matching file. Under `touched` the batch may hand these lanes a commit range instead (`--base REF`, `--against REF`); under `all` it hands them `--all`, since a range is narrower than the sweep that setting asks for. |
 | `DECISIONS_DIR`, `DECISION_ID_PREFIX`, `DECISION_ID_WIDTH` | `docs/decisions`, `D`, `3` | The decider skill's scheme, read by md-refs to judge decision IDs; IDs are not judged where the directory is not tracked. |
 | `COMMIT_GUARDS_COMMENT_PATHS` | the extensions in [CHECKS.md § comments](CHECKS.md#comments) | Space-separated globs naming the source files the comments lane scans, matched against the full repo-relative path (`*` crosses `/`); replaces the default. |
 | `COMMIT_GUARDS_COMMENT_EXCLUDES` | `tools/comments-excludes` | comments exclusion list (generated, vendored, and immutable first-party files). `GH_ISSUE_PATTERN` (the github skill's key) declares the tracker ID shape; empty leaves ID checks inactive. |
@@ -102,7 +112,7 @@ Exclude immutable first-party sources, including applied SQL migrations, from th
 
 Settings follow [README.md § Settings](README.md#settings). `COMMIT_GUARDS_SETTINGS_FILE=/dev/null` skips file sources; `COMMIT_GUARDS_CHANGELOG_COLLATE=1` is environment-only, authorizes `--collate` on a clean index and working tree, and lets `commit-msg` count a record change as the release changelog entry.
 
-**Excludes format.** `pattern<TAB>reason` per line (shell glob against the full repo-relative path; `*` crosses `/`); a pattern without a reason is a config error. A pattern opening with `!` carves its matches back into the scanned set, and wins over every exclusion row whatever the order. To exclude a path that literally begins with `!`, escape it: `\!foo`. **Baseline format.** `path<TAB>count`, `LC_ALL=C` sorted, unique paths, positive counts. Initial suppression baseline: [CHECKS.md § suppression-ban](CHECKS.md#suppression-ban). Hook install and removal details: [DEVELOPMENT.md](DEVELOPMENT.md).
+**Excludes format.** `pattern<TAB>reason` per line (shell glob against the full repo-relative path; `*` crosses `/`); a pattern without a reason is a config error. A pattern opening with `!` carves its matches back into the scanned set, and wins over every exclusion row whatever the order. To exclude a path that literally begins with `!`, escape it: `\!foo`. **Baseline format.** `path<TAB>N`, `LC_ALL=C` sorted, unique paths, N a positive integer: a count for suppression-ban, an object size in bytes for byte-ceiling. Initial suppression baseline: [CHECKS.md § suppression-ban](CHECKS.md#suppression-ban). Hook install and removal details: [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Generated-file exclusions
 

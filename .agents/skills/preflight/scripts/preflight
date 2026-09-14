@@ -135,9 +135,11 @@ Scope rules:
   any lane; the whole-file lanes still see its path. A deleted path leaves the
   change set, and applied-migration-edited reads it from the diff instead.
   The test tree sets its own rules: a tests/ or fixtures/ tree, and a suite
-  as unwired-suite defines one, wherever it lives. early-close-pipe,
-  mktemp-trap, the source-file direction of docs-cited-paths, and the
-  strict-mode and swallowed-status shapes of fail-open stand down there. In a
+  as unwired-suite defines one, wherever it lives. mktemp-trap, the
+  source-file direction of docs-cited-paths, and the strict-mode and
+  swallowed-status shapes of fail-open stand down there. early-close-pipe is
+  judged there like anywhere else: a suite that sets pipefail dies of the
+  same 141, and its own rules are about observing a status, not SIGPIPE. In a
   test-named source file (tests.rs, *_test.*, *_tests.*, *.test.*, *.spec.*,
   test_*) only the swallowed-status shape and that same docs-cited-paths
   direction stand down. The mktemp assignment shape of fail-open is judged in
@@ -165,8 +167,24 @@ JSON, taplo or python3 with tomllib for TOML. A needed lane whose tool is
 unavailable prints as not run and is listed in the final result, which does
 not change the exit status.
 
-Output: one finding per line, path:line: [lane] message, line 0 for a
-whole-file finding, then a result line counting findings and changed files.
+Output protocol, which callers and this package's suites parse:
+  finding   path:line: [lane] message      line 0 for a whole-file finding
+  verdict   preflight: clean=N              N changed files, no findings
+            preflight: findings=N           N findings
+            Each carries its English count on the next line, and a run with
+            skipped lanes adds `preflight: not-run=lane,lane` as its own
+            record.
+  refusal   preflight: key=value           first line, on stderr, exit 2
+            A dependency's own diagnostic is captured and replayed after the
+            record, so nothing precedes it.
+  not-run   preflight: not-run=lane        first line, per skipped lane
+            A value carrying a newline or a tab has it escaped as the two
+            characters \n or \t, so a record is always one line.
+            Both carry their English explanation on the next line, which is
+            for a person and is not part of the contract.
+The suites assert this whole protocol: the finding heads row by row through
+the harness, the verdict lines as exact text, and each refusal by its key,
+its value and the exit status.
 
 Diff construction and the glob grammars: references/lanes.md.
 
@@ -174,8 +192,42 @@ Exit codes: 0 clean; 1 findings; 2 usage/environment error.
 EOF
 }
 
-env_error() {
-  echo "preflight: $*" >&2
+# Every refusal leaves here, so the wording lives in one place. The FIRST line
+# is the stable part a caller may match: `preflight: <key>=<value>`, where the
+# key names the condition and the value is the path, ref, argument or command
+# it is about. Everything after it is English for a person and carries no
+# contract. Tests assert the key, the value and the exit status, never a
+# sentence.
+# A dependency's own diagnostic must not reach stderr before the record: a
+# caller reading the first line would miss it. `pf_quiet` runs a command with
+# its stderr captured, and the refusal replays that text AFTER its own two
+# lines, so the record is always first and nothing is lost.
+PF_DEP_ERR=""
+# Runs a dependency with its stderr captured, leaving stdout wherever the
+# caller sends it, so a diagnostic cannot reach the terminal before the
+# refusal record. `env_error` replays what was captured after its own lines,
+# so nothing is lost. Used at every failure path that ends in a refusal.
+pf_dep() { # COMMAND... -> the command's status, its stderr in PF_DEP_ERR
+  local st=0
+  PF_DEP_ERR=""
+  "$@" 2>"$TMP/dep.err" || st=$?
+  PF_DEP_ERR="$(cat "$TMP/dep.err" 2>/dev/null)"
+  return "$st"
+}
+
+env_error() { # KEY VALUE EXPLANATION...
+  pf_key="$1"
+  # The value goes into a line-oriented record, and some conditions refused
+  # here are ABOUT a path holding a newline or a tab: written raw, such a
+  # value would split the record that carries it. Both are escaped here, in
+  # the one place a value is formatted, so one refusal is always one first
+  # line and the reader sees the two characters rather than the byte.
+  pf_value="${2//$'\n'/\\n}"
+  pf_value="${pf_value//$'\t'/\\t}"
+  shift 2
+  printf 'preflight: %s=%s\n' "$pf_key" "$pf_value" >&2
+  printf '%s\n' "$*" >&2
+  [ -z "$PF_DEP_ERR" ] || printf '%s\n' "$PF_DEP_ERR" >&2
   exit 2
 }
 
@@ -186,23 +238,47 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --staged) MODE="staged" ;;
     --all) MODE="all" ;;
-    --base) [ $# -ge 2 ] || env_error "--base requires a ref"; shift; MODE="base"; BASE_REF="$1" ;;
+    --base) [ $# -ge 2 ] || env_error usage --base "the flag needs a ref argument"; shift; MODE="base"; BASE_REF="$1" ;;
     --base=*) MODE="base"; BASE_REF="${1#--base=}" ;;
-    --repo) [ $# -ge 2 ] || env_error "--repo requires a path"; shift; REPO_OPT="$1" ;;
+    --repo) [ $# -ge 2 ] || env_error usage --repo "the flag needs a path argument"; shift; REPO_OPT="$1" ;;
     --repo=*) REPO_OPT="${1#--repo=}" ;;
     -h | --help) usage; exit 0 ;;
-    *) env_error "unknown argument '$1' (see --help)" ;;
+    *) env_error usage "$1" "not an argument this tool takes; see --help" ;;
   esac
   shift
 done
 
 if [ -n "$REPO_OPT" ]; then
-  cd -- "$REPO_OPT" 2>/dev/null || env_error "--repo path is not a directory: $REPO_OPT"
+  cd -- "$REPO_OPT" 2>/dev/null || env_error repo-path "$REPO_OPT" "--repo names something that is not a directory this run can enter"
 fi
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || env_error "not inside a git repository"
+# These two run before the run's own temporary directory exists, so they
+# take their stderr through the substitution they are already read through
+# rather than a file: a predictable name under a shared directory, opened
+# with truncation, is a symlink another process can aim at anything this
+# caller may write. On success the substitution holds the answer, which is
+# checked to be a directory so a warning cannot pass for one; on failure it
+# holds the cause, replayed after the record.
+pf_early=""
+pf_early="$(git rev-parse --show-toplevel 2>&1)" || {
+  PF_DEP_ERR="$pf_early"
+  env_error not-a-repo "$PWD" "no git repository contains this directory, so there is no diff to read"
+}
+[ -d "$pf_early" ] || {
+  PF_DEP_ERR="$pf_early"
+  env_error not-a-repo "$PWD" "the repository root could not be read as a directory"
+}
+REPO_ROOT="$pf_early"
 cd "$REPO_ROOT"
 
-TMP="$(mktemp -d)" || env_error "could not create a temporary directory"
+pf_early="$(mktemp -d 2>&1)" || {
+  PF_DEP_ERR="$pf_early"
+  env_error tmpdir "${TMPDIR:-/tmp}" "a scratch directory could not be created under it"
+}
+[ -d "$pf_early" ] || {
+  PF_DEP_ERR="$pf_early"
+  env_error tmpdir "${TMPDIR:-/tmp}" "the scratch directory it named is not a directory"
+}
+TMP="$pf_early"
 # cleanup re-exits with the status it interrupted: under errexit a failing rm
 # would otherwise replace the contract exit code with its own.
 cleanup() {
@@ -211,7 +287,13 @@ cleanup() {
   exit "$cleanup_status"
 }
 trap cleanup EXIT
-pf_load_project_env "$MODE" "$REPO_ROOT" "$TMP" || env_error "could not load project settings"
+# Runs in THIS shell, never a subshell: it exports the settings the lanes
+# read, and a command substitution would drop them. Its stderr goes to a file
+# so a diagnostic cannot precede the record.
+pf_load_project_env "$MODE" "$REPO_ROOT" "$TMP" 2>"$TMP/settings.err" || {
+  PF_DEP_ERR="$(cat "$TMP/settings.err")"
+  env_error settings "$REPO_ROOT" "the project settings under this root could not be loaded"
+}
 : >"$TMP/findings.tsv"
 : >"$TMP/skipped.tsv"
 : >"$TMP/added.tsv"
@@ -248,9 +330,10 @@ content_of() { # IDX PATH — sets CONTENT; nonzero when there is no content to 
       # An index entry the change set just listed has content by definition,
       # so a lookup that misses it (a corrupt or missing object) or a write
       # that cannot land is a failed read, never a shape with nothing to read.
-      { git show ":0:$2" >"$out.part" 2>/dev/null && mv -- "$out.part" "$out"; } || {
+      { git show ":0:$2" >"$out.part" 2>"$TMP/dep.err" && mv -- "$out.part" "$out"; } || {
         rm -f "$out.part"
-        env_error "could not read the staged content of $2 — refusing to report clean over a file no lane read"
+        PF_DEP_ERR="$(cat "$TMP/dep.err" 2>/dev/null)"
+        env_error unreadable "$2" "the staged content could not be read; refusing to report clean over a file no lane read"
       }
     fi
     CONTENT="$out"
@@ -273,10 +356,14 @@ content_is_binary() { # CONTENT-PATH PATH — 0 when git would call the content 
   # A read that FAILS is no verdict at all. Skipping it would leave the path
   # inside a clean count no lane ever read, so it is loud instead — the policy
   # the commit-guards lanes take for this same condition.
-  total="$(head -c "$BINARY_SAMPLE" -- "$1" | wc -c)" \
-    || env_error "could not read $2 to classify its content — refusing to report clean over a file no lane read"
-  stripped="$(head -c "$BINARY_SAMPLE" -- "$1" | LC_ALL=C tr -d '\000' | wc -c)" \
-    || env_error "could not read $2 to classify its content — refusing to report clean over a file no lane read"
+  total="$( { head -c "$BINARY_SAMPLE" -- "$1" | wc -c; } 2>"$TMP/dep.err" )" || {
+    PF_DEP_ERR="$(cat "$TMP/dep.err" 2>/dev/null)"
+    env_error unreadable "$2" "the content could not be read to classify it; refusing to report clean over a file no lane read"
+  }
+  stripped="$( { head -c "$BINARY_SAMPLE" -- "$1" | LC_ALL=C tr -d '\000' | wc -c; } 2>"$TMP/dep.err" )" || {
+    PF_DEP_ERR="$(cat "$TMP/dep.err" 2>/dev/null)"
+    env_error unreadable "$2" "the content could not be read to classify it; refusing to report clean over a file no lane read"
+  }
   [ "$((total))" -ne "$((stripped))" ]
 }
 
@@ -291,11 +378,17 @@ content_is_binary() { # CONTENT-PATH PATH — 0 when git would call the content 
 # is judged on content by the verdict below, before the patch is taken.
 git_diff() { git -c core.quotePath=false -c diff.noprefix=false -c diff.mnemonicPrefix=false diff --no-ext-diff --no-textconv --text "$@"; }
 
-resolve_base() { # -> merge-base commit on stdout; nonzero when none resolves
+# Runs inside a command substitution, so it must NOT refuse: an `exit` there
+# ends only the subshell and the caller would refuse a second time, printing
+# two records for one condition. It reports the condition through its status
+# and the caller emits the single refusal.
+#   0 a base is on stdout    2 the named ref does not resolve
+#   1 no default candidate   3 the named ref shares no merge base
+resolve_base() { # -> merge-base commit on stdout; nonzero names the condition
   local cand base
   if [ -n "$BASE_REF" ]; then
-    git rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null || env_error "--base ref does not resolve to a commit: $BASE_REF"
-    base="$(git merge-base HEAD "$BASE_REF" 2>/dev/null)" || env_error "no merge base between HEAD and $BASE_REF"
+    git rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null || return 2
+    base="$(git merge-base HEAD "$BASE_REF" 2>/dev/null)" || return 3
     printf '%s' "$base"
     return 0
   fi
@@ -312,22 +405,29 @@ resolve_base() { # -> merge-base commit on stdout; nonzero when none resolves
 
 case "$MODE" in
   all)
-    git ls-files -z >"$TMP/files.z" || env_error "git ls-files failed"
+    pf_dep git ls-files -z >"$TMP/files.z" || env_error git-failed ls-files "listing the tracked files failed"
     ;;
   staged)
-    git rev-parse --verify --quiet HEAD >/dev/null || env_error "the repository has no commits yet — nothing to diff --staged against"
-    git_diff --cached --name-only --diff-filter=d -z >"$TMP/files.z" || env_error "git diff --cached failed"
-    git_diff --cached --name-only --no-renames --diff-filter=A >"$TMP/newfiles.list" || env_error "git diff --cached failed"
+    git rev-parse --verify --quiet HEAD >/dev/null || env_error no-commits --staged "the repository has no commits, so there is nothing to diff the index against"
+    pf_dep git_diff --cached --name-only --diff-filter=d -z >"$TMP/files.z" || env_error git-failed diff-cached "reading the staged diff failed"
+    pf_dep git_diff --cached --name-only --no-renames --diff-filter=A >"$TMP/newfiles.list" || env_error git-failed diff-cached "reading the staged diff failed"
     ;;
   base)
-    git rev-parse --verify --quiet HEAD >/dev/null || env_error "the repository has no commits yet — pass --all"
-    BASE="$(resolve_base)" || env_error "could not resolve a default diff base (tried origin/HEAD, origin/main, main) — pass --base REF or --all"
-    git_diff --name-only --diff-filter=d -z "$BASE" -- >"$TMP/files.z" || env_error "git diff against $BASE failed"
-    git_diff --name-only --no-renames --diff-filter=A "$BASE" -- >"$TMP/newfiles.list" || env_error "git diff against $BASE failed"
+    git rev-parse --verify --quiet HEAD >/dev/null || env_error no-commits base "the repository has no commits; pass --all"
+    base_status=0
+    BASE="$(resolve_base)" || base_status=$?
+    case "$base_status" in
+      0) ;;
+      2) env_error base-ref "$BASE_REF" "the ref does not resolve to a commit in this repository" ;;
+      3) env_error merge-base "$BASE_REF" "HEAD and this ref share no merge base, so there is no range to read" ;;
+      *) env_error base-unresolved "origin/HEAD,origin/main,main" "none of these resolved; pass --base REF or --all" ;;
+    esac
+    pf_dep git_diff --name-only --diff-filter=d -z "$BASE" -- >"$TMP/files.z" || env_error git-failed "diff-$BASE" "reading the diff against this base failed"
+    pf_dep git_diff --name-only --no-renames --diff-filter=A "$BASE" -- >"$TMP/newfiles.list" || env_error git-failed "diff-$BASE" "reading the diff against this base failed"
     # A file never added is invisible to `git diff` yet is part of the change
     # the author is about to commit. Every non-ignored untracked file is a new
     # file with every line added, exactly what it will be at the PR.
-    git -c core.quotePath=false ls-files --others --exclude-standard -z >"$TMP/untracked.z" || env_error "git ls-files --others failed"
+    pf_dep git -c core.quotePath=false ls-files --others --exclude-standard -z >"$TMP/untracked.z" || env_error git-failed ls-files-others "listing the untracked files failed"
     ;;
 esac
 [ -f "$TMP/untracked.z" ] || : >"$TMP/untracked.z"
@@ -337,7 +437,7 @@ esac
 # pathological path loudly rather than letting it desync the map.
 while IFS= read -r -d '' f; do
   case "$f" in
-    *"$TAB"* | *"$NL"*) env_error "changed path contains a tab or newline, unrepresentable in this tool's records: '$f'" ;;
+    *"$TAB"* | *"$NL"*) env_error unrepresentable-path "$f" "a changed path holding a tab or newline cannot be represented in this tool's records" ;;
   esac
   printf '%s\n' "$f"
 done <"$TMP/files.z" >"$TMP/files.list"
@@ -373,10 +473,10 @@ else
   # into the patch and none of its bytes can reach the parser below.
   case "$MODE" in
     staged)
-      git_diff --cached --unified=0 --no-color --no-renames --diff-filter=d -- ${PATCH_EXCLUDE[@]+"${PATCH_EXCLUDE[@]}"} >"$TMP/patch" || env_error "git diff --cached failed"
+      pf_dep git_diff --cached --unified=0 --no-color --no-renames --diff-filter=d -- ${PATCH_EXCLUDE[@]+"${PATCH_EXCLUDE[@]}"} >"$TMP/patch" || env_error git-failed diff-cached "reading the staged diff failed"
       ;;
     base)
-      git_diff --unified=0 --no-color --no-renames --diff-filter=d "$BASE" -- ${PATCH_EXCLUDE[@]+"${PATCH_EXCLUDE[@]}"} >"$TMP/patch" || env_error "git diff against $BASE failed"
+      git_diff --unified=0 --no-color --no-renames --diff-filter=d "$BASE" -- ${PATCH_EXCLUDE[@]+"${PATCH_EXCLUDE[@]}"} >"$TMP/patch" || env_error git-failed "diff-$BASE" "reading the diff against this base failed"
       ;;
   esac
   # A `+++ b/<path>` record re-points the whole parse at another file, so it
@@ -428,7 +528,7 @@ else
   ' "$TMP/patch"
   while IFS= read -r -d '' f; do
     case "$f" in
-      *"$TAB"* | *"$NL"*) env_error "untracked path contains a tab or newline, unrepresentable in this tool's records: '$f'" ;;
+      *"$TAB"* | *"$NL"*) env_error unrepresentable-path "$f" "an untracked path holding a tab or newline cannot be represented in this tool's records" ;;
     esac
     printf '%s\n' "$f" >>"$TMP/files.list"
     printf '%s\n' "$f" >>"$TMP/newfiles.list"
@@ -466,9 +566,9 @@ awk -F'\t' -v dir="$TMP" -v listfile="$TMP/files.list" '
   }
 ' "$TMP/files.list" "$TMP/added.tsv" >"$TMP/split.err" || split_status=$?
 [ "$split_status" -eq 0 ] \
-  || env_error "the added lines for '$(cat "$TMP/split.err")' arrived in two separate groups — refusing to report over a record set whose second group would truncate the first"
+  || env_error split-groups "$(cat "$TMP/split.err")" "the added lines arrived in two separate groups; refusing to report over a record set whose second group would truncate the first"
 
-git ls-files >"$TMP/tracked.list" || env_error "git ls-files failed"
+pf_dep git ls-files >"$TMP/tracked.list" || env_error git-failed ls-files "listing the tracked files failed"
 # Every directory that holds tracked files, at every depth — plus the
 # directories of the untracked files in scope, so a new doc under a new
 # directory is judged as it will be once committed.
@@ -634,6 +734,18 @@ has_exit_trap() { # FILE
 # opens with `$(`, and it runs no command and carries no status, so a loop
 # counter — the commonest line in this repo's own tooling — is not the shape.
 SUBST_ASSIGN_RE='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="?\$\([^(]'
+# A substitution assignment's status is checked when the assignment is the
+# condition, or when an operator immediately follows the substitution.
+# Reading only the tail keeps an operator inside the substitution out, and
+# requiring the operator at the tail's start keeps a later command out.
+substitution_status_checked() { # LINE
+  if grep -Eq -- '^[[:space:]]*(if|elif)[[:space:]]+(![[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*="?\$\([^(]' <<<"$1" \
+    && ! grep -Eq -- '(&&|\|\|)' <<<"${1%%)*}"; then
+    return 0
+  fi
+  grep -Eq -- '^"?[[:space:]]*(&&|\|\|)' <<<"${1##*)}" && return 0
+  return 1
+}
 # The guard the assignment was written to reach: a test naming the assigned
 # variable on one of the lines just below. It is the whole finding — a
 # variable nothing below tests belongs to a command whose failure is MEANT to
@@ -827,12 +939,108 @@ test_tree_role() { # PATH IS_SHELL(0|1)
   return 1
 }
 
+# Does a runner body invoke RUNNER over the whole of that runner's default
+# include? One tokenizer owns the answer, because a regex cannot: every
+# quoting shape it did not anticipate read as a terminator. Here a quote
+# opens a span inside the word it stands in and ends nothing, so a quoted
+# positional (bun test 'src/') and a quote inside a flag word
+# (--timeout='5000' src/) are ordinary tokens. A comment is recognised here
+# too, at a word boundary outside quotes, so a quoted hash
+# (--reporter='a # b' src/) truncates nothing and keeps its positional.
+#
+# FKIND names which fields of the file carry a command, because most do not.
+# Only a command-bearing value is judged, so a workflow step's `name: bun
+# test` and a manifest's description are text: shell files are commands
+# throughout; a workflow arms only a `run:` value and the block scalar it
+# opens; a manifest arms only a value inside its `scripts` object, tracked by
+# brace depth. Everything else is tokenized and dropped unjudged.
+#
+# Within an armed command, leading NAME=value assignments and manager or
+# exec-form words (npx pnpm yarn exec dlx) are stepped over, then the runner
+# word must stand there, then W2 when the runner names a subcommand of its
+# own (bun test), then any of SUBS, the subcommands that still mean the whole
+# default include (vitest run).
+#
+# Every remaining word must be a flag. A word that is not one is a positional
+# path or filter: it restricts the run to part of the tree, so the invocation
+# no longer stands for the whole default include, and the path token it
+# writes is its own wiring evidence. A flag's detached value (--timeout 5000)
+# is such a word too — telling one from a path filter needs each runner's own
+# flag arity, and guessing it is the fail-open direction this lane must not
+# take. references/lanes.md carries that rule for the people who hit it.
+invokes_default_include() { # BODY-FILE W1 W2 SUBS FKIND
+  LC_ALL=C awk -v W1="$2" -v W2="$3" -v SUBS="$4" -v FKIND="$5" '
+    BEGIN { nm = split("npx pnpm yarn exec dlx", mgr, " "); ns = split(SUBS, sb, " ") }
+    function flush_tok() { if (have) { c++; cmd[c] = tok } tok = ""; have = 0 }
+    function is_mgr(t,   j) { for (j = 1; j <= nm; j++) if (t == mgr[j]) return 1; return 0 }
+    function is_sub(t,   j) { for (j = 1; j <= ns; j++) if (t == sb[j]) return 1; return 0 }
+    function is_bare(   j) {
+      j = 1
+      while (j <= c && (cmd[j] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || is_mgr(cmd[j]))) j++
+      if (j > c || cmd[j] != W1) return 0
+      j++
+      if (W2 != "") { if (j > c || cmd[j] != W2) return 0; j++ }
+      while (j <= c && is_sub(cmd[j])) j++
+      for (; j <= c; j++) if (substr(cmd[j], 1, 1) != "-") return 0
+      return 1
+    }
+    function end_cmd() { flush_tok(); if (armed && c > 0 && is_bare()) found = 1; c = 0 }
+    {
+      L = length($0); i = 1; enc = ""; q = ""; tok = ""; have = 0; c = 0
+      if (FKIND == "shell") armed = 1
+      else if (FKIND == "yaml") {
+        if (blk && $0 !~ /^[[:space:]]*-?[[:space:]]*[A-Za-z_][A-Za-z0-9_.-]*:([[:space:]]|$)/) armed = 1
+        else { blk = 0; armed = 0 }
+      } else armed = 0
+      while (i <= L) {
+        ch = substr($0, i, 1)
+        if (q != "") {
+          if (ch == "\\" && q == "\"") { tok = tok substr($0, i + 1, 1); i += 2; continue }
+          if (ch == q) { q = ""; i++; continue }
+          tok = tok ch; i++; continue
+        }
+        if (enc != "" && ch == enc) { end_cmd(); enc = ""; armed = 0; i++; continue }
+        if (ch == "\\") { tok = tok substr($0, i + 1, 1); have = 1; i += 2; continue }
+        if (ch == "\"" || ch == "'"'"'") { q = ch; have = 1; i++; continue }
+        if (ch == "#" && have == 0 && FKIND != "json") break
+        if (ch == " " || ch == "\t") { flush_tok(); i++; continue }
+        if (ch == ";" || ch == "&" || ch == "|" || ch == "`" || ch == "(" || ch == ")") { end_cmd(); i++; continue }
+        if (FKIND == "json" && (ch == "{" || ch == "}")) {
+          flush_tok(); c = 0
+          if (ch == "{") { if (pend) { insc = 1; sd = 1; pend = 0 } else if (insc) sd++ }
+          else if (insc) { sd--; if (sd <= 0) insc = 0 }
+          i++; continue
+        }
+        if (ch == ":" && !armed) {
+          flush_tok()
+          key = (c > 0) ? cmd[c] : ""
+          c = 0
+          i++
+          while (i <= L && (substr($0, i, 1) == " " || substr($0, i, 1) == "\t")) i++
+          if (FKIND == "json") {
+            if (key == "scripts") { pend = 1; continue }
+            if (!insc) continue
+          } else if (key != "run") break
+          armed = 1
+          ch = substr($0, i, 1)
+          if (ch == "\"" || ch == "'"'"'") { enc = ch; i++ }
+          else if (FKIND == "yaml" && (ch == "|" || ch == ">")) { blk = 1; break }
+          continue
+        }
+        tok = tok ch; have = 1; i++
+      }
+      end_cmd()
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$1"
+}
+
 # The tracked runners and their path-shaped tokens, collected once. Read
 # through content_of, so staged scope judges the staged runner rather than a
 # worktree edit that is not part of this change.
 RUNNERS_READ_WHOLE=1
 build_runner_index() {
-  local r c k=0 status kind scope
+  local r c k=0 status kind w2 subs fkind scope
   [ ! -f "$TMP/runner.toks" ] || return 0
   # Untracked runners are in scope exactly when untracked suites are: a
   # workflow added beside its suite wires it before either is committed.
@@ -849,25 +1057,32 @@ build_runner_index() {
     content_of "r$k" "$r" || { RUNNERS_READ_WHOLE=0; continue; }
     c="$CONTENT"
     cat -- "$c" >>"$TMP/runner.bodies"
-    # A runner invoking bare vitest or jest runs that runner's own default
-    # include glob — no path in the runner ever names the suites it
-    # executes. Comment context is dropped first — whole-line comments and
-    # a trailing comment opened by whitespace-then-# — then the word must
-    # stand at a command position — after line-leading whitespace, a shell
-    # connector (; & | backtick paren), a directly preceding manager or
-    # exec-form word (npx pnpm yarn exec dlx), or a
-    # colon opening a manifest or workflow value with an optional quote —
-    # allowing NAME=value assignment words, their values plain or
-    # quoted, between that opener and the word — and end at whitespace,
-    # a quote, a connector, or the line end. A
-    # dependency key ("vitest": "^3"), a package path (@vitest/ui), a
-    # path-prefixed binary (node_modules/.bin/vitest), and a prose mention
-    # all fail that shape. Recorded as the directory the runner runs
-    # from: manifests run beside themselves; workflows and validate
-    # scripts run from the root of the tree that owns them.
-    sed -e '/^[[:space:]]*#/d' -e 's/[[:space:]]#.*//' -- "$c" >"$TMP/runner.body.one"
-    for kind in vitest jest; do
-      LC_ALL=C grep -qE "(^[[:space:]]*|[;\`(&|][[:space:]]*|(npx|pnpm|yarn|exec|dlx)[[:space:]]+|:[[:space:]]*[\"']?)([A-Za-z_][A-Za-z0-9_]*=([^[:space:]'\"]|'[^']*'|\"[^\"]*\")*[[:space:]]+)*$kind([[:space:]\"'\`&;|)]|\$)" "$TMP/runner.body.one" || continue
+    # A runner invoking one of these over its whole default include runs that
+    # runner's own include glob — no path in the runner ever names the suites
+    # it executes. invokes_default_include owns that grammar, including which
+    # fields of this file carry a command at all, so a dependency key
+    # ("vitest": "^3"), a package path (@vitest/ui), a path-prefixed binary
+    # (node_modules/.bin/vitest), a step name and a prose mention all fail it.
+    # Recorded as the directory the runner runs from: manifests run beside
+    # themselves; workflows and validate scripts run from the root of the tree
+    # that owns them.
+    #
+    # bun names its test runner in a second word: bun on its own is the
+    # package runner and `bun run test` re-enters the script table. vitest
+    # keeps the two subcommands that still run the whole include; jest has
+    # none, so every word after it is a path pattern.
+    case "$r" in
+      .github/workflows/*) fkind=yaml ;;
+      *package.json) fkind=json ;;
+      *) fkind=shell ;;
+    esac
+    for kind in vitest jest bun; do
+      case "$kind" in
+        vitest) w2=""; subs="run watch" ;;
+        jest) w2=""; subs="" ;;
+        bun) w2=test; subs="" ;;
+      esac
+      invokes_default_include "$c" "$kind" "$w2" "$subs" "$fkind" || continue
       scope=""
       case "$r" in
         .github/workflows/*) ;;
@@ -880,9 +1095,12 @@ build_runner_index() {
       printf '%s\n' "$scope" >>"$TMP/runner.defaultglob"
     done
     status=0
-    LC_ALL=C tr -cs 'A-Za-z0-9_*./-' '\n' <"$c" | LC_ALL=C grep -e / |
-      RN="$r" awk 'BEGIN { p = ENVIRON["RN"] } { print p "\t" $0 }' >>"$TMP/runner.toks.raw" || status=$?
-    [ "$status" -le 1 ] || env_error "unwired-suite lane could not read the runner $r"
+    { LC_ALL=C tr -cs 'A-Za-z0-9_*./-' '\n' <"$c" | LC_ALL=C grep -e / |
+      RN="$r" awk 'BEGIN { p = ENVIRON["RN"] } { print p "\t" $0 }' >>"$TMP/runner.toks.raw"; } 2>"$TMP/dep.err" || status=$?
+    [ "$status" -le 1 ] || {
+      PF_DEP_ERR="$(cat "$TMP/dep.err" 2>/dev/null)"
+      env_error runner-unreadable "$r" "the unwired-suite lane could not read this runner"
+    }
   done <"$TMP/runner.names"
   LC_ALL=C sort -u "$TMP/runner.toks.raw" >"$TMP/runner.toks"
 }
@@ -907,12 +1125,13 @@ suite_is_wired() { # SUITE-PATH
     case "$r" in */*) ;; *) continue ;; esac
     case "$p" in "${r%/*}"/*) return 0 ;; esac
   done <"$TMP/runner.names"
-  # A recorded bare vitest/jest invocation wires every suite its runner's
-  # default include glob matches under the directory it runs from. Both
-  # defaults cover *.test.ts/js/mjs — vitest's include and Jest 30's
-  # testMatch (**/?(*.)+(spec|test).?([mc])[jt]s?(x)) alike. A config
-  # pinning an explicit include or testMatch is not evaluated — an
-  # unproven suite is not an unwired one.
+  # A recorded whole-default-include invocation wires every suite its
+  # runner's default include glob matches under the directory it runs from.
+  # All three defaults cover *.test.ts/js/mjs — vitest's include, Jest 30's
+  # testMatch (**/?(*.)+(spec|test).?([mc])[jt]s?(x)) and Bun's recursive
+  # *.test.{js,jsx,ts,tsx,mjs,cjs,mts,cts} discovery alike. A config pinning
+  # an explicit include or testMatch is not evaluated — an unproven suite is
+  # not an unwired one.
   while IFS= read -r scope; do
     case "$p" in
       *.test.ts | *.test.js | *.test.mjs) ;;
@@ -1106,7 +1325,9 @@ while IFS= read -r f; do
     n="${rec%%"$TAB"*}"
     content="${rec#*"$TAB"}"
 
-    if [ "$is_sh" = 1 ] && [ "$vendored_mirror" = 0 ] && [ "$has_ee" = 0 ] && printf '%s' "$content" | grep -Eq -- "$MKTEMP_ASSIGN"; then
+    if [ "$is_sh" = 1 ] && [ "$vendored_mirror" = 0 ] && [ "$has_ee" = 0 ] \
+      && grep -Eq -- "$MKTEMP_ASSIGN" <<<"$content" \
+      && ! substitution_status_checked "$content"; then
       emit "$f" "$n" fail-open "unchecked mktemp in a file without errexit — a failed mktemp leaves the variable empty and the script runs on"
     fi
 
@@ -1121,22 +1342,13 @@ while IFS= read -r f; do
       && [ "$has_ee" = 1 ] && [ "$has_noee" = 0 ]; then
       case "$content" in
         *'$('*)
-          # The operator is a status capture only OUTSIDE the substitution, so
-          # the skip reads the tail past the last `)`: `VAR="$(cmd)" || VAR=""`
-          # is the fix shape and stays out, while `VAR="$(cd "$d" && cmd)"` —
-          # whose inner operator captures nothing — is judged like any other.
-          case "${content##*)}" in
-            *'||'* | *'&&'*) ;;
-            *)
-              if grep -Eq -- "$SUBST_ASSIGN_RE" <<<"$content"; then
-                assign_var="${content#"${content%%[![:space:]]*}"}"
-                assign_var="${assign_var%%=*}"
-                if guard_tests_var "$cpath" "$n" "$assign_var"; then
-                  emit "$f" "$n" fail-open "bare command-substitution assignment under errexit — its status ends the script here, so the test of \$$assign_var below never runs; move the assignment into the condition"
-                fi
-              fi
-              ;;
-          esac
+          if ! substitution_status_checked "$content" && grep -Eq -- "$SUBST_ASSIGN_RE" <<<"$content"; then
+            assign_var="${content#"${content%%[![:space:]]*}"}"
+            assign_var="${assign_var%%=*}"
+            if guard_tests_var "$cpath" "$n" "$assign_var"; then
+              emit "$f" "$n" fail-open "bare command-substitution assignment under errexit — its status ends the script here, so the test of \$$assign_var below never runs; move the assignment into the condition"
+            fi
+          fi
           ;;
       esac
     fi
@@ -1187,7 +1399,11 @@ while IFS= read -r f; do
       esac
     fi
 
-    if [ "$is_sh" = 1 ] && [ "$own_rules" = 0 ] && [ "$vendored_mirror" = 0 ] && [ "$has_pf" = 1 ]; then
+    # The test tree is judged here, unlike in the lanes above: its own rules
+    # buy a suite the right to observe a status errexit would abort on, which
+    # is no licence to take a 141 that ends the run in the middle of a
+    # section. The file's own pipefail is already the condition above.
+    if [ "$is_sh" = 1 ] && [ "$vendored_mirror" = 0 ] && [ "$has_pf" = 1 ]; then
       case "$content" in
         *"|"*)
           if ! is_comment_line "$content" && grep -Eq -- "$EARLY_CLOSE_RE" <<<"$content"; then
@@ -1273,9 +1489,9 @@ if [ -n "$MIGRATION_BASE" ] && [ -n "$MIGRATION_GLOBS" ]; then
   # MDR are the statuses the verb below names; the base read, not the filter,
   # is what keeps an added file out.
   if [ "$MODE" = staged ]; then
-    git_diff --cached --find-renames --name-status --diff-filter=MDR -z >"$TMP/migrations.z" || env_error "git diff --cached failed"
+    pf_dep git_diff --cached --find-renames --name-status --diff-filter=MDR -z >"$TMP/migrations.z" || env_error git-failed diff-cached "reading the staged diff failed"
   else
-    git_diff --find-renames --name-status --diff-filter=MDR -z "$BASE" -- >"$TMP/migrations.z" || env_error "git diff against $BASE failed"
+    pf_dep git_diff --find-renames --name-status --diff-filter=MDR -z "$BASE" -- >"$TMP/migrations.z" || env_error git-failed "diff-$BASE" "reading the diff against this base failed"
   fi
   while IFS= read -r -d '' mstatus && IFS= read -r -d '' mpath; do
     mnew=""
@@ -1304,20 +1520,26 @@ fi
 # --- verdict -----------------------------------------------------------------
 SKIPPED=""
 LC_ALL=C sort -u "$TMP/skipped.tsv" >"$TMP/skipped.unique"
+# A lane that could not run says so with its own key line, the lane as the
+# value, and the reason underneath. Same shape as a refusal: the first line is
+# what a caller matches, the English is for a person.
 while IFS="$TAB" read -r lane reason; do
-  printf 'preflight: [%s] not run: %s\n' "$lane" "$reason"
-  case ", $SKIPPED, " in
-    *", $lane, "*) ;;
-    *) SKIPPED="${SKIPPED:+$SKIPPED, }$lane" ;;
+  printf 'preflight: not-run=%s\n%s\n' "$lane" "$reason"
+  case ",$SKIPPED," in
+    *",$lane,"*) ;;
+    *) SKIPPED="${SKIPPED:+$SKIPPED,}$lane" ;;
   esac
 done <"$TMP/skipped.unique"
-SKIP_NOTE="${SKIPPED:+; not run: $SKIPPED}"
+# The skipped set is its own record rather than a clause riding on the
+# verdict's first line, so a caller reads one key per line.
+SKIP_NOTE="${SKIPPED:+
+preflight: not-run=$SKIPPED}"
 COUNT="$(awk 'END { print NR }' "$TMP/findings.tsv")"
 if [ "$COUNT" -gt 0 ]; then
   LC_ALL=C sort -t"$TAB" -k1,1 -k2,2n "$TMP/findings.tsv" | while IFS="$TAB" read -r p n lane msg; do
     printf '%s:%s: [%s] %s\n' "$p" "$n" "$lane" "$msg"
   done
-  printf 'preflight: %s finding(s) across %s changed file(s)%s\n' "$COUNT" "$FILE_COUNT" "$SKIP_NOTE"
+  printf 'preflight: findings=%s\nacross %s changed file(s)%s\n' "$COUNT" "$FILE_COUNT" "$SKIP_NOTE"
   exit 1
 fi
-printf 'preflight: clean (%s changed file(s))%s\n' "$FILE_COUNT" "$SKIP_NOTE"
+printf 'preflight: clean=%s\nno findings across that many changed file(s)%s\n' "$FILE_COUNT" "$SKIP_NOTE"

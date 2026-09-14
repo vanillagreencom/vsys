@@ -505,7 +505,7 @@ cache_get_issue() {
                 url: ($issue.url // ""),
                 children: $children,
                 pending_count: $pending,
-                attachments: [($attachments // [])[] | {filename, content_type, local_path}]
+                attachments: [($attachments // [])[] | {url, filename, repo_path, content_type, local_path}]
             }')
 
         case "$FORMAT" in
@@ -527,7 +527,7 @@ cache_get_issue() {
             local output="$1"
             if [[ "$(echo "$attachments" | jq 'length')" != "0" ]]; then
                 echo "$output" | jq --argjson a "$attachments" \
-                    '. + {attachments: [($a // [])[] | {filename, content_type, local_path}]}'
+                    '. + {attachments: [($a // [])[] | {url, filename, repo_path, content_type, local_path}]}'
             else
                 echo "$output"
             fi
@@ -1265,26 +1265,33 @@ main() {
                 # Fetch attachments for a specific issue
                 attach_ensure_dir
                 local urls
-                urls=$(attach_extract_all_urls | jq --arg id "$issue_id" '[.[] | select(.source == $id)]')
+                urls=$(attach_extract_all_urls | jq --arg id "$issue_id" '[.[] | select(.source == $id)]') || return 1
                 local count
                 count=$(echo "$urls" | jq 'length')
-                local downloaded=0
+                local downloaded=0 failed=0
                 for (( i=0; i<count; i++ )); do
-                    local url source context
+                    local url source context title
                     url=$(echo "$urls" | jq -r ".[$i].url")
                     source=$(echo "$urls" | jq -r ".[$i].source")
                     context=$(echo "$urls" | jq -r ".[$i].context")
+                    title=$(echo "$urls" | jq -r ".[$i].filename // empty")
                     local rc=0
-                    attach_download_url "$url" "$source" "$context" || rc=$?
+                    attach_download_url "$url" "$source" "$context" "$title" || rc=$?
                     # rc 0 = newly downloaded, rc 2 = already cached, rc 1 = failed
                     if (( rc == 0 )); then
                         (( downloaded++ )) || true
+                    elif (( rc == 1 )); then
+                        (( failed++ )) || true
                     fi
                 done
+                if (( failed > 0 )); then
+                    echo "Linear attachments: download_failed=$failed" >&2
+                    return 1
+                fi
                 echo "{\"downloaded\": $downloaded, \"total_urls\": $count}"
             else
                 local count
-                count=$(attach_sync)
+                count=$(attach_sync) || return 1
                 echo "{\"downloaded\": $count}"
             fi
             ;;

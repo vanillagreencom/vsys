@@ -4,7 +4,7 @@ The on-disk record a dev or QA agent writes at the end of an implement or fix de
 
 Written **only** by `dev-return-write` — never hand-authored, never composed with a file-write tool. The writer builds the JSON with `jq` and writes it atomically; its `--help` is the flag reference. Validation gates live in `dev-artifact-check --help`; round-closure routing in [`../references/artifact-checks.md`](../references/artifact-checks.md).
 
-Every `implement` receipt carries the branch's additions plus deletions at its commit as `baseline_lines`, with binary rows omitted and a floor of 1. When the round-mode receipt is accepted, `dev-artifact-check` records that value in workflow state only if `pr.baseline_lines` is null. The writer never changes workflow state.
+Every `implement` receipt carries the branch's additions plus deletions at its commit as `baseline_lines`, with binary rows and mandated render mirrors omitted and a floor of 1. A render pairs off against the source it renders by the rule `branch-size-check` uses, so a source with a tracked render is counted once. The receipt value measures churn; it does not authorize a fix round. The issue's optional `**Expected delta**` line supplies the comparison in the size report; [dev-round.md § Declared cuts](dev-round.md#declared-cuts) defines chosen cuts.
 
 ## Identity: the round id
 
@@ -25,11 +25,11 @@ Fix rounds have an input-side sibling bound by the same token, `tmp/dev-round-[I
   "branch": "user/proj-123",
   "commit": "abc123f",
   "baseline_lines": 138,
-  "validate": "pass",
-  "validate_note": "80/80 on re-run; first run flaked on Rust Tests (release), same git_diff_hash",
+  "validate": "FAILING: cargo test",
+  "validate_note": "Test-only validation ceiling: the suite failed at 34m; the failed target passed alone under load",
   "qa_labels": ["needs-review"],
   "summary_posted": true,
-  "summary": null,
+  "summary": "### Proposed Rules\n- Rule the validation list is missing",
   "bundled": false,
   "items": [
     { "n": 1, "decision": "Applied", "reasoning": "Fixed nil deref in empty buffer" }
@@ -45,12 +45,12 @@ Fix rounds have an input-side sibling bound by the same token, `tmp/dev-round-[I
 | `issue` | Yes | `--issue` | Normalized workflow-state key (Parent ID when bundled) |
 | `branch` | Yes | `--branch` | Git branch (non-empty string) |
 | `commit` | Yes | `--commit` | HEAD SHA after the commit, or the prior HEAD when no commit was needed |
-| `baseline_lines` | implement | measured by writer | Additions plus deletions against the base branch at `commit`, omitting binary rows and floored at 1. Round-mode acceptance writes the first value to workflow state. **Absent for `fix`** |
+| `baseline_lines` | implement | measured by writer | Additions plus deletions against the base branch at `commit`, omitting binary rows and render mirrors whose source changed in the same diff, floored at 1. **Absent for `fix`** |
 | `validate` | Yes | `--validate` | `pass` or `FAILING: check1,check2` — a closed enumeration |
 | `validate_note` | Optional | `--validate-note` | A free-text qualifier the enumeration cannot express, or `null` |
 | `qa_labels` | Optional | `--qa-label` (repeatable) | Applied QA labels; `[]` when none |
 | `summary_posted` | Optional | `--no-summary` sets `false` | `true` only when the summary was posted to a tracker; GitHub and ad-hoc rounds set `false` |
-| `summary` | Optional | `--summary` or `--summary-file` | The summary content, or `null`. Carries the summary for rounds that post nowhere |
+| `summary` | Optional | `--summary` or `--summary-file` | The summary content, or `null`. Every single implement round embeds it, including a Linear round that also sets `summary_posted: true`, so a consumer can read its `### Proposed Rules` |
 | `bundled` | Optional | `--bundled` sets `true` | `true` for a bundled implement |
 | `items` | Conditional | `--item N DECISION REASONING` | Per kind rules below |
 
@@ -66,10 +66,10 @@ Fix rounds have an input-side sibling bound by the same token, `tmp/dev-round-[I
 
 ## `validate` and its note
 
-`validate` is a closed enumeration. `--validate-note` records what the enumeration cannot express — e.g. a lane that failed once and passed on re-run over the identical diff — and it never relaxes `--validate`:
+`validate` is a closed enumeration. `--validate-note` records what the enumeration cannot express — the test-only validation-ceiling re-run that the dev skill's `dev-implement.md` § 5 names, or a flake worth recording — and it never relaxes `--validate`. Outside that named ceiling a failing validation ends the round; it is never re-run into a pass:
 
 ```bash
---validate pass --validate-note "80/80 on re-run; first run flaked on Rust Tests (release), same git_diff_hash"
+--validate "FAILING: cargo test" --validate-note "Test-only validation ceiling: the suite failed at 34m; the failed target passed alone under load"
 ```
 
 `dev-artifact-check` echoes both. An empty or whitespace-only note is rejected.

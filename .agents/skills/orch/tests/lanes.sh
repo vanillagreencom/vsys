@@ -11,6 +11,9 @@
 # row stages one, so no row reads another's claims or the checkout's.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
+# Every lane this suite measures lives under LANES_HOME; an inherited lane
+# setting would point discovery at the operator's real accounts.
+unset ORCH_LANE_DIRS ORCH_LANE_ALIASES ORCH_LANE_EXCLUDE ORCH_LANE_RETIRE ORCH_LANES_USAGE_TTL CODEX_HOME
 # Resolve siblings from the TEST directory, never from a repo root: the CLI
 # integration check runs this same suite from an INSTALLED layout
 # (.agents/skills/orch/tests/...), where a `<root>/skills/orch/...` path does not
@@ -68,10 +71,18 @@ run_lanes() {
   RUN="$TMP_ROOT/runs/$((++RUN_SEQ))"
   mkdir -p "$RUN/store"
   ERR="$RUN/stderr"
-  OUT=$(env LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" \
+  OUT=$(env LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" FETCH_LOG="$RUN/fetch.log" \
     OVERSEE_WATCH_STATE_DIR="$RUN/store" TMUX_PANES_FILE="$RUN/panes" \
     PATH="$CLAIM_BIN:$PATH" ${env_args[@]+"${env_args[@]}"} "$LANES" "$@" 2>"$ERR")
   RC=$?
+}
+
+# fetched_lanes FILE — the lane names the fetch stub logged (directory names
+# without the leading dot), sorted and comma-joined, or none.
+fetched_lanes() {
+  local v
+  v="$(sed 's/^\.//' "$1" 2>/dev/null | sort | paste -sd, - || true)"
+  printf '%s' "${v:-none}"
 }
 
 json() { jq -r "$1" <<<"$OUT" 2>/dev/null || echo UNPARSEABLE; }
@@ -85,6 +96,9 @@ json() { jq -r "$1" <<<"$OUT" 2>/dev/null || echo UNPARSEABLE; }
 #   bs.<field>            that field of the backslash-named lane
 #   aliases               every listed alias, sorted
 #   files                 the claim files left in the store, sorted, or none
+#   fetched               the lanes the fetch stub served, sorted, or none
+#   cachefiles            the lanes whose usage records the run left, sorted, or none
+#   <alias>.aged          that lane's usage_age_s, or 30+ from 30 seconds on
 observe() {
   local got="" token name value alias field
   for token in $1; do
@@ -96,6 +110,13 @@ observe() {
       length) value="$(json length)" ;;
       aliases) value="$(json '[.[].alias] | sort | join(",")')" ;;
       files) value="$(ls -1 "$STORE/claims" 2>/dev/null | sed 's/\.claim$//' | paste -sd, - || true)"; [[ -n "$value" ]] || value=none ;;
+      fetched) value="$(fetched_lanes "$RUN/fetch.log")" ;;
+      cachefiles) value="$(cat "$RUN/store/usage"/*.json 2>/dev/null | jq -r '.config_dir' | sed "s#^$H/\\.##" | sort | paste -sd, - || true)"; [[ -n "$value" ]] || value=none ;;
+      *.aged)
+        # A reused figure's age grows with the clock; the row pins its floor.
+        value="$(json ".[] | select(.alias==\"${name%%.*}\") | .usage_age_s")"
+        [[ "$value" =~ ^[0-9]+$ && "$value" -ge 30 ]] && value="30+"
+        ;;
       first.*) value="$(json ".[0].${name#first.}")" ;;
       bs.*) value="$(jq -r --arg d "$BSDIR" ".[] | select(.config_dir==\$d) | .${name#bs.}" <<<"$OUT" 2>/dev/null || echo UNPARSEABLE)" ;;
       *.*)
@@ -182,12 +203,12 @@ make_codex_lane "$H/.codex"
 jq -n '{rate_limit: {primary_window: {used_percent: 44, reset_at: 1785000000, limit_window_seconds: 604800},
                      secondary_window: null}}' > "$FIXTURE_DIR/.codex.json"
 table \
-  "a 7-day primary window fills the weekly slot and the missing session window stays null|CODEX_HOME=$H/.codex|list --harness codex --json|first.weekly_pct=44 first.session_5h_pct=null first.headroom_pct=56"
+  "a 7-day primary window fills the weekly slot and the missing session window stays null||list --harness codex --json|first.weekly_pct=44 first.session_5h_pct=null first.headroom_pct=56"
 jq -n '{rate_limit: {primary_window: {used_percent: 30, reset_at: 1785000000, limit_window_seconds: 18000},
                      secondary_window: {used_percent: 70, reset_at: 1785600000, limit_window_seconds: 604800}}}' \
   > "$FIXTURE_DIR/.codex.json"
 table \
-  "a 5h and a 7d window fill their slots and the larger binds|CODEX_HOME=$H/.codex|list --harness codex --json|first.session_5h_pct=30 first.weekly_pct=70 first.headroom_pct=30"
+  "a 5h and a 7d window fill their slots and the larger binds||list --harness codex --json|first.session_5h_pct=30 first.weekly_pct=70 first.headroom_pct=30"
 
 echo "=== in-flight lane claims ==="
 # open-terminal records one claim per lane window it launches; a claim is live
@@ -335,6 +356,108 @@ else
     "one unreadable claim file is enough for pick to refuse|live:%7|keepme:live:%7:claude|file:keepme|$PICK|rc=1" \
     "an unreadable claim file is left in place|live:%7|keepme:live:%7:claude|file:keepme|$LIST|files=keepme"
 fi
+
+echo "=== exclusion and retirement overlay discovery ==="
+# An excluded lane is never listed, fetched or picked; a lane past its
+# retirement date is listed as retired and never fetched or picked, one before
+# it is picked as usual. The retired lane's credentials file is not JSON, so a
+# read before the retirement check reports `error` instead of `retired`; the
+# fetch log proves no usage query. `fetched` lists the lanes the stub served.
+standard_home home
+table \
+  "an excluded lane is not listed and its usage is never fetched|ORCH_LANE_EXCLUDE=claude|$LIST|aliases=eclaude,nclaude,openclaude fetched=eclaude,nclaude" \
+  "pick never returns an excluded lane, even the one with the most headroom|ORCH_LANE_EXCLUDE=sclaude, claude|pick --harness claude|rc=0 out=CLAUDE_CONFIG_DIR=$H/.eclaude fetched=eclaude,nclaude" \
+  "an excluded ORCH_LANE_DIRS entry is neither listed nor fetched|ORCH_LANE_DIRS=$H/.claude:$H/.eclaude;ORCH_LANE_EXCLUDE=.claude|list --json|aliases=eclaude fetched=eclaude" \
+  "an alias names an excluded lane as its directory name does|ORCH_LANE_ALIASES=claude=personal;ORCH_LANE_EXCLUDE=personal|$LIST|aliases=eclaude,nclaude,openclaude fetched=eclaude,nclaude" \
+  "an ORCH_LANE_DIRS whose every entry is excluded still keeps discovery off|ORCH_LANE_DIRS=$H/.eclaude;ORCH_LANE_EXCLUDE=eclaude|$LIST|length=0 fetched=none" \
+  "pick never returns a retired lane, even the one with the most headroom|ORCH_LANE_RETIRE=claude=2000-01-01|pick --harness claude|rc=0 out=CLAUDE_CONFIG_DIR=$H/.eclaude" \
+  "a lane before its retirement date is picked as usual|ORCH_LANE_RETIRE=claude=2999-12-31|pick --harness claude|rc=0 out=CLAUDE_CONFIG_DIR=$H/.claude"
+printf 'not json' > "$H/.claude/.credentials.json"
+table \
+  "a lane past its retirement date is listed as retired, unread and unfetched|ORCH_LANE_RETIRE=claude=2000-01-01|$LIST|claude.status=retired claude.headroom_pct=null fetched=eclaude,nclaude"
+
+echo "=== codex lanes are discovered like claude lanes ==="
+# ~/.codex plus every ~/.*codex* directory; an ORCH_LANE_DIRS entry holding
+# auth.json and no .credentials.json is a codex lane.
+new_home codexes
+make_codex_lane "$H/.codex"
+make_codex_lane "$H/.1codex"
+make_codex_lane "$H/.2codex"
+make_lane "$H" claude 3600
+for c in codex:80 1codex:50 2codex:10; do
+  jq -n --argjson p "${c#*:}" '{rate_limit: {primary_window: {used_percent: $p, reset_at: 1785000000, limit_window_seconds: 18000}}}' \
+    > "$FIXTURE_DIR/.${c%%:*}.json"
+done
+claude_usage 10 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+table \
+  "every numbered codex dir is listed as a codex lane||list --harness codex --json|aliases=1codex,2codex,codex" \
+  "pick --harness codex takes the numbered lane with the most headroom||pick --harness codex|rc=0 out=CODEX_HOME=$H/.2codex" \
+  "an ORCH_LANE_DIRS entry is a codex or claude lane by the credentials file it holds|ORCH_LANE_DIRS=$H/.1codex:$H/.claude|list --json|1codex.harness=codex claude.harness=claude length=2"
+# A CODEX_HOME the codex CLI reads outside the discovery glob is still a lane,
+# listed once when discovery found it too; a retired ORCH_LANE_DIRS entry
+# holding auth.json under a name without `codex` lists as claude, because its
+# harness comes from its name, never a probe.
+XCODEX="$TMP_ROOT/elsewhere-codex"
+make_codex_lane "$XCODEX"
+RETIRED_ACCT="$TMP_ROOT/retired-acct"
+make_codex_lane "$RETIRED_ACCT"
+jq -n '{rate_limit: {primary_window: {used_percent: 40, reset_at: 1785000000, limit_window_seconds: 18000}}}' \
+  > "$FIXTURE_DIR/elsewhere-codex.json"
+table \
+  "a Claude-only ORCH_LANE_DIRS leaves codex lanes discovered|ORCH_LANE_DIRS=$H/.claude|list --json|aliases=1codex,2codex,claude,codex" \
+  "a CODEX_HOME outside the home is a codex lane beside the discovered ones|CODEX_HOME=$XCODEX|list --harness codex --json|aliases=1codex,2codex,codex,elsewhere-codex elsewhere-codex.harness=codex" \
+  "a CODEX_HOME discovery already found is listed once|CODEX_HOME=$H/.codex|list --harness codex --json|length=3" \
+  "a retired ORCH_LANE_DIRS entry takes its harness from its name, never a probe|ORCH_LANE_DIRS=$RETIRED_ACCT;ORCH_LANE_RETIRE=retired-acct=2000-01-01|list --harness claude --json|retired-acct.harness=claude retired-acct.status=retired fetched=none"
+# Lanes sharing a directory name keep separate cache records: the first run
+# fetches both, a second run within the TTL fetches neither.
+SAMENAME="$TMP_ROOT/other/.codex"
+make_codex_lane "$SAMENAME"
+SAMENAME_STATE="$TMP_ROOT/samename-state"
+table \
+  "two same-named codex lanes are each fetched on the first run|CODEX_HOME=$SAMENAME;OVERSEE_WATCH_STATE_DIR=$SAMENAME_STATE|list --harness codex --json|fetched=1codex,2codex,codex,codex" \
+  "a second run within the TTL reuses both same-named records|CODEX_HOME=$SAMENAME;OVERSEE_WATCH_STATE_DIR=$SAMENAME_STATE|list --harness codex --json|fetched=none"
+
+echo "=== usage figures are cached per host ==="
+# A run writes each fetched body under the state dir's usage/ and a run
+# within the TTL reuses it without a fetch; --no-cache and an expired figure
+# fetch afresh. The staged body differs from the fixture (claude at 50%), so
+# which figure a run used is visible in its headroom.
+standard_home home
+CACHE_STATE="$TMP_ROOT/cache-state"
+# stage_cache AGE_S — a cached claude figure fetched AGE_S seconds ago, written
+# over the record a real run left, so the file is the one lanes itself names.
+stage_cache() {
+  local f
+  rm -rf -- "${CACHE_STATE:?}"
+  env LANES_HOME="$H" ORCH_LANE_DIRS="$H/.claude" ORCH_LANES_FETCH_CMD="$FETCHER" OVERSEE_WATCH_STATE_DIR="$CACHE_STATE" \
+    PATH="$CLAIM_BIN:$PATH" "$LANES" list --harness claude --json >/dev/null 2>&1
+  for f in "$CACHE_STATE"/usage/*.json; do
+    [[ -f "$f" && "$(jq -r '.config_dir' "$f")" == "$H/.claude" ]] || continue
+    jq --argjson at "$(( $(date +%s) - $1 ))" --argjson u "$(claude_usage 50 20 5 Opus)" \
+      '.fetched_at = $at | .usage = $u' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    return 0
+  done
+  echo "stage_cache: no cached claude record to stage" >&2
+  exit 1
+}
+table \
+  "a fresh fetch reports age 0 and writes one cache file per fetched lane||$LIST|claude.usage_age_s=0 cachefiles=claude,eclaude,nclaude"
+stage_cache 30
+table \
+  "a figure within the TTL is reused without a fetch, its age reported|OVERSEE_WATCH_STATE_DIR=$CACHE_STATE|$LIST|claude.headroom_pct=50 claude.aged=30+ fetched=eclaude,nclaude"
+stage_cache 30
+table \
+  "--no-cache fetches afresh|OVERSEE_WATCH_STATE_DIR=$CACHE_STATE|$LIST --no-cache|claude.headroom_pct=80 fetched=claude,eclaude,nclaude"
+stage_cache 30
+table \
+  "a figure at or past the TTL is fetched afresh|OVERSEE_WATCH_STATE_DIR=$CACHE_STATE;ORCH_LANES_USAGE_TTL=30|$LIST|claude.headroom_pct=80 fetched=claude,eclaude,nclaude"
+
+echo "=== pick --json names the binding bucket and its reset ==="
+# claude's largest bucket is weekly, eclaude's the 5-hour session.
+standard_home home
+table \
+  "pick --json carries the chosen lane's headroom, binding bucket and that bucket's reset||pick --harness claude --json|headroom_pct=80 binding_bucket=weekly binding_resets_at=2026-08-01T06:00:00Z" \
+  "a lane bound by its session window names the session bucket and reset||$LIST|eclaude.binding_bucket=session eclaude.binding_resets_at=2026-07-27T06:00:00Z nclaude.binding_bucket=weekly openclaude.binding_bucket=null"
 
 echo "=== argument handling ==="
 table \
