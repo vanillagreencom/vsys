@@ -12,6 +12,7 @@ import {
   readPanes,
   switchClientArgv,
   switchCommand,
+  targetPanes,
 } from "./tmux";
 
 test("a pane resolves to its session, window and pane, and a partial line is dropped", () => {
@@ -46,6 +47,105 @@ test("a pane resolves to its session, window and pane, and a partial line is dro
   expect(panes.size).toBe(5);
   // The format asks for those three fields and separates them the same way.
   expect(paneFormat.split("\t")).toHaveLength(3);
+});
+
+test("a target resolves to the panes it names, in every spelling tmux accepts", () => {
+  // One server. `vsys:2` holds a single pane; `vsys:3` is split in two; the
+  // window name `build` is used again in another session; and `vsys:4` is
+  // named with a dot in it, which a pane index would otherwise be read out of.
+  const panes = parsePanes(
+    [
+      "%13\tvsys:2.1\tbuild",
+      "%30\tvsys:3.1\teditor",
+      "%31\tvsys:3.2\teditor",
+      "%40\twork:1.1\tbuild",
+      "%50\tvsys:4.1\tmy.app",
+    ].join("\n"),
+  );
+  // The target, and the handles it names. Sorted, because the answer is a set
+  // and its order is the map's rather than anything a caller may rely on.
+  const rows: [string, string[]][] = [
+    // A handle names itself, with the map and without it: it is already the
+    // key every action takes.
+    ["%13", ["%13"]],
+    ["%99", ["%99"]],
+    // The four spellings of one pane: the address the map holds, the window
+    // by its name, the window with the pane left to tmux, and the exact-match
+    // prefix on either name.
+    ["vsys:2.1", ["%13"]],
+    ["vsys:build.1", ["%13"]],
+    ["vsys:2", ["%13"]],
+    ["=vsys:2.1", ["%13"]],
+    ["=vsys:=build.1", ["%13"]],
+    // A window of two panes, with the pane left to tmux: both, because only
+    // the server knows which of them tmux would pick.
+    ["vsys:3", ["%30", "%31"]],
+    ["vsys:editor", ["%30", "%31"]],
+    ["vsys:editor.2", ["%31"]],
+    // A dotted window name is the name, not a window and a pane index: the
+    // text after the last dot is `app`, and a pane index is digits.
+    ["vsys:my.app", ["%50"]],
+    ["vsys:my.app.1", ["%50"]],
+    // A window name is only a name inside its own session.
+    ["work:build.1", ["%40"]],
+    ["work:1", ["%40"]],
+    // Nothing, because the map cannot say which pane these are: no session to
+    // match on, a name tmux would match as a prefix, a window the map does not
+    // hold, and a pane index that window does not hold.
+    ["2.1", []],
+    ["vsys:bui.1", []],
+    ["vsys:9.1", []],
+    ["vsys:2.7", []],
+  ];
+  for (const [target, named] of rows)
+    expect({ target, named: [...targetPanes(target, panes)].sort() }).toEqual({
+      target,
+      named,
+    });
+  // A map that never arrived names nothing by address, which is not the same
+  // as naming some other pane.
+  expect([...targetPanes("vsys:2.1", new Map())]).toEqual([]);
+  // A window whose own name ends in a dot and digits, the other branch of the
+  // split rule from `vsys:my.app` above. Measured against tmux 3.4: where
+  // window `v1` holds pane index 2, `tst:v1.2` reaches that pane and not the
+  // window named `v1.2`, because the split is tmux's first reading.
+  const split = parsePanes(["%2\ttst:0.2\tv1", "%3\ttst:1.0\tv1.2"].join("\n"));
+  expect([...targetPanes("tst:v1.2", split)]).toEqual(["%2"]);
+  // The same target where no window `v1` exists. tmux retries the whole rest
+  // as a window name and reaches the `v1.2` window; this names nothing, which
+  // leaves the caller undecided and refuses the read rather than sending it to
+  // a pane tmux would not have reached.
+  expect([...targetPanes("tst:v1.2", parsePanes("%1\ttst:1.0\tv1.2"))]).toEqual(
+    [],
+  );
+  // Measured on tmux 3.4: which of the two readings tmux takes turns on the
+  // window part, not on the pane component. Where the window part names a
+  // window the server holds, tmux stays in it and resolves the pane component
+  // there — `{last}`, `top` and `+` are its own selectors, and anything it
+  // does not know falls to that window's active pane. None of that is in this
+  // map, so each is undecided rather than a pane in some other window.
+  const inWindow = parsePanes(
+    ["%0\ttst:0.0\tbuild", "%1\ttst:0.1\tbuild", "%2\ttst:1.0\tbuild.app"].join(
+      "\n",
+    ),
+  );
+  for (const suffix of ["{last}", "top", "+", "app"])
+    expect({
+      suffix,
+      named: [...targetPanes(`tst:build.${suffix}`, inWindow)],
+    }).toEqual({ suffix, named: [] });
+  // `app` is in that list because the hazard is not the selector list: a
+  // window literally named `build.app` sits in this map and tmux still reaches
+  // `build`, so matching the whole rest would name a pane tmux never reaches.
+  //
+  // Where the window part names no window, tmux retries the whole rest as one
+  // name, and so does this. That retry is what keeps `vsys:my.app` resolving.
+  expect([
+    ...targetPanes(
+      "tst:nosuch.{last}",
+      parsePanes("%3\ttst:2.0\tnosuch.{last}"),
+    ),
+  ]).toEqual(["%3"]);
 });
 
 test("captured pane text cannot move the cursor, repaint or write the clipboard", () => {

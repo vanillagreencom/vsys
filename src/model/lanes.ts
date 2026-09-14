@@ -1,8 +1,14 @@
 import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
-import { isPaneId, type PaneSet } from "../collect/tmux";
+import {
+  isPaneId,
+  type PaneAddress,
+  type PaneSet,
+  targetPanes,
+} from "../collect/tmux";
 import {
   accountName,
+  firstEnv,
   jobserver,
   laneName,
   paneName,
@@ -64,6 +70,36 @@ export function blockedOn(
   if ((io ?? 0) <= 0 && (memory ?? 0) <= 0) return null;
   return (io ?? 0) >= (memory ?? 0) ? "io" : "memory";
 }
+/**
+ * Whether a lane's pane is the pane vsys draws in.
+ *
+ * `no` is the dangerous answer: it is the only one that permits a capture, so
+ * it is the only one the pane map has to have spoken for. Anything undecided
+ * says so instead, which costs a reader one terminal where a wrong `no` costs
+ * the capture that draws vsys's screen inside itself, one copy deeper on every
+ * sample.
+ *
+ * `docs/architecture/lanes.md` holds the reasoning behind the three answers.
+ */
+export function ownPaneMark(
+  target: string,
+  own: string,
+  elsewhere: boolean,
+  panes: Map<string, PaneAddress>,
+  handle: string | null,
+): Lane["self"] {
+  if (target === "" || own === "" || elsewhere) return "no";
+  const named = targetPanes(target, panes);
+  // `no` permits the capture, so it needs the map to have spoken about vsys's
+  // own pane. A handle target is compared against vsys's own handle directly
+  // and needs no map entry; every other target does, and a listing that came
+  // back without vsys's own row settles nothing about the panes beside it.
+  if (named.size > 0 && !named.has(own) && (isPaneId(target) || panes.has(own)))
+    return "no";
+  return (named.size === 1 && named.has(own)) || handle === own
+    ? "yes"
+    : "unknown";
+}
 /** Alarmed scopes stay visible even when their slice is not watched. */
 export function lanes(
   groups: Group[],
@@ -79,17 +115,14 @@ export function lanes(
    */
   tmux?: PaneSet,
 ): Lane[] {
-  const panes = tmux?.byId;
+  /** Every pane the read gave. Empty when no read answered. */
+  const panes = tmux?.byId ?? new Map<string, PaneAddress>();
   /**
    * The server those panes came from. Empty means vsys does not know which
    * server it read, and an unknown boundary is not one to refuse at.
    */
   const socket = tmux?.socket ?? "";
-  /**
-   * The address of the pane vsys draws in, so a lane carrying an address
-   * rather than a handle can still be recognised as that pane.
-   */
-  const ownAddress = tmux?.own ? (panes?.get(tmux.own)?.address ?? "") : "";
+  const own = tmux?.own ?? "";
   const covered = new Set<number>();
   const result: Lane[] = [];
   const byPid = new Map(procs.map((p) => [p.pid, p]));
@@ -125,27 +158,10 @@ export function lanes(
           ? "same"
           : "other";
     const elsewhere = server === "other";
-    // A lane carries whichever form its own environment held, so the pane vsys
-    // draws in is compared in both: the `%N` handle from `TMUX_PANE`, and the
-    // `session:window.pane` address a reader puts in `VSYS_PANE`. The question
-    // is which pane the command will reach, not which server the lane's
-    // process sat on: `capture-pane` and `switch-client` are spawned in vsys's
-    // own environment, so tmux resolves the target against vsys's own server
-    // and a pane string that matches addresses vsys's own pane whatever server
-    // handed it out. A lane known to be on another server is answered `no`
-    // because `elsewhere` already leaves it neither read nor offered a switch.
-    // `unknown` is what vsys owes when it cannot decide: it draws in a pane,
-    // the lane names one by address, and the map saying which pane vsys's own
-    // handle is did not arrive. That case may not answer `no`, which every
-    // consumer reads as licence to run the capture against the pane.
-    const self: Lane["self"] =
-      pane === "" || server === "other"
-        ? "no"
-        : pane === tmux?.own || (ownAddress !== "" && pane === ownAddress)
-          ? "yes"
-          : tmux?.own && !isPaneId(pane) && ownAddress === ""
-            ? "unknown"
-            : "no";
+    // `TMUX_PANE` alone, never the configured list, which holds whatever
+    // target the reader chose: a handle compares to a handle.
+    const handle = firstEnv(main, ["TMUX_PANE"]);
+    const self = ownPaneMark(pane, own, elsewhere, panes, handle);
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
@@ -188,12 +204,12 @@ export function lanes(
       address: elsewhere
         ? ""
         : isPaneId(pane)
-          ? (panes?.get(pane)?.address ?? "")
+          ? (panes.get(pane)?.address ?? "")
           : pane,
       window: elsewhere
         ? ""
         : isPaneId(pane)
-          ? (panes?.get(pane)?.window ?? "")
+          ? (panes.get(pane)?.window ?? "")
           : "",
       /**
        * The pane belongs to a tmux server this vsys is not talking to. `%9` is

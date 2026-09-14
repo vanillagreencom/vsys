@@ -52,6 +52,140 @@ export const switchCommand = (target: string) =>
  */
 export const isPaneId = (value: string): boolean => /^%\d+$/.test(value);
 
+/** What tmux matches a pane on. The window matches by index or by name. */
+interface PaneTarget {
+  session: string;
+  window: string;
+  /** Empty when the target names a window and leaves the pane to tmux. */
+  pane: string;
+  /**
+   * The pane component written as a handle, which tmux resolves without
+   * reference to the window beside it: `vsys:other.%0` reaches `%0` though
+   * `%0` sits in another window. Set only for that form.
+   */
+  handle?: string;
+  /**
+   * The window part of a target whose pane component is neither an index nor
+   * a handle, with `window` above holding tmux's other reading, the whole
+   * rest as one name. Which of the two tmux takes turns on whether this names
+   * a window the server holds, so only the map can decide it.
+   */
+  split?: string;
+}
+/** tmux's exact-match prefix. Every match below is exact, so it is dropped. */
+const bare = (name: string): string => name.replace(/^=/, "");
+/**
+ * A handle in the digits tmux itself prints. `%007` and `%7` are one pane to
+ * tmux, and the pane map is keyed by tmux's own output, which never pads. Two
+ * spellings of one handle would otherwise compare unequal and a target naming
+ * vsys's own pane would read as naming some other one.
+ */
+const canonHandle = (value: string): string => value.replace(/^%0+(?=\d)/, "%");
+/**
+ * A window part tmux reads as something other than a name: the relative forms
+ * `+`, `-` and `!` with an optional offset, a braced form such as `{last}`,
+ * and the characters tmux matches as a pattern. Each reaches a window this
+ * parser cannot work out, and a window may also carry one of these as its
+ * literal name, so matching the text would name the wrong window rather than
+ * none. The exact-match prefix removes the ambiguity and is handled before
+ * this is asked.
+ */
+const selector = (window: string): boolean =>
+  /^[+-]\d*$/.test(window) ||
+  window === "!" ||
+  /^\{.*\}$/.test(window) ||
+  /[*?[\]]/.test(window);
+/**
+ * Null when the target names no session: no address in the map carries one
+ * either, and which session tmux would supply is not something the map says.
+ */
+function parseTarget(target: string): PaneTarget | null {
+  const colon = target.indexOf(":");
+  if (colon < 0) return null;
+  const session = bare(target.slice(0, colon));
+  const rest = target.slice(colon + 1);
+  // The prefix is read before it is stripped, because it is what tells a
+  // literal window name from a selector tmux would act on.
+  const exact = rest.startsWith("=");
+  const body = exact ? rest.slice(1) : rest;
+  const dot = body.lastIndexOf(".");
+  const tail = dot > 0 ? body.slice(dot + 1) : "";
+  // The rest splits whenever it ends in a dot and digits, which is tmux's own
+  // first reading: for `vsys:v1.2` both reach the pane in window `v1` where
+  // that window and pane index exist. Where either is missing tmux resolves
+  // something else — that window's active pane, or a window truly named
+  // `v1.2` — and this parser matches nothing, so the answer is undecided.
+  // A handle in the pane component names its pane whatever window stands
+  // beside it, so it is answered before the window is looked at.
+  if (dot > 0 && isPaneId(tail))
+    return {
+      session,
+      window: body.slice(0, dot),
+      pane: "",
+      handle: canonHandle(tail),
+    };
+  if (dot > 0 && /^\d+$/.test(tail))
+    return { session, window: body.slice(0, dot), pane: tail };
+  if (!exact && selector(body)) return null;
+  // Neither an index nor a handle after the last dot. `window` carries tmux's
+  // retry, the whole rest as one name, and `split` the window part it would
+  // have used; the caller picks between them against the map.
+  return dot > 0
+    ? { session, window: body, pane: "", split: body.slice(0, dot) }
+    : { session, window: body, pane: "" };
+}
+function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
+  const at = parseTarget(pane.address);
+  if (!at || at.pane === "") return false;
+  return (
+    target.session === at.session &&
+    (target.window === at.window || target.window === pane.window) &&
+    (target.pane === "" || target.pane === at.pane)
+  );
+}
+/**
+ * The panes a tmux target names, as `%N` handles. One pane answers to several
+ * spellings: `vsys:2.1` is the address this map holds, `vsys:build.1` names
+ * the window by its name, `vsys:2` leaves the pane to tmux, `vsys:build.%9`
+ * puts the handle in the pane component, and a leading `=` forces the exact
+ * match every comparison here already makes. A handle names itself, needs no
+ * map, and is read in the digits tmux prints, so `%009` is `%9`.
+ *
+ * A set, because a target carrying no pane index names every pane of its
+ * window and only the server knows which of them tmux would pick.
+ *
+ * Empty when the map cannot say: a target naming no session, a session or
+ * window this map does not hold, a name tmux would match as a pattern or a
+ * prefix, which is matched here as neither, a window part tmux reads as a
+ * selector rather than a name, such as a bare `+`, which may also be some
+ * window's literal name, or a pane component that is neither an index nor a
+ * handle while the window part beside it names a window the map holds, where
+ * tmux stays in that window and resolves something this map does not carry.
+ */
+export function targetPanes(
+  target: string,
+  panes: Map<string, PaneAddress>,
+): Set<string> {
+  if (isPaneId(target)) return new Set([canonHandle(target)]);
+  const parsed = parseTarget(target);
+  if (!parsed) return new Set();
+  if (parsed.handle) return new Set([parsed.handle]);
+  // tmux takes the split reading whenever the window part names a window the
+  // server holds, and resolves the pane component inside it — a selector such
+  // as `{last}` or `top`, or that window's active pane for anything it does
+  // not know. None of that is in this map, so the answer is undecided. Only
+  // where no such window exists does tmux retry the whole rest as one name,
+  // which is what `window` carries and what resolves a window named `my.app`.
+  if (parsed.split !== undefined) {
+    const probe = { session: parsed.session, window: parsed.split, pane: "" };
+    for (const [, pane] of panes)
+      if (namesPane(probe, pane)) return new Set<string>();
+  }
+  const found = new Set<string>();
+  for (const [id, pane] of panes) if (namesPane(parsed, pane)) found.add(id);
+  return found;
+}
+
 /**
  * The addresses of every pane the server holds, keyed by pane id. A line that
  * does not carry all three fields is dropped rather than guessed at: a partial

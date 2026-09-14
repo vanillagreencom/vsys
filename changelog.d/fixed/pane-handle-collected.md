@@ -1,0 +1,1 @@
+- Narrowing `Pane variables` to your own name no longer stops vsys recognising the pane it draws in, which had left the Terminal section unable to tell for a pane vsys was drawing in.

@@ -207,10 +207,11 @@ export interface Lane {
    *
    * Three answers, because vsys cannot always find out and an answer it
    * cannot give read as `no` opens the capture this exists to close. Only `no`
-   * permits a read, a switch or a copied command. Matched on the `%N` handle
-   * and on the resolved address alike, since a lane carries whichever its own
-   * environment held; the address is the form vsys can fail to decide, because
-   * only the pane map says which pane an address names.
+   * permits a read, a switch or a copied command, and it is the one answer the
+   * pane map must have spoken for: the lane's target resolves to the set of
+   * panes it names, and a set leaving vsys's own pane out is `no` where the
+   * map named that pane. A target the map cannot settle is decided by the
+   * handle in the lane's own environment, or left undecided.
    */
   self: "yes" | "no" | "unknown";
   title: string;

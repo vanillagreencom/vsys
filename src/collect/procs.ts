@@ -220,6 +220,10 @@ export class ProcessCollector {
       // is already parsed whole and filtered by this list, so one more name
       // costs no read.
       "TMUX",
+      // The handle tmux exported into the pane. Read here because the own-pane
+      // mark compares it against vsys's own handle, and paneEnv is a reader's
+      // to narrow.
+      "TMUX_PANE",
       c.laneEnv,
       ...c.capMarkers,
       ...c.jobserverEnv,
