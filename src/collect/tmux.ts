@@ -58,9 +58,36 @@ interface PaneTarget {
   window: string;
   /** Empty when the target names a window and leaves the pane to tmux. */
   pane: string;
+  /**
+   * The pane component written as a handle, which tmux resolves without
+   * reference to the window beside it: `vsys:other.%0` reaches `%0` though
+   * `%0` sits in another window. Set only for that form.
+   */
+  handle?: string;
 }
 /** tmux's exact-match prefix. Every match below is exact, so it is dropped. */
 const bare = (name: string): string => name.replace(/^=/, "");
+/**
+ * A handle in the digits tmux itself prints. `%007` and `%7` are one pane to
+ * tmux, and the pane map is keyed by tmux's own output, which never pads. Two
+ * spellings of one handle would otherwise compare unequal and a target naming
+ * vsys's own pane would read as naming some other one.
+ */
+const canonHandle = (value: string): string => value.replace(/^%0+(?=\d)/, "%");
+/**
+ * A window part tmux reads as something other than a name: the relative forms
+ * `+`, `-` and `!` with an optional offset, a braced form such as `{last}`,
+ * and the characters tmux matches as a pattern. Each reaches a window this
+ * parser cannot work out, and a window may also carry one of these as its
+ * literal name, so matching the text would name the wrong window rather than
+ * none. The exact-match prefix removes the ambiguity and is handled before
+ * this is asked.
+ */
+const selector = (window: string): boolean =>
+  /^[+-]\d*$/.test(window) ||
+  window === "!" ||
+  /^\{.*\}$/.test(window) ||
+  /[*?[\]]/.test(window);
 /**
  * Null when the target names no session: no address in the map carries one
  * either, and which session tmux would supply is not something the map says.
@@ -69,16 +96,26 @@ function parseTarget(target: string): PaneTarget | null {
   const colon = target.indexOf(":");
   if (colon < 0) return null;
   const session = bare(target.slice(0, colon));
-  const rest = bare(target.slice(colon + 1));
-  const dot = rest.lastIndexOf(".");
+  const rest = target.slice(colon + 1);
+  // The prefix is read before it is stripped, because it is what tells a
+  // literal window name from a selector tmux would act on.
+  const exact = rest.startsWith("=");
+  const body = exact ? rest.slice(1) : rest;
+  const dot = body.lastIndexOf(".");
+  const tail = dot > 0 ? body.slice(dot + 1) : "";
   // The rest splits whenever it ends in a dot and digits, which is tmux's own
   // first reading: for `vsys:v1.2` both reach the pane in window `v1` where
   // that window and pane index exist. Where either is missing tmux resolves
   // something else — that window's active pane, or a window truly named
   // `v1.2` — and this parser matches nothing, so the answer is undecided.
-  return dot > 0 && /^\d+$/.test(rest.slice(dot + 1))
-    ? { session, window: rest.slice(0, dot), pane: rest.slice(dot + 1) }
-    : { session, window: rest, pane: "" };
+  const split = dot > 0 && (/^\d+$/.test(tail) || isPaneId(tail));
+  const window = split ? body.slice(0, dot) : body;
+  // A handle in the pane component names its pane whatever window stands
+  // beside it, so it is answered before the window is looked at.
+  if (split && isPaneId(tail))
+    return { session, window, pane: "", handle: canonHandle(tail) };
+  if (!exact && selector(window)) return null;
+  return { session, window, pane: split ? tail : "" };
 }
 function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
   const at = parseTarget(pane.address);
@@ -92,24 +129,28 @@ function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
 /**
  * The panes a tmux target names, as `%N` handles. One pane answers to several
  * spellings: `vsys:2.1` is the address this map holds, `vsys:build.1` names
- * the window by its name, `vsys:2` leaves the pane to tmux, and a leading `=`
- * forces the exact match every comparison here already makes. A handle names
- * itself and needs no map.
+ * the window by its name, `vsys:2` leaves the pane to tmux, `vsys:build.%9`
+ * puts the handle in the pane component, and a leading `=` forces the exact
+ * match every comparison here already makes. A handle names itself, needs no
+ * map, and is read in the digits tmux prints, so `%009` is `%9`.
  *
  * A set, because a target carrying no pane index names every pane of its
  * window and only the server knows which of them tmux would pick.
  *
  * Empty when the map cannot say: a target naming no session, a session or
- * window this map does not hold, or a name tmux would match as a pattern or a
- * prefix, which is matched here as neither.
+ * window this map does not hold, a name tmux would match as a pattern or a
+ * prefix, which is matched here as neither, or a window part tmux reads as a
+ * selector rather than a name, such as a bare `+`, which may also be some
+ * window's literal name.
  */
 export function targetPanes(
   target: string,
   panes: Map<string, PaneAddress>,
 ): Set<string> {
-  if (isPaneId(target)) return new Set([target]);
+  if (isPaneId(target)) return new Set([canonHandle(target)]);
   const parsed = parseTarget(target);
   if (!parsed) return new Set();
+  if (parsed.handle) return new Set([parsed.handle]);
   const found = new Set<string>();
   for (const [id, pane] of panes) if (namesPane(parsed, pane)) found.add(id);
   return found;

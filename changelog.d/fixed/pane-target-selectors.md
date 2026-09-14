@@ -1,0 +1,1 @@
+- The Terminal section no longer captures the pane vsys draws in when `VSYS_PANE` holds a zero-padded pane id, a pane id in the pane position, or a window selector such as `+`.

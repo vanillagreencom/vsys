@@ -561,6 +561,34 @@ test("vsys's own pane is marked however the lane's target spells it", () => {
   // so the same partial read still answers `no` and the guard above cannot be
   // widened into one that refuses every lane after a partial read.
   expect(ownPaneMark("%99", "%146", false, partial, null)).toBe("no");
+  // Three targets tmux resolves to vsys's own pane that a comparison on the
+  // text alone sends elsewhere. Each answered `no` before, which is the answer
+  // that runs the capture, and the capture carries the lane's raw target.
+  //
+  // A handle padded with zeros. `%00146` and `%146` are one pane to tmux, and
+  // the map is keyed by tmux's own output, which never pads.
+  expect(ownPaneMark("%00146", "%146", false, panes, null)).toBe("yes");
+  // A handle in the pane component, which tmux resolves without reference to
+  // the window beside it, against a server holding a window whose literal name
+  // is that whole dotted string.
+  const collide = new Map([
+    ["%146", { address: "vsys:2.1", window: "build" }],
+    ["%9", { address: "vsys:5.1", window: "build.%146" }],
+  ]);
+  expect(ownPaneMark("vsys:build.%146", "%146", false, collide, null)).toBe(
+    "yes",
+  );
+  // A bare `+` is the next window to tmux, not the window named `+`, and a
+  // server can hold both readings at once. vsys cannot tell which pane tmux
+  // would reach, so it says so rather than naming the window it can see.
+  const relative = new Map([
+    ["%1", { address: "vsys:1.0", window: "other" }],
+    ["%2", { address: "vsys:2.0", window: "+" }],
+  ]);
+  expect(ownPaneMark("vsys:+", "%1", false, relative, null)).toBe("unknown");
+  // The exact-match prefix names that window in tmux and here alike, so it
+  // stays decided and the lane keeps its terminal.
+  expect(ownPaneMark("vsys:=+", "%1", false, relative, null)).toBe("no");
 });
 
 test("the pane vsys draws in is marked on the lane, in either form it carries", () => {
