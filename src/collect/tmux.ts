@@ -53,6 +53,78 @@ export const switchCommand = (target: string) =>
 export const isPaneId = (value: string): boolean => /^%\d+$/.test(value);
 
 /**
+ * A pane target split into the parts tmux matches a pane on: the session, the
+ * window by its index or by its name, and the pane index a target may leave
+ * out.
+ */
+interface PaneTarget {
+  session: string;
+  window: string;
+  /** Empty when the target names a window and leaves the pane to tmux. */
+  pane: string;
+}
+/** tmux's exact-match prefix. Every match below is exact, so it is dropped. */
+const bare = (name: string): string => name.replace(/^=/, "");
+/**
+ * A target as the three parts a pane is matched on. Null when the target
+ * names no session: no address in the map carries one either, and which
+ * session tmux would supply in its place is not something the map says.
+ */
+function parseTarget(target: string): PaneTarget | null {
+  const colon = target.indexOf(":");
+  if (colon < 0) return null;
+  const session = bare(target.slice(0, colon));
+  const rest = bare(target.slice(colon + 1));
+  const dot = rest.lastIndexOf(".");
+  // A pane index is digits. A window named with a dot in it keeps the whole
+  // rest as its name, because what follows that dot is then not an index.
+  return dot > 0 && /^\d+$/.test(rest.slice(dot + 1))
+    ? { session, window: rest.slice(0, dot), pane: rest.slice(dot + 1) }
+    : { session, window: rest, pane: "" };
+}
+/** Whether a target names this pane, by the window's index or by its name. */
+function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
+  const colon = pane.address.indexOf(":");
+  const dot = pane.address.lastIndexOf(".");
+  if (colon < 0 || dot < colon) return false;
+  return (
+    target.session === pane.address.slice(0, colon) &&
+    (target.window === pane.address.slice(colon + 1, dot) ||
+      target.window === pane.window) &&
+    (target.pane === "" || target.pane === pane.address.slice(dot + 1))
+  );
+}
+/**
+ * The panes a tmux target names, as `%N` handles. One pane answers to several
+ * spellings: `vsys:2.1` is the address this map holds, `vsys:build.1` names
+ * the window by its name, `vsys:2` leaves the pane to tmux, and a leading `=`
+ * forces the exact match every comparison here already makes. A handle names
+ * itself and needs no map.
+ *
+ * A set rather than one handle, because a target carrying no pane index names
+ * every pane of its window and only the server knows which of them tmux would
+ * pick. A caller asking whether a target is one particular pane is answered
+ * by a set that leaves that pane out, and left undecided by a set holding it
+ * beside others.
+ *
+ * Empty when the map cannot say: a target naming no session, a session or
+ * window this map does not hold, or a name tmux would match as a pattern or a
+ * prefix, which is matched here as neither. Empty is never the answer that a
+ * target is some other pane, which is the answer that permits a capture.
+ */
+export function targetPanes(
+  target: string,
+  panes: Map<string, PaneAddress>,
+): Set<string> {
+  if (isPaneId(target)) return new Set([target]);
+  const parsed = parseTarget(target);
+  if (!parsed) return new Set();
+  const found = new Set<string>();
+  for (const [id, pane] of panes) if (namesPane(parsed, pane)) found.add(id);
+  return found;
+}
+
+/**
  * The addresses of every pane the server holds, keyed by pane id. A line that
  * does not carry all three fields is dropped rather than guessed at: a partial
  * address sends a reader to the wrong window.

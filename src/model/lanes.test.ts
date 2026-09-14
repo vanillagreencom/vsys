@@ -444,6 +444,103 @@ test("a restarted server on the same socket path is a different server", () => {
   });
 });
 
+test("vsys's own pane is marked however the lane's target spells it", () => {
+  const c = defaults();
+  const groups = [groupSnapshot({ path: "a.scope", name: "a.scope" })];
+  const path = "/tmp/tmux-1000/default";
+  const socket = serverPart(`${path},4242,3`);
+  const ours = `${path},4242,0`;
+  // vsys draws in `%146`, which this server calls `vsys:2.1` in a window named
+  // `build`. `vsys:3` is a window of two panes, neither of them vsys's, and
+  // another session uses the window name `build` again.
+  const panes = new Map([
+    ["%146", { address: "vsys:2.1", window: "build" }],
+    ["%30", { address: "vsys:3.1", window: "editor" }],
+    ["%31", { address: "vsys:3.2", window: "editor" }],
+    ["%40", { address: "work:1.1", window: "build" }],
+  ]);
+  const asRead = { socket, own: "%146", byId: panes };
+  const agent = (env: Record<string, string>) =>
+    processSnapshot({ pid: 1, group: "a.scope", tool: "claude", env });
+  const mark = (env: Record<string, string>, read = asRead) =>
+    lanes(groups, [agent(env)], c, 0, read)[0]?.self;
+  // The row's name, what the lane's own environment held, and the answer it
+  // earns. Every one of these targets is a target tmux takes, so the mark
+  // rests on which pane the target reaches and never on how it was spelled.
+  type Row = [string, Record<string, string>, Lane["self"]];
+  const rows: Row[] = [
+    // vsys's own pane, in each spelling of it.
+    ["address", { VSYS_PANE: "vsys:2.1" }, "yes"],
+    ["window by name", { VSYS_PANE: "vsys:build.1" }, "yes"],
+    ["pane left to tmux", { VSYS_PANE: "vsys:2" }, "yes"],
+    ["exact match", { VSYS_PANE: "=vsys:2.1" }, "yes"],
+    ["exact window name", { VSYS_PANE: "=vsys:=build.1" }, "yes"],
+    // Another pane, in the same spellings. The map names it, vsys's own is
+    // not it, and the lane keeps its terminal.
+    ["another address", { VSYS_PANE: "vsys:3.1" }, "no"],
+    ["another window by name", { VSYS_PANE: "vsys:editor.2" }, "no"],
+    // Two panes, and vsys's own is neither, so which one tmux would pick does
+    // not change the answer.
+    ["another window, pane left to tmux", { VSYS_PANE: "vsys:3" }, "no"],
+    // A window name belongs to its session, so this is a third pane again.
+    [
+      "that window name in another session",
+      { VSYS_PANE: "work:build.1" },
+      "no",
+    ],
+    // The map cannot say which pane these name: no session to match on, a name
+    // tmux would match as a prefix, and a window this map does not hold. Each
+    // could be vsys's own, so vsys says it cannot tell rather than `no`, which
+    // is the answer that would run the capture against its own pane.
+    ["no session", { VSYS_PANE: "2.1" }, "unknown"],
+    ["window by prefix", { VSYS_PANE: "vsys:bui.1" }, "unknown"],
+    ["a window the map does not hold", { VSYS_PANE: "vsys:9.1" }, "unknown"],
+    // The same target, from a lane whose own shell tmux put in vsys's pane.
+    // That handle settles what the target could not.
+    [
+      "unresolved, shell in vsys's pane",
+      { VSYS_PANE: "vsys:bui.1", TMUX_PANE: "%146" },
+      "yes",
+    ],
+    // And from a lane whose shell is elsewhere, which leaves it undecided:
+    // the reader's target still might be vsys's pane spelled that way.
+    [
+      "unresolved, shell in another pane",
+      { VSYS_PANE: "vsys:bui.1", TMUX_PANE: "%30" },
+      "unknown",
+    ],
+  ];
+  for (const [row, env, self] of rows)
+    expect({ row, self: mark({ TMUX: ours, ...env }) }).toEqual({ row, self });
+  // A window of two panes, one of them vsys's own, with the pane index left
+  // out. tmux sends the capture to whichever pane is active and the map does
+  // not say which that is, so the target may be vsys's own pane.
+  const split = {
+    ...asRead,
+    byId: new Map([
+      ["%146", { address: "vsys:2.1", window: "build" }],
+      ["%147", { address: "vsys:2.2", window: "build" }],
+    ]),
+  };
+  expect(mark({ TMUX: ours, VSYS_PANE: "vsys:2" }, split)).toBe("unknown");
+  // Unless the lane's own shell is the pane vsys draws in.
+  expect(
+    mark({ TMUX: ours, VSYS_PANE: "vsys:2", TMUX_PANE: "%146" }, split),
+  ).toBe("yes");
+  // A `list-panes` that failed leaves no map, so no address spelling resolves
+  // at all. The handle tmux exported into the lane's own pane is what is left,
+  // and it names the pane vsys draws in.
+  const lost = { ...asRead, byId: new Map() };
+  expect(
+    mark({ TMUX: ours, VSYS_PANE: "vsys:build.1", TMUX_PANE: "%146" }, lost),
+  ).toBe("yes");
+  // A lane on a server known to differ is still answered `no`: `elsewhere`
+  // stops it earlier, and no spelling of a stranger's pane changes that.
+  expect(
+    mark({ TMUX: "/tmp/tmux-1000/other,777,0", VSYS_PANE: "vsys:build.1" }),
+  ).toBe("no");
+});
+
 test("the pane vsys draws in is marked on the lane, in either form it carries", () => {
   const c = defaults();
   const groups = ["a", "b", "d", "e"].map((n) =>

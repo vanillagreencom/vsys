@@ -12,6 +12,7 @@ import {
   readPanes,
   switchClientArgv,
   switchCommand,
+  targetPanes,
 } from "./tmux";
 
 test("a pane resolves to its session, window and pane, and a partial line is dropped", () => {
@@ -46,6 +47,58 @@ test("a pane resolves to its session, window and pane, and a partial line is dro
   expect(panes.size).toBe(5);
   // The format asks for those three fields and separates them the same way.
   expect(paneFormat.split("\t")).toHaveLength(3);
+});
+
+test("a target resolves to the panes it names, in every spelling tmux accepts", () => {
+  // One server. `vsys:2` holds a single pane; `vsys:3` is split in two; the
+  // window name `build` is used again in another session.
+  const panes = parsePanes(
+    [
+      "%13\tvsys:2.1\tbuild",
+      "%30\tvsys:3.1\teditor",
+      "%31\tvsys:3.2\teditor",
+      "%40\twork:1.1\tbuild",
+    ].join("\n"),
+  );
+  // The target, and the handles it names. Sorted, because the answer is a set
+  // and its order is the map's rather than anything a caller may rely on.
+  const rows: [string, string[]][] = [
+    // A handle names itself, with the map and without it: it is already the
+    // key every action takes.
+    ["%13", ["%13"]],
+    ["%99", ["%99"]],
+    // The four spellings of one pane: the address the map holds, the window
+    // by its name, the window with the pane left to tmux, and the exact-match
+    // prefix on either name.
+    ["vsys:2.1", ["%13"]],
+    ["vsys:build.1", ["%13"]],
+    ["vsys:2", ["%13"]],
+    ["=vsys:2.1", ["%13"]],
+    ["=vsys:=build.1", ["%13"]],
+    // A window of two panes, with the pane left to tmux: both, because only
+    // the server knows which of them tmux would pick.
+    ["vsys:3", ["%30", "%31"]],
+    ["vsys:editor", ["%30", "%31"]],
+    ["vsys:editor.2", ["%31"]],
+    // A window name is only a name inside its own session.
+    ["work:build.1", ["%40"]],
+    ["work:1", ["%40"]],
+    // Nothing, because the map cannot say which pane these are: no session to
+    // match on, a name tmux would match as a prefix, a window the map does not
+    // hold, and a pane index that window does not hold.
+    ["2.1", []],
+    ["vsys:bui.1", []],
+    ["vsys:9.1", []],
+    ["vsys:2.7", []],
+  ];
+  for (const [target, named] of rows)
+    expect({ target, named: [...targetPanes(target, panes)].sort() }).toEqual({
+      target,
+      named,
+    });
+  // A map that never arrived names nothing by address, which is not the same
+  // as naming some other pane.
+  expect([...targetPanes("vsys:2.1", new Map())]).toEqual([]);
 });
 
 test("captured pane text cannot move the cursor, repaint or write the clipboard", () => {

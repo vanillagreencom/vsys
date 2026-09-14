@@ -1,8 +1,14 @@
 import { basename } from "node:path";
 import type { CollectionConfig } from "../collect/settings";
-import { isPaneId, type PaneSet } from "../collect/tmux";
+import {
+  isPaneId,
+  type PaneAddress,
+  type PaneSet,
+  targetPanes,
+} from "../collect/tmux";
 import {
   accountName,
+  firstEnv,
   jobserver,
   laneName,
   paneName,
@@ -79,17 +85,15 @@ export function lanes(
    */
   tmux?: PaneSet,
 ): Lane[] {
-  const panes = tmux?.byId;
+  /** Every pane the read gave. Empty when no read answered. */
+  const panes = tmux?.byId ?? new Map<string, PaneAddress>();
   /**
    * The server those panes came from. Empty means vsys does not know which
    * server it read, and an unknown boundary is not one to refuse at.
    */
   const socket = tmux?.socket ?? "";
-  /**
-   * The address of the pane vsys draws in, so a lane carrying an address
-   * rather than a handle can still be recognised as that pane.
-   */
-  const ownAddress = tmux?.own ? (panes?.get(tmux.own)?.address ?? "") : "";
+  /** The handle of the pane vsys draws in, empty when it draws in none. */
+  const own = tmux?.own ?? "";
   const covered = new Set<number>();
   const result: Lane[] = [];
   const byPid = new Map(procs.map((p) => [p.pid, p]));
@@ -113,6 +117,20 @@ export function lanes(
     const pane = paneName(main, c);
     const mine = paneSocket(main);
     /**
+     * The panes the lane's target names on the server vsys read. A handle
+     * names itself with no map at all; every other spelling is resolved
+     * through the map, so the mark below rests on which pane the target
+     * reaches rather than on how the reader spelled it.
+     */
+    const named = pane === "" ? new Set<string>() : targetPanes(pane, panes);
+    /**
+     * The lane's own shell sits in the pane vsys draws in. Read from
+     * `TMUX_PANE` alone, which tmux set, rather than from the configured list,
+     * which holds whatever target the reader chose: a handle compares to
+     * another handle, so this stands when the map cannot resolve that target.
+     */
+    const inOwn = own !== "" && firstEnv(main, ["TMUX_PANE"]) === own;
+    /**
      * What the lane says about its tmux server, against the one vsys read.
      * Naming no server is its own state, neither a match nor a boundary:
      * `elsewhere` refuses only a server known to differ, and the own-pane mark
@@ -125,27 +143,37 @@ export function lanes(
           ? "same"
           : "other";
     const elsewhere = server === "other";
-    // A lane carries whichever form its own environment held, so the pane vsys
-    // draws in is compared in both: the `%N` handle from `TMUX_PANE`, and the
-    // `session:window.pane` address a reader puts in `VSYS_PANE`. The question
-    // is which pane the command will reach, not which server the lane's
-    // process sat on: `capture-pane` and `switch-client` are spawned in vsys's
-    // own environment, so tmux resolves the target against vsys's own server
-    // and a pane string that matches addresses vsys's own pane whatever server
-    // handed it out. A lane known to be on another server is answered `no`
-    // because `elsewhere` already leaves it neither read nor offered a switch.
-    // `unknown` is what vsys owes when it cannot decide: it draws in a pane,
-    // the lane names one by address, and the map saying which pane vsys's own
-    // handle is did not arrive. That case may not answer `no`, which every
-    // consumer reads as licence to run the capture against the pane.
+    // Which pane the command will reach, not how the lane spelled it and not
+    // which server the lane's process sat on: `capture-pane` and
+    // `switch-client` are spawned in vsys's own environment, so tmux resolves
+    // the target against vsys's own server and a target naming vsys's own pane
+    // reaches it whatever server handed the string out. A lane known to be on
+    // another server is answered `no` because `elsewhere` already leaves it
+    // neither read nor offered a switch.
+    //
+    // The target is answered by the set of panes it names. A set holding only
+    // vsys's own pane is `yes`. A set that leaves vsys's own pane out is `no`,
+    // which is the only answer that permits a capture and so the only one that
+    // needs the map to have spoken. Everything else is undecided, and vsys
+    // says so rather than answering `no`: an undecided lane costs its reader
+    // one terminal, and `no` in its place costs the capture that draws vsys's
+    // screen inside itself, one copy deeper on every sample.
+    //
+    // Two undecided cases are settled by the lane's own `TMUX_PANE` instead.
+    // A target tmux would resolve to the window's active pane names several,
+    // and a target the map could not resolve at all names none; in both, a
+    // lane whose own shell sits in vsys's pane is answered `yes`. That reads
+    // the shell rather than the target, so it can refuse a lane whose reader
+    // pointed `VSYS_PANE` at some other pane. It fails toward the message,
+    // never toward the capture.
     const self: Lane["self"] =
-      pane === "" || server === "other"
+      pane === "" || own === "" || server === "other"
         ? "no"
-        : pane === tmux?.own || (ownAddress !== "" && pane === ownAddress)
-          ? "yes"
-          : tmux?.own && !isPaneId(pane) && ownAddress === ""
-            ? "unknown"
-            : "no";
+        : named.size > 0 && !named.has(own)
+          ? "no"
+          : named.size === 1 || inOwn
+            ? "yes"
+            : "unknown";
     const title = windowTitle(main, c);
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
@@ -188,12 +216,12 @@ export function lanes(
       address: elsewhere
         ? ""
         : isPaneId(pane)
-          ? (panes?.get(pane)?.address ?? "")
+          ? (panes.get(pane)?.address ?? "")
           : pane,
       window: elsewhere
         ? ""
         : isPaneId(pane)
-          ? (panes?.get(pane)?.window ?? "")
+          ? (panes.get(pane)?.window ?? "")
           : "",
       /**
        * The pane belongs to a tmux server this vsys is not talking to. `%9` is

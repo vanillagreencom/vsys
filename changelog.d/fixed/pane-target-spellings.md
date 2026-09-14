@@ -1,0 +1,1 @@
+- The Terminal section no longer captures the pane vsys draws in when `VSYS_PANE` spells it any other way tmux takes, such as `vsys:build.1` or `vsys:2`, and says so when it cannot tell.
