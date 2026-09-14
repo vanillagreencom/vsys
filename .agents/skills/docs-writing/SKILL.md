@@ -100,14 +100,14 @@ Read by an agent or maintainer looking up one value. Any lookup document: `refer
 
 ### Documentation HTML
 
-Read from `docs/` in a browser. Apply the standard, repository writing rules and companion markdown's file type. Website pages served from a web root or built by a bundler are excluded.
+Read by an agent or maintainer who needs repository documentation in a browser-native format.
 
-- One offline file: `<title>`, one `<h1>`, `<h2>` sections and tables. No framework, build step, external scripts or stylesheets.
-- Diagram each flow, topology or lifecycle with inline SVG, `role="img"` and a sentence in `aria-label`. Use the markdown's terms. Prose adds only what the diagram cannot show.
-- Define each unfamiliar term once, at first use, with a hover tooltip such as `<span class="term" title="…">`. Use one plain sentence.
-- Keep pictures and tables in HTML, decisions and costs in markdown. Link both ways and commit the pair together. Declare `<!-- Covers: companion.md -->` for `doc-drift-check`.
-- Related pages share `<nav class="tabs">` links. Mark the current page with `class="here"`.
-- Follow [doc-limits policy](../doc-limits/references/policy.md) and verify relative `href` targets with `md-refs`.
+- An offline page under `docs/` that opens directly without a build step.
+- The standard and the content rules of the equivalent Markdown file type.
+- Local styles that the document needs. No framework or external asset.
+- Inline SVG is available when a diagram explains a relationship more clearly than prose.
+- A `title` attribute is available when a short hover definition helps the reader.
+- Excluded: pages served from a web root or built by an application bundler. Those are product files, not repository documentation.
 
 ### `SKILL.md`, `workflows/*.md`, `agents/*.md`
 
@@ -152,7 +152,7 @@ The `changelog-entries` lane owns the shape. Follow the repository's `changelog.
 
 - Docs change in the same commit as the code they describe. The `doc-drift-check` hook names the unchanged covering docs to the agent and blocks that stop once per set.
 - One paragraph per line, one list item per line, no hard wraps inside either. Blank lines separate paragraphs, list blocks, headings, and fences. Tables and fenced code stay as written. The commit-guards `md-format` lane enforces it and `md-reflow` converts a file once.
-- Every relative link, `<path>.md § Heading` or `<path>.md#anchor` citation, and decision ID resolves. The `md-refs` lane checks them.
+- Relative links in Markdown must resolve. [commit-guards `CHECKS.md` § md-refs](../commit-guards/CHECKS.md#md-refs) owns the checked forms.
 - Agent-loaded markdown carries no history. The `prose` lane checks it.
 - Document byte limits and exceptions follow [doc-limits policy](../doc-limits/references/policy.md).
 - A rule a shipped kendex package states is never restated in the repo's own markdown. The repo installs the package and customises through `kendex.toml`.

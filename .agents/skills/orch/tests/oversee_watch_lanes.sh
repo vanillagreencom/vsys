@@ -61,6 +61,7 @@ screen() {
     working_below_turn) printf '%b\n' '❯ go ahead and refactor it' '⏺ Thinking (esc to interrupt)' "$COMPOSER" > "$pane" ;;
     # a submitted turn opens with the composer's marker, and nothing below it
     prompt_above_turn) printf '%b\n' '❯ run the suite' '⏺ Bash(cargo test)' '  ⎿ Compiling kendex v5.0.0' > "$pane" ;;
+    capacity_retry) printf '%b\n' '› Continue the task again.' '' '■ Selected model is at capacity. Try again later.' '' '› Ask Codex to do anything' > "$pane" ;;
     # a byte-exact Claude Code 2.1.261 dialog under fixtures/: the permission
     # prompt indents its selected row one column, AskUserQuestion draws its
     # row at column 0 with the question ABOVE it; each is checked for the
@@ -96,6 +97,7 @@ lane() {
   case "$1" in
     claude) ;;
     codex) printf 'codex\n' > "$STUB_DIR/cmd-gh-2.txt" ;;
+    agent_confine) printf 'agent-confine\n' > "$STUB_DIR/cmd-gh-2.txt" ;;
     bash) printf 'bash\n' > "$STUB_DIR/cmd-gh-2.txt" ;;
     # a login shell reports itself as -bash
     login) printf -- '-bash\n' > "$STUB_DIR/cmd-gh-2.txt" ;;
@@ -262,6 +264,13 @@ lane_table \
   "a stale prompt under an exited harness is not a question|new|prompt|bash|1|first=$HEARTBEAT1 out~EVENT+lane-asking=false" \
   "...and the second pass reports the lane as exited rather than starved|cont|prompt|bash|2|first=EVENT+lane-exited+gh-2"
 
+echo "=== model-capacity: Codex stopped before it could return ==="
+lane_table \
+  "a Codex capacity banner is its own event on the first pass|new|codex:codex-model-capacity|codex|1|rc=0 first=EVENT+model-capacity+gh-2 out~Selected+model+is+at+capacity=true out~EVENT+idle-after-return=false" \
+  "the same capacity stop is reported once|cont|codex:codex-model-capacity|codex|1|first=$HEARTBEAT1 out~EVENT+model-capacity=false out~EVENT+idle-after-return=false" \
+  "a new turn with the same stopped screen is a new capacity event|cont|capacity_retry|codex|1|first=EVENT+model-capacity+gh-2 out~EVENT+idle-after-return=false" \
+  "an agent-confine Codex lane gets the capacity event immediately|new|codex:codex-model-capacity|agent_confine|1|first=EVENT+model-capacity+gh-2 out~EVENT+idle-after-return=false"
+
 echo "=== idle-after-return: the round is over and nobody is driving ==="
 # An idle prompt on two consecutive passes is the event: the screen between
 # two tool calls reads the same for one pass, and idle then working is a lane
@@ -325,6 +334,17 @@ MUTANT_DIR="$TMP_ROOT/mutant"
 mkdir -p "$MUTANT_DIR/orch"
 cp -R "$REPO_ROOT/skills/orch/scripts" "$MUTANT_DIR/orch/scripts"
 ln -s "$REPO_ROOT/skills/github" "$MUTANT_DIR/github"
+assert_eq "$(grep -cF "MODEL_CAPACITY='Selected model is at capacity'" "$REPO_ROOT/skills/orch/scripts/oversee-watch" || true)" "1" \
+  "control: the model-capacity classifier has one match to replace"
+sed "s/MODEL_CAPACITY='Selected model is at capacity'/MODEL_CAPACITY='__never_model_capacity__'/" \
+  "$REPO_ROOT/skills/orch/scripts/oversee-watch" > "$MUTANT_DIR/orch/scripts/oversee-watch"
+assert_eq "$(cmp -s "$MUTANT_DIR/orch/scripts/oversee-watch" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" "differs" \
+  "control: the mutant really removes the model-capacity classifier"
+WATCH_BIN="$MUTANT_DIR/orch/scripts/oversee-watch" lane_table \
+  "control: without the classifier the first capacity pass emits nothing|new|codex:codex-model-capacity|codex|1|first=$HEARTBEAT1 out~EVENT+model-capacity=false" \
+  "control: without the classifier the second pass records idle|cont|codex:codex-model-capacity|codex|1|first=EVENT+idle-after-return+gh-2 out~EVENT+model-capacity=false"
+WATCH_BIN="$REPO_ROOT/skills/orch/scripts/oversee-watch" lane_table \
+  "an old idle row cannot suppress the first capacity event|cont|codex:codex-model-capacity|codex|1|first=EVENT+model-capacity+gh-2 out~EVENT+idle-after-return=false"
 sed 's/^    if \[\[ "$prior" == "$screen_key|reported" \]\]; then continue; fi$/    prior="${prior%|reported}"/' \
   "$REPO_ROOT/skills/orch/scripts/oversee-watch" > "$MUTANT_DIR/orch/scripts/oversee-watch"
 assert_eq "$(cmp -s "$MUTANT_DIR/orch/scripts/oversee-watch" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" "differs" \

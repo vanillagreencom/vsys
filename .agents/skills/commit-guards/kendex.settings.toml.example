@@ -50,10 +50,10 @@ COMMIT_GUARDS_MD_SCOPE = "touched"
 # these lanes and md-refs.
 COMMIT_GUARDS_MD_PATHS = "*.md"
 
-# The documents md-refs judges: agent-loaded markdown, architecture docs
-# and documentation HTML. Space-separated shell globs match the full
-# repo-relative path; * crosses directory separators.
-COMMIT_GUARDS_MD_REFS_PATHS = "AGENTS.md */AGENTS.md CLAUDE.md */CLAUDE.md SKILL.md */SKILL.md workflows/*.md */workflows/*.md agents/*.md */agents/*.md docs/architecture/*.md docs/*.html"
+# The documents md-refs judges: agent-loaded markdown and architecture docs.
+# Space-separated shell globs match the full repo-relative path; * crosses
+# directory separators.
+COMMIT_GUARDS_MD_REFS_PATHS = "AGENTS.md */AGENTS.md CLAUDE.md */CLAUDE.md SKILL.md */SKILL.md workflows/*.md */workflows/*.md agents/*.md */agents/*.md docs/architecture/*.md"
 
 # The source files md-refs reads for the same `<path>.md § Heading` citation
 # in their comment text, and in a TOML file's string literals. Same glob
