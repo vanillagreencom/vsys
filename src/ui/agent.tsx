@@ -589,7 +589,7 @@ export function Agent({
                       {lane.self === "yes" && live && (
                         <Empty text="vsys is drawing in this pane, so what it holds is this screen." />
                       )}
-                      {/* vsys could not compare this lane's address against
+                      {/* vsys could not settle this lane's target against
                           its own pane. Claiming it draws in this one would be
                           evidence vsys does not have, and reading it is the
                           mistake the whole section exists to avoid. */}

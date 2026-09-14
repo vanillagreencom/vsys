@@ -71,8 +71,9 @@ function parseTarget(target: string): PaneTarget | null {
   const session = bare(target.slice(0, colon));
   const rest = bare(target.slice(colon + 1));
   const dot = rest.lastIndexOf(".");
-  // A pane index is digits. A window named with a dot in it keeps the whole
-  // rest as its name, because what follows that dot is then not an index.
+  // The rest splits whenever it ends in a dot and digits, so a window whose
+  // own name ends that way is not resolved: `vsys:v1.2` names the window
+  // `v1.2` to tmux and nothing here. Undecided is the accepted answer there.
   return dot > 0 && /^\d+$/.test(rest.slice(dot + 1))
     ? { session, window: rest.slice(0, dot), pane: rest.slice(dot + 1) }
     : { session, window: rest, pane: "" };
@@ -98,8 +99,7 @@ function namesPane(target: PaneTarget, pane: PaneAddress): boolean {
  *
  * Empty when the map cannot say: a target naming no session, a session or
  * window this map does not hold, or a name tmux would match as a pattern or a
- * prefix, which is matched here as neither. Empty is never read as naming some
- * other pane, which is the answer that permits a capture.
+ * prefix, which is matched here as neither.
  */
 export function targetPanes(
   target: string,

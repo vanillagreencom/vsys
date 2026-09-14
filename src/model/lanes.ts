@@ -73,20 +73,13 @@ export function blockedOn(
 /**
  * Whether a lane's pane is the pane vsys draws in.
  *
- * Which pane the command will reach, not which server the lane's process sat
- * on: `capture-pane` and `switch-client` are spawned in vsys's own
- * environment, so a target naming vsys's own pane reaches it whatever server
- * handed the string out. A lane on a server known to differ is `no` because
- * `elsewhere` already leaves it neither read nor offered a switch.
+ * `no` is the dangerous answer: it is the only one that permits a capture, so
+ * it is the only one the pane map has to have spoken for. Anything undecided
+ * says so instead, which costs a reader one terminal where a wrong `no` costs
+ * the capture that draws vsys's screen inside itself, one copy deeper on every
+ * sample.
  *
- * `no` is the only answer that permits a capture, so it is the only one the
- * map has to have spoken for: anything undecided says so instead, costing its
- * reader one terminal where `no` would cost the capture that draws vsys's
- * screen inside itself, one copy deeper on every sample. The lane's own handle
- * settles the two undecided shapes — a window target naming several panes, and
- * a target the map could not resolve — which is why it can refuse a lane whose
- * reader pointed `VSYS_PANE` elsewhere. It fails toward the message, never
- * toward the capture.
+ * `docs/architecture/lanes.md` holds the reasoning behind the three answers.
  */
 export function ownPaneMark(
   target: string,
