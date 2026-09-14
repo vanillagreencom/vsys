@@ -11,8 +11,10 @@ Use the harness file-write tool to save this script as `[RUN_DIR]/launch.sh`:
 ```sh
 run_path=$1
 shift
-setsid sh -c '"$@" > "$0.log" 2>&1; printf "%s\n" "$?" > "$0.exit"' "$run_path" "$@" > /dev/null 2>&1 < /dev/null &
+setsid -f sh -c '"$@" > "$0.log" 2>&1; printf "%s\n" "$?" > "$0.exit"' "$run_path" "$@" > /dev/null 2>&1 < /dev/null
 ```
+
+The script forks with `setsid -f` and not a trailing `&`, so the launcher adds no signal ignores of its own: a job that a non-interactive shell starts with `&` ignores INT and QUIT, which leaves a detached guard or waiter uninterruptible and makes its signal rows report false failures. A signal the calling process already ignores stays ignored.
 
 Invoke it as one foreground shell-tool command. Replace `[WAITER_COMMAND_AND_ARGS]` with the workflow's complete command, including any `env -u` prefixes. Preserve its polling interval, budget and output flags:
 
@@ -36,4 +38,4 @@ cat "[RUN_DIR]/wait.exit"
 cat "[RUN_DIR]/wait.log"
 ```
 
-The completion file contains the waiter's exit code. Route that code and the log's final result through the calling workflow. A nonzero code stays nonzero. A confirmed stopped process with no completion file has no verdict; report the interruption and confirm that no waiter for this PR remains before any workflow-authorized retry. Never replace the waiter with manual GitHub polls or short foreground slices.
+The completion file contains the waiter's exit code. Route that code and the log's final result through the calling workflow; exit `5` has no result and takes the workflow's exit-5 route. A nonzero code stays nonzero. A confirmed stopped process with no completion file has no verdict; report the interruption and confirm that no waiter for this PR remains before any workflow-authorized retry. Never replace the waiter with manual GitHub polls or short foreground slices.

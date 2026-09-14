@@ -407,6 +407,8 @@ json() { jq -r "$1" <<<"$OUT" 2>/dev/null || echo UNPARSEABLE; }
 #   checkruns_read    whether any check-runs read reached the stub
 #   guard_warned      the guard's consecutive-failure warning on stderr
 #   checkrun_warned   the progress read's consecutive-failure warning
+#   mail              the count on a `queue-wait: mail=` stdout line
+#   stderr_line       stderr's first line, spaces encoded as +
 observe() {
   local got="" token name value
   for token in $1; do
@@ -418,6 +420,8 @@ observe() {
       stdout) value="$([[ -n "$OUT" ]] && echo line || echo empty)" ;;
       text_verdict) value="$(sed -n '1s/^queue-wait: result status=[^ ]* verdict=\([^ ]*\).*$/\1/p' <<<"$OUT")" ;;
       text_repo) value="$(sed -n '1s/^queue-wait: result .* repo=\([^ ]*\).*$/\1/p' <<<"$OUT")" ;;
+      stderr_line) value="$(sed -n '1p' "$ERR")"; value="${value// /+}" ;;
+      mail) value="$(sed -n '1s/^queue-wait: mail=\([0-9]*\)$/\1/p' <<<"$OUT")" ;;
       help_record) value="${OUT%%$'\n'*}"; value="${value// /+}" ;;
       mutations)
         value="$(sed -e 's/^disablePullRequestAutoMerge .*/disable/' -e 's/^dequeuePullRequest .*/dequeue/' "$SEQ_DIR/mutations.log" 2>/dev/null | paste -sd, - || true)"
@@ -561,6 +565,14 @@ table '1 1 20 --no-check-probe' \
   'queued and stalled|open_queued_head,checkruns:last=c1.0|1 1 8 --no-check-probe||rc=1 text_verdict=queued' \
   'the result line names the repository it read|state:last=merged,queue:last=in|1 1 10 --no-check-probe|GH_REPO=other/elsewhere|rc=0 text_verdict=merged text_repo=other/elsewhere'
 
+echo "=== unread lane mail ends the wait early ==="
+# A directive the virtual clock's first sleep delivers to the lane's mailbox;
+# the poll interval equals the budget, so a wait that does not watch the
+# mailbox inside its sleep reaches the deadline instead.
+table "$QW" \
+  "a directive written mid-wait returns the keyed line with exit 5|open_queued|1 30 30 --json --no-check-probe --item KEN-3|STUB_MAIL_TO=$TMP_ROOT/repo/tmp/lane-mail/KEN-3/to-lane.jsonl|rc=5 mail=1" \
+  "a directive reaching the nested ci-wait probe ends the outer wait|open_armed|1 1 20 --json --item KEN-6|STUB_MAIL_TO=$TMP_ROOT/repo/tmp/lane-mail/KEN-6/to-lane.jsonl|rc=5 mail=1"
+
 echo "=== argument validation ends in the parser, before any gh call ==="
 # The recording gh stub fails every call, so a case that reached auth or a
 # poll reads as calls > 0.
@@ -579,6 +591,7 @@ arg_rows=(
   'poll_interval past max_wait is a usage error|1 1800 600 --json --no-check-probe|rc=2 stdout=empty gh_calls=0'
   'a non-numeric poll_interval is a usage error|1 abc 600 --json --no-check-probe|rc=2 stdout=empty gh_calls=0'
   'an unknown flag is refused in the parser|1 30 600 --bogus-flag|rc=2 stdout=empty gh_calls=0'
+  '--item without a value is refused in the parser|1 30 600 --item|rc=2 stdout=empty stderr_line=queue-wait:+missing-item+option=--item gh_calls=0'
   'a missing PR number is a usage error, not exit 1||rc=2 stdout=empty gh_calls=0'
   '--help prints the routed sections and exits 0|--help|rc=0 help_record=queue-wait:+usage+command=queue-wait gh_calls=0'
 )

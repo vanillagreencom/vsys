@@ -25,6 +25,8 @@ usage() {
 Usage: oversee-watch [--interval SECS] [--max-loops N] [--since ISO8601]
                      [--item ISSUE_ID]... [--repo OWNER/REPO]...
                      [--hosted ITEM=REMOTE_ROOT]... [LANE_WINDOW...]
+       oversee-watch --repeat SECS --items-file PATH [--windows-file PATH]
+                     [any option above]...
 
 Blocks until the fleet needs the overseer, then prints every event the pass
 found as one block, each line prefixed with its kind, and exits once. Re-run
@@ -50,6 +52,9 @@ Events, checked and reported in this order every pass:
   EVENT lane-notice <item> <id>
                              the same, for a notice the lane wants read but
                              is not waiting on; its text follows
+  EVENT owner-note <id>      a note in the overseer's own mailbox, sent with
+                             `lane-mail send --item overseer --directive`;
+                             its text follows. Read with or without --item
   EVENT handoff <item>       the --item's workflow state carries a `.handoff`
                              record with no `.resumed_at`; the record follows.
                              Emitted once per record, on every surface: it
@@ -90,7 +95,7 @@ first repository's OVERSEE_WATCH_STATE_DIR baseline from kept or canceled
 verdicts. Lane prompts use pane and turn.
 
 A line already delivered is not delivered again by a re-run: merged,
-lane-question, lane-notice,
+lane-question, lane-notice, owner-note,
 lane-asking, usage-limit, model-capacity, lane-exited, idle-after-return and handoff are keyed
 in that baseline and repeat only when what they report changes: another PR, a
 different wall or a reset gone by, a replacement pane, a different screen, a
@@ -119,6 +124,17 @@ Options:
   LANE_WINDOW...      tmux window names to watch; requires $TMUX. A bare name
                       is a window in the caller's session; `session:window`,
                       tmux's own target form, names one in another session
+  --repeat SECS       the watch for a session: run one watch per pass with
+                      the other options, sleep SECS after it exits with any
+                      status, and run the next. Requires --items-file
+  --items-file PATH   one --item per non-blank line, added to any --item
+                      given; repeat mode only, re-read before every pass
+  --windows-file PATH one LANE_WINDOW per non-blank line, added to any
+                      LANE_WINDOW given; repeat mode only, re-read before
+                      every pass. A window, from either, that tmux does not
+                      list is carried until a pass exits 0 having reported
+                      window-gone with one stderr note; later passes leave it
+                      out until tmux lists it again
 
 Exit codes:
   0  at least one EVENT line was printed
@@ -127,6 +143,10 @@ Exit codes:
      event was printed. Pr-watch commits repository baselines in order, so
      earlier repository baselines may already have advanced when a later
      rename fails. Only baselines that did not advance repeat their events
+Repeat mode prints each pass's output and ignores its exit code. It exits 2
+only on a usage error, a list file it cannot read, an argument a pass would
+refuse (an item, a --hosted entry, a repeated --repo, a lane outside tmux),
+or a tmux window list that fails.
 
 When pr-watch.sh is installed, oversee-watch runs it with --heal on every pass.
 Gate-stale dispatches PR_WATCH_WRITER_WORKFLOW, so its credential requires
@@ -146,12 +166,12 @@ Environment:
   OVERSEE_WATCH_TRACKER       path to the Linear CLI
   OVERSEE_WATCH_WORKFLOW_STATE path to workflow-state; with an --item a
                               missing one exits 2 rather than dropping handoff
-  OVERSEE_WATCH_LANE_MAIL     path to lane-mail; with an --item a missing one
-                              exits 2 rather than dropping the mail pass
+  OVERSEE_WATCH_LANE_MAIL     path to lane-mail; a missing one exits 2 rather
+                              than dropping the mail pass
   PR_WATCH_WRITER_WORKFLOW    workflow dispatched by pr-watch --heal
   OVERSEE_WATCH_STATE_DIR     one baseline file per repository — reducer,
                               triage, lane-asking, usage-limit and handoff
-                              rows — plus claims/
+                              rows — plus claims/ and overseer-mail
 USAGE
 }
 # stderr messages start `oversee-watch: REASON field=value ...`. Backslash,
@@ -166,6 +186,11 @@ ow_message() { # REASON FIELD=VALUE...
     state-directory-create-failed) text='The watch state directory could not be created. Check OVERSEE_WATCH_STATE_DIR.' ;;
     state-directory-unwritable) text='The watch state directory is not writable. Check OVERSEE_WATCH_STATE_DIR.' ;;
     interval-invalid) text='The interval must be a non-negative integer.' ;;
+    repeat-invalid) text='The repeat delay must be a non-negative integer.' ;;
+    repeat-required) text='The option is read only in repeat mode. Add --repeat SECS.' ;;
+    items-file-required) text='Repeat mode reads its items from a file. Add --items-file PATH.' ;;
+    list-file-unreadable) text='The list file could not be read. Repeat mode stops rather than watch a partial set.' ;;
+    window-absent) text='tmux does not list the window. Passes carry it until one reports it gone; later passes leave it out until tmux lists it again.' ;;
     max-loops-invalid) text='The loop limit must be a positive integer.' ;;
     tmux-missing) text='Run in the tmux session that owns these lanes, or omit the lanes.' ;;
     since-invalid) text='Use a UTC timestamp in YYYY-MM-DDTHH:MM:SSZ form.' ;;
@@ -247,9 +272,18 @@ parse_argv() {
   ITEMS=()
   LANES=()
   HOSTED=()
+  REPEAT=""
+  ITEMS_FILE=""
+  WINDOWS_FILE=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --repeat) need_val "$@"; REPEAT="$2"; shift 2 ;;
+      --repeat=*) REPEAT="${1#--repeat=}"; need_val --repeat "$REPEAT"; shift ;;
+      --items-file) need_val "$@"; ITEMS_FILE="$2"; shift 2 ;;
+      --items-file=*) ITEMS_FILE="${1#--items-file=}"; need_val --items-file "$ITEMS_FILE"; shift ;;
+      --windows-file) need_val "$@"; WINDOWS_FILE="$2"; shift 2 ;;
+      --windows-file=*) WINDOWS_FILE="${1#--windows-file=}"; need_val --windows-file "$WINDOWS_FILE"; shift ;;
       --hosted) need_val "$@"; HOSTED+=("$2"); shift 2 ;;
       --hosted=*) need_val --hosted "${1#--hosted=}"; HOSTED+=("${1#--hosted=}"); shift ;;
       --interval) need_val "$@"; INTERVAL="$2"; shift 2 ;;
@@ -313,10 +347,12 @@ esac
 WORKFLOW_STATE_ARGS=(--state-dir "$WORKFLOW_STATE_DIR")
 PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 
-# One state-file class, and only one: the per-repo reducer baseline. Triage
-# keys, lane-asking fingerprints and usage-limit sightings are rows in the
-# first repository's file, never a file of their own. This makes the directory exist before any of them
-# is read. The live pane capture remains authoritative.
+# Two state files: the per-repo reducer baseline, and overseer-mail, the
+# overseer mailbox count, which no --since or repository names because the
+# owner's mailbox outlives every fleet. Triage keys, lane-asking fingerprints,
+# usage-limit sightings and lane-mail rows are rows in the first repository's
+# file, never a file of their own. This makes the directory exist before any of
+# them is read. The live pane capture remains authoritative.
 watch_state_init() {
   mkdir -p "$PW_STATE_DIR" \
     || die state-directory-create-failed "" "path=$PW_STATE_DIR"
@@ -428,13 +464,42 @@ CODEX_MARKER_RE='^›'
 # a -v value.
 DIALOG_ROW_RE='^(❯|›) [0-9]+[.] '
 
+# The windows of the session a lane names: `session:window` lists that
+# session, a bare name the caller's. Every other tmux read passes the lane
+# through as its -t target, which tmux resolves in the same two shapes.
+# The session is matched exactly (`=`): tmux otherwise falls back to a
+# prefix match, and a lane whose session died would silently watch a
+# sibling's. A session tmux destroyed with its last window has no windows,
+# so it lists as none and the lane reads gone; any other failure is fatal.
+lane_session_windows() {
+  local out
+  case "$1" in
+    *:*)
+      out="$(tmux list-windows -t "=${1%%:*}" -F '#W' 2>&1)" && { printf '%s\n' "$out"; return 0; }
+      [[ "$out" == "can't find session: "* ]] && return 0
+      printf '%s\n' "$out"
+      return 1 ;;
+    *) tmux list-windows -F '#W' 2>&1 ;;
+  esac
+}
+
+# The one presence answer, for a pass and for repeat mode's windows file.
+lane_window_listed() { # LANE
+  local existing
+  existing="$(lane_session_windows "$1")" || die window-list-failed "$existing" "lane=$1"
+  grep -qxF -- "${1#*:}" <<<"$existing"
+}
+
 parse_argv "$@"
 
 [[ "$INTERVAL" =~ ^[0-9]+$ ]] || die interval-invalid "" "value=$INTERVAL"
 [[ "$MAX_LOOPS" =~ ^[0-9]+$ && "$MAX_LOOPS" -ge 1 ]] || die max-loops-invalid "" "value=$MAX_LOOPS"
-if [[ ${#LANES[@]} -gt 0 && -z "${TMUX:-}" ]]; then
-  die tmux-missing "" "lanes=${LANES[*]}"
-fi
+# A lane is read through tmux, so a run naming one outside tmux is refused. A
+# single run and every repeat pass ask it of the lanes they carry.
+check_lane_set() {
+  [[ ${#LANES[@]} -eq 0 || -n "${TMUX:-}" ]] || die tmux-missing "" "lanes=${LANES[*]}"
+}
+check_lane_set
 
 # No floor by default: the floor must not move between runs, and a run has no
 # way to know when the previous one stopped looking.
@@ -444,6 +509,120 @@ if [[ -n "$SINCE" ]]; then
     || die since-invalid "" "value=$SINCE"
   SINCE_EPOCH="$(to_epoch "$SINCE")" || die since-invalid "" "value=$SINCE"
 fi
+
+# One canonical spelling per repository. GitHub reads a repo path
+# case-insensitively, so lowercasing each entry leaves the duplicate check, the
+# owner the merged check matches on, the reducer's state-file name, the repo it
+# prefixes its lines with and the GH_REPO it exports all naming one string. A
+# repeat would reduce that repository twice into one state file and report it
+# twice in the context, so it is a usage error, named as the caller spelled it.
+# A single run and repeat mode both call it.
+check_repo_set() {
+  local repo_i repo_raw repos_seen=""
+  [[ ${#REPOS[@]} -gt 0 ]] || return 0
+  for repo_i in "${!REPOS[@]}"; do
+    repo_raw="${REPOS[$repo_i]}"
+    REPOS[$repo_i]="$(printf '%s' "$repo_raw" | tr '[:upper:]' '[:lower:]')"
+    if grep -qxF -- "${REPOS[$repo_i]}" <<<"$repos_seen"; then
+      die repo-duplicate "" "repo=$repo_raw"
+    fi
+    repos_seen+="${REPOS[$repo_i]}"$'\n'
+  done
+}
+
+# The --item and --hosted checks, run by a single run and by every repeat pass
+# on the set that pass will carry. The item's head branch is its id lowercased
+# (worktree create's branch name); one branch per line, for the jq membership
+# test.
+check_item_set() {
+  local item entry hosted_item hosted_seen=""
+  ITEM_BRANCHES=""
+  for item in ${ITEMS[@]+"${ITEMS[@]}"}; do
+    [[ "$item" =~ ^[A-Za-z0-9._-]+$ ]] || die item-invalid "" "item=$item"
+    ITEM_BRANCHES+="$(printf '%s' "$item" | tr '[:upper:]' '[:lower:]')"$'\n'
+  done
+  # `--hosted ITEM=REMOTE_ROOT`, validated here so the mail pass never
+  # composes a remote path out of a value nobody judged. One entry per item: two
+  # roots for one lane would read one of its mailboxes and drain the other.
+  for entry in ${HOSTED[@]+"${HOSTED[@]}"}; do
+    [[ "$entry" == *=* ]] || die hosted-invalid "" "value=$entry"
+    [[ "${entry%%=*}" =~ ^[A-Za-z0-9._-]+$ && -n "${entry#*=}" ]] \
+      || die hosted-invalid "" "value=$entry"
+    grep -qxF -- "${entry%%=*}" <<<"$hosted_seen" \
+      && die hosted-duplicate "" "item=${entry%%=*}"
+    # An entry for an item this run does not watch reads no mailbox at all, and
+    # the item it was meant for quietly reads its local root instead.
+    hosted_item=0
+    for item in ${ITEMS[@]+"${ITEMS[@]}"}; do
+      [[ "$item" != "${entry%%=*}" ]] || hosted_item=1
+    done
+    [[ "$hosted_item" -eq 1 ]] || die hosted-unknown-item "" "item=${entry%%=*}"
+    hosted_seen+="${entry%%=*}"$'\n'
+  done
+}
+
+# Repeat mode runs here, ahead of every note and read a single run makes. Each
+# pass is this script in single-run mode, so a pass keeps that contract whole.
+# The lists are re-read before every pass: the live set changes on every
+# launch and every merge. A list that cannot be read, or a set the pass would
+# refuse, ends the watch rather than running empty passes after every sleep.
+repeat_watch() {
+  local self="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}" args items windows line noted="" gone="" pending pass_rc given lanes
+  given=(${ITEMS[@]+"${ITEMS[@]}"})
+  lanes=(${LANES[@]+"${LANES[@]}"})
+  check_repo_set
+  while :; do
+    items="$(cat -- "$ITEMS_FILE" 2>&1)" || die list-file-unreadable "$items" "option=--items-file" "path=$ITEMS_FILE"
+    windows=""
+    [[ -z "$WINDOWS_FILE" ]] || windows="$(cat -- "$WINDOWS_FILE" 2>&1)" \
+      || die list-file-unreadable "$windows" "option=--windows-file" "path=$WINDOWS_FILE"
+    args=(--interval "$INTERVAL" --max-loops "$MAX_LOOPS")
+    [[ -z "$SINCE" ]] || args+=(--since "$SINCE")
+    for line in ${REPOS[@]+"${REPOS[@]}"}; do args+=(--repo "$line"); done
+    for line in ${HOSTED[@]+"${HOSTED[@]}"}; do args+=(--hosted "$line"); done
+    ITEMS=(${given[@]+"${given[@]}"})
+    while IFS= read -r line; do
+      [[ -z "${line//[[:space:]]/}" ]] || ITEMS+=("$line")
+    done <<<"$items"
+    check_item_set
+    for line in ${ITEMS[@]+"${ITEMS[@]}"}; do args+=(--item "$line"); done
+    LANES=(${lanes[@]+"${lanes[@]}"})
+    while IFS= read -r line; do
+      [[ -z "${line//[[:space:]]/}" ]] || LANES+=("$line")
+    done <<<"$windows"
+    check_lane_set
+    pending=""
+    for line in ${LANES[@]+"${LANES[@]}"}; do
+      if lane_window_listed "$line"; then
+        # Listed again, so a later death under this name is news again.
+        noted="$(grep -vxF -- "$line" <<<"$noted" || :)"
+        gone="$(grep -vxF -- "$line" <<<"$gone" || :)"
+      elif grep -qxF -- "$line" <<<"$gone"; then
+        continue
+      else
+        # An absent window rides every pass, noted once, until a pass that
+        # carried it exits 0; later passes leave it out while it stays gone.
+        grep -qxF -- "$line" <<<"$noted" \
+          || { noted+=$'\n'"$line"; ow_message window-absent "lane=$line" >&2; }
+        pending+=$'\n'"$line"
+      fi
+      args+=("$line")
+    done
+    pass_rc=0
+    "$self" "${args[@]}" || pass_rc=$?
+    # A pass exits 0 only after its check_lanes ran, which printed window-gone
+    # for every absent window it carried; any other exit may have stopped first.
+    [[ "$pass_rc" -ne 0 ]] || gone+="$pending"
+    sleep "$REPEAT"
+  done
+}
+if [[ -n "$REPEAT" ]]; then
+  [[ "$REPEAT" =~ ^[0-9]+$ ]] || die repeat-invalid "" "value=$REPEAT"
+  [[ -n "$ITEMS_FILE" ]] || die items-file-required "" "option=--repeat"
+  repeat_watch
+fi
+[[ -z "$ITEMS_FILE" ]] || die repeat-required "" "option=--items-file"
+[[ -z "$WINDOWS_FILE" ]] || die repeat-required "" "option=--windows-file"
 
 TRIAGE_ENABLED=0
 # LINEAR_TEAM decides whether this fleet has a team to triage at all: empty,
@@ -464,33 +643,7 @@ if [[ -n "$SINCE" ]]; then
   fi
 fi
 
-# The item's head branch is its id lowercased (worktree create's branch name);
-# one branch per line, for the jq membership test.
-ITEM_BRANCHES=""
-for item in ${ITEMS[@]+"${ITEMS[@]}"}; do
-  [[ "$item" =~ ^[A-Za-z0-9._-]+$ ]] || die item-invalid "" "item=$item"
-  ITEM_BRANCHES+="$(printf '%s' "$item" | tr '[:upper:]' '[:lower:]')"$'\n'
-done
-
-# `--hosted ITEM=REMOTE_ROOT`, validated once here so the mail pass never
-# composes a remote path out of a value nobody judged. One entry per item: two
-# roots for one lane would read one of its mailboxes and drain the other.
-hosted_seen=""
-for entry in ${HOSTED[@]+"${HOSTED[@]}"}; do
-  [[ "$entry" == *=* ]] || die hosted-invalid "" "value=$entry"
-  [[ "${entry%%=*}" =~ ^[A-Za-z0-9._-]+$ && -n "${entry#*=}" ]] \
-    || die hosted-invalid "" "value=$entry"
-  grep -qxF -- "${entry%%=*}" <<<"$hosted_seen" \
-    && die hosted-duplicate "" "item=${entry%%=*}"
-  # An entry for an item this run does not watch reads no mailbox at all, and
-  # the item it was meant for quietly reads its local root instead.
-  hosted_item=0
-  for item in ${ITEMS[@]+"${ITEMS[@]}"}; do
-    [[ "$item" != "${entry%%=*}" ]] || hosted_item=1
-  done
-  [[ "$hosted_item" -eq 1 ]] || die hosted-unknown-item "" "item=${entry%%=*}"
-  hosted_seen+="${entry%%=*}"$'\n'
-done
+check_item_set
 
 # HOSTED_ROOT is the item's lane root on its own host, empty for a lane on this
 # disk. Set rather than printed: a substitution would carry the lookup's own
@@ -536,24 +689,10 @@ if [[ ${#REPOS[@]} -eq 0 ]]; then
   [[ "$resolve_status" -eq 0 && -n "$resolved" ]] || die repo-unresolved "" "option=--repo"
   REPOS=("$resolved")
 fi
-# One canonical spelling per repository, settled once, HERE — below the default
-# resolution, the one point every path's REPOS has reached its final value, so
-# a repo `gh repo view` reported in its registered casing is canonicalized too.
-# GitHub reads a repo path case-insensitively, so lowercasing each entry leaves
-# the duplicate check, the owner the merged check matches on, the reducer's
-# state-file name, the repo it prefixes its lines with and the GH_REPO it
-# exports all naming one string. A repeat would reduce that repository twice
-# into one state file and report it twice in the context, so it is a usage
-# error, named as the caller spelled it.
-repos_seen=""
-for repo_i in "${!REPOS[@]}"; do
-  repo_raw="${REPOS[$repo_i]}"
-  REPOS[$repo_i]="$(printf '%s' "$repo_raw" | tr '[:upper:]' '[:lower:]')"
-  if grep -qxF -- "${REPOS[$repo_i]}" <<<"$repos_seen"; then
-    die repo-duplicate "" "repo=$repo_raw"
-  fi
-  repos_seen+="${REPOS[$repo_i]}"$'\n'
-done
+# Settled once, HERE — below the default resolution, the one point every path's
+# REPOS has reached its final value, so a repo `gh repo view` reported in its
+# registered casing is canonicalized too.
+check_repo_set
 if [[ -x "$PR_WATCH" ]]; then
   :
 else
@@ -567,12 +706,12 @@ else
   # otherwise a lane-exited the overseer relaunches from nothing.
   [[ -x "$WORKFLOW_STATE" ]] \
     || die helper-missing "" "path=$WORKFLOW_STATE" "setting=OVERSEE_WATCH_WORKFLOW_STATE"
-  # And so does the mail pass: it is the only channel a lane has to reach the
-  # overseer on a surface with no pane, so a missing reader would leave every
-  # question unread with nothing said.
-  [[ -x "$LANE_MAIL" ]] \
-    || die helper-missing "" "path=$LANE_MAIL" "setting=OVERSEE_WATCH_LANE_MAIL"
 fi
+# The mail pass fails closed too, items or not: it is the only channel a lane
+# has to reach the overseer on a surface with no pane, and the one the owner's
+# notes arrive on, so a missing reader would leave them unread with nothing said.
+[[ -x "$LANE_MAIL" ]] \
+  || die helper-missing "" "path=$LANE_MAIL" "setting=OVERSEE_WATCH_LANE_MAIL"
 # Inside tmux the pane checks are how an item's lane is watched, so a run
 # naming items and no window is told which checks it is not running, as the
 # two notes above say for the reducer and the merged check. Outside tmux there
@@ -731,23 +870,31 @@ check_handoff() {
 # holds how many to-overseer.jsonl lines have been drained and `drain` reports
 # the file's own count, so a message is reported once. An ask already answered
 # is dropped by `drain` rather than by a row, so a restarted overseer with no
-# rows re-reports only what it still owes a reply.
+# rows re-reports only what it still owes a reply. The overseer's own mailbox
+# is read the same way on every pass, items or not: `inbox --after` over its
+# to-lane.jsonl, where the owner's notes land. Its count is one file no --since
+# or repository names, because the owner's mailbox outlives every fleet.
 check_mail() {
-  [[ ${#ITEMS[@]} -gt 0 ]] || return 0
-  local item prior out count line fields id kind options text rest rc args reread
-  local errf="$WORK_DIR/mail.err" state="${PW_SEEN[0]}"
-  for item in "${ITEMS[@]}"; do
-    if ! prior="$(lane_row_get lane-mail "$state" "$item")"; then
+  local item verb stored prior out count line fields id kind options text rest rc args reread
+  local errf="$WORK_DIR/mail.err" state="${PW_SEEN[0]}" mailf="$PW_STATE_DIR/overseer-mail"
+  for item in ${ITEMS[@]+"${ITEMS[@]}"} overseer; do
+    stored=""
+    if [[ "$item" == overseer ]]; then
+      [[ ! -e "$mailf" ]] || stored="$(cat "$mailf")" || die state-read-failed "" "path=$mailf"
+    elif ! stored="$(lane_row_get lane-mail "$state" "$item")"; then
       die state-read-failed "" "item=$item" "row=lane-mail"
     fi
+    prior="$stored"
     [[ "$prior" =~ ^[0-9]+$ ]] || prior=0
+    verb=drain
+    [[ "$item" != overseer ]] || verb=inbox
     hosted_root "$item"
     reread=0
     while :; do
       args=(--item "$item" --after "$prior")
       [[ -z "$HOSTED_ROOT" ]] || args+=(--root "$HOSTED_ROOT" --host)
       rc=0
-      out="$("$LANE_MAIL" drain "${args[@]}" 2>"$errf")" || rc=$?
+      out="$("$LANE_MAIL" "$verb" "${args[@]}" 2>"$errf")" || rc=$?
       [[ "$rc" -eq 0 ]] \
         || die mail-read-failed "$(cat "$errf")" "item=$item" "exit=$rc"
       if ! count="$(head -n 1 <<<"$out")"; then
@@ -765,7 +912,7 @@ check_mail() {
       reread=1
       prior=0
     done
-    state="$(lane_row_set lane-mail "$state" "$item" "$count")"
+    [[ "$item" == overseer ]] || state="$(lane_row_set lane-mail "$state" "$item" "$count")"
     while IFS= read -r line; do
       [[ -n "$line" ]] || continue
       if ! fields="$(jq -r '[.id // "", .kind // "", ((.options // []) | join(", "))] | @tsv' <<<"$line")"; then
@@ -775,8 +922,9 @@ check_mail() {
       rest="${fields#*$'\t'}"
       kind="${rest%%$'\t'*}"
       options="${rest#*$'\t'}"
-      case "$kind" in
-        ask) echo "EVENT lane-question $item $id" ;;
+      case "$verb:$kind" in
+        inbox:*) echo "EVENT owner-note $id" ;;
+        drain:ask) echo "EVENT lane-question $item $id" ;;
         # Only the lane writes this file, and it writes asks and notices; any
         # other kind is a line to show rather than a line to drop silently.
         *) echo "EVENT lane-notice $item $id" ;;
@@ -798,6 +946,8 @@ check_mail() {
     # replaces, this one how far the overseer has read a lane's mailbox. An
     # item out of --item for one run and back in the next would otherwise
     # drain from zero and report every message that lane ever sent.
+    [[ "$item" != overseer || "$count" == "${stored:-0}" ]] \
+      || { pw_stage_state "$mailf" "$count"; pw_commit_state "$mailf"; }
     lane_row_commit "$state"
   done
 }
@@ -916,39 +1066,19 @@ lane_field() { awk -F'\t' -v i="$2" -v field="$3" '$1 == i { print $field }' <<<
 lane_state() { lane_field "$1" "$2" 2; }
 lane_pane_file() { printf '%s/pane.%s' "$WORK_DIR" "$1"; }
 
-# The windows of the session a lane names: `session:window` lists that
-# session, a bare name the caller's. Every other tmux read passes the lane
-# through as its -t target, which tmux resolves in the same two shapes.
-# The session is matched exactly (`=`): tmux otherwise falls back to a
-# prefix match, and a lane whose session died would silently watch a
-# sibling's. A session tmux destroyed with its last window has no windows,
-# so it lists as none and the lane reads gone; any other failure is fatal.
-lane_session_windows() {
-  local out
-  case "$1" in
-    *:*)
-      out="$(tmux list-windows -t "=${1%%:*}" -F '#W' 2>&1)" && { printf '%s\n' "$out"; return 0; }
-      [[ "$out" == "can't find session: "* ]] && return 0
-      printf '%s\n' "$out"
-      return 1 ;;
-    *) tmux list-windows -F '#W' 2>&1 ;;
-  esac
-}
-
 # Build one immutable lane snapshot for the pass. The final capture path is
 # the success marker; a failed redirect leaves only a removed scratch file.
 observe_lanes() {
   LANE_OBS=""
   LANE_TURNS=()
   [[ ${#LANES[@]} -gt 0 ]] || return 0
-  local existing lane pane below key prefix prior obs pid cmd capture errf i=0 state="${PW_SEEN[0]}"
+  local lane pane below key prefix prior obs pid cmd capture errf i=0 state="${PW_SEEN[0]}"
   local banner reset_key seen_at seen_pane seen_reported seen_key
   for lane in "${LANES[@]}"; do
     i=$((i + 1))
     capture="$(lane_pane_file "$i")"
     rm -f "$capture" "$capture.$$.tmp"
-    existing="$(lane_session_windows "$lane")" || die window-list-failed "$existing" "lane=$lane"
-    if ! grep -qxF -- "${lane#*:}" <<<"$existing"; then
+    if ! lane_window_listed "$lane"; then
       LANE_OBS+="$i"$'\t'"gone"$'\t\t\t\n'
       state="$(lane_row_clear lane-asking "$state" "$lane")"
       state="$(lane_row_clear usage-limit "$state" "$lane")"
