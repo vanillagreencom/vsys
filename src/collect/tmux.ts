@@ -71,9 +71,11 @@ function parseTarget(target: string): PaneTarget | null {
   const session = bare(target.slice(0, colon));
   const rest = bare(target.slice(colon + 1));
   const dot = rest.lastIndexOf(".");
-  // The rest splits whenever it ends in a dot and digits, so a window whose
-  // own name ends that way is not resolved: `vsys:v1.2` names the window
-  // `v1.2` to tmux and nothing here. Undecided is the accepted answer there.
+  // The rest splits whenever it ends in a dot and digits, which is tmux's own
+  // first reading: for `vsys:v1.2` both reach the pane in window `v1` where
+  // that window and pane index exist. Where either is missing tmux resolves
+  // something else — that window's active pane, or a window truly named
+  // `v1.2` — and this parser matches nothing, so the answer is undecided.
   return dot > 0 && /^\d+$/.test(rest.slice(dot + 1))
     ? { session, window: rest.slice(0, dot), pane: rest.slice(dot + 1) }
     : { session, window: rest, pane: "" };
