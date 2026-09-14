@@ -2,7 +2,7 @@
 
 Run a local pre-PR review, push, create or update the PR, triage review comments, wait for the reviewer-gate verdict, verify CI, and confirm the merge gates. The review gate (§ 4) runs before CI verification (§ 5).
 
-Run every long waiter below through [Waiter launch](../references/waiter-launch.md): detach with `setsid`, poll its completion file, then route the recorded exit and result. The waiter commands below are arguments to that launch, except `approval-wait --resolve-mode`, which runs directly.
+Run every long waiter below through [Waiter launch](../references/waiter-launch.md): detach with `setsid`, poll its completion file, then route the recorded exit and result. The waiter commands below are arguments to that launch, except `approval-wait --resolve-mode`, which runs directly. Exit `5` with the log line `<waiter>: mail=<count>` or `<waiter>: mail-unreadable=<path>` is no verdict: run `.agents/skills/orch/scripts/lane-mail inbox --item [ISSUE_ID]`, act on what it prints, then launch the same waiter again in a fresh run directory; route every other exit as written below.
 
 | Command | Behavior |
 |---------|----------|
@@ -211,10 +211,10 @@ For `off`, skip the wait and go to § 5 — the internal review, CI, and comment
 1. **Wait.** Poll for the verdict and new comments together:
 
    ```bash
-   .agents/skills/orch/scripts/approval-wait [PR_NUMBER] 30 --json --mode [GATE_MODE]
+   .agents/skills/orch/scripts/approval-wait [PR_NUMBER] 30 --json --mode [GATE_MODE] --item [ISSUE_ID]
    ```
 
-   No `max_wait` positional: the budget resolves through `PR_REVIEW_WAIT_SECS`. approval-wait always emits a JSON result.
+   No `max_wait` positional: the budget resolves through `PR_REVIEW_WAIT_SECS`. approval-wait emits a JSON result on every exit but `5`.
 
    | `status` | Action |
    |----------|--------|
@@ -276,7 +276,7 @@ After any fix-up push: push → the Restart check, and on a restart wait for a N
 ## 5. Verify CI
 
 ```bash
-.agents/skills/orch/scripts/ci-wait [PR_NUMBER] --json
+.agents/skills/orch/scripts/ci-wait [PR_NUMBER] --json --item [ISSUE_ID]
 ```
 
 | Result | Action |
@@ -334,7 +334,7 @@ Empty `json_paths` means no internal review is recorded: report the unmet gate a
 `unresolved_count > 0` runs ONE triage pass (`⤵ workflows/review-pr-comments.md [PR_NUMBER] § 1-8 → § 6.1 gate 3`, managed, bounded by the same `REVIEW_MAX_EXTERNAL_ROUNDS` cap on `pr_comment_review.iterations`). If that pass pushed commits, re-confirm the § 4 gate through its Restart check with a short wait (skip when `GATE_MODE` is `off`), then re-run § 5:
 
 ```bash
-.agents/skills/orch/scripts/approval-wait [PR_NUMBER] 15 300 --json --mode [GATE_MODE]
+.agents/skills/orch/scripts/approval-wait [PR_NUMBER] 15 300 --json --mode [GATE_MODE] --item [ISSUE_ID]
 ```
 
 Re-run the gate-3 command once. If threads remain and the external-round cap is below, `auto-recommended` logs `Triage again` and runs one more pass; at the cap it records `review-threads-open`. Under `ask`, present `Triage again` | `Force merge` | `Stop here`, with `Triage again` recommended.

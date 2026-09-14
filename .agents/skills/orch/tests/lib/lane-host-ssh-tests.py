@@ -177,6 +177,50 @@ exec git "$@"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(b"PI_CODING_AGENT_DIR", result.stdout)
 
+    def test_create_places_per_harness_pre_approval(self):
+        """The overseer's trust file lands where each harness reads it; Claude's merges."""
+        seed = b'{"userID": "kept", "projects": {"/c": {"allowedTools": ["Bash"], "hasTrustDialogAccepted": false}}}'
+        merged = {"userID": "kept", "hasCompletedOnboarding": True, "projects": {"/c": {"allowedTools": ["Bash"], "hasTrustDialogAccepted": True}}}
+        rows = (("claude", ".claude.json", self.root / ".claude.json", b'{"hasCompletedOnboarding": true, "projects": {"/c": {"hasTrustDialogAccepted": true}}}', json.loads, merged),
+                ("codex", "config.toml", Path(self.row["account"]) / "config.toml", b'[projects."/c"]\ntrust_level = "trusted"\n', bytes, None),
+                ("pi", "trust.json", Path(self.row["account"]) / "trust.json", b'{"/c": true}\n', bytes, None))
+        (self.account / "lane-host").mkdir()
+        (self.account / "lane-host/.claude.json").write_bytes(rows[0][3])
+        fresh = self.create("--reuse")
+        self.assertEqual(fresh.returncode, 0, fresh.stderr)
+        self.assertEqual(json.loads((self.root / ".claude.json").read_bytes()), json.loads(rows[0][3]))
+        (self.root / ".claude.json").write_bytes(seed)
+        for harness, name, landed, data, parse, expected in rows:
+            with self.subTest(harness=harness):
+                (self.account / "lane-host" / name).write_bytes(data)
+                result = self.create("--reuse", harness=harness)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(parse(landed.read_bytes()), expected or data)
+        # The controls: a provider without the placement lands nothing, and
+        # one that puts the Claude snapshot whole drops the host's own keys.
+        original = self.script.read_text()
+        fragment = "    if approval.exists():"
+        self.assertEqual(original.count(fragment), 1)
+        self.script.write_text(original.replace(fragment, "    if False:"))
+        for harness, _, landed, *_ in rows:
+            with self.subTest(control=harness):
+                landed.unlink()
+                self.assertEqual(self.create("--reuse", harness=harness).returncode, 0)
+                self.assertFalse(landed.exists())
+        fragment = "            data = json.dumps(claude_state("
+        self.assertEqual(original.count(fragment), 1)
+        self.script.write_text(original.replace(fragment, "            data = data or json.dumps(claude_state("))
+        (self.root / ".claude.json").write_bytes(seed)
+        self.assertEqual(self.create("--reuse").returncode, 0)
+        self.assertNotIn("userID", json.loads((self.root / ".claude.json").read_bytes()))
+        # A merge that parses the absent file fails a fresh host's create.
+        fragment = "{} if existing is None else json.loads(existing)"
+        self.assertEqual(original.count(fragment), 1)
+        self.script.write_text(original.replace(fragment, "json.loads(existing)"))
+        (self.root / ".claude.json").unlink()
+        self.assertNotEqual(self.create("--reuse").returncode, 0)
+        self.assertFalse((self.root / ".claude.json").exists())
+
     def test_fresh_clone_uses_host_github_protocol(self):
         self.assertEqual(self.create(SSH_TEST_GIT_PROTOCOL="ssh").returncode, 0)
         self.assertIn("gh repo clone owner/repo " + self.row["clone"], (self.root / "calls").read_text())

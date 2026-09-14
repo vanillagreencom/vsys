@@ -207,7 +207,7 @@ assert_eq "$(cmp -s "$MUTANT_DIR/orch/scripts/oversee-watch" "$REPO_ROOT/skills/
   "differs" "control: the mutant really stops the pass consulting its baseline row"
 
 UNCHECKED="$MUTANT_DIR/orch/scripts/oversee-watch-unchecked"
-sed 's@^  \[\[ "\$hosted_item" -eq 1 \]\] || die hosted-unknown-item .*$@  :@' \
+sed 's@^    \[\[ "\$hosted_item" -eq 1 \]\] || die hosted-unknown-item .*$@    :@' \
   "$REPO_ROOT/skills/orch/scripts/oversee-watch" > "$UNCHECKED"
 chmod +x "$UNCHECKED"
 assert_eq "$(cmp -s "$UNCHECKED" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" \
@@ -268,6 +268,27 @@ err="$TMP_ROOT/mutant-b"
 out="$(WATCH_BIN="$MUTANT_DIR/orch/scripts/oversee-watch" run_watch -- --max-loops 1 --item KEN-12 2>"$err")"
 assert_eq "$(head -1 <<<"$out")" "EVENT lane-question KEN-12 $ID" \
   "control: without the row a re-run reports the same ask again" "$err"
+
+# Sent from a linked worktree with no --root, the note lands in the main
+# checkout's overseer mailbox, which the watch reads with no --item at all.
+new_case mail_owner_note
+git -C "$CASE_REPO_ROOT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m seed
+git -C "$CASE_REPO_ROOT" worktree add -q --detach "$TMP_ROOT/linked"
+printf 'Hold KEN-7 for the owner.\n' > "$TMP_ROOT/note.txt"
+(cd "$TMP_ROOT/linked" && "$LANE_MAIL" send --item overseer --directive --file "$TMP_ROOT/note.txt")
+NOTE="$(jq -r .id "$CASE_REPO_ROOT/tmp/lane-mail/overseer/to-lane.jsonl" 2>/dev/null)" || NOTE=unsent
+err="$TMP_ROOT/owner-a"
+out="$(run_watch -- --max-loops 1 2>"$err")"
+assert_eq "$(head -1 <<<"$out")" "EVENT owner-note $NOTE" \
+  "a note to the overseer emits owner-note naming its id" "$err"
+assert_contains "$out" "Hold KEN-7 for the owner." "the note's text follows its event line" "$err"
+err="$TMP_ROOT/owner-b"
+out="$(run_watch -- --max-loops 1 2>"$err")"
+assert_eq "$(head -1 <<<"$out")" "$HEARTBEAT" "the same note is not reported twice" "$err"
+err="$TMP_ROOT/owner-c"
+out="$(run_watch LINEAR_TEAM -- --max-loops 1 --since 2026-01-01T00:00:00Z 2>"$err")"
+assert_eq "$(head -1 <<<"$out")" "EVENT heartbeat loops=1 interval=0s since=2026-01-01T00:00:00Z" \
+  "a watch for another fleet's --since does not report the note again" "$err"
 
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
