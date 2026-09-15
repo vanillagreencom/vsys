@@ -101,13 +101,6 @@ try {
   }
   const full = await measure(100);
   const bounded = await measure(defaults().scratchDutyPercent);
-  const totals = [full, bounded].map((r) => r.scan.scratch[0]?.bytes ?? null);
-  if (totals[0] === null || totals[0] !== totals[1])
-    throw new Error(
-      `A bounded scan read a different total than a full one: ${JSON.stringify(totals)}`,
-    );
-  if (full.scan.errors.length || bounded.scan.errors.length)
-    throw new Error(JSON.stringify([full.scan.errors, bounded.scan.errors]));
   // A slice this tree cannot fit inside, on any machine that runs the check:
   // the full-thread scan just measured how long the same traversal takes, so
   // an eighth of it is a slice the traversal has to cross. The one-millisecond
@@ -117,6 +110,18 @@ try {
     defaults().scratchDutyPercent,
     Math.max(1, full.elapsedMs / 8),
   );
+  // A tree this benchmark could not read makes every figure below it
+  // meaningless, so one rule covers all three scans.
+  const unread = [full, bounded, held].flatMap((r) => r.scan.errors);
+  if (unread.length)
+    throw new Error(
+      `A scan of the benchmark tree reported a source error: ${JSON.stringify(unread)}`,
+    );
+  const totals = [full, bounded].map((r) => r.scan.scratch[0]?.bytes ?? null);
+  if (totals[0] === null || totals[0] !== totals[1])
+    throw new Error(
+      `A bounded scan read a different total than a full one: ${JSON.stringify(totals)}`,
+    );
   // A bounded scan asks for rest, and it takes the rest it asked for. Nothing
   // else in the check contract can see either. Working time sits on top of
   // the rests, so the measured elapsed time runs well clear of this floor; a
@@ -129,8 +134,6 @@ try {
     throw new Error(
       `A scan asked for ${held.restedMs} ms of rest and finished in ${held.elapsedMs} ms`,
     );
-  if (held.scan.errors.length)
-    throw new Error(JSON.stringify(held.scan.errors));
   console.log(
     JSON.stringify({
       sessions,
