@@ -23,6 +23,6 @@
 
 **Revisit When**: A configured root grows large enough that a bounded traversal cannot finish within the reader's tolerance, or a kernel interface reports directory sizes without a traversal.
 
-**Verification**: `bun run bench:scratch` reports elapsed time and processor time for a full-thread scan and a bounded one over one tree and checks that both read one total. `src/collect/scratch-scan.test.ts` checks the rest a slice earns and that a paced traversal returns its thread; `src/collect/scratch.test.ts` checks eligibility from completion.
+**Verification**: `bun run bench:scratch`, which is in the check contract. It reports elapsed and processor time for a full-thread scan and a bounded one over one tree, and it refuses a bounded scan that read a different total, asked for no rest, or finished in less time than the rest it asked for. The invariants in [storage architecture](../architecture/storage.md) name the tests, and are the one place those citations are kept.
 
 **References**: `src/collect/scratch.ts`, `src/collect/scratch-scan.ts`, `src/collect/scratch-worker.ts`, [storage architecture](../architecture/storage.md)

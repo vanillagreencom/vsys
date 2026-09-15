@@ -11,9 +11,8 @@ export interface ScratchScan {
 }
 
 /**
- * How much of a thread the traversal may hold, and how long it may hold it
- * before it lets go. At a `dutyPercent` of 100 the rest a slice earns is
- * zero, so the traversal runs unbroken.
+ * `sliceMs` is the granularity the share is enforced at; `restMs` owns what a
+ * spent slice earns at `dutyPercent`.
  */
 export interface ScanBudget {
   sliceMs: number;
@@ -30,7 +29,8 @@ export interface PaceClock {
   sleep: (ms: number) => Promise<void>;
 }
 
-const timerPace: PaceClock = {
+/** The pace the program keeps: the monotonic clock and a real timer. */
+export const timerPace: PaceClock = {
   now: () => performance.now(),
   sleep: (ms) =>
     new Promise((resolve) => {

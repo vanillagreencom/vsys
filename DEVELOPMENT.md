@@ -16,10 +16,11 @@ A maintainer works on the collector that reads the machine, the model that decid
 ## Constraints
 
 - The project pins its Bun version in `.bun-version` and carries that runtime as a development dependency, so the repository's own Bun is the one to run. Where the system Bun differs, use `PATH="$PWD/node_modules/.bin:$PATH" python3 scripts/ci.py`.
-- `scripts/ci.py` refuses to run unless `package.json` defines a nonempty `lint`, `typecheck`, `test` and `build` script and `bun.lock` is committed. It installs with `--frozen-lockfile`, so a lockfile behind `package.json` fails rather than resolving.
+- `scripts/ci.py` refuses to run unless `package.json` defines a nonempty script for each name in its own `CHECKS`, and `bun.lock` is committed. It installs with `--frozen-lockfile`, so a lockfile behind `package.json` fails rather than resolving. It deletes the files in its `ARTIFACTS` before the checks and requires each one back, present and not empty, after them, so only this run's build can satisfy it.
 - A new setting that collection reads must be added to `collectionKeys` in `src/collect/settings.ts`. Leaving it out compiles only because collection never reads it, and the runtime would then not rebuild the collector when it changes.
 - A display setting or a notification rule must stay out of that list, because rebuilding the collector discards the counters and alert state a sample compares against.
-- Scratch traversal runs in a worker. Bun's bundler does not follow the worker's URL, so `bun run build` emits `src/collect/scratch-worker.ts` as a second entry point beside `dist/main.js`, and `src/collect/scratch.ts` resolves whichever of the two spellings is on disk. A build that emits only the entry point leaves the dashboard unable to measure scratch.
+- Scratch traversal runs in a worker. Bun's bundler does not follow the worker's URL, so `bun run build` emits `src/collect/scratch-worker.ts` as a second entry point beside `dist/main.js`, and `src/collect/scratch.ts` resolves whichever of the two spellings is on disk. A build that emits only the entry point leaves the dashboard unable to measure scratch, and `scripts/ci.py` fails on exactly that.
+- The traversal's processor bound lives in a timer on a worker thread, where a unit test stages the clock and no test can see the wait. `bun run bench:scratch` is the instrument that measures it, which is why it is in the check contract rather than beside the other benchmarks alone.
 - Docs change in the same commit as the code they describe. The `doc-drift-check` hook reads the `Covers:` line of each file in `docs/architecture/` and shows a notice when covered code changed without them.
 
 ## Run and debug
@@ -30,7 +31,7 @@ bun src/main.ts --help        # options
 bun src/main.ts --once        # one JSON snapshot, exit 2 on source errors
 bun src/main.ts --markdown --once
 bun src/main.ts --config PATH # another TOML settings file
-python3 scripts/ci.py         # install, lint, types, tests, build
+python3 scripts/ci.py         # install, lint, types, tests, build, scratch bound
 bun test src/                 # the application suites alone
 bun run build                 # dist/main.js, run it with Bun from the project directory
 ```
@@ -44,7 +45,7 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 - `src/store/*.test.ts`: checkpoint replay, retention, the SQLite schema guard, the load-path migration and the timeline event derivation.
 - `src/ui/*.test.tsx`: the mounted shell through OpenTUI's terminal test renderer. These drive the real screens from the keyboard and the mouse and read the rendered frame back.
 - `src/main.test.ts`: the CLI in terminals created for the test, including that quit and a failed shutdown each restore their own terminal settings.
-- `scripts/ci_test.py`: that the CI runner rejects incomplete configuration and a failed command. Run it with `python3 -m unittest discover -s scripts -p '*_test.py' -v`.
+- `scripts/ci_test.py`: that the CI runner rejects incomplete configuration, a failed command, and a build that emitted only one of its entry points. It reads the runner's own `CHECKS` and `ARTIFACTS`, so a check added to one is not missing from the other. Run it with `python3 -m unittest discover -s scripts -p '*_test.py' -v`.
 
 ## Benchmarks and what they do not prove
 

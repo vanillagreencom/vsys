@@ -2,12 +2,19 @@ import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { defaults } from "../config/config";
 import { volumesByDevice } from "../model/integrity";
+import type { Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
 import { osc52 } from "./clipboard";
 import { type KeyHandler, KeyProvider } from "./keys";
-import { itemPath, Storage, storageItems, volumeLevel } from "./storage-screen";
+import {
+  itemPath,
+  Storage,
+  scratchSummary,
+  storageItems,
+  volumeLevel,
+} from "./storage-screen";
 import { ui } from "./theme";
 
 test("Storage lists filesystems, then scrubs, then scratch directories, then sessions", () => {
@@ -648,6 +655,78 @@ test("the copy key on a filesystem copies one line that removes its build output
     expect(t.written.length).toBe(1);
   } finally {
     await t.close();
+  }
+});
+
+test("the scratch heading and its empty line are decided together", () => {
+  const row = (path: string) => ({
+    path,
+    bytes: 1,
+    age: 0,
+    modifiedAt: null,
+    error: null,
+  });
+  const rows: [
+    string,
+    string[],
+    Partial<Snapshot["storage"]>,
+    string,
+    string | null,
+  ][] = [
+    // No roots and no reading: the section says so, and says it once.
+    [
+      "unconfigured",
+      [],
+      { scratchTime: 1000 },
+      "measured ",
+      "No scratch directory is configured.",
+    ],
+    // Roots set and the first traversal running. A reader who set them is
+    // never told that none are set.
+    [
+      "first scan",
+      ["/scratch"],
+      { scratchPending: true },
+      "measuring",
+      "The configured scratch directories have not been measured yet.",
+    ],
+    [
+      "first scan failed",
+      ["/scratch"],
+      {},
+      "not measured yet",
+      "The configured scratch directories have not been measured yet.",
+    ],
+    // The roots were cleared and the rows measured under them are still on
+    // the screen, which is the frame between a settings change and its first
+    // sample. Rows present are a reading, so no line denies them.
+    [
+      "cleared with stale rows",
+      [],
+      { scratch: [row("/scratch")], scratchTime: 1000 },
+      "measured ",
+      null,
+    ],
+    [
+      "session rows only",
+      [],
+      { sessions: [row("/scratch/s")] },
+      "not measured yet",
+      null,
+    ],
+  ];
+  for (const [name, scratchDirs, storage, state, empty] of rows) {
+    const s = emptySnapshot();
+    const summary = scratchSummary(
+      { ...defaults(), scratchDirs },
+      { ...s.storage, ...storage },
+    );
+    // The measured state carries a clock reading, so the row pins its words.
+    expect({ name, states: summary.state.startsWith(state), empty }).toEqual({
+      name,
+      states: true,
+      empty: summary.empty,
+    });
   }
 });
 

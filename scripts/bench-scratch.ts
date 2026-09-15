@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkerScan } from "../src/collect/scratch";
-import type { ScratchScan } from "../src/collect/scratch-scan";
+import {
+  type PaceClock,
+  type ScratchScan,
+  scanScratch,
+  timerPace,
+} from "../src/collect/scratch-scan";
 import { defaults } from "../src/config/config";
 
 const sessions = 200;
@@ -39,6 +44,46 @@ async function measure(dutyPercent: number): Promise<{
   }
 }
 
+/**
+ * The bound itself, measured where the rests can be counted. The pace runs on
+ * this thread through the shipped clock, and every rest it asks for is
+ * recorded before that clock takes it. A scan cannot finish in less time than
+ * the rests it asked for, so a pace that asks and does not wait, and a timer
+ * that ignores the duration it was given, both show up here as an elapsed
+ * time far under the rest asked for.
+ */
+async function bound(dutyPercent: number): Promise<{
+  dutyPercent: number;
+  elapsedMs: number;
+  restedMs: number;
+  rests: number;
+  scan: ScratchScan;
+}> {
+  const c = { ...defaults(), scratchDirs: [root] };
+  const asked: number[] = [];
+  const clock: PaceClock = {
+    now: timerPace.now,
+    sleep: async (ms) => {
+      asked.push(ms);
+      await timerPace.sleep(ms);
+    },
+  };
+  const started = performance.now();
+  const scan = await scanScratch(
+    c,
+    Date.now(),
+    { sliceMs: 10, dutyPercent },
+    clock,
+  );
+  return {
+    dutyPercent,
+    elapsedMs: performance.now() - started,
+    restedMs: asked.reduce((sum, ms) => sum + ms, 0),
+    rests: asked.length,
+    scan,
+  };
+}
+
 try {
   for (let s = 0; s < sessions; s++) {
     const dir = join(root, `session-${s}`);
@@ -58,6 +103,21 @@ try {
     );
   if (full.scan.errors.length || bounded.scan.errors.length)
     throw new Error(JSON.stringify([full.scan.errors, bounded.scan.errors]));
+  const held = await bound(defaults().scratchDutyPercent);
+  // A bounded scan asks for rest, and it takes the rest it asked for. Nothing
+  // else in the check contract can see either. Working time sits on top of
+  // the rests, so the measured elapsed time runs well clear of this floor; a
+  // scan that skipped its rests lands at a fraction of it.
+  if (held.restedMs <= 0)
+    throw new Error(
+      `A scan at ${held.dutyPercent} percent asked for no rest across ${held.rests} slices`,
+    );
+  if (held.elapsedMs < held.restedMs * 0.95)
+    throw new Error(
+      `A scan asked for ${held.restedMs} ms of rest and finished in ${held.elapsedMs} ms`,
+    );
+  if (held.scan.errors.length)
+    throw new Error(JSON.stringify(held.scan.errors));
   console.log(
     JSON.stringify({
       sessions,
@@ -76,7 +136,11 @@ try {
       // than more.
       stretch: bounded.elapsedMs / full.elapsedMs,
       aimedStretch: 100 / bounded.dutyPercent,
-      rested: bounded.elapsedMs > full.elapsedMs,
+      rested: {
+        rests: held.rests,
+        restedMs: held.restedMs,
+        elapsedMs: held.elapsedMs,
+      },
     }),
   );
 } finally {

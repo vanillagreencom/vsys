@@ -8,6 +8,11 @@ import sys
 
 
 ARTIFACTS = ("dist/main.js", "dist/scratch-worker.js")
+# The scratch scan's processor bound lives in a timer and a worker thread, so
+# no unit test can see it: a staged clock records what the pace asks for and
+# returns at once. bench:scratch is the one instrument that measures the rest
+# taken, and it is in this list so the contract fails when the bound is gone.
+CHECKS = ("lint", "typecheck", "test", "build", "bench:scratch")
 
 
 def main() -> int:
@@ -21,8 +26,7 @@ def main() -> int:
 
     package = json.loads(manifest.read_text())
     scripts = package.get("scripts", {})
-    checks = ("lint", "typecheck", "test", "build")
-    for check in checks:
+    for check in CHECKS:
         command = scripts.get(check)
         if not isinstance(command, str) or not command.strip():
             raise ValueError(f"package.json must define a nonempty {check} script")
@@ -37,7 +41,7 @@ def main() -> int:
     # removed first, so only this build can satisfy the requirement.
     for name in ARTIFACTS:
         Path(name).unlink(missing_ok=True)
-    for check in checks:
+    for check in CHECKS:
         subprocess.run(["bun", "run", check], check=True)
     for name in ARTIFACTS:
         artifact = Path(name)

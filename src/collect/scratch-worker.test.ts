@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { defaults } from "../config/config";
 import { fixture } from "../test/fixture";
-import { ScanCancelled, WorkerScan } from "./scratch";
+import { ScanCancelled, type ScanThread, WorkerScan } from "./scratch";
 import type { ScanReply, ScanRequest, ScratchScan } from "./scratch-scan";
 
 const full = { sliceMs: 10, dutyPercent: 100 };
@@ -17,11 +17,11 @@ const empty = (time: number): ScratchScan => ({
 });
 
 /** A scan thread the test drives, so no case depends on a real traversal. */
-class Staged {
+class Staged implements ScanThread {
   sent: ScanRequest[] = [];
   stopped = 0;
-  onmessage?: (event: MessageEvent<ScanReply>) => void;
-  onerror?: (event: ErrorEvent) => void;
+  onmessage: ((event: MessageEvent<ScanReply>) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
   private ended?: () => void;
   postMessage(request: ScanRequest): void {
     this.sent.push(request);
@@ -29,7 +29,7 @@ class Staged {
   terminate(): void {
     this.stopped++;
   }
-  addEventListener(_kind: string, handler: () => void): void {
+  addEventListener(_kind: "close", handler: () => void): void {
     this.ended = handler;
   }
   /** Answer the scan at `index` of the ones this thread was sent. */
@@ -52,7 +52,7 @@ function staged() {
   const runner = new WorkerScan(() => {
     const thread = new Staged();
     threads.push(thread);
-    return thread as unknown as Worker;
+    return thread;
   });
   return { runner, threads };
 }
