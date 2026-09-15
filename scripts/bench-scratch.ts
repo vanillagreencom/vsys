@@ -52,8 +52,12 @@ async function measure(dutyPercent: number): Promise<{
  * that ignores the duration it was given, both show up here as an elapsed
  * time far under the rest asked for.
  */
-async function bound(dutyPercent: number): Promise<{
+async function bound(
+  dutyPercent: number,
+  sliceMs: number,
+): Promise<{
   dutyPercent: number;
+  sliceMs: number;
   elapsedMs: number;
   restedMs: number;
   rests: number;
@@ -72,11 +76,12 @@ async function bound(dutyPercent: number): Promise<{
   const scan = await scanScratch(
     c,
     Date.now(),
-    { sliceMs: 10, dutyPercent },
+    { sliceMs, dutyPercent },
     clock,
   );
   return {
     dutyPercent,
+    sliceMs,
     elapsedMs: performance.now() - started,
     restedMs: asked.reduce((sum, ms) => sum + ms, 0),
     rests: asked.length,
@@ -103,14 +108,22 @@ try {
     );
   if (full.scan.errors.length || bounded.scan.errors.length)
     throw new Error(JSON.stringify([full.scan.errors, bounded.scan.errors]));
-  const held = await bound(defaults().scratchDutyPercent);
+  // A slice this tree cannot fit inside, on any machine that runs the check:
+  // the full-thread scan just measured how long the same traversal takes, so
+  // an eighth of it is a slice the traversal has to cross. The one-millisecond
+  // floor keeps each rest well above what a timer can resolve, which is what
+  // separates a scan that rested from one that did not.
+  const held = await bound(
+    defaults().scratchDutyPercent,
+    Math.max(1, full.elapsedMs / 8),
+  );
   // A bounded scan asks for rest, and it takes the rest it asked for. Nothing
   // else in the check contract can see either. Working time sits on top of
   // the rests, so the measured elapsed time runs well clear of this floor; a
   // scan that skipped its rests lands at a fraction of it.
   if (held.restedMs <= 0)
     throw new Error(
-      `A scan at ${held.dutyPercent} percent asked for no rest across ${held.rests} slices`,
+      `A scan at ${held.dutyPercent} percent over ${held.sliceMs} ms slices asked for no rest across ${held.rests} of them`,
     );
   if (held.elapsedMs < held.restedMs * 0.95)
     throw new Error(
@@ -137,6 +150,7 @@ try {
       stretch: bounded.elapsedMs / full.elapsedMs,
       aimedStretch: 100 / bounded.dutyPercent,
       rested: {
+        sliceMs: held.sliceMs,
         rests: held.rests,
         restedMs: held.restedMs,
         elapsedMs: held.elapsedMs,

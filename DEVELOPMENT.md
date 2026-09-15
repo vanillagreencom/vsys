@@ -20,7 +20,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - A new setting that collection reads must be added to `collectionKeys` in `src/collect/settings.ts`. Leaving it out compiles only because collection never reads it, and the runtime would then not rebuild the collector when it changes.
 - A display setting or a notification rule must stay out of that list, because rebuilding the collector discards the counters and alert state a sample compares against.
 - Scratch traversal runs in a worker. Bun's bundler does not follow the worker's URL, so `bun run build` emits `src/collect/scratch-worker.ts` as a second entry point beside `dist/main.js`, and `src/collect/scratch.ts` resolves whichever of the two spellings is on disk. A build that emits only the entry point leaves the dashboard unable to measure scratch, and `scripts/ci.py` fails on exactly that.
-- The traversal's processor bound lives in a timer on a worker thread, where a unit test stages the clock and no test can see the wait. `bun run bench:scratch` is the instrument that measures it, which is why it is in the check contract rather than beside the other benchmarks alone.
+- The traversal's processor bound lives in a timer on a worker thread, where a unit test stages the clock and no test can see the wait. `bun run bench:scratch` measures it, and the Benchmarks section below says what it proves and what it refuses.
 - Docs change in the same commit as the code they describe. The `doc-drift-check` hook reads the `Covers:` line of each file in `docs/architecture/` and shows a notice when covered code changed without them.
 
 ## Run and debug
@@ -51,7 +51,11 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 
 `bun run bench` collects a fixture of 50 scopes and 2000 processes six times, discards the first, and reports the per-sample and per-phase timings against a 20 ms target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
 
-`bun run bench:scratch` builds a scratch tree and measures two scans of it, discarding a warm-up before each, then reports elapsed time and whole-process processor time for a scan that holds the whole thread and one held to the default share. It checks that both read one total. Its processor figure covers the whole process, so it includes the main thread receiving the reading, and its tree sits in the page cache, so the result does not establish the cost of a cold traversal.
+`bun run bench:scratch` builds a scratch tree and measures three scans of it. Two run on a scan thread, a warm-up discarded before each, and report elapsed time and whole-process processor time for a scan that holds the whole thread and one held to the default share. The third runs on the caller's thread through the shipped pace, wrapped so every rest the pace asks for is recorded before the timer takes it, and reports the slice it used, the rests it took and their total.
+
+It is the only instrument that can see the processor bound, which is why it is in the check contract rather than beside the other benchmarks alone. It refuses three things: a bounded scan that read a different total than the full-thread one, a bounded scan that asked for no rest, and one that finished in under 95 percent of the rest it asked for. Working time sits on top of the rests, so a scan that took them runs well clear of that floor and one that skipped them lands at a fraction of it. The slice is an eighth of the measured full-thread scan, so the traversal crosses one whatever the machine.
+
+Its processor figure covers the whole process, so it includes the main thread receiving the reading, and its tree sits in the page cache, so the result does not establish the cost of a cold traversal.
 
 `bun run bench:history` fills the configured history window while replacing a process at each sample, then compares selected replayed snapshots against their originals across checkpoint boundaries. It reports incomplete retention and memory use. Its generated workload does not establish a memory bound for every command line or process mix.
 

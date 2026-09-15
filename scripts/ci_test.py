@@ -69,14 +69,28 @@ class ApplicationChecks(unittest.TestCase):
                 self.assertNotEqual(self.run_ci().returncode, 0)
                 marker.unlink()
 
+    def test_contract_names_every_check_and_artifact(self):
+        # Every other expectation here is derived from these two, so their
+        # contents are asserted once. Dropping a check leaves the thing it
+        # gates unmeasured with the rest of the suite green.
+        self.assertEqual(CHECKS, ("lint", "typecheck", "test", "build", "bench:scratch"))
+        self.assertEqual(ARTIFACTS, ("dist/main.js", "dist/scratch-worker.js"))
+
     def test_missing_or_empty_script_fails(self):
         for check in CHECKS:
             for value in (None, "", " ", False):
                 with self.subTest(check=check, value=value):
-                    scripts = {name: "fixture" for name in ("lint", "typecheck", "test", "build")}
+                    scripts = {name: "fixture" for name in CHECKS}
                     scripts[check] = value
                     self.package(scripts)
-                    self.assertNotEqual(self.run_ci().returncode, 0)
+                    result = self.run_ci()
+                    self.assertNotEqual(result.returncode, 0)
+                    # The named check is the only invalid entry, so a subtest
+                    # that passes on another check's absence is not a pass.
+                    self.assertIn(
+                        f"package.json must define a nonempty {check} script",
+                        result.stderr,
+                    )
                     self.assertFalse(self.commands.exists())
 
     def test_missing_lockfile_fails(self):
