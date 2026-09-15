@@ -28,9 +28,11 @@ function sample(i: number): Sample {
  * that back, because the alternative is a budget wide enough to evict on.
  */
 function unsealed(archive: Archive): number {
-  const chunks = (archive as unknown as { chunks: { open: string[] }[] })
-    .chunks;
-  return chunks.slice(0, -1).reduce((n, c) => n + c.open.length, 0);
+  // Element access rather than a cast, so a rename of the field or a change
+  // to what a checkpoint holds is a compile error here and not a throw. The
+  // dotted form the lint asks for does not compile: the field is private.
+  // biome-ignore lint/complexity/useLiteralKeys: reads a private field
+  return archive["chunks"].slice(0, -1).reduce((n, c) => n + c.open.length, 0);
 }
 
 /** Append samples `from` up to but not including `to`, and keep each one. */
@@ -167,11 +169,6 @@ test("replay and lane charts read a sealed line at the line it is", () => {
   // inflated segment. That conversion is exercised only where a whole sealed
   // segment lies before the line asked for, so every case here fills one
   // checkpoint past its open-run limit before it reads anything back.
-  const build = (): Archive => {
-    const archive = new Archive();
-    extend(archive, 0, 300);
-    return archive;
-  };
   const archive = new Archive();
   const expected = extend(archive, 0, 300);
   // Backwards first, which drops the cursor and rebuilds it from the base
@@ -183,12 +180,14 @@ test("replay and lane charts read a sealed line at the line it is", () => {
     expect(archive.at(time)).toEqual(snapshot);
 
   const id = laneSnapshot().id;
-  const warm = build();
+  const warm = new Archive();
+  extend(warm, 0, 300);
   // A first read caches the chart up to the newest sample; later samples seal
   // the run that read left open, so the second read starts inside a segment.
   warm.laneWindow(id, 0, 150000);
   extend(warm, 300, 380);
-  const cold = build();
+  const cold = new Archive();
+  extend(cold, 0, 300);
   extend(cold, 300, 380);
   const series = warm.laneWindow(id, 0, 380000);
   expect(series).toHaveLength(380);
