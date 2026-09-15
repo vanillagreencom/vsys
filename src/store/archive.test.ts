@@ -22,17 +22,33 @@ function sample(i: number): Sample {
 }
 
 /**
- * Lines held by any checkpoint but the one still taking them. Only that last
- * checkpoint may hold lines it has not sealed; every earlier one was sealed
- * as the archive moved past it, and reaching in is the shortest way to read
- * that back, because the alternative is a budget wide enough to evict on.
+ * The archive's checkpoints. Reaching in is the shortest way to read back what
+ * the cases below claim: the alternative to counting a checkpoint's lines is a
+ * budget wide enough to evict on, and the alternative to counting its segments
+ * is a literal that drifts from the archive it was derived on.
  */
-function unsealed(archive: Archive): number {
+function checkpoints(archive: Archive) {
   // Element access rather than a cast, so a rename of the field or a change
   // to what a checkpoint holds is a compile error here and not a throw. The
   // dotted form the lint asks for does not compile: the field is private.
   // biome-ignore lint/complexity/useLiteralKeys: reads a private field
-  return archive["chunks"].slice(0, -1).reduce((n, c) => n + c.open.length, 0);
+  return archive["chunks"];
+}
+
+/**
+ * Lines held by any checkpoint but the one still taking them. Only that last
+ * checkpoint may hold lines it has not sealed; every earlier one was sealed as
+ * the archive moved past it.
+ */
+function unsealed(archive: Archive): number {
+  return checkpoints(archive)
+    .slice(0, -1)
+    .reduce((n, c) => n + c.open.length, 0);
+}
+
+/** Sealed segments across every checkpoint, which is what one walk inflates. */
+function segments(archive: Archive): number {
+  return checkpoints(archive).reduce((n, c) => n + c.segments.length, 0);
 }
 
 /** Append samples `from` up to but not including `to`, and keep each one. */
@@ -226,10 +242,10 @@ test("reading every retained sample inflates each sealed segment once", () => {
     spy.mockRestore();
   }
   expect(rows).toBe(400);
-  // Five sealed segments, and one more inflation each time the walk crosses
-  // from the segment it holds into the next, which it can do once per
-  // segment. Ten is that ceiling; four hundred is a reader per sample.
-  expect(inflations).toBeLessThanOrEqual(10);
+  // Crossing into a segment is the inflation, so a forward walk pays one per
+  // segment and the archive it just built says how many that is. A reader
+  // rebuilt per sample pays four hundred.
+  expect(inflations).toBe(segments(archive));
 });
 test("a checkpoint that rolled over is charged what it compressed to", () => {
   // A sealed run is compressed text, not the open text it was charged as
