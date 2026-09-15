@@ -175,30 +175,100 @@ function apply(before: Json | undefined, change: Change): Json {
   }
 }
 
+/** One immutable run of lines, compressed once when the run was sealed. */
+interface Segment {
+  data: Uint8Array;
+  count: number;
+}
+/**
+ * A checkpoint holds a base snapshot and one delta line per later sample.
+ * Lines arrive in `open` and move into a `Segment` once, so no append ever
+ * compresses a line a previous append already compressed.
+ */
 interface Chunk {
   times: number[];
-  data: Uint8Array;
-  revision: number;
+  segments: Segment[];
+  sealedBytes: number;
+  open: string[];
+  openLength: number;
+  length: number;
 }
 interface Active {
   chunk: Chunk;
-  base: string;
-  changes: string[];
-  length: number;
   previous: Json;
 }
 interface Cursor {
   chunk: Chunk;
-  revision: number;
-  lines: string[];
   index: number;
   value: Json;
 }
 interface LaneCursor {
-  revision: number;
   index: number;
   table: Json;
   samples: LaneSample[];
+}
+
+/** Samples per checkpoint, after which a fresh base replaces the delta chain. */
+const chunkSamples = 300;
+/** Checkpoint text, the other rollover bound, in UTF-16 code units. */
+const chunkLimit = 16 * 1024 * 1024;
+/**
+ * Uncompressed text a checkpoint may hold before it seals, in UTF-16 code
+ * units. It bounds both the live memory an open checkpoint costs and the
+ * input of one seal, because a seal compresses this run and nothing else.
+ */
+const openLimit = 1024 * 1024;
+
+function chunkBytes(chunk: Chunk): number {
+  // An open line is text, so it is charged at the two bytes a UTF-16 code
+  // unit costs, not at the bytes it would take once compressed.
+  return chunk.sealedBytes + chunk.openLength * 2;
+}
+
+/** Compress the open run once. The lines it held are never compressed again. */
+function seal(chunk: Chunk): void {
+  if (!chunk.open.length) return;
+  const data = Bun.gzipSync(chunk.open.join("\n"));
+  chunk.segments.push({ data, count: chunk.open.length });
+  chunk.sealedBytes += data.byteLength;
+  chunk.open = [];
+  chunk.openLength = 0;
+}
+
+function append(chunk: Chunk, time: number, line: string): void {
+  if (chunk.openLength >= openLimit) seal(chunk);
+  chunk.open.push(line);
+  chunk.openLength += line.length + 1;
+  chunk.length += line.length + 1;
+  chunk.times.push(time);
+}
+
+/**
+ * The lines from `from` to the end of the checkpoint, decompressing only the
+ * segments those lines span. A reader that already holds an earlier line — the
+ * replay cursor on every live sample — reaches the newest line without
+ * decompressing anything, because the newest lines are the open ones.
+ */
+function linesFrom(
+  chunk: Chunk,
+  from: number,
+): { start: number; lines: string[] } {
+  let start = 0;
+  const parts: string[][] = [];
+  for (const segment of chunk.segments) {
+    if (!parts.length && start + segment.count <= from) {
+      start += segment.count;
+      continue;
+    }
+    parts.push(
+      new TextDecoder()
+        .decode(Bun.gunzipSync(new Uint8Array(segment.data)))
+        .split("\n"),
+    );
+  }
+  if (!parts.length) return { start, lines: chunk.open };
+  parts.push(chunk.open);
+  return { start, lines: parts.flat() };
 }
 
 /** Bounded checkpoints retain exact snapshots without repeating static fields. */
@@ -217,37 +287,41 @@ export class Archive {
     const value = encode(json);
     if (
       !this.active ||
-      this.active.chunk.times.length >= 300 ||
-      this.active.length >= 16 * 1024 * 1024
+      this.active.chunk.times.length >= chunkSamples ||
+      this.active.chunk.length >= chunkLimit
     ) {
+      // The outgoing checkpoint takes no further lines, so its open run is
+      // compressed now and the checkpoint never allocates again.
+      if (this.active) {
+        this.bytes -= chunkBytes(this.active.chunk);
+        seal(this.active.chunk);
+        this.bytes += chunkBytes(this.active.chunk);
+      }
       const base = JSON.stringify(value);
-      const data = Bun.gzipSync(base);
-      const chunk = { times: [time], data, revision: 0 };
-      this.chunks.push(chunk);
-      this.bytes += data.byteLength;
-      this.active = {
-        chunk,
-        base,
-        changes: [],
-        length: base.length,
-        previous: value,
+      const chunk: Chunk = {
+        times: [],
+        segments: [],
+        sealedBytes: 0,
+        open: [],
+        openLength: 0,
+        length: 0,
       };
+      append(chunk, time, base);
+      this.chunks.push(chunk);
+      this.bytes += chunkBytes(chunk);
+      this.active = { chunk, previous: value };
     } else {
       const a = this.active;
       const change = JSON.stringify(difference(a.previous, value) ?? null);
-      a.changes.push(change);
-      a.length += change.length + 1;
       a.previous = value;
-      this.bytes -= a.chunk.data.byteLength;
-      a.chunk.data = Bun.gzipSync(`${a.base}\n${a.changes.join("\n")}`);
-      a.chunk.times.push(time);
-      a.chunk.revision++;
-      this.bytes += a.chunk.data.byteLength;
+      this.bytes -= chunkBytes(a.chunk);
+      append(a.chunk, time, change);
+      this.bytes += chunkBytes(a.chunk);
     }
     while (this.bytes > this.maxBytes && this.chunks.length > 1) {
       const old = this.chunks.shift();
       if (!old) throw new Error("Archive has no oldest checkpoint");
-      this.bytes -= old.data.byteLength;
+      this.bytes -= chunkBytes(old);
       this.shortened = true;
       if (this.cursor?.chunk === old) this.cursor = undefined;
       for (const cache of this.laneCache.values()) cache.delete(old);
@@ -262,7 +336,7 @@ export class Archive {
     ) {
       const old = this.chunks.shift();
       if (!old) throw new Error("Archive has no expired checkpoint");
-      this.bytes -= old.data.byteLength;
+      this.bytes -= chunkBytes(old);
       if (this.active?.chunk === old) this.active = undefined;
       if (this.cursor?.chunk === old) this.cursor = undefined;
       for (const cache of this.laneCache.values()) cache.delete(old);
@@ -272,37 +346,37 @@ export class Archive {
     const chunk = this.chunks.findLast((c) => c.times[0] <= time);
     if (!chunk) return null;
     const index = chunk.times.findLastIndex((t) => t <= time);
-    const lines =
-      this.cursor?.chunk === chunk && this.cursor.revision === chunk.revision
-        ? this.cursor.lines
-        : this.active?.chunk === chunk
-          ? [this.active.base, ...this.active.changes]
-          : new TextDecoder()
-              .decode(Bun.gunzipSync(new Uint8Array(chunk.data)))
-              .split("\n");
-    let start = 0;
-    let value: Json;
-    if (this.cursor?.chunk === chunk && this.cursor.index <= index) {
-      start = this.cursor.index;
-      value = this.cursor.value;
-    } else value = JSON.parse(lines[0]) as Json;
-    for (let i = start + 1; i <= index; i++) {
-      const change = JSON.parse(lines[i]) as Change | null;
+    const cursor =
+      this.cursor?.chunk === chunk && this.cursor.index <= index
+        ? this.cursor
+        : undefined;
+    // Without a usable cursor the walk starts at the base line, so `start` is
+    // zero there and `lines[0]` is that base.
+    const { start, lines } = linesFrom(chunk, cursor ? cursor.index + 1 : 0);
+    const applied = cursor?.index ?? 0;
+    let value = cursor ? cursor.value : (JSON.parse(lines[0]) as Json);
+    for (let i = applied + 1; i <= index; i++) {
+      const change = JSON.parse(lines[i - start]) as Change | null;
       if (change) value = apply(value, change);
     }
-    this.cursor = { chunk, revision: chunk.revision, lines, index, value };
+    this.cursor = { chunk, index, value };
     return decode(value);
   }
   copy(cutoff: number): Archive {
     const copy = new Archive(this.maxBytes);
+    // The copy owns its own arrays: the original keeps appending to its open
+    // run and sealing into its segment list, and neither may reach the copy.
     copy.chunks = this.chunks
       .filter((c) => (c.times.at(-1) ?? cutoff) >= cutoff)
       .map((c) => ({
         times: [...c.times],
-        data: c.data,
-        revision: c.revision,
+        segments: [...c.segments],
+        sealedBytes: c.sealedBytes,
+        open: [...c.open],
+        openLength: c.openLength,
+        length: c.length,
       }));
-    copy.bytes = copy.chunks.reduce((sum, c) => sum + c.data.byteLength, 0);
+    copy.bytes = copy.chunks.reduce((sum, c) => sum + chunkBytes(c), 0);
     copy.shortened = this.shortened;
     return copy;
   }
@@ -325,19 +399,17 @@ export class Archive {
       if (chunk.times[0] > end || (chunk.times.at(-1) ?? start) < start)
         continue;
       let saved = cache.get(chunk);
-      if (!saved || saved.revision !== chunk.revision) {
-        const lines =
-          this.active?.chunk === chunk
-            ? [this.active.base, ...this.active.changes]
-            : new TextDecoder()
-                .decode(Bun.gunzipSync(new Uint8Array(chunk.data)))
-                .split("\n");
+      if (!saved || saved.index < chunk.times.length - 1) {
+        const first = (saved?.index ?? -1) + 1;
+        const { start: base, lines } = linesFrom(chunk, first);
+        // Without a saved table the walk starts at the base line, so `base` is
+        // zero there and `lines[0]` is that base.
         let table: Json =
           saved?.table ?? (JSON.parse(lines[0]) as ObjectValue).lanes;
         const samples = saved?.samples ?? [];
-        for (let i = (saved?.index ?? -1) + 1; i < chunk.times.length; i++) {
+        for (let i = first; i < chunk.times.length; i++) {
           if (i > 0) {
-            const change = JSON.parse(lines[i]) as Change | null;
+            const change = JSON.parse(lines[i - base]) as Change | null;
             if (change?.kind === "replace") {
               if (!object(change.value))
                 throw new Error("Archived snapshot is not an object");
@@ -369,12 +441,7 @@ export class Archive {
             ioPressure: metric("ioPressure"),
           });
         }
-        saved = {
-          revision: chunk.revision,
-          index: chunk.times.length - 1,
-          table,
-          samples,
-        };
+        saved = { index: chunk.times.length - 1, table, samples };
         cache.set(chunk, saved);
       }
       for (const sample of saved.samples)

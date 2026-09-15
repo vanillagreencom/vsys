@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   emptySnapshot,
   groupSnapshot,
@@ -70,4 +70,49 @@ test("duplicate times and a checkpoint past the budget fail visibly", () => {
   archive.add(s.time, JSON.stringify(s));
   expect(() => archive.add(s.time, JSON.stringify(s))).toThrow();
   expect(() => new Archive(1).add(s.time, JSON.stringify(s))).toThrow();
+  // The uncompressed lines a checkpoint has not sealed yet are live memory and
+  // are charged to the budget, so they cannot grow unwatched between seals.
+  const open = new Archive(96 * 1024);
+  expect(() => {
+    for (let i = 0; i < 40; i++) {
+      const next = emptySnapshot(1000 + i * 1000);
+      next.procs = [processSnapshot({ cwd: `/work/${"x".repeat(8192)}/${i}` })];
+      open.add(next.time, JSON.stringify(next));
+    }
+  }).toThrow();
+});
+test("an append compresses only the lines that append added", () => {
+  const archive = new Archive();
+  const inputs: number[] = [];
+  const compressing: number[] = [];
+  const expected = new Map<number, ReturnType<typeof emptySnapshot>>();
+  const spy = spyOn(Bun, "gzipSync");
+  try {
+    for (let i = 0; i < 400; i++) {
+      const s = emptySnapshot(1000 + i * 1000);
+      // A fresh long path each sample, so the deltas alone pass the open-run
+      // limit several times and the checkpoint has to seal more than once.
+      s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(2048)}` })];
+      spy.mockClear();
+      archive.add(s.time, JSON.stringify(s));
+      const added = spy.mock.calls.map(([data]) =>
+        typeof data === "string" ? data.length : data.byteLength,
+      );
+      if (added.length) compressing.push(i);
+      inputs.push(...added);
+      if ([0, 299, 300, 399].includes(i)) expected.set(s.time, s);
+    }
+  } finally {
+    spy.mockRestore();
+  }
+  const total = inputs.reduce((sum, n) => sum + n, 0);
+  // Every appended line is compressed once, so the work over 400 appends is
+  // the text those appends wrote rather than that text once per append.
+  expect(total).toBeLessThan(4 * 1024 * 1024);
+  // No append compresses a run larger than the open limit plus its own line,
+  // so a seal cannot become one long pause at the end of a checkpoint.
+  expect(Math.max(...inputs)).toBeLessThan(2 * 1024 * 1024);
+  expect(compressing.length).toBeLessThan(10);
+  for (const [time, snapshot] of expected)
+    expect(archive.at(time)).toEqual(snapshot);
 });

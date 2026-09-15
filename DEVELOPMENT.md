@@ -49,7 +49,7 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 
 `bun run bench` collects a fixture of 50 scopes and 2000 processes six times, discards the first, and reports the per-sample and per-phase timings against a 20 ms target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
 
-`bun run bench:history` fills the configured history window while replacing a process at each sample, then compares selected replayed snapshots against their originals across checkpoint boundaries. It reports incomplete retention and memory use. Its generated workload does not establish a memory bound for every command line or process mix.
+`bun run bench:history` fills the configured history window while replacing a process at each sample and moving every counter by a different amount per row, then compares every retained checkpoint against its original across checkpoint boundaries. It reports incomplete retention, memory use, and the median, 95th percentile and slowest append for both `History.add` and `Archive.add`. Its generated workload does not establish a memory bound for every command line or process mix, and its timings come from one machine under whatever else it was running.
 
 ## Repository tooling
 
