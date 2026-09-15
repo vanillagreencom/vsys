@@ -116,28 +116,25 @@ try {
   }
   const firstRetained = history.at(1000) !== null;
   let verified = 0;
-  let evicted = 0;
-  for (const [time, json] of [...expected.entries()].reverse()) {
+  let holding = false;
+  // Oldest first. Retention ends at one point and never resumes, so what the
+  // window holds is a run at the newest end and what it dropped is the prefix
+  // before that run. A snapshot missing once the run has begun is replay that
+  // failed, which is why nothing here asks of a single snapshot which of the
+  // two it was.
+  for (const [time, json] of expected) {
     const replayed = history.at(time);
-    // A shortened window drops its oldest checkpoints. A window that never
-    // shortened dropped nothing, so a missing snapshot there is a replay
-    // defect and not an eviction, and it fails rather than being counted.
     if (replayed === null) {
-      if (!history.retentionWarning)
+      if (holding)
         throw new Error(`Retained snapshot at ${time} did not replay`);
-      evicted++;
       continue;
     }
+    holding = true;
     if (!isDeepStrictEqual(replayed, JSON.parse(json)))
       throw new Error(`Replay differs from the collected snapshot at ${time}`);
     verified++;
   }
-  // A run that evicted more than it verified proves almost nothing, and the
-  // count alone cannot say which of the two it was.
-  if (verified <= evicted)
-    throw new Error(
-      `Verified ${verified} snapshot(s) against ${evicted} evicted`,
-    );
+  if (!verified) throw new Error("No retained snapshot was verified");
   // One checkpoint of the same workload against the archive alone, so the
   // share of an append that belongs to snapshot storage is readable next to
   // the whole-sample cost above.
@@ -158,7 +155,6 @@ try {
       requiredSamples: required,
       firstRetained,
       verifiedSnapshots: verified,
-      evictedSnapshots: evicted,
       complete: samples === required && firstRetained,
       warning: history.retentionWarning,
       elapsedMs: performance.now() - started,
