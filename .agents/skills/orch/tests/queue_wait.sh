@@ -140,6 +140,9 @@ case "${1:-}" in
       _emit_fixture queue "$(_next graphql)"
     fi
     if [[ "${2:-}" == "user" ]]; then
+      # The first STUB_GH_API_USER_HANGS checks outlive any auth bound; a
+      # fractional sleep is a real one under the virtual clock.
+      [[ "$(_next api_user)" -gt "${STUB_GH_API_USER_HANGS:-0}" ]] || sleep 5.0
       _stub_auth_ok || { echo "HTTP 401: Bad credentials" >&2; exit 1; }
       echo "test-user"
       exit 0
@@ -492,7 +495,9 @@ table "$QW" \
   'an empty object body|state:last=open,queue:last=braces|||rc=1 status=error verdict=unknown error_line=queue-wait:+queue-unreadable+pr=1+repo=owner/repo+polls=3' \
   'an empty body|state:last=open,queue:last=empty|||rc=1 status=error verdict=unknown error_line=queue-wait:+queue-unreadable+pr=1+repo=owner/repo+polls=3' \
   'a GraphQL errors array surfaces its message|state:last=open,queue:last=gql_errors|||rc=1 status=error verdict=unknown error_line=queue-wait:+queue-rejected+pr=1+detail=isInMergeQueue' \
-  'no GitHub auth path exits 3 like the other waiters|open_queued||STUB_GH_DENY_KEYRING=1|rc=3 status=error error_line=queue-wait:+auth-unavailable+command=gh'
+  'no GitHub auth path exits 3 like the other waiters|open_queued||STUB_GH_DENY_KEYRING=1|rc=3 status=error error_line=queue-wait:+auth-unavailable+command=gh' \
+  'an env token whose check is killed at its bound is asked again and polls|state:last=merged,queue:last=in||GH_TOKEN=dtn_placeholder,STUB_GH_VALID_TOKEN=dtn_placeholder,STUB_GH_API_USER_HANGS=1,STUB_GH_DENY_KEYRING=1,KENDEX_GITHUB_AUTH_TIMEOUT=0.1|rc=0 verdict=merged polls=1' \
+  'an env token killed at its bound twice is not accepted|open_queued||GH_TOKEN=dtn_placeholder,STUB_GH_VALID_TOKEN=dtn_placeholder,STUB_GH_API_USER_HANGS=2,STUB_GH_DENY_KEYRING=1,KENDEX_GITHUB_AUTH_TIMEOUT=0.1|rc=3 status=error polls=0'
 
 echo "=== the late-findings guard: any unresolved thread while queued or armed ==="
 # Disarm first (a bare dequeue can be raced back in by the arming), then
@@ -529,15 +534,19 @@ echo "=== the progress signal on a budget-exhausted queued verdict ==="
 # running, is still_progressing; measurable and unmoving is stalled. No head
 # commit means progress is unobservable: null, never a check-run read. A
 # failed read is unknown, never zero, warns after three, and neither erases
-# the comparison baseline nor counts as movement.
+# the comparison baseline nor counts as movement. The cause word separates
+# the two: unobservable is progress_unobservable, never stalled, so merge-pr
+# § 5 cannot route an unread queue into a CI repair round. The counts behind
+# the word — progress_head_polls, progress_check_reads, last_running_count —
+# are asserted with it, since a false report is read back off the JSON alone.
 table '1 1 8 --json --no-check-probe' \
   'a completed count advancing every poll is still progressing|open_queued_head,checkruns:advancing=12|1 1 4 --json --no-check-probe||rc=1 verdict=queued status=timeout progressing=true cause=still_progressing checkruns_read=true' \
   'a flat count with nothing running is stalled|open_queued_head,checkruns:last=c1.0|||verdict=queued progressing=false cause=stalled checkruns_read=true' \
   'one change older than the window, then flat, is stalled|open_queued_head,checkruns:1=c1.0,checkruns:last=c2.0|||verdict=queued progressing=false cause=stalled' \
-  'a flat count with a run in progress is still progressing|open_queued_head,checkruns:last=c1.1|||verdict=queued polls=8 progressing=true cause=still_progressing' \
+  'a flat count with a run in progress is still progressing|open_queued_head,checkruns:last=c1.1|||verdict=queued polls=8 progressing=true cause=still_progressing progress_head_polls=8 progress_check_reads=8 last_running_count=1' \
   'a flat count with a run queued is still progressing|open_queued_head,checkruns:last=queued_run|||progressing=true cause=still_progressing' \
-  'no head commit on the entry: progress unobservable, no check-run read|open_queued,checkruns:last=c3.0|1 1 4 --json --no-check-probe||verdict=queued has_progressing=true progressing=null cause=stalled checkruns_read=false' \
-  'every check-run read failing is unknown, never zero, and warns|open_queued_head,checkruns:last=fail502|1 1 5 --json --no-check-probe||verdict=queued has_progressing=true progressing=null cause=stalled checkrun_warned=true' \
+  'no head commit on the entry: progress unobservable, no check-run read|open_queued,checkruns:last=c3.0|1 1 4 --json --no-check-probe||verdict=queued has_progressing=true progressing=null cause=progress_unobservable checkruns_read=false progress_head_polls=0 progress_check_reads=0 last_running_count=null' \
+  'every check-run read failing is unknown, never zero, and warns|open_queued_head,checkruns:last=fail502|1 1 5 --json --no-check-probe||verdict=queued has_progressing=true progressing=null cause=progress_unobservable checkrun_warned=true progress_head_polls=5 progress_check_reads=0 last_running_count=null' \
   'a failed read between two reads does not erase the movement|open_queued_head,checkruns:1=c1.0,checkruns:2=fail502,checkruns:last=c2.0|1 1 4 --json --no-check-probe||verdict=queued progressing=true cause=still_progressing' \
   'a merged verdict carries progressing and no cause|state:last=merged,queue:last=in_head|1 1 10 --json --no-check-probe||verdict=merged has_progressing=true has_cause=false'
 

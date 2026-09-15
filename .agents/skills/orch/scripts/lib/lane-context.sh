@@ -67,6 +67,25 @@ LANE_CONTEXT_HARNESSES='[a-z0-9]*claude|codex|pi|agent-confine'
 # shell ended its session, which says more than the process name does.
 LANE_CONTEXT_SHELLS='sh|bash|zsh|fish|dash|ksh|mksh|tcsh|csh|nu|xonsh|elvish'
 
+# The window a Claude model runs on, for a status line that names none. A
+# fleet status-line command that divides by the window and prints the
+# percentage alone names none on EVERY line, so this table is not a
+# default-window fallback: it is the window itself, wherever the line is
+# silent. Claude's own built-in line names one, and a named window wins.
+#
+# An entry is the window the model ACTUALLY runs, established by measuring
+# the largest prompt the model has been sent on this fleet, and a model whose
+# window that does not establish is LEFT OUT. Absent yields no window, which
+# the report prints as a dash and the overseer reads as unmeasured — the
+# honest answer. A wrong figure is worse than none in both directions: too
+# small hides a nearly full lane behind a confident low number and it rides
+# into compaction, too large launches a successor an overseer with room does
+# not need.
+#
+# The key is the TIER WORD the status line prints, so Opus 5 and Opus 4.8
+# share one entry.
+LANE_CONTEXT_DEFAULT_WINDOWS='fable=1000000 opus=1000000'
+
 # One record. $1 window, $2 pane id, $3 config dir, $4 account label,
 # $5 harness, $6 used percent, $7 status, $8 detail, $9 context tokens.
 # Empty numeric or label fields become null, never 0 or "".
@@ -107,14 +126,19 @@ lane_context_shape() {
 
 # Read one context figure from a captured screen on stdin. $1 is the pane's
 # foreground process, which `lane_context_shape` turns into the shape offered.
-# Prints `<harness>\t<used percent>\t<context tokens>\t<window tokens>`;
-# exits 1 when the shape offered found nothing. The window is the token count
-# the status line itself names — Claude's `(1M context)` parenthetical between
-# the version and the percentage — and the token figure is the percentage
-# times that window. Both are empty on a line naming none: the codex status
-# line never names its window, and a Claude session on its default window
-# prints no parenthetical. The overseer's handoff mark is an absolute token
-# count, so a lane with no figure never reaches it.
+# Prints `<harness>\t<used percent>\t<context tokens>\t<window tokens>\t<window
+# source>`; exits 1 when the shape offered found nothing. The window is the
+# token count the status line itself names — Claude's `(1M context)`
+# parenthetical between the version and the percentage, source `status-line` —
+# and the token figure is the percentage times that window. A claude line
+# naming no window — every line a status-line command that prints the
+# percentage alone draws — takes the window the model named on that same line
+# runs, from LANE_CONTEXT_DEFAULT_WINDOWS, source
+# `model-default`. All three are empty where neither answers: the codex status
+# line never names a window, and a claude line naming none for a model the
+# table leaves out is unmeasured rather than guessed at. The overseer's
+# handoff mark is an absolute token count, so a lane with no figure never
+# reaches it — and the source is what says which reading a refusal rests on.
 #
 # The codex shape is offered the FINAL NON-EMPTY line and no other. The
 # claude shape is offered every line and its LAST match wins; no window is
@@ -160,7 +184,11 @@ lane_context_shape() {
 lane_context_parse() {
   local out shape
   shape="$(lane_context_shape "${1:-}")"
-  out="$(awk -v shape="$shape" '
+  out="$(awk -v shape="$shape" -v defaults="$LANE_CONTEXT_DEFAULT_WINDOWS" '
+    BEGIN {
+      n = split(defaults, pairs, / /)
+      for (i = 1; i <= n; i++) { split(pairs[i], kv, "="); default_window[kv[1]] = kv[2] }
+    }
     {
       if ($0 ~ /[^ \t]/) last = $0
       if (shape == "codex") next
@@ -168,22 +196,31 @@ lane_context_parse() {
       if (match(low, /^[ \t]*[^ \t()]+([ \t]+\([^)]*\))?[ \t]+(opus|sonnet|haiku|fable)[ \t]+[0-9]+(\.[0-9]+)?([ \t]*\([^)]*\))?[ \t]+[0-9]+%[ \t]+\([^) \t]+\)([ \t]+\/[^ \t]*)*[ \t]*$/)) {
         line = substr(low, RSTART, RLENGTH)
         # The window parenthetical is the one naming a token count, so the
-        # branch parenthetical before the model never matches it.
-        window = ""
+        # branch parenthetical before the model never matches it, and a
+        # window the line DOES name always wins over the table. With none,
+        # the MODEL answers — matched where the status line puts it, before
+        # its version, so a working directory or branch spelling a model name
+        # cannot stand in for it.
+        window = ""; source = ""
         if (match(line, /\([0-9]+(\.[0-9]+)?[km][ \t]+context\)/)) {
           w = substr(line, RSTART + 1, RLENGTH - 2)
           unit = (w ~ /m/) ? 1000000 : 1000
           sub(/[km].*$/, "", w)
           window = w * unit
+          source = "status-line"
+        } else if (match(line, /[ \t](opus|sonnet|haiku|fable)[ \t]+[0-9]/)) {
+          model = substr(line, RSTART + 1, RLENGTH - 1)
+          sub(/[ \t].*$/, "", model)
+          if (default_window[model] != "") { window = default_window[model]; source = "model-default" }
         }
         match(line, /[0-9]+%[ \t]+\([^) \t]+\)/)
         s = substr(line, RSTART, RLENGTH)
         sub(/%.*$/, "", s)
-        if (s != "" && s + 0 <= 100) { c_found = 1; c_used = s + 0; c_window = window }
+        if (s != "" && s + 0 <= 100) { c_found = 1; c_used = s + 0; c_window = window; c_source = source }
       }
     }
     END {
-      window = ""
+      window = ""; source = ""
       low = (shape == "claude") ? "" : tolower(last)
       if (match(low, /^[^a-z0-9]*context:?[ \t]+[0-9]+%[ \t]+(left|used)([ \t]+(·|[|])[ \t]+[^ \t].*)?[ \t]*$/)) {
         codex_line = 1
@@ -194,14 +231,36 @@ lane_context_parse() {
         gsub(/[^0-9]/, "", s)
         if (s + 0 <= 100) { harness = "codex"; used = remaining ? 100 - (s + 0) : s + 0 }
       }
-      if (!codex_line && c_found) { harness = "claude"; used = c_used; window = c_window }
+      if (!codex_line && c_found) { harness = "claude"; used = c_used; window = c_window; source = c_source }
       if (harness == "") exit
-      if (window == "") printf "%s\t%d\t\t\n", harness, used
-      else printf "%s\t%d\t%d\t%d\n", harness, used, int(used * window / 100), window
+      if (window == "") printf "%s\t%d\t\t\t\n", harness, used
+      else printf "%s\t%d\t%d\t%d\t%s\n", harness, used, int(used * window / 100), window, source
     }
   ')"
   [[ -n "$out" ]] || return 1
   printf '%s\n' "$out"
+}
+
+# The claims in $1 plus the CALLER's OWN pane, unless a claim already names it.
+# An overseer is started by hand into a window nothing claimed a lane for, so
+# its own context — the figure its succession turns on — reaches no report
+# built from claims alone, and that session reads as an empty fleet. $1:
+# `lane_claims_read` output. $2: the caller's config dir, canonicalised by the
+# caller, which owns that spelling.
+#
+# The pane is matched on `<server pid> <pane id>`, the same key a claim's
+# liveness rests on: a pane id alone repeats on every tmux server, and a
+# duplicate row would report one session as two lanes.
+lane_context_with_caller() {
+  local claims="$1" cfg="$2" pane="${TMUX_PANE:-}" server name
+  if [[ -n "$pane" ]] && server="$(tmux display-message -p -t "$pane" '#{pid}' 2>/dev/null)" \
+    && [[ -n "$server" ]] \
+    && ! awk -F'\t' -v s="$server" -v p="$pane" '$3 == s && $4 == p { f = 1 } END { exit !f }' <<<"$claims"
+  then
+    name="$(tmux display-message -p -t "$pane" '#{window_name}' 2>/dev/null)" || name=""
+    claims="$claims"$'\n'"$cfg"$'\t'"$name"$'\t'"$server"$'\t'"$pane"
+  fi
+  printf '%s\n' "$claims"
 }
 
 # One record per live lane claim, as a JSON array. $1: `lane_claims_read`
@@ -220,7 +279,7 @@ lane_context_parse() {
 # WHICH harness, which is how the reader knows the shape to look for without
 # guessing it from a screen that quotes both all day.
 lane_context_collect() {
-  local claims="$1" alias_fn="$2" cfg lane server pane screen parsed
+  local claims="$1" alias_fn="$2" cfg lane server pane screen parsed claim rest
   local this_server detail cmd pane_cmds p_pid p_pane p_cmd harness used tokens
   # `<pane id> <command>` per line, not an associative array: macOS Bash 3.2
   # has none and rejects an associative-array declaration, which under this
@@ -233,8 +292,15 @@ lane_context_collect() {
     pane_cmds+="$p_pane $p_cmd"$'\n'
   done < <(tmux list-panes -a -F '#{pid} #{pane_id} #{pane_current_command}' 2>/dev/null)
   {
-    while IFS=$'\t' read -r cfg lane server pane; do
-      [[ -n "$pane" ]] || continue
+    # Split by hand, never `IFS=$'\t' read`: a TAB is IFS whitespace, so read
+    # drops a LEADING one and every field of a row whose config dir is empty
+    # shifts left. A caller pane whose account cannot be established is such a
+    # row, and it would be reported under the pane id of another lane.
+    while IFS= read -r claim; do
+      cfg="${claim%%$'\t'*}"; rest="${claim#*$'\t'}"
+      lane="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
+      server="${rest%%$'\t'*}"; pane="${rest##*$'\t'}"
+      [[ -n "$pane" && "$claim" == *$'\t'*$'\t'*$'\t'* ]] || continue
       if [[ "$server" != "$this_server" ]]; then
         # Empty means nothing could be enumerated at all: no pane id here
         # resolves, and reporting the local screen for any of them would be
@@ -315,7 +381,7 @@ lane_context_message() {
       printf 'lane-context: percent kind=consumed\n'
       printf 'CONTEXT_USED_PCT: percent of the context window CONSUMED. A Codex lane prints what is LEFT or what is USED; only LEFT is converted here.\n'
       printf 'lane-context: tokens kind=window-percent absent=-\n'
-      printf 'CONTEXT_TOKENS: that percent of the window the status line names, as Claude does with (1M context); a dash where the line names no window.\n'
+      printf 'CONTEXT_TOKENS: that percent of the window the status line names, as Claude does with (1M context), or of the model default where it names none; a dash where neither answers.\n'
       printf 'lane-context: headroom kind=account-binding handoff=threshold\n'
       printf 'HEADROOM: percent remaining in the account binding bucket; HANDOFF is required at or below ORCH_HANDOFF_HEADROOM_PCT.\n'
       ;;

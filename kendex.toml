@@ -7,12 +7,7 @@ repo = "vanillagreencom/kendex"
 harnesses = [
     "claude",
     "codex",
-    "opencode",
-    "cursor",
     "pi",
-    "gemini",
-    "copilot",
-    "antigravity",
 ]
 
 [agents.generalist]
@@ -161,6 +156,10 @@ harnesses = [
     "pi",
 ]
 
+[hooks.code-quality-load-check]
+source = "kendex"
+harnesses = ["claude"]
+
 [commands.code-scrub]
 source = "kendex"
 
@@ -210,42 +209,6 @@ reason = "Generated from vanillagreencom/kendex; fix the upstream package and re
 
 [[bot-instructions.exclusions.path]]
 glob = ".codex/hooks/*.sh"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".cursor/rules/**"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".gemini/agents/**"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".gemini/commands/**"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".gemini/hooks/*.sh"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".github/agents/**"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".github/hooks/*.sh"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".opencode/agents/**"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".opencode/commands/**"
-reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
-
-[[bot-instructions.exclusions.path]]
-glob = ".opencode/instructions/**"
 reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
 
 [[bot-instructions.exclusions.path]]

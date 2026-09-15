@@ -46,5 +46,31 @@ for row in \
   assert_eq "$label" "$expect" "$(run "$r")"
 done
 
+echo "=== with neither tool reachable the lane refuses and names the CI remedy ==="
+# The lane runs with one directory on PATH, so no ruff is reachable wherever it
+# is installed. It holds a python3 that exits 1, standing in for the pyflakes
+# probe, and a link to each command the lane needs to reach its tool check; a
+# missing one fails this row at its own refusal key, never silently.
+NO_TOOL_PATH="$TMP/no-tool-bin"
+mkdir -p "$NO_TOOL_PATH"
+printf '#!/bin/sh\nexit 1\n' >"$NO_TOOL_PATH/python3"
+chmod +x "$NO_TOOL_PATH/python3"
+for cmd in bash git jq mktemp dirname rm tr head wc; do
+  cmd_path="$(command -v "$cmd")" || { echo "harness: $cmd is not on PATH" >&2; exit 2; }
+  ln -s -- "$cmd_path" "$NO_TOOL_PATH/$cmd"
+done
+r="$TMP/row-tool-missing"
+git -c init.defaultBranch=main init -q "$r"
+printf 'x = 1\n' >"$r/script.py"
+git -C "$r" add script.py
+rc=0
+out="$(cd "$r" && PATH="$NO_TOOL_PATH" "$PY_NAMES" --staged 2>&1)" || rc=$?
+assert_eq "a selected file with neither tool installed refuses at the stable key" \
+  "rc=2 py-names: tool-missing=ruff,pyflakes" \
+  "rc=$rc $(printf '%s\n' "$out" | LC_ALL=C awk '/^py-names: [a-z-]+=/ && !seen { print; seen=1 }')"
+assert_eq "the refusal carries the CI ordering remedy" \
+  "  In CI, install ruff, or pyflakes for python3 3.11 or newer, in a step before the commit-guards step, and on every run, including a harness-only run." \
+  "$(printf '%s\n' "$out" | LC_ALL=C awk '/^  In CI, /')"
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

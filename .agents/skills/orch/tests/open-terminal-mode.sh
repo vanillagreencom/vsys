@@ -14,6 +14,9 @@
 # then a failure so no lane goes further), gh, and the worktree CLI.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
+# An inherited or configured lane host would turn these local launches into
+# hosted ones; the caller environment outranks project settings.
+export ORCH_LANE_HOST=local
 # shellcheck source=lib/shared-skill-libs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 
@@ -101,6 +104,7 @@ set -euo pipefail
 [[ "\${1:-}" == "create" ]] || { echo "unexpected worktree stub call: \$*" >&2; exit 1; }
 d="$TMP_ROOT/wt/\${2:-item}"
 mkdir -p "\$d"
+git init -q "\$d"
 printf '%s\n' "\$d"
 EOS
 chmod +x "$STUB"
@@ -110,6 +114,7 @@ chmod +x "$STUB"
 stage() {
   mkdir -p "$1/scripts/lib"
   cp "$2" "$1/scripts/open-terminal"
+  cp "$SCRIPTS_DIR/lane-host" "$1/scripts/lane-host"
   cp "$SRC_LIB_DIR"/*.sh "$1/scripts/lib/"
   orch_fixture_shared_libs "$1"
   chmod +x "$1/scripts/open-terminal"

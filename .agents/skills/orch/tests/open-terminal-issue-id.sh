@@ -11,6 +11,9 @@
 # the worktree CLI, GUI terminal, and gh so nothing external is launched.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
+# An inherited or configured lane host would turn these local launches into
+# hosted ones; the caller environment outranks project settings.
+export ORCH_LANE_HOST=local
 # shellcheck source=lib/shared-skill-libs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 
@@ -73,6 +76,7 @@ set -euo pipefail
 if [[ "\${1:-}" == "create" ]]; then
   d="$TMP_ROOT/wt/\${2:-unknown}"
   mkdir -p "\$d"
+  git init -q "\$d"
   printf '%s\n' "\$d"
   exit 0
 fi
@@ -87,6 +91,7 @@ make_ot_repo() {
   local repo="$1" settings="${2:-}"
   mkdir -p "$repo/scripts/lib"
   cp "$SRC_OT" "$repo/scripts/open-terminal"
+  cp "$SCRIPTS_DIR/lane-host" "$repo/scripts/lane-host"
   cp "$SRC_LIB_DIR"/*.sh "$repo/scripts/lib/"
   orch_fixture_shared_libs "$repo"
   chmod +x "$repo/scripts/open-terminal"

@@ -7,15 +7,40 @@ if [[ "${LANE_HOST_STUB_STATUS:-0}" -ne 0 ]]; then
   exit "$LANE_HOST_STUB_STATUS"
 fi
 # One verb at a time, for a caller telling a failed read from a failed host:
-# _CAT_STATUS fails cat alone, _TOUCH_STATUS the probe, and _PUT_DELAY holds
-# put open long enough for a second caller to race the first.
+# _CAT_STATUS fails cat alone, _TOUCH_STATUS the probe, _CLOSE_STATUS fails
+# close with the static provider's close-refused line (for _CLOSE_ITEM alone
+# when set), and _PUT_DELAY
+# holds put open long enough for a second caller to race the first.
 case "$1" in
+  close) [[ "${LANE_HOST_STUB_CLOSE_STATUS:-0}" -eq 0 || "${LANE_HOST_STUB_CLOSE_ITEM:-$3}" != "$3" ]] \
+    || { printf 'lane-host-ssh: close-refused path=/srv/clone\n' >&2; exit "$LANE_HOST_STUB_CLOSE_STATUS"; } ;;
   cat) [[ "${LANE_HOST_STUB_CAT_STATUS:-0}" -eq 0 ]] || exit "$LANE_HOST_STUB_CAT_STATUS" ;;
   touch) [[ "${LANE_HOST_STUB_TOUCH_STATUS:-0}" -eq 0 ]] || exit "$LANE_HOST_STUB_TOUCH_STATUS" ;;
   put) [[ -z "${LANE_HOST_STUB_PUT_DELAY:-}" ]] || sleep "$LANE_HOST_STUB_PUT_DELAY" ;;
 esac
+# lane-host-ssh's mailbox guard, run first by cat and put: a path under
+# tmp/lane-mail/ whose tmp/lane-mail or item directory, or the file itself, is
+# a symlink or not the kind it names exits 3.
+mailbox_guard() { # PATH
+  local mail rest component kind
+  case "$1" in */tmp/lane-mail/*) ;; *) return 0 ;; esac
+  mail="${1%/tmp/lane-mail/*}/tmp/lane-mail"
+  rest="${1##*/tmp/lane-mail/}"
+  for component in "$mail" "$mail/${rest%%/*}" "$1"; do
+    kind=-d
+    [ "$component" != "$1" ] || kind=-f
+    if [ -L "$component" ] || { [ -e "$component" ] && ! test "$kind" "$component"; }; then
+      printf 'lane-host-fixture: mailbox-component path=%s\n' "$component" >&2
+      exit 3
+    fi
+  done
+}
 case "$1" in
-  create) printf 'ssh-target=lane.example\tpath=/srv/lane\tremote-prefix=exec bash -lc\n' ;;
+  # LANE_HOST_STUB_CREATE_LINE replaces the create line, for a caller refusing
+  # one that lacks a field.
+  create)
+    if [[ -n "${LANE_HOST_STUB_CREATE_LINE:-}" ]]; then printf '%s\n' "$LANE_HOST_STUB_CREATE_LINE"
+    else printf 'ssh-target=lane.example\tpath=/srv/lane\tremote-prefix=exec bash -lc\n'; fi ;;
   # LANE_HOST_STUB_DIR models a whole remote filesystem: `cat` and `put` read
   # and write the remote path under it, so a caller that moves several files —
   # a lane mailbox is two — is not held to one. Without it the single
@@ -26,6 +51,7 @@ case "$1" in
   cat)
     src="${LANE_HOST_STUB_FILE:-}"
     [ -z "${LANE_HOST_STUB_DIR:-}" ] || src="$LANE_HOST_STUB_DIR$4"
+    mailbox_guard "$src"
     [ -e "$src" ] || exit 2
     cat -- "$src" ;;
   # Staged beside the target and renamed, as the protocol requires, so a put
@@ -34,16 +60,23 @@ case "$1" in
   put)
     dest="${LANE_HOST_STUB_FILE:-}"
     [ -z "${LANE_HOST_STUB_DIR:-}" ] || dest="$LANE_HOST_STUB_DIR$4"
+    mailbox_guard "$dest"
     mkdir -p -- "$(dirname -- "$dest")"
+    staged="$(mktemp -- "$dest.kendex-put.XXXXXX")"
     if [ -n "${LANE_HOST_STUB_PUT_FAIL:-}" ]; then
-      head -c 10 > "$dest.kendex-put.$$"
+      head -c 10 > "$staged"
       exit 1
     fi
-    cat > "$dest.kendex-put.$$"
-    mv -f -- "$dest.kendex-put.$$" "$dest" ;;
+    cat > "$staged"
+    mv -f -- "$staged" "$dest" ;;
   touch) ;;
+  # LANE_HOST_STUB_CLOSE_EMPTY is a close that archived nothing: no kept= line.
+  # LANE_HOST_STUB_CLOSE_JAM makes the watch's state directory unwritable once
+  # the close has run, so the watch's next row commit fails.
   close)
-    printf 'kept=%s\n' "${LANE_HOST_STUB_ARCHIVE:-/fleet/archive/repo/TEST-1/tmp-stub.tgz}"
+    [[ -n "${LANE_HOST_STUB_CLOSE_EMPTY:-}" ]] \
+      || printf 'kept=%s\n' "${LANE_HOST_STUB_ARCHIVE:-/fleet/archive/repo/TEST-1/tmp-stub.tgz}"
+    [[ -z "${LANE_HOST_STUB_CLOSE_JAM:-}" ]] || chmod 555 "$OVERSEE_WATCH_STATE_DIR"
     printf 'delete --item %s\n' "$3" >> "$LANE_HOST_STUB_LOG"
     ;;
   list) printf 'owner/repo/TEST-1\thosted\t-\tlane.example\n' ;;
