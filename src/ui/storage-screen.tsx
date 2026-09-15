@@ -267,6 +267,18 @@ export function Storage({
     : st.scratchTime == null
       ? "not measured yet"
       : `measured ${new Date(st.scratchTime).toLocaleTimeString()}`;
+  /**
+   * What the scratch section says when it has no rows. Configured roots with
+   * no reading yet are a measurement in flight, not an absence of roots:
+   * telling a reader who has set them that none are set is false, and a
+   * bounded traversal holds that state for as long as the scan takes.
+   */
+  const scratchEmpty =
+    c.scratchDirs.length === 0
+      ? "No scratch directory is configured."
+      : st.scratch.length || st.sessions.length
+        ? null
+        : "The configured scratch directories have not been measured yet.";
   const scratchTop = Math.max(
     c.scratchQuota,
     ...[...st.scratch, ...st.sessions].map((x) => x.bytes ?? 0),
@@ -564,9 +576,7 @@ export function Storage({
           width={width}
           count={`${scanState} · quota ${amount(c.scratchQuota, c)}`}
         />
-        {!st.scratch.length && !st.sessions.length && (
-          <Empty text="No scratch directory is configured." />
-        )}
+        {scratchEmpty !== null && <Empty text={scratchEmpty} />}
         {items.filter((item) => item.kind === "scratch").map(scratchRow)}
       </box>
     </scrollbox>

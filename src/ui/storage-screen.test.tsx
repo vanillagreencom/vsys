@@ -650,3 +650,34 @@ test("the copy key on a filesystem copies one line that removes its build output
     await t.close();
   }
 });
+
+test("scratch roots with no reading yet are measuring, not unconfigured", async () => {
+  const rows: [string[], boolean, string][] = [
+    [[], false, "No scratch directory is configured."],
+    [["/scratch"], true, "have not been measured yet"],
+    [["/scratch"], false, "have not been measured yet"],
+  ];
+  for (const [scratchDirs, scratchPending, expected] of rows) {
+    const c = { ...defaults(), scratchDirs };
+    const s = emptySnapshot();
+    s.storage.scratchPending = scratchPending;
+    const t = await mount(s, c, { width: 140, height: 40 });
+    try {
+      await t.press("5");
+      const frame = t.frame();
+      expect({ scratchDirs, shown: frame.includes(expected) }).toEqual({
+        scratchDirs,
+        shown: true,
+      });
+      // A reader who has set roots is never told that none are set.
+      expect({
+        scratchDirs,
+        denied:
+          scratchDirs.length > 0 &&
+          frame.includes("No scratch directory is configured."),
+      }).toEqual({ scratchDirs, denied: false });
+    } finally {
+      await t.close();
+    }
+  }
+});

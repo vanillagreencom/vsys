@@ -1,15 +1,20 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import {
-  type ScanBudget,
-  ScanCancelled,
-  type ScanReply,
-  type ScanRequest,
-  type ScratchScan,
+import type {
+  ScanBudget,
+  ScanReply,
+  ScanRequest,
+  ScratchScan,
 } from "./scratch-scan";
 import type { CollectionConfig } from "./settings";
 
-export type { ScratchScan } from "./scratch-scan";
+/** A scan its caller stopped. It is no reading, and it is no failure. */
+export class ScanCancelled extends Error {
+  constructor() {
+    super("Scratch scan cancelled");
+    this.name = "ScanCancelled";
+  }
+}
 
 /**
  * The scan thread's own file: the source module beside this one, or the built
@@ -51,6 +56,11 @@ export interface ScanRunner {
  * a single job and only starts the next after that job settles.
  */
 export class WorkerScan implements ScanRunner {
+  /** The program starts a real thread; a test stands up its own. */
+  constructor(
+    private start: () => Worker = () =>
+      new Worker(workerFile(), { type: "module" }),
+  ) {}
   private worker?: Worker;
   private id = 0;
   private pending?: {
@@ -61,22 +71,29 @@ export class WorkerScan implements ScanRunner {
   private closed = false;
   private thread(): Worker {
     if (this.worker) return this.worker;
-    const worker = new Worker(workerFile(), { type: "module" });
+    const worker = this.start();
     worker.onmessage = (event: MessageEvent<ScanReply>) => {
       this.receive(event.data);
     };
     // A thread that died owes its caller an answer, and the next scan needs a
     // thread. Leaving the promise open would hold the collector's single job
     // forever, so scratch would read its last complete data and never refresh.
+    //
+    // Each listener names the thread it was registered on. A thread this host
+    // has already replaced still delivers its last events, and acting on one
+    // would end the thread now running and fail the scan on it.
     worker.onerror = (event: ErrorEvent) => {
-      this.fail(new Error(`Scratch scan thread failed: ${event.message}`));
+      if (this.worker === worker)
+        this.fail(new Error(`Scratch scan thread failed: ${event.message}`));
     };
     worker.addEventListener("close", () => {
-      this.fail(new Error("Scratch scan thread exited before it answered"));
+      if (this.worker === worker)
+        this.fail(new Error("Scratch scan thread exited before it answered"));
     });
     this.worker = worker;
     return worker;
   }
+  /** The one teardown: end the thread, then settle whatever was waiting. */
   private fail(error: Error): void {
     const pending = this.pending;
     this.pending = undefined;
@@ -93,9 +110,6 @@ export class WorkerScan implements ScanRunner {
     switch (reply.kind) {
       case "scan":
         pending.resolve(reply.scan);
-        return;
-      case "cancelled":
-        pending.reject(new ScanCancelled());
         return;
       case "failed":
         pending.reject(new Error(reply.message));
@@ -121,33 +135,25 @@ export class WorkerScan implements ScanRunner {
     const worker = this.thread();
     return new Promise<ScratchScan>((resolve, reject) => {
       this.pending = { id, resolve, reject };
+      // An abandoned scan owes its caller an answer now. Its thread keeps
+      // reading until the caller ends it, and its reply names a scan this
+      // host is no longer waiting for, so nothing publishes it.
       signal.addEventListener(
         "abort",
         () => {
           if (this.pending?.id !== id) return;
           this.pending = undefined;
-          this.worker?.postMessage({ kind: "cancel" } satisfies ScanRequest);
           reject(new ScanCancelled());
         },
         { once: true },
       );
-      worker.postMessage({
-        kind: "scan",
-        id,
-        config: c,
-        time,
-        budget,
-      } satisfies ScanRequest);
+      worker.postMessage({ id, config: c, time, budget } satisfies ScanRequest);
     });
   }
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    const pending = this.pending;
-    this.pending = undefined;
-    this.worker?.terminate();
-    this.worker = undefined;
-    pending?.reject(new ScanCancelled());
+    this.fail(new ScanCancelled());
   }
 }
 

@@ -8,6 +8,9 @@ import subprocess
 import sys
 
 
+ARTIFACTS = ("dist/main.js", "dist/scratch-worker.js")
+
+
 def run_warden_checks() -> None:
     warden = Path("warden")
     if not warden.exists():
@@ -51,8 +54,19 @@ def main() -> int:
         raise ValueError("Commit bun.lock before running application checks")
 
     subprocess.run(["bun", "install", "--frozen-lockfile"], check=True)
+    # The scratch scan runs in a worker, which the bundler does not follow, so
+    # the build emits it as a second entry point. Nothing else here reads the
+    # build's output: dropping that entry point leaves every check green while
+    # the shipped dashboard cannot measure scratch at all. Last run's files are
+    # removed first, so only this build can satisfy the requirement.
+    for name in ARTIFACTS:
+        Path(name).unlink(missing_ok=True)
     for check in checks:
         subprocess.run(["bun", "run", check], check=True)
+    for name in ARTIFACTS:
+        artifact = Path(name)
+        if not artifact.is_file() or artifact.stat().st_size == 0:
+            raise ValueError(f"The build emitted no {name}")
     return 0
 
 
