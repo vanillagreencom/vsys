@@ -198,7 +198,7 @@ interface Active {
   previous: Json;
 }
 interface Cursor {
-  chunk: Chunk;
+  reader: Reader;
   index: number;
   value: Json;
 }
@@ -213,11 +213,13 @@ const chunkSamples = 300;
 /** Checkpoint text, the other rollover bound, in UTF-16 code units. */
 const chunkLimit = 16 * 1024 * 1024;
 /**
- * Uncompressed text a checkpoint may hold before it seals, in UTF-16 code
- * units. It bounds both the live memory an open checkpoint costs and the
- * input of one seal, because a seal compresses this run and nothing else.
+ * Text a checkpoint may hold unsealed, in UTF-16 code units. A run seals once
+ * it reaches this, so it holds the limit plus the one line that crossed it,
+ * and that whole run is the input of one seal and of nothing else.
  */
 const openLimit = 1024 * 1024;
+
+const decoder = new TextDecoder();
 
 function chunkBytes(chunk: Chunk): number {
   // An open line is text, so it is charged at the two bytes a UTF-16 code
@@ -244,31 +246,47 @@ function append(chunk: Chunk, time: number, line: string): void {
 }
 
 /**
- * The lines from `from` to the end of the checkpoint, decompressing only the
- * segments those lines span. A reader that already holds an earlier line — the
- * replay cursor on every live sample — reaches the newest line without
- * decompressing anything, because the newest lines are the open ones.
+ * Reads one checkpoint's lines by line number. A sealed segment is inflated
+ * when a line inside it is read and is dropped when a line outside it is, so
+ * a walk through a checkpoint inflates each segment once and never holds more
+ * than one segment's text. The open lines are read from the checkpoint itself
+ * and cost nothing to reach, which is where every live sample reads.
  */
-function linesFrom(
-  chunk: Chunk,
-  from: number,
-): { start: number; lines: string[] } {
-  let start = 0;
-  const parts: string[][] = [];
-  for (const segment of chunk.segments) {
-    if (!parts.length && start + segment.count <= from) {
-      start += segment.count;
-      continue;
-    }
-    parts.push(
-      new TextDecoder()
-        .decode(Bun.gunzipSync(new Uint8Array(segment.data)))
-        .split("\n"),
-    );
+class Reader {
+  /** Sealed lines when this reader was made, and where the open run starts. */
+  private readonly sealed: number;
+  private readonly segments: number;
+  /** The one inflated segment, and the line number its first line carries. */
+  private first = 0;
+  private lines: string[] = [];
+  constructor(readonly chunk: Chunk) {
+    this.segments = chunk.segments.length;
+    this.sealed = chunk.segments.reduce((n, s) => n + s.count, 0);
   }
-  if (!parts.length) return { start, lines: chunk.open };
-  parts.push(chunk.open);
-  return { start, lines: parts.flat() };
+  /**
+   * A seal moves open lines into a segment, which moves where the open run
+   * starts, so a reader made before one cannot place a line after it.
+   */
+  get current(): boolean {
+    return this.chunk.segments.length === this.segments;
+  }
+  line(index: number): string {
+    if (index >= this.sealed) return this.chunk.open[index - this.sealed];
+    if (index < this.first || index >= this.first + this.lines.length) {
+      let start = 0;
+      let at = 0;
+      for (const segment of this.chunk.segments) {
+        if (index < start + segment.count) break;
+        start += segment.count;
+        at++;
+      }
+      this.first = start;
+      this.lines = decoder
+        .decode(Bun.gunzipSync(new Uint8Array(this.chunk.segments[at].data)))
+        .split("\n");
+    }
+    return this.lines[index - this.first];
+  }
 }
 
 /** Bounded checkpoints retain exact snapshots without repeating static fields. */
@@ -290,12 +308,15 @@ export class Archive {
       this.active.chunk.times.length >= chunkSamples ||
       this.active.chunk.length >= chunkLimit
     ) {
-      // The outgoing checkpoint takes no further lines, so its open run is
-      // compressed now and the checkpoint never allocates again.
-      if (this.active) {
-        this.bytes -= chunkBytes(this.active.chunk);
-        seal(this.active.chunk);
-        this.bytes += chunkBytes(this.active.chunk);
+      // The checkpoint that was last takes no further lines, so its open run
+      // is compressed now and that checkpoint never allocates again. It is
+      // read from the list rather than from `active`, because a copy carries
+      // an unsealed run that it never appended to and never would seal.
+      const previous = this.chunks.at(-1);
+      if (previous) {
+        this.bytes -= chunkBytes(previous);
+        seal(previous);
+        this.bytes += chunkBytes(previous);
       }
       const base = JSON.stringify(value);
       const chunk: Chunk = {
@@ -323,7 +344,7 @@ export class Archive {
       if (!old) throw new Error("Archive has no oldest checkpoint");
       this.bytes -= chunkBytes(old);
       this.shortened = true;
-      if (this.cursor?.chunk === old) this.cursor = undefined;
+      if (this.cursor?.reader.chunk === old) this.cursor = undefined;
       for (const cache of this.laneCache.values()) cache.delete(old);
     }
     if (this.bytes > this.maxBytes)
@@ -338,7 +359,7 @@ export class Archive {
       if (!old) throw new Error("Archive has no expired checkpoint");
       this.bytes -= chunkBytes(old);
       if (this.active?.chunk === old) this.active = undefined;
-      if (this.cursor?.chunk === old) this.cursor = undefined;
+      if (this.cursor?.reader.chunk === old) this.cursor = undefined;
       for (const cache of this.laneCache.values()) cache.delete(old);
     }
   }
@@ -346,20 +367,24 @@ export class Archive {
     const chunk = this.chunks.findLast((c) => c.times[0] <= time);
     if (!chunk) return null;
     const index = chunk.times.findLastIndex((t) => t <= time);
+    // The cursor carries the snapshot it last rebuilt and the reader that
+    // inflated the lines it walked. Keeping the reader is what makes a walk
+    // forward through a checkpoint inflate each sealed segment once rather
+    // than once per sample, which is the whole cost of `rows`.
     const cursor =
-      this.cursor?.chunk === chunk && this.cursor.index <= index
+      this.cursor?.reader.chunk === chunk &&
+      this.cursor.reader.current &&
+      this.cursor.index <= index
         ? this.cursor
         : undefined;
-    // Without a usable cursor the walk starts at the base line, so `start` is
-    // zero there and `lines[0]` is that base.
-    const { start, lines } = linesFrom(chunk, cursor ? cursor.index + 1 : 0);
+    const reader = cursor?.reader ?? new Reader(chunk);
     const applied = cursor?.index ?? 0;
-    let value = cursor ? cursor.value : (JSON.parse(lines[0]) as Json);
+    let value = cursor ? cursor.value : (JSON.parse(reader.line(0)) as Json);
     for (let i = applied + 1; i <= index; i++) {
-      const change = JSON.parse(lines[i - start]) as Change | null;
+      const change = JSON.parse(reader.line(i)) as Change | null;
       if (change) value = apply(value, change);
     }
-    this.cursor = { chunk, index, value };
+    this.cursor = { reader, index, value };
     return decode(value);
   }
   copy(cutoff: number): Archive {
@@ -401,15 +426,13 @@ export class Archive {
       let saved = cache.get(chunk);
       if (!saved || saved.index < chunk.times.length - 1) {
         const first = (saved?.index ?? -1) + 1;
-        const { start: base, lines } = linesFrom(chunk, first);
-        // Without a saved table the walk starts at the base line, so `base` is
-        // zero there and `lines[0]` is that base.
+        const reader = new Reader(chunk);
         let table: Json =
-          saved?.table ?? (JSON.parse(lines[0]) as ObjectValue).lanes;
+          saved?.table ?? (JSON.parse(reader.line(0)) as ObjectValue).lanes;
         const samples = saved?.samples ?? [];
         for (let i = first; i < chunk.times.length; i++) {
           if (i > 0) {
-            const change = JSON.parse(lines[i - base]) as Change | null;
+            const change = JSON.parse(reader.line(i)) as Change | null;
             if (change?.kind === "replace") {
               if (!object(change.value))
                 throw new Error("Archived snapshot is not an object");

@@ -119,9 +119,12 @@ try {
   let evicted = 0;
   for (const [time, json] of [...expected.entries()].reverse()) {
     const replayed = history.at(time);
-    // A shortened window drops its oldest checkpoints. Every checkpoint the
-    // window still holds has to replay exactly, whether or not it shortened.
+    // A shortened window drops its oldest checkpoints. A window that never
+    // shortened dropped nothing, so a missing snapshot there is a replay
+    // defect and not an eviction, and it fails rather than being counted.
     if (replayed === null) {
+      if (!history.retentionWarning)
+        throw new Error(`Retained snapshot at ${time} did not replay`);
       evicted++;
       continue;
     }
@@ -129,7 +132,12 @@ try {
       throw new Error(`Replay differs from the collected snapshot at ${time}`);
     verified++;
   }
-  if (!verified) throw new Error("No retained snapshot was verified");
+  // A run that evicted more than it verified proves almost nothing, and the
+  // count alone cannot say which of the two it was.
+  if (verified <= evicted)
+    throw new Error(
+      `Verified ${verified} snapshot(s) against ${evicted} evicted`,
+    );
   // One checkpoint of the same workload against the archive alone, so the
   // share of an append that belongs to snapshot storage is readable next to
   // the whole-sample cost above.
