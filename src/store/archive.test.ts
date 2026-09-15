@@ -21,6 +21,18 @@ function sample(i: number): Sample {
   return s;
 }
 
+/**
+ * Lines held by any checkpoint but the one still taking them. Only that last
+ * checkpoint may hold lines it has not sealed; every earlier one was sealed
+ * as the archive moved past it, and reaching in is the shortest way to read
+ * that back, because the alternative is a budget wide enough to evict on.
+ */
+function unsealed(archive: Archive): number {
+  const chunks = (archive as unknown as { chunks: { open: string[] }[] })
+    .chunks;
+  return chunks.slice(0, -1).reduce((n, c) => n + c.open.length, 0);
+}
+
 /** Append samples `from` up to but not including `to`, and keep each one. */
 function extend(
   archive: Archive,
@@ -229,17 +241,16 @@ test("a checkpoint that rolled over is charged what it compressed to", () => {
   // of repeated text that compress to almost nothing. Charging each of the
   // four rolled-over checkpoints its open size instead reaches four.
   const archive = new Archive(3 * 1024 * 1024);
-  extend(archive, 0, 201);
+  extend(archive, 0, 150);
   // A copy carries the open run of the checkpoint it copied and never appends
   // to that checkpoint, so the copy is the other way that run has to be
-  // sealed. Sample 201 is the sample after a seal fills the run, so the copy
-  // inherits about two megabytes of it, which is the most one can inherit and
-  // the most a copy that never sealed it would carry for its whole life.
+  // sealed. One append is the whole of what that takes.
   const copy = archive.copy(0);
-  extend(archive, 201, 1200);
+  extend(archive, 150, 1200);
   expect(archive.shortened).toBe(false);
   expect(archive.at(1000)?.time).toBe(1000);
-  extend(copy, 201, 1200);
-  expect(copy.shortened).toBe(false);
+  expect(unsealed(archive)).toBe(0);
+  extend(copy, 150, 151);
+  expect(unsealed(copy)).toBe(0);
   expect(copy.at(1000)?.time).toBe(1000);
 });
