@@ -11,7 +11,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `src/ui/`: the shell, the seven screens and every word and formatted number on them.
 - `src/runtime.ts`: the sampling scheduler and the settings-change path. `src/main.ts` is the entry point and `src/effect.ts` performs a confirmed lane action.
 - `src/test/`: the temporary-file fixture and the mounted-app harness the suites share.
-- `scripts/`: the CI runner and the two benchmarks.
+- `scripts/`: the CI runner and the three benchmarks.
 - `data/`: shipped JSON data that both the dashboard and the warden read.
 - `warden/`: the optional Python agent warden, its launcher scripts, its systemd user-unit templates and its unit tests.
 
@@ -22,6 +22,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `.github/workflows/ci.yml` ends in a job named `CI`. It fails when any job it lists in `needs` does not succeed, and it is the aggregate the main ruleset is to require in place of the per-job checks. Its "Require every needed job to succeed" step parses the workflow with `yq` and fails when that `needs` list differs from the other jobs in the workflow, so a new job must go into the list.
 - A new setting that collection reads must be added to `collectionKeys` in `src/collect/settings.ts`. Leaving it out compiles only because collection never reads it, and the runtime would then not rebuild the collector when it changes.
 - A display setting or a notification rule must stay out of that list, because rebuilding the collector discards the counters and alert state a sample compares against.
+- Scratch traversal runs in a worker. Bun's bundler does not follow the worker's URL, so `bun run build` emits `src/collect/scratch-worker.ts` as a second entry point beside `dist/main.js`, and `src/collect/scratch.ts` resolves whichever of the two spellings is on disk. A build that emits only the entry point leaves the dashboard unable to measure scratch.
 - Docs change in the same commit as the code they describe. The `doc-drift-check` hook reads the `Covers:` line of each file in `docs/architecture/` and shows a notice when covered code changed without them.
 
 ## Run and debug
@@ -42,7 +43,7 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 
 ## Tests
 
-- `src/collect/*.test.ts`: collection against temporary procfs, cgroup and storage fixtures. No test spawns tmux or a build cache server, because a collector is only given those readers when the program builds it.
+- `src/collect/*.test.ts`: collection against temporary procfs, cgroup and storage fixtures. No test spawns tmux or a build cache server, because a collector is only given those readers when the program builds it. `src/collect/scratch-worker.test.ts` starts the real scan thread against a temporary directory, which is what proves the worker file resolves in the source tree.
 - `src/model/*.test.ts`: lane derivation and naming, the cause ladder and the meters, build classification, the exact command of each lane action, and shell quoting read back through `/bin/sh`.
 - `src/store/*.test.ts`: checkpoint replay, retention, the SQLite schema guard, the load-path migration and the timeline event derivation.
 - `src/ui/*.test.tsx`: the mounted shell through OpenTUI's terminal test renderer. These drive the real screens from the keyboard and the mouse and read the rendered frame back.
@@ -53,6 +54,8 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 ## Benchmarks and what they do not prove
 
 `bun run bench` collects a fixture of 50 scopes and 2000 processes six times, discards the first, and reports the per-sample and per-phase timings against a 20 ms target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
+
+`bun run bench:scratch` builds a scratch tree, scans it twice through the scan thread, and reports elapsed time and whole-process processor time for a scan that holds the whole thread and one held to the default share. It checks that both read one total. Its processor figure covers the whole process, so it includes the main thread receiving the reading, and its tree sits in the page cache, so the result does not establish the cost of a cold traversal.
 
 `bun run bench:history` fills the configured history window while replacing a process at each sample and moving every counter by a different amount per row, then compares selected replayed snapshots against their originals across checkpoint boundaries. It reports incomplete retention, memory use, and the median, 95th percentile and slowest append for both `History.add` and `Archive.add`. Its generated workload does not establish a memory bound for every command line or process mix, and its timings come from one machine under whatever else it was running.
 
