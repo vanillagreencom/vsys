@@ -104,6 +104,8 @@ export interface Config {
   scratchDirs: string[];
   scratchQuota: number;
   scratchRefreshMs: number;
+  /** The share of one core a background scratch scan may hold while it runs. */
+  scratchDutyPercent: number;
   btrfsMounts: string[];
   scrubDir: string;
   smartDir: string;
@@ -194,6 +196,7 @@ export function defaults(): Config {
     ],
     scratchQuota: 10737418240,
     scratchRefreshMs: 30000,
+    scratchDutyPercent: 25,
     btrfsMounts: [],
     scrubDir: "/run/btrfs-scrub",
     smartDir: "/run/smartctl",
@@ -288,6 +291,7 @@ export function validate(value: unknown): Config {
     "pressureHoldSeconds",
     "scratchQuota",
     "scratchRefreshMs",
+    "scratchDutyPercent",
     "scrubMaxAgeDays",
   ] as const) {
     if (!Number.isFinite(c[key]) || c[key] < 0)
@@ -301,6 +305,10 @@ export function validate(value: unknown): Config {
     throw new Error(
       "Scratch refresh must be between 1000 and 86400000 milliseconds",
     );
+  // Zero would stop the traversal from ever finishing a slice, so a scratch
+  // reading would never complete rather than arriving slowly.
+  if (c.scratchDutyPercent < 1 || c.scratchDutyPercent > 100)
+    throw new Error("Scratch scan share must be between 1 and 100 percent");
   if (c.historyHours <= 0 || c.historyHours > 24)
     throw new Error(
       "History window must be greater than zero and at most 24 hours",

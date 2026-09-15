@@ -34,6 +34,7 @@ export const collectionKeys = [
   "scratchDirs",
   "scratchQuota",
   "scratchRefreshMs",
+  "scratchDutyPercent",
   "btrfsMounts",
   "scrubDir",
   "smartDir",

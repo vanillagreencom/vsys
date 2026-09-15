@@ -31,6 +31,10 @@ test("invalid settings stop loading", () => {
     { notifications: ["unknown"] },
     { laneNameParts: ["hostname"] },
     { keys: { quit: "j" } },
+    // A scan share of zero would leave a traversal that never finishes a
+    // slice, so scratch would read as pending forever.
+    { scratchDutyPercent: 0 },
+    { scratchDutyPercent: 101 },
     { sqlitePath: "relative" },
     { unknown: 1 },
   ])
