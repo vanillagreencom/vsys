@@ -50,7 +50,7 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 
 `bun run bench` collects a fixture of 50 scopes and 2000 processes six times, discards the first, and reports the per-sample and per-phase timings against a 20 ms target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
 
-`bun run bench:scratch` builds a scratch tree, scans it twice through the scan thread, and reports elapsed time and whole-process processor time for a scan that holds the whole thread and one held to the default share. It checks that both read one total. Its processor figure covers the whole process, so it includes the main thread receiving the reading, and its tree sits in the page cache, so the result does not establish the cost of a cold traversal.
+`bun run bench:scratch` builds a scratch tree and measures two scans of it, discarding a warm-up before each, then reports elapsed time and whole-process processor time for a scan that holds the whole thread and one held to the default share. It checks that both read one total. Its processor figure covers the whole process, so it includes the main thread receiving the reading, and its tree sits in the page cache, so the result does not establish the cost of a cold traversal.
 
 `bun run bench:history` fills the configured history window while replacing a process at each sample, then compares selected replayed snapshots against their originals across checkpoint boundaries. It reports incomplete retention and memory use. Its generated workload does not establish a memory bound for every command line or process mix.
 

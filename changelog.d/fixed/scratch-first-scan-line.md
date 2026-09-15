@@ -1,0 +1,1 @@
+- Storage no longer says no scratch directory is configured while the first measurement of configured directories is still running.

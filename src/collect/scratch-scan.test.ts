@@ -2,10 +2,9 @@ import { expect, test } from "bun:test";
 import { linkSync, lstatSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
-import { restMs, ScanCancelled, scanScratch } from "./scratch-scan";
+import { type PaceClock, restMs, scanScratch } from "./scratch-scan";
 
 const full = { sliceMs: 10, dutyPercent: 100 };
-const never = () => false;
 
 test("one traversal counts hard links once per root and once per session", async () => {
   const f = fixture();
@@ -17,7 +16,7 @@ test("one traversal counts hard links once per root and once per session", async
     symlinkSync(f.root, join(path, "loop"));
     const missing = join(f.root, "missing");
     const c = { ...f.config, scratchDirs: [path, missing] };
-    const result = await scanScratch(c, Date.now(), full, never);
+    const result = await scanScratch(c, Date.now(), full);
     expect(result.scratch[0].bytes).toBe(
       lstatSync(path).size +
         lstatSync(join(path, "a")).size +
@@ -40,51 +39,56 @@ test("one traversal counts hard links once per root and once per session", async
   }
 });
 
-test("a stopped traversal reports no reading and no source error", async () => {
+test("a traversal rests for what each spent slice earned", async () => {
   const f = fixture();
   const path = join(f.root, "scratch");
   try {
-    for (let i = 0; i < 40; i++) f.write(join(path, `dir-${i}/file`), "1234");
+    for (let i = 0; i < 4; i++) f.write(join(path, `dir-${i}/file`), "1234");
     const c = { ...f.config, scratchDirs: [path] };
-    let stop = false;
-    const scan = scanScratch(
-      c,
-      Date.now(),
-      { sliceMs: 0, dutyPercent: 50 },
-      () => stop,
-    );
-    stop = true;
-    await expect(scan).rejects.toBeInstanceOf(ScanCancelled);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test("a paced traversal returns its thread between entries", async () => {
-  const f = fixture();
-  const path = join(f.root, "scratch");
-  try {
-    for (let i = 0; i < 40; i++) f.write(join(path, `dir-${i}/file`), "1234");
-    const c = { ...f.config, scratchDirs: [path] };
-    // Entry reads are synchronous, so nothing but the pace hands the thread
-    // back. A traversal that never rests leaves this timer unfired until it
-    // has walked the whole tree.
-    let turns = 0;
-    const ticking = setInterval(() => {
-      turns++;
-    }, 1);
-    try {
+    // The clock advances a fixed step per reading, so every entry measures
+    // the same busy time however loaded the machine running this is. A slice
+    // of zero makes every entry end one.
+    const step = 5;
+    const busy = step * 2;
+    const rows: [number, number][] = [
+      [100, 0],
+      [50, busy],
+      [25, busy * 3],
+      [20, busy * 4],
+    ];
+    for (const [dutyPercent, expected] of rows) {
+      let reading = 0;
+      const sleeps: number[] = [];
+      const clock: PaceClock = {
+        now: () => {
+          reading += step;
+          return reading;
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      };
       const result = await scanScratch(
         c,
         Date.now(),
-        { sliceMs: 0, dutyPercent: 50 },
-        never,
+        { sliceMs: 0, dutyPercent },
+        clock,
       );
-      expect(result.scratch[0].error).toBeNull();
-    } finally {
-      clearInterval(ticking);
+      expect({ dutyPercent, error: result.scratch[0].error }).toEqual({
+        dutyPercent,
+        error: null,
+      });
+      // Every entry rests, including at a duty of 100 where what it earned is
+      // nothing. A traversal that skips the rest records none at all.
+      expect({ dutyPercent, rested: sleeps.length > 0 }).toEqual({
+        dutyPercent,
+        rested: true,
+      });
+      expect({ dutyPercent, waited: [...new Set(sleeps)] }).toEqual({
+        dutyPercent,
+        waited: [expected],
+      });
     }
-    expect(turns).toBeGreaterThan(0);
   } finally {
     f.cleanup();
   }

@@ -23,6 +23,10 @@ class ApplicationChecks(unittest.TestCase):
             "#!/bin/sh\n"
             'printf "%s\\n" "$*" >> "$CI_COMMAND_LOG"\n'
             'if [ "$*" = "${CI_FAIL_COMMAND:-}" ]; then exit 23; fi\n'
+            'if [ "$*" = "run build" ]; then\n'
+            '  mkdir -p dist\n'
+            '  for name in ${CI_BUILD_EMITS}; do printf x > "dist/$name"; done\n'
+            "fi\n"
         )
         binary.chmod(0o755)
         self.env = {
@@ -30,6 +34,7 @@ class ApplicationChecks(unittest.TestCase):
             "PATH": str(self.root) + os.pathsep + os.environ["PATH"],
             "CI_COMMAND_LOG": str(self.commands),
             "CI_FAIL_COMMAND": "",
+            "CI_BUILD_EMITS": "main.js scratch-worker.js",
         }
 
     def run_ci(self):
@@ -80,6 +85,20 @@ class ApplicationChecks(unittest.TestCase):
                 (self.root / "package.json").write_text(contents)
                 self.assertNotEqual(self.run_ci().returncode, 0)
                 self.assertFalse(self.commands.exists())
+
+    def test_build_missing_an_entry_point_fails(self):
+        # The scratch scan thread is a build output of its own. A build that
+        # emits only the bundle passes every command it runs.
+        for emitted in ("main.js", "scratch-worker.js"):
+            with self.subTest(emitted=emitted):
+                self.package()
+                self.env["CI_BUILD_EMITS"] = emitted
+                result = self.run_ci()
+                self.assertNotEqual(result.returncode, 0)
+                missing = "scratch-worker.js" if emitted == "main.js" else "main.js"
+                self.assertIn(f"The build emitted no dist/{missing}", result.stderr)
+                self.commands.unlink()
+        self.env["CI_BUILD_EMITS"] = "main.js scratch-worker.js"
 
     def test_check_order_and_each_command_failure(self):
         commands = ["install --frozen-lockfile", "run lint", "run typecheck", "run test", "run build"]

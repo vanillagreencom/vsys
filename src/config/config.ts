@@ -305,8 +305,9 @@ export function validate(value: unknown): Config {
     throw new Error(
       "Scratch refresh must be between 1000 and 86400000 milliseconds",
     );
-  // Zero would stop the traversal from ever finishing a slice, so a scratch
-  // reading would never complete rather than arriving slowly.
+  // At zero the rest a slice earns is not a finite number, and a timer given
+  // one waits its shortest interval instead. The traversal would then run at
+  // close to full speed, which is the one thing this setting exists to stop.
   if (c.scratchDutyPercent < 1 || c.scratchDutyPercent > 100)
     throw new Error("Scratch scan share must be between 1 and 100 percent");
   if (c.historyHours <= 0 || c.historyHours > 24)
