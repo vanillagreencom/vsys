@@ -66,8 +66,24 @@ tm set-option -g renumber-windows off
 TMUX_ADDR="$(tm display-message -p '#{socket_path},#{pid},0')"
 
 MARK='  kendex (ken-1453) Fable 5.1 (1M context) 52% (fixture@example.com)     /rc'
-NO_WINDOW='  kendex (ken-1453) Opus 5 41% (fixture@example.com)     /rc'
+# The line a status-line command that prints the percentage alone draws: no
+# window at all, which is what the overseer this feature was built for shows.
+NO_WINDOW_1M='  kendex (ken-1453) Fable 5.1 52% (fixture@example.com)     /rc'
 UNDER_MARK='  kendex (ken-1453) Fable 5.1 (1M context) 10% (fixture@example.com)     /rc'
+
+# The same script over a lane-context.sh whose window table is empty, which is
+# what this reader did before the table existed. The tree is
+# symlinks but for that one file, so every other dependency is the real one.
+SRC_DIR="$(cd "$(dirname "$SUCCEED")" && pwd)"
+UNPATCHED="$TMP_ROOT/unpatched"
+mkdir -p "$UNPATCHED"
+ln -s "$SRC_DIR"/* "$UNPATCHED/"
+rm -f -- "${UNPATCHED:?}/lib"
+mkdir "$UNPATCHED/lib"
+ln -s "$SRC_DIR"/lib/* "$UNPATCHED/lib/"
+rm -f -- "${UNPATCHED:?}/lib/lane-context.sh"
+sed "s/^LANE_CONTEXT_DEFAULT_WINDOWS=.*/LANE_CONTEXT_DEFAULT_WINDOWS=''/" \
+  "$SRC_DIR/lib/lane-context.sh" > "$UNPATCHED/lib/lane-context.sh"
 
 # new_caller SCREEN — every window past index 0 closed, then a caller pane at
 # index 1 showing SCREEN; sets CALLER_PANE and CALLER_WINDOW.
@@ -95,7 +111,8 @@ shift 2
 cd "$TMP_ROOT/work" && exec env -i HOME="$H" PATH="$BIN:$PATH" TMUX="\$TMUX" TMUX_PANE="\$TMUX_PANE" \\
   LANES_HOME="$H" FIXTURE_DIR="$FIXTURE_DIR" OVERSEE_WATCH_STATE_DIR="$TMP_ROOT/state-\$row" \\
   ORCH_LANES_FETCH_CMD="$FETCHER" ORCH_LANE_DIRS="$H/.claude:$H/.codex" ORCH_OVERSEER_PREFERENCE="\$pref" \\
-  "$SUCCEED" "\$@"
+  ORCH_OVERSEER_SUCCESSION="\${SUCCESSION:-on}" \\
+  "\${SUCCEED_BIN:-$SUCCEED}" "\$@"
 ENV
 # in-pane ARGS... — a caller pane's own command: draw the screen, wait until
 # tmux shows it, then become the script.
@@ -181,11 +198,43 @@ check "1M window under the context mark: context-below-mark, nothing launched" \
   "$RC|$(sed -n 1p <<<"$OUT")|$(overseers)|$(recorded claude)" \
   "0|oversee-succeed: context-below-mark tokens=100000 mark=500000|0|none"
 
-new_caller "$NO_WINDOW"
-run_succeed below 'claude:1:high'
-check "no 1M window: window-below-mark, nothing launched" \
+new_caller "$NO_WINDOW_1M"
+run_succeed window 'claude:1:high'
+check "a line naming no window takes the window its model runs, and the successor launches" \
+  "$RC|$(layout)|$(caller_open)|$(recorded claude)" \
+  "0|1 overseer;|no|lane=$H/.claude;-n;overseer;--model;fable;--effort;high;/goal Load the orch skill and run the orch $BRIEF_TAIL;"
+
+# What a refusal's window rests on. A window the line NAMES is read off the
+# line whatever the table holds for that model, and a model the table leaves
+# out is no window at all rather than another model's figure.
+for row in \
+  "  kendex (ken-1453) Opus 5 (200k context) 41% (fixture@example.com)     /rc|window=200000 source=status-line|a named window under 1M is read off the line, not off the table" \
+  "  kendex (ken-1453) Sonnet 4.5 52% (fixture@example.com)     /rc|window=none source=none|a model the table leaves out is unmeasured, not guessed at"; do
+  IFS='|' read -r row_screen row_want row_label <<<"$row"
+  new_caller "$row_screen"
+  run_succeed window 'claude:1:high'
+  check "$row_label" \
+    "$RC|$(sed -n 1p <<<"$OUT")|$(overseers)|$(recorded claude)" \
+    "0|oversee-succeed: window-below-mark $row_want|0|none"
+done
+
+# ORCH_OVERSEER_SUCCESSION over a screen past the mark, which would launch.
+for row in \
+  "off|0|oversee-succeed: succession-off ORCH_OVERSEER_SUCCESSION=off" \
+  "true|1|oversee-succeed: invalid-succession ORCH_OVERSEER_SUCCESSION=true"; do
+  IFS='|' read -r row_value row_rc row_want <<<"$row"
+  new_caller "$MARK"
+  SUCCESSION="$row_value" run_succeed succession 'claude:1:high'
+  check "succession $row_value: nothing launched" \
+    "$RC|$(sed -n 1p <<<"$OUT")|$(overseers)|$(recorded claude)" \
+    "$row_rc|$row_want|0|none"
+done
+
+new_caller "$NO_WINDOW_1M"
+SUCCEED_BIN="$UNPATCHED/oversee-succeed" run_succeed control 'claude:1:high'
+check "control: with the window table empty the same screen refuses and launches nothing" \
   "$RC|$(sed -n 1p <<<"$OUT")|$(overseers)|$(recorded claude)" \
-  "0|oversee-succeed: window-below-mark window=none|0|none"
+  "0|oversee-succeed: window-below-mark window=none source=none|0|none"
 
 printf '\npass: %s   fail: %s\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -19,6 +19,10 @@
 #     merge-commit:<oid>, merge-fail:<already-queued|policy|transport|queue-required>
 #     graphql:fail (the queue query fails, the REST fallback answers)
 #     require-token (the stub refuses a mutation without the bot token)
+#     repo:no-auto (allow_auto_merge=false), repo:no-rule (no ruleset check),
+#     repo:pr-rule (a ruleset pull_request rule only), repo:classic (no ruleset,
+#     one classic required check)
+#     base:<branch> the PR's base; gate reads answer only its encoded path
 #     env:NAME=value  the caller's environment
 #   argv   check | auto | immediate | force | admin | admin-dry | force-auto |
 #          expected:<sha> (--auto with --expected-head) | router:<flags>
@@ -123,6 +127,11 @@ word() {
     merge-fail:*) W_ENV+=("STUB_MERGE_EXIT=1" "STUB_MERGE_STDERR=$(merge_stderr_of "$v")") ;;
     graphql:fail) W_ENV+=("STUB_POST_GRAPHQL_FAIL=true") ;;
     require-token) W_ENV+=("STUB_REQUIRE_TOKEN=true") ;;
+    repo:no-auto) W_ENV+=("STUB_ALLOW_AUTO_MERGE=false") ;;
+    repo:no-rule) W_ENV+=("STUB_GATE_RULES=[]") ;;
+    repo:pr-rule) W_ENV+=('STUB_GATE_RULES=[{"type":"pull_request"}]') ;;
+    repo:classic) W_ENV+=("STUB_GATE_RULES=[]" "STUB_CLASSIC_CHECKS=1") ;;
+    base:*) W_ENV+=("STUB_BASE=$v") ;;
     env:*) W_ENV+=("$v") ;;
     -) ;;
     *) echo "UNKNOWN-WORD: $1" >&2; exit 2 ;;
@@ -178,7 +187,7 @@ calls() {
       "api graphql"*mergeQueueEntry*) out="$out,graphql:queue" ;;
       "api graphql"*) out="$out,graphql:threads" ;;
       "api user"*) out="$out,user" ;;
-      "auth status"*|"repo view"*) ;;
+      "auth status"*|"repo view"*|"api repos/"*|"pr view 123 --json baseRefName"*) ;;
       *) out="$out,?($line)" ;;
     esac
   done <"$CALL_LOG"
@@ -235,6 +244,7 @@ err_macro() {
     threads:*) printf 'unresolved_threads: %s actionable thread(s) need attention' "${1#threads:}" ;;
     fetch-failed) printf 'review_threads_fetch_failed: Failed to fetch actionable review threads from GitHub' ;;
     malformed) printf 'review_threads_fetch_failed: GitHub returned malformed review thread data' ;;
+    arm-remedy) printf 'Nothing mutated. Enable auto-merge and a required status check or review rule on the base branch, or merge through orch merge-pr with the explicit consumer-only answer under submit-pr.md § 6.2.' ;;
     *) printf 'UNKNOWN-MACRO:%s' "$1" ;;
   esac
 }
@@ -313,9 +323,15 @@ a failed check without --auto is blocked with the auto hint|checks:failed|immedi
 the admin dry run names the mode and mutates nothing|checks:ci-required|admin-dry|0|Would merge PR #123 (--squash, mode=immediate, delete_branch=false, token=current-user admin mode)|{admin-skip}|calls=view:state auth=<unset>
 --admin clears the caller's own token before every call, without the router's help|checks:ci-required post:MERGED merge-commit:admin-merge-oid env:GH_TOKEN=ghp_user|admin|0|-|{admin-skip};MERGED PR #123|calls=view:state,view:head,merge:admin,graphql:queue auth=<unset>
 the admin router clears the caller's token and never promotes the bot's|checks:ci-required post:MERGED merge-commit:admin-merge-oid env:GH_TOKEN=ghp_user env:GH_BOT_TOKEN=ghp_test_token|router:--admin|0|-|{admin-skip};MERGED PR #123|calls=view:state,view:head,merge:admin,graphql:queue auth=<unset>
-the non-admin router promotes the bot token for the mutation and the snapshot|checks:ci-required require-token post:MERGED merge-commit:forced-merge-oid env:GH_BOT_TOKEN=ghp_test_token|router:--force|0|-|{override-skip};MERGED PR #123|calls=user,view:state,view:head,merge,graphql:queue auth=ghp_test_token
+the non-admin router promotes the bot token for the mutation and the snapshot|checks:ci-required require-token post:MERGED merge-commit:forced-merge-oid env:GH_BOT_TOKEN=ghp_test_token|router:--force|0|-|{override-skip};Using GH_BOT_TOKEN as stub-user;MERGED PR #123|calls=user,view:state,view:head,user,merge,graphql:queue auth=ghp_test_token
 a prepared head that drifted fails before arming|checks:ci-required head:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|expected:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|1|-|BLOCKED PR #123 — prepared head changed before merge attempt (expected=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, actual=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)|calls=$PRE auth=<unset>
-an active queue entry after --auto is success-pending, exit 75, volatile|checks:ci-required head:28132e9b990a595417f79f4e213b4e984bf676fd post-entry require-token env:GH_BOT_TOKEN=ghp_test_token|auto|75|-|QUEUED IN MERGE QUEUE PR #123 — queueState=QUEUED;{volatile}|calls=$PRE,merge:auto,graphql:queue auth=<unset>+ghp_test_token
+an active queue entry after --auto is success-pending, exit 75, volatile|checks:ci-required head:28132e9b990a595417f79f4e213b4e984bf676fd post-entry require-token env:GH_BOT_TOKEN=ghp_test_token|auto|75|-|Using GH_BOT_TOKEN as stub-user;QUEUED IN MERGE QUEUE PR #123 — queueState=QUEUED;{volatile}|calls=$PRE,user,merge:auto,graphql:queue auth=<unset>+ghp_test_token
+--auto refuses where auto-merge is off: nothing mutated|checks:ci-required repo:no-auto|auto|1|-|arm: no-merge-gate=allow_auto_merge repo=owner/repo;{arm-remedy}|calls=$CHECK auth=<unset>
+--auto refuses where the base branch has no required check or review rule|checks:ci-required repo:no-rule|auto|1|-|arm: no-merge-gate=required_check repo=owner/repo;{arm-remedy}|calls=$CHECK auth=<unset>
+the refusal is the first stderr line, ahead of the checks' warnings|checks:none repo:no-auto|auto|1|-|arm: no-merge-gate=allow_auto_merge repo=owner/repo;{arm-remedy}|calls=$CHECK auth=<unset>
+a ruleset pull_request rule alone is a gate: it arms|checks:ci-required post-auto repo:pr-rule|auto|75|-|{no-token};AUTO-MERGE ENABLED PR #123 — will fire when CI + branch protection clear;{volatile}|calls=$PRE,merge:auto,graphql:queue auth=<unset>
+a classic required check with no ruleset is a gate: it arms|checks:ci-required post-auto repo:classic|auto|75|-|{no-token};AUTO-MERGE ENABLED PR #123 — will fire when CI + branch protection clear;{volatile}|calls=$PRE,merge:auto,graphql:queue auth=<unset>
+a base branch with slashes is URL-encoded in the gate reads and arms|checks:ci-required post-auto base:release/foo/bar|auto|75|-|{no-token};AUTO-MERGE ENABLED PR #123 — will fire when CI + branch protection clear;{volatile}|calls=$PRE,merge:auto,graphql:queue auth=<unset>
 classic auto-merge is success-pending, exit 75, volatile|checks:ci-required post-auto|auto|75|-|{no-token};AUTO-MERGE ENABLED PR #123 — will fire when CI + branch protection clear;{volatile}|calls=$PRE,merge:auto,graphql:queue auth=<unset>
 an immediate merge whose snapshot is MERGED exits 0|checks:ci-required post:MERGED merge-commit:merged-oid|auto|0|-|{no-token};MERGED PR #123|calls=$PRE,merge:auto,graphql:queue auth=<unset>
 OPEN, unqueued and unarmed after a zero exit is blocked, naming the absent proof|checks:ci-required|auto|1|-|{no-token};BLOCKED PR #123 — gh reported success but state=OPEN, autoMerge=false, mergeQueue=false;merge command accepted|calls=$PRE,merge:auto,graphql:queue auth=<unset>
@@ -340,6 +356,8 @@ a state resolved only on the retry still short-circuits --auto, the lookup retri
 a closed PR found on the retry keeps its line|state:CLOSED state-err:once|auto|1|-|{closed}|calls=view:state,view:state auth=<unset>
 the immediate mode on a retry-resolved state|state:MERGED merged-at state-err:once|immediate|0|-|ALREADY MERGED PR #123 2026-08-15T09:41:12Z|calls=view:state,view:state auth=<unset>
 an open PR still merges, its state read once|checks:ci-required post:MERGED merge-commit:merged-oid|immediate|0|-|{no-token};MERGED PR #123|calls=$PRE,merge,graphql:queue auth=<unset>
+GH_TOKEN alone is named with the installation it acts as, and no current-user warning|checks:ci-required post:MERGED merge-commit:merged-oid env:GH_TOKEN=ghs_INSTALL|immediate|0|-|Using GH_TOKEN as GitHub App installation;MERGED PR #123|calls=$PRE,user,merge,graphql:queue auth=ghs_INSTALL
+a token whose user lookup fails any other way is named unverified, and the merge still runs|checks:ci-required post:MERGED merge-commit:merged-oid env:GH_TOKEN=ghp_REVOKED|immediate|0|-|Using GH_TOKEN as unverified;MERGED PR #123|calls=$PRE,user,merge,graphql:queue auth=ghp_REVOKED
 "
 
 echo

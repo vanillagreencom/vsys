@@ -39,10 +39,6 @@ Events, checked and reported in this order every pass:
                              --repo
   EVENT triage <item>        an item created at or after --since that is absent
                              from the first repository's persisted baseline
-  EVENT window-gone <lane>   the tmux window no longer exists
-  EVENT lane-exited <lane>   `pgrep -P` reports no child under a bare shell on
-                             two passes; pane tail follows. An unusable probe
-                             is not an answer and keeps the lane watched
   EVENT lane-question <item> <id>
                              the --item's lane appended an ask to its lane
                              mailbox; its text follows. Answer it with
@@ -54,7 +50,28 @@ Events, checked and reported in this order every pass:
                              is not waiting on; its text follows
   EVENT owner-note <id>      a note in the overseer's own mailbox, sent with
                              `lane-mail send --item overseer --directive`;
-                             its text follows. Read with or without --item
+                             its text follows. Read with or without --item.
+                             Every text and `options:` line of these three
+                             kinds is indented two spaces, so a message line
+                             never begins with EVENT
+  EVENT window-gone <lane>   the tmux window no longer exists
+  EVENT lane-exited <lane>   `pgrep -P` reports no child under a bare shell on
+                             two passes; pane tail follows. An unusable probe
+                             is not an answer and keeps the lane watched
+  EVENT lane-closed <item>   under a lane-exited whose window watches a --hosted
+                             item already reported merged, once the pass finds
+                             its worktree gone: `lane-host close` succeeded;
+                             the provider's output follows, then `kept=none`
+                             when that output has no `kept=` line because the
+                             close archived nothing. A lane exiting while its
+                             worktree stands is not closed
+  EVENT lane-close-refused <item>
+                             the same close exited 3: a checkout of the lane,
+                             its clone or its worktree, has uncommitted
+                             files. `path=PATH` follows, taken from the
+                             provider's `close-refused path=PATH` line, or
+                             `path=unknown` without one; the sandbox stays.
+                             Never retried, never --force
   EVENT handoff <item>       the --item's workflow state carries a `.handoff`
                              record with no `.resumed_at`; the record follows.
                              Emitted once per record, on every surface: it
@@ -120,7 +137,12 @@ Options:
                       read through `lane-host` against REMOTE_ROOT rather
                       than this disk. Repeatable, once per item. An item with
                       no --hosted entry is read from `worktree path ITEM`,
-                      and the project root when that reports none
+                      and the project root when that reports none. The
+                      clone root is learned from REMOTE_ROOT/.git and kept:
+                      the item's workflow state is read from the clone, and
+                      so is its mailbox once the worktree is gone. A window
+                      watches the item it is named for, and gh-N watches
+                      issue-N, as open-terminal names a GitHub item's lane
   LANE_WINDOW...      tmux window names to watch; requires $TMUX. A bare name
                       is a window in the caller's session; `session:window`,
                       tmux's own target form, names one in another session
@@ -208,6 +230,7 @@ ow_message() { # REASON FIELD=VALUE...
     tracker-list-failed) text='The tracker list command failed.' ;;
     tracker-list-invalid) text='The tracker list output could not be parsed.' ;;
     handoff-read-failed) text='The handoff record could not be read.' ;;
+    lane-close-failed) text='lane-host close failed for a reason other than a refusal on uncommitted files. The next run reports the exit again and retries.' ;;
     hosted-invalid) text='Spell --hosted as ITEM=REMOTE_ROOT, with the item in letters, digits, dot, underscore and hyphen.' ;;
     hosted-unknown-item) text='The --hosted item is not one this run watches. Name it with --item, or drop the entry.' ;;
     hosted-duplicate) text='Name each hosted item once.' ;;
@@ -368,9 +391,10 @@ watch_state_init() {
 #   lane-exited<TAB><lane><TAB><pane key>[|reported]
 #   lane-idle<TAB><lane><TAB><pane key>|<screen key>[|reported]
 #   handoff<TAB><item><TAB><record checksum>
-#   lane-mail<TAB><item><TAB><to-overseer.jsonl lines already drained>
-# The lane-mail row is the one kind that is never pruned: it is durable read
-# state rather than a sighting, and check_mail says why.
+#   lane-mail<TAB><item>[@clone]<TAB><to-overseer.jsonl lines already drained> <first id>
+#   clone-root<TAB><item><TAB><the hosted lane's clone, on its own host>
+# The lane-mail and clone-root rows are never pruned: they are durable read
+# state rather than sightings, and check_mail says why.
 #   merged<TAB><item><TAB><repo>#<number>[ <repo>#<number>...]
 # The usage-limit value is split apart where the event is emitted, some 200
 # lines below where it is written; the reset key's own layout is
@@ -425,8 +449,8 @@ LANE_ASKING_RE='(❯|›) [0-9]+\. |Do you want to|Enter to select|Esc to cancel
 # for the apostrophe: ASCII in the binaries, typographic once rendered.
 USAGE_LIMIT_RE='You.(ve|re) (hit|reached) your [a-z ]*limit|[Uu]sage limit reached|hit usage limits|out of (usage )?credits|/usage-credits'
 MODEL_CAPACITY='Selected model is at capacity'
-# A turn in flight is WORKING_RE, in lib/pane-working.sh: open-terminal reads
-# the same question off a launching pane, and one answer serves both.
+# A turn in flight is `pane_working`, in lib/pane-working.sh: open-terminal
+# reads the same question off a launching pane, and one answer serves both.
 # The marker each harness draws at column 0 for a submitted user message
 # echoed into the transcript AND for the composer the lane sits at: Claude
 # Code `❯`, Codex `›`. Spelled as an alternation of literals and NEVER as a
@@ -660,6 +684,113 @@ hosted_root() { # ITEM
   done
 }
 
+# The item a lane window watches, as LANE_ITEM, with hosted_root set for it.
+# open-terminal names a window for its item, except a GitHub item's: window
+# gh-N, item issue-N. The literal name is tried first, so a tracker whose own
+# identifiers read gh-N keeps them.
+hosted_lane_item() { # LANE
+  LANE_ITEM="${1#*:}"
+  hosted_root "$LANE_ITEM"
+  [[ -z "$HOSTED_ROOT" && "$LANE_ITEM" == gh-* && "${LANE_ITEM#gh-}" =~ ^[0-9]+$ ]] || return 0
+  LANE_ITEM="issue-${LANE_ITEM#gh-}"
+  hosted_root "$LANE_ITEM"
+}
+
+# The hosted items whose worktree this pass's mail read found gone, one per line.
+HOSTED_GONE_ITEMS=""
+
+# `lane-host cat --item ITEM PATH` into DEST: 0 read, 1 not there, 2 failed.
+# Exit 2 is also the dispatcher's own refusal, so it reads as a missing file
+# only once `touch` answers (schemas/lane-host.md). A failed read leaves no DEST.
+host_fetch() { # ITEM PATH DEST
+  local rc=0
+  "$SCRIPT_DIR/lane-host" cat --item "$1" "$2" >"$3" 2>"$WORK_DIR/host.err" || rc=$?
+  [[ "$rc" -ne 0 ]] || return 0
+  rm -f -- "$3"
+  [[ "$rc" -eq 2 ]] || return 2
+  "$SCRIPT_DIR/lane-host" touch --item "$1" >/dev/null 2>>"$WORK_DIR/host.err" || return 2
+  return 1
+}
+
+# The clone a hosted lane's worktree belongs to, which its record does not
+# carry: the worktree's `.git` file names it (`gitdir: <clone>/.git/worktrees/
+# <name>`) while the worktree stands, and STATE's clone-root row keeps it for
+# after merge-pr.md § 5 removes the worktree. Sets HOSTED_CLONE, and
+# HOSTED_GONE to 1 when the worktree is gone. Call after hosted_root.
+hosted_clone() { # ITEM STATE
+  local line="" rc=0
+  HOSTED_GONE=0
+  host_fetch "$1" "$HOSTED_ROOT/.git" "$WORK_DIR/gitfile" || rc=$?
+  case "$rc" in
+    0)
+      IFS= read -r line <"$WORK_DIR/gitfile" || [[ -n "$line" ]] \
+        || die handoff-read-failed "" "item=$1" "path=$HOSTED_ROOT/.git" "value=<empty>"
+      [[ "$line" == "gitdir: /"*/.git/worktrees/* ]] \
+        || die handoff-read-failed "" "item=$1" "path=$HOSTED_ROOT/.git" "value=$line"
+      line="${line#gitdir: }"
+      HOSTED_CLONE="${line%/.git/worktrees/*}" ;;
+    1)
+      HOSTED_GONE=1
+      if ! HOSTED_CLONE="$(lane_row_get clone-root "$2" "$1")" || [[ -z "$HOSTED_CLONE" ]]; then
+        die handoff-read-failed "" "item=$1" "clone=unknown"
+      fi ;;
+    *) die handoff-read-failed "$(cat "$WORK_DIR/host.err")" "item=$1" "path=$HOSTED_ROOT/.git" ;;
+  esac
+}
+
+# The directory an item's workflow state is read from, as ITEM_STATE_DIR. A
+# hosted lane's state is in its clone (workflow-state joins a relative state
+# directory to the common root), fetched into a scratch directory the same
+# reader then reads; a file the host does not have leaves it empty, as a
+# missing local file does. check_mail has learned the clone this pass.
+item_state_dir() { # ITEM STATE
+  local clone remote rc=0
+  ITEM_STATE_DIR="$WORKFLOW_STATE_DIR"
+  hosted_root "$1"
+  [[ -n "$HOSTED_ROOT" ]] || return 0
+  if ! clone="$(lane_row_get clone-root "$2" "$1")" || [[ -z "$clone" ]]; then
+    die handoff-read-failed "" "item=$1" "clone=unknown"
+  fi
+  remote="$STATE_DIR_SETTING"
+  [[ "$remote" == /* ]] || remote="$clone/$remote"
+  ITEM_STATE_DIR="$WORK_DIR/hosted-state/$1"
+  mkdir -p -- "$ITEM_STATE_DIR" || die handoff-read-failed "" "item=$1" "path=$ITEM_STATE_DIR"
+  host_fetch "$1" "$remote/workflow-state-$1.json" "$ITEM_STATE_DIR/workflow-state-$1.json" || rc=$?
+  [[ "$rc" -le 1 ]] || die handoff-read-failed "$(cat "$WORK_DIR/host.err")" "item=$1" "path=$remote"
+}
+
+# Run where a hosted item's lane-exited is reported, once per pane, after its
+# merged. Exit 3 is a checkout with uncommitted files: the user settles it, so
+# it is reported and never retried or forced. Any other exit returns 1 with its
+# message on stderr: the caller commits the rows it already settled, other
+# lanes' closes among them, before the pass exits 2.
+close_hosted_lane() { # ITEM
+  local out line path="" rc=0
+  out="$("$SCRIPT_DIR/lane-host" close --item "$1" 2>&1)" || rc=$?
+  case "$rc" in
+    0)
+      echo "EVENT lane-closed $1"
+      [[ -z "$out" ]] || printf '%s\n' "$out"
+      # A close that archived no tmp records prints no kept= line; the
+      # overseer still gets one to record.
+      grep -q '^kept=' <<<"$out" || echo "kept=none" ;;
+    3)
+      # The provider's close-refused line names the refused checkout.
+      while IFS= read -r line; do
+        [[ "$line" == *"close-refused path="* ]] || continue
+        path="${line#*close-refused path=}"
+        break
+      done <<<"$out"
+      echo "EVENT lane-close-refused $1"
+      printf 'path=%s\n' "${path:-unknown}"
+      [[ -z "$out" ]] || printf '%s\n' "$out" >&2 ;;
+    *)
+      ow_message lane-close-failed "item=$1" "exit=$rc" >&2
+      [[ -z "$out" ]] || printf '%s\n' "$out" >&2
+      return 1 ;;
+  esac
+}
+
 command -v gh >/dev/null 2>&1 || die command-missing "" "command=gh"
 command -v jq >/dev/null 2>&1 || die command-missing "" "command=jq"
 command -v cksum >/dev/null 2>&1 || die command-missing "" "command=cksum"
@@ -841,12 +972,13 @@ check_handoff() {
   [[ ${#ITEMS[@]} -gt 0 ]] || return 0
   local item rec key prior errf="$WORK_DIR/handoff.err" state="${PW_SEEN[0]}"
   for item in "${ITEMS[@]}"; do
-    if ! "$WORKFLOW_STATE" --state-dir "$WORKFLOW_STATE_DIR" exists "$item" >/dev/null 2>&1; then
+    item_state_dir "$item" "$state"
+    if ! "$WORKFLOW_STATE" --state-dir "$ITEM_STATE_DIR" exists "$item" >/dev/null 2>&1; then
       state="$(lane_row_clear handoff "$state" "$item")"
       continue
     fi
-    if ! rec="$("$WORKFLOW_STATE" --state-dir "$WORKFLOW_STATE_DIR" get "$item" '.handoff | select(type == "object" and .resumed_at == null) | tojson' 2>"$errf")"; then
-      die handoff-read-failed "$(cat "$errf")" "item=$item" "path=$WORKFLOW_STATE_DIR"
+    if ! rec="$("$WORKFLOW_STATE" --state-dir "$ITEM_STATE_DIR" get "$item" '.handoff | select(type == "object" and .resumed_at == null) | tojson' 2>"$errf")"; then
+      die handoff-read-failed "$(cat "$errf")" "item=$item" "path=$ITEM_STATE_DIR"
     fi
     if [[ -z "$rec" ]]; then
       state="$(lane_row_clear handoff "$state" "$item")"
@@ -867,52 +999,72 @@ check_handoff() {
 # Every --item's lane mailbox, read from disk or through `lane-host`, so the
 # check runs on every surface: a lane with no pane, on another host, or in a
 # session this process cannot see still reaches the overseer. Each item's row
-# holds how many to-overseer.jsonl lines have been drained and `drain` reports
-# the file's own count, so a message is reported once. An ask already answered
+# holds how many to-overseer.jsonl lines have been drained and the id the file
+# opened with, and `drain` reports the file's own count and first id, so a
+# message is reported once. An ask already answered
 # is dropped by `drain` rather than by a row, so a restarted overseer with no
 # rows re-reports only what it still owes a reply. The overseer's own mailbox
 # is read the same way on every pass, items or not: `inbox --after` over its
 # to-lane.jsonl, where the owner's notes land. Its count is one file no --since
 # or repository names, because the owner's mailbox outlives every fleet.
 check_mail() {
-  local item verb stored prior out count line fields id kind options text rest rc args reread
+  local item verb stored prior seen out header count first line fields id kind options text rest rc args reread root cursor
   local errf="$WORK_DIR/mail.err" state="${PW_SEEN[0]}" mailf="$PW_STATE_DIR/overseer-mail"
+  HOSTED_GONE_ITEMS=""
   for item in ${ITEMS[@]+"${ITEMS[@]}"} overseer; do
+    hosted_root "$item"
+    root="$HOSTED_ROOT"
+    cursor="$item"
+    if [[ -n "$HOSTED_ROOT" ]]; then
+      hosted_clone "$item" "$state"
+      state="$(lane_row_set clone-root "$state" "$item" "$HOSTED_CLONE")"
+      # With the worktree removed, the lane's closing notice lands in the
+      # clone's mailbox: another file, so another cursor.
+      if [[ "$HOSTED_GONE" -eq 1 ]]; then
+        HOSTED_GONE_ITEMS+="$item"$'\n'
+        root="$HOSTED_CLONE"; cursor="$item@clone"
+      fi
+    fi
     stored=""
     if [[ "$item" == overseer ]]; then
       [[ ! -e "$mailf" ]] || stored="$(cat "$mailf")" || die state-read-failed "" "path=$mailf"
-    elif ! stored="$(lane_row_get lane-mail "$state" "$item")"; then
+    elif ! stored="$(lane_row_get lane-mail "$state" "$cursor")"; then
       die state-read-failed "" "item=$item" "row=lane-mail"
     fi
-    prior="$stored"
-    [[ "$prior" =~ ^[0-9]+$ ]] || prior=0
+    # `<count> <first>`: the lines drained, and the id the mailbox opened with
+    # when they were, empty where it opened with none.
+    read -r prior seen <<<"$stored"
+    [[ "$prior" =~ ^[0-9]+$ ]] || { prior=0; seen=""; }
     verb=drain
     [[ "$item" != overseer ]] || verb=inbox
-    hosted_root "$item"
     reread=0
     while :; do
       args=(--item "$item" --after "$prior")
-      [[ -z "$HOSTED_ROOT" ]] || args+=(--root "$HOSTED_ROOT" --host)
+      [[ -z "$root" ]] || args+=(--root "$root" --host)
       rc=0
       out="$("$LANE_MAIL" "$verb" "${args[@]}" 2>"$errf")" || rc=$?
       [[ "$rc" -eq 0 ]] \
         || die mail-read-failed "$(cat "$errf")" "item=$item" "exit=$rc"
-      if ! count="$(head -n 1 <<<"$out")"; then
+      if ! header="$(head -n 1 <<<"$out")"; then
         die mail-read-invalid "" "item=$item" "value=count"
       fi
-      [[ "$count" == count=* && "${count#count=}" =~ ^[0-9]+$ ]] \
-        || die mail-read-invalid "" "item=$item" "value=${count:-<empty>}"
-      count="${count#count=}"
-      # A mailbox holding fewer lines than the cursor that read it is not that
-      # mailbox: a lane relaunched onto a replacement host brings a fresh one,
-      # and the saved cursor would suppress everything it holds and then lower
-      # itself, losing those messages for good. Read the replacement whole,
-      # once — a second regression is the same answer and would not end.
-      [[ "$count" -lt "$prior" && "$reread" -eq 0 ]] || break
+      [[ "$header" =~ ^count=([0-9]+)\ first=([A-Za-z0-9._-]*)$ ]] \
+        || die mail-read-invalid "" "item=$item" "value=${header:-<empty>}"
+      count="${BASH_REMATCH[1]}"
+      first="${BASH_REMATCH[2]}"
+      # A mailbox opening with another envelope than the one recorded, or
+      # holding fewer lines than the cursor that read it, is not that mailbox:
+      # a lane relaunched onto a replacement host brings a fresh one, and the
+      # saved cursor would suppress what it holds, losing those messages for
+      # good. The count is the answer where no first id was recorded. Read the
+      # replacement whole, once — a second mismatch is the same answer and
+      # would not end.
+      [[ "$reread" -eq 0 && "$prior" -gt 0 ]] || break
+      [[ "$count" -lt "$prior" || ( -n "$seen" && "$first" != "$seen" ) ]] || break
       reread=1
       prior=0
     done
-    [[ "$item" == overseer ]] || state="$(lane_row_set lane-mail "$state" "$item" "$count")"
+    [[ "$item" == overseer ]] || state="$(lane_row_set lane-mail "$state" "$cursor" "$count $first")"
     while IFS= read -r line; do
       [[ -n "$line" ]] || continue
       if ! fields="$(jq -r '[.id // "", .kind // "", ((.options // []) | join(", "))] | @tsv' <<<"$line")"; then
@@ -932,10 +1084,13 @@ check_mail() {
       if ! text="$(jq -r '.text // ""' <<<"$line")"; then
         die mail-read-invalid "" "item=$item" "value=text"
       fi
-      [[ -z "$text" ]] || printf '%s\n' "$text"
+      # Every payload line is indented two spaces, so a message line spelling
+      # `EVENT ...` never reads as a record: only the watch's own lines start
+      # at the first column.
+      [[ -z "$text" ]] || sed 's/^/  /' <<<"$text"
       # An ask's choices are the other half of the question; without this line
       # the overseer is asked to pick from a list it was never shown.
-      [[ -z "$options" ]] || printf 'options: %s\n' "$options"
+      [[ -z "$options" ]] || printf '  options: %s\n' "$options"
       PASS_EVENT=1
     done <<<"$(tail -n +2 <<<"$out")"
     # Committed here, per item and after its lines are out: a later mailbox
@@ -946,8 +1101,8 @@ check_mail() {
     # replaces, this one how far the overseer has read a lane's mailbox. An
     # item out of --item for one run and back in the next would otherwise
     # drain from zero and report every message that lane ever sent.
-    [[ "$item" != overseer || "$count" == "${stored:-0}" ]] \
-      || { pw_stage_state "$mailf" "$count"; pw_commit_state "$mailf"; }
+    [[ "$item" != overseer || "$count $first" == "${stored:-0 }" ]] \
+      || { pw_stage_state "$mailf" "$count $first"; pw_commit_state "$mailf"; }
     lane_row_commit "$state"
   done
 }
@@ -1036,7 +1191,7 @@ lane_limit_banner() {
   [[ "$rc" -le 1 ]] \
     || die limit-scan-failed "" "exit=$rc"
   [[ -n "$banner" ]] || return 0
-  ! grep -Eq -- "$WORKING_RE" <<<"$slice" || return 0
+  ! pane_working "$slice" || return 0
   printf '%s\n' "$banner"
 }
 
@@ -1151,7 +1306,7 @@ check_lanes() {
   [[ ${#LANES[@]} -gt 0 ]] || { check_handoff; return 0; }
   local lane pane below cmd pid state probe i states="" asking_now="" walled_now="" claims="" claimed pane_key
   local seen seen_at seen_pane seen_reported seen_key reset_at reset_utc reset_note event
-  local asking_state fingerprint prior turn_identity idle capacity capacity_key screen_key
+  local asking_state fingerprint prior turn_identity idle capacity capacity_key screen_key close_failed=0
   # One liveness read and one pane capture per lane per pass: a lane's kind is
   # decided from a single observation, never from two screens taken apart. The
   # pid leads the format so a command carrying a space cannot shift the split.
@@ -1210,6 +1365,20 @@ check_lanes() {
       [[ -z "$pane" ]] || pane_tail "$pane"
       PASS_EVENT=1
       asking_state="$(lane_row_clear lane-asking "$asking_state" "$lane")"
+      # A worktree still standing is a lane stopped inside merge-pr.md § 5,
+      # which the overseer resumes; its sandbox closes on the exit after that.
+      hosted_lane_item "$lane"
+      if [[ -n "$HOSTED_ROOT" && -n "$(lane_row_get merged "$asking_state" "$LANE_ITEM")" ]] \
+         && grep -qxF -- "$LANE_ITEM" <<<"$HOSTED_GONE_ITEMS"; then
+        # Committed before the close, which cannot be undone: a run that stops
+        # after a close must not close this lane a second time.
+        lane_row_commit "$asking_state"
+        if ! close_hosted_lane "$LANE_ITEM"; then
+          # Left unreported, so the next run reports this exit and retries.
+          asking_state="$(lane_row_set lane-exited "$asking_state" "$lane" "$pane_key")"
+          close_failed=1
+        fi
+      fi
     else
       asking_state="$(lane_row_set lane-exited "$asking_state" "$lane" "$pane_key")"
     fi
@@ -1326,10 +1495,10 @@ check_lanes() {
        && ! grep -qxF -- "$i" <<<"$asking_now"; then
       pane="$(cat -- "$(lane_pane_file "$i")")"
       below="$(pane_below_last_turn "$pane")"
-      if grep -Eq -- "$CODEX_MARKER_RE" <<<"$below" && grep -qF -- "$MODEL_CAPACITY" <<<"$below" && ! grep -Eq -- "$WORKING_RE" <<<"$below"; then
+      if grep -Eq -- "$CODEX_MARKER_RE" <<<"$below" && grep -qF -- "$MODEL_CAPACITY" <<<"$below" && ! pane_working "$below"; then
         idle=1
         capacity=1
-      elif ! grep -Eq -- "$WORKING_RE" <<<"$below" && grep -Eq -- "$PANE_MARKER_RE" <<<"$below"; then
+      elif ! pane_working "$below" && grep -Eq -- "$PANE_MARKER_RE" <<<"$below"; then
         idle=1
       fi
     fi
@@ -1355,6 +1524,10 @@ check_lanes() {
       continue
     fi
     asking_state="$(lane_row_clear model-capacity "$asking_state" "$lane")"
+    # The whole slice below the last turn is the key: any change to what the
+    # lane shows is a different idle screen and news again. A repaint of an
+    # older frame does not reach here, since a scrolled view carries `Jump to
+    # bottom` and pane_working reads that frame as working.
     screen_key="${pane_key}|$(printf '%s' "$below" | cksum)"
     prior="$(lane_row_get lane-idle "$asking_state" "$lane")"
     if [[ "$prior" == "$screen_key|reported" ]]; then continue; fi
@@ -1370,6 +1543,9 @@ check_lanes() {
   # Committed after every asking and idle line is out: a row written ahead of
   # its event would make a crash between the two lose the question for good.
   lane_row_commit "$asking_state"
+  # A failed close ends the pass only here, once every lane check above has
+  # reported what it found.
+  [[ "$close_failed" -eq 0 ]] || exit 2
 }
 
 # Every --repo's open PRs, each line prefixed with its repo as the reducer's

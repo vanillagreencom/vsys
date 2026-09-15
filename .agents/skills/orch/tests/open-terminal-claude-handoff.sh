@@ -33,6 +33,9 @@
 # real to read back the argv claude receives.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
+# An inherited or configured lane host would turn these local launches into
+# hosted ones; the caller environment outranks project settings.
+export ORCH_LANE_HOST=local
 # shellcheck source=lib/shared-skill-libs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 
@@ -111,6 +114,12 @@ chmod +x "$BIN/ghostty" "$BIN/gh" "$BIN/tmux"
 # developer's desktop provides and this suite would open real windows.
 export TERMINAL=ghostty
 
+# A codex lane directory for the modes that pass --lane. Its name carries the
+# harness word without being it, so it reaches lane_launch_form's launcher arm
+# the way a real lane does.
+CODEX_LANE="$TMP_ROOT/.lanecodex"
+mkdir -p "$CODEX_LANE"
+
 # Stub worktree CLI: `create <item>` makes and prints a temp dir.
 STUB="$TMP_ROOT/worktree-stub"
 cat > "$STUB" <<EOF
@@ -120,6 +129,7 @@ printf '%s\n' "\$*" >> "\$OT_WORKTREE_LOG"
 if [[ "\${1:-}" == "create" ]]; then
   d="$TMP_ROOT/wt/\${2:-unknown}"
   mkdir -p "\$d"
+  git init -q "\$d"
   printf '%s\n' "\$d"
   exit 0
 fi
@@ -133,9 +143,13 @@ chmod +x "$STUB"
 REPO="$TMP_ROOT/repo"
 mkdir -p "$REPO/scripts/lib"
 cp "$SRC_OT" "$REPO/scripts/open-terminal"
+cp "$SCRIPTS_DIR/lane-host" "$REPO/scripts/lane-host"
+# `lanes` is what a --lane row's lane_check calls; without it the row refuses
+# with helper-missing before reaching the gate it is about.
+cp "$SCRIPTS_DIR/lanes" "$REPO/scripts/lanes"
 cp "$SRC_LIB_DIR"/*.sh "$REPO/scripts/lib/"
 orch_fixture_shared_libs "$REPO"
-chmod +x "$REPO/scripts/open-terminal"
+chmod +x "$REPO/scripts/open-terminal" "$REPO/scripts/lanes"
 git -C "$REPO" init -q
 OT="$REPO/scripts/open-terminal"
 # Every row runs whatever binary this names; `mutant` repoints it at a copy
@@ -234,6 +248,7 @@ run() {
     custom-portable) envs=(TMUX=stub,1,0); args=(--tmux --cmd "claude 'Read the agent'\\''s brief'") ;;
     tmux) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1); args=(--tmux --harness claude) ;;
     tmux-codex) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1); args=(--tmux --harness codex) ;;
+    tmux-codex-lane) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1); args=(--tmux --harness codex --lane "$CODEX_LANE") ;;
     *) echo "run: unknown mode $mode" >&2; exit 1 ;;
   esac
   if [[ "$envspec" != - ]]; then
@@ -312,6 +327,9 @@ mutant() {
   src="$SCRIPTS_DIR/$file"
   mkdir -p "$dir/scripts/lib"
   cp "$SRC_OT" "$dir/scripts/open-terminal"
+  cp "$SCRIPTS_DIR/lane-host" "$dir/scripts/lane-host"
+  cp "$SCRIPTS_DIR/lanes" "$dir/scripts/lanes"
+  chmod +x "$dir/scripts/lanes"
   cp "$SRC_LIB_DIR"/*.sh "$dir/scripts/lib/"
   orch_fixture_shared_libs "$dir"
   sed "$expr" "$src" > "$dir/scripts/$file"
@@ -436,8 +454,8 @@ launch_table \
   "a buffer paste failure is a failed launch|tmux-codex|OT_TMUX_FAIL=paste-buffer|-|-|rc=1 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=true out~open-terminal:+summary+launched=1=false" \
   "a pane mode read failure is a failed launch|tmux-codex|OT_TMUX_FAIL=display-message|-|-|rc=1 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=true out~open-terminal:+summary+launched=1=false"
 
-assert_eq "$(grep -cF 'if ! tmux_paste "$pane" "clear; $cmd"; then' "$SRC_OT")" 1 'control locates the launch paste check'
-mutant paste-failure-ignored open-terminal 's/if ! tmux_paste "$pane" "clear; $cmd"; then/if tmux_paste "$pane" "clear; $cmd"; then/' 'the launch paste failure check'
+assert_eq "$(grep -cF 'if ! tmux_paste "$pane" "$line"; then' "$SRC_OT")" 1 'control locates the launch paste check'
+mutant paste-failure-ignored open-terminal 's/if ! tmux_paste "$pane" "$line"; then/if tmux_paste "$pane" "$line"; then/' 'the launch paste failure check'
 launch_table "control: ignoring a failed paste reports the lane launched|tmux-codex|OT_TMUX_FAIL=load-buffer|-|-|rc=0 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=false out~open-terminal:+summary+launched=1=true"
 unmutate
 
@@ -496,14 +514,22 @@ echo "=== open-terminal claude handoff: the verify timeout ==="
 # zero-pass loop misreported as a delivery failure; leading zeros are base
 # 10, not octal, and never inflate the digit count into the clamp; a runaway or overflow-sized value is clamped loudly rather
 # than hanging the launch or wrapping into negative arithmetic and an
-# instant resend. A codex tmux lane never reads it.
+# instant resend. A codex tmux lane reads it only under --lane, where the
+# account check waits on it; without one it reads nothing and a broken setting
+# leaves that launch alone.
 launch_table \
   "a non-integer is a config error naming the setting, not a delivery failure|tmux|ORCH_TMUX_VERIFY_SECS=abc|-|delivered|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true stderr~open-terminal:+brief-undelivered=false" \
   "zero is rejected the same way|tmux|ORCH_TMUX_VERIFY_SECS=0|-|delivered|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=0=true" \
   "leading zeros are base 10, not octal, and do not count toward the clamp|tmux|ORCH_TMUX_VERIFY_SECS=0000000000000000008|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-invalid=false stderr~open-terminal:+verify-seconds-clamped=false" \
   "an overflow-sized value is clamped loudly, with no instant resend|tmux|ORCH_TMUX_VERIFY_SECS=10000000000000000000|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+value=10000000000000000000+limit=120=true resends=0" \
   "a runaway value is clamped loudly and still verifies|tmux|ORCH_TMUX_VERIFY_SECS=99999|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+value=99999+limit=120=true" \
-  "a codex tmux lane never validates the claude-verification timeout|tmux-codex|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false"
+  "a codex tmux lane with no --lane reads the timeout nowhere and is not aborted by a broken one|tmux-codex|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false" \
+  "a codex lane launch refuses a broken timeout, which its account check waits on|tmux-codex-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true"
+
+mutant codex-lane-unvalidated open-terminal 's/      codex) \[\[ -z "$LANE" \]\] || TIMEOUT_IS_READ=true ;;//' 'the codex lane timeout reader'
+launch_table \
+  "control: without the codex lane reader a broken timeout is discarded on the path that waits on it|tmux-codex-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false"
+unmutate
 
 tmux() { "$REAL_TMUX" -L "ot-paste-$$" "$@"; }
 pane="$(tmux -f /dev/null new-session -d -P -F '#{pane_id}' "cat >> '$TMP_ROOT/received'")"

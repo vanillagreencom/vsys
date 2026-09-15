@@ -16,6 +16,9 @@
 # would launch.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
+# An inherited or configured lane host would turn these local launches into
+# hosted ones; the caller environment outranks project settings.
+export ORCH_LANE_HOST=local
 # shellcheck source=lib/shared-skill-libs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 
@@ -95,6 +98,7 @@ set -euo pipefail
 if [[ "\${1:-}" == "create" ]]; then
   d="$TMP_ROOT/wt/\${2:-unknown}"
   mkdir -p "\$d"
+  git init -q "\$d"
   printf '%s\n' "\$d"
   exit 0
 fi
@@ -108,6 +112,7 @@ chmod +x "$STUB"
 REPO="$TMP_ROOT/repo"
 mkdir -p "$REPO/scripts/lib"
 cp "$SRC_OT" "$REPO/scripts/open-terminal"
+cp "$SCRIPTS_DIR/lane-host" "$REPO/scripts/lane-host"
 cp "$SRC_LIB_DIR"/*.sh "$REPO/scripts/lib/"
 orch_fixture_shared_libs "$REPO"
 chmod +x "$REPO/scripts/open-terminal"

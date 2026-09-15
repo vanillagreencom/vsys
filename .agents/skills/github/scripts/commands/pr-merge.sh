@@ -60,6 +60,8 @@ Merge-mode exit codes:
        Classic auto-merge is armed until protection clears.
   1    BLOCKED PR #N
        The requested operation failed; a pre-existing queue entry or auto-merge request may remain active.
+  1    arm: no-merge-gate=<allow_auto_merge|required_check|unverified> repo=<owner/repo>
+       --auto refused, nothing mutated: GitHub would merge at once with nothing to wait on.
   1    CLOSED (not merged) PR #N
        The PR is closed unmerged. Nothing was attempted.
 
@@ -384,6 +386,27 @@ gh_with_token() {
     fi
 }
 
+# Print what `gh pr merge --auto` would lack to wait on, or nothing. With
+# auto-merge off, or no required check or review rule on the base branch,
+# GitHub merges an armed PR at once. A failed read prints `unverified`.
+merge_gate_gap() {
+    local pr_num="$1" token="$2" allow="" base="" rules="" classic=""
+    allow=$(gh_with_token "$token" api 'repos/{owner}/{repo}' --jq '.allow_auto_merge' 2>/dev/null) || allow=""
+    case "$allow" in
+        true) ;;
+        false) echo allow_auto_merge; return 0 ;;
+        *) echo unverified; return 0 ;;
+    esac
+    if ! base=$(gh_with_token "$token" pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>/dev/null) || [ -z "$base" ] \
+        || ! base=$(jq -nr --arg v "$base" '$v | @uri') \
+        || ! rules=$(gh_with_token "$token" api "repos/{owner}/{repo}/rules/branches/$base" --paginate --jq '.[] | select(.type == "required_status_checks" or .type == "pull_request") | .type' 2>/dev/null) \
+        || ! classic=$(gh_with_token "$token" api "repos/{owner}/{repo}/branches/$base" --jq '.protection.required_status_checks | (.contexts // []) + (.checks // []) | length' 2>/dev/null); then
+        echo unverified; return 0
+    fi
+    case "$classic" in '' | *[!0-9]*) echo unverified; return 0 ;; esac
+    [ -n "$rules" ] || [ "$classic" -gt 0 ] || echo required_check
+}
+
 volatile_note() {
     local pr_num="$1" repo="${GH_REPO:-}" remote resolved reducer
     # pr-watch.sh requires GH_REPO; print the reducer with the repository it
@@ -563,7 +586,8 @@ main() {
             "$(jq -r '.mergedAt // ""' <<<"$PR_STATE_JSON")"
     fi
 
-    local token; if [ "$admin" = true ]; then token=""; else token=$(load_bot_token); fi
+    local selection=""; [ "$admin" = true ] || selection=$(load_bot_token)
+    local token="${selection#*=}" token_source="${selection%%=*}"
 
     local check_result=""
     if [ "$force" = false ]; then
@@ -591,6 +615,16 @@ main() {
                 print_blocked "$check_result" "$pr_num"
                 exit 1
             fi
+        fi
+
+        # Before any other stderr: callers route on this refusal's first line.
+        local gate_gap slug
+        [ "$auto" = false ] || [ "$dry_run" = true ] || gate_gap=$(merge_gate_gap "$pr_num" "$token")
+        if [ -n "${gate_gap:-}" ]; then
+            slug=$(kendex_github_resolve_gh_repo "${PROJECT_ROOT:-$PWD}" 2>/dev/null) || slug=unresolved
+            echo "arm: no-merge-gate=$gate_gap repo=$slug" >&2
+            echo "  Nothing mutated. Enable auto-merge and a required status check or review rule on the base branch, or merge through orch merge-pr with the explicit consumer-only answer under submit-pr.md § 6.2." >&2
+            exit 1
         fi
 
         local warnings
@@ -630,6 +664,9 @@ main() {
 
     local merge_output merge_exit=0
     if [ -n "$token" ]; then
+        local identity
+        identity=$(kendex_github_token_identity "$token")
+        echo "Using $token_source as $identity" >&2
         merge_output=$(gh_with_token "$token" "${cmd[@]}" 2>&1) || merge_exit=$?
     else
         [ "$admin" = true ] || echo "Warning: GH_BOT_TOKEN not configured, using current user" >&2

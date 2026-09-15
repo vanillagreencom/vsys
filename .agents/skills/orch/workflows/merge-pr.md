@@ -231,7 +231,7 @@ Use the output as `MAIN_REPO_ROOT`.
    env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/github/scripts/github.sh -C [MAIN_REPO_ROOT] pr-merge [PR_NUMBER] --auto --expected-head [PREPARED_HEAD]
    ```
 
-   Exit `0` merged the prepared head immediately — continue to step 2. Any exit but `0` or `75` is an exact-head arm failure: surface it and return to § 3.2.
+   Exit `0` merged the prepared head immediately — continue to step 2. Exit `1` with first line `arm: no-merge-gate=<condition>` means the repository has nothing for auto-merge to wait on: record the named stop `no-merge-gate`, hand back with the remedy its second line names, and never fall back to a raw `gh pr merge --auto`. Any other exit but `0` or `75` is an exact-head arm failure: surface it and return to § 3.2.
 
    Exit `75` means queued or armed. Run the command below through [Waiter launch](../references/waiter-launch.md). Keep the lane active while polling the completion file, then route the recorded exit and result.
 
@@ -254,12 +254,14 @@ Use the output as `MAIN_REPO_ROOT`.
    | `ejected` | Recovery cycle below, using the resolved gate mode and `[RECOVERY_COUNT]` |
    | `disarmed` | Recovery cycle below |
    | `dequeued` | Late-findings triage below; on `cause: late_findings_dequeue_failed` confirm the dequeue or the disarm first |
-   | `queued` | Still armed at the deadline. `cause: still_progressing` means the merge is live: run the wait again, and keep repeating until a verdict terminates it. `cause: stalled` takes the Recovery cycle below |
+   | `queued` | Still armed at the deadline. `cause: still_progressing` means the merge is live: run the wait again, and keep repeating until a verdict terminates it. `cause: progress_unobservable` means no poll could read the queue's checks, which is not evidence of an idle queue: run the wait again on the same head under the bound below, rather than straight into the Recovery cycle. `cause: stalled` takes the Recovery cycle below |
    | `not_queued` | The arm this step made is gone — an ejection or a silent disarm — not a merge that never fired. Take the Recovery cycle below, where `ejected` and `disarmed` already go. Never re-arm here: the head's merge-group run has just failed, and re-arming it into a shared queue can eject the PRs batched with it |
    | `closed` | Hand back with the verdict; no replay |
    | `unknown` | Unrecognized, or `status: error` — a read failed and says nothing about the arm, which after exit `75` is usually still live. Unarm before handing back, in `merge-pr-restack.md` step 1's order: disable auto-merge if `autoMergeRequest` is set, then dequeue via GraphQL if `isInMergeQueue` is still true, then re-read both. Hand back with the `error` and `cause` fields, and never re-arm |
 
    A `still_progressing` repeat is left unbounded on purpose. It terminates: the signal stays true only while a check-run is not completed or the queue entry is still moving, and GitHub's own workflow timeout finally fails a run whose runner died. Entry movement ends too — a position only falls, so the PR reaches the front and merges or leaves the queue. Returning early would leave the PR armed with the merge free to fire behind a departed lane, and steps 5 and 6 would never run on it — which is the whole reason the lane waits here rather than handing back.
+
+   A `progress_unobservable` repeat is bounded, because nothing in that signal promises it ends. Take one repeat wait on the same head. A second consecutive `progress_unobservable` takes the Recovery cycle, where `stalled` already goes: the lane stays on the PR and steps 2-6 still run on it, which is the same reason the `still_progressing` repeat does not return early. The result's two counts say which shape the lane met and neither gates the route — `progress_head_polls: 0` means no poll's queue entry ever exposed a head commit to read, and a `progress_head_polls` above 0 with `progress_check_reads: 0` means every read on that head failed.
 
    **Recovery cycle** — route the failure back into ci-fix, never fix CI by hand:
 

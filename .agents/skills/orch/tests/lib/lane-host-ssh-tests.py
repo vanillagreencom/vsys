@@ -221,6 +221,76 @@ exec git "$@"
         self.assertNotEqual(self.create("--reuse").returncode, 0)
         self.assertFalse((self.root / ".claude.json").exists())
 
+    def test_create_marks_the_lane_for_its_mail_hook(self):
+        self.assertEqual(self.create().returncode, 0)
+        root = subprocess.run([self.env["REAL_GIT"], "-C", self.row["clone"] + "-worktree", "rev-parse", "--show-toplevel"],
+                              check=True, capture_output=True).stdout
+        self.assertEqual((Path(self.row["clone"]) / ".git/lane-mail/test-1").read_bytes(), root)
+
+    def test_control_lane_mail_marker(self):
+        original = self.script.read_text()
+        fragment = 'mv -f -- "$staged" "$common/lane-mail/$2"'
+        self.assertEqual(original.count(fragment), 1)
+        self.script.write_text(original.replace(fragment, 'rm -f -- "$staged"'))
+        self.assertEqual(self.create().returncode, 0)
+        self.assertFalse((Path(self.row["clone"]) / ".git/lane-mail/test-1").exists())
+
+    def test_put_never_writes_through_a_planted_staging_link(self):
+        # The wrapper plants a link at the staging name a PID would give, then
+        # execs the real bash, which keeps that PID for the remote script.
+        target = self.root / "lane/tmp/lane-mail/TEST-1/to-lane.jsonl"
+        target.parent.mkdir(parents=True)
+        outside = self.root / "outside"
+        outside.write_text("outside\n")
+        wrap = self.root / "wrap"
+        self.executable(wrap / "bash", '#!/bin/sh\n[ -z "$SSH_TEST_PLANT" ] || ln -s "$SSH_TEST_PLANT_TARGET" "$SSH_TEST_PLANT.kendex-put.$$" 2>/dev/null\nexec "$REAL_BASH" "$@"\n')
+        put = self.call("put", "--item", "TEST-1", str(target), data=b"mail\n", PATH=str(wrap) + os.pathsep + self.env["PATH"],
+                        REAL_BASH=shutil.which("bash"), SSH_TEST_PLANT=str(target), SSH_TEST_PLANT_TARGET=str(outside))
+        self.assertEqual((put.returncode, outside.read_text(), target.read_bytes()), (0, "outside\n", b"mail\n"), put.stderr)
+
+    def test_create_refuses_a_linked_marker(self):
+        self.assertEqual(self.create().returncode, 0)
+        marker = Path(self.row["clone"]) / ".git/lane-mail/test-1"
+        target = self.root / "marker-target"
+        marker.unlink()
+        marker.symlink_to(target)
+        refused = self.create("--reuse")
+        self.assertEqual(refused.returncode, 1, refused.stderr)
+        self.assertIn(f"lane-host-ssh: marker-unsafe path={marker}\n".encode(), refused.stderr)
+        self.assertNotIn(b"path=", refused.stdout)
+        self.assertFalse(target.exists())
+
+    def test_mailbox_paths_refuse_a_linked_component(self):
+        box = self.root / "lane/tmp/lane-mail/TEST-1"
+        away = self.root / "away"
+        away.mkdir()
+        (away / "to-lane.jsonl").write_text("elsewhere\n")
+        box.parent.mkdir(parents=True)
+        box.symlink_to(away)
+        target = str(box / "to-lane.jsonl")
+        for verb, data in (("cat", b""), ("put", b"new\n")):
+            with self.subTest(verb=verb):
+                refused = self.call(verb, "--item", "TEST-1", target, data=data)
+                self.assertEqual(refused.returncode, 3, refused.stderr)
+                self.assertIn(f"lane-host-ssh: mailbox-component path={box}\n".encode(), refused.stderr)
+        self.assertEqual((away / "to-lane.jsonl").read_text(), "elsewhere\n")
+        original = self.script.read_text()
+        fragment = "*/tmp/lane-mail/*)"
+        self.assertEqual(original.count(fragment), 1)
+        self.script.write_text(original.replace(fragment, "*/no-mailbox-here/*)"))
+        self.assertEqual(self.call("cat", "--item", "TEST-1", target).stdout, b"elsewhere\n")
+
+    def test_mailbox_guard_judges_the_last_mailbox_segment(self):
+        box = self.root / "srv/tmp/lane-mail/project/tmp/lane-mail/TEST-1"
+        away = self.root / "away-last"
+        away.mkdir()
+        (away / "to-lane.jsonl").write_text("elsewhere\n")
+        box.parent.mkdir(parents=True)
+        box.symlink_to(away)
+        refused = self.call("cat", "--item", "TEST-1", str(box / "to-lane.jsonl"))
+        self.assertEqual(refused.returncode, 3, refused.stderr)
+        self.assertIn(f"lane-host-ssh: mailbox-component path={box}\n".encode(), refused.stderr)
+
     def test_fresh_clone_uses_host_github_protocol(self):
         self.assertEqual(self.create(SSH_TEST_GIT_PROTOCOL="ssh").returncode, 0)
         self.assertIn("gh repo clone owner/repo " + self.row["clone"], (self.root / "calls").read_text())
