@@ -1,0 +1,1 @@
+- Recording a sample no longer recompresses the samples before it, so the dashboard stays responsive as history builds up. Memory holds slightly fewer samples before retention shortens.
