@@ -7,6 +7,35 @@ import {
 } from "../test/fixture";
 import { Archive } from "./archive";
 
+type Sample = ReturnType<typeof emptySnapshot>;
+
+/**
+ * One sample carrying a path long enough that a checkpoint's deltas cross the
+ * open-run limit several times. That width is what makes the cases below seal
+ * at all, so it lives here rather than in each of them.
+ */
+function sample(i: number): Sample {
+  const s = emptySnapshot(1000 + i * 1000);
+  s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(4096)}` })];
+  s.lanes = [laneSnapshot({ cpu: i, rss: 4096 * i })];
+  return s;
+}
+
+/** Append samples `from` up to but not including `to`, and keep each one. */
+function extend(
+  archive: Archive,
+  from: number,
+  to: number,
+): Map<number, Sample> {
+  const added = new Map<number, Sample>();
+  for (let i = from; i < to; i++) {
+    const s = sample(i);
+    archive.add(s.time, JSON.stringify(s));
+    added.set(s.time, s);
+  }
+  return added;
+}
+
 test("checkpoint replay preserves changes, process churn and arbitrary cursor order", () => {
   const archive = new Archive();
   const expected = new Map<number, ReturnType<typeof emptySnapshot>>();
@@ -84,18 +113,13 @@ test("duplicate times and a checkpoint past the budget fail visibly", () => {
 test("an append compresses only the lines that append added", () => {
   const archive = new Archive();
   const inputs: number[] = [];
-  const expected = new Map<number, ReturnType<typeof emptySnapshot>>();
+  const expected = new Map<number, Sample>();
   let text = 0;
   let longest = 0;
   const spy = spyOn(Bun, "gzipSync");
   try {
     for (let i = 0; i < 400; i++) {
-      const s = emptySnapshot(1000 + i * 1000);
-      // A fresh long path each sample. At about twelve thousand code units a
-      // sample, a three-hundred-sample checkpoint writes about three and a
-      // half times the open-run limit, so its run seals three times over and
-      // a fourth time as the checkpoint rolls over.
-      s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(4096)}` })];
+      const s = sample(i);
       const json = JSON.stringify(s);
       text += json.length;
       longest = Math.max(longest, json.length);
@@ -131,20 +155,13 @@ test("replay and lane charts read a sealed line at the line it is", () => {
   // inflated segment. That conversion is exercised only where a whole sealed
   // segment lies before the line asked for, so every case here fills one
   // checkpoint past its open-run limit before it reads anything back.
-  type Snapshot = ReturnType<typeof emptySnapshot>;
-  const build = (): { archive: Archive; expected: Map<number, Snapshot> } => {
+  const build = (): Archive => {
     const archive = new Archive();
-    const expected = new Map<number, Snapshot>();
-    for (let i = 0; i < 300; i++) {
-      const s = emptySnapshot(1000 + i * 1000);
-      s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(4096)}` })];
-      s.lanes = [laneSnapshot({ cpu: i, rss: 4096 * i })];
-      archive.add(s.time, JSON.stringify(s));
-      expected.set(s.time, s);
-    }
-    return { archive, expected };
+    extend(archive, 0, 300);
+    return archive;
   };
-  const { archive, expected } = build();
+  const archive = new Archive();
+  const expected = extend(archive, 0, 300);
   // Backwards first, which drops the cursor and rebuilds it from the base
   // line, then forwards over every sample, which walks the cursor across
   // each sealed segment in turn.
@@ -154,27 +171,31 @@ test("replay and lane charts read a sealed line at the line it is", () => {
     expect(archive.at(time)).toEqual(snapshot);
 
   const id = laneSnapshot().id;
-  const warm = build().archive;
+  const warm = build();
   // A first read caches the chart up to the newest sample; later samples seal
   // the run that read left open, so the second read starts inside a segment.
   warm.laneWindow(id, 0, 150000);
-  for (let i = 300; i < 380; i++) {
-    const s = emptySnapshot(1000 + i * 1000);
-    s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(4096)}` })];
-    s.lanes = [laneSnapshot({ cpu: i, rss: 4096 * i })];
-    warm.add(s.time, JSON.stringify(s));
-  }
-  const cold = build().archive;
-  for (let i = 300; i < 380; i++) {
-    const s = emptySnapshot(1000 + i * 1000);
-    s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(4096)}` })];
-    s.lanes = [laneSnapshot({ cpu: i, rss: 4096 * i })];
-    cold.add(s.time, JSON.stringify(s));
-  }
+  extend(warm, 300, 380);
+  const cold = build();
+  extend(cold, 300, 380);
   const series = warm.laneWindow(id, 0, 380000);
   expect(series).toHaveLength(380);
   expect(series).toEqual(cold.laneWindow(id, 0, 380000));
   expect(series[299].cpu).toBe(299);
+});
+test("a run sealing under a parked cursor does not corrupt what it reads", () => {
+  // A reader pins a sample and leaves it pinned while samples keep arriving.
+  // The open run crosses its limit under that parked cursor, which moves
+  // where the open run starts, and every later read on that checkpoint reuses
+  // the cursor. A cursor that did not notice the seal reads the wrong line
+  // and hands the pane a snapshot that is wrong with nothing reddening.
+  const archive = new Archive();
+  const expected = extend(archive, 0, 60);
+  expect(archive.at(60000)).toEqual(expected.get(60000) ?? null);
+  for (const [time, snapshot] of extend(archive, 60, 200))
+    expected.set(time, snapshot);
+  for (const [time, snapshot] of expected)
+    if (time >= 60000) expect(archive.at(time)).toEqual(snapshot);
 });
 test("reading every retained sample inflates each sealed segment once", () => {
   // Replay walks forward, so it reaches each line once. Rebuilding the reader
@@ -183,11 +204,7 @@ test("reading every retained sample inflates each sealed segment once", () => {
   // SQLite on, where the screen stops drawing and stops taking keys until it
   // finishes.
   const archive = new Archive();
-  for (let i = 0; i < 400; i++) {
-    const s = emptySnapshot(1000 + i * 1000);
-    s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(4096)}` })];
-    archive.add(s.time, JSON.stringify(s));
-  }
+  extend(archive, 0, 400);
   const spy = spyOn(Bun, "gunzipSync");
   let rows = 0;
   let inflations = 0;
@@ -212,21 +229,17 @@ test("a checkpoint that rolled over is charged what it compressed to", () => {
   // of repeated text that compress to almost nothing. Charging each of the
   // four rolled-over checkpoints its open size instead reaches four.
   const archive = new Archive(3 * 1024 * 1024);
-  for (let i = 0; i < 1200; i++) {
-    const s = emptySnapshot(1000 + i * 1000);
-    s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(4096)}` })];
-    archive.add(s.time, JSON.stringify(s));
-  }
+  extend(archive, 0, 201);
+  // A copy carries the open run of the checkpoint it copied and never appends
+  // to that checkpoint, so the copy is the other way that run has to be
+  // sealed. Sample 201 is the sample after a seal fills the run, so the copy
+  // inherits about two megabytes of it, which is the most one can inherit and
+  // the most a copy that never sealed it would carry for its whole life.
+  const copy = archive.copy(0);
+  extend(archive, 201, 1200);
   expect(archive.shortened).toBe(false);
   expect(archive.at(1000)?.time).toBe(1000);
-  // A copy carries the open run of the checkpoint it copied and never appends
-  // to that checkpoint, so the copy is the other way a run has to be sealed.
-  const copy = archive.copy(0);
-  for (let i = 1200; i < 1700; i++) {
-    const s = emptySnapshot(1000 + i * 1000);
-    s.procs = [processSnapshot({ cwd: `/work/${String(i).repeat(4096)}` })];
-    copy.add(s.time, JSON.stringify(s));
-  }
+  extend(copy, 201, 1200);
   expect(copy.shortened).toBe(false);
   expect(copy.at(1000)?.time).toBe(1000);
 });
