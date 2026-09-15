@@ -10,6 +10,12 @@ import unittest
 
 
 CI = Path(__file__).with_name("ci.py").resolve()
+sys.path.insert(0, str(CI.parent))
+# The runner owns its own check list and artifact names; a second copy here
+# would pass while the two drifted apart.
+from ci import ARTIFACTS, CHECKS  # noqa: E402
+
+emits = " ".join(name.split("/")[-1] for name in ARTIFACTS)
 
 
 class ApplicationChecks(unittest.TestCase):
@@ -23,6 +29,10 @@ class ApplicationChecks(unittest.TestCase):
             "#!/bin/sh\n"
             'printf "%s\\n" "$*" >> "$CI_COMMAND_LOG"\n'
             'if [ "$*" = "${CI_FAIL_COMMAND:-}" ]; then exit 23; fi\n'
+            'if [ "$*" = "run build" ]; then\n'
+            '  mkdir -p dist\n'
+            '  for name in ${CI_BUILD_EMITS}; do printf x > "dist/$name"; done\n'
+            "fi\n"
         )
         binary.chmod(0o755)
         self.env = {
@@ -30,6 +40,7 @@ class ApplicationChecks(unittest.TestCase):
             "PATH": str(self.root) + os.pathsep + os.environ["PATH"],
             "CI_COMMAND_LOG": str(self.commands),
             "CI_FAIL_COMMAND": "",
+            "CI_BUILD_EMITS": emits,
         }
 
     def run_ci(self):
@@ -40,7 +51,7 @@ class ApplicationChecks(unittest.TestCase):
 
     def package(self, scripts=None):
         if scripts is None:
-            scripts = {name: "fixture" for name in ("lint", "typecheck", "test", "build")}
+            scripts = {name: "fixture" for name in CHECKS}
         (self.root / "package.json").write_text(json.dumps({"scripts": scripts}))
         (self.root / "bun.lock").write_text("fixture")
 
@@ -58,14 +69,28 @@ class ApplicationChecks(unittest.TestCase):
                 self.assertNotEqual(self.run_ci().returncode, 0)
                 marker.unlink()
 
+    def test_contract_names_every_check_and_artifact(self):
+        # Every other expectation here is derived from these two, so their
+        # contents are asserted once. Dropping a check leaves the thing it
+        # gates unmeasured with the rest of the suite green.
+        self.assertEqual(CHECKS, ("lint", "typecheck", "test", "build", "bench:scratch"))
+        self.assertEqual(ARTIFACTS, ("dist/main.js", "dist/scratch-worker.js"))
+
     def test_missing_or_empty_script_fails(self):
-        for check in ("lint", "typecheck", "test", "build"):
+        for check in CHECKS:
             for value in (None, "", " ", False):
                 with self.subTest(check=check, value=value):
-                    scripts = {name: "fixture" for name in ("lint", "typecheck", "test", "build")}
+                    scripts = {name: "fixture" for name in CHECKS}
                     scripts[check] = value
                     self.package(scripts)
-                    self.assertNotEqual(self.run_ci().returncode, 0)
+                    result = self.run_ci()
+                    self.assertNotEqual(result.returncode, 0)
+                    # The named check is the only invalid entry, so a subtest
+                    # that passes on another check's absence is not a pass.
+                    self.assertIn(
+                        f"package.json must define a nonempty {check} script",
+                        result.stderr,
+                    )
                     self.assertFalse(self.commands.exists())
 
     def test_missing_lockfile_fails(self):
@@ -81,8 +106,24 @@ class ApplicationChecks(unittest.TestCase):
                 self.assertNotEqual(self.run_ci().returncode, 0)
                 self.assertFalse(self.commands.exists())
 
+    def test_build_missing_an_entry_point_fails(self):
+        # The scratch scan thread is a build output of its own. A build that
+        # emits only the bundle passes every command it runs.
+        for emitted in (name.split("/")[-1] for name in ARTIFACTS):
+            with self.subTest(emitted=emitted):
+                self.package()
+                self.env["CI_BUILD_EMITS"] = emitted
+                result = self.run_ci()
+                self.assertNotEqual(result.returncode, 0)
+                missing = next(
+                    name for name in ARTIFACTS if not name.endswith("/" + emitted)
+                )
+                self.assertIn(f"The build emitted no {missing}", result.stderr)
+                self.commands.unlink()
+        self.env["CI_BUILD_EMITS"] = emits
+
     def test_check_order_and_each_command_failure(self):
-        commands = ["install --frozen-lockfile", "run lint", "run typecheck", "run test", "run build"]
+        commands = ["install --frozen-lockfile", *(f"run {check}" for check in CHECKS)]
         self.package()
         result = self.run_ci()
         self.assertEqual(result.returncode, 0, result.stderr)

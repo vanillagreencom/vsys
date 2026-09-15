@@ -162,6 +162,11 @@ export const settingInfo: Record<string, SettingInfo> = {
     help: "How often scratch directories are measured, separately from refresh.",
     unit: "ms",
   },
+  scratchDutyPercent: {
+    label: "Scratch scan share",
+    help: "The share of one processor core a background scratch scan may hold.",
+    unit: "percent",
+  },
   btrfsMounts: {
     label: "Watched Btrfs mounts",
     help: "Mount points watched for error counters and free space. Empty watches every Btrfs mount.",
@@ -274,6 +279,7 @@ export const settingGroups: [string, string[]][] = [
       "buildOutputGlobs",
       "scratchDirs",
       "scratchRefreshMs",
+      "scratchDutyPercent",
     ],
   ],
   ["Program", ["notifications", "writeMode"]],

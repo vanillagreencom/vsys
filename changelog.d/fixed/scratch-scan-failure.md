@@ -1,0 +1,1 @@
+- A failed scratch scan keeps the last complete sizes and their measurement time and names the failure beside them, rather than reporting what it had counted so far.

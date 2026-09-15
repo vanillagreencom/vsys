@@ -80,6 +80,35 @@ export function storageItems(s: Snapshot): StorageItem[] {
     ),
   ];
 }
+/**
+ * The two things the scratch section says about itself: the state beside its
+ * heading, and the line that stands in for the rows when it has none. Both
+ * are decided here, from one reading of the settings and the sample, because
+ * a settings change reaches the screen before the first sample taken under
+ * it: rows outlive the roots that produced them for one frame, and two lines
+ * reading different inputs contradicted each other across it.
+ *
+ * Rows present are a reading, whatever the roots now say. Roots set with no
+ * rows are a measurement still to come, never an absence of roots.
+ */
+export function scratchSummary(
+  c: Config,
+  st: Snapshot["storage"],
+): { state: string; empty: string | null } {
+  const state = st.scratchPending
+    ? "measuring"
+    : st.scratchTime == null
+      ? "not measured yet"
+      : `measured ${new Date(st.scratchTime).toLocaleTimeString()}`;
+  if (st.scratch.length || st.sessions.length) return { state, empty: null };
+  return {
+    state,
+    empty: c.scratchDirs.length
+      ? "The configured scratch directories have not been measured yet."
+      : "No scratch directory is configured.",
+  };
+}
+
 export function volumeLevel(v: Volume, freeFloor: number): Level {
   if (v.readOnly || Object.values(v.delta).some((n) => n > 0)) return "danger";
   if (v.free !== null && v.free < freeFloor) return "danger";
@@ -262,11 +291,7 @@ export function Storage({
   let index = -1;
   const next = () => ++index;
   const st = s.storage;
-  const scanState = st.scratchPending
-    ? "measuring"
-    : st.scratchTime == null
-      ? "not measured yet"
-      : `measured ${new Date(st.scratchTime).toLocaleTimeString()}`;
+  const scratch = scratchSummary(c, st);
   const scratchTop = Math.max(
     c.scratchQuota,
     ...[...st.scratch, ...st.sessions].map((x) => x.bytes ?? 0),
@@ -562,11 +587,9 @@ export function Storage({
         <Section
           {...heading(2)}
           width={width}
-          count={`${scanState} · quota ${amount(c.scratchQuota, c)}`}
+          count={`${scratch.state} · quota ${amount(c.scratchQuota, c)}`}
         />
-        {!st.scratch.length && !st.sessions.length && (
-          <Empty text="No scratch directory is configured." />
-        )}
+        {scratch.empty !== null && <Empty text={scratch.empty} />}
         {items.filter((item) => item.kind === "scratch").map(scratchRow)}
       </box>
     </scrollbox>

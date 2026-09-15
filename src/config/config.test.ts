@@ -31,6 +31,10 @@ test("invalid settings stop loading", () => {
     { notifications: ["unknown"] },
     { laneNameParts: ["hostname"] },
     { keys: { quit: "j" } },
+    // At a scan share of zero the rest a slice earns is not a finite number,
+    // and the traversal runs unbounded rather than slowly.
+    { scratchDutyPercent: 0 },
+    { scratchDutyPercent: 101 },
     { sqlitePath: "relative" },
     { unknown: 1 },
   ])
