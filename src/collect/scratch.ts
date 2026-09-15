@@ -36,6 +36,19 @@ function workerFile(): URL {
 }
 
 /**
+ * What this host calls on a scan thread, and all of it. A real `Worker`
+ * satisfies it, so a test stands up its own and the compiler still checks
+ * the fake against every member the host reaches for.
+ */
+export interface ScanThread {
+  onmessage: ((event: MessageEvent<ScanReply>) => void) | null;
+  onerror: ((event: ErrorEvent) => void) | null;
+  addEventListener(kind: "close", handler: () => void): void;
+  postMessage(request: ScanRequest): void;
+  terminate(): void;
+}
+
+/**
  * Where a scan runs. The program runs it on a thread of its own; a test
  * supplies its own runner and never starts one.
  */
@@ -58,10 +71,10 @@ export interface ScanRunner {
 export class WorkerScan implements ScanRunner {
   /** The program starts a real thread; a test stands up its own. */
   constructor(
-    private start: () => Worker = () =>
+    private start: () => ScanThread = () =>
       new Worker(workerFile(), { type: "module" }),
   ) {}
-  private worker?: Worker;
+  private worker?: ScanThread;
   private id = 0;
   private pending?: {
     id: number;
@@ -69,7 +82,7 @@ export class WorkerScan implements ScanRunner {
     reject: (error: unknown) => void;
   };
   private closed = false;
-  private thread(): Worker {
+  private thread(): ScanThread {
     if (this.worker) return this.worker;
     const worker = this.start();
     worker.onmessage = (event: MessageEvent<ScanReply>) => {
@@ -157,14 +170,10 @@ export class WorkerScan implements ScanRunner {
   }
 }
 
-/**
- * How long the traversal works before it rests. A slice this short keeps the
- * thread answering a cancellation promptly; the share of it the traversal
- * keeps is the reader's setting.
- */
+/** The granularity the reader's share is enforced at. */
 const SLICE_MS = 4;
 
-/** A live dashboard reuses completed scans while a single cancellable scan runs. */
+/** A live dashboard reuses completed scans while a single scan runs. */
 export class ScratchCollector {
   private data: ScratchScan = {
     scratch: [],
@@ -205,8 +214,7 @@ export class ScratchCollector {
       const controller = new AbortController();
       this.controller = controller;
       // A caller that waits is a script with no screen to protect, so its
-      // scan holds the thread throughout. A live dashboard grants the share
-      // the reader set and rests for the remainder of every slice.
+      // scan holds the thread throughout.
       const budget: ScanBudget = {
         sliceMs: SLICE_MS,
         dutyPercent: wait ? 100 : c.scratchDutyPercent,

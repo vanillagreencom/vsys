@@ -4,7 +4,7 @@ vsys is a Linux terminal dashboard for agent processes and system health, writte
 
 ## Commands
 
-- `python3 scripts/ci.py`: the full check contract — install, lint, types, tests, build. Run this before claiming a change is green.
+- `python3 scripts/ci.py`: the full check contract — install, lint, types, tests, build, and the scratch scan bound. Run this before claiming a change is green.
 - `bun test src/`: the application suites alone.
 - `bun src/main.ts --once`: one JSON snapshot with no terminal, which is how to see real output from a script.
 - The repository pins its own Bun in `.bun-version` and ships it as a dependency. Where the system Bun differs, prefix with `PATH="$PWD/node_modules/.bin:$PATH"`.
