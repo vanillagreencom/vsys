@@ -816,6 +816,7 @@
   ".claude/hooks/block-repo-copy.sh",
   ".claude/hooks/block-unsafe-rm.sh",
   ".claude/hooks/block-worktree-refresh.sh",
+  ".claude/hooks/code-quality-load-check.sh",
   ".claude/hooks/command-safety.sh",
   ".claude/hooks/doc-drift-check.sh",
   ".claude/hooks/lane-mail-check.sh",

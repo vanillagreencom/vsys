@@ -156,6 +156,10 @@ harnesses = [
     "pi",
 ]
 
+[hooks.code-quality-load-check]
+source = "kendex"
+harnesses = ["claude"]
+
 [commands.code-scrub]
 source = "kendex"
 
