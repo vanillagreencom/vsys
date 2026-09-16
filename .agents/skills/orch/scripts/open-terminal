@@ -57,6 +57,7 @@ ot_message() { # REASON FIELD=VALUE...
     terminal-fallback) text='The requested terminal is unavailable. The selected terminal will open the lane.' ;;
     terminal-opened) text='The GUI terminal launch was started.' ;;
     issue-invalid) text='The issue identifier does not match the configured pattern.' ;;
+    issue-canonical-failed) text='The git-context helper could not canonicalize the issue identifier. Nothing was created.' ;;
     github-item-invalid) text='A GitHub work item must be an issue number.' ;;
     repo-missing) text='Specify a repository when GitHub cannot resolve it.' ;;
     claim-unrecorded) text='The previous claim is missing. The batch cannot select another account safely.' ;;
@@ -73,6 +74,7 @@ ot_message() { # REASON FIELD=VALUE...
     wake-invalid) text='The wake option takes --harness claude, codex or pi, and no --cmd, --relaunch or lane host.' ;;
     session-missing) text='No session of this harness names the item. Nothing was started.' ;;
     wake-failed) text='The delivering command exited non-zero before the wake window closed. The lane was not woken; the log says why.' ;;
+    wake-refused) text='A session is still working in the lane worktree, or whether one is still working could not be determined, so a resume would run a second session beside it. Nothing was started. Send a halt, or wait for the turn to end.' ;;
     lane-woken) text='The line that reads the lane inbox is on its way to the session. The delivering command runs detached; its output goes to the log.' ;;
     summary) text='The launch batch is complete.' ;;
     *) printf 'open-terminal: message-invalid reason=%s\n' "$reason" >&2; return 2 ;;
@@ -156,7 +158,21 @@ Options:
                     refusal, never a fresh start. The turn runs detached; its
                     output goes to tmp/lane-wake-ITEM.log in the worktree. A
                     delivery that exits non-zero within its first 5 seconds
-                    is refused as wake-failed.
+                    is refused as wake-failed. A Claude or Codex lane still
+                    working in its worktree (a shell under its harness
+                    process, or a Claude session file not reading idle) is
+                    refused as wake-refused reason=busy, and one whose state
+                    cannot be determined as reason=unjudged: a live Codex
+                    session with no shell under it, which gives no idle
+                    signal, or any lane on a host without /proc. Send a
+                    halt or wait.
+
+A Linear ITEM is accepted in whichever case GH_ISSUE_PATTERN matches and
+launched under the tracker's canonical spelling, TEAM-N, which names the
+window, the brief, the lane's mailbox and its workflow-state key. A GitHub
+item's window is gh-N and its brief names github OWNER/REPO#N, while its
+mailbox and workflow-state key are issue-N. The worktree path and its branch
+stay lower case.
 
 On tmux lanes the launch is verified against the pane and the brief re-sent
 once if a first-run dialog consumed it ($ORCH_TMUX_VERIFY_SECS per pass,
@@ -586,20 +602,28 @@ pi_relaunch_root() { # WORKTREE HOME
 
 # Find the newest transcript whose harness kickoff names the item.
 find_relaunch_session() { # HARNESS ITEM WORKTREE
-  local harness="$1" item="$2" cwd="$3" home="${LANES_HOME:-$HOME}" config roots root inventory match_filter files file best="" best_root="" rc relative target
+  local harness="$1" item="$2" cwd="$3" home="${LANES_HOME:-$HOME}" config roots root inventory id_match match_filter files file best="" best_root="" rc relative target
   command -v jq >/dev/null 2>&1 || return 2
-  # Codex writes injected repository instructions as user response items. Its
-  # user_message event is the harness kickoff, so only that record identifies
-  # the work item. Claude Code and Pi keep their own first-message formats.
+  # Whether a kickoff record names the item, for every harness: one expression,
+  # so the letter-case rule has a single home and one test pins it. The id is
+  # matched without regard to case because a transcript holds whatever spelling
+  # its own launch rendered, and an earlier launcher rendered the case
+  # GH_ISSUE_PATTERN was written in rather than the tracker's canonical one, so
+  # a case-sensitive scan would miss a lane's own session and resume nothing.
+  id_match='|first|tostring|test("(^|[^A-Za-z0-9])"+$i+"([^A-Za-z0-9]|$)"; "i")'
+  # Which record is the kickoff differs per harness. Codex writes injected
+  # repository instructions as user response items, so only its user_message
+  # event identifies the work item. Claude Code and Pi keep their own
+  # first-message formats.
   case "$harness" in
-    claude) roots="$home/.claude-shared/projects"; match_filter='[inputs|fromjson?|select(.type=="user")|.message.content]|first|tostring|test("(^|[^A-Za-z0-9])"+$i+"([^A-Za-z0-9]|$)")' ;;
+    claude) roots="$home/.claude-shared/projects"; match_filter='[inputs|fromjson?|select(.type=="user")|.message.content]'"$id_match" ;;
     codex)
       config="${CODEX_HOME:-$home/.codex}"; [[ "${LANE_ENV%%=*}" != CODEX_HOME ]] || config="${LANE_ENV#*=}"
       [[ -x "$LANES_CLI" ]] || return 2
       inventory="$("$LANES_CLI" list --harness codex --json)" || return 2
       roots="$(jq -er --arg d "$config" 'if type=="array" and all(.[]; (.config_dir|type)=="string") then ([.[]|.config_dir]+[$d]|unique[]|.+"/sessions") else error("inventory") end' <<<"$inventory")" || return 2
-      match_filter='[inputs|fromjson?|select(.type=="event_msg" and .payload.type=="user_message")|.payload.message]|first|tostring|test("(^|[^A-Za-z0-9])"+$i+"([^A-Za-z0-9]|$)")' ;;
-    pi) roots="$(pi_relaunch_root "$cwd" "$home")" || return 2; match_filter='[inputs|fromjson?|select(.type=="message" and .message.role=="user")|.message.content]|first|tostring|test("(^|[^A-Za-z0-9])"+$i+"([^A-Za-z0-9]|$)")' ;;
+      match_filter='[inputs|fromjson?|select(.type=="event_msg" and .payload.type=="user_message")|.payload.message]'"$id_match" ;;
+    pi) roots="$(pi_relaunch_root "$cwd" "$home")" || return 2; match_filter='[inputs|fromjson?|select(.type=="message" and .message.role=="user")|.message.content]'"$id_match" ;;
   esac
   [[ "$TRACKER" != github ]] || item="#$item"
   while IFS= read -r root; do
@@ -1046,6 +1070,50 @@ launchable_dir() { # DIR TITLE
   return 1
 }
 
+# A Claude or Codex wake resumes the session in a second process, so a session
+# still working in the worktree would be doubled. Busy: a live harness process
+# whose cwd is the worktree has a shell descendant, which every tool call and
+# background task runs through, or, for Claude, its session file does not read
+# idle. Language and MCP servers are non-shell children an idle session keeps,
+# so only shells count. Codex gives no idle signal, so a live codex session
+# with no shell under it is unjudged, never idle. The cwd and the environment
+# are read through /proc.
+lane_session_state() { # DIR — prints busy, idle or unjudged
+  local root table pids pid cwd state config
+  root="$(cd -- "$1" && pwd -P)" || { printf unjudged; return 0; }
+  # pid, parent pid and command name without its directory, which macOS ps prints.
+  table="$(ps -A -o pid= -o ppid= -o comm= | awk '{ pid = $1; ppid = $2; $1 = ""; $2 = ""; name = substr($0, 3); sub(/.*\//, "", name); print pid, ppid, name }')" ||
+    { printf unjudged; return 0; }
+  pids="$(awk -v harness="$HARNESS" '$3 == harness { print $1 }' <<<"$table")" || { printf unjudged; return 0; }
+  for pid in $pids; do
+    [[ -d /proc/self ]] || { printf unjudged; return 0; }
+    if ! cwd="$(readlink -- "/proc/$pid/cwd" 2>/dev/null)"; then
+      # A process that exited is no session; one still running whose cwd
+      # cannot be read is never judged idle.
+      [[ -d "/proc/$pid" ]] || continue
+      printf unjudged; return 0
+    fi
+    [[ "$cwd" == "$root" ]] || continue
+    state="$(awk -v top="$pid" '{ parent[$1] = $2; name[$1] = $3 }
+      END {
+        state = "idle"
+        for (p in name) {
+          if (name[p] !~ /^-?(ba|da|z|fi)?sh$/) continue
+          for (q = parent[p]; (q in parent) && q != top; q = parent[q]) ;
+          if (q == top) state = "busy"
+        }
+        print state
+      }' <<<"$table")" || { printf unjudged; return 0; }
+    [[ "$state" == idle ]] || { printf busy; return 0; }
+    [[ "$HARNESS" == claude ]] || { printf unjudged; return 0; }
+    # A missing environment falls back to the default config dir, where a
+    # missing session file reads busy.
+    config="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^CLAUDE_CONFIG_DIR=//p')" || config=""
+    jq -e '.status == "idle"' "${config:-${HOME:-}/.claude}/sessions/$pid.json" >/dev/null 2>&1 || { printf busy; return 0; }
+  done
+  printf idle
+}
+
 # The launch marker lane-mail-check requires: WT's root, under the common git
 # directory at lane-mail/<ITEM in lower case>. A lane-mail directory or marker
 # that is a symlink or not its plain kind fails, and the root lands through a
@@ -1240,19 +1308,18 @@ lanes_seen=""
 for raw in "${ITEMS[@]}"; do
   item="$raw"
   if [[ "$TRACKER" == "linear" ]]; then
-    # Validate case-insensitively, then normalize to whichever case the
-    # configured GH_ISSUE_PATTERN accepts, so lowercase-convention projects
-    # (e.g. GH_ISSUE_PATTERN="cc-[0-9]+") work without forcing uppercase.
-    item_upper="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
-    item_lower="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-    if [[ "$item_upper" =~ ^$GH_ISSUE_PATTERN$ ]]; then
-      item="$item_upper"
-    elif [[ "$item_lower" =~ ^$GH_ISSUE_PATTERN$ ]]; then
-      item="$item_lower"
-    elif [[ "$raw" =~ ^$GH_ISSUE_PATTERN$ ]]; then
-      item="$raw"
-    else
+    # git-context owns the canonical spelling of a tracker item, so this brief,
+    # the mailbox the lane opens under it, its status file and its
+    # workflow-state key cannot name one item two ways on a case-sensitive
+    # disk. A lowercase-convention GH_ISSUE_PATTERN (e.g. "cc-[0-9]+") is still
+    # accepted on input and never emitted. `worktree` lowercases the id for the
+    # path and the branch itself, so the canonical item is also the worktree id.
+    canonical_rc=0
+    item="$("$SCRIPT_DIR/git-context" issue-canonical "$raw" "$GH_ISSUE_PATTERN")" || canonical_rc=$?
+    if [[ "$canonical_rc" -eq 1 ]]; then
       ot_message issue-invalid "item=$raw" >&2; exit 1
+    elif [[ "$canonical_rc" -ne 0 ]]; then
+      ot_message issue-canonical-failed "item=$raw" "exit=$canonical_rc" >&2; exit 1
     fi
     wt_id="$item"
     title="$item"
@@ -1338,6 +1405,12 @@ for raw in "${ITEMS[@]}"; do
     ot_message worktree-failed "item=$item" "exit=$create_rc" >&2
     failed=$((failed + 1))
     continue
+  fi
+  # A Pi wake enters the live session through pi-bridge. A Claude or Codex wake
+  # starts a second process on the session, so a working one is refused.
+  if [[ "$WAKE" == true && "$HARNESS" != pi ]]; then
+    if ! wake_state="$(lane_session_state "$wt")"; then wake_state=unjudged; fi
+    [[ "$wake_state" == idle ]] || { ot_message wake-refused "item=$item" "reason=$wake_state" >&2; failed=$((failed + 1)); continue; }
   fi
   if [[ "$LANE_HOST" != local ]]; then
     IFS=$'\t' read -r -a host_fields <<<"$host_line"
