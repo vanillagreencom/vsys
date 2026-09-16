@@ -156,7 +156,23 @@ harnesses = [
     "pi",
 ]
 
-[hooks.code-quality-load-check]
+[hooks.lane-mail-deliver]
+source = "kendex"
+harnesses = [
+    "claude",
+    "codex",
+    "pi",
+]
+
+[hooks.lane-mail-halt]
+source = "kendex"
+harnesses = [
+    "claude",
+    "codex",
+    "pi",
+]
+
+[hooks.skill-load-check]
 source = "kendex"
 harnesses = ["claude"]
 
