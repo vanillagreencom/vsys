@@ -128,6 +128,49 @@ GC="$SKILL_DIR/scripts/git-context"
 assert_eq "$("$GC" issue-from-branch "$issue_repo")" "CC-536" "git-context uppercases lower-case Linear branch ids"
 git -C "$issue_repo" checkout -q --orphan issue-369
 assert_eq "$("$GC" issue-from-branch "$issue_repo")" "issue-369" "git-context keeps GitHub issue branch ids lowercase"
+# One owner of the canonical spelling: a bare id the pattern accepts in either
+# case reaches the same answer the branch match does, so a launched brief, a
+# mailbox path and a workflow-state key cannot name one item two ways.
+assert_eq "$("$GC" issue-canonical cc-536 'cc-[0-9]+')" "CC-536" "git-context canonicalizes a bare id against a lowercase pattern"
+canonical_rc=0
+"$GC" issue-canonical 12ab 'cc-[0-9]+' >/dev/null 2>"$TMP_ROOT/canonical.err" || canonical_rc=$?
+assert_eq "$canonical_rc" "1" "git-context rejects a bare id no case of the pattern matches"
+assert_eq "$(sed -n '1p' "$TMP_ROOT/canonical.err")" "git-context: issue-uncanonical id=12ab" \
+  "and names the rejected id"
+
+# Every caller composes paths on common-root, so a value relative to the
+# directory it was asked about would name somewhere else entirely. Git answers
+# `../..` from below a checkout top, and that climb is made from the physical
+# directory: through a symlink to a nested one, a logical climb starts at the
+# link's own place and lands outside the checkout. Both shapes are controlled.
+deep_repo="$TMP_ROOT/deep-repo"
+mkdir -p "$deep_repo/sub/deeper"
+git init -q "$deep_repo"
+deep_top="$(cd "$deep_repo" && pwd -P)"
+assert_eq "$("$GC" common-root "$deep_repo/sub/deeper")" "$deep_top" \
+  "git-context resolves a directory below a checkout top to that checkout"
+assert_eq "$(cd "$deep_repo/sub/deeper" && "$GC" common-root .)" "$deep_top" \
+  "and does the same asked from inside it"
+deep_link="$TMP_ROOT/deep-link"
+ln -s "$deep_repo/sub/deeper" "$deep_link"
+assert_eq "$("$GC" common-root "$deep_link")" "$deep_top" \
+  "and resolves a symlink to a nested directory to the checkout it is inside"
+relative_gc="$TMP_ROOT/git-context-relative"
+sed 's@\*/\.git) (cd -P -- "\$worktree" && cd -P -- "\$(dirname -- "\$git_common_dir")" && pwd -P) ;;@*/.git) dirname "$git_common_dir" ;;@' \
+  "$GC" > "$relative_gc"
+chmod +x "$relative_gc"
+assert_eq "$(cmp -s "$relative_gc" "$GC" && echo same || echo differs)" "differs" \
+  "control: the relative mutant really restores the unresolved answer"
+assert_eq "$("$relative_gc" common-root "$deep_repo/sub/deeper")" "../.." \
+  "control: unresolved, the answer is a path against the caller's own directory"
+logical_gc="$TMP_ROOT/git-context-logical"
+sed 's@(cd -P -- "\$worktree" \&\& cd -P -- @(cd -- "$worktree" \&\& cd -- @' "$GC" > "$logical_gc"
+chmod +x "$logical_gc"
+assert_eq "$(cmp -s "$logical_gc" "$GC" && echo same || echo differs)" "differs" \
+  "control: the logical mutant really drops the physical climb"
+link_ancestor="$(cd -P -- "$TMP_ROOT" && cd -P -- .. && pwd -P)"
+assert_eq "$("$logical_gc" common-root "$deep_link")" "$link_ancestor" \
+  "control: climbing logically from a symlink answers an ancestor of the link, not the checkout"
 
 # The comment-triage baseline is an RFC-3339 UTC instant compared against
 # GitHub timestamps; a locale-shaped or local-zone value would silently

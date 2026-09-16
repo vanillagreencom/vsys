@@ -30,7 +30,9 @@ SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
 SRC_OT="${OPEN_TERMINAL_UNDER_TEST:-$SCRIPTS_DIR/open-terminal}"
 SRC_LIB_DIR="$SCRIPTS_DIR/lib"
 TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+# The fixture sessions this suite started; nothing else is killed.
+LIVE_PIDS=""
+trap 'kill $LIVE_PIDS 2>/dev/null || :; rm -rf "$TMP_ROOT"' EXIT
 
 PASS=0
 FAIL=0
@@ -74,7 +76,9 @@ BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 cat > "$BIN/ghostty" <<'EOF'
 #!/usr/bin/env bash
-[[ -z "${OT_CAPTURE:-}" ]] || printf '%s\n' "${!#}" >"$OT_CAPTURE"
+# The capture is renamed into place, so it exists only once whole: a test
+# waiting for it never reads the empty file a plain redirect would leave first.
+[[ -z "${OT_CAPTURE:-}" ]] || { printf '%s\n' "${!#}" >"$OT_CAPTURE.part" && mv -- "$OT_CAPTURE.part" "$OT_CAPTURE"; }
 exit 0
 EOF
 cat > "$BIN/gh" <<'EOF'
@@ -130,7 +134,7 @@ chmod +x "$STUB"
 REPO="$TMP_ROOT/repo"
 mkdir -p "$REPO/scripts/lib"
 cp "$SRC_OT" "$REPO/scripts/open-terminal"
-cp "$SCRIPTS_DIR/lane-host" "$REPO/scripts/lane-host"
+cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/git-context" "$REPO/scripts/"
 cp "$SRC_LIB_DIR"/*.sh "$REPO/scripts/lib/"
 orch_fixture_shared_libs "$REPO"
 chmod +x "$REPO/scripts/open-terminal"
@@ -227,11 +231,16 @@ assert_eq "$RC" "0" "--relaunch with no existing worktree launches"
 assert_eq "$(tr '\n' ' ' < "$CALL_LOG")" "CC-1 " "a missing worktree takes the bare create form"
 
 # Relaunch resumes the newest transcript whose harness kickoff names the item.
+# The claude transcript records the item lower case while the launch names the
+# canonical upper-case one: a session launched before the canonical brief holds
+# whichever case its project's pattern was written in, and a scan that read the
+# id case-sensitively would resume nothing and start a second session on the
+# lane's worktree.
 SESSION_HOME="$TMP_ROOT/session-home"; CLAUDE222=22222222-2222-2222-2222-222222222222; CODEX444=44444444-4444-4444-4444-444444444444; mkdir -p "$SESSION_HOME/.claude-shared/projects/repo" "$SESSION_HOME/.selected-codex/sessions/2026" "$SESSION_HOME/.pi/agent/sessions/repo"
-printf '%s\n' '{"type":"user","message":{"content":"start CC-1"}}' >"$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222.jsonl"
+printf '%s\n' '{"type":"user","message":{"content":"start cc-1"}}' >"$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222.jsonl"
 cp "$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222.jsonl" "$SESSION_HOME/.claude-shared/projects/repo/11111111-1111-1111-1111-111111111111.jsonl"; touch -t 200001010000 "$SESSION_HOME/.claude-shared/projects/repo/11111111-1111-1111-1111-111111111111.jsonl"
 mkdir -p "$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222/subagents"
-printf '%s\n' '{"type":"user","message":{"content":"start CC-1"}}' >"$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222/subagents/child-agent.jsonl"; touch -t 203001010000 "$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222/subagents/child-agent.jsonl"
+printf '%s\n' '{"type":"user","message":{"content":"start cc-1"}}' >"$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222/subagents/child-agent.jsonl"; touch -t 203001010000 "$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222/subagents/child-agent.jsonl"
 printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$CODEX444\"}}" '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"repository instructions"}]}}' '{"type":"event_msg","payload":{"type":"user_message","message":"start CC-1"}}' >"$SESSION_HOME/.selected-codex/sessions/2026/session.jsonl"
 printf '%s\n' '{"type":"message","message":{"role":"user","content":"start CC-1"}}' >"$SESSION_HOME/.pi/agent/sessions/repo/session.jsonl"
 EXIT_DIR="$TMP_ROOT/resume-exit"; EXISTS_DIR="$TMP_ROOT/resume-exists"; mkdir -p "$EXIT_DIR" "$EXISTS_DIR"; touch "$EXISTS_DIR/CC-1"
@@ -349,6 +358,112 @@ for row in "session-missing item=CC-9 harness=claude|--harness claude CC-9" "dir
   assert_contains "$ERR" "open-terminal: $key" "wake refusal names its key: ${key%% *}"
   assert_eq "$(cat "$TMP_ROOT/wake-refused.cmd" 2>/dev/null)" "" "wake refusal starts no session: ${key%% *}"
 done
+
+# A Claude or Codex session still working in the lane worktree is not resumed
+# beside itself. The fixture session is a copy of bash named for the harness,
+# so it carries the harness's command name, running in the worktree with the
+# shell child and, for Claude, the session file a row names.
+LIVE_BIN="$TMP_ROOT/live-bin"; mkdir -p "$LIVE_BIN"; cp "$BASH" "$LIVE_BIN/claude"; cp "$BASH" "$LIVE_BIN/codex"
+LIVE_CONFIG="$TMP_ROOT/live-config"; mkfifo "$TMP_ROOT/never"
+cat >"$TMP_ROOT/live-session.sh" <<'EOF'
+[ "$1" = - ] || printf '{"status":"%s"}\n' "$1" >"$CLAUDE_CONFIG_DIR/sessions/$$.json"
+if [ "$2" = 1 ]; then
+  bash -c 'printf "%s\n" "$$" >"$1.shell"; read -r _ <"$2"' shell "$3" "$4" &
+  n=0; while [ ! -s "$3.shell" ] && [ "$n" -lt 200 ]; do sleep 0.05; n=$((n + 1)); done
+fi
+: >"$3"
+read -r _ <"$4"
+EOF
+# live_wake HARNESS STATUS SHELL [SCRIPT] — a HARNESS wake on CC-1 through
+# SCRIPT, beside a live session whose file reads STATUS (`-` writes none), with
+# a shell child when SHELL is 1.
+live_wake() {
+  local ready="$TMP_ROOT/live-ready" pid n=0 saved="$OT"
+  rm -rf -- "$LIVE_CONFIG" "$ready" "$ready.shell" "$TMP_ROOT/live-wake.cmd"; mkdir -p "$LIVE_CONFIG/sessions"
+  (cd "$TMP_ROOT/wt/CC-1" && export CLAUDE_CONFIG_DIR="$LIVE_CONFIG" && exec "$LIVE_BIN/$1" "$TMP_ROOT/live-session.sh" "$2" "$3" "$ready" "$TMP_ROOT/never") &
+  pid=$!
+  LIVE_PIDS="$pid"
+  while [[ ! -e "$ready" && "$n" -lt 200 ]]; do sleep 0.05; n=$((n + 1)); done
+  [[ ! -s "$ready.shell" ]] || LIVE_PIDS="$LIVE_PIDS $(cat "$ready.shell")"
+  OT="${4:-$OT}"
+  OT_CAPTURE="$TMP_ROOT/live-wake.cmd" LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" \
+    run_case live-wake -- --wake --harness "$1" CC-1
+  OT="$saved"
+  kill $LIVE_PIDS 2>/dev/null || :
+  wait "$pid" 2>/dev/null || :
+  LIVE_PIDS=""
+}
+LIVE_RESUME_claude="claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE"
+LIVE_RESUME_codex="codex exec resume $CODEX444 $WAKE_LINE"
+for row in "claude idle 1 busy|a shell under an idle session" "claude busy 0 busy|a session file not reading idle" "claude idle 0 idle|an idle session" \
+  "codex - 1 busy|a shell under a codex session" "codex - 0 unjudged|a codex session with no shell under it"; do
+  IFS='|' read -r spec label <<<"$row"
+  read -r harness status shell want <<<"$spec"
+  # With no /proc the cwd of the live session cannot be read at all.
+  [[ -d /proc/self ]] || want=unjudged
+  live_wake "$harness" "$status" "$shell"
+  if [[ "$want" == idle ]]; then
+    resume_var="LIVE_RESUME_$harness"
+    assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "${!resume_var}" "a wake beside $label resumes it"
+  else
+    assert_eq "RC=$RC resumed=$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "RC=1 resumed=" "a wake beside $label exits 1 and resumes nothing"
+    assert_contains "$ERR" "open-terminal: wake-refused item=CC-1 reason=$want" "a wake beside $label is refused as $want"
+  fi
+done
+# The mutant: the refusal gone, the session state still read.
+BUSY_MUTANT_REPO="$TMP_ROOT/busy-mutant-repo"
+cp -a "$REPO" "$BUSY_MUTANT_REPO"
+BUSY_MUTANT="$BUSY_MUTANT_REPO/scripts/open-terminal"
+sed -i.bak 's/\[\[ "$wake_state" == idle \]\] ||/true ||/' "$BUSY_MUTANT"
+assert_eq "$(cmp -s "$OT" "$BUSY_MUTANT" && echo same || echo changed)" "changed" "control: the busy mutant really drops the refusal"
+live_wake claude idle 1 "$BUSY_MUTANT"
+assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE" \
+  "control: without the refusal a wake resumes beside a working session"
+# The inverse of the codex rows: with no codex process in the worktree, the wake
+# proceeds.
+OT_CAPTURE="$TMP_ROOT/live-wake.cmd" LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" \
+  run_case live-wake-none -- --wake --harness codex CC-1
+assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_codex" \
+  "a codex wake with no codex process in the worktree resumes it"
+# The mutant: a codex session with no shell under it read as idle again. With
+# no /proc the wake is unjudged before any session is read, so the control has
+# nothing to turn.
+if [[ -d /proc/self ]]; then
+  CODEX_IDLE_MUTANT_REPO="$TMP_ROOT/codex-idle-mutant-repo"
+  cp -a "$REPO" "$CODEX_IDLE_MUTANT_REPO"
+  CODEX_IDLE_MUTANT="$CODEX_IDLE_MUTANT_REPO/scripts/open-terminal"
+  sed -i.bak 's/^    \[\[ "$HARNESS" == claude \]\] || { printf unjudged; return 0; }$/    [[ "$HARNESS" == claude ]] || continue/' "$CODEX_IDLE_MUTANT"
+  assert_eq "$(cmp -s "$OT" "$CODEX_IDLE_MUTANT" && echo same || echo changed)" "changed" \
+    "control: the codex-idle mutant really reads a shell-less codex session as idle"
+  live_wake codex - 0 "$CODEX_IDLE_MUTANT"
+  assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_codex" \
+    "control: without the codex arm a wake resumes beside a live codex session"
+fi
+# A live session whose cwd cannot be read is unjudged, never idle. The shim
+# stands in for the one readlink open-terminal calls and hides only a cwd in
+# the fixture worktree.
+CWD_SHIM="$TMP_ROOT/cwd-shim"; mkdir -p "$CWD_SHIM"
+printf '#!/bin/sh\nt=$("%s" "$@") || exit 1\n[ "$t" != "%s" ] || exit 1\nprintf "%%s\\n" "$t"\n' \
+  "$(command -v readlink)" "$TMP_ROOT/wt/CC-1" >"$CWD_SHIM/readlink"
+chmod +x "$CWD_SHIM/readlink"
+PATH="$CWD_SHIM:$PATH" live_wake claude idle 0
+assert_eq "RC=$RC resumed=$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "RC=1 resumed=" \
+  "a wake beside a session whose cwd cannot be read exits 1 and resumes nothing"
+assert_contains "$ERR" "open-terminal: wake-refused item=CC-1 reason=unjudged" \
+  "a wake beside a session whose cwd cannot be read is refused as unjudged"
+# The mutant: a failed cwd read skips the process again. With no /proc the
+# wake is unjudged before any cwd is read, so the control has nothing to turn.
+if [[ -d /proc/self ]]; then
+  UNREAD_MUTANT_REPO="$TMP_ROOT/unread-mutant-repo"
+  cp -a "$REPO" "$UNREAD_MUTANT_REPO"
+  UNREAD_MUTANT="$UNREAD_MUTANT_REPO/scripts/open-terminal"
+  sed -i.bak 's/^      printf unjudged; return 0$/      continue/' "$UNREAD_MUTANT"
+  assert_eq "$(cmp -s "$OT" "$UNREAD_MUTANT" && echo same || echo changed)" "changed" \
+    "control: the unread-cwd mutant really skips the process"
+  PATH="$CWD_SHIM:$PATH" live_wake claude idle 0 "$UNREAD_MUTANT"
+  assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE" \
+    "control: without the unjudged arm a wake resumes beside a session it never read"
+fi
 
 if [[ "${OPEN_TERMINAL_SKIP_CONTROL:-}" != 1 ]]; then
   CLAUDE_MUTANT="$TMP_ROOT/open-terminal-claude-recursive"

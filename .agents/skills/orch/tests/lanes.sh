@@ -14,6 +14,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 # Every lane this suite measures lives under LANES_HOME; an inherited lane
 # setting would point discovery at the operator's real accounts.
 unset ORCH_LANE_DIRS ORCH_LANE_ALIASES ORCH_LANE_EXCLUDE ORCH_LANE_RETIRE ORCH_LANES_USAGE_TTL CODEX_HOME
+# The renewal's own settings, for the same reason: with one of these exported a
+# developer runs a different suite from CI, where a baseline expired-token row
+# renews, or a row reaches a live helper or the real token endpoint.
+unset ORCH_LANES_CLAUDE_CLIENT_ID ORCH_LANES_TOKEN_CMD ORCH_LANES_CLAUDE_TOKEN_URL
 # Resolve siblings from the TEST directory, never from a repo root: the CLI
 # integration check runs this same suite from an INSTALLED layout
 # (.agents/skills/orch/tests/...), where a `<root>/skills/orch/...` path does not
@@ -72,6 +76,7 @@ run_lanes() {
   mkdir -p "$RUN/store"
   ERR="$RUN/stderr"
   OUT=$(env LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" FETCH_LOG="$RUN/fetch.log" \
+    TOKEN_LOG="$RUN/token.log" \
     OVERSEE_WATCH_STATE_DIR="$RUN/store" TMUX_PANES_FILE="$RUN/panes" \
     PATH="$CLAIM_BIN:$PATH" ${env_args[@]+"${env_args[@]}"} "$LANES" "$@" 2>"$ERR")
   RC=$?
@@ -111,7 +116,19 @@ observe() {
       aliases) value="$(json '[.[].alias] | sort | join(",")')" ;;
       files) value="$(ls -1 "$STORE/claims" 2>/dev/null | sed 's/\.claim$//' | paste -sd, - || true)"; [[ -n "$value" ]] || value=none ;;
       fetched) value="$(fetched_lanes "$RUN/fetch.log")" ;;
+      tokencalls) value="$(grep -c . "$RUN/token.log" 2>/dev/null || true)"; value="${value:-0}" ;;
+      # Every jq argument vector of the run, searched for the fixture's own
+      # refresh token and for both tokens the endpoint stub hands back.
+      jqsecrets) value="$(grep -c -e refresh-claude -e renewed-token -e rotated-refresh "$JQ_ARGV_LOG" 2>/dev/null || true)"; value="${value:-0}" ;;
+      newtoken) value="$(jq -r '.claudeAiOauth.accessToken' "$H/.claude/.credentials.json" 2>/dev/null || echo UNREADABLE)" ;;
+      newrefresh) value="$(jq -r '.claudeAiOauth.refreshToken' "$H/.claude/.credentials.json" 2>/dev/null || echo UNREADABLE)" ;;
       cachefiles) value="$(cat "$RUN/store/usage"/*.json 2>/dev/null | jq -r '.config_dir' | sed "s#^$H/\\.##" | sort | paste -sd, - || true)"; [[ -n "$value" ]] || value=none ;;
+      *.cause)
+        # A detail is a sentence, and `expect` splits on whitespace: the
+        # underscores let a row pin the whole text rather than a fragment.
+        value="$(json ".[] | select(.alias==\"${name%%.*}\") | .detail")"
+        value="${value// /_}"
+        ;;
       *.aged)
         # A reused figure's age grows with the clock; the row pins its floor.
         value="$(json ".[] | select(.alias==\"${name%%.*}\") | .usage_age_s")"
@@ -192,6 +209,165 @@ new_home unreachable
 make_lane "$H" claude 3600
 table \
   "a failed usage query is unreachable with null headroom||$LIST|first.status=unreachable first.headroom_pct=null"
+
+echo "=== an expired access token is renewed in place, or the lane stays expired ==="
+# The lane `pick` prints must carry a live token: a session launched on a stale
+# one stalls at its first call. The token POST is the stub; the lock, the
+# re-read under it and the credentials write-back are the real ones.
+TOKEN_OK="$TMP_ROOT/token-ok"
+# Answers without jq of its own: the argv row below reads every jq argument
+# vector of the run, and a stub that passed its own fixture tokens to jq would
+# be the leak it is looking for.
+cat > "$TOKEN_OK" <<'STUB'
+#!/usr/bin/env bash
+# The token request body arrives on stdin; the endpoint's JSON goes to stdout.
+cat >/dev/null
+[[ -z "${TOKEN_LOG:-}" ]] || printf 'refresh\n' >> "$TOKEN_LOG"
+printf '{"access_token":"renewed-token","refresh_token":"rotated-refresh","expires_in":3600}\n'
+STUB
+chmod +x "$TOKEN_OK"
+TOKEN_BAD="$TMP_ROOT/token-bad"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "{}"\n' > "$TOKEN_BAD"
+chmod +x "$TOKEN_BAD"
+# An access token with no expires_in. The empty object above never reaches the
+# expiry refusal, because the missing access token refuses first.
+TOKEN_NOEXP="$TMP_ROOT/token-noexp"
+cat > "$TOKEN_NOEXP" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"access_token":"renewed-token","refresh_token":"rotated-refresh"}\n'
+STUB
+chmod +x "$TOKEN_NOEXP"
+# Zero is a number and not a lifetime: it dates the new expiry to this instant,
+# so the lane would return renewed and the next run would renew it again.
+TOKEN_ZEROEXP="$TMP_ROOT/token-zeroexp"
+cat > "$TOKEN_ZEROEXP" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"access_token":"renewed-token","refresh_token":"rotated-refresh","expires_in":0}\n'
+STUB
+chmod +x "$TOKEN_ZEROEXP"
+REFRESH_ENV="ORCH_LANES_CLAUDE_CLIENT_ID=client-1;ORCH_LANES_TOKEN_CMD=$TOKEN_OK"
+
+new_home refreshable
+make_lane "$H" claude -60
+make_lane "$H" eclaude 3600
+claude_usage 10 20 5  Opus > "$FIXTURE_DIR/.claude.json"
+claude_usage 40 40 40 Opus > "$FIXTURE_DIR/.eclaude.json"
+table \
+  "a renewed lane is measured like any other, its record marked refreshable, both the new token and the rotated refresh token written back to its credentials|$REFRESH_ENV|$LIST|claude.status=ok claude.refreshable=true claude.headroom_pct=80 newtoken=renewed-token newrefresh=rotated-refresh" \
+  "a lane whose token had not expired is not refreshable|$REFRESH_ENV|$LIST|eclaude.status=ok eclaude.refreshable=false"
+
+# Its own home: the rows above renewed theirs, and a renewal writes an expiry
+# in the future, so that home has no expired lane left for `pick` to renew.
+new_home pick-renews
+make_lane "$H" claude -60
+make_lane "$H" eclaude 3600
+claude_usage 10 20 5  Opus > "$FIXTURE_DIR/.claude.json"
+claude_usage 40 40 40 Opus > "$FIXTURE_DIR/.eclaude.json"
+table \
+  "pick renews the lane it returns, once|$REFRESH_ENV|pick --harness claude|rc=0 out=CLAUDE_CONFIG_DIR=$H/.claude tokencalls=1"
+
+# The renewal writes the new expiry with the new token. Without it every later
+# run reads the lane as expired and rotates the shared refresh token again,
+# which is a worse version of the failure this renewal exists to remove. The
+# first list renews; the asserted row is the second.
+new_home renew-once
+make_lane "$H" claude -60
+claude_usage 10 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+run_lanes "$REFRESH_ENV" $LIST
+table \
+  "a second run reads the renewed lane as live and makes no second token call|$REFRESH_ENV|$LIST|claude.status=ok claude.refreshable=false claude.headroom_pct=80 tokencalls=0"
+
+# Every secret reaches jq through the environment. On Linux /proc/<pid>/cmdline
+# is world-readable, so a token on an argument vector is readable by any local
+# user for as long as the process lives.
+JQ_ARGV_BIN="$TMP_ROOT/jq-argv-bin"; mkdir -p "$JQ_ARGV_BIN"
+JQ_ARGV_LOG="$TMP_ROOT/jq-argv.log"
+REAL_JQ="$(command -v jq)"
+cat > "$JQ_ARGV_BIN/jq" <<STUBEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$JQ_ARGV_LOG"
+exec "$REAL_JQ" "\$@"
+STUBEOF
+chmod +x "$JQ_ARGV_BIN/jq"
+new_home jq-argv
+make_lane "$H" claude -60
+claude_usage 10 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+: > "$JQ_ARGV_LOG"
+table \
+  "a renewal puts no token on a jq argument vector|$REFRESH_ENV;PATH=$JQ_ARGV_BIN:$CLAIM_BIN:$PATH|$LIST|claude.status=ok claude.refreshable=true jqsecrets=0"
+
+new_home refresh-fails
+make_lane "$H" claude -60
+claude_usage 10 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+table \
+  "a renewal the endpoint refuses fails closed as expired, naming the cause|ORCH_LANES_CLAUDE_CLIENT_ID=client-1;ORCH_LANES_TOKEN_CMD=$TOKEN_BAD|$LIST|claude.status=expired claude.refreshable=false claude.headroom_pct=null claude.cause=access_token_expired_and_could_not_be_renewed:_the_token_endpoint_returned_no_access_token" \
+  "pick refuses a lane whose renewal failed|ORCH_LANES_CLAUDE_CLIENT_ID=client-1;ORCH_LANES_TOKEN_CMD=$TOKEN_BAD|pick --harness claude|rc=3"
+
+# RFC 6749 makes expires_in recommended, not required: a response without one
+# refuses rather than writing a live token under the past expiry, which would
+# renew again on every later run.
+new_home no-expires-in
+make_lane "$H" claude -60
+claude_usage 10 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+table \
+  "a response with no expires_in refuses, naming it, and leaves the credentials alone|ORCH_LANES_CLAUDE_CLIENT_ID=client-1;ORCH_LANES_TOKEN_CMD=$TOKEN_NOEXP|$LIST|claude.status=expired claude.refreshable=false claude.headroom_pct=null claude.cause=access_token_expired_and_could_not_be_renewed:_the_token_endpoint_returned_no_usable_expires_in newtoken=token-claude newrefresh=refresh-claude"
+
+new_home zero-expires-in
+make_lane "$H" claude -60
+claude_usage 10 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+table \
+  "an expires_in of zero refuses on the same cause and leaves the credentials alone|ORCH_LANES_CLAUDE_CLIENT_ID=client-1;ORCH_LANES_TOKEN_CMD=$TOKEN_ZEROEXP|$LIST|claude.status=expired claude.refreshable=false claude.headroom_pct=null claude.cause=access_token_expired_and_could_not_be_renewed:_the_token_endpoint_returned_no_usable_expires_in newtoken=token-claude newrefresh=refresh-claude"
+
+# A real interleaving, not a simulated one: the peer takes the SAME lock through
+# the same lib the renewal uses, writes a live token and a rotated refresh token
+# while the measured run waits on it, and releases. Posting after that would
+# rotate the peer's fresh refresh token away and strand its account.
+PEER="$TMP_ROOT/peer-renew"
+cat > "$PEER" <<'STUB'
+#!/usr/bin/env bash
+# argv: <credentials path> <held marker path>
+set -uo pipefail
+# shellcheck source=/dev/null
+source "$SCRIPTS_DIR/lib/file-lock.sh"
+creds="$1"; held="$2"; lock="$(dirname "$creds")/.lanes-refresh.lock"
+exec 9>"$lock" || exit 1
+orch_take_lock 9 "$lock" 30 || exit 1
+# Only now is the interleaving staged: the caller waits for this before it runs.
+: > "$held"
+sleep 2
+exp=$(( ($(date +%s) + 3600) * 1000 ))
+jq --argjson exp "$exp" \
+  '.claudeAiOauth.accessToken = "peer-token"
+   | .claudeAiOauth.refreshToken = "peer-refresh"
+   | .claudeAiOauth.expiresAt = $exp' "$creds" > "$creds.peer" || exit 1
+mv "$creds.peer" "$creds" || exit 1
+exec 9>&-
+orch_release_lock
+STUB
+chmod +x "$PEER"
+export SCRIPTS_DIR
+new_home peer-renews
+make_lane "$H" claude -60
+claude_usage 10 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+PEER_HELD="$TMP_ROOT/peer-held"; rm -f -- "${PEER_HELD:?}"
+"$PEER" "$H/.claude/.credentials.json" "$PEER_HELD" &
+PEER_PID=$!
+peer_wait=0
+until [[ -f "$PEER_HELD" ]] || (( peer_wait >= 100 )); do sleep 0.1; peer_wait=$((peer_wait + 1)); done
+[[ -f "$PEER_HELD" ]] || { printf 'peer-renew never took the lock; the interleaving was not staged\n' >&2; exit 1; }
+table \
+  "a renewal a peer wrote under the lock is taken as it stands, with no second POST|$REFRESH_ENV|$LIST|claude.status=ok claude.refreshable=true claude.headroom_pct=80 tokencalls=0 newtoken=peer-token newrefresh=peer-refresh"
+wait "$PEER_PID"
+
+new_home no-refresh-token
+mkdir -p "$H/.claude"
+jq -n --argjson exp "$(( ($(date +%s) - 60) * 1000 ))" \
+  '{claudeAiOauth: {accessToken: "stale", expiresAt: $exp, subscriptionType: "max"}}' \
+  > "$H/.claude/.credentials.json"
+table \
+  "an expired lane with no refresh token beside it names that, and never reaches the endpoint|ORCH_LANES_CLAUDE_CLIENT_ID=client-1;ORCH_LANES_TOKEN_CMD=$TOKEN_OK|$LIST|claude.status=expired claude.refreshable=false claude.cause=access_token_expired_and_could_not_be_renewed:_there_is_no_refresh_token_in_$H/.claude/.credentials.json_to_renew_with tokencalls=0"
 
 echo "=== codex windows route by duration, not by position ==="
 # OpenAI's primary/secondary windows do not map to session/weekly by position:

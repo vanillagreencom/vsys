@@ -3,11 +3,11 @@
 # name: lane-mail-check
 # event: Stop
 # matcher:
-# description: Blocks a lane's turn end while its overseer mailbox holds unread lines, so a directive or a ruling reaches the lane without a keystroke, a pane or a question tool. The lane is the work item `LANE_MAIL_ITEM` names, or the one directory under `<repo>/tmp/lane-mail/` whose name lowercases to the current branch; a session with neither is not a lane and passes silently, as does a lane whose mailbox holds no unread line and a directory git reports no repository for and that holds no mailbox of its own. A mailbox belongs to a lane only where a launch recorded one: `open-terminal` and `lane-host create` write the lane's root to `lane-mail/<item in lower case>` under the repository's common git directory, and a mailbox with no marker bound to this root passes silently. Unread lines are peeked through the orch skill's own `lane-mail inbox --peek`, the one reader of the mailbox and its cursor, and acknowledged with `inbox --ack` only once the refusal is written, so a hook killed at its budget leaves them unread and a line acknowledged here is never handed over twice. That reader is resolved from this hook's own install, walking up to the home directory for `skills/orch/scripts/lane-mail` or the shared `.agents/skills/orch/scripts/lane-mail` beside it, then the home's own shared tree for a harness root relocated out of it; the open repository's `.agents/skills/orch/scripts/lane-mail` is used only where this hook is installed in that repository, and a reader outside that containment is refused rather than run. The refusal opens with `lane-mail-check: unread=<count>` and carries one JSON envelope per line under it; the turn then continues with them. `stop_hook_active` true passes.
+# description: Blocks a lane's turn end while its overseer mailbox holds unread lines, so a directive or a ruling reaches the lane without a keystroke, a pane or a question tool. The lane is the work item `LANE_MAIL_ITEM` names, or the one directory under `<repo>/tmp/lane-mail/` whose name lowercases to the current branch; a session with neither is not a lane and passes silently, as does a lane whose mailbox holds no unread line and a directory git reports no repository for and that holds no mailbox of its own. A mailbox belongs to a lane only where a launch recorded one: `open-terminal` and `lane-host create` write the lane's root to `lane-mail/<item in lower case>` under the repository's common git directory, and a mailbox with no marker bound to this root passes silently. Unread lines are peeked through the orch skill's own `lane-mail inbox --peek`, the one reader of the mailbox and its cursor, and acknowledged with `inbox --ack` only once the refusal is written, so a hook killed at its budget leaves them unread and a line acknowledged here is never handed over twice. That reader is resolved from this hook's own install, walking up to the home directory for `skills/orch/scripts/lane-mail` or the shared `.agents/skills/orch/scripts/lane-mail` beside it, then the home's own shared tree for a harness root relocated out of it; the open repository's `.agents/skills/orch/scripts/lane-mail` is used only where this hook is installed in that repository, and a reader outside that containment is refused rather than run. The refusal opens with `lane-mail-check: unread=<count>` and carries one JSON envelope per line under it; the turn then continues with them. Run with the argument `deliver` by the lane-mail-deliver hook after a tool call, it exits 0 with the harness's JSON on stdout, whose `additionalContext` carries the same lines. Run with `halt` by the lane-mail-halt hook before one, it acknowledges nothing and refuses the call while an unread directive sent with `lane-mail send --halt` stands, opening `lane-mail-check: halt=<id>` with the directive and the one `lane-mail inbox` command that reads it; that command alone passes. A call a subagent makes, whose payload carries a non-empty `agent_id` or `agent_type`, is handed no mail and acknowledges none, and while a halt stands it is refused without that command. `stop_hook_active` true passes the turn-end run alone. Not run on gemini: it has no Stop event. Not run on copilot: its agentStop also fires at each subagent's end. Not run on antigravity: its Stop payload carries no `stop_hook_active`.
 # summary: Hands a lane the messages its overseer sent before the turn can end, so a directive is acted on instead of waiting for the next launch.
 # safety: Reads the payload, the repository's branch, the lane's launch marker and the lane mailbox directory; the only write is the mailbox cursor the orch reader advances. Exit 2 names the unread count and the messages, and asks for them to be acted on, never bypassed. The reader it runs comes from its own install, never from the repository a session has open, so a repository that tracks a mailbox and an executable at that path cannot have it run. jq and cat read the payload; a payload it cannot read is refused, never passed, and so is a mailbox whose reader is missing or fails, an item name outside the alphabet a work item is spelled in, a branch that matches more than one mailbox, and a repository state git cannot report where a mailbox sits under the working directory. Every refusal opens with `lane-mail-check: <key>=<value>`; what a command this hook runs writes is captured at the site and replayed under that line, so nothing precedes the key.
 # timeout: 30
-# harnesses: [claude-code, codex, pi]
+# harnesses: [claude, codex, pi, opencode, cursor]
 # ---
 
 set -euo pipefail
@@ -15,8 +15,13 @@ set -euo pipefail
 # Names are matched by byte ranges below, so the locale decides the match.
 export LC_ALL=C
 
-# What the refusal names, empty until it is known: the lane's unread lines.
+# What the refusal names, empty until it is known: the lane's unread lines,
+# and a halt's directive with the one command that reads it.
 UNREAD=""
+HALT_TEXT=""
+ACK_COMMAND=""
+# Who made the call the payload describes: lead, or subagent.
+CALLER=""
 NL='
 '
 
@@ -61,14 +66,30 @@ message() { # KEY VALUE [CAUSE]
       reader-outside=*)
         echo "the only lane mailbox reader on offer is $2, supplied by the repository this session has open, and this hook is not installed in that repository; refusing to run it. Install the orch skill in the scope this hook is installed in."
         ;;
+      arm=*)
+        echo "this hook judges a turn end with no argument, a finished tool call with deliver, and a tool call about to run with halt; $2 is none of them"
+        ;;
       inbox=header)
         echo "the lane mailbox reader's --peek output did not open with its count line, so whether messages are waiting is unknown"
+        ;;
+      inbox=envelope)
+        echo "an envelope the lane mailbox reader printed could not be read, so whether the overseer halted this lane is unknown:"
+        ;;
+      halt=*)
+        if [ "$CALLER" = subagent ]; then
+          printf 'the overseer halted the lane this agent works in, and every tool call is refused until the lane lead reads the halt. Stop, and report the halt to the lead:\n%s\n' "$HALT_TEXT"
+        else
+          printf 'the overseer halted this lane, and every tool call is refused until the lane reads the halt. Run exactly this command, then act on the directive:\n%s\n%s\n' "$ACK_COMMAND" "$HALT_TEXT"
+        fi
         ;;
       inbox=*)
         echo "the lane mailbox reader exited $2, so whether messages are waiting is unknown:"
         ;;
+      notice=unwritten)
+        echo "the notice carrying the lane's unread messages could not be written, so they stay unread for the next tool call:"
+        ;;
       unread=*)
-        printf 'the overseer sent these messages to this lane; act on each, then finish:\n%s\n' "$UNREAD"
+        printf 'the overseer sent these messages to this lane; act on each as its text directs:\n%s\n' "$UNREAD"
         ;;
     esac
     # The cause a command this hook ran wrote, captured at the site and
@@ -81,6 +102,13 @@ refuse() { # KEY VALUE [CAUSE]
   message "$@"
   exit 2
 }
+
+# The event this run judges: a turn end with no argument, or the arm the
+# lane-mail-deliver or lane-mail-halt hook beside this one names.
+case "${1:-stop}" in
+  stop | deliver | halt) ARM="${1:-stop}" ;;
+  *) refuse arm "$1" ;;
+esac
 
 # The payload readers come first and alone: the flag that ends a stop hook's
 # retry is in that payload, so refusing any other absence ahead of it would
@@ -95,12 +123,26 @@ done
 # the substitution holds them and the refusal replays them under the keyed line.
 INPUT=$(cat 2>&1) || refuse payload unreadable "$INPUT"
 
-ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active == true | tostring' 2>&1) ||
-  refuse payload invalid-json "$ACTIVE"
+# One read of the payload: the turn-end retry flag, and who made the call. A
+# subagent's call carries agent_id on one harness and agent_type on another;
+# the lane lead's carries neither.
+READ=$(printf '%s' "$INPUT" | jq -r '
+  def str(f): if f == null then "" elif (f | type) == "string" then f else error("not a string") end;
+  [(.stop_hook_active == true | tostring),
+   (if str(.agent_id) + str(.agent_type) == "" then "lead" else "subagent" end)] | join(" ")' 2>&1) ||
+  refuse payload invalid-json "$READ"
+ACTIVE=${READ%% *}
+CALLER=${READ#* }
 
 # The harness sets stop_hook_active on the turn it continued because a stop
 # hook blocked. Refusing that turn as well is the loop the flag exists to end.
-if [ "$ACTIVE" = "true" ]; then
+if [ "$ARM" = stop ] && [ "$ACTIVE" = "true" ]; then
+  exit 0
+fi
+
+# Lane mail belongs to the lane lead: a subagent's finished call is handed none
+# and acknowledges none, so the lead's own run still finds it unread.
+if [ "$ARM" = deliver ] && [ "$CALLER" = subagent ]; then
   exit 0
 fi
 
@@ -258,7 +300,39 @@ case "$PEEK" in
 esac
 [ -n "$UNREAD" ] || exit 0
 
+# The halt arm acknowledges nothing. It refuses while an unread halt stands and
+# passes the one plain read that acknowledges it, so the lane can run that read.
+if [ "$ARM" = halt ]; then
+  HALT=$(printf '%s\n' "$UNREAD" | jq -c -s 'map(select(.halt == true)) | first // empty' 2>&1) ||
+    refuse inbox envelope "$HALT"
+  [ -n "$HALT" ] || exit 0
+  HALT_ID=$(printf '%s' "$HALT" | jq -r '.id | strings' 2>&1) || refuse inbox envelope "$HALT_ID"
+  HALT_TEXT=$(printf '%s' "$HALT" | jq -r '.text | strings' 2>&1) || refuse inbox envelope "$HALT_TEXT"
+  # Only the lead acknowledges a halt: a subagent is refused whatever it runs,
+  # and is never offered the command.
+  if [ "$CALLER" = lead ]; then
+    printf -v ACK_COMMAND '%q inbox --item %q' "$READER" "$ITEM"
+    COMMAND=$(printf '%s' "$INPUT" | jq -r '(.tool_input | objects | .command | strings) // ""' 2>&1) ||
+      refuse payload invalid-json "$COMMAND"
+    [ "$COMMAND" != "$ACK_COMMAND" ] || exit 0
+  fi
+  refuse halt "$HALT_ID"
+fi
+
 COUNT=$(printf '%s\n' "$UNREAD" | awk 'END { print NR + 0 }')
+
+# After a tool call the notice travels as the context the harness's JSON
+# carries, exit 0: an exit 2 there replaces the tool's own output on one
+# harness. The keyed line opens that context. Acknowledged once it is written,
+# as below.
+if [ "$ARM" = deliver ]; then
+  NOTICE=$(message unread "$COUNT" 2>&1)
+  jq -nc --arg text "$NOTICE" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $text}}' \
+    2>"$WORK_DIR/notice.err" || refuse notice unwritten "$(cat -- "$WORK_DIR/notice.err")"
+  "$READER" inbox --item "$ITEM" --ack "$LINES" >/dev/null 2>"$WORK_DIR/ack.err" ||
+    { cat -- "$WORK_DIR/ack.err" >&2 || :; }
+  exit 0
+fi
 # Peek, then acknowledge: the cursor moves only once the refusal is written, so
 # a hook killed at its budget leaves the lines unread for the next stop rather
 # than consumed unseen. An acknowledgement that fails costs a repeat, never a
