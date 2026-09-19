@@ -6,8 +6,9 @@
 # second checkout, the overseer of another repository. The must-fail controls
 # close the file, one per surface: the partial last line, the inbox cursor,
 # inbox --after, the already-answered drain filter, the ownership rule, the
-# overseer inbox's answer exception, the one-spelling rule and the
-# self-target rule.
+# overseer inbox's answer exception, the one-spelling rule, the self-target
+# rule, the hosted append, and the lock and terminator that `scripts/lib` owns,
+# whose controls run a library copy with one of those rules removed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 
@@ -445,6 +446,52 @@ else
   printf '  skip  the one-spelling rule: this filesystem is case-insensitive, so the second name is the first mailbox\n'
 fi
 
+# A write leaves no work directory behind on a host with no flock, which is
+# every stock macOS. There file-lock.sh takes a mkdir mutex, and the mutex arm
+# arms its own EXIT trap over lane-mail's; the trap the writer re-arms after
+# the lock is what still removes the work directory. The PATH below is the
+# commands lane-mail names, minus flock, so the mutex arm is the one that runs.
+FLOCKLESS_BIN="$TMP_ROOT/no-flock-bin"
+mkdir -p "$FLOCKLESS_BIN"
+for command_name in bash sh cat tail printf mkdir mv rm rmdir date jq awk sed git \
+  tr head sleep cp ln wc sort grep dirname basename touch chmod id uname getent; do
+  command_path="$(command -v "$command_name" 2>/dev/null)" || continue
+  ln -sfn "$command_path" "$FLOCKLESS_BIN/$command_name"
+done
+# `mktemp -d` with no template reads TMPDIR on GNU and a shared /tmp on BSD, so
+# on macOS the work directory this case counts lands where nothing can count
+# it. This one gives that form the template BSD asks for, under the TMPDIR the
+# case sets, and passes every other call through. Where the directory goes is
+# all it decides; whether it is removed is what the case is about, and the row
+# below pins the premise so a platform that moves it says so itself.
+FLOCKLESS_MKTEMP="$(command -v mktemp)"
+cat > "$FLOCKLESS_BIN/mktemp" <<STUB
+#!/bin/sh
+if [ "\$#" -eq 1 ] && [ "\$1" = -d ]; then
+  exec "$FLOCKLESS_MKTEMP" -d "\${TMPDIR:-/tmp}/tmp.XXXXXXXXXX"
+fi
+exec "$FLOCKLESS_MKTEMP" "\$@"
+STUB
+chmod +x "$FLOCKLESS_BIN/mktemp"
+FLOCKLESS_PROBE_DIR="$TMP_ROOT/no-flock-probe"
+mkdir -p "$FLOCKLESS_PROBE_DIR"
+FLOCKLESS_PROBE="$(env TMPDIR="$FLOCKLESS_PROBE_DIR" PATH="$FLOCKLESS_BIN" mktemp -d)"
+assert_eq "${FLOCKLESS_PROBE#$FLOCKLESS_PROBE_DIR/}" "${FLOCKLESS_PROBE##*/}" \
+  "a work directory lands under the TMPDIR this case counts"
+# What one local write on that PATH exits with, and how many work directories
+# it leaves under a TMPDIR of its own.
+flockless_leftovers() { # NAME BIN
+  local rc=0 dir="$TMP_ROOT/no-flock-tmp-$1"
+  mkdir -p "$dir"
+  (cd "$LANE" && env TMPDIR="$dir" PATH="$FLOCKLESS_BIN" \
+    "$2" notice --item KEN-1 --file "$(text n 'no flock on this host')") || rc=$?
+  FLOCKLESS="$rc=$(ls "$dir" | wc -l | tr -d ' ')"
+}
+new_lane flockless_cleanup
+flockless_leftovers real "$LANE_MAIL"
+assert_eq "$(env PATH="$FLOCKLESS_BIN" sh -c 'command -v flock >/dev/null 2>&1 && echo present || echo absent')=$FLOCKLESS" \
+  "absent=0=0" "a local write where flock is absent leaves no work directory behind"
+
 # The remote root exists nowhere on this disk, so a case that silently fell
 # back to the local root would read an empty mailbox instead.
 new_lane hosted
@@ -460,52 +507,110 @@ HOST_BIN=""
 host_lm() { # ARGS... — HOST_ENV adds stub knobs, HOST_BIN swaps in a mutant
   RC=0
   OUT="$(cd "$LANE" && env ORCH_LANE_HOST="$FIXTURE_HOST" LANE_HOST_STUB_LOG="$STUB_LOG" \
-    LANE_HOST_STUB_DIR="$REMOTE_DISK" ${HOST_ENV[@]+"${HOST_ENV[@]}"} \
+    LANE_HOST_STUB_DIR="$REMOTE_DISK" LANE_HOST_STUB_LIB="$REPO_ROOT/skills/orch/scripts/lib" \
+    ${HOST_ENV[@]+"${HOST_ENV[@]}"} \
     "${HOST_BIN:-$LANE_MAIL}" "$@" 2>"$TMP_ROOT/err")" || RC=$?
   ERR="$(head -n 1 "$TMP_ROOT/err")"
   HOST_ENV=(); HOST_BIN=""
 }
 
-# A put that dies leaves the previous file standing: the provider stages the
-# bytes beside the target and renames only once they have all arrived.
-put_survives() { # sets SURVIVED to the text the remote mailbox still holds
+# An append that dies adds nothing: the provider stages the bytes beside the
+# target and reaches the file only once they have all arrived.
+append_survives() { # sets SURVIVED to the text the remote mailbox still holds
   local box="$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/KEN-5/to-lane.jsonl"
   mkdir -p "${box%/*}"
   printf '{"id":"kept","kind":"directive","at":"t","text":"kept"}\n' > "$box"
-  HOST_ENV=(LANE_HOST_STUB_PUT_FAIL=1)
+  HOST_ENV=(LANE_HOST_STUB_APPEND_FAIL=1)
   host_lm send --item KEN-5 --root "$REMOTE_ROOT" --host --directive --file "$(text d 'new')"
   SURVIVED="$(jq -rs 'map(.text) | join(",")' < "$box" 2>/dev/null)" || SURVIVED=gone
 }
 
-# Two writers on one item, the second starting while the first is inside its
-# put. BIN is the script both run. The put delay is what makes the overlap a
-# fact rather than a hope: it is longer than any startup skew between two
-# children of one loop, so without a lock both read the file before either
-# writes it.
-race_sends() { # ITEM BIN
+# Two writers on one hosted mailbox, each in its OWN checkout, which is what
+# two overseers of two repositories are. Nothing on either sender's disk can
+# serialize them: a lock one takes at home is a lock the other never opens, so
+# the lock the provider takes where the file is, is the only thing keeping both
+# lines. The stub delay makes the overlap a fact rather than a hope: it is
+# longer than any startup skew between two children of one loop.
+race_peer_sends() { # BIN
   local n
-  mkdir -p "$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/$1"
-  : > "$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/$1/to-lane.jsonl"
+  mkdir -p "$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/overseer"
+  : > "$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/overseer/to-lane.jsonl"
   printf 'first\n' > "$TMP_ROOT/first.txt"
   printf 'second\n' > "$TMP_ROOT/second.txt"
   for n in first second; do
-    (cd "$LANE" && env ORCH_LANE_HOST="$FIXTURE_HOST" LANE_HOST_STUB_LOG="$STUB_LOG" \
-      LANE_HOST_STUB_DIR="$REMOTE_DISK" LANE_HOST_STUB_PUT_DELAY=1 \
-      OVERSEE_WATCH_STATE_DIR="$TMP_ROOT/watch-state" \
-      "$2" send --item "$1" --root "$REMOTE_ROOT" --host --directive \
-      --file "$TMP_ROOT/$n.txt") &
+    (cd "$TMP_ROOT/racer_$n" && env ORCH_LANE_HOST="$FIXTURE_HOST" LANE_HOST_STUB_LOG="$STUB_LOG" \
+      LANE_HOST_STUB_DIR="$REMOTE_DISK" LANE_HOST_STUB_APPEND_DELAY=1 LANE_HOST_STUB_PUT_DELAY=1 \
+      LANE_HOST_STUB_LIB="$REPO_ROOT/skills/orch/scripts/lib" \
+      OVERSEE_WATCH_STATE_DIR="$TMP_ROOT/racer_$n/state" \
+      "$1" peer send --repo "$REMOTE_ROOT" --host --file "$TMP_ROOT/$n.txt") &
   done
   wait
-  RACED="$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/$1/to-lane.jsonl"
+  RACED="$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/overseer/to-lane.jsonl"
 }
 
-# What the raced file holds: both texts in order, or `lost`. Two unlocked puts
-# into one path either drop a line or tear the bytes of both, and the lock is
-# what rules out each, so the assertion is the guarantee rather than one of
-# the ways it breaks.
+# What the raced file holds: both texts, or `lost`. A write that replaces the
+# file instead of appending drops a line, and two writers sharing no lock tear
+# each other's bytes so that nothing parses. The lock rules out each, so the
+# assertion is the guarantee rather than one of the ways it breaks.
 raced_texts() {
   jq -rs 'map(.text) | sort | join(",")' < "$RACED" 2>/dev/null || printf 'lost'
 }
+
+# A background writer holding one file's lock, through the same orch_take_lock
+# every mailbox append calls. It signals NAME.taken once it holds the lock and
+# lets go when NAME.release appears, or after a minute, so a case that aborts
+# before releasing it leaves no process spinning behind the suite.
+hold_lock() { # FILE NAME
+  local waited=0
+  . "$REPO_ROOT/skills/orch/scripts/lib/file-lock.sh"
+  exec 9>>"$1"
+  orch_take_lock 9 "$1" 30 || return 1
+  : > "$TMP_ROOT/$2.taken"
+  while [ ! -e "$TMP_ROOT/$2.release" ]; do
+    waited=$((waited + 1))
+    [ "$waited" -lt 1200 ] || return 1
+    sleep 0.05
+  done
+}
+
+# Wait for a holder's marker, bounded at five seconds. A holder that failed
+# before writing it would otherwise spin the suite to the CI job's own timeout,
+# with nothing on screen saying which assertion was in flight.
+await_marker() { # PATH
+  local tries=0
+  while [ ! -e "$1" ]; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 100 ] || return 1
+    sleep 0.05
+  done
+}
+
+# The lock the provider takes, observed without a race, because a race only
+# ever samples one interleaving. The holder takes the mailbox's own lock
+# through the same orch_take_lock the library calls, so a hosted send cannot
+# write while it is held and lands once the holder lets go. LIB is the library
+# the fixture appends through, the real one unless a control hands a mutant.
+held_hosted_send() { # BIN LIB — sets HELD to the line counts during and after
+  local box="$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/overseer/to-lane.jsonl" during send_pid
+  mkdir -p -- "${box%/*}"
+  : > "$box"
+  rm -f -- "${TMP_ROOT:?}/held.taken" "${TMP_ROOT:?}/held.release"
+  printf 'while the lock is held\n' > "$TMP_ROOT/held.txt"
+  hold_lock "$box" held &
+  await_marker "$TMP_ROOT/held.taken" || { HELD="holder-never-took-the-lock"; return 0; }
+  (cd "$TMP_ROOT/racer_first" && env ORCH_LANE_HOST="$FIXTURE_HOST" LANE_HOST_STUB_LOG="$STUB_LOG" \
+    LANE_HOST_STUB_DIR="$REMOTE_DISK" LANE_HOST_STUB_LIB="$2" \
+    OVERSEE_WATCH_STATE_DIR="$TMP_ROOT/racer_first/state" \
+    "$1" peer send --repo "$REMOTE_ROOT" --host --file "$TMP_ROOT/held.txt" >/dev/null 2>&1) &
+  send_pid=$!
+  sleep 2
+  during="$(awk 'END { print NR + 0 }' < "$box")"
+  : > "$TMP_ROOT/held.release"
+  wait "$send_pid" || true
+  wait
+  HELD="$during/$(awk 'END { print NR + 0 }' < "$box")"
+}
+
 host_lm drain --item KEN-1 --root "$REMOTE_ROOT" --host --after 0
 assert_eq "$RC=$(count_line)" "0=count=1" "a hosted drain counts the remote mailbox"
 assert_eq "$(tail -n +2 <<<"$OUT" | jq -r '.text')" "Hosted question" "a hosted drain reads the lane's own host"
@@ -517,7 +622,25 @@ assert_eq "$(jq -r '.text' < "$REMOTE_DISK$REMOTE_ROOT/tmp/lane-mail/KEN-1/to-la
   "Hosted answer." "a hosted send writes through the transport to the remote mailbox"
 host_lm drain --item KEN-1 --root "$REMOTE_ROOT" --host --after 0
 assert_eq "$(tail -n +2 <<<"$OUT")" "" "a hosted drain skips the ask its hosted answer already answers"
-assert_eq "$(grep -c -- "put --item KEN-1" "$STUB_LOG")" "1" "the hosted send crosses lane-host put once"
+assert_eq "$(grep -c -- "append --item KEN-1" "$STUB_LOG")" "1" "the hosted send crosses lane-host append once"
+assert_eq "$(grep -c -- "put --item KEN-1" "$STUB_LOG")" "0" "and never put, which would replace the whole mailbox"
+
+# A provider predating the verb fails it. The send refuses and names the verb;
+# reading the mailbox and putting it back is what loses a line, so no write
+# falls back to it.
+HOST_ENV=(LANE_HOST_STUB_NO_APPEND=1)
+host_lm send --item KEN-3 --root "$REMOTE_ROOT" --host --directive --file "$(text d 'no verb here')"
+assert_eq "$RC=$ERR" "2=lane-mail: host-append=KEN-3" \
+  "a provider without the append verb refuses the hosted send"
+assert_eq "$(grep -c -- "put --item KEN-3" "$STUB_LOG")" "0" "and nothing falls back to a put"
+
+# A host out of reach is not a provider declining a write it never saw. The
+# send probes it exactly as a read does, so the operator gets the key that says
+# to start or relaunch the host, and the state it is in.
+HOST_ENV=(LANE_HOST_STUB_STATUS=4)
+host_lm send --item KEN-3 --root "$REMOTE_ROOT" --host --directive --file "$(text d 'no host')"
+assert_eq "$RC=$ERR" "2=lane-mail: host-unreachable=KEN-3 state=unknown" \
+  "a hosted send whose host cannot be reached is refused as unreachable, with its state"
 # A host that answers and a mailbox that is not there yet is an empty read; a
 # host that does not answer is refused, since the transport reports one status
 # for both and a silent lane is not the safe reading.
@@ -552,28 +675,65 @@ host_lm drain --item TEST-1 --root "$REMOTE_ROOT" --host --after 0
 assert_eq "$RC=$ERR" "2=lane-mail: host-unreachable=TEST-1 state=hosted" \
   "an unreachable host's refusal carries the state its provider reports"
 
-# Two overseer writers, not one process: the second send starts while the
-# first is inside its put, and both lines land.
-new_lane hosted_put
-put_survives
-assert_eq "$SURVIVED" "kept" "a put that dies partway replaces nothing"
-assert_eq "$RC=$ERR" "2=lane-mail: host-write=KEN-5" "and the send says the write failed"
+# A transfer that dies partway adds nothing, and the send says so.
+new_lane hosted_append
+append_survives
+assert_eq "$SURVIVED" "kept" "an append that dies partway adds nothing"
+assert_eq "$RC=$ERR" "2=lane-mail: host-append=KEN-5" "and the send says the append failed"
 
 # A peer ask records itself only once the peer has it. Both files are
 # append-only and pending filters on answered ids alone, so a record written
 # before a delivery that refused would owe an answer to a question the peer
 # never received, and every retry would add another.
 new_lane peer_undelivered
-HOST_ENV=(LANE_HOST_STUB_PUT_FAIL=1)
+HOST_ENV=(LANE_HOST_STUB_APPEND_FAIL=1)
 host_lm peer ask --repo "$REMOTE_ROOT" --host --file "$(text q 'Never delivered?')"
-assert_eq "$RC=$ERR" "2=lane-mail: host-write=overseer" "a peer ask whose delivery fails refuses"
+assert_eq "$RC=$ERR" "2=lane-mail: host-append=overseer" "a peer ask whose delivery fails refuses"
 lm pending --item overseer
 assert_eq "$RC=$OUT" "0=" \
   "and leaves the asker's pending empty rather than owed an answer the peer never saw"
 
-new_lane hosted_lock
-race_sends KEN-1 "$LANE_MAIL"
-assert_eq "$(raced_texts)" "first,second" "two hosted sends racing on one item both land"
+new_lane racer_first
+new_lane racer_second
+race_peer_sends "$LANE_MAIL"
+assert_eq "$(raced_texts)" "first,second" \
+  "two peers on separate checkouts racing on one hosted overseer mailbox both land"
+
+# The lock itself, which a race can only sample: while the mailbox's own lock
+# is held, the hosted send writes nothing, and it lands when the hold ends.
+held_hosted_send "$LANE_MAIL" "$REPO_ROOT/skills/orch/scripts/lib"
+assert_eq "$HELD" "0/1" "a hosted send waits on the mailbox lock and lands when it is free"
+
+# The library's own two outcomes, driven for real: a lock another writer holds,
+# and a directory that cannot be written. Three callers read these codes, so
+# each is pinned where it is produced. The wait is one second because what is
+# under test is which outcome comes back, not how long a caller waits.
+new_lane library_codes
+LIB_BOX="$LANE/box.jsonl"
+: > "$LIB_BOX"
+rm -f -- "${TMP_ROOT:?}/libcode.taken" "${TMP_ROOT:?}/libcode.release"
+hold_lock "$LIB_BOX" libcode &
+LIB_RC=0
+if await_marker "$TMP_ROOT/libcode.taken"; then
+  ( . "$REPO_ROOT/skills/orch/scripts/lib/file-lock.sh"
+    . "$REPO_ROOT/skills/orch/scripts/lib/mailbox-append.sh"
+    mailbox_append_locked "$LIB_BOX" 1 <<<'{"id":"blocked"}' ) 2>/dev/null || LIB_RC=$?
+else
+  LIB_RC=holder-never-took-the-lock
+fi
+: > "$TMP_ROOT/libcode.release"
+wait
+assert_eq "$LIB_RC=$(awk 'END { print NR + 0 }' < "$LIB_BOX")" "3=0" \
+  "the library reports 3 for a lock another writer holds, and adds nothing"
+
+mkdir -p -- "$LANE/sealed"
+chmod 500 "$LANE/sealed"
+LIB_RC=0
+( . "$REPO_ROOT/skills/orch/scripts/lib/file-lock.sh"
+  . "$REPO_ROOT/skills/orch/scripts/lib/mailbox-append.sh"
+  mailbox_append_locked "$LANE/sealed/box.jsonl" 1 <<<'{"id":"nowhere"}' ) 2>/dev/null || LIB_RC=$?
+chmod 700 "$LANE/sealed"
+assert_eq "$LIB_RC" "2" "the library reports 2 for a mailbox it could not open"
 
 # One per surface: the partial-line rule, the inbox cursor, inbox --after, the
 # already-answered filter, the ownership rule, the self-target rule and the
@@ -590,6 +750,25 @@ mkdir -p "$MUTANT_DIR"
 ln -sfn "$REPO_ROOT/skills/orch/scripts/lib" "$MUTANT_DIR/lib"
 ln -sfn "$REPO_ROOT/skills/orch/scripts/lane-host" "$MUTANT_DIR/lane-host"
 ln -sfn "$REPO_ROOT/skills/orch/scripts/git-context" "$MUTANT_DIR/git-context"
+# A control on a rule `scripts/lib` owns, which a mutant of lane-mail itself
+# cannot reach: a directory holding a library copy with that one rule removed,
+# an unmodified lane-mail beside it, and the siblings both resolve. MUTANT_LIB
+# is the library for a provider fixture, MUTANT_LIB_BIN the script for a lane.
+mutant_lib() { # NAME SED-EXPRESSION
+  local dir="$MUTANT_DIR/$1" source="$REPO_ROOT/skills/orch/scripts/lib/mailbox-append.sh"
+  mkdir -p "$dir/lib"
+  cp "$REPO_ROOT"/skills/orch/scripts/lib/*.sh "$dir/lib/"
+  sed "$2" "$source" > "$dir/lib/mailbox-append.sh"
+  assert_eq "$(cmp -s "$dir/lib/mailbox-append.sh" "$source" && echo same || echo differs)" "differs" \
+    "control: the $1 library mutant really differs from mailbox-append.sh"
+  cp "$LANE_MAIL" "$dir/lane-mail"
+  chmod +x "$dir/lane-mail"
+  ln -sfn "$REPO_ROOT/skills/orch/scripts/lane-host" "$dir/lane-host"
+  ln -sfn "$REPO_ROOT/skills/orch/scripts/git-context" "$dir/git-context"
+  MUTANT_LIB="$dir/lib"
+  MUTANT_LIB_BIN="$dir/lane-mail"
+}
+
 mutant() { # NAME SED-EXPRESSION
   sed "$2" "$LANE_MAIL" > "$MUTANT_DIR/$1"
   chmod +x "$MUTANT_DIR/$1"
@@ -598,7 +777,7 @@ mutant() { # NAME SED-EXPRESSION
   LANE_MAIL_BIN="$MUTANT_DIR/$1"
 }
 
-mutant partial-consumed 's@if \[ "\$last" = "\$NL"x \]; then@if [ x = x ]; then@'
+mutant partial-consumed 's@if \[ "\$complete" -eq 0 \]; then@if [ x = x ]; then@'
 new_lane control_partial
 LANE_MAIL_BIN="$LANE_MAIL" lm notice --item KEN-1 --file "$(text n 'whole')"
 LANE_MAIL_BIN="$LANE_MAIL" lm ask --item KEN-1 --file "$(text q 'q')" >/dev/null
@@ -702,24 +881,24 @@ assert_eq "$(tail -n +2 <<<"$OUT" | jq -r '.text')" "settled" \
 
 
 STREAMING_HOST="$MUTANT_DIR/streaming-host"
-sed 's@^      head -c 10 > "\$staged"$@      head -c 10 > "$dest"@' \
+sed 's@^      head -c 10 > "\$landing"$@      head -c 10 >> "$dest"@' \
   "$FIXTURE_HOST" > "$STREAMING_HOST"
 chmod +x "$STREAMING_HOST"
 assert_eq "$(cmp -s "$STREAMING_HOST" "$FIXTURE_HOST" && echo same || echo differs)" "differs" \
   "control: the streaming-host mutant really writes the partial stream into the target"
-new_lane control_hosted_put
+new_lane control_hosted_append
 FIXTURE_HOST_REAL="$FIXTURE_HOST"
 FIXTURE_HOST="$STREAMING_HOST"
-put_survives
+append_survives
 FIXTURE_HOST="$FIXTURE_HOST_REAL"
 assert_eq "$SURVIVED" "gone" \
-  "control: a put that streams into the target loses what was there"
+  "control: an append that streams into the target leaves a fragment behind"
 
-mutant unterminated 's@^  lm_terminate "\$1"$@  :@'
+mutant_lib unterminated 's@^  printf .\\n. >>"\$1" || return 1$@  return 0@'
 new_lane control_interrupted
 LANE_MAIL_BIN="$LANE_MAIL" lm notice --item KEN-1 --file "$(text n 'whole')"
 printf '{"id":"half","kind":"notice"' >> "$LANE/tmp/lane-mail/KEN-1/to-overseer.jsonl"
-LANE_MAIL_BIN="$MUTANT_DIR/unterminated" lm ask --item KEN-1 --file "$(text q 'after the fragment')"
+LANE_MAIL_BIN="$MUTANT_LIB_BIN" lm ask --item KEN-1 --file "$(text q 'after the fragment')"
 LANE_MAIL_BIN="$LANE_MAIL" lm drain --item KEN-1 --root "$LANE" --after 0
 assert_eq "$(tail -n +2 <<<"$OUT" | jq -rs 'map(.text) | join(",")')" "whole" \
   "control: without the terminator the envelope after a fragment is lost with it"
@@ -741,17 +920,71 @@ host_lm drain --item KEN-1 --root "$REMOTE_ROOT" --host --after 0
 assert_eq "$RC=$(count_line)" "0=count=0" \
   "control: without the exit-code reading a failed read is an empty mailbox again"
 
-mutant state-unnamed 's@^    REFUSE_EXTRA="state=\$(lm_host_state)"$@    :@'
+mutant state-unnamed 's@^  REFUSE_EXTRA="state=\$(lm_host_state)"$@  :@'
 HOST_ENV=(LANE_HOST_STUB_TOUCH_STATUS=1); HOST_BIN="$MUTANT_DIR/state-unnamed"
 host_lm drain --item TEST-1 --root "$REMOTE_ROOT" --host --after 0
 assert_eq "$ERR" "lane-mail: host-unreachable=TEST-1" \
   "control: without the lookup the refusal names no state"
 
-mutant hosted-unlocked 's@^  orch_take_lock 8 "\$lock" 30 .*$@  :@'
-new_lane control_hosted_lock
-race_sends KEN-2 "$MUTANT_DIR/hosted-unlocked"
+# The defect this replaced: a hosted write that reads the mailbox, adds its
+# line and puts the file back. The mutant keeps the transport call and swaps
+# the verb, so the line still crosses and the provider still writes, and the
+# loss is the put replacing a file the other sender had already added to.
+mutant hosted-put 's@"\$SCRIPT_DIR/lane-host" append --item@"$SCRIPT_DIR/lane-host" put --item@'
+race_peer_sends "$MUTANT_DIR/hosted-put"
 assert_eq "$([ "$(raced_texts)" = first,second ] && echo both || echo lost)" "lost" \
-  "control: without the lock the raced sends do not both survive"
+  "control: a hosted write that puts the file back instead of appending does not keep both lines"
+
+# The other half of the guarantee: the lock the provider takes where the file
+# is. A library copy with that one call removed reaches the fixture through the
+# same LANE_HOST_STUB_LIB the suites hand it, and the two writers then tear
+# each other's bytes.
+# The re-armed trap, without which the mutex arm's own EXIT trap replaces
+# lane-mail's and the work directory stays. Addressed inside lm_append_local,
+# because the inbox cursor site re-arms for the same reason.
+mutant trap-not-rearmed '/^lm_append_local/,/^}/ s@^  trap lm_cleanup EXIT$@  :@'
+new_lane control_flockless
+flockless_leftovers control "$MUTANT_DIR/trap-not-rearmed"
+assert_eq "$FLOCKLESS" "0=1" \
+  "control: without the re-armed trap a write where flock is absent keeps its work directory"
+
+# The two codes the library returns and the two refusals lane-mail turns them
+# into. A library copy returns each code at its first line, so the mapping is
+# pinned without waiting out lane-mail's own thirty seconds on a held lock; the
+# codes themselves are produced for real earlier in this file.
+for row in '3|lock-failed' '2|write-failed'; do
+  CODE="${row%%|*}"
+  KEY="${row#*|}"
+  mutant_lib "returns-$CODE" 's@^  exec 9>>"\$1" || return 2$@  return '"$CODE"'@'
+  new_lane "decode_$CODE"
+  # --root, as the neighbouring rows pass it: a verb that resolves its own root
+  # answers the physical path, and on a disk whose temporary root is a symlink,
+  # every macOS, that is not the name this file built the lane under.
+  LANE_MAIL_BIN="$MUTANT_LIB_BIN" lm notice --item KEN-1 --root "$LANE" --file "$(text n 'decoded')"
+  assert_eq "$RC=$ERR" "2=lane-mail: $KEY=$LANE/tmp/lane-mail/KEN-1/to-overseer.jsonl" \
+    "the library's $CODE is refused as $KEY"
+done
+
+# The same two codes as the provider reports them. lane-mail's host-append
+# refusal sends the operator to the provider's own line for the cause, so what
+# that line says is the whole diagnosis: a writer holding the mailbox, or a
+# disk it could not write.
+for row in '3|lock-timeout' '2|write-failed'; do
+  CODE="${row%%|*}"
+  WORD="${row#*|}"
+  mutant_lib "hosted-returns-$CODE" 's@^  exec 9>>"\$1" || return 2$@  return '"$CODE"'@'
+  new_lane "hosted_decode_$CODE"
+  HOST_ENV=(LANE_HOST_STUB_LIB="$MUTANT_LIB")
+  host_lm send --item KEN-4 --root "$REMOTE_ROOT" --host --directive --file "$(text d 'decoded')"
+  assert_eq "$RC=$ERR=$(grep -c "append-failed path=.* reason=$WORD\$" "$TMP_ROOT/err")" \
+    "2=lane-mail: host-append=KEN-4=1" \
+    "a hosted append ending in $CODE reaches the operator as reason=$WORD"
+done
+
+mutant_lib unlocked 's@^  if ! orch_take_lock 9 "\$1" "\$2"; then$@  if false; then@'
+held_hosted_send "$LANE_MAIL" "$MUTANT_LIB"
+assert_eq "$HELD" "1/1" \
+  "control: without the lock the hosted send writes while another writer holds it"
 
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

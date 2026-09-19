@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import tarfile
+import time
 import unittest
 
 PACKAGE = Path(__file__).resolve().parents[2]
@@ -105,6 +106,8 @@ esac
         scripts.mkdir(parents=True)
         for name in ("resolve-base-branch", "sync-base"):
             shutil.copy2(PACKAGE / "scripts" / name, scripts / name)
+        # append takes its lock through the clone's own installed lock library.
+        shutil.copytree(PACKAGE / "scripts/lib", scripts / "lib")
         self.executable(self.source / ".agents/skills/github/scripts/git-https-auth", '''#!/usr/bin/env bash
 exec git "$@"
 ''')
@@ -343,6 +346,161 @@ exec git "$@"
                   data=b"a much longer second answer\n", SSH_TEST_CUT="5")
         self.assertEqual(target.read_bytes(), b"a muc")
         self.script.write_text(original)
+
+    def test_append_adds_whole_lines_and_nothing_else(self):
+        """Each append adds its line; a fragment is closed and a cut adds nothing."""
+        self.assertEqual(self.create().returncode, 0)
+        target = self.root / "lane/tmp/lane-mail/TEST-1/to-lane.jsonl"
+        target.parent.mkdir(parents=True)
+        for line in (b'{"id":"one"}\n', b'{"id":"two"}\n'):
+            with self.subTest(line=line):
+                result = self.call("append", "--item", "TEST-1", "--", str(target), data=line)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(target.read_bytes(), b'{"id":"one"}\n{"id":"two"}\n')
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        # An item directory the lane has not opened yet is created on the way,
+        # and the transfer's own umask is what makes the mailbox private.
+        fresh = self.root / "lane/tmp/lane-mail/TEST-9/to-lane.jsonl"
+        result = self.call("append", "--item", "TEST-1", "--", str(fresh), data=b'{"id":"fresh"}\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(fresh.read_bytes(), b'{"id":"fresh"}\n')
+        self.assertEqual(fresh.stat().st_mode & 0o777, 0o600)
+        # A fragment an interrupted writer left is closed first, so the line
+        # after it lands whole instead of glued to it and both lost.
+        target.write_bytes(b'{"id":"half"')
+        result = self.call("append", "--item", "TEST-1", "--", str(target), data=b'{"id":"whole"}\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(target.read_bytes(), b'{"id":"half"\n{"id":"whole"}\n')
+        # A stream cut short adds nothing and leaves no staging file behind.
+        cut = self.call("append", "--item", "TEST-1", "--", str(target),
+                        data=b'{"id":"a much longer line"}\n', SSH_TEST_CUT="5")
+        self.assertNotEqual(cut.returncode, 0)
+        self.assertEqual(target.read_bytes(), b'{"id":"half"\n{"id":"whole"}\n')
+        self.assertEqual(list(target.parent.glob("to-lane.jsonl.kendex-append.*")), [])
+        # One control per rule, each keeping every other rule in place. The
+        # count lives in this script and the termination rule in the package
+        # library the remote payload sources, so a row names its own file.
+        # Fields: the file, the rule's own text, what removing it leaves, the
+        # file the case starts from, the bytes fed, how many of them the stream
+        # carries, and the file the mutant then holds.
+        library = Path(self.row["clone"]) / ".agents/skills/orch/scripts/lib/mailbox-append.sh"
+        rows = (
+            (self.script, 'if [ "$((arrived + 0))" -ne "$2" ]; then', "if false; then",
+             b'{"id":"whole"}\n', b'{"id":"a much longer line"}\n', "5",
+             b'{"id":"whole"}\n{"id"'),
+            (library, r"""printf '\n' >>"$1" || return 1""", "return 0",
+             b'{"id":"half"', b'{"id":"whole"}\n', "",
+             b'{"id":"half"{"id":"whole"}\n'),
+        )
+        for path, rule, without, seed, fed, carried, held in rows:
+            with self.subTest(rule=rule):
+                original = path.read_text()
+                self.assertEqual(original.count(rule), 1)
+                path.write_text(original.replace(rule, without))
+                target.write_bytes(seed)
+                self.call("append", "--item", "TEST-1", "--", str(target), data=fed,
+                          **({"SSH_TEST_CUT": carried} if carried else {}))
+                self.assertEqual(target.read_bytes(), held)
+                path.write_text(original)
+
+    # A race only ever samples one interleaving. Holding the mailbox's own lock
+    # through the same orch_take_lock the library calls settles it instead.
+    # The release wait is bounded too, so a case that aborts before releasing
+    # the lock leaves no process spinning behind the suite.
+    HOLD_LOCK = 'set -euo pipefail\n. "%s/file-lock.sh"\nexec 9>>"%s"\norch_take_lock 9 "%s" 30\n' \
+        ': > "%s"\nwaited=0\nwhile [ ! -e "%s" ]; do\n' \
+        '  waited=$((waited + 1)); [ "$waited" -lt 1200 ] || exit 1\n  sleep 0.05\ndone'
+
+    def test_append_waits_on_the_lock_the_mailbox_owns(self):
+        """A second writer of one mailbox waits for it; unlocked it writes through."""
+        self.assertEqual(self.create().returncode, 0)
+        library = Path(self.row["clone"]) / ".agents/skills/orch/scripts/lib"
+        target = self.root / "lane/tmp/lane-mail/TEST-1/to-lane.jsonl"
+        target.parent.mkdir(parents=True)
+        original = (library / "mailbox-append.sh").read_text()
+        rule = 'if ! orch_take_lock 9 "$1" "$2"; then'
+        self.assertEqual(original.count(rule), 1)
+        taken, release = self.root / "lock-taken", self.root / "lock-release"
+        hold = self.HOLD_LOCK % (library, target, target, taken, release)
+        for source, expected in ((original, (0, 1)), (original.replace(rule, "if false; then"), (1, 1))):
+            with self.subTest(locked=source == original):
+                (library / "mailbox-append.sh").write_text(source)
+                target.write_bytes(b"")
+                for marker in (taken, release):
+                    marker.unlink(missing_ok=True)
+                holder = subprocess.Popen(["bash", "-c", hold], env=self.env)
+                # Bounded, and ended as soon as the holder is: a holder that
+                # died before taking the lock would otherwise spin to the CI
+                # job's own timeout with nothing saying what was in flight.
+                deadline = time.monotonic() + 5
+                while not taken.exists():
+                    self.assertIsNone(holder.poll(), "the lock holder exited without taking the lock")
+                    self.assertLess(time.monotonic(), deadline, f"the lock holder never wrote {taken}")
+                    time.sleep(0.05)
+                append = subprocess.Popen(
+                    [str(self.script), "append", "--item", "TEST-1", "--", str(target)],
+                    cwd=self.root, env=self.env, stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                append.stdin.write(b'{"id":"held"}\n')
+                append.stdin.close()
+                time.sleep(2)
+                during = len(target.read_bytes().splitlines())
+                release.write_bytes(b"")
+                append.wait()
+                holder.wait()
+                self.assertEqual((during, len(target.read_bytes().splitlines())), expected)
+        (library / "mailbox-append.sh").write_text(original)
+
+    def test_append_names_its_failure_in_a_word(self):
+        """The library's number is decoded where it is printed, not passed on."""
+        self.assertEqual(self.create().returncode, 0)
+        target = self.root / "lane/tmp/lane-mail/TEST-1/to-lane.jsonl"
+        target.parent.mkdir(parents=True)
+        library = Path(self.row["clone"]) / ".agents/skills/orch/scripts/lib/mailbox-append.sh"
+        original = library.read_text()
+        opened = 'exec 9>>"$1" || return 2'
+        self.assertEqual(original.count(opened), 1)
+        # The write row arranges a real failure: the staging succeeds and the
+        # target's own open is what fails, which is that branch with no wait. A
+        # directory refusing every open would stop at the staging and never
+        # reach the decode. The lock row takes its code from a library copy
+        # rather than from a real thirty-second wait on a held mailbox.
+        # Fields: the target's mode, the library the clone holds, the word an
+        # operator must read, and the number they must not.
+        rows = (
+            (0o400, original, b"reason=write-failed", b"reason=2"),
+            (0o600, original.replace(opened, "return 3"), b"reason=lock-timeout", b"reason=3"),
+        )
+        for mode, source, word, number in rows:
+            with self.subTest(word=word):
+                target.write_bytes(b'{"id":"kept"}\n')
+                target.chmod(mode)
+                library.write_text(source)
+                refused = self.call("append", "--item", "TEST-1", "--", str(target),
+                                    data=b'{"id":"nowhere"}\n')
+                target.chmod(0o600)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(b"lane-host-ssh: append-failed", refused.stderr)
+                self.assertIn(word, refused.stderr)
+                self.assertNotIn(number, refused.stderr)
+                self.assertEqual(target.read_bytes(), b'{"id":"kept"}\n')
+        library.write_text(original)
+
+    def test_append_names_a_clone_that_predates_the_verb(self):
+        """The control machine and the host's clone update apart."""
+        self.assertEqual(self.create().returncode, 0)
+        library = Path(self.row["clone"]) / ".agents/skills/orch/scripts/lib/mailbox-append.sh"
+        target = self.root / "lane/tmp/lane-mail/TEST-1/to-lane.jsonl"
+        target.parent.mkdir(parents=True)
+        kept = library.read_bytes()
+        library.unlink()
+        self.addCleanup(library.write_bytes, kept)
+        refused = self.call("append", "--item", "TEST-1", "--", str(target), data=b'{"id":"nowhere"}\n')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn(f"lane-host-ssh: append-library-missing path={library}\n".encode(), refused.stderr)
+        self.assertIn(b"predates the append verb", refused.stderr)
+        self.assertFalse(target.exists())
+        self.assertEqual(list(target.parent.glob("*.kendex-append.*")), [])
 
     def test_cat_tells_an_absent_path_from_one_it_cannot_read(self):
         """Exit 2 is "not there"; every other read failure keeps its own status."""

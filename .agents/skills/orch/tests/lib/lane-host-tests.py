@@ -24,7 +24,8 @@ class LaneHostTests(unittest.TestCase):
         self.stub = self.root / "provider with space"
         shutil.copy2(PACKAGE / "tests/fixtures/lane-host", self.stub)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("ORCH_", "KENDEX_", "LANE_HOST_"))}
-        self.env.update(LANE_HOST_STUB_LOG=str(self.root / "calls"), LANE_HOST_STUB_FILE=str(self.root / "bytes"))
+        self.env.update(LANE_HOST_STUB_LOG=str(self.root / "calls"), LANE_HOST_STUB_FILE=str(self.root / "bytes"),
+                        LANE_HOST_STUB_LIB=str(self.script.parent / "lib"))
 
     def run_host(self, *args, **env):
         return subprocess.run([str(self.script), *args], cwd=self.root,
@@ -57,6 +58,10 @@ class LaneHostTests(unittest.TestCase):
         self.assertEqual(self.run_host("put", "--item", "TEST-1", "/remote", **env).returncode, 0)
         result = self.run_host("cat", "--item", "TEST-1", "/remote", **env)
         self.assertEqual((result.returncode, result.stdout), (0, b"seed\x00data\n"))
+        appended = self.run_host("append", "--item", "TEST-1", "/remote", **env)
+        self.assertEqual(appended.returncode, 0, appended.stderr)
+        result = self.run_host("cat", "--item", "TEST-1", "/remote", **env)
+        self.assertEqual((result.returncode, result.stdout), (0, b"seed\x00data\nseed\x00data\n"))
         for code, notice in ((75, False), (1, True), (3, True)):
             with self.subTest(code=code):
                 result = self.run_host(*args, **env, LANE_HOST_STUB_STATUS=str(code))
