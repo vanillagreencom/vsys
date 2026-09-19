@@ -24,6 +24,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 export ORCH_LANE_HOST=local
 # shellcheck source=lib/shared-skill-libs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
+# shellcheck source=lib/process-table.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/process-table.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
@@ -94,11 +96,41 @@ ln -s gh "$BIN/lanes"
 # developer's desktop provides and this suite would open real windows.
 export TERMINAL=ghostty
 
+# The process table every wake row reads. `lane_session_state` walks `ps -A`
+# for processes named for the harness and reads each one's /proc cwd, so an
+# unstubbed row is answered by whoever else is logged into the box: one
+# root-owned claude anywhere on it refuses every claude row as `unjudged`.
+# Every launcher that runs the script under test — run_case and woken_under —
+# puts these stubs on its PATH, and a new one must too, so a row's table is the
+# one staged here whatever the host is running.
+#
+# The default is an EMPTY table: this box runs no harness at all. What a row
+# whose wake goes through actually needs is narrower — no process named for the
+# harness whose /proc cwd is the lane's worktree — and an empty table is one way
+# to reach it. A row wanting a session in that worktree writes its own table
+# before the wake. lib/process-table.sh carries the rest of the rationale.
+PROC_BIN="$TMP_ROOT/proc-bin"
+proc_table_install "$PROC_BIN"
+PROC_TABLE="$TMP_ROOT/proc-table.txt"
+PROC_CWD_FILE="$TMP_ROOT/proc-cwd.txt"
+PROC_HIDDEN_PIDS=""
+export PROC_TABLE PROC_CWD_FILE PROC_HIDDEN_PIDS
+proc_table_write "$PROC_TABLE"
+proc_cwd_write "$PROC_CWD_FILE"
+
 # Stub worktree CLI:
 #   exists <item>          "true" when $STUB_EXISTS_DIR/<item> is present
 #   create <item>          logs "<item>", exits per $STUB_EXIT_DIR/<item>
 #   create <item> --reuse  logs "<item> --reuse", exits per
 #                          $STUB_EXIT_DIR/<item>.reuse
+#   merged <item>          prints $STUB_MERGED_DIR/<item> when that file is
+#                          present (its merge commit, exit 0); exits 2 with a
+#                          worktree-merge-unverified record when
+#                          $STUB_MERGED_DIR/<item>.unverified is present, the
+#                          answer on any machine with no gh, no gh auth or no
+#                          network; else exits 1
+#   fix-links <item>       logs "<item> fix-links", exits per
+#                          $STUB_EXIT_DIR/<item>.links
 #   path <item>            prints the dir create makes, present or not
 # With no exit-code file the call makes and prints a worktree dir (exit 0).
 STUB="$TMP_ROOT/worktree-stub"
@@ -108,6 +140,26 @@ set -euo pipefail
 [[ "\${1:-}" != "path" ]] || { printf '%s\n' "$TMP_ROOT/wt/\${2:-unknown}"; exit 0; }
 if [[ "\${1:-}" == "exists" ]]; then
   [[ -f "\$STUB_EXISTS_DIR/\${2:-unknown}" ]] && echo "true" || echo "false"
+  exit 0
+fi
+if [[ "\${1:-}" == "merged" ]]; then
+  item="\${2:-unknown}"
+  if [[ -f "\${STUB_MERGED_DIR:-}/\$item.unverified" ]]; then
+    echo "worktree-merge-unverified: \$item" >&2
+    exit 2
+  fi
+  if [[ -f "\${STUB_MERGED_DIR:-}/\$item" ]]; then cat "\$STUB_MERGED_DIR/\$item"; exit 0; fi
+  echo "worktree-unmerged: \$item" >&2
+  exit 1
+fi
+if [[ "\${1:-}" == "fix-links" ]]; then
+  item="\${2:-unknown}"
+  printf '%s fix-links\n' "\$item" >> "\$STUB_CALL_LOG"
+  if [[ -f "\$STUB_EXIT_DIR/\$item.links" ]]; then
+    echo "worktree: links-unrestored \$item" >&2
+    exit "\$(cat "\$STUB_EXIT_DIR/\$item.links")"
+  fi
+  echo "worktree: links-restored \$item"
   exit 0
 fi
 if [[ "\${1:-}" == "create" ]]; then
@@ -134,7 +186,7 @@ chmod +x "$STUB"
 REPO="$TMP_ROOT/repo"
 mkdir -p "$REPO/scripts/lib"
 cp "$SRC_OT" "$REPO/scripts/open-terminal"
-cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/git-context" "$REPO/scripts/"
+cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$REPO/scripts/"
 cp "$SRC_LIB_DIR"/*.sh "$REPO/scripts/lib/"
 orch_fixture_shared_libs "$REPO"
 chmod +x "$REPO/scripts/open-terminal"
@@ -148,11 +200,12 @@ run_case() {
   CALL_LOG="$TMP_ROOT/$name.calls"
   : > "$CALL_LOG"
   : "${EXISTS_DIR:=$TMP_ROOT/exists-none}"
-  mkdir -p "$EXISTS_DIR"
+  : "${MERGED_DIR:=$TMP_ROOT/merged-none}"
+  mkdir -p "$EXISTS_DIR" "$MERGED_DIR"
   set +e
-  OUT=$(PATH="$BIN:$PATH" WORKTREE_CLI="$STUB" LANES_CLI="$BIN/lanes" STUB_CALL_LOG="$CALL_LOG" STUB_EXIT_DIR="$EXIT_DIR" OT_CAPTURE="${OT_CAPTURE:-}" LANES_HOME="${LANES_HOME:-}" CODEX_HOME="${CODEX_HOME_OVERRIDE:-}" CODEX_INVENTORY="${CODEX_INVENTORY:-}" \
+  OUT=$(PATH="$BIN:$PROC_BIN:$PATH" ORCH_STATE_DIR="$TMP_ROOT/state" WORKTREE_CLI="$STUB" LANES_CLI="$BIN/lanes" STUB_CALL_LOG="$CALL_LOG" STUB_EXIT_DIR="$EXIT_DIR" OT_CAPTURE="${OT_CAPTURE:-}" LANES_HOME="${LANES_HOME:-}" CODEX_HOME="${CODEX_HOME_OVERRIDE:-}" CODEX_INVENTORY="${CODEX_INVENTORY:-}" \
     PI_CODING_AGENT_DIR="${PI_AGENT_DIR:-}" PI_CODING_AGENT_SESSION_DIR="${PI_SESSION_DIR:-}" \
-    STUB_EXISTS_DIR="$EXISTS_DIR" \
+    STUB_EXISTS_DIR="$EXISTS_DIR" STUB_MERGED_DIR="$MERGED_DIR" \
     "$OT" --ghostty ${CMD_ARGS[@]+"${CMD_ARGS[@]}"} "$@" 2>"$TMP_ROOT/$name.err")
   RC=$?
   set -e
@@ -211,6 +264,13 @@ assert_eq "$RC" "0" "--relaunch launches into the existing worktree"
 assert_eq "$(tr '\n' ' ' < "$CALL_LOG")" "CC-1 --reuse " "--relaunch creates with --reuse, and never retries bare"
 assert_contains "$OUT" "open-terminal: terminal-opened item=CC-1" "the replacement session is launched"
 assert_not_contains "$ERR" "open-terminal: item-owned item=CC-1" "a relaunched item is not skipped as owned"
+# The stub writes worktree-unmerged on stderr here, the ordinary answer on any
+# branch still in flight. It is the launcher's to consume: on a relaunch that
+# then succeeds, an error-shaped line about an unmerged branch reads as a
+# failure. This assertion is the one that reddens if the suppression goes; the
+# assertion named "the unanswered question reaches the operator", in case 9m,
+# pins the other half.
+assert_not_contains "$ERR" "worktree-unmerged" "the merge question's ordinary answer never reaches the operator"
 
 # Case 6: --relaunch on a worktree held under another owner's lease — create
 # --reuse still exits 75 — stays a skip.
@@ -230,6 +290,56 @@ run_case c7 -- --relaunch CC-1
 assert_eq "$RC" "0" "--relaunch with no existing worktree launches"
 assert_eq "$(tr '\n' ' ' < "$CALL_LOG")" "CC-1 " "a missing worktree takes the bare create form"
 
+# Case 8: --relaunch on an item whose pull request merged. The tree is kept as
+# it stands and create is never asked for it, so it never takes create's guard
+# lease. The reuse exit code seeded below is what a rebase conflict looks like
+# to the launcher, and the assertion named "a merged item is never handed to
+# create, and its links are re-asserted" is what reddens if that call is made:
+# it reads the call log, which would then hold the reuse. That same assertion
+# covers the links the skipped create would have applied, which are re-asserted
+# here because the continuation line sends the lane to a script under .agents.
+EXIT_DIR="$TMP_ROOT/exit8"; mkdir -p "$EXIT_DIR"
+EXISTS_DIR="$TMP_ROOT/exists8"; mkdir -p "$EXISTS_DIR" "$TMP_ROOT/wt/CC-1"
+MERGED_DIR="$TMP_ROOT/merged8"; mkdir -p "$MERGED_DIR"
+printf '1' > "$EXIT_DIR/CC-1.reuse"; touch "$EXISTS_DIR/CC-1"
+printf '5b55bc9f4b55fd98f11b1d7a22471dc5c75c782d\n' > "$MERGED_DIR/CC-1"
+run_case c8 -- --relaunch CC-1
+assert_eq "$RC" "0" "a merged item relaunches instead of failing on its own squash"
+assert_eq "$(tr '\n' ' ' < "$CALL_LOG")" "CC-1 fix-links " "a merged item is never handed to create, and its links are re-asserted"
+assert_contains "$OUT" "open-terminal: worktree-reuse-merged item=CC-1 commit=5b55bc9f4b55fd98f11b1d7a22471dc5c75c782d" "the kept tree is reported with its merge commit"
+assert_contains "$OUT" "open-terminal: terminal-opened item=CC-1" "the merged lane is launched"
+
+# Case 9: the merge lookup could not answer — gh missing, unauthenticated, or
+# offline. That is not an answer of "not merged" and it is not one of "merged":
+# the item takes `create --reuse`, which asks the question again for itself,
+# and the record naming the gap reaches the operator rather than being eaten
+# with the ordinary answer.
+EXIT_DIR="$TMP_ROOT/exit9m"; mkdir -p "$EXIT_DIR"
+EXISTS_DIR="$TMP_ROOT/exists9m"; mkdir -p "$EXISTS_DIR"
+MERGED_DIR="$TMP_ROOT/merged9m"; mkdir -p "$MERGED_DIR"
+touch "$EXISTS_DIR/CC-1" "$MERGED_DIR/CC-1.unverified"
+run_case c9m -- --relaunch CC-1
+assert_eq "$RC" "0" "an unanswerable merge lookup still launches the item"
+assert_eq "$(tr '\n' ' ' < "$CALL_LOG")" "CC-1 --reuse " "an unanswerable lookup takes the reuse path, which judges it again"
+assert_not_contains "$OUT" "worktree-reuse-merged" "an unanswerable lookup is never reported as a merged tree"
+assert_contains "$ERR" "worktree-merge-unverified: CC-1" "the unanswered question reaches the operator"
+
+# Case 10: the kept tree's links cannot be restored. The lane would be launched
+# with a continuation line naming a script under .agents that it cannot reach,
+# so the item fails instead.
+EXIT_DIR="$TMP_ROOT/exit10"; mkdir -p "$EXIT_DIR"
+EXISTS_DIR="$TMP_ROOT/exists10"; mkdir -p "$EXISTS_DIR" "$TMP_ROOT/wt/CC-1"
+MERGED_DIR="$TMP_ROOT/merged10"; mkdir -p "$MERGED_DIR"
+touch "$EXISTS_DIR/CC-1"
+printf '1' > "$EXIT_DIR/CC-1.links"
+printf '5b55bc9f4b55fd98f11b1d7a22471dc5c75c782d\n' > "$MERGED_DIR/CC-1"
+run_case c10 -- --relaunch CC-1
+assert_eq "$RC" "1" "a kept tree whose links cannot be restored fails the item"
+assert_contains "$ERR" "open-terminal: worktree-links-failed item=CC-1" "the unreachable links are named"
+assert_not_contains "$OUT" "open-terminal: terminal-opened item=CC-1" "no lane is launched into a tree it cannot read"
+
+MERGED_DIR=""
+
 # Relaunch resumes the newest transcript whose harness kickoff names the item.
 # The claude transcript records the item lower case while the launch names the
 # canonical upper-case one: a session launched before the canonical brief holds
@@ -244,15 +354,21 @@ printf '%s\n' '{"type":"user","message":{"content":"start cc-1"}}' >"$SESSION_HO
 printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$CODEX444\"}}" '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"repository instructions"}]}}' '{"type":"event_msg","payload":{"type":"user_message","message":"start CC-1"}}' >"$SESSION_HOME/.selected-codex/sessions/2026/session.jsonl"
 printf '%s\n' '{"type":"message","message":{"role":"user","content":"start CC-1"}}' >"$SESSION_HOME/.pi/agent/sessions/repo/session.jsonl"
 EXIT_DIR="$TMP_ROOT/resume-exit"; EXISTS_DIR="$TMP_ROOT/resume-exists"; mkdir -p "$EXIT_DIR" "$EXISTS_DIR"; touch "$EXISTS_DIR/CC-1"
+#
+# The resumed command carries the continuation line itself on every harness, so
+# the relaunch is one call and nobody pastes a follow-up into the pane. Each
+# harness takes it as the last positional argument of its own resume form.
 CMD_ARGS=()
+RELAUNCH_LINE="Resume the orch workflow for CC-1 from where this session stopped. Run .agents/skills/orch/scripts/lane-mail inbox --item CC-1 first and act on every directive it prints."
 for row in "claude|claude -n CC-1 --resume $CLAUDE222" "codex|codex resume $CODEX444" "pi|pi --session $SESSION_HOME/.pi/agent/sessions/repo/session.jsonl"; do
   IFS='|' read -r harness expected <<<"$row"
   capture="$TMP_ROOT/resume-$harness.cmd"
   OT_CAPTURE="$capture" LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" run_case "resume-$harness" -- --relaunch --harness "$harness" CC-1
-  for _ in {1..10000}; do [[ -f "$capture" ]] && break; done; assert_contains "$(cat "$capture")" "$expected" "$harness relaunch uses its native resume command"
+  for _ in {1..10000}; do [[ -f "$capture" ]] && break; done; assert_contains "$(cat "$capture")" "$expected '$RELAUNCH_LINE'" "$harness relaunch resumes with the continuation line"
 done
 OT_CAPTURE="$TMP_ROOT/fresh.cmd" LANES_HOME="$SESSION_HOME" run_case fresh -- --relaunch --harness codex CC-9
 for _ in {1..10000}; do [[ -f "$TMP_ROOT/fresh.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/fresh.cmd")" "execute the orch start workflow for CC-9" "a relaunch with no matching session uses the fresh brief"
+assert_not_contains "$(cat "$TMP_ROOT/fresh.cmd")" "Resume the orch workflow" "the fresh brief carries no continuation line to repeat itself"
 
 OLD_CODEX="$SESSION_HOME/.old-codex"; CROSS_CODEX=55555555-5555-5555-5555-555555555555; mkdir -p "$OLD_CODEX/sessions/2026"
 printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$CROSS_CODEX\"}}" '{"type":"event_msg","payload":{"type":"user_message","message":"start CC-2"}}' >"$OLD_CODEX/sessions/2026/cross.jsonl"
@@ -295,6 +411,19 @@ for row in "claude|claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE" "codex|code
   assert_contains "$OUT" "open-terminal: lane-woken item=CC-1 harness=$harness log=$TMP_ROOT/wt/CC-1/tmp/lane-wake-CC-1.log" "$harness wake names its log"
   assert_eq "$(cat "$capture" 2>/dev/null)" "$expected" "$harness wake delivers the inbox line through its native resume"
 done
+# A GitHub item is the issue number while its worktree id is issue-<n>, and the
+# mailbox is bound under the worktree id: write_lane_marker writes it there and
+# the overseer's `lane-mail send --item` writes the same id. A line built from
+# the bare number would send the lane to an empty mailbox. Pi is the harness
+# that reaches this: its wake goes through pi-bridge and reads no session
+# store, so no transcript has to match the item first.
+mkdir -p "$TMP_ROOT/wt/issue-2708"
+git -C "$TMP_ROOT/wt/issue-2708" init -q
+OT_CAPTURE="$TMP_ROOT/wake-gh.cmd" run_case wake-gh -- --wake --tracker github --repo o/r --harness pi 2708
+assert_eq "$(cat "$TMP_ROOT/wake-gh.cmd" 2>/dev/null)" \
+  "pi-bridge send --cwd $TMP_ROOT/wt/issue-2708 Run .agents/skills/orch/scripts/lane-mail inbox --item issue-2708 and act on every directive it prints." \
+  "a GitHub wake names the worktree id its mailbox is bound under, never the bare issue number"
+
 OT_CAPTURE="$TMP_ROOT/wake-failed.cmd" WAKE_STUB_RC=3 run_case wake-failed -- --wake --harness pi CC-1
 assert_eq "$RC" "1" "a wake whose delivery exits non-zero exits 1"
 assert_contains "$ERR" "open-terminal: wake-failed item=CC-1 harness=pi exit=3 log=$TMP_ROOT/wt/CC-1/tmp/lane-wake-CC-1.log" "a failed delivery is refused as wake-failed"
@@ -321,7 +450,7 @@ WAKE_LANE_DIR="$TMP_ROOT/.wakecodex"; mkdir -p "$WAKE_LANE_DIR"
 woken_under() {
   local script="$1" name="$2" out rc=0
   set +e
-  out=$(PATH="$BIN:$PATH" WORKTREE_CLI="$STUB" LANES_CLI="$WAKE_LANE_BIN/lanes" \
+  out=$(PATH="$BIN:$PROC_BIN:$PATH" ORCH_STATE_DIR="$TMP_ROOT/state" WORKTREE_CLI="$STUB" LANES_CLI="$WAKE_LANE_BIN/lanes" \
     STUB_CALL_LOG="$TMP_ROOT/$name.calls" STUB_EXIT_DIR="$TMP_ROOT/exit-none" \
     STUB_EXISTS_DIR="$TMP_ROOT/exists-none" OT_CAPTURE="$TMP_ROOT/$name.cmd" \
     LANES_HOME="$SESSION_HOME" CODEX_HOME="$SESSION_HOME/.selected-codex" \
@@ -359,111 +488,265 @@ for row in "session-missing item=CC-9 harness=claude|--harness claude CC-9" "dir
   assert_eq "$(cat "$TMP_ROOT/wake-refused.cmd" 2>/dev/null)" "" "wake refusal starts no session: ${key%% *}"
 done
 
+# Every WAKE row below reads the fixture table through lib/process-table.sh,
+# which says what that pair covers and what a row must still arrange for
+# itself. So no wake row runs the real reader, and the one guard row here does
+# nothing else: it runs it deliberately, with PROC_BIN off the PATH.
+#
+# That reader is a `ps -A` piped through an awk that moves the command name
+# into a field of its own and strips the executable path macOS puts in `comm`,
+# and a matcher that compares the harness name against the third field it
+# prints. Let either transform regress and no name matches, the pid loop never
+# runs, lane_session_state prints idle, the pane's idle rung stands and the
+# wake resumes beside a live session: the fail-open this branch closes, with
+# every wake row still green.
+#
+# The row reads the two lines out of the script under test rather than spelling
+# them again, so a change to either moves it. Only the two transforms are
+# pinned, not the awk's every detail: the substr offset that trims ps's column
+# padding has no consumer, since the matcher and the parent-tree scan below it
+# both re-split on whitespace, and a row asserting it would be pinning a
+# spelling rather than a guarantee. The path strip is pinned by a wake row
+# instead, the macOS one in the table below, which asserts what the wake does
+# rather than a count.
+REAL_TABLE_READ="$(sed -n 's/^  table="\$(\(.*\))".*$/\1/p' "$SRC_OT")"
+REAL_PID_MATCH="$(sed -n 's/^  pids="\$(\(.*\))".*$/\1/p' "$SRC_OT")"
+assert_eq "table=$(grep -c . <<<"$REAL_TABLE_READ") match=$(grep -c . <<<"$REAL_PID_MATCH")" \
+  "table=1 match=1" "the real reader and its matcher are each one line of the script under test"
+
+# The first runs both against THIS box, with PROC_BIN off the PATH, and asks
+# for the pid of the shell running this suite under its own command name. It
+# claims nothing about anyone else's processes.
+SUITE_PID=$$
+real_rc=0
+real_found="$(
+  HARNESS="${BASH##*/}"
+  table="$(eval "$REAL_TABLE_READ")" || exit 3
+  pids="$(eval "$REAL_PID_MATCH")" || exit 4
+  grep -cx -- "$SUITE_PID" <<<"$pids" || true
+)" || real_rc=$?
+assert_eq "rc=$real_rc found=$real_found" "rc=0 found=1" \
+  "the real reader run on this box finds the shell running this suite by its command name"
+
 # A Claude or Codex session still working in the lane worktree is not resumed
-# beside itself. The fixture session is a copy of bash named for the harness,
-# so it carries the harness's command name, running in the worktree with the
-# shell child and, for Claude, the session file a row names.
-LIVE_BIN="$TMP_ROOT/live-bin"; mkdir -p "$LIVE_BIN"; cp "$BASH" "$LIVE_BIN/claude"; cp "$BASH" "$LIVE_BIN/codex"
+# beside itself. What the wake reads to find one is this machine's process
+# table, and every row below states its own table through lib/process-table.sh
+# instead of leaving the answer to whatever else the box is running.
+WT_CC1="$TMP_ROOT/wt/CC-1"; mkdir -p "$WT_CC1"
+# The claude arm reads CLAUDE_CONFIG_DIR out of the session's own environment
+# and falls back to $HOME/.claude when it cannot. A row meaning `not idle` has
+# to land that fallback somewhere this fixture owns: the developer's real home
+# holds session files named for live pids, and a collision there would decide
+# the row.
+WAKE_HOME="$TMP_ROOT/wake-home"; mkdir -p "$WAKE_HOME/.claude/sessions"
+LIVE_RESUME_claude="claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE"
+LIVE_RESUME_codex="codex exec resume $CODEX444 $WAKE_LINE"
+
+# table_wake HARNESS [SCRIPT] — a HARNESS wake on CC-1 through SCRIPT, over the
+# table the caller staged. Nothing is started and nothing is waited for, so the
+# row's precondition holds at the instant the wake reads it.
+table_wake() {
+  local saved="$OT"
+  rm -f -- "${TMP_ROOT:?}/live-wake.cmd"
+  OT="${2:-$OT}"
+  HOME="$WAKE_HOME" \
+    OT_CAPTURE="$TMP_ROOT/live-wake.cmd" LANES_HOME="$SESSION_HOME" \
+    CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" \
+    run_case live-wake -- --wake --harness "$1" CC-1
+  OT="$saved"
+}
+
+# The fake pids the rows below put in the worktree. None of them needs to exist:
+# `readlink` answers their cwd off PROC_CWD_FILE, and that is the whole of the
+# CWD read. It is not the whole of the reading — a claude pid that reaches the
+# idle branch is also read for its environment and for the session file named
+# after it — which is what WAKE_HOME above stands under.
+#
+# Two claude pids, because the producer has two separate arms that answer
+# `busy`, and a row answered by both pins neither. CLAUDE_IDLE_PID's session
+# file reads idle, so only the shell child under it can say the turn is live;
+# CLAUDE_PID has no shell child, so only its session file can.
+#
+# MACOS_PID is the same fixture seen the way macOS `ps` reports it, its comm the
+# whole executable path behind padded pid columns. No Linux process shows that
+# shape, and the row is what pins the strip that removes it.
+CLAUDE_IDLE_PID=9101; CLAUDE_IDLE_SHELL=9102; CLAUDE_PID=9103; MACOS_PID=9105
+CODEX_PID=9201; CODEX_SHELL=9202
+printf '{"status":"idle"}\n' >"$WAKE_HOME/.claude/sessions/$CLAUDE_IDLE_PID.json"
+printf '{"status":"busy"}\n' >"$WAKE_HOME/.claude/sessions/$CLAUDE_PID.json"
+
+# NAME|TABLE ROWS, comma-separated|THE WAKE'S ANSWER
+#
+# The refusal names the state the shared judge read, so a harness process in the
+# worktree is `working` where the /proc read alone called it `busy`. With no
+# pane on this tmux server carrying the item's window name, the process table is
+# the whole of the reading here, exactly as it was before the judge existed.
+while IFS='|' read -r label rows want; do
+  [[ -n "$label" ]] || continue
+  IFS=',' read -r -a table_rows <<<"$rows"
+  proc_table_write "$PROC_TABLE" ${table_rows[@]+"${table_rows[@]}"}
+  proc_cwd_write "$PROC_CWD_FILE" "$CLAUDE_IDLE_PID=$WT_CC1" "$CLAUDE_PID=$WT_CC1" \
+    "$MACOS_PID=$WT_CC1" "$CODEX_PID=$WT_CC1"
+  proc_table_readable || want=unjudged
+  table_wake "${label%% *}"
+  assert_eq "RC=$RC resumed=$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "RC=1 resumed=" \
+    "a wake beside $label exits 1 and resumes nothing"
+  assert_contains "$ERR" "open-terminal: wake-refused item=CC-1 reason=$want" \
+    "a wake beside $label is refused as $want"
+done <<ROWS
+claude with a shell under an idle session file|$CLAUDE_IDLE_PID 1 claude,$CLAUDE_IDLE_SHELL $CLAUDE_IDLE_PID bash|working
+claude whose session file does not read idle|$CLAUDE_PID 1 claude|working
+claude whose comm is a whole path behind padded columns|  $MACOS_PID     1 /Applications/Claude.app/Contents/MacOS/claude|working
+codex with a shell under it|$CODEX_PID 1 codex,$CODEX_SHELL $CODEX_PID bash|working
+codex with no shell under it|$CODEX_PID 1 codex|unjudged
+ROWS
+
+# The inverse of those rows: a box running no harness in the worktree at all,
+# where the wake goes through. The empty table is that precondition, stated.
+proc_table_write "$PROC_TABLE"
+proc_cwd_write "$PROC_CWD_FILE"
+table_wake codex
+assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_codex" \
+  "a codex wake with no codex process in the worktree resumes it"
+
+# The one row that still needs a REAL process. `/proc/<pid>/environ` is where
+# the wake finds the session's CLAUDE_CONFIG_DIR, and no table stands in for it,
+# so the idle answer this row asserts is the only one that exercises that read.
+# The fixture session is a copy of bash named claude, running in the worktree.
+LIVE_BIN="$TMP_ROOT/live-bin"; mkdir -p "$LIVE_BIN"; cp "$BASH" "$LIVE_BIN/claude"
 LIVE_CONFIG="$TMP_ROOT/live-config"; mkfifo "$TMP_ROOT/never"
 cat >"$TMP_ROOT/live-session.sh" <<'EOF'
-[ "$1" = - ] || printf '{"status":"%s"}\n' "$1" >"$CLAUDE_CONFIG_DIR/sessions/$$.json"
-if [ "$2" = 1 ]; then
-  bash -c 'printf "%s\n" "$$" >"$1.shell"; read -r _ <"$2"' shell "$3" "$4" &
-  n=0; while [ ! -s "$3.shell" ] && [ "$n" -lt 200 ]; do sleep 0.05; n=$((n + 1)); done
-fi
-: >"$3"
-read -r _ <"$4"
+printf '{"status":"idle"}\n' >"$CLAUDE_CONFIG_DIR/sessions/$$.json"
+: >"$1"
+read -r _ <"$2"
 EOF
-# live_wake HARNESS STATUS SHELL [SCRIPT] — a HARNESS wake on CC-1 through
-# SCRIPT, beside a live session whose file reads STATUS (`-` writes none), with
-# a shell child when SHELL is 1.
-live_wake() {
-  local ready="$TMP_ROOT/live-ready" pid n=0 saved="$OT"
-  rm -rf -- "$LIVE_CONFIG" "$ready" "$ready.shell" "$TMP_ROOT/live-wake.cmd"; mkdir -p "$LIVE_CONFIG/sessions"
-  (cd "$TMP_ROOT/wt/CC-1" && export CLAUDE_CONFIG_DIR="$LIVE_CONFIG" && exec "$LIVE_BIN/$1" "$TMP_ROOT/live-session.sh" "$2" "$3" "$ready" "$TMP_ROOT/never") &
+# live_claude_wake [SCRIPT] — the wake beside that session. Its pid comes from
+# the shell that started it, so the table is exact the moment the process
+# exists; the two assertions are the row's precondition, and they name the
+# fixture rather than letting a process that never started read as a verdict.
+live_claude_wake() {
+  local ready="$TMP_ROOT/live-ready" pid n=0
+  rm -rf -- "${LIVE_CONFIG:?}" "${ready:?}"; mkdir -p "$LIVE_CONFIG/sessions"
+  (cd "$WT_CC1" && export CLAUDE_CONFIG_DIR="$LIVE_CONFIG" && exec "$LIVE_BIN/claude" "$TMP_ROOT/live-session.sh" "$ready" "$TMP_ROOT/never") &
   pid=$!
   LIVE_PIDS="$pid"
   while [[ ! -e "$ready" && "$n" -lt 200 ]]; do sleep 0.05; n=$((n + 1)); done
-  [[ ! -s "$ready.shell" ]] || LIVE_PIDS="$LIVE_PIDS $(cat "$ready.shell")"
-  OT="${4:-$OT}"
-  OT_CAPTURE="$TMP_ROOT/live-wake.cmd" LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" \
-    run_case live-wake -- --wake --harness "$1" CC-1
-  OT="$saved"
+  assert_eq "$([[ -s "$LIVE_CONFIG/sessions/$pid.json" ]] && echo wrote || echo missing)" "wrote" \
+    "fixture: the live claude session wrote its status file before the wake"
+  if proc_table_readable; then
+    assert_eq "$(readlink -- "/proc/$pid/cwd" 2>/dev/null)" "$WT_CC1" \
+      "fixture: the live claude session runs in the lane worktree"
+  fi
+  proc_table_write "$PROC_TABLE" "$pid 1 claude"
+  proc_cwd_write "$PROC_CWD_FILE"
+  table_wake claude "${1:-}"
   kill $LIVE_PIDS 2>/dev/null || :
   wait "$pid" 2>/dev/null || :
   LIVE_PIDS=""
 }
-LIVE_RESUME_claude="claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE"
-LIVE_RESUME_codex="codex exec resume $CODEX444 $WAKE_LINE"
-for row in "claude idle 1 busy|a shell under an idle session" "claude busy 0 busy|a session file not reading idle" "claude idle 0 idle|an idle session" \
-  "codex - 1 busy|a shell under a codex session" "codex - 0 unjudged|a codex session with no shell under it"; do
-  IFS='|' read -r spec label <<<"$row"
-  read -r harness status shell want <<<"$spec"
-  # With no /proc the cwd of the live session cannot be read at all.
-  [[ -d /proc/self ]] || want=unjudged
-  live_wake "$harness" "$status" "$shell"
-  if [[ "$want" == idle ]]; then
-    resume_var="LIVE_RESUME_$harness"
-    assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "${!resume_var}" "a wake beside $label resumes it"
-  else
-    assert_eq "RC=$RC resumed=$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "RC=1 resumed=" "a wake beside $label exits 1 and resumes nothing"
-    assert_contains "$ERR" "open-terminal: wake-refused item=CC-1 reason=$want" "a wake beside $label is refused as $want"
-  fi
-done
+live_claude_wake
+if proc_table_readable; then
+  assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_claude" \
+    "a wake beside an idle claude session resumes it"
+else
+  assert_contains "$ERR" "open-terminal: wake-refused item=CC-1 reason=unjudged" \
+    "with no /proc that same session is unjudged"
+fi
+
+# The rows the pane alone gets wrong. WORKING_RE draws a second or two into a
+# turn, so the first moments of one are an input marker with nothing above it —
+# byte for byte a finished turn. Read off the pane that is `idle`, and a wake
+# acting on `idle` starts a second session on a worktree mid-turn. The harness
+# process is what tells them apart, and anything but a process read that says
+# idle answers ahead of the pane's idle rung.
+WAKE_PANE_BIN="$TMP_ROOT/wake-pane-bin"; mkdir -p "$WAKE_PANE_BIN"
+cat >"$WAKE_PANE_BIN/tmux" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in
+  list-panes) printf 'CC-1\t%%9\t4242\t%s\n' "\$(cat "$TMP_ROOT/wake-pane.cmd")"; exit 0 ;;
+  capture-pane) cat "$TMP_ROOT/wake-pane.txt"; exit 0 ;;
+esac
+exit 1
+EOF
+chmod +x "$WAKE_PANE_BIN/tmux"
+
+# HARNESS|TABLE ROWS, comma-separated|COMPOSER LINE|REFUSAL|WHAT THE PROCESS READ SAYS
+#
+# Both rows put a lane's own idle-looking screen on the tmux server the wake
+# reads. The claude row's process has a shell under it, a turn already under
+# way. The codex row's has none, which is all a live codex session ever shows,
+# since codex publishes no idle signal — and `unjudged` must never buy a resume.
+while IFS='|' read -r wharness wrows wcomposer wreason wlabel; do
+  [[ -n "$wharness" ]] || continue
+  printf '%s\n' "$wharness" >"$TMP_ROOT/wake-pane.cmd"
+  printf '%s\n%s\n' '⏺ Done: the PR is merged.' "$wcomposer" >"$TMP_ROOT/wake-pane.txt"
+  IFS=',' read -r -a table_rows <<<"$wrows"
+  proc_table_write "$PROC_TABLE" ${table_rows[@]+"${table_rows[@]}"}
+  proc_cwd_write "$PROC_CWD_FILE" "$CLAUDE_IDLE_PID=$WT_CC1" "$CLAUDE_PID=$WT_CC1" "$CODEX_PID=$WT_CC1"
+  proc_table_readable || wreason=unjudged
+  PATH="$WAKE_PANE_BIN:$PATH" table_wake "$wharness"
+  assert_eq "RC=$RC resumed=$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "RC=1 resumed=" \
+    "a $wharness wake over an idle-looking pane whose process read says $wlabel resumes nothing"
+  assert_contains "$ERR" "open-terminal: wake-refused item=CC-1 reason=$wreason" \
+    "that pane is refused as $wreason, not taken for the idle it looks like"
+done <<ROWS
+claude|$CLAUDE_IDLE_PID 1 claude,$CLAUDE_IDLE_SHELL $CLAUDE_IDLE_PID bash|$(printf '\xe2\x9d\xaf\xc2\xa0')|working|a live turn under an idle session file
+codex|$CODEX_PID 1 codex|$(printf '\xe2\x80\xba')|unjudged|nothing it could tell
+ROWS
+
 # The mutant: the refusal gone, the session state still read.
 BUSY_MUTANT_REPO="$TMP_ROOT/busy-mutant-repo"
 cp -a "$REPO" "$BUSY_MUTANT_REPO"
 BUSY_MUTANT="$BUSY_MUTANT_REPO/scripts/open-terminal"
 sed -i.bak 's/\[\[ "$wake_state" == idle \]\] ||/true ||/' "$BUSY_MUTANT"
 assert_eq "$(cmp -s "$OT" "$BUSY_MUTANT" && echo same || echo changed)" "changed" "control: the busy mutant really drops the refusal"
-live_wake claude idle 1 "$BUSY_MUTANT"
-assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE" \
+proc_table_write "$PROC_TABLE" "$CLAUDE_IDLE_PID 1 claude" "$CLAUDE_IDLE_SHELL $CLAUDE_IDLE_PID bash"
+proc_cwd_write "$PROC_CWD_FILE" "$CLAUDE_IDLE_PID=$WT_CC1"
+table_wake claude "$BUSY_MUTANT"
+assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_claude" \
   "control: without the refusal a wake resumes beside a working session"
-# The inverse of the codex rows: with no codex process in the worktree, the wake
-# proceeds.
-OT_CAPTURE="$TMP_ROOT/live-wake.cmd" LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" \
-  run_case live-wake-none -- --wake --harness codex CC-1
-assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_codex" \
-  "a codex wake with no codex process in the worktree resumes it"
 # The mutant: a codex session with no shell under it read as idle again. With
 # no /proc the wake is unjudged before any session is read, so the control has
 # nothing to turn.
-if [[ -d /proc/self ]]; then
+if proc_table_readable; then
   CODEX_IDLE_MUTANT_REPO="$TMP_ROOT/codex-idle-mutant-repo"
   cp -a "$REPO" "$CODEX_IDLE_MUTANT_REPO"
   CODEX_IDLE_MUTANT="$CODEX_IDLE_MUTANT_REPO/scripts/open-terminal"
   sed -i.bak 's/^    \[\[ "$HARNESS" == claude \]\] || { printf unjudged; return 0; }$/    [[ "$HARNESS" == claude ]] || continue/' "$CODEX_IDLE_MUTANT"
   assert_eq "$(cmp -s "$OT" "$CODEX_IDLE_MUTANT" && echo same || echo changed)" "changed" \
     "control: the codex-idle mutant really reads a shell-less codex session as idle"
-  live_wake codex - 0 "$CODEX_IDLE_MUTANT"
+  proc_table_write "$PROC_TABLE" "$CODEX_PID 1 codex"
+  proc_cwd_write "$PROC_CWD_FILE" "$CODEX_PID=$WT_CC1"
+  table_wake codex "$CODEX_IDLE_MUTANT"
   assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_codex" \
     "control: without the codex arm a wake resumes beside a live codex session"
 fi
-# A live session whose cwd cannot be read is unjudged, never idle. The shim
-# stands in for the one readlink open-terminal calls and hides only a cwd in
-# the fixture worktree.
-CWD_SHIM="$TMP_ROOT/cwd-shim"; mkdir -p "$CWD_SHIM"
-printf '#!/bin/sh\nt=$("%s" "$@") || exit 1\n[ "$t" != "%s" ] || exit 1\nprintf "%%s\\n" "$t"\n' \
-  "$(command -v readlink)" "$TMP_ROOT/wt/CC-1" >"$CWD_SHIM/readlink"
-chmod +x "$CWD_SHIM/readlink"
-PATH="$CWD_SHIM:$PATH" live_wake claude idle 0
+# A live session whose cwd cannot be read is unjudged, never idle. The pid here
+# is this test shell's own, the one pid the row can be sure /proc still holds:
+# the producer refuses only a process that has NOT exited, and a fake pid would
+# be walked past as a session that is over.
+proc_table_write "$PROC_TABLE" "$$ 1 claude"
+proc_cwd_write "$PROC_CWD_FILE"
+PROC_HIDDEN_PIDS="$$"
+table_wake claude
 assert_eq "RC=$RC resumed=$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "RC=1 resumed=" \
   "a wake beside a session whose cwd cannot be read exits 1 and resumes nothing"
 assert_contains "$ERR" "open-terminal: wake-refused item=CC-1 reason=unjudged" \
   "a wake beside a session whose cwd cannot be read is refused as unjudged"
 # The mutant: a failed cwd read skips the process again. With no /proc the
 # wake is unjudged before any cwd is read, so the control has nothing to turn.
-if [[ -d /proc/self ]]; then
+if proc_table_readable; then
   UNREAD_MUTANT_REPO="$TMP_ROOT/unread-mutant-repo"
   cp -a "$REPO" "$UNREAD_MUTANT_REPO"
   UNREAD_MUTANT="$UNREAD_MUTANT_REPO/scripts/open-terminal"
   sed -i.bak 's/^      printf unjudged; return 0$/      continue/' "$UNREAD_MUTANT"
   assert_eq "$(cmp -s "$OT" "$UNREAD_MUTANT" && echo same || echo changed)" "changed" \
     "control: the unread-cwd mutant really skips the process"
-  PATH="$CWD_SHIM:$PATH" live_wake claude idle 0 "$UNREAD_MUTANT"
-  assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE" \
+  table_wake claude "$UNREAD_MUTANT"
+  assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_claude" \
     "control: without the unjudged arm a wake resumes beside a session it never read"
 fi
+PROC_HIDDEN_PIDS=""
 
 if [[ "${OPEN_TERMINAL_SKIP_CONTROL:-}" != 1 ]]; then
   CLAUDE_MUTANT="$TMP_ROOT/open-terminal-claude-recursive"
@@ -478,6 +761,30 @@ if [[ "${OPEN_TERMINAL_SKIP_CONTROL:-}" != 1 ]]; then
   CLAUDE_CONTROL_RC=$?
   set -e
   assert_eq "$CLAUDE_CONTROL_RC" "1" "control: recursive Claude selection chooses the newer child transcript"
+
+  LINE_MUTANT="$TMP_ROOT/open-terminal-no-continuation"
+  cp "$SRC_OT" "$LINE_MUTANT"
+  assert_eq "$(grep -cF 'elif [[ "$RELAUNCH" == true ]]; then' "$LINE_MUTANT")" "1" "control finds the relaunch continuation arm"
+  sed -i.bak 's/elif \[\[ "$RELAUNCH" == true \]\]; then/elif [[ "$RELAUNCH" == false ]]; then/' "$LINE_MUTANT"
+  rm -f -- "$LINE_MUTANT.bak"
+  if cmp -s "$SRC_OT" "$LINE_MUTANT"; then FAIL=$((FAIL + 1)); printf '  FAIL  control did not disarm the continuation arm\n'; else PASS=$((PASS + 1)); printf '  ok    control disarmed the continuation arm\n'; fi
+  set +e
+  OPEN_TERMINAL_UNDER_TEST="$LINE_MUTANT" OPEN_TERMINAL_SKIP_CONTROL=1 "$0" >"$TMP_ROOT/line-control.out" 2>&1
+  LINE_CONTROL_RC=$?
+  set -e
+  assert_eq "$LINE_CONTROL_RC" "1" "control: without the arm a relaunch resumes with no continuation line"
+
+  MERGED_MUTANT="$TMP_ROOT/open-terminal-merged-ignored"
+  cp "$SRC_OT" "$MERGED_MUTANT"
+  assert_eq "$(grep -cF 'if [[ "$merged_rc" -eq 0 && -n "$reuse_merged" ]]; then' "$MERGED_MUTANT")" "1" "control finds the merged-tree arm"
+  sed -i.bak 's/if \[\[ "$merged_rc" -eq 0 \&\& -n "$reuse_merged" \]\]; then/if [[ "$merged_rc" -eq 0 \&\& -z "$reuse_merged" ]]; then/' "$MERGED_MUTANT"
+  rm -f -- "$MERGED_MUTANT.bak"
+  if cmp -s "$SRC_OT" "$MERGED_MUTANT"; then FAIL=$((FAIL + 1)); printf '  FAIL  control did not disarm the merged-tree arm\n'; else PASS=$((PASS + 1)); printf '  ok    control disarmed the merged-tree arm\n'; fi
+  set +e
+  OPEN_TERMINAL_UNDER_TEST="$MERGED_MUTANT" OPEN_TERMINAL_SKIP_CONTROL=1 "$0" >"$TMP_ROOT/merged-control.out" 2>&1
+  MERGED_CONTROL_RC=$?
+  set -e
+  assert_eq "$MERGED_CONTROL_RC" "1" "control: without the arm a merged item is handed to the reuse rebase"
 
   MUTANT="$TMP_ROOT/open-terminal-pi-default"
   cp "$SRC_OT" "$MUTANT"
