@@ -52,6 +52,15 @@
 # never read as an empty one.
 set -euo pipefail
 
+# A launch home reaches this library in CODEX_HOME, and only lane-home.sh says
+# which account such a path belongs to. Sourced here rather than left to the
+# caller: the turn-end hook that asks the account question loads this file
+# alone. The sibling is named by expansion and not by `dirname` and `pwd`,
+# because this library is also loaded under a PATH holding jq, awk and cat and
+# nothing else, where an external would leave it half loaded.
+# shellcheck source=lane-home.sh
+source "${BASH_SOURCE[0]%/*}/lane-home.sh"
+
 # The foreground processes that ARE a harness, matched whole. A denylist of
 # shells cannot establish that one is running: after a harness exits, a pane
 # running less, vim or git log still holds the old footer and passes any
@@ -135,10 +144,110 @@ lane_context_shape() {
   esac
 }
 
+# The config directory a session of shape $1 runs its credential out of,
+# decided here and in no other place: `lanes context` asks it about the pane it
+# is reading, and the lane's own turn-end hook asks it about itself, so one
+# session is never joined to one account by the report and to another by the
+# hook that hands it off.
+#
+# Which variable names the account is decided by the SHAPE, never by which
+# variable happens to be set: every launcher here prefixes one without clearing
+# the other, so both can be, and reading Claude's on a Codex session reports a
+# whole other account's headroom. A session started by hand sets neither, which
+# is the overseer, and takes the directory its harness itself defaults to. A
+# shape naming neither harness has only the variables to go on and takes one
+# only where exactly one is set, so no session is joined to an account that was
+# never established; empty is the honest answer, and its caller reports an
+# account it could not name rather than reading it as room.
+#
+# What CODEX_HOME holds is not always an account. A codex launch that had to
+# make its own folder-trust record runs under a private home built under one,
+# so lib/lane-home.sh turns such a path back into the account it was built
+# under. Without that the mail a turn-end hook hands off, and the lane it has
+# `lanes pick` judge, name a directory no claim was taken on, and a second
+# session is launched onto an account this one is already spending. Both arms
+# that can answer with that variable go through the rule: the codex shape, and
+# the shape naming no harness, which is what a pane running `lanes` itself
+# offers. A claude answer passes through it unchanged, carrying no such shape.
+lane_context_caller_cfg() { # SHAPE
+  local home="${LANES_HOME:-$HOME}"
+  case "${1:-}" in
+    claude) printf '%s\n' "${CLAUDE_CONFIG_DIR:-$home/.claude}" ;;
+    codex) lane_launch_home_account "${CODEX_HOME:-$home/.codex}" ;;
+    *)
+      [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -n "${CODEX_HOME:-}" ] ||
+        lane_launch_home_account "${CLAUDE_CONFIG_DIR:-${CODEX_HOME:-}}"
+      ;;
+  esac
+}
+
+# lane_context_fields LINE — one `lane_context_parse` line split into the six
+# fields it prints: LANE_CTX_HARNESS, LANE_CTX_USED, LANE_CTX_TOKENS,
+# LANE_CTX_WINDOW, LANE_CTX_SOURCE and LANE_CTX_MODEL. Every consumer of that
+# line reads it here, so the split is written once.
+#
+# Split by hand, never `IFS=$'\t' read`: a TAB is IFS whitespace, so read
+# collapses a RUN of them into one delimiter. A claude line naming no window
+# prints three empty fields in a row, and read then hands the MODEL back as the
+# token count — a model name where a number belongs, and no model at all for
+# the caller whose account mark turns on it. Only a model the window table
+# leaves out reaches that shape, so the fault is invisible on the tiers the
+# table names. The claims reader below splits by hand for the same reason.
+#
+# A line carrying fewer fields than it prints leaves the ones it did not reach
+# empty, never a copy of the last one it did.
+lane_context_fields() { # LINE
+  local rest="${1:-}"
+  LANE_CTX_HARNESS="" LANE_CTX_USED="" LANE_CTX_TOKENS=""
+  LANE_CTX_WINDOW="" LANE_CTX_SOURCE="" LANE_CTX_MODEL=""
+  LANE_CTX_HARNESS="${rest%%$'\t'*}"
+  [ "$rest" != "$LANE_CTX_HARNESS" ] || return 0
+  rest="${rest#*$'\t'}"
+  LANE_CTX_USED="${rest%%$'\t'*}"
+  [ "$rest" != "$LANE_CTX_USED" ] || return 0
+  rest="${rest#*$'\t'}"
+  LANE_CTX_TOKENS="${rest%%$'\t'*}"
+  [ "$rest" != "$LANE_CTX_TOKENS" ] || return 0
+  rest="${rest#*$'\t'}"
+  LANE_CTX_WINDOW="${rest%%$'\t'*}"
+  [ "$rest" != "$LANE_CTX_WINDOW" ] || return 0
+  rest="${rest#*$'\t'}"
+  LANE_CTX_SOURCE="${rest%%$'\t'*}"
+  [ "$rest" != "$LANE_CTX_SOURCE" ] || return 0
+  LANE_CTX_MODEL="${rest#*$'\t'}"
+}
+
+# lane_context_mark_model HARNESS MODEL — the model a session of HARNESS
+# launched on MODEL will be judged on by a later reading of its own status
+# line, which is the reading `lane_context_parse` above takes. Claude's line
+# names the model, so that session is judged on MODEL's own buckets; codex's
+# names none, so it is judged on the account's binding bucket and this answers
+# empty, as the parse does for such a pane.
+#
+# It exists so a caller CHOOSING an account for a session it is about to
+# launch holds that account to the reading the session will take of itself. A
+# choice made on a narrower reading than the session's own picks an account
+# the session then judges as spent, hands over again, and pays a window swap
+# and a handoff every cycle.
+lane_context_mark_model() { # HARNESS MODEL
+  case "${1:-}" in
+    claude) printf '%s\n' "${2:-}" ;;
+    *) printf '\n' ;;
+  esac
+}
+
 # Read one context figure from a captured screen on stdin. $1 is the pane's
 # foreground process, which `lane_context_shape` turns into the shape offered.
 # Prints `<harness>\t<used percent>\t<context tokens>\t<window tokens>\t<window
-# source>`; exits 1 when the shape offered found nothing. The window is the
+# source>\t<model>`; exits 1 when the shape offered found nothing. The MODEL is
+# the one the status line names, with its version, and it is empty wherever the
+# line names none: every codex reading, since that shape reads a context
+# percentage and nothing else. A caller judging an account on the buckets this
+# session spends passes it to lib/lane-model.sh, which leaves out the
+# model-scoped windows the name does not match; an empty model names none, and
+# that file judges such a session on the account's binding bucket instead.
+#
+# The window is the
 # token count the status line itself names — Claude's `(1M context)`
 # parenthetical between the version and the percentage, source `status-line` —
 # and the token figure is the percentage times that window. A claude line
@@ -209,25 +318,36 @@ lane_context_parse() {
         # The window parenthetical is the one naming a token count, so the
         # branch parenthetical before the model never matches it, and a
         # window the line DOES name always wins over the table. With none,
-        # the MODEL answers — matched where the status line puts it, before
-        # its version, so a working directory or branch spelling a model name
-        # cannot stand in for it.
-        window = ""; source = ""
+        # the MODEL answers.
+        #
+        # The model is matched where the status line puts it, before its
+        # version and after the optional branch parenthetical, so a working
+        # directory or branch spelling a model name cannot stand in for it.
+        # It is read whether or not the line names a window, because the two
+        # answer different questions: the window is how much room this session
+        # has left, and the model is which of the account buckets it spends.
+        # The version is kept, so the name reaches a scoped window of THAT
+        # generation and not of every one the tier ever had; the bare tier word
+        # alone is the window table key below.
+        window = ""; source = ""; named = ""
+        if (match(line, /[ \t](opus|sonnet|haiku|fable)[ \t]+[0-9]+(\.[0-9]+)?/)) {
+          named = substr(line, RSTART + 1, RLENGTH - 1)
+        }
         if (match(line, /\([0-9]+(\.[0-9]+)?[km][ \t]+context\)/)) {
           w = substr(line, RSTART + 1, RLENGTH - 2)
           unit = (w ~ /m/) ? 1000000 : 1000
           sub(/[km].*$/, "", w)
           window = w * unit
           source = "status-line"
-        } else if (match(line, /[ \t](opus|sonnet|haiku|fable)[ \t]+[0-9]/)) {
-          model = substr(line, RSTART + 1, RLENGTH - 1)
+        } else if (named != "") {
+          model = named
           sub(/[ \t].*$/, "", model)
           if (default_window[model] != "") { window = default_window[model]; source = "model-default" }
         }
         match(line, /[0-9]+%[ \t]+\([^) \t]+\)/)
         s = substr(line, RSTART, RLENGTH)
         sub(/%.*$/, "", s)
-        if (s != "" && s + 0 <= 100) { c_found = 1; c_used = s + 0; c_window = window; c_source = source }
+        if (s != "" && s + 0 <= 100) { c_found = 1; c_used = s + 0; c_window = window; c_source = source; c_model = named }
       }
     }
     END {
@@ -242,14 +362,32 @@ lane_context_parse() {
         gsub(/[^0-9]/, "", s)
         if (s + 0 <= 100) { harness = "codex"; used = remaining ? 100 - (s + 0) : s + 0 }
       }
-      if (!codex_line && c_found) { harness = "claude"; used = c_used; window = c_window; source = c_source }
+      if (!codex_line && c_found) { harness = "claude"; used = c_used; window = c_window; source = c_source; model = c_model }
+      else model = ""
       if (harness == "") exit
-      if (window == "") printf "%s\t%d\t\t\t\n", harness, used
-      else printf "%s\t%d\t%d\t%d\t%s\n", harness, used, int(used * window / 100), window, source
+      if (window == "") printf "%s\t%d\t\t\t\t%s\n", harness, used, model
+      else printf "%s\t%d\t%d\t%d\t%s\t%s\n", harness, used, int(used * window / 100), window, source, model
     }
   ')"
   [[ -n "$out" ]] || return 1
   printf '%s\n' "$out"
+}
+
+# The key a live session's own row is matched on, `<tmux server pid> <pane id>`
+# on one line; 1 where the caller sits on no pane this reader can ask about.
+#
+# Pane ids restart at %0 on every tmux server, so the PAIR is the key and the id
+# alone is not. Every consumer that compares one session's key against another
+# session's record reads it here: the report below matches its claims on it,
+# `oversee-watch` records the overseer's by it, and the turn-end hook compares
+# its own against that record, so the three cannot spell one session
+# differently.
+lane_context_caller_key() {
+  local pane="${TMUX_PANE:-}" server
+  [ -n "$pane" ] || return 1
+  server="$(tmux display-message -p -t "$pane" '#{pid}' 2>/dev/null)" || return 1
+  [ -n "$server" ] || return 1
+  printf '%s %s\n' "$server" "$pane"
 }
 
 # The claims in $1 plus the CALLER's OWN pane, unless a claim already names it.
@@ -265,13 +403,13 @@ lane_context_parse() {
 # lands on, appended or already present, carries the `caller` flag out, so
 # this is the only place that decides which row is the reader's own session.
 lane_context_with_caller() {
-  local claims="$1" cfg="$2" pane="${TMUX_PANE:-}" server name marked
-  if [[ -z "$pane" ]] || ! server="$(tmux display-message -p -t "$pane" '#{pid}' 2>/dev/null)" \
-    || [[ -z "$server" ]]
-  then
+  local claims="$1" cfg="$2" key pane server name marked
+  if ! key="$(lane_context_caller_key)"; then
     printf '%s\n' "$claims"
     return 0
   fi
+  server="${key%% *}"
+  pane="${key#* }"
   # A claim already naming this pair IS the caller's row, so the flag goes on
   # the record that is already there rather than on a duplicate beside it.
   if marked="$(awk -F'\t' -v OFS='\t' -v s="$server" -v p="$pane" '
@@ -301,7 +439,7 @@ lane_context_with_caller() {
 # guessing it from a screen that quotes both all day.
 lane_context_collect() {
   local claims="$1" alias_fn="$2" cfg lane server pane caller screen parsed claim rest
-  local this_server detail cmd pane_cmds p_pid p_pane p_cmd harness used tokens
+  local this_server detail cmd pane_cmds p_pid p_pane p_cmd
   # `<pane id> <command>` per line, not an associative array: macOS Bash 3.2
   # has none and rejects an associative-array declaration, which under this
   # file's errexit would abort the whole report rather than lose one lane.
@@ -364,9 +502,9 @@ lane_context_collect() {
           "no_status_line" "$detail" "" "$server" "$caller"
         continue
       fi
-      IFS=$'\t' read -r harness used tokens _ <<<"$parsed"
+      lane_context_fields "$parsed"
       lane_context_emit "$lane" "$pane" "$cfg" "$("$alias_fn" "$cfg")" \
-        "$harness" "$used" "ok" "" "$tokens" "$server" "$caller"
+        "$LANE_CTX_HARNESS" "$LANE_CTX_USED" "ok" "" "$LANE_CTX_TOKENS" "$server" "$caller"
     done <<<"$claims"
   } | jq -s '.'
 }
@@ -411,7 +549,7 @@ lane_context_message() {
       printf 'lane-context: headroom kind=account-binding handoff=threshold\n'
       printf 'HEADROOM: percent remaining in the account binding bucket; HANDOFF is required at or below ORCH_HANDOFF_HEADROOM_PCT.\n'
       printf 'lane-context: handoff kind=lane-threshold overseer-trigger=ORCH_OVERSEER_HEADROOM_PCT\n'
-      printf 'HANDOFF: the LANE threshold and no other. An overseer succeeds itself at ORCH_OVERSEER_HEADROOM_PCT, the higher figure by default (20 against 5), so by default its own row reads - at a headroom that already fires its succession.\n'
+      printf 'HANDOFF: the LANE threshold and no other. An overseer succeeds itself at ORCH_OVERSEER_HEADROOM_PCT, the higher figure by default (10 against 3), so by default its own row reads - at a headroom that already fires its succession.\n'
       printf 'lane-context: caller kind=lane-marker marker=*\n'
       printf 'LANE: a leading * marks the row of the session that ran this command.\n'
       ;;

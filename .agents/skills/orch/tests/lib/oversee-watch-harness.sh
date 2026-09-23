@@ -163,7 +163,14 @@ EOF
 cat > "$TMP_ROOT/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
-prev=""
+# The pane or lane a call names, read from its own argv: every format arm below
+# asks the same question, and a scan each arm kept for itself shared one cursor
+# and so depended on the order the arms were written in.
+dash_t() {
+  local prev="" out="" x
+  for x in "$@"; do [[ "$prev" == "-t" ]] && out="$x"; prev="$x"; done
+  printf '%s\n' "$out"
+}
 case "${1:-}" in
   list-windows)
     s=""
@@ -190,11 +197,41 @@ case "${1:-}" in
     if [[ "$w" -gt 0 && "$join" -eq 0 ]]; then fold -w "$w" -- "$src"; else cat "$src"; fi
     exit 0 ;;
   display-message)
+    # `-p -t <pane> '#{pid}'` asks which tmux server a pane belongs to, the
+    # first half of the key lib/lane-context.sh builds a session's own row on.
+    # Answered from the same pane-key file the pair above is answered from, so
+    # a case that moves a pane's server moves both readings together.
+    for a in "$@"; do
+      [[ "$a" == '#{pid}' ]] || continue
+      lane="$(dash_t "$@")"
+      if [[ -f "$STUB_DIR/pane-key-fail-$lane" ]]; then
+        cat "$STUB_DIR/pane-key-fail-$lane" >&2
+        exit 1
+      fi
+      if [[ -f "$STUB_DIR/pane-key-$lane.txt" ]]; then
+        awk '{ print $1; exit }' "$STUB_DIR/pane-key-$lane.txt"
+      else printf '7000\n'; fi
+      exit 0
+    done
+    # `-p -t <pane> '#{window_id}'` asks which window a pane sits in — the
+    # overseer's own, which the watch reports and a successor lands in.
+    # window-id-<pane>.txt overrides the default and window-id-fail-<pane>
+    # makes the probe fail, the two shapes the pane probes above already have.
+    for a in "$@"; do
+      [[ "$a" == '#{window_id}' ]] || continue
+      lane="$(dash_t "$@")"
+      if [[ -f "$STUB_DIR/window-id-fail-$lane" ]]; then
+        printf 'E_WINDOW pane=%s\n' "$lane" >&2
+        exit 1
+      fi
+      if [[ -f "$STUB_DIR/window-id-$lane.txt" ]]; then cat "$STUB_DIR/window-id-$lane.txt"
+      else printf '@7\n'; fi
+      exit 0
+    done
     # `-p -t <lane> '#{pid} #{pane_id}'` asks for the pane's liveness key.
     for a in "$@"; do
       [[ "$a" == *'#{pane_id}'* ]] || continue
-      lane=""
-      for x in "$@"; do [[ "$prev" == "-t" ]] && lane="$x"; prev="$x"; done
+      lane="$(dash_t "$@")"
       if [[ -f "$STUB_DIR/pane-key-fail-$lane" ]]; then
         cat "$STUB_DIR/pane-key-fail-$lane" >&2
         exit 1
@@ -348,11 +385,15 @@ fi
 exec "$real" "$@"
 EOF
 
-# Workflow-state reader. `get oversee <expr>` executes the watcher's jq filter
-# against the case's oversee-state.json while preserving explicit failure
-# fixtures; `exists <item>` and `get <item> <expr>` read state-<item>.json,
-# a missing file exiting 1 the way the real CLI does. Every call's argv is
-# appended to workflow-state.args.
+# Workflow-state reader. Every `oversee` call — read and write alike — is handed
+# to the real script against a scratch state dir seeded from the case's
+# oversee-state.json and copied back after, so a fleet-state verb has one
+# implementation and a stub cannot let the watch pass a case the shipped CLI
+# fails. The explicit failure fixtures above it still answer first.
+# `exists <item>` and `get <item> <expr>` read state-<item>.json, a missing file
+# exiting 1 the way the real CLI does; `handoff-standing` is handed over for the
+# same reason the oversee calls are. Every call's argv is appended to
+# workflow-state.args.
 cat > "$TMP_ROOT/bin/workflow-state-stub.sh" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -367,13 +408,18 @@ while [[ $# -gt 0 && "$1" == --* ]]; do
 done
 cmd="${1:-}"; id="${2:-}"; expr="${3:-}"
 if [[ "$id" == oversee ]]; then
-  [[ -n "$expr" ]] || { echo "workflow-state stub: missing jq expression" >&2; exit 2; }
-  jq -r "$expr" "$STUB_DIR/oversee-state.json"
-  exit
+  ws="$STUB_DIR/ws"
+  mkdir -p "$ws" || exit 2
+  cp -- "$STUB_DIR/oversee-state.json" "$ws/workflow-state-oversee.json" || exit 2
+  rc=0
+  "$REAL_WORKFLOW_STATE" --state-dir "$ws" "$@" || rc=$?
+  cp -- "$ws/workflow-state-oversee.json" "$STUB_DIR/oversee-state.json" || exit 2
+  exit "$rc"
 fi
 file="$state_dir/workflow-state-$id.json"
 case "$cmd" in
   exists) [[ -f "$file" ]] ;;
+  handoff-standing) exec "$REAL_WORKFLOW_STATE" --state-dir "${state_dir:-tmp}" handoff-standing "$id" ;;
   get)
     [[ -f "$file" ]] || { echo "Error: State file not found: $file" >&2; exit 1; }
     jq -r "${expr:-.}" "$file" ;;
@@ -381,9 +427,22 @@ case "$cmd" in
 esac
 EOF
 
+# Close-out stub. lane-close has its own suite; watch tests keep their provider
+# fixtures and assert only the event translation around this one verb.
+cat > "$TMP_ROOT/bin/lane-close-stub.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >> "$STUB_DIR/lane-close.args"
+if [[ "${1:-}" == --state-dir ]]; then shift 2; fi
+item="$1"
+rc=0
+"$REAL_LANE_HOST" close --item "$item" || rc=$?
+[[ "$rc" -eq 0 ]] || exit "$rc"
+EOF
+
 chmod +x "$TMP_ROOT/bin/gh" "$TMP_ROOT/bin/tmux" "$TMP_ROOT/bin/pgrep" \
   "$TMP_ROOT/bin/pr-watch-stub.sh" "$TMP_ROOT/bin/linear-stub.sh" "$TMP_ROOT/bin/date" \
-  "$TMP_ROOT/bin/workflow-state-stub.sh"
+  "$TMP_ROOT/bin/workflow-state-stub.sh" "$TMP_ROOT/bin/lane-close-stub.sh"
 
 STUB_DIR=""
 STATE_DIR=""
@@ -410,7 +469,13 @@ new_case() {
 
 # run_watch [ENV=VAL ...] -- ARGS...   (fast cadence; TMUX set unless NO_TMUX=1)
 # WATCH_BIN names the script under test; a suite points it at a mutant copy
-# for a must-fail control and leaves it unset otherwise.
+# for a must-fail control and leaves it unset otherwise. WATCH_CWD names the
+# checkout the watch runs in, for a case whose fleet is more than one
+# repository; it defaults to the sandbox repository every other case uses, and
+# any checkout it names carries the same .agents/skills/orch symlink.
+# Every kendex [env] setting the watch reads is unset here as well: a settings
+# file exports them into the agent shell, and one inherited from the caller
+# would decide a case's outcome instead of the case.
 # `--repo owner/repo` is supplied only when ARGS name no repo of their own:
 # --repo is repeatable, so injecting it beside a case's own would make that
 # case a two-repo fleet with owner/repo first. `--no-repo` is the harness's own
@@ -437,15 +502,18 @@ run_watch() {
       *) watch_args+=("$arg") ;;
     esac
   done
-  (cd "$TMP_ROOT/repo" \
+  (cd "${WATCH_CWD:-$TMP_ROOT/repo}" \
     && PATH="$TMP_ROOT/bin:$PATH" \
        env -u GH_TOKEN -u GITHUB_TOKEN -u GH_BOT_TOKEN -u ORCH_STATE_DIR \
-           -u LINEAR_TEAM \
+           -u ORCH_WATCH_TAIL_LINES -u LINEAR_TEAM \
            STUB_DIR="$STUB_DIR" TMUX="fake" OVERSEE_TEST_REAL_DATE="$OVERSEE_TEST_REAL_DATE" \
            ${team_args[@]+"${team_args[@]}"} \
            OVERSEE_WATCH_PR_WATCH="$TMP_ROOT/bin/pr-watch-stub.sh" \
            OVERSEE_WATCH_TRACKER="$TMP_ROOT/bin/linear-stub.sh" \
            OVERSEE_WATCH_WORKFLOW_STATE="$TMP_ROOT/bin/workflow-state-stub.sh" \
+           OVERSEE_WATCH_LANE_CLOSE="$TMP_ROOT/bin/lane-close-stub.sh" \
+           REAL_LANE_HOST="$REPO_ROOT/skills/orch/scripts/lane-host" \
+           REAL_WORKFLOW_STATE="$REPO_ROOT/skills/orch/scripts/workflow-state" \
            OVERSEE_WATCH_STATE_DIR="$STATE_DIR" \
            ${env_args[@]+"${env_args[@]}"} \
            "${WATCH_BIN:-.agents/skills/orch/scripts/oversee-watch}" --interval 0 --max-loops 2 \

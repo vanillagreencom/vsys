@@ -66,6 +66,19 @@ def build(model, schema=None):
             files[f".macroscope/correctness/{surface['name']}.md"] = (
                 render_markdown.macroscope_surface(model, surface)
             )
+    if bots["codex"]:
+        # Last, so the collision question is asked against the whole output
+        # set rather than against a second list of the paths this package
+        # writes. A configured path landing on another output would otherwise
+        # replace it here and the run would report both as written.
+        path = model.code_review_path
+        if path in files:
+            raise RenderError(
+                f"{path}: [bot-instructions.repo] code_review_path names a path this "
+                "render already writes. The pointed file and that surface would be one "
+                "file, and only the later one would survive"
+            )
+        files[path] = render_markdown.code_review(model)
     return Build(model, files, data, region)
 
 
@@ -145,17 +158,42 @@ def bounds(existing):
     return start, end
 
 
+def body_byte_bounds(existing):
+    """UTF-8 byte bounds of the body selected by `bounds`, or None."""
+    span = bounds(existing)
+    if span is None:
+        return None
+    start, end = span
+    starts = [0]
+    starts.extend(i + 1 for i, char in enumerate(existing) if char == "\n")
+    body_start = starts[start + 1] if start + 1 < len(starts) else len(existing)
+    body_end = starts[end] if end < len(starts) else len(existing)
+    return (len(existing[:body_start].encode("utf-8")),
+            len(existing[:body_end].encode("utf-8")))
+
+
+def not_located(existing, path="AGENTS.md"):
+    """Why `bounds` said None, in one sentence carrying the heading count.
+
+    The single wording for that condition. `splice` raises it and
+    `region-bounds` prints it, so a caller reading one refusal and a caller
+    reading the other are told the same thing, and zero headings never reads
+    as two.
+    """
+    return (
+        f"{path}: found {len(headings(existing))} "
+        f"`{render_markdown.AGENTS_HEADING}` headings; "
+        "exactly one is required. Zero is an error and two is an error rather than "
+        "a guess about which one to replace"
+    )
+
+
 def splice(existing, region_body, path="AGENTS.md"):
     """Replace the owned region's body in `existing`, returning new bytes."""
     lines = existing.split("\n")
     span = bounds(existing)
     if span is None:
-        raise RenderError(
-            f"{path}: found {len(headings(existing))} "
-            f"`{render_markdown.AGENTS_HEADING}` headings; "
-            "exactly one is required. Zero is an error and two is an error rather than "
-            "a guess about which one to replace"
-        )
+        raise RenderError(not_located(existing, path))
     start, end = span
     body = region_body.strip("\n").split("\n")
     # One blank line each side of the body, so the region never runs into the

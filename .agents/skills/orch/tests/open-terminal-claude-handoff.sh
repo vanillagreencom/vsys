@@ -47,6 +47,9 @@ REAL_TMUX="$(command -v tmux)" || exit 1
 # shellcheck source=lib/waiter-assertions.sh
 source "$TEST_DIR/lib/waiter-assertions.sh"
 TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
+# The fleet home every launch here runs under; see run() below.
+FLEET_HOME="$TMP_ROOT/fleet-home"
+mkdir -p "$FLEET_HOME"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # The composer's prompt marker is `❯` followed by a NON-BREAKING space; a
@@ -143,7 +146,7 @@ chmod +x "$STUB"
 REPO="$TMP_ROOT/repo"
 mkdir -p "$REPO/scripts/lib"
 cp "$SRC_OT" "$REPO/scripts/open-terminal"
-cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$REPO/scripts/"
+cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$REPO/scripts/"
 # `lanes` is what a --lane row's lane_check calls; without it the row refuses
 # with helper-missing before reaching the gate it is about.
 cp "$SCRIPTS_DIR/lanes" "$REPO/scripts/lanes"
@@ -248,9 +251,19 @@ run() {
     custom-portable) envs=(TMUX=stub,1,0); args=(--tmux --cmd "claude 'Read the agent'\\''s brief'") ;;
     tmux) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1); args=(--tmux --harness claude) ;;
     tmux-codex) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1); args=(--tmux --harness codex) ;;
-    tmux-codex-lane) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1); args=(--tmux --harness codex --lane "$CODEX_LANE") ;;
+    # A lane launch names a model and an effort or open-terminal refuses it
+    # before anything else; these rows are about the timeout the account check
+    # waits on, so the pair rides with the mode in codex's own spellings.
+    tmux-codex-lane) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1)
+      args=(--tmux --harness codex --lane "$CODEX_LANE"
+            --launch-flags "-m gpt-6-astra -c model_reasoning_effort=high") ;;
     *) echo "run: unknown mode $mode" >&2; exit 1 ;;
   esac
+  # A codex launch here names no --lane, so it prepares its folder trust under
+  # the account LANES_HOME points at. Pinned to the fixture before a row's own
+  # pairs are appended, so nothing derives that account from the developer's
+  # HOME and writes a private launch home into their live codex account.
+  envs+=(LANES_HOME="$FLEET_HOME")
   if [[ "$envspec" != - ]]; then
     IFS=',' read -ra pairs <<<"$envspec"
     for pair in "${pairs[@]}"; do envs+=("$pair"); done
@@ -327,7 +340,7 @@ mutant() {
   src="$SCRIPTS_DIR/$file"
   mkdir -p "$dir/scripts/lib"
   cp "$SRC_OT" "$dir/scripts/open-terminal"
-  cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$dir/scripts/"
+  cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$dir/scripts/"
   cp "$SCRIPTS_DIR/lanes" "$dir/scripts/lanes"
   chmod +x "$dir/scripts/lanes"
   cp "$SRC_LIB_DIR"/*.sh "$dir/scripts/lib/"
@@ -521,8 +534,8 @@ launch_table \
   "a non-integer is a config error naming the setting, not a delivery failure|tmux|ORCH_TMUX_VERIFY_SECS=abc|-|delivered|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true stderr~open-terminal:+brief-undelivered=false" \
   "zero is rejected the same way|tmux|ORCH_TMUX_VERIFY_SECS=0|-|delivered|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=0=true" \
   "leading zeros are base 10, not octal, and do not count toward the clamp|tmux|ORCH_TMUX_VERIFY_SECS=0000000000000000008|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-invalid=false stderr~open-terminal:+verify-seconds-clamped=false" \
-  "an overflow-sized value is clamped loudly, with no instant resend|tmux|ORCH_TMUX_VERIFY_SECS=10000000000000000000|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+value=10000000000000000000+limit=120=true resends=0" \
-  "a runaway value is clamped loudly and still verifies|tmux|ORCH_TMUX_VERIFY_SECS=99999|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+value=99999+limit=120=true" \
+  "an overflow-sized value is clamped loudly, with no instant resend|tmux|ORCH_TMUX_VERIFY_SECS=10000000000000000000|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+setting=ORCH_TMUX_VERIFY_SECS+value=10000000000000000000+limit=120=true resends=0" \
+  "a runaway value is clamped loudly and still verifies|tmux|ORCH_TMUX_VERIFY_SECS=99999|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+setting=ORCH_TMUX_VERIFY_SECS+value=99999+limit=120=true" \
   "a codex tmux lane with no --lane reads the timeout nowhere and is not aborted by a broken one|tmux-codex|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false" \
   "a codex lane launch refuses a broken timeout, which its account check waits on|tmux-codex-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true"
 

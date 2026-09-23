@@ -27,6 +27,8 @@ Apply the Ancestor gate ([references/skill-rules.md § Coordination](../referenc
 - **The explicit-choice exception survives.** An enclosing `(one PR)` ancestor makes that bundle the launch item only for container-expanded entries; an item the USER supplied explicitly stays the launch item, still gated on the unioned blockers.
 - **Deduplicate, then collapse ancestry.** Keep one entry per issue id, marking it EXPLICIT whenever any duplicate was user-supplied. Then, when one final item is an ancestor bundle of another, keep only the bundle.
 
+Output: [Lane Output](../references/skill-rules.md#lane-output).
+
 <output_format>
 
 ### Launch Handoff
@@ -46,7 +48,7 @@ Apply the Ancestor gate ([references/skill-rules.md § Coordination](../referenc
 
 **Skip if** `harness == codex-app`.
 
-Choose the launch flags for THIS task before launching — model, effort, and permission posture are a per-task judgment, sized to the item's difficulty and, for a claude or codex item, to its account lane under [oversee.md](oversee.md) § 3 Lane directive. A claude lane must include a permission-bypass flag (`open-terminal` warns when the flags omit one).
+Choose the launch flags for THIS task before launching — model, effort, and permission posture are a per-task judgment, sized to the item's difficulty and, for a claude or codex item, to its account lane under [oversee.md](oversee.md) § 3 Lane directive. An `open-terminal` launch under a `--lane` names a model, and an effort where its harness has an effort flag; `open-terminal --help` holds the flag each harness takes, marks the harness with no effort flag, and refuses a lane launch that names either none. The commands below pass no `--cmd`, so those words go in `--launch-flags`; a launch that does pass `--cmd` names them inside that command instead, the template being rendered verbatim, and `--launch-flags` beside it are refused as reaching nothing. A claude lane must include a permission-bypass flag (`open-terminal` warns when the flags omit one, and leaves a `--cmd` launch alone, its own argv carrying the posture).
 
 Omit `--tmux` and `--ghostty` unless the user explicitly requests a terminal-mode override. With neither flag `open-terminal` auto-detects the mode: tmux windows inside tmux, GUI terminals outside it. What the screen looks like is not a request; `--ghostty` inside tmux moves the lane out of the workspace.
 
@@ -75,6 +77,8 @@ For each item, create exactly one thread with `codex_app.create_thread`, targeti
 Full contract: [references/codex-runtime.md](../references/codex-runtime.md).
 
 ## 3. Return
+
+Output: [Lane Output](../references/skill-rules.md#lane-output).
 
 <output_format>
 

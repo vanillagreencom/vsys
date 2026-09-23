@@ -298,22 +298,6 @@ out="$(WATCH_BIN="$FLUSH" run_watch -- --max-loops 1 --item KEN-51 2>"$err")"
 assert_eq "$(grep -c '^EVENT ' <<<"$out")" "2" \
   "control: without the indent a message line reads as a second record" "$err"
 
-LATE="$MUTANT_DIR/orch/scripts/oversee-watch-late"
-python3 -c 'import sys
-p, out = sys.argv[1], sys.argv[2]
-s = open(p).read()
-old = "    lane_row_commit \"$state\"\n  done\n}"
-assert old in s, "late-commit mutant"
-open(out, "w").write(s.replace(old, "  done\n  lane_row_commit \"$state\"\n}", 1))' \
-  "$REPO_ROOT/skills/orch/scripts/oversee-watch" "$LATE"
-chmod +x "$LATE"
-assert_eq "$(cmp -s "$LATE" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" \
-  "differs" "control: the late-commit mutant really moves the commit below the loop"
-new_case mail_commit_mutant
-blocked_pair KEN-32 KEN-33 "$LATE"
-assert_contains "$BLOCKED_AGAIN" "EVENT lane-notice KEN-32 " \
-  "control: with the commit below the loop the earlier notice is reported again" "$TMP_ROOT/blocked-b"
-
 new_case mail_row_mutant
 mail_reset KEN-12
 ID="$(say KEN-12 ask 'Report me once.')"
@@ -347,6 +331,237 @@ err="$TMP_ROOT/owner-c"
 out="$(run_watch LINEAR_TEAM -- --max-loops 1 --since 2026-01-01T00:00:00Z 2>"$err")"
 assert_eq "$(head -1 <<<"$out")" "EVENT heartbeat loops=1 interval=0s since=2026-01-01T00:00:00Z" \
   "a watch for another fleet's --since does not report the note again" "$err"
+
+# The unkeyed position file every watch on a host shared before the position
+# was keyed. The watch whose mailbox it counts adopts it, so the upgrade pass
+# replays nothing, and writes the keyed file instead of it.
+# How many mailbox-keyed position files the case's state directory holds. The
+# glob stands unmatched where there are none, which the existence test drops.
+keyed_positions() {
+  local f n=0
+  for f in "$STATE_DIR"/overseer-mail__*; do
+    [[ -e "$f" ]] || continue
+    n=$((n + 1))
+  done
+  printf '%s\n' "$n"
+}
+new_case mail_legacy_position
+mail_reset overseer
+printf 'The position predates the key.\n' > "$TMP_ROOT/legacy-note.txt"
+(cd "$CASE_REPO_ROOT" && "$LANE_MAIL" send --item overseer --directive \
+  --file "$TMP_ROOT/legacy-note.txt" >/dev/null)
+LEGACY_NOTE="$(jq -r .id "$CASE_REPO_ROOT/tmp/lane-mail/overseer/to-lane.jsonl" 2>/dev/null)" || LEGACY_NOTE=unsent
+err="$TMP_ROOT/legacy-a"
+out="$(run_watch -- --max-loops 1 2>"$err")"
+assert_eq "$(head -1 <<<"$out")" "EVENT owner-note $LEGACY_NOTE" \
+  "the note is reported on the pass that finds it" "$err"
+assert_eq "$(keyed_positions)" "1" \
+  "the read position is written to a file named for the mailbox it counts"
+assert_eq "$([[ -e "$STATE_DIR/overseer-mail" ]] && echo present || echo absent)" "absent" \
+  "and never to the unkeyed name"
+# What a host that ran the shared file leaves behind. A second note arrives
+# before the upgrade pass, so the position that pass writes, two lines read, is
+# not the bytes it adopted: a watch that kept writing the unkeyed file would
+# leave other bytes there.
+mv "$STATE_DIR"/overseer-mail__* "$STATE_DIR/overseer-mail"
+printf 'A note the adopted position has not counted.\n' > "$TMP_ROOT/legacy-note-b.txt"
+(cd "$CASE_REPO_ROOT" && "$LANE_MAIL" send --item overseer --directive \
+  --file "$TMP_ROOT/legacy-note-b.txt" >/dev/null)
+LEGACY_IDS="$(jq -r .id "$CASE_REPO_ROOT/tmp/lane-mail/overseer/to-lane.jsonl" 2>/dev/null)" || LEGACY_IDS=""
+LEGACY_NOTE_B="$(tail -1 <<<"$LEGACY_IDS")"
+err="$TMP_ROOT/legacy-b"
+out="$(run_watch -- --max-loops 1 2>"$err")"
+assert_eq "$(head -1 <<<"$out")" "EVENT owner-note $LEGACY_NOTE_B" \
+  "an unkeyed position whose first id is this mailbox's is the starting position" "$err"
+assert_not_contains "$out" "owner-note $LEGACY_NOTE" \
+  "so the note that position already counted is not replayed" "$err"
+assert_eq "$(cat "$STATE_DIR/overseer-mail")" "1 $LEGACY_NOTE" \
+  "the unkeyed file is never written again" "$err"
+assert_eq "$(keyed_positions)" "1" \
+  "the position it seeded is kept under the keyed name" "$err"
+err="$TMP_ROOT/legacy-c"
+out="$(run_watch -- --max-loops 1 2>"$err")"
+assert_eq "$(head -1 <<<"$out")" "$HEARTBEAT" \
+  "the pass after the upgrade reads the keyed position, not the unkeyed one" "$err"
+assert_eq "$(cat "$STATE_DIR/overseer-mail")" "1 $LEGACY_NOTE" \
+  "which still holds the bytes the upgrade found there" "$err"
+
+# The upgrade with nothing in the mailbox yet. The shared file holds a real
+# position, a count of lines read and the id they opened with, which the
+# fixture below puts there. An empty mailbox reports neither, and that report
+# is the same "no lines read, no first id" the foot of the pass compares
+# against wherever no keyed file exists yet. So the pass finds nothing to
+# write, no keyed file appears, and the unkeyed one is still there to be read
+# the next pass and the pass after. Only seeding ahead of the pass, in
+# watch_state_init, retires it.
+new_case mail_legacy_position_empty
+mail_reset overseer
+mkdir -p "$STATE_DIR"
+printf '2 %s' "$LEGACY_NOTE" > "$STATE_DIR/overseer-mail"
+err="$TMP_ROOT/legacy-empty"
+out="$(run_watch -- --max-loops 1 2>"$err")"
+assert_eq "$(head -1 <<<"$out")" "$HEARTBEAT" \
+  "an empty mailbox under an unkeyed position emits nothing" "$err"
+assert_eq "$(keyed_positions)" "1" \
+  "and the keyed file exists after that first pass, so the unkeyed one is read no more" "$err"
+
+# The upgrade state a two-overseer host is actually in: the unkeyed file holds
+# the OTHER repository's watch's position, a count and a first id no message in
+# this mailbox carries. It names a mailbox this one is not, so check_mail's
+# replacement branch reads this one whole, once, because that pass writes this
+# mailbox's own position under its own name. PEER_FIRST is the line the foreign
+# count alone would have skipped, PEER_SEEN counts how often it is reported
+# across three passes, and PEER_WHOLE how many lines those passes report.
+PEER_POSITION='1 lane-0000000000-peer'
+legacy_peer_fleet() { # [WATCH_BIN]
+  local bin="${1:-}" n pass out ids
+  mail_reset overseer
+  for n in 1 2; do
+    printf 'Note %s, under a position from another mailbox.\n' "$n" > "$TMP_ROOT/peer-seed-note.txt"
+    (cd "$CASE_REPO_ROOT" && "$LANE_MAIL" send --item overseer --directive \
+      --file "$TMP_ROOT/peer-seed-note.txt" >/dev/null)
+  done
+  ids="$(jq -r .id "$CASE_REPO_ROOT/tmp/lane-mail/overseer/to-lane.jsonl" 2>/dev/null)" || ids=""
+  PEER_FIRST="$(head -1 <<<"$ids")"
+  mkdir -p "$STATE_DIR"
+  printf '%s' "$PEER_POSITION" > "$STATE_DIR/overseer-mail"
+  PEER_SEEN=0
+  PEER_WHOLE=0
+  for pass in 1 2 3; do
+    out="$(WATCH_BIN="$bin" run_watch -- --max-loops 1 2>"$TMP_ROOT/peer-$pass")"
+    PEER_SEEN=$((PEER_SEEN + $(grep -c "^EVENT owner-note $PEER_FIRST$" <<<"$out" || true)))
+    PEER_WHOLE=$((PEER_WHOLE + $(grep -c '^EVENT owner-note ' <<<"$out" || true)))
+  done
+}
+new_case mail_legacy_position_peer
+legacy_peer_fleet
+assert_eq "$PEER_SEEN" "1" \
+  "under another mailbox's position this mailbox is read whole once across three passes" \
+  "$TMP_ROOT/peer-3"
+assert_eq "$PEER_WHOLE" "2" \
+  "and those passes report the two lines it holds, no more" "$TMP_ROOT/peer-3"
+assert_eq "$(cat "$STATE_DIR/overseer-mail")" "$PEER_POSITION" \
+  "the foreign position is read, never written" "$TMP_ROOT/peer-3"
+assert_eq "$(keyed_positions)" "1" \
+  "and this mailbox's own position is written under its own name" "$TMP_ROOT/peer-3"
+
+LEGACYREAD="$MUTANT_DIR/orch/scripts/oversee-watch-legacyread"
+sed 's@\[\[ ! -e "\$mailf" \]\] || stored=.*@stored="$(cat "$PW_MAIL_LEGACY" 2>/dev/null || true)"@' \
+  "$REPO_ROOT/skills/orch/scripts/oversee-watch" > "$LEGACYREAD"
+chmod +x "$LEGACYREAD"
+assert_eq "$(cmp -s "$LEGACYREAD" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" \
+  "differs" "control: the legacy-read mutant really consults the unkeyed file on every pass"
+new_case mail_legacy_position_peer_mutant
+legacy_peer_fleet "$LEGACYREAD"
+assert_eq "$PEER_SEEN" "3" \
+  "control: a watch that consults the unkeyed file every pass replays the mailbox every pass" \
+  "$TMP_ROOT/peer-3"
+assert_eq "$PEER_WHOLE" "6" \
+  "control: reporting both lines three times over" "$TMP_ROOT/peer-3"
+
+# One mailbox, two checkouts. lane-mail resolves the overseer mailbox to the
+# main checkout from a linked worktree as well, and every fleet lane runs in
+# one, so a watch started there must name the position file the main checkout's
+# watch names. WT_SEEN counts how often the one note is reported across a pass
+# from each.
+git -C "$CASE_REPO_ROOT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m worktree-seed
+git -C "$CASE_REPO_ROOT" worktree add -q --detach "$TMP_ROOT/watch-worktree"
+mkdir -p "$TMP_ROOT/watch-worktree/.agents/skills"
+ln -s "$REPO_ROOT/skills/orch" "$TMP_ROOT/watch-worktree/.agents/skills/orch"
+worktree_fleet() { # [WATCH_BIN]
+  local bin="${1:-}" cwd out
+  mail_reset overseer
+  printf 'Hold KEN-7, from whichever checkout reads this.\n' > "$TMP_ROOT/wt-note.txt"
+  (cd "$CASE_REPO_ROOT" && "$LANE_MAIL" send --item overseer --directive \
+    --file "$TMP_ROOT/wt-note.txt" >/dev/null)
+  WT_NOTE="$(jq -r .id "$CASE_REPO_ROOT/tmp/lane-mail/overseer/to-lane.jsonl" 2>/dev/null)" || WT_NOTE=unsent
+  WT_SEEN=0
+  for cwd in "$CASE_REPO_ROOT" "$TMP_ROOT/watch-worktree"; do
+    out="$(WATCH_BIN="$bin" WATCH_CWD="$cwd" run_watch -- --max-loops 1 2>"$TMP_ROOT/wt-${cwd##*/}")"
+    WT_SEEN=$((WT_SEEN + $(grep -c "^EVENT owner-note $WT_NOTE$" <<<"$out" || true)))
+  done
+}
+new_case mail_worktree_position
+worktree_fleet
+assert_eq "$WT_SEEN" "1" \
+  "a note is reported once across a pass in the main checkout and a pass in a linked worktree of it" \
+  "$TMP_ROOT/wt-watch-worktree"
+assert_eq "$(keyed_positions)" "1" \
+  "because one mailbox keeps one position file, whichever checkout the watch runs in" \
+  "$TMP_ROOT/wt-watch-worktree"
+
+MAINROOT="$MUTANT_DIR/orch/scripts/oversee-watch-mainroot"
+sed 's@^MAIL_ROOT="\$(.*@MAIL_ROOT=""@' \
+  "$REPO_ROOT/skills/orch/scripts/oversee-watch" > "$MAINROOT"
+chmod +x "$MAINROOT"
+assert_eq "$(cmp -s "$MAINROOT" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" \
+  "differs" "control: the own-checkout mutant really stops the watch asking which checkout holds the mailbox"
+new_case mail_worktree_position_mutant
+worktree_fleet "$MAINROOT"
+assert_eq "$WT_SEEN" "2" \
+  "control: keyed on the watch's own checkout, the worktree pass replays the note the main checkout read" \
+  "$TMP_ROOT/wt-watch-worktree"
+assert_eq "$(keyed_positions)" "2" \
+  "control: and one mailbox ends the case with two position files" \
+  "$TMP_ROOT/wt-watch-worktree"
+
+# Two overseers of two repositories on one host point OVERSEE_WATCH_STATE_DIR
+# at one directory, which is how their lane claims line up. Each keeps its own
+# mailbox read position there, so neither reads the other's and replays its own
+# mail. SHARED_ALPHA_SEEN and SHARED_BETA_SEEN count how often each
+# repository's one note was emitted across three passes that alternate between
+# the two watches.
+SHARED_ALPHA="$TMP_ROOT/shared-alpha"
+SHARED_BETA="$TMP_ROOT/shared-beta"
+for root in "$SHARED_ALPHA" "$SHARED_BETA"; do
+  mkdir -p "$root/.agents/skills"
+  ln -s "$REPO_ROOT/skills/orch" "$root/.agents/skills/orch"
+  git -C "$root" init -q
+done
+shared_fleet() { # [WATCH_BIN]
+  local bin="${1:-}" root pass out
+  for root in "$SHARED_ALPHA" "$SHARED_BETA"; do
+    rm -rf -- "${root:?}/tmp"
+    printf 'Hold the lane.\n' > "$TMP_ROOT/shared-note.txt"
+    (cd "$root" && "$LANE_MAIL" send --item overseer --directive \
+      --file "$TMP_ROOT/shared-note.txt" >/dev/null)
+  done
+  SHARED_ALPHA_ID="$(jq -r .id "$SHARED_ALPHA/tmp/lane-mail/overseer/to-lane.jsonl" 2>/dev/null)" || SHARED_ALPHA_ID=unsent
+  SHARED_BETA_ID="$(jq -r .id "$SHARED_BETA/tmp/lane-mail/overseer/to-lane.jsonl" 2>/dev/null)" || SHARED_BETA_ID=unsent
+  SHARED_ALPHA_SEEN=0
+  SHARED_BETA_SEEN=0
+  for pass in 1 2 3; do
+    out="$(WATCH_BIN="$bin" WATCH_CWD="$SHARED_ALPHA" run_watch -- \
+      --max-loops 1 --repo owner/alpha 2>"$TMP_ROOT/shared-alpha-$pass")"
+    SHARED_ALPHA_SEEN=$((SHARED_ALPHA_SEEN + $(grep -c "^EVENT owner-note $SHARED_ALPHA_ID$" <<<"$out" || true)))
+    out="$(WATCH_BIN="$bin" WATCH_CWD="$SHARED_BETA" run_watch -- \
+      --max-loops 1 --repo owner/beta 2>"$TMP_ROOT/shared-beta-$pass")"
+    SHARED_BETA_SEEN=$((SHARED_BETA_SEEN + $(grep -c "^EVENT owner-note $SHARED_BETA_ID$" <<<"$out" || true)))
+  done
+}
+new_case mail_shared_state_dir
+shared_fleet
+assert_eq "$SHARED_ALPHA_SEEN" "1" \
+  "one watch's note is emitted once across three passes over a shared state directory" \
+  "$TMP_ROOT/shared-alpha-3"
+assert_eq "$SHARED_BETA_SEEN" "1" \
+  "the other watch's note is emitted once across the same three passes" \
+  "$TMP_ROOT/shared-beta-3"
+
+SHAREDKEY="$MUTANT_DIR/orch/scripts/oversee-watch-sharedkey"
+sed 's@/overseer-mail__\$(pw_slug "\$MAIL_ROOT")@/overseer-mail@' \
+  "$REPO_ROOT/skills/orch/scripts/oversee-watch" > "$SHAREDKEY"
+chmod +x "$SHAREDKEY"
+assert_eq "$(cmp -s "$SHAREDKEY" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" \
+  "differs" "control: the shared-key mutant really drops the mailbox from the file name"
+new_case mail_shared_state_dir_mutant
+shared_fleet "$SHAREDKEY"
+assert_eq "$SHARED_ALPHA_SEEN" "3" \
+  "control: with one position file for both mailboxes one watch replays its note on every pass" \
+  "$TMP_ROOT/shared-alpha-3"
+assert_eq "$SHARED_BETA_SEEN" "3" \
+  "control: and so does the other" \
+  "$TMP_ROOT/shared-beta-3"
 
 # A peer overseer writes this one's mailbox from its own checkout, so the watch
 # reports the repository the note came from rather than the owner.
@@ -385,6 +600,203 @@ err="$TMP_ROOT/peer-ask"
 out="$(run_watch -- --max-loops 1 2>"$err")"
 assert_eq "$(head -1 <<<"$out")" "EVENT peer-note peer-repo $PEER_INBOUND kind=ask" \
   "a peer's ask is told from a note by the kind on its line" "$err"
+
+# Each lane-local read surface can fail on the first item without starving the
+# next item. The second pass keeps the same failure in place: the later lane's
+# successful mail and handoff rows must stop both of its events replaying.
+continuation_pair() { # mail|state-fetch|handoff-output [WATCH_BIN]
+  local kind="$1" bin="${2:-}" first=KEN-62 later=KEN-63 remote wrapper sealed item
+  local -a CONTINUE_ENV CONTINUE_ARGS
+  rm -rf -- "${CASE_REPO_ROOT:?}/tmp/lane-mail"
+  rm -f -- "$CASE_REPO_ROOT/tmp/workflow-state-$first.json" \
+    "$CASE_REPO_ROOT/tmp/workflow-state-$later.json"
+  mkdir -p "$CASE_REPO_ROOT/tmp/lane-mail/$first" "$CASE_REPO_ROOT/tmp/lane-mail/$later"
+  printf '{"id":"first-%s","kind":"notice","at":"t","text":"First lane."}\n' "$kind" \
+    > "$CASE_REPO_ROOT/tmp/lane-mail/$first/to-overseer.jsonl"
+  printf '{"id":"later-%s","kind":"notice","at":"t","text":"Later lane."}\n' "$kind" \
+    > "$CASE_REPO_ROOT/tmp/lane-mail/$later/to-overseer.jsonl"
+  CONTINUE_ENV=()
+  CONTINUE_ARGS=(--max-loops 1 --item "$first" --item "$later")
+  CONTINUE_CAUSE=""
+  CONTINUE_HANDOFF=""
+  sealed=""
+  case "$kind" in
+    mail)
+      sealed="$CASE_REPO_ROOT/tmp/lane-mail/$first/to-overseer.jsonl"
+      chmod 000 "$sealed"
+      CONTINUE_CAUSE="oversee-watch: mail-read-failed item=$first exit=2"
+      ;;
+    state-fetch)
+      remote="$STUB_DIR/continuation-remote"
+      rm -rf -- "${remote:?}"
+      for item in "$first" "$later"; do
+        mkdir -p "$remote/srv/lane/$item/tmp/lane-mail/$item" "$remote/srv/clone/tmp/lane-mail/$item"
+        printf 'gitdir: /srv/clone/.git/worktrees/%s\n' "$item" > "$remote/srv/lane/$item/.git"
+        cp "$CASE_REPO_ROOT/tmp/lane-mail/$item/to-overseer.jsonl" \
+          "$remote/srv/lane/$item/tmp/lane-mail/$item/to-overseer.jsonl"
+        printf '{"handoff":{"written_at":"t"}}\n' \
+          > "$remote/srv/clone/tmp/workflow-state-$item.json"
+      done
+      rm -rf -- "${CASE_REPO_ROOT:?}/tmp/lane-mail"
+      CONTINUE_ENV=(ORCH_LANE_HOST="$FIXTURE_HOST" LANE_HOST_STUB_LOG="$STUB_DIR/host.log"
+        LANE_HOST_STUB_DIR="$remote" LANE_HOST_STUB_CAT_STATUS=1
+        LANE_HOST_STUB_CAT_ITEM="$first"
+        LANE_HOST_STUB_CAT_PATH="/srv/clone/tmp/workflow-state-$first.json")
+      CONTINUE_ARGS+=(--hosted "$first=/srv/lane/$first" --hosted "$later=/srv/lane/$later")
+      CONTINUE_CAUSE="oversee-watch: handoff-read-failed item=$first path=/srv/clone/tmp"
+      CONTINUE_HANDOFF="EVENT handoff $later"
+      ;;
+    handoff-output)
+      printf '{"handoff":{"written_at":"t"}}\n' \
+        > "$CASE_REPO_ROOT/tmp/workflow-state-$first.json"
+      printf '{"handoff":{"written_at":"t"}}\n' \
+        > "$CASE_REPO_ROOT/tmp/workflow-state-$later.json"
+      wrapper="$STUB_DIR/workflow-state-invalid.sh"
+      cat > "$wrapper" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+if [[ " $* " == *" handoff-standing KEN-62 "* ]]; then
+  printf 'workflow-state: handoff-standing=invalid\n'
+  exit 0
+fi
+exec "$WORKFLOW_STATE_STUB" "$@"
+EOF
+      chmod +x "$wrapper"
+      CONTINUE_ENV=(OVERSEE_WATCH_WORKFLOW_STATE="$wrapper"
+        WORKFLOW_STATE_STUB="$TMP_ROOT/bin/workflow-state-stub.sh")
+      CONTINUE_CAUSE="oversee-watch: handoff-read-failed item=$first path=$CASE_REPO_ROOT/tmp"
+      CONTINUE_HANDOFF="EVENT handoff $later"
+      ;;
+    *) echo "continuation_pair: unknown kind: $kind" >&2; exit 2 ;;
+  esac
+  CONTINUE_RC=0
+  CONTINUE_OUT="$(WATCH_BIN="$bin" run_watch ${CONTINUE_ENV[@]+"${CONTINUE_ENV[@]}"} -- \
+    "${CONTINUE_ARGS[@]}" 2>"$STUB_DIR/continue-a.err")" || CONTINUE_RC=$?
+  CONTINUE_AGAIN_RC=0
+  CONTINUE_AGAIN="$(WATCH_BIN="$bin" run_watch ${CONTINUE_ENV[@]+"${CONTINUE_ENV[@]}"} -- \
+    "${CONTINUE_ARGS[@]}" 2>"$STUB_DIR/continue-b.err")" || CONTINUE_AGAIN_RC=$?
+  [[ -z "$sealed" ]] || chmod 644 "$sealed"
+}
+
+for kind in mail state-fetch handoff-output; do
+  new_case "mail_continue_$kind"
+  continuation_pair "$kind"
+  assert_eq "$CONTINUE_RC" "2" "$kind failure exits 2 after the completed pass"
+  assert_eq "$(grep -cxF -- "$CONTINUE_CAUSE" "$STUB_DIR/continue-a.err" || :)" "1" \
+    "$kind failure prints its keyed cause once" "$STUB_DIR/continue-a.err"
+  assert_eq "$(grep -cx "EVENT lane-notice KEN-63 later-$kind" <<<"$CONTINUE_OUT" || :)" "1" \
+    "$kind failure does not hide the later lane's mail" "$STUB_DIR/continue-a.err"
+  [[ -z "$CONTINUE_HANDOFF" ]] || assert_eq \
+    "$(grep -cxF -- "$CONTINUE_HANDOFF" <<<"$CONTINUE_OUT" || :)" "1" \
+    "$kind failure does not hide the later lane's handoff" "$STUB_DIR/continue-a.err"
+  assert_eq "$CONTINUE_AGAIN_RC" "2" "$kind failure keeps the next completed pass failed"
+  assert_eq "$(grep -cxF -- "EVENT lane-notice KEN-63 later-$kind" <<<"$CONTINUE_AGAIN" || :)" "0" \
+    "$kind failure preserves the later lane's successful cursors" "$STUB_DIR/continue-b.err"
+  [[ -z "$CONTINUE_HANDOFF" ]] || assert_eq \
+    "$(grep -cxF -- "$CONTINUE_HANDOFF" <<<"$CONTINUE_AGAIN" || :)" "0" \
+    "$kind failure preserves the later lane's successful handoff row" "$STUB_DIR/continue-b.err"
+done
+
+# One stopped hosted lane is a failed read, not the end of the pass. The later
+# lane and both kinds of overseer note each advance their own cursor. The
+# stopped row advances only when the provider reports another state.
+stopped_fleet() { # [WATCH_BIN]
+  local bin="${1:-}" remote_disk="$STUB_DIR/stopped-remote" n
+  STOPPED_REMOTE="$remote_disk"
+  mail_reset overseer
+  rm -rf -- "${remote_disk:?}"
+  for n in 60 61; do
+    mkdir -p "$remote_disk/srv/lane/KEN-$n/tmp/lane-mail/KEN-$n"
+    printf 'gitdir: /srv/clone/.git/worktrees/KEN-%s\n' "$n" \
+      > "$remote_disk/srv/lane/KEN-$n/.git"
+  done
+  printf '{"id":"later-1","kind":"notice","at":"t","text":"Later lane."}\n' \
+    > "$remote_disk/srv/lane/KEN-61/tmp/lane-mail/KEN-61/to-overseer.jsonl"
+  printf 'Owner note.\n' > "$TMP_ROOT/stopped-owner.txt"
+  (cd "$CASE_REPO_ROOT" && "$LANE_MAIL" send --item overseer --directive \
+    --file "$TMP_ROOT/stopped-owner.txt" >/dev/null)
+  STOPPED_OWNER="$(jq -r .id "$CASE_REPO_ROOT/tmp/lane-mail/overseer/to-lane.jsonl")"
+  printf 'Peer note.\n' > "$TMP_ROOT/stopped-peer.txt"
+  (cd "$PEER_REPO" && "$LANE_MAIL" peer send --repo "$CASE_REPO_ROOT" \
+    --file "$TMP_ROOT/stopped-peer.txt")
+  STOPPED_PEER="$(jq -rs '.[1].id' "$CASE_REPO_ROOT/tmp/lane-mail/overseer/to-lane.jsonl")"
+  STOPPED_RC=0
+  STOPPED_OUT="$(WATCH_BIN="$bin" run_watch ORCH_LANE_HOST="$FIXTURE_HOST" \
+    LANE_HOST_STUB_LOG="$STUB_DIR/host.log" LANE_HOST_STUB_DIR="$remote_disk" \
+    LANE_HOST_STUB_CAT_STATUS=1 LANE_HOST_STUB_CAT_ITEM=KEN-60 \
+    LANE_HOST_STUB_CAT_STATE=stopped -- --max-loops 1 \
+    --item KEN-60 --hosted KEN-60=/srv/lane/KEN-60 \
+    --item KEN-61 --hosted KEN-61=/srv/lane/KEN-61 2>"$TMP_ROOT/stopped-a")" \
+    || STOPPED_RC=$?
+  STOPPED_AGAIN_RC=0
+  STOPPED_AGAIN="$(WATCH_BIN="$bin" run_watch ORCH_LANE_HOST="$FIXTURE_HOST" \
+    LANE_HOST_STUB_LOG="$STUB_DIR/host.log" LANE_HOST_STUB_DIR="$remote_disk" \
+    LANE_HOST_STUB_CAT_STATUS=1 LANE_HOST_STUB_CAT_ITEM=KEN-60 \
+    LANE_HOST_STUB_CAT_STATE=stopped -- --max-loops 1 \
+    --item KEN-60 --hosted KEN-60=/srv/lane/KEN-60 \
+    --item KEN-61 --hosted KEN-61=/srv/lane/KEN-61 2>"$TMP_ROOT/stopped-b")" \
+    || STOPPED_AGAIN_RC=$?
+}
+
+new_case mail_stopped_lane_continues
+stopped_fleet
+assert_eq "$STOPPED_RC" "2" "a stopped hosted lane makes the completed pass fail"
+assert_eq "$(grep -c '^oversee-watch: handoff-read-failed item=KEN-60 ' "$TMP_ROOT/stopped-a" || :)" "1" \
+  "the stopped lane's keyed failure is emitted once" "$TMP_ROOT/stopped-a"
+assert_eq "$(grep -c '^lane-stopped item=KEN-60 state=stopped verb=cat$' "$TMP_ROOT/stopped-a" || :)" "1" \
+  "the provider's stopped state follows the keyed failure once" "$TMP_ROOT/stopped-a"
+assert_eq "$(grep -c '^EVENT lane-notice KEN-61 later-1$' <<<"$STOPPED_OUT" || :)" "1" \
+  "the pass reports the later lane's notice" "$TMP_ROOT/stopped-a"
+assert_eq "$(grep -c "^EVENT owner-note $STOPPED_OWNER$" <<<"$STOPPED_OUT" || :)" "1" \
+  "the pass reports the owner's note" "$TMP_ROOT/stopped-a"
+assert_eq "$(grep -c "^EVENT peer-note peer-repo $STOPPED_PEER kind=directive$" <<<"$STOPPED_OUT" || :)" "1" \
+  "the pass reports the peer note" "$TMP_ROOT/stopped-a"
+assert_eq "$STOPPED_AGAIN_RC" "2" "the standing stopped lane keeps the next completed pass failed"
+assert_eq "$(grep -c 'lane-stopped item=KEN-60 state=stopped' "$TMP_ROOT/stopped-b" || :)" "0" \
+  "the same stopped state is not reported on every pass" "$TMP_ROOT/stopped-b"
+assert_eq "$(grep -c '^EVENT ' <<<"$STOPPED_AGAIN" || :)" "0" \
+  "the successful lane and overseer cursors suppress their events on the next pass" "$TMP_ROOT/stopped-b"
+run_watch ORCH_LANE_HOST="$FIXTURE_HOST" LANE_HOST_STUB_LOG="$STUB_DIR/host.log" \
+  LANE_HOST_STUB_DIR="$STOPPED_REMOTE" -- --max-loops 1 \
+  --item KEN-60 --hosted KEN-60=/srv/lane/KEN-60 \
+  --item KEN-61 --hosted KEN-61=/srv/lane/KEN-61 >/dev/null 2>"$TMP_ROOT/stopped-recovered"
+rc=0
+out="$(run_watch ORCH_LANE_HOST="$FIXTURE_HOST" LANE_HOST_STUB_LOG="$STUB_DIR/host.log" \
+  LANE_HOST_STUB_DIR="$STOPPED_REMOTE" LANE_HOST_STUB_CAT_STATUS=1 \
+  LANE_HOST_STUB_CAT_ITEM=KEN-60 LANE_HOST_STUB_CAT_STATE=stopped -- --max-loops 1 \
+  --item KEN-60 --hosted KEN-60=/srv/lane/KEN-60 \
+  --item KEN-61 --hosted KEN-61=/srv/lane/KEN-61 2>"$TMP_ROOT/stopped-c")" || rc=$?
+assert_eq "$rc" "2" "the lane's next stopped state makes the completed pass fail again"
+assert_eq "$(grep -c '^lane-stopped item=KEN-60 state=stopped verb=cat$' "$TMP_ROOT/stopped-c" || :)" "1" \
+  "a successful read clears the stopped sighting, so the next stop is reported" "$TMP_ROOT/stopped-c"
+
+STOP_EARLY="$MUTANT_DIR/orch/scripts/oversee-watch-stop-early"
+python3 -c 'import sys
+src, out = sys.argv[1:]
+s = open(src).read()
+old = "  PASS_FAILED=1\n  PASS_FAILED_ITEMS+="
+new = "  exit 2\n  PASS_FAILED_ITEMS+="
+assert s.count(old) == 1, "deferred-exit mutant pattern"
+open(out, "w").write(s.replace(old, new))' \
+  "$REPO_ROOT/skills/orch/scripts/oversee-watch" "$STOP_EARLY"
+chmod +x "$STOP_EARLY"
+assert_eq "$(cmp -s "$STOP_EARLY" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" \
+  "differs" "control: the stop-early mutant really restores a lane failure's immediate exit"
+new_case mail_stopped_lane_control
+stopped_fleet "$STOP_EARLY"
+assert_eq "$(grep -c '^EVENT ' <<<"$STOPPED_OUT" || :)" "0" \
+  "control: ending at the failed lane drops the later lane and both overseer notes" "$TMP_ROOT/stopped-a"
+
+NO_SUCCESS_CURSOR="$MUTANT_DIR/orch/scripts/oversee-watch-no-success-cursor"
+sed 's@state="$(lane_row_set lane-mail "$state" "$cursor" "$count $first")"@:@' \
+  "$REPO_ROOT/skills/orch/scripts/oversee-watch" > "$NO_SUCCESS_CURSOR"
+chmod +x "$NO_SUCCESS_CURSOR"
+assert_eq "$(cmp -s "$NO_SUCCESS_CURSOR" "$REPO_ROOT/skills/orch/scripts/oversee-watch" && echo same || echo differs)" \
+  "differs" "control: the cursor mutant really drops the successful lane's cursor"
+new_case mail_stopped_lane_cursor_control
+stopped_fleet "$NO_SUCCESS_CURSOR"
+assert_eq "$(grep -c '^EVENT lane-notice KEN-61 later-1$' <<<"$STOPPED_AGAIN" || :)" "1" \
+  "control: without its cursor the successful later lane is reported again" "$TMP_ROOT/stopped-b"
 
 KINDLESS="$MUTANT_DIR/orch/scripts/oversee-watch-kindless"
 sed 's@\$id kind=\$kind\${re:+ re=\$re}@$id${re:+ re=$re}@' \
@@ -518,7 +930,7 @@ hosted_mutant retried '      echo "EVENT lane-close-refused $1"' '      return 1
 hosted_mutant standing '         && grep -qxF -- "$LANE_ITEM" <<<"$HOSTED_GONE_ITEMS"; then' '; then'
 hosted_mutant fail-fast '      ow_message lane-close-failed "item=$1" "exit=$rc" >&2' '      exit 2'
 hosted_mutant window '  LANE_ITEM="issue-${LANE_ITEM#gh-}"' '  :'
-hosted_mutant nothing-kept '      grep -q '"'"'^kept='"'"' <<<"$out" || echo "kept=none" ;;' '      ;;'
+hosted_mutant nothing-kept '        echo "kept=none"' '        :'
 hosted_mutant exit-zero '  [[ "$close_failed" -eq 0 ]] || exit 2' '  :'
 hosted_mutant unkeyed '      ow_message lane-close-failed "item=$1" "exit=$rc" >&2' '      :'
 hosted_mutant commit-after '        lane_row_commit "$asking_state"' '        :'

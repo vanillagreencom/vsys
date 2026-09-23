@@ -231,6 +231,8 @@ Wave mode also shuts an `unresponsive` reviewer down and records it, so the slot
 
 Overall verdict is `action_required` when any reviewer reported blockers, else `pass`. Unresponsive reviewers do not affect it.
 
+Output: [Lane Output](../references/skill-rules.md#lane-output).
+
 <output_format>
 
 ### ✅ PR REVIEW COMPLETE
@@ -247,6 +249,8 @@ Blockers or `category == "fix"` suggestions present → § 4. Otherwise → § 5
 ## 4. Handle Review Items
 
 Collect blockers and `category == "fix"` suggestions from the appended JSONs. None → § 5.
+
+Output: [Lane Output](../references/skill-rules.md#lane-output).
 
 <output_format>
 
@@ -268,7 +272,7 @@ Collect blockers and `category == "fix"` suggestions from the appended JSONs. No
 
 Omit empty categories. Read `patched_causes` and `frozen_causes` first, with the command [finding-disposition.md § Recurrence](../references/finding-disposition.md#recurrence) states. Decline any item that cannot affect real usage with a one-line reason here, per [SKILL.md § The Cycle](../SKILL.md#the-cycle) — it is neither fixed nor filed, and it is reported in § 8.
 
-**Disposition is by rule, not by prompt** — never present a selection menu over the findings. Disposition every finding per [references/finding-disposition.md](../references/finding-disposition.md) § Decision flow, Step 0 first, and only what survives it enters the fix set. Every blocker and `category == "fix"` suggestion that survives goes to the fix round below, in EVERY decision mode; `ORCH_DECISION_MODE` does not gate it. The always-ask set in [SKILL.md § The Cycle](../SKILL.md#the-cycle) still applies.
+**Disposition is by rule, not by prompt** — never present a selection menu over the findings. Disposition every finding per [references/finding-disposition.md](../references/finding-disposition.md) § Decision flow, Step 0 first, and only what survives it enters the fix set. Every blocker and `category == "fix"` suggestion that survives goes to the fix round below, in EVERY decision mode; `ORCH_DECISION_MODE` does not gate it. The ask set in [communication-modes.md](../references/communication-modes.md) § Ask set still applies.
 
 **Recurrence before the cap.** A finding sharing a root cause with one a prior round patched is dispositioned by [finding-disposition.md § Recurrence](../references/finding-disposition.md#recurrence), and no further patch round answers it. Check it here, ahead of the cap below. Each disposition owes one thing and reaches one place: `structural-close`, which a cause this diff introduces or arms takes, owes an item naming the generating surface in place of the site and reaches the fix round whatever `rereview_cycles` reads; a cause this diff neither introduces nor arms owes the At The Cap write below, its `reason` reading `recurrence outside this diff's authorship` in place of the cap's, and reaches § 8, which files it; a cause `frozen_causes` names owes its one-line reason and reaches § 8's declined report. The `fix set` is what this section delegates — every item still standing after declines, plus every `structural-close`, and at the cap those alone. Empty → § 5, otherwise → Fix Delegation.
 
@@ -407,6 +411,8 @@ On the way out, and before § 8, disposition every item still outstanding — ev
 Empty `json_paths` → report "No review items" and → § 9. Otherwise read every JSON, collect the `category == "issue"` suggestions, and deduplicate by (location, description), keeping the first and noting all sources.
 
 **Declined items are re-derived, not remembered.** A blocker or `category == "fix"` suggestion that appears in a `json_paths` artifact but in neither `fixed_items` nor `escalated_items` was declined in § 4 or § 7. Carry each one's recorded reason; where a compaction lost it, report `reason: not recorded` rather than inventing one.
+
+Output: [Lane Output](../references/skill-rules.md#lane-output).
 
 <output_format>
 

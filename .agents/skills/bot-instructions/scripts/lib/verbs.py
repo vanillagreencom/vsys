@@ -9,8 +9,8 @@ bytes or its new ones.
 
 import re
 
-from . import marker, render, run, writer
-from .errors import RenderError, ValidationFailed
+from . import marker, render, render_markdown, run, writer
+from .errors import Finding, RenderError, ValidationFailed
 
 
 def _cause(exc):
@@ -22,12 +22,18 @@ def render_verb(ctx, root, dry_run=False):
     """Validate, then write. A validator failure leaves the repo untouched."""
     run.require_clean(ctx)
     paths = sorted(ctx.build.files)
-    if ctx.build.region_body is not None:
-        paths.append("AGENTS.md")
-    if not paths:
+    if dry_run:
+        paths = [path for path in paths if writer.inspect(root, path)[1]]
+    region = ctx.build.region_body is not None and (not dry_run or _region_owned(root))
+    if not paths and not region:
         return ["nothing to render: every [bot-instructions.bots] flag is false"] + ctx.skipped
     if dry_run:
-        return [f"would write {p}" for p in paths] + ctx.skipped
+        lines = [f"would write {p}" for p in paths]
+        if region:
+            lines.append(
+                f"would write region AGENTS.md\t{render_markdown.AGENTS_HEADING}"
+            )
+        return lines + ctx.skipped
     written = []
     try:
         for path in sorted(ctx.build.files):
@@ -35,7 +41,6 @@ def render_verb(ctx, root, dry_run=False):
             written.append(path)
         if ctx.build.region_body is not None:
             _splice(ctx, root)
-            written.append("AGENTS.md")
     except BaseException as exc:
         # `KeyboardInterrupt` and `SystemExit` stringify to NOTHING, and a
         # Ctrl-C part way through is the case this report exists for. The test
@@ -47,7 +52,10 @@ def render_verb(ctx, root, dry_run=False):
             "every path above holds either its old bytes or its new ones — re-run "
             "render to finish the set",
         ])) from exc
-    return [f"wrote {p}" for p in written] + ctx.skipped
+    lines = [f"wrote {p}" for p in written]
+    if region:
+        lines.append(f"wrote region AGENTS.md\t{render_markdown.AGENTS_HEADING}")
+    return lines + ctx.skipped
 
 
 def _splice(ctx, root):
@@ -80,6 +88,15 @@ def _splice(ctx, root):
     writer.replace(root, "AGENTS.md", transform=transform, require_marker=False)
 
 
+def _region_owned(root):
+    """Whether discovery may report the region that a write may replace."""
+    existing, _ = writer.inspect(root, "AGENTS.md", require_marker=False)
+    if existing is None:
+        return False
+    current = render.region_of(existing)
+    return current is not None and marker.owns("AGENTS.md", current)
+
+
 def check_verb(ctx):
     findings = run.validate(ctx)
     if findings:
@@ -94,7 +111,7 @@ def adopt_verb(ctx, root):
     replaces it, and the diff between the two is the content that has to
     survive in the TOML.
     """
-    lines, pointers = [], set()
+    lines, pointers, findings = [], set(), []
     try:
         for path in sorted(ctx.build.files):
             held = _adopt_file(ctx, root, path)
@@ -103,7 +120,7 @@ def adopt_verb(ctx, root):
             lines.append(f"adopted {path} ({len(held.splitlines())} lines it held)")
             pointers |= points_at(held)
         if ctx.build.region_body is not None:
-            lines.extend(_adopt_region(ctx, root, pointers))
+            lines.extend(_adopt_region(ctx, root, pointers, findings))
     except BaseException as exc:
         # The report IS the output of this verb: what each file held is the
         # diff the TOML has to absorb, and the pointer list is what the
@@ -119,6 +136,8 @@ def adopt_verb(ctx, root):
     lines.extend(_pointer_lines(pointers))
     if not lines:
         lines.append("nothing to adopt: every generated path is already this package's")
+    if findings:
+        raise ValidationFailed(findings, report=lines)
     return lines
 
 
@@ -148,25 +167,65 @@ def _adopt_file(ctx, root, path):
     return held[0]
 
 
-def _adopt_region(ctx, root, pointers):
+def _adopt_region(ctx, root, pointers, findings):
     """The region form of `_adopt_file`, and it shares the reason: the region
-    read, the ownership decision and the splice come from one open."""
-    held = []
+    read, the ownership decision and the splice come from one open.
+
+    That one open also answers the length question below, for a region this
+    call adopted and for one it found already marked alike: a second read to
+    judge a region this run may have just rewritten would judge different
+    bytes.
+    """
+    held, seen = [], []
 
     def transform(existing):
         if existing is None:
             return None
         current = render.region_of(existing)
-        if current is None or marker.owns("AGENTS.md", current):
+        if current is None:
+            return None
+        seen.append(current)
+        if marker.owns("AGENTS.md", current):
             return None
         held.append(current)
         body = ctx.model.marker("html") + ("\n\n" + current if current.strip() else "")
         return render.splice(existing, body)
 
-    if not writer.replace(root, "AGENTS.md", transform=transform, require_marker=False):
+    wrote = writer.replace(root, "AGENTS.md", transform=transform, require_marker=False)
+    if seen:
+        _region_finding(ctx, seen[0], findings)
+    if not wrote:
         return []
     pointers |= points_at(held[0])
     return [f"adopted AGENTS.md § Code Review Rules ({len(held[0].splitlines())} lines it held)"]
+
+
+def _region_finding(ctx, current, findings):
+    """A region holding more than the directive line is a finding here.
+
+    `adopt` runs no validator, so without this a repo could adopt eight blocks
+    of doctrine into the file every harness loads at every session start and
+    be told only that the adoption succeeded. The marker it just wrote is what
+    makes the repair one `render`.
+
+    Adopt-only. On `check` the same question belongs to `drift`, which holds
+    the region against a fresh render; a second judge there would red beside
+    it on every repo and say the same thing twice.
+    """
+    body = [line for line in current.split("\n")
+            if line.strip() and not marker.carries_marker(line)]
+    # An empty region is the documented starting state, not a finding:
+    # `references/checklist.md` step 6 adds a bare heading by hand and step 8
+    # adopts it. There is nothing there for `render` to migrate.
+    if body in ([], [render_markdown.agents_directive(ctx.model)]):
+        return
+    findings.append(Finding(
+        "agents-region",
+        f"the `{render_markdown.AGENTS_HEADING}` region carries {len(body)} line(s) "
+        f"below its marker; the managed region is the one directive line naming "
+        f"{ctx.model.code_review_path}. The marker is in place, so `render` migrates it",
+        "AGENTS.md",
+    ))
 
 
 # `adopt` names every repo-root or `.github/` markdown file an adopted file

@@ -69,8 +69,11 @@ personal overrides):
   WORKTREE_RELATIVE_SYMLINKS  Space-separated path=target symlinks created
                               inside each worktree; relative targets resolve
                               from the link location.
-  WORKTREE_COPIES             Space-separated files copied from the main
-                              checkout into each worktree.
+  WORKTREE_COPIES             Space-separated files copied only from the main
+                              checkout when neither checkout's Git index owns
+                              them.
+                              Git-owned files stay with their checkout. In a
+                              standalone checkout, configured copies do nothing.
   WORKTREE_MKDIRS             Space-separated directories created inside each
                               worktree with mkdir -p (gitignored scratch dirs
                               such as tmp).
@@ -151,6 +154,7 @@ print_create_help() {
   worktree_message help create
   cat <<'EOF'
 Usage: worktree create <ID> [BRANCH] [options]
+       worktree create <ID> --transfer <BRANCH>
 
 Create a worktree for an issue ID (resolved under the configured worktree base
 dir; default: ../.worktrees/<repo> beside the main checkout), optionally with an
@@ -196,6 +200,16 @@ Options:
   --replay        With --reuse/--restack: run the same restack as an ordered
                   cherry-pick replay with no rebase porcelain, for execution
                   policies that reject 'git rebase'
+
+Transfer form:
+  --transfer BRANCH
+                  Move BRANCH from the main checkout into this issue
+                  worktree, then restore the main checkout to its default
+                  branch. BRANCH must be the main checkout's current local
+                  branch. Staged, unstaged and untracked changes move with it.
+                  A recovery stash is kept until the transfer succeeds.
+                  Do not combine --transfer with the BRANCH positional,
+                  --base, --from, --pr, --reuse, --restack, or --replay.
 
 Reuse rebase conflicts:
   Bare create never rebases an existing worktree. When the --reuse rebase

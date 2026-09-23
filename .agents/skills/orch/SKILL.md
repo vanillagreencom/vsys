@@ -20,7 +20,7 @@ tags: [automation]
 
 Load `github` and `worktree` before anything else; a Linear work item also needs `linear`. The dev and reviewer skills call orch scripts.
 
-> **MODE SWITCH**: you are the orchestrator. Delegate every implementation, review, and QA task to a specialist sub-agent. Never edit code unless the user explicitly asks.
+> **MODE SWITCH**: you are the orchestrator. Delegate every implementation, review, and QA task to a specialist sub-agent. Never edit code unless the user explicitly asks, or the item runs the `micro` tier ([workflows/micro.md](workflows/micro.md)), whose runner makes the edit itself.
 
 ## The Cycle
 
@@ -32,10 +32,11 @@ Get the issue → dev implements → review → dev fixes blockers → re-review
   - Every finding runs its [§ Decision flow](references/finding-disposition.md#decision-flow), Step 0 first, and ends as one of the reply forms that section sets out.
   - A defect class recurring across rounds → its [§ Recurrence](references/finding-disposition.md#recurrence), never patched per comment, for a rule restated in prose or a table as much as for code.
   - A defect in code the issue's Done-when does not need, or a PR whose reviewer or orchestrator chooses a cut from its size report → a cut round. A round whose only findings are scope or wording asks ends the review: reply, resolve, push nothing, merge through the gate. `--admin` requires the explicit consumer-only answer in `submit-pr.md` § 6.2.
-- **Ask the user only about product or experience.** Scope expansion beyond the issue and revisiting a recorded decision always ask, whatever `ORCH_DECISION_MODE` says. Merge asks unless `ORCH_MERGE_AUTONOMY=auto`, which merges without asking only when every merge gate is green. In a lane every ask gate is `lane-mail`, never the harness question tool: [references/skill-rules.md](references/skill-rules.md) § Coordination.
+- **Ask gates.** Which questions reach the user, and how each one is worded under the mode `ORCH_USER_MODE` names, is [references/communication-modes.md](references/communication-modes.md); nothing outside that file narrows or widens the set. That ask set holds whatever `ORCH_DECISION_MODE` says. Merge asks unless `ORCH_MERGE_AUTONOMY=auto`, which merges without asking only when every merge gate is green. In a lane every ask gate is `lane-mail`, never the harness question tool: [references/skill-rules.md](references/skill-rules.md) § Coordination.
 - **Post-PR autonomy.** After a PR exists, `ORCH_DECISION_MODE=auto-recommended` takes and logs the continuing option while a bounded wait, retry, or triage round remains. `ask` presents the listed choice. `workflow-state head-budget take` owns automatic retry spending, starting the count over on a changed head for review-wait only. At a cap, `workflow-state post-pr-stop record` atomically persists the named stop and renders its matching Markdown comment; the workflow posts that file to the PR and returns the stored stop. A nested caller uses `record-if-empty` so a precise upstream stop wins. Every continuing action clears the stop with `workflow-state update`. Initialize the resolved state key before these transitions. `ORCH_MERGE_AUTONOMY` controls merge consent only.
-- **The overseer reads results.** It accepts a lane's green suite, validation command, and CI without reproducing them. It gives no separate grant to prepare, commit, push, or merge, and uses no shared validation slot. A green lane with existing user merge authorization arms auto-merge itself without a grant, then owns its merge wait to a terminal verdict as `workflows/merge-pr.md` requires. It accepts a dev agent's test-only validation-ceiling report and does not extend validation. The overseer never sends model or account instructions to a lane. The lane's model is fixed at launch, and the lane launches no lanes.
+- **The overseer reads results.** It accepts a lane's green suite, validation command, and CI without reproducing them. It gives no separate grant to prepare, commit, push, or merge, and uses no shared validation slot; the one thing it runs itself is a `micro` item ([workflows/micro.md](workflows/micro.md)), whose commit chain is that item's whole validation. A green lane with existing user merge authorization arms auto-merge itself without a grant, then owns its merge wait to a terminal verdict as `workflows/merge-pr.md` requires. It accepts a dev agent's test-only validation-ceiling report and does not extend validation. The overseer never sends model or account instructions to a lane. The lane's model is fixed at launch, and the lane launches no lanes.
 - **Acceptance is artifact-based.** A round closes on a validated on-disk artifact plus git/tracker state, never on a return message.
+- **A lane is quiet.** `ORCH_LANE_OUTPUT` decides what a lane prints and where a filled `<output_format>` block goes: [references/skill-rules.md](references/skill-rules.md) § Lane Output.
 
 ## Commands
 
@@ -45,6 +46,7 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 |---------|-----------|----------|---------|
 | `start` | `[ISSUE_ID]` \| `github OWNER/REPO#N` | `workflows/start.md` / `workflows/start-worktree.md` | Prepare one work item; from a worktree, run the full session |
 | `start new` | `linear\|github ...` | `workflows/start-new.md` | Create one issue, then start it |
+| `micro` | `[ISSUE_ID]` \| `github OWNER/REPO#N` | `workflows/micro.md` | Few-line tier: edit, commit, PR, arm, merge, with no dev agent and no review cycle |
 | `handoff` | `linear\|github ...` | `workflows/handoff.md` | Launch independent sessions |
 | `plan-issues` | `PLAN_PATH linear\|github` | `workflows/plan-issues.md` | Convert plan items into issues |
 | `dev-start` | `[ISSUE_ID]` | `workflows/dev-start.md` | Delegate implementation |
@@ -81,6 +83,7 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 | `worktree-push` | Push an issue worktree via `worktree push`, reconciling rebased SHAs in workflow state (`.rebase_map`, `fixed_items`, `pr_comment_review.fixes`) in the same call; `--check-live-round` answers whether a fix round is in flight and pushes nothing |
 | `dev-round-write` | Persist a fix round's delegated item set at stamp time; `--cut` records the round that cuts an oversized branch |
 | `dev-artifact-check` | Validate a dev round's completion artifact by round id |
+| `dev-validate-run` | Run `DEV_VALIDATE_CMD` detached under `DEV_VALIDATE_TIMEOUT_SECS` and leave its verdict on disk as one `guard-exit=N` sentinel; `--wait --run-dir` polls that run, exit 3 meaning poll again. The route every harness validates through |
 | `branch-size-check` | Report added production, test and render-mirror lines against the issue's optional `**Expected delta**`. Size never refuses; malformed allowance text exits 3. `--help` |
 | `approval-wait` | Poll the reviewer gate; `--resolve-mode` prints the effective gate mode |
 | `ci-wait` | Block until CI completes on a PR |
@@ -88,12 +91,14 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 | `orch-env` | Effective value of a kendex `[env]` setting (process env > `.env.local` > `.kendex/settings.toml` > `kendex.settings.toml` > default) |
 | `spawn-adapter` | Resolve Codex spawn parameters (`spawn`) and the runtime thread budget (`slots`) |
 | `open-terminal` | Terminal handoff; model, effort, and permission flags via `--launch-flags` |
+| `lane-close` | Exit one finished recorded lane, close its hosted sandbox and tmux window, and update its fleet record |
 | `lanes` | Enumerate harness auth lanes; `pick` prints the launch env prefix for the least-loaded qualifying lane, exit 3 when none qualifies; `context` reports each live lane's context use; `state <item>` prints one lane's state from the pane, by the same judge `oversee-watch` and `open-terminal --wake` ask |
 | `lane-host` | Resolve or call the configured host provider; protocol: [schemas/lane-host.md](schemas/lane-host.md). Static SSH reference: `lane-host-ssh --help` |
 | `lane-mail` | The lane-to-overseer mailbox. A lane runs `ask`, `notice`, `wait` and `inbox`; the overseer runs `send`, `drain` and `pending`, adding `--root` and `--host` for a lane on another host |
+| `lane-marker` | Write a lane's launch record, the marker under the common git directory and the lane's own mailbox; `open-terminal` and `lane-host create` both call it, and `lane-mail-check` hands a lane its mail only where it stands. Takes two positional arguments, or `--marker-path` with a common git directory and the item to print the marker's path for a launcher writing it on another machine |
 | `reconcile-work-items` | Read-only tracker sweep (parked containers, items stale past `RECONCILE_STALE_HOURS`, Done items with unchecked boxes). Exit 1 on findings |
-| `oversee-watch` | Block until the fleet needs the overseer, then print one wake carrying every event the pass found |
-| `oversee-succeed` | Replace an overseer past its context mark, or on an account at or below `ORCH_OVERSEER_HEADROOM_PCT` headroom, with a successor overseer window at the same index; `window-below-mark` and `context-below-mark` exit 0, `no-lane-qualifies` refuses and at `mark=account` names the account and its reset |
+| `oversee-watch` | Block until the fleet needs the overseer, then print one wake carrying every event the pass found. Also reads the overseer's own pane: `overseer-mark` reports its own context or account mark reached, and `overseer-dead` and `overseer-walled` relaunch an overseer that ended or whose account is spent, in its window through `oversee-succeed`, where exit 3 says a successor holds it |
+| `oversee-succeed` | Replace an overseer past its context mark, or on an account at or below `ORCH_OVERSEER_HEADROOM_PCT` headroom, with a successor overseer window at the same index; `window-below-mark` and `context-below-mark` exit 0, `no-lane-qualifies` refuses at exit 3 and at `mark=account` names the account and its reset. `--check-marks` judges the two marks and prints what they found, launching nothing: the turn-end hook and `oversee-watch` both act on that one answer. `--print-launch-line` prints the command a successor of this session would run, for `oversee-watch` to record, `--dead-pane` sends a recorded line into the window of an overseer that already died, and `--walled-pane` picks a fresh account for one whose own is spent, its pane still answering for its harness |
 
 Every script takes `--help` bar `pr-view-json` and `resolve-base-branch`, whose only argument is a path. Waiter and gate semantics, including the `3` exit on hard auth failure and reading the effective gate mode (`approval`, `review`, `off`) only through `approval-wait --resolve-mode`: [references/gates.md](references/gates.md). Artifact checks: [references/artifact-checks.md](references/artifact-checks.md). Schemas: `schemas/workflow-state.md` (state file), `schemas/dev-return.md` (dev completion artifact), `schemas/dev-round.md` (fix-round item set), [`../reviewer/schemas/review-finding.md`](../reviewer/schemas/review-finding.md) (review/QA findings).
 
@@ -105,7 +110,7 @@ Every script takes `--help` bar `pr-view-json` and `resolve-base-branch`, whose 
 
 ## Configuration
 
-Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.local` holds secrets and personal overrides. Keys: [README.md](README.md) § Settings; review-gate keys in [references/gates.md](references/gates.md); lane keys in `lanes --help` and `open-terminal --help`. System dependencies: `jq`; `bash` 3.2; `flock` and `setsid` (util-linux).
+Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.local` holds secrets and personal overrides. Keys: [README.md](README.md) § Settings; review-gate keys in [references/gates.md](references/gates.md); lane keys in `lanes --help` and `open-terminal --help`. System dependencies: `jq`; `bash` 3.2; `flock` and `setsid` (util-linux); `timeout` or `gtimeout` (coreutils), which bounds the validation run `dev-validate-run` starts.
 
 ---
 
@@ -121,7 +126,7 @@ Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.
 
 ## Skill Rules
 
-Delegation, agent lifecycle, round closure, and coordination: [references/skill-rules.md](references/skill-rules.md).
+Delegation, agent lifecycle, round closure, coordination, and lane output: [references/skill-rules.md](references/skill-rules.md).
 
 ### Workflow Execution
 

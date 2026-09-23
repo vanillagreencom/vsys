@@ -28,6 +28,8 @@ Recommendation: "[HOW TO FIX]"
 ---
 ```
 
+Output: [Lane Output](../references/skill-rules.md#lane-output).
+
 <output_format>
 
 ### Fix Items — [ISSUE_ID]
@@ -44,7 +46,7 @@ Then resolve the decision mode:
 .agents/skills/orch/scripts/orch-env ORCH_DECISION_MODE auto-recommended
 ```
 
-`auto-recommended` takes the recommended option (`Fix all`) without asking; anything else asks `Fix all` | multi-select `#N: [TITLE]` | `Cancel`. The always-ask set in [SKILL.md § The Cycle](../SKILL.md#the-cycle) applies in every mode.
+`auto-recommended` takes the recommended option (`Fix all`) without asking; anything else asks `Fix all` | multi-select `#N: [TITLE]` | `Cancel`. The ask set in [communication-modes.md](../references/communication-modes.md) § Ask set applies in every mode.
 
 Cancel ends the workflow; a selection goes to § 2.
 
@@ -208,6 +210,8 @@ Cancel ends the workflow; a selection goes to § 2.
 ## 3. Return
 
 **Standalone**:
+
+Output: [Lane Output](../references/skill-rules.md#lane-output).
 
 <output_format>
 

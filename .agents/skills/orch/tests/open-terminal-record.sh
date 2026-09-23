@@ -45,7 +45,12 @@ assert_eq() {
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/ghostty"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$BIN/gh"
+cat > "$BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+# The resolver's `gh repo view` rung, answered only where a row arms it.
+[[ "${1:-}" == repo && -n "${STUB_GH_REPO:-}" ]] || exit 1
+printf '%s\n' "$STUB_GH_REPO"
+EOF
 printf '#!/usr/bin/env bash\ncase "${1:-}" in check) exit 0 ;; list) echo "[]" ;; esac\nexit 0\n' > "$BIN/lanes"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/claude"
 cat > "$BIN/tmux" <<'EOF'
@@ -91,7 +96,7 @@ mkdir -p "$EXISTS_DIR"
 REPO="$TMP_ROOT/repo"
 mkdir -p "$REPO/scripts/lib"
 cp "$SRC_OT" "$REPO/scripts/open-terminal"
-cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$REPO/scripts/"
+cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$REPO/scripts/"
 cp "$SCRIPTS_DIR/lib"/*.sh "$REPO/scripts/lib/"
 orch_fixture_shared_libs "$REPO"
 chmod +x "$REPO/scripts/open-terminal"
@@ -126,7 +131,8 @@ run_ot() {
   set +e
   OUT="$(cd "$cwd" && PATH="$BIN:$PROC_BIN:$PATH" OVERSEE_WATCH_STATE_DIR="$TMP_ROOT/claims" \
     WORKTREE_CLI="$STUB" LANES_CLI="$BIN/lanes" LANES_HOME="$SESSION_HOME" EXISTS_DIR="$EXISTS_DIR" \
-    GH_ISSUE_PATTERN='[A-Z]+-[0-9]+' TMUX="${RUN_TMUX:-}" "$script" ${state_args[@]+"${state_args[@]}"} "$@" 2>"$TMP_ROOT/err")"
+    GH_ISSUE_PATTERN='[A-Z]+-[0-9]+' TMUX="${RUN_TMUX:-}" GH_REPO="" STUB_GH_REPO="${STUB_GH_REPO:-}" \
+    "$script" ${state_args[@]+"${state_args[@]}"} "$@" 2>"$TMP_ROOT/err")"
   RC=$?
   set -e
   ERR="$(cat "$TMP_ROOT/err")"
@@ -145,26 +151,48 @@ run_ot --ghostty --harness claude --launch-flags "--model opus --verbose" CC-1
 REC="$(record CC-1)"
 assert_eq "rc=$RC records=$(records CC-1)" "rc=0 records=1" "a GUI launch writes one record and the state is created for it"
 assert_eq "$(sed "s/ launched_at=[^ ]*//" <<<"$REC")" \
-  "item=CC-1 window=null account=null host=null mail_root=$TMP_ROOT/wt/CC-1 surface=gui model=opus session_id=null status=running" \
+  "item=CC-1 tracker=linear repo=null harness=claude window=null account=null host=null mail_root=$TMP_ROOT/wt/CC-1 surface=gui model=opus session_id=null status=running" \
   "the record carries the item, no window off tmux, the worktree as mail_root, the flags' model and status running"
 assert_eq "$(stamped "$(field "$REC" launched_at)")" "iso" "launched_at is a UTC timestamp"
 LAUNCHED_AT="$(field "$REC" launched_at)"
 
-RUN_TMUX=stub,1,0 run_ot --tmux --harness claude --lane "$LANE_DIR" --cmd true CC-2
+# The choice words sit INSIDE the --cmd command, which is the command this
+# launch runs: a template is rendered verbatim and no launch flag is appended to
+# it, so the model recorded here is the model the harness was started with.
+RUN_TMUX=stub,1,0 run_ot --tmux --harness claude --lane "$LANE_DIR" --cmd "true --model opus --effort high" CC-2
 assert_eq "rc=$RC $(sed "s/ launched_at=[^ ]*//" <<<"$(record CC-2)")" \
-  "rc=0 item=CC-2 window=CC-2 account=$LANE_DIR host=null mail_root=$TMP_ROOT/wt/CC-2 surface=tmux model=null session_id=null status=running" \
-  "a tmux launch under a lane records its window, its account dir and the tmux surface"
+  "rc=0 item=CC-2 tracker=linear repo=null harness=claude window=CC-2 account=$LANE_DIR host=null mail_root=$TMP_ROOT/wt/CC-2 surface=tmux model=opus session_id=null status=running" \
+  "a tmux launch under a lane records its window, its account dir, the tmux surface and the model its own command names"
 RUN_TMUX=stub,1,0 run_ot --tmux --tracker github --repo o/r --cmd true 2709
 assert_eq "rc=$RC $(record issue-2709 | sed -E 's/ (account|host|mail_root|surface|model|session_id|launched_at)=[^ ]*//g')" \
-  "rc=0 item=issue-2709 window=gh-2709 status=running" \
+  "rc=0 item=issue-2709 tracker=github repo=o/r harness=null window=gh-2709 status=running" \
   "a GitHub item is recorded under its workflow-state id with the window the watch reads it through"
 
-echo "=== the model is read from the launch flags as the harness reads them ==="
+# --repo is optional on a supported GitHub launch: the resolver answers and
+# every launch command carries that answer, so the record carries it too. A
+# record left null here is a lane whose close-out cannot read its item.
+STUB_GH_REPO=o/resolved RUN_TMUX=stub,1,0 run_ot --tmux --tracker github --cmd true 2711
+assert_eq "rc=$RC repo=$(field "$(record issue-2711)" repo)" "rc=0 repo=o/resolved" \
+  "a GitHub launch with no --repo records the repository its resolver answered"
+
+echo "=== the model is read from the command the launch runs, as the harness reads it ==="
+# No --harness here, so no row judges these launches and the record is the only
+# reader of the model: it names whatever the launch passes, in every spelling
+# the table holds.
 for row in "--model=sonnet|CC-10|sonnet" "-m haiku|CC-11|haiku" "|CC-12|null" "--verbose|CC-13|null"; do
-  IFS='|' read -r flags item want <<<"$row"
-  if [[ -n "$flags" ]]; then run_ot --ghostty --cmd true --launch-flags "$flags" "$item"; else run_ot --ghostty --cmd true "$item"; fi
-  assert_eq "rc=$RC model=$(field "$(record "$item")" model)" "rc=0 model=$want" "flags '$flags' record model $want"
+  IFS='|' read -r words item want <<<"$row"
+  run_ot --ghostty --cmd "true${words:+ $words}" "$item"
+  assert_eq "rc=$RC model=$(field "$(record "$item")" model)" "rc=0 model=$want" "command words '$words' record model $want"
 done
+
+echo "=== --launch-flags beside --cmd reach nothing and are refused ==="
+# start_cmd renders a template verbatim and appends no flag to it, so a model
+# left in --launch-flags would be gated and recorded while the harness ran its
+# own default. Nothing launches and nothing is recorded.
+run_ot --ghostty --harness claude --lane "$LANE_DIR" --cmd true --launch-flags "--model opus --effort high" CC-14
+assert_eq "rc=$RC refused=$(grep -c '^open-terminal: launch-flags-unreachable option=--launch-flags flags=--model opus --effort high$' <<<"$ERR" || true) records=$(records CC-14)" \
+  "rc=1 refused=1 records=0" \
+  "launch flags passed beside a --cmd template refuse the launch, naming the flags that reach nothing, and record nothing"
 
 echo "=== a relaunch rewrites the moved fields in place and keeps launched_at ==="
 # launched_at is moved to a fixed past value first: a stamp of this second
@@ -172,16 +200,16 @@ echo "=== a relaunch rewrites the moved fields in place and keeps launched_at ==
 touch "$EXISTS_DIR/CC-1"
 LAUNCHED_AT=2026-01-01T00:00:00Z
 "$WS" --state-dir "$STATE" update oversee '(.lanes[] | select(.item == "CC-1")) |= (.status = "done" | .launched_at = "'"$LAUNCHED_AT"'")' >/dev/null
-run_ot --relaunch --ghostty --harness claude --lane "$LANE_DIR" CC-1
+run_ot --relaunch --ghostty --harness claude --lane "$LANE_DIR" --launch-flags "--model opus --effort high" CC-1
 assert_eq "rc=$RC records=$(records CC-1) $(record CC-1)" \
-  "rc=0 records=1 item=CC-1 window=null account=$LANE_DIR host=null mail_root=$TMP_ROOT/wt/CC-1 surface=gui model=null session_id=$CLAUDE222 launched_at=$LAUNCHED_AT status=running" \
+  "rc=0 records=1 item=CC-1 tracker=linear repo=null harness=claude window=null account=$LANE_DIR host=null mail_root=$TMP_ROOT/wt/CC-1 surface=gui model=opus session_id=$CLAUDE222 launched_at=$LAUNCHED_AT status=running" \
   "a relaunch keeps one record: the resumed session id and the new account land, launched_at stands, and a done lane runs again"
 
 echo "=== a wake rewrites the session it resumed and nothing else ==="
 "$WS" --state-dir "$STATE" update oversee '(.lanes[] | select(.item == "CC-1")) |= (.session_id = null | .status = "done")' >/dev/null
 run_ot --wake --harness claude CC-1
 assert_eq "rc=$RC woken=$(grep -c '^open-terminal: lane-woken item=CC-1 ' <<<"$OUT" || true) $(record CC-1)" \
-  "rc=0 woken=1 item=CC-1 window=null account=$LANE_DIR host=null mail_root=$TMP_ROOT/wt/CC-1 surface=gui model=null session_id=$CLAUDE222 launched_at=$LAUNCHED_AT status=running" \
+  "rc=0 woken=1 item=CC-1 tracker=linear repo=null harness=claude window=null account=$LANE_DIR host=null mail_root=$TMP_ROOT/wt/CC-1 surface=gui model=opus session_id=$CLAUDE222 launched_at=$LAUNCHED_AT status=running" \
   "a wake sets the resumed session id and status running and leaves the launch's fields as they were"
 
 echo "=== a wake of an item no record names is refused as record-missing, with nothing written ==="
@@ -197,11 +225,85 @@ echo "=== a hosted launch records its host and the root its mailbox is read unde
 # /srv/lane; the tmux stub reads as an ssh pane at its prompt. The watch turns
 # host and mail_root into its --hosted entry, the one route to that mailbox.
 HOST_STUB="$TEST_DIR/fixtures/lane-host"
-STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" RUN_TMUX=stub,1,0 \
-  run_ot --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd true CC-60
+# The provider's disk. The lane's `.git` there names the clone whose common git
+# directory holds its marker, and the marker the launch writes lands under it.
+HOSTED_DISK="$TMP_ROOT/remote"
+mkdir -p "$HOSTED_DISK/srv/lane"
+printf 'gitdir: /srv/clone/.git/worktrees/lane\n' > "$HOSTED_DISK/srv/lane/.git"
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" RUN_TMUX=stub,1,0 \
+  run_ot --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-60
 assert_eq "rc=$RC $(sed "s/ launched_at=[^ ]*//" <<<"$(record CC-60)")" \
-  "rc=0 item=CC-60 window=CC-60 account=$LANE_DIR host=$HOST_STUB mail_root=/srv/lane surface=tmux model=null session_id=null status=running" \
+  "rc=0 item=CC-60 tracker=linear repo=o/r harness=claude window=CC-60 account=$LANE_DIR host=$HOST_STUB mail_root=/srv/lane surface=tmux model=opus session_id=null status=running" \
   "a hosted record carries the host spec and the remote path create named, never the local tree"
+
+echo "=== a hosted launch writes its lane's marker on the host and reads it back ==="
+# `hooks/lane-mail-check.sh` reads a session as a launched lane only where the
+# marker under the common git directory holds the root that session opens in.
+# The stub provider writes none, which is the provider these rows are about:
+# the launcher writes the marker over the transport and reads it back, or the
+# item is not launched and nothing is counted.
+#
+# marker_at LOWER_ITEM — `root` where the marker holds the path the lane opens
+# in, `other` where it holds anything else, `none` where none was written.
+marker_at() {
+  local m="$HOSTED_DISK/srv/clone/.git/lane-mail/$1" held
+  [[ -f "$m" ]] || { printf none; return; }
+  held="$(cat "$m")"
+  [[ "$held" != /srv/lane ]] || { printf root; return; }
+  printf other
+}
+
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" RUN_TMUX=stub,1,0 \
+  run_ot --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-63
+assert_eq "rc=$RC marker=$(marker_at cc-63) records=$(records CC-63) summary=$(grep -c '^open-terminal: summary launched=1 ' <<<"$OUT" || true)" \
+  "rc=0 marker=root records=1 summary=1" \
+  "a hosted launch binds its lowercased item to the root the lane opens in, under the clone the provider's worktree names"
+
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" LANE_HOST_STUB_PUT_STATUS=1 RUN_TMUX=stub,1,0 \
+  run_ot --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-64
+assert_eq "rc=$RC marker=$(marker_at cc-64) records=$(records CC-64) refused=$(grep -c '^open-terminal: marker-failed item=CC-64 path=/srv/clone/.git/lane-mail/cc-64$' <<<"$ERR" || true) summary=$(grep -c '^open-terminal: summary launched=0 ' <<<"$ERR" || true)" \
+  "rc=1 marker=none records=0 refused=1 summary=1" \
+  "a hosted launch whose marker write fails names the item and the marker path, records nothing and launches nothing"
+
+# A relaunch onto a host whose create wrote no marker: the lane is recovered
+# and marked, so a sandbox made before its provider wrote records is not deaf
+# for the rest of its life.
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" RUN_TMUX=stub,1,0 \
+  run_ot --relaunch --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-65
+assert_eq "rc=$RC marker=$(marker_at cc-65) relaunch=$(grep -c '^create --item CC-65 .*--relaunch $' "$TMP_ROOT/host.log" || true)" \
+  "rc=0 marker=root relaunch=1" \
+  "a hosted relaunch writes the marker its host never carried"
+
+# The two reads ahead of the marker. A provider answers a file it does not
+# have with a status and no line of its own, and the gitfile reader prints
+# nothing either, so neither reaches the operator unless the launcher names it.
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" \
+  LANE_HOST_STUB_CAT_STATUS=2 LANE_HOST_STUB_CAT_PATH=/srv/lane/.git RUN_TMUX=stub,1,0 \
+  run_ot --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-68
+assert_eq "rc=$RC first=$(grep -c '^open-terminal: host-gitfile-unread item=CC-68 path=/srv/lane/.git$' <<<"$ERR" || true) marker_failed=$(grep -c '^open-terminal: marker-failed ' <<<"$ERR" || true) records=$(records CC-68)" \
+  "rc=1 first=1 marker_failed=0 records=0" \
+  "a lane whose .git the host cannot produce names that read, not the marker write"
+
+# A .git holding anything but a linked worktree's gitdir line: its own disk, so
+# the rows above keep the one the launches read.
+BENT_DISK="$TMP_ROOT/remote-bent"
+mkdir -p "$BENT_DISK/srv/lane"
+printf 'gitdir: worktrees/lane\n' > "$BENT_DISK/srv/lane/.git"
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$BENT_DISK" RUN_TMUX=stub,1,0 \
+  run_ot --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-69
+assert_eq "rc=$RC first=$(grep -c '^open-terminal: host-gitfile-invalid item=CC-69 path=/srv/lane/.git value=gitdir: worktrees/lane$' <<<"$ERR" || true) marker_failed=$(grep -c '^open-terminal: marker-failed ' <<<"$ERR" || true) records=$(records CC-69)" \
+  "rc=1 first=1 marker_failed=0 records=0" \
+  "a .git that names no linked worktree git directory names that read and the line it held"
+
+# The read-back. A provider that accepts the whole transfer and lands other
+# bytes reports no failure of its own, so the marker holds a root no session
+# opens in and lane-mail-check reads that lane as none.
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" \
+  LANE_HOST_STUB_PUT_BYTES=/srv/stale RUN_TMUX=stub,1,0 \
+  run_ot --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-70
+assert_eq "rc=$RC marker=$(marker_at cc-70) records=$(records CC-70) refused=$(grep -cx 'open-terminal: marker-failed item=CC-70 path=/srv/clone/.git/lane-mail/cc-70' <<<"$ERR" || true)" \
+  "rc=1 marker=other records=0 refused=1" \
+  "a marker that reads back holding another root fails the item and records nothing"
 
 echo "=== --state-dir is the record's one address, wherever the launch runs from ==="
 ELSEWHERE="$TMP_ROOT/elsewhere"
@@ -271,7 +373,7 @@ assert_eq "rc=$RC opened=$(grep -c '^open-terminal: terminal-opened ' <<<"$OUT" 
 fixture_copy() {
   local dir="$TMP_ROOT/$1"
   mkdir -p "$dir/scripts/lib"
-  cp "$SRC_OT" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$dir/scripts/"
+  cp "$SRC_OT" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$dir/scripts/"
   cp "$SCRIPTS_DIR/lib"/*.sh "$dir/scripts/lib/"
   orch_fixture_shared_libs "$dir"
   git -C "$dir" init -q
@@ -361,15 +463,49 @@ run_ot SCRIPT="$TMP_ROOT/fleetless/scripts/open-terminal" STATE_DIR= CWD="$NOFLE
 assert_eq "rc=$RC launch_dir=$([[ -e "$NOFLEET_CONTROL/tmp/workflow-state-oversee.json" ]] && echo written || echo none)" "rc=0 launch_dir=written" \
   "control: with every launch a fleet launch a flagless handoff writes the launch checkout's oversee state"
 mutant hostless '  [[ "$LANE_HOST" == local ]] || host="$LANE_HOST"' '  [[ "$LANE_HOST" == local ]] || host=""'
-STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" RUN_TMUX=stub,1,0 \
-  run_ot SCRIPT="$TMP_ROOT/hostless/scripts/open-terminal" --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd true CC-61
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" RUN_TMUX=stub,1,0 \
+  run_ot SCRIPT="$TMP_ROOT/hostless/scripts/open-terminal" --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-61
 assert_eq "rc=$RC host=$(field "$(record CC-61)" host) mail_root=$(field "$(record CC-61)" mail_root)" "rc=0 host=null mail_root=/srv/lane" \
   "control: with the host assignment blanked a hosted lane records a null host and reports success"
 mutant rootless '  [[ "$LANE_HOST" == local ]] || record_root="$remote_path"' '  [[ "$LANE_HOST" == local ]] || record_root="$wt"'
-STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" RUN_TMUX=stub,1,0 \
-  run_ot SCRIPT="$TMP_ROOT/rootless/scripts/open-terminal" CWD="$REPO" --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd true CC-62
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" RUN_TMUX=stub,1,0 \
+  run_ot SCRIPT="$TMP_ROOT/rootless/scripts/open-terminal" CWD="$REPO" --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-62
 assert_eq "rc=$RC host=$(field "$(record CC-62)" host) mail_root=$(field "$(record CC-62)" mail_root)" "rc=0 host=$HOST_STUB mail_root=$REPO" \
   "control: with the remote root dropped a hosted lane records the caller checkout as mail_root and reports success"
+mutant hostblind '  if [[ "$WAKE" != true && -d "$wt" ]] && ! write_lane_marker' '  if [[ "$WAKE" != true && "$LANE_HOST" == local && -d "$wt" ]] && ! write_lane_marker'
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" RUN_TMUX=stub,1,0 \
+  run_ot SCRIPT="$TMP_ROOT/hostblind/scripts/open-terminal" --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-67
+assert_eq "rc=$RC marker=$(marker_at cc-67) summary=$(grep -c '^open-terminal: summary launched=1 ' <<<"$OUT" || true)" "rc=0 marker=none summary=1" \
+  "control: with the write site naming a local host again a hosted launch reports itself launched and leaves its lane unmarked"
+mutant causeless '  LANE_MARKER_REASON=host-gitfile-unread' '  LANE_MARKER_REASON=marker-failed'
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" \
+  LANE_HOST_STUB_CAT_STATUS=2 LANE_HOST_STUB_CAT_PATH=/srv/lane/.git RUN_TMUX=stub,1,0 \
+  run_ot SCRIPT="$TMP_ROOT/causeless/scripts/open-terminal" --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-71
+assert_eq "rc=$RC unread=$(grep -c '^open-terminal: host-gitfile-unread ' <<<"$ERR" || true) marker_failed=$(grep -c '^open-terminal: marker-failed item=CC-71 ' <<<"$ERR" || true)" \
+  "rc=1 unread=0 marker_failed=1" \
+  "control: with the read carrying the write's reason a .git the host cannot produce is reported as a failed marker write"
+mutant unreadback '  [[ "$read_back" == "$2" ]]' '  [[ -n "$read_back" ]]'
+STUB_PANE_CMD=ssh STUB_PANE_TEXT='dev@lane:~$' LANE_HOST_STUB_LOG="$TMP_ROOT/host.log" LANE_HOST_STUB_DIR="$HOSTED_DISK" \
+  LANE_HOST_STUB_PUT_BYTES=/srv/stale RUN_TMUX=stub,1,0 \
+  run_ot SCRIPT="$TMP_ROOT/unreadback/scripts/open-terminal" --tmux --harness claude --lane "$LANE_DIR" --host "$HOST_STUB" --repo o/r --cmd "true --model opus --effort high" CC-72
+assert_eq "rc=$RC marker=$(marker_at cc-72) records=$(records CC-72) summary=$(grep -c '^open-terminal: summary launched=1 ' <<<"$OUT" || true)" \
+  "rc=0 marker=other records=1 summary=1" \
+  "control: with the read-back asking only for bytes a marker holding another root is reported as launched"
+
+mutant trackerless '--arg tracker "$TRACKER"' '--arg tracker ""'
+run_ot SCRIPT="$TMP_ROOT/trackerless/scripts/open-terminal" --ghostty --cmd true CC-63
+assert_eq "rc=$RC tracker=$(field "$(record CC-63)" tracker)" 'rc=0 tracker=null' \
+  'control: with tracker output dropped a Linear launch reports success with no tracker identity'
+
+mutant repoless '  [[ "$TRACKER" != github ]] || record_repo="$repo"' '  :'
+STUB_GH_REPO=o/resolved run_ot SCRIPT="$TMP_ROOT/repoless/scripts/open-terminal" --ghostty --tracker github --cmd true 2710
+assert_eq "rc=$RC repo=$(field "$(record issue-2710)" repo)" 'rc=0 repo=null' \
+  'control: with the record back on the raw option a resolved GitHub launch is recorded with no repository'
+
+mutant harnessless '--arg harness "$LAUNCH_HARNESS"' '--arg harness ""'
+run_ot SCRIPT="$TMP_ROOT/harnessless/scripts/open-terminal" --ghostty --harness claude --cmd true CC-64
+assert_eq "rc=$RC harness=$(field "$(record CC-64)" harness)" 'rc=0 harness=null' \
+  'control: with harness output dropped a harness launch reports success with no close-out path'
 
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"
