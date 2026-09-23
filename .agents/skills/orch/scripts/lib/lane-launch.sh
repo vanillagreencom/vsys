@@ -19,6 +19,19 @@
 # shellcheck source=lane-claims.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lane-claims.sh"
 
+# lane_codex_trust_prepare below reads a codex config.toml for one key and
+# writes it back without one table. That reading is shared with `spawn-adapter`,
+# which asks the same file a different question, so it lives in its own library
+# and both callers source it rather than each carrying a scanner of its own.
+# shellcheck source=toml.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toml.sh"
+
+# The private home the preparation below builds is named by lane-home.sh, which
+# also takes such a path back apart for the readers outside this launch that ask
+# which account a session is spending.
+# shellcheck source=lane-home.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lane-home.sh"
+
 # The env prefix that puts a launch on a chosen account: the harness names the
 # variable, the directory IS the account. One mapping for every caller — the
 # chooser in `lanes` that hands a picked lane back as a prefix, and the
@@ -36,10 +49,485 @@ lane_env_prefix() { # HARNESS DIR
   printf '%s=%s\n' "$var" "$2"
 }
 
+# How each harness spells the two choices a lane launch must make, for every
+# caller that READS a launch's flags and every caller that WRITES them: the
+# launcher that refuses a launch naming neither, and the successor builder in
+# `oversee-succeed` that renders them. Stated here once, in the file that owns
+# per-harness launch mapping, so a harness that renames its effort flag cannot
+# leave one copy behind and have the launcher refuse every launch of it while
+# the builder writes the old word.
+#
+# One row per harness,
+# `HARNESS|MODEL SPELLINGS|EFFORT SPELLINGS|EFFORT-IN-MODEL|ATTACH WORD`, each
+# spelling list space-separated, so a consumer's harness or a new flag spelling
+# is one row rather than a code path. A spelling that ends in `=` is a whole
+# token with its value attached; any other is a flag word taking the next token
+# or an attached `=VALUE`. `-` as the effort list is a harness whose launch form
+# has no effort flag, and such a launch names the model alone. The fourth field
+# is the separator that attaches the effort to the model VALUE where the harness
+# accepts it there, `-` where it does not; a launch using that form has named
+# both choices in one token. The fifth is the flag word an attached-value
+# spelling rides on when one is WRITTEN — codex's `-c` carries the whole
+# `model_reasoning_effort=` token — and `-` where the effort is a plain flag
+# word that takes its value as the next one.
+#
+# The FIRST spelling of each list is the one written; the rest are further
+# spellings a caller may have typed, which launch_choice_value reads.
+#
+# Read out of each harness's own help, never from memory:
+#   claude    `claude --help`: `--model <model>`, `--effort <level>`.
+#   codex     `codex --help`: `-m, --model <MODEL>`; reasoning effort is a
+#             config override, `-c, --config <key=value>` carrying the
+#             `model_reasoning_effort` key, so the whole token is the spelling.
+#   opencode  the flags table of `opencode [project]`, the form start_cmd
+#             renders: `--model, -m`, and no effort flag at all. `--variant`
+#             belongs to `opencode run`, which this script never launches.
+#   pi        `pi --help`: `--model <pattern>` "supports provider/id and optional
+#             `:<thinking>`", `--thinking <level>`. The colon form is the fourth
+#             field: `--model sonnet:high` names the level pi will run at, so a
+#             launch passing it has made the effort choice and is not asked for
+#             it again.
+LAUNCH_CHOICE_FLAGS=(
+  'claude|--model|--effort|-|-'
+  'codex|-m --model|model_reasoning_effort=|-|-c'
+  'opencode|-m --model|-|-|-'
+  'pi|--model|--thinking|:|-'
+)
+# The row for harness $1, empty where the table names no such harness.
+launch_choice_row() { # HARNESS
+  local row
+  for row in "${LAUNCH_CHOICE_FLAGS[@]}"; do
+    [[ "${row%%|*}" != "$1" ]] || { printf '%s\n' "$row"; return; }
+  done
+}
+
+# The model spellings a launch on harness $1 is read with: that harness's own,
+# or EVERY spelling the table names when the launch names no harness. A launch
+# naming no harness ANYWHERE in its argv carries its own argv in --cmd and
+# reaches no gate, because no row judges it, but the lane record still names the
+# model it passes and which harness will read that word is not this launcher's
+# to know. A caller that can name the harness passes it: open-terminal reads one
+# out of a `--lane auto:<h>` spec where no --harness was given, and hands that
+# harness here, so such a launch is read and judged by its own row. Derived from
+# the same rows, so a spelling is added in one place and both readings get it.
+launch_choice_model_spellings() { # [HARNESS]
+  local row spellings word out=""
+  for row in "${LAUNCH_CHOICE_FLAGS[@]}"; do
+    [[ -z "$1" || "${row%%|*}" == "$1" ]] || continue
+    IFS='|' read -r _ spellings _ _ _ <<<"$row"
+    for word in $spellings; do
+      case " $out " in *" $word "*) ;; *) out="$out $word" ;; esac
+    done
+  done
+  printf '%s\n' "${out# }"
+}
+# The effort spellings a launch on harness $1 is read with, empty where there is
+# no effort word to name at all: a row whose effort list is `-`, the table's way
+# of saying that harness's launch form has no effort flag, and a harness the
+# table holds no row for. One question, answered here beside launch_choice_effort
+# rather than by a caller reading that sentinel for itself.
+launch_choice_effort_spellings() { # HARNESS
+  local row spellings
+  row="$(launch_choice_row "$1")"
+  [[ -n "$row" ]] || return 0
+  IFS='|' read -r _ _ spellings _ _ <<<"$row"
+  [[ "$spellings" != - ]] || return 0
+  printf '%s\n' "$spellings"
+}
+
+# The value one launch names for one choice, empty where it names none, over as
+# many texts as the caller hands it, first match winning.
+#
+# Several texts, because the LANE RECORD of a launch no row judges names the
+# model that launch passes whatever text carries it (the comment above
+# launch_choice_model_spellings). This is not a precedence that makes a word
+# interchangeable between two texts: a caller judging a launch hands this the
+# text the launch actually RUNS, since a --cmd template is rendered verbatim and
+# --launch-flags reach a harness only through a command the caller builds.
+# open-terminal refuses the two together for that reason, as
+# launch-flags-unreachable, so its readings have one text to give.
+#
+# read -a, not `for tok in $2`, for the reason start_cmd states: a bare
+# expansion globs the very brackets a model id can carry.
+launch_choice_value() { # SPELLINGS TEXT...
+  local spellings="$1"
+  shift
+  local -a words=() tokens=()
+  local text word tok i
+  read -r -a words <<<"$spellings"
+  for text in "$@"; do
+    [[ -n "$text" ]] || continue
+    tokens=()
+    read -r -a tokens <<<"$text"
+    i=0
+    while (( i < ${#tokens[@]} )); do
+      tok="${tokens[i]}"
+      for word in ${words[@]+"${words[@]}"}; do
+        if [[ "$word" == *= ]]; then
+          [[ "$tok" == "$word"* ]] || continue
+          printf '%s\n' "${tok#"$word"}"
+          return
+        fi
+        if [[ "$tok" == "$word="* ]]; then
+          printf '%s\n' "${tok#"$word"=}"
+          return
+        fi
+        if [[ "$tok" == "$word" ]] && (( i + 1 < ${#tokens[@]} )); then
+          printf '%s\n' "${tokens[i+1]}"
+          return
+        fi
+      done
+      i=$((i + 1))
+    done
+  done
+  # Naming no value is an ordinary answer here, the refusal below being what
+  # acts on it, so the status says the search ran rather than what it found.
+  # `i=$((i + 1))` above for the same reason: `(( i++ ))` answers 1 on the
+  # first token and errexit would end the run inside this substitution.
+  return 0
+}
+
+# The EFFORT one launch names, empty where it names none or where the harness has
+# no effort flag at all. Read with that harness's own spelling, and then, where
+# the row names a separator, from the model value: pi documents its thinking
+# level on `--model <pattern>` as `sonnet:high`, so a launch passing that has
+# made both choices in one token and is not asked for the level again. The
+# separator lives in the row, so a harness added with a colon form needs no
+# second edit anywhere, and a caller asking this library what effort a launch
+# named gets the same answer the launcher acts on.
+#
+# A separator with nothing after it names no level, which its caller refuses.
+launch_choice_effort() { # HARNESS TEXT [TEXT]
+  local row effort_spellings in_model model effort
+  row="$(launch_choice_row "$1")"
+  [[ -n "$row" ]] || return 0
+  IFS='|' read -r _ _ effort_spellings in_model _ <<<"$row"
+  [[ "$effort_spellings" != - ]] || return 0
+  effort="$(launch_choice_value "$effort_spellings" "$2" "${3:-}")"
+  if [[ -z "$effort" && "$in_model" != - ]]; then
+    model="$(launch_choice_value "$(launch_choice_model_spellings "$1")" "$2" "${3:-}")"
+    [[ "$model" != *"$in_model"* ]] || effort="${model##*"$in_model"}"
+  fi
+  printf '%s\n' "$effort"
+}
+
+# The model and effort words a launch of HARNESS passes, written from that
+# harness's own row and quoted for the shell the caller is building a command
+# in. The inverse of launch_choice_value, over the same row: what this writes is
+# what that reads, so a successor overseer cannot be given a spelling the
+# launcher would refuse.
+#
+# Empty, status 0, where MODEL is empty: a caller with no model to pass names
+# neither word. Status 1 where a MODEL is named and the table holds no row for
+# that harness, which is not an answer but the absence of one. A harness whose
+# row has no effort spelling takes the model alone; so does an empty EFFORT.
+launch_choice_write() { # HARNESS MODEL EFFORT
+  local row model_spellings effort_spellings attach word out
+  # No model to pass is an answer: the caller names neither word, and an effort
+  # beside a default model is half a choice. A model the table has no row for is
+  # NOT an answer — nothing here knows how that harness spells it, and writing
+  # nothing would launch it on whatever default it ships. The caller refuses.
+  [[ -n "$2" ]] || return 0
+  row="$(launch_choice_row "$1")"
+  [[ -n "$row" ]] || return 1
+  IFS='|' read -r _ model_spellings effort_spellings _ attach <<<"$row"
+  read -r word _ <<<"$model_spellings"
+  out="$word $(printf %q "$2")"
+  if [[ "$effort_spellings" != - && -n "$3" ]]; then
+    read -r word _ <<<"$effort_spellings"
+    if [[ "$word" == *= ]]; then
+      # An attached-value spelling is one token, and the row names the flag word
+      # it rides on.
+      out="$out $attach $(printf %q "$word$3")"
+    else
+      out="$out $word $(printf %q "$3")"
+    fi
+  fi
+  printf '%s\n' "$out"
+}
+
+# The flags of a launch on HARNESS with that harness's own MODEL and EFFORT
+# words taken out, left in LAUNCH_CHOICE_KEPT. What is left is every other flag
+# in the order it was given.
+#
+# The inverse of launch_choice_write over the same row, and the reason it
+# exists: a caller hands its flags on to a launch it did not write, and those
+# flags name a model and an effort in the CALLER harness's spelling. A launch
+# generated for another harness has been given its own pair from its own row,
+# so carrying the caller's through would hand it a second model and a flag word
+# its own launch form may not have at all.
+#
+# Read exactly as launch_choice_value reads, so a spelling is added to the row
+# once and both halves get it: EVERY spelling in the list, not the written one
+# alone; a spelling ending in `=` matches a whole attached token and takes the
+# row's attach word with it where that word stands in front of it, since codex
+# writes the effort as two tokens and dropping the second alone would leave a
+# `-c` whose value is then the next flag; any other spelling takes its own
+# token and the `=VALUE` or following token that belongs to it. A spelling last
+# in the list names no value, so it goes alone: the caller named no model
+# there, and a bare flag word is the one thing its harness would refuse.
+#
+# Status 1 where the table holds no row for HARNESS, the same answer
+# launch_choice_write gives: nothing here knows how that harness spells either
+# word, and keeping them is the corruption this exists to stop. The caller
+# refuses rather than guessing.
+LAUNCH_CHOICE_KEPT=()
+launch_choice_strip() { # HARNESS FLAG...
+  local row attach word tok drop i n
+  local -a spellings=() rest=()
+  LAUNCH_CHOICE_KEPT=()
+  row="$(launch_choice_row "$1")"
+  [[ -n "$row" ]] || return 1
+  IFS='|' read -r _ _ _ _ attach <<<"$row"
+  read -r -a spellings \
+    <<<"$(launch_choice_model_spellings "$1") $(launch_choice_effort_spellings "$1")"
+  shift
+  rest=("$@")
+  n=${#rest[@]}
+  i=0
+  while (( i < n )); do
+    tok="${rest[i]}"
+    drop=0
+    if [[ "$attach" != - && "$tok" == "$attach" ]] && (( i + 1 < n )); then
+      for word in ${spellings[@]+"${spellings[@]}"}; do
+        [[ "$word" == *= && "${rest[i+1]}" == "$word"* ]] || continue
+        drop=2
+        break
+      done
+    fi
+    if (( drop == 0 )); then
+      for word in ${spellings[@]+"${spellings[@]}"}; do
+        if [[ "$word" == *= ]]; then
+          [[ "$tok" == "$word"* ]] || continue
+          drop=1
+          break
+        fi
+        if [[ "$tok" == "$word="* ]]; then
+          drop=1
+          break
+        fi
+        if [[ "$tok" == "$word" ]]; then
+          drop=1
+          (( i + 1 >= n )) || drop=2
+          break
+        fi
+      done
+    fi
+    if (( drop == 0 )); then
+      LAUNCH_CHOICE_KEPT+=("$tok")
+      drop=1
+    fi
+    i=$((i + drop))
+  done
+}
+
 # A value the pane's own shell reads back as itself.
 lane_single_quote() { # VALUE
   local escaped="'\\''"
   printf "'%s'" "${1//\'/$escaped}"
+}
+
+# The trust record a Codex launch reads BEFORE it reads the arguments it was
+# launched with: `[projects."<dir>"] trust_level = "trusted"` in the config.toml
+# the launch's CODEX_HOME names. Without it the harness opens on `Do you trust
+# the contents of this directory?` and stays there, and an unattended launch —
+# an overseer succession, a lane opened into a worktree nothing has trusted yet
+# — has nobody at the pane to answer, so the whole launch is spent on a
+# question.
+#
+# A sandboxed lane gets this from the provider's pre-approval step
+# (../../schemas/lane-host.md § Provider protocol). A control-host launch has
+# no such step and cannot be given one by editing the account: a numbered
+# account's config.toml is a link the account shim points at the shared fleet
+# render on every launch, so an entry written there is gone by the next launch
+# and is visible to no fixture. The launch therefore builds a CODEX_HOME OF ITS OWN
+# under the account, holding the account's own files by link and one config.toml
+# of its own carrying the account's config plus the entry.
+#
+# lane_codex_trust_prepare's answer, read by the caller that reports the route
+# beside its own launch line and refuses when the entry could not be made.
+LANE_TRUST_ROUTE=""
+LANE_TRUST_HOME=""
+LANE_TRUST_REASON=""
+
+# lane_codex_trusted CONFIG DIR — what CONFIG says about opening into DIR.
+#
+#   0  trusted outright: the harness starts into DIR with no question
+#   1  the config does not say: no file, no table, no key, or a value the
+#      reader could not take
+#   2  the config carries an answer for DIR that is not trust
+#
+# The last two are kept apart because only the middle one licenses writing an
+# entry. Codex's own trust level takes exactly `trusted` and `untrusted`, so a
+# config answering `untrusted` for this directory holds a recorded decision in
+# the tool's own spelling, and overwriting it would run the launch at full trust
+# against the answer somebody gave.
+lane_codex_trusted() { # CONFIG DIR
+  local value
+  value="$(toml_value "$1" "projects.\"$2\"" trust_level)" || return 1
+  [ "$value" = trusted ] || return 2
+}
+
+# lane_codex_recorded DIR CONFIG... — what somebody has ALREADY recorded for
+# DIR, over every config a launch on this lane can read, as lane_codex_trusted's
+# own status with the strictest answer winning: 2 where any of them answers
+# something that is not trust, 0 where one trusts and none refuses, 1 where none
+# of them says anything.
+#
+# One reader, because the question has more than one file to ask. A launch on
+# the launch-home route runs with CODEX_HOME at the private home, so that is the
+# config codex writes a folder-trust answer into; a check that read the account
+# alone found nothing there, rebuilt the home from the account and appended
+# trust over the answer somebody had given. A config location added later is one
+# more argument here rather than a second per-file check a new site can miss.
+lane_codex_recorded() { # DIR CONFIG...
+  local dir="$1" config rc out=1
+  shift
+  for config in "$@"; do
+    rc=0
+    lane_codex_trusted "$config" "$dir" || rc=$?
+    [ "$rc" != 2 ] || return 2
+    [ "$rc" != 0 ] || out=0
+  done
+  return "$out"
+}
+
+# Make the trust entry for LAUNCH_DIR exist in the config a HARNESS launch on
+# LANE_DIR will read, and say which home that is. Prints nothing; the answer is
+# the three variables above, so a caller names the route in its own launch line.
+#
+#   LANE_TRUST_ROUTE   `none` for a harness that asks no such question,
+#                      `preapproved` where the account's own config already
+#                      trusts the directory, `launch-home` where this built a
+#                      private home carrying the entry
+#   LANE_TRUST_HOME    the CODEX_HOME the launch must run under
+#   LANE_TRUST_REASON  set on a non-zero return, naming what could not be done
+#
+# HARNESS is taken rather than tested by each caller, the way lane_launch_form
+# beside it takes one: a caller then makes one unconditional call and handles
+# one refusal, instead of repeating a harness test, a call, a swap and a
+# refusal around it.
+#
+# Status 1 is the LAUNCH READINESS answer, and the caller refuses on it rather
+# than opening a pane on a dialog. The closing step reads back the entry the
+# launch needs from the config that was just written: a home another launch
+# rewrote between the write and the read, a write that reported success and
+# produced nothing, and a path that broke the header across lines all end
+# there. A path carrying a quote or a backslash does NOT: the reader here
+# matches the header this wrote, while the harness reads both characters as
+# TOML string syntax and takes the file, or the key, to say something else.
+# Neither reaches here from a path kendex builds.
+lane_codex_trust_prepare() { # HARNESS LANE_DIR LAUNCH_DIR
+  local harness="$1" lane dir="$3" config home entry name staged rc=0
+  LANE_TRUST_ROUTE=""
+  LANE_TRUST_HOME="$2"
+  LANE_TRUST_REASON=""
+  if [ "$harness" != codex ]; then
+    LANE_TRUST_ROUTE=none
+    return 0
+  fi
+  # The ACCOUNT, never a private home. A caller inside a launched session reads
+  # its own CODEX_HOME to name its lane, and a home taken raw here would hold
+  # the next home inside it, one level deeper per launch, each level linking
+  # the level above rather than the account.
+  lane="$(lane_launch_home_account "$2")" || { LANE_TRUST_REASON=home-path; return 1; }
+  [ -n "$lane" ] || { LANE_TRUST_REASON=home-path; return 1; }
+  LANE_TRUST_HOME="$lane"
+  config="$lane/config.toml"
+  # An existing config this process cannot read is a refusal and never an
+  # absence. A numbered account's config.toml IS a symlink the account shim
+  # repoints, and a dangling one answers a readability test exactly as a missing
+  # file does; read as absence it stages an empty config, and the launch starts
+  # with every table the account was approved for gone, the hook approval among
+  # them, on the hook-approval dialog rather than the folder-trust one.
+  if { [ -e "$config" ] || [ -L "$config" ]; } && { [ ! -f "$config" ] || [ ! -r "$config" ]; }; then
+    LANE_TRUST_REASON=config-unreadable
+    return 1
+  fi
+  home="$(lane_codex_home_path "$lane" "$dir")" || { LANE_TRUST_REASON=home-path; return 1; }
+  # Read from BOTH configs a launch here can open, so an answer recorded in the
+  # private home is honoured exactly as one recorded in the account is. That
+  # home is where the launch-home route points CODEX_HOME, so it is where codex
+  # writes the answer somebody gives at the pane.
+  lane_codex_recorded "$dir" "$config" "$home/config.toml" || rc=$?
+  [ "$rc" != 2 ] || { LANE_TRUST_REASON=trust-refused; return 1; }
+  # `preapproved` is the ACCOUNT's own answer and only the account's: a
+  # `trusted` in the private home is this preparation's own earlier write, and
+  # reading it as the account's would skip the rebuild that carries across
+  # whatever the account has been approved for since.
+  rc=0
+  lane_codex_trusted "$config" "$dir" || rc=$?
+  [ "$rc" != 0 ] || { LANE_TRUST_ROUTE=preapproved; return 0; }
+  # The whole private tree is the account's own secrets by another name, so it
+  # is created private and the files written into it are protected by it.
+  ( umask 077 && mkdir -p -- "$home" ) || { LANE_TRUST_REASON=home-create; return 1; }
+  # The transcript store belongs to the ACCOUNT. The harness creates what is
+  # missing under the home it is given, so a store absent at this moment is
+  # created inside the private home, where open-terminal's relaunch scan never
+  # looks: that scan reads `<account>/sessions`, and a rollout written anywhere
+  # else is a resume that silently starts a fresh thread. Made in the account
+  # first so the loop below links it like any other entry. Every other name the
+  # harness invents after this point is created privately and stays there; this
+  # is the one such name anything here reads.
+  ( umask 077 && mkdir -p -- "$lane/sessions" ) || { LANE_TRUST_REASON=account-store; return 1; }
+  # The account's own files by link, never by copy: a token the harness renews
+  # under this lane is renewed in the account's auth.json, and the transcripts a
+  # resumed launch is scanned for stay where the account keeps them. config.toml
+  # is the one file this home owns, and `lane-launch` holds this home, so
+  # linking it in would nest the tree inside itself.
+  for entry in "$lane"/* "$lane"/.[!.]*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    { [ "$name" != config.toml ] && [ "$name" != lane-launch ]; } || continue
+    # A REAL directory at the name refuses. `ln -s -f` replaces a link and
+    # replaces a plain file, but at a directory it descends INTO it, creates the
+    # link inside and reports success, so a home that once held a directory of
+    # its own gains another level under that name at every launch. A plain file
+    # is replaced on purpose, and the producer is the rule two lines above: a
+    # name the account did not hold when this home was built is created here and
+    # stays here, so once the account gains that name there are two copies of
+    # it, and the link makes the account's the one this lane reads. No producer
+    # here detaches a link: the codex write that puts a credential at this name
+    # opens the existing path, so it lands in the account's own file.
+    if [ -d "$home/$name" ] && [ ! -L "$home/$name" ]; then
+      LANE_TRUST_REASON=home-entry
+      return 1
+    fi
+    ln -sfn -- "$entry" "$home/$name" || { LANE_TRUST_REASON=home-link; return 1; }
+  done
+  # Staged under this shell's own pid and renamed over the target, so a launch
+  # reading this home while another writes it meets the whole previous config or
+  # the whole new one, never half a file the harness refuses to parse, and two
+  # writers never share the file they are staging into. Every arm from here
+  # takes the staged file away before it refuses: one left behind is another
+  # file per refused launch, in the directory the config-write message sends the
+  # operator to read.
+  #
+  # The account's config carries everything the account was approved for — the
+  # hook approval the fleet install composed onto it, and every other launch
+  # directory's trust — minus this directory's own table, which the entry below
+  # states outright. Dropped rather than left in place because a harness that
+  # already recorded its own answer for this directory declares that table, and
+  # a second header for it is a duplicate key the harness rejects the whole file
+  # for: the launch would then start on no config at all rather than on a
+  # question.
+  staged="$home/config.toml.$$"
+  if [ -f "$config" ]; then
+    toml_without_table "$config" "projects.\"$dir\"" > "$staged" \
+      || { rm -f -- "${staged:?}"; LANE_TRUST_REASON=config-write; return 1; }
+  else
+    : > "$staged" || { rm -f -- "${staged:?}"; LANE_TRUST_REASON=config-write; return 1; }
+  fi
+  # A leading newline, because the account's config ends inside whatever table
+  # it ends in and a header appended to that line would be read as part of it.
+  printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$dir" >> "$staged" \
+    || { rm -f -- "${staged:?}"; LANE_TRUST_REASON=config-write; return 1; }
+  mv -f -- "$staged" "$home/config.toml" \
+    || { rm -f -- "${staged:?}"; LANE_TRUST_REASON=config-install; return 1; }
+  lane_codex_trusted "$home/config.toml" "$dir" || { LANE_TRUST_REASON=entry-unreadable; return 1; }
+  LANE_TRUST_ROUTE=launch-home
+  LANE_TRUST_HOME="$home"
+  return 0
 }
 
 # The ONE decision about how a resolved lane reaches the launched harness, made
@@ -279,7 +767,8 @@ lane_account_check() { # PANE LANE_VAR PICKED FORM BOUND
     waited=$((waited + 1))
   done
   LANE_ACCOUNT_OBSERVED="$observed"
-  if [[ "$(lane_claims_canon "$observed")" == "$(lane_claims_canon "$picked")" ]]; then
+  if [[ "$(lane_claims_canon "$(lane_launch_home_account "$observed")")" \
+     == "$(lane_claims_canon "$(lane_launch_home_account "$picked")")" ]]; then
     LANE_ACCOUNT_RESULT=verified
     return 0
   fi

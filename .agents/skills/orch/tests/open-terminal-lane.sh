@@ -14,10 +14,18 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 # Every lane this suite measures lives under LANES_HOME; an inherited lane
 # setting would point discovery at the operator's real accounts.
 unset ORCH_LANE_DIRS ORCH_LANE_ALIASES ORCH_LANE_EXCLUDE ORCH_LANE_RETIRE ORCH_LANES_USAGE_TTL CODEX_HOME
+# The renewal's own settings, for the same reason: with one of these exported a
+# developer runs a different suite from CI, where the expired-lane rows below
+# stay expired, and a row could reach a live helper or the real token endpoint.
+unset ORCH_LANES_CLAUDE_CLIENT_ID ORCH_LANES_TOKEN_CMD ORCH_LANES_CLAUDE_TOKEN_URL
 # The caller's environment outranks project settings, so a pinned local host
 # keeps an inherited or configured provider out of the local rows; hosted rows
 # pass the stub themselves.
 export ORCH_LANE_HOST=local
+# The usage threshold is pinned per run (run_ot) rather than read from the
+# checkout kendex.settings.toml, so the rows below assert what a launch
+# actually does rather than the repository configuration.
+unset ORCH_LANE_MAX_PCT
 # shellcheck source=lib/shared-skill-libs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +41,19 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 source "$TEST_DIR/lib/waiter-assertions.sh"
 # shellcheck source=lib/lanes-fixture.sh
 source "$TEST_DIR/lib/lanes-fixture.sh"
+# The trust rows below read the config a codex launch would open. That reading
+# is the launcher's own, so the suite sources it rather than scanning the file
+# a second way and pinning what its own scanner happens to find.
+# shellcheck source=../scripts/lib/toml.sh
+source "$SCRIPTS_DIR/lib/toml.sh"
+# lane_launch_home_account, for the rows that ask which ACCOUNT a launch
+# landed on: a private home's path is a checksum a row cannot spell, and the
+# launcher's own rule is what turns it back into the account.
+# shellcheck source=../scripts/lib/lane-home.sh
+source "$SCRIPTS_DIR/lib/lane-home.sh"
+# mutate_file, the substitution half of the must-fail controls below.
+# shellcheck source=lib/growth-state.sh
+source "$TEST_DIR/lib/growth-state.sh"
 
 FETCHER="$TMP_ROOT/fetch"
 make_fetcher "$FETCHER"
@@ -45,7 +66,16 @@ OT_STUB_BIN="$TMP_ROOT/ot-bin"; mkdir -p "$OT_STUB_BIN"
 cat > "$OT_STUB_BIN/worktree" <<'STUBEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$OT_WT_LOG"
-[[ "${1:-}" == "create" ]] && { d="$(mktemp -d "$(dirname "$OT_WT_LOG")/wt.XXXXXX")"; git init -q "$d"; printf '%s\n' "$d"; exit 0; }
+if [[ "${1:-}" == "create" ]]; then
+  # $OT_WT_FIXED pins the path for a row whose account config has to name the
+  # launch directory before the launch reads it.
+  if [[ -n "${OT_WT_FIXED:-}" ]]; then d="$OT_WT_FIXED"; mkdir -p "$d"
+  else d="$(mktemp -d "$(dirname "$OT_WT_LOG")/wt.XXXXXX")"; fi
+  git init -q "$d"
+  printf '%s\n' "$d" >> "${OT_WT_PATH:-/dev/null}"
+  printf '%s\n' "$d"
+  exit 0
+fi
 exit 0
 STUBEOF
 cat > "$OT_STUB_BIN/gh" <<'STUBEOF'
@@ -53,16 +83,59 @@ cat > "$OT_STUB_BIN/gh" <<'STUBEOF'
 exit 1
 STUBEOF
 # tmux logs every call; $OT_TMUX_FAIL names one subcommand that fails after
-# logging, so a window can be created and claimed while its launch fails. The
-# server pid is this test process, so claims recorded against it are live;
-# $OT_TMUX_PANES counts the windows created and list-panes reports each.
+# logging, so a window can be created and claimed while its launch fails, and
+# $OT_TMUX_FAIL_NTH aims a failure at one call of a subcommand several readers
+# share. The server pid is this test process, so claims recorded against it are
+# live; $OT_TMUX_PANES counts the windows created and list-panes reports each.
+#
+# The hosted rows get a pane that behaves as a terminal does, replayed from
+# this log rather than timed by the row. An ssh line pasted while the pane is
+# already running ssh is typed INTO that client and opens no connection, which
+# is the whole of what the retry has to work around; only a paste made while
+# the pane is at its own shell dials. An interrupt (send-keys C-c) is what
+# returns the pane to its shell. So the replay carries two facts:
+#   state        ssh while a dialling paste is the newest event, shell before
+#                the first one and after every interrupt
+#   connections  pastes that dialled, which is pastes made at the shell
+# $OT_SSH_CONNECTS_ON names the connection whose host answers with a prompt;
+# earlier ones show a connecting screen and no prompt, so a row puts the prompt
+# on the first dial, on the retry's dial, or on neither. $OT_SSH_DIES_AFTER
+# names how many pane_current_command reads a connection survives; past it the
+# pane is back at its shell, which is a session that died under the wait.
+# $OT_SSH_IGNORES_INTERRUPT is the other end of that: a client already past
+# connect, whose raw-mode terminal forwards the interrupt to the remote instead
+# of dying, so the pane stays in ssh and no retyped line can reach a shell.
+# $OT_SSH_SCREEN names a file holding the connected screen, several lines and
+# not one, which is what a login printing a banner above its prompt draws.
 cat > "$OT_STUB_BIN/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$OT_TMUX_LOG"
 if [[ -n "${OT_TMUX_FAIL:-}" && "${1:-}" == "$OT_TMUX_FAIL" ]]; then
   exit 1
 fi
+# $OT_TMUX_FAIL_NTH is SUB:N — the Nth call of subcommand SUB in the run fails,
+# counted from the log above, this call included. $OT_TMUX_FAIL fails every
+# call of a subcommand for the whole run, which cannot be aimed at one reader
+# where several of them read the same subcommand.
+if [[ -n "${OT_TMUX_FAIL_NTH:-}" && "${1:-}" == "${OT_TMUX_FAIL_NTH%%:*}" ]]; then
+  seen="$(grep -c "^${OT_TMUX_FAIL_NTH%%:*} " "$OT_TMUX_LOG")" || true
+  [[ "$seen" != "${OT_TMUX_FAIL_NTH##*:}" ]] || exit 1
+fi
 n=0; [[ -f "${OT_TMUX_PANES:-}" ]] && n="$(cat "$OT_TMUX_PANES")"
+# The pane replayed from the log the launcher's own calls wrote: `state` is ssh
+# or shell, `connections` counts the pastes that dialled, and `reads` counts the
+# pane_current_command reads since the newest dial.
+eval "$(awk '
+  /^clear; ssh / { if (state != "ssh") { conn++; state = "ssh"; reads = 0 } ; next }
+  /^send-keys .* C-c$/ { if (ENVIRON["OT_SSH_IGNORES_INTERRUPT"] == "") state = "shell"; next }
+  /pane_current_command/ { if (state == "ssh") reads++ }
+  END { printf "state=%s connections=%d reads=%d\n", (state == "ssh" ? "ssh" : "shell"), conn + 0, reads + 0 }
+' "$OT_TMUX_LOG")"
+# A connection the row says has outlived its welcome: the pane is back at its
+# own shell, exactly as one whose ssh was interrupted is.
+if [[ "$state" == ssh && -n "${OT_SSH_DIES_AFTER:-}" && "$reads" -gt "$OT_SSH_DIES_AFTER" ]]; then
+  state=shell
+fi
 case "${1:-}" in
   new-window)
     n=$((n + 1)); [[ -z "${OT_TMUX_PANES:-}" ]] || printf '%s' "$n" > "$OT_TMUX_PANES"
@@ -70,8 +143,24 @@ case "${1:-}" in
   list-panes)
     i=1; while [[ "$i" -le "$n" ]]; do echo "$OT_TMUX_SERVER_PID %$i"; i=$((i + 1)); done ;;
   list-windows) echo "1" ;;
+  show-environment)
+    # The tmux environment a new pane inherits, which is not the launcher's own.
+    # tmux keeps TWO of them and the read names which: the SESSION scope without
+    # -g, the GLOBAL scope with it, the latter being where the environment the
+    # server was started with lands. A pane takes the session entry wherever it
+    # has one. So this arm answers per scope, from a variable of that scope's
+    # own, and a scope holding nothing fails the read the way the real tmux
+    # reports an unknown variable. The value `-` is that scope's removal marker,
+    # which tmux prints as a leading dash on the name and which hides the
+    # variable from the pane.
+    var="${!#}"
+    if [[ "${2:-}" == -g ]]; then value="${OT_TMUX_ENV_GLOBAL_CODEX_HOME:-}"
+    else value="${OT_TMUX_ENV_SESSION_CODEX_HOME:-}"; fi
+    { [[ "$var" == CODEX_HOME ]] && [[ -n "$value" ]]; } || exit 1
+    if [[ "$value" == - ]]; then printf -- '-%s\n' "$var"; else printf '%s=%s\n' "$var" "$value"; fi ;;
   display-message)
-    if [[ "$*" == *pane_current_command* ]]; then echo ssh
+    if [[ "$*" == *pane_current_command* ]]; then
+      if [[ "$state" == ssh ]]; then echo ssh; else echo bash; fi
     elif [[ "$*" == *pane_pid* ]]; then
       # The moment the account check starts: a row that holds its leaf back
       # until then puts the first read inside the window it is pinning.
@@ -79,10 +168,16 @@ case "${1:-}" in
       printf '%s\n' "${OT_PANE_PID:-0}"
     else echo 0; fi ;;
   capture-pane)
+    # A connection whose host has not answered yet: a screen ending in a full
+    # stop, which carries no prompt character.
+    if [[ "$state" == ssh && -n "${OT_SSH_CONNECTS_ON:-}" && "$connections" -lt "$OT_SSH_CONNECTS_ON" ]]; then printf 'Connecting to lane.example...\n'
     # With a gate named, the pane shows nothing a launch check accepts until
     # that file exists: a row can then hold "launched" back until the wrapper
     # has handed the account over, which is the order the real thing has.
-    if [[ -n "${OT_LAUNCHED_GATE:-}" && ! -e "$OT_LAUNCHED_GATE" ]]; then printf 'dev@lane:~$\n'
+    # The connected screen a row spells out, from a file because a screen is
+    # several lines while run_ot's env list is one.
+    elif [[ "$state" == ssh && -n "${OT_SSH_SCREEN:-}" ]]; then cat "$OT_SSH_SCREEN"
+    elif [[ -n "${OT_LAUNCHED_GATE:-}" && ! -e "$OT_LAUNCHED_GATE" ]]; then printf 'dev@lane:~$\n'
     else printf '%s\n' "${OT_PANE_TEXT:-dev@lane:~\$}"; fi ;;
   load-buffer) cat "${!#}" >> "$OT_TMUX_LOG" ;;
 esac
@@ -139,21 +234,52 @@ TABBED="$TMP_ROOT/tab	lane"; mkdir -p "$TABBED"
 COLLIDE="$TMP_ROOT/collide"; mkdir -p "$COLLIDE/work"; git -C "$COLLIDE" init -q -b main
 BARE="$TMP_ROOT/bare"; mkdir -p "$BARE/somelane"; git -C "$BARE" init -q -b main
 NOREPO="$TMP_ROOT/norepo"; mkdir -p "$NOREPO"
+# A git repository with no kendex settings of its own. A script copied outside
+# every checkout resolves no PROJECT_ROOT, and `lane-host resolve` then runs
+# from the working directory, which has to be a repository; this one carries no
+# settings for that script to pick up on the way.
+NOSETTINGS="$TMP_ROOT/nosettings"; mkdir -p "$NOSETTINGS"; git -C "$NOSETTINGS" init -q -b main
 
 standard_home home
+
+# A lane launch on a harness the flag table names names a model, and a reasoning
+# effort where that harness has an effort flag, or open-terminal refuses it
+# before any lane is judged; so every row below names both. CHOICE is
+# the pair a row about something else passes: Opus, which every fixture in this
+# suite measures with room, and an effort no gate here reads, so the row's
+# outcome still turns on the one thing it is about. The rows that ARE about the
+# pair spell their own, or pass none.
+#
+# Two spellings of the one pair, because the words go in the text the launch
+# RUNS: CHOICE for a row that lets the launcher build the harness command, and
+# CHOICE_CMD for a row whose launch carries its own `true` command, where
+# --launch-flags would reach nothing and be refused.
+CHOICE='flags=--model opus --effort high'
+CHOICE_CMD='cmd=true --model opus --effort high'
 
 # --- harness ---------------------------------------------------------------
 
 # run_ot ENV ARGS... — runs open-terminal with the stubs, the standard home
 # and a fresh claim store, tmux log, pane counter and worktree log under
 # $RUN. ENV is a semicolon-separated list of `env` arguments that may override
-# the defaults; an item `cwd=DIR` runs from DIR instead of the checkout, and
+# the defaults; an item `cwd=DIR` runs from DIR instead of the checkout,
+# `max_pct=unset` drops the pinned launch threshold so `lanes` decides, and
 # `prep=store_ro` or `prep=claims_file` stages this run's claim store as a
-# read-only directory or as a plain file before the launch. OUT is stdout and
-# stderr together, the way a caller sees a launch.
+# read-only directory or as a plain file before the launch, `flags=S` passes S
+# as one --launch-flags string and `cmd=S` passes S as one --cmd template. Those
+# last two exist because a lane launch names both a model and an effort, which
+# is two words, while a table row's args field is word-split; the env list is
+# not. They are alternatives, never both: --launch-flags beside --cmd reach
+# nothing and open-terminal refuses them, so a row whose launch runs its own
+# command spells the pair inside that command. OUT is stdout and stderr
+# together, the way a caller sees a launch.
 RUN_SEQ=0
 run_ot() {
-  local env_list="$1" env_args=() items item cwd="$PWD" prep=""
+  local env_list="$1" env_args=() flag_args=() items item cwd="$PWD" prep=""
+  # The threshold is pinned per run so a row asserts what a launch does rather
+  # than the checkout configuration. `max_pct=unset` drops the pin for the rows
+  # that ask which number decides when the launcher forwards none.
+  local pct_pin=(ORCH_LANE_MAX_PCT=95)
   shift
   RUN="$TMP_ROOT/runs/$((++RUN_SEQ))"
   mkdir -p "$RUN"
@@ -162,7 +288,14 @@ run_ot() {
     for item in "${items[@]}"; do
       case "$item" in
         cwd=*) cwd="${item#cwd=}" ;;
+        max_pct=*)
+          [[ "${item#max_pct=}" == unset ]] \
+            || { printf 'run_ot: max_pct takes only unset: %s\n' "$item" >&2; exit 1; }
+          pct_pin=()
+          ;;
         prep=*) prep="${item#prep=}" ;;
+        flags=*) flag_args=(--launch-flags "${item#flags=}") ;;
+        cmd=*) flag_args=(--cmd "${item#cmd=}") ;;
         *) env_args+=("$item") ;;
       esac
     done
@@ -173,15 +306,22 @@ run_ot() {
     claims_file) mkdir -p "$RUN/state"; : > "$RUN/state/claims" ;;
     *) echo "run_ot: unknown prep $prep" >&2; exit 1 ;;
   esac
-  # Every tmux wait is bounded by this, the premise wait ahead of the account
-  # read included. These rows stub a pane that draws no harness screen, so each
-  # such wait runs to its bound; one second keeps the suite honest and quick.
+  # The provider's disk for this run: a hosted launch reads the lane's `.git`
+  # there for the clone its marker belongs under, and writes the marker back.
+  mkdir -p "$RUN/remote/srv/lane"
+  printf 'gitdir: /srv/clone/.git/worktrees/lane\n' > "$RUN/remote/srv/lane/.git"
+  # Every tmux wait is bounded by one of these two, the premise wait ahead of
+  # the account read included. These rows stub a pane that draws no harness
+  # screen, so each such wait runs to its bound; one second keeps the suite
+  # honest and quick. Which waits read the ssh bound, and how many of them a
+  # hosted launch makes, is named at open-terminal's validation gate.
   OUT=$(cd "$cwd" && env LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" GH_ISSUE_PATTERN='[A-Z]+-[0-9]+' \
-    ORCH_TMUX_VERIFY_SECS=1 \
+    LANE_HOST_STUB_DIR="$RUN/remote" \
+    ORCH_TMUX_VERIFY_SECS=1 ORCH_LANE_SSH_PROMPT_SECS=1 ${pct_pin[@]+"${pct_pin[@]}"} \
     TMUX=stub,1,0 OT_TMUX_LOG="$RUN/tmux.log" OT_TMUX_SERVER_PID="$$" OT_TMUX_PANES="$RUN/panes" \
-    OT_WT_LOG="$RUN/worktree.log" OVERSEE_WATCH_STATE_DIR="$RUN/state" ORCH_STATE_DIR="$RUN/state" LANE_HOST_STUB_LOG="$RUN/host.log" \
+    OT_WT_LOG="$RUN/worktree.log" OT_WT_PATH="$RUN/worktree.path" OVERSEE_WATCH_STATE_DIR="$RUN/state" ORCH_STATE_DIR="$RUN/state" LANE_HOST_STUB_LOG="$RUN/host.log" \
     PATH="$OT_STUB_BIN:$PATH" WORKTREE_CLI="$OT_STUB_BIN/worktree" \
-    ${env_args[@]+"${env_args[@]}"} "$OPEN_TERMINAL" "$@" 2>&1)
+    ${env_args[@]+"${env_args[@]}"} "$OPEN_TERMINAL" ${flag_args[@]+"${flag_args[@]}"} "$@" 2>&1)
   RC=$?
   [[ "$prep" != store_ro ]] || chmod 755 "$RUN/state/claims"
 }
@@ -195,6 +335,13 @@ lane_names() {
   local names
   names="$(grep -oE "CLAUDE_CONFIG_DIR='?[^ '\"]+" <<<"$1" | sed -E -e "s/^CLAUDE_CONFIG_DIR='?//" -e 's/\.$//' -e "s#^$H/\\.##" | awk '!seen[$0]++' | paste -sd, - || true)"
   printf '%s' "${names:-none}"
+}
+
+# launched_codex_home — the CODEX_HOME the launched command names, empty when
+# the run launched none. The value is single-quoted inside the launch line the
+# pane's shell reads, which is where the tmux stub logs it.
+launched_codex_home() {
+  sed -nE "s/.*env CODEX_HOME='([^']*)'.*/\\1/p" "$RUN/tmux.log" 2>/dev/null | sed -n 1p || true
 }
 
 # counted PATTERN FILE — matching lines, or `nolog` when the stub never wrote
@@ -218,9 +365,25 @@ counted() {
 #   out_lanes     the lanes the launch output names, in order
 #   summary       the batch summary's lane attribution, the one fact only the
 #                 summary carries: `spread=N` distinct lanes, or `lane=NAME`
-#   walled        lane, model and pct of the lane-model-walled line, or none
+#   walled        lane, model, pct and bucket of the lane-model-walled line, or none
 #   unreadable    lane, model and step of the lane-model-unreadable line, or none
 #   judgefailed   lane, model and exit of the lane-judge-failed line, or none
+#   modelmissing  harness, lane and spellings of the launch-model-missing line,
+#                 or none
+#   effortmissing the same of the launch-effort-missing line, or none
+#   flagsunreachable  every field of the launch-flags-unreachable line, commas
+#                 for spaces, or none
+#   credentialdead  lane and host of the host-credential-dead line, or none
+#   promptmissing every field of the remote-prompt-missing line, commas for
+#                 spaces, or none
+#   seconds_invalid  setting and value of the verify-seconds-invalid line, or none
+#   seconds_clamped  setting, value and limit of the verify-seconds-clamped
+#                 line, or none
+#   tmuxfailed    operation and item of the tmux-failed line, or none
+#   relaunchgate  the host-relaunch-credential lines, which say the launch was
+#                 not judged on this machine's copy of the account
+#   unanswered    the host-accounts-unanswered lines, which say the provider
+#                 failed the accounts verb and the launch kept the local gate
 #   claimsnotice  the keyed lanes: pick-lane-claims notice lines, which say the
 #                 claim store could not be read and the wall verdict stands
 #   refused       the first field of the lane-refused line, or none
@@ -261,7 +424,7 @@ observe() {
         value="${value:-none}"
         ;;
       walled)
-        value="$(awk '$1 == "open-terminal:" && $2 == "lane-model-walled" { print $3, $4, $5; exit }' <<<"$OUT" | tr ' ' ',')"
+        value="$(awk '$1 == "open-terminal:" && $2 == "lane-model-walled" { print $3, $4, $5, $6; exit }' <<<"$OUT" | tr ' ' ',')"
         value="${value:-none}"
         ;;
       unreadable)
@@ -272,7 +435,91 @@ observe() {
         value="$(awk '$1 == "open-terminal:" && $2 == "lane-judge-failed" { print $3, $4, $5; exit }' <<<"$OUT" | tr ' ' ',')"
         value="${value:-none}"
         ;;
+      modelmissing)
+        value="$(awk '$1 == "open-terminal:" && $2 == "launch-model-missing" { print $3, $4, $5; exit }' <<<"$OUT" | tr ' ' ',')"
+        value="${value:-none}"
+        ;;
+      effortmissing)
+        value="$(awk '$1 == "open-terminal:" && $2 == "launch-effort-missing" { print $3, $4, $5; exit }' <<<"$OUT" | tr ' ' ',')"
+        value="${value:-none}"
+        ;;
+      flagsunreachable)
+        # Every field of the line, commas for spaces: the flags it names carry
+        # spaces of their own and an expect string is word-split.
+        value="$(sed -n 's/^open-terminal: launch-flags-unreachable //p' <<<"$OUT" | sed -n 1p | tr ' ' ',')"
+        value="${value:-none}"
+        ;;
+      credentialdead)
+        value="$(awk '$1 == "open-terminal:" && $2 == "host-credential-dead" { print $3, $4; exit }' <<<"$OUT" | tr ' ' ',')"
+        value="${value:-none}"
+        ;;
+      promptmissing)
+        # Every field of the line, commas for spaces: the bound it spent and
+        # the attempts it made are the two only this line carries.
+        value="$(sed -n 's/^open-terminal: remote-prompt-missing //p' <<<"$OUT" | sed -n 1p | tr ' ' ',')"
+        value="${value:-none}"
+        ;;
+      seconds_invalid)
+        value="$(awk '$1 == "open-terminal:" && $2 == "verify-seconds-invalid" { print $3, $4; exit }' <<<"$OUT" | tr ' ' ',')"
+        value="${value:-none}"
+        ;;
+      seconds_clamped)
+        value="$(awk '$1 == "open-terminal:" && $2 == "verify-seconds-clamped" { print $3, $4, $5; exit }' <<<"$OUT" | tr ' ' ',')"
+        value="${value:-none}"
+        ;;
+      tmuxfailed)
+        value="$(awk '$1 == "open-terminal:" && $2 == "tmux-failed" { print $3, $4; exit }' <<<"$OUT" | tr ' ' ',')"
+        value="${value:-none}"
+        ;;
+      relaunchgate) value="$(grep -c '^open-terminal: host-relaunch-credential ' <<<"$OUT" || true)" ;;
+      unanswered) value="$(grep -c '^open-terminal: host-accounts-unanswered ' <<<"$OUT" || true)" ;;
       claimsnotice) value="$(grep -c '^lanes: pick-lane-claims claims=null$' <<<"$OUT" || true)" ;;
+      # Which CODEX_HOME the launched command runs under, as a shape rather
+      # than a path: `private` is a home of this launch's own under the
+      # account, sitting under a directory named for the worktree path and its
+      # checksum, so it is not a value a row can spell; its own leaf is the
+      # fixed word `home`. Anything else is named relative to the home.
+      cmd_home)
+        local home
+        home="$(launched_codex_home)"
+        if [[ -z "$home" ]]; then value=none
+        elif [[ "$home" == */lane-launch/*/home ]]; then value=private
+        else value="${home#"$H/"}"; fi
+        ;;
+      # Which ACCOUNT that CODEX_HOME belongs to, named relative to the
+      # fixture home. A private home sits under a directory named for the
+      # worktree path and its checksum, so the account is taken back out of it
+      # through the launcher's own rule rather than spelled here.
+      cmd_account)
+        local account
+        account="$(launched_codex_home)"
+        if [[ -z "$account" ]]; then value=none
+        else value="$(lane_launch_home_account "$account")"; value="${value#"$H/"}"; fi
+        ;;
+      # The refusal the launcher reports when it could not make the entry. The
+      # count is the assertion, not the catalog line in the source: a catalog
+      # line survives a guard that stopped refusing.
+      trustfail) value="$(grep -c '^open-terminal: launch-trust-missing ' <<<"$OUT" || true)" ;;
+      # Which route made the directory trusted, as the launcher reports it
+      # beside the launch. That line is the only place a reader learns which
+      # config the session is running under: an account that already answered
+      # for the directory, or a home this launch built for it.
+      trust_route)
+        local route
+        route="$(sed -nE 's/^open-terminal: launch-trusted .*route=([^ ]*).*/\1/p' <<<"$OUT" | sed -n 1p)"
+        value="${route:-none}"
+        ;;
+      # Does that home's config trust the directory the window opened in? That
+      # is the question the harness answers before it reads its arguments, read
+      # here through the launcher's own reader.
+      home_trusts)
+        local trust_home trust_wt
+        trust_home="$(launched_codex_home)"
+        trust_wt="$(sed -n '$p' "$RUN/worktree.path" 2>/dev/null || true)"
+        if [[ -z "$trust_home" || -z "$trust_wt" ]]; then value=none
+        elif [[ "$(toml_value "$trust_home/config.toml" "projects.\"$trust_wt\"" trust_level || true)" == trusted ]]; then value=yes
+        else value=no; fi
+        ;;
       *) value=UNKNOWN_FIELD ;;
     esac
     got="$got $name=$value"
@@ -305,54 +552,279 @@ echo "=== a lane is resolved before anything launches ==="
 # (a malformed setting) is reported as that failure, never as a covered lane.
 table \
   "--help exits 0 outside a git repository|cwd=$NOREPO|--help|rc=0 stdout=line" \
-  'no lane under the threshold: nothing launched, no worktree created||--harness claude --lane auto --lane-max-pct 15 --cmd true CC-1|rc=1 launched=nolog creates=nolog' \
-  'an explicit --lane that is not a directory is refused||--harness claude --lane /nonexistent/lane CC-1|rc=1 launched=nolog' \
-  'an unknown --lane alias is refused|ORCH_LANE_ALIASES=eclaude=work|--harness claude --lane nosuchlane --cmd true CC-1|rc=1 launched=nolog' \
-  'a retired lane named by its alias is refused before anything launches|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_RETIRE=eclaude=2000-01-01|--harness claude --lane work --cmd true CC-1|rc=1 launched=nolog refused=lane=work' \
-  "an excluded lane named by its config dir is refused before anything launches|ORCH_LANE_EXCLUDE=eclaude|--harness claude --lane $H/.eclaude --cmd true CC-1|rc=1 launched=nolog refused=lane=$H/.eclaude" \
-  "an excluded lane's alias is refused even beside a same-named cwd directory|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_EXCLUDE=eclaude;cwd=$COLLIDE|--harness claude --lane work --cmd true CC-1|rc=1 launched=nolog refused=lane=work" \
-  "an excluded lane's alias with no same-named directory is refused, not unknown|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_EXCLUDE=eclaude;cwd=$BARE|--harness claude --lane work --cmd true CC-1|rc=1 launched=nolog refused=lane=work" \
-  "a named lane whose check fails on a malformed setting is a resolution failure, not a refusal|ORCH_LANES_USAGE_TTL=soon|--harness claude --lane $H/.eclaude --cmd true CC-1|rc=1 launched=nolog refused=none failed=exit=1"
+  "no lane under the threshold: nothing launched, no worktree created|$CHOICE_CMD|--harness claude --lane auto --lane-max-pct 15 CC-1|rc=1 launched=nolog creates=nolog" \
+  "an explicit --lane that is not a directory is refused|$CHOICE|--harness claude --lane /nonexistent/lane CC-1|rc=1 launched=nolog" \
+  "an unknown --lane alias is refused|ORCH_LANE_ALIASES=eclaude=work;$CHOICE_CMD|--harness claude --lane nosuchlane CC-1|rc=1 launched=nolog" \
+  "a retired lane named by its alias is refused before anything launches|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_RETIRE=eclaude=2000-01-01;$CHOICE_CMD|--harness claude --lane work CC-1|rc=1 launched=nolog refused=lane=work" \
+  "an excluded lane named by its config dir is refused before anything launches|ORCH_LANE_EXCLUDE=eclaude;$CHOICE_CMD|--harness claude --lane $H/.eclaude CC-1|rc=1 launched=nolog refused=lane=$H/.eclaude" \
+  "an excluded lane's alias is refused even beside a same-named cwd directory|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_EXCLUDE=eclaude;cwd=$COLLIDE;$CHOICE_CMD|--harness claude --lane work CC-1|rc=1 launched=nolog refused=lane=work" \
+  "an excluded lane's alias with no same-named directory is refused, not unknown|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANE_EXCLUDE=eclaude;cwd=$BARE;$CHOICE_CMD|--harness claude --lane work CC-1|rc=1 launched=nolog refused=lane=work" \
+  "a named lane whose check fails on a malformed setting is a resolution failure, not a refusal|ORCH_LANES_USAGE_TTL=soon;$CHOICE_CMD|--harness claude --lane $H/.eclaude CC-1|rc=1 launched=nolog refused=none failed=exit=1" \
+  "an ALIAS-spelled lane whose lookup fails on the same setting is that failure too, never an unknown alias|ORCH_LANE_ALIASES=eclaude=work;ORCH_LANES_USAGE_TTL=soon;$CHOICE_CMD|--harness claude --lane work CC-1|rc=1 launched=nolog refused=none failed=exit=1"
 
 # The separator-bearing path cannot ride through a table row's word split.
-run_ot "" --harness claude --lane "$TABBED" --cmd true CC-21
+run_ot "$CHOICE_CMD" --harness claude --lane "$TABBED" CC-21
 assert_eq "$(observe "rc=1 launched=nolog")" "rc=1 launched=nolog" "a tab-bearing lane config dir is refused"
+
+echo "=== a lane launch names a model and an effort, or nothing launches ==="
+# A harness default is whatever that harness happens to ship this week, and the
+# account the launch opens on is spent either way, so a lane, a model and an
+# effort are one purposeful choice: a launch making only part of it is refused
+# before any lane is judged, and is never judged on the account's binding bucket
+# instead. One keyed refusal per missing half, so the key says which. Every
+# harness the flag table names, a relaunch as much as a fresh launch.
+#
+# The spellings each row pins are the table's own, which is why a harness whose
+# CLI spells the pair differently is one row there: codex takes `-m` and a
+# `model_reasoning_effort=` config token, pi `--model` and `--thinking`, and
+# opencode's launch form has no effort flag at all, so it asks the model alone.
+table \
+  "a launch naming a model and no effort is refused, naming the flag that harness takes|cmd=true --model opus|--harness claude --lane $H/.claude CC-81|rc=1 launched=nolog creates=nolog modelmissing=none effortmissing=harness=claude,lane=$H/.claude,spellings=--effort" \
+  "a launch naming neither is refused for both, one keyed line each||--harness claude --lane $H/.claude --cmd true CC-82|rc=1 launched=nolog creates=nolog modelmissing=harness=claude,lane=$H/.claude,spellings=--model effortmissing=harness=claude,lane=$H/.claude,spellings=--effort" \
+  "a pi launch naming neither is refused the same way, on pi's own spellings||--harness pi --lane $H/.claude --cmd true CC-83|rc=1 launched=nolog creates=nolog modelmissing=harness=pi,lane=$H/.claude,spellings=--model effortmissing=harness=pi,lane=$H/.claude,spellings=--thinking" \
+  "a codex launch naming neither is refused on codex's config-token spelling of the effort||--harness codex --lane $H/.claude --cmd true CC-84|rc=1 launched=nolog creates=nolog modelmissing=harness=codex,lane=$H/.claude,spellings=-m,--model effortmissing=harness=codex,lane=$H/.claude,spellings=model_reasoning_effort=" \
+  "a relaunch naming neither is refused too, the choice being the launch's and not the session's||--harness claude --relaunch --lane $H/.claude --cmd true CC-85|rc=1 launched=nolog modelmissing=harness=claude,lane=$H/.claude,spellings=--model" \
+  "a launch naming both launches, which is what the usage gate below then judges|$CHOICE_CMD|--harness claude --lane $H/.claude CC-86|rc=0 launched=1 modelmissing=none effortmissing=none" \
+  "opencode has no effort flag to name, so its launch asks the model alone|cmd=true --model anthropic/claude-opus-5|--harness opencode --lane $H/.claude CC-87|rc=0 launched=1 modelmissing=none effortmissing=none"
+
+# The --cmd template carries the same two words for the same reason: a launch
+# writing its own harness argv still made the choice, and a template a row
+# cannot spell inside a word-split args field is passed through run_ot's argv.
+run_ot "" --harness claude --lane "$H/.claude" --cmd "claude --model opus --effort high" CC-88
+assert_eq "$(observe "rc=0 launched=1 modelmissing=none effortmissing=none")" \
+  "rc=0 launched=1 modelmissing=none effortmissing=none" \
+  "a model and an effort named only in the --cmd template are named"
+run_ot "" --harness claude --lane "$H/.claude" --cmd "claude --model opus" CC-89
+assert_eq "$(observe "rc=1 launched=nolog effortmissing=harness=claude,lane=$H/.claude,spellings=--effort")" \
+  "rc=1 launched=nolog effortmissing=harness=claude,lane=$H/.claude,spellings=--effort" \
+  "a --cmd template naming a model and no effort is refused for the effort"
+
+# THE LANE SPEC NAMES THE HARNESS TOO. `--lane auto:<h>` resolves a real <h>
+# account through `lanes pick --harness <h>`, so a launch that passed no
+# --harness has still named the harness whose row judges its choice words, and
+# that row judges it. Keyed on --harness alone the gate skipped exactly this
+# shape: the launch was accepted with no model named and the lane started on
+# whatever default the harness ships. Its control is ctl-lane-harness below.
+#
+# Only a launch naming a harness NOWHERE stays exempt — a named config dir or
+# alias with no --harness — because nothing in that argv says which harness
+# reads the words in the caller's own command.
+table \
+  "a launch naming its harness only in the lane spec is judged by that harness's row|cmd=true|--lane auto:claude CC-114|rc=1 launched=nolog creates=nolog modelmissing=harness=claude,lane=auto:claude,spellings=--model effortmissing=harness=claude,lane=auto:claude,spellings=--effort" \
+  "the same launch naming both words inside its command launches|$CHOICE_CMD|--lane auto:claude CC-115|rc=0 launched=1 modelmissing=none effortmissing=none" \
+  "a named lane with no --harness names no harness anywhere, and is the one shape left exempt|cmd=true|--lane $H/.claude CC-116|rc=0 launched=1 modelmissing=none effortmissing=none"
+
+# --launch-flags beside a --cmd template reach NOTHING: start_cmd renders the
+# template verbatim and appends no flag to it. Left ungated, the choice words
+# there would be read, judged and recorded while the harness ran its own
+# default. The refusal is the launch's, not the lane's, so it lands on a launch
+# with no --lane too, and the model or effort the flags name is never read.
+run_ot "flags=--model opus --effort high" --harness claude --lane "$H/.claude" --cmd true CC-99
+assert_eq "$(observe "rc=1 launched=nolog creates=nolog flagsunreachable=option=--launch-flags,flags=--model,opus,--effort,high modelmissing=none effortmissing=none")" \
+  "rc=1 launched=nolog creates=nolog flagsunreachable=option=--launch-flags,flags=--model,opus,--effort,high modelmissing=none effortmissing=none" \
+  "launch flags beside a --cmd template refuse the launch, naming the flags that reach nothing"
+run_ot "flags=--model opus --effort high" --cmd true CC-112
+assert_eq "$(observe "rc=1 launched=nolog flagsunreachable=option=--launch-flags,flags=--model,opus,--effort,high")" \
+  "rc=1 launched=nolog flagsunreachable=option=--launch-flags,flags=--model,opus,--effort,high" \
+  "a wholly custom launch with no harness and no lane is refused for the same unreachable flags"
+
+# pi spells the thinking level on the model value too, `--model sonnet:high`,
+# which its own --help documents. A launch passing that has made both choices, so
+# asking it for a --thinking it already named would refuse a launch that named
+# everything. The table row's fourth field carries the separator, `-` for the
+# harness that has none, so this is one row rule and not a branch per harness:
+# the claude rows above pass `opus` with no level and are still asked for
+# --effort. A separator with nothing after it names no level.
+#
+# The last row is the inverse: an arbitrary value carrying the same character on
+# a harness whose row names no separator is a model value and nothing more.
+table \
+  "pi's level on the model value names the effort, so the launch is not asked for it again|cmd=true --model sonnet:high|--harness pi --lane $H/.claude CC-95|rc=0 launched=1 modelmissing=none effortmissing=none" \
+  "a separator with no level after it names no effort, so that launch is still refused|cmd=true --model sonnet:|--harness pi --lane $H/.claude CC-97|rc=1 launched=nolog modelmissing=none effortmissing=harness=pi,lane=$H/.claude,spellings=--thinking" \
+  "a claude launch whose model value carries a colon is still asked for its effort, its row naming no separator|cmd=true --model opus:1m|--harness claude --lane $H/.claude CC-98|rc=1 launched=nolog modelmissing=none effortmissing=harness=claude,lane=$H/.claude,spellings=--effort"
+# The same value inside a --cmd template, which a word-split args field cannot
+# spell.
+run_ot "" --harness pi --lane "$H/.claude" --cmd "pi --model sonnet:high" CC-96
+assert_eq "$(observe "rc=0 launched=1 modelmissing=none effortmissing=none")" \
+  "rc=0 launched=1 modelmissing=none effortmissing=none" \
+  "pi's level named on the model value inside the --cmd template names the effort too"
 
 echo "=== a launch is refused when the model it passes has no window left ==="
 # An account with plan-wide weekly room can still have none left for ONE model.
 # The binding bucket never shows it, so a --wake or --relaunch onto a named
 # account opens its first turn on a usage banner instead of the session it
-# resumed. The model comes from --launch-flags, which is where both harnesses
-# take it; a launch that names none reaches no model gate at all, and the named
-# lane launches as before.
+# resumed. The model comes from the text the launch RUNS: the --cmd command
+# where there is one, --launch-flags where there is not, so the wall judged is
+# always the wall of the model the harness will really be started on.
 # The refusal sits in lane resolution, ahead of the branch that tells a wake
 # from a relaunch from a plain launch, so every launch mode meets the same
 # clause and the relaunch row below is the shaped input for all of them.
 claude_usage 10 20 95 'Fable 5.1' > "$FIXTURE_DIR/.claude.json"
 table \
-  "a named lane whose window for this model is walled is refused before anything launches||--harness claude --lane $H/.claude --launch-flags --model=fable --cmd true CC-60|rc=1 launched=nolog creates=nolog walled=lane=$H/.claude,model=fable,pct=95" \
-  "a relaunch onto that same lane is refused the same way||--harness claude --relaunch --lane $H/.claude --launch-flags --model=fable --cmd true CC-61|rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=95" \
-  "the same lane launches for a model whose own window has room||--harness claude --lane $H/.claude --launch-flags --model=opus --cmd true CC-62|rc=0 launched=1 walled=none" \
-  "a launch naming no model reaches no model gate, and the named lane launches as before||--harness claude --lane $H/.claude --cmd true CC-63|rc=0 launched=1 walled=none" \
-  "--lane auto takes the account with the most room for the model being passed||--harness claude --lane auto --launch-flags --model=opus --cmd true CC-64|rc=0 cmd_lane=claude walled=none" \
-  "--lane auto moves off the account whose window for that model is walled||--harness claude --lane auto --launch-flags --model=fable --cmd true CC-65|rc=0 cmd_lane=eclaude walled=none"
+  "a named lane whose window for this model is walled is refused before anything launches|cmd=true --model=fable --effort=high|--harness claude --lane $H/.claude CC-60|rc=1 launched=nolog creates=nolog walled=lane=$H/.claude,model=fable,pct=95,bucket=model" \
+  "a relaunch onto that same lane is refused the same way|cmd=true --model=fable --effort=high|--harness claude --relaunch --lane $H/.claude CC-61|rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=95,bucket=model" \
+  "the same lane launches for a model whose own window has room|$CHOICE_CMD|--harness claude --lane $H/.claude CC-62|rc=0 launched=1 walled=none" \
+  "--lane auto takes the account with the most room for the model being passed|$CHOICE_CMD|--harness claude --lane auto CC-64|rc=0 cmd_lane=claude walled=none" \
+  "--lane auto moves off the account whose window for that model is walled|cmd=true --model=fable --effort=high|--harness claude --lane auto CC-65|rc=0 cmd_lane=eclaude walled=none"
 
-# A model can be spelled three ways in --launch-flags and the gate reads all
-# three. The rows above spell `--model=X`; these spell `--model X` and codex's
-# `-m X`, so deleting the arm that takes the value from the NEXT token reddens
-# a row instead of silently unguarding every space-form and codex launch.
-run_ot "" --harness claude --lane "$H/.claude" --launch-flags "--model fable" --cmd true CC-67
-assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=95")" \
-  "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=95" \
-  "the space-spelled --model in the launch flags gates the lane too"
+# A model can be spelled three ways and the gate reads all three. The rows above
+# spell `--model=X`; these spell `--model X` and codex's `-m X`, so deleting the
+# arm that takes the value from the NEXT token reddens a row instead of silently
+# unguarding every space-form and codex launch.
+run_ot "cmd=true --model fable --effort high" --harness claude --lane "$H/.claude" CC-67
+assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=95,bucket=model")" \
+  "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=95,bucket=model" \
+  "the space-spelled --model in the launch command gates the lane too"
+
+# A launch that carries its own harness argv is gated on the model INSIDE that
+# argv, which is the model it will really run: the template is read rather than
+# waved through, and the same wall is judged as for a launch whose command this
+# launcher builds. The second row is the inverse, a model with room in the same
+# template still launching.
+run_ot "" --harness claude --lane "$H/.claude" --cmd "claude --model fable --effort high" CC-75
+assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=95,bucket=model")" \
+  "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=95,bucket=model" \
+  "a model named inside the --cmd command gates the lane on that model's wall"
+# cmd_home beside the launch: a claude lane names no CODEX_HOME and builds no
+# home of its own, since the folder-trust record that harness reads is not this
+# file at all.
+run_ot "" --harness claude --lane "$H/.claude" --cmd "claude --model opus --effort high" CC-76
+assert_eq "$(observe "rc=0 launched=1 walled=none cmd_home=none trust_route=none")" \
+  "rc=0 launched=1 walled=none cmd_home=none trust_route=none" \
+  "a --cmd naming a model with room still launches, under no CODEX_HOME and no trust route"
 
 make_codex_lane "$H/.codex"
 jq -n '{rate_limit: {primary_window: {used_percent: 95, reset_at: 1785000000,
                                       limit_window_seconds: 18000}}}' > "$FIXTURE_DIR/.codex.json"
-run_ot "" --harness codex --lane "$H/.codex" --launch-flags "-m fable" --cmd true CC-68
-assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.codex,model=fable,pct=95")" \
-  "rc=1 launched=nolog walled=lane=$H/.codex,model=fable,pct=95" \
+run_ot "cmd=true -m fable -c model_reasoning_effort=high" --harness codex --lane "$H/.codex" CC-68
+assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.codex,model=fable,pct=95,bucket=session")" \
+  "rc=1 launched=nolog walled=lane=$H/.codex,model=fable,pct=95,bucket=session" \
   "codex spells the model -m, and that launch is gated on the same wall"
+
+# A Codex session started into a directory its config does not trust stops on
+# the folder-trust question and waits there, and a lane launch has nobody at
+# the pane to answer it. The entry is made before the window opens, in a
+# CODEX_HOME of the launch's own under the account, because the account's own
+# config.toml is a link its shim repoints at every launch. The preparation
+# itself is lane-launch-trust.sh; these rows are the wiring, and what the
+# launched command ends up running under.
+make_codex_lane "$H/.tcodex"
+jq -n '{rate_limit: {primary_window: {used_percent: 5, reset_at: 1785000000,
+                                      limit_window_seconds: 18000}}}' > "$FIXTURE_DIR/.tcodex.json"
+run_ot "cmd=true -m gpt-5 -c model_reasoning_effort=high" --harness codex --lane "$H/.tcodex" CC-1632
+assert_eq "$(observe "rc=0 launched=1 cmd_home=private home_trusts=yes trust_route=launch-home")" \
+  "rc=0 launched=1 cmd_home=private home_trusts=yes trust_route=launch-home" \
+  "a codex launch runs under a home whose config trusts the worktree it opens in, and names that route"
+# A codex launch with NO --lane opens into the same untrusted worktree and is
+# prepared the same way: folder trust belongs to the directory, not to the
+# account a launch was aimed at, and the command shape handoff.md section 2
+# documents passes no --lane at all.
+#
+# WHICH account such a launch lands on is the one the pane would have opened on
+# by itself. Under tmux that is the tmux SERVER's environment, and CODEX_HOME is
+# not on tmux's default update-environment list, so a value set in the
+# launcher's own environment never reaches the pane. An orch agent running
+# inside a codex lane launches handoff items this way, and reading its own
+# variable would move every one of them onto its own account, with no claim
+# taken on it and the account check skipped.
+#
+# ENV|ITEM|ACCOUNT|WHAT, one row per place the value can sit. No HOME is
+# pinned: the default account is derived from LANES_HOME like every other
+# reader's, so a row that had to set HOME would be saying the derivation is
+# somewhere else.
+#
+# WHICH tmux scope holds it is the second half of that question. tmux keeps a
+# session environment beside a global one and a pane takes the session entry
+# wherever it has one; the environment the SERVER was started with lands in the
+# GLOBAL scope alone, and nothing here writes a session entry, so on a fleet
+# host the account a pane inherits is the global one. A read without -g answers
+# `unknown variable` there and sends the launch to the harness default instead.
+for row in \
+  "|CC-1634|.codex|the default account under LANES_HOME" \
+  "CODEX_HOME=$H/.tcodex;|CC-1636|.codex|the launcher's own CODEX_HOME, which no pane inherits" \
+  "OT_TMUX_ENV_GLOBAL_CODEX_HOME=$H/.tcodex;|CC-1637|.tcodex|the tmux GLOBAL scope, where a server's own environment lands" \
+  "OT_TMUX_ENV_SESSION_CODEX_HOME=$H/.tcodex;|CC-1638|.tcodex|the tmux SESSION scope, which a set-environment writes" \
+  "OT_TMUX_ENV_SESSION_CODEX_HOME=$H/.tcodex;OT_TMUX_ENV_GLOBAL_CODEX_HOME=$H/.codex;|CC-1639|.tcodex|a session entry, which the pane takes over the global one" \
+  "OT_TMUX_ENV_SESSION_CODEX_HOME=-;OT_TMUX_ENV_GLOBAL_CODEX_HOME=$H/.tcodex;|CC-1640|.codex|a session removal marker, which hides the global value from the pane" \
+  ; do
+  extra="${row%%|*}"; rest="${row#*|}"
+  item="${rest%%|*}"; rest="${rest#*|}"
+  account="${rest%%|*}"; what="${rest#*|}"
+  want="rc=0 launched=1 cmd_home=private cmd_account=$account home_trusts=yes trust_route=launch-home"
+  run_ot "${extra}cmd=true -m gpt-5 -c model_reasoning_effort=high" --harness codex "$item"
+  assert_eq "$(observe "$want")" "$want" \
+    "a codex launch with no --lane is prepared under $what"
+done
+
+# Control: the walk asks the session scope alone, which is what reading without
+# -g amounted to. The global entry is then unreachable and the launch falls to
+# the harness default — the account every no-lane launch on a fleet host was
+# landing on while the operator's numbered account sat in the scope nobody read.
+GLOBAL_ROOT="$TMP_ROOT/mutant-global-scope/orch"
+mkdir -p "$GLOBAL_ROOT/scripts"
+cp -R "$SCRIPTS_DIR/." "$GLOBAL_ROOT/scripts/"
+orch_fixture_shared_libs "$GLOBAL_ROOT"
+mutate_file "$GLOBAL_ROOT/scripts/open-terminal" \
+  'for scope in session global; do' 'for scope in session; do'
+OPEN_TERMINAL_REAL="$OPEN_TERMINAL"
+OPEN_TERMINAL="$GLOBAL_ROOT/scripts/open-terminal"
+run_ot "OT_TMUX_ENV_GLOBAL_CODEX_HOME=$H/.tcodex;cmd=true -m gpt-5 -c model_reasoning_effort=high" \
+  --harness codex CC-1641
+assert_eq "$(observe "rc=0 launched=1 cmd_account=.codex")" "rc=0 launched=1 cmd_account=.codex" \
+  "control: a walk that never asks the global scope spends the default account, not the server's"
+OPEN_TERMINAL="$OPEN_TERMINAL_REAL"
+
+# An account whose config exists and cannot be read refuses the item: the
+# launch would otherwise start with every table the account was approved for
+# gone. Nothing opens, and the batch exits on the failed count. The config is
+# replaced with a dangling link, which is the shape a numbered account's shim
+# leaves behind when the render it points at is not there.
+DANGLING_LANE="$H/.dcodex"
+make_codex_lane "$DANGLING_LANE"
+jq -n '{rate_limit: {primary_window: {used_percent: 5, reset_at: 1785000000,
+                                      limit_window_seconds: 18000}}}' > "$FIXTURE_DIR/.dcodex.json"
+ln -sfn "$H/no-such-render.toml" "${DANGLING_LANE:?}/config.toml"
+run_ot "cmd=true -m gpt-5 -c model_reasoning_effort=high" --harness codex --lane "$DANGLING_LANE" CC-1635
+assert_eq "$(observe "rc=1 launched=nolog trustfail=1")" "rc=1 launched=nolog trustfail=1" \
+  "an account config that cannot be read refuses the item and opens no window"
+
+# The account answering for the worktree already is the other route: nothing is
+# built and the launch runs under the account directory itself. The worktree is
+# pinned for this row, since a config can only name a directory that exists
+# before the launch reads it.
+TRUSTED_WT="$TMP_ROOT/trusted-wt"
+printf '[projects."%s"]\ntrust_level = "trusted"\n' "$TRUSTED_WT" > "$H/.tcodex/config.toml"
+run_ot "OT_WT_FIXED=$TRUSTED_WT;cmd=true -m gpt-5 -c model_reasoning_effort=high" \
+  --harness codex --lane "$H/.tcodex" CC-1633
+assert_eq "$(observe "rc=0 launched=1 cmd_home=.tcodex home_trusts=yes trust_route=preapproved")" \
+  "rc=0 launched=1 cmd_home=.tcodex home_trusts=yes trust_route=preapproved" \
+  "an account config that already trusts the worktree launches on the account itself, under the other route"
+
+# The model-scoped window has room, but the shared 5-hour window walls every
+# model on the account. The launcher reports that shared bucket as the cause.
+claude_usage 85 20 10 'Fable 5.1' > "$FIXTURE_DIR/.claude.json"
+run_ot "ORCH_LANE_MAX_PCT=80;cmd=true --model fable --effort high" --harness claude --lane "$H/.claude" CC-118
+assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=85,bucket=session")" \
+  "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=85,bucket=session" \
+  "a shared 5-hour wall refuses a launch whose model-scoped bucket has room"
+
+# Control: keep the refusal and its diagnostic, but make the launcher replace
+# the deciding bucket with the model spelling. The assertion above distinguishes
+# that result from the shared session bucket the judge returned.
+BUCKET_ROOT="$TMP_ROOT/mutant-launch-bucket/orch"
+mkdir -p "$BUCKET_ROOT/scripts"
+cp -R "$SCRIPTS_DIR/." "$BUCKET_ROOT/scripts/"
+orch_fixture_shared_libs "$BUCKET_ROOT"
+mutate_file "$BUCKET_ROOT/scripts/open-terminal" \
+  '"bucket=$lane_bucket"' '"bucket=model"'
+OPEN_TERMINAL_REAL="$OPEN_TERMINAL"
+OPEN_TERMINAL="$BUCKET_ROOT/scripts/open-terminal"
+run_ot "ORCH_LANE_MAX_PCT=80;cmd=true --model fable --effort high" --harness claude --lane "$H/.claude" CC-119
+assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=85,bucket=model")" \
+  "rc=1 launched=nolog walled=lane=$H/.claude,model=fable,pct=85,bucket=model" \
+  "control: a launcher that replaces the deciding bucket reports the wrong model bucket"
+OPEN_TERMINAL="$OPEN_TERMINAL_REAL"
+claude_usage 10 20 95 'Fable 5.1' > "$FIXTURE_DIR/.claude.json"
 
 # A lane the inventory HAS but whose windows answer nothing for this model is
 # a lane nobody measured, not a lane that is full: the key says so. Telling an
@@ -361,7 +833,7 @@ assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.codex,model=fable,pct=
 make_lane "$H" uclaude 3600
 jq -n '{limits: [{kind: "weekly_scoped", percent: 10, resets_at: "2026-08-01T06:00:00Z",
                   scope: {model: {display_name: "Opus"}}}]}' > "$FIXTURE_DIR/.uclaude.json"
-run_ot "" --harness claude --lane "$H/.uclaude" --launch-flags --model=sonnet --cmd true CC-69
+run_ot "cmd=true --model sonnet --effort high" --harness claude --lane "$H/.uclaude" CC-69
 assert_eq "$(observe "rc=1 launched=nolog unreadable=lane=$H/.uclaude,model=sonnet,step=windows walled=none")" \
   "rc=1 launched=nolog unreadable=lane=$H/.uclaude,model=sonnet,step=windows walled=none" \
   "a lane whose windows name no such model is unreadable, never reported as full"
@@ -369,7 +841,7 @@ assert_eq "$(observe "rc=1 launched=nolog unreadable=lane=$H/.uclaude,model=sonn
 # A lane whose usage could not be fetched at all is the same answer for the same
 # reason: nobody read a window, so nobody may say the allowance is gone. The
 # openclaude dir is discovered as a lane and has no credentials to measure.
-run_ot "" --harness claude --lane "$H/.openclaude" --launch-flags --model=fable --cmd true CC-73
+run_ot "cmd=true --model fable --effort high" --harness claude --lane "$H/.openclaude" CC-73
 assert_eq "$(observe "rc=1 launched=nolog unreadable=lane=$H/.openclaude,model=fable,step=windows walled=none")" \
   "rc=1 launched=nolog unreadable=lane=$H/.openclaude,model=fable,step=windows walled=none" \
   "a lane whose usage could not be read is unreadable, never reported as full"
@@ -379,7 +851,7 @@ assert_eq "$(observe "rc=1 launched=nolog unreadable=lane=$H/.openclaude,model=f
 # given, and this gate does not take that away.
 OUTSIDE_LANE="$TMP_ROOT/outside-any-lane"
 mkdir -p "$OUTSIDE_LANE"
-run_ot "" --harness claude --lane "$OUTSIDE_LANE" --launch-flags --model=fable --cmd true CC-70
+run_ot "cmd=true --model fable --effort high" --harness claude --lane "$OUTSIDE_LANE" CC-70
 assert_eq "$(observe "rc=0 launched=1 walled=none unreadable=none")" \
   "rc=0 launched=1 walled=none unreadable=none" \
   "a config dir outside every lane record launches, the gate holding no record to judge it by"
@@ -387,7 +859,7 @@ assert_eq "$(observe "rc=0 launched=1 walled=none unreadable=none")" \
 # The threshold is forwarded, never evaluated here: a value this script once
 # fed to bash arithmetic is now refused by the one parser that owns it, and the
 # launch stops rather than proceeding on a comparison that errored.
-run_ot "" --harness claude --lane "$H/.claude" --lane-max-pct '90%' --launch-flags --model=fable --cmd true CC-71
+run_ot "cmd=true --model fable --effort high" --harness claude --lane "$H/.claude" --lane-max-pct '90%' CC-71
 assert_eq "$(observe "rc=1 launched=nolog judgefailed=lane=$H/.claude,model=fable,exit=1 unreadable=none")" \
   "rc=1 launched=nolog judgefailed=lane=$H/.claude,model=fable,exit=1 unreadable=none" \
   "a malformed --lane-max-pct on a named lane refuses the launch, named as the judge failing and not as an unread window"
@@ -396,7 +868,7 @@ assert_eq "$(observe "rc=1 launched=nolog judgefailed=lane=$H/.claude,model=fabl
 # gate asks for a wall, which no claim count enters, so the store is reported as
 # a notice on stderr and the window opens. The claim write fails too and is not
 # fatal either, which is the policy this gate now matches.
-run_ot "prep=claims_file" --harness claude --lane "$H/.claude" --launch-flags --model=opus --cmd true CC-74
+run_ot "prep=claims_file;$CHOICE_CMD" --harness claude --lane "$H/.claude" CC-74
 assert_eq "$(observe "rc=0 launched=1 claimsnotice=1 walled=none judgefailed=none")" \
   "rc=0 launched=1 claimsnotice=1 walled=none judgefailed=none" \
   "an unreadable claim store notices and launches the named lane rather than refusing it"
@@ -412,8 +884,8 @@ echo "=== a bare --lane word is an alias first, then a directory ==="
 # otherwise win and launch under a config dir nobody configured, silently. A
 # word no alias claims still resolves as a directory.
 table \
-  "a cwd directory does not shadow the alias it collides with|ORCH_LANE_ALIASES=eclaude=work;cwd=$COLLIDE|--harness claude --lane work --cmd true CC-1|rc=0 out_lanes=eclaude" \
-  "a bare word no alias claims falls back to the directory|ORCH_LANE_ALIASES=eclaude=work;cwd=$BARE|--harness claude --lane somelane --cmd true CC-1|rc=0 out_lanes=somelane"
+  "a cwd directory does not shadow the alias it collides with|ORCH_LANE_ALIASES=eclaude=work;cwd=$COLLIDE;$CHOICE_CMD|--harness claude --lane work CC-1|rc=0 out_lanes=eclaude" \
+  "a bare word no alias claims falls back to the directory|ORCH_LANE_ALIASES=eclaude=work;cwd=$BARE;$CHOICE_CMD|--harness claude --lane somelane CC-1|rc=0 out_lanes=somelane"
 
 echo "=== a tmux launch under a lane runs under it and records its claim ==="
 # The launched command carries the lane as a single-quoted env prefix; the
@@ -422,9 +894,9 @@ echo "=== a tmux launch under a lane runs under it and records its claim ==="
 # launch has no pane to keep a claim alive, so a GUI batch records nothing
 # and stays on the lane resolved up front.
 table \
-  "--lane <alias> launches under that lane's env prefix and records one claim naming lane, window and pane|ORCH_LANE_ALIASES=eclaude=work|--harness claude --lane work --cmd true CC-2|rc=0 cmd_lane=eclaude claims=1 claim_lanes=eclaude claim_window=CC-2 claim_pane=%1" \
+  "--lane <alias> launches under that lane's env prefix and records one claim naming lane, window and pane|ORCH_LANE_ALIASES=eclaude=work;$CHOICE_CMD|--harness claude --lane work CC-2|rc=0 cmd_lane=eclaude claims=1 claim_lanes=eclaude claim_window=CC-2 claim_pane=%1" \
   'a launch with no --lane still opens its window and records no claim||--harness claude --cmd true CC-3|launched=1 claims=nolog' \
-  'a GUI batch launches, records no claim, and reports the one lane it resolved|TERMINAL=ghostty|--ghostty --harness claude --lane auto --cmd true CC-10 CC-11|rc=0 claims=nolog summary=lane=claude'
+  "a GUI batch launches, records no claim, and reports the one lane it resolved|TERMINAL=ghostty;$CHOICE_CMD|--ghostty --harness claude --lane auto CC-10 CC-11|rc=0 claims=nolog summary=lane=claude"
 
 echo "=== --lane auto over a batch re-picks off every claimed lane ==="
 # Each recorded claim moves the next item off that lane; a window created and
@@ -435,24 +907,24 @@ echo "=== --lane auto over a batch re-picks off every claimed lane ==="
 # next item blind; an item another session owns never carried a session and
 # is not a lane the batch ran on.
 table \
-  'a two-item batch spreads across two accounts, most headroom first|| --harness claude --lane auto --cmd true CC-4 CC-5|rc=0 launched=2 claim_lanes=claude,eclaude out_lanes=claude,eclaude summary=spread=2' \
-  'a claimed window whose launch failed still moves the next item off that lane|OT_TMUX_FAIL=send-keys|--harness claude --lane auto --cmd true CC-8 CC-9|launched=2 claim_lanes=claude,eclaude out_lanes=claude,eclaude' \
-  'a third item returning to a used lane still reports two distinct lanes||--harness claude --lane auto --cmd true CC-12 CC-13 CC-14|launched=3 summary=spread=2' \
-  "a re-picked lane carrying a separator stops the batch after the first launch|LANES_HOME=$TABHOME;FIXTURE_DIR=$TABFIX|--harness claude --lane auto --cmd true CC-22 CC-23|rc=1 launched=1 claims=1" \
-  "a re-pick that cannot place its item stops the batch after the first launch|ORCH_LANES_FETCH_CMD=$TMP_ROOT/fetch-flaky;FLAKY_COUNT=$TMP_ROOT/flaky-count;FLAKY_OK=3;ORCH_LANES_USAGE_TTL=0|--harness claude --lane auto --cmd true CC-6 CC-7|rc=1 launched=1 claims=1" \
-  "a lane picked for an item another session owns is not one the batch ran on|WORKTREE_CLI=$OWNED_STUB;OWNED_COUNT=$TMP_ROOT/owned-count;OWNED_ROOT=$TMP_ROOT|--harness claude --lane auto --cmd true CC-17 CC-18|launched=1 summary=lane=claude"
+  "a two-item batch spreads across two accounts, most headroom first|$CHOICE_CMD| --harness claude --lane auto CC-4 CC-5|rc=0 launched=2 claim_lanes=claude,eclaude out_lanes=claude,eclaude summary=spread=2" \
+  "a claimed window whose launch failed still moves the next item off that lane|OT_TMUX_FAIL=send-keys;$CHOICE_CMD|--harness claude --lane auto CC-8 CC-9|launched=2 claim_lanes=claude,eclaude out_lanes=claude,eclaude" \
+  "a third item returning to a used lane still reports two distinct lanes|$CHOICE_CMD|--harness claude --lane auto CC-12 CC-13 CC-14|launched=3 summary=spread=2" \
+  "a re-picked lane carrying a separator stops the batch after the first launch|LANES_HOME=$TABHOME;FIXTURE_DIR=$TABFIX;$CHOICE_CMD|--harness claude --lane auto CC-22 CC-23|rc=1 launched=1 claims=1" \
+  "a re-pick that cannot place its item stops the batch after the first launch|ORCH_LANES_FETCH_CMD=$TMP_ROOT/fetch-flaky;FLAKY_COUNT=$TMP_ROOT/flaky-count;FLAKY_OK=3;ORCH_LANES_USAGE_TTL=0;$CHOICE_CMD|--harness claude --lane auto CC-6 CC-7|rc=1 launched=1 claims=1" \
+  "a lane picked for an item another session owns is not one the batch ran on|WORKTREE_CLI=$OWNED_STUB;OWNED_COUNT=$TMP_ROOT/owned-count;OWNED_ROOT=$TMP_ROOT;$CHOICE_CMD|--harness claude --lane auto CC-17 CC-18|launched=1 summary=lane=claude"
 
 # A claims path that is not a directory is a misconfiguration, not an empty
 # store: the pick refuses before anything launches.
 table \
-  'a non-directory claims path refuses the launch|prep=claims_file|--harness claude --lane auto --cmd true CC-19|rc=1 launched=nolog'
+  "a non-directory claims path refuses the launch|prep=claims_file;$CHOICE_CMD|--harness claude --lane auto CC-19|rc=1 launched=nolog"
 
 # Root writes into a mode-555 directory, so the row cannot fail a write there.
 if [[ "$(id -u)" -eq 0 ]]; then
   printf '  skip  unwritable claim store (running as root)\n'
 else
   table \
-    'a claim that could not be recorded stops the batch after the launch that stands|prep=store_ro|--harness claude --lane auto --cmd true CC-15 CC-16|rc=1 launched=1'
+    "a claim that could not be recorded stops the batch after the launch that stands|prep=store_ro;$CHOICE_CMD|--harness claude --lane auto CC-15 CC-16|rc=1 launched=1"
 fi
 
 echo "=== a hosted launch goes through lane-host create and an ssh pane ==="
@@ -464,13 +936,17 @@ echo "=== a hosted launch goes through lane-host create and an ssh pane ==="
 # harness the host protocol does not name and a wake are refused before create,
 # and a create line missing a field fails the item before a window opens.
 HOST_STUB="$TEST_DIR/fixtures/lane-host"
-host_call() { [[ -f "$RUN/host.log" ]] || { echo nolog; return; }; sed -E -e 's/ +$//' -e "s#$H/\\.##g" -e 's/ /,/g' "$RUN/host.log"; }
+# Every provider call the run made, in order: one `,`-joined verb and argument
+# list per call, the calls themselves joined with `;`. A row that asserts this
+# asserts the whole call sequence, so a call the launcher adds cannot pass
+# unnoticed.
+host_call() { [[ -f "$RUN/host.log" ]] || { echo nolog; return; }; sed -E -e 's/ +$//' -e "s#$H/\\.##g" -e 's/ /,/g' "$RUN/host.log" | paste -sd';' -; }
 typed() { grep -cF -- "$1" "$RUN/tmux.log" 2>/dev/null || true; }
 said() { grep -cxF -- "$1" <<<"$OUT" || true; }
 
-run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_LANE_ALIASES=eclaude=work" --harness claude --lane work --repo o/r --cmd true CC-40
-assert_eq "$(observe "rc=0 creates=nolog launched=1 claim_lanes=eclaude") create=$(host_call) ssh=$(typed "clear; ssh 'lane.example'") remote=$(typed "exec bash -lc 'cd /srv/lane && exec true'") env=$(typed CLAUDE_CONFIG_DIR=) opened=$(said "open-terminal: tmux-opened item=CC-40 host=$HOST_STUB path=/srv/lane")" \
-  "rc=0 creates=nolog launched=1 claim_lanes=eclaude create=create,--item,CC-40,--repo,o/r,--harness,claude,--account,eclaude ssh=1 remote=1 env=0 opened=1" \
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_LANE_ALIASES=eclaude=work;$CHOICE_CMD" --harness claude --lane work --repo o/r CC-40
+assert_eq "$(observe "rc=0 creates=nolog launched=1 claim_lanes=eclaude") calls=$(host_call) ssh=$(typed "clear; ssh 'lane.example'") remote=$(typed "exec bash -lc 'cd /srv/lane && exec true --model opus --effort high'") env=$(typed CLAUDE_CONFIG_DIR=) opened=$(said "open-terminal: tmux-opened item=CC-40 host=$HOST_STUB path=/srv/lane")" \
+  "rc=0 creates=nolog launched=1 claim_lanes=eclaude calls=create,--item,CC-40,--repo,o/r,--harness,claude,--account,eclaude;cat,--item,CC-40,/srv/lane/.git;put,--item,CC-40,/srv/clone/.git/lane-mail/cc-40;cat,--item,CC-40,/srv/clone/.git/lane-mail/cc-40 ssh=1 remote=1 env=0 opened=1" \
   "a hosted launch creates through lane-host, types ssh then the remote line, and renders no lane env prefix"
 # A hosted relaunch continues natively. Q is how single_quote renders one quote
 # of the continuation line inside the remote command.
@@ -481,20 +957,23 @@ assert_eq "$(observe "rc=0 creates=nolog launched=1 claim_lanes=eclaude") create
 # as a session name. The assertion named "a hosted codex relaunch resumes
 # promptless, so no sentence is rendered into the session-id slot" is what
 # reddens if that line comes back.
+# Write it as ${Q} wherever a letter, digit or underscore follows: `$Qopus` is
+# the variable Qopus, which under `set -u` empties the whole substitution the
+# expectation was built in and leaves the row comparing against nothing.
 Q="'\\''"
 hosted_line() { printf 'Resume the orch workflow for %s from where this session stopped. Run .agents/skills/orch/scripts/lane-mail inbox --item %s first and act on every directive it prints.' "$1" "$1"; }
 HOSTED_LINE="$(hosted_line CC-41)"
-run_ot "" --host "$HOST_STUB" --harness claude --lane auto --repo o/r --relaunch --launch-flags --model=opus CC-41
-assert_eq "$(observe "rc=0 creates=nolog launched=1") create=$(host_call) remote=$(typed "exec bash -lc 'cd /srv/lane && exec claude $Q--model=opus$Q --continue $Q$HOSTED_LINE$Q'")" \
-  "rc=0 creates=nolog launched=1 create=create,--item,CC-41,--repo,o/r,--harness,claude,--account,claude,--relaunch remote=1" \
+run_ot "$CHOICE" --host "$HOST_STUB" --harness claude --lane auto --repo o/r --relaunch CC-41
+assert_eq "$(observe "rc=0 creates=nolog launched=1") calls=$(host_call) remote=$(typed "exec bash -lc 'cd /srv/lane && exec claude $Q--model$Q ${Q}opus$Q $Q--effort$Q ${Q}high$Q --continue $Q$HOSTED_LINE$Q'")" \
+  "rc=0 creates=nolog launched=1 calls=create,--item,CC-41,--repo,o/r,--harness,claude,--account,claude,--relaunch;cat,--item,CC-41,/srv/lane/.git;put,--item,CC-41,/srv/clone/.git/lane-mail/cc-41;cat,--item,CC-41,/srv/clone/.git/lane-mail/cc-41 remote=1" \
   "a hosted claude relaunch passes the picked account and --relaunch, and continues natively with the continuation line"
 HOSTED_LINE="$(hosted_line CC-48)"
-run_ot "ORCH_LANE_ALIASES=eclaude=work" --host "$HOST_STUB" --harness pi --lane work --repo o/r --relaunch CC-48
-assert_eq "$(observe "rc=0 creates=nolog launched=1") remote=$(typed "exec bash -lc 'cd /srv/lane && exec pi -c $Q$HOSTED_LINE$Q'")" \
+run_ot "ORCH_LANE_ALIASES=eclaude=work;flags=--model opus --thinking high" --host "$HOST_STUB" --harness pi --lane work --repo o/r --relaunch CC-48
+assert_eq "$(observe "rc=0 creates=nolog launched=1") remote=$(typed "exec bash -lc 'cd /srv/lane && exec pi $Q--model$Q ${Q}opus$Q $Q--thinking$Q ${Q}high$Q -c $Q$HOSTED_LINE$Q'")" \
   "rc=0 creates=nolog launched=1 remote=1" \
   "a hosted pi relaunch continues natively with the continuation line"
-run_ot "ORCH_LANE_ALIASES=eclaude=work" --host "$HOST_STUB" --harness codex --lane work --repo o/r --relaunch CC-49
-assert_eq "$(observe "rc=0 creates=nolog launched=1") remote=$(typed "exec bash -lc 'cd /srv/lane && exec codex resume --last'") line=$(typed "Resume the orch workflow for CC-49")" \
+run_ot "ORCH_LANE_ALIASES=eclaude=work;flags=-m gpt-6-astra -c model_reasoning_effort=high" --host "$HOST_STUB" --harness codex --lane work --repo o/r --relaunch CC-49
+assert_eq "$(observe "rc=0 creates=nolog launched=1") remote=$(typed "exec bash -lc 'cd /srv/lane && exec codex $Q-m$Q ${Q}gpt-6-astra$Q $Q-c$Q ${Q}model_reasoning_effort=high$Q resume --last'") line=$(typed "Resume the orch workflow for CC-49")" \
   "rc=0 creates=nolog launched=1 remote=1 line=0" \
   "a hosted codex relaunch resumes promptless, so no sentence is rendered into the session-id slot"
 # The lane comes up idle, so the launcher owes the operator a record saying the
@@ -516,8 +995,13 @@ assert_eq "$(said "open-terminal: resume-lineless item=CC-49 harness=codex")" "1
 # form exits 0 and the probe would answer the same for the rendering and for
 # the defect.
 if command -v codex >/dev/null 2>&1; then
-  RENDERED="$(sed -n "s/.*exec bash -lc 'cd \/srv\/lane \&\& exec \(codex resume .*\)'.*/\1/p" "$RUN/tmux.log" | tail -1)"
-  assert_eq "${RENDERED:-MISSING}" "codex resume --last" "the rendered remote command is recovered from the pane log"
+  # The pane log holds the command as it was TYPED, so every quote start_cmd put
+  # round a flag token reads as the `bash -lc` escape; the second sed undoes that
+  # escape, which is what the remote shell does before codex sees its argv.
+  RENDERED="$(sed -n "s/.*exec bash -lc 'cd \/srv\/lane \&\& exec \(codex .*\)'.*/\1/p" "$RUN/tmux.log" \
+    | tail -1 | sed "s/'\\\\''/'/g")"
+  assert_eq "${RENDERED:-MISSING}" "codex '-m' 'gpt-6-astra' '-c' 'model_reasoning_effort=high' resume --last" \
+    "the rendered remote command is recovered from the pane log"
   CODEX_PARSE_RC=0
   CODEX_HOME="$TMP_ROOT/codex-parse-home" timeout 20 bash -c "$RENDERED zz-appended-session" </dev/null >/dev/null 2>&1 || CODEX_PARSE_RC=$?
   assert_eq "$CODEX_PARSE_RC" "1" "a positional appended to the rendering is still parsed as a session id"
@@ -535,14 +1019,136 @@ fi
 # line with no transcript lookup, so it is where the two ids are visibly
 # distinct, and the assertion below is what reddens if the bare number returns.
 HOSTED_LINE="$(hosted_line issue-2708)"
-run_ot "ORCH_LANE_ALIASES=eclaude=work" --host "$HOST_STUB" --tracker github --harness claude --lane work --repo o/r --relaunch 2708
-assert_eq "$(observe "rc=0 creates=nolog launched=1") create=$(host_call) remote=$(typed "exec bash -lc 'cd /srv/lane && exec claude --continue $Q$HOSTED_LINE$Q'")" \
-  "rc=0 creates=nolog launched=1 create=create,--item,issue-2708,--repo,o/r,--harness,claude,--account,eclaude,--relaunch remote=1" \
-  "a GitHub relaunch names the worktree id its mailbox is bound under, never the bare issue number"
-run_ot "LANE_HOST_STUB_STATUS=75" --host "$HOST_STUB" --harness claude --lane auto --repo o/r --cmd true CC-42
+run_ot "ORCH_LANE_ALIASES=eclaude=work;$CHOICE" --host "$HOST_STUB" --tracker github --harness claude --lane work --repo o/r --relaunch 2708
+assert_eq "$(observe "rc=0 creates=nolog launched=1") calls=$(host_call) remote=$(typed "exec bash -lc 'cd /srv/lane && exec claude $Q--model$Q ${Q}opus$Q $Q--effort$Q ${Q}high$Q --continue $Q$HOSTED_LINE$Q'")" \
+  "rc=0 creates=nolog launched=1 calls=create,--item,issue-2708,--repo,o/r,--harness,claude,--account,eclaude,--relaunch;cat,--item,issue-2708,/srv/lane/.git;put,--item,issue-2708,/srv/clone/.git/lane-mail/issue-2708;cat,--item,issue-2708,/srv/clone/.git/lane-mail/issue-2708 remote=1" \
+  "a GitHub relaunch names the worktree id its mailbox is bound under, never the bare issue number, and asks the provider nothing on an account that measured"
+
+# WHICH CREDENTIAL A HOSTED LAUNCH RUNS ON. The host runs the copy the provider
+# put there, which is independent of this machine's copy only where the provider
+# installs a secret of its own; a provider that re-seeds the host from the
+# account's config dir at every create runs this machine's copy, on a relaunch as
+# much as a fresh launch. So the PROVIDER'S ANSWER decides, never the --relaunch
+# flag: the answer comes from `lanes host-accounts`, the one reader of that verb,
+# and only `held` skips the usage gate.
+#
+# xclaude carries an expired access token and no OAuth client id is configured
+# for it, so `lanes` reports it `expired` and measures no window. Each row below
+# differs from its neighbour in one thing: what the provider answers, and whether
+# the launch is a relaunch.
+make_lane "$H" xclaude -3600
+printf 'account=%s\tharness=claude\n' "$H/.xclaude" > "$TMP_ROOT/hosted-accounts.tsv"
+HOSTED_ACCOUNT="LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/hosted-accounts.tsv"
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;$HOSTED_ACCOUNT;$CHOICE_CMD" --host "$HOST_STUB" --harness claude \
+  --lane "$H/.xclaude" --repo o/r CC-77
+assert_eq "$(observe "rc=1 launched=nolog credentialdead=lane=$H/.xclaude,host=$HOST_STUB unreadable=none")" \
+  "rc=1 launched=nolog credentialdead=lane=$H/.xclaude,host=$HOST_STUB unreadable=none" \
+  "a fresh hosted launch on an account this machine cannot renew is refused as host-credential-dead"
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;$HOSTED_ACCOUNT;flags=--model fable --effort high" --host "$HOST_STUB" --harness claude \
+  --lane "$H/.xclaude" --repo o/r --relaunch CC-78
+assert_eq "$(observe "rc=0 launched=1 credentialdead=none unreadable=none relaunchgate=1")" \
+  "rc=0 launched=1 credentialdead=none unreadable=none relaunchgate=1" \
+  "a hosted relaunch on that same dead local copy proceeds, and says which credential runs it"
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;$CHOICE_CMD" --host "$HOST_STUB" --harness claude \
+  --lane "$H/.xclaude" --repo o/r CC-79
+assert_eq "$(observe "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xclaude,model=opus,step=windows")" \
+  "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xclaude,model=opus,step=windows" \
+  "a provider holding no credential for the account leaves the refusal the unread window it was"
+# The relaunch's skip is the provider's answer, not the flag. A provider with no
+# accounts verb — the shipped reference lane-host-ssh, which copies this
+# machine's account files to the host at every create — answers nothing, so the
+# relaunch is judged on the local reading it runs on. Silent: the absent verb is
+# no news.
+RELAUNCH_FLAGS='flags=--model fable --effort high'
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;LANE_HOST_STUB_NO_ACCOUNTS=1;$RELAUNCH_FLAGS" --host "$HOST_STUB" \
+  --harness claude --lane "$H/.xclaude" --repo o/r --relaunch CC-100
+assert_eq "$(observe "rc=1 launched=nolog relaunchgate=0 unanswered=0 credentialdead=none unreadable=lane=$H/.xclaude,model=fable,step=windows")" \
+  "rc=1 launched=nolog relaunchgate=0 unanswered=0 credentialdead=none unreadable=lane=$H/.xclaude,model=fable,step=windows" \
+  "a hosted relaunch whose provider implements no accounts verb keeps the usage gate, and says nothing about a verb that is absent"
+# The control for this row is ctl-relaunch-skip, in the controls section below,
+# where mutant_repo is defined; it keeps this world's lane and fixtures.
+
+# WHICH unmeasured account gets the login remedy. The remedy is for a credential
+# this machine holds and cannot renew, which `lanes` reports as `expired` and
+# nothing else; an account that reads fine and simply has no window for the model
+# is the unread window it always was. Its own lane, whose one window names a
+# model no other row launches, so a pick asking for another model drops it.
+make_lane "$H" vclaude 3600
+jq -n '{limits: [{kind: "weekly_scoped", percent: 10, resets_at: "2026-08-01T06:00:00Z",
+                  scope: {model: {display_name: "Haiku"}}}]}' > "$FIXTURE_DIR/.vclaude.json"
+printf 'account=%s\tharness=claude\n' "$H/.vclaude" > "$TMP_ROOT/hosted-accounts-vclaude.tsv"
+run_ot "LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/hosted-accounts-vclaude.tsv;cmd=true --model sonnet --effort high" \
+  --host "$HOST_STUB" --harness claude --lane "$H/.vclaude" --repo o/r CC-110
+assert_eq "$(observe "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.vclaude,model=sonnet,step=windows")" \
+  "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.vclaude,model=sonnet,step=windows" \
+  "a hosted account the provider holds, unmeasured for this model but not expired, is the unread window and not a login to renew"
+# WHICH account the provider's answer is about. An answer naming other accounts
+# of this harness is an answer that does not name this one, so the exact
+# comparison is what stands between a held account and a neighbour's.
+printf 'account=%s\tharness=claude\n' "$H/.eclaude" > "$TMP_ROOT/hosted-accounts-other.tsv"
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/hosted-accounts-other.tsv;$CHOICE_CMD" \
+  --host "$HOST_STUB" --harness claude --lane "$H/.xclaude" --repo o/r CC-111
+assert_eq "$(observe "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xclaude,model=opus,step=windows")" \
+  "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xclaude,model=opus,step=windows" \
+  "a provider naming other accounts of this harness holds nothing for this one, so the refusal stays the unread window"
+
+# THE WALL BINDS A HOSTED RELAUNCH TOO. A usage window belongs to the account,
+# not to the copy of the credential that reads it, so a window measured at the
+# threshold here is the window the sandbox meets; resuming would spend the
+# sandbox start, the worktree step and the continuation line to open on a usage
+# banner. The local twin is CC-61 above, refused on the same shape, and the
+# provider holds this account — which changes the UNMEASURED answer and nothing
+# about the wall. Its own lane, so no row that follows reads this window.
+make_lane "$H" wclaude 3600
+claude_usage 10 20 95 'Fable 5.1' > "$FIXTURE_DIR/.wclaude.json"
+printf 'account=%s\tharness=claude\n' "$H/.wclaude" > "$TMP_ROOT/hosted-accounts-walled.tsv"
+run_ot "LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/hosted-accounts-walled.tsv;$RELAUNCH_FLAGS" --host "$HOST_STUB" \
+  --harness claude --lane "$H/.wclaude" --repo o/r --relaunch CC-107
+assert_eq "$(observe "rc=1 launched=nolog creates=nolog relaunchgate=0 walled=lane=$H/.wclaude,model=fable,pct=95,bucket=model")" \
+  "rc=1 launched=nolog creates=nolog relaunchgate=0 walled=lane=$H/.wclaude,model=fable,pct=95,bucket=model" \
+  "a hosted relaunch onto an account the provider holds meets the wall its local twin meets"
+
+# A verb that exists and fails is the other case: the reader prints the
+# provider's own bytes under its keyed line, this launcher adds one of its own,
+# and the gate still holds, because no answer establishes nothing.
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;LANE_HOST_STUB_ACCOUNTS_STATUS=7;$RELAUNCH_FLAGS" --host "$HOST_STUB" \
+  --harness claude --lane "$H/.xclaude" --repo o/r --relaunch CC-101
+assert_eq "$(observe "rc=1 launched=nolog relaunchgate=0 unanswered=1 unreadable=lane=$H/.xclaude,model=fable,step=windows") provider=$(said 'lane-host-fixture: accounts-failed') reader=$(grep -c "^lanes: host-accounts-unreadable host=$HOST_STUB exit=7\$" <<<"$OUT" || true)" \
+  "rc=1 launched=nolog relaunchgate=0 unanswered=1 unreadable=lane=$H/.xclaude,model=fable,step=windows provider=1 reader=1" \
+  "a hosted relaunch whose provider fails the accounts verb keeps the gate, and the provider's line, the reader's line and the launcher's line all appear"
+# The reader's validation reaches this launcher, which does no matching of its
+# own. A row `lanes` drops for a percentage nobody can parse holds no account
+# here either, so the refusal is the unread window and not a login remedy the
+# owner cannot act on.
+printf 'account=%s\tharness=claude\tweekly-pct=999\n' "$H/.xclaude" > "$TMP_ROOT/hosted-accounts-bad.tsv"
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/hosted-accounts-bad.tsv;$CHOICE_CMD" \
+  --host "$HOST_STUB" --harness claude --lane "$H/.xclaude" --repo o/r CC-102
+assert_eq "$(observe "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xclaude,model=opus,step=windows") dropped=$(grep -c "^lanes: host-account-invalid account=$H/.xclaude field=weekly-pct\$" <<<"$OUT" || true)" \
+  "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xclaude,model=opus,step=windows dropped=1" \
+  "an accounts row the reader drops holds no account for the launcher either"
+# The harness is part of the match, and the reader makes it: a row naming this
+# account under the other harness is not this launch's account.
+printf 'account=%s\tharness=codex\n' "$H/.xclaude" > "$TMP_ROOT/hosted-accounts-codex.tsv"
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/hosted-accounts-codex.tsv;$CHOICE_CMD" \
+  --host "$HOST_STUB" --harness claude --lane "$H/.xclaude" --repo o/r CC-103
+assert_eq "$(observe "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xclaude,model=opus,step=windows")" \
+  "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xclaude,model=opus,step=windows" \
+  "an accounts row naming this account under another harness holds nothing for this launch"
+# host-credential-dead reaches claude lanes. `lanes` reads an unrenewable expiry
+# from the claude token alone; a codex account whose own auth.json cannot be used
+# reads `unreachable`, which an offline read also produces, so the refusal stays
+# the unread window and --help says so.
+make_codex_lane "$H/.xcodex"
+printf 'account=%s\tharness=codex\n' "$H/.xcodex" > "$TMP_ROOT/hosted-accounts-xcodex.tsv"
+run_ot "LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/hosted-accounts-xcodex.tsv;cmd=true -m gpt-6-astra -c model_reasoning_effort=high" \
+  --host "$HOST_STUB" --harness codex --lane "$H/.xcodex" --repo o/r CC-104
+assert_eq "$(observe "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xcodex,model=gpt-6-astra,step=windows")" \
+  "rc=1 launched=nolog credentialdead=none unreadable=lane=$H/.xcodex,model=gpt-6-astra,step=windows" \
+  "a codex lane this machine cannot measure is the unread window, never the claude-only login remedy"
+run_ot "LANE_HOST_STUB_STATUS=75;$CHOICE_CMD" --host "$HOST_STUB" --harness claude --lane auto --repo o/r CC-42
 assert_eq "$(observe "rc= launched=") owned=$(awk '$2 == "item-owned" { print $3 }' <<<"$OUT")" "rc=75 launched=nolog owned=item=CC-42" \
   "a hosted create exit 75 skips the item as owned by another session"
-run_ot "LANE_HOST_STUB_STATUS=1" --host "$HOST_STUB" --harness claude --lane auto --repo o/r --cmd true CC-43
+run_ot "LANE_HOST_STUB_STATUS=1;$CHOICE_CMD" --host "$HOST_STUB" --harness claude --lane auto --repo o/r CC-43
 assert_eq "$(observe "rc= launched= creates=") failed=$(said "open-terminal: host-create-failed item=CC-43 exit=1")" "rc=1 launched=nolog creates=nolog failed=1" \
   "a hosted create failure is host-create-failed and opens no window"
 run_ot "" --host "$HOST_STUB" --lane "$H/.eclaude" --repo o/r --cmd true CC-44
@@ -551,30 +1157,187 @@ assert_eq "$(observe "rc= launched= creates=") create=$(host_call) invalid=$(awk
 run_ot "" --host "$HOST_STUB" --harness claude --wake CC-45
 assert_eq "$(observe "rc=") create=$(host_call) wake=$(awk '$2 == "wake-invalid"' <<<"$OUT" | wc -l | tr -d '[:space:]')" "rc=1 create=nolog wake=1" \
   "a hosted wake is wake-invalid before any create"
-run_ot "LANE_HOST_STUB_CREATE_LINE=ssh-target=lane.example"$'\t'"path=/srv/lane" --host "$HOST_STUB" --harness claude --lane auto --repo o/r --cmd true CC-46
+run_ot "LANE_HOST_STUB_CREATE_LINE=ssh-target=lane.example"$'\t'"path=/srv/lane;$CHOICE_CMD" --host "$HOST_STUB" --harness claude --lane auto --repo o/r CC-46
 assert_eq "$(observe "rc= launched=") invalid=$(said "open-terminal: host-line-invalid item=CC-46")" "rc=1 launched=nolog invalid=1" \
   "a create line missing its remote prefix is host-line-invalid and opens no window"
 # lane-host create writes the hosted lane's marker on its host. A local one
 # would bind the caller's own checkout, which would then pose as a lane.
 HOSTCALLER="$TMP_ROOT/hostcaller"; mkdir -p "$HOSTCALLER"; git -C "$HOSTCALLER" init -q
-run_ot "cwd=$HOSTCALLER" --host "$HOST_STUB" --harness claude --lane auto --repo o/r --cmd true CC-47
+run_ot "cwd=$HOSTCALLER;$CHOICE_CMD" --host "$HOST_STUB" --harness claude --lane auto --repo o/r CC-47
 assert_eq "$(observe "rc= launched=") local_marker=$([[ -e "$HOSTCALLER/.git/lane-mail" ]] && echo present || echo absent)" "rc=0 launched=1 local_marker=absent" \
   "a hosted launch writes no lane marker into the caller's own checkout"
+
+echo "=== the hosted ssh prompt wait has its own bound and one retry ==="
+# A sandbox whose tailnet route comes up late shows its shell seconds after the
+# first bound runs out. The wait spends its bound, interrupts the stalled
+# client, waits for the pane's own shell to come back and dials again, so the
+# launch still starts its lane instead of leaving a window holding a live ssh
+# session and no harness. The interrupt is load-bearing: a paste made while ssh
+# holds the pane is typed into that session and dials nothing, which is what
+# the stub replays.
+#
+# The bound is ORCH_LANE_SSH_PROMPT_SECS, and NOT ORCH_TMUX_VERIFY_SECS, which
+# keeps bounding the harness-screen and brief waits. $OT_SSH_CONNECTS_ON names
+# the connection whose host answers, so a row puts the prompt on the first
+# dial, on the retry's dial, or on neither. Every row reads the whole refusal
+# line, whose reason, bound and attempt count are the facts only it carries.
+SSH_LINE="clear; ssh 'lane.example'"
+INTERRUPT="send-keys -t %1 C-c"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_SSH_CONNECTS_ON=1;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-120
+assert_eq "$(observe "rc=0 launched=1 promptmissing=none") ssh=$(typed "$SSH_LINE") int=$(typed "$INTERRUPT")" \
+  "rc=0 launched=1 promptmissing=none ssh=1 int=0" \
+  "a prompt on the first dial launches the lane on one ssh paste, with no interrupt and no retry"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_SSH_CONNECTS_ON=2;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-121
+assert_eq "$(observe "rc=0 launched=1 promptmissing=none") ssh=$(typed "$SSH_LINE") int=$(typed "$INTERRUPT")" \
+  "rc=0 launched=1 promptmissing=none ssh=2 int=1" \
+  "a host that answers only the second dial is reached by the interrupt and the retry, and the lane launches"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_SSH_CONNECTS_ON=3;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-122
+assert_eq "$(observe "rc=1 promptmissing=item=CC-122,host=$HOST_STUB,reason=prompt-silent,seconds=1,attempts=2") ssh=$(typed "$SSH_LINE") int=$(typed "$INTERRUPT")" \
+  "rc=1 promptmissing=item=CC-122,host=$HOST_STUB,reason=prompt-silent,seconds=1,attempts=2 ssh=2 int=1" \
+  "a host that answers neither dial is remote-prompt-missing naming prompt-silent, the bound and both attempts"
+# A pane no longer running ssh is a session that died, not a client to
+# interrupt: nothing is interrupted and nothing is dialled a second time.
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_SSH_CONNECTS_ON=3;OT_SSH_DIES_AFTER=1;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-123
+assert_eq "$(observe "rc=1 promptmissing=item=CC-123,host=$HOST_STUB,reason=session-gone,seconds=1,attempts=1") ssh=$(typed "$SSH_LINE") int=$(typed "$INTERRUPT")" \
+  "rc=1 promptmissing=item=CC-123,host=$HOST_STUB,reason=session-gone,seconds=1,attempts=1 ssh=1 int=0" \
+  "a pane whose ssh session died under the first wait is session-gone on one paste, with no interrupt"
+# The new bound is judged by the block that judges ORCH_TMUX_VERIFY_SECS, so it
+# takes the same keyed refusal under its own name, before any window opens.
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_LANE_SSH_PROMPT_SECS=abc;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-124
+assert_eq "$(observe "rc=1 launched=nolog seconds_invalid=setting=ORCH_LANE_SSH_PROMPT_SECS,value=abc") create=$(host_call)" \
+  "rc=1 launched=nolog seconds_invalid=setting=ORCH_LANE_SSH_PROMPT_SECS,value=abc create=nolog" \
+  "a non-integer ssh bound is the verify-seconds-invalid refusal under its own setting name, before any create"
+# The ceiling the --help text promises, which is 300 and not the 120 the
+# verification timeout takes. The host answers the first dial, so the clamped
+# value is never waited out.
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_LANE_SSH_PROMPT_SECS=400;OT_SSH_CONNECTS_ON=1;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-130
+assert_eq "$(observe "rc=0 launched=1 seconds_clamped=setting=ORCH_LANE_SSH_PROMPT_SECS,value=400,limit=300")" \
+  "rc=0 launched=1 seconds_clamped=setting=ORCH_LANE_SSH_PROMPT_SECS,value=400,limit=300" \
+  "an oversized ssh bound is clamped loudly to its own ceiling of 300, and the lane still launches"
+# The other direction of the gate: a local lane reaches neither ssh wait, so a
+# broken ssh bound must not abort one. Its hosted twin is CC-124 above.
+run_ot "ORCH_LANE_SSH_PROMPT_SECS=abc;$CHOICE_CMD" --harness claude --lane "$H/.claude" CC-131
+assert_eq "$(observe "rc=0 launched=1 seconds_invalid=none")" "rc=0 launched=1 seconds_invalid=none" \
+  "a local claude tmux lane reads the ssh bound nowhere and is not aborted by a broken one"
+
+# A pane read that fails on THIS machine is the local failure it is, never a
+# host that showed no prompt: the operator is sent to their own tmux, not to a
+# window on the sandbox. Both reads the wait makes get a row. The failure is
+# aimed at the wait's own call, because the two subcommands have other readers
+# in the same run: display-message also reads pane_in_mode before every paste,
+# and capture-pane also carries the brief verification.
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_TMUX_FAIL_NTH=display-message:3;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-132
+assert_eq "$(observe "rc=1 tmuxfailed=operation=display-message,item=CC-132 promptmissing=none")" \
+  "rc=1 tmuxfailed=operation=display-message,item=CC-132 promptmissing=none" \
+  "a failed pane-command read during the ssh wait is tmux-failed naming display-message, not remote-prompt-missing"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_TMUX_FAIL_NTH=capture-pane:1;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-133
+assert_eq "$(observe "rc=1 tmuxfailed=operation=capture-pane,item=CC-133 promptmissing=none")" \
+  "rc=1 tmuxfailed=operation=capture-pane,item=CC-133 promptmissing=none" \
+  "a failed pane capture during the ssh wait is tmux-failed naming capture-pane, not remote-prompt-missing"
+
+# The two bounds are told apart by the polling, not by the refusal's own field:
+# with three seconds for the ssh bound and one for the other, a host that
+# answers neither dial is looked at four times per wait plus the one look that
+# finds the pane back at its shell. Read against ORCH_TMUX_VERIFY_SECS the same
+# run makes five looks, so a wait that took the wrong bound cannot pass here.
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_LANE_SSH_PROMPT_SECS=3;ORCH_TMUX_VERIFY_SECS=1;OT_SSH_CONNECTS_ON=3;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-126
+assert_eq "$(observe "rc=1 promptmissing=item=CC-126,host=$HOST_STUB,reason=prompt-silent,seconds=3,attempts=2") polls=$(typed pane_current_command)" \
+  "rc=1 promptmissing=item=CC-126,host=$HOST_STUB,reason=prompt-silent,seconds=3,attempts=2 polls=9" \
+  "both waits poll on the ssh bound, which the run's look count separates from the verification timeout"
+
+# A client already past connect keeps the pane through the interrupt: its
+# terminal is in raw mode, so C-c is forwarded to the remote rather than
+# killing it. The pane never comes back to its own shell, so no second line
+# can be run and the refusal reports the one dial that was made, on a host
+# that would have answered a later one. The third wait is here, and it takes
+# the ssh bound: at three seconds against one for the verification timeout the
+# run makes four looks per wait, where the harness bound would make two in the
+# second wait and eight looks in all.
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_LANE_SSH_PROMPT_SECS=3;ORCH_TMUX_VERIFY_SECS=1;OT_SSH_CONNECTS_ON=2;OT_SSH_IGNORES_INTERRUPT=1;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-134
+assert_eq "$(observe "rc=1 promptmissing=item=CC-134,host=$HOST_STUB,reason=prompt-silent,seconds=3,attempts=1") ssh=$(typed "$SSH_LINE") int=$(typed "$INTERRUPT") polls=$(typed pane_current_command)" \
+  "rc=1 promptmissing=item=CC-134,host=$HOST_STUB,reason=prompt-silent,seconds=3,attempts=1 ssh=1 int=1 polls=8" \
+  "a client that keeps the pane through the interrupt is refused on its one dial, the wait for the shell spending the ssh bound"
+# The interrupt is a keystroke that can fail on this machine like any other,
+# and it is refused under its own operation name: an operator sent to debug an
+# ssh paste would be looking at a line that was never typed. The send-keys the
+# interrupt makes is the second of the run, the first being the Enter that
+# submits the ssh line.
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_SSH_CONNECTS_ON=2;OT_TMUX_FAIL_NTH=send-keys:2;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-135
+assert_eq "$(observe "rc=1 tmuxfailed=operation=interrupt,item=CC-135 promptmissing=none")" \
+  "rc=1 tmuxfailed=operation=interrupt,item=CC-135 promptmissing=none" \
+  "an interrupt that fails on this machine is tmux-failed naming interrupt, not a host that showed no prompt"
+
+# The screen is read for its LAST non-blank line, because a real login prints a
+# banner above its prompt. One row per direction: a banner that itself ends in
+# a prompt character above the real prompt launches, and a banner ending in a
+# full stop below the real prompt does not. The second is the one a reader of
+# the first line would pass.
+BANNER_FIRST="$TMP_ROOT/ssh-screen-banner-first"
+printf 'Last login from 100.64.0.2 >\ndev@lane:~$\n' > "$BANNER_FIRST"
+BANNER_LAST="$TMP_ROOT/ssh-screen-banner-last"
+printf 'dev@lane:~$\nThis sandbox rejoins the tailnet on boot.\n' > "$BANNER_LAST"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_SSH_SCREEN=$BANNER_FIRST;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-136
+assert_eq "$(observe "rc=0 launched=1 promptmissing=none") ssh=$(typed "$SSH_LINE")" \
+  "rc=0 launched=1 promptmissing=none ssh=1" \
+  "a prompt under a banner line is the line the wait reads, and the lane launches on one dial"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_SSH_SCREEN=$BANNER_LAST;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-137
+assert_eq "$(observe "rc=1 promptmissing=item=CC-137,host=$HOST_STUB,reason=prompt-silent,seconds=1,attempts=2")" \
+  "rc=1 promptmissing=item=CC-137,host=$HOST_STUB,reason=prompt-silent,seconds=1,attempts=2" \
+  "a prompt with a banner line under it is not the line the wait reads, and the bound is spent"
+
+# A hosted lane reads ORCH_TMUX_VERIFY_SECS only where a brief is rendered for
+# it: claude, no --cmd and no host relaunch. Its other two readers sit behind
+# lane_account_readable, which is false for every hosted lane. So a broken one
+# must not abort the hosted shapes that never consult it, and must still abort
+# the one that does. One row per term of that condition, the harness, the
+# --cmd template and the relaunch, and one for the shape it lets through.
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_TMUX_VERIFY_SECS=abc;flags=-m gpt-6-astra -c model_reasoning_effort=high" --harness codex --lane "$H/.eclaude" --repo o/r CC-127
+assert_eq "$(observe "rc=0 launched=1 seconds_invalid=none")" "rc=0 launched=1 seconds_invalid=none" \
+  "a hosted codex lane carries no brief and is not aborted by a broken verification timeout"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_TMUX_VERIFY_SECS=abc;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-128
+assert_eq "$(observe "rc=0 launched=1 seconds_invalid=none")" "rc=0 launched=1 seconds_invalid=none" \
+  "a hosted --cmd lane carries no brief either, and is not aborted by the same broken timeout"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_TMUX_VERIFY_SECS=abc;$CHOICE" --harness claude --lane "$H/.eclaude" --repo o/r --relaunch CC-138
+assert_eq "$(observe "rc=0 launched=1 seconds_invalid=none")" "rc=0 launched=1 seconds_invalid=none" \
+  "a hosted claude relaunch continues on its host with no brief, and is not aborted by it either"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;ORCH_TMUX_VERIFY_SECS=abc;$CHOICE" --harness claude --lane "$H/.eclaude" --repo o/r CC-129
+assert_eq "$(observe "rc=1 launched=nolog seconds_invalid=setting=ORCH_TMUX_VERIFY_SECS,value=abc")" \
+  "rc=1 launched=nolog seconds_invalid=setting=ORCH_TMUX_VERIFY_SECS,value=abc" \
+  "the one hosted shape that renders a brief still refuses that broken timeout before any create"
+
+# Control: keep the retry and its refusal, but take the interrupt away. The
+# pane then never comes back from the stalled client, the second dial the
+# launch above is rescued by is never made, and that launch ends as the
+# refusal on its one attempt.
+RETRY_ROOT="$TMP_ROOT/mutant-ssh-retry/orch"
+mkdir -p "$RETRY_ROOT/scripts"
+cp -R "$SCRIPTS_DIR/." "$RETRY_ROOT/scripts/"
+orch_fixture_shared_libs "$RETRY_ROOT"
+mutate_file "$RETRY_ROOT/scripts/open-terminal" \
+  'if ! tmux send-keys -t "$pane" C-c; then' 'if ! tmux display-message -p -t "$pane" Q >/dev/null; then'
+OPEN_TERMINAL_REAL="$OPEN_TERMINAL"
+OPEN_TERMINAL="$RETRY_ROOT/scripts/open-terminal"
+run_ot "ORCH_LANE_HOST=$HOST_STUB;OT_SSH_CONNECTS_ON=2;$CHOICE_CMD" --harness claude --lane "$H/.eclaude" --repo o/r CC-125
+assert_eq "$(observe "rc=1 promptmissing=item=CC-125,host=$HOST_STUB,reason=prompt-silent,seconds=1,attempts=1") ssh=$(typed "$SSH_LINE") int=$(typed "$INTERRUPT")" \
+  "rc=1 promptmissing=item=CC-125,host=$HOST_STUB,reason=prompt-silent,seconds=1,attempts=1 ssh=1 int=0" \
+  "control: a retry that never interrupts never gets the pane back, so it dials once and the lane is abandoned"
+OPEN_TERMINAL="$OPEN_TERMINAL_REAL"
 
 echo "=== the claim store belongs to the caller's checkout ==="
 # `.agents` in a worktree points back at the main checkout, so a root derived
 # from the script's own path would write where `lanes` never looks.
 SCRIPTREPO="$TMP_ROOT/scriptrepo"; CALLERREPO="$TMP_ROOT/callerrepo"
 mkdir -p "$SCRIPTREPO/scripts/lib" "$CALLERREPO"
-cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTREPO/scripts/"
+cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$SCRIPTREPO/scripts/"
 cp "$SCRIPTS_DIR/lib"/*.sh "$SCRIPTREPO/scripts/lib/"
 orch_fixture_shared_libs "$SCRIPTREPO"
-chmod +x "$SCRIPTREPO/scripts/open-terminal" "$SCRIPTREPO/scripts/lanes"
+chmod +x "$SCRIPTREPO/scripts/open-terminal" "$SCRIPTREPO/scripts/lanes" "$SCRIPTREPO/scripts/lane-marker"
 git -C "$SCRIPTREPO" init -q; git -C "$CALLERREPO" init -q
 ( cd "$CALLERREPO" && LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" GH_ISSUE_PATTERN='[A-Z]+-[0-9]+' \
   TMUX=stub,1,0 OT_TMUX_LOG="$TMP_ROOT/caller.tmux.log" OT_TMUX_SERVER_PID="$$" OT_TMUX_PANES="$TMP_ROOT/caller.panes" \
   OT_WT_LOG="$TMP_ROOT/caller.worktree.log" PATH="$OT_STUB_BIN:$PATH" WORKTREE_CLI="$OT_STUB_BIN/worktree" \
-  "$SCRIPTREPO/scripts/open-terminal" --harness claude --lane auto --cmd true CC-20 ) >/dev/null 2>&1
+  "$SCRIPTREPO/scripts/open-terminal" --harness claude --lane auto \
+  --cmd "true --model opus --effort high" CC-20 ) >/dev/null 2>&1
 assert_eq "caller=$(ls -1 "$CALLERREPO"/tmp/oversee-watch/claims 2>/dev/null | wc -l | tr -d '[:space:]') script=$(ls -1 "$SCRIPTREPO"/tmp/oversee-watch/claims 2>/dev/null | wc -l | tr -d '[:space:]')" \
   "caller=1 script=0" "the claim lands in the caller checkout, where lanes reads it, never under the script's"
 
@@ -589,7 +1352,8 @@ REPO_LOG="$TMP_ROOT/caller.repo.tmux.log"
 ( cd "$CALLERREPO" && LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" GH_ISSUE_PATTERN='[A-Z]+-[0-9]+' \
   TMUX=stub,1,0 OT_TMUX_LOG="$REPO_LOG" OT_TMUX_SERVER_PID="$$" OT_TMUX_PANES="$TMP_ROOT/caller.repo.panes" \
   OT_WT_LOG="$TMP_ROOT/caller.repo.worktree.log" PATH="$OT_STUB_BIN:$PATH" WORKTREE_CLI="$OT_STUB_BIN/worktree" \
-  "$SCRIPTREPO/scripts/open-terminal" --harness claude --lane auto --cmd 'true {repo}' CC-21 ) >/dev/null 2>&1
+  "$SCRIPTREPO/scripts/open-terminal" --harness claude --lane auto \
+  --cmd 'true {repo} --model opus --effort high' CC-21 ) >/dev/null 2>&1
 assert_eq "caller=$(grep -c 'caller-owner/caller-repo' "$REPO_LOG" || true) script=$(grep -c 'script-owner/script-repo' "$REPO_LOG" || true)" \
   "caller=1 script=0" "the launch line names the caller checkout's repository, never the script checkout's"
 
@@ -605,10 +1369,10 @@ BAD_REPO="o/r';id;'"
 # The mutant: a resolve_repo that reads the output and drops the status.
 MUTREPO="$TMP_ROOT/mutrepo"
 mkdir -p "$MUTREPO/scripts/lib"
-cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$MUTREPO/scripts/"
+cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$MUTREPO/scripts/"
 cp "$SCRIPTS_DIR/lib"/*.sh "$MUTREPO/scripts/lib/"
 orch_fixture_shared_libs "$MUTREPO"
-chmod +x "$MUTREPO/scripts/open-terminal" "$MUTREPO/scripts/lanes"
+chmod +x "$MUTREPO/scripts/open-terminal" "$MUTREPO/scripts/lanes" "$MUTREPO/scripts/lane-marker"
 assert_eq "$(grep -Fc '[[ "$resolve_status" -eq 0 ]] || return 0' "$MUTREPO/scripts/open-terminal")" "1" \
   "control finds exactly one live status check"
 # `#` as the delimiter: the line the control rewrites carries `||`.
@@ -631,7 +1395,8 @@ run_bad_repo() {
     GH_REPO="$BAD_REPO" TMUX=stub,1,0 OT_TMUX_LOG="$log" OT_TMUX_SERVER_PID="$$" \
     OT_TMUX_PANES="$TMP_ROOT/$name.panes" OT_WT_LOG="$TMP_ROOT/$name.worktree.log" \
     PATH="$OT_STUB_BIN:$PATH" WORKTREE_CLI="$OT_STUB_BIN/worktree" \
-    "$script" --harness claude --lane auto --cmd 'true {repo}' CC-30 ) >/dev/null 2>&1
+    "$script" --harness claude --lane auto \
+      --cmd 'true {repo} --model opus --effort high' CC-30 ) >/dev/null 2>&1
   printf 'launched=%s rejected=%s' \
     "$(grep -c '^new-window' "$log" || true)" "$(grep -cF "$BAD_REPO" "$log" || true)"
 }
@@ -646,6 +1411,10 @@ echo "=== a launch binds its item to the tree it made, or fails the item ==="
 # root. A tree git cannot mark fails the item rather than launching a lane the
 # hook never reaches. The unmarkable tree sits outside every repository, and the
 # ceiling keeps git from finding the one the suite's temp root may sit in.
+#
+# `lane-marker` owns the record and the containment over it, and lane-marker.sh
+# pins those; what these rows pin is that a launch calls it and fails the item
+# on what it says.
 NOGIT_STUB="$TMP_ROOT/worktree-nogit"
 cat > "$NOGIT_STUB" <<'STUBEOF'
 #!/usr/bin/env bash
@@ -655,9 +1424,13 @@ STUBEOF
 chmod +x "$NOGIT_STUB"
 
 # marked SCRIPT NAME WORKTREE_CLI — one launch of CC-40 from a caller checkout
-# of its own. Prints `rc=<rc> marker=<root|none|other> refused=<marker-failed lines>`.
+# of its own. Prints `rc=<rc> marker=<root|none|other> box=<made|none>
+# refused=<marker-failed lines>`. `box` is the lane's own mailbox directory,
+# which the launch makes in the item's own spelling: lane-mail-check resolves
+# the item by it, so a lane nobody has messaged is still judged on its handoff
+# marks.
 marked() {
-  local script="$1" name="$2" runs="$TMP_ROOT/$2-runs" caller="$TMP_ROOT/$2-caller" out rc=0 wt marker=none
+  local script="$1" name="$2" runs="$TMP_ROOT/$2-runs" caller="$TMP_ROOT/$2-caller" out rc=0 wt marker=none box=none
   mkdir -p "$runs" "$caller"
   git -C "$caller" init -q
   out="$( cd "$caller" && GIT_CEILING_DIRECTORIES="$TMP_ROOT" LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$FETCHER" \
@@ -669,13 +1442,32 @@ marked() {
     marker=other
     [[ "$(cat "$wt/.git/lane-mail/cc-40")" != "$wt" ]] || marker=root
   fi
-  printf 'rc=%s marker=%s refused=%s' "$rc" "$marker" "$(grep -c '^open-terminal: marker-failed item=CC-40 ' <<<"$out" || true)"
+  # A plain directory, never a link a row planted: -d alone follows one.
+  { [[ -L "$wt/tmp/lane-mail/CC-40" ]] || [[ ! -d "$wt/tmp/lane-mail/CC-40" ]]; } || box=made
+  printf 'rc=%s marker=%s box=%s refused=%s' "$rc" "$marker" "$box" "$(grep -c '^open-terminal: marker-failed item=CC-40 ' <<<"$out" || true)"
 }
 
-assert_eq "$(marked "$OPEN_TERMINAL" marked "$OT_STUB_BIN/worktree")" "rc=0 marker=root refused=0" \
-  "a launch binds its lowercased item to the root of the tree it made"
-assert_eq "$(marked "$OPEN_TERMINAL" unmarkable "$NOGIT_STUB")" "rc=1 marker=none refused=1" \
+assert_eq "$(marked "$OPEN_TERMINAL" marked "$OT_STUB_BIN/worktree")" "rc=0 marker=root box=made refused=0" \
+  "a launch binds its lowercased item to the root of the tree it made and opens the lane's mailbox there"
+assert_eq "$(marked "$OPEN_TERMINAL" unmarkable "$NOGIT_STUB")" "rc=1 marker=none box=none refused=1" \
   "a tree git cannot mark fails the item instead of launching it"
+
+# A worktree whose tmp is a symlink, which skills/worktree's WORKTREE_SYMLINKS
+# makes: the launch marks it and opens its mailbox through the link, because
+# containment starts at tmp/lane-mail, where lane-mail's own reader starts it.
+TMPLINK_STUB="$TMP_ROOT/worktree-tmplink"
+cat > "$TMPLINK_STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == "create" ]] || exit 0
+d="$(mktemp -d "$(dirname "$OT_WT_LOG")/wt.XXXXXX")"
+git init -q "$d"
+scratch="$(mktemp -d "$(dirname "$OT_WT_LOG")/scratch.XXXXXX")"
+ln -s "$scratch" "$d/tmp"
+printf '%s\n' "$d"
+STUBEOF
+chmod +x "$TMPLINK_STUB"
+assert_eq "$(marked "$OPEN_TERMINAL" tmplink "$TMPLINK_STUB")" "rc=0 marker=root box=made refused=0" \
+  "a launch into a worktree whose tmp is a symlink writes the marker and the mailbox"
 
 # A symlink already at the marker path fails the item and writes through nothing.
 LINKED_STUB="$TMP_ROOT/worktree-linked"
@@ -691,21 +1483,41 @@ STUBEOF
 chmod +x "$LINKED_STUB"
 LINKED="$(marked "$OPEN_TERMINAL" linked "$LINKED_STUB")"
 assert_eq "$LINKED target=$([[ -e "$TMP_ROOT/linked-runs/marker-target" ]] && echo written || echo untouched)" \
-  "rc=1 marker=none refused=1 target=untouched" "a symlink at the marker path fails the item and writes through nothing"
+  "rc=1 marker=none box=none refused=1 target=untouched" "a symlink at the marker path fails the item and writes through nothing"
 
 # The mutant: the marker line gone, so neither the write nor its refusal runs.
 MARKREPO="$TMP_ROOT/markrepo"
 mkdir -p "$MARKREPO/scripts/lib"
-cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$MARKREPO/scripts/"
+cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" \
+  "$SCRIPTS_DIR/lane-marker" "$MARKREPO/scripts/"
 cp "$SCRIPTS_DIR/lib"/*.sh "$MARKREPO/scripts/lib/"
 orch_fixture_shared_libs "$MARKREPO"
-chmod +x "$MARKREPO/scripts/open-terminal" "$MARKREPO/scripts/lanes"
-sed -i.bak '/^  if \[\[ "\$WAKE" != true && "\$LANE_HOST" == local && -d "\$wt" \]\] && ! write_lane_marker /d' "$MARKREPO/scripts/open-terminal"
-assert_eq "$(grep -c 'ot_message marker-failed' "$MARKREPO/scripts/open-terminal")" "0" "control applied the marker mutation"
-assert_eq "$(marked "$MARKREPO/scripts/open-terminal" mutant-marked "$OT_STUB_BIN/worktree")" "rc=0 marker=none refused=0" \
+chmod +x "$MARKREPO/scripts/open-terminal" "$MARKREPO/scripts/lanes" "$MARKREPO/scripts/lane-marker"
+sed -i.bak '/^  if \[\[ "\$WAKE" != true && -d "\$wt" \]\] && ! write_lane_marker /d' "$MARKREPO/scripts/open-terminal"
+assert_eq "$(grep -c 'ot_message "\$LANE_MARKER_REASON"' "$MARKREPO/scripts/open-terminal")" "0" "control applied the marker mutation"
+assert_eq "$(marked "$MARKREPO/scripts/open-terminal" mutant-marked "$OT_STUB_BIN/worktree")" "rc=0 marker=none box=none refused=0" \
   "control: without the marker line a launch leaves its lane unmarked"
-assert_eq "$(marked "$MARKREPO/scripts/open-terminal" mutant-unmarkable "$NOGIT_STUB")" "rc=0 marker=none refused=0" \
+assert_eq "$(marked "$MARKREPO/scripts/open-terminal" mutant-unmarkable "$NOGIT_STUB")" "rc=0 marker=none box=none refused=0" \
   "control: without the marker line an unmarkable tree launches anyway"
+
+# The mailbox directory alone, with the marker still written: a launch that
+# lost only the directory leaves the lane's turn-end hook no name to resolve
+# its handoff marks by, and this is what tells that apart from a lost marker.
+# The defect is planted in the owner the launcher calls, which is what these
+# rows say the launcher does.
+BOXREPO="$TMP_ROOT/boxrepo"
+mkdir -p "$BOXREPO/scripts/lib"
+cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" \
+  "$SCRIPTS_DIR/lane-marker" "$BOXREPO/scripts/"
+cp "$SCRIPTS_DIR/lib"/*.sh "$BOXREPO/scripts/lib/"
+orch_fixture_shared_libs "$BOXREPO"
+chmod +x "$BOXREPO/scripts/open-terminal" "$BOXREPO/scripts/lanes" "$BOXREPO/scripts/lane-marker"
+sed -i.bak 's@^MADE=\$(mkdir -p -- "\$COMMON/lane-mail" "\$BOX" 2>&1)@MADE=$(mkdir -p -- "$COMMON/lane-mail" 2>\&1)@' \
+  "$BOXREPO/scripts/lane-marker"
+assert_eq "$(grep -c 'mkdir -p -- "\$COMMON/lane-mail" "\$BOX"' "$BOXREPO/scripts/lane-marker")" "0" \
+  "control applied the mailbox-directory mutation"
+assert_eq "$(marked "$BOXREPO/scripts/open-terminal" mutant-boxless "$OT_STUB_BIN/worktree")" "rc=0 marker=root box=none refused=0" \
+  "control: without its mkdir the launch marks the lane and opens no mailbox for it"
 
 echo "=== a lane launches through its own launcher ==="
 # A command named for the lane's config directory selects the account itself,
@@ -804,17 +1616,35 @@ lane_launch() {
   local script="$1" name="$2" harness="$3" lane="$4" leaf="$5" late="$6" fields="$7" item="CC-50"
   shift 7
   local runs="$TMP_ROOT/$name-runs" caller="$TMP_ROOT/$name-caller" out rc=0 tree form=none launcher trigger="" var f value got=""
-  local template="" flags="" text="" opt
+  # A row whose leaf names a path derived from the launch directory pins that
+  # directory, since the stub otherwise makes a fresh one per run and no row
+  # can spell it.
+  local template="" flags="" text="" fixed_wt="" prefix_home="$lane" opt
   for opt in "$@"; do
     case "$opt" in
       cmd=*) template="${opt#cmd=}" ;;
       flags=*) flags="${opt#flags=}" ;;
       text=*) text="${opt#text=}" ;;
+      wt=*) fixed_wt="${opt#wt=}" ;;
+      home=*) prefix_home="${opt#home=}" ;;
       *) printf 'lane_launch: unknown option %s\n' "$opt" >&2; exit 1 ;;
     esac
   done
-  local extra=()
-  [[ -z "$template" ]] || extra=(--cmd "$template")
+  # Every lane launch names a model and an effort or nothing launches. These
+  # rows are about the launcher form and their lanes are outside every lane
+  # record, so the pair is passed in the spelling the row's harness takes and
+  # nothing here turns on its value. It goes in the text the launch RUNS: inside
+  # a row's own --cmd command where it has one, since --launch-flags beside a
+  # template reach nothing and are refused, and in --launch-flags where it does
+  # not. Appended, so the template's FIRST word, which is what the launcher form
+  # is judged on, stays the row's own.
+  local choice extra=()
+  case "$harness" in
+    codex) choice="-m gpt-6-astra -c model_reasoning_effort=high" ;;
+    *) choice="--model opus --effort high" ;;
+  esac
+  if [[ -n "$template" ]]; then extra=(--cmd "$template $choice")
+  else extra=(--launch-flags "$choice"); fi
   # shellcheck disable=SC2206  # a row's flags are its own words, split on purpose.
   [[ -z "$flags" ]] || extra+=($flags)
   # The screen a launched TUI draws: the brief it was given, and the live-input
@@ -844,13 +1674,15 @@ lane_launch() {
     TMUX=stub,1,0 OT_TMUX_LOG="$runs/tmux.log" OT_TMUX_SERVER_PID="$$" OT_TMUX_PANES="$runs/panes" \
     OT_PANE_PID="$tree" OT_PANE_TEXT="$text" ORCH_TMUX_VERIFY_SECS=5 OT_PANE_PID_TRIGGER="$trigger" \
     OT_LAUNCHED_GATE="$gate" \
-    OT_WT_LOG="$runs/worktree.log" OVERSEE_WATCH_STATE_DIR="$runs/state" \
+    OT_WT_LOG="$runs/worktree.log" OT_WT_FIXED="$fixed_wt" OVERSEE_WATCH_STATE_DIR="$runs/state" \
     PATH="$LNBIN:$OT_STUB_BIN:$PATH" WORKTREE_CLI="$OT_STUB_BIN/worktree" \
     "$script" --harness "$harness" --lane "$lane" ${extra[@]+"${extra[@]}"} "$item" 2>&1 )" || rc=$?
   kill_tree "$tree"
   # Under a template the first word after the prefix is the caller's own
   # command, not the harness word, so the prefix is all this row matches on.
-  local want="clear; env $var='$lane' "
+  # The value the prefix must name: the lane itself, or the home `home=` gives
+  # a row whose launch builds one.
+  local want="clear; env $var='$prefix_home' "
   [[ -n "$template" ]] || want+="$harness "
   grep -qF "$want" "$runs/tmux.log" && form=prefix
   grep -qF "clear; '$LNBIN/$launcher' " "$runs/tmux.log" && form=launcher
@@ -884,13 +1716,17 @@ lane_launch() {
 # dropping the account check's settle test entirely leaves a loop that never
 # breaks, which is not the behaviour it replaced, and dropping the launcher
 # print leaves the judge emitting nothing.
+#
+# Every control lives BELOW this definition, whatever section its green row sits
+# in: a call above it is an undefined function, which run_ot reports as exit 127
+# and a row reads as an ordinary assertion failure.
 mutant_repo() {
   local dir="$TMP_ROOT/$1" file="$2"
   mkdir -p "$dir/scripts/lib"
-  cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$dir/scripts/"
+  cp "$OPEN_TERMINAL" "$SCRIPTS_DIR/lanes" "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$dir/scripts/"
   cp "$SCRIPTS_DIR/lib"/*.sh "$dir/scripts/lib/"
   orch_fixture_shared_libs "$dir"
-  chmod +x "$dir/scripts/open-terminal" "$dir/scripts/lanes"
+  chmod +x "$dir/scripts/open-terminal" "$dir/scripts/lanes" "$dir/scripts/lane-marker"
   assert_eq "$(grep -c -e "$3" "$dir/$file")" "1" "control $1 finds exactly one line to mutate"
   if [[ $# -ge 4 ]]; then sed -i.bak "s/$3/$4/" "$dir/$file"
   else sed -i.bak "/$3/d" "$dir/$file"; fi
@@ -920,6 +1756,11 @@ mutant_repo ctl-failexit scripts/open-terminal '|| tmux_launch_verify "\$pane" "
 # timeout waiting for a screen first. Dropping the guard leaves the wait running
 # its full bound ahead of a read that returns `skipped` either way.
 mutant_repo ctl-readable scripts/open-terminal 'if lane_account_readable "\$LANE_FORM"; then' 'if true; then'
+# A launch that built a private CODEX_HOME runs under it, so the account check
+# reads that home back off the pane. Without the rule that maps a home to the
+# account it sits under, every such launch reports a mismatch against the very
+# account it is running on, and its window is closed.
+mutant_repo ctl-homeaccount scripts/lib/lane-home.sh '\*\/lane-launch\/\*\/home) printf'
 mutant_repo ctl-unpremised scripts/open-terminal 'if \[\[ "\$3" == unmet \]\]; then ot_message lane-unobserved "item=\$2" "reason=unpremised" >&2' 'if false; then ot_message lane-unobserved "item=$2" "reason=unpremised" >\&2'
 
 assert_eq "$(lane_launch "$OPEN_TERMINAL" launcher claude "$LNLANE" "$LNLANE" - "rc form bare")" \
@@ -931,10 +1772,22 @@ assert_eq "$(lane_launch "$OPEN_TERMINAL" bare claude "$LNBARE" "$LNBARE" - "rc 
 assert_eq "$(lane_launch "$OPEN_TERMINAL" self claude "$LNSELF" "$LNSELF" - "rc form bare")" \
   "rc=0 form=prefix bare=0" \
   "a lane named for the harness itself keeps the env prefix: the harness binary picks its own default account"
-assert_eq "$(lane_launch "$OPEN_TERMINAL" codex-launcher codex "$LNCODEX" "$LNCODEX" - "rc form bare")" \
-  "rc=0 form=launcher bare=0" \
-  "a codex lane whose launcher is on PATH launches through its absolute path, with no CODEX_HOME prefix"
-assert_eq "$(lane_launch "$OPEN_TERMINAL" codex-self codex "$LNCODEXSELF" "$LNCODEXSELF" - "rc form bare")" \
+# A codex launch runs under the home it builds for its worktree, and that home
+# is reached by the variable that names it whatever else is on PATH: an account
+# launcher exports CODEX_HOME for its OWN name, which would put the launch back
+# on the shared config with no trust entry in it. So the launcher form is what
+# these two rows say a codex lane must NOT take, where the claude rows above
+# say a lane with a launcher takes it. Each row pins its worktree, since the
+# home it must name is derived from that path.
+CODEXLAUNCHWT="$TMP_ROOT/codex-launcher-wt"
+CODEXSELFWT="$TMP_ROOT/codex-self-wt"
+codex_home_for() { ( source "$SCRIPTS_DIR/lib/lane-launch.sh" && lane_codex_home_path "$1" "$2" ); }
+assert_eq "$(lane_launch "$OPEN_TERMINAL" codex-launcher codex "$LNCODEX" "$LNCODEX" - "rc form bare" \
+  "wt=$CODEXLAUNCHWT" "home=$(codex_home_for "$LNCODEX" "$CODEXLAUNCHWT")")" \
+  "rc=0 form=prefix bare=0" \
+  "a codex lane keeps the prefix even where its launcher is on PATH: the launcher would overwrite the home carrying the launch's folder trust"
+assert_eq "$(lane_launch "$OPEN_TERMINAL" codex-self codex "$LNCODEXSELF" "$LNCODEXSELF" - "rc form bare" \
+  "wt=$CODEXSELFWT" "home=$(codex_home_for "$LNCODEXSELF" "$CODEXSELFWT")")" \
   "rc=0 form=prefix bare=0" \
   "a codex lane named for the harness itself keeps the CODEX_HOME prefix"
 assert_eq "$(lane_launch "$OPEN_TERMINAL" trailing claude "$LNLANE/" "$LNLANE" - "rc form bare")" \
@@ -974,27 +1827,162 @@ assert_eq "$(lane_launch "$TMP_ROOT/ctl-readable/scripts/open-terminal" mutant-r
 # that name for its own rows and the patched path is restored after.
 OPEN_TERMINAL_PATCHED="$OPEN_TERMINAL"
 
-# Without the arm that takes a model from the NEXT token, a space-spelled
-# --model and codex's -m read as no model at all, the gate never runs, and the
-# walled lane launches onto the usage banner the refusal exists to prevent.
-mutant_repo ctl-take scripts/open-terminal '--model|-m) take=true ;;'
-claude_usage 10 20 95 'Fable 5.1' > "$FIXTURE_DIR/.claude.json"
-OPEN_TERMINAL="$TMP_ROOT/ctl-take/scripts/open-terminal"
-run_ot "" --harness claude --lane "$H/.claude" --launch-flags "--model fable" --cmd true CC-66
+# One control per rule of the model-and-effort refusal, each on the same
+# arguments as the green row beside it. OUTSIDE_LANE is a config dir no lane
+# record covers, so a launch that gets past the refusal meets no usage verdict
+# and the row reads the refusal alone.
+run_ot "" --harness claude --lane "$OUTSIDE_LANE" --cmd true CC-90
+assert_eq "$(observe "rc=1 launched=nolog modelmissing=harness=claude,lane=$OUTSIDE_LANE,spellings=--model")" \
+  "rc=1 launched=nolog modelmissing=harness=claude,lane=$OUTSIDE_LANE,spellings=--model" \
+  "a lane launch naming no model is refused for it"
+mutant_repo ctl-model-rule scripts/open-terminal 'if \[\[ -z "\$LAUNCH_MODEL" \]\]; then' 'if [[ -n "$LAUNCH_MODEL" ]]; then'
+OPEN_TERMINAL="$TMP_ROOT/ctl-model-rule/scripts/open-terminal"
+run_ot "" --harness claude --lane "$OUTSIDE_LANE" --cmd true CC-91
+assert_eq "$(observe "modelmissing=none effortmissing=harness=claude,lane=$OUTSIDE_LANE,spellings=--effort")" \
+  "modelmissing=none effortmissing=harness=claude,lane=$OUTSIDE_LANE,spellings=--effort" \
+  "control: without the model rule a launch naming no model is not refused for it"
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
+
+run_ot "cmd=true --model opus" --harness claude --lane "$OUTSIDE_LANE" CC-92
+assert_eq "$(observe "rc=1 launched=nolog effortmissing=harness=claude,lane=$OUTSIDE_LANE,spellings=--effort")" \
+  "rc=1 launched=nolog effortmissing=harness=claude,lane=$OUTSIDE_LANE,spellings=--effort" \
+  "a lane launch naming no effort is refused for it"
+mutant_repo ctl-effort-rule scripts/open-terminal '\-z "\$LAUNCH_EFFORT" \]\]' '-n "$LAUNCH_EFFORT" ]]'
+OPEN_TERMINAL="$TMP_ROOT/ctl-effort-rule/scripts/open-terminal"
+run_ot "cmd=true --model opus" --harness claude --lane "$OUTSIDE_LANE" CC-93
+assert_eq "$(observe "rc=0 launched=1 effortmissing=none")" "rc=0 launched=1 effortmissing=none" \
+  "control: without the effort rule a launch naming no effort launches"
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
+# The bypass this refusal closes, planted whole: the refusal gone AND the model
+# read out of the launch flags again, which is the code as it shipped. The
+# launch then passes the gate on a word start_cmd renders nowhere, and its lane
+# is judged and its record written under a model the harness never runs. Two
+# edits on one copy, because either alone refuses the launch for the other's
+# reason. OUTSIDE_LANE is covered by no lane record, so the row reads the gate
+# alone. Its green rows are the CC-99 and CC-112 launches above.
+mutant_repo ctl-flags-reach scripts/open-terminal 'if \[\[ -n "\$CMD_TEMPLATE" && -n "\$LAUNCH_FLAGS" \]\]; then' 'if false; then'
+assert_eq "$(grep -cF 'LAUNCH_TEXT="$CMD_TEMPLATE"' "$TMP_ROOT/ctl-flags-reach/scripts/open-terminal")" "1" \
+  "control ctl-flags-reach finds one text-the-launch-runs assignment to widen"
+sed -i.bak 's/LAUNCH_TEXT="\$CMD_TEMPLATE"/LAUNCH_TEXT="$LAUNCH_FLAGS $CMD_TEMPLATE"/' \
+  "$TMP_ROOT/ctl-flags-reach/scripts/open-terminal"
+assert_eq "$(grep -cF 'LAUNCH_TEXT="$LAUNCH_FLAGS $CMD_TEMPLATE"' "$TMP_ROOT/ctl-flags-reach/scripts/open-terminal")" "1" \
+  "control ctl-flags-reach applied its second mutation"
+OPEN_TERMINAL="$TMP_ROOT/ctl-flags-reach/scripts/open-terminal"
+run_ot "flags=--model opus --effort high" --harness claude --lane "$OUTSIDE_LANE" --cmd true CC-113
+assert_eq "$(observe "rc=0 launched=1 flagsunreachable=none modelmissing=none")" \
+  "rc=0 launched=1 flagsunreachable=none modelmissing=none" \
+  "control: with the refusal gone and the flags read again, a launch whose command names no model passes the gate on a model the harness never runs"
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
+
+# The harness a `--lane auto:<h>` spec names is the launch's harness, and the
+# gate reads it. Keyed on --harness alone, the same launch reaches the lane with
+# no model named at all, which is the state the refusal exists to prevent. Its
+# green row is the CC-114 launch above.
+mutant_repo ctl-lane-harness scripts/open-terminal 'LAUNCH_HARNESS="\$LANE_SPEC_HARNESS"' 'LAUNCH_HARNESS="$HARNESS"'
+OPEN_TERMINAL="$TMP_ROOT/ctl-lane-harness/scripts/open-terminal"
+run_ot "cmd=true" --lane auto:claude CC-117
+assert_eq "$(observe "rc=0 launched=1 modelmissing=none effortmissing=none")" \
+  "rc=0 launched=1 modelmissing=none effortmissing=none" \
+  "control: keyed on --harness alone the gate skips a launch naming its harness only in the lane spec, and it starts on the harness default"
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
+
+# pi's level on the model value is read from the row's separator field. Without
+# that read, the launch that named both choices in one token is refused for the
+# effort it already passed.
+mutant_repo ctl-colon "$LAUNCH_LIB" '\[\[ "\$model" != \*"\$in_model"\* \]\] ||' '[[ "$model" == *"$in_model"* ]] ||'
+OPEN_TERMINAL="$TMP_ROOT/ctl-colon/scripts/open-terminal"
+run_ot "cmd=true --model sonnet:high" --harness pi --lane "$H/.claude" CC-105
+assert_eq "$(observe "rc=1 launched=nolog effortmissing=harness=pi,lane=$H/.claude,spellings=--thinking")" \
+  "rc=1 launched=nolog effortmissing=harness=pi,lane=$H/.claude,spellings=--thinking" \
+  "control: without the separator read the level on the model value is not the effort, and the launch is refused for naming none"
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
+
+# Which unmeasured account a relaunch proceeds on is the provider's answer and
+# not the --relaunch flag. Keyed on the flag alone, the same launch over a
+# provider that holds nothing proceeds and tells the operator the host runs a
+# credential nothing here established. Its green row is the CC-100 launch above,
+# on that world's expired xclaude lane and the same absent-verb provider.
+mutant_repo ctl-relaunch-skip scripts/open-terminal '&& "\$HOST_ACCOUNT" == held \]\]' ']]'
+OPEN_TERMINAL="$TMP_ROOT/ctl-relaunch-skip/scripts/open-terminal"
+run_ot "ORCH_LANES_CLAUDE_CLIENT_ID=;LANE_HOST_STUB_NO_ACCOUNTS=1;$RELAUNCH_FLAGS" --host "$HOST_STUB" \
+  --harness claude --lane "$H/.xclaude" --repo o/r --relaunch CC-106
+assert_eq "$(observe "rc=0 launched=1 relaunchgate=1 unreadable=none")" \
+  "rc=0 launched=1 relaunchgate=1 unreadable=none" \
+  "control: keyed on the flag alone, a relaunch whose provider holds nothing proceeds and claims the host copy runs it"
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
+
+# The alias lookup's own status, taken and then acted on. Without the capture the
+# failing lookup ends the run under errexit inside the substitution, and the
+# launch dies with no keyed line of its own for the operator to act on. Its green
+# row is the alias-spelled resolution-failure row in the first table.
+#
+# The CHECK that reads the captured status has no control of its own: with it
+# gone the empty answer falls to the alias-not-found branch, whose `lane_check`
+# meets the same malformed setting and refuses with the same key, so no input
+# this suite can build tells the two apart. What the green row holds is the key
+# an operator acts on, which is the same either way.
+mutant_repo ctl-alias-status scripts/open-terminal ')" || alias_rc=\$?' ')"'
+OPEN_TERMINAL="$TMP_ROOT/ctl-alias-status/scripts/open-terminal"
+run_ot "ORCH_LANE_ALIASES=eclaude=work;ORCH_LANES_USAGE_TTL=soon;$CHOICE_CMD" --harness claude --lane work CC-109
+assert_eq "$(observe "rc=1 launched=nolog failed=none") keyed=$(grep -c '^open-terminal: ' <<<"$OUT" || true)" \
+  "rc=1 launched=nolog failed=none keyed=0" \
+  "control: without the alias lookup's status the launch dies inside the substitution with no keyed line"
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
+
+# The wall is judged for every named lane, with no launch shape exempt. Exempting
+# the hosted relaunch — the shape that reads the provider at all — lets the
+# walled account resume and open on its usage banner, which is the whole cost the
+# gate exists to avoid. Its green row is CC-107 above, on that world's wclaude
+# lane and a provider that holds it.
+mutant_repo ctl-gate-every-shape scripts/open-terminal \
+  'if \[\[ "\$lane_gate" == true \]\]; then' 'if [[ "$lane_gate" == true \&\& "$HOST_RELAUNCH" != true ]]; then'
+OPEN_TERMINAL="$TMP_ROOT/ctl-gate-every-shape/scripts/open-terminal"
+run_ot "LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/hosted-accounts-walled.tsv;$RELAUNCH_FLAGS" --host "$HOST_STUB" \
+  --harness claude --lane "$H/.wclaude" --repo o/r --relaunch CC-108
 assert_eq "$(observe "rc=0 launched=1 walled=none")" "rc=0 launched=1 walled=none" \
-  "control: without the take arm the space-spelled model is not read and the walled lane launches"
+  "control: with the hosted relaunch exempt from the gate the walled account resumes onto its own usage banner"
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
+
+# Without the arm that takes a choice's value from the NEXT token, every
+# space-spelled flag reads as absent: `--model sonnet` names no model, and the
+# launch is refused for naming none instead of being judged against the window
+# it did name. The uclaude fixture is where the two answers are visibly
+# different — no window of it measures sonnet, so the unpatched script refuses
+# as lane-model-unreadable and the patched one never reaches the lane at all.
+claude_usage 10 20 95 'Fable 5.1' > "$FIXTURE_DIR/.claude.json"
+# The lane its own gate row left the home is removed again after that row, so
+# this pair builds it back: one scoped window for Opus and nothing else, which
+# has binding-bucket room and measures nothing for sonnet.
+make_lane "$H" uclaude 3600
+jq -n '{limits: [{kind: "weekly_scoped", percent: 10, resets_at: "2026-08-01T06:00:00Z",
+                  scope: {model: {display_name: "Opus"}}}]}' > "$FIXTURE_DIR/.uclaude.json"
+run_ot "cmd=true --model sonnet --effort high" --harness claude --lane "$H/.uclaude" CC-80
+assert_eq "$(observe "rc=1 launched=nolog modelmissing=none unreadable=lane=$H/.uclaude,model=sonnet,step=windows")" \
+  "rc=1 launched=nolog modelmissing=none unreadable=lane=$H/.uclaude,model=sonnet,step=windows" \
+  "the space-spelled model is judged against that lane's own window, which measures nothing for it"
+mutant_repo ctl-take "$LAUNCH_LIB" 'tokens\[i+1\]'
+OPEN_TERMINAL="$TMP_ROOT/ctl-take/scripts/open-terminal"
+run_ot "cmd=true --model sonnet --effort high" --harness claude --lane "$H/.uclaude" CC-66
+assert_eq "$(observe "rc=1 launched=nolog unreadable=none modelmissing=harness=claude,lane=$H/.uclaude,spellings=--model")" \
+  "rc=1 launched=nolog unreadable=none modelmissing=harness=claude,lane=$H/.uclaude,spellings=--model" \
+  "control: without the take arm the space-spelled model reads as none and the launch is refused for naming none"
 
 # Without the null clause in the judge, an unmeasured wall compares as though it
 # were the smallest number there is — jq orders null below every number — and a
 # lane whose windows answer nothing for the model is handed back as having room.
 # The clause is lib/lane-model.sh's `wall_verdict`, the one classifier both pick
 # forms read, so this row reddens with the fleet chooser's own control.
+#
+# The unpatched script first: a copy taken while the row above still pointed at
+# its own mutant would carry two planted defects under one verdict, and would
+# pass while either was caught.
+OPEN_TERMINAL="$OPEN_TERMINAL_PATCHED"
 mutant_repo ctl-nullwall scripts/lib/lane-model.sh 'if \. == null then "unmeasured"' 'if false then "unmeasured"'
 make_lane "$H" uclaude 3600
 jq -n '{limits: [{kind: "weekly_scoped", percent: 10, resets_at: "2026-08-01T06:00:00Z",
                   scope: {model: {display_name: "Opus"}}}]}' > "$FIXTURE_DIR/.uclaude.json"
 OPEN_TERMINAL="$TMP_ROOT/ctl-nullwall/scripts/open-terminal"
-run_ot "" --harness claude --lane "$H/.uclaude" --launch-flags --model=sonnet --cmd true CC-72
+run_ot "cmd=true --model sonnet --effort high" --harness claude --lane "$H/.uclaude" CC-72
 assert_eq "$(observe "rc=0 launched=1 unreadable=none")" "rc=0 launched=1 unreadable=none" \
   "control: without the null clause a lane nothing measures is treated as free and launches"
 rm -rf -- "${H:?}/.uclaude" "${FIXTURE_DIR:?}/.uclaude.json"
@@ -1086,6 +2074,22 @@ else
     "rc=0 verified=1 premise=1 unpremised=0" \
     "control: without the unpremised arm a reading off a pane that never showed a harness is announced as a verified account"
 
+  # A codex launch runs under the home it built for its worktree, so what the
+  # pane carries is that home and not the account directory. The check's
+  # question is which ACCOUNT the pane is spending, and a home built under one
+  # is that account; a pane on some other account still disagrees, which the
+  # `wrong` row above pins. The worktree is pinned because the leaf here is
+  # derived from it, and the home path comes from the builder itself rather
+  # than a second spelling of its shape.
+  CODEXTRUSTWT="$TMP_ROOT/codex-trust-wt"
+  CODEXTRUSTHOME="$( source "$SCRIPTS_DIR/lib/lane-launch.sh" && lane_codex_home_path "$LNCODEXSELF" "$CODEXTRUSTWT" )"
+  assert_eq "$(lane_launch "$OPEN_TERMINAL" codex-trust codex "$LNCODEXSELF" "$CODEXTRUSTHOME" - "rc verified mismatch closed" "wt=$CODEXTRUSTWT")" \
+    "rc=0 verified=1 mismatch=0 closed=0" \
+    "a pane carrying the home this launch built confirms the account it was built under"
+  assert_eq "$(lane_launch "$TMP_ROOT/ctl-homeaccount/scripts/open-terminal" mutant-homeaccount codex "$LNCODEXSELF" "$CODEXTRUSTHOME" - "rc verified mismatch closed" "wt=$CODEXTRUSTWT")" \
+    "rc=1 verified=0 mismatch=1 closed=1" \
+    "control: without the home-to-account rule a launch is closed over the home it was given"
+
   # A launch whose verification FAILS leaves this pane open with its claim
   # live, so the account it is really running on still has to be the picked
   # one. The pane draws neither the brief nor a ready composer, which is the
@@ -1099,6 +2103,48 @@ else
     "rc=1 verified=0 mismatch=0 closed=0" \
     "control: returning on the failed verification leaves the pane open on an account nobody picked"
 fi
+
+echo "=== with no threshold flag the launcher forwards none and lanes decides ==="
+# The bound lives in `lanes` alone. A launch passing no --lane-max-pct is judged
+# on exactly the number the oversee directive's own `lanes pick` used; a second
+# default here is what handed the overseer an account this gate then refused,
+# so the item never launched and the same lane was picked again next cycle.
+#
+# The rows run against a copy of the scripts placed outside every checkout, and
+# that is what isolates them: open-terminal takes its project root from `git -C`
+# on its OWN directory, not from the working directory, so the shipped script
+# loads this repository's kendex.settings.toml and exports its threshold to the
+# `lanes` it spawns. The copy loads no settings file, run_ot's pin is dropped,
+# and the suite unsets the variable, so the number that decides is the one
+# `lanes` holds. The whole scripts directory is copied because open-terminal
+# resolves its libraries and `lanes` beside itself, and the github libs are laid
+# beside the copy because an orch lib reaches them by a fixed relative path.
+new_home lanes-default
+make_lane "$H" claude 3600
+make_lane "$H" eclaude 3600
+claude_usage 10 92 5 Opus > "$FIXTURE_DIR/.claude.json"
+claude_usage 10 97 5 Opus > "$FIXTURE_DIR/.eclaude.json"
+OUTSIDE_ROOT="$TMP_ROOT/outside-checkout/orch"; OUTSIDE_SCRIPTS="$OUTSIDE_ROOT/scripts"
+mkdir -p "$OUTSIDE_SCRIPTS"
+cp -R "$SCRIPTS_DIR/." "$OUTSIDE_SCRIPTS/" || { printf 'outside copy failed\n' >&2; exit 1; }
+orch_fixture_shared_libs "$OUTSIDE_ROOT"
+OT_REAL="$OPEN_TERMINAL"; OPEN_TERMINAL="$OUTSIDE_SCRIPTS/open-terminal"
+table \
+  "a named lane at 92 percent used launches, the launcher forwarding no threshold of its own|max_pct=unset;cwd=$NOSETTINGS;$CHOICE_CMD|--harness claude --lane $H/.claude CC-75|rc=0 launched=1 cmd_lane=claude walled=none" \
+  "--lane auto is judged on the same bound, passing over the account above it|max_pct=unset;cwd=$NOSETTINGS;$CHOICE_CMD|--harness claude --lane auto CC-76|rc=0 launched=1 cmd_lane=claude"
+
+# The control plants the private default this change removed INTO THAT SAME
+# COPY, so it differs from the two rows above by the defect and nothing else:
+# the launcher then forwards 90 whatever `lanes` holds, and the account at 92
+# percent is refused although the directive's own pick handed it back.
+mutate_file "$OUTSIDE_SCRIPTS/open-terminal" \
+  '[[ -z "$LANE_MAX_PCT" ]] || LANE_PCT_ARGS=(--max-pct "$LANE_MAX_PCT")' \
+  'LANE_PCT_ARGS=(--max-pct "${LANE_MAX_PCT:-90}")'
+run_ot "max_pct=unset;cwd=$NOSETTINGS;$CHOICE_CMD" --harness claude --lane "$H/.claude" CC-77
+assert_eq "$(observe "rc=1 launched=nolog walled=lane=$H/.claude,model=opus,pct=92,bucket=weekly")" \
+  "rc=1 launched=nolog walled=lane=$H/.claude,model=opus,pct=92,bucket=weekly" \
+  "control: a private default of 90 refuses the account the directive's own pick handed back"
+OPEN_TERMINAL="$OT_REAL"
 
 # Hermeticity proof: every window the launch rows created went through the
 # stub. No new-window line anywhere means a real tmux server took the calls.

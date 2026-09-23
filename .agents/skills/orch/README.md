@@ -8,14 +8,14 @@ orch takes Linear or GitHub issues through implementation, review and merge with
 kendex add vanillagreencom/kendex --skill orch
 ```
 
-Requires jq, Bash 3.2, flock and setsid; the included SSH host provider also needs Python 3.8 or later on the controlling machine. kendex installs the required workflow skills. Add linear for Linear issues. Second-opinion and review-gate are optional.
+Requires jq, Bash 3.2, flock, setsid and timeout or gtimeout; the included SSH host provider also needs Python 3.8+ on the controlling machine. kendex installs the required skills. Add linear for Linear issues. Second-opinion and review-gate are optional.
 
 ## Features
 
 - `orch start`, run in an issue's worktree, takes one issue to merge: a coding agent implements it, review agents check the change, the coding agent applies the required fixes, and orch opens the PR, waits for CI and the review gate, and merges it.
 - `orch oversee` launches one lane per unblocked issue, reports merges, lane questions, stopped lanes, usage limits and new Linear issues as events through `oversee-watch`, takes each PR to merge, and then runs the post-merge steps and refreshes the consumer repositories when a merge changes shipped packages.
 - `lane-mail` carries questions, notices and directives between a lane and the overseer as files in the lane's worktree, so messages need no tmux pane and also reach a lane on another machine.
-- `oversee-succeed` starts a new overseer from the handoff file in the same tmux window position once an overseer with a 1M-token context window has used about 500,000 tokens, or once its account headroom falls to the `ORCH_OVERSEER_HEADROOM_PCT` trigger, then closes the old window; the successor is opened on an account above that trigger, and `ORCH_OVERSEER_SUCCESSION=off` turns the whole thing off.
+- `oversee-succeed` starts a new overseer from the handoff file in the same tmux window position once an overseer with a 1M-token context window has used about 500,000 tokens, or once its account headroom falls to the `ORCH_OVERSEER_HEADROOM_PCT` trigger, then closes the old window; the successor is opened on an account above that trigger, and `ORCH_OVERSEER_SUCCESSION=off` turns the whole thing off. `oversee-watch` calls it for one that ended or walled, which takes no turn and reaches no mark to hand over on.
 - `lanes` reads the usage of each Claude Code and Codex account it discovers or is configured with, and picks the account with the fewest lanes in flight among those under the usage threshold; the watch reports an account that hit its usage limit and the time the limit resets.
 - `lane-host` runs lanes on another machine through a provider script, with the same mailbox and watch; `lane-host-ssh` is the included provider for SSH hosts. What runs where, which credential each part spends and how mail and handoff move on a hosted fleet: [docs/hosted-oversight.html](docs/hosted-oversight.html).
 - `open-terminal --relaunch` resumes a stopped lane's own agent session, on the same account or another one, and workflow state and handoff files let a lane or overseer continue where it stopped.
@@ -42,24 +42,37 @@ Non-secret settings go in committed `kendex.settings.toml` under `[env]`; secret
 | `REVIEW_MAX_CYCLES` | Internal re-review cycles per issue; the number set is the number of re-entries allowed | `4` |
 | `REVIEW_MAX_EXTERNAL_ROUNDS` | External comment-triage passes and automatic review-wait restarts on one PR head | `4` |
 | `REVIEWER_SLOT_BUDGET` | Concurrent agent-session budget counting the primary; `0` is unlimited; reviews run in waves past it. On Codex, the cap `spawn-adapter slots` reports | `0` |
-| `ORCH_DECISION_MODE` | `ask` presents decision points; `auto-recommended` executes the recommended option. The always-ask set in [SKILL.md § The Cycle](SKILL.md#the-cycle) holds in every mode | `auto-recommended` |
-| `ORCH_MERGE_AUTONOMY` | `auto` uses existing user authorization to merge once every gate is green; `ask` requires user authorization for each merge and routes it through the fleet overseer | `auto` |
-| `PM_CREATE_AUTONOMY` | Audit creation and cancellation policy: [project-management settings](../project-management/README.md#settings) | `ask` |
+| `ORCH_USER_MODE` | `ceo` or `engineer`, and what each asks: [communication-modes.md](references/communication-modes.md) | `ceo` |
+| `ORCH_DECISION_MODE` | `ask` presents decision points; `auto-recommended` takes the recommended one | `auto-recommended` |
+| `ORCH_MERGE_AUTONOMY` | `auto` merges once every gate is green on authorization already given; `ask` requires it per merge | `auto` |
+| `ORCH_MERGE_BYPASS` | `fast-path` merges a PR directly, ahead of the merge queue and its second CI pass, when the head already holds the base head and every merge gate is met; every other value, unset or unrecognized, arms auto-merge first and the PR takes the queue | `off` |
+| Admin-merge settings | `ORCH_ADMIN_MERGE_GH_CONFIG_DIR`, `ORCH_ADMIN_MERGE_CLASSES`: [settings example](kendex.settings.toml.example). A set config dir preempts `ORCH_MERGE_BYPASS=fast-path` | empty |
+| `PM_CREATE_AUTONOMY` | Audit creation and cancellation: [project-management settings](../project-management/README.md#settings) | `ask`; `auto` under `ceo` |
 | `ORCH_POST_MERGE_CMD` | Bash command that `scripts/post-merge` runs in the base checkout after synchronization. `ORCH_POST_MERGE_BEFORE` is the base before the oldest unprocessed synchronization; `ORCH_POST_MERGE_AFTER` is the current synchronized head. `sync-base` saves the first in `refs/kendex/post-merge-base`; only a successful or empty command advances it. A failed command stops before project refresh and verification and keeps the range for retry | empty |
-| `ORCH_CONSUMER_REPOS` | Space-separated absolute base-checkout paths that receive the consumer train, in refresh order | empty |
+| `ORCH_CONSUMER_REPOS` | Space-separated absolute base-checkout paths that set the consumer train's refresh order. The train also refreshes every other project `kendex project list` names that subscribes to the package | empty |
 | `PR_REVIEW_ON_TIMEOUT` | `proceed` advances only when no reviewer engaged and no thread is open; `block` reports the timeout | `proceed` |
 | `ORCH_OVERSEER_LANES` | Concurrent lanes `oversee` keeps in flight | `3` |
-| `ORCH_HANDOFF_HEADROOM_PCT` | Account headroom at or below which `lanes context` marks a live lane for handoff | `5` |
-| `ORCH_OVERSEER_PREFERENCE` | Comma-separated `harness:rank:effort` entries `oversee-succeed` tries in order for the successor overseer. `rank` is a position on the kendex tier ladder, 1 for the top tier, never a model name. Empty means the caller's own harness, with the model and effort flags the overseer passes after `--`. Which lane the successor opens on is `oversee-succeed`'s own rule, stated once in its `--help` | empty |
-| `ORCH_OVERSEER_SUCCESSION` | `on` lets `oversee-succeed` launch the successor overseer; `off` launches nothing, and the overseer asks the user to start the next session | `on` |
-| `ORCH_OVERSEER_HEADROOM_PCT` | Account headroom at or below which `oversee-succeed` succeeds the overseer, and at or below which it opens no successor | `20` |
-| `ORCH_LANE_HOST` | Provider selected by `lane-host`; executable script path or `local`. `open-terminal` launches through it; `--host` overrides it. [Host protocol](schemas/lane-host.md) | `local` |
+| `ORCH_LANE_OUTPUT` | Lane pane output: [skill-rules.md](references/skill-rules.md) § Lane Output | `quiet` |
+| `ORCH_HANDOFF_CONTEXT_TOKENS` | Context tokens at or past which a turn end is refused until that session's handoff record stands. The `lane-mail-check` hook judges a lane on it and `oversee-succeed` judges the overseer on it, for that hook and the watch; both read it through `orch-env`. `lanes context` marks no lane on it: its `HANDOFF` column answers for the headroom mark alone | `500000` |
+| `ORCH_HANDOFF_HEADROOM_PCT` | Account headroom at or below which `lanes context` marks a live lane for handoff and the `lane-mail-check` turn-end hook refuses that lane's turn end, read against the binding bucket. Both resolve it through the kendex settings ladder, the hook through `orch-env` and `lanes context` through its own `kendex_load_project_env` call, so a settings file sets one mark for both. Never compared with `ORCH_LANE_MAX_PCT` | `3` |
+| `ORCH_OVERSEER_PREFERENCE` | Comma-separated `harness:rank:effort` entries `oversee-succeed` tries in order for the successor overseer. `rank` is a position on the kendex tier ladder, 1 for the top tier, never a model name. The walk always ends in the caller's own harness, with the model and effort flags passed after `--`. Which lane the successor opens on is `oversee-succeed`'s own rule, stated once in its `--help` | empty |
+| `ORCH_OVERSEER_SUCCESSION` | `on` lets `oversee-succeed` launch the successor overseer; `off` launches nothing and turns off the turn-end refusal naming it; the `overseer-mark` watch line still goes out. A live overseer asks the user to start the next session. A dead or walled one gets a notice only | `on` |
+| `ORCH_OVERSEER_DEAD_PASSES` | Consecutive watch passes that must read the overseer pane as exited, or as walled, before the watch reports it; a walled reading needs its account judged at or below the trigger too | `2` |
+| `ORCH_OVERSEER_HEADROOM_PCT` | Account headroom at or below which `oversee-succeed` succeeds the overseer onto an account above it, and refuses its turn end through `lane-mail-check` | `10` |
+| `ORCH_OVERSEER_MARK_REPEAT` | Watch passes a standing `overseer-mark` waits before it is reported again | `5` |
+| `ORCH_WATCH_TAIL_LINES` | Most pane lines one `oversee-watch` event prints; see its `--help` § Events | `12` |
+| `ORCH_LANE_HOST` | Provider `lane-host` runs: an executable script path or `local`. `open-terminal` launches through it; `--host` overrides. [Host protocol](schemas/lane-host.md) | `local` |
 | `QA_PERF_PATHS` | Space-separated path globs whose modification adds the `needs-perf-test` QA signal | empty |
 | `RECONCILE_STALE_HOURS` | Hours before an In Progress or In Review item counts as started-stale in `reconcile-work-items` sweeps | `24` |
 | `WORKTREE_CLI` | Path to the worktree CLI `open-terminal` drives; empty resolves the installed worktree skill's script | resolved |
 | Review-gate settings | `REVIEW_GATE_MODE`, `PR_REVIEW_GATE`, `PR_REVIEW_CHECK`, `PR_REVIEW_WAIT_SECS`: [references/gates.md](references/gates.md) | |
-| Lane settings | `ORCH_LANE_DIRS`, `ORCH_LANE_ALIASES`, `ORCH_LANE_EXCLUDE`, `ORCH_LANE_RETIRE`, `ORCH_LANES_USAGE_TTL`, `ORCH_LANE_MAX_PCT`, `ORCH_TMUX_VERIFY_SECS`: `lanes --help`, `open-terminal --help` | |
+| `ORCH_LANE_MAX_PCT` | Usage share at or above which `lanes pick` refuses an account, read against the binding bucket or, with `--model`, against the window that walls that model. `lanes --max-pct`, `lanes --min-headroom-pct` and `open-terminal --lane-max-pct` override it. Never compared with `ORCH_HANDOFF_HEADROOM_PCT`, so a lane picked on a model window can already be at or below the handoff mark on the account's own bucket; `lanes pick --binding-floor` holds both to one bound, as `oversee-succeed` does | `95` |
+| Lane settings | `ORCH_LANE_DIRS`, `ORCH_LANE_ALIASES`, `ORCH_LANE_EXCLUDE`, `ORCH_LANE_RETIRE`, `ORCH_LANES_USAGE_TTL`, `ORCH_TMUX_VERIFY_SECS`, `ORCH_LANE_SSH_PROMPT_SECS`: `lanes --help`, `open-terminal --help` | |
 | `ORCH_SIZE_RENDER_ROOTS` | Render-mirror roots excluded from production and test counts when their source changes in the same branch | `.agents .claude .codex .pi` |
 | `ORCH_SIZE_TEST_PATHS` | Path globs counted as test lines in size reports and cut comparisons | empty |
+
+`ORCH_MERGE_BYPASS` instructs the lane and grants it nothing. A direct merge lands only where the organization has given the merging account a ruleset bypass on the base branch. Without that grant GitHub refuses it and the PR takes the queue.
+
+The fast path gives up what the queue provides: serialization against other merges on that base, and the late-findings dequeue `queue-wait` performs.
 
 Maintainer notes and the test entry point: [DEVELOPMENT.md](DEVELOPMENT.md).

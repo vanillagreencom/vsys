@@ -15,19 +15,41 @@ if [[ "${LANE_HOST_STUB_STATUS:-0}" -ne 0 ]]; then
   exit "$LANE_HOST_STUB_STATUS"
 fi
 # One verb at a time, for a caller telling a failed read from a failed host:
-# _CAT_STATUS fails cat alone, _TOUCH_STATUS the probe, _CLOSE_STATUS fails
-# close with the static provider's close-refused line (for _CLOSE_ITEM alone
-# when set), _PUT_DELAY holds put open long enough for a second caller to race
+# _CAT_STATUS fails cat alone (for _CAT_ITEM or the exact _CAT_PATH when set),
+# and _CAT_STATE adds the provider's lane-stopped line. _TOUCH_STATUS fails the probe.
+# _CLOSE_STATUS fails close with the static provider's close-refused line (for
+# _CLOSE_ITEM alone when set). _PUT_STATUS fails put alone, the provider that
+# accepted a lane's bytes and wrote none of them. _PUT_BYTES is the provider
+# whose put reports success and lands that literal instead: the file holds
+# bytes the caller never sent, which only a read-back tells apart.
+# _PUT_DELAY holds put open long enough for a second caller to race
 # the first, and _NO_APPEND is a provider predating the verb, which the case
-# below refuses. _APPEND_DELAY holds append at its write, further down.
+# below refuses. _NO_ACCOUNTS is a provider that does not implement the OPTIONAL
+# accounts verb, answering exit 2 with its own line, and _ACCOUNTS_STATUS is one
+# that implements the verb and fails it, which is the other case entirely.
+# _APPEND_DELAY holds append at its write, further down.
 case "$1" in
   close) [[ "${LANE_HOST_STUB_CLOSE_STATUS:-0}" -eq 0 || "${LANE_HOST_STUB_CLOSE_ITEM:-$3}" != "$3" ]] \
     || { printf 'lane-host-ssh: close-refused path=/srv/clone\n' >&2; exit "$LANE_HOST_STUB_CLOSE_STATUS"; } ;;
-  cat) [[ "${LANE_HOST_STUB_CAT_STATUS:-0}" -eq 0 ]] || exit "$LANE_HOST_STUB_CAT_STATUS" ;;
+  cat)
+    if [[ "${LANE_HOST_STUB_CAT_STATUS:-0}" -ne 0 \
+       && "${LANE_HOST_STUB_CAT_ITEM:-$3}" == "$3" \
+       && "${LANE_HOST_STUB_CAT_PATH:-$4}" == "$4" ]]; then
+      [[ -z "${LANE_HOST_STUB_CAT_STATE:-}" ]] \
+        || printf 'lane-stopped item=%s state=%s verb=cat\n' "$3" "$LANE_HOST_STUB_CAT_STATE" >&2
+      exit "$LANE_HOST_STUB_CAT_STATUS"
+    fi ;;
   touch) [[ "${LANE_HOST_STUB_TOUCH_STATUS:-0}" -eq 0 ]] || exit "$LANE_HOST_STUB_TOUCH_STATUS" ;;
-  put) [[ -z "${LANE_HOST_STUB_PUT_DELAY:-}" ]] || sleep "$LANE_HOST_STUB_PUT_DELAY" ;;
+  put)
+    [[ "${LANE_HOST_STUB_PUT_STATUS:-0}" -eq 0 ]] \
+      || { printf 'lane-host-fixture: put-failed path=%s\n' "$4" >&2; exit "$LANE_HOST_STUB_PUT_STATUS"; }
+    [[ -z "${LANE_HOST_STUB_PUT_DELAY:-}" ]] || sleep "$LANE_HOST_STUB_PUT_DELAY" ;;
   append)
     [[ -z "${LANE_HOST_STUB_NO_APPEND:-}" ]] || { printf 'lane-host-fixture: verb-invalid verb=append\n' >&2; exit 2; } ;;
+  accounts)
+    [[ -z "${LANE_HOST_STUB_NO_ACCOUNTS:-}" ]] || { printf 'lane-host-fixture: verb-invalid verb=accounts\n' >&2; exit 2; }
+    [[ "${LANE_HOST_STUB_ACCOUNTS_STATUS:-0}" -eq 0 ]] \
+      || { printf 'lane-host-fixture: accounts-failed\n' >&2; exit "$LANE_HOST_STUB_ACCOUNTS_STATUS"; } ;;
 esac
 # lane-host-ssh's mailbox guard, run first by cat, put and append: a path under
 # tmp/lane-mail/ whose tmp/lane-mail or item directory, or the file itself, is
@@ -75,6 +97,9 @@ case "$1" in
     mkdir -p -- "$(dirname -- "$dest")"
     staged="$(mktemp -- "$dest.kendex-put.XXXXXX")"
     cat > "$staged"
+    # The caller's bytes are read first either way, so the sender sees the
+    # whole transfer accepted, which is the provider _PUT_BYTES models.
+    [ -z "${LANE_HOST_STUB_PUT_BYTES:-}" ] || printf '%s\n' "$LANE_HOST_STUB_PUT_BYTES" > "$staged"
     mv -f -- "$staged" "$dest" ;;
   # The protocol's append: the line is added under a lock taken HERE, on the
   # disk that holds the file, which is what a sender's own lock can never be.
@@ -114,6 +139,7 @@ case "$1" in
       exit 1
     fi ;;
   touch) ;;
+  stop) ;;
   # LANE_HOST_STUB_CLOSE_EMPTY is a close that archived nothing: no kept= line.
   # LANE_HOST_STUB_CLOSE_JAM makes the watch's state directory unwritable once
   # the close has run, so the watch's next row commit fails.
@@ -124,5 +150,11 @@ case "$1" in
     printf 'delete --item %s\n' "$3" >> "$LANE_HOST_STUB_LOG"
     ;;
   list) printf 'owner/repo/TEST-1\thosted\t-\tlane.example\n' ;;
+  # LANE_HOST_STUB_ACCOUNTS names a FILE holding the whole answer verbatim, so
+  # a caller writes the protocol's own tabs rather than a spelling this stub
+  # would have to translate. Unset, the provider holds no credential at all,
+  # which is what a caller asserting the empty answer needs.
+  accounts)
+    [ -z "${LANE_HOST_STUB_ACCOUNTS:-}" ] || cat -- "$LANE_HOST_STUB_ACCOUNTS" ;;
   *) exit 2 ;;
 esac

@@ -9,8 +9,26 @@ metadata:
   source: kendex
   repository: "https://github.com/vanillagreencom/kendex"
   bugs: "https://github.com/vanillagreencom/kendex/issues"
-  version: "2.1.0"
+  version: "2.2.1"
 tags: [review]
+repo-effects:
+  summary: "Renders the enabled review-bot instruction files, the pointed code-review file and the owned Code Review Rules region in this repository."
+  writes:
+    - ".github/copilot-instructions.md"
+    - ".github/instructions/"
+    - ".coderabbit.yaml"
+    - ".pr_agent.toml"
+    - "best_practices.md"
+    - "REVIEW.md"
+    - ".macroscope/"
+    - "AGENTS.md"
+  installer: "scripts/bot-instructions render"
+  uninstaller: "scripts/bot-instructions retire"
+  checker: "scripts/bot-instructions check"
+  removal: "Delete each generated surface and the pointed code-review file first, remove the owned Code Review Rules body but keep its heading, disable its [bot-instructions.bots] flag, render, then remove the package."
+  notes:
+    - "Only surfaces enabled in the effective [bot-instructions] manifest are written."
+    - "The review doctrine is written to [bot-instructions.repo] code_review_path, which defaults to .github/instructions/code-review.md and is refused outside that directory, so every path this package writes is one of those listed above."
 ---
 
 # Bot Instructions
@@ -19,6 +37,7 @@ tags: [review]
 .agents/skills/bot-instructions/scripts/bot-instructions render   # write every enabled surface
 .agents/skills/bot-instructions/scripts/bot-instructions check    # re-render and compare
 .agents/skills/bot-instructions/scripts/bot-instructions adopt    # take hand-written files over
+.agents/skills/bot-instructions/scripts/bot-instructions retire   # revoke kendex automatic rendering on removal
 ```
 
 Flags: `--repo`, `--spec`, `--staged`, `--dry-run`; `bot-instructions --help`. Python 3.11+.
@@ -31,9 +50,11 @@ Exit codes: 0 clean, 1 findings, 2 could not complete. A pre-commit lane blocks 
 |-----|-------|-----------|
 | Codex | `AGENTS.md` § Code Review Rules, root plus nearest nested | undocumented |
 | Copilot code review | `.github/copilot-instructions.md`, `.github/instructions/**/*.instructions.md`, `AGENTS.md` | the pull request head |
-| CodeRabbit | `.coderabbit.yaml`, whole-file, beneath any organization or workspace global override, plus `AGENTS.md` through `knowledge_base.code_guidelines.filePatterns` | the pull request head |
+| CodeRabbit | `.coderabbit.yaml`, whole-file, beneath any organization or workspace global override, plus the `knowledge_base.code_guidelines.filePatterns` files | the pull request head |
 | Qodo | `.pr_agent.toml`, `best_practices.md`, `REVIEW.md` | the default branch root |
 | Macroscope | `.macroscope/ignore.md`, `.macroscope/correctness/*.md`, plus `.macroscope/check-run-agents/**` and `.macroscope/approvability.md`, which this package never writes | the pull request's most recent commit, or the default branch for a fork |
+
+Codex and Copilot reach the doctrine by following a pointer rather than by reading it in place. The `AGENTS.md` region is one directive line naming the pointed file, and `.github/copilot-instructions.md` carries the same pointer; CodeRabbit follows a real file reference. No block is restated to those three anywhere else, except `render-out-of-scope` in `.coderabbit.yaml`'s catch-all entry, where it is doing scoping work — [schemas/renders.md](schemas/renders.md) § Doctrine routing note (a).
 
 Routing per block and surface: [schemas/renders.md](schemas/renders.md) § Doctrine routing. Vendor caps: [references/limits.md](references/limits.md).
 
@@ -46,8 +67,15 @@ A `[[bot-instructions.surface]]` reaches Copilot, CodeRabbit and Macroscope, plu
 - `render` writes every enabled surface after validating it.
 - `check` re-renders and diffs, reading the index under `--staged`.
 - `adopt` takes a hand-written file or `AGENTS.md` region under management once.
+- `retire` lets kendex revoke automatic rendering when it removes the package. It leaves generated files unchanged.
 
 The generator owns only the `AGENTS.md` § Code Review Rules region and never creates the file. A repo without the heading adds it, sets `[bot-instructions.bots] codex`, runs `adopt`, then `render`. A tracked nested `AGENTS.md` carrying that heading is a `check` finding. Retire a surface with delete, then `render`. `render` replaces only a file whose canonical marker is present; `adopt` is the way in. Details: [schemas/renders.md](schemas/renders.md) § Common rules.
+
+## The doctrine lives in one file per repo
+
+`[bot-instructions.bots] codex` writes the complete doctrine to `[bot-instructions.repo] code_review_path`, which defaults to `.github/instructions/code-review.md`, and writes the `AGENTS.md` owned region as one directive line naming it. A longer region is a finding: `adopt` reports it under `agents-region` and still writes the marker, `check` reports it under `drift`, and `render` replaces it. A repo migrates by rendering. Body and bounds: [schemas/renders.md](schemas/renders.md) § `code-review.md`.
+
+**No vendor page documents a bot following an in-file reference.** CodeRabbit's `code_guidelines.filePatterns` is a real load, so its doctrine is not at issue; Codex and Copilot reach the pointed file only by opening what the directive names, and a bot that does not reviews with no repo rules at all. A repo enabling `codex` renders a canary to find out — one harmless rule that is exclusive among the files the bot under test reads, so its appearance in a comment proves the comment was written against the pointed file. A `[bot-instructions.doctrine.append]` gives that exclusivity for Codex and Copilot, which read no other file carrying doctrine; it is not exclusive in general, since an append reaches every destination its block routes to, Qodo's and Macroscope's included. [references/limits.md](references/limits.md) § GitHub Copilot code review carries the evidence and the failure mode.
 
 ## Every rendered config excludes the render trees
 
@@ -96,7 +124,7 @@ Mark a finding as blocking only if it must stop the merge. Mark other findings a
 
 ### no-preferences
 
-Do not report style, wording, naming, or comment preferences. Do not request speculative changes to a path that already fails closed. Leave formatting and lint to CI. Request a test only when the diff changes behavior that no test exercises. Name that behavior in one comment. Request a tighter assertion only when the row's named claim can regress without it reddening; an incidental finding the fixture also produces, or a state pin restating a refusal the exit status carries, is not a gap. Do not ask a script to copy a verb another file owns, such as an ancestor walk or a parser; name the owner and ask for a call to it or an escalation, since a second copy is a twin.
+Do not report style, wording, naming, or comment preferences. Do not request speculative changes to a path that already fails closed. Leave formatting and lint to CI. Request a test only when the diff changes behavior that no test exercises. Name that behavior in one comment. Request a tighter assertion only when the row's named claim can regress without it reddening; an incidental finding the fixture also produces, or a state pin restating a refusal the exit status carries, is not a gap. Do not ask a script to copy a verb another file owns, such as an ancestor walk or a parser; name the owner and ask for a call to it or an escalation, since a second copy is a twin. Review a diff that changes only documentation for correctness alone: a claim the code contradicts, a reference that does not resolve, a broken link. Wording there is the file's content, not a defect.
 
 ### declined
 

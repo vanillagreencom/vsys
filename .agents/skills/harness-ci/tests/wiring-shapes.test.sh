@@ -6,7 +6,8 @@ set -euo pipefail
 # shellcheck source=lib/sandbox.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/sandbox.sh"
 
-WIRING="$TEST_DIR/../references/wiring.md"
+WIRING="${WIRING_UNDER_TEST:-$TEST_DIR/../references/wiring.md}"
+AGGREGATE_NEEDS="$TEST_DIR/../scripts/aggregate-needs"
 [ -f "$WIRING" ] || { echo "missing $WIRING" >&2; exit 1; }
 
 # Only the fenced yaml blocks, with the fences dropped.
@@ -27,9 +28,12 @@ assert_eq "every workflow expression closes on its own line" "" "$unclosed"
 # EVERY citation, not only the ones already ending in the script's name: a
 # rename that reached one call site and not the rest has to fail here.
 cited="$(printf '%s\n' "$blocks" | grep -oE '\.agents/skills/[A-Za-z0-9_/.-]+' | sort -u)"
-assert_eq "the shapes name one script path" ".agents/skills/harness-ci/scripts/harness-only" "$cited"
-assert_eq "that path is the one this package ships" "yes" \
-  "$([ -x "$TEST_DIR/../scripts/harness-only" ] && echo yes || echo no)"
+assert_eq "the shapes name the shipped script paths" \
+  ".agents/skills/harness-ci/scripts/aggregate-needs
+.agents/skills/harness-ci/scripts/change-class
+.agents/skills/harness-ci/scripts/harness-only" "$cited"
+assert_eq "those paths are the scripts this package ships" "yes yes yes" \
+  "$([ -x "$TEST_DIR/../scripts/aggregate-needs" ] && echo yes || echo no) $([ -x "$TEST_DIR/../scripts/change-class" ] && echo yes || echo no) $([ -x "$TEST_DIR/../scripts/harness-only" ] && echo yes || echo no)"
 
 # Pass each extracted option to the real parser. A documented unknown option
 # must produce the wiring-error status instead of being accepted by a copy of
@@ -40,10 +44,18 @@ parser_base="$(git -C "$parser_repo" rev-parse HEAD)"
 commit_paths "$parser_repo" render .agents/skills/orch/SKILL.md
 parser_head="$(git -C "$parser_repo" rev-parse HEAD)"
 probe_value="$SANDBOX/probe-value"
-parser_rejections=""
-documented_option_row_count=0
-for flag in $(printf '%s\n' "$blocks" | grep -oE '(^|[[:space:]])--[a-z-]+' | tr -d ' ' | sort -u); do
-  documented_option_row_count=$((documented_option_row_count + 1))
+extract_options() { # COMMAND
+  printf '%s\n' "$blocks" | awk -v command="$1" '
+  index($0, command) > 0 { in_call = 1; next }
+  in_call && /^[[:space:]]+--/ { print; next }
+  in_call { in_call = 0 }
+' | grep -oE '(^|[[:space:]])--[a-z-]+' | tr -d ' ' | sort -u
+}
+
+harness_parser_rejections=""
+harness_option_row_count=0
+for flag in $(extract_options scripts/harness-only); do
+  harness_option_row_count=$((harness_option_row_count + 1))
   if "$HARNESS_ONLY" --repo "$parser_repo" --event push \
     --base "$parser_base" --head "$parser_head" "$flag" "$probe_value" \
     >/dev/null 2>&1; then
@@ -52,15 +64,34 @@ for flag in $(printf '%s\n' "$blocks" | grep -oE '(^|[[:space:]])--[a-z-]+' | tr
     parser_status=$?
   fi
   if [ "$parser_status" != 0 ]; then
-    parser_rejections="$parser_rejections $flag:$parser_status"
+    harness_parser_rejections="$harness_parser_rejections $flag:$parser_status"
   fi
 done
-require_rows documented-option "$documented_option_row_count"
-assert_eq "the shapes pass only flags the script accepts" "" "$parser_rejections"
+require_rows documented-harness-option "$harness_option_row_count"
+assert_eq "the shapes pass only harness-only flags its parser accepts" "" \
+  "$harness_parser_rejections"
+
+aggregate_parser_rejections=""
+aggregate_option_row_count=0
+for flag in $(extract_options scripts/aggregate-needs); do
+  aggregate_option_row_count=$((aggregate_option_row_count + 1))
+  if "$AGGREGATE_NEEDS" "$flag" "$probe_value" --help >/dev/null 2>&1; then
+    parser_status=0
+  else
+    parser_status=$?
+  fi
+  if [ "$parser_status" != 0 ]; then
+    aggregate_parser_rejections="$aggregate_parser_rejections $flag:$parser_status"
+  fi
+done
+require_rows documented-aggregate-option "$aggregate_option_row_count"
+assert_eq "the shapes pass only aggregate-needs flags its parser accepts" "" \
+  "$aggregate_parser_rejections"
 
 # A syntactically valid copy with an extractor that matches no options must
 # stop at the row floor. The copy omits this control to avoid nesting.
 # empty-documented-options-control:start
+if [ -z "${WIRING_SHAPES_CONTROL:-}" ]; then
 control_root="$SANDBOX/empty-documented-options"
 cp -R "$TEST_DIR/.." "$control_root"
 control_script="$control_root/tests/wiring-shapes-empty-options.test.sh"
@@ -69,7 +100,7 @@ if ! awk '
   /^# empty-documented-options-control:start$/ { in_control = 1; next }
   /^# empty-documented-options-control:end$/ { in_control = 0; next }
   in_control { next }
-  /^for flag in / {
+  index($0, "--[a-z-]+") > 0 {
     needle = "--[a-z-]+"
     position = index($0, needle)
     if (position == 0) exit 2
@@ -107,17 +138,82 @@ else
   exit 1
 fi
 assert_eq "the empty documented-option table names its failure" \
-  "FAIL: documented-option table executed no rows" "$control_stderr"
+  "FAIL: documented-harness-option table executed no rows" "$control_stderr"
+fi
 # empty-documented-options-control:end
+
+# A misspelled aggregate option used to escape the harness-only-only extractor.
+# Run this suite against that planted documentation mutant and require it to
+# fail before a consumer can copy an option that exits 2 in CI.
+if [ -z "${WIRING_SHAPES_CONTROL:-}" ]; then
+  option_mutant="$SANDBOX/wiring-invalid-aggregate-option.md"
+  if ! awk '
+    BEGIN { changed = 0 }
+    /--skippable test/ {
+      sub(/--skippable test/, "--skippablee test")
+      changed += 1
+    }
+    { print }
+    END { if (changed != 1) exit 2 }
+  ' "$WIRING" >"$option_mutant"; then
+    echo "could not build the invalid aggregate-option control" >&2
+    exit 1
+  fi
+  option_control_status=0
+  if WIRING_SHAPES_CONTROL=1 WIRING_UNDER_TEST="$option_mutant" \
+    bash "$TEST_DIR/wiring-shapes.test.sh" \
+    >"$SANDBOX/option-control.stdout" 2>"$SANDBOX/option-control.stderr"; then
+    option_control_status=0
+  else
+    option_control_status=$?
+  fi
+  assert_eq "the invalid aggregate-option mutant turns the wiring suite red" \
+    1 "$option_control_status"
+fi
 
 # The push endpoints come from the event payload, with `github.sha` LAST. On a
 # branch-deletion push `github.event.after` is the all-zero sha and
 # `github.sha` is the default branch tip, so a HEAD expression reaching
 # `github.sha` before `after` would hand the classifier two real commits.
 heads="$(printf '%s\n' "$blocks" | grep -F 'HEAD:' || true)"
-assert_eq "the shapes carry a HEAD expression" "3" "$(printf '%s\n' "$heads" | grep -c 'HEAD:')"
+bases="$(printf '%s\n' "$blocks" | grep -cF 'BASE:' || true)"
+assert_eq "every classifier step that names a base also names a head" \
+  "$bases heads=$([ "$bases" -gt 0 ] && echo yes || echo no)" \
+  "$(printf '%s\n' "$heads" | grep -c 'HEAD:') heads=yes"
 misordered="$(printf '%s\n' "$heads" | grep -vE 'github\.event\.after[^|]*\|\|[^|]*github\.sha' || true)"
 assert_eq "every HEAD expression tries github.event.after before github.sha" "" "$misordered"
+
+# The derived count above says the file holds as many HEAD entries as BASE
+# entries; it does not say they sit in the block that runs a classifier. A
+# shape that loses BOTH its endpoint entries keeps the counts balanced and
+# would ship a classify step reading its repository's checked-out HEAD
+# against nothing. Each block is judged on its own.
+# One pass over the fences: the count on the first line, then a line per
+# offending block. Two passes would be two copies of the fence handling and
+# the script-name test, free to drift apart into a floor that counts blocks
+# the assertion no longer judges.
+classifier_blocks="$(awk '
+  /^```yaml$/ { inblock = 1; block = ""; names_classifier = 0; next }
+  /^```$/ {
+    if (inblock && names_classifier) {
+      found += 1
+      if (!(block ~ /BASE:/ && block ~ /HEAD:/)) offending = offending "block " NR "\n"
+    }
+    inblock = 0
+    next
+  }
+  inblock {
+    block = block $0 "\n"
+    if (index($0, "scripts/harness-only") > 0 ||
+        index($0, "scripts/change-class") > 0) names_classifier = 1
+  }
+  END { printf "%d\n%s", found + 0, offending }
+' "$WIRING")"
+classifier_found="${classifier_blocks%%$'\n'*}"
+classifier_offending="${classifier_blocks#"$classifier_found"}"
+require_rows classifier-block "$classifier_found"
+assert_eq "every block that runs a classifier names a BASE and a HEAD" "" \
+  "${classifier_offending#$'\n'}"
 
 # Both lane-condition variants ship, and the one that fails open is labelled
 # as such. A reader who finds only the single-gate form wires it into a lane

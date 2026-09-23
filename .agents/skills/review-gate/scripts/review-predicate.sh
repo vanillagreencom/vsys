@@ -23,7 +23,7 @@ fork pull_request_review leg is a read-only no-op) and the repo's ungated
 selftest CI job.
 
 Env (required): GH_TOKEN (or ambient gh auth), GH_REPO, PR_NUMBER, HEAD_SHA
-Env (optional): PR_AUTHOR — resolved from the PR when empty.
+Env (optional): PR_AUTHOR and PR_BASE_SHA — resolved from the PR when empty.
 
 Output: one machine-readable line on stdout:
   verdict=approved|awaiting|threads-open|changes-requested|untracked-claim|
@@ -71,27 +71,31 @@ evidence present.
 
 A REVIEW-BODY TERM fails closed on findings that never became threads.
 A reviewer that judges a finding to be in code the current diff did not
-change writes it into the review BODY, under a `### Suppressed comments (N)`
-heading, and no review comment is posted — so `unresolved` is 0 and the
-gate would approve over a finding the reviewer itself marked `Blocking:`.
+change writes it into the review BODY, under a `Suppressed comments (N)` or
+`Previously missed (N)` section, and no review comment is posted — so
+`unresolved` is 0 and the gate would approve over a finding the reviewer
+itself marked `Blocking:`.
 `suppressed-findings` counts those blocks across the rows the evidence
 select accepts, BEFORE the min_state reduction, at the commit the gate
 RELIES ON — the head, and the carry base too once carry decided the evidence,
 since the carried row is the one whose body carries the block. Lines inside a
 fenced snippet are skipped, so the pasted code under an entry cannot end the
-block, while the heading itself is read WHATEVER the fence state says and
-closes any fence it finds open — no run of fence-looking lines earlier in the
-body can hide the block that follows. It names the count and the file:line
+block, while the section title itself is read WHATEVER the fence state says
+and closes any fence it finds open — no run of fence-looking lines earlier in
+the body can hide the block that follows. The title is read off a markdown
+heading or a <details> summary, and an entry off a bold or a backticked
+`file:line` line, because the reviewer writes the block in either shape.
+It names the count and the file:line
 entries: the detail carries a bounded list (a status description holds 140
 characters, so a truncated list says how many it dropped) and the full list
 goes to stderr. It has NO DEDICATED settings key, and the only switch that
 reaches it is REVIEW_GATE_MODE=off, which answers approved for the whole gate
 without reading any evidence. An entry is SUBTRACTED when the PR author has
 answered it: an issue comment binding this head, carrying a line that opens
-with the entry's own `file:line` token — bare as this detail prints it or
-bold as the review body does, both read, neither the anchor, since equality
-with a scanned entry is the identity check — and continues with one of the
-three reply forms. The COMMENT binds by SAYING SO: `Dispositions at <sha>`,
+with the entry's own `file:line` token — bare as this detail prints it, or
+bold or backticked as the review body does, all read, none the anchor, since
+equality with a scanned entry is the identity check — and continues with one
+of the three reply forms. The COMMENT binds by SAYING SO: `Dispositions at <sha>`,
 naming a sha at or above REVIEW_GATE_SHA_PREFIX_FLOOR that the head starts
 with, so a comment written for an earlier head does not survive a push.
 Nothing else binds. A sha-shaped run the comment merely carries — a `Fixed in
@@ -234,6 +238,14 @@ ladder and exceptions in references/settings.md; list values pack with ';'):
                                             Unknown values are a config error
                                             (exit 2) — a typo must never
                                             silently disable a merge gate
+  REVIEW_GATE_DOCS_ONLY                     'bot' (default) keeps review
+                                            evidence mandatory for docs-only
+                                            diffs; 'none' lets the shared
+                                            harness-ci docs classifier satisfy
+                                            the evidence term. Standing
+                                            objections, suppressed findings
+                                            and unresolved threads still fail
+                                            closed
 
 Carry-forward engine:
   REVIEW_GATE_CARRY_FORWARD    Carry-safe delta classes ('docs', 'comments',
@@ -414,6 +426,7 @@ CARRY_EXCLUDE="$(rg_setting REVIEW_GATE_CARRY_FORWARD_EXCLUDE "")" || exit 2
 VENDORED_PATHS="$(rg_setting REVIEW_GATE_VENDORED_PATHS "")" || exit 2
 RENDER_PATHS="$(rg_setting REVIEW_GATE_RENDER_PATHS "")" || exit 2
 GATE_MODE="$(rg_setting REVIEW_GATE_MODE "enforce")" || exit 2
+DOCS_ONLY_MODE="$(rg_setting REVIEW_GATE_DOCS_ONLY "bot")" || exit 2
 
 # Configuration errors are exit 2 (no verdict), same contract as a failed
 # evidence read: a typo in trust config must never quietly widen or narrow
@@ -432,6 +445,13 @@ case "$GATE_MODE" in
   enforce|off) ;;
   *)
     rg_message error predicate-mode "$GATE_MODE" "::error::review-predicate: REVIEW_GATE_MODE must be 'enforce' or 'off', got '$GATE_MODE'" >&2
+    exit 2
+    ;;
+esac
+case "$DOCS_ONLY_MODE" in
+  bot|none) ;;
+  *)
+    rg_message error predicate-docs-only "$DOCS_ONLY_MODE" "::error::review-predicate: REVIEW_GATE_DOCS_ONLY must be 'bot' or 'none', got '$DOCS_ONLY_MODE'" >&2
     exit 2
     ;;
 esac
@@ -602,6 +622,7 @@ EOF_PATTERNS
 CARRY_EXCLUDE_PROPHYLACTIC="$(rg_setting REVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC "")" || exit 2
 rg_check_patterns REVIEW_GATE_CARRY_FORWARD_EXCLUDE "$CARRY_EXCLUDE"
 rg_check_patterns REVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC "$CARRY_EXCLUDE_PROPHYLACTIC"
+CARRY_EXCLUDE_N="$(rg_pack "$CARRY_EXCLUDE" ';')" || rg_pack_failed REVIEW_GATE_CARRY_FORWARD_EXCLUDE
 # The two path SETS — the vendored carry class's and the render-only
 # lane's — are judged by the same grammar and by one rule of their own: no
 # entry without literal path text, an unbounded set by any spelling. A
@@ -670,6 +691,16 @@ done <<EOF_COMMENT_CFG
 $COMMENT_REVIEWERS_N
 EOF_COMMENT_CFG
 
+# REVIEW_GATE_DOCS_ONLY delegates the path decision to harness-ci. The
+# required skill dependency installs this sibling beside review-gate in both
+# catalog and rendered layouts. A partial installation must fail config
+# validation before it can leave an earlier success status in place.
+DOCS_CLASSIFIER="$script_dir/../../harness-ci/scripts/harness-only"
+if [ "$DOCS_ONLY_MODE" = "none" ] && [ ! -x "$DOCS_CLASSIFIER" ]; then
+  rg_message error predicate-docs-classifier "$DOCS_CLASSIFIER" "::error::review-predicate: REVIEW_GATE_DOCS_ONLY=none requires the executable harness-ci docs classifier at '$DOCS_CLASSIFIER'" >&2
+  exit 2
+fi
+
 # Every configuration rule above has now run, and --check-config stops HERE:
 # the last point before the predicate needs a PR. A rule moved below this
 # statement is a visible edit, not a silent hole in what the flag covers.
@@ -707,6 +738,57 @@ if [ -z "${PR_AUTHOR:-}" ]; then
     exit 2
   fi
 fi
+
+# The writer already read the PR object while enumerating open PRs. Reuse its
+# base sha when present. Direct predicate calls retain one live-read fallback,
+# shared by every diff classifier in this process.
+pr_base_state=unresolved
+pr_base=""
+resolve_pr_base() {
+  case "$pr_base_state" in
+    resolved) return 0 ;;
+    failed | invalid) return 1 ;;
+  esac
+  pr_base="${PR_BASE_SHA:-}"
+  if [ -z "$pr_base" ]; then
+    pr_base="$(gh_read "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.base.sha // ""')" || {
+      pr_base_state=failed
+      return 1
+    }
+  fi
+  if ! printf '%s' "$pr_base" | grep -qxE '[0-9a-f]{40}'; then
+    pr_base_state=invalid
+    return 1
+  fi
+  pr_base_state=resolved
+}
+
+# The checkout stays on the trusted default branch. A shallow checkout needs
+# the complete ancestry behind both endpoints because the shared classifier
+# uses a three-dot diff. PR heads use the base repository's pull-request ref,
+# which also resolves fork heads without checking out PR-controlled files.
+materialize_docs_commits() { # REPO BASE HEAD
+  local repo="$1" base_sha="$2" head_sha="$3" shallow
+  shallow="$(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null)" || return 1
+  if [ "$shallow" = "true" ]; then
+    git -C "$repo" -c credential.helper='!gh auth git-credential' \
+      fetch --quiet --unshallow --no-tags --no-write-fetch-head origin \
+      "$base_sha" "refs/pull/$PR_NUMBER/head" || return 1
+  else
+    if ! git -C "$repo" cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+      git -C "$repo" -c credential.helper='!gh auth git-credential' \
+        fetch --quiet --no-tags --no-write-fetch-head origin "$base_sha" || return 1
+    fi
+    if ! git -C "$repo" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+      git -C "$repo" -c credential.helper='!gh auth git-credential' \
+        fetch --quiet --no-tags --no-write-fetch-head origin \
+        "refs/pull/$PR_NUMBER/head" || return 1
+    fi
+  fi
+  git -C "$repo" cat-file -e "${base_sha}^{commit}" 2>/dev/null &&
+    git -C "$repo" cat-file -e "${head_sha}^{commit}" 2>/dev/null &&
+    git -C "$repo" merge-base "$base_sha" "$head_sha" >/dev/null 2>&1
+}
 
 # Two steps, not a pipe: `--paginate` emits ONE ARRAY PER PAGE, which the
 # count filters below would evaluate per-array (multi-line counts that can
@@ -1476,6 +1558,64 @@ $carry_candidates
 EOF_CARRY
 fi
 
+# The docs-only lane replaces missing bot evidence only when harness-ci's
+# shared classifier accepts this exact PR diff. It does not own the path set;
+# harness-only --mode docs is the one classifier used here and in CI. A
+# classifier refusal takes the normal evidence path. Changes-requested,
+# suppressed findings and unresolved threads still fail closed below.
+docs_only=0
+docs_refuse() { # CODE VALUE REASON: the normal gate path decides
+  rg_message notice "$1" "$2" "::warning::docs-only lane: $3; taking the normal gate path" >&2
+}
+if [ "$DOCS_ONLY_MODE" = "none" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
+   && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] && [ "$carried" = "0" ]; then
+  docs_repo=""
+  docs_base=""
+  docs_output=""
+  docs_paths=""
+  if ! docs_repo="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    docs_refuse docs-repo "$script_dir" "the repository root could not be resolved"
+  elif ! resolve_pr_base; then
+    if [ "$pr_base_state" = "invalid" ]; then
+      docs_refuse docs-base-sha "$pr_base" "PR #$PR_NUMBER carries no full base sha ('$pr_base')"
+    else
+      docs_refuse docs-base-read "$PR_NUMBER" "could not read PR #$PR_NUMBER for its base sha"
+    fi
+  else
+    docs_base="$pr_base"
+  fi
+  if [ -n "$docs_base" ] && ! materialize_docs_commits "$docs_repo" "$docs_base" "$HEAD_SHA"; then
+    docs_refuse docs-fetch "$docs_base...$HEAD_SHA" "the evaluated commits could not be materialized"
+    docs_base=""
+  fi
+  if [ -n "$docs_base" ]; then
+    docs_paths="$(mktemp)" || {
+      docs_refuse docs-paths-create "$docs_base...$HEAD_SHA" "changed-path storage could not be created"
+      docs_base=""
+    }
+  fi
+  if [ -n "$docs_base" ] && ! docs_output="$("$DOCS_CLASSIFIER" --mode docs --event pull_request --base "$docs_base" --head "$HEAD_SHA" --repo "$docs_repo" --output /dev/null --paths-output "$docs_paths")"; then
+    docs_refuse docs-classifier "$docs_base...$HEAD_SHA" "the shared docs classifier failed"
+  elif [ -n "$docs_base" ]; then
+    case "$docs_output" in
+      docs_only=true)
+        docs_only=1
+        while IFS= read -r docs_path; do
+          [ -n "$docs_path" ] || continue
+          if rg_path_in_set "$docs_path" "$CARRY_EXCLUDE_N"; then
+            docs_refuse docs-policy-path "$docs_path" "'$docs_path' matches REVIEW_GATE_CARRY_FORWARD_EXCLUDE"
+            docs_only=0
+            break
+          fi
+        done <"$docs_paths"
+        ;;
+      docs_only=false) ;;
+      *) docs_refuse docs-protocol "$docs_output" "the shared docs classifier returned an invalid verdict" ;;
+    esac
+  fi
+  [ -z "$docs_paths" ] || rm -f -- "$docs_paths"
+fi
+
 # The render-only lane. A repo names the harness render trees it commits as
 # kendex output in REVIEW_GATE_RENDER_PATHS; a PR whose ENTIRE diff sits
 # under that set needs no review evidence, because no review re-examines
@@ -1513,7 +1653,8 @@ render_refuse() { # CODE VALUE REASON: the normal gate path decides
   rg_message notice "$1" "$2" "::warning::render-only lane: $3; taking the normal gate path" >&2
 }
 if [ -n "$RENDER_PATHS_N" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
-   && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] && [ "$carried" = "0" ]; then
+   && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] && [ "$carried" = "0" ] \
+   && [ "$docs_only" = "0" ]; then
   render_out=""
   render_base=""
   # Two steps, not a pipe — the compare read's pagination and fail-loud
@@ -1524,15 +1665,20 @@ if [ -n "$RENDER_PATHS_N" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
   # a row carries, so a rename is judged by both. A row that is not a
   # renamed file yet carries a source name is judged by it too, the
   # vendored class's rule.
-  if ! render_base="$(gh_read "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.base.sha // ""')"; then
-    render_refuse render-base-read "$PR_NUMBER" "could not read PR #$PR_NUMBER for its base sha"
-  elif ! printf '%s' "$render_base" | grep -qxE '[0-9a-f]{40}'; then
-    render_refuse render-base-sha "$render_base" "PR #$PR_NUMBER carries no full base sha ('$render_base')"
-  elif ! render_pages="$(gh_read "repos/$GH_REPO/compare/$render_base...$HEAD_SHA?per_page=100" --paginate)"; then
+  if ! resolve_pr_base; then
+    if [ "$pr_base_state" = "invalid" ]; then
+      render_refuse render-base-sha "$pr_base" "PR #$PR_NUMBER carries no full base sha ('$pr_base')"
+    else
+      render_refuse render-base-read "$PR_NUMBER" "could not read PR #$PR_NUMBER for its base sha"
+    fi
+  else
+    render_base="$pr_base"
+  fi
+  if [ -n "$render_base" ] && ! render_pages="$(gh_read "repos/$GH_REPO/compare/$render_base...$HEAD_SHA?per_page=100" --paginate)"; then
     render_refuse render-compare-read "$render_base...$HEAD_SHA" "could not read the comparison $render_base...$HEAD_SHA"
-  elif [ -z "$render_pages" ]; then
+  elif [ -n "$render_base" ] && [ -z "$render_pages" ]; then
     render_refuse render-compare-empty "$render_base...$HEAD_SHA" "the comparison $render_base...$HEAD_SHA produced zero bytes (broken read)"
-  elif ! render_out="$(jq -rs '
+  elif [ -n "$render_base" ] && ! render_out="$(jq -rs '
       if (length == 0) or (any(.[]; type != "object")) or ((.[0].files | type) != "array") then "refuse render-compare-pages malformed compare pages"
       else .[0].files as $files
         | if ($files | length) == 0 then "refuse render-empty-diff an empty diff (zero files)"
@@ -1545,7 +1691,7 @@ if [ -n "$RENDER_PATHS_N" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
           end
       end' <<<"$render_pages" 2>/dev/null)"; then
     render_refuse render-compare-parse "$render_base...$HEAD_SHA" "the comparison $render_base...$HEAD_SHA could not be parsed (malformed pages)"
-  else
+  elif [ -n "$render_base" ]; then
     render_verdict="$(head -n 1 <<<"$render_out")"
     case "$render_verdict" in
       "ok "*)
@@ -1787,8 +1933,9 @@ fi
 
 # Suppressed-finding evidence, the term with no off switch. A reviewer that
 # judges a finding to be in code the current diff did not change writes it
-# into the review BODY, under a `### Suppressed comments (N)` heading, rather
-# than posting it as a review comment. Such a finding creates NO review
+# into the review BODY, under a `Suppressed comments (N)` or `Previously
+# missed (N)` section, rather than posting it as a review comment. Such a
+# finding creates NO review
 # thread: `unresolved` counts zero and the cascade would fall through to
 # approved with a finding the reviewer itself marked `Blocking:` standing in
 # the body. The term reads the body of every row the evidence
@@ -1810,13 +1957,16 @@ fi
 # rather than to exit 2 — exit 2 tells the writer to take no action, which
 # would leave an earlier success standing over the very body it could not
 # read. Known limit, the mirror of the errored-attestation filter's: a body
-# that quotes the heading at the start of a line — a fenced example in a PR
+# that quotes the title at the start of a line — a fenced example in a PR
 # about this term — counts as a real block. That direction is visible and
 # clears with the next review; the opposite is a silent merge.
 #
-# The block ends at the next heading of any level or at `</details>`, so the
-# `- **Files reviewed:**` trailer Copilot writes after the entries is outside
-# it and the next review section cannot donate entries to it. Lines inside a
+# The block ends at the next heading of any level, or at the `</details>`
+# that closes the section the title opened, so the `- **Files reviewed:**`
+# trailer Copilot writes after the entries is outside it and the next review
+# section cannot donate entries to it. The close is DEPTH-COUNTED because the
+# summary-titled shape wraps each entry in its own `<details>`: ending at the
+# first `</details>` would keep one entry and drop the rest. Lines inside a
 # fenced snippet are skipped: the offending code a reviewer pastes under an
 # entry is full of `#` comment lines, and one of those read as a heading
 # would end the block and drop every entry after it from the list. The fence
@@ -1825,9 +1975,12 @@ fi
 # per CommonMark, so a three-backtick fence inside a four-backtick one does
 # not end it.
 #
-# THE HEADING IS THE SENTINEL, and it is read whatever the fence state says.
-# Both heading arms run before the fence arm and close any fence they find
-# open, so no run of fence-looking lines EARLIER in the body can leave the
+# THE SECTION TITLE IS THE SENTINEL, and it is read whatever the fence state
+# says. A title is whatever a markdown heading or a `<details>` summary
+# carries, with inner tags stripped, because the reviewer writes the block on
+# both surfaces and under both names. Both title arms run before the
+# fence arm and close any fence they find open, so no run of fence-looking
+# lines EARLIER in the body can leave the
 # scan inside a fence and swallow the block that follows — that would be
 # declared=0 and a gate approving over a finding, which is the whole defect
 # this term exists to close. It errs toward finding a block, never toward
@@ -1853,18 +2006,67 @@ supp_detail=""
 # copy of the carry term's state filter here could drift from it.
 supp_carry_base=""
 [ "$carried" != "1" ] || supp_carry_base="$carry_base"
+# The two programs of this term — the body scan below and the disposition read
+# after it — identify a finding by EXACT STRING EQUALITY between a token the
+# scan extracted and a token the author's comment carries. Anything either one
+# strips or admits, the other must too, so each such rule is spelled ONCE here
+# and passed into both rather than written twice a hundred lines apart.
+#
+# display_strip drops what a rendered review carries and neither surface
+# means: a CR from a body written on Windows, and the zero-width space Copilot
+# writes into a path to break it across lines for display. A character dropped
+# on one side and kept on the other is an entry no reply can ever answer,
+# because the difference is invisible in both surfaces.
+SUPP_NORMALIZE_DEF='def display_strip: gsub("\r"; "") | gsub("\u200b"; "");
+'
+# entry_marks is the decoration the review body wraps an entry token in. The
+# scan reads a line so decorated and the disposition read answers a reply so
+# decorated: a mark only one of them knew is an entry the author cannot clear.
+SUPP_ENTRY_DEF='def entry_marks: ["**", "`"];
+'
 supp_raw="$(jq -r --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
         --arg trusted "$TRUSTED_LOGINS_N" --arg carrybase "$supp_carry_base" \
-        --arg errmarks "$ERROR_PATTERNS" "$ACCEPTED_ROWS_DEF"'
+        --arg errmarks "$ERROR_PATTERNS" \
+        "$SUPP_NORMALIZE_DEF$SUPP_ENTRY_DEF$ACCEPTED_ROWS_DEF"'
+  # The sentinel text of a line, whichever surface carries it: a markdown
+  # heading, or the <summary> of a <details> section. The reviewer writes the
+  # block on either, so ONE extractor feeds both title tests rather than a
+  # regex per spelling, and a further spelling arrives as a title string
+  # instead of a new arm. Inner tags go on the summary arm: a section title
+  # arrives wrapped in <strong>.
+  def block_title:
+    if test("^#{1,6}[ \t]+") then sub("^#{1,6}[ \t]+"; "")
+    elif test("^<summary[^>]*>.*</summary>[ \t]*$")
+    then sub("^<summary[^>]*>"; "") | sub("</summary>[ \t]*$"; "") | gsub("<[^>]*>"; "")
+    else "" end
+    | sub("^[ \t]+"; "") | sub("[ \t]+$"; "");
+  # The entry token a whole line carries, or nothing. A line is one of the
+  # shared entry_marks, the token, the SAME mark again, and trailing blanks —
+  # `path:line`, where the line number is what makes a token and the path may
+  # hold any character but a mark. Iterating the list rather than branching
+  # per decoration is what keeps this in step with the disposition read, which
+  # iterates the same list.
+  def entry_token:
+    sub("[ \t]+$"; "") as $l
+    | first(
+        entry_marks[]
+        | . as $d
+        | ($d | length) as $dn
+        | select(($l | length) > (2 * $dn))
+        | select(($l | startswith($d)) and ($l | endswith($d)))
+        | $l[$dn:(($l | length) - $dn)]
+        | select(test("^[^*`]+:[0-9]+$")));
   def suppressed_scan:
-    reduce (((. // "") | gsub("\r"; "")) | split("\n"))[] as $l
-      ({declared: 0, entries: 0, unparsed: 0, inblock: false, fchar: "", flen: 0, list: []};
+    reduce (((. // "") | display_strip) | split("\n"))[] as $l
+      ({declared: 0, entries: 0, unparsed: 0, inblock: false, depth: 0, fchar: "", flen: 0, list: []};
         ($l | capture("^[ \t]{0,3}(?<f>`{3,}|~{3,})(?<rest>.*)$") // null) as $fx
-        | if ($l | test("^#{1,6}[ \t]+Suppressed comments[ \t]*\\([0-9]+\\)[ \t]*$")) then
-          .declared += ($l | capture("\\((?<n>[0-9]+)\\)") | .n | tonumber)
-          | .inblock = true | .fchar = "" | .flen = 0
-        elif ($l | test("^#{1,6}[ \t]+Suppressed comments([ \t]|$)")) then
-          .unparsed += 1 | .inblock = true | .fchar = "" | .flen = 0
+        | ($l | block_title) as $title
+        | (($l | entry_token) // "") as $entry
+        | if ($title | test("^(Suppressed comments|Previously missed)[ \t]*\\([0-9]+\\)$")) then
+          .declared += ($title | capture("\\((?<n>[0-9]+)\\)") | .n | tonumber)
+          | .inblock = true | .depth = 0 | .fchar = "" | .flen = 0
+        elif ($title | test("^(Suppressed comments|Previously missed)([ \t]|$)")) then
+          .unparsed += 1 | .inblock = true | .depth = 0 | .fchar = "" | .flen = 0
         elif .fchar != "" then
           if ($fx != null and ($fx.f[0:1] == .fchar)
               and (($fx.f | length) >= .flen) and ($fx.rest | test("^[ \t]*$")))
@@ -1872,11 +2074,15 @@ supp_raw="$(jq -r --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
           else . end
         elif $fx != null then
           .fchar = ($fx.f[0:1]) | .flen = ($fx.f | length)
-        elif ($l | test("^#{1,6}[ \t]") or ($l | test("^</details>"))) then
-          .inblock = false
-        elif .inblock and ($l | test("^\\*\\*[^*]+:[0-9]+\\*\\*[ \t]*$")) then
-          .entries += 1
-          | .list += [$l | capture("^\\*\\*(?<e>[^*]+:[0-9]+)\\*\\*") | .e]
+        elif ($l | test("^<details([ \t>]|$)")) then
+          if .inblock then .depth += 1 else . end
+        elif ($l | test("^</details>")) then
+          if .inblock and .depth > 0 then .depth -= 1
+          else .inblock = false | .depth = 0 end
+        elif ($l | test("^#{1,6}[ \t]")) then
+          .inblock = false | .depth = 0
+        elif .inblock and $entry != "" then
+          .entries += 1 | .list += [$entry]
         else . end);
   trust_list($trusted) as $t
   | error_marks($errmarks) as $mk
@@ -1917,10 +2123,10 @@ fi
 # above REVIEW_GATE_SHA_PREFIX_FLOOR that the head starts with, so a reply
 # written for an earlier head does not survive a push — and opens a line with
 # the entry's own `file:line` token, which the status prints bare and the
-# review body prints bold, followed by the reply. BOTH SPELLINGS ARE READ and
-# neither is the anchor: the token's equality with a scanned entry is what
-# identifies the finding, so the asterisks decide nothing and an author
-# copying either surface is answered. The reply is judged by the SHARED
+# review body prints bold or backticked, followed by the reply. EVERY
+# SPELLING IS READ and NONE is the anchor: the token's equality with a
+# scanned entry is what identifies the finding, so the decoration decides
+# nothing and an author copying any surface is answered. The reply is judged by the SHARED
 # reply forms: a reply that is
 # neither a disposition nor a tracking claim, a tracking claim naming no
 # issue, and a decline whose reason strips to nothing all leave the entry
@@ -1946,7 +2152,8 @@ supp_answered=0
 if [ "$suppressed_state" = "ok" ] && [ "$suppressed" != "0" ]; then
   load_issue_comments
   supp_disp="$(jq -r --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
-          --arg floor "$SHA_FLOOR" --arg entries "$supp_list" "$REPLY_FORMS_DEF"'
+          --arg floor "$SHA_FLOOR" --arg entries "$supp_list" \
+          "$SUPP_NORMALIZE_DEF$SUPP_ENTRY_DEF$REPLY_FORMS_DEF"'
     def unanswered($r):
       ((($r | disposition) or ($r | tracking)) | not)
       or ((($r | disposition) | not) and (($r | names_issue) | not))
@@ -1973,9 +2180,12 @@ if [ "$suppressed_state" = "ok" ] && [ "$suppressed" != "0" ]; then
     # a token pattern of its own: the scan is the one definition of what an
     # entry token is, and a second spelling here would be a twin that drifts
     # from it — the first one already did, refusing a path with a space the
-    # scan admits and the detail prints. Both surfaces the author can copy go
-    # through this one path: the review body prints the token bold, the status
-    # detail prints it bare.
+    # scan admits and the detail prints. Every surface the author can copy
+    # goes through this one path: the review body prints the token wrapped in
+    # one of the shared entry_marks, the status detail prints it bare. The
+    # decorated arm ITERATES that list rather than branching per mark, for the
+    # same reason the scan does: a mark the scan reads and this one did not
+    # would be an entry no author could clear.
     #
     # The bare arm requires the character after the entry to be no letter or
     # digit, so `a/b.ts:1` cannot claim the line `a/b.ts:12 ...`. A path may
@@ -1991,12 +2201,13 @@ if [ "$suppressed_state" = "ok" ] && [ "$suppressed" != "0" ]; then
           $by_length[]
           | . as $e
           | ($e | length) as $n
-          | if ($l | startswith("**" + $e + "**"))
-            then {entry: $e, r: ($l[($n + 4):])}
-            elif ($l | startswith($e)) and (($l[$n:] | test("^[\\p{L}\\p{N}]")) | not)
-            then {entry: $e, r: ($l[$n:])}
-            else empty
-            end)
+          | ( ( entry_marks[]
+                | . as $d
+                | select($l | startswith($d + $e + $d))
+                | {entry: $e, r: ($l[($n + 2 * ($d | length)):])} ),
+              ( select(($l | startswith($e))
+                       and (($l[$n:] | test("^[\\p{L}\\p{N}]")) | not))
+                | {entry: $e, r: ($l[$n:])} ) ))
       # The separator run between the token and the reply is what the author
       # wrote there — a dash, a colon, an em dash, nothing at all.
       | .r |= sub("^[^\\p{L}\\p{N}]*"; "");
@@ -2008,7 +2219,7 @@ if [ "$suppressed_state" = "ok" ] && [ "$suppressed" != "0" ]; then
     | ($wanted | sort_by(-length)) as $by_length
     | [ .[]
         | select((.user.login // "") == $author)
-        | (.body // "" | gsub("\r"; ""))
+        | (.body // "" | display_strip)
         | select(head_bound($sha; $floor))
         | split("\n")[]
         | line_reply($by_length)
@@ -2051,10 +2262,10 @@ if [ -n "$supp_list" ]; then
 $supp_list" >&2
 fi
 case "$suppressed_state" in
-  malformed) supp_detail="a Suppressed comments block could not be read (broken parse) — no finding count is provable" ;;
+  malformed) supp_detail="a suppressed-findings block could not be read (broken parse) — no finding count is provable" ;;
   disposition-unreadable) supp_detail="the head-bound disposition replies could not be read — every suppressed finding stands" ;;
-  unparsed) supp_detail="a Suppressed comments heading names no readable count — read it in the review body" ;;
-  mismatch) supp_detail="Suppressed comments declares $supp_declared finding(s) but $supp_entries entry line(s) parsed — read the block in the review body" ;;
+  unparsed) supp_detail="a suppressed-findings block names no readable count — read it in the review body" ;;
+  mismatch) supp_detail="the suppressed-findings block declares $supp_declared finding(s) but $supp_entries entry line(s) parsed — read it in the review body" ;;
   ok)
     if [ "$suppressed" != "0" ]; then
       # Names are added while the FINISHED detail stays inside the budget,
@@ -2094,7 +2305,7 @@ case "$suppressed_state" in
     ;;
 esac
 
-rg_message notice predicate-evaluated "$HEAD_SHA" "PR #$PR_NUMBER head $HEAD_SHA: reviews=$got clean-analysis=$check comment-form=$comment_hits outage-marker=$outageok carried=$carried render-only=$render_only changes-requested=$cr unresolved-threads=$unresolved untracked-claims=$untracked unreasoned-declines=$unreasoned suppressed-findings=$supp_notice (threads=$THREADS_MODE)" >&2
+rg_message notice predicate-evaluated "$HEAD_SHA" "PR #$PR_NUMBER head $HEAD_SHA: reviews=$got clean-analysis=$check comment-form=$comment_hits outage-marker=$outageok carried=$carried docs-only=$docs_only render-only=$render_only changes-requested=$cr unresolved-threads=$unresolved untracked-claims=$untracked unreasoned-declines=$unreasoned suppressed-findings=$supp_notice (threads=$THREADS_MODE)" >&2
 
 if [ "$cr" != "0" ]; then
   echo "verdict=changes-requested detail=standing review changes requested (persists across pushes until re-approval or dismissal)"
@@ -2107,13 +2318,15 @@ elif [ -n "$supp_detail" ]; then
   # construction, so the no-evidence branch could never mask it, and the
   # specific content refusal belongs in front of the generic thread count.
   echo "verdict=suppressed-findings detail=$supp_detail"
-elif [ "$got" = "0" ] && [ "$check" = "0" ] && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] && [ "$carried" = "0" ] && [ "$render_only" = "0" ]; then
+elif [ "$got" = "0" ] && [ "$check" = "0" ] && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] && [ "$carried" = "0" ] && [ "$docs_only" = "0" ] && [ "$render_only" = "0" ]; then
   # One line, no source list. Which sources could open the gate is the repo's
   # own settings (references/settings.md), not a status description GitHub
   # keeps 140 characters of.
   echo "verdict=awaiting detail=no review evidence at $HEAD_SHA yet"
 elif [ "$unresolved" != "0" ]; then
   echo "verdict=threads-open detail=$unresolved unresolved review thread(s)"
+elif [ "$docs_only" = "1" ]; then
+  echo "verdict=approved detail=docs-only diff (REVIEW_GATE_DOCS_ONLY=none); no review evidence required"
 elif [ "$render_only" = "1" ]; then
   # The lane is SUBSTITUTING for evidence, so the status says so: a reader
   # sees this PR merged on its diff, not on a review.

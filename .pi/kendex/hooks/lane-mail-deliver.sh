@@ -8,6 +8,7 @@
 # safety: Runs only the lane-mail-check hook installed in its own directory, whose safety line covers the payload, mailbox and reader it reads. A judge that is not there is refused, never skipped.
 # timeout: 30
 # harnesses: [claude, codex, pi, opencode, cursor]
+# requires: [lane-mail-check]
 # ---
 
 set -euo pipefail
