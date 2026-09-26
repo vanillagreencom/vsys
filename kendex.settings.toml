@@ -106,6 +106,8 @@ ORCH_OVERSEER_LANES = "12"
 # Successor overseer order for oversee-succeed, as harness:rank:effort on the
 # tier ladder: top Claude tier, top Codex tier, then the second tier of each.
 ORCH_OVERSEER_PREFERENCE = "claude:1:high,codex:1:high,claude:2:high,codex:2:high"
+ORCH_OVERSEER_HEADROOM_PCT = "5"
+ORCH_OVERSEER_WALL_MINUTES = "20"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
 ORCH_LANE_MAX_PCT = "95"
 
