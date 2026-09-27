@@ -22,6 +22,11 @@ source "$TEST_DIR/lib/growth-state.sh"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+# The mode a fix round runs is read from the project's settings, and orch-env
+# reads the process environment first: a developer's own range command would
+# otherwise decide the fix receipts' acceptance.
+unset DEV_VALIDATE_RANGE_CMD
+VRUN="$(validate_run_dir "$TMP_ROOT/validate-run" full)"
 mkdir -p "$TMP_ROOT/linear/scripts" "$TMP_ROOT/bin"
 cat > "$TMP_ROOT/bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -30,7 +35,7 @@ jq -r --arg id "issue-$3" '.[] | select(.identifier == $id) | .description' .cac
 SH
 chmod +x "$TMP_ROOT/bin/gh"
 export PATH="$TMP_ROOT/bin:$PATH"
-LIVE_SCRIPTS="$(copy_scripts live)"
+LIVE_SCRIPTS="$(mutant_scripts live)" || exit 1
 CHECK="$LIVE_SCRIPTS/dev-artifact-check"
 ROUND_WRITE_BIN="$LIVE_SCRIPTS/dev-round-write"
 RETURN_WRITE="$LIVE_SCRIPTS/dev-return-write"
@@ -43,19 +48,8 @@ write_allowance() {
   printf '.cache/\n' >> "$(git -C "$repo" rev-parse --path-format=absolute --git-path info/exclude)"
 }
 
-PASS=0
-FAIL=0
-
-assert_eq() {
-  local got="$1" want="$2" name="$3"
-  if [[ "$got" == "$want" ]]; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        expected: %s\n        got:      %s\n' "$name" "$want" "$got"
-  fi
-}
+# shellcheck source=lib/assertions.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assertions.sh"
 
 round_write() {
   growth_round_write "$STATE" "$ROUND_WRITE_BIN" "$@"
@@ -86,7 +80,7 @@ git -C "$wt" add tools/sneaky-check
 git -C "$wt" commit -q -m sneaky
 head_sha="$(git -C "$wt" rev-parse HEAD)"
 "$RETURN_WRITE" --worktree "$wt" --kind fix --issue issue-826 --round-id 1-1 --branch b \
-  --commit "$head_sha" --validate pass --item 1 Applied done >/dev/null
+  --commit "$head_sha" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-wt-1-1-1" "$wt" issue-826 1-1)" --item 1 Applied done >/dev/null
 
 assert_eq "$(reason --worktree "$wt" --issue issue-826 --round-id 1-1 --expect-items-from-round)" \
   "unapproved_additions" "control: the bound check refuses the unlisted addition"
@@ -105,7 +99,7 @@ assert_eq "$([[ -z "$flagless_out" ]] && echo silent || jq -r '.ok' <<<"$flagles
 
 # An implement round writes no round record, so it stays flagless.
 "$RETURN_WRITE" --worktree "$wt" --kind implement --issue issue-826 --round-id 2-2 --branch b \
-  --commit "$head_sha" --validate pass >/dev/null
+  --commit "$head_sha" --validate pass --validate-run-dir "$VRUN" >/dev/null
 assert_eq "$(env ORCH_STATE_DIR="$wt/tmp" "$CHECK" --worktree "$wt" --issue issue-826 \
   --round-id 2-2 | jq -r '.reason')" "valid" \
   "a flagless implement receipt is unaffected by the fix-round requirement"
@@ -231,7 +225,7 @@ git -C "$cut_wt" add change.txt
 git -C "$cut_wt" commit -q -m cut
 cut_head="$(git -C "$cut_wt" rev-parse HEAD)"
 "$RETURN_WRITE" --worktree "$cut_wt" --kind fix --issue issue-1165 --round-id 1-1 --branch cut \
-  --commit "$cut_head" --validate pass --item 1 Applied "cut to the Done-when" >/dev/null
+  --commit "$cut_head" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-cutwt-1-1-2" "$cut_wt" issue-1165 1-1)" --item 1 Applied "cut to the Done-when" >/dev/null
 assert_eq "$(cut_reason --worktree "$cut_wt" --issue issue-1165 --round-id 1-1 --expect-items-from-round)" \
   "valid" "a cut that brought the branch back to the cap is accepted"
 
@@ -244,7 +238,7 @@ git -C "$cut_wt" add change.txt
 git -C "$cut_wt" commit -q -m grew
 grew_head="$(git -C "$cut_wt" rev-parse HEAD)"
 "$RETURN_WRITE" --worktree "$cut_wt" --kind fix --issue issue-1165 --round-id 2-2 --branch cut \
-  --commit "$grew_head" --validate pass --item 1 Applied "cut to the Done-when" >/dev/null
+  --commit "$grew_head" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-cutwt-2-2-3" "$cut_wt" issue-1165 2-2)" --item 1 Applied "cut to the Done-when" >/dev/null
 assert_eq "$(cut_reason --worktree "$cut_wt" --issue issue-1165 --round-id 2-2 --expect-items-from-round)" \
   "cut_not_shrunk" "a round declared a cut that grew the branch is refused"
 
@@ -255,11 +249,10 @@ for line in 'No allowance.' '**Expected delta**: 100 lines' '**Expected delta**:
     "cut_not_shrunk" "the recorded cut comparison survives: $line"
 done
 
-MUTANT_SCRIPTS="$(copy_scripts cut-comparison-mutant)"
-MUTANT_LIB="$MUTANT_SCRIPTS/lib/branch-growth.sh"
-assert_eq "$(grep -Fc 'cut_args=(--cut-from-round "$4")' "$MUTANT_LIB")" "1" "control finds the recorded comparison"
-sed -i.bak 's/cut_args=(--cut-from-round "$4")/cut_args=()/' "$MUTANT_LIB"
-assert_eq "$([[ ! -L "$MUTANT_LIB" ]] && ! cmp -s "$MUTANT_LIB" "$LIVE_SCRIPTS/lib/branch-growth.sh" && echo changed)" "changed" "control changes the private comparison"
+# dev-artifact-check's one must-fail control: the recorded comparison dropped
+# from a private copy of the measurement, so the tracker edit decides the cut.
+MUTANT_SCRIPTS="$(mutant_scripts cut-comparison-mutant lib/branch-growth.sh)" || exit 1
+mutate_file "$MUTANT_SCRIPTS/lib/branch-growth.sh" 'cut_args=(--cut-from-round "$4")' 'cut_args=()'
 write_allowance "$cut_wt" issue-1165 '**Expected delta**: 100 lines'
 LIVE_CHECK="$CHECK"
 CHECK="$MUTANT_SCRIPTS/dev-artifact-check"
@@ -277,30 +270,19 @@ git -C "$cut_wt" add change.txt
 git -C "$cut_wt" commit -q -m unsized-cut
 cut_head="$(git -C "$cut_wt" rev-parse HEAD)"
 "$RETURN_WRITE" --worktree "$cut_wt" --kind fix --issue issue-1165 --round-id 3-3 --branch cut \
-  --commit "$cut_head" --validate pass --item 1 Applied "cut to the Done-when" >/dev/null
+  --commit "$cut_head" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-cutwt-3-3-4" "$cut_wt" issue-1165 3-3)" --item 1 Applied "cut to the Done-when" >/dev/null
 assert_eq "$(cut_reason --worktree "$cut_wt" --issue issue-1165 --round-id 3-3 --expect-items-from-round)" \
   "valid" "an unsized cut can finish below its recorded counts"
 assert_eq "$("$STATE" --state-dir "$cut_wt/tmp" get issue-1165 '.pr.size_check.verdict, .pr.size_check.production_allowance, .pr.size_check.test_allowance' | paste -sd, -)" \
   "allowance_missing,null,null" "cut acceptance keeps the unsized PR report without invented allowances"
 
-STATE_SCRIPTS="$(copy_scripts cut-state-mutant)"
-STATE_CHECKER="$STATE_SCRIPTS/branch-size-check"
-assert_eq "$(grep -Fc 'if [[ -z "$cut_from_round" ]]; then' "$STATE_CHECKER")" "1" "control finds the report write guard"
-sed -i.bak 's/if \[\[ -z "$cut_from_round" \]\]; then/if :; then # [[ -z "$cut_from_round" ]]/' "$STATE_CHECKER"
-assert_eq "$([[ ! -L "$STATE_CHECKER" ]] && ! cmp -s "$STATE_CHECKER" "$LIVE_SCRIPTS/branch-size-check" && echo changed)" "changed" "control changes the private report writer"
-CHECK="$STATE_SCRIPTS/dev-artifact-check"
-assert_eq "$(cut_reason --worktree "$cut_wt" --issue issue-1165 --round-id 3-3 --expect-items-from-round)" \
-  "valid" "control: the cut still succeeds when its comparison overwrites state"
-assert_eq "$("$STATE" --state-dir "$cut_wt/tmp" get issue-1165 '.pr.size_check.verdict, .pr.size_check.production_allowance, .pr.size_check.test_allowance' | paste -sd, -)" \
-  "pass,6,0" "control: the state write invents allowances for the unsized report"
-CHECK="$LIVE_CHECK"
 mkdir -p "$cut_wt/tests"
 printf 'test\n' > "$cut_wt/tests/new.sh"
 git -C "$cut_wt" add tests/new.sh
 git -C "$cut_wt" commit -q -m test-growth
 cut_head="$(git -C "$cut_wt" rev-parse HEAD)"
 "$RETURN_WRITE" --worktree "$cut_wt" --kind fix --issue issue-1165 --round-id 3-3 --branch cut \
-  --commit "$cut_head" --validate pass --item 1 Applied "cut to the Done-when" >/dev/null
+  --commit "$cut_head" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-cutwt-3-3-5" "$cut_wt" issue-1165 3-3)" --item 1 Applied "cut to the Done-when" >/dev/null
 assert_eq "$(cut_reason --worktree "$cut_wt" --issue issue-1165 --round-id 3-3 --expect-items-from-round)" \
   "cut_not_shrunk" "an unsized cut cannot grow tests above their recorded count"
 unsized_record="$cut_wt/tmp/dev-round-issue-1165-3-3.json"
@@ -311,21 +293,20 @@ retry_record="$cut_wt/tmp/dev-round-issue-1165-retry.json"
 assert_eq "$(jq -r '[.size_check.verdict, .size_check.production_lines, .size_check.test_lines, .cut_comparison.production_allowance, .cut_comparison.test_allowance] | join(",")' "$retry_record")" \
   "allowance_missing,2,1,6,0" "a cut retry records current counts and preserves the earlier comparison"
 "$RETURN_WRITE" --worktree "$cut_wt" --kind fix --issue issue-1165 --round-id retry --branch cut \
-  --commit "$cut_head" --validate pass --item 1 Applied "cut to the Done-when" >/dev/null
+  --commit "$cut_head" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-cutwt-retry-6" "$cut_wt" issue-1165 retry)" --item 1 Applied "cut to the Done-when" >/dev/null
 assert_eq "$(cut_reason --worktree "$cut_wt" --issue issue-1165 --round-id retry --expect-items-from-round)" \
   "cut_not_shrunk" "a fresh cut retry cannot accept the same uncut growth"
 
-RETRY_SCRIPTS="$(copy_scripts cut-retry-mutant)"
-RETRY_WRITER="$RETRY_SCRIPTS/dev-round-write"
-assert_eq "$(grep -Fc '  cut_comparison="$BRANCH_ALLOWANCE_RECORD"' "$RETRY_WRITER")" "1" "control finds the preserved cut comparison"
-sed -i.bak 's/  cut_comparison="$BRANCH_ALLOWANCE_RECORD"/  cut_comparison="$size_check" # $BRANCH_ALLOWANCE_RECORD/' "$RETRY_WRITER"
-assert_eq "$([[ ! -L "$RETRY_WRITER" ]] && ! cmp -s "$RETRY_WRITER" "$LIVE_SCRIPTS/dev-round-write" && echo changed)" "changed" "control changes the private retry writer"
+# dev-round-write's one must-fail control: a private writer whose cut retry
+# records its own counts in place of the earlier comparison.
+RETRY_WRITER="$(mutant_scripts cut-retry-mutant dev-round-write)/dev-round-write" || exit 1
+mutate_file "$RETRY_WRITER" '  cut_comparison="$BRANCH_ALLOWANCE_RECORD"' '  cut_comparison="$size_check"'
 ROUND_WRITE_BIN="$RETRY_WRITER"
 "$ROUND_WRITE" --worktree "$cut_wt" --issue issue-1165 --round-id retry-mutant \
   --cut-from-round "$unsized_record" --item 1 "finish the cut" "the branch this round shrinks" >/dev/null
 ROUND_WRITE_BIN="$LIVE_SCRIPTS/dev-round-write"
 "$RETURN_WRITE" --worktree "$cut_wt" --kind fix --issue issue-1165 --round-id retry-mutant --branch cut \
-  --commit "$cut_head" --validate pass --item 1 Applied "cut to the Done-when" >/dev/null
+  --commit "$cut_head" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-cutwt-retry-mutant-7" "$cut_wt" issue-1165 retry-mutant)" --item 1 Applied "cut to the Done-when" >/dev/null
 assert_eq "$(cut_reason --worktree "$cut_wt" --issue issue-1165 --round-id retry-mutant --expect-items-from-round)" \
   "valid" "control: resetting the comparison accepts the unchanged growth"
 

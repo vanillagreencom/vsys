@@ -17,7 +17,7 @@ Resolve `ORCH_DECISION_MODE` once for this post-PR workflow:
 .agents/skills/orch/scripts/orch-env ORCH_DECISION_MODE auto-recommended
 ```
 
-**Standalone init** (`lifecycle: "self"`): `gh pr view --json number -q .number` gives `PR_NUMBER`, and `git-context issue-from-branch .` gives `ISSUE_ID` when the branch carries an issue id. When it does not, `ISSUE_ID` is `pr-[PR_NUMBER]`, the same repository-local fallback key [`ci-fix.md` § 1](ci-fix.md) and [`merge-pr.md` § 3](merge-pr.md) use; a branch with no issue id is ordinary, not a stop. Then, when `workflow-state exists --json [ISSUE_ID]` reports false, resolve `WT_PATH`, read the branch with `git-context branch`, and run `workflow-state init`.
+**Standalone init** (`lifecycle: "self"`): `gh pr view --json number -q .number` gives `PR_NUMBER`, and `git-context issue-from-branch .` gives `ISSUE_ID` when the branch carries an issue id. When it does not, `ISSUE_ID` is `pr-[PR_NUMBER]`, the same repository-local fallback key [`ci-fix.md` § 1](ci-fix.md) and [`merge-pr.md` § 3](merge-pr.md) use; a branch with no issue id is ordinary, not a stop. Then, when `workflow-state exists --json [ISSUE_ID]` reports false, resolve `WT_PATH`, read the branch with `git-context branch`, and run `workflow-state init [ISSUE_ID] --worktree [WT_PATH] --branch [BRANCH]`, since the round-start prune reads the worktree from state.
 
 Both commands below write to that state, so the key must resolve and the state must exist before either runs. Except under `--dry-run`, this triage pass is a continuing action:
 
@@ -218,16 +218,26 @@ Read the round budget first. The cap governs what may be pushed, so it decides b
 .agents/skills/orch/scripts/workflow-state cap REVIEW_MAX_EXTERNAL_ROUNDS --issue [ISSUE_ID]
 ```
 
-It prints `below [COUNT]/[CAP]` or `at-cap [COUNT]/[CAP]`, counting `pr_comment_review.iterations`. An `at-cap` verdict on `REVIEW_MAX_EXTERNAL_ROUNDS` ends the ordinary fix rounds on this PR. Two rules decide the pass. **At the cap the disposition is unconditional and the fix is what stops**: every thread is analyzed and gets its reply posted and resolved, on this pass and every later one, and what the cap forbids is the fix and the push that follows it. The **fix set** is what the rest of this section groups, records and delegates: the items marked Fixing, and **at the cap only the cap-exempt ones — a defect this diff itself introduces or arms and Step 0 does not exclude**. The pass then runs three steps, in order. **File first** — run § 6.2 for every item clearing its bar, invoked with its return recorded as `→ § 6.1` rather than § 6.2's usual `→ § 6.3`. **Then the exception**, the only delegation and the only push this pass makes. **Then reply**, through the reply table below: `Tracked: [ISSUE_ID]` for a filed item, `Fixed in [SHA]` for one the exception fixed, `Declined: [REASON]` for the rest, which needs no issue. Resolve each thread as you reply, then → § 6.3 with § 6.2 already done.
+It prints `below [COUNT]/[CAP]` or `at-cap [COUNT]/[CAP]`, counting `pr_comment_review.iterations`. An `at-cap` verdict on `REVIEW_MAX_EXTERNAL_ROUNDS` ends the ordinary fix rounds on this PR. Two rules decide the pass. **At the cap the disposition is unconditional and the fix is what stops**: every thread is analyzed and gets its reply posted and resolved, on this pass and every later one, and what the cap forbids is the fix and the push that follows it. The **fix set** is what the rest of this section groups, records and delegates: the items marked Fixing, and **at the cap only the cap-exempt ones — a defect this diff itself introduces or arms and Step 0 does not exclude**. The pass then runs three steps, in order. **File first** — run § 6.2 for every item clearing its bar, invoked with its return recorded as `→ § 6.1` rather than § 6.2's usual `→ § 6.3`. **Then the exception**, the only fix delegation and the only push this pass makes; a fix the verification pass below triggers is part of it. **Then reply**, through the reply table below: `Tracked: [ISSUE_ID]` for a filed item, `Fixed in [SHA]` for one the exception fixed, `Declined: [REASON]` for the rest, which needs no issue. Resolve each thread as you reply, then → § 6.3 with § 6.2 already done.
 
-**Delegate the fix set.** Ensure the worktree exists (`worktree exists`/`worktree path`, creating with `--pr [PR_NUMBER]` when missing), group the `fix set` by `agent`, then stamp the round per group as separate tool calls immediately before delegating, arming the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure):
+**Delegate the fix set.** Ensure the worktree exists (`worktree exists`/`worktree path`, creating with `--pr [PR_NUMBER]` when missing) and record the head the verification pass below diffs against, once per fix set:
 
 ```bash
-.agents/skills/orch/scripts/workflow-state set-now [ISSUE_ID] dev_delegated_at
+.agents/skills/orch/scripts/workflow-state set-git-head [ISSUE_ID] pre_delegate_sha [WORKTREE_PATH]
 ```
+
+Group the `fix set` by `agent`, then stamp the round per group as separate tool calls immediately before delegating, the round-start prune between the two stamps, arming the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure):
 
 ```bash
 .agents/skills/orch/scripts/workflow-state new-round-id [ISSUE_ID] dev_round_id
+```
+
+```bash
+.agents/skills/orch/scripts/round-prune [ISSUE_ID]
+```
+
+```bash
+.agents/skills/orch/scripts/workflow-state set-now [ISSUE_ID] dev_delegated_at
 ```
 
 Persist this group's slice of the `fix set`: write `[WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json` with the harness file-write tool as a JSON array of `{"n": [N], "text": "[ITEM_TEXT]", "reach": "[REACH]"}`. `[ITEM_TEXT]` is that item's formatted block from the delegation verbatim. `[REACH]` names the shipped producer, user action, or fixture that reaches the finding — a command a person runs, a file a shipped writer emits, a test in the tree. An item with no reach is a `Declined:` reply, not a fix: disposition it per [`../references/finding-disposition.md` § Filing bar](../references/finding-disposition.md#filing-bar) instead of delegating it. The writer refuses a short list of shapes, enumerated in [`../schemas/dev-round.md`](../schemas/dev-round.md) and in `dev-round-write --help`; it is a backstop and not the judgement — a reach it accepts has been recorded, not approved.
@@ -240,9 +250,15 @@ When the list is non-empty, pass those exact repository-relative paths to the wr
 .agents/skills/orch/scripts/dev-round-write --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --round-id [DEV_ROUND_ID] --items-file [WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json [--adds "[REPO_RELATIVE_PATHS]"]
 ```
 
-Every measured size verdict permits delegation. Use the round's `size_check` report for the cut decision in [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow). A chosen cut follows [`dev-fix.md` § 2](dev-fix.md) step 4. Exit 3 means malformed allowance text. Other nonzero exits name a usage or environment failure. Report either failure and stop. Resolve a `pr-[PR_NUMBER]` key to its issue before delegation so the checker can read the issue.
+Every measured size verdict permits delegation. Use the round's `size_check` report for the cut decision in [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow). A chosen cut follows [`dev-fix.md` § 2](dev-fix.md) step 4. Exit 3 means malformed allowance text. Other nonzero exits name a usage or environment failure. Report either failure and stop. A `pr-[PR_NUMBER]` key names no issue, so the checker measures the branch and records `allowance_missing`.
 
 ⚠ Fill placeholders only ([Format Tags Are Literal](../references/skill-rules.md#format-tags-are-literal)). `Recommendation:` is the technical fix; the agent owns its own process.
+
+Read the near-ceiling lines the last recorded round left, and render one `Near-ceiling:` line per entry. The key is the one carrier: the artifact's own path is addressed by `dev_round_id`, which the stamp above has already overwritten.
+
+```bash
+.agents/skills/orch/scripts/workflow-state get [ISSUE_ID] '.near_ceiling // []'
+```
 
 Fill `Worktree:` from `git -C "[DIR]" rev-parse --show-toplevel`.
 
@@ -256,6 +272,7 @@ Worktree: [WORKTREE_PATH]
 Round ID: [DEV_ROUND_ID]
 Artifact Key: [ISSUE_ID]
 [If the round may add files: "Adds: [REPO_RELATIVE_PATHS]"]
+[For each near_ceiling line read from workflow state: "Near-ceiling: [LINE]"]
 
 Review items:
 [For each item in the fix set:]
@@ -282,7 +299,15 @@ git -C "[WORKTREE_PATH]" status --porcelain
 git -C "[WORKTREE_PATH]" log -1 --oneline
 ```
 
-Apply the fix-round A×B table in [`dev-fix.md` § 2](dev-fix.md), which is canonical — including exact-commit binding on accept, the bounded git re-read on `accept` with B failing, the report-only tail-reconciliation nudge on `wait` with B passing, and the never-accept `retry` row, which never re-runs the fix. On accept: applied items are marked for reply, items the agent skipped go to the skipped list with their reason, and blocked items become issue candidates in § 6.2.
+Apply the fix-round acceptance in [`dev-fix.md` § 2](dev-fix.md), which is canonical: the stalled-round route stated ahead of its A×B table, then the table itself, including exact-commit binding on accept, the bounded git re-read on `accept` with B failing, the report-only tail-reconciliation nudge on `wait` with B passing, and the never-accept `retry` row, which never re-runs the fix. On accept: applied items are marked for reply, items the agent skipped go to the skipped list with their reason, and blocked items become issue candidates in § 6.2.
+
+**Verify before the push.** Every accepted fix round gets one focused pass over its diff, `[PRE_SHA]...HEAD`, by [review-pr.md § Bounded Re-Review](review-pr.md#bounded-re-review)'s rule for a fix diff no reviewer has seen, whatever `REVIEW_MAX_EXTERNAL_ROUNDS` reads. Its panel is the union of the domain reviewers § 2 routed the applied items to and the reviewers whose domains that diff touches by the scoped-panel rule there:
+
+```bash
+.agents/skills/orch/scripts/workflow-state set [ISSUE_ID] verification_panel '{"agents": [PANEL_AGENTS_JSON], "reason": "pr-comments fix round: [DOMAINS]"}'
+```
+
+Delegate and collect it as review-pr.md § 2.2 and § 3 do, with `Diff-range: [PRE_SHA]...HEAD`, then shut its reviewers down and clear their state with review-pr.md § 5's first write. Its blockers and `category == "fix"` suggestions re-enter § 5's disposition flow as findings of this pass; what survives joins this pass's `fix set` as a defect this diff introduces. Its `category == "issue"` suggestions go to § 6.2, as § 5 routes the triage reports' own; at the cap, where § 6.2 has already run, it runs once more for them after this pass. One verification pass runs per push: the fix it triggers joins the same push without a second pass, and the next external round reviews it.
 
 **Batch per fully-reviewed head.** Push a fix round only after every configured reviewer has reported on the current head. A pass with nothing to push skips this command:
 

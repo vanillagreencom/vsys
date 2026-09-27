@@ -24,6 +24,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 
 # The brief ends at the start command; start.md owns completion.
 TC=""
+# The words every codex command leads with, quoted per token as start_cmd
+# quotes each flag: the launch-only setting that keeps Codex off its startup
+# update prompt, then the feature switch that keeps its question tool away.
+CODEX_SETTINGS="'-c' 'check_for_update_on_startup=false' '-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'model_auto_compact_token_limit_scope=body_after_prefix' '-c' 'model_post_turn_compact_threshold_percent=0' '-c' 'features.default_mode_request_user_input=false'"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
@@ -42,41 +46,8 @@ FLEET_HOME="$TMP_ROOT/fleet-home"
 mkdir -p "$FLEET_HOME"
 LAUNCH_ENV=(LANES_HOME="$FLEET_HOME" CODEX_HOME=)
 
-PASS=0
-FAIL=0
-
-assert_eq() {
-  local got="$1" want="$2" name="$3"
-  if [[ "$got" == "$want" ]]; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        expected: %s\n        got:      %s\n' "$name" "$want" "$got"
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" name="$3"
-  if grep -qF -- "$needle" <<<"$haystack"; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        wanted substring: %s\n        in: %s\n' "$name" "$needle" "$haystack"
-  fi
-}
-
-assert_not_contains() {
-  local haystack="$1" needle="$2" name="$3"
-  if grep -qF -- "$needle" <<<"$haystack"; then
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        forbidden substring: %s\n        in: %s\n' "$name" "$needle" "$haystack"
-  else
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  fi
-}
+# shellcheck source=lib/assertions.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assertions.sh"
 
 # Stub bin: ghostty captures its final argument — the composed `cd ... && codex
 # ...` command open_gui hands to `bash -lc` — into $OT_CAPTURE; gh exits 1 so
@@ -123,7 +94,7 @@ REPO="$TMP_ROOT/repo"
 mkdir -p "$REPO/scripts/lib"
 cp "$SRC_OT" "$REPO/scripts/open-terminal"
 cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$REPO/scripts/"
-cp "$SRC_LIB_DIR"/*.sh "$REPO/scripts/lib/"
+cp -R "$SRC_LIB_DIR/." "$REPO/scripts/lib/"
 orch_fixture_shared_libs "$REPO"
 chmod +x "$REPO/scripts/open-terminal"
 git -C "$REPO" init -q
@@ -152,13 +123,12 @@ set -e
 assert_eq "$c1_code" "0" "linear:codex launch succeeds"
 if wait_capture "$CAP1"; then
   c1_cmd="$(cat "$CAP1")"
-  assert_contains "$c1_cmd" "codex 'Read .agents/skills/orch/SKILL.md and execute the orch start workflow for CC-737${TC}'" \
+  assert_contains "$c1_cmd" "codex $CODEX_SETTINGS 'Read .agents/skills/orch/SKILL.md and execute the orch start workflow for CC-737${TC}'" \
     "linear:codex emits the prose kickoff naming SKILL.md and the item"
   assert_not_contains "$c1_cmd" '$' "linear:codex command contains no \$"
   assert_not_contains "$c1_cmd" '`' "linear:codex command contains no backtick"
 else
-  FAIL=$((FAIL + 1))
-  printf '  FAIL  linear:codex never invoked the terminal stub\n'
+  fail "linear:codex never invoked the terminal stub"
 fi
 
 # Case 2: github:codex — same prose shape carrying repo#item.
@@ -170,13 +140,12 @@ set -e
 assert_eq "$c2_code" "0" "github:codex launch succeeds"
 if wait_capture "$CAP2"; then
   c2_cmd="$(cat "$CAP2")"
-  assert_contains "$c2_cmd" "codex 'Read .agents/skills/orch/SKILL.md and execute the orch start workflow for github acme/widgets#42${TC}'" \
+  assert_contains "$c2_cmd" "codex $CODEX_SETTINGS 'Read .agents/skills/orch/SKILL.md and execute the orch start workflow for github acme/widgets#42${TC}'" \
     "github:codex emits the prose kickoff carrying repo#item"
   assert_not_contains "$c2_cmd" '$' "github:codex command contains no \$"
   assert_not_contains "$c2_cmd" '`' "github:codex command contains no backtick"
 else
-  FAIL=$((FAIL + 1))
-  printf '  FAIL  github:codex never invoked the terminal stub\n'
+  fail "github:codex never invoked the terminal stub"
 fi
 
 echo

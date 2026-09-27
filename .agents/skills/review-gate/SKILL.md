@@ -19,22 +19,24 @@ tags: [review]
 
 The gate answers ONE question: **has this exact PR head been reviewed?** It posts that answer as a commit status the repo's branch rules require. It does not check CI, re-run anything, or reason about jobs.
 
-Two greens do NOT mean a review happened. Under `REVIEW_GATE_MODE = "off"` the predicate evaluates no evidence and attests only that the repo disabled the gate; and merge-group statuses never read the mode, posting green as "merge-queue entry: post-approval by construction". Both: [`REVIEW_GATE_MODE` in the settings table](references/settings.md).
+Two greens do NOT mean a review happened. `REVIEW_GATE_MODE = "off"` evaluates no evidence when the class policy is inactive or resolves to `current`; it attests only that the repo disabled the gate. A class policy `bot` decision still requires review evidence. Merge-group statuses never read the mode and post green as "merge-queue entry: post-approval by construction". See [`REVIEW_GATE_MODE` in the settings table](references/settings.md).
 
 ## Decision table
 
 | Verdict | Status | Meaning |
 |---|---|---|
-| `approved` | `success` | Evidence exists for this head, the whole diff sits under `REVIEW_GATE_RENDER_PATHS`, or `REVIEW_GATE_DOCS_ONLY = "none"` and the shared CI classifier accepts the diff as docs-only; no standing objection; no unresolved threads. Under `REVIEW_GATE_MODE = "off"` the predicate evaluates NO term. Success there means only "gate disabled", stated in the status description. |
+| `approved` | `success` | Evidence exists for this head, the whole diff sits under `REVIEW_GATE_RENDER_PATHS`, or `REVIEW_GATE_DOCS_ONLY = "none"` and the shared CI classifier accepts the diff as docs-only; no standing objection; no unresolved threads. For an inactive or `current` class policy, `REVIEW_GATE_MODE = "off"` evaluates no evidence term. Success there means only "gate disabled", stated in the status description. |
 | `awaiting` | `pending` | No review evidence for this head yet. |
-| `threads-open` | `pending` | Evidence exists, but review threads are unresolved. |
+| `threads-open` | `pending` | Evidence exists, but review threads are unresolved. A merge-route waiver resolution that has lapsed counts as unresolved: [README class policy](README.md#class-policy). |
 | `changes-requested` | `failure` | A reviewer objects. Red means objection, never a build failure. |
 | `untracked-claim` | `failure` | A disposition reply that claims tracking and names no issue fails the gate. |
 | `unreasoned-decline` | `failure` | A decline whose reason strips to nothing against the label vocabulary fails the gate. |
-| `suppressed-findings` | `failure` | A review body at the commit the gate relies on — the head, or the carry base once carry supplies the evidence — carries a `Suppressed comments (N)` or `Previously missed (N)` block: findings that never became threads. Either title counts, written as a markdown heading or as a `<details>` summary. The status names the count and the file:line list. It has no dedicated settings key, and while enforcement is on nothing disables it; `REVIEW_GATE_MODE = "off"` reaches it only by disabling the whole gate. An entry clears when the PR author answers it in an issue comment carrying a line `Dispositions at <sha>` that names this head, plus a line per entry opening with the entry's own `file:line` token — bare as the status prints it, or bold or backticked as the review body does — followed by `Fixed in <sha>`, `Declined: <reason>` or `Tracked: <ID>`. That marker is the only thing that binds the comment to the head. The whole term clears when that commit carries no such block. |
+| `suppressed-findings` | `failure` | A review body at the commit the gate relies on — the head, or the carry base once carry supplies the evidence — carries a `Suppressed comments (N)` or `Previously missed (N)` block: findings that never became threads. Either title counts, written as a markdown heading or as a `<details>` summary. The status names the count and the file:line list. It has no dedicated settings key. A class policy `none` decision skips it. `REVIEW_GATE_MODE = "off"` skips it for an inactive or `current` class policy. An entry clears when the PR author answers it in an issue comment carrying a line `Dispositions at <sha>` that names this head, plus a line per entry opening with the entry's own `file:line` token — bare as the status prints it, or bold or backticked as the review body does — followed by `Fixed in <sha>`, `Declined: <reason>` or `Tracked: <ID>`. That marker is the only thing that binds the comment to the head. The whole term clears when that commit carries no such block. |
 | (exit 2, no verdict) | *unchanged* | A read failed or config is invalid. Take NO action; retry next pass. |
 
 Pending text names the head; which sources open the gate is [references/settings.md](references/settings.md) § Reading the pending status. How the reply-parsing failure verdicts read a reply is `DEVELOPMENT.md` § Tracking-claim parsing and § Decline parsing, and how `suppressed-findings` reads a body is § Suppressed-finding parsing; what to write instead is orch's `references/finding-disposition.md`.
+
+An active `REVIEW_GATE_CLASS_POLICY` applies the [README class policy](README.md#class-policy) before this decision table, and that table states the scope a `none` row waives. `scripts/review-policy` is the one owner of the answer, and every other consumer reads it from there rather than re-deriving it.
 
 # Working in a consumer repo
 
@@ -89,7 +91,7 @@ Then add the validate step to the repo's CI as its own job, with no `needs`, no 
       - run: .agents/skills/review-gate/scripts/validate.sh
 ```
 
-Finish with the repo-side wiring of ruleset, merge queue, and bypass actor, and delete the local machinery the writer supersedes, in the same PR: [references/adoption.md](references/adoption.md).
+Finish with the repo-side wiring of ruleset and merge queue, with no standing bypass actor, and delete the local machinery the writer supersedes, in the same PR: [references/adoption.md](references/adoption.md).
 
 ## 3. Decide and repair
 
@@ -103,15 +105,15 @@ Keys a repo decides: [references/adoption.md](references/adoption.md) § Keys a 
 
 **Reviewers are down / nothing is reviewing.** Run the internal review loop: fix findings, resolve every thread, then post the override status with a real reason. It cannot bypass an objection or an open thread.
 
-**A PR that repairs the gate itself.** The writer always runs the merged engine. Merge the repair PR with the ruleset's bypass actor and say so in the commit message.
+**A PR that repairs the gate itself.** The writer always runs the merged engine, so the repair cannot turn its own gate context green, and no ruleset carries a standing bypass actor to merge it past that. Break-glass: for the repair session the owner adds one bypass entry to the organization merge-queue ruleset (the Organization admin role, or a one-member break-glass team holding only the owner where another organization admin exists), merges the repair PR directly under that bypass, outside the queue, and removes the entry in the same session. The repair's commit message names the entry. No required context is changed, so no other repository loses its gate.
 
-**A settings-change PR** is judged by the OLD config. A PR adding a trusted login cannot have its own gate honor it. Merge via normal review or the bypass actor.
+**A settings-change PR** is judged by the OLD config. A PR adding a trusted login cannot have its own gate honor it. Merge it through normal review.
 
 # The engine
 
 Evidence for the CURRENT head is any of:
 
-1. A non-author review object accepted by the configured trust and state rules.
+1. A non-author review object accepted by the configured trust and state rules, carrying content of its own: a verdict, a body, or a thread it opened.
 2. A trusted clean-analysis check-run or commit status that proves analysis ran.
 3. A trusted comment-form pass bound to this head's SHA.
 4. A trusted operator override with a reason, for missing evidence only.
@@ -120,9 +122,16 @@ Carry-forward never creates evidence or bypasses a fail-closed term. Objections 
 
 ## Scripts
 
+- `scripts/adopt-refresh.sh`: validate the existing app-secret environment, adopt the refresh workflow, and register exact workflow copies for render verification. [Setup and operation](references/adoption.md#automatic-consumer-refresh). `--help`
+- `scripts/refresh-consumer.sh`: rebuild the rolling refresh branch from the default branch, prove render equality, and open or update its pull request with app-token auto-merge. Called by the refresh workflow.
+- `scripts/refresh-reviews.sh`: answer automatic findings only after the trusted predicate proves render class with review policy `none`. Called by the refresh workflow.
+- `scripts/dispatch-refresh.sh`: signal all non-archived repositories visible to the catalog app installation.
 - `scripts/validate.sh`: validate a consumer installation. `--help`
-- `scripts/validate-workflow.sh`: compare the adopted workflow with the template. `--help`
+- `scripts/validate-workflow.sh`: compare the adopted workflow with the template; `--adopt` re-installs a new template over an unedited copy. `--help`
+- `scripts/validate-standard.sh`: report, read-only, whether this repository's rulesets, classic branch protection, required contexts, app installation and app-secret environment match the organization standard, whether a job named `CI` ran for the pull request the default branch head merged and for that head's merge group, and whether a standard secret name also sits in a repository, organization or Dependabot secret or in another environment. A row it cannot read is a FAIL. `--help` names each row and the permission its reads need; a token holding only the lanes app's read-only set reads the bypass-actor, classic-protection, CI-context and app rows and the Dependabot scopes as unreadable.
+- `scripts/provision-environment.sh`: the organization owner's write half of the standard's environment. From the owner's own machine, never a lane or CI, it creates or corrects the environment, its default-branch-only policy and its secrets in every repository of an organization that is not archived, and reports one record per repository. `--dry-run` writes nothing. `--help`
 - `scripts/review-predicate.sh`: evaluate one head or validate config. `--help`
+- `scripts/review-policy`: map the shared classifier's answer to the configured review evidence policy. `--help`
 - `scripts/review-writer.sh`: `workflow_dispatch` and `schedule` evaluate and converge every open PR; `merge_group` posts one queue success, while `WRITER_READ_ONLY=1` is a no-op. Its header documents the workflow-only contract.
 - `scripts/pr-watch.sh`: reduce open PRs to attention lines. `--help`
 

@@ -9,7 +9,8 @@ Usage: worktree <command> [ID|/path] [options]
 
 Portable git worktree manager. Worktrees live outside the repo root at
 <parent-of-checkout>/.worktrees/<checkout-name>/<id>; WORKTREE_BASE_DIR
-overrides the parent directory.
+overrides the parent directory. A hosted lane's worktree lives elsewhere
+(create --help, --hosted).
 
 Commands:
   create ID        Claim a new issue worktree. Refuses implicit reuse when a
@@ -21,6 +22,7 @@ Commands:
                    (remove --help)
   cleanup          Remove worktrees whose branches are merged (cleanup --help)
   path ID          Print the worktree path for an issue ID
+  path --hosted    Print the one path a hosted lane's worktree takes
   exists ID        Check whether a worktree exists for an issue ID
   merged ID        Print the commit the issue tree's pull request merged as
   check            Pre-create git state check of the MAIN checkout (JSON:
@@ -39,13 +41,14 @@ Each mutating command's full contract is its own --help.
 Path arguments and canonicalization:
   The project root resolves via git rev-parse (at any depth, inside worktrees
   too). Issue IDs that derive paths must match [A-Za-z0-9][A-Za-z0-9._-]* and
-  must not contain '..'. Issue-ID resolution prefers the configured base dir
-  and falls back to the worktree registered for the issue branch; there is no
-  auto-migration. Path comparisons are canonical (physical, symlink-resolved
-  on both sides). Direct path arguments for mutating commands must be
-  registered worktrees of this repository's common Git directory: fix-links,
-  codex-setup, codex-branch, claude-setup, and remove refuse the main checkout
-  and foreign worktrees. Codex app-created worktrees are registered git
+  must not contain '..'. Issue-ID resolution prefers the configured base dir,
+  then the worktree registered for the issue branch, then a hosted tree that
+  records the issue (create --help, --hosted); there is no auto-migration.
+  Path comparisons are canonical (physical, symlink-resolved on both sides).
+  Direct path arguments for mutating commands must be registered worktrees of
+  this repository's common Git directory: fix-links, codex-setup,
+  codex-branch, claude-setup, and remove refuse the main checkout and foreign
+  worktrees. Codex app-created worktrees are registered git
   worktrees and are accepted even outside WORKTREE_BASE_DIR.
 
 Configuration (loaded lowest to highest: kendex.settings.toml [env], then
@@ -58,6 +61,9 @@ personal overrides):
                               ../.worktrees/<checkout-name>, an external
                               per-repo sibling dir. Do not point it inside the
                               repo root.
+  WORKTREE_HOSTED_NAME        The last segment of the path create --hosted
+                              gives a new worktree (create --help); one path
+                              segment in the issue-ID alphabet. Default: lane.
   WORKTREE_DEFAULT_BRANCH     Default branch name (auto-detected if unset;
                               fallback: main)
   WORKTREE_SYMLINKS           Space-separated paths symlinked from the main
@@ -71,9 +77,7 @@ personal overrides):
                               from the link location.
   WORKTREE_COPIES             Space-separated files copied only from the main
                               checkout when neither checkout's Git index owns
-                              them.
-                              Git-owned files stay with their checkout. In a
-                              standalone checkout, configured copies do nothing.
+                              them. Git-owned files stay with their checkout.
   WORKTREE_MKDIRS             Space-separated directories created inside each
                               worktree with mkdir -p (gitignored scratch dirs
                               such as tmp).
@@ -81,6 +85,11 @@ personal overrides):
   BOT_SIGNING_KEY             SSH signing key path
   BOT_REMOTE_NAME             Remote name for push (default: origin)
   BOT_REMOTE_URL              URL for the bot remote (added on create if set)
+
+Same-checkout setup:
+  Setup does nothing when the checkout is both the source and the destination,
+  as in a standalone clone or the main checkout: every configured entry would
+  act on its own source.
 
 Setup-path hardening:
   Configured setup paths (WORKTREE_SYMLINKS, WORKTREE_COPIES, WORKTREE_MKDIRS,
@@ -141,6 +150,31 @@ to still be at its recorded original head, checks that branch out, clears the
 record, and re-applies worktree setup, refusing and keeping the record when the
 branch has moved or the checkout fails.
 
+Conflicted hooks: a harness re-reads its hooks on every event, and conflict
+markers in one make it fail every tool call and turn end. So when a paused
+restack's conflicts include a path that a tracked harness hook declaration
+runs (any JSON file whose top-level 'hooks' entries carry a 'command', such as
+.claude/settings.json, .codex/hooks.json or .pi/kendex/hooks.json), that path
+takes one side of the conflict, its conflicted content is saved beside it as
+<path>.restack-conflict, and one 'worktree-restack-hook-held:' line names
+every such path. Resolve the markers in the saved copy, then replace the path
+in one step with 'mv <path>.restack-conflict <path>', stage the path, and
+unstage the copy with 'git rm -q --cached --ignore-unmatch --
+<path>.restack-conflict'. continue and skip refuse with
+'worktree-restack-hook-unconsumed:' while a saved copy is in the worktree or
+the index; deleting it, staging the path and unstaging the copy keeps the held
+side. abort removes the saved copies. The held set is the paths a
+declaration's command names and the libraries those hooks source, directly or
+through another library, read from the '# shellcheck source=' directive above
+each 'source' or '.' line, at the pre-restack head, the paused HEAD and the
+commit being replayed. A directive resolves against the sourcing file's
+directory; one that climbs out of it ('../skills/<skill>/...') matches every
+tracked path ending in the rest of it, since the hook finds that library by
+searching. When any read that discovery makes fails, the lookup of the
+commit being replayed included, or jq is missing, every conflicted path is
+held the same way.
+Conflicts in every other path keep their markers in place.
+
 On completion, continue and skip report one 'rebase-map: <old-sha>
 <new-sha|dropped>' line per rewritten commit on stderr and append the same
 lines, under a 'rebase-hop:' line of their own, to 'kendex-rebase-map' in the
@@ -177,10 +211,13 @@ implementer.
   - A fresh worktree is unclaimed: create never claims a session-guard lease.
 
 Options:
-  --base BRANCH   Checkout an existing remote branch into the worktree;
-                  the default branch instead starts a new issue branch from it
-                  (it is always checked out in the main checkout and is never
-                  issue-ownership evidence)
+  --base BRANCH   Checkout an existing branch into the worktree; a BRANCH
+                  other than the default must be on origin. One that is not
+                  is refused: fetch it if it is only on another remote, then
+                  push it, or `git switch` to it in the main checkout and
+                  pass --transfer instead. The default branch instead starts
+                  a new issue branch from it (it is always checked out in
+                  the main checkout and is never issue-ownership evidence)
   --from REF      Create a new branch (named after ID) starting from REF
                   (branch, tag, or commit) after the normal ownership claim
                   gate
@@ -200,6 +237,19 @@ Options:
   --replay        With --reuse/--restack: run the same restack as an ordered
                   cherry-pick replay with no rebase porcelain, for execution
                   policies that reject 'git rebase'
+  --hosted        The create runs for a hosted lane, on a clone that holds one
+                  lane worktree: a new tree lands at
+                  ../.worktrees/<checkout-name>/<WORKTREE_HOSTED_NAME> beside
+                  the checkout whatever WORKTREE_BASE_DIR says (path
+                  --hosted), the same path in every lane whose clone sits at
+                  the same path, so a build there hits compile-cache entries
+                  keyed by another lane's identical source path. The tree
+                  records its issue, so the issue ID finds it with HEAD
+                  detached. With --reuse or --restack a tree the issue already
+                  has is reused where it stands; without them create refuses
+                  it (exit 75) as for any existing tree. A path another
+                  issue's tree holds exits 75. Without --hosted, the new tree
+                  is keyed by the issue ID so several can coexist
 
 Transfer form:
   --transfer BRANCH
@@ -226,7 +276,9 @@ Reuse rebase conflicts:
        conflicted.
   With no conflict, --restack completes the same rebase as --reuse. The
   guarded actions fail closed on missing, stale, or unrelated state
-  (restack --help).
+  (restack --help). A conflicted path a harness runs as a hook, or a library
+  such a hook sources, is held at a parseable side instead of left with
+  markers (restack --help).
 
 Rewritten commits:
   A completed --reuse/--restack rebase reports one 'rebase-map: <old-sha>
@@ -297,12 +349,14 @@ print_cleanup_help() {
   cat <<'EOF'
 Usage: worktree cleanup [--stale] [--ttl-minutes N]
        worktree cleanup --targets-only [--apply] [--older-than-days N]
+       worktree cleanup --targets-only [--apply] --worktree PATH --owner ID
 
 Remove worktrees whose branch is already merged into origin/<default>.
 A worktree held by a session guard lease is never collected — not even one
 this session claimed — nor is a zero-commit worktree: a branch with no
 commits of its own is pending work, not merged work. Every skip is reported;
-a quiet cleanup means nothing was held back.
+a quiet cleanup means nothing was held back. The one exception is the
+owner-scoped prune below, and it removes build output, never a worktree.
 
 cleanup fetches origin, considers non-main registered worktrees, and proves
 each branch merged two ways: ancestry into origin/<default> (or the local
@@ -384,6 +438,19 @@ live process holds it; and when the unit is lock-free on a platform with no
 process inspection. It keeps the whole worktree when a session guard lease is
 present or HEAD moves mid-run.
 
+--worktree PATH --owner ID is the owner-scoped prune: the session holding a
+worktree's lease reclaims that one worktree's build output, for example before
+a round when its disk runs short. PATH must be a linked worktree of this
+repository. It runs under the lease when the lease owner is ID, claims the
+worktree for the delete as the sweep does when no lease is held, and refuses,
+exiting 1, when another owner's lease or a lock outside the guard holds it or
+HEAD moves mid-run. No retention window applies, so it takes only output a
+build lock guards, the Cargo profiles under target/, and never node_modules/ or
+.next/, which nothing reinstalls between rounds. Output written a minute ago is
+pruned too; a profile kept for its held build lock, a live holder or a change
+under the measurement fails the prune, exit 1, after the rest is reclaimed. The
+lease stays with its owner afterwards.
+
 --apply claims each worktree through the session guard for the duration of the
 delete and refuses outright when that guard is unavailable; the preview needs
 no lease because it writes nothing. Only this mode needs python3 and Unix
@@ -400,6 +467,9 @@ Options:
   --targets-only      Prune build output; keep the worktree and its branch.
   --apply             Delete what the preview listed. --targets-only only.
   --older-than-days N Keep output written within N days (default: 7).
+                      --targets-only only; not with --owner.
+  --worktree PATH     With --owner: prune this one worktree. --targets-only only.
+  --owner ID          With --worktree: the lease owner the prune acts for.
                       --targets-only only.
 EOF
 }
@@ -420,14 +490,32 @@ worktrees).
 
 Force-with-lease authorization: after the auto-rebase, the push uses a scoped
 --force-with-lease pinned to the target branch OID known before the rebase.
-'create --reuse' and the supported 'create --restack' conflict-recovery flow
-persist the same narrowly scoped authorization in the worktree: it records
-the exact observed remote OID and the exact successfully restacked local
-head. push accepts that rewritten head or later commits built on it, still
-pins the force-with-lease to the recorded remote OID, and consumes the
-authorization after success. A different local rewrite, remote movement while
-conflict resolution is pending, or a moved remote at push time fails closed.
+Every verb that rewrites the branch persists the same narrowly scoped
+authorization in the worktree before it rewrites: this auto-rebase, 'create
+--reuse' and the supported 'create --restack' conflict-recovery flow. It
+records the exact observed remote OID and the exact successfully rewritten
+local head. push accepts that rewritten head or later commits built on it,
+still pins the force-with-lease to the recorded remote OID, and consumes the
+authorization after success. Only success consumes it: a pre-push hook that
+refuses leaves the rewrite and its authorization standing, so the run that
+fixes what the hook named publishes without redoing that rebase and without a
+hand-run git command. A default branch that advanced since is rebased onto
+again under the same authorization. A different local rewrite, remote
+movement while conflict resolution is pending, or a moved remote at push time
+fails closed.
 Plain pushes are still used with --no-rebase.
+
+A remote OID the local branch does not contain is
+'worktree-push-remote-uncontained', and the route it names follows what the
+branch holds. Where the remote carries work the branch lacks, it names the
+fetch and rebase. Where the branch already carries every commit on the remote
+branch under rewritten SHAs, fetching and rebasing would replay work that
+rewrite superseded, so the refusal says so: no recorded authorization covers
+the rewrite. Running a rewrite verb on that branch now rewrites nothing and
+records nothing, so the refusal names the git push that republishes the
+branch, pinned to the remote OID it read. A rewrite push or the guarded
+restack recorded but could not map is refused on that record before this
+check, so that route is never named for it.
 
 rebase-map: when the auto-rebase rewrites branch commits, push prints one
 'rebase-map: <old-sha> <new-sha>' line per rewritten commit on stdout

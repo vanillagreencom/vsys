@@ -50,7 +50,16 @@ Predicate: review evidence present for the CURRENT head — any of
       errored state, so a bot review that ERRORS lands as a normal review
       row (COMMENTED) whose body says the review never ran. Like a
       skip-marked check pass it proves nothing ran — silence, routed to
-      NOT-EVIDENCE, never to failure, and never a carry-forward candidate;
+      NOT-EVIDENCE, never to failure, and never a carry-forward candidate.
+      The row also needs content of its own: a formal verdict (APPROVED or
+      CHANGES_REQUESTED, whatever its body), a non-blank body, or a review
+      comment that opens a thread. Answering a thread submits a bodyless
+      COMMENTED row whose every comment is a reply; that row is
+      NOT-EVIDENCE the same way. A bodyless COMMENTED row is judged from
+      the review-comment listing, read last and only when the verdict
+      turns on it: min_state 'any', no objection, claim, decline or
+      suppressed finding, and no other evidence or waiver. Ancestor rows
+      are judged only under carry-forward. A failed read of it is exit 2;
   (b) a trusted clean-analysis CHECK-RUN or legacy COMMIT STATUS succeeding
       on this head, whose title/summary/description carries no skip-pattern
       marker (a "pass" that says the analysis was rate limited, skipped, or
@@ -88,9 +97,9 @@ heading or a <details> summary, and an entry off a bold or a backticked
 It names the count and the file:line
 entries: the detail carries a bounded list (a status description holds 140
 characters, so a truncated list says how many it dropped) and the full list
-goes to stderr. It has NO DEDICATED settings key, and the only switch that
-reaches it is REVIEW_GATE_MODE=off, which answers approved for the whole gate
-without reading any evidence. An entry is SUBTRACTED when the PR author has
+goes to stderr. It has NO DEDICATED settings key. A class-policy `none`
+decision skips it. REVIEW_GATE_MODE=off skips it when the class policy is
+inactive or `current`. An entry is SUBTRACTED when the PR author has
 answered it: an issue comment binding this head, carrying a line that opens
 with the entry's own `file:line` token — bare as this detail prints it, or
 bold or backticked as the review body does, all read, none the anchor, since
@@ -228,9 +237,10 @@ ladder and exceptions in references/settings.md; list values pack with ';'):
   REVIEW_GATE_API_RETRY_DELAY_SECONDS       delay between retry attempts
                                             (default 2)
   REVIEW_GATE_MODE                          'enforce' (default) or 'off':
-                                            'off' answers approved WITHOUT
-                                            evaluating any evidence — the
-                                            one-switch per-repo gate disable.
+                                            'off' answers approved without
+                                            evidence for an inactive or
+                                            `current` class policy. A `bot`
+                                            class still requires review.
                                             The verdict detail carries the
                                             attestation so every posted
                                             status says the gate is disabled,
@@ -378,6 +388,17 @@ if [ "$#" -gt 0 ]; then
 fi
 
 . "$script_dir/lib/settings.sh"
+if ! . "$script_dir/lib/review-findings.sh"; then
+  rg_message error predicate-findings-load "$script_dir/lib/review-findings.sh" "Could not load the review findings parser." >&2
+  exit 2
+fi
+# The merge route's waiver rule, which the thread term below reads. A rule
+# that will not load is no verdict: without it a lapsed waiver would read as
+# a resolved thread.
+if [ ! -r "$script_dir/lib/waiver.sh" ] || ! . "$script_dir/lib/waiver.sh" || [ -z "${RG_WAIVER_JQ:-}" ]; then
+  rg_message error predicate-waiver-load "$script_dir/lib/waiver.sh" "::error::review-predicate: the merge-route waiver rule could not be loaded — no verdict" >&2
+  exit 2
+fi
 
 # `|| exit 2`: rg_setting fails on a present-but-unparseable assignment, and
 # that is a configuration error (no verdict), never an empty value.
@@ -397,19 +418,10 @@ ERROR_PATTERNS="$(rg_setting REVIEW_GATE_REVIEW_OBJECT_ERROR_PATTERNS "encounter
 THREADS_MODE="$(rg_setting REVIEW_GATE_THREADS "enforce")" || exit 2
 
 # ONE parse of each packed trust list, here at the single place the settings
-# are resolved. Every consumer below works from these: the configuration
-# checks, the evidence reads, and the awaiting label. Entry boundaries and
-# emptiness are decided once, so a value like " ; , " cannot be an open trust
-# model to one reader and a named list to another.
-# pipefail inside, checked at every caller: this decides the trust boundary,
-# and the last stage of the pipeline returns 0 on empty output. A `tr` that
-# died would leave a RESTRICTED list looking empty, which the evidence read
-# takes as "any non-author" — the trust list would open the gate it was set
-# to close. A broken pipeline is exit 2 with no verdict instead.
-rg_pack() { # RAW SEPARATORS -> one trimmed, non-empty entry per line
-  ( set -o pipefail
-    printf '%s\n' "$1" | tr "$2" '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d' )
-}
+# are resolved, with lib/settings.sh's rg_pack. Every consumer below works from
+# these: the configuration checks, the evidence reads, and the awaiting label.
+# Entry boundaries and emptiness are decided once, so a value like " ; , "
+# cannot be an open trust model to one reader and a named list to another.
 # Called OUTSIDE the substitutions below: an `exit` inside `$( )` would leave
 # the subshell and the predicate would carry on with the empty value.
 rg_pack_failed() { # KEY
@@ -448,6 +460,9 @@ case "$GATE_MODE" in
     exit 2
     ;;
 esac
+# A package setting the writer spends and this check adopts: judged by the one
+# rule both read, so a value that passes here cannot fail every writer run.
+rg_pr_deadline_seconds >/dev/null || exit 2
 case "$DOCS_ONLY_MODE" in
   bot|none) ;;
   *)
@@ -695,11 +710,25 @@ EOF_COMMENT_CFG
 # required skill dependency installs this sibling beside review-gate in both
 # catalog and rendered layouts. A partial installation must fail config
 # validation before it can leave an earlier success status in place.
-DOCS_CLASSIFIER="$script_dir/../../harness-ci/scripts/harness-only"
-if [ "$DOCS_ONLY_MODE" = "none" ] && [ ! -x "$DOCS_CLASSIFIER" ]; then
-  rg_message error predicate-docs-classifier "$DOCS_CLASSIFIER" "::error::review-predicate: REVIEW_GATE_DOCS_ONLY=none requires the executable harness-ci docs classifier at '$DOCS_CLASSIFIER'" >&2
+PATH_CLASSIFIER="$script_dir/../../harness-ci/scripts/harness-only"
+if [ "$DOCS_ONLY_MODE" = "none" ] && [ ! -x "$PATH_CLASSIFIER" ]; then
+  rg_message error predicate-docs-classifier "$PATH_CLASSIFIER" "::error::review-predicate: REVIEW_GATE_DOCS_ONLY=none requires the executable harness-ci docs classifier at '$PATH_CLASSIFIER'" >&2
   exit 2
 fi
+POLICY_OWNER="$script_dir/review-policy"
+if [ ! -x "$POLICY_OWNER" ]; then
+  rg_message error predicate-policy-owner "$POLICY_OWNER" "::error::review-predicate: the review class policy owner is not executable" >&2
+  exit 2
+fi
+POLICY_STATE="$($POLICY_OWNER --check-config)" || exit 2
+case "$POLICY_STATE" in
+  review-policy=active) POLICY_STATE=active ;;
+  review-policy=inactive) POLICY_STATE=inactive ;;
+  *)
+    rg_message error predicate-policy-protocol "$POLICY_STATE" "::error::review-predicate: the review class policy owner returned an invalid configuration record" >&2
+    exit 2
+    ;;
+esac
 
 # Every configuration rule above has now run, and --check-config stops HERE:
 # the last point before the predicate needs a PR. A rule moved below this
@@ -716,14 +745,14 @@ for required in GH_REPO PR_NUMBER HEAD_SHA; do
   fi
 done
 
-# The one-switch gate disable (owner-controlled): mode "off" answers
-# approved BEFORE any evidence read — no API calls, no evidence model, no
-# thread term. The detail line is an attestation, not a review claim: every
+# The legacy gate disable (owner-controlled): mode "off" answers approved
+# before evidence reads while class policy is inactive. The detail line is
+# an attestation, not a review claim: every
 # status the writer converges from this verdict says the gate is disabled.
 # Required env is still validated above (a caller that cannot even name the
 # PR is misconfigured regardless of mode), and an invalid mode value already
 # exited 2 — the switch can turn the gate off, a typo cannot.
-if [ "$GATE_MODE" = "off" ]; then
+if [ "$GATE_MODE" = "off" ] && [ "$POLICY_STATE" = "inactive" ]; then
   echo "verdict=approved detail=review gate disabled by settings (REVIEW_GATE_MODE=off)"
   exit 0
 fi
@@ -790,6 +819,165 @@ materialize_docs_commits() { # REPO BASE HEAD
     git -C "$repo" merge-base "$base_sha" "$head_sha" >/dev/null 2>&1
 }
 
+# The policy owner and classifier come from the trusted default-branch
+# checkout. The pull-request checkout is judged data. Source preparation and
+# classification run without the writer's GitHub credentials.
+#
+# Sources are prepared on the condition change-class's header states for its
+# one kendex read: harness-only answering harness_only=true for the range,
+# asked here with the arguments change-class passes it. Any other diff skips
+# the refresh.
+#
+# Source preparation reads the JUDGED pull request's manifest, so how much work
+# it asks for is the pull request's to choose. The writer converges every open
+# pull request inside one 12-minute step, and an unbounded refresh lets one
+# manifest spend the whole of it while every pull request behind it goes
+# unevaluated. Two bounds hold that to one pull request's own share, and each
+# names itself in the refusal:
+#
+#   sources   CLASS_REFRESH_MAX_SOURCES, counted before anything is fetched. A
+#             manifest past it is refused rather than prepared. The number is
+#             generous on purpose — it is the pathological-manifest stop, not a
+#             limit any real consumer should meet — because refusing a legitimate
+#             manifest leaves that repository's gate unconverged for good, while
+#             the deadline below only costs it a pass.
+#   time      CLASS_REFRESH_DEADLINE_SECONDS around the refresh itself, which is
+#             the bound that actually bites: a cold fetch has its own
+#             120-second ceiling, so a handful of unresponsive sources would
+#             otherwise outlast the step. At this size a pass still reaches
+#             sixteen pull requests with every one of them overrunning.
+#
+# An overrun returns non-zero like any other preparation failure, so the caller
+# exits 2 through predicate-policy-resolve, writes no status, and the next pass
+# tries again. `timeout` is coreutils and the writer runs where it exists; a
+# host with neither spelling keeps the unbounded behaviour and says so, since
+# refusing there would disable the gate on a machine whose only fault is a
+# missing utility.
+CLASS_REFRESH_MAX_SOURCES=12
+CLASS_REFRESH_DEADLINE_SECONDS=45
+
+# The bounded refresh the render proof reads, in the pull request's checkout.
+prepare_policy_sources() { # CHECKOUT
+  local subject="$1" declared bound refresh_status
+  declared="$( (cd "$subject" && env -u GH_TOKEN -u GITHUB_TOKEN -u GH_CONFIG_DIR kendex source list 2>/dev/null) | grep -c .)" || declared=0
+  if [ "$declared" -gt "$CLASS_REFRESH_MAX_SOURCES" ]; then
+    rg_message error predicate-policy-sources "$declared/$CLASS_REFRESH_MAX_SOURCES" \
+      "::error::review-predicate: the pull request's manifest declares $declared sources, past the class-policy cap of $CLASS_REFRESH_MAX_SOURCES; none were prepared" >&2
+    return 1
+  fi
+  bound=()
+  if command -v timeout >/dev/null 2>&1; then
+    bound=(timeout "$CLASS_REFRESH_DEADLINE_SECONDS")
+  elif command -v gtimeout >/dev/null 2>&1; then
+    bound=(gtimeout "$CLASS_REFRESH_DEADLINE_SECONDS")
+  else
+    rg_message warning predicate-policy-unbounded "$CLASS_REFRESH_DEADLINE_SECONDS" \
+      "review-predicate: no timeout utility here, so the class-policy refresh runs unbounded" >&2
+  fi
+  refresh_status=0
+  (cd "$subject" && env -u GH_TOKEN -u GITHUB_TOKEN -u GH_CONFIG_DIR \
+    ${bound[@]+"${bound[@]}"} kendex source refresh >/dev/null) || refresh_status=$?
+  if [ "$refresh_status" -ne 0 ]; then
+    if [ "$refresh_status" -eq 124 ]; then
+      rg_message error predicate-policy-refresh-deadline "$PR_NUMBER/${CLASS_REFRESH_DEADLINE_SECONDS}s" \
+        "::error::review-predicate: PR #$PR_NUMBER: source preparation passed its ${CLASS_REFRESH_DEADLINE_SECONDS}s bound; this pull request is left for the next pass" >&2
+    fi
+    return 1
+  fi
+}
+
+resolve_class_policy() ( # REPO BASE HEAD
+  repo="$1"
+  base_sha="$2"
+  head_sha="$3"
+  scratch="$(mktemp -d)" || return 1
+  subject="$scratch/subject"
+  added=0
+  cleanup_policy_subject() {
+    if [ "$added" != 0 ] && ! git -C "$repo" worktree remove --force -- "$subject" >/dev/null 2>&1; then
+      rg_message warning predicate-policy-cleanup "$subject" "review-predicate: could not remove the temporary class-policy checkout" >&2
+    fi
+    rm -rf -- "${scratch:?}"
+  }
+  trap cleanup_policy_subject EXIT
+  git -C "$repo" worktree add --quiet --detach "$subject" "$head_sha" || return 1
+  added=1
+  if ! paths_verdict="$(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_CONFIG_DIR "$PATH_CLASSIFIER" \
+    --mode harness --event pull_request --base "$base_sha" --head "$head_sha" \
+    --repo "$subject" --output /dev/null 2>"$scratch/paths.err")"; then
+    cat -- "$scratch/paths.err" >&2
+    rg_message error predicate-policy-paths "$PATH_CLASSIFIER" \
+      "::error::review-predicate: the harness-ci path classifier refused the class-policy range" >&2
+    return 1
+  fi
+  case "$paths_verdict" in
+    harness_only=true) prepare_policy_sources "$subject" || return 1 ;;
+    harness_only=false) ;;
+    *)
+      rg_message error predicate-policy-paths "$paths_verdict" \
+        "::error::review-predicate: the harness-ci path classifier returned an invalid verdict" >&2
+      return 1
+      ;;
+  esac
+  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_CONFIG_DIR "$POLICY_OWNER" \
+    --event pull_request --base "$base_sha" --head "$head_sha" --repo "$subject"
+)
+
+CLASS_POLICY=""
+CLASS_NAME=""
+CLASS_EVIDENCE=""
+if [ "$POLICY_STATE" = "active" ]; then
+  POLICY_REPO="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null)" || {
+    rg_message error predicate-policy-repo "$script_dir" "::error::review-predicate: the trusted repository root could not be resolved" >&2
+    exit 2
+  }
+  resolve_pr_base || {
+    rg_message error predicate-policy-base "$PR_NUMBER" "::error::review-predicate: the pull request base could not be resolved for class policy" >&2
+    exit 2
+  }
+  materialize_docs_commits "$POLICY_REPO" "$pr_base" "$HEAD_SHA" || {
+    rg_message error predicate-policy-commits "$pr_base...$HEAD_SHA" "::error::review-predicate: the commits needed for class policy could not be materialized" >&2
+    exit 2
+  }
+  CLASS_POLICY="$(resolve_class_policy "$POLICY_REPO" "$pr_base" "$HEAD_SHA")" || {
+    rg_message error predicate-policy-resolve "$pr_base...$HEAD_SHA" "::error::review-predicate: the change class or review policy could not be resolved" >&2
+    exit 2
+  }
+  case "$CLASS_POLICY" in
+    "change_class=render review_evidence="*" policy=active"|"change_class=trivial review_evidence="*" policy=active"|"change_class=micro review_evidence="*" policy=active"|"change_class=small review_evidence="*" policy=active"|"change_class=standard review_evidence="*" policy=active") ;;
+    *)
+      rg_message error predicate-policy-live-protocol "$CLASS_POLICY" "::error::review-predicate: the review class policy owner returned an invalid live record" >&2
+      exit 2
+      ;;
+  esac
+  CLASS_NAME="${CLASS_POLICY#change_class=}"
+  CLASS_NAME="${CLASS_NAME%% *}"
+  CLASS_EVIDENCE="${CLASS_POLICY#* review_evidence=}"
+  CLASS_EVIDENCE="${CLASS_EVIDENCE%% *}"
+  [ "$CLASS_POLICY" = "change_class=$CLASS_NAME review_evidence=$CLASS_EVIDENCE policy=active" ] || {
+    rg_message error predicate-policy-live-protocol "$CLASS_POLICY" "::error::review-predicate: the review class policy owner returned a malformed live record" >&2
+    exit 2
+  }
+  rg_message notice predicate-class-policy "$CLASS_NAME:$CLASS_EVIDENCE" "review-predicate: change class $CLASS_NAME uses review evidence policy $CLASS_EVIDENCE" >&2
+  case "$CLASS_EVIDENCE" in
+    none)
+      echo "verdict=approved detail=change class $CLASS_NAME requires no review evidence or thread wait"
+      exit 0
+      ;;
+    required) ;;
+    current)
+      if [ "$GATE_MODE" = "off" ]; then
+        echo "verdict=approved detail=review gate disabled by settings (REVIEW_GATE_MODE=off)"
+        exit 0
+      fi
+      ;;
+    *)
+      rg_message error predicate-policy-evidence "$CLASS_EVIDENCE" "::error::review-predicate: the review class policy owner returned an unknown evidence policy" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 # Two steps, not a pipe: `--paginate` emits ONE ARRAY PER PAGE, which the
 # count filters below would evaluate per-array (multi-line counts that can
 # never equal "0" past 100 reviews), and a mid-pipe gh failure must fail
@@ -804,20 +992,7 @@ materialize_docs_commits() { # REPO BASE HEAD
 # body passes the zero-byte check yet slurps to [] (vacuously "no reviews"),
 # and an error-object page would collapse through `add` — both erase a
 # standing CHANGES_REQUESTED. A broken read is exit 2, never empty evidence.
-raw_reviews="$(gh_read "repos/$GH_REPO/pulls/$PR_NUMBER/reviews?per_page=100" --paginate)" || {
-  rg_message error predicate-reviews-read "$PR_NUMBER" "::error::could not read reviews for PR #$PR_NUMBER" >&2
-  exit 2
-}
-if [ -z "$raw_reviews" ]; then
-  rg_message error predicate-reviews-empty "$PR_NUMBER" "::error::reviews read for PR #$PR_NUMBER produced zero bytes (broken read, not an empty page set)" >&2
-  exit 2
-fi
-reviews="$(jq -s 'if (length > 0) and all(type == "array")
-                  then add
-                  else error("review pages are not arrays") end' <<<"$raw_reviews" 2>/dev/null)" || {
-  rg_message error predicate-reviews-pages "$PR_NUMBER" "::error::reviews read for PR #$PR_NUMBER returned non-array pages or a vacuous body (broken read)" >&2
-  exit 2
-}
+rg_load_reviews gh_read || exit 2
 # Changes-requested reduces each reviewer over their DECISIVE states only
 # (APPROVED / CHANGES_REQUESTED, ordered by submitted_at) across the WHOLE
 # PR — never scoped to the head: GitHub keeps an objection standing when the
@@ -857,64 +1032,76 @@ cr="$(jq '[.[] | select(.state != "DISMISSED" and .state != "PENDING") | select(
 # objection would be a fail-open lever, and an errored row can never block
 # anyway (it is not CHANGES_REQUESTED).
 #
+# A REPLY-ONLY review is not evidence either. Answering an existing review
+# thread submits its own COMMENTED review with an empty body whose every
+# comment is a reply, so counting it would pass the head the moment anyone
+# answers a thread, on a row that says nothing about the head. A row counts
+# only with content of its own: a formal verdict (APPROVED or
+# CHANGES_REQUESTED, whatever its body — the Approve button with no comment
+# submits an empty-bodied APPROVED), a non-blank body, or a review comment
+# that opens a thread rather than answering one. The review row carries no
+# comments, so which threads a bodyless COMMENTED row opened is read from the
+# review-comment listing into $openers by the openers stage, which runs last
+# and only when the verdict turns on it. orch's approval-wait applies the same
+# rule to the same rows.
+#
 # Defined ONCE and concatenated in front of EVERY jq program that accepts
 # review rows, because what the gate accepts as a review must never drift
 # between them and hand-kept copies of the chain would part ways silently.
 # Three programs call it: head evidence below, carry candidates, and the
 # suppressed-finding scan. What is shared is the whole accepted-row chain —
-# the state and author exclusions, the trust list, and this attestation — and
-# each program adds only what is genuinely its own: the commit predicate, and
-# min_state where it applies. The `cr` reduction above is NOT a fourth copy;
-# it is deliberately unfiltered by the trust list, for the reason stated
-# there.
+# the state and author exclusions, the trust list, this attestation and the
+# content rule — and each program adds only what is genuinely its own: the
+# commit predicate, and min_state where it applies. The `cr` reduction above
+# is NOT a fourth copy; it is deliberately unfiltered by the trust list, for
+# the reason stated there, and the content rule never drops the verdicts it
+# reduces.
 #
 # The body is bound BEFORE testing containment: inside contains(.) the dot
 # would rebind, the same trap as the skip-pattern filter. $mk is the
 # lowercased pattern list, $t the trust list, both built by the helpers here
-# from the $errmarks and $trusted each program passes.
-ACCEPTED_ROWS_DEF='def not_errored_attestation($mk):
-  (((.body // "") | ascii_downcase
-    | sub("^[\\s>]+"; "") | split("\n") | (.[0] // "")) as $b
-   | [ $mk[] | . as $p | select($b | contains($p)) ] | length) == 0;
-def trust_list($trusted):
-  $trusted | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0));
-def error_marks($errmarks):
-  $errmarks | split(";") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | map(ascii_downcase);
-def accepted_rows($t; $mk; $author):
-  [ .[]
-    | select(.state != "DISMISSED" and .state != "PENDING" and .user.login != $author)
-    | select(($t | length) == 0 or (.user.login as $l | ($t | index($l)) != null))
-    | select(not_errored_attestation($mk)) ];'
+# from the $errmarks and $trusted each program passes; $openers is the ids of
+# the reviews that opened a thread.
+
+
+# THREAD_OPENERS starts empty: until the openers stage below reads the
+# review-comment listing, a bodyless row is not evidence anywhere, and every
+# term that reads accepted rows decides without it.
+THREAD_OPENERS='[]'
 
 # Review-object evidence. NOT a latest-review-per-reviewer reduction (see the
 # header): in "any" mode every accepted row counts; in "approved" mode a
 # login contributes evidence when its newest APPROVED at head is not followed
 # by a newer CHANGES_REQUESTED from that same login — a trailing COMMENTED
 # never withdraws an approval.
-got="$(jq --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
-        --arg trusted "$TRUSTED_LOGINS_N" --arg minstate "$MIN_STATE" \
-        --arg errmarks "$ERROR_PATTERNS" "$ACCEPTED_ROWS_DEF"'
-  trust_list($trusted) as $t
-  | error_marks($errmarks) as $mk
-  | [ accepted_rows($t; $mk; $author)[] | select(.commit_id == $sha) ]
-  | if $minstate == "approved" then
-      group_by(.user.login)
-      | map(sort_by(.submitted_at // ""))
-      | map(select(
-          ([.[] | select(.state == "APPROVED")] | length) > 0
-          and (
-            ([.[] | select(.state == "CHANGES_REQUESTED")] | length) == 0
-            or (([.[] | select(.state == "APPROVED")] | last | .submitted_at // "") >
-                ([.[] | select(.state == "CHANGES_REQUESTED")] | last | .submitted_at // ""))
-          )
-        ))
-      | length
-    else
-      length
-    end' <<<"$reviews")" || {
-  rg_message error predicate-review-evidence "$PR_NUMBER" "::error::could not evaluate review-object evidence for PR #$PR_NUMBER" >&2
-  exit 2
+count_head_evidence() {
+  got="$(jq --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
+          --arg trusted "$TRUSTED_LOGINS_N" --arg minstate "$MIN_STATE" \
+          --arg errmarks "$ERROR_PATTERNS" --argjson openers "$THREAD_OPENERS" \
+          "$ACCEPTED_ROWS_DEF"'
+    trust_list($trusted) as $t
+    | error_marks($errmarks) as $mk
+    | [ accepted_rows($t; $mk; $author; $openers)[] | select(.commit_id == $sha) ]
+    | if $minstate == "approved" then
+        group_by(.user.login)
+        | map(sort_by(.submitted_at // ""))
+        | map(select(
+            ([.[] | select(.state == "APPROVED")] | length) > 0
+            and (
+              ([.[] | select(.state == "CHANGES_REQUESTED")] | length) == 0
+              or (([.[] | select(.state == "APPROVED")] | last | .submitted_at // "") >
+                  ([.[] | select(.state == "CHANGES_REQUESTED")] | last | .submitted_at // ""))
+            )
+          ))
+        | length
+      else
+        length
+      end' <<<"$reviews")" || {
+    rg_message error predicate-review-evidence "$PR_NUMBER" "::error::could not evaluate review-object evidence for PR #$PR_NUMBER" >&2
+    exit 2
+  }
 }
+count_head_evidence
 
 # Clean-analysis evidence: bots that submit a review OBJECT only when they
 # have findings pass their trusted check on a clean re-analysis and post no
@@ -1352,8 +1539,7 @@ fi
 carried=0
 carry_base=""
 carry_kind=""
-if [ -n "$CARRY_FORWARD" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
-   && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ]; then
+carry_walk() {
   # Candidate commits: accepted review rows (same trust filters as head
   # evidence — errored-attestation rows excluded here too, or an errored
   # ancestor review would seed a carry nothing ever reviewed;
@@ -1363,10 +1549,11 @@ if [ -n "$CARRY_FORWARD" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
   # bounded so a force-push-heavy PR cannot turn the walk into an API storm.
   carry_candidates="$(jq -r --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
       --arg trusted "$TRUSTED_LOGINS_N" --arg minstate "$MIN_STATE" \
-      --arg errmarks "$ERROR_PATTERNS" "$ACCEPTED_ROWS_DEF"'
+      --arg errmarks "$ERROR_PATTERNS" --argjson openers "$THREAD_OPENERS" \
+      "$ACCEPTED_ROWS_DEF"'
     trust_list($trusted) as $t
     | error_marks($errmarks) as $mk
-    | [ accepted_rows($t; $mk; $author)[]
+    | [ accepted_rows($t; $mk; $author; $openers)[]
         | select($minstate != "approved" or .state == "APPROVED")
         | select((.commit_id // "") != "" and .commit_id != $sha)
       ]
@@ -1556,6 +1743,10 @@ EOF_VENDORED_FILES
   done <<EOF_CARRY
 $carry_candidates
 EOF_CARRY
+}
+if [ -n "$CARRY_FORWARD" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
+   && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ]; then
+  carry_walk
 fi
 
 # The docs-only lane replaces missing bot evidence only when harness-ci's
@@ -1567,7 +1758,7 @@ docs_only=0
 docs_refuse() { # CODE VALUE REASON: the normal gate path decides
   rg_message notice "$1" "$2" "::warning::docs-only lane: $3; taking the normal gate path" >&2
 }
-if [ "$DOCS_ONLY_MODE" = "none" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
+if [ "$POLICY_STATE" = "inactive" ] && [ "$DOCS_ONLY_MODE" = "none" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
    && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] && [ "$carried" = "0" ]; then
   docs_repo=""
   docs_base=""
@@ -1594,7 +1785,7 @@ if [ "$DOCS_ONLY_MODE" = "none" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
       docs_base=""
     }
   fi
-  if [ -n "$docs_base" ] && ! docs_output="$("$DOCS_CLASSIFIER" --mode docs --event pull_request --base "$docs_base" --head "$HEAD_SHA" --repo "$docs_repo" --output /dev/null --paths-output "$docs_paths")"; then
+  if [ -n "$docs_base" ] && ! docs_output="$("$PATH_CLASSIFIER" --mode docs --event pull_request --base "$docs_base" --head "$HEAD_SHA" --repo "$docs_repo" --output /dev/null --paths-output "$docs_paths")"; then
     docs_refuse docs-classifier "$docs_base...$HEAD_SHA" "the shared docs classifier failed"
   elif [ -n "$docs_base" ]; then
     case "$docs_output" in
@@ -1652,7 +1843,7 @@ render_files=0
 render_refuse() { # CODE VALUE REASON: the normal gate path decides
   rg_message notice "$1" "$2" "::warning::render-only lane: $3; taking the normal gate path" >&2
 }
-if [ -n "$RENDER_PATHS_N" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
+if [ "$POLICY_STATE" = "inactive" ] && [ -n "$RENDER_PATHS_N" ] && [ "$got" = "0" ] && [ "$check" = "0" ] \
    && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] && [ "$carried" = "0" ] \
    && [ "$docs_only" = "0" ]; then
   render_out=""
@@ -1839,6 +2030,10 @@ unresolved=0
 untracked=0
 unreasoned=0
 if [ "$THREADS_MODE" = "enforce" ]; then
+# A resolved thread whose merge-route waiver has lapsed counts as unresolved:
+# lib/waiver.sh owns when that is. The term is reached only where the class
+# policy answered other than none, so a waiver still standing here has lapsed.
+#
 # A thread's disposition is its newest non-bot comment that is a Fixed in
 # <sha>/Declined: reply or carries a track-word; other comments never move
 # it. It is an untracked claim when it is not such a reply and names no
@@ -1846,7 +2041,7 @@ if [ "$THREADS_MODE" = "enforce" ]; then
 # claimant is also the resolver. Bot comments are exempt (they quote each
 # other); a missing comments field reads as none. A thread past 50 comments
 # cannot be fully read in this page shape, so it fails closed as malformed.
-t_threads_page_jq="$REPLY_FORMS_DEF"'  def replies: [(.comments.nodes // [])[] | select((.author.__typename // "User") != "Bot") | (.body // "")];
+t_threads_page_jq="$REPLY_FORMS_DEF$RG_WAIVER_JQ$AUTOMATIC_AUTHOR_DEF"'  def replies: [(.comments.nodes // [])[] | select((.author | automatic_author) | not) | (.body // "")];
   def standing: [replies[] | select(disposition or tracking)] | last // empty;
   def standing_decline: [replies[] | select(disposition or declined or tracking)] | last // empty;
   if ((.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage | type) != "boolean")
@@ -1854,7 +2049,7 @@ t_threads_page_jq="$REPLY_FORMS_DEF"'  def replies: [(.comments.nodes // [])[] |
   then "malformed"
   elif ([.data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.pageInfo.hasNextPage == true)] | length) > 0
   then "malformed"
-  else ([.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length | tostring)
+  else ([.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false or (rg_waiver_view | rg_waiver_stands))] | length | tostring)
     + " " + ([.data.repository.pullRequest.reviewThreads.nodes[]
         | standing
         | select(disposition | not)
@@ -1876,7 +2071,7 @@ while :; do
   fi
   if [ -n "$t_cursor" ]; then
     t_page="$(gh_read graphql \
-      -f query='query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:50){pageInfo{hasNextPage} nodes{body author{__typename}}}}}}}}' \
+      -f query='query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved resolvedBy{login} comments(first:50){pageInfo{hasNextPage} nodes{body author{login __typename}}}}}}}}' \
       -F owner="${GH_REPO%/*}" -F repo="${GH_REPO#*/}" -F number="$PR_NUMBER" -f after="$t_cursor" \
       --jq "$t_threads_page_jq")" || {
       rg_message error predicate-thread-read "$PR_NUMBER" "::error::could not read review threads" >&2
@@ -1884,7 +2079,7 @@ while :; do
     }
   else
     t_page="$(gh_read graphql \
-      -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:50){pageInfo{hasNextPage} nodes{body author{__typename}}}}}}}}' \
+      -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{isResolved resolvedBy{login} comments(first:50){pageInfo{hasNextPage} nodes{body author{login __typename}}}}}}}}' \
       -F owner="${GH_REPO%/*}" -F repo="${GH_REPO#*/}" -F number="$PR_NUMBER" \
       --jq "$t_threads_page_jq")" || {
       rg_message error predicate-thread-read "$PR_NUMBER" "::error::could not read review threads" >&2
@@ -1998,312 +2193,324 @@ fi
 # next over the same body, with nothing reviewed at the new head: this term's
 # own fail-open on a second path, and the one refusal carry could erase (a
 # standing changes-requested is unscoped by sha and threads are PR-scoped).
-suppressed=0
-suppressed_state=ok
-supp_detail=""
-# `carry_base` is set only together with carried=1, and min_state is left off
-# both shas on purpose: the wider set is the fail-closed one, and a second
-# copy of the carry term's state filter here could drift from it.
-supp_carry_base=""
-[ "$carried" != "1" ] || supp_carry_base="$carry_base"
-# The two programs of this term — the body scan below and the disposition read
-# after it — identify a finding by EXACT STRING EQUALITY between a token the
-# scan extracted and a token the author's comment carries. Anything either one
-# strips or admits, the other must too, so each such rule is spelled ONCE here
-# and passed into both rather than written twice a hundred lines apart.
-#
-# display_strip drops what a rendered review carries and neither surface
-# means: a CR from a body written on Windows, and the zero-width space Copilot
-# writes into a path to break it across lines for display. A character dropped
-# on one side and kept on the other is an entry no reply can ever answer,
-# because the difference is invisible in both surfaces.
-SUPP_NORMALIZE_DEF='def display_strip: gsub("\r"; "") | gsub("\u200b"; "");
-'
-# entry_marks is the decoration the review body wraps an entry token in. The
-# scan reads a line so decorated and the disposition read answers a reply so
-# decorated: a mark only one of them knew is an entry the author cannot clear.
-SUPP_ENTRY_DEF='def entry_marks: ["**", "`"];
-'
-supp_raw="$(jq -r --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
-        --arg trusted "$TRUSTED_LOGINS_N" --arg carrybase "$supp_carry_base" \
-        --arg errmarks "$ERROR_PATTERNS" \
-        "$SUPP_NORMALIZE_DEF$SUPP_ENTRY_DEF$ACCEPTED_ROWS_DEF"'
-  # The sentinel text of a line, whichever surface carries it: a markdown
-  # heading, or the <summary> of a <details> section. The reviewer writes the
-  # block on either, so ONE extractor feeds both title tests rather than a
-  # regex per spelling, and a further spelling arrives as a title string
-  # instead of a new arm. Inner tags go on the summary arm: a section title
-  # arrives wrapped in <strong>.
-  def block_title:
-    if test("^#{1,6}[ \t]+") then sub("^#{1,6}[ \t]+"; "")
-    elif test("^<summary[^>]*>.*</summary>[ \t]*$")
-    then sub("^<summary[^>]*>"; "") | sub("</summary>[ \t]*$"; "") | gsub("<[^>]*>"; "")
-    else "" end
-    | sub("^[ \t]+"; "") | sub("[ \t]+$"; "");
-  # The entry token a whole line carries, or nothing. A line is one of the
-  # shared entry_marks, the token, the SAME mark again, and trailing blanks —
-  # `path:line`, where the line number is what makes a token and the path may
-  # hold any character but a mark. Iterating the list rather than branching
-  # per decoration is what keeps this in step with the disposition read, which
-  # iterates the same list.
-  def entry_token:
-    sub("[ \t]+$"; "") as $l
-    | first(
-        entry_marks[]
-        | . as $d
-        | ($d | length) as $dn
-        | select(($l | length) > (2 * $dn))
-        | select(($l | startswith($d)) and ($l | endswith($d)))
-        | $l[$dn:(($l | length) - $dn)]
-        | select(test("^[^*`]+:[0-9]+$")));
-  def suppressed_scan:
-    reduce (((. // "") | display_strip) | split("\n"))[] as $l
-      ({declared: 0, entries: 0, unparsed: 0, inblock: false, depth: 0, fchar: "", flen: 0, list: []};
-        ($l | capture("^[ \t]{0,3}(?<f>`{3,}|~{3,})(?<rest>.*)$") // null) as $fx
-        | ($l | block_title) as $title
-        | (($l | entry_token) // "") as $entry
-        | if ($title | test("^(Suppressed comments|Previously missed)[ \t]*\\([0-9]+\\)$")) then
-          .declared += ($title | capture("\\((?<n>[0-9]+)\\)") | .n | tonumber)
-          | .inblock = true | .depth = 0 | .fchar = "" | .flen = 0
-        elif ($title | test("^(Suppressed comments|Previously missed)([ \t]|$)")) then
-          .unparsed += 1 | .inblock = true | .depth = 0 | .fchar = "" | .flen = 0
-        elif .fchar != "" then
-          if ($fx != null and ($fx.f[0:1] == .fchar)
-              and (($fx.f | length) >= .flen) and ($fx.rest | test("^[ \t]*$")))
-          then .fchar = "" | .flen = 0
-          else . end
-        elif $fx != null then
-          .fchar = ($fx.f[0:1]) | .flen = ($fx.f | length)
-        elif ($l | test("^<details([ \t>]|$)")) then
-          if .inblock then .depth += 1 else . end
-        elif ($l | test("^</details>")) then
-          if .inblock and .depth > 0 then .depth -= 1
-          else .inblock = false | .depth = 0 end
-        elif ($l | test("^#{1,6}[ \t]")) then
-          .inblock = false | .depth = 0
-        elif .inblock and $entry != "" then
-          .entries += 1 | .list += [$entry]
-        else . end);
-  trust_list($trusted) as $t
-  | error_marks($errmarks) as $mk
-  | [ accepted_rows($t; $mk; $author)[]
-      | select(.commit_id == $sha or ($carrybase != "" and .commit_id == $carrybase))
-      | (.body // "") | suppressed_scan
-    ] as $rows
-  | (([$rows[] | .declared] | add) // 0) as $declared
-  | (([$rows[] | .entries] | add) // 0) as $entries
-  | (([$rows[] | .unparsed] | add) // 0) as $unparsed
-  | "\($declared) \($entries) \($unparsed)\n" + ([$rows[] | .list[]] | join("\n"))' <<<"$reviews")" || {
-  rg_message error predicate-suppressed-read "$PR_NUMBER" "::error::could not read suppressed-finding blocks from review bodies for PR #$PR_NUMBER" >&2
-  exit 2
-}
-supp_head="${supp_raw%%$'\n'*}"
-case "$supp_raw" in
-  *$'\n'*) supp_list="${supp_raw#*$'\n'}" ;;
-  *) supp_list="" ;;
-esac
-supp_declared="${supp_head%% *}"
-supp_rest="${supp_head#* }"
-supp_entries="${supp_rest%% *}"
-supp_unparsed="${supp_rest##* }"
-case "$supp_declared$supp_entries$supp_unparsed" in
-  '' | *[!0-9]*) suppressed_state=malformed ;;
-esac
-if [ "$suppressed_state" = "ok" ] && [ "$supp_unparsed" != "0" ]; then
-  suppressed_state=unparsed
-elif [ "$suppressed_state" = "ok" ] && [ "$supp_declared" != "$supp_entries" ]; then
-  suppressed_state=mismatch
-elif [ "$suppressed_state" = "ok" ]; then
-  suppressed="$supp_declared"
-fi
+scan_suppressed_findings() {
+  suppressed=0
+  suppressed_state=ok
+  supp_detail=""
+  # `carry_base` is set only together with carried=1, and min_state is left off
+  # both shas on purpose: the wider set is the fail-closed one, and a second
+  # copy of the carry term's state filter here could drift from it.
+  supp_carry_base=""
+  [ "$carried" != "1" ] || supp_carry_base="$carry_base"
+  # The two programs of this term — the body scan below and the disposition read
+  # after it — identify a finding by EXACT STRING EQUALITY between a token the
+  # scan extracted and a token the author's comment carries. Anything either one
+  # strips or admits, the other must too, so each such rule is spelled ONCE here
+  # and passed into both rather than written twice a hundred lines apart.
+  #
+  # display_strip drops what a rendered review carries and neither surface
+  # means: a CR from a body written on Windows, and the zero-width space Copilot
+  # writes into a path to break it across lines for display. A character dropped
+  # on one side and kept on the other is an entry no reply can ever answer,
+  # because the difference is invisible in both surfaces.
+  supp_raw="$(jq -r --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
+          --arg trusted "$TRUSTED_LOGINS_N" --arg carrybase "$supp_carry_base" \
+          --arg errmarks "$ERROR_PATTERNS" --argjson openers "$THREAD_OPENERS" \
+          "$SUPP_NORMALIZE_DEF$SUPP_ENTRY_DEF$ACCEPTED_ROWS_DEF$SUPP_SCAN_DEF"'
+    trust_list($trusted) as $t
+    | error_marks($errmarks) as $mk
+    | [ accepted_rows($t; $mk; $author; $openers)[]
+        | select(.commit_id == $sha or ($carrybase != "" and .commit_id == $carrybase))
+        | (.body // "") | suppressed_scan
+      ] as $rows
+    | (([$rows[] | .declared] | add) // 0) as $declared
+    | (([$rows[] | .entries] | add) // 0) as $entries
+    | (([$rows[] | .unparsed] | add) // 0) as $unparsed
+    | "\($declared) \($entries) \($unparsed)\n" + ([$rows[] | .list[]] | join("\n"))' <<<"$reviews")" || {
+    rg_message error predicate-suppressed-read "$PR_NUMBER" "::error::could not read suppressed-finding blocks from review bodies for PR #$PR_NUMBER" >&2
+    exit 2
+  }
+  supp_head="${supp_raw%%$'\n'*}"
+  case "$supp_raw" in
+    *$'\n'*) supp_list="${supp_raw#*$'\n'}" ;;
+    *) supp_list="" ;;
+  esac
+  supp_declared="${supp_head%% *}"
+  supp_rest="${supp_head#* }"
+  supp_entries="${supp_rest%% *}"
+  supp_unparsed="${supp_rest##* }"
+  case "$supp_declared$supp_entries$supp_unparsed" in
+    '' | *[!0-9]*) suppressed_state=malformed ;;
+  esac
+  if [ "$suppressed_state" = "ok" ] && [ "$supp_unparsed" != "0" ]; then
+    suppressed_state=unparsed
+  elif [ "$suppressed_state" = "ok" ] && [ "$supp_declared" != "$supp_entries" ]; then
+    suppressed_state=mismatch
+  elif [ "$suppressed_state" = "ok" ]; then
+    suppressed="$supp_declared"
+  fi
 
-# THE DISPOSITION READ: a body finding is answered the way a thread finding
-# is. No thread carries it, so the reply is a PR comment by the AUTHOR that
-# binds this head — the binding comment-form evidence uses, a hex run at or
-# above REVIEW_GATE_SHA_PREFIX_FLOOR that the head starts with, so a reply
-# written for an earlier head does not survive a push — and opens a line with
-# the entry's own `file:line` token, which the status prints bare and the
-# review body prints bold or backticked, followed by the reply. EVERY
-# SPELLING IS READ and NONE is the anchor: the token's equality with a
-# scanned entry is what identifies the finding, so the decoration decides
-# nothing and an author copying any surface is answered. The reply is judged by the SHARED
-# reply forms: a reply that is
-# neither a disposition nor a tracking claim, a tracking claim naming no
-# issue, and a decline whose reason strips to nothing all leave the entry
-# standing, so a label answers nothing here either. Only entries the read
-# subtracts leave the count; an entry with no reply, or the read itself
-# failing to produce a count, keeps every finding — the fail-closed
-# direction, and the reason this refuses to a verdict rather than to exit 2.
-#
-# Answering is the AUTHOR's, exactly as a thread reply is: this term does not
-# ask who may disposition a finding, only that the disposition is written,
-# bound and reasoned.
-#
-# THE COMMENT BINDS THE HEAD BY SAYING SO: a line reading `Dispositions at
-# <sha>`, the phrase orch already tells an author to write. Nothing else in
-# it binds. A sha-shaped run asserts no commit — the one a `Fixed in <sha>`
-# names, a tracking claim's `#1234567`, a path that opens with hex, a line
-# disposing an entry the newest review dropped — yet while any of them could
-# bind, a comment written for an earlier head bound itself to this one
-# through whichever run it happened to carry, taking its other replies across
-# a diff no reviewer re-read. A marker cannot be written by accident, which
-# is what ends the class rather than excluding its members one at a time.
-supp_answered=0
-if [ "$suppressed_state" = "ok" ] && [ "$suppressed" != "0" ]; then
-  load_issue_comments
-  supp_disp="$(jq -r --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
-          --arg floor "$SHA_FLOOR" --arg entries "$supp_list" \
-          "$SUPP_NORMALIZE_DEF$SUPP_ENTRY_DEF$REPLY_FORMS_DEF"'
-    def unanswered($r):
-      ((($r | disposition) or ($r | tracking)) | not)
-      or ((($r | disposition) | not) and (($r | names_issue) | not))
-      or (($r | declined) and (($r | reason_left) == ""));
-    # The shape is the comment-form matcher: the literal marker, decoration
-    # after it ignored as non-hex, then the sha. The bound sha is captured
-    # BEFORE the comparison, since referring to it as dot inside startswith
-    # would rebind dot to the head and accept any sha — the trap that matcher
-    # documents.
-    #
-    # THE MARKER OPENS A LINE. A body scan would take the phrase anywhere the
-    # comment carries it — quoted from another pull request, inside a fenced
-    # example, mid-sentence in prose — and the decoration run would reach
-    # across newlines for a sha on a later line. None of those is an author
-    # asserting which commit this comment answers. The line anchor is the
-    # whole of it: no fence tracker, because a fenced marker does not open a
-    # line of the comment any more than a quoted one does.
-    def head_bound($sha; $floor):
-      [ split("\n")[]
-        | capture("^[ \t]*dispositions[ \t]+at[^0-9a-fA-F]*(?<c>[0-9a-fA-F]{" + $floor + ",40})"; "i")
-        | (.c | ascii_downcase) as $claimed
-        | select(($sha | ascii_downcase) | startswith($claimed)) ] | length > 0;
-    # A line names an entry by EQUALITY with one the scan extracted, never by
-    # a token pattern of its own: the scan is the one definition of what an
-    # entry token is, and a second spelling here would be a twin that drifts
-    # from it — the first one already did, refusing a path with a space the
-    # scan admits and the detail prints. Every surface the author can copy
-    # goes through this one path: the review body prints the token wrapped in
-    # one of the shared entry_marks, the status detail prints it bare. The
-    # decorated arm ITERATES that list rather than branching per mark, for the
-    # same reason the scan does: a mark the scan reads and this one did not
-    # would be an entry no author could clear.
-    #
-    # The bare arm requires the character after the entry to be no letter or
-    # digit, so `a/b.ts:1` cannot claim the line `a/b.ts:12 ...`. A path may
-    # hold a colon of its own, though, and then one entry is a prefix of
-    # another at a separator the test allows: `src/foo:1` opens the line of
-    # `src/foo:1.ts:2`, whose remainder still carries a track word and an id,
-    # and one reply would answer both findings. A LINE NAMES ONE ENTRY, the
-    # longest it opens with — the list arrives ordered by length and the first
-    # match wins — so the shorter finding is left for its own reply.
-    def line_reply($by_length):
-      sub("^[ \t]*([-*+][ \t]+)?"; "") as $l
-      | first(
-          $by_length[]
+  # THE DISPOSITION READ: a body finding is answered the way a thread finding
+  # is. No thread carries it, so the reply is a PR comment by the AUTHOR that
+  # binds this head — the binding comment-form evidence uses, a hex run at or
+  # above REVIEW_GATE_SHA_PREFIX_FLOOR that the head starts with, so a reply
+  # written for an earlier head does not survive a push — and opens a line with
+  # the entry's own `file:line` token, which the status prints bare and the
+  # review body prints bold or backticked, followed by the reply. EVERY
+  # SPELLING IS READ and NONE is the anchor: the token's equality with a
+  # scanned entry is what identifies the finding, so the decoration decides
+  # nothing and an author copying any surface is answered. The reply is judged by the SHARED
+  # reply forms: a reply that is
+  # neither a disposition nor a tracking claim, a tracking claim naming no
+  # issue, and a decline whose reason strips to nothing all leave the entry
+  # standing, so a label answers nothing here either. Only entries the read
+  # subtracts leave the count; an entry with no reply, or the read itself
+  # failing to produce a count, keeps every finding — the fail-closed
+  # direction, and the reason this refuses to a verdict rather than to exit 2.
+  #
+  # Answering is the AUTHOR's, exactly as a thread reply is: this term does not
+  # ask who may disposition a finding, only that the disposition is written,
+  # bound and reasoned.
+  #
+  # THE COMMENT BINDS THE HEAD BY SAYING SO: a line reading `Dispositions at
+  # <sha>`, the phrase orch already tells an author to write. Nothing else in
+  # it binds. A sha-shaped run asserts no commit — the one a `Fixed in <sha>`
+  # names, a tracking claim's `#1234567`, a path that opens with hex, a line
+  # disposing an entry the newest review dropped — yet while any of them could
+  # bind, a comment written for an earlier head bound itself to this one
+  # through whichever run it happened to carry, taking its other replies across
+  # a diff no reviewer re-read. A marker cannot be written by accident, which
+  # is what ends the class rather than excluding its members one at a time.
+  supp_answered=0
+  if [ "$suppressed_state" = "ok" ] && [ "$suppressed" != "0" ]; then
+    load_issue_comments
+    supp_disp="$(jq -r --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" \
+            --arg floor "$SHA_FLOOR" --arg entries "$supp_list" \
+            "$SUPP_NORMALIZE_DEF$SUPP_ENTRY_DEF$REPLY_FORMS_DEF"'
+      def unanswered($r):
+        ((($r | disposition) or ($r | tracking)) | not)
+        or ((($r | disposition) | not) and (($r | names_issue) | not))
+        or (($r | declined) and (($r | reason_left) == ""));
+      # The shape is the comment-form matcher: the literal marker, decoration
+      # after it ignored as non-hex, then the sha. The bound sha is captured
+      # BEFORE the comparison, since referring to it as dot inside startswith
+      # would rebind dot to the head and accept any sha — the trap that matcher
+      # documents.
+      #
+      # THE MARKER OPENS A LINE. A body scan would take the phrase anywhere the
+      # comment carries it — quoted from another pull request, inside a fenced
+      # example, mid-sentence in prose — and the decoration run would reach
+      # across newlines for a sha on a later line. None of those is an author
+      # asserting which commit this comment answers. The line anchor is the
+      # whole of it: no fence tracker, because a fenced marker does not open a
+      # line of the comment any more than a quoted one does.
+      def head_bound($sha; $floor):
+        [ split("\n")[]
+          | capture("^[ \t]*dispositions[ \t]+at[^0-9a-fA-F]*(?<c>[0-9a-fA-F]{" + $floor + ",40})"; "i")
+          | (.c | ascii_downcase) as $claimed
+          | select(($sha | ascii_downcase) | startswith($claimed)) ] | length > 0;
+      # A line names an entry by EQUALITY with one the scan extracted, never by
+      # a token pattern of its own: the scan is the one definition of what an
+      # entry token is, and a second spelling here would be a twin that drifts
+      # from it — the first one already did, refusing a path with a space the
+      # scan admits and the detail prints. Every surface the author can copy
+      # goes through this one path: the review body prints the token wrapped in
+      # one of the shared entry_marks, the status detail prints it bare. The
+      # decorated arm ITERATES that list rather than branching per mark, for the
+      # same reason the scan does: a mark the scan reads and this one did not
+      # would be an entry no author could clear.
+      #
+      # The bare arm requires the character after the entry to be no letter or
+      # digit, so `a/b.ts:1` cannot claim the line `a/b.ts:12 ...`. A path may
+      # hold a colon of its own, though, and then one entry is a prefix of
+      # another at a separator the test allows: `src/foo:1` opens the line of
+      # `src/foo:1.ts:2`, whose remainder still carries a track word and an id,
+      # and one reply would answer both findings. A LINE NAMES ONE ENTRY, the
+      # longest it opens with — the list arrives ordered by length and the first
+      # match wins — so the shorter finding is left for its own reply.
+      def line_reply($by_length):
+        sub("^[ \t]*([-*+][ \t]+)?"; "") as $l
+        | first(
+            $by_length[]
+            | . as $e
+            | ($e | length) as $n
+            | ( ( entry_marks[]
+                  | . as $d
+                  | select($l | startswith($d + $e + $d))
+                  | {entry: $e, r: ($l[($n + 2 * ($d | length)):])} ),
+                ( select(($l | startswith($e))
+                         and (($l[$n:] | test("^[\\p{L}\\p{N}]")) | not))
+                  | {entry: $e, r: ($l[$n:])} ) ))
+        # The separator run between the token and the reply is what the author
+        # wrote there — a dash, a colon, an em dash, nothing at all.
+        | .r |= sub("^[^\\p{L}\\p{N}]*"; "");
+      # $wanted keeps the order the scan found the entries in, which is the
+      # order the detail and the log name what is left. Matching reads the same
+      # set longest-first, which is a property of the match and not of the
+      # report.
+      ($entries | split("\n") | map(select(length > 0))) as $wanted
+      | ($wanted | sort_by(-length)) as $by_length
+      | [ .[]
+          | select((.user.login // "") == $author)
+          | (.body // "" | display_strip)
+          | select(head_bound($sha; $floor))
+          | split("\n")[]
+          | line_reply($by_length)
+        ] as $said
+      # The NEWEST line naming an entry decides, as a thread takes its newest
+      # reply: an author who answers and then writes something else about the
+      # same entry has withdrawn the answer.
+      | [ $wanted[]
           | . as $e
-          | ($e | length) as $n
-          | ( ( entry_marks[]
-                | . as $d
-                | select($l | startswith($d + $e + $d))
-                | {entry: $e, r: ($l[($n + 2 * ($d | length)):])} ),
-              ( select(($l | startswith($e))
-                       and (($l[$n:] | test("^[\\p{L}\\p{N}]")) | not))
-                | {entry: $e, r: ($l[$n:])} ) ))
-      # The separator run between the token and the reply is what the author
-      # wrote there — a dash, a colon, an em dash, nothing at all.
-      | .r |= sub("^[^\\p{L}\\p{N}]*"; "");
-    # $wanted keeps the order the scan found the entries in, which is the
-    # order the detail and the log name what is left. Matching reads the same
-    # set longest-first, which is a property of the match and not of the
-    # report.
-    ($entries | split("\n") | map(select(length > 0))) as $wanted
-    | ($wanted | sort_by(-length)) as $by_length
-    | [ .[]
-        | select((.user.login // "") == $author)
-        | (.body // "" | display_strip)
-        | select(head_bound($sha; $floor))
-        | split("\n")[]
-        | line_reply($by_length)
-      ] as $said
-    # The NEWEST line naming an entry decides, as a thread takes its newest
-    # reply: an author who answers and then writes something else about the
-    # same entry has withdrawn the answer.
-    | [ $wanted[]
-        | . as $e
-        | ([ $said[] | select(.entry == $e) ] | last) as $reply
-        | select($reply == null or unanswered($reply.r))
-      ]
-    | "\(length)\n" + join("\n")' <<<"$comments")" || supp_disp=""
-  supp_left="${supp_disp%%$'\n'*}"
-  case "$supp_left" in
-    '' | *[!0-9]*) suppressed_state=disposition-unreadable ;;
-    *)
-      supp_answered=$((supp_entries - supp_left))
-      suppressed="$supp_left"
-      supp_entries="$supp_left"
-      case "$supp_disp" in
-        *$'\n'*) supp_list="${supp_disp#*$'\n'}" ;;
-        *) supp_list="" ;;
-      esac
+          | ([ $said[] | select(.entry == $e) ] | last) as $reply
+          | select($reply == null or unanswered($reply.r))
+        ]
+      | "\(length)\n" + join("\n")' <<<"$comments")" || supp_disp=""
+    supp_left="${supp_disp%%$'\n'*}"
+    case "$supp_left" in
+      '' | *[!0-9]*) suppressed_state=disposition-unreadable ;;
+      *)
+        supp_answered=$((supp_entries - supp_left))
+        suppressed="$supp_left"
+        supp_entries="$supp_left"
+        case "$supp_disp" in
+          *$'\n'*) supp_list="${supp_disp#*$'\n'}" ;;
+          *) supp_list="" ;;
+        esac
+        ;;
+    esac
+  fi
+  if [ "$supp_answered" != "0" ]; then
+    rg_message notice predicate-suppressed-answered "$supp_answered" "PR #$PR_NUMBER head $HEAD_SHA: $supp_answered suppressed finding(s) answered by a head-bound author comment" >&2
+  fi
+  # The evaluated line reports the number when the block was read whole, and
+  # the refusal word when it was not — the shape `unresolved` uses for its own
+  # overflow.
+  supp_notice="$suppressed_state"
+  [ "$suppressed_state" != "ok" ] || supp_notice="$suppressed"
+  # The FULL list goes to the log, where a human reads it whole; the detail
+  # below lands in a 140-character commit-status description and is bounded.
+  if [ -n "$supp_list" ]; then
+    rg_message notice predicate-suppressed "$supp_notice" "PR #$PR_NUMBER head $HEAD_SHA: findings written into a review body, carried by no thread and unanswered at this head:
+$supp_list" >&2
+  fi
+  case "$suppressed_state" in
+    malformed) supp_detail="a suppressed-findings block could not be read (broken parse) — no finding count is provable" ;;
+    disposition-unreadable) supp_detail="the head-bound disposition replies could not be read — every suppressed finding stands" ;;
+    unparsed) supp_detail="a suppressed-findings block names no readable count — read it in the review body" ;;
+    mismatch) supp_detail="the suppressed-findings block declares $supp_declared finding(s) but $supp_entries entry line(s) parsed — read it in the review body" ;;
+    ok)
+      if [ "$suppressed" != "0" ]; then
+        # Names are added while the FINISHED detail stays inside the budget,
+        # then the remainder is COUNTED: a truncated list must never read as
+        # the whole one. Budgeting the bare name list instead would let the
+        # entry that crosses the line overshoot by its own whole length, and
+        # review-writer.sh's cut — 140 characters, the commit-status API's
+        # description limit, and that script owns the cut — would land on the
+        # ` +K more` and hand a reader a short list reading as a complete one.
+        # The projection is exact because the entry count is known before the
+        # loop: admitting an entry can only shrink the suffix the projection
+        # already paid for, so the string this test accepts is the string that
+        # ships.
+        supp_prefix="$suppressed suppressed finding(s) in a review body, carried by no thread: "
+        supp_names=""
+        supp_shown=0
+        while IFS= read -r supp_entry; do
+          [ -n "$supp_entry" ] || continue
+          if [ -z "$supp_names" ]; then supp_try="$supp_entry"; else supp_try="$supp_names, $supp_entry"; fi
+          supp_tail=""
+          [ "$((supp_entries - supp_shown - 1))" -le 0 ] || supp_tail=" +$((supp_entries - supp_shown - 1)) more"
+          [ "$((${#supp_prefix} + ${#supp_try} + ${#supp_tail}))" -le 140 ] || break
+          supp_names="$supp_try"
+          supp_shown=$((supp_shown + 1))
+        done <<<"$supp_list"
+        if [ "$supp_shown" -lt "$supp_entries" ]; then
+          # An empty name list is the degenerate case — not even the first
+          # entry fits. The count stands alone rather than half a path.
+          if [ -z "$supp_names" ]; then
+            supp_names="+$((supp_entries - supp_shown)) more"
+          else
+            supp_names="$supp_names +$((supp_entries - supp_shown)) more"
+          fi
+        fi
+        supp_detail="$supp_prefix$supp_names"
+      fi
       ;;
   esac
+}
+scan_suppressed_findings
+
+# Whether any review evidence or waiver stands for this head. The verdict
+# below reads it for `awaiting`, and the openers stage for the one case where
+# a bodyless review row could still supply the evidence.
+evidence_absent() {
+  [ "$got" = "0" ] && [ "$check" = "0" ] && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] \
+    && [ "$carried" = "0" ] && [ "$docs_only" = "0" ] && [ "$render_only" = "0" ]
+}
+
+# THE OPENERS STAGE. A bodyless COMMENTED row counts only if it opened a
+# thread, and only the review-comment listing says so. That answer is taken
+# here, after every other term is decided, and only when the verdict depends
+# on nothing else: min_state "any" (under "approved" a COMMENTED row is never
+# evidence and carry takes only APPROVED rows), no standing objection, claim,
+# decline or suppressed finding ahead of `awaiting` in the verdict order, and
+# no evidence or waiver standing. So a failed read of the listing costs only a
+# head whose answer turns on it. The head is judged first; the ancestors only
+# when carry-forward is enabled and the head is still bare, by walking the
+# carry candidates again with the openers admitted. A base that second walk
+# carries to can hold another review whose body declares findings, so the
+# suppressed-finding scan runs again at that base; the verdict order puts its
+# refusal ahead of the carried approval.
+bodyless_pending() { # head|ancestors
+  local pending
+  pending="$(jq --arg sha "$HEAD_SHA" --arg author "$PR_AUTHOR" --arg scope "$1" \
+          --arg trusted "$TRUSTED_LOGINS_N" --arg errmarks "$ERROR_PATTERNS" "$ACCEPTED_ROWS_DEF"'
+    trust_list($trusted) as $t
+    | error_marks($errmarks) as $mk
+    | any(candidate_rows($t; $mk; $author)[]
+          | select(if $scope == "head" then .commit_id == $sha
+                   else (.commit_id // "") != "" and .commit_id != $sha end);
+          own_content | not)' <<<"$reviews")" || {
+    rg_message error predicate-review-content "$PR_NUMBER" "::error::could not evaluate review content for PR #$PR_NUMBER" >&2
+    exit 2
+  }
+  [ "$pending" = "true" ]
+}
+# Every page, and a failed, zero-byte or non-array read is exit 2, as for the
+# reviews read: a failed read must never become an empty opener list, which
+# would drop a bodyless review that did open a thread.
+load_thread_openers() {
+  local raw_review_comments
+  raw_review_comments="$(gh_read "repos/$GH_REPO/pulls/$PR_NUMBER/comments?per_page=100" --paginate)" || {
+    rg_message error predicate-review-comments-read "$PR_NUMBER" "::error::could not read review comments for PR #$PR_NUMBER" >&2
+    exit 2
+  }
+  if [ -z "$raw_review_comments" ]; then
+    rg_message error predicate-review-comments-empty "$PR_NUMBER" "::error::review-comments read for PR #$PR_NUMBER produced zero bytes (broken read, not an empty page set)" >&2
+    exit 2
+  fi
+  THREAD_OPENERS="$(jq -c -s 'if (length > 0) and all(type == "array")
+                              then add | [ .[] | select(.in_reply_to_id == null) | .pull_request_review_id
+                                           | select(. != null) ] | unique
+                              else error("review comment pages are not arrays") end' <<<"$raw_review_comments" 2>/dev/null)" || {
+    rg_message error predicate-review-comments-pages "$PR_NUMBER" "::error::review-comments read for PR #$PR_NUMBER returned non-array pages or a vacuous body (broken read)" >&2
+    exit 2
+  }
+}
+if [ "$MIN_STATE" = "any" ] && [ "$cr" = "0" ] && [ "$untracked" = "0" ] && [ "$unreasoned" = "0" ] \
+   && [ -z "$supp_detail" ] && evidence_absent; then
+  openers_loaded=0
+  if bodyless_pending head; then
+    load_thread_openers
+    openers_loaded=1
+    count_head_evidence
+  fi
+  if [ "$got" = "0" ] && [ -n "$CARRY_FORWARD" ] && bodyless_pending ancestors; then
+    [ "$openers_loaded" = "1" ] || load_thread_openers
+    carry_walk
+    [ "$carried" = "0" ] || scan_suppressed_findings
+  fi
 fi
-if [ "$supp_answered" != "0" ]; then
-  rg_message notice predicate-suppressed-answered "$supp_answered" "PR #$PR_NUMBER head $HEAD_SHA: $supp_answered suppressed finding(s) answered by a head-bound author comment" >&2
-fi
-# The evaluated line reports the number when the block was read whole, and
-# the refusal word when it was not — the shape `unresolved` uses for its own
-# overflow.
-supp_notice="$suppressed_state"
-[ "$suppressed_state" != "ok" ] || supp_notice="$suppressed"
-# The FULL list goes to the log, where a human reads it whole; the detail
-# below lands in a 140-character commit-status description and is bounded.
-if [ -n "$supp_list" ]; then
-  rg_message notice predicate-suppressed "$supp_notice" "PR #$PR_NUMBER head $HEAD_SHA: findings written into a review body, carried by no thread and unanswered at this head:
-$supp_list" >&2
-fi
-case "$suppressed_state" in
-  malformed) supp_detail="a suppressed-findings block could not be read (broken parse) — no finding count is provable" ;;
-  disposition-unreadable) supp_detail="the head-bound disposition replies could not be read — every suppressed finding stands" ;;
-  unparsed) supp_detail="a suppressed-findings block names no readable count — read it in the review body" ;;
-  mismatch) supp_detail="the suppressed-findings block declares $supp_declared finding(s) but $supp_entries entry line(s) parsed — read it in the review body" ;;
-  ok)
-    if [ "$suppressed" != "0" ]; then
-      # Names are added while the FINISHED detail stays inside the budget,
-      # then the remainder is COUNTED: a truncated list must never read as
-      # the whole one. Budgeting the bare name list instead would let the
-      # entry that crosses the line overshoot by its own whole length, and
-      # review-writer.sh's cut — 140 characters, the commit-status API's
-      # description limit, and that script owns the cut — would land on the
-      # ` +K more` and hand a reader a short list reading as a complete one.
-      # The projection is exact because the entry count is known before the
-      # loop: admitting an entry can only shrink the suffix the projection
-      # already paid for, so the string this test accepts is the string that
-      # ships.
-      supp_prefix="$suppressed suppressed finding(s) in a review body, carried by no thread: "
-      supp_names=""
-      supp_shown=0
-      while IFS= read -r supp_entry; do
-        [ -n "$supp_entry" ] || continue
-        if [ -z "$supp_names" ]; then supp_try="$supp_entry"; else supp_try="$supp_names, $supp_entry"; fi
-        supp_tail=""
-        [ "$((supp_entries - supp_shown - 1))" -le 0 ] || supp_tail=" +$((supp_entries - supp_shown - 1)) more"
-        [ "$((${#supp_prefix} + ${#supp_try} + ${#supp_tail}))" -le 140 ] || break
-        supp_names="$supp_try"
-        supp_shown=$((supp_shown + 1))
-      done <<<"$supp_list"
-      if [ "$supp_shown" -lt "$supp_entries" ]; then
-        # An empty name list is the degenerate case — not even the first
-        # entry fits. The count stands alone rather than half a path.
-        if [ -z "$supp_names" ]; then
-          supp_names="+$((supp_entries - supp_shown)) more"
-        else
-          supp_names="$supp_names +$((supp_entries - supp_shown)) more"
-        fi
-      fi
-      supp_detail="$supp_prefix$supp_names"
-    fi
-    ;;
-esac
 
 rg_message notice predicate-evaluated "$HEAD_SHA" "PR #$PR_NUMBER head $HEAD_SHA: reviews=$got clean-analysis=$check comment-form=$comment_hits outage-marker=$outageok carried=$carried docs-only=$docs_only render-only=$render_only changes-requested=$cr unresolved-threads=$unresolved untracked-claims=$untracked unreasoned-declines=$unreasoned suppressed-findings=$supp_notice (threads=$THREADS_MODE)" >&2
 
@@ -2318,7 +2525,7 @@ elif [ -n "$supp_detail" ]; then
   # construction, so the no-evidence branch could never mask it, and the
   # specific content refusal belongs in front of the generic thread count.
   echo "verdict=suppressed-findings detail=$supp_detail"
-elif [ "$got" = "0" ] && [ "$check" = "0" ] && [ "$comment_hits" = "0" ] && [ "$outageok" = "0" ] && [ "$carried" = "0" ] && [ "$docs_only" = "0" ] && [ "$render_only" = "0" ]; then
+elif evidence_absent; then
   # One line, no source list. Which sources could open the gate is the repo's
   # own settings (references/settings.md), not a status description GitHub
   # keeps 140 characters of.

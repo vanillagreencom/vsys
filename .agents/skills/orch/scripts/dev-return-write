@@ -19,15 +19,62 @@
 # Usage:
 #   dev-return-write --worktree PATH --kind implement|fix --issue ID --round-id RID \
 #     --branch BRANCH --commit SHA --validate STR [--validate-note TEXT] \
-#     [--qa-label LABEL]... [--bundled] [--no-summary] \
-#     [--summary TEXT | --summary-file PATH] [--item N DECISION REASONING]...
+#     [--validate-run-dir RUN_DIR] [--qa-label LABEL]... [--near-ceiling-base REF] \
+#     [--bundled] [--no-summary] \
+#     [--summary TEXT | --summary-file PATH | --recovered-text PATH] \
+#     [--item N DECISION REASONING]...
 #
-# --validate stays strictly enumerated ("pass" or "FAILING:…") so it remains
-# machine-checkable. --validate-note is the additive channel for a QUALIFIED
+# near_ceiling carries one byte-ceiling near-ceiling line per file within
+# reach of the byte ceiling, as that lane reports the branch at artifact time,
+# so the orchestrator's next round brief plans the split before a later commit
+# meets the wall. --near-ceiling-base REF is the field's one producer: this
+# writer runs the worktree's installed lane with --base REF and keeps every
+# stdout line beginning "byte-ceiling: near-ceiling=" on exit 0 or 1 (exit 1
+# only adds a file already over the ceiling). A repository with nothing at the
+# lane path has no byte ceiling and so no file near one: []. A round that did
+# not probe (no --near-ceiling-base), a broken link on the way to the lane, a
+# lane that is not executable, or a lane that exits otherwise records
+# near_ceiling: null and the cause in near_ceiling_error: an empty list would
+# claim nothing is near the wall, and the orchestrator replaces its carried list
+# with whatever it reads.
+#
+# --validate stays strictly enumerated ("pass", "no-verdict" or "FAILING:…") so
+# it remains machine-checkable. --validate-note is the additive channel for a QUALIFIED
 # result the enumeration cannot express — a lane that passed only on re-run, a
 # flake that had to be investigated, a caveat worth carrying.
 # Without it the caveat is lost from the record orch treats as authoritative,
 # surviving only if the agent happens to mention it conversationally.
+#
+# --validate-run-dir is the run directory the round's dev-validate-run printed.
+# `dev-validate-run --record` owns that directory's format and answers for it:
+# validate_mode is its mode, never typed by the agent, and a --validate pass
+# needs a run whose sentinel is guard-exit=0. no-verdict needs a run the bound
+# ended, whose record is verdict=no-verdict: that run was cut off, not refuted,
+# so it is neither a pass nor a failure, and the scoped suites the round ran in
+# its place are its evidence, named in --validate-note, which it requires. A FAILING result is accepted beside
+# any run: --validate judges every gate of the round, and a passing run
+# with another gate failing is still a failed round. Submit reuses only a full
+# pass, so a range pass recorded as full, or a failed run recorded as a pass,
+# would stand in for the whole battery. A pass or no-verdict requires the
+# run. A failing round may omit it, because dev-validate-run refuses some
+# failures, an empty DEV_VALIDATE_CMD among them, before any run directory
+# exists; validate_mode is then null. validate_time is the run's wall time as
+# --record reports it, a no-verdict run's included, and null where no run is
+# named or the run is unfinished.
+#
+# A fix round's run is bound to its round. The round record dev-round-write
+# stamped at delegation, PATH/tmp/dev-round-ID-RID.json, names the round's
+# base_sha and delegated_at, and a fix receipt names a run only when the HEAD
+# --record reports for it contains that base, or the run records that base as
+# the one a rebase left off the branch, and the run started no earlier than
+# delegated_at. A rebase mid-round moves HEAD off the base, and the round's
+# own run then records the base as orphaned. An earlier round's run, still on
+# disk and in the dev agent's context, fails one or the other: the implement
+# round's started before the base existed, and a fix round that committed
+# nothing leaves the next round's base at the HEAD its own run started at, but
+# that run started before the next round was delegated. Accepting either would
+# record a pass for a commit it never judged, and submit would reuse a full one
+# as the whole battery. An implement round has no round record and no binding.
 #
 # Writes PATH/tmp/dev-return-ID-RID.json and prints its absolute path (one line).
 #
@@ -41,11 +88,23 @@
 #     "commit": "[HEAD_SHA_AFTER_COMMIT]",    // required
 #     "baseline_lines": 138,                  // implement only; additions + deletions
 #                                             // outside the render mirror, floor 1
-#     "validate": "pass" | "FAILING: c1,c2",  // required
+#     "validate": "pass" | "no-verdict" | "FAILING: c1,c2", // required
+#     "validate_mode": "full" | "range" | null, // read from --validate-run-dir;
+#                                             // null only for a FAILING round
+#                                             // with no run
+#     "validate_time": {"started_at": "…", "ended_at": "…", "seconds": 3300} | null,
+#                                             // read from --validate-run-dir;
+#                                             // null with no run or an
+#                                             // unfinished one
 #     "validate_note": "…" | null,            // --validate-note
 #     "qa_labels": ["needs-review"],          // [] when no --qa-label given
+#     "near_ceiling": ["…"] | null,           // byte-ceiling near-ceiling lines
+#                                             // for the branch at this moment; [];
+#                                             // null when the probe did not answer
+#     "near_ceiling_error": "…" | null,       // why near_ceiling is null
 #     "summary_posted": true,                 // false with --no-summary
 #     "summary": "…" | null,                  // --summary text or --summary-file content
+#     "recovered_from": "transcript" | null,  // --recovered-text
 #     "bundled": false,                       // true with --bundled
 #     "items": [{"n": 1, "decision": "Applied", "reasoning": "…"}]
 #   }
@@ -54,8 +113,10 @@
 #   --kind fix OR --bundled  → REQUIRES >=1 --item (a fix/bundled artifact with no
 #                              items is incomplete).
 #   --kind implement (single, no --bundled) → zero items allowed → writes "items": [].
-#   --summary and --summary-file are mutually exclusive for every kind (one
-#   summary source, no silent precedence).
+#   --summary, --summary-file and --recovered-text are mutually exclusive for
+#   every kind (one summary source, no silent precedence).
+#   --recovered-text is the report round-recover read from a stalled agent's
+#   transcript: it becomes the summary and sets recovered_from.
 #   DECISION ∈ {Applied, Skipped, Blocked}; N is a non-negative integer; REASONING
 #   must be non-empty.
 #
@@ -96,10 +157,17 @@ die() {
       unknown-argument) printf 'The argument is not supported.\n' ;;
       not-directory) printf 'The worktree path is not a directory.\n' ;;
       invalid-kind) printf 'The kind must be implement or fix.\n' ;;
-      invalid-validate) printf 'The validation result must be pass or start with FAILING:.\n' ;;
+      invalid-validate) printf 'The validation result must be pass, no-verdict, or start with FAILING:.\n' ;;
+      run-record-unreadable) printf 'dev-validate-run --record could not read the run; its refusal follows.\n' ;;
+      validate-disagrees) printf 'A pass needs a run that passed, and no-verdict a run the timeout ended; this run is neither.\n' ;;
+      round-record-unreadable) printf 'A fix receipt names a run only against its round record, and this one carries no base_sha of 40 hex or no delegated_at epoch.\n' ;;
+      run-headless) printf 'The run records no starting HEAD, so it cannot be bound to a round; start a new run.\n' ;;
+      run-off-round) printf 'The run started at a HEAD that does not contain the round base, and records no rebase that left that base off the branch, so it validated another round.\n' ;;
+      run-before-round) printf 'The run started before the round was delegated, so it validated an earlier round.\n' ;;
+      ancestry-unreadable) printf 'Git could not compare the run HEAD with the round base.\n' ;;
       empty-text) printf 'The text must contain a non-whitespace character.\n' ;;
       summary-conflict) printf 'Supply one summary source.\n' ;;
-      missing-file) printf 'The summary file does not exist.\n' ;;
+      missing-file) printf 'The summary or recovered-text file does not exist.\n' ;;
       missing-items) printf 'A fix or bundled receipt must contain an item.\n' ;;
       baseline-read) printf '%s\n' "$BRANCH_GROWTH_ERROR" ;;
     esac
@@ -112,22 +180,46 @@ usage() {
 Usage:
   dev-return-write --worktree PATH --kind implement|fix --issue ID --round-id RID \
     --branch BRANCH --commit SHA --validate STR [--validate-note TEXT] \
-    [--qa-label LABEL]... [--bundled] [--no-summary] \
-    [--summary TEXT | --summary-file PATH] [--item N DECISION REASONING]...
+    [--validate-run-dir RUN_DIR] [--qa-label LABEL]... [--near-ceiling-base REF] \
+    [--bundled] [--no-summary] \
+    [--summary TEXT | --summary-file PATH | --recovered-text PATH] \
+    [--item N DECISION REASONING]...
 
 Writes PATH/tmp/dev-return-ID-RID.json (atomically) and prints its absolute path.
 An implement receipt carries additions plus deletions against the base branch,
 with a floor of 1. The orchestrator verifies and persists the first accepted one.
 --kind fix OR --bundled requires >=1 --item; DECISION is Applied|Skipped|Blocked;
-REASONING must be non-empty. --validate is "pass" or begins with "FAILING:".
+REASONING must be non-empty. --validate is "pass", "no-verdict" or begins
+with "FAILING:".
 --validate-note carries a qualified result the enumeration cannot express (the
 test-only validation-ceiling re-run dev-implement.md section 5 names, a flake
 worth recording); it never relaxes --validate. Outside that named ceiling a
 failing validation ends the round and is never re-run into a pass.
+--validate-run-dir RUN_DIR is the run directory dev-validate-run printed;
+validate_mode is the mode dev-validate-run --record reports for it, full or
+range, and a --validate pass needs a run that passed, no-verdict a run the
+timeout ended and a --validate-note naming the scoped suites that passed; a
+FAILING result is accepted beside any run. A pass or no-verdict requires it; a FAILING round with no run omits it and
+records validate_mode null. Submit reuses only a full pass. validate_time is
+the run's wall time --record reports, a no-verdict run's included, and null
+with no run or an unfinished one. With --kind fix the run must start at a HEAD
+that contains the base_sha of PATH/tmp/dev-round-ID-RID.json, or record that
+base as the one a rebase left off the branch, no earlier than its
+delegated_at, so a run from an earlier round is refused.
 --summary TEXT embeds the summary inline; --summary-file PATH embeds a file's
-content. They are mutually exclusive (one summary source, no silent precedence).
-Every single-valued flag may be supplied at most once (no silent last-wins);
-only --qa-label and --item repeat.
+content. --recovered-text PATH embeds the report round-recover read from a
+stalled agent's transcript and records recovered_from: transcript. The three
+are mutually exclusive (one summary source, no silent precedence).
+--near-ceiling-base REF runs the worktree's
+.agents/skills/commit-guards/scripts/byte-ceiling --base REF and records one
+near-ceiling line per file within reach of the byte ceiling on exit 0 or 1;
+the next round's brief plans the split from it. A repository with nothing at
+that path records []. An omitted --near-ceiling-base, a broken link on the way
+to the lane, a lane that is not executable, or a lane that exits otherwise
+records near_ceiling null and the cause in near_ceiling_error, so the
+orchestrator keeps the list it carries.
+Every single-valued flag may be supplied at most once
+(no silent last-wins); only --qa-label and --item repeat.
 --issue / --round-id must match ^[A-Za-z0-9._-]+$. Canonical schema:
 skills/orch/schemas/dev-return.md. Validated by dev-artifact-check.
 Exit 0 on success; every usage/validation error exits 2.
@@ -142,7 +234,8 @@ EOF
 is_own_flag() {
   case "$1" in
     --worktree|--kind|--issue|--round-id|--branch|--commit|--validate|\
-    --validate-note|--summary|--summary-file|--qa-label|--bundled|\
+    --validate-note|--validate-run-dir|--summary|--summary-file|--recovered-text|--qa-label|\
+    --near-ceiling-base|--bundled|\
     --no-summary|--item|-h|--help) return 0 ;;
     *) return 1 ;;
   esac
@@ -183,14 +276,25 @@ branch=""
 commit=""
 validate=""
 validate_note=""
+validate_mode=""
+validate_run_dir=""
+validate_seconds=""
+validate_started_at=""
+validate_ended_at=""
+run_head=""
+run_start=""
+run_orphaned=""
 baseline_lines=null
 summary_file=""
 summary_file_given=false
 summary_text=""
 summary_given=false
+recovered_text=""
+recovered_given=false
 bundled=false
 summary_posted=true
 qa_labels=()
+near_ceiling=()
 item_n=()
 item_decision=()
 item_reasoning=()
@@ -204,6 +308,9 @@ branch_given=false
 commit_given=false
 validate_given=false
 validate_note_given=false
+validate_run_dir_given=false
+near_ceiling_base=""
+near_ceiling_base_given=false
 
 while (( $# > 0 )); do
   case "$1" in
@@ -215,9 +322,12 @@ while (( $# > 0 )); do
     --commit)       need "$1" $# "${2:-}"; no_dup "$1" "$commit_given";       commit_given=true;       commit="$2"; shift 2 ;;
     --validate)     need "$1" $# "${2:-}"; no_dup "$1" "$validate_given";     validate_given=true;     validate="$2"; shift 2 ;;
     --validate-note) need "$1" $# "${2:-}"; no_dup "$1" "$validate_note_given"; validate_note_given=true; validate_note="$2"; shift 2 ;;
+    --validate-run-dir) need "$1" $# "${2:-}"; no_dup "$1" "$validate_run_dir_given"; validate_run_dir_given=true; validate_run_dir="$2"; shift 2 ;;
     --summary)      need "$1" $# "${2:-}"; no_dup "$1" "$summary_given";      summary_given=true;      summary_text="$2"; shift 2 ;;
     --summary-file) need "$1" $# "${2:-}"; no_dup "$1" "$summary_file_given"; summary_file_given=true; summary_file="$2"; shift 2 ;;
+    --recovered-text) need "$1" $# "${2:-}"; no_dup "$1" "$recovered_given"; recovered_given=true; recovered_text="$2"; shift 2 ;;
     --qa-label)     need "$1" $# "${2:-}"; qa_labels+=("$2"); shift 2 ;;
+    --near-ceiling-base) need "$1" $# "${2:-}"; no_dup "$1" "$near_ceiling_base_given"; near_ceiling_base_given=true; near_ceiling_base="$2"; shift 2 ;;
     --bundled)      bundled=true; shift ;;
     --no-summary)   summary_posted=false; shift ;;
     --item)
@@ -266,21 +376,57 @@ check_id_token --round-id "$round_id"
 [[ -n "$branch" ]]   || die required option=--branch
 [[ -n "$commit" ]]   || die required option=--commit
 [[ -n "$validate" ]] || die required option=--validate
-[[ "$validate" == "pass" || "$validate" == FAILING:* ]] \
+[[ "$validate" == "pass" || "$validate" == "no-verdict" || "$validate" == FAILING:* ]] \
   || die invalid-validate "value=$validate"
+if [[ "$validate_run_dir_given" == "true" ]]; then
+  [[ -n "$validate_run_dir" ]] || die required option=--validate-run-dir
+  if ! run_record="$("$SCRIPT_DIR/dev-validate-run" --record --run-dir "$validate_run_dir" 2>&1)"; then
+    IFS= read -r run_cause <<<"$run_record" || true
+    die run-record-unreadable "path=$validate_run_dir" "cause=$run_cause"
+  fi
+  # The one line --record prints: validate-mode=M verdict=V head=H start=S,
+  # then validate-base-orphaned=O where a rebase left the run's base off the
+  # branch, then seconds=N started-at=T ended-at=T where the run finished, the
+  # bound's end included.
+  run_verdict=""
+  read -r -a run_fields <<<"$run_record"
+  for field in ${run_fields[@]+"${run_fields[@]}"}; do
+    case "$field" in
+      validate-mode=*) validate_mode="${field#*=}" ;;
+      verdict=*) run_verdict="${field#*=}" ;;
+      head=*) run_head="${field#*=}" ;;
+      start=*) run_start="${field#*=}" ;;
+      validate-base-orphaned=*) run_orphaned="${field#*=}" ;;
+      seconds=*) validate_seconds="${field#*=}" ;;
+      started-at=*) validate_started_at="${field#*=}" ;;
+      ended-at=*) validate_ended_at="${field#*=}" ;;
+    esac
+  done
+  [[ "$validate" == FAILING:* || "$validate" == "$run_verdict" ]] \
+    || die validate-disagrees "validate=$validate" "run=$run_verdict"
+elif [[ "$validate" != FAILING:* ]]; then
+  die required option=--validate-run-dir "validate=$validate"
+fi
 # An empty or whitespace-only note is worse than none: it looks like a recorded
 # caveat while carrying nothing. Reject it rather than storing "".
 if [[ -n "${validate_note+set}" && -n "$validate_note" ]]; then
   [[ -n "${validate_note//[[:space:]]/}" ]] \
     || die empty-text option=--validate-note
 fi
+# A no-verdict with no suites named would accept a round on no evidence.
+[[ "$validate" != no-verdict || -n "$validate_note" ]] \
+  || die required option=--validate-note validate=no-verdict
 # One summary source only — accepting both would need a precedence rule, and a
 # silently ignored flag is exactly the class of quiet misrecording this writer
 # exists to prevent. Exclusion is by flag PRESENCE, not value: "--summary-file
 # ''" (e.g. an empty path variable) is still a supplied second source, and
 # treating it as absent would silently drop the caller's intent.
-if [[ "$summary_given" == "true" && "$summary_file_given" == "true" ]]; then
-  die summary-conflict options=--summary,--summary-file
+sources=0
+for given in "$summary_given" "$summary_file_given" "$recovered_given"; do
+  if [[ "$given" == "true" ]]; then sources=$((sources + 1)); fi
+done
+if (( sources > 1 )); then
+  die summary-conflict options=--summary,--summary-file,--recovered-text
 fi
 if [[ "$summary_given" == "true" ]]; then
   # An empty or whitespace-only summary looks like a recorded deliverable while
@@ -294,6 +440,13 @@ if [[ "$summary_file_given" == "true" ]]; then
   [[ -n "$summary_file" ]] || die required option=--summary-file
   [[ -f "$summary_file" ]] || die missing-file "path=$summary_file"
 fi
+if [[ "$recovered_given" == "true" ]]; then
+  [[ -f "$recovered_text" ]] || die missing-file "path=$recovered_text"
+fi
+
+if [[ "$near_ceiling_base_given" == "true" ]]; then
+  [[ -n "$near_ceiling_base" ]] || die required option=--near-ceiling-base
+fi
 
 # A fix or bundled artifact without items is incomplete — reject before writing.
 if [[ "$kind" == "fix" || "$bundled" == "true" ]]; then
@@ -302,16 +455,93 @@ if [[ "$kind" == "fix" || "$bundled" == "true" ]]; then
   fi
 fi
 
+# A fix round's run must have started on the round's base, or from it once a
+# rebase left it off the branch, and once the round was delegated.
+if [[ "$kind" == "fix" && "$validate_run_dir_given" == "true" ]]; then
+  round_record="$worktree/tmp/dev-round-$issue-$round_id.json"
+  round_fields="$(jq -r '[(if (.base_sha? | type) == "string" then .base_sha else "" end),
+      (if (.delegated_at? | type) == "number" then .delegated_at | tostring else "" end)] | join(" ")' \
+    "$round_record" 2>/dev/null)" || round_fields=""
+  read -r round_base round_delegated_at <<<"$round_fields" || true
+  [[ "$round_base" =~ ^[0-9a-f]{40}$ && "${round_delegated_at:-}" =~ ^[0-9]+$ ]] \
+    || die round-record-unreadable "path=$round_record"
+  [[ -n "$run_head" ]] || die run-headless "run-dir=$validate_run_dir"
+  # The head is checked as hex before it reaches git, where a value shaped like
+  # an option would be parsed as one.
+  ancestry=0
+  if [[ "$run_head" =~ ^[0-9a-f]+$ ]]; then
+    git -C "$worktree" merge-base --is-ancestor "$round_base" "$run_head" 2>/dev/null || ancestry=$?
+  else
+    ancestry=128
+  fi
+  case "$ancestry" in
+    0) ;;
+    1) [[ "$run_orphaned" == "$round_base" ]] \
+         || die run-off-round "run-dir=$validate_run_dir" "head=$run_head" "base-sha=$round_base" ;;
+    *) die ancestry-unreadable "run-dir=$validate_run_dir" "head=$run_head" "base-sha=$round_base" ;;
+  esac
+  [[ "$run_start" =~ ^[0-9]+$ ]] \
+    || die run-record-unreadable "path=$validate_run_dir" "cause=start=$run_start"
+  (( 10#$run_start >= 10#$round_delegated_at )) \
+    || die run-before-round "run-dir=$validate_run_dir" "start=$run_start" "delegated-at=$round_delegated_at"
+fi
+
 if [[ "$kind" == "implement" ]]; then
   branch_baseline_lines "$worktree" "$SCRIPT_DIR/resolve-base-branch" "$commit" baseline_lines \
     || die baseline-read "path=$worktree" "commit=$commit"
 fi
 
-# --- Build the two variable-length arrays deterministically with jq ---
+# --- Build the variable-length arrays deterministically with jq ---
 if (( ${#qa_labels[@]} > 0 )); then
   qa_json="$(jq -n '$ARGS.positional' --args "${qa_labels[@]}")"
 else
   qa_json='[]'
+fi
+
+# The probe runs the worktree's own installed lane, so it measures under the
+# settings that repository's commits are held to.
+# Nothing at the lane path means no byte ceiling, so the list stays empty. A
+# worktree's untracked .agents children are links to the main checkout, so a
+# dangling link at or above the lane is a broken install, not an absent lane.
+near_error=""
+lane="$worktree/.agents/skills/commit-guards/scripts/byte-ceiling"
+lane_broken=""
+ancestor="${lane%/*}"
+while [[ "$ancestor" != "$worktree" && "$ancestor" == "$worktree"/* ]]; do
+  [[ -L "$ancestor" && ! -e "$ancestor" ]] && lane_broken="$ancestor"
+  ancestor="${ancestor%/*}"
+done
+if [[ "$near_ceiling_base_given" != "true" ]]; then
+  near_error="byte-ceiling not probed: no --near-ceiling-base"
+elif [[ -n "$lane_broken" ]]; then
+  near_error="byte-ceiling broken link: $lane_broken"
+elif [[ -x "$lane" ]]; then
+  lane_err="$(mktemp)"
+  trap 'rm -f -- "${lane_err:?}"' EXIT
+  lane_rc=0
+  lane_out="$(cd -- "$worktree" && "$lane" --base "$near_ceiling_base" 2>"$lane_err")" || lane_rc=$?
+  case "$lane_rc" in
+    0|1)
+      while IFS= read -r line; do
+        [[ "$line" == "byte-ceiling: near-ceiling="* ]] && near_ceiling+=("$line")
+      done <<<"$lane_out"
+      ;;
+    *)
+      near_error="byte-ceiling exit $lane_rc: $(head -n1 -- "$lane_err")"
+      ;;
+  esac
+  rm -f -- "${lane_err:?}"
+  trap - EXIT
+elif [[ -e "$lane" || -L "$lane" ]]; then
+  near_error="byte-ceiling not executable: $lane"
+fi
+
+if [[ -n "$near_error" ]]; then
+  near_json=null
+elif (( ${#near_ceiling[@]} > 0 )); then
+  near_json="$(jq -n '$ARGS.positional' --args "${near_ceiling[@]}")"
+else
+  near_json='[]'
 fi
 
 if (( ${#item_n[@]} > 0 )); then
@@ -343,7 +573,11 @@ trap 'rm -f "$tmp"' EXIT
 # along for GitHub/ad-hoc recovery, where the completion summary is returned to
 # the orchestrator rather than posted to a tracker; summary_posted stays honest
 # (true only for the Linear-posted case).
-if [[ "$summary_file_given" == "true" ]]; then
+recovered_from=null
+if [[ "$recovered_given" == "true" ]]; then
+  summary_arg=(--rawfile summary "$recovered_text")
+  recovered_from='"transcript"'
+elif [[ "$summary_file_given" == "true" ]]; then
   summary_arg=(--rawfile summary "$summary_file")
 elif [[ "$summary_given" == "true" ]]; then
   summary_arg=(--arg summary "$summary_text")
@@ -360,10 +594,17 @@ jq -n \
   --arg commit "$commit" \
   --argjson baseline_lines "$baseline_lines" \
   --arg validate "$validate" \
+  --arg validate_mode "$validate_mode" \
+  --arg validate_seconds "$validate_seconds" \
+  --arg validate_started_at "$validate_started_at" \
+  --arg validate_ended_at "$validate_ended_at" \
   --arg validate_note "$validate_note" \
   --argjson qa_labels "$qa_json" \
+  --argjson near_ceiling "$near_json" \
+  --arg near_ceiling_error "$near_error" \
   --argjson summary_posted "$summary_posted" \
   "${summary_arg[@]}" \
+  --argjson recovered_from "$recovered_from" \
   --argjson bundled "$bundled" \
   --argjson items "$items_json" \
   '({
@@ -374,10 +615,16 @@ jq -n \
      branch: $branch,
      commit: $commit,
      validate: $validate,
+     validate_mode: (if $validate_mode == "" then null else $validate_mode end),
+     validate_time: (if $validate_seconds == "" then null
+       else {started_at: $validate_started_at, ended_at: $validate_ended_at, seconds: ($validate_seconds | tonumber)} end),
      validate_note: (if $validate_note == "" then null else $validate_note end),
      qa_labels: $qa_labels,
+     near_ceiling: $near_ceiling,
+     near_ceiling_error: (if $near_ceiling_error == "" then null else $near_ceiling_error end),
      summary_posted: $summary_posted,
      summary: $summary,
+     recovered_from: $recovered_from,
      bundled: $bundled,
      items: $items
    } + if $kind == "implement" then {baseline_lines: $baseline_lines} else {} end)' > "$tmp"

@@ -30,12 +30,25 @@ Output (safe format):
     "id": "PRRT_...",
     "is_resolved": false,
     "is_outdated": false,
+    "resolved_by": "",
     "path": "src/file.rs",
     "line": 42,
     "author": "reviewer",
-    "body": "First comment text"
+    "author_type": "User",
+    "body": "First comment text",
+    "comment_count": 2,
+    "comments": [{"author": "reviewer", "author_type": "User", "body": "..."}]
   }]
 }
+
+author, author_type and body describe the first comment. author_type is
+GitHub's actor type: Bot for an app such as Copilot's reviewer, whose login
+carries no [bot] suffix here, User for a person, and empty where GitHub names
+no author. comments holds the thread's first 100 comments in order, each
+typed the same way, and comment_count is the thread's whole count, so a
+caller can tell a thread it read in full from one it did not. resolved_by is
+the login that resolved the thread, empty while it is open; GitHub spells an
+app's login there with a [bot] suffix its comment authors lack.
 
 Examples:
   pr-threads.sh 23
@@ -71,7 +84,7 @@ get_pr_threads() {
                 ;;
             --format)
                 if [ -z "${2:-}" ]; then
-                    echo '{"error": "--format requires an argument (safe or raw)"}' >&2
+                    github_error '--format requires an argument (safe or raw)'
                     exit 1
                 fi
                 FORMAT="$2"
@@ -81,12 +94,12 @@ get_pr_threads() {
 # Unknown flags must not fall through to the positional branch and
                 # be resolved as a PR ref, turning a typo into a confusing
                 # "No PR found for: --typo".
-                echo "{\"error\": \"Unknown option: $1\"}" >&2
+                github_error "Unknown option: $1"
                 exit 1
                 ;;
             *)
                 if [ -n "$pr_ref" ]; then
-                    echo "{\"error\": \"Unexpected argument: $1\"}" >&2
+                    github_error "Unexpected argument: $1"
                     exit 1
                 fi
                 pr_ref="$1"
@@ -98,7 +111,7 @@ get_pr_threads() {
     case "$FORMAT" in
         safe|raw) ;;
         *)
-            echo "{\"error\": \"Invalid format: $FORMAT. Use: safe, raw\"}" >&2
+            github_error "Invalid format: $FORMAT. Use: safe, raw"
             exit 1
             ;;
     esac
@@ -118,9 +131,10 @@ get_pr_threads() {
                           id
                           isResolved
                           isOutdated
+                          resolvedBy { login }
                           path
                           line
-                          comments(first: 1) { nodes { author { login } body } }') || exit 1
+                          comments(first: 100) { totalCount nodes { author { login __typename } body } }') || exit 1
 
     local result
     # The complete multi-page result can be large; wrap stdin rather than
@@ -168,10 +182,18 @@ get_pr_threads() {
                     id: .id,
                     is_resolved: .isResolved,
                     is_outdated: .isOutdated,
+                    resolved_by: (.resolvedBy.login // ""),
                     path: (.path // ""),
                     line: (.line // null),
                     author: (.comments.nodes[0].author.login // ""),
-                    body: (.comments.nodes[0].body // "")
+                    author_type: (.comments.nodes[0].author.__typename // ""),
+                    body: (.comments.nodes[0].body // ""),
+                    comment_count: (.comments.totalCount // null),
+                    comments: [(.comments.nodes // [])[] | {
+                        author: (.author.login // ""),
+                        author_type: (.author.__typename // ""),
+                        body: (.body // "")
+                    }]
                 }]
             }'
             ;;

@@ -1,5 +1,6 @@
 # SCAFFOLD from the kendex review-gate skill (templates/review-gate-writer.yml).
-# Copy verbatim into `.github/workflows/`; `kendex refresh` does not sync it.
+# Copy verbatim into `.github/workflows/`; after a refresh brings a new
+# template, `validate-workflow.sh --adopt` re-installs it over an unedited copy.
 # `validate-workflow.sh` allows YAML comment edits outside block scalars only.
 # Comments inside `run: |` remain executable input. This is the only writer and
 # posts the gate commit status on every leg that reaches it
@@ -78,9 +79,9 @@
 # trigger below cannot re-trigger this workflow.
 #
 # The gate answers ONE question — is this head reviewed? — and never
-# re-runs CI. (REVIEW_GATE_MODE=off answers it with a gate-disabled
-# attestation instead of evaluating evidence: a green PR-head status then
-# means "gate disabled", never "reviewed". PR-head statuses only — the
+# re-runs CI. (For an inactive or `current` class policy,
+# REVIEW_GATE_MODE=off answers with a gate-disabled attestation instead of
+# evaluating evidence. PR-head statuses only — the
 # merge_group leg below bypasses the predicate and always posts green as
 # "merge-queue entry: post-approval by construction", mode unread.)
 # Whether untested code can merge is branch
@@ -609,8 +610,28 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          # REVIEW_GATE_DOCS_ONLY uses the shared Git diff classifier.
+          # Review class policy and REVIEW_GATE_DOCS_ONLY use shared Git diff classifiers.
           fetch-depth: 1
+
+      - name: Install kendex for change classification
+        env:
+          # The installer runs in the writer job, before the credentialed step
+          # below. It never sees the writer token, and pinning it is what keeps
+          # it from rewriting that step's code or environment: a mutable script
+          # fetched here would run before, and persist into, the step that
+          # holds the credential.
+          GH_TOKEN: ""
+          # <run>-<attempt>-<commit>. The last field is the kendex commit this
+          # build came from, so the installer is fetched from the same commit
+          # the release tag below pins. Same installer, no second one.
+          KENDEX_VERSION: main-build-261-1-d1637e9ee73474603707339935ebaed33d175269
+          KENDEX_INSTALLER_REPO: vanillagreencom/kendex
+        run: |
+          set -euo pipefail
+          policy="$(.agents/skills/review-gate/scripts/review-policy --check-config)"
+          if [ "$policy" = "review-policy=active" ]; then
+            curl -fsSL "https://raw.githubusercontent.com/$KENDEX_INSTALLER_REPO/${KENDEX_VERSION##*-}/install.sh" | sh -s -- --version "$KENDEX_VERSION"
+          fi
 
       - name: Evaluate and converge the gate
         # Bounded strictly under the job's timeout-minutes so the

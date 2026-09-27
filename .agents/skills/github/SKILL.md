@@ -4,6 +4,8 @@ description: "Load to work a GitHub pull request: threads, comments, reviews, CI
 summary: "GitHub API CLI for pull requests: threads, comments, reviews, CI logs, merging, and cross-PR analysis."
 license: MIT
 user-invocable: true
+dependencies:
+  optional: [review-gate]
 metadata:
   author: vanillagreen
   source: kendex
@@ -26,11 +28,12 @@ tags: [git, integration]
 | `pr-data <N> [--actionable]` | Get PR with threads, comments, files. `--actionable`: unresolved non-outdated only. |
 | `pr-view [N] [--json FIELDS]` | View PR details (wraps gh pr view with bounded auth/no-PR errors) |
 | `pr-threads <N> [--unresolved\|--resolved] [--format=safe\|raw]` | Complete paginated thread list/count, outdated included. Both filters apply in both formats. See *PR blocked with no visible conversations*. |
+| `pr-timeline <N> [--repo OWNER/REPO] [--gate-context NAME]` | One PR's phase stamps (first commit, opened, last push, first bot review, first and final review-gate pass, CI green, armed, queued, merged) and its CI wall time on the final head and in the merge group, as one JSON object. Reads check suites and their check runs through every page up to the cap its `--help` states; refuses a connection longer than the page it read, or still open at that cap, rather than stamping from part of the history. |
 | `pr-list-ready [--all] [--format=safe\|table]` | List PRs ready for merge |
 | `pr-list-failing [--all] [--format=safe\|table]` | List PRs with CI failures |
 | `pr-create [--title T] [--body B \| --body-file PATH] [--draft] [--dry-run] [--force]` | Create PR as bot. Safety checks: not main, has commits, pushed; `--force` skips them. |
 | `pr-edit-body <N> --body-file PATH` | Update an existing PR body through the sanitized router. |
-| `pr-merge <N> [--check\|--force\|--admin\|--admin-credential\|--auto]` | Merge PR. `--check` reports readiness as JSON on stdout plus a one-word verdict and `head-run: <ids>` (the run scope of the CI classification) on stderr; `--auto` queues a currently-blocked PR; `--admin-credential` is the overseer's gated merge under the control host's owner credential, and prints one `admin-merge` record line. Three exit codes, the review-thread gate, and `--force`/`--admin`. See *PR Merge Outcomes*. |
+| `pr-merge <N> [--check\|--auto]` | Merge PR. `--check` reports readiness as JSON on stdout plus a one-word verdict and `head-run: <ids>` (the run scope of the CI classification) on stderr; `--auto` queues a currently-blocked PR. Three exit codes and the review-thread gate. See *PR Merge Outcomes*. |
 | `ci-classify-refusal <N>` | Name the cause of a pr-merge refusal on one `cause:` line (`fetch_error`, `merge_conflict`, `changes_requested`, `threads`, `ci_failed`, `ci_pending`, `computing`, `merged`, `closed`, `none`; an issue prefix outside that vocabulary becomes the cause word itself, and `none` means the checks pass now); `ci_failed` adds `fail:` lines run-correlated to the authoritative run and `superseded:` lines naming runs whose checks were not counted; every non-terminal cause adds a `ci_optional_failed:` line for red checks the base branch does not require. `--help` |
 | `pr-cross-check [N...] [--quick\|--verify]` | Cross-PR analysis. `--verify`: full build+test (auto-detects build system). |
 | `pr-issue <N> [--format=safe\|text]` | Extract issue ID from PR branch (configurable via `GH_ISSUE_PATTERN`) |
@@ -45,18 +48,18 @@ tags: [git, integration]
 | `post-reply <PRRT_...\|numeric-id> [body \| --body-file PATH] [--pr N]` | Reply to review comment. `--pr N` is REQUIRED for numeric comment IDs; thread `PRRT_...` IDs need no PR number. |
 | `post-comment <PR> [body \| --body-file PATH]` | Post PR-level comment. |
 | `find-comment <PR> --pattern <regex>` | Find comment by pattern/author |
-| `edit-comment <id> [body \| --body-file PATH]` | Edit existing comment. |
+| `edit-comment <id> [body \| --body-file PATH]` | Edit an existing comment, PR-level (`#issuecomment-<id>`) or inside a review thread (`#discussion_r<id>`). Endpoint order and the unknown-id refusal: `edit-comment --help`. |
 | `sticky-comment <PR> [--verdict\|--analysis\|--body]` | Get bot sticky comment. `--verdict`: quick pass/fail. `--analysis`: deep recommendation. |
 
 CI waiting belongs to `.agents/skills/orch/scripts/ci-wait`; `await-mergeable` waits for merge-state resolution.
 
-Contracts: `label-add --help`, `git-https-auth --help`, `git-diff-summary --help`.
+Contracts: `label-add --help`, `edit-comment --help`, `git-https-auth --help`, `git-diff-summary --help`.
 
 ### PR Merge Outcomes
 
-The `pr-merge` readiness check blocks only on contexts the base branch requires, read from its rulesets and classic protection. A red check outside that set is a `ci_optional_failed:` warning, matching what GitHub itself merges over. A required context that has registered no check on the head is `ci_pending: <context> (missing)`. A base that requires nothing, whose protection cannot be read, or whose ruleset carries a rule gating the merge on a check it does not name, counts every check. Every mode but `--force` and `--admin` runs that readiness check, `--check`, the immediate merge and `--auto` alike, and `ci-classify-refusal` reads the same required set. The orch `ci-wait` waiter counts every red check instead.
+The `pr-merge` readiness check blocks only on contexts the base branch requires, read from its rulesets and classic protection. A red check outside that set is a `ci_optional_failed:` warning, matching what GitHub itself merges over. A required context that has registered no check on the head is `ci_pending: <context> (missing)`. A base that requires nothing, whose protection cannot be read, or whose ruleset carries a rule gating the merge on a check it does not name, counts every check. Every mode runs that readiness check, `--check`, the immediate merge and `--auto` alike, and `ci-classify-refusal` reads the same required set. The orch `ci-wait` waiter counts every red check instead.
 
-Full contract: `pr-merge --help`. Exit `75` is volatile: the caller arms one exact head and waits on that head with the orch skill's `queue-wait`, whose `--help` § Verdicts maps each verdict to a route; an unrecognized verdict is never re-armed. With the review-gate skill installed, its watcher output contract is `pr-watch.sh --help`. If `can_merge` is false with no `issues`, read `state`. The thread gate is **Policy, not mechanism.** `--force` and the explicit-user-only `--admin` are its overrides. `--admin-credential` re-checks every condition on the exact head itself — the review gate and every required context among them — dequeues a queued PR, re-runs those gates where a dequeue or disarm actually ran, then merges with the control host's owner credential whose `--admin` bypasses branch protection for that merge alone. A ruleset or branch-protection read that does not answer refuses there rather than falling back to an empty required set. The route reads the base's gates under both spellings GitHub enforces, its ruleset rules and its classic branch protection, and refuses on a gate it cannot account for under either, on one that forbids the merge method the route would pass, and on an unresolved thread, outdated included, where the base requires every conversation resolved. It also refuses where `ORCH_ADMIN_MERGE_GH_CONFIG_DIR` names no directory.
+Full contract: `pr-merge --help`. Exit `75` is volatile: the caller arms one exact head and waits on that head with the orch skill's `queue-wait`, whose `--help` § Verdicts maps each verdict to a route; an unrecognized verdict is never re-armed. With the review-gate skill installed, its watcher output contract is `pr-watch.sh --help`. If `can_merge` is false with no `issues`, read `state`. The thread gate is **Policy, not mechanism.** No flag overrides it. The review gate's own class policy waives it for the threads only review bots have written in on a change class whose review evidence is waived, and the merge modes reply on and resolve those threads before they merge or arm; every other open thread still blocks, a thread resolved under a waiver that lapsed blocks and the merge modes reopen it, and an unreadable class policy blocks instead. Every mode leaves the merge queue to GitHub: on a base that requires one, the immediate merge and `--auto` enroll the PR and exit `75`. The retired merge settings are refused in every mode: `pr-merge --help` § Retired settings.
 
 ### PR blocked with no visible conversations
 
