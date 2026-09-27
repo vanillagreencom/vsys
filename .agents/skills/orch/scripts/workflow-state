@@ -130,6 +130,42 @@ state_message() {
       printf 'workflow-state: fleet-log-at-future at=%s now=%s\n' "$at" "$now"
       printf '%s\n' "Error: append-file: fleet_log record $file is dated $at, later than the clock at $now; leave \"at\" out and the append stamps it"
       ;;
+    fleet-log-row-bytes)
+      printf 'workflow-state: fleet-log-row-bytes bytes=%s cap=%s\n' "$bytes" "$cap"
+      printf '%s\n' "Error: append-file: fleet_log record $file carries $bytes bytes of text, over ORCH_FLEET_LOG_ROW_BYTES=$cap; write the ruling as one line under the cap"
+      ;;
+    fleet-log-reader)
+      printf 'workflow-state: fleet-log-reader reader=%s\n' "${1:-}"
+      printf '%s\n' "Error: fleet-log takes the reader takeover or audit"
+      ;;
+    keep-value)
+      printf 'workflow-state: keep-value option=%s\n' "--keep"
+      printf '%s\n' "Error: --keep requires a path argument"
+      ;;
+    prune-age-unreadable)
+      printf 'workflow-state: prune-age-unreadable path=%s\n' "$unit"
+      printf '%s\n' "Error: prune: find could not read every entry under $unit, so its age is unjudged; nothing was archived or removed"
+      [[ -z "$err" ]] || printf '%s\n' "$err"
+      ;;
+    prune-archive-failed)
+      printf 'workflow-state: prune-archive-failed path=%s\n' "$archive_dir"
+      printf '%s\n' "Error: prune: the archive under $archive_dir could not be built; nothing was removed"
+      [[ -z "$err" ]] || printf '%s\n' "$err"
+      ;;
+    prune-remove-failed)
+      printf 'workflow-state: prune-remove-failed path=%s kept=%s\n' "$unit" "$archive"
+      printf '%s\n' "Error: prune: $unit could not be removed; the archive holds it and every path before it"
+      [[ -z "$err" ]] || printf '%s\n' "$err"
+      ;;
+    progress-dir-failed)
+      printf 'workflow-state: progress-dir-failed path=%s\n' "$dir"
+      printf '%s\n' "Error: $dir could not be created"
+      [[ -z "$err" ]] || printf '%s\n' "$err"
+      ;;
+    prune-progress-overlap)
+      printf 'workflow-state: prune-progress-overlap path=%s state-dir=%s\n' "$pd" "$sd"
+      printf '%s\n' "Error: prune: ORCH_PROGRESS_REPORT_DIR is or holds the state directory, so its entries would pass the keep list; nothing was archived or removed"
+      ;;
     handoff-record)
       printf 'workflow-state: handoff-record issue=%s\n' "$issue_id"
       printf '%s\n' "Error: set: the handoff record for $issue_id is not a JSON object, so its \"written_at\" cannot be read"
@@ -174,9 +210,30 @@ state_message() {
       printf 'workflow-state: cap-unresolved setting=%s\n' "REVIEW_MAX_CYCLES"
       printf '%s\n' "workflow-state: could not resolve REVIEW_MAX_CYCLES; rereview_panel not set"
       ;;
+    tier-value)
+      printf 'workflow-state: tier-value value=%s\n' "$value"
+      printf '%s\n' "Error: tier is micro, small or standard, not '$value'"
+      ;;
+    panel-bound)
+      printf 'workflow-state: panel-bound field=%s agents=%s limit=%s\n' "$field" "$agents" "$SMALL_TIER_PANEL_MAX"
+      printf '%s\n' "workflow-state: a small item's review panel holds at most $SMALL_TIER_PANEL_MAX reviewers, the external lane counted (small.md § 3); $field not set"
+      ;;
+    panel-external)
+      printf 'workflow-state: panel-external field=%s\n' "$field"
+      printf '%s\n' "workflow-state: a small item's review panel says whether the external lane runs, as \"external\": true or false (small.md § 3); $field not set"
+      ;;
     cycle-cap)
       printf 'workflow-state: cycle-cap count=%s limit=%s\n' "$(jq -r '.entered' <<<"$report")" "$cap"
       printf '%s\n' "workflow-state: rereview_cycles is at the cap ($(jq -r '.entered' <<<"$report") >= REVIEW_MAX_CYCLES=$cap, entries already taken): the fix loop is over — no further re-review cycle and no further fix round; follow review-pr § 4 At The Cap, \"Capped items are escalated, never dropped\" — one update per still-outstanding blocker and category==fix suggestion records it in escalated_items (outcome \"blocked\") and drops its superseded fixed_items entry in the same write — then go to review-pr § 5 (verdict pass) and report them"
+      ;;
+    remove-issue)
+      printf 'workflow-state: remove-issue command=%s\n' "remove"
+      printf '%s\n' "Error: remove requires an issue_id"
+      ;;
+    remove-failed)
+      printf 'workflow-state: remove-failed path=%s\n' "$unit"
+      printf '%s\n' "Error: remove: $unit could not be removed; every path before it is gone"
+      [[ -z "$err" ]] || printf '%s\n' "$err"
       ;;
     exists-issue)
       printf 'workflow-state: exists-issue command=%s\n' "exists"
@@ -282,6 +339,7 @@ cmd_init() {
         worktree: $worktree,
         branch: $branch,
         qa_labels: $qa_labels,
+        near_ceiling: [],
         child_sessions: {},
         review_agents: [],
         review_agent_ids: {},
@@ -464,7 +522,7 @@ cmd_head_budget() {
         take)
             [[ $# -eq 4 ]] || { state_message budget-fields "$@" >&2; return 2; }
             local head="$4" limit report
-            limit=$(cap_limit "$setting") || return 1
+            limit=$(cap_limit "$setting" "$issue_id") || return 1
             report=$(cmd_update_report "$issue_id" '
               (.post_pr_budgets[$field] // null) as $saved |
               (if $head_keyed and (($saved.head // "") != $head) then 0 else ($saved.attempts // 0) end) as $used |
@@ -520,18 +578,11 @@ cmd_append() {
 #   stamp    the record carries no time, so the caller writes the printed
 #            clock into it
 #   invalid  RAW is not the ISO 8601 UTC form the schema names, or names no
-#            instant a calendar has. Neither question is left to the date
-#            ladder, whose two arms answer both of them differently: the GNU
-#            arm reads spellings the BSD arm cannot, and the BSD arm, being
-#            strptime then mktime, range-checks a day as 1 to 31 and then
-#            normalizes the thirtieth of February into the first of March
-#            instead of refusing it. So
-#            the shape is the regex below, and the instant is the round trip
-#            below that — to the epoch and back into this same form. Both arms
-#            agree on it, because a date either of them normalized renders as
-#            the day it moved to and no longer matches RAW. A record stored on
-#            Linux and refused on macOS, or the reverse, is the one outcome
-#            neither caller can act on
+#            instant a calendar has. The shape is the regex below, since the
+#            date ladder's GNU arm reads spellings its BSD arm cannot; the
+#            instant is `to_epoch`'s, which refuses a stamp naming none on both
+#            arms. A record stored on Linux and refused on macOS, or the
+#            reverse, is the one outcome neither caller can act on
 #   future   the record is dated past the clock, which no write can be
 #   keep     anything else, because a write that lands late is a real late
 #            write
@@ -540,6 +591,7 @@ cmd_append() {
 # their own keys. `clock` is the exception: the clock is this script's, not
 # either field's, so both callers refuse it under the one `clock-unreadable`
 # key rather than two spellings of one cause.
+ISO_UTC_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 stamp_judge() { # RAW -> VERDICT<TAB>NOW
     local raw="$1" now_epoch now raw_epoch verdict=keep
     # Both clock reads are checked, because a command substitution carries no
@@ -556,11 +608,9 @@ stamp_judge() { # RAW -> VERDICT<TAB>NOW
     fi
     if [[ -z "$raw" ]]; then
         verdict=stamp
-    elif [[ ! "$raw" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    elif [[ ! "$raw" =~ $ISO_UTC_RE ]]; then
         verdict=invalid
     elif ! raw_epoch=$(to_epoch "$raw"); then
-        verdict=invalid
-    elif [[ "$(from_epoch "$raw_epoch" '%Y-%m-%dT%H:%M:%SZ')" != "$raw" ]]; then
         verdict=invalid
     elif [[ "$raw_epoch" -gt "$now_epoch" ]]; then
         verdict=future
@@ -604,6 +654,14 @@ cmd_append_file() {
             stamp)   stamp_args=(--arg now "$now")
                      entry_expr='($entry[0] | .at = $now)' ;;
         esac
+        # A successor reads the last ORCH_TAKEOVER_ROWS rows whole at takeover,
+        # so the cap on each row's text is what bounds that read.
+        local cap bytes
+        cap=$("$SCRIPT_DIR/orch-env" ORCH_FLEET_LOG_ROW_BYTES 600) || return 1
+        bytes=$(jq -r '.text? // "" | tostring | utf8bytelength' < "$file") || return 1
+        if (( bytes > cap )); then
+            state_message fleet-log-row-bytes "$@" >&2; return 1
+        fi
     fi
 
     local state_file
@@ -615,27 +673,54 @@ cmd_append_file() {
 }
 
 # The round caps, spelled once: setting name, the workflow-state field its
-# count is read from (empty when the caller keeps its own count), and its
-# default. `cap`, the rereview_panel guard below, every refusal's roster and
-# the help text derive from this table, so a cap included or renamed here needs no
-# second edit kept in step, and `cap_limit` is the one place a cap resolves.
+# count is read from (empty when the caller keeps its own count), its
+# default, and the ceiling an item whose state records `tier` small holds it
+# to (empty for none): small.md's one fix round with one re-review, and its
+# two bot rounds. `cap`, the rereview_panel guard below, every refusal's
+# roster and the help text derive from this table, so a cap included or
+# renamed here needs no second edit kept in step, and `cap_limit` is the one
+# place a cap resolves.
 cap_table() {
-    printf 'REVIEW_MAX_CYCLES\trereview_cycles\t4\n'
-    printf 'REVIEW_MAX_EXTERNAL_ROUNDS\tpr_comment_review.iterations\t4\n'
-    printf 'CI_FIX_MAX_CYCLES\t\t6\n'
+    printf 'REVIEW_MAX_CYCLES\trereview_cycles\t4\t1\n'
+    printf 'REVIEW_MAX_EXTERNAL_ROUNDS\tpr_comment_review.iterations\t4\t2\n'
+    printf 'CI_FIX_MAX_CYCLES\t\t6\t\n'
 }
 
-# One cap's "<field><tab><default>", or the one refusal naming every known cap.
+# The reviewers a small item's panel may hold, the external lane counted,
+# small.md § 3's other bound.
+SMALL_TIER_PANEL_MAX=3
+
+# One cap's "<field><tab><default><tab><small ceiling>", or the one refusal
+# naming every known cap.
 cap_row() {
-    cap_table | awk -F'\t' -v want="$1" '$1 == want { print $2 "\t" $3; found = 1 } END { exit found ? 0 : 1 }' && return 0
+    cap_table | awk -F'\t' -v want="$1" '$1 == want { print $2 "\t" $3 "\t" $4; found = 1 } END { exit found ? 0 : 1 }' && return 0
     state_message unknown-cap "$@" >&2
     return 2
 }
 
+# The tier an item's state records, empty when none is.
+state_tier() {
+    local state_file
+    state_file=$(get_state_file "$1")
+    ensure_state_exists "$state_file"
+    jq -r '.tier // ""' "$state_file"
+}
+
+# SETTING [ISSUE]: the resolved cap, held to the small ceiling when ISSUE's
+# state records tier small.
 cap_limit() {
-    local row
+    local row limit small tier=""
     row=$(cap_row "$1") || return 2
-    "$SCRIPT_DIR/orch-env" "$1" "${row##*$'\t'}"
+    small="${row##*$'\t'}"
+    row="${row%$'\t'*}"
+    limit=$("$SCRIPT_DIR/orch-env" "$1" "${row##*$'\t'}") || return 1
+    if [[ -n "${2:-}" && -n "$small" ]]; then
+        tier=$(state_tier "$2") || return 1
+    fi
+    if [[ "$tier" == "small" && "$limit" =~ ^[0-9]+$ ]] && (( limit > small )); then
+        limit="$small"
+    fi
+    printf '%s\n' "$limit"
 }
 
 # The workflows' reader for the table above: a cap is read through this command
@@ -665,7 +750,7 @@ cmd_cap() {
     local row field limit
     row=$(cap_row "$setting") || return 2
     field="${row%%$'\t'*}"
-    limit=$(cap_limit "$setting") || return 2
+    limit=$(cap_limit "$setting" "$issue_id") || return 2
 
     if [[ "$have_count" -eq 0 && -z "$issue_id" ]]; then
         printf '%s\n' "$limit"
@@ -713,9 +798,31 @@ cmd_set() {
 
     # review-pr § 4 writes `rereview_panel` to re-enter § 2: that write IS the re-review cycle, so it raises `rereview_cycles` under the same lock it is gated on, and refuses once that count reaches REVIEW_MAX_CYCLES, so the setting is the number of entries allowed. The count is entries already taken, so the comparison is >=, not >.
     # Nothing else spends that budget: `cycles` is the general fix-round tally, and § 7's QA re-check and § 2 verification pass write `qa_recheck_panel` and `verification_panel`, fields this branch never matches.
+    if [[ "$field" == "tier" ]]; then
+        case "$value" in
+            micro|small|standard) ;;
+            *) state_message tier-value "$@" >&2; return 2 ;;
+        esac
+    fi
+    if [[ "$field" =~ ^(first|rereview|verification)_panel$ && "$value" == "{"* ]] &&
+        [[ "$(state_tier "$issue_id")" == "small" ]]; then
+        # The external lane (review-pr § 2.2) is one of the reviewers the
+        # bound counts, so the panel must say whether it runs.
+        local agents external
+        external=$(jq -r '.external | type' <<<"$value") || return 1
+        if [[ "$external" != boolean ]]; then
+            state_message panel-external "$@" >&2
+            return 1
+        fi
+        agents=$(jq -r '((.agents // []) | length) + (if .external then 1 else 0 end)' <<<"$value") || return 1
+        if (( agents > SMALL_TIER_PANEL_MAX )); then
+            state_message panel-bound "$@" >&2
+            return 1
+        fi
+    fi
     if [[ "$field" == "rereview_panel" && "$value" == "{"* ]]; then
         local cap report
-        cap=$(cap_limit REVIEW_MAX_CYCLES) || { state_message cap-unresolved "$@" >&2; return 1; }
+        cap=$(cap_limit REVIEW_MAX_CYCLES "$issue_id") || { state_message cap-unresolved "$@" >&2; return 1; }
         report=$(cmd_update_report "$issue_id" "(.rereview_cycles // 0) as \$n | if \$n >= $cap then {state: ., report: {refused: true, entered: \$n}} else {state: (.rereview_panel = $value | .rereview_cycles = \$n + 1), report: {refused: false}} end") || return 1
         if [[ "$(jq -r '.refused' <<<"$report")" == "true" ]]; then
             state_message cycle-cap "$@" >&2
@@ -800,6 +907,21 @@ cmd_new_round_id() {
     value="$(date +%s%N)-$RANDOM"
     cmd_set "$issue_id" "$field" "$value"
     echo "$value"
+}
+
+# Mint and print a key for work whose branch carries no issue id and whose PR
+# gives none either: local-<epoch>-<pid>-<random>. The key names no issue, so
+# branch-size-check measures it without reading a tracker, and it matches the
+# path-safe grammar every round writer checks. Nothing is written: the caller
+# that minted it owns the key, inits state under it and removes that state.
+# Seconds rather than %N, which macOS date prints as a literal N; the pid keeps
+# two same-second mints from one repository apart.
+cmd_new_local_key() {
+    local now field=local_key
+    [[ $# -eq 0 ]] || { state_message unknown-option "$@" >&2; return 2; }
+    now=$(date -u +%s) || now=""
+    [[ "$now" =~ ^[0-9]+$ ]] || { state_message clock-unreadable "$@" >&2; return 1; }
+    printf 'local-%s-%s-%s\n' "$now" "$$" "$RANDOM"
 }
 
 cmd_path() {
@@ -887,10 +1009,320 @@ cmd_handoff_standing() {
     printf '%s\n' "$record"
 }
 
-cmd_remove() {
+# The main checkout every worktree of this repository shares, or the project
+# root outside Git, and a project-relative setting joined to it, so a path
+# setting names one directory from any checkout.
+project_root() {
+    if git -C "$PROJECT_ROOT" rev-parse --show-toplevel >/dev/null 2>&1; then
+        "$SCRIPT_DIR/git-context" common-root "$PROJECT_ROOT"
+    else
+        printf '%s\n' "$PROJECT_ROOT"
+    fi
+}
+
+project_path() { # PATH
+    local root
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *) root=$(project_root) || return 1
+           printf '%s/%s\n' "$root" "$1" ;;
+    esac
+}
+
+# The fleet state's path, returning 1 where no file is there yet. A first fleet
+# session has none until its first launch writes one, which leaves takeover
+# nothing to read rather than a missing state to refuse; prune then judges the
+# directory without lane records, as cmd_prune states.
+fleet_state_file() {
     local state_file
-    state_file="$(get_state_file "$1")"
-    rm -f -- "$state_file" "$state_file.lock"
+    state_file=$(get_state_file oversee)
+    printf '%s\n' "$state_file"
+    [[ -f "$state_file" ]]
+}
+
+# The fleet log's two readers, each printing its rows one JSON object per
+# line: the successor overseer's takeover read, the last ORCH_TAKEOVER_ROWS
+# rows but the `cycle` rows oversee-cycle logs, which would crowd the rulings
+# out of the window, and the audit read, every proposal and ruling row.
+cmd_fleet_log() {
+    local reader="${1:-}" state_file rows
+    case "$reader" in
+        takeover)
+            state_file=$(fleet_state_file) || return 0
+            rows=$("$SCRIPT_DIR/orch-env" ORCH_TAKEOVER_ROWS 10) || return 1
+            jq -c --argjson n "$rows" \
+                '[(.fleet_log // [])[] | select(.kind != "cycle")] | if $n == 0 then empty else .[-$n:][] end' "$state_file" ;;
+        audit)
+            state_file=$(get_state_file oversee)
+            ensure_state_exists "$state_file"
+            jq -c '(.fleet_log // [])[] | select(.kind == "proposal" or .kind == "ruling")' "$state_file" ;;
+        *) state_message fleet-log-reader "$@" >&2; return 2 ;;
+    esac
+}
+
+# The owner progress report record, which the writer and the prune both read
+# here: its directory, ORCH_PROGRESS_REPORT_DIR joined to the project, and its
+# name, a UTC stamp, the suffix of the one a succession writes, then .md. The
+# pattern is derived from the stamp format, each field two digits.
+PROGRESS_REPORT_STAMP='%m-%d-%H-%M'
+PROGRESS_REPORT_SUFFIX=-succession
+PROGRESS_REPORT_RE='[0-9]{2}'
+PROGRESS_REPORT_RE="^${PROGRESS_REPORT_STAMP//%?/$PROGRESS_REPORT_RE}($PROGRESS_REPORT_SUFFIX)?\\.md\$"
+progress_report_dir() {
+    local setting
+    setting=$("$SCRIPT_DIR/orch-env" ORCH_PROGRESS_REPORT_DIR tmp/progress-reports) || return 1
+    project_path "$setting"
+}
+
+# The owner progress report's path: MM-DD-HH-MM.md in UTC under
+# ORCH_PROGRESS_REPORT_DIR, with -succession before the extension for the one
+# a succession writes. The directory is created; the report is the caller's.
+cmd_progress_report_path() {
+    local suffix="" dir now_epoch stamp err field=progress_report
+    case "$#:${1:-}" in
+        0:) ;;
+        1:--succession) suffix=$PROGRESS_REPORT_SUFFIX ;;
+        *) state_message unknown-option "$@" >&2; return 2 ;;
+    esac
+    dir=$(progress_report_dir) || return 1
+    now_epoch=$(date -u +%s) || now_epoch=""
+    stamp=$(from_epoch "$now_epoch" "$PROGRESS_REPORT_STAMP") || stamp=""
+    if [[ -z "$now_epoch" || -z "$stamp" ]]; then
+        state_message clock-unreadable "$@" >&2; return 1
+    fi
+    err=$(mkdir -p -- "$dir" 2>&1) || { state_message progress-dir-failed "$@" >&2; return 1; }
+    printf '%s/%s%s.md\n' "$dir" "$stamp" "$suffix"
+}
+
+# The entries of the state directory SD that a prune or an item's close-out
+# judges, into UNITS: every entry but the fleet state, its lock and the watch's
+# own files, each entry under handoffs/ but the overseer handoff file, and each
+# mailbox under lane-mail/ but the overseer's. PD, the resolved progress report
+# directory, is skipped where it sits inside SD; the prune judges it apart.
+UNITS=()
+state_units() { # SD STATE_FILE PD
+    local sd="$1" pd="$3" entry f
+    UNITS=()
+    watch_pid_paths "$2" || return 1
+    shopt -s nullglob dotglob
+    for entry in "$sd"/*; do
+        [[ "$pd" != "$entry" && "$pd" != "$entry"/* ]] || continue
+        case "$entry" in
+            "$sd/${2##*/}"|"$sd/${2##*/}.lock"|"$WATCH_PID_FILE"|"$WATCH_ARGV_FILE"|"$WATCH_LOG_FILE"|"$WATCH_ERR_FILE"|"$WATCH_RUNNER_FILE") ;;
+            "$sd/handoffs")
+                for f in "$entry"/*; do [[ "${f##*/}" == OVERSEER-HANDOFF.md ]] || UNITS+=("$f"); done ;;
+            "$sd/lane-mail")
+                for f in "$entry"/*; do [[ "${f##*/}" == overseer ]] || UNITS+=("$f"); done ;;
+            *) UNITS+=("$entry") ;;
+        esac
+    done
+    shopt -u nullglob dotglob
+}
+
+# Whether UNIT's name carries ITEM as a whole token: its mailbox, its workflow
+# state, its status file and anything else named for it, and never a file of an
+# item whose key extends ITEM's.
+unit_names_item() { # UNIT ITEM
+    local re="(^|[-_.])${2//./\\.}([-_.]|$)"
+    [[ "${1##*/}" =~ $re ]]
+}
+
+# `prune [--keep PATH]...`: the retention that
+# schemas/workflow-state.md § Recording policy states, applied to the fleet
+# state and the directory holding it.
+#
+# A live item's paths stay whatever their age. An item is live while its own
+# workflow state stands and was written within the retention or names a
+# linked worktree that still stands: the item's close-out, `remove`, takes that state
+# when the item ends. With a fleet state, a lane whose record is not `done` is
+# live too; a checkout with no fleet state, where no overseer runs, has only
+# the workflow states to judge by. The
+# keep list is explicit, and a path on it is never a candidate whatever its age.
+# Nothing leaves the disk or the state before one archive holding all of it is
+# written: a failed archive removes nothing, and the rows are dropped from the
+# state before any path is removed, so a failure part way leaves the archive a
+# superset of what went.
+#
+# Output, one keyed line each: `pruned path=PATH` per removed path, then
+# `pruned fleet_log=N lanes=N progress_reports=N paths=N`, then `kept=ARCHIVE`,
+# or `kept=none` where there was nothing to archive.
+cmd_prune() {
+    local -a keeps=() units=() candidates=()
+    local keep
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --keep)
+                [[ $# -ge 2 && -n "$2" ]] || { state_message keep-value "$@" >&2; return 2; }
+                keep="$2"
+                [[ "$keep" == /* ]] || keep="$PWD/$keep"
+                if [[ -d "$keep" ]]; then
+                    keep=$(cd -P -- "$keep" && pwd -P) || return 1
+                elif [[ -d "$(dirname -- "$keep")" ]]; then
+                    keep="$(cd -P -- "$(dirname -- "$keep")" && pwd -P)/$(basename -- "$keep")" || return 1
+                fi
+                keeps+=("$keep"); shift 2 ;;
+            *) state_message unknown-option "$@" >&2; return 2 ;;
+        esac
+    done
+
+    local state_file field=fleet_log fleet=true
+    state_file=$(fleet_state_file) || fleet=false
+
+    local days progress_dir now_epoch cutoff
+    days=$("$SCRIPT_DIR/orch-env" ORCH_RECORD_RETENTION_DAYS 14) || return 1
+    progress_dir=$(progress_report_dir) || return 1
+    now_epoch=$(date -u +%s) || now_epoch=""
+    cutoff=""
+    [[ -z "$now_epoch" ]] || cutoff=$(from_epoch "$((now_epoch - days * 86400))" '%Y-%m-%dT%H:%M:%SZ') || cutoff=""
+    [[ -n "$cutoff" ]] || { state_message clock-unreadable "$@" >&2; return 1; }
+
+    local sd pd="" unit err="" f live="" rows='{"fleet_log":[],"lanes":[]}'
+    if [[ ! -d "$STATE_DIR" ]]; then
+        printf 'pruned fleet_log=0 lanes=0 progress_reports=0 paths=0\nkept=none\n'
+        return 0
+    fi
+    sd=$(cd -P -- "$STATE_DIR" && pwd -P) || return 1
+    if [[ "$fleet" == true ]]; then
+        # A lane whose record is anything but `done` is live: `running`, and a
+        # `preparing` or `stopped` one a relaunch resumes into its own files.
+        # The first lane record stays whatever its age or status: its
+        # `launched_at` is the fleet start every watch passes as --since.
+        live=$(jq -r '(.lanes // [])[] | select(.status != "done") | .item // empty' "$state_file") || return 1
+        rows=$(jq -c --arg cut "$cutoff" --arg iso "$ISO_UTC_RE" '
+            def old: type == "string" and test($iso) and . < $cut;
+            {fleet_log: [(.fleet_log // [])[] | select(.at | old)],
+             lanes: [(.lanes // [])[1:][] | select(.status == "done" and (.launched_at | old))]}' "$state_file") || return 1
+        live+=$'\n'
+    fi
+    # An item whose own workflow state stands is live under either branch, the
+    # fleet state apart, while that state was written within the retention or
+    # the worktree it records still stands: a lane closed while its item was
+    # open keeps that state for a later resume, and only the item's close-out
+    # takes it. The worktree a state names is the linked one git-context
+    # lane-worktree resolves from its worktree and branch fields, as
+    # round-prune reads it, never the main checkout. A state past the
+    # retention that names no such worktree is an item nothing resumes, one a
+    # close-out never reached, and it ages out with its files.
+    local recent wt branch root=""
+    for f in "$sd/$STATE_PREFIX-"*.json; do
+        [[ -f "$f" && "$f" != "$sd/${state_file##*/}" ]] || continue
+        if ! recent=$(find "$f" -mtime "-$days" -print 2>&1); then
+            unit="$f" err="$recent"; state_message prune-age-unreadable "$@" >&2; return 1
+        fi
+        if [[ -z "$recent" ]]; then
+            wt=$(jq -r '.worktree // empty' "$f") || return 1
+            branch=$(jq -r '.branch // empty' "$f") || return 1
+            [[ -n "$root" ]] || root=$(project_root) || return 1
+            wt=$("$SCRIPT_DIR/git-context" lane-worktree "$wt" "$branch" "$root") || return 1
+            [[ -n "$wt" ]] || continue
+        fi
+        f="${f#"$sd/$STATE_PREFIX-"}"
+        live+="${f%.json}"$'\n'
+    done
+
+    [[ ! -d "$progress_dir" ]] || pd=$(cd -P -- "$progress_dir" && pwd -P) || return 1
+    if [[ -n "$pd" && ( "$pd" == "$sd" || "$sd" == "$pd"/* ) ]]; then
+        state_message prune-progress-overlap "$@" >&2; return 1
+    fi
+
+    state_units "$sd" "$state_file" "$pd" || return 1
+    units=(${UNITS[@]+"${UNITS[@]}"})
+    if [[ -n "$pd" ]]; then
+        shopt -s nullglob
+        for f in "$pd"/*; do
+            [[ ! "${f##*/}" =~ $PROGRESS_REPORT_RE ]] || units+=("$f")
+        done
+        shopt -u nullglob
+    fi
+
+    local item kept_by reports=0
+    for unit in ${units[@]+"${units[@]}"}; do
+        kept_by=""
+        for keep in ${keeps[@]+"${keeps[@]}"}; do
+            [[ "$unit" != "$keep" && "$keep" != "$unit"/* ]] || kept_by=keep
+        done
+        while IFS= read -r item; do
+            [[ -z "$item" ]] || ! unit_names_item "$unit" "$item" || kept_by=live
+        done <<<"$live"
+        [[ -z "$kept_by" ]] || continue
+        # A find that fails prints why on the lines it returns, and a warning
+        # beside a success leaves the unit kept as recent.
+        if ! recent=$(find "$unit" -mtime "-$days" -print 2>&1); then
+            err="$recent"; state_message prune-age-unreadable "$@" >&2; return 1
+        fi
+        [[ -z "$recent" ]] || continue
+        candidates+=("$unit")
+        [[ -z "$pd" || "$unit" != "$pd"/* ]] || reports=$((reports + 1))
+    done
+
+    local n_rows n_log n_lanes repo_root archive_dir stage="" archive=none saved_umask
+    n_log=$(jq '.fleet_log | length' <<<"$rows") || return 1
+    n_lanes=$(jq '.lanes | length' <<<"$rows") || return 1
+    n_rows=$((n_log + n_lanes))
+    if [[ "$n_rows" -gt 0 || "${#candidates[@]}" -gt 0 ]]; then
+        repo_root=$(project_root) || return 1
+        archive_dir="${FLEET_DIR:-$HOME/.fleet}/archive/${repo_root##*/}/oversee"
+        # Private, as lane-host close keeps a lane's archive: the archive holds
+        # whatever the state directory held, secrets included. Paths are
+        # relative to /, as that close archives them, so a progress directory
+        # outside the state directory archives the same way. The refusal's key
+        # is the first line, and the failing step's own words follow it.
+        saved_umask=$(umask)
+        umask 077
+        if ! err=$(mkdir -p -- "$archive_dir" 2>&1); then
+            :
+        elif ! stage=$(mktemp -d "$archive_dir/prune-$now_epoch-XXXXXX" 2>&1); then
+            err="$stage"; stage=""
+        elif ! { printf '%s\n' "$rows" > "$stage/records.json" \
+                 && { printf '%s\n' "${stage#/}/records.json"
+                      for unit in ${candidates[@]+"${candidates[@]}"}; do printf '%s\n' "${unit#/}"; done
+                    } > "$stage/paths" \
+                 && tar -czf "$stage.tgz" -C / -T "$stage/paths" 2>"$stage/tar.err"; }; then
+            err=$(cat -- "$stage/tar.err" 2>/dev/null) || err=""
+        else
+            archive="$stage.tgz"
+        fi
+        umask "$saved_umask"
+        if [[ "$archive" == none ]]; then
+            [[ -z "$stage" ]] || rm -rf -- "${stage:?}" "${stage:?}.tgz"
+            state_message prune-archive-failed "$@" >&2; return 1
+        fi
+        if [[ "$n_rows" -gt 0 ]] && ! atomic_update "$state_file" \
+            '.fleet_log = ((.fleet_log // []) - $r[0].fleet_log) | .lanes = ((.lanes // []) - $r[0].lanes)' \
+            --slurpfile r "$stage/records.json"; then
+            rm -rf -- "${stage:?}"; return 1
+        fi
+        rm -rf -- "${stage:?}"
+        for unit in ${candidates[@]+"${candidates[@]}"}; do
+            err=$(rm -rf -- "${unit:?}" 2>&1) || { state_message prune-remove-failed "$@" >&2; return 1; }
+            printf 'pruned path=%s\n' "$unit"
+        done
+    fi
+    printf 'pruned fleet_log=%s lanes=%s progress_reports=%s paths=%s\n' \
+        "$n_log" "$n_lanes" "$reports" "${#candidates[@]}"
+    printf 'kept=%s\n' "$archive"
+}
+
+# `remove ITEM`: the item's close-out. Every entry state_units yields that
+# names ITEM goes whatever its age, the item's workflow state and its lock
+# among them. The lane status file and the lane mailbox stay: the recording
+# policy gives those two their own retention, which the prune applies. Prints
+# `removed path=PATH` per path; a state directory that is not there holds none.
+# Where no fleet state stands, no overseer prunes the directory, so the
+# close-out runs the prune too and prints its lines after its own.
+cmd_remove() {
+    local item="${1:-}" sd unit err
+    [[ -n "$item" ]] || { state_message remove-issue "$@" >&2; return 2; }
+    [[ -d "$STATE_DIR" ]] || return 0
+    sd=$(cd -P -- "$STATE_DIR" && pwd -P) || return 1
+    state_units "$sd" "$(get_state_file oversee)" "" || return 1
+    for unit in ${UNITS[@]+"${UNITS[@]}"}; do
+        unit_names_item "$unit" "$item" || continue
+        [[ "$unit" != "$sd/lane-status-$item.md" && "$unit" != "$sd/lane-mail/$item" ]] || continue
+        err=$(rm -rf -- "${unit:?}" 2>&1) || { state_message remove-failed "$@" >&2; return 1; }
+        printf 'removed path=%s\n' "$unit"
+    done
+    fleet_state_file >/dev/null || cmd_prune
 }
 
 cmd_help() {
@@ -901,8 +1333,8 @@ Global options (before the subcommand):
   --state-dir <path>            Override state directory for all subcommands.
                                 Takes precedence over ORCH_STATE_DIR. Prefer this
                                 flag over the ORCH_STATE_DIR=… env prefix from
-                                worktree sessions: a plain flag is classifier-safe
-                                under Codex approval=never.
+                                worktree sessions: orch's shell rule takes no
+                                env prefix.
 
 Commands:
   init <issue_id> [options]     Create new state file
@@ -966,7 +1398,9 @@ Commands:
                                 current UTC time. A clock this
                                 command cannot read refuses the append as
                                 clock-unreadable rather than stamping an
-                                unreadable time
+                                unreadable time. Text longer than
+                                ORCH_FLEET_LOG_ROW_BYTES bytes (default 600) is
+                                refused as fleet-log-row-bytes
   cap <setting> [--issue <id> | --count <n>]
                                 Round caps. Bare: print the resolved cap.
                                 With --issue: read the state field the setting
@@ -975,7 +1409,7 @@ Commands:
                                 at-cap being count >= cap. Settings:
 EOF
     cap_table | awk -F'\t' \
-        '{ printf "%34s%s (%s, %s)\n", "", $1, ($2 == "" ? "--count only" : $2), $3 }'
+        '{ printf "%34s%s (%s, %s%s)\n", "", $1, ($2 == "" ? "--count only" : $2), $3, ($4 == "" ? "" : ", tier small " $4) }'
     cat << 'EOF'
   increment <issue_id> <field>  Increment numeric field
   set <issue_id> <field> <value>  Set field value ({/[ prefix, null/true/false,
@@ -992,12 +1426,22 @@ EOF
                                 null or false, is stamped with the current UTC
                                 time. A clock this command cannot
                                 read refuses the set as clock-unreadable rather
-                                than stamping an unreadable time
+                                than stamping an unreadable time. On field
+                                tier the value is micro, small or standard,
+                                refused otherwise as tier-value. With tier
+                                small, a first_panel, rereview_panel or
+                                verification_panel is refused as
+                                panel-external unless its "external" is true
+                                or false, and as panel-bound when its agents,
+                                plus one for "external": true, exceed 3
   set-git-head <issue_id> <field> [worktree]  Set field to current HEAD SHA
   set-now <issue_id> <field>     Set field to current epoch seconds
   new-round-id <issue_id> <field>  Generate a unique per-delegation round token,
                                 store it at <field>, and print it (binds a dev
                                 completion artifact to its delegation — kendex#776)
+  new-local-key                 Mint and print a local-<epoch>-<pid>-<random>
+                                key for work with no issue id (Keys below);
+                                writes nothing
   path <issue_id>               Print state file path
   exists [--json] <issue_id>    Exit 0 if exists, 1 if not; --json prints status and exits 0
   handoff-standing <issue_id>   Print one verdict line and exit 0:
@@ -1017,12 +1461,63 @@ EOF
                                 unknown command, and a settings file bash 3.2
                                 cannot parse kills the script before dispatch —
                                 and is never read as "no record stands"
-  remove <issue_id>             Delete the state file and its lock sidecar; absent is success
+  remove <issue_id>             The item's close-out: delete every entry of the
+                                state directory whose name carries the key as a
+                                whole token, its state file and lock sidecar
+                                among them, keeping the lane status file, the
+                                lane mailbox and the fleet's own files. Prints
+                                "removed path=PATH" per path; absent is success.
+                                Where no fleet state exists it then runs prune
+                                and prints its lines
+  fleet-log takeover|audit      Print fleet_log rows of the oversee state, one
+                                JSON object per line: takeover the last rows
+                                of every kind but cycle, as many as the
+                                setting ORCH_TAKEOVER_ROWS (default 10),
+                                and nothing, exit 0, where no fleet state
+                                exists yet; audit every proposal and ruling row
+  progress-report-path [--succession]
+                                Print the owner progress report's path,
+                                MM-DD-HH-MM.md in UTC (MM-DD-HH-MM-succession.md
+                                with --succession) under ORCH_PROGRESS_REPORT_DIR
+                                (default tmp/progress-reports), creating the
+                                directory
+  prune [--keep PATH]...        Apply the retention in schemas/workflow-state.md
+                                section Recording policy to the oversee state
+                                and its directory, past the retention in days
+                                that ORCH_RECORD_RETENTION_DAYS sets (default
+                                14). Archives everything it removes under
+                                FLEET_DIR/archive/REPO/oversee first (FLEET_DIR
+                                defaults to ~/.fleet); a failed archive removes
+                                nothing. Never removes a --keep path, the first
+                                lane record, a path named for a lane whose
+                                record is not done, nor a path named for an
+                                item whose workflow state file stands and was
+                                written within the retention or names a
+                                linked worktree, never the main checkout, that
+                                git-context lane-worktree resolves from its
+                                worktree and branch fields. Refused
+                                as prune-progress-overlap where the progress
+                                report directory is or holds the state
+                                directory. Prints "pruned path=PATH" per removed
+                                path, a "pruned fleet_log=N lanes=N
+                                progress_reports=N paths=N" count, then
+                                "kept=ARCHIVE" or kept=none. With no fleet state
+                                there are no lane records, and the directory is
+                                judged by age and standing workflow states alone
 
 Keys:
-  GitHub-issue orchestration stores state under the normalized key issue-<N>.
-  Every command resolves <issue_id> to that exact key — pass init the same
-  spelling every later command will use.
+  Four per-item key forms: the tracker identifier (KEN-123) for a tracked
+  issue, issue-<N> for a GitHub issue, the repository-local pr-<N> for a
+  pull request whose branch carries no issue id, and local-<epoch>-<pid>-<random>
+  from new-local-key for work with neither, such as a local review whose fix
+  round needs a key. A workflow that inits state under a local key owns that
+  state: it passes the key to every round it stamps and removes the state
+  when it ends. pr-<N> and local- keys name no issue. Beside them stands one
+  fixed key, oversee, holding the fleet session state that
+  schemas/workflow-state.md section Oversee state describes. The key is stored as passed and validated by its
+  callers, not here: every command interpolates <issue_id> into the state
+  filename exactly as given, so pass init the spelling every later command
+  will use.
 
 Examples:
   workflow-state init PROJ-123 --agent rust --worktree /tmp/wt
@@ -1056,9 +1551,8 @@ EOF
 # for the help forms. --state-dir <path> (or --state-dir=<path>) overrides the
 # state directory for EVERY subcommand and takes precedence over
 # ORCH_STATE_DIR (which stays supported as a fallback). Prefer this flag from
-# worktree sessions: a plain flag is classifier-safe under Codex
-# approval=never, whereas an `ORCH_STATE_DIR=… workflow-state …`
-# env-assignment prefix is rejected as a flagged command shape.
+# worktree sessions: orch's shell rule (../SKILL.md § Harness-Safe Shell) takes
+# no env-assignment prefix such as `ORCH_STATE_DIR=… workflow-state …`.
 #
 # An EMPTY value is rejected, not read as absent: `--state-dir "$VAR"` with VAR
 # unset must name the mistake, not write orch state where nobody asked.
@@ -1109,6 +1603,8 @@ unset parse_rc
 source "$SCRIPT_DIR/lib/date-ladder.sh"
 # shellcheck source=lib/file-lock.sh
 source "$SCRIPT_DIR/lib/file-lock.sh"
+# shellcheck source=lib/watch-pid.sh
+source "$SCRIPT_DIR/lib/watch-pid.sh"
 # shellcheck source=lib/kendex-env.sh
 source "$SCRIPT_DIR/lib/kendex-env.sh"
 kendex_load_project_env "$PROJECT_ROOT"
@@ -1116,17 +1612,7 @@ kendex_load_project_env "$PROJECT_ROOT"
 # Parsed only now, so the flag the caller passed outranks every project file.
 parse_global_opts "$@"
 shift "$GLOBAL_OPTS"
-STATE_DIR="${STATE_DIR_FLAG:-${ORCH_STATE_DIR:-tmp}}"
-case "$STATE_DIR" in
-    /*) ;;
-    *)
-        STATE_ROOT="$PROJECT_ROOT"
-        if git -C "$PROJECT_ROOT" rev-parse --show-toplevel >/dev/null 2>&1; then
-            STATE_ROOT="$("$SCRIPT_DIR/git-context" common-root "$PROJECT_ROOT")"
-        fi
-        STATE_DIR="$STATE_ROOT/$STATE_DIR"
-        ;;
-esac
+STATE_DIR="$(project_path "${STATE_DIR_FLAG:-${ORCH_STATE_DIR:-tmp}}")"
 # Not configurable at all, and so resolved here rather than above the loader,
 # which would let a settings [env] key rename the state file: the file name is
 # the identity every caller and doc reference resolves, so renaming it would
@@ -1150,9 +1636,13 @@ case "$1" in
     set-git-head) shift; cmd_set_git_head "$@" ;;
     set-now)   shift; cmd_set_now "$@" ;;
     new-round-id) shift; cmd_new_round_id "$@" ;;
+    new-local-key) shift; cmd_new_local_key "$@" ;;
     path)      shift; cmd_path "$@" ;;
     exists)    shift; cmd_exists "$@" ;;
     handoff-standing) shift; cmd_handoff_standing "$@" ;;
+    fleet-log) shift; cmd_fleet_log "$@" ;;
+    progress-report-path) shift; cmd_progress_report_path "$@" ;;
+    prune)     shift; cmd_prune "$@" ;;
     remove)    shift; cmd_remove "$@" ;;
     *) state_message unknown-command "$@" >&2; cmd_help >&2; exit 1 ;;
 esac

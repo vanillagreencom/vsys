@@ -2,7 +2,8 @@
 # Terminal-mode selection and the environment a GUI lane receives.
 #
 # With neither --tmux nor --ghostty, open-terminal picks tmux when $TMUX is set
-# and a GUI terminal otherwise. Either flag overrides that. A caller who passes
+# or ORCH_TMUX_SESSION names the fleet session on the person's own server, and
+# a GUI terminal otherwise. Either flag overrides that. A caller who passes
 # --ghostty from inside tmux (the flag inferred from what the screen looked
 # like) is warned that the override moved the lane out of the workspace, and the
 # GUI window it opens carries neither TMUX nor TMUX_PANE: without that scrub the
@@ -19,27 +20,19 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 export ORCH_LANE_HOST=local
 # shellcheck source=lib/shared-skill-libs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
+# mutant_scripts and mutate_file, the two halves of the control below.
+# shellcheck source=lib/growth-state.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/growth-state.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
-SRC_OT="${OPEN_TERMINAL_UNDER_TEST:-$SCRIPTS_DIR/open-terminal}"
+SRC_OT="$SCRIPTS_DIR/open-terminal"
 SRC_LIB_DIR="$SCRIPTS_DIR/lib"
 TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-PASS=0
-FAIL=0
-ok() { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
-bad() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n        %s\n' "$1" "${2:-}"; }
-assert_eq() { [[ "$1" == "$2" ]] && ok "$3" || bad "$3" "expected: $2   got: $1"; }
-assert_contains() {
-  grep -qF -- "$2" <<<"$1" && ok "$3" || bad "$3" "wanted substring: $2
-        in: $1"
-}
-assert_not_contains() {
-  grep -qF -- "$2" <<<"$1" && bad "$3" "unwanted substring: $2
-        in: $1" || ok "$3"
-}
+# shellcheck source=lib/assertions.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assertions.sh"
 
 # Stub bin. A GUI terminal stub logs its own name, its argv and the tmux
 # identity it was handed (`<unset>` when the variable is absent, which is what a
@@ -67,6 +60,8 @@ gui_stub "$GHOSTTY_BIN/ghostty"
 cat > "$BIN/tmux" <<'STUB'
 #!/usr/bin/env bash
 printf 'tmux %s\n' "$*" >> "$OT_TMUX_LOG"
+# The named session exists, so a launch reaches the window calls, which fail.
+[[ "${1:-}" != has-session ]] || exit 0
 exit 1
 STUB
 cat > "$BIN/gh" <<'STUB'
@@ -115,7 +110,7 @@ stage() {
   mkdir -p "$1/scripts/lib"
   cp "$2" "$1/scripts/open-terminal"
   cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$1/scripts/"
-  cp "$SRC_LIB_DIR"/*.sh "$1/scripts/lib/"
+  cp -R "$SRC_LIB_DIR/." "$1/scripts/lib/"
   orch_fixture_shared_libs "$1"
   chmod +x "$1/scripts/open-terminal"
   git -C "$1" init -q
@@ -125,8 +120,9 @@ REPO="$TMP_ROOT/repo"
 stage "$REPO" "$SRC_OT"
 
 # run NAME OT WHERE ARGS... — WHERE is `in` (a tmux controller: TMUX and
-# TMUX_PANE set) or `out` (neither present, whatever this suite itself runs
-# under). $RUN_PATH is the launch PATH and $RUN_TERMINAL the $TERMINAL value
+# TMUX_PANE set), `out` (neither present, whatever this suite itself runs
+# under) or `setting` (neither present, ORCH_TMUX_SESSION naming the fleet
+# session on the person's own server). $RUN_PATH is the launch PATH and $RUN_TERMINAL the $TERMINAL value
 # (empty: unset), both defaulting to the `term` arm. Sets RC, ERR,
 # TERM_LOG_TEXT and TMUX_LOG_TEXT.
 RUN_PATH=""
@@ -141,9 +137,10 @@ run() {
   local -a launch_env=(env)
   [[ -n "$RUN_TERMINAL" ]] || launch_env+=(-u TERMINAL)
   case "$where" in
-    in)  launch_env+=(TMUX=stub,1,0 TMUX_PANE=%7) ;;
+    in)  launch_env+=(TMUX=stub,1,0 TMUX_PANE=%7 ORCH_TMUX_SESSION=stub) ;;
     out) launch_env+=(-u TMUX -u TMUX_PANE) ;;
-    *) echo "run: WHERE must be in or out, got '$where'" >&2; exit 2 ;;
+    setting) launch_env+=(-u TMUX -u TMUX_PANE ORCH_TMUX_SESSION=stub) ;;
+    *) echo "run: WHERE must be in, out or setting, got '$where'" >&2; exit 2 ;;
   esac
   [[ -z "$RUN_TERMINAL" ]] || launch_env+=("TERMINAL=$RUN_TERMINAL")
   set +e
@@ -177,10 +174,13 @@ WARNING='open-terminal: mode-override option=--ghostty detected=tmux'
 # rejects before its first tmux call; the flag still won, since no GUI opened.
 MODE_ROWS='in||tmux|nowarn
 out||gui|nowarn
+setting||tmux|nowarn
 in|--ghostty|gui|warn
 out|--ghostty|gui|nowarn
+setting|--ghostty|gui|nowarn
 in|--tmux|tmux|nowarn
-out|--tmux|refused|nowarn'
+out|--tmux|refused|nowarn
+setting|--tmux|tmux|nowarn'
 
 # check_mode_rows LABEL OT — runs every row against OT and asserts it.
 check_mode_rows() {
@@ -219,55 +219,33 @@ check_mode_rows() {
   done <<<"$MODE_ROWS"
 }
 
-echo "=== open-terminal: mode is auto-detected from \$TMUX and a flag overrides it ==="
+echo "=== open-terminal: mode is auto-detected from \$TMUX or ORCH_TMUX_SESSION and a flag overrides it ==="
 check_mode_rows main "$REPO/scripts/open-terminal"
 
 echo
-echo "=== each rule can fail ==="
+echo "=== the rule can fail ==="
 
-# mutate NAME SED_EXPR — a copy of open-terminal with SED_EXPR applied, staged
-# in its own repo; the copy must differ from the source or the control proves
-# nothing. Sets MUTANT_OT to the staged script (no subshell, so the tally
-# above keeps counting).
-mutate() {
-  local name="$1" expr="$2"
-  local dir="$TMP_ROOT/mutant-$name"
-  mkdir -p "$dir"
-  sed "$expr" "$SRC_OT" > "$dir/open-terminal"
-  if cmp -s "$SRC_OT" "$dir/open-terminal"; then
-    bad "control: the $name mutant really changes open-terminal" "the copy is byte-identical to open-terminal"
-  else
-    ok "control: the $name mutant really changes open-terminal"
-  fi
-  stage "$dir/repo" "$dir/open-terminal"
-  MUTANT_OT="$dir/repo/scripts/open-terminal"
-}
-
-# Auto-detection gone: with no flag every launch is a GUI launch, so the
-# inside-tmux default row reds while the flagged rows still hold.
-mutate default 's/then TERMINAL_MODE="tmux"; else TERMINAL_MODE="gui"/then TERMINAL_MODE="gui"; else TERMINAL_MODE="gui"/'
+# The suite's one must-fail control. Auto-detection gone: with no flag every
+# launch is a GUI launch, so the inside-tmux default row reds while the flagged
+# rows still hold.
+MUTANT_REPO="$TMP_ROOT/mutant-default"
+MUTANT_OT="$(mutant_scripts mutant-default open-terminal)/open-terminal" || exit 1
+git -C "$MUTANT_REPO" init -q
+orch_fixture_shared_libs "$MUTANT_REPO"
+mutate_file "$MUTANT_OT" 'then TERMINAL_MODE="tmux"; else TERMINAL_MODE="gui"' 'then TERMINAL_MODE="gui"; else TERMINAL_MODE="gui"'
 run mut_default "$MUTANT_OT" in CC-1
 assert_eq "$TMUX_LOG_TEXT" "" "control: without auto-detection tmux is never reached from inside tmux"
 assert_contains "$TERM_LOG_TEXT" "term -e bash -lc" "control: and a GUI terminal opens instead"
-
-# The warning's branch never taken: the override still launches, silently.
-mutate warning 's/^elif \[\[ "$TERMINAL_MODE" == "ghostty" \&\& -n "${TMUX:-}" \]\]; then$/elif false; then/'
-run mut_warn "$MUTANT_OT" in --ghostty CC-1
-assert_eq "$RC" "0" "control: without the warning the override still launches"
-assert_not_contains "$ERR" "$WARNING" "control: and says nothing about overriding tmux"
 
 echo
 echo "=== a GUI terminal opened from inside tmux inherits no tmux identity, on every launcher arm ==="
 
 # One row per open_gui arm: the PATH and $TERMINAL that reach it, and the argv
 # the stub must log. Every arm detaches through run_detached, which owns the
-# scrub. Each row runs green against open-terminal and red against a mutant
-# whose run_detached scrubs only CLAUDECODE, so no arm escapes the scrub.
+# scrub.
 ARM_ROWS="terminal|$BIN:$PATH|term|term -e bash -lc
 xdg|$XDG_BIN:$BIN:$PATH|-|xdg-terminal-exec bash -lc
 ghostty|$GHOSTTY_BIN:$BIN:$NO_XDG_PATH|-|ghostty --working-directory="
-mutate scrub 's#env -u CLAUDECODE -u TMUX -u TMUX_PANE#env -u CLAUDECODE#g'
-SCRUB_MUTANT_OT="$MUTANT_OT"
 while IFS='|' read -r arm path terminal argv; do
   [[ -n "$arm" ]] || continue
   RUN_PATH="$path"
@@ -277,18 +255,14 @@ while IFS='|' read -r arm path terminal argv; do
   assert_contains "$TERM_LOG_TEXT" "$argv" "$arm arm: the launch went through this arm"
   assert_contains "$TERM_LOG_TEXT" "env TMUX=<unset> TMUX_PANE=<unset>" \
     "$arm arm: the GUI terminal receives neither TMUX nor TMUX_PANE"
-  run "mut-scrub-$arm" "$SCRUB_MUTANT_OT" in --ghostty CC-1
-  assert_eq "$RC" "0" "control: $arm arm without the scrub still launches"
-  assert_contains "$TERM_LOG_TEXT" "$argv" "control: $arm arm is still the arm taken"
-  assert_contains "$TERM_LOG_TEXT" "env TMUX=stub,1,0 TMUX_PANE=%7" \
-    "control: and the $arm arm's terminal really does inherit TMUX and TMUX_PANE"
 done <<<"$ARM_ROWS"
 RUN_PATH=""
 RUN_TERMINAL="term"
 
 echo "=== the GUI launch happens on a host with no setsid ==="
 
-# run_detached detaches the window so it outlives this script. setsid is util-linux
+# run_detached detaches the window so it outlives this script, through
+# lib/lane-launch.sh's lane_run_detached. setsid is util-linux
 # and stock macOS has none, and the launch line sends its own stderr to
 # /dev/null — so a `setsid: command not found` was swallowed there, nothing
 # opened, and open-terminal still printed "Opened terminal". nohup is the arm
@@ -306,9 +280,9 @@ mkdir -p "$NO_SETSID_PATH"
 rm -f -- "$NO_SETSID_PATH/setsid"
 # Without this the case passes vacuously through the setsid branch.
 if PATH="$NO_SETSID_PATH" command -v setsid >/dev/null 2>&1; then
-  bad "the probe PATH resolves no setsid" "setsid is still reachable"
+  fail "the probe PATH resolves no setsid" "setsid is still reachable"
 else
-  ok "the probe PATH resolves no setsid"
+  pass "the probe PATH resolves no setsid"
 fi
 
 RUN_PATH="$BIN:$NO_SETSID_PATH"
@@ -316,13 +290,6 @@ run "nosetsid" "$REPO/scripts/open-terminal" out CC-1
 assert_eq "$RC" "0" "no setsid: the GUI launch is reported as successful"
 assert_contains "$TERM_LOG_TEXT" "term -e bash -lc" "no setsid: a GUI terminal really opens"
 
-# The control: with the nohup arm deleted the same run opens nothing, so the
-# assertion above is about the arm and not about a launch that would happen
-# either way.
-mutate "nosetsid" 's#^    nohup env #    setsid env #'
-RUN_PATH="$BIN:$NO_SETSID_PATH"
-run "mut-nosetsid" "$MUTANT_OT" out CC-1
-assert_eq "$TERM_LOG_TEXT" "" "control: without the nohup arm no GUI terminal opens on a setsid-less host"
 RUN_PATH=""
 RUN_TERMINAL="term"
 

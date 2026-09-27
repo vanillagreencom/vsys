@@ -128,9 +128,8 @@ source "$SCRIPT_DIR/lib/gh-repo.sh"
 source "$SCRIPT_DIR/lib/lane-mail-nap.sh"
 # shellcheck source=lib/review-threads.sh
 source "$SCRIPT_DIR/lib/review-threads.sh"
-# The disarm/dequeue verb, owned by the github skill and shared with pr-merge's
-# admin route so the waiter and that route cannot drift on how a PR leaves the
-# queue. orch declares github a required dependency (SKILL.md).
+# The disarm/dequeue verb, owned by the github skill. orch declares github a
+# required dependency (SKILL.md).
 # shellcheck source=../../github/scripts/lib/merge-queue.sh
 source "$SCRIPT_DIR/../../github/scripts/lib/merge-queue.sh"
 
@@ -153,8 +152,8 @@ a final result on stdout: a stable verdict line with English below, or a JSON
 object with --json, so callers can route merged vs ejected vs disarmed vs still-queued
 deterministically (kendex#819); the exceptions are the usage errors, which
 exit 2 and print to stderr, exit 4, and exit 5. It is the merge-pr queue watch as one
-simple command (accepted by the Codex approval=never classifier where a
-sleep-poll loop is rejected) and the only place WAS_QUEUED lives: whether ANY
+simple command, the form orch's shell rule asks for in place of a
+sleep-poll loop, and the only place WAS_QUEUED lives: whether ANY
 earlier poll observed the PR queued or armed. Separate tool calls carry no
 memory, so an orchestrator re-entering per poll cannot tell "ejected from the
 queue" from "never entered it"; this script can. It is NOT a CI waiter:
@@ -367,9 +366,8 @@ Environment (orch-env ladder: parent env > .env.local > .kendex/settings.toml /
                 own clock (default 120).
 
 Long waiter launch:
-  Run under setsid with the exit written to a completion file, then poll
-  that file while keeping the lane active. Follow orch's
-  references/waiter-launch.md for the saved launch script and commands.
+  Follow orch's references/waiter-launch.md for the saved launch script and
+  commands, and poll its completion file while keeping the lane active.
   Never start a long waiter as a harness background command. A missing
   completion file is no verdict and does not authorize a duplicate waiter.
 
