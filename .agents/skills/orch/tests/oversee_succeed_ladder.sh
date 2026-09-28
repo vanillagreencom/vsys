@@ -324,8 +324,8 @@ assert_eq "$RC|$(keyed entry-permission-untransferable)|$(launched claude)|$(lau
   "a codex caller whose permission words cannot cross skips the claude entries and succeeds on codex"
 # Its control: a walk that chooses the claude entry anyway refuses after it,
 # launching nothing.
-SKIPCTL="$(mutant_scripts skipctl oversee-succeed)" || exit 1
-mutate_file "$SKIPCTL/oversee-succeed" '      if [[ "$harness" != "$CALLER_HARNESS" ]] && ! entry_transferable "$harness"; then' '      if false; then'
+SKIPCTL="$(mutant_scripts skipctl lib/overseer-launch.sh)" || exit 1
+mutate_file "$SKIPCTL/lib/overseer-launch.sh" '      ol_entry_permitted "$entry" || continue' '      :'
 new_caller codex
 CALLER_LANE="CODEX_HOME=$H/.codex" SUCCEED_BIN="$SKIPCTL/oversee-succeed" run_succeed skipctl unset
 assert_eq "$RC|$(first_key)|$(launched claude)|$(launched codex)" \
@@ -431,8 +431,8 @@ assert_eq "$RC|$(keyed entry-permission-untransferable)|$(launched pi)|$(launche
   "a claude caller skips a pi entry no permission posture crosses to"
 # Its control: a walk that asks the source row alone chooses the pi entry and
 # then refuses, launching nothing.
-PISKIPCTL="$(mutant_scripts piskipctl oversee-succeed)" || exit 1
-mutate_file "$PISKIPCTL/oversee-succeed" '  launch_choice_permission_write "$1" >/dev/null || return 1' ''
+PISKIPCTL="$(mutant_scripts piskipctl lib/overseer-launch.sh)" || exit 1
+mutate_file "$PISKIPCTL/lib/overseer-launch.sh" '  if launch_choice_permission_write "$OL_HARNESS" >/dev/null; then' '  if true; then'
 pi_skip_row "$PISKIPCTL/oversee-succeed"
 assert_eq "$RC|$(first_key)|$(launched pi)|$(launched claude)" "1|launch-choice-failed|none|none" \
   "control: a walk that asks the source row alone chooses the pi entry and refuses"

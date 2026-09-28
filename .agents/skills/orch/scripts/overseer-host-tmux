@@ -32,14 +32,16 @@
 #            lib/lane-state.sh's word for the pane, the one judge every
 #            reader of a lane asks: working, idle, asking, walled, exited,
 #            or unjudged where the screen settles nothing, with `cause=`
-#            naming a scan the judge could not run. `--launch` is the
-#            first-turn reading a launcher takes of a pane it opened seconds
-#            ago, which has no earlier turn to slice from: working where a
-#            turn is in flight anywhere on the screen, asking where the
-#            folder-trust dialog holds the harness, in which case the line
-#            under the keyed one is that dialog line rather than the screen,
-#            and idle otherwise. A session the server no longer lists is
-#            `state=gone` with no screen.
+#            naming each scan the judge could not run, comma-separated:
+#            `limit-scan`, and `process-probe` with `probe=` its exit
+#            status. `--launch` is the first-turn reading a launcher takes
+#            of a pane it opened seconds ago, which has no earlier turn to
+#            slice from: working where a turn is in flight anywhere on the
+#            screen, asking where the folder-trust dialog holds the
+#            harness, in which case the line under the keyed one is that
+#            dialog line rather than the screen, and idle otherwise. A
+#            session the server no longer lists is `state=gone` with no
+#            screen, a pane that closes during any read of it included.
 #   deliver  reads a block on stdin and confirms the session can read it.
 #            On tmux the harness reads the watch log inside its own turn,
 #            so the block is already where that session reads; this verb
@@ -151,6 +153,38 @@ pane_listed() { # PANE
   grep -qxF -- "$1" <<<"$panes"
 }
 
+# inspect's answer for a session the server does not list: the keyed line
+# alone, at exit 0.
+inspect_gone() {
+  printf 'session=%s window=none server=none state=gone\n' "$SESSION"
+  exit 0
+}
+# inspect holds every read after its first listing to one rule: a pane the
+# server no longer lists answers gone at exit 0, whatever that read answered.
+# A read that failed, or answered outside its shape, lists the panes again: a
+# pane gone since the first listing closed mid-read and is gone, and one still
+# listed is the read itself failing, refused with its own words. A read that
+# answered is held to the same rule once the judgement is made
+# (inspect_settled), since a pane that closes mid-read can still answer.
+inspect_unread() { # FIELD=VALUE...
+  local detail
+  detail="$(cat -- "$DEP_ERR")" || detail=""
+  pane_listed "$SESSION" || inspect_gone
+  printf '%s\n' "$detail" > "$DEP_ERR"
+  die session-unreadable "session=$SESSION" "$@"
+}
+# inspect_field VAR FIELD SHAPE FORMAT — one display-message read of the
+# session into VAR, held to the regex SHAPE.
+inspect_field() { # VAR FIELD SHAPE FORMAT
+  local out
+  if ! out="$(pane_field "$SESSION" "$4")" || ! matches "$out" "$3"; then
+    inspect_unread "field=$2" "value=${out:-none}"
+  fi
+  printf -v "$1" '%s' "$out"
+}
+# The last read of the rule: the pane still listed once every read is made.
+inspect_settled() { pane_listed "$SESSION" || inspect_gone; }
+
 require_session() { # VALUE
   [[ -n "$1" ]] || die_status 2 option-missing option=--session "verb=$VERB"
   matches "$1" '^%[0-9]+$' || die_status 2 invalid-session "value=$1"
@@ -200,13 +234,10 @@ case "$VERB" in
     ;;
   inspect)
     require_session "$SESSION"
-    if ! pane_listed "$SESSION"; then
-      printf 'session=%s window=none server=none state=gone\n' "$SESSION"
-      exit 0
-    fi
-    window="$(pane_field "$SESSION" '#{window_id}')" || die session-unreadable "session=$SESSION" field=window_id
-    server="$(pane_field "$SESSION" '#{pid}')" || die session-unreadable "session=$SESSION" field=pid
-    screen="$(tmux capture-pane -pJ -t "$SESSION" 2>"$DEP_ERR")" || die session-unreadable "session=$SESSION" field=capture
+    pane_listed "$SESSION" || inspect_gone
+    inspect_field window window_id '^@[0-9]+$' '#{window_id}'
+    inspect_field server pid '^[0-9]+$' '#{pid}'
+    screen="$(tmux capture-pane -pJ -t "$SESSION" 2>"$DEP_ERR")" || inspect_unread field=capture
     if [[ "$LAUNCH" -eq 1 ]]; then
       # The whole capture, never a turn slice: a pane opened seconds ago has
       # no earlier turn to slice from. The trust dialog is named by its own
@@ -220,20 +251,22 @@ case "$VERB" in
       else
         state=idle
       fi
+      inspect_settled
       printf 'session=%s window=%s server=%s state=%s\n' "$SESSION" "$window" "$server" "$state"
     else
-      obs="$(pane_field "$SESSION" '#{pane_pid} #{pane_current_command}')" \
-        || die session-unreadable "session=$SESSION" field=pane_pid
-      matches "$obs" '^[0-9]+[[:blank:]]+[^[:space:]]' \
-        || die session-unreadable "session=$SESSION" field=pane_pid "value=${obs:-none}"
+      inspect_field obs pane_pid '^[0-9]+[[:blank:]]+[^[:space:]]' '#{pane_pid} #{pane_current_command}'
       pid="${obs%%[[:blank:]]*}"
       cmd="${obs#*[[:blank:]]}"
       cause=""
       # The sixth argument is empty: this reader's vantage point is the pane,
       # so a screen the pane rungs cannot settle is `unjudged`, never `exited`.
-      lane_state state listed "$cmd" "$pid" "$screen" || cause=" cause=limit-scan"
-      [[ "$LANE_PROBE_RC" -le 1 || -n "$cause" ]] || cause=" cause=process-probe"
-      printf 'session=%s window=%s server=%s state=%s%s\n' "$SESSION" "$window" "$server" "$state" "$cause"
+      # Each scan the judge could not run is named, the child probe with its
+      # own exit status, since the caller runs no probe of its own.
+      lane_state state listed "$cmd" "$pid" "$screen" || cause=",limit-scan"
+      [[ "$LANE_PROBE_RC" -le 1 ]] || cause="$cause,process-probe probe=$LANE_PROBE_RC"
+      inspect_settled
+      printf 'session=%s window=%s server=%s state=%s%s\n' "$SESSION" "$window" "$server" "$state" \
+        "${cause:+ cause=${cause#,}}"
     fi
     printf '%s\n' "$screen"
     ;;

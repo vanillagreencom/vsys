@@ -408,7 +408,7 @@ assert_eq "$BARE_RC|$BARE_MODEL|$BARE_JUDGED|$RC|$(jq -r '.overseer.model' "$FLE
 # Its control: a successor that runs, and records, its caller's bare flag
 # leaves the next generation's succession refusing an account it cannot name.
 BARECTL="$(mutant_scripts barectl oversee-succeed)" || exit 1
-mutate_file "$BARECTL/oversee-succeed" '      if [[ "$CALLER_HARNESS" == pi && "$CALLER_MODEL" == ?*/?* ]]; then' '      if false; then'
+mutate_file "$BARECTL/oversee-succeed" '  if [[ "$CALLER_HARNESS" == pi && "$CALLER_MODEL" == ?*/?* ]]; then' '  if false; then'
 bare_row "$BARECTL/oversee-succeed"
 assert_eq "$BARE_MODEL|$RC|$(grep -m1 -o '^oversee-succeed: pi-account-unknown [^ ]*' <<<"$ERR")" \
   "claude-fable-5-1|1|oversee-succeed: pi-account-unknown model=claude-fable-5-1" \
@@ -449,8 +449,8 @@ done
 
 # The control for the pair rule: a caller entry that keeps its own flags beside
 # the record's pair hands the successor two models.
-PAIRCTL="$(mutant_scripts pairctl oversee-succeed)" || exit 1
-mutate_file "$PAIRCTL/oversee-succeed" '[[ "$chosen" == caller && -z "$model" ]]' '[[ "$chosen" == caller ]]'
+PAIRCTL="$(mutant_scripts pairctl lib/overseer-launch.sh)" || exit 1
+mutate_file "$PAIRCTL/lib/overseer-launch.sh" '  if [[ -z "$model" ]]; then' '  if true; then'
 state "$(record "$CALLER_PANE" "$H/.eclaude" fable)"
 SUCCEED_BIN="$PAIRCTL/oversee-succeed" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --print-launch-line -- "$BYPASS" --model opus --effort low
 assert_eq "$RC|$OUT" "0|env CLAUDE_CONFIG_DIR='$H/.eclaude' claude -n overseer --model fable --effort high $LEAD $BYPASS --model opus --effort low '$BRIEF'" \
@@ -694,6 +694,34 @@ mutate_file "$CWDCTL/oversee-succeed" '  [[ -z "$OL_KNOWN_CWD" ]] || CALLER_PATH
 pending_run "$CWDCTL"
 assert_eq "$RC|$SUCC_CWD" "0|$CALLER_CWD" \
   "control: a caller that ignores its recorded directory opens the successor in the pane's"
+# A session record write the state refuses is a notice here: the succession
+# commits, the caller's window closed and the successor in its slot.
+recordfail_run() { # SCRIPTS_DIR
+  local dir="$1"
+  rm -f -- "${dir:?}/workflow-state" "${TMP_ROOT:?}/record-refused"
+  cat > "$dir/workflow-state" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1 \$2 \$3" == "set oversee overseer" && ! -e "$TMP_ROOT/record-refused" ]]; then
+  touch "$TMP_ROOT/record-refused"; echo 'fixture: record write refused' >&2; exit 1
+fi
+exec "$SRC_DIR/workflow-state" "\$@"
+STUB
+  chmod +x "$dir/workflow-state"
+  new_caller claude
+  reading "Fable 5.1"
+  state "$(record "$CALLER_PANE" "$H/.eclaude" fable)"
+  SUCCEED_BIN="$dir/oversee-succeed" PREFERENCE=claude:1:low run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --wait-secs 20 -- "$BYPASS"
+  CALLER_LISTED="$(tm list-panes -a -F '#{pane_id}' | grep -cxF -- "$CALLER_PANE" || true)"
+}
+recordfail_run "$(mutant_scripts recordfail)"
+assert_eq "$RC|$(grep -c '^oversee-succeed: record-unwritten field=overseer step=write$' <<<"$ERR")|$CALLER_LISTED" \
+  "0|1|0" \
+  "a record write the state refuses is a notice, and the succession commits" "$TMP_ROOT/err"
+RECNOTICECTL="$(mutant_scripts recnoticectl oversee-succeed)" || exit 1
+mutate_file "$RECNOTICECTL/oversee-succeed" '      message record-unwritten field=overseer step=write >&2' '      return 1'
+recordfail_run "$RECNOTICECTL"
+assert_eq "$RC|$CALLER_LISTED" "1|1" \
+  "control: a hook that refuses on the failed record write keeps the caller running"
 
 # --- the succession -------------------------------------------------------
 # A live succession judges the account and model its record names: .eclaude at
