@@ -87,7 +87,7 @@ TMUX_ADDR="$(tm display-message -p '#{socket_path},#{pid},0')"
 SERVER_PID="$(tm display-message -p '#{pid}')"
 run_tmux() { # ARGS...
   RC=0
-  OUT="$(cd "$TMP_ROOT/work" && env -i HOME="$TMP_ROOT" PATH="$PATH" TMUX="$TMUX_ADDR" "${PROVIDER_BIN:-$HOST}" "$@" 2>&1 </dev/null)" || RC=$?
+  OUT="$(cd "$TMP_ROOT/work" && env -i HOME="$TMP_ROOT" PATH="${RUN_PATH:-$PATH}" TMUX="$TMUX_ADDR" "${PROVIDER_BIN:-$HOST}" "$@" 2>&1 </dev/null)" || RC=$?
 }
 layout() { tm list-windows -t fleet -F '#{window_index} #{window_name}' | awk '$1 > 0' | tr '\n' ';'; }
 field() { awk -v k="$2=" 'NR == 1 { for (i = 1; i <= NF; i++) if (index($i, k) == 1) { print substr($i, length(k) + 1); exit } }' <<<"$1"; }
@@ -153,6 +153,101 @@ run_tmux inspect --session %999
 assert_eq "$RC|$(tr '\n' ';' <<<"$OUT")" \
   "0|session=%999 window=none server=none state=gone;" \
   "inspect on a session the server does not list answers gone with no screen"
+# A pane that closes during any read after the listing is gone, never an
+# unreadable session: the window a succession's stop closes while its caller's
+# wait reads. A tmux on PATH closes the pane at one read: just before the
+# capture, which then fails; at the process read, which a closing pane can
+# answer empty at exit 0; or just after the capture, which answered, the last
+# read `--launch` makes.
+RACE_BIN="$TMP_ROOT/race-bin"
+mkdir -p "$RACE_BIN"
+race_pane() { # INDEX before|empty|after — a pane the tmux on RACE_BIN closes at that read
+  local real
+  real="$(command -v tmux)"
+  RACE="$(new_pane "$1" 'exec sleep 100000')"
+  case "$2" in
+    before) printf '#!/bin/sh\n[ "$1" != capture-pane ] || %s kill-pane -t %s 2>/dev/null\nexec %s "$@"\n' \
+              "$real" "$RACE" "$real" ;;
+    empty) printf '#!/bin/sh\ncase "$*" in *"#{pane_pid} "*) %s kill-pane -t %s 2>/dev/null; echo; exit 0 ;; esac\nexec %s "$@"\n' \
+              "$real" "$RACE" "$real" ;;
+    after) printf '#!/bin/sh\n[ "$1" = capture-pane ] || exec %s "$@"\n%s "$@"; rc=$?\n%s kill-pane -t %s 2>/dev/null\nexit $rc\n' \
+              "$real" "$real" "$real" "$RACE" ;;
+  esac > "$RACE_BIN/tmux"
+  chmod +x "$RACE_BIN/tmux"
+}
+for read in before empty after; do
+  race_pane 11 "$read"
+  launch=()
+  [[ "$read" != after ]] || launch=(--launch)
+  RUN_PATH="$RACE_BIN:$PATH" run_tmux inspect ${launch[@]+"${launch[@]}"} --session "$RACE"
+  assert_eq "$RC|$(tr '\n' ';' <<<"$OUT")" \
+    "0|session=$RACE window=none server=none state=gone;" \
+    "inspect on a session that closes at its read ($read) answers gone"
+done
+# Its control: a provider that refuses every failed read as unreadable.
+RACECTL="$(mutant_scripts racectl overseer-host-tmux)" || exit 1
+mutate_file "$RACECTL/overseer-host-tmux" '  detail="$(cat -- "$DEP_ERR")" || detail=""' \
+  '  die session-unreadable "session=$SESSION" "$@"'
+race_pane 12 before
+PROVIDER_BIN="$RACECTL/overseer-host-tmux" RUN_PATH="$RACE_BIN:$PATH" run_tmux inspect --session "$RACE"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
+  "1|overseer-host-tmux: session-unreadable session=$RACE field=capture" \
+  "control: without the second listing a pane closed during the read is unreadable"
+# The empty answer's control: a read held to its shape with no second listing.
+SHAPECTL="$(mutant_scripts shapectl overseer-host-tmux)" || exit 1
+mutate_file "$SHAPECTL/overseer-host-tmux" '    inspect_unread "field=$2" "value=${out:-none}"' \
+  '    die session-unreadable "session=$SESSION" "field=$2" "value=${out:-none}"'
+race_pane 13 empty
+PROVIDER_BIN="$SHAPECTL/overseer-host-tmux" RUN_PATH="$RACE_BIN:$PATH" run_tmux inspect --session "$RACE"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
+  "1|overseer-host-tmux: session-unreadable session=$RACE field=pane_pid value=none" \
+  "control: an empty answer with no second listing is unreadable"
+# The answered read's control: no listing once the judgement is made.
+SETTLECTL="$(mutant_scripts settlectl overseer-host-tmux)" || exit 1
+mutate_file "$SETTLECTL/overseer-host-tmux" 'inspect_settled() { pane_listed "$SESSION" || inspect_gone; }' \
+  'inspect_settled() { :; }'
+race_pane 14 after
+PROVIDER_BIN="$SETTLECTL/overseer-host-tmux" RUN_PATH="$RACE_BIN:$PATH" run_tmux inspect --launch --session "$RACE"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT" | grep -c ' server=none state=gone$' || true)" "0|0" \
+  "control: with no listing after the judgement a pane closed after its capture is judged as if live"
+# A child probe that cannot run is named with its own exit status: a pgrep
+# on PATH that fails as a broken probe does, under a bare shell.
+PROBE_BIN="$TMP_ROOT/probe-bin"
+mkdir -p "$PROBE_BIN"
+printf '#!/bin/sh\nexit 3\n' > "$PROBE_BIN/pgrep"
+chmod +x "$PROBE_BIN/pgrep"
+RUN_PATH="$PROBE_BIN:$PATH" run_tmux inspect --session "$SHELL_PANE"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT" | grep -o ' cause=.*')" \
+  "0| cause=process-probe probe=3" \
+  "inspect names a child probe that could not run and its exit status"
+# Both scans failing on one pass are both named: the probe as above and a grep
+# that fails on the usage-limit pattern alone.
+# shellcheck source=../scripts/lib/lane-state.sh
+LIMIT_RE="$(source "$SRC_DIR/lib/lane-state.sh" && printf '%s' "$USAGE_LIMIT_RE")"
+cat > "$PROBE_BIN/grep" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do [[ "\$arg" != $(printf '%q' "$LIMIT_RE") ]] || exit 2; done
+exec $(command -v grep) "\$@"
+STUB
+chmod +x "$PROBE_BIN/grep"
+both_causes() { # [PROVIDER_BIN]
+  PROVIDER_BIN="${1:-}" RUN_PATH="$PROBE_BIN:$PATH" run_tmux inspect --session "$SHELL_PANE"
+  BOTH="$RC|$(sed -n 1p <<<"$OUT" | grep -o ' cause=.*')"
+}
+both_causes
+assert_eq "$BOTH" "0| cause=limit-scan,process-probe probe=3" \
+  "inspect names both scans where both fail, the probe with its exit status"
+BOTHCTL="$(mutant_scripts bothctl overseer-host-tmux)" || exit 1
+mutate_file "$BOTHCTL/overseer-host-tmux" '[[ "$LANE_PROBE_RC" -le 1 ]] || cause=' \
+  '[[ "$LANE_PROBE_RC" -le 1 || -n "$cause" ]] || cause='
+both_causes "$BOTHCTL/overseer-host-tmux"
+assert_eq "$BOTH" "0| cause=limit-scan" "control: a provider that names one scan drops the probe beside the limit scan"
+rm -f -- "${PROBE_BIN:?}/grep"
+PROBECTL="$(mutant_scripts probectl overseer-host-tmux)" || exit 1
+mutate_file "$PROBECTL/overseer-host-tmux" 'cause="$cause,process-probe probe=$LANE_PROBE_RC"' 'cause="$cause,process-probe"'
+PROVIDER_BIN="$PROBECTL/overseer-host-tmux" RUN_PATH="$PROBE_BIN:$PATH" run_tmux inspect --session "$SHELL_PANE"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT" | grep -o ' cause=.*')" "0| cause=process-probe" \
+  "control: a provider that drops the probe status names the cause alone"
 run_tmux inspect --session fleet:3
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
   "2|overseer-host-tmux: invalid-session value=fleet:3" \
