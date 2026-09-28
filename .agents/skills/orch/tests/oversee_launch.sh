@@ -123,7 +123,7 @@ identity() { printf '%s|' "$(recorded harness)" "$(recorded account)" "$(recorde
 assert_eq "$(identity)" "claude|$H/.claude|$H/.claude|fable|high|$WORK_REAL|" \
   "the session record carries the launch identity the command was built with"
 assert_eq "$(keyed overseer-launch "$OUT" | sed -n 1p | sed 's/session=%[0-9]*/session=%N/; s/window=@[0-9]*/window=@N/')" \
-  "oversee: overseer-launch form=prefix lane=$H/.claude trust=none session=%N window=@N server=$SOCKET" \
+  "oversee: overseer-launch form=prefix lane=$H/.claude trust=account-config session=%N window=@N server=$SOCKET" \
   "the launch line names the form and the session before the record"
 
 # A second launch while that overseer is live is refused: two overseers never
@@ -215,10 +215,22 @@ assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(overseers)" \
 # register: the record for a hand-opened pane, its generation one past the
 # record's, kept where the record already names that pane.
 HAND="$(tm new-window -d -t fleet:4 -n hand -P -F '#{pane_id}' "exec '$BIN/hclaude' 100000")"
+PRIOR_LINE="$(recorded launch_line)"
 run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$HAND" CLAUDE_CONFIG_DIR="$H/.eclaude" -- register
-assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(recorded runtime)|$(recorded account)" \
-  "0|oversee: registered session=$HAND window=$(tm display-message -p -t "$HAND" '#{window_id}') server=$SERVER_PID generation=4 account=$H/.eclaude|tmux|$H/.eclaude" \
-  "register writes the record for the caller's pane, one generation past the record"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(recorded runtime)|$(recorded account)|$(recorded launch_line)" \
+  "0|oversee: registered session=$HAND window=$(tm display-message -p -t "$HAND" '#{window_id}') server=$SERVER_PID generation=4 account=$H/.eclaude|tmux|$H/.eclaude|none" \
+  "register writes the record for the caller's pane, one generation past the record, and drops the launch line the record held"
+# The line's control: a writer that keeps the prior's fields whole leaves the
+# launched session's line on the hand-opened one, and a death of the latter
+# would replay the former's command. The line the real register just dropped
+# is put back first, so the control meets the record that register met.
+[[ "$PRIOR_LINE" != none ]] || fail "control premise: the record held no launch line before register"
+jq --arg line "$PRIOR_LINE" '.overseer.launch_line = $line' "$FLEET_STATE" > "$FLEET_STATE.tmp" && mv -- "$FLEET_STATE.tmp" "$FLEET_STATE"
+LINECTL="$(mutant_scripts linectl lib/overseer-launch.sh)" || exit 1
+mutate_file "$LINECTL/lib/overseer-launch.sh" '($p | del(.pending, .launch_line))' '($p | del(.pending))'
+OVERSEE_BIN="$LINECTL/oversee" run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$HAND" CLAUDE_CONFIG_DIR="$H/.eclaude" -- register
+assert_eq "$RC|$(recorded launch_line)" "0|$PRIOR_LINE" \
+  "control: a register that keeps the prior fields whole carries the launched session's line"
 HAND_IDENTITY="claude|$H/.eclaude|$H/.eclaude|none|none|$(tm display-message -p -t "$HAND" '#{pane_current_path}')|"
 assert_eq "$(identity)" "$HAND_IDENTITY" \
   "register records the harness the pane runs, its account and directory, and no model or effort"
