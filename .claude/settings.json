@@ -54,7 +54,6 @@
         ]
       },
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -66,7 +65,6 @@
     ],
     "Stop": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -83,7 +81,6 @@
     ],
     "SubagentStop": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -106,7 +103,6 @@
     ],
     "TaskCompleted": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -118,7 +114,6 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",

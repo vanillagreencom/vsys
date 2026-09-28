@@ -319,7 +319,14 @@ mkdir -p "$repo/sub"
 printf '# x\n\n## Code Review Rules\n\ny\n' > "$repo/sub/AGENTS.md"
 git -C "$repo" add -A >/dev/null 2>&1
 expect_red agents-section 'a nested AGENTS.md, with git answering' check --repo "$repo"
-rm -rf -- "${repo:?}/.git"
+# The must-fail control for the helper: its removal stubbed out, git answers,
+# so the nested-AGENTS.md clause alone reds. Exit 1 is the findings status of
+# every clause on this fixture, so the fired set is pinned beside it.
+ctrl="$(bi_remove_git() { :; }; bi_remove_git "$repo" && bi_run check --repo "$repo" \
+  && fired="$(bi_fired)" && printf '%s %s' "$bi_status" "${fired% }")"
+if [ "$ctrl" = '1 agents-section' ]; then ok 'control: the removal stubbed out, the no-git case goes red'
+else bad 'control: the removal stubbed out, the no-git case goes red' "got=$ctrl"; fi
+bi_remove_git "$repo" || exit 1
 expect_message 'git ls-files' 'and the same tree with git unable to answer' \
   check --repo "$repo"
 
@@ -342,5 +349,55 @@ printf 'x\n' > "$repo/.claude/we{ird}/a.md"
 git -C "$repo" add -A >/dev/null 2>&1
 expect_red exclusion-consistency \
   'a harness subdirectory name outside the glob dialect' render --dry-run --repo "$repo"
+
+# The engine writes a mixed inventory when it adopts a workflow template.
+if env PYTHONDONTWRITEBYTECODE=1 python3 - "$BI_ROOT/skills/bot-instructions/scripts" <<'PYTEST'
+import json
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from lib import manifest
+from lib.errors import ManifestError
+
+record = {"path": ".github/workflows/kendex-refresh.yml",
+          "template": ".agents/skills/review-gate/templates/kendex-refresh.yml",
+          "templateHash": "sha256:" + "a" * 64}
+class Tree:
+    def __init__(self, value):
+        self.value = value
+    def read(self, path):
+        assert path == manifest.INVENTORY
+        return json.dumps(self.value)
+
+mixed = [".agents/skills/dev/SKILL.md", record]
+assert manifest.rendered_skill_trees(Tree(mixed)) == ["dev"]
+for field, value in [("path", None), ("path", ""), ("path", "a\nb"),
+                     ("template", None), ("template", "a\0b"),
+                     ("templateHash", None), ("templateHash", "sha256:bad"),
+                     ("extra", True)]:
+    bad = dict(record, **{field: value})
+    try:
+        manifest.rendered_skill_trees(Tree([bad]))
+    except ManifestError:
+        pass
+    else:
+        raise AssertionError((field, value))
+# The same valid mixed input refuses if adopted objects cannot pass the reader.
+source = Path(manifest.__file__).read_text()
+needle = "isinstance(value, dict)"
+assert source.count(needle) == 1
+mutant = source.replace(needle, "False and isinstance(value, dict)")
+assert mutant != source
+namespace = {"__name__": "lib.manifest", "__package__": "lib"}
+exec(compile(mutant, str(manifest.__file__), "exec"), namespace)
+try:
+    namespace["rendered_skill_trees"](Tree(mixed))
+except ManifestError:
+    pass
+else:
+    raise AssertionError("control: adopted acceptance removal must reject the valid inventory")
+PYTEST
+then ok 'adopted workflow inventory shape and refusal control'
+else bad 'adopted workflow inventory shape and refusal control'; fi
 
 bi_summary

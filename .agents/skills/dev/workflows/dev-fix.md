@@ -10,7 +10,7 @@ The workflow for a dev agent receiving a review-fix delegation. Every path is wo
 
 Confirm the shell's real working directory is the delegation's `Worktree:` path before any repo-relative command, by the check at the top of [dev-implement.md](./dev-implement.md).
 
-**Skip if** the delegation is ad-hoc. Read prior work, decisions, and handoff notes before evaluating any item.
+**Skip if** the delegation is ad-hoc: it carries no `Issue:` line, or its `Artifact Key:` is a `pr-N` or `local-` key, which names no issue whatever `Issue:` repeats. In such a round, `[ISSUE_ID]` in the commit header and the proposed-rule path below takes the `Artifact Key:` value. Otherwise read prior work, decisions, and handoff notes before evaluating any item.
 
 ```bash
 .agents/skills/linear/scripts/linear.sh cache issues get [ISSUE_ID]
@@ -26,6 +26,8 @@ GitHub: `gh issue view [N] --repo [OWNER/REPO] --json number,title,body,comments
 Evaluate each item in `Review items:` independently.
 
 An optional `Adds:` line is the complete blank-separated list of protected additions this round may make; a blank or tab separates, so a path containing whitespace is read as two paths and cannot be authorized as one. One path is `Adds: tools/one-helper.sh`; multiple paths are `Adds: tools/one-helper.sh skills/x/scripts/check`. [`../../orch/schemas/dev-round.md` § Protected additions](../../orch/schemas/dev-round.md#protected-additions) is the sole scope definition. With no line, add none in that scope. If the fix needs another protected file, report that requirement instead of creating it; the orchestrator must authorize the exact path in a fresh round.
+
+An optional `Near-ceiling:` line, one per file, is a `byte-ceiling` record the previous round produced: the path, its bytes, the ceiling in bytes and the percent of the ceiling reached. That file is within reach of the wall, and this round owns its split — plan or perform it rather than growing the file further, or say in the return why the split cannot be made here. With no line, no file is known to be within reach.
 
 - **Apply** when the item relates to the parent issue and adds no new risk. Unrelated changes are Skipped with the reason; the orchestrator files.
 - **Skip** when the pattern conflicts with the existing architecture, would break other functionality, or violates your defined rules and conventions. Before applying anything, search the decisions governing the affected area — `.agents/skills/decider/scripts/decisions search "[RELEVANT_KEYWORDS]"`, and `.agents/skills/decider/scripts/decisions search --issue [ISSUE_ID]` for those linked to the issue — and read the full file for any match. An item contradicting an active decision is skipped citing it, e.g. "Skipped — contradicts [DECISION_ID]".
@@ -50,7 +52,9 @@ Follow [dev SKILL.md § Reflect](../SKILL.md#reflect). Complete every repository
 
 ## 3. Validate And Commit
 
-Follow [dev-implement.md § 5. Validate](./dev-implement.md#5-validate) from the worktree root. Use the Visual QA rule below.
+Follow [dev-implement.md § 5. Validate](./dev-implement.md#5-validate) from the worktree root, with two changes. Its `DEV_VALIDATE_CMD` item validates this round's changes only: start it as `.agents/skills/orch/scripts/dev-validate-run --worktree [WORKTREE_PATH] --validate-mode range --base [BASE_SHA]`, where `[BASE_SHA]` is the `base_sha` of `[WORKTREE_PATH]/tmp/dev-round-[ARTIFACT_KEY]-[DEV_ROUND_ID].json`, and poll it the same way. Use the Visual QA rule below.
+
+The run records the mode that ran, `range`, or `full` in a project that sets no `DEV_VALIDATE_RANGE_CMD`, and § 5's `dev-return-write` reads it from the run directory.
 
 **Visual QA** — **skip if** the issue has no `design` label or the fix touches no UI code. Otherwise confirm what the fix changes renders correctly, not the full checklist.
 
@@ -86,11 +90,13 @@ Write the artifact first, per [dev SKILL.md § Round Contract](../SKILL.md#round
 
 If the validation list misses a rule, write `tmp/proposed-rule-[ISSUE_ID].md` with a `### Proposed Rules` heading and the proposal as one bullet. Append `--summary-file tmp/proposed-rule-[ISSUE_ID].md` to the command below. Omit the file and flag when there is no proposal.
 
+`[BASE_BRANCH]` is what `.agents/skills/orch/scripts/resolve-base-branch [WORKTREE_PATH]` reports; `--near-ceiling-base` takes it as `origin/[BASE_BRANCH]` because the local branch may sit behind the remote, and in a fresh clone may not exist at all.
+
 ```bash
-.agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind fix --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [HEAD_SHA_AFTER_COMMIT] --validate [pass|"FAILING: check1,check2"] [--validate-note [TEXT]] --no-summary [--summary-file tmp/proposed-rule-[ISSUE_ID].md] --item [N] [DECISION] [REASONING] [--item ...]
+.agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind fix --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [HEAD_SHA_AFTER_COMMIT] --validate [pass|no-verdict|"FAILING: check1,check2"] [--validate-run-dir [RUN_DIR]] [--validate-note [TEXT]] --no-summary [--summary-file tmp/proposed-rule-[ISSUE_ID].md] --item [N] [DECISION] [REASONING] [--item ...] --near-ceiling-base origin/[BASE_BRANCH]
 ```
 
-One `--item N DECISION REASONING` per **delegated** item — Applied, Skipped, and Blocked alike; the artifact must cover exactly the delegated set, `N` being the item's `#[N]` number (value shapes: `dev-return-write --help`; keep `REASONING` free of backticks). `--commit` is HEAD after the commit, or the prior HEAD when no commit was needed.
+One `--item N DECISION REASONING` per **delegated** item — Applied, Skipped, and Blocked alike; the artifact must cover exactly the delegated set, `N` being the item's `#[N]` number (value shapes: `dev-return-write --help`; keep `REASONING` free of backticks). `--commit` is HEAD after the commit, or the prior HEAD when no commit was needed. `[RUN_DIR]` is the `run-dir=` value `dev-validate-run` printed in this round's § 3; the writer refuses a run from an earlier round, one that started at a HEAD without the round's `base_sha`, unless the run records that base as the one a rebase left off the branch, or one that started before the round was delegated. A `pass` needs that run to have passed, a `no-verdict` that run to have been cut off; omit the flag only when validation failed before any run started.
 
 **Respawned mid-round without the `Review items:` list?** Do not reconstruct it from the raw review JSONs and do not guess. Read `[WORKTREE_PATH]/tmp/dev-round-[ARTIFACT_KEY]-[DEV_ROUND_ID].json`, whose `items[]` entries each carry the delegated number `n`, the item's full text, and the `reach` the orchestrator recorded, and write one `--item` per entry. If that file is missing too, report the gap and write no artifact.
 
@@ -102,6 +108,6 @@ One `--item N DECISION REASONING` per **delegated** item — Applied, Skipped, a
 | N | Applied/Skipped/Blocked | [EXPLANATION — cite DXXX or rule if Skipped] |
 
 Commits: [SHAS or "none"]
-Validate: [pass or "FAILING: check1, check2"]
+Validate: [pass, "no-verdict: suite1, suite2", or "FAILING: check1, check2"]
 Proposed rule: [proposal or "none"]
 </output_format>

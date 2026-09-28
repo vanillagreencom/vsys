@@ -311,7 +311,23 @@ prepare_restack_authorization() {
   record_pending_restack_authorization "$wt" "$remote" "$branch" "$expected_oid" "$original_head" "$base_oid"
 }
 
-remote_ref_lease_arg() {
+# Whether the local branch already carries every commit unique to the remote
+# branch, under different SHAs. Git's own patch-equivalence judge over the
+# symmetric difference answers it, so a branch a rewrite moved off the remote
+# is told from a remote that genuinely moved ahead. A rev-list that cannot
+# answer is not an answer: the caller keeps the fetch-and-rebase route, which
+# is the safe reading of an unknown.
+branch_holds_remote_commits() { # WT EXPECTED_OID -> 0 when every remote-only commit has a local twin
+  local wt="$1" expected_oid="$2" remote_only=""
+
+  remote_only="$(git -C "$wt" rev-list --count --cherry-pick --right-only "HEAD...$expected_oid" 2>/dev/null)" || return 1
+  [[ "$remote_only" == 0 ]]
+}
+
+# The remote OID a force-with-lease push of BRANCH is pinned to, empty where
+# the remote branch must not exist yet. Refuses a remote OID the local branch
+# neither contains nor holds a push authorization for.
+remote_ref_lease_oid() {
   local wt="$1" remote="$2" branch="$3"
   local remote_head_ref="refs/heads/$branch"
   local remote_tracking_ref="refs/remotes/$remote/$branch"
@@ -329,7 +345,6 @@ remote_ref_lease_arg() {
       fetch_status=$?
       if grep -qiE "couldn't find remote ref|could not find remote ref|remote ref does not exist|remote branch .* not found" "$fetch_err"; then
         rm -f "$fetch_err"
-        printf '%s\n' "--force-with-lease=${remote_head_ref}:"
         return 0
       fi
 
@@ -345,18 +360,36 @@ remote_ref_lease_arg() {
     # Empty expectation means the remote branch must not already exist. This
     # keeps first pushes safe and prevents overwriting an existing branch that
     # the local checkout has never observed.
-    printf '%s\n' "--force-with-lease=${remote_head_ref}:"
     return 0
   fi
 
   if ! git -C "$wt" merge-base --is-ancestor "$expected_oid" HEAD && \
      ! restack_push_authorization_matches "$wt" "$remote" "$branch" "$expected_oid"; then
     worktree_message push-remote-uncontained "$remote/$branch" "Error: Remote '$remote/$branch' points at $expected_oid, which is not contained in local branch '$branch'." >&2
-    echo "Fetch and rebase/merge '$remote/$branch' before using worktree push." >&2
+    # A branch that already holds the remote's work under rewritten SHAs was
+    # moved off the remote by a rewrite no recorded authorization covers, so
+    # fetching and rebasing would replay commits that rewrite superseded. No
+    # verb republishes such a branch, because a rewrite verb run on it now
+    # rewrites nothing and so records nothing, so the route is a push pinned
+    # to the OID this refusal read. The push arm refuses an unmapped rewrite
+    # before it asks this, so the route is never named for one. A remote that
+    # genuinely moved ahead carries work this branch lacks, and keeps the
+    # fetch-and-rebase route.
+    if branch_holds_remote_commits "$wt" "$expected_oid"; then
+      echo "Local branch '$branch' already holds every commit on '$remote/$branch' under rewritten SHAs, so fetching and rebasing would replay superseded work." >&2
+      echo "No recorded push authorization covers this rewrite." >&2
+      echo "Republish the branch pinned to the remote OID above:" >&2
+      # A branch or remote name may carry shell syntax Git accepts, and the
+      # branch can be one a PR author named, so every argument is quoted for
+      # the shell the operator pastes this into.
+      printf '  git -C %q push %q %q %q\n' "$wt" "--force-with-lease=refs/heads/$branch:$expected_oid" "$remote" "$branch" >&2
+    else
+      echo "Fetch and rebase/merge '$remote/$branch' before using worktree push." >&2
+    fi
     return 1
   fi
 
-  printf '%s\n' "--force-with-lease=${remote_head_ref}:${expected_oid}"
+  printf '%s\n' "$expected_oid"
 }
 
 # Which judge refused a push, read off the transcript, one predicate each.
@@ -771,9 +804,15 @@ strip_trailing_slashes() {
   printf '%s\n' "$path"
 }
 
+# One path segment in the alphabet an issue ID is spelled in: a name composed
+# under the worktree base dir that cannot climb out of it or name a subtree.
+is_path_segment() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$1" != *..* ]]
+}
+
 validate_issue_id() {
   local issue="$1"
-  if [[ ! "$issue" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$issue" == *..* ]]; then
+  if ! is_path_segment "$issue"; then
     worktree_message issue-invalid "$issue" "Error: invalid issue ID '$issue'. Use letters, numbers, '.', '_', or '-' only; start with a letter/number and do not include '..'." >&2
     return 1
   fi
@@ -906,17 +945,21 @@ mkdir_inside_worktree() {
   fi
 }
 
+# An external per-repo dir beside the checkout. Worktrees (and their build
+# outputs) must not live under the repo root — an editor recursively watching
+# the repo would ingest every worktree's build artifacts and can exhaust the
+# per-user inotify budget. A shared sibling like ../trees would collide across
+# repos (two repos' issue-1 would resolve to the same path), so the repo name
+# disambiguates.
+checkout_worktrees_dir() {
+  printf '%s/.worktrees/%s\n' "$(dirname "$PROJECT_ROOT")" "$(basename "$PROJECT_ROOT")"
+}
+
 resolve_worktree_base_dir() {
   local raw="${WORKTREE_BASE_DIR:-}"
   local path
   if [[ -z "$raw" ]]; then
-    # Default: an external per-repo dir beside the checkout. Worktrees (and
-    # their build outputs) must not live under the repo root — an editor
-    # recursively watching the repo would ingest every worktree's build
-    # artifacts and can exhaust the per-user inotify budget. A shared sibling
-    # like ../trees would collide across repos (two repos' issue-1 would
-    # resolve to the same path), so the repo name disambiguates.
-    path="$(dirname "$PROJECT_ROOT")/.worktrees/$(basename "$PROJECT_ROOT")"
+    path="$(checkout_worktrees_dir)"
   else
     if [[ "$raw" == "~" ]]; then
       raw="${HOME:?WORKTREE_BASE_DIR uses ~ but HOME is not set}"
@@ -1037,8 +1080,67 @@ worktree_path() {
   echo "$TREES_DIR/$(echo "$1" | tr '[:upper:]' '[:lower:]')"
 }
 
+# The path a NEW worktree takes, by the kind of host it is created on. A local
+# machine holds several worktrees of one repository at once, so each takes the
+# path keyed by its issue. A hosted lane's clone holds exactly one, so every
+# lane of the repository takes the same path: sccache keys a Rust compile by
+# its absolute source path, and only a path identical in every lane lets one
+# lane's build, or the warm snapshot's, answer another's. That path is
+# composed from the clone's own location, never WORKTREE_BASE_DIR: an absolute
+# base dir names one directory for every clone on a machine, and two clones of
+# a repository on one host would then share one lane path. The fleet puts each
+# clone at the same path on every host, so the result still matches across
+# lanes. Every reader finds a hosted tree through worktree_path_for_issue,
+# never through this spelling.
+worktree_new_path() { # HOST_KIND ISSUE
+  local name="${WORKTREE_HOSTED_NAME:-lane}"
+  case "$1" in
+    local) worktree_path "$2" ;;
+    hosted)
+      if ! is_path_segment "$name"; then
+        worktree_message hosted-name-invalid "$name" "Error: WORKTREE_HOSTED_NAME must be one path segment of letters, numbers, '.', '_' or '-', starting with a letter or number and without '..'." >&2
+        return 1
+      fi
+      printf '%s/%s\n' "$(checkout_worktrees_dir)" "$name"
+      ;;
+    *)
+      worktree_message host-kind-invalid "$1" "Error: internal: a new worktree path was asked for host kind '$1'; only local and hosted exist." >&2
+      return 1
+      ;;
+  esac
+}
+
 issue_branch_name() {
   echo "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# The issue a worktree was created for, in lower case, recorded in the tree's
+# private git dir. It is the one route from an issue ID to a hosted tree that
+# does not go through HEAD: the hosted path carries no issue ID, and a paused
+# restack leaves the tree detached, so its branch is not registered to it.
+readonly WORKTREE_ISSUE_RECORD="kendex-issue"
+
+record_worktree_issue() { # WT ISSUE
+  local git_dir=""
+  if ! git_dir="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" ||
+     ! printf '%s\n' "$(issue_branch_name "$2")" >"$git_dir/$WORKTREE_ISSUE_RECORD"; then
+    worktree_message issue-record-failed "$1" "Error: could not record issue '$2' in the git dir of $1, so the issue ID cannot find this tree while its HEAD is detached." >&2
+    return 1
+  fi
+}
+
+# Every create exit that hands back a tree, a reuse included, prints it here,
+# so the record is written, or repaired, wherever a tree is returned.
+report_created_worktree() {
+  record_worktree_issue "$WT_PATH" "$ISSUE" || exit 1
+  printf '%s\n' "$WT_PATH"
+}
+
+recorded_worktree_issue() { # WT
+  local git_dir=""
+  git_dir="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  [[ -f "$git_dir/$WORKTREE_ISSUE_RECORD" ]] || return 1
+  cat -- "$git_dir/$WORKTREE_ISSUE_RECORD"
 }
 
 current_checkout_path_for_issue() {
@@ -1311,10 +1413,12 @@ worktree_for_branch() {
 # Resolve an issue ID to its worktree path. Prefers the configured
 # WORKTREE_BASE_DIR target; when nothing exists there, falls back to the
 # worktree registered for the issue branch so trees created under a different
-# WORKTREE_BASE_DIR keep working unmoved (no auto-migration). The main
-# checkout is never a fallback target.
+# WORKTREE_BASE_DIR keep working unmoved (no auto-migration), then to the
+# hosted lane path when the tree there records the issue, which finds a hosted
+# tree whose HEAD a paused restack detached. The main checkout is never a
+# fallback target.
 worktree_path_for_issue() {
-  local issue="$1" configured="" registered=""
+  local issue="$1" configured="" registered="" hosted=""
   validate_issue_id "$issue" || return 1
   configured="$(worktree_path "$issue")"
   if [[ -e "$configured" || -L "$configured" ]]; then
@@ -1324,6 +1428,14 @@ worktree_path_for_issue() {
   registered="$(worktree_for_branch "$(issue_branch_name "$issue")" 2>/dev/null || true)"
   if [[ -n "$registered" ]] && ! same_canonical_dir "$registered" "$PROJECT_ROOT"; then
     printf '%s\n' "$registered"
+    return 0
+  fi
+  # An invalid WORKTREE_HOSTED_NAME names no path a hosted create could have
+  # made, so it leaves nothing to find here.
+  hosted="$(worktree_new_path hosted 2>/dev/null)" || hosted=""
+  if [[ -n "$hosted" && -d "$hosted" ]] && is_registered_project_worktree "$hosted" &&
+     [[ "$(recorded_worktree_issue "$hosted" || true)" == "$(issue_branch_name "$issue")" ]]; then
+    printf '%s\n' "$hosted"
     return 0
   fi
   printf '%s\n' "$configured"
@@ -2167,10 +2279,18 @@ refuse_existing_branch() {
   echo "  Signal: $signal${details:+ ($details)}" >&2
   echo "No worktree was created and no local branch was rebased or modified." >&2
   echo "Inspect or monitor the existing work instead of spawning another implementer." >&2
+  # The signal names the ref the scan met first, not where the branch is:
+  # `local` fires for a published branch too, and `remote` for one on a
+  # secondary remote. --base asks origin alone, so origin decides the advice.
   if [[ "$signal" == pr ]]; then
     echo "To inspect that PR in a worktree intentionally, pass --pr <number>." >&2
-  else
+  elif remote_branch_discovered origin "$branch"; then
     echo "To check out that branch intentionally, pass --base $branch." >&2
+  else
+    echo "Branch '$branch' is not on origin, so --base cannot check it out. Either:" >&2
+    [[ "$signal" == remote ]] && echo "  fetch it first:           git fetch ${details%/"$branch"} $branch:$branch" >&2
+    echo "  push it first:            git push -u origin $branch; then $0 create $issue --base $branch" >&2
+    echo "  from the main checkout:   git switch $branch; then $0 create $issue --transfer $branch" >&2
   fi
   return "$ACTIVE_WORK_EXIT"
 }
@@ -2227,6 +2347,10 @@ case "${1:-}" in
 
     if [[ "$ACTION" == abort ]]; then
       RESTACK_ORIGINAL_HEAD="$(restack_state_get "$WT_PATH" originalHead)"
+      # The abort restores the branch's own version of every held path, so
+      # the saved conflicted copies are stale; their list goes with Git's
+      # paused state, so read it first.
+      HELD_COPIES="$(restack_unconsumed_hook_copies "$WT_PATH")"
       if [[ "$RESTACK_MODE" == replay ]]; then
         # The replay never moved the branch ref, so aborting the cherry-pick
         # restores the detach point and reattaching restores everything.
@@ -2255,10 +2379,14 @@ case "${1:-}" in
           exit 1
         fi
       fi
+      while IFS= read -r HELD_COPY; do
+        [[ -z "$HELD_COPY" ]] || rm -f -- "$WT_PATH/$HELD_COPY"
+      done <<<"$HELD_COPIES"
       finish_guarded_restack_abort "$WT_PATH" aborted
       exit 0
     fi
 
+    restack_refuse_unconsumed_hooks "$WT_PATH" || exit 1
     validate_worktree_setup_config || exit 1
     validate_pending_restack_remote "$WT_PATH" || exit 1
     RESTACK_BASE_OID="$(restack_state_get "$WT_PATH" baseOid)"
@@ -2360,9 +2488,11 @@ case "${1:-}" in
     REUSE=false
     RESTACK=false
     REPLAY=false
+    HOST_KIND=local
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --base) BASE="$2"; shift 2 ;;
+        --hosted) HOST_KIND=hosted; shift ;;
         --from) FROM="$2"; shift 2 ;;
         --pr) PR="$2"; shift 2 ;;
         --transfer) TRANSFER="${2:-}"; [[ -n "$TRANSFER" ]] || { worktree_message transfer-branch-missing "--transfer" "Error: --transfer requires the local branch checked out in the main checkout." >&2; exit 1; }; shift 2 ;;
@@ -2434,7 +2564,7 @@ case "${1:-}" in
       REUSE_STATUS="$(git -C "$WT_PATH" status --porcelain 2>/dev/null)" || { worktree_message reuse-status-failed "$WT_PATH" "Error: could not read the worktree state before reusing $WT_PATH." >&2; exit 1; }
       if [[ "$REUSE" == true && "$RESTACK" != true && "$REPLAY" != true && -n "$REUSE_STATUS" ]]; then
         worktree_message reuse-dirty "$WT_PATH" "Reused $WT_PATH with uncommitted work; refreshed its lease and skipped the rebase." >&2
-        echo "$WT_PATH"; exit 0
+        report_created_worktree; exit 0
       fi
 
       # Network/ref discovery must succeed before the claim lock or any setup
@@ -2561,15 +2691,8 @@ case "${1:-}" in
               fi
               if [[ "$RESTACK" == true ]]; then
                 worktree_message replay-conflicts "$WT_PATH" "Error: Cherry-pick replay onto origin/$DEFAULT_BRANCH stopped on conflicts in $WT_PATH." >&2
-                if [[ -n "$CONFLICT_FILES" ]]; then
-                  echo "Conflicting files:" >&2
-                  sed 's/^/  /' <<<"$CONFLICT_FILES" >&2
-                fi
-                echo "The replay is paused in the worktree so the conflicts can be resolved:" >&2
-                echo "  1. Edit each conflicting file to remove the conflict markers." >&2
-                echo "  2. git -C \"$WT_PATH\" add <file>    (each resolved file)" >&2
-                echo "  3. $0 restack continue \"$WT_PATH\"    (repeat if it stops again)" >&2
-                echo "     If the resolved commit is empty: $0 restack skip \"$WT_PATH\"" >&2
+                echo "The replay is paused in the worktree so the conflicts can be resolved." >&2
+                report_restack_conflicts "$WT_PATH" "$CONFLICT_FILES"
                 echo "To back out instead: $0 restack abort \"$WT_PATH\"" >&2
                 exit 1
               fi
@@ -2644,15 +2767,8 @@ case "${1:-}" in
             fi
             if [[ "$RESTACK" == true ]]; then
               worktree_message rebase-conflicts "$WT_PATH" "Error: Rebase onto origin/$DEFAULT_BRANCH stopped on conflicts in $WT_PATH." >&2
-              if [[ -n "$CONFLICT_FILES" ]]; then
-                echo "Conflicting files:" >&2
-                sed 's/^/  /' <<<"$CONFLICT_FILES" >&2
-              fi
-              echo "The rebase is paused in the worktree so the conflicts can be resolved:" >&2
-              echo "  1. Edit each conflicting file to remove the conflict markers." >&2
-              echo "  2. git -C \"$WT_PATH\" add <file>    (each resolved file)" >&2
-              echo "  3. $0 restack continue \"$WT_PATH\"    (repeat if it stops again)" >&2
-              echo "     If the resolved commit is empty: $0 restack skip \"$WT_PATH\"" >&2
+              echo "The rebase is paused in the worktree so the conflicts can be resolved." >&2
+              report_restack_conflicts "$WT_PATH" "$CONFLICT_FILES"
               echo "To back out instead: $0 restack abort \"$WT_PATH\"" >&2
               exit 1
             fi
@@ -2685,7 +2801,7 @@ case "${1:-}" in
       # Refresh setup (rebase may have replaced symlinks with tracked content)
       release_issue_claim_lock
       setup_app_worktree "$WT_PATH"
-      echo "$WT_PATH"
+      report_created_worktree
       exit 0
     fi
 
@@ -2695,6 +2811,11 @@ case "${1:-}" in
     if [[ -e "$WT_PATH" || -L "$WT_PATH" ]]; then
       refuse_incomplete_worktree "$ISSUE" "$WT_PATH" || exit "$ACTIVE_WORK_EXIT"
     fi
+
+    # No tree stands for the issue, so any tree made below is new and takes
+    # the path its host kind gives. A hosted path another issue's tree still
+    # holds is refused by each mode's guard_new_target_path.
+    WT_PATH="$(worktree_new_path "$HOST_KIND" "$ISSUE")" || exit 1
 
     if [[ "$REUSE" == true || "$RESTACK" == true ]]; then
       worktree_message reuse-missing "$WT_PATH" "Error: --reuse/--restack requires an existing worktree at $WT_PATH" >&2
@@ -2785,7 +2906,7 @@ case "${1:-}" in
         git -C "$WT_PATH" stash drop 'stash@{0}' >/dev/null 2>&1 || \
           worktree_message transfer-stash-kept "$TRANSFER_STASH" "Warning: transfer succeeded, but its recovery stash could not be removed." >&2
       fi
-      echo "$WT_PATH"
+      report_created_worktree
       exit 0
     fi
 
@@ -2816,7 +2937,7 @@ case "${1:-}" in
       git -C "$PROJECT_ROOT" worktree add --no-track -b "$BRANCH" "$WT_PATH" "$START_POINT" >/dev/null 2>&1
       release_issue_claim_lock
       setup_app_worktree "$WT_PATH"
-      echo "$WT_PATH"
+      report_created_worktree
       exit 0
     fi
 
@@ -2910,7 +3031,7 @@ case "${1:-}" in
     fi
 
     setup_app_worktree "$WT_PATH"
-    echo "$WT_PATH"
+    report_created_worktree
     ;;
 
   list)
@@ -3142,6 +3263,9 @@ case "${1:-}" in
     # reclaim nothing on the machine that reports a full disk.
     if [[ "$OUTPUT_PRUNE_MODE" == true ]]; then
       cleanup_enumerate_worktrees || exit 1
+      if [[ -n "$OUTPUT_PRUNE_WORKTREE" ]]; then
+        output_prune_owned_tree || exit 1
+      fi
       output_prune_sweep ${CLEANUP_TREES[@]+"${CLEANUP_TREES[@]}"} || CLEANUP_FAILED=true
       if [[ "$CLEANUP_FAILED" == true ]]; then
         exit 1
@@ -3254,7 +3378,11 @@ case "${1:-}" in
     ;;
 
   path)
-    worktree_path_for_issue "${2:?Error: path requires an issue ID}"
+    if [[ "${2:-}" == --hosted && $# -eq 2 ]]; then
+      worktree_new_path hosted
+    else
+      worktree_path_for_issue "${2:?Error: path requires an issue ID}"
+    fi
     ;;
 
   exists)
@@ -3365,22 +3493,13 @@ case "${1:-}" in
       REMOTE="origin"
     fi
 
-    CURRENT_BRANCH=$(git -C "$WT_PATH" branch --show-current 2>/dev/null)
-    PUSH_LEASE=()
-    if [[ "$AUTO_REBASE" == true && -n "$CURRENT_BRANCH" && "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]]; then
-      if LEASE_ARG="$(remote_ref_lease_arg "$WT_PATH" "$REMOTE" "$CURRENT_BRANCH")"; then
-        PUSH_LEASE=("$LEASE_ARG")
-      else
-        exit 1
-      fi
-    fi
-
-    # An earlier push may have rewritten this branch without deriving a map and
-    # refused. That rewrite stands, and this run would find the base already
+    # An earlier rewrite of this branch may have gone without a derivable map
+    # and refused. That rewrite stands, and this run would find the base already
     # contained, rebase nothing and derive nothing, so it must refuse too
     # rather than publish a branch no map ever described. --no-rebase is no
-    # exception: the commits are already rewritten. It sits after the lease,
-    # which judges a diverged remote on its own and says so in its own words.
+    # exception: the commits are already rewritten. It sits ahead of the lease,
+    # whose uncontained refusal names a force push that would publish exactly
+    # that unmapped rewrite.
     if ! read_unmapped_rewrite "$WT_PATH"; then
       worktree_message push-unmapped-unreadable "$WT_PATH" "Error: Could not read $WT_PATH's rebase-map record, so whether an earlier rebase left this branch unmapped is unknown; refusing to push." >&2
       exit 1
@@ -3391,6 +3510,20 @@ case "${1:-}" in
       echo "Reconcile every recorded SHA against that reflog, then remove the record to push:" >&2
       echo "  rm -f \"$(restack_rebase_map_file "$WT_PATH" 2>/dev/null || printf '<map file>')\"" >&2
       exit 1
+    fi
+
+    if ! CURRENT_BRANCH="$(git -C "$WT_PATH" branch --show-current 2>/dev/null)"; then
+      worktree_message push-branch-read-failed "$WT_PATH" "Error: could not read the current branch of $WT_PATH; refusing to push." >&2
+      exit 1
+    fi
+    PUSH_LEASE=()
+    LEASE_EXPECTED_OID=""
+    if [[ "$AUTO_REBASE" == true && -n "$CURRENT_BRANCH" && "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]]; then
+      if LEASE_EXPECTED_OID="$(remote_ref_lease_oid "$WT_PATH" "$REMOTE" "$CURRENT_BRANCH")"; then
+        PUSH_LEASE=("--force-with-lease=refs/heads/$CURRENT_BRANCH:$LEASE_EXPECTED_OID")
+      else
+        exit 1
+      fi
     fi
 
     if [[ "$AUTO_REBASE" == true ]]; then
@@ -3405,14 +3538,38 @@ case "${1:-}" in
           PRE_REBASE_COMMITS="$(git -C "$WT_PATH" log --reverse --format='%H %s' "origin/$DEFAULT_BRANCH..HEAD")"
           # Write-ahead, before git touches a commit: see record_pending_rewrite.
           record_pending_rewrite "$WT_PATH" "$PRE_REBASE_HEAD" || exit 1
+          # The same moment carries the push authorization. The lease above was
+          # computed while the remote OID was still contained in this branch,
+          # and the rebase below ends that containment; without a record of the
+          # OID it was read at, a push the pre-push chain refuses leaves the
+          # retry recomputing the lease against a rewritten head and refusing
+          # `push-remote-uncontained` on a branch the tool itself rewrote.
+          # Refusing before the rewrite starts is why this sits here, and its
+          # own uncontained check cannot fire: the lease just passed the same
+          # one against the same remote, branch and OID.
+          if [[ -n "$LEASE_EXPECTED_OID" ]]; then
+            PUSH_REBASE_BASE_OID="$(git -C "$WT_PATH" rev-parse "origin/$DEFAULT_BRANCH")"
+            prepare_restack_authorization "$WT_PATH" "$REMOTE" "$CURRENT_BRANCH" "$LEASE_EXPECTED_OID" "$PUSH_REBASE_BASE_OID" || exit 1
+          fi
           if ! git -C "$WT_PATH" rebase "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
             git -C "$WT_PATH" rebase --abort >/dev/null 2>&1 || true
             # An abort that unwound the rewrite puts the branch back on the head
-            # the record names, so the record goes with it; one that did not
-            # leaves the branch mid-rewrite, where the record must stand.
-            rebase_in_progress "$WT_PATH" || warn_uncleared_pending_rewrite "$WT_PATH"
+            # the record names, so the record and this attempt's pending
+            # authorization go with it, leaving whatever an earlier refused push
+            # authorized for the head the branch is back on; one that did not
+            # leaves the branch mid-rewrite, where both must stand.
+            rebase_in_progress "$WT_PATH" || cancel_pending_restack_authorization "$WT_PATH"
             worktree_message push-rebase-failed "$CURRENT_BRANCH" "Error: Rebase onto origin/$DEFAULT_BRANCH failed (conflicts). Push with --no-rebase or resolve manually." >&2
             exit 1
+          fi
+          # The rewrite is done, so the authorization prepared before it
+          # becomes the head a retry's lease accepts. Every refusal below
+          # leaves this rewrite standing, which is the state a retry has to
+          # publish, and none of them is thereby waved through: an unmapped
+          # rewrite's record is still on disk, and read_unmapped_rewrite
+          # refuses every push until the map is durable or the record removed.
+          if [[ -n "$LEASE_EXPECTED_OID" ]]; then
+            finalize_pending_restack_authorization "$WT_PATH" "$REMOTE" "$CURRENT_BRANCH" "$LEASE_EXPECTED_OID" || exit 1
           fi
           POST_REBASE_COMMITS="$(git -C "$WT_PATH" log --reverse --format='%H %s' "origin/$DEFAULT_BRANCH..HEAD")"
           if ! PUSH_MAP_LINES="$(emit_rebase_map "$PRE_REBASE_COMMITS" "$POST_REBASE_COMMITS")"; then

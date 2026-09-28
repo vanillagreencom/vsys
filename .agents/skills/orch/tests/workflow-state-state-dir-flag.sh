@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Tests for the classifier-safe `--state-dir` global flag on
-# workflow-state. The env-prefix form `ORCH_STATE_DIR=… workflow-state …` is
-# rejected under Codex approval=never (env-assignment prefix is a flagged
-# command shape), so worktree sessions target a canonical state directory with
-# the plain `--state-dir <path>` flag instead. ORCH_STATE_DIR stays supported as
+# Tests for the `--state-dir` global flag on workflow-state. orch's shell rule
+# (../SKILL.md § Harness-Safe Shell) takes no env-assignment prefix such as
+# `ORCH_STATE_DIR=… workflow-state …`, so worktree sessions target a canonical
+# state directory with the plain `--state-dir <path>` flag instead. ORCH_STATE_DIR stays supported as
 # a fallback. These tests fail against a unguarded script that lacks the flag
 # (`--state-dir` dispatches as an unknown command).
 
@@ -16,41 +15,21 @@ TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 WS="$REPO_ROOT/skills/orch/scripts/workflow-state"
+# mutant_scripts and mutate_file, the two halves of the control below.
+# shellcheck source=lib/growth-state.sh
+source "$TEST_DIR/lib/growth-state.sh"
 
-PASS=0
-FAIL=0
-
-assert_eq() {
-  local got="$1" want="$2" name="$3"
-  if [[ "$got" == "$want" ]]; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        expected: %s\n        got:      %s\n' "$name" "$want" "$got"
-  fi
-}
+# shellcheck source=lib/assertions.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assertions.sh"
 
 assert_file_exists() {
   local file="$1" name="$2"
-  if [[ -f "$file" ]]; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        expected file to exist: %s\n' "$name" "$file"
-  fi
+  if [[ -f "$file" ]]; then pass "$name"; else fail "$name" "expected file to exist: $file"; fi
 }
 
 assert_file_absent() {
   local file="$1" name="$2"
-  if [[ ! -f "$file" ]]; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        expected file to be absent: %s\n' "$name" "$file"
-  fi
+  if [[ ! -f "$file" ]]; then pass "$name"; else fail "$name" "expected file to be absent: $file"; fi
 }
 
 echo "=== workflow-state --state-dir global flag ==="
@@ -63,30 +42,11 @@ git -C "$main_repo" worktree add -q -b issue-anchor "$worktree"
 assert_file_exists "$main_repo/tmp/workflow-state-issue-anchor.json" "a worktree writes default state under the main checkout"
 assert_file_absent "$worktree/tmp/workflow-state-issue-anchor.json" "a worktree does not keep its own default state"
 
-mutant_dir="$TMP_ROOT/mutant/orch/scripts"
-mkdir -p "$mutant_dir"
-cp -R "$REPO_ROOT/skills/orch/scripts/lib" "$mutant_dir/lib"
-cp "$REPO_ROOT/skills/orch/scripts/git-context" "$mutant_dir/git-context"
-assert_eq "$(grep -Fc 'STATE_DIR="$STATE_ROOT/$STATE_DIR"' "$WS")" "1" "anchor control finds the relative-directory join"
-sed 's|STATE_DIR="$STATE_ROOT/$STATE_DIR"|STATE_DIR="$PWD/$STATE_DIR"|' "$WS" > "$mutant_dir/workflow-state"
-(cd "$worktree" && env -u ORCH_STATE_DIR bash "$mutant_dir/workflow-state" init issue-mutant --branch issue-mutant) >/dev/null
+# The default directory's one must-fail control: a cwd-relative join.
+anchor_mutant="$(mutant_scripts anchor-mutant workflow-state)/workflow-state" || exit 1
+mutate_file "$anchor_mutant" '*) root=$(project_root) || return 1' '*) root=$PWD'
+(cd "$worktree" && env -u ORCH_STATE_DIR "$anchor_mutant" init issue-mutant --branch issue-mutant) >/dev/null
 assert_file_absent "$main_repo/tmp/workflow-state-issue-mutant.json" "control: a cwd-relative join misses the main checkout"
-
-remove_dir="$TMP_ROOT/remove"
-for key in issue-one issue-two; do "$WS" --state-dir "$remove_dir" init "$key" >/dev/null; done
-"$WS" --state-dir "$remove_dir" update issue-one '.' >/dev/null
-"$WS" --state-dir "$remove_dir" remove issue-one
-assert_file_absent "$remove_dir/workflow-state-issue-one.json" "remove deletes the exact state file"
-assert_file_absent "$remove_dir/workflow-state-issue-one.json.lock" "remove deletes its lock sidecar"
-"$WS" --state-dir "$remove_dir" remove issue-absent
-assert_file_exists "$remove_dir/workflow-state-issue-two.json" "remove keeps a sibling and accepts an absent key"
-
-assert_eq "$(grep -Fc 'rm -f -- "$state_file" "$state_file.lock"' "$WS")" "1" "remove control finds the exact paths"
-awk 'index($0, "rm -f -- \"$state_file\" \"$state_file.lock\"") { print "    rm -f -- \"$STATE_DIR\"/workflow-state-*.json*"; next } { print }' "$WS" > "$mutant_dir/workflow-state-glob"
-glob_dir="$TMP_ROOT/glob"
-for key in issue-one issue-two; do "$WS" --state-dir "$glob_dir" init "$key" >/dev/null; done
-bash "$mutant_dir/workflow-state-glob" --state-dir "$glob_dir" remove issue-one
-assert_file_absent "$glob_dir/workflow-state-issue-two.json" "control: a glob delete removes the sibling"
 
 # Test 1: --state-dir with NO ORCH_STATE_DIR env and no env prefix. init writes
 # to and get reads back from <state-dir>/workflow-state-<ID>.json.

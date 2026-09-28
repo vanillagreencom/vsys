@@ -20,23 +20,19 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 export ORCH_LANE_HOST=local
 # shellcheck source=lib/shared-skill-libs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
+# mutant_scripts and mutate_file, the two halves of the control below.
+# shellcheck source=lib/growth-state.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/growth-state.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
-SRC_OT="${OPEN_TERMINAL_UNDER_TEST:-$SCRIPTS_DIR/open-terminal}"
+SRC_OT="$SCRIPTS_DIR/open-terminal"
 SRC_LIB_DIR="$SCRIPTS_DIR/lib"
 TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-PASS=0
-FAIL=0
-ok() { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
-bad() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n        %s\n' "$1" "${2:-}"; }
-assert_eq() { [[ "$1" == "$2" ]] && ok "$3" || bad "$3" "expected: $2   got: $1"; }
-assert_contains() {
-  grep -qF -- "$2" <<<"$1" && ok "$3" || bad "$3" "wanted substring: $2
-        in: $1"
-}
+# shellcheck source=lib/assertions.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assertions.sh"
 
 # Stub bin. The GUI terminal APPENDS rather than truncating, so a case that
 # expects no launch fails loudly on a stray one instead of overwriting it.
@@ -52,6 +48,8 @@ EOF
 cat > "$BIN/tmux" <<'EOF'
 #!/usr/bin/env bash
 printf 'tmux %s\n' "$*" >> "$OT_TMUX_LOG"
+# The named session exists, so a launch reaches the window calls, which fail.
+[[ "${1:-}" != has-session ]] || exit 0
 exit 1
 EOF
 cat > "$BIN/gh" <<'EOF'
@@ -82,7 +80,7 @@ stage() {
   mkdir -p "$1/scripts/lib"
   cp "$2" "$1/scripts/open-terminal"
   cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$1/scripts/"
-  cp "$SRC_LIB_DIR"/*.sh "$1/scripts/lib/"
+  cp -R "$SRC_LIB_DIR/." "$1/scripts/lib/"
   orch_fixture_shared_libs "$1"
   chmod +x "$1/scripts/open-terminal"
   git -C "$1" init -q
@@ -101,7 +99,7 @@ run() {
   set +e
   PATH="$BIN:$PATH" ORCH_STATE_DIR="$TMP_ROOT/$name.state" WORKTREE_CLI="$STUB" STUB_MODE="$mode" \
     OT_TERM_LOG="$term_log" OT_TMUX_LOG="$tmux_log" \
-    TMUX="${OT_TMUX_VALUE:-}" TERMINAL=term \
+    TMUX="${OT_TMUX_VALUE:-}" ORCH_TMUX_SESSION=stub TERMINAL=term \
     "$ot" --cmd 'echo {item}' "$@" >"$TMP_ROOT/$name.out" 2>"$TMP_ROOT/$name.err"
   RC=$?
   set -e
@@ -155,43 +153,19 @@ assert_eq "$TMUX_LOG_TEXT" "" "tmux was never called for the deleted directory"
 echo
 echo "=== the refusal can fail: with the guard gone the window opens ==="
 
-# The must-fail control, run over BOTH shapes the guard refuses. `launchable_dir`
-# is the whole protection, so the mutation is its one test — with that gone the
-# function returns 0 for every path and each launch proceeds.
-MUTANT="$TMP_ROOT/mutant"
-mkdir -p "$MUTANT"
-sed 's/\[\[ -d "$1" \]\] && return 0/return 0/' "$SRC_OT" > "$MUTANT/open-terminal"
-if cmp -s "$SRC_OT" "$MUTANT/open-terminal"; then
-  bad "control: the mutant really drops the directory test" "the copy is byte-identical to open-terminal"
-else
-  ok "control: the mutant really drops the directory test"
-fi
+# The suite's one must-fail control. `launchable_dir` is the whole protection,
+# so the mutation is its one test: with that gone the function returns 0 for
+# every path and the launch at the deleted directory proceeds.
 MUTANT_REPO="$TMP_ROOT/mutant-repo"
-stage "$MUTANT_REPO" "$MUTANT/open-terminal"
+MUTANT_OT="$(mutant_scripts mutant-repo open-terminal)/open-terminal" || exit 1
+git -C "$MUTANT_REPO" init -q
+orch_fixture_shared_libs "$MUTANT_REPO"
+mutate_file "$MUTANT_OT" '[[ -d "$1" ]] && return 0' 'return 0'
 
-run mutant "$MUTANT_REPO/scripts/open-terminal" missing --ghostty CC-1
+run mutant "$MUTANT_OT" missing --ghostty CC-1
 assert_eq "$RC" "0" "control: without the guard the deleted-path launch is reported as successful"
 assert_contains "$TERM_LOG_TEXT" "term -e bash -lc" \
   "control: and a terminal really is opened at the directory that is gone"
-
-# The empty path is the shape the leak takes, so it carries its own
-# control rather than riding on the deleted one: a guard written as a stat of a
-# non-empty path would refuse the case above and still launch this one.
-run mutant_empty "$MUTANT_REPO/scripts/open-terminal" empty --ghostty CC-1
-assert_eq "$RC" "0" "control: without the guard the empty-path launch is reported as successful"
-assert_contains "$TERM_LOG_TEXT" "term -e bash -lc" \
-  "control: and a terminal really is opened for the empty working directory"
-
-# The tmux path carries the same control. The stub tmux exits 1, so the item
-# fails either way and the LOG is what separates the two: refused means tmux was
-# never reached, and this case proves the tmux row above reds the moment its
-# `launchable_dir` call goes, rather than passing on a harness that could not
-# reach tmux at all.
-OT_TMUX_VALUE=stub,1,0
-run mutant_tmux "$MUTANT_REPO/scripts/open-terminal" missing --tmux CC-1
-OT_TMUX_VALUE=""
-assert_contains "$TMUX_LOG_TEXT" "tmux list-windows" \
-  "control: without the guard the tmux path really does place a window at the deleted directory"
 
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"

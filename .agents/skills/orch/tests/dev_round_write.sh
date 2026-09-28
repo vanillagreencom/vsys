@@ -20,10 +20,14 @@ REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 STATE="$REPO_ROOT/skills/orch/scripts/workflow-state"
 # shellcheck source=lib/growth-state.sh
 source "$TEST_DIR/lib/growth-state.sh"
-# shellcheck source=lib/waiter-assertions.sh
-source "$TEST_DIR/lib/waiter-assertions.sh"
+# shellcheck source=lib/assertions.sh
+source "$TEST_DIR/lib/assertions.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+# The mode a fix round runs is read from the project's settings, and orch-env
+# reads the process environment first: a developer's own range command would
+# otherwise decide the fix receipts' acceptance.
+unset DEV_VALIDATE_RANGE_CMD
 mkdir -p "$TMP_ROOT/linear/scripts" "$TMP_ROOT/bin"
 # The size owner reads the issue through its sibling Linear CLI. This stand-in
 # supplies the same raw cache row on Bash 3.2 test runners.
@@ -41,7 +45,7 @@ jq -r --arg id "issue-$3" '.[] | select(.identifier == $id) | .description' .cac
 SH
 chmod +x "$TMP_ROOT/linear/scripts/linear.sh" "$TMP_ROOT/bin/gh"
 export PATH="$TMP_ROOT/bin:$PATH"
-LIVE_SCRIPTS="$(copy_scripts live)"
+LIVE_SCRIPTS="$(mutant_scripts live)" || exit 1
 WRITE_BIN="$LIVE_SCRIPTS/dev-round-write"
 RETURN_WRITE="$LIVE_SCRIPTS/dev-return-write"
 CHECK="$LIVE_SCRIPTS/dev-artifact-check"
@@ -160,14 +164,23 @@ echo "=== a two-item round record, immutable once stamped ==="
 # worktree); an identical re-invocation is an idempotent retry, a different
 # set under the same round id is refused with the original intact, and a
 # fresh round id writes a distinct file beside the prior round's.
+WRITE_BEFORE="$(date +%s)"
 run_write --worktree "$WT" --issue issue-1230 --round-id "$RID" --item 1 "$ITEM1" "$REACH1" --item 2 "$ITEM2" "$REACH2" --adds "$ADDS"
+WRITE_AFTER="$(date +%s)"
 FIRST="$OUT"
-E="rc=0 out=$WT/tmp/dev-round-issue-1230-$RID.json written=yes .schema_version=2 .schema_version|type=number .round_id=$RID .issue=issue-1230 .base_sha=$BASE_SHA .adds|tojson=[\"crates/parser/src/lib.rs\",\"skills/orch/scripts/new-check\"] .items|length=2 .items[0].n=1 .items[0].n|type=number"
-assert_eq "$(observe "$E")" "$E" "the record carries the round token, the normalized issue, HEAD as base_sha, the adds list and one numbered item per --item" "$ERR"
+E="rc=0 out=$WT/tmp/dev-round-issue-1230-$RID.json written=yes .schema_version=2 .schema_version|type=number .round_id=$RID .issue=issue-1230 .base_sha=$BASE_SHA .delegated_at|type=number (.delegated_at>=$WRITE_BEFORE)and(.delegated_at<=$WRITE_AFTER)=true .adds|tojson=[\"crates/parser/src/lib.rs\",\"skills/orch/scripts/new-check\"] .items|length=2 .items[0].n=1 .items[0].n|type=number"
+assert_eq "$(observe "$E")" "$E" "the record carries the round token, the normalized issue, HEAD as base_sha, the delegation time, the adds list and one numbered item per --item" "$ERR"
 assert_eq "$(rec '.items[1].text')" "$ITEM2" "an item's formatted block is preserved verbatim, multi-line" "$ERR"
 assert_eq "$([[ -e "$WT/.git/kendex" ]] && echo yes || echo no)" "no" "nothing is written outside the worktree"
 run_write --worktree "$WT" --issue issue-1230 --round-id "$RID" --item 1 "$ITEM1" "$REACH1" --item 2 "$ITEM2" "$REACH2" --adds "$ADDS"
 assert_eq "$(observe "rc=0 out=$FIRST [.items[].n]|tojson=[1,2]")" "rc=0 out=$FIRST [.items[].n]|tojson=[1,2]" "an identical re-invocation is idempotent: same path, record unchanged" "$ERR"
+# A retry a minute after the first invocation stamps a later time, which is
+# not a different delegation: the record keeps the first invocation's.
+FIRST_AT="$(( $(jq -r '.delegated_at' "$FIRST") - 60 ))"
+jq --argjson at "$FIRST_AT" '.delegated_at = $at' "$FIRST" > "$FIRST.next"
+mv "$FIRST.next" "$FIRST"
+run_write --worktree "$WT" --issue issue-1230 --round-id "$RID" --item 1 "$ITEM1" "$REACH1" --item 2 "$ITEM2" "$REACH2" --adds "$ADDS"
+assert_eq "$(observe "rc=0 .delegated_at=$FIRST_AT")" "rc=0 .delegated_at=$FIRST_AT" "a later identical retry is idempotent and keeps the first invocation's delegation time" "$ERR"
 run_write --worktree "$WT" --issue issue-1230 --round-id "$RID" --item 3 replacement "$OK_REACH"
 OUT="$FIRST"
 assert_eq "$(observe "rc=2 [.items[].n]|tojson=[1,2]")" "rc=2 [.items[].n]|tojson=[1,2]" "a different set under the same round id is refused and the original stands" "$ERR"
@@ -175,9 +188,9 @@ run_write --worktree "$WT" --issue issue-1230 --round-id 2-2 --item 1 "next roun
 assert_eq "$([[ "$OUT" != "$FIRST" && -f "$FIRST" && -f "$OUT" ]] && echo yes || echo no)" "yes" "a new round id writes a distinct record without clobbering the prior round's"
 
 echo "=== --items-file: the harness-safe route for shell-hostile item text ==="
-# Real review blocks carry backticks and quotes, which Codex rejects in a
-# command even single-quoted, so the orchestrator writes the JSON with the
-# harness file tool and passes one path. Each row writes its own file and
+# Real review blocks carry backticks and quotes, and a finding's text never
+# crosses argv (../SKILL.md § Harness-Safe Shell), so the orchestrator writes the
+# JSON with the harness file tool and passes one path. Each row writes its own file and
 # takes its own round id.
 ITEMS="$TMP_ROOT/items.json"
 # `label^items json^round^expect` (the separator is ^ so item text and jq
@@ -227,12 +240,12 @@ assert_eq "$(find "$WT/tmp" -maxdepth 1 -name 'dev-round-i-60-*.json' | wc -l | 
 run_write --worktree "$WT" --issue issue-1230 --round-id 61-61 --item 1 text "kendex refresh in a linked worktree"
 E='rc=0 .items[0]|keys_unsorted|tojson=["n","text","reach"]'
 assert_eq "$(observe "$E") reach=$(rec .items[0].reach)" "$E reach=kendex refresh in a linked worktree" "a reach naming a command a person runs is accepted and recorded verbatim beside n and text" "$ERR"
-# Control: with check_reach neutered the same value is accepted, so the
-# refusals above come from the live check and not another arm. The mutation is
-# asserted to have landed before the run that depends on it.
-REACH_MUTANT="$(copy_scripts reach-mutant)/dev-round-write"
+# The suite's one must-fail control: with check_reach neutered the same value
+# is accepted, so the refusals above come from the live check and not another
+# arm. The mutation is asserted to have landed before the run that depends on
+# it.
+REACH_MUTANT="$(mutant_scripts reach-mutant dev-round-write)/dev-round-write" || exit 1
 awk '{ print } /^check_reach\(\) \{$/ { print "  return 0  # MUTATED" }' "$WRITE_BIN" > "$REACH_MUTANT"
-chmod +x "$REACH_MUTANT"
 assert_eq "$(grep -Fc -- "return 0  # MUTATED" "$REACH_MUTANT")" "1" "control: the reach mutation landed in the copy"
 set +e
 growth_round_write "$STATE" "$REACH_MUTANT" --worktree "$WT" --issue issue-1230 --round-id 63-63 --item 1 text "Copilot thread" >/dev/null 2>&1; mutant_rc=$?
@@ -314,23 +327,42 @@ for row in "${size_rows[@]}"; do
   fi
 done
 
-# Restore a refusal for measured over and unsized results in the writer.
-MUTANT_SCRIPTS="$(copy_scripts size-refusal-mutant)"
-MUTANT_WRITE="$MUTANT_SCRIPTS/dev-round-write"
-assert_eq "$(grep -Fc 'if (( measured != 0 )); then' "$MUTANT_WRITE")" "1" "control finds the result handler"
-sed -i.bak '/^if (( measured != 0 )); then/i\
-[[ "$BRANCH_ALLOWANCE_STATUS" == pass ]] || exit 3
-' "$MUTANT_WRITE"
-assert_eq "$([[ ! -L "$MUTANT_WRITE" ]] && ! cmp -s "$MUTANT_WRITE" "$WRITE_BIN" && echo changed)" "changed" "control changes the private writer"
-LIVE_WRITE="$WRITE_BIN"
-WRITE_BIN="$MUTANT_WRITE"
-for row in 'over|**Expected delta**: 4 lines' 'missing|No size field.'; do
-  IFS='|' read -r label line <<<"$row"
-  write_allowance "$GW" KEN-GROWTH "$line"
-  run_write --worktree "$GW" --issue KEN-GROWTH --round-id "control-$label" --item 1 size "$OK_REACH"
-  assert_eq "$(observe 'rc=3 written=no')" 'rc=3 written=no' "control: $label refuses the report-and-continue case" "$ERR"
-done
-WRITE_BIN="$LIVE_WRITE"
+echo "=== a pr-N key stamps its round and the checker reads it back ==="
+# A pull request with no issue id keys its state pr-N (review-pr-comments.md
+# § 1). No tracker holds that key, so the branch measures under
+# allowance_missing and the round still stamps.
+PRW="$(new_repo pr-wt)"
+init_growth_state "$STATE" "$PRW" pr-51 51-1 >/dev/null
+run_write --worktree "$PRW" --issue pr-51 --round-id 51-1 --item 1 "pr key round" "$OK_REACH"
+E="rc=0 written=yes .issue=pr-51 .size_check.verdict=allowance_missing .size_check.production_allowance=null"
+assert_eq "$(observe "$E")" "$E" "a round under a pr-N key stamps with the measured allowance_missing verdict" "$ERR"
+"$RETURN_WRITE" --worktree "$PRW" --kind fix --issue pr-51 --round-id 51-1 --branch main \
+  --commit "$(git -C "$PRW" rev-parse HEAD)" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-prw-51-1-1" "$PRW" pr-51 51-1)" --item 1 Applied done >/dev/null
+set +e
+"$CHECK" --worktree "$PRW" --issue pr-51 --round-id 51-1 --expect-items-from-round >/dev/null 2>&1
+pr_check_rc=$?
+set -e
+assert_eq "$pr_check_rc" "0" "dev-artifact-check reads the pr-N round back" "$ERR"
+
+echo "=== a no-issue local review stamps its fix round under a minted local key ==="
+# ../workflows/review.md § 4 on a branch with no issue id mints a key with
+# `workflow-state new-local-key` and inits state under it, then
+# ../workflows/dev-fix.md § 2 step 4 stamps the round. No tracker holds that
+# key either.
+LW="$(new_repo local-wt)"
+LOCAL_KEY="$("$STATE" new-local-key)"
+init_growth_state "$STATE" "$LW" "$LOCAL_KEY" seed >/dev/null
+LOCAL_RID="$("$STATE" --state-dir "$LW/tmp" new-round-id "$LOCAL_KEY" dev_round_id)"
+run_write --worktree "$LW" --issue "$LOCAL_KEY" --round-id "$LOCAL_RID" --item 1 "local review round" "$OK_REACH"
+E="rc=0 written=yes .issue=$LOCAL_KEY .round_id=$LOCAL_RID .size_check.verdict=allowance_missing"
+assert_eq "$(observe "$E")" "$E" "a round under a minted local key stamps with the measured allowance_missing verdict" "$ERR"
+"$RETURN_WRITE" --worktree "$LW" --kind fix --issue "$LOCAL_KEY" --round-id "$LOCAL_RID" --branch main \
+  --commit "$(git -C "$LW" rev-parse HEAD)" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-lw-local" "$LW" "$LOCAL_KEY" "$LOCAL_RID")" --item 1 Applied done >/dev/null
+set +e
+"$CHECK" --worktree "$LW" --issue "$LOCAL_KEY" --round-id "$LOCAL_RID" --expect-items-from-round >/dev/null 2>&1
+local_check_rc=$?
+set -e
+assert_eq "$local_check_rc" "0" "dev-artifact-check reads the local-key round back" "$ERR"
 
 echo "=== a record the reader cannot use fails acceptance closed ==="
 # A record removed after delegation, a non-string base_sha, an empty path
