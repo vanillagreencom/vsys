@@ -7,27 +7,49 @@
 #
 # Sourced by lib/lane-context.sh, never run.
 
-# The window a Claude model runs on. The transcript names the model on every
-# assistant line (`claude-opus-5-5`) and never the window, so the window is the
-# one this fleet has measured for the model's tier word, the largest prompt a
-# model of that tier has been sent here. A tier this table leaves out has no
-# window, and its sessions are reported unmeasured rather than judged against
-# a guess: too small a figure hands a session off early, too large one lets it
-# run into its wall.
-LANE_ADAPTER_CLAUDE_WINDOWS='fable=1000000 opus=1000000'
+# The window a Claude model runs on, as `PATTERN=WINDOW` rows matched in order
+# against the whole lowercased model name. The transcript names the model on
+# every assistant line (`claude-opus-5-5`) and never the window. The fable and
+# opus rows are the window this fleet has measured for any model of that tier.
+# The Sonnet 5 and Haiku 4.5 rows are the windows Claude Code's own model
+# registry and the model docs give: Sonnet 5 runs 1M with no 200K variant,
+# Haiku 4.5 runs 200K. Those rows name exact ids because an older Sonnet runs
+# 200K unless its `[1m]` variant was chosen, and the transcript names the same
+# model either way; a bare `sonnet` or `haiku` names none, since an
+# ANTHROPIC_DEFAULT_*_MODEL pin can move it, and a launch writes the id in its
+# place (lane_adapter_claude_model_id). A
+# model no row names has no window, and its sessions are reported unmeasured
+# rather than judged against a guess: too small a figure hands a session off
+# early, too large one lets it run into its wall.
+LANE_ADAPTER_CLAUDE_WINDOWS='*fable*=1000000 *opus*=1000000 claude-sonnet-5=1000000 claude-haiku-4-5=200000 claude-haiku-4-5-20251001=200000'
 
-# lane_adapter_claude_window MODEL — the window MODEL runs, from the tier word
-# its name carries (`claude-opus-5-5`, `opus[1m]`, `fable`), empty where the
-# table names none. The one rule both a reading and a launch ask, so a model a
-# launch refuses is exactly one whose sessions would read unmeasured.
+# lane_adapter_claude_window MODEL — the window MODEL runs (`claude-opus-5-5`,
+# `opus[1m]`), empty where no row matches it. The one rule both a
+# reading and a launch ask, so a model a launch refuses is exactly one whose
+# sessions would read unmeasured. read -a, not `for pair in $TABLE`, so a row's
+# pattern is never globbed against the working directory.
 lane_adapter_claude_window() { # MODEL
   local model pair
+  local -a pairs=()
   model=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
-  for pair in $LANE_ADAPTER_CLAUDE_WINDOWS; do
+  read -r -a pairs <<<"$LANE_ADAPTER_CLAUDE_WINDOWS"
+  for pair in "${pairs[@]}"; do
+    # shellcheck disable=SC2254 # the row is a pattern
     case "$model" in
-      *"${pair%%=*}"*) printf '%s\n' "${pair#*=}"; return 0 ;;
+      ${pair%=*}) printf '%s\n' "${pair##*=}"; return 0 ;;
     esac
   done
+}
+
+# lane_adapter_claude_model_id MODEL — the model id a launch writes for MODEL:
+# the one the `sonnet` or `haiku` alias resolves to on the first-party API, and
+# MODEL itself for any other spelling.
+lane_adapter_claude_model_id() { # MODEL
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    sonnet) printf '%s\n' claude-sonnet-5 ;;
+    haiku) printf '%s\n' claude-haiku-4-5 ;;
+    *) printf '%s\n' "${1:-}" ;;
+  esac
 }
 
 # One reading from a Claude Code transcript on stdin: `<tokens>\t<window>\t<model>`

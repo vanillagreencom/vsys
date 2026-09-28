@@ -34,6 +34,8 @@ Bind the repository root as `[MAIN_REPO_ROOT]` and create the directory every st
 mkdir -p [MAIN_REPO_ROOT]/tmp
 ```
 
+**No hand-back leaves an armed PR.** Every route below that ends this run without a merged PR, each `records [STOP_NAME]` branch, each hand-back, the recovery-cycle cap, an `ask` answer that skips the merge and the `closed` verdict included, first takes [merge-pr-restack.md § Unarm at a stop](merge-pr-restack.md#unarm-at-a-stop) for the PR it is stopping, with `[STOP_DIR]` being `[MAIN_REPO_ROOT]/tmp`. On the batch route that is every PR in scope, since a cross-check stop exists to keep them from landing together.
+
 **Stop routes.** Every `records [STOP_NAME]` branch below records against the `[STATE_KEY]` § 3 resolved for the PR it is stopping, renders into the one path this workflow uses, and posts that file on that PR:
 
 ```bash
@@ -152,7 +154,7 @@ Reuse the `[ISSUE]` and `[PR_BRANCH]` § 3 resolved for this PR, and worktree co
 
 ### 4.1 Detach Orphaned Children
 
-**Skip if** no `[ISSUE]` was extracted, or `TRACKER=github`.
+**Skip if** no `[ISSUE]` was extracted, `TRACKER=github`, or workflow state for `[STATE_KEY]` records `children_detached`: [submit-pr.md](submit-pr.md) § 2 step 5 already ran this detach, before its arm.
 
 ```bash
 .agents/skills/linear/scripts/linear.sh cache issues children [ISSUE] --pending --recursive
@@ -222,7 +224,7 @@ Use the output as `MAIN_REPO_ROOT`.
 
    A `[MICRO_ENTRY]` run continues only where the mode resolved above is `exempt` AND `[MICRO_HEAD]` equals `[PREPARED_HEAD]`: the class is measured over both endpoints, and a retarget changes it without moving the head, so the fresh answer is what carries the exemption and the head says it is the same run. Any other answer arms nothing and escapes by micro.md condition 9. Read workflow state `pr.size_check` for `[STATE_KEY]`, and use it only when its `head_sha` equals `[PREPARED_HEAD]`, per [workflow-state.md § Field Definitions](../schemas/workflow-state.md#field-definitions). Its verdict and counts inform the reviewer's or orchestrator's cut decision under [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow). A missing or stale report supplies no current counts. The report does not gate merge.
 
-   **Merge route.** One route, on every change class: take the `--auto` arm below, and reach the direct attempt only where that arm answers `arm: no-merge-gate`. That answer does not mean the base has no queue: a base that still queues the PR answers the direct attempt with exit `75`, which takes the queue-wait block. An item whose workflow state carries `pr_approval.forced` takes the same arm.
+   **Merge route.** One route, on every change class: take the `--auto` arm below, and reach the direct attempt only where that arm answers `arm: no-merge-gate`. That answer does not mean the base has no queue: a base that still queues the PR answers the direct attempt with exit `75`, which takes the queue-wait block. An item whose workflow state carries `pr_approval.forced` takes the same arm. A PR [submit-pr.md](submit-pr.md) § 2 step 5 armed at creation takes it too: the arm binds the prepared head and answers exit `75`, and the lane waits in the queue-wait block.
 
    The lane arms its own head under the token the `github.sh` router selects, which in a lane sandbox is the lanes app's installation token, and waits in `queue-wait` to a terminal verdict. No overseer merges for it and no setting routes it past the queue (`pr-merge --help` § Retired settings).
 
@@ -270,7 +272,7 @@ Use the output as `MAIN_REPO_ROOT`.
    | `queued` | Still armed at the deadline. `cause: still_progressing` means the merge is live: run the wait again, and keep repeating until a verdict terminates it. `cause: progress_unobservable` means no poll could read the queue's checks, which is not evidence of an idle queue: run the wait again on the same head under the bound below, rather than straight into the Recovery cycle. `cause: stalled` takes the Recovery cycle below |
    | `not_queued` | The arm this step made is gone — an ejection or a silent disarm — not a merge that never fired. Take the Recovery cycle below, where `ejected` and `disarmed` already go. Never re-arm here: the head's merge-group run has just failed, and re-arming it into a shared queue can eject the PRs batched with it |
    | `closed` | Hand back with the verdict; no replay |
-   | `unknown` | Unrecognized, or `status: error` — a read failed and says nothing about the arm, which after exit `75` is usually still live. Unarm before handing back, in `merge-pr-restack.md` step 1's order. Hand back with the `error` and `cause` fields, and never re-arm |
+   | `unknown` | Unrecognized, or `status: error` — a read failed and says nothing about the arm, which after exit `75` is usually still live. Unarm before handing back, by § 1's no-armed-hand-back rule. Hand back with the `error` and `cause` fields, and never re-arm |
 
    A `still_progressing` repeat is left unbounded on purpose. It terminates: the signal stays true only while a check-run is not completed or the queue entry is still moving, and GitHub's own workflow timeout finally fails a run whose runner died. Entry movement ends too — a position only falls, so the PR reaches the front and merges or leaves the queue. Returning early would leave the PR armed with the merge free to fire behind a departed lane, and steps 5 and 6 would never run on it — which is the whole reason the lane waits here rather than handing back.
 
@@ -393,7 +395,7 @@ Use the output as `MAIN_REPO_ROOT`.
 
    For `merge-pr all` or an explicit user request, also sweep the project. Check each local branch with `env -u GH_REPO -u GITHUB_REPOSITORY gh pr list --head [BRANCH] --base [BASE_BRANCH] --state all --json number,state,headRefOid,isCrossRepository`, and auto-delete only a branch with no worktree whose tip equals the `headRefOid` of one of its **merged**, non-cross-repository PRs — the predicate `worktree cleanup` applies. Neither state nor a merge into another base is the test: a closed PR merged nothing, a PR merged into a release or other side branch left its commit out of `[BASE_BRANCH]` with this ref possibly the last ordinary one holding it, and a merged PR whose head differs from the tip left the extra commits reachable from this ref alone. Leave every other branch alone, and ask before removing a stale worktree or a branch with no PR. Compare `ls [TREES_DIR]/` against `worktree list --porcelain` for orphan directories, asking before removing any.
 
-5. **Answer the threads the wait's guard did not catch.** GitHub's merge queue never re-checks thread resolution once a PR is admitted. `queue-wait`'s late-findings guard does, but on its own probe clock (`QUEUE_WAIT_PROBE_INTERVAL`, 120 seconds by default), so a finding landing inside that gap, or after the merge itself, rides the merge in. Read the merged PR's unresolved threads once and answer each. Resolve the merge commit first — the queue merged a head this lane never saw:
+5. **Answer the threads the wait's guard did not catch.** GitHub's merge queue never re-checks thread resolution once a PR is admitted. `queue-wait`'s late-findings guard does, but on its own probe clock (`QUEUE_WAIT_PROBE_INTERVAL`, 120 seconds by default), so a finding landing inside that gap, or after the merge itself, rides the merge in. A PR [submit-pr.md](submit-pr.md) § 2 step 5 armed at creation has a wider gap, accepted: GitHub can enqueue it while the lane is still in submit-pr § 3-§ 6, and a thread posted between that enqueue and the guard step 1's queue wait starts rides the merge in the same way. Read the merged PR's unresolved threads once and answer each. Resolve the merge commit first — the queue merged a head this lane never saw:
 
    ```bash
    env -u GH_REPO -u GITHUB_REPOSITORY gh pr view [PR_NUMBER] --json mergeCommit --jq .mergeCommit.oid
@@ -405,15 +407,15 @@ Use the output as `MAIN_REPO_ROOT`.
 
    That oid is `[MERGE_SHA]`. Each reply is one of the three dispositions ([references/finding-disposition.md](../references/finding-disposition.md)): `Declined: [reason]`, `Fixed in [MERGE_SHA]`, or `Tracked: [ISSUE_ID]` with the issue created first under [skill-rules.md § Coordination](../references/skill-rules.md#coordination). Reply and resolve through `github.sh post-reply` and `github.sh resolve-thread`, under the section's clearing rule and `-C [MAIN_REPO_ROOT]` like the read above. This read happens once. A thread landing after it is unhandled: nothing else reads a merged PR's threads.
 
-6. **Verify the project and remove the worktree.** Run the build, install, and verification work the project's own instructions require after a merge; this workflow defines no generic command and does not infer one. A project's install record (`.kendex-lock.json`) is recorded by the route its own instructions name, never re-recorded by the lane after a merge or a restack. On failure, report the command and its diagnostic in § 6 and keep the worktree. Once it passes, close the item out under the main checkout's state directory, `tmp/` under `[MAIN_REPO_ROOT]` by default, before worktree removal:
+6. **Verify the project and remove the worktree.** Run the build, install, and verification work the project's own instructions require after a merge; this workflow defines no generic command and does not infer one. A project's install record (`.kendex-lock.json`) is recorded by the route its own instructions name, never re-recorded by the lane after a merge or a restack. On failure, report the command and its diagnostic in § 6 and keep the worktree. Once it passes, close the item out under the main checkout's state directory, `tmp/` under `[MAIN_REPO_ROOT]` by default, before worktree removal. Where § 4 found an issue worktree, name its `tmp/` for the close-out's archive; otherwise drop the `--archive` pair:
 
    ```bash
-   .agents/skills/orch/scripts/workflow-state remove [STATE_KEY]
+   .agents/skills/orch/scripts/workflow-state remove [STATE_KEY] --archive [WORKTREE_PATH]/tmp
    ```
 
-   What it takes and keeps is [schemas/workflow-state.md § Item close-out](../schemas/workflow-state.md#item-close-out). A `workflow-state remove` refusal blocks nothing after it: its first line goes on § 6's `tmp/ close-out` line.
+   What it takes, archives and keeps is [schemas/workflow-state.md § Item close-out](../schemas/workflow-state.md#item-close-out). Its `removed kept=` line names the archive holding the item's state and the worktree's `tmp/` records, and goes on § 6's `tmp/ close-out` line. A refusal keeps the worktree, since the worktree's records may be in no archive: the refusal's first line goes on that line instead, and the worktree line reads `standing — close-out refused`.
 
-   With the project verification passed, re-run step 4's disposal predicate whole. Step 4 read it two steps ago, and step 5's replies and this step's build can each dirty the tree or move the branch. `worktree remove` runs `git worktree remove --force` and then `rm -rf`, so it refuses nothing itself: uncommitted content, untracked content and a worktree that has moved to another branch all go with the directory, and the predicate is the only thing between them and that.
+   With the project verification passed and the close-out done, re-run step 4's disposal predicate whole. Step 4 read it two steps ago, and step 5's replies and this step's build can each dirty the tree or move the branch. `worktree remove` runs `git worktree remove --force` and then `rm -rf`, so it refuses nothing itself: uncommitted content, untracked content and a worktree that has moved to another branch all go with the directory, and the predicate is the only thing between them and that.
 
    Every part holding removes it, run from `[MAIN_REPO_ROOT]` so the lane is not deleting its own cwd:
 
@@ -444,13 +446,13 @@ Output: [Lane Output](../references/skill-rules.md#lane-output).
 | Container | [PARENT_ID] → Done / deferred — [pending ids, restorations, or cause] |
 | Base sync | local `[BASE_BRANCH]` → [NEW_SHA] |
 
-tmp/ close-out: [FIRST_REFUSAL_LINE]
+tmp/ close-out: [KEPT_LINE_OR_FIRST_REFUSAL_LINE]
 
 Worktree `[WORKTREE_PATH]` gone / standing — [cause]
 
 </output_format>
 
-The `Container` row appears only when § 5 step 2 found a container parent. When § 5 step 3 hit a blocking outcome it carries the warning instead of a sha: `⚠️ local [BASE_BRANCH] STALE at [LOCAL_SHA] (origin/[BASE_BRANCH] at [ORIGIN_SHA]) — [CAUSE]`. The worktree line closes the block with step 6's read: `gone`, or `standing — [cause]` — the cause step 4's disposal predicate named, or `foreign lease` from the helper, or `project verification failed`. Omit it only where § 4 found no issue worktree. The `tmp/ close-out` line carries the first line of a `workflow-state remove` refusal in step 6, and is omitted where that command succeeded or never ran. Add a `Review gate` row only when the merge did not proceed on a plain `approved`/`reviewed` verdict — `⚠️ reviewer-down proceed (no reviewer posted; PR_REVIEW_ON_TIMEOUT=proceed)` or `⚠️ forced (user override)`.
+The `Container` row appears only when § 5 step 2 found a container parent. When § 5 step 3 hit a blocking outcome it carries the warning instead of a sha: `⚠️ local [BASE_BRANCH] STALE at [LOCAL_SHA] (origin/[BASE_BRANCH] at [ORIGIN_SHA]) — [CAUSE]`. The worktree line closes the block with step 6's read: `gone`, or `standing — [cause]` — the cause step 4's disposal predicate named, or `foreign lease` from the helper, or `project verification failed`, or `close-out refused`. Omit it only where § 4 found no issue worktree. The `tmp/ close-out` line carries step 6's `removed kept=` line from `workflow-state remove`, or the first line of its refusal, and is omitted where that command never ran. Add a `Review gate` row only when the merge did not proceed on a plain `approved`/`reviewed` verdict — `⚠️ reviewer-down proceed (no reviewer posted; PR_REVIEW_ON_TIMEOUT=proceed)` or `⚠️ forced (user override)`.
 
 For `merge-pr all`, add the cross-PR analysis and a merge table:
 

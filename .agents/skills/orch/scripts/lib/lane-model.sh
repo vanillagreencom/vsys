@@ -5,11 +5,13 @@
 # no allowance left for, and the launch's first turn is a usage banner instead
 # of a session.
 #
-# The jq program below is the whole answer, and `lanes` is its only consumer:
+# The jq program below is the whole answer, and `lanes` is its only judge:
 # both of its pick forms — the fleet chooser and the single named lane — read
 # `lane_binding` and the `wall_verdict` that classifies it from here, so the two
 # cannot come to different conclusions about one account on one usage reading,
 # nor can one of them know a verdict the other has no arm for.
+# oversee-watch reads `lane_binding` too, for the reset a walled launch waits
+# on, once `lanes pick` has judged the wall; it judges no wall of its own.
 #
 # Sourced, never run.
 
@@ -19,9 +21,11 @@
 # and reset beside the percentage so a refusal can name what made the decision.
 #
 # The 5-hour session and the plan-wide weekly window wall every model, so both
-# always count. A model-scoped weekly window walls only the model its own label
-# names, so a launch on another model does not draw on it and it is left out —
-# the difference between refusing an account that is free for this launch and
+# always count, and so does a monthly pool: the Copilot credits a Pi launch on
+# a `github-copilot/` model spends are one pool for every model it names. A
+# model-scoped weekly window walls only the model its own label names, so a
+# launch on another model does not draw on it and it is left out — the
+# difference between refusing an account that is free for this launch and
 # launching one into a wall the binding bucket never showed.
 #
 # The label match is containment in either direction over the NORMALIZED
@@ -88,7 +92,9 @@ def shared_bindings:
   [{bucket: "session", pct: .session_5h_pct,
     resets_at: (.resets.session // null)},
    {bucket: "weekly", pct: .weekly_pct,
-    resets_at: (.resets.weekly // null)}];
+    resets_at: (.resets.weekly // null)},
+   {bucket: "monthly", pct: (.monthly_pct // null),
+    resets_at: (.resets.monthly // null)}];
 
 def model_binding($model):
   ($model | lane_norm) as $m
@@ -149,6 +155,34 @@ def lane_binding($model; $binding_floor):
           | if $b == null then null else ([$w, $b] | max_binding) end)
     end;
 
+# same_window($binding) over one bucket of the prior sample: true where it is
+# the window $binding judges now, so the difference between the two readings
+# is usage spent inside one window and never a reset.
+#
+# Neither side of the comparison is held stable by the usage endpoint between
+# two reads, so both are compared as identities rather than as strings. The
+# label is compared in its lane_norm spelling, the one model_binding matches a
+# model on, and a null label only ever matches a null one. The reset stamps are
+# one window where both parse to epochs no more than reset_drift_s apart: a
+# stamp read either side of a second boundary is still the same reset, and an
+# equality test would read it as a new window on every pass, so the account
+# would never measure a rate while its figure moved. A real reset between the
+# two readings moves the stamp by a whole window, 5 hours at the shortest, so
+# the tolerance never joins two windows. A stamp that does not parse is
+# compared by equality, and a window with no stamp matches nothing, since
+# nothing then says the two readings share it.
+def reset_drift_s: 300;
+def reset_epoch: if type == "string" then (try fromdateiso8601 catch null) else null end;
+def label_identity: if . == null then null else lane_norm end;
+def same_window($binding):
+  (.resets_at | reset_epoch) as $was
+  | ($binding.resets_at | reset_epoch) as $now
+  | ((.label // null) | label_identity) == (($binding.label // null) | label_identity)
+    and .resets_at != null and $binding.resets_at != null
+    and (if $was != null and $now != null
+         then ($was - $now | if . < 0 then -. else . end) <= reset_drift_s
+         else .resets_at == $binding.resets_at end);
+
 def with_lane_binding($model; $binding_floor):
   lane_binding($model; $binding_floor) as $binding
   | (if $binding == null then [] elif $binding.bucket == "model" then (._rate_prior.model_buckets // [])
@@ -156,8 +190,7 @@ def with_lane_binding($model; $binding_floor):
             pct: (if $binding.bucket == "session" then ._rate_prior.session_5h_pct
                   elif $binding.bucket == "weekly" then ._rate_prior.weekly_pct else null end),
             resets_at: ._rate_prior.resets[$binding.bucket]}] end
-     | map(select((.label // null) == ($binding.label // null)
-                  and .resets_at != null and .resets_at == $binding.resets_at))
+     | map(select(same_window($binding)))
      | first.pct // null) as $prior
   | (if $binding == null or $prior == null then null
      else ($binding.pct - $prior) end) as $delta
@@ -176,14 +209,57 @@ def with_lane_binding($model; $binding_floor):
             then (((100 - $binding.pct) * ._rate_elapsed_s / ($delta * 60)) | ceil)
             else null end)};
 
+# with_lane_projection($burn_default) over one record with_lane_binding has
+# judged: the room the account has left an hour from now if every live lane
+# on it keeps burning, which is what a launch onto it inherits. A wall reading
+# lags the launches in flight by minutes, so an account read as having the
+# most room fills until it walls; the projection charges each live claim its
+# expected burn before any verdict is taken.
+#
+# burn_pct_per_lane_hour is the judged window measured rate shared out across
+# the live claims where both exist, and $burn_default, ORCH_LANE_BURN_PCT_PER_HOUR,
+# where they do not: a rate taken with nothing claimed says nothing about what
+# one lane costs, and an unmeasured rate says nothing at all.
+#
+# The default is points of the 5-hour session window. A weekly window, the
+# plan-wide one or a model-scoped one, holds the same hour of work as the
+# share 5 of its 168 hours is, so it is charged the default times 5/168:
+# charged whole, an account weekly-bound at 86 percent with two lanes would
+# project past 95 and be dropped with days of room left.
+# projected_headroom_pct is the judged headroom less the claims times that
+# burn, null where the wall is null, since nothing measured the account, or the
+# claims are null, since the claim store could not be read: an unknown count is
+# never charged as zero lanes.
+def with_lane_projection($burn_default):
+  (if .usage_rate_state == "measured" and (.claims // 0) > 0
+   then .usage_rate_pct_per_min * 60 / .claims
+   elif .binding_bucket == "session" then $burn_default
+   else $burn_default * 5 / 168 end) as $burn
+  | . + {burn_pct_per_lane_hour: (if .wall == null then null else $burn end),
+         projected_headroom_pct:
+           (if .wall == null or .claims == null then null
+            else 100 - .wall - .claims * $burn end)};
+
+# judged_wall over one record with_lane_projection has read: the projected
+# use wall_verdict judges, for the chooser and `pick --lane --projected`, so a
+# named lane is refused on the rule the chooser drops it on. Null, which
+# wall_verdict reads as unmeasured, where no projection was made: a wall
+# nobody read, or claims nobody could count. Both callers refuse an unread
+# claim store before judging, and this arm keeps one that reached it from
+# reading as zero lanes in flight.
+def judged_wall:
+  if .projected_headroom_pct == null then null
+  else 100 - .projected_headroom_pct
+  end;
+
 def lane_public: del(._rate_prior, ._rate_elapsed_s, ._id);
 
 # One spelling for every reset a lane record carries: whole-second UTC with a
 # Z, the form Codex resets are rendered in. The Claude usage endpoint writes
 # fractional seconds and +00:00, and a provider row carries whatever its
 # timestamp is; a reader parsing the stamp (the BSD `date` arm cannot read the
-# fraction) or comparing two of them by equality, as with_lane_binding does
-# with the prior sample, needs one form. emit_lane applies it to the current
+# fraction) or comparing two of them, as same_window does with the prior
+# sample, needs one form. emit_lane applies it to the current
 # windows and to the prior sample alike, so the comparison stays like with like.
 def utc_stamp: if type == "string" then sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") else . end;
 def utc_resets:

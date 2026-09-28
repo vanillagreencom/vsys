@@ -16,8 +16,11 @@ BRANCH_GROWTH_BASE_REF=""
 # call still reads correctly without. An incompatible change to an existing
 # entry point takes a NEW function name and a bump, never a new signature
 # under the old name — an older caller would accept this number and then call
-# the old spelling.
-BRANCH_GROWTH_CONTRACT=1
+# the old spelling. A result variable a caller outside this package reads
+# bumps it too: an older library leaves that variable unset.
+#
+# 2: branch_size_classified sets BRANCH_SIZE_TEST_FILES.
+BRANCH_GROWTH_CONTRACT=2
 # The one git invocation every branch measurement reads, so callers score
 # the same diffstat under the same rules. --find-renames is passed rather than
 # left to the runner's diff.renames, which decides whether a move a size
@@ -190,8 +193,14 @@ branch_allowance_check() {
 BRANCH_SIZE_PRODUCTION=""
 BRANCH_SIZE_TEST=""
 BRANCH_SIZE_MIRROR=""
-# The same paths' additions plus deletions, render mirrors left out, for the
-# implement receipt. This shares the report's render classification.
+# Every changed path the test rule names, by itself or past a render root,
+# one per line, from every numstat row, a binary file's included. A paired
+# render mirror's lines count as mirror lines, listed or not; every other row
+# counts as test lines exactly when its path is listed. Each rename end is
+# listed on its own, as a reader without rename detection names each apart.
+BRANCH_SIZE_TEST_FILES=""
+# Every counted row's additions plus deletions, render mirrors left out, for
+# the implement receipt. This shares the report's render classification.
 BRANCH_SIZE_BASELINE=""
 # Split the branch's added lines into production, test, and mandated render
 # mirror lines. Additions alone are counted there, so a rewrite that moves
@@ -218,9 +227,10 @@ BRANCH_SIZE_BASELINE=""
 # against, replacing the base-branch lookup, and $2 is then unused and empty.
 #
 # $4 is the blank-separated list of extra test-path globs a repository adds to
-# the built-in test rule. A pattern matches the whole repository-relative path,
-# with `*` any run of characters including `/`, `?` any single character, and
-# everything else literal. The list only adds: empty, or matching nothing, it
+# the built-in test rule. A pattern matches the whole repository-relative path
+# or, for a path under a render root, the path past that root, with `*` any
+# run of characters including `/`, `?` any single character, and everything
+# else literal. The list only adds: empty, or matching nothing, it
 # leaves every line where the built-in rule put it, which for a path that rule
 # does not name is production and the stricter allowance.
 #
@@ -235,7 +245,10 @@ branch_size_classified() {
   branch_size_numstat "$worktree" "$base_resolver" "$commit" numstat "$base_override" || return 1
   if ! measured="$(BRANCH_GROWTH_TEST_PATHS="$test_paths" \
     awk -F '\t' -v roots="$BRANCH_GROWTH_RENDER_ROOTS" '
-    function new_path(p,   open_at, close_at, prefix, suffix, moved) {
+    # One end of a numstat path, 1 the path before a rename and 2 after it.
+    # git abbreviates a shared prefix and suffix as `a/{b => c}/d`, and a side
+    # that is empty there, as in `a/{ => c}/d`, leaves one slash too many.
+    function rename_end(p, side,   open_at, close_at, prefix, suffix, moved) {
       if (index(p, " => ") == 0) return p
       open_at = index(p, "{")
       close_at = index(p, "}")
@@ -243,10 +256,11 @@ branch_size_classified() {
         prefix = substr(p, 1, open_at - 1)
         suffix = substr(p, close_at + 1)
         moved = substr(p, open_at + 1, close_at - open_at - 1)
-        sub(/^.* => /, "", moved)
+        if (side == 1) sub(/ => .*$/, "", moved); else sub(/^.* => /, "", moved)
+        if (moved == "") suffix = substr(suffix, 2)
         return prefix moved suffix
       }
-      sub(/^.* => /, "", p)
+      if (side == 1) sub(/ => .*$/, "", p); else sub(/^.* => /, "", p)
       return p
     }
     function base_name(p) { sub(/^.*\//, "", p); return p }
@@ -287,6 +301,10 @@ branch_size_classified() {
       for (i = 1; i <= npats; i++) if (p ~ pattern[i]) return 1
       return 0
     }
+    function list_if_test(p,   rest) {
+      rest = render_rest(p)
+      if (is_test(p) || (rest != "" && is_test(rest))) { listed[p] = 1; test_files = test_files "\n" p }
+    }
     function pairs_with_source(rest,   rest_stem, s) {
       rest_stem = stem_path(rest)
       for (s in source_stem) {
@@ -301,11 +319,15 @@ branch_size_classified() {
       npats = split(ENVIRON["BRANCH_GROWTH_TEST_PATHS"], pattern, " ")
       for (i = 1; i <= npats; i++) pattern[i] = glob_to_regex(pattern[i])
     }
+    NF > 0 {
+      list_if_test(rename_end($3, 1))
+      if (index($3, " => ")) list_if_test(rename_end($3, 2))
+    }
     NF == 0 || ($1 == "-" && $2 == "-") { next }
     $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ { failed = 1; next }
     {
       n += 1
-      path[n] = new_path($3)
+      path[n] = rename_end($3, 2)
       lines[n] = $1
       changed[n] = $1 + $2
       mirror_rest[n] = render_rest(path[n])
@@ -316,13 +338,17 @@ branch_size_classified() {
       for (i = 1; i <= n; i++) {
         if (mirror_rest[i] != "" && pairs_with_source(mirror_rest[i])) { mirror += lines[i]; continue }
         baseline += changed[i]
-        if (is_test(path[i])) tests += lines[i]; else production += lines[i]
+        if (path[i] in listed) tests += lines[i]; else production += lines[i]
       }
-      printf "%d %d %d %d", production + 0, tests + 0, mirror + 0, baseline + 0
+      printf "%d %d %d %d%s", production + 0, tests + 0, mirror + 0, baseline + 0, test_files
     }
   ' <<<"$numstat")"; then
     branch_growth_fail "git numstat returned an unsupported additions/deletions shape"
     return 1
   fi
   read -r BRANCH_SIZE_PRODUCTION BRANCH_SIZE_TEST BRANCH_SIZE_MIRROR BRANCH_SIZE_BASELINE <<<"$measured"
+  BRANCH_SIZE_TEST_FILES=""
+  case "$measured" in
+    *$'\n'*) BRANCH_SIZE_TEST_FILES="${measured#*$'\n'}" ;;
+  esac
 }

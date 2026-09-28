@@ -16,7 +16,7 @@ Usage: oversee-watch [--interval SECS] [--max-loops N] [--since ISO8601]
                      [--item ISSUE_ID]... [--repo OWNER/REPO]...
                      [--hosted ITEM=REMOTE_ROOT]... [--root ITEM=PATH]...
                      [--handoff PATH] [--state PATH [--skip-lane WINDOW]...]
-                     [--harness claude|codex] [LANE_WINDOW...] [-- OVERSEER_FLAGS...]
+                     [--harness claude|codex|copilot|pi] [LANE_WINDOW...] [-- OVERSEER_FLAGS...]
        oversee-watch --repeat SECS --state PATH [any option above]...
 
 Blocks until the fleet needs the overseer, then prints every event it found
@@ -44,12 +44,24 @@ context. The heartbeat reads the mail once more when a long pass ended after
 the last mail pass.
 
 The long pass's events, checked and reported in this order:
-  EVENT overseer-dead <pane> window=<window> passes=<N> succession=<on|off> [record=<server>:<pane>|none]
-                             the OVERSEER's own pane — the $TMUX_PANE this
-                             watch was started from — read `exited` by the
-                             shared judge on N consecutive passes. record=
-                             is carried where no successor is launched for
-                             want of a line: the fleet state's overseer
+  EVENT overseer-dead <pane> window=<window> passes=<N> succession=<on|off>
+        source=<record|rows|process|pane> [record=<server>:<pane>|none]
+                             the OVERSEER's own session — the $TMUX_PANE this
+                             watch was started from — read `exited` on N
+                             consecutive passes. `source` names what settled
+                             it: `record`, the exit status `overseer-run`
+                             wrote into the fleet state's overseer.exit once
+                             the launch line returned, over a bare shell with
+                             nothing under it; `rows`, a SessionEnd row its
+                             harness wrote to the file the fleet state's
+                             overseer.session_rows names, over that same bare
+                             shell; `process`, a pane whose process is a bare
+                             shell with nothing under it; `pane`, the named
+                             fallback where no row can judge, the pane
+                             captured and read by the shared judge, with an
+                             overseer-fallback notice naming the cause.
+                             record= is carried where no successor is launched
+                             for want of a line: the fleet state's overseer
                              record by its server and pane, or none. Nothing
                              else notices an overseer that ended: its lanes
                              keep working, this watch keeps printing to a log
@@ -65,8 +77,17 @@ The long pass's events, checked and reported in this order:
                              own), and stops: the successor runs a watch of
                              its own
   EVENT overseer-walled <pane> window=<window> passes=<N> succession=<on|off>
-                             the same pane read `walled` by the same judge on
-                             N consecutive passes AND its own account judged
+        source=<rows|account|pane>
+                             the same session read `walled`: from `rows`, a
+                             StopFailure row whose error is `rate_limit`,
+                             standing unless its account measures room, its
+                             message, or message=unrecorded, under the line; from `account`, a live
+                             session whose own account the mark judgement
+                             reads at zero headroom, its account and reset
+                             under the line; both on the first pass that
+                             reads them. Or, from the `pane` fallback, on N
+                             consecutive passes read by the same judge AND
+                             its own account judged
                              at or below its trigger: the harness is still
                              running and its ACCOUNT is spent. Such a session
                              takes no turn, so it answers no lane, reads no
@@ -79,8 +100,9 @@ The long pass's events, checked and reported in this order:
                              watch relays about other lanes: a wall the
                              account refutes is one of those, and the pane is
                              left alone under overseer-wall-unconfirmed. The
-                             banner's own window follows the line, as it does
-                             for a lane's usage-limit. The line goes to the
+                             banner's own window follows a pane wall's line,
+                             as it does for a lane's usage-limit. The line
+                             goes to the
                              same two channels. The successor is launched
                              through `oversee-succeed --walled-pane`, which
                              picks its account afresh and never reopens on the
@@ -134,6 +156,18 @@ The long pass's events, checked and reported in this order:
                              lane-close closes it.
                              These three are read from --state records and
                              reported once per preparation
+  EVENT start-stalled <item> age=<secs>
+                             a running --state record names a mail_root whose
+                             tmp/lane-status-<item>.md does not exist
+                             ORCH_WATCH_START_STALL_SECS after the record went
+                             running, its running_at (launched_at on a record
+                             with none), on every harness, a hosted one read
+                             through `lane-host cat`: the lane never started
+                             its workflow. age= counts from that stamp, which
+                             a relaunch renews, so the line after a relaunch
+                             is a second stall. Reported once and again every
+                             ORCH_OVERSEER_MARK_REPEAT passes while it stands;
+                             a record whose file once stood is never reported
   EVENT window-gone <lane>   the tmux window no longer exists. Nothing follows
                              the line: the remedy is one relaunch, which
                              reads the item's worktree and PR, not a screen
@@ -200,7 +234,15 @@ The long pass's events, checked and reported in this order:
                              remedy is one continuation line back to the lane
   EVENT idle-after-return <lane>
                              the live harness sits idle on two passes; the
-                             lane's closing lines follow
+                             lane's closing lines follow. A Pi lane is idle,
+                             working or walled by the last row its own
+                             lane-mail-check hook wrote under the pi-hooks
+                             carrier, a Stop at its turn end or a PreToolUse
+                             at the first tool call of a turn, never by its
+                             pane: the lines under this event are the pane's,
+                             read as payload alone, and a Pi lane with no row
+                             is unjudged, never idle. Its usage-limit block is
+                             that row's error message
   EVENT account <alias> config_dir=<dir> harness=<harness> through=<local|host>
                 status=<status> verdict=<room|walled|unmeasured> headroom_pct=<N|->
                 binding_bucket=<bucket|-> binding_resets_at=<utc|->
@@ -234,7 +276,32 @@ The long pass's events, checked and reported in this order:
                              account, the fields the account event carries up
                              to `change=`, from the last long pass's reading.
                              `account-roster unread` replaces them when that
-                             reading failed
+                             reading failed. Last, with --state, one line
+                             `owed <item> state=<in-progress|in-review|open-pr>
+                             priority=<N|-> lane=<none|status> verdict=<queue|
+                             merged pr=<N>|dated harness=<h> until=<reset|->|
+                             unjudged harness=<h>>` per item the tracker holds
+                             as work the fleet owes that launch_queue lacks:
+                             with LINEAR_TEAM, the team's In Progress and In
+                             Review items, one live read, a priority of 0 (none)
+                             printed `-`; with none, every open PR of the first
+                             --repo on an issue-N branch, from a listing of its
+                             own that exits 2 as owed-list-truncated at 1000.
+                             A record running, preparing or parked owes
+                             nothing. `merged` is a record carrying its merge's
+                             `cycle`. A record with no harness is `queue`.
+                             Every other verdict reads the accounts of the
+                             record's host, its `host` or `local`, as
+                             ORCH_LANE_HOST: a `lanes list` there that fails
+                             is `unjudged`, named as owed-accounts-unread; one
+                             listing no account of the harness is `queue`;
+                             otherwise `lanes pick --harness <h> [--model <m>]`
+                             with the record's harness and model decides:
+                             room is `queue`, a wall `dated` until the earliest
+                             reset of that model's binding bucket among the
+                             harness's accounts on that host, and every account
+                             unmeasured or a failed pick `unjudged`, the
+                             failure named as owed-wall-unjudged
 
 The mail pass's events, in this order, lane by lane and the overseer's own
 mailbox last:
@@ -283,12 +350,16 @@ The overseer mailbox is read through its own to-lane.cursor, which a session
 start's `lane-mail inbox --item overseer` moves too, acknowledged only once
 its notes are printed, whatever state directory, --since or checkout this
 watch runs with. A session start's read between the peek and the
-acknowledgement reports a note twice.
-Before every mail pass the overseer's own pane is read once; while it reads
-exited, or walled with a wall its own account confirms, no mailbox is read,
-so a successor finds what was sent in the meantime. A wall
-the account refutes, or one no judgement could settle, reads live: its mail
-is read, and the long pass starts no successor for it. Off tmux there is no
+acknowledgement reports a note twice. The lane-mail hooks move it too, for
+a lead session in the checkout while no repeat watch holds the fleet state:
+with single passes, every lead session there, the overseer included. A line
+they take is not reported here.
+Before every mail pass the overseer's session is read once, as the long pass
+reads it; while it reads exited, or walled, no mailbox is read, so a
+successor finds what was sent in the meantime. A rows wall stands unless its
+own account measures room; a screen wall stands only where its own account
+confirms it, and one no judgement could settle reads live. A wall that reads
+live has its mail read, and the long pass starts no successor for it. Off tmux there is no
 such pane and the mail is read; a pane that cannot be read reads live too,
 except while a long pass is in flight, which may be closing it in a
 succession, and the mail waits for that pass to end.
@@ -392,8 +463,10 @@ Options:
                       and a has-session call failing for any other reason,
                       no server at the socket among them, as tmux-failed
                       naming that socket
-  --harness H         the OVERSEER's harness, handed to each oversee-succeed
-                      call; a Codex pane reads node, which names neither
+  --harness H         the OVERSEER's harness, claude, codex, copilot or pi,
+                      handed to each oversee-succeed call; a Codex or Copilot
+                      CLI pane reads node and a pi pane pi, which the pane
+                      reader maps to no one harness
   -- OVERSEER_FLAGS...
                       the flags the OVERSEER itself runs under — its
                       permission flags, plus its current model and effort
@@ -408,17 +481,19 @@ Options:
                       A record naming this pane answers the line's harness
                       and account, and its model and effort as a pair where
                       it names a model (`oversee-succeed --help`).
-                      A line this start cannot build or record is the notice
-                      overseer-line-missing or overseer-unrecorded, on stderr
-                      and in the fleet log, and the watch runs on: the pane
-                      is judged from tmux, and a death relaunches from the
-                      line the fleet state already holds where its record
-                      names this pane by server and pane id, the last line
-                      a launch, a succession or a watch start recorded for
-                      it, which a session restarted by hand may not have
-                      been started with; a record naming another pane, or
-                      none, reports the death with no successor, naming
-                      that record
+                      A line this start cannot build or record is the
+                      notice overseer-line-missing or overseer-unrecorded,
+                      on stderr and in the fleet log, and the watch runs
+                      on: the session is judged from the exit status and
+                      rows file the record already holds for this pane, and
+                      from the pane, the named fallback, where it names
+                      none; a death relaunches from the line the fleet
+                      state already holds where its record names this pane
+                      by server and pane id, the last line a launch, a
+                      succession or a watch start recorded for it, which a
+                      session restarted by hand may not have been started
+                      with; a record naming another pane, or none, reports
+                      the death with no successor, naming that record
   --repeat SECS       the watch for a session: run one watch per pass with
                       the other options, sleep SECS after it exits, or
                       ORCH_WATCH_MAIL_INTERVAL where that is shorter and the
@@ -534,10 +609,12 @@ Inside tmux, an --item with no LANE_WINDOW skips the pane checks with one
 stderr note; outside tmux there is no pane to read and nothing is noted.
 
 Environment:
-  LINEAR_TEAM                 team the triage check reads under --since, from
-                              kendex.settings.toml [env] unless the environment
-                              sets it. Empty or absent skips triage, said once;
-                              with a team a missing tracker CLI or
+  LINEAR_TEAM                 team the triage check reads under --since and
+                              the heartbeat's owed items read with --state,
+                              from kendex.settings.toml [env] unless the
+                              environment sets it. Empty or absent skips
+                              triage, said once, and reads the owed items from
+                              open PRs; with a team a missing tracker CLI or
                               workflow-state exits 2 rather than dropping it
   ORCH_STATE_DIR              workflow-state directory; relative paths join
                               the project root; absolute paths stay unchanged
@@ -571,14 +648,18 @@ Environment:
                               walled overseer. A missing one leaves the
                               overseer check to report and launch nothing,
                               said once
-  ORCH_OVERSEER_DEAD_PASSES   consecutive passes the overseer pane must read
+  ORCH_OVERSEER_DEAD_PASSES   consecutive passes the overseer must read
                               `exited` before overseer-dead goes out, and
-                              `walled` before overseer-walled does (default
-                              2). One pass is a poll that caught a live
-                              session between its harness and its shell. The
-                              walled case also needs its account judged at or
-                              below ORCH_OVERSEER_HEADROOM_PCT; passes alone
-                              never close a window whose harness is alive
+                              its pane `walled` before a screen wall's
+                              overseer-walled does (default 2). One pass is a
+                              poll that caught a live session between its
+                              harness and its shell. A screen wall also needs
+                              its account judged at or below
+                              ORCH_OVERSEER_HEADROOM_PCT; passes alone never
+                              close a window whose harness is alive. A rows
+                              wall, which stands unless its account measures
+                              room, and an account read at zero headroom go
+                              out on the first pass
   ORCH_OVERSEER_SUCCESSION    `off` leaves the overseer-dead and
                               overseer-walled notices and
                               launches no successor; `oversee-succeed` owns
@@ -614,6 +695,10 @@ Environment:
   ORCH_DIRECTIVE_UNREAD_SECS  age in seconds past which a directive the lane
                               has not read is reported directive-unread, a
                               whole number, default 300
+  ORCH_WATCH_START_STALL_SECS seconds after a record went running, its
+                              running_at, its status file may still be missing before
+                              start-stalled goes out, a positive whole number,
+                              default 600
 USAGE
 }
 # stderr messages start `oversee-watch: REASON field=value ...`. Backslash,
@@ -642,14 +727,19 @@ ow_message() { # REASON FIELD=VALUE...
     interval-invalid) text='The interval must be a non-negative integer.' ;;
     handoff-invalid) text='The handoff path takes letters, digits and ./_- only, as oversee-succeed reads it.' ;;
     mail-interval-invalid) text='ORCH_WATCH_MAIL_INTERVAL takes a whole number of seconds, with no leading zero.' ;;
+    start-stall-secs-invalid) text='ORCH_WATCH_START_STALL_SECS takes a positive whole number of seconds, with no leading zero.' ;;
+    start-stall-unread) text='The lane status file could not be read through lane-host, so whether the lane started settles nothing this pass: no start-stalled goes out for it and its row stands. The exit is lane_host_fetch'"'"'s: 2 a failed read, 4 no lane-host slot.' ;;
+    lane-rows-unread) text='The Pi lane session rows could not be read, so the lane reads unjudged this pass and its pane is not read in their place. The exit is lane_host_fetch'"'"'s for a hosted lane, 2 a failed read and 4 no lane-host slot; 0 is a file this read reached and could not read, or whose last row names an event no writer writes, and 2 on a local lane is a record naming no mail_root.' ;;
     unread-secs-invalid) text='ORCH_DIRECTIVE_UNREAD_SECS takes a whole number of seconds, with no leading zero.' ;;
     dead-passes-invalid) text='ORCH_OVERSEER_DEAD_PASSES must be a positive integer.' ;;
     mark-repeat-invalid) text='ORCH_OVERSEER_MARK_REPEAT must be a positive integer.' ;;
     overseer-mark-unjudged) text='The overseer own-mark judgement could not be made this pass, so its account marks settle nothing here. A standing mark is not cleared by a reading that failed; oversee-succeed owns the judgement and its own keyed line says why.' ;;
     overseer-wall-unjudged) text='The overseer pane read walled and the account judgement that would confirm it could not be made, so nothing is acted on: this pane carries the limit banners this watch relays about OTHER lanes, and the screen alone cannot tell those from the overseer own account running out. The reading is left to the next pass.' ;;
     overseer-wall-unconfirmed) text='The overseer pane read walled and its own account measures room, so the banner on that screen is one this watch relayed about another lane and the overseer is working. Nothing is launched and no window is closed. The fields name the judgement that refuted it.' ;;
+    overseer-wall-lifted) text='The overseer session rows last recorded a usage-limit failure and its own account now measures room, so the wall has lifted and the session is read as live. Only a finished turn writes the row that clears it.' ;;
     overseer-unwatched) text='The overseer pane is not being watched, so an overseer that dies is reported by nothing. The field names what is missing.' ;;
     overseer-unreadable) text='The overseer pane could not be read, so its state settles nothing this pass.' ;;
+    overseer-fallback) text='The overseer session rows could not judge it, so this pass judges its pane, the named fallback, as the watch did before the rows existed. The cause names why: no rows file recorded for this pane (unrecorded), a fleet state that could not be read (state-unreadable), no row in the file yet (none), a row naming a harness that emits no session end or usage-limit event (unsupported), or a file that could not be read (unreadable).' ;;
     overseer-line-missing) text='This start could not build the overseer launch line, so the fleet state keeps the line it already holds, or none. The pane is still watched. '"$OW_REPLAY_RULE"' The held field is that line, none where the record holds none for this pane, or unread where the record could not be read. The detail under this line is the refusal of oversee-succeed --print-launch-line.' ;;
     overseer-unrecorded) text='This start could not record the overseer pane in the fleet state, so the record stays as it was. The pane is still watched. '"$OW_REPLAY_RULE"' The held field is that line, none where the record holds none for this pane, or unread where the record, or the pane key that names it, could not be read. The step field names what failed.' ;;
     overseer-notice-failed) text='An overseer notice could not be delivered on the channel the field names. A notice from a pass still had its event line printed; a notice from the watch start has none.' ;;
@@ -659,7 +749,7 @@ ow_message() { # REASON FIELD=VALUE...
     repeat-invalid) text='The repeat delay must be a non-negative integer.' ;;
     state-required) text='The option reads its lanes from the oversee workflow state. Add --state PATH.' ;;
     state-unreadable) text='The oversee state file could not be read. The watch stops rather than carry a partial fleet.' ;;
-    state-invalid) text='The oversee state file is not workflow-state JSON with a lanes array of records naming their item. The watch stops rather than carry a partial fleet.' ;;
+    state-invalid) text='The oversee state file is not workflow-state JSON with a lanes array of records naming their item, each status and harness one word, and a launch_queue of item keys. The watch stops rather than carry a partial fleet.' ;;
     window-absent) text='tmux does not list the window. Passes carry it until one reports it gone; later passes skip it until tmux lists it again.' ;;
     sleep-failed) text='The repeat delay could not be slept. Repeat mode stops rather than run passes back to back.' ;;
     fleet-read) text='The fleet this watch carries, as the last state read gave it; printed again when a re-read changes it. dropped counts every record whose status is not running, which the watch does not carry as a lane, and parked the records among those it carries for the merged check alone.' ;;
@@ -684,6 +774,10 @@ ow_message() { # REASON FIELD=VALUE...
     time-failed) text='The current UTC time could not be read.' ;;
     tracker-list-failed) text='The tracker list command failed.' ;;
     tracker-list-invalid) text='The tracker list output could not be parsed.' ;;
+    owed-roster-invalid) text='The account listing read for the owed items could not be put to them, so the heartbeat names none.' ;;
+    owed-accounts-unread) text='lanes list failed under this host, so the owed items on it read unjudged this heartbeat. Its own words follow.' ;;
+    owed-list-truncated) text='The item repository open pull request listing reached its limit, so an owed issue-N pull request past it would be missing. The heartbeat names no owed item from a partial list.' ;;
+    owed-wall-unjudged) text='lanes pick could not judge the wall for this host, harness and model, so the owed items on them read unjudged this heartbeat. Its own words follow.' ;;
     handoff-read-failed) text='The handoff record could not be read.' ;;
     lane-close-failed) text='lane-close failed before it completed the close. The next run reports the exit again and retries.' ;;
     parked-merge-unmatched) text='A pull request merged on the parked item'"'"'s branch name, reported above as merged, is not the one its record names, so the parked sandbox stays stopped: recorded= is the record'"'"'s <repo>#<number> in lower case and seen= the merged keys this pass found. The lane closes when the recorded pull request merges in that repository.' ;;

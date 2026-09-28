@@ -209,6 +209,8 @@ run_files \
   "only line 1 is a shebang: a second #! line is a comment|a.sh|#!/bin/bash\n#!second $W\n|||rc=1 $(hit "$ID" a.sh 2 "!second $W");$(idx 1 1)" \
   "a backslash in a single-quoted shell string escapes nothing|a.sh|echo 'a\\\\' # $W\n|||rc=1 $(hit "$ID" a.sh 1 " $W");$(idx 1 1)" \
   "a backslash in \$'...' does escape, so the comment after the string is judged|a.sh|echo \$'a\\\\'b' # $W\n|||rc=1 $(hit "$ID" a.sh 1 " $W");$(idx 1 1)" \
+  "a backslash in a double-quoted shell string escapes its quote, so the comment after the string is judged|a.sh|echo \"a\\\\\"b\" # $W\n|||rc=1 $(hit "$ID" a.sh 1 " $W");$(idx 1 1)" \
+  "a backslash outside a string quotes the next character, so the escaped quote between two closed strings opens nothing|a.sh|echo 'it'\\\\''s' # $W\n|||rc=1 $(hit "$ID" a.sh 1 " $W");$(idx 1 1)" \
   "a heredoc body is not judged; the line after its terminator is|a.sh|cat <<EOF\n# $W\nEOF\n# $W\n|||rc=1 $(hit "$ID" a.sh 4 " $W");$(idx 1 1)" \
   "a quoted <<- heredoc ends at its tab-indented terminator|a.sh|cat <<-'EOF'\n\t# $W\n\tEOF\n# $W\n|||rc=1 $(hit "$ID" a.sh 4 " $W");$(idx 1 1)" \
   "a plain << heredoc is not ended by a tab-indented terminator: it never closes|a.sh|cat <<EOF\n# $W\n\tEOF\n# $W\n|||rc=2 $(extraction a.sh unclosed-heredoc:1:EOF);$(incomplete 1 0 0)$(unread 1)" \
@@ -231,12 +233,44 @@ run_files \
   "YAML: a doubled quote ends nothing, and the trailing comment is judged|a.yml|key: 'don''t' # $W\n|||rc=1 $(hit "$ID" a.yml 1 " $W");$(idx 1 1)" \
   "a Makefile is judged by its basename|Makefile|all: # $W\n|||rc=1 $(hit "$ID" Makefile 1 " $W");$(idx 1 1)" \
   "a nested Dockerfile is judged by its basename|sub/Dockerfile|# $W\n|||rc=1 $(hit "$ID" sub/Dockerfile 1 " $W");$(idx 1 1)"
-# A row cannot carry a `|`; the two contents that do are fixtures here.
+# A row cannot carry a `|`; the contents that do are fixtures here.
 fx_pipe_heredoc() { file pipe-heredoc a.sh "cat <<\"END-OF\" | sort\n# $W\nEND-OF\n# $W\n"; }
 fx_pipe_yaml() { file pipe-yaml a.yml "key: |\n  # $W\n"; }
+# An escaped quote in a case pattern and an escaped double quote in a
+# `[[ =~ ]]` regex, each followed by a comment that must be judged; the lines
+# are taken from a consumer's bin/check-scans.sh.
+fx_escaped_case() {
+  repo escaped-case
+  cat >"$R/a.sh" <<'SH'
+case $sm_c in
+  \'|\") sm_q=$sm_c; sm_keep+=' '; sm_fresh=0;;
+esac
+SH
+  printf '# %s\n' "$W" >>"$R/a.sh"
+  stage
+}
+fx_escaped_regex() {
+  repo escaped-regex
+  cat >"$R/a.sh" <<'SH'
+          if [ "$rc" != 0 ]; then
+            [ "$want" = REFUSAL ] || out="$out$f:$((i + 1)): $word: the keyed line cannot be read, so whether it carries fix= is unjudged
+"
+          elif [[ $arg != *fix=* && ! $arg =~ ^\"?\$([A-Za-z_][A-Za-z0-9_]*|[0-9@*]|\{[^}]*\})\"?$ && -n $arg ]]; then
+            out="$out$f:$((i + 1)): $word: the refusal carries no fix=
+"
+          fi
+SH
+  printf '# %s\n' "$W" >>"$R/a.sh"
+  stage
+}
 run_rows \
   "a quoted heredoc word is stripped of its quotes and stops before the pipe|fx_pipe_heredoc|||rc=1 $(hit "$ID" a.sh 4 " $W");$(idx 1 1)" \
-  "a YAML block scalar is read as code (stated limit)|fx_pipe_yaml|||rc=1 $(hit "$ID" a.yml 2 " $W");$(idx 1 1)"
+  "a YAML block scalar is read as code (stated limit)|fx_pipe_yaml|||rc=1 $(hit "$ID" a.yml 2 " $W");$(idx 1 1)" \
+  "an escaped quote in a case pattern opens nothing, so the comment after the case is judged|fx_escaped_case|||rc=1 $(hit "$ID" a.sh 4 " $W");$(idx 1 1)" \
+  "an escaped double quote in a [[ =~ ]] regex opens nothing, so the comment after the test is judged|fx_escaped_regex|||rc=1 $(hit "$ID" a.sh 8 " $W");$(idx 1 1)"
+for fx in escaped-case escaped-regex; do
+  assert_eq "fixture: the $fx shape is valid Bash" "0" "$(bash -n "$TMP/$fx/a.sh" 2>&1; echo $?)"
+done
 # The three quoted-substitution fixtures above are valid Bash; the extractor
 # is held to shapes the shell accepts.
 for content in "out=\"\$(printf '\"')\"\n# $W\n" "out=\"\$(\n# $W\nprintf ok\n)\"\n" "out=\"\$(python3 - <<'PY'\nprint(\"<<'MANIFEST_EOF'\")\nPY\n)\"\n# $W\n"; do
@@ -264,6 +298,8 @@ run_files \
   "a -- inside a Lua long string is read as a comment (stated limit)|a.lua|s = [[ --$W ]]\n|||rc=1 $(hit "$ID" a.lua 1 "$W ]]");$(idx 1 1)" \
   "a nested Rust block comment closes at the first */, so the tail is read as code (stated limit)|a.rs|/* outer /* inner */ $W */\n|||rc=0 $(ok_idx 1)" \
   "a levelled Lua block opener is read as a -- line comment, judged on its own line|a.lua|--[==[ $W\n]==] x = 1\n|||rc=1 $(hit "$ID" a.lua 1 "[==[ $W");$(idx 1 1)" \
+  "a comment after an unparenthesised case pattern inside a quoted \$(...) is read as string text (stated limit)|a.sh|x=\"\$(case \$y in\n  a) # $W\n     echo hi;;\nesac)\"\n|||rc=0 $(ok_idx 1)" \
+  "control: the same comment after a parenthesised pattern is judged|a.sh|x=\"\$(case \$y in\n  (a) # $W\n     echo hi;;\nesac)\"\n|||rc=1 $(hit "$ID" a.sh 2 " $W");$(idx 1 1)" \
   "a line opening two heredocs honours the first: the body after its terminator is judged (stated limit)|a.sh|cat <<A <<B\n# $W\nA\n# $W\nB\n# $W\n|||rc=1 $(hit "$ID" a.sh 4 " $W");$(hit "$ID" a.sh 6 " $W");$(idx 2 1)" \
   "a Ruby heredoc body is read as code, so its hash is a comment (stated limit)|a.rb|s = <<~EOS\n# $W\nEOS\n|||rc=1 $(hit "$ID" a.rb 2 " $W");$(idx 1 1)" \
   "a Makefile recipe's shell is read under the hash grammar with its strings tracked (stated limit)|Makefile|all:\n\techo '# $W'\n|||rc=0 $(ok_idx 1)" \
@@ -301,6 +337,14 @@ run_files \
   "a first line naming a shell without #! is not a shebang|run|# start with bash\n# $W\n|COMMIT_GUARDS_COMMENT_PATHS=run||rc=0 comments: unmeasured-count=$(unread 1)" \
   "the same file with no shebang is counted as unmeasured, and nothing measurable was scanned|run|# $W\necho hi\n|COMMIT_GUARDS_COMMENT_PATHS=run||rc=0 comments: unmeasured-count=$(unread 1)" \
   "an extension the table does not carry is counted, not guessed at|notes.txt|# $W\n|COMMIT_GUARDS_COMMENT_PATHS=*.txt||rc=0 comments: unmeasured-count=$(unread 1)"
+# The refusal's explanation opens with the reader's cause, which names the
+# opener's line; an opener past line 1 proves the number is the opener's.
+repo reader-cause
+put a.sh "true\necho 'open\n# $W\n"
+stage
+CAUSE="$(cd "$R" && "$CM" 2>&1)" || true
+assert_eq "an unclosed quote's refusal names the reader's cause and the opener's line" \
+  "  comment-reader:unclosed-string line=2" "$(printf '%s\n' "$CAUSE" | LC_ALL=C awk '/^  comment-reader:/')"
 run_rows \
   "a regex literal holding a backtick opens a template literal that never closes (stated limit), and the later file's finding is kept|fx_unclosed_ts|||rc=2 $(extraction a.ts unclosed-string:1);$(hit "$ID" b.rs 1 " $W");$(incomplete 1 1 1)$(unread 1)" \
   "a shebang read failure puts the stable record before head's cause|fx_shim_head|PATH=$TMP/shim-head/shim:$PATH,COMMIT_GUARDS_COMMENT_PATHS=run||rc=2 ${ERR}shebang-read=run;dependency-order-control: shebang-read" \

@@ -305,6 +305,28 @@ assert_eq "the template's steps name the shipped script paths" \
 assert_eq "those paths are scripts this package ships" "yes yes" \
   "$([ -x "$AGGREGATE_NEEDS" ] && echo yes || echo no) $([ -x "$TEST_DIR/../scripts/harness-only" ] && echo yes || echo no)"
 
+# --- 4a. The permission the proof reads with ------------------------------
+# The action reads the workflow's earlier runs and their records with the job
+# token, so the changes job grants `actions: read`; a template without it
+# gets one refusal per run and no reuse.
+assert_eq "the changes job grants the proof's read and the checkout's, nothing more" \
+  "actions: read contents: read" "$(job_permissions "$TEMPLATE" changes)"
+awk '$0 == "      actions: read" { n++; next } { print } END { if (n != 1) exit 2 }' \
+  "$TEMPLATE" >"$SANDBOX/no-actions-read.yml" ||
+  { echo "actions: read could not be dropped from a copy" >&2; exit 1; }
+assert_eq "must-fail: a changes job without actions: read is named" "contents: read" \
+  "$(job_permissions "$SANDBOX/no-actions-read.yml" changes)"
+
+# The template's lanes run wherever lanes is true and do the same work on
+# every event, which is the one thing that lets a run reading no declaration
+# record covers=all for the run after it; a template without the input
+# records covers=none and nothing reuses.
+assert_eq "the classify step says every lane runs wherever lanes is true" "true" \
+  "$(step_key "$TEMPLATE" classify covers-all-lanes)"
+plant "$TEMPLATE" "covers-all-lanes: true" "covers-all-lanes: false" "$SANDBOX/no-covers-all.yml"
+assert_eq "must-fail: a template not saying so is named" "false" \
+  "$(step_key "$SANDBOX/no-covers-all.yml" classify covers-all-lanes)"
+
 # --- 5. The steps the classifier can live without -------------------------
 
 # Whether the changes job's step with id ID carries `continue-on-error: true`.

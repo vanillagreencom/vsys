@@ -23,9 +23,12 @@
 #   § verb       `lanes state` as the third caller: the wiring around the judge,
 #                and the host probe that reports beside the state, never as it,
 #                with one must-fail control on the verb
+#   § pi rows    a Pi lane judged from the rows its own hook writes, over
+#                screens that would answer otherwise
 #   § control    the must-fail control on the judge: one that reads the harness
 #                process and not the pane — the wake as it was — calls the idle
-#                screen unjudged
+#                screen unjudged, and one that reads a rowless Pi lane's pane
+#                calls it idle
 #
 # The sandbox, its tmux and pgrep stubs and its assertions are
 # lib/oversee-watch-harness.sh, the same ones the watch's own suites drive, so
@@ -61,8 +64,9 @@ export PATH="$TMP_ROOT/bin:$PATH"
 printf '4242\n' > "$STUB_DIR/kids-100.txt"   # pid 100 has a child
 printf '2' > "$STUB_DIR/probe-fail-102"  # pid 102's probe cannot run
 
-# The screens, each named for what a lane showing it is doing. The Codex ones
-# are the byte-exact captures under fixtures/; the Claude ones are the shapes
+# The screens, each named for what a lane showing it is doing. The Codex and
+# Copilot ones are the byte-exact captures under fixtures/, the Copilot ones off
+# Copilot CLI 1.0.88 in a tmux pane; the Claude ones are the shapes
 # oversee_watch_lanes.sh already pins, kept whole here so a row's premise is
 # visible beside it.
 screen_for() {
@@ -77,6 +81,10 @@ screen_for() {
     codex_idle) cat "$CODEX_PANES/codex-idle-after-turn.txt" ;;
     codex_working) cat "$CODEX_PANES/codex-working.txt" ;;
     claude_dialog) cat "$CODEX_PANES/claude-dialog-permission.txt" ;;
+    copilot_idle) cat "$CODEX_PANES/copilot-idle.txt" ;;
+    copilot_draft) cat "$CODEX_PANES/copilot-composer-draft.txt" ;;
+    copilot_working) cat "$CODEX_PANES/copilot-working.txt" ;;
+    copilot_trust) cat "$CODEX_PANES/copilot-dialog-trust.txt" ;;
     *) printf 'screen_for: no such screen: %s\n' "$1" >&2; return 1 ;;
   esac
 }
@@ -123,6 +131,25 @@ a busy process answers before the idle rung, since a turn's first seconds draw a
 a process read that could not tell never becomes idle, however plainly the screen reads it|listed|claude|100|idle|unjudged||unjudged
 the same for the codex screen a live session between tool calls draws|listed|codex|100|codex_idle|unjudged||unjudged
 a process read that says idle agrees with the marker and the lane is idle|listed|claude|100|idle|idle||idle
+a copilot composer with its frame's rule under it is idle|listed|node|100|copilot_idle|||idle
+a copilot composer holding a draft is the same live input|listed|node|100|copilot_draft|||idle
+a copilot footer running a command is a turn in flight|listed|node|100|copilot_working|||working
+copilot's folder-trust dialog is asking|listed|node|100|copilot_trust|||asking
+ROWS
+
+# Whether a launcher sees the harness up on a pane it opened: the Copilot
+# composer is two lines, so it is the one screen the one-line pattern misses.
+# A dialog answers no, the direction the launcher waits out.
+while IFS='|' read -r name screen want; do
+  [[ -n "$name" ]] || continue
+  up=no
+  ! pane_harness_up "$(screen_for "$screen")" || up=yes
+  assert_eq "$up" "$want" "$name"
+done <<'ROWS'
+a claude composer is the harness up|idle|yes
+an idle copilot composer is the harness up|copilot_idle|yes
+a copilot command in flight is the harness up|copilot_working|yes
+copilot's folder-trust dialog is not|copilot_trust|no
 ROWS
 
 # A scan that fails is not an answer: exit 2 and `unjudged`, never a verdict a
@@ -146,6 +173,54 @@ assert_eq "$scan_state rc=$scan_rc" "unjudged rc=2" \
   "a failed scan is exit 2 and unjudged, never the idle its session read claimed"
 rm -f -- "${TMP_ROOT:?}/bin/grep"
 hash -r
+
+echo "=== lane-state § pi rows: a Pi lane judged from what Pi emits ==="
+
+# A Pi lane's rows, as the lane-mail-check hook writes them under the pi-hooks
+# carrier (hooks/tests/lane-mail-check.test.sh pins that writer), read by the
+# one verdict every caller asks and handed to the judge. Each row runs over a
+# pane screen that would answer something ELSE, so a row that passes proves the
+# rows answered and the screen did not.
+# shellcheck source=../scripts/lib/session-rows.sh
+source "$SCRIPTS_DIR/lib/session-rows.sh"
+PI_ROWS_FILE="$TMP_ROOT/pi-session-rows.jsonl"
+pi_row_file() { # SHAPE
+  rm -f -- "${PI_ROWS_FILE:?}"
+  case "$1" in
+    none) ;;
+    ended) printf '%s\n' '{"at":1,"event":"Stop","harness":"pi","stop_reason":"stop"}' > "$PI_ROWS_FILE" ;;
+    reopened) printf '%s\n' '{"at":1,"event":"Stop","harness":"pi","stop_reason":"stop"}' \
+      '{"at":2,"event":"PreToolUse","harness":"pi"}' > "$PI_ROWS_FILE" ;;
+    limit) printf '%s\n' '{"at":1,"event":"Stop","harness":"pi","stop_reason":"error","message":"429 Usage limit reached for this model"}' > "$PI_ROWS_FILE" ;;
+    failed) printf '%s\n' '{"at":1,"event":"Stop","harness":"pi","stop_reason":"error","message":"network timeout"}' > "$PI_ROWS_FILE" ;;
+    fragment) printf '%s\n%s' '{"at":1,"event":"Stop","harness":"pi","stop_reason":"stop"}' '{"at":2,"eve' > "$PI_ROWS_FILE" ;;
+    foreign) printf '%s\n' '{"at":1,"event":"SessionEnd","harness":"pi"}' > "$PI_ROWS_FILE" ;;
+    *) printf 'pi_row_file: no such shape: %s\n' "$1" >&2; return 1 ;;
+  esac
+}
+
+# NAME|ROWS|CMD|PID|SCREEN|WANT_VERDICT|WANT_STATE
+while IFS='|' read -r name rows cmd pid screen want_verdict want_state; do
+  [[ -n "$name" ]] || continue
+  pi_row_file "$rows"
+  verdict_rc=0
+  session_rows_lane_verdict "$PI_ROWS_FILE" || verdict_rc=$?
+  word="$SESSION_ROWS_VERDICT"
+  [[ "$verdict_rc" -eq 0 ]] || word=unreadable
+  row_state=""
+  row_rc=0
+  lane_state row_state listed "$cmd" "$pid" "$(screen_for "$screen")" "" "" "$word" || row_rc=$?
+  assert_eq "verdict=$word state=$row_state rc=$row_rc" "verdict=$want_verdict state=$want_state rc=0" "$name"
+done <<'ROWS'
+a Pi lane with no hook row is unjudged, never the idle its screen draws|none|pi|100|idle|none|unjudged
+a Stop row with no turn after it is idle, whatever the screen draws|ended|pi|100|working|idle|idle
+a tool call after the Stop row is a turn in flight|reopened|pi|100|idle|working|working
+a turn that ended on Pi's usage-limit error is walled|limit|pi|100|idle|walled|walled
+a turn that ended on any other error is idle, its error the payload|failed|pi|100|walled|idle|idle
+a fragment a killed writer left is passed over for the row before it|fragment|pi|100|working|idle|idle
+a row no lane writer writes is unreadable, and unreadable is unjudged|foreign|pi|100|idle|unreadable|unjudged
+a bare shell with nothing under it is exited, whatever the rows say|ended|bash|101|shell|idle|exited
+ROWS
 
 echo "=== lane-state § observe: the pane handed to the judge ==="
 
@@ -271,6 +346,25 @@ assert_eq "rc=$resolve_rc count=$LANE_PANE_COUNT" "rc=2 count=0" \
 
 echo "=== lane-state § process ownership: host process reads ==="
 
+# The names each harness's process carries, as the ownership read and
+# pane-write match them. Copilot's native binary reads MainThread on Linux and
+# its node loader node-MainThread, which a signal must not stand in for.
+while IFS='|' read -r name harness process want; do
+  [[ -n "$name" ]] || continue
+  got=no
+  ! LANE_TEST_RE="$(lane_harness_process_re "$harness")" awk -v n="$process" \
+    'BEGIN { exit !(n ~ ENVIRON["LANE_TEST_RE"]) }' || got=yes
+  assert_eq "$got" "$want" "$name"
+done <<'ROWS'
+claude runs under its own name|claude|claude|yes
+a name that only contains the harness's is another process|claude|claude-x|no
+copilot's native binary on Linux|copilot|MainThread|yes
+copilot's binary where ps prints the executable|copilot|copilot|yes
+copilot's node loader is not the process a stop signals|copilot|node-MainThread|no
+MainThread belongs to no other harness|claude|MainThread|no
+a harness name's metacharacters match only themselves|kz)harness|kz)harness|yes
+ROWS
+
 if proc_table_readable; then
   new_case process-ownership
   PROCESS_ROOT="$TMP_ROOT/process-root"
@@ -339,6 +433,29 @@ PY
   ) || PROCESS_ZOMBIE_CONTROL_RC=$?
   assert_eq "$PROCESS_ZOMBIE_CONTROL_RC" 2 \
     "control: reading the zombie as live makes the ownership read fail"
+
+  # A Copilot lane: a real process named as the Copilot CLI binary is on
+  # Linux, in the worktree beside the two harnesses above, which it is not.
+  cp "$PROCESS_REAL_BASH" "$PROCESS_ROOT/MainThread"
+  (cd "$PROCESS_ROOT" && exec "$PROCESS_ROOT/MainThread" -c 'trap "exit 0" TERM; while :; do sleep 1; done') &
+  PROCESS_COPILOT=$!
+  PROCESS_FIXTURE_PIDS+=" $PROCESS_COPILOT"
+  # The exec renames the child a moment after the fork; the table is read once
+  # it has.
+  for _process_try in {1..100}; do
+    [[ "$(cat "/proc/$PROCESS_COPILOT/comm" 2>/dev/null)" != MainThread ]] || break
+    sleep 0.02
+  done
+  PROCESS_OWNED_RC=0
+  lane_owned_processes "$PROCESS_ROOT" copilot || PROCESS_OWNED_RC=$?
+  assert_eq "$LANE_OWNED_PROCESS_PIDS rc=$PROCESS_OWNED_RC" "$PROCESS_COPILOT rc=0" \
+    "a copilot lane's harness is its MainThread process, and only that one"
+  PROCESS_NAME_MUTANT="$TMP_ROOT/lane-state-copilot-name.sh"
+  grep -v -F "copilot) printf '%s\n' '^(copilot|MainThread)\$' ;;" "$SCRIPTS_DIR/lib/lane-state.sh" > "$PROCESS_NAME_MUTANT"
+  assert_eq "$(cmp -s "$PROCESS_NAME_MUTANT" "$SCRIPTS_DIR/lib/lane-state.sh" && echo same || echo differs)" differs \
+    "control: the mutant really drops copilot's process names"
+  assert_eq "$(source "$PROCESS_NAME_MUTANT"; lane_owned_processes "$PROCESS_ROOT" copilot; printf '%s' "${LANE_OWNED_PROCESS_PIDS:-none}")" none \
+    "control: read under its harness name alone, a copilot lane owns no process"
 
   PROCESS_FAIL_PS="$PROCESS_ROOT/fail-ps"
   mkdir -p "$PROCESS_FAIL_PS"
@@ -466,6 +583,21 @@ shell|101|bash|exited|lane-exited
 idle|100|claude|idle|idle-after-return
 ROWS
 
+# A Copilot lane, whose pane reads node, its npm loader: the watch alone, since
+# the wake does not take the harness and the lane's monitor is its own wake.
+while IFS='|' read -r screen event; do
+  [[ -n "$screen" ]] || continue
+  new_case "agree-$screen"
+  export STUB_DIR
+  printf '4242\n' > "$STUB_DIR/kids-100.txt"
+  assert_eq "$(watch_event "$screen" 100 node)" "$event" \
+    "the watch reads the $screen screen as $event"
+done <<'ROWS'
+copilot_idle|idle-after-return
+copilot_trust|lane-asking
+copilot_working|none
+ROWS
+
 # The PRODUCER of `unjudged`, not the word. The two § states rows above hand it
 # to the judge as an argument; nothing there runs `lane_session_state`, which is
 # what emits it in the field. Here the pane is the same idle screen those rows
@@ -499,7 +631,11 @@ echo "=== lane-state § verb: lanes state, the judge on the command line ==="
 # `lane-host` for a stub, and the wake fixture runs against the real one.
 VERB_REPO="$TMP_ROOT/verb-repo"
 mkdir -p "$VERB_REPO/scripts/lib"
-cp "$SCRIPTS_DIR/lanes" "$VERB_REPO/scripts/"
+# Every script, since `lanes state` asks workflow-state for the fleet's lane
+# records and that script runs its own neighbours.
+for verb_script in "$SCRIPTS_DIR"/*; do
+  [[ ! -f "$verb_script" ]] || cp "$verb_script" "$VERB_REPO/scripts/"
+done
 cp -R "$SCRIPTS_DIR/lib/." "$VERB_REPO/scripts/lib/"
 chmod +x "$VERB_REPO/scripts/lanes"
 git -C "$VERB_REPO" init -q
@@ -593,6 +729,43 @@ kendex:CC-1|idle|local|0|idle rc=0 note=none
 fleet:CC-1|idle|local|0|unjudged rc=0 note=none
 kendex:CC-404|none|ssh|1|unjudged rc=0 note=host-unreachable
 ROWS
+
+# A window a running fleet record names as a Pi lane's answers from the rows
+# its hook wrote in its mailbox, never from its pane: each row stages a screen
+# that would answer otherwise. With no row the lane is unjudged, and a window
+# no record names keeps the pane, the fallback the help names.
+PI_VERB_ROOT="$TMP_ROOT/pi-verb-lane"
+mkdir -p "$PI_VERB_ROOT/tmp/lane-mail/CC-1"
+(cd "$VERB_REPO" && ./scripts/workflow-state init oversee >/dev/null \
+  && ./scripts/workflow-state set oversee lanes "$(jq -nc --arg root "$PI_VERB_ROOT" \
+    '[{item: "CC-1", window: "kendex:CC-1", harness: "pi", host: null, mail_root: $root, status: "running"}]')" >/dev/null)
+PI_VERB_ROWS="$PI_VERB_ROOT/tmp/lane-mail/CC-1/session-rows.jsonl"
+# ROWS|SCREEN|WANT, ROWS being the Pi lane's last row's event, or none
+while IFS='|' read -r rows screen want; do
+  [[ -n "$rows" ]] || continue
+  rm -f -- "${PI_VERB_ROWS:?}"
+  [[ "$rows" == none ]] || jq -nc --arg e "$rows" '{at: 1, event: $e, harness: "pi", stop_reason: "stop"}' > "$PI_VERB_ROWS"
+  assert_eq "$(verb_state CC-1 "$screen" local 0)" "$want" \
+    "lanes state: a Pi lane whose last row is $rows on a $screen pane"
+done <<'ROWS'
+Stop|working|idle rc=0 note=none
+PreToolUse|idle|working rc=0 note=none
+none|idle|unjudged rc=0 note=none
+ROWS
+assert_eq "$(verb_state CC-2 working local 0)" "working rc=0 note=none" \
+  "lanes state: a window no running record names is read at its pane, the fallback"
+# The verb's Pi control: rows read and never handed to the judge leave the
+# pane to answer for a Pi lane.
+jq -nc '{at: 1, event: "Stop", harness: "pi", stop_reason: "stop"}' > "$PI_VERB_ROWS"
+ROWS_MUTANT_SCRIPTS="$(mutant_scripts verb-rows-mutant lanes)" || exit 1
+ROWS_MUTANT_REPO="$(dirname "$ROWS_MUTANT_SCRIPTS")"
+git -C "$ROWS_MUTANT_REPO" init -q
+cp -R "$VERB_REPO/tmp" "$ROWS_MUTANT_REPO/tmp"
+mutate_file "$ROWS_MUTANT_SCRIPTS/lanes" '"$LANE_PANE_SCREEN" "" "" "$STATE_ROWS"' '"$LANE_PANE_SCREEN" "" "" ""'
+assert_eq "$(VERB_RUN_REPO="$ROWS_MUTANT_REPO" verb_state CC-1 working local 0)" "working rc=0 note=none" \
+  "control: a verb that drops the rows reads a Pi lane's pane"
+rm -f -- "${PI_VERB_ROWS:?}"
+(cd "$VERB_REPO" && ./scripts/workflow-state set oversee lanes '[]' >/dev/null)
 
 # The hosted probe names the item, which is the window part of a
 # session-qualified name: the provider knows items and never tmux sessions.
@@ -702,6 +875,43 @@ mutant_state="$(
 )"
 assert_eq "$mutant_state" "unjudged" \
   "control: reading only the harness process calls the idle screen unjudged"
+
+# The Copilot composer's signature, the rule under its marker line, cut from
+# the slice: the marker line then reads as a turn already taken, the slice
+# below it holds no marker, and neither the judge nor the launcher's premise
+# sees an idle Copilot lane.
+FRAMED_MUTANT="$TMP_ROOT/mutant-framed.sh"
+FRAMED_LINE='      framed = (last > 0 && last < NR && line[last + 1] ~ rule)'
+assert_eq "$(grep -c -x -F "$FRAMED_LINE" "$SCRIPTS_DIR/lib/lane-state.sh")" 1 \
+  "control: the framed line is in the library once"
+awk -v l="$FRAMED_LINE" '$0 == l { print "      framed = 0"; next } { print }' "$SCRIPTS_DIR/lib/lane-state.sh" > "$FRAMED_MUTANT"
+framed_state="$(
+  source "$FRAMED_MUTANT"
+  answer=""
+  lane_state answer listed node 100 "$(screen_for copilot_idle)" ""
+  up=no
+  ! pane_harness_up "$(screen_for copilot_idle)" || up=yes
+  printf '%s up=%s' "$answer" "$up"
+)"
+assert_eq "$framed_state" "unjudged up=no" \
+  "control: without the framed signature an idle copilot lane is unjudged and not up"
+
+# The Pi reading's own control: a judge that hands a Pi lane with no hook row
+# to the pane rungs reads the idle screen idle, the pane scrape the rows exist
+# to end.
+MUTANT_LIB="$TMP_ROOT/mutant-lane-state-pi.sh"
+sed 's/^    \*) printf -v "\$_ls_out" unjudged; return 0 ;;$/    *) ;;/' \
+  "$SCRIPTS_DIR/lib/lane-state.sh" > "$MUTANT_LIB"
+assert_eq "$(cmp -s "$MUTANT_LIB" "$SCRIPTS_DIR/lib/lane-state.sh" && echo same || echo differs)" "differs" \
+  "control: the mutant really hands a rowless Pi lane to the pane"
+mutant_state="$(
+  source "$MUTANT_LIB"
+  answer=""
+  lane_state answer listed pi 100 "$(screen_for idle)" "" "" none
+  printf '%s' "$answer"
+)"
+assert_eq "$mutant_state" "idle" \
+  "control: a judge that reads the pane for a rowless Pi lane calls it idle"
 
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

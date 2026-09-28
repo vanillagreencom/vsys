@@ -268,6 +268,9 @@ run() {
     tmux-codex-lane) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1)
       args=(--tmux --harness codex --lane "$CODEX_LANE"
             --launch-flags "-m gpt-6-astra -c model_reasoning_effort=high") ;;
+    tmux-copilot-lane) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1)
+      args=(--tmux --harness copilot --lane "$CODEX_LANE"
+            --launch-flags "--model claude-opus-5 --reasoning-effort high") ;;
     *) echo "run: unknown mode $mode" >&2; exit 1 ;;
   esac
   # A codex launch here names no --lane, so it prepares its folder trust under
@@ -367,7 +370,7 @@ echo "=== open-terminal claude handoff: per-task launch flags ==="
 launch_table \
   "linear:claude renders the caller's launch flags before the brief, no warning|gui|-|--model opus[1m] --effort max --dangerously-skip-permissions|-|rc=0 cmd~'--model'+'opus[1m]'+'--effort'+'max'+'--dangerously-skip-permissions'+'$BRIEFN'=true stderr~open-terminal:+permission-prompt=false" \
   "github:claude renders the same|github|-|--effort max --dangerously-skip-permissions|-|rc=0 cmd~'--effort'+'max'+'--dangerously-skip-permissions'+'/orch+start+github+acme/widgets#42'=true" \
-  "a second launch renders its own flags, nothing leaking from another launch or a stored default|gui|-|--model sonnet --permission-mode bypassPermissions|-|rc=0 cmd~'--model'+'sonnet'+'--permission-mode'+'bypassPermissions'+'$BRIEFN'=true cmd~'--effort'+'max'=false stderr~open-terminal:+permission-prompt=false" \
+  "a second launch renders its own flags, nothing leaking from another launch or a stored default|gui|-|--model claude-sonnet-4-6 --permission-mode bypassPermissions|-|rc=0 cmd~'--model'+'claude-sonnet-4-6'+'--permission-mode'+'bypassPermissions'+'$BRIEFN'=true cmd~'--effort'+'max'=false stderr~open-terminal:+permission-prompt=false" \
   "an unflagged launch renders no model, effort or permission default, and warns it will stall unattended|gui|-|-|-|rc=0 tail=claude+-n+CC-737+'--disallowedTools=AskUserQuestion,EnterPlanMode'+'$BRIEFN' stderr~open-terminal:+permission-prompt+flags==true" \
   "an unflagged codex launch warns for the same unattended prompt|gui-codex|-|-|-|rc=0 stderr~open-terminal:+permission-prompt+flags==true" \
   "codex's unattended permission word suppresses the warning|gui-codex|-|--dangerously-bypass-approvals-and-sandbox|-|rc=0 cmd~--dangerously-bypass-approvals-and-sandbox=true stderr~open-terminal:+permission-prompt=false" \
@@ -385,7 +388,7 @@ launch_table \
 QUOTE_OT="$(mutant_scripts quote-guard-removed open-terminal)/open-terminal" || exit 1
 git -C "$TMP_ROOT/quote-guard-removed" init -q
 orch_fixture_shared_libs "$TMP_ROOT/quote-guard-removed"
-mutate_file "$QUOTE_OT" 'cmd_has_unbalanced_quote "$cmd" &&' 'false &&'
+mutate_file "$QUOTE_OT" "[[ -z \"\$quote\" ]] || printf 'cmd-unbalanced-quote" "true || printf 'cmd-unbalanced-quote"
 OT_UNDER_TEST="$QUOTE_OT"
 launch_table "control: without the quote guard the apostrophe command creates a tmux worktree and window|custom-tmux|-|-|-|rc=0 creates=1 log~new-window=true stderr~open-terminal:+cmd-unbalanced-quote=false"
 OT_UNDER_TEST="$OT"
@@ -476,9 +479,9 @@ echo "=== open-terminal claude handoff: the verify timeout ==="
 # zero-pass loop misreported as a delivery failure; leading zeros are base
 # 10, not octal, and never inflate the digit count into the clamp; a runaway or overflow-sized value is clamped loudly rather
 # than hanging the launch or wrapping into negative arithmetic and an
-# instant resend. A codex tmux lane reads it only under --lane, where the
-# account check waits on it; without one it reads nothing and a broken setting
-# leaves that launch alone.
+# instant resend. A codex or copilot tmux lane reads it only under --lane,
+# where the account check waits on it; without one it reads nothing and a
+# broken setting leaves that launch alone.
 launch_table \
   "a non-integer is a config error naming the setting, not a delivery failure|tmux|ORCH_TMUX_VERIFY_SECS=abc|-|delivered|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true stderr~open-terminal:+brief-undelivered=false" \
   "zero is rejected the same way|tmux|ORCH_TMUX_VERIFY_SECS=0|-|delivered|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=0=true" \
@@ -486,7 +489,8 @@ launch_table \
   "an overflow-sized value is clamped loudly, with no instant resend|tmux|ORCH_TMUX_VERIFY_SECS=10000000000000000000|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+setting=ORCH_TMUX_VERIFY_SECS+value=10000000000000000000+limit=120=true resends=0" \
   "a runaway value is clamped loudly and still verifies|tmux|ORCH_TMUX_VERIFY_SECS=99999|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+setting=ORCH_TMUX_VERIFY_SECS+value=99999+limit=120=true" \
   "a codex tmux lane with no --lane reads the timeout nowhere and is not aborted by a broken one|tmux-codex|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false" \
-  "a codex lane launch refuses a broken timeout, which its account check waits on|tmux-codex-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true"
+  "a codex lane launch refuses a broken timeout, which its account check waits on|tmux-codex-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true" \
+  "a copilot lane launch refuses it the same way, its account check waiting on it too|tmux-copilot-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true"
 
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"

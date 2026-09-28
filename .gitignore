@@ -6,7 +6,6 @@ dist
 .claude/settings.local.json
 tmp/
 docs/roadmaps/
-docs/plans/
 docs/handoff/
 docs/reviews/
 

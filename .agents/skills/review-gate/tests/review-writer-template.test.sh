@@ -108,16 +108,17 @@ for i in "${!WORKFLOWS[@]}"; do
   ' "${WORKFLOWS[$i]}")"
   install_shape="$(printf '%s\n' "$install_block" | sed -n \
     -e '/GH_TOKEN: ""/p' \
-    -e '/KENDEX_VERSION: v1.1.0/p' \
+    -e 's/^\([[:space:]]*KENDEX_VERSION: \)v[0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}$/\1<tag>/p' \
+    -e 's/^\([[:space:]]*KENDEX_INSTALLER_SHA: \)[0-9a-f]\{40\}$/\1<sha>/p' \
     -e '/KENDEX_INSTALLER_REPO: vanillagreencom\/kendex/p' \
     -e '/review-policy --check-config/p' \
     -e '/if \[ "$policy" = "review-policy=active" \]/p' \
-    -e '/curl -fsSL "https:\/\/raw.githubusercontent.com\/$KENDEX_INSTALLER_REPO\/${KENDEX_VERSION##\*-}\/install.sh" | sh -s -- --version "$KENDEX_VERSION"/p' \
+    -e '/curl -fsSL "https:\/\/raw.githubusercontent.com\/$KENDEX_INSTALLER_REPO\/$KENDEX_INSTALLER_SHA\/install.sh" | sh -s -- --version "$KENDEX_VERSION"/p' \
     | sed 's/^[[:space:]]*//' | paste -sd'|' -)"
   policy_path='.agents/skills/review-gate/scripts/review-policy'
   [ "${WORKFLOW_LABELS[$i]}" != "self-adoption copy" ] || policy_path='skills/review-gate/scripts/review-policy'
   assert_eq "$install_shape" \
-    "GH_TOKEN: \"\"|KENDEX_VERSION: v1.1.0|KENDEX_INSTALLER_REPO: vanillagreencom/kendex|policy=\"\$($policy_path --check-config)\"|if [ \"\$policy\" = \"review-policy=active\" ]; then|curl -fsSL \"https://raw.githubusercontent.com/\$KENDEX_INSTALLER_REPO/\${KENDEX_VERSION##*-}/install.sh\" | sh -s -- --version \"\$KENDEX_VERSION\"" \
+    "GH_TOKEN: \"\"|KENDEX_VERSION: <tag>|KENDEX_INSTALLER_SHA: <sha>|KENDEX_INSTALLER_REPO: vanillagreencom/kendex|policy=\"\$($policy_path --check-config)\"|if [ \"\$policy\" = \"review-policy=active\" ]; then|curl -fsSL \"https://raw.githubusercontent.com/\$KENDEX_INSTALLER_REPO/\$KENDEX_INSTALLER_SHA/install.sh\" | sh -s -- --version \"\$KENDEX_VERSION\"" \
     "[${WORKFLOW_LABELS[$i]}] active class policy installs the pinned installer and the pinned kendex without the writer token"
   if grep -Fq 'kendex.ai/install.sh' <<<"$install_block"; then
     FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "[${WORKFLOW_LABELS[$i]}] install step must not fetch the mutable installer, which runs before the credentialed step"

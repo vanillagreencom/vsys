@@ -96,6 +96,11 @@ ROWS=(
   "active|exit-2|--floor small --base b --head h|tier=standard brief=start cause=classifier-failed rc=0|a classifier that cannot answer is standard"
   "active|-|--production 1 --path $PR_MERGE|tier=standard brief=start cause=excluded-path rc=0|a merge-gate Location is never micro whatever the estimate"
   "active|-|--production 1 --path skills/orch/workflows/review-pr.md|tier=micro brief=micro cause=estimate-within-micro rc=0|a Location off the list leaves the estimate's class"
+  "active|-|--production 1 --path hooks/block-bare-cd.sh|tier=standard brief=start cause=excluded-path rc=0|a hook body Location is never micro"
+  "active|-|--production 1 --path hooks/tests/block-bare-cd.test.sh|tier=micro brief=micro cause=estimate-within-micro rc=0|a hook suite Location leaves the estimate's class"
+  "active|-|--production 1 --path skills/x/SKILL.md|tier=small brief=small cause=instruction-file rc=0|a SKILL.md Location is never micro"
+  "active|-|--production 1 --path AGENTS.md|tier=small brief=small cause=instruction-file rc=0|a root AGENTS.md Location is never micro"
+  "active|-|--production $((SMALL_MAX + 1)) --path skills/x/SKILL.md|tier=standard brief=start cause=estimate-past-small rc=0|an instruction Location leaves a wider estimate alone"
   "active|unmeasured|--floor micro --base b --head h|tier=standard brief=start cause=classifier-unmeasured rc=0|a standard the classifier did not measure says so"
   "active|nomarker|--floor micro --base b --head h|tier=standard brief=start cause=classifier-unmeasured rc=0|a class with no measured marker is standard"
   "active|docs|--floor micro --base b --head h|tier=standard brief=start cause=classifier-unreadable rc=0|a classifier word outside the classes is standard"
@@ -116,6 +121,31 @@ for row in "${ROWS[@]}"; do
   # shellcheck disable=SC2086
   assert_eq "$(run_tier "$policy" "$class" $args)" "$want" "$name"
 done
+
+# Must-fail control for the hook body row: the list's one-segment glob needs
+# extglob, and a copy without it reads a hook body as off the list.
+mkdir -p "$TMP_ROOT/no-extglob"
+cp -R "$LAYOUT/." "$TMP_ROOT/no-extglob/"
+sed '/^shopt -s extglob$/d' "$ORCH_DIR/scripts/item-tier" >"$TMP_ROOT/no-extglob/orch/scripts/item-tier"
+assert_eq "$(grep -c '^shopt -s extglob$' "$ORCH_DIR/scripts/item-tier") $(grep -c '^shopt -s extglob$' "$TMP_ROOT/no-extglob/orch/scripts/item-tier" || true)" \
+  "1 0" "the extglob control drops the one shopt"
+TIER_BIN="$TMP_ROOT/no-extglob/orch/scripts/item-tier"
+assert_eq "$(run_tier active - --production 1 --path hooks/block-bare-cd.sh)" \
+  "tier=micro brief=micro cause=estimate-within-micro rc=0" "an item-tier without extglob misses a hook body"
+unset TIER_BIN
+
+# Must-fail control for the instruction rows: a copy that never reads the
+# list's `instruction` lines leaves a SKILL.md Location at the estimate's class.
+mkdir -p "$TMP_ROOT/no-floor"
+cp -R "$LAYOUT/." "$TMP_ROOT/no-floor/"
+floor_line='      consider_path "$path" "$instruction" small instruction-file'
+awk -v line="$floor_line" '$0 != line' "$ORCH_DIR/scripts/item-tier" >"$TMP_ROOT/no-floor/orch/scripts/item-tier"
+assert_eq "$(grep -cxF -- "$floor_line" "$ORCH_DIR/scripts/item-tier") $(grep -cxF -- "$floor_line" "$TMP_ROOT/no-floor/orch/scripts/item-tier" || true)" \
+  "1 0" "the floor control drops the one instruction read"
+TIER_BIN="$TMP_ROOT/no-floor/orch/scripts/item-tier"
+assert_eq "$(run_tier active - --production 1 --path skills/x/SKILL.md)" \
+  "tier=micro brief=micro cause=estimate-within-micro rc=0" "an item-tier without the floor lets a SKILL.md Location run micro"
+unset TIER_BIN
 
 # A ceiling list item-tier cannot use is standard, never a narrower class.
 TIER_BIN="$TMP_ROOT/no-conf/orch/scripts/item-tier"

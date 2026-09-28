@@ -54,7 +54,7 @@ BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN" "$TMP_ROOT/work/tmp"
 # A harness stub draws the hint a running turn shows, so a relaunched session
 # reads as working.
-for harness in claude codex; do
+for harness in claude codex pi; do
   printf '#!/bin/sh\necho "esc to interrupt"\nexec sleep 100000\n' > "$BIN/$harness"
 done
 cat > "$BIN/kendex" <<'STUB'
@@ -64,7 +64,7 @@ case "$1:$2:$3" in
   *) exit 1 ;;
 esac
 STUB
-chmod +x "$BIN/claude" "$BIN/codex" "$BIN/kendex"
+chmod +x "$BIN/claude" "$BIN/codex" "$BIN/pi" "$BIN/kendex"
 # A caller whose foreground process names claude: a copy of sleep, since a
 # script or a shell named for the harness can reset the name tmux reads.
 cp "$(command -v sleep)" "$BIN/hclaude"
@@ -85,6 +85,12 @@ claude_usage 10 10 99 Opus > "$FIXTURE_DIR/.claude.json"
 claude_usage 95 20 5 Opus > "$FIXTURE_DIR/.eclaude.json"
 jq -n '{rate_limit: {primary_window: {used_percent: 20, reset_at: 1785000000, limit_window_seconds: 18000}, secondary_window: null}}' \
   > "$FIXTURE_DIR/.codex.json"
+# A pi install a pi successor may open on: its user settings turn compaction
+# off, and its pi-hooks carrier sends the context window.
+PI_AGENT="$H/.pi/agent"
+mkdir -p "$PI_AGENT/packages/@vanillagreen/pi-hooks/extensions"
+jq -n '{compaction: {enabled: false}}' > "$PI_AGENT/settings.json"
+printf 'payload.context_window = usage.contextWindow;\n' > "$PI_AGENT/packages/@vanillagreen/pi-hooks/extensions/stop.ts"
 
 env PATH="$BIN:$PATH" tmux -L "$SOCK" -f /dev/null new-session -d -s fleet -x 220 -y 50 'exec sleep 100000'
 tm set-option -g default-shell /bin/sh
@@ -183,6 +189,8 @@ for row in \
   "this:$H/.claude:fable:pending|Opus 5|CLAUDE_CONFIG_DIR=$H/.eclaude|mail|account-below-mark headroom=90|a pending successor, the reading, the environment and a mailbox note all disagree: the current record decides" \
   "other:$H/.eclaude:claude-opus-5|Fable 5.1|CLAUDE_CONFIG_DIR=$H/.claude|-|account-below-mark headroom=90|a record naming another session is not this one's: the bootstrap readings decide" \
   "otherserver:$H/.eclaude:claude-opus-5|Fable 5.1|CLAUDE_CONFIG_DIR=$H/.claude|-|account-below-mark headroom=90|a record naming this pane id on another tmux server is not this one's" \
+  "pi:$H/.claude:pi-claude/claude-opus-5|Fable 5.1|CLAUDE_CONFIG_DIR=$H/.eclaude|-|mark-reached kind=headroom value=1|a pi record on the pi-claude provider: its claude account, judged on the claude model the provider runs" \
+  "pi::openai/gpt-5|Fable 5.1|CLAUDE_CONFIG_DIR=$H/.claude|-|mark-unmeasured kind=headroom reason=headroom-none succession=on|a pi record on another provider spends no account lanes measures, and no environment account stands in" \
   ; do
   IFS='|' read -r row_record row_reading row_lane row_mail row_want row_what <<<"$row"
   new_caller claude
@@ -198,10 +206,51 @@ for row in \
     this) state "$(record "$CALLER_PANE" "$rec_account" "$rec_model" "$([[ -z "$rec_pending" ]] && echo '{}' || echo "$PENDING")")" ;;
     other) state "$(record %999 "$rec_account" "$rec_model")" ;;
     otherserver) state "$(record "$CALLER_PANE" "$rec_account" "$rec_model" '{"server": "1"}')" ;;
+    pi) state "$(record "$CALLER_PANE" "$rec_account" "$rec_model" '{"harness": "pi"}')" ;;
   esac
   run_succeed "$row_lane" --check-marks
   assert_eq "$RC|$(judged)" "0|$row_want" "--check-marks: $row_what" "$TMP_ROOT/err"
 done
+
+# start_row HARNESS ACCOUNT MODEL — the caller's own SessionStart row
+# (lib/session-rows.sh), as its hook writes one in the shape Claude Code
+# 2.1.283 emits, in the rows file for its pane on this server.
+start_row() {
+  mkdir -p "$MAILBOX_DIR"
+  jq -cn --arg h "$1" --arg a "$2" --arg m "$3" '{at: 1, event: "SessionStart", harness: $h,
+    session_id: "5f0c", transcript_path: "/t/5f0c.jsonl", cwd: "/work", source: "startup",
+    model: $m, account: $a}' > "$MAILBOX_DIR/session-$SERVER_PID-${CALLER_PANE#%}.jsonl"
+}
+# With no record, the row answers ahead of the environment, the reading and
+# --harness; a record still answers ahead of the row.
+for row in \
+  "claude|$H/.eclaude|claude-fable-5-1|Fable 5.1|none||mark-reached kind=headroom value=5|the row's account decides over the environment's" \
+  "claude|$H/.claude|claude-opus-5|Fable 5.1|none||mark-reached kind=headroom value=1|the row's model decides over the reading's" \
+  "claude|$H/.claude|claude-fable-5-1|-|codex||account-below-mark headroom=90|the row's harness decides over --harness on a pane naming none" \
+  "claude|$H/.claude|claude-opus-5|Fable 5.1|none|record|account-below-mark headroom=90|a record naming the session decides over its row" \
+  ; do
+  IFS='|' read -r r_harness r_account r_model r_reading r_flag r_record r_want r_what <<<"$row"
+  flags=(--check-marks)
+  [[ "$r_flag" == none ]] || flags+=(--harness "$r_flag")
+  if [[ "$r_reading" == - ]]; then new_caller; else new_caller claude; reading "$r_reading"; fi
+  if [[ "$r_record" == record ]]; then state "$(record "$CALLER_PANE" "$H/.claude" fable)"; else state none; fi
+  start_row "$r_harness" "$r_account" "$r_model"
+  run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" "${flags[@]}"
+  assert_eq "$RC|$(judged)" "0|$r_want" "--check-marks: $r_what" "$TMP_ROOT/err"
+done
+# The row rule's control: a caller that reads no row is judged on the
+# environment's account, as the first row above says it is not.
+ROWCTL="$(mutant_scripts rowctl lib/overseer-launch.sh)" || exit 1
+mutate_file "$ROWCTL/lib/overseer-launch.sh" \
+  '  session_rows_start "$(session_rows_overseer_file "$3" "$1" "$2")" || true' \
+  '  :'
+new_caller claude
+reading "Fable 5.1"
+state none
+start_row claude "$H/.eclaude" claude-fable-5-1
+SUCCEED_BIN="$ROWCTL/oversee-succeed" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --check-marks
+assert_eq "$RC|$(judged)" "0|account-below-mark headroom=90" \
+  "control: a caller that reads no row is judged on the environment's account" "$TMP_ROOT/err"
 
 # A state that cannot be read is said, and the bootstrap readings judge.
 new_caller claude
@@ -255,16 +304,121 @@ harness_row
 assert_eq "$RC|$(judged)" "0|mark-reached kind=headroom value=5" \
   "--check-marks: the record's harness decides over --harness" "$TMP_ROOT/err"
 HARNESSCTL="$(mutant_scripts harnessctl oversee-succeed)" || exit 1
-mutate_file "$HARNESSCTL/oversee-succeed" '  if [[ -n "$OL_CUR_HARNESS" ]]; then' '  if false; then'
+mutate_file "$HARNESSCTL/oversee-succeed" '  if [[ -n "$OL_KNOWN_HARNESS" ]]; then' '  if false; then'
 harness_row "$HARNESSCTL/oversee-succeed"
 assert_eq "$RC|$(judged)" "0|mark-unmeasured kind=headroom reason=headroom-none succession=on" \
   "control: a caller that takes --harness over its record judges the record's account as a codex lane" "$TMP_ROOT/err"
+
+# The control for the pi account rule: a pi model read as naming no account
+# leaves a pi-claude overseer's own claude account unjudged.
+PICTL="$(mutant_scripts pictl lib/overseer-launch.sh)" || exit 1
+mutate_file "$PICTL/lib/overseer-launch.sh" '    pi-claude/?*)' '    pi-claude/?*-unread)'
+new_caller claude
+reading "Fable 5.1"
+state "$(record "$CALLER_PANE" "$H/.claude" pi-claude/claude-opus-5 '{"harness": "pi"}')"
+SUCCEED_BIN="$PICTL/oversee-succeed" run_succeed "CLAUDE_CONFIG_DIR=$H/.eclaude" --check-marks
+assert_eq "$RC|$(judged)" "0|mark-unmeasured kind=headroom reason=headroom-none succession=on" \
+  "control: a pi-claude model read as naming no account leaves the overseer's account unjudged" "$TMP_ROOT/err"
+
+# A pi record on a github-copilot model is judged on the Copilot pool the
+# owner states for its Pi root, spent to 2 percent here.
+pool_row() { # [SUCCEED_BIN]
+  new_caller claude
+  state "$(record "$CALLER_PANE" "" github-copilot/gpt-5 '{"harness": "pi"}')"
+  SUCCEED_BIN="${1:-}" run_succeed "ORCH_LANE_COPILOT_POOL=$PI_AGENT=98/100" --check-marks
+}
+pool_row
+assert_eq "$RC|$(judged)" "0|mark-reached kind=headroom value=2" \
+  "--check-marks on a pi record on a github-copilot model judges the stated Copilot pool" "$TMP_ROOT/err"
+POOLCTL="$(mutant_scripts poolctl lib/overseer-launch.sh)" || exit 1
+mutate_file "$POOLCTL/lib/overseer-launch.sh" '  [[ "${1:-}" == pi && -z "$OL_ACCOUNT_HARNESS" ]] || return 0' '  [[ "${1:-}" == pi ]] || return 0'
+pool_row "$POOLCTL/oversee-succeed"
+assert_eq "$RC|$(judged)" "0|mark-unmeasured kind=headroom reason=headroom-none succession=on" \
+  "control: an account reader that ignores the Copilot pool leaves the pi overseer's account unjudged" "$TMP_ROOT/err"
+# At that mark the pick moves the successor onto the pool's other account, a
+# Pi root with no settings file, where pi compacts by default: the handoff
+# gate reads the root the successor runs under, never the caller's, and
+# refuses naming that root's settings file.
+PI_ROOT2="$H/.pi2"
+mkdir -p "$PI_ROOT2"
+pool_succeed_row() { # [SUCCEED_BIN]
+  new_caller claude
+  state "$(record "$CALLER_PANE" "" github-copilot/gpt-5 '{"harness": "pi"}')"
+  SUCCEED_BIN="${1:-}" run_succeed "ORCH_LANE_COPILOT_POOL=$PI_AGENT=98/100,$PI_ROOT2=10/100" \
+    --wait-secs 5 -- --model github-copilot/gpt-5 --thinking high
+}
+pool_succeed_row
+assert_eq "$RC|$(grep -m1 '^oversee-succeed: pi-handoff-unmarked' <<<"$ERR")" \
+  "1|oversee-succeed: pi-handoff-unmarked reason=compaction-on file=$PI_ROOT2/settings.json" \
+  "a pool successor on another Pi root is refused on that root's settings" "$TMP_ROOT/err"
+PIROOTCTL="$(mutant_scripts pirootctl oversee-succeed)" || exit 1
+mutate_file "$PIROOTCTL/oversee-succeed" '    [[ "$lane_var" != PI_CODING_AGENT_DIR || -z "$lane_dir" ]] || pi_root="$lane_dir"' ''
+pool_succeed_row "$PIROOTCTL/oversee-succeed"
+assert_eq "$(grep -c '^oversee-succeed: pi-handoff-unmarked' <<<"$ERR" || true)|$(grep -o "lane=$PI_ROOT2" <<<"$OUT" | head -1)" \
+  "0|lane=$PI_ROOT2" \
+  "control: a gate reading the caller's Pi root lets the pool successor open on an unmarked root"
+
+# A pi overseer launched under pi's split spelling, `--provider pi-claude
+# --model <id>`, at its context mark with Fable room on its own account: its
+# successor's record names the model with its provider, so the next
+# generation's turn-end judgement reaches the same claude account.
+split_row() { # [SUCCEED_BIN]
+  new_caller claude
+  state "$(record "$CALLER_PANE" "$H/.claude" "" "$(jq -cn --arg cwd "$TMP_ROOT/work" '{harness: "pi", model: null, effort: null, cwd: $cwd}')")"
+  SUCCEED_BIN="${1:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --context 950000:1000000 --wait-secs 20 \
+    -- --provider pi-claude --model claude-fable-5-1 --thinking high
+  SPLIT_RC="$RC"
+  CALLER_PANE="$(jq -r '.overseer.pane' "$FLEET_STATE")"
+  SUCCEED_BIN="${1:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --check-marks
+}
+split_row
+assert_eq "$SPLIT_RC|$(jq -r '.overseer | [.harness, .model] | join(" ")' "$FLEET_STATE")|$RC|$(judged)" \
+  "0|pi pi-claude/claude-fable-5-1|0|account-below-mark headroom=90" \
+  "a split --provider launch records the model with its provider, and the next generation is judged on its claude account" "$TMP_ROOT/err"
+SPLITCTL="$(mutant_scripts splitctl lib/overseer-launch.sh)" || exit 1
+mutate_file "$SPLITCTL/lib/overseer-launch.sh" '  ol_identity "$harness" "$lane_dir" "$OL_LAUNCH_HOME" "$model" \' \
+  '  ol_identity "$harness" "$lane_dir" "$OL_LAUNCH_HOME" "$(launch_choice_value "$(launch_choice_model_spellings "$harness")" "$*")" \'
+split_row "$SPLITCTL/oversee-succeed"
+assert_eq "$(jq -r '.overseer.model' "$FLEET_STATE")|$(judged)" \
+  "claude-fable-5-1|mark-unmeasured kind=headroom reason=headroom-none succession=on" \
+  "control: an identity that reads the bare model word leaves the next generation's account unjudged" "$TMP_ROOT/err"
+# A pi overseer nothing recorded, started with a bare `--model <id>`, whose
+# reading names `pi-claude/<id>`: it hands over at its context mark, and the
+# successor runs and records the provider-bearing model its account was chosen
+# from, so the next generation's judgement and succession read the claude
+# account rather than a bare model that names none.
+bare_row() { # [SUCCEED_BIN]
+  new_caller
+  mkdir -p "$MAILBOX_DIR"
+  lane_context_record "$MAILBOX_DIR" pi 100000 1000000 pi-claude/claude-fable-5-1 "" "$SERVER_PID $CALLER_PANE"
+  state null
+  SUCCEED_BIN="${1:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --context 950000:1000000 --wait-secs 20 \
+    -- --model claude-fable-5-1 --thinking high
+  BARE_RC="$RC" BARE_MODEL="$(jq -r '.overseer.model' "$FLEET_STATE")"
+  CALLER_PANE="$(jq -r '.overseer.pane' "$FLEET_STATE")"
+  SUCCEED_BIN="${1:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --check-marks
+  BARE_JUDGED="$(judged)"
+  SUCCEED_BIN="${1:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --context 950000:1000000 --wait-secs 20 \
+    -- --model claude-fable-5-1 --thinking high
+}
+bare_row
+assert_eq "$BARE_RC|$BARE_MODEL|$BARE_JUDGED|$RC|$(jq -r '.overseer.model' "$FLEET_STATE")" \
+  "0|pi-claude/claude-fable-5-1|account-below-mark headroom=90|0|pi-claude/claude-fable-5-1" \
+  "a bare --model pi overseer hands over on its reading's provider, and the next generation judges and hands over on the claude account" "$TMP_ROOT/err"
+# Its control: a successor that runs, and records, its caller's bare flag
+# leaves the next generation's succession refusing an account it cannot name.
+BARECTL="$(mutant_scripts barectl oversee-succeed)" || exit 1
+mutate_file "$BARECTL/oversee-succeed" '      if [[ "$CALLER_HARNESS" == pi && "$CALLER_MODEL" == ?*/?* ]]; then' '      if false; then'
+bare_row "$BARECTL/oversee-succeed"
+assert_eq "$BARE_MODEL|$RC|$(grep -m1 -o '^oversee-succeed: pi-account-unknown [^ ]*' <<<"$ERR")" \
+  "claude-fable-5-1|1|oversee-succeed: pi-account-unknown model=claude-fable-5-1" \
+  "control: a successor recording the bare flag leaves the next generation refusing pi-account-unknown"
 
 # The control for the model rule: a caller that ignores the record's model is
 # judged on the reading's.
 MODELCTL="$(mutant_scripts modelctl oversee-succeed)" || exit 1
 mutate_file "$MODELCTL/oversee-succeed" \
-  '"${OL_CUR_MODEL:-$reading_model}"' \
+  '"${OL_KNOWN_MODEL:-$reading_model}"' \
   '"$reading_model"'
 new_caller claude
 reading "Fable 5.1"
@@ -301,6 +455,129 @@ state "$(record "$CALLER_PANE" "$H/.eclaude" fable)"
 SUCCEED_BIN="$PAIRCTL/oversee-succeed" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --print-launch-line -- "$BYPASS" --model opus --effort low
 assert_eq "$RC|$OUT" "0|env CLAUDE_CONFIG_DIR='$H/.eclaude' claude -n overseer --model fable --effort high $LEAD $BYPASS --model opus --effort low '$BRIEF'" \
   "control: a caller entry that keeps its flags beside the record's pair names two models" "$TMP_ROOT/err"
+
+# A pi overseer's line: its model and level words, its question-tool words and
+# its skill command as the brief. With no record and no reading, --harness
+# names the harness, and a model off the pi-claude provider names no account,
+# so the line carries no lane variable. The pane opens in the work directory,
+# where no pi project settings stand.
+PI_BRIEF="'/skill:orch oversee after reading the overseer handoff at tmp/handoffs/OVERSEER-HANDOFF.md'"
+pi_print_row() { # [SUCCEED_BIN] [MODEL]
+  tm kill-window -a -t fleet:0
+  CALLER_PANE="$(tm new-window -d -t fleet:1 -c "$TMP_ROOT/work" -P -F '#{pane_id}' 'exec sleep 100000')"
+  state none
+  SUCCEED_BIN="${1:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --print-launch-line --harness pi \
+    -- --model "${2:-openai/gpt-5}" --thinking high
+}
+pi_print_row
+assert_eq "$RC|$OUT" "0|pi --exclude-tools question --model openai/gpt-5 --thinking high $PI_BRIEF" \
+  "--print-launch-line --harness pi prints the pi line, bare on a provider no lane measures" "$TMP_ROOT/err"
+# A github-copilot model spends the Copilot pool, whose account is the Pi root
+# the line opens under PI_CODING_AGENT_DIR (lib/lane-launch.sh §
+# lane_env_prefix), here the home's own.
+pi_print_row "" github-copilot/gpt-5
+assert_eq "$RC|$OUT" "0|env PI_CODING_AGENT_DIR='$PI_AGENT' pi --exclude-tools question --model github-copilot/gpt-5 --thinking high $PI_BRIEF" \
+  "--print-launch-line on a pi overseer on the Copilot pool opens on its Pi root" "$TMP_ROOT/err"
+PIHARNESSCTL="$(mutant_scripts piharnessctl oversee-succeed)" || exit 1
+mutate_file "$PIHARNESSCTL/oversee-succeed" '| copilot | pi) ;;' '| copilot) ;;'
+pi_print_row "$PIHARNESSCTL/oversee-succeed"
+assert_eq "$RC|$(sed -n 1p <<<"$ERR")" "1|oversee-succeed: invalid-harness value=pi" \
+  "control: a --harness check naming no pi refuses the pi overseer's line"
+# A pi-claude overseer nothing recorded: its --model word after -- names the
+# provider, so its line opens on the claude account its environment names. A
+# bare model names no provider and no account, and is refused rather than
+# printed with no lane.
+pi_claude_row() { # MODEL [SUCCEED_BIN]
+  tm kill-window -a -t fleet:0
+  CALLER_PANE="$(tm new-window -d -t fleet:1 -c "$TMP_ROOT/work" -P -F '#{pane_id}' 'exec sleep 100000')"
+  state none
+  SUCCEED_BIN="${2:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.eclaude" --print-launch-line --harness pi \
+    -- --model "$1" --thinking high
+}
+pi_claude_row pi-claude/claude-opus-5
+assert_eq "$RC|$OUT" \
+  "0|env CLAUDE_CONFIG_DIR='$H/.eclaude' pi --exclude-tools question --model pi-claude/claude-opus-5 --thinking high $PI_BRIEF" \
+  "--print-launch-line on a record-less pi-claude overseer opens on its claude account" "$TMP_ROOT/err"
+pi_claude_row claude-opus-5
+assert_eq "$RC|$(sed -n 1p <<<"$ERR")|$OUT" "1|oversee-succeed: pi-account-unknown model=claude-opus-5|" \
+  "--print-launch-line refuses a pi overseer whose model names no provider"
+PIFLAGCTL="$(mutant_scripts piflagctl oversee-succeed)" || exit 1
+mutate_file "$PIFLAGCTL/oversee-succeed" '    caller_model="$(ol_pi_model "$OL_KNOWN_MODEL" "$flag_model" "$reading_model")"' '    caller_model="$(ol_pi_model "$OL_KNOWN_MODEL" "" "$reading_model")"'
+pi_claude_row pi-claude/claude-opus-5 "$PIFLAGCTL/oversee-succeed"
+assert_eq "$RC|$(sed -n 1p <<<"$ERR")" "1|oversee-succeed: pi-account-unknown model=none" \
+  "control: a caller that reads no --model word leaves a record-less pi overseer's account unknown"
+# The same overseer judged at its turn end, with no --harness: its pane
+# reports pi, which the pane reader maps to no one harness, so its reading
+# names the harness, and the provider its model names the account.
+mkdir -p "$TMP_ROOT/pibin"
+cp "$(command -v sleep)" "$TMP_ROOT/pibin/pi"
+pi_reading_row() { # [SUCCEED_BIN]
+  tm kill-window -a -t fleet:0
+  CALLER_PANE="$(tm new-window -d -t fleet:1 -P -F '#{pane_id}' "exec '$TMP_ROOT/pibin/pi' 100000")"
+  mkdir -p "$MAILBOX_DIR"
+  lane_context_record "$MAILBOX_DIR" pi 100000 1000000 pi-claude/claude-opus-5 "" "$SERVER_PID $CALLER_PANE"
+  state none
+  SUCCEED_BIN="${1:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --check-marks
+}
+pi_reading_row
+assert_eq "$RC|$(tm display-message -p -t "$CALLER_PANE" '#{pane_current_command}')|$(judged)" \
+  "0|pi|mark-reached kind=headroom value=1" \
+  "--check-marks on a record-less pi-claude overseer takes pi from its reading and judges its claude account" "$TMP_ROOT/err"
+PIPANECTL="$(mutant_scripts pipanectl oversee-succeed)" || exit 1
+mutate_file "$PIPANECTL/oversee-succeed" '      claude | codex | pi) CALLER_HARNESS="$reading_harness" ;;' '      claude | codex) CALLER_HARNESS="$reading_harness" ;;'
+pi_reading_row "$PIPANECTL/oversee-succeed"
+assert_eq "$RC|$(sed -n 1p <<<"$ERR")" "1|oversee-succeed: harness-unnamed pane=$CALLER_PANE" \
+  "control: a reading harness naming no pi leaves a pi pane unnamed"
+PIREADCTL="$(mutant_scripts pireadctl oversee-succeed)" || exit 1
+mutate_file "$PIREADCTL/oversee-succeed" '    caller_model="$(ol_pi_model "$OL_KNOWN_MODEL" "$flag_model" "$reading_model")"' '    caller_model="$(ol_pi_model "$OL_KNOWN_MODEL" "$flag_model" "")"'
+SUCCEED_BIN="$PIREADCTL/oversee-succeed" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --check-marks
+assert_eq "$RC|$(judged)" "0|mark-unmeasured kind=headroom reason=headroom-none succession=on" \
+  "control: a caller that ignores the pi reading's model leaves the account unjudged" "$TMP_ROOT/err"
+
+# A bare --model word beside a reading naming pi-claude/<id>: the reading
+# names the account, so the turn-end judgement and the succession it asks for
+# both reach the headroom mark on the claude account, whose Opus window is
+# spent, and no successor has a seat.
+pi_reading_row
+assert_eq "$RC|$(judged)" "0|mark-reached kind=headroom value=1" \
+  "--check-marks on a pi reading naming pi-claude reaches the headroom mark" "$TMP_ROOT/err"
+pi_bare_flag_row() { # [SUCCEED_BIN]
+  SUCCEED_BIN="${1:-}" run_succeed "CLAUDE_CONFIG_DIR=$H/.claude" --harness pi -- --model claude-opus-5 --thinking high
+}
+pi_bare_flag_row
+assert_eq "$RC|$(sed -n 1p <<<"$ERR" | awk '{print $2}')|$(grep -o 'mark=[a-z]*' <<<"$(sed -n 1p <<<"$ERR")")" \
+  "3|no-lane-qualifies|mark=headroom" \
+  "the succession beside a bare --model word reads the reading's claude account"
+PIBARECTL="$(mutant_scripts pibarectl lib/overseer-launch.sh)" || exit 1
+mutate_file "$PIBARECTL/lib/overseer-launch.sh" \
+  '  for m in "$@"; do [[ "$m" != ?*/?* ]] || { printf '"'"'%s\n'"'"' "$m"; return 0; }; done' ''
+pi_bare_flag_row "$PIBARECTL/oversee-succeed"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT" | awk '{print $2}')" "0|context-unmeasured" \
+  "control: a bare --model word taken over the reading leaves the succession's account unmeasured"
+
+# The settings a pi successor would compact under refuse its line, as they
+# refuse a pi lane's launch.
+jq -n '{compaction: {enabled: true}}' > "$PI_AGENT/settings.json"
+pi_print_row
+assert_eq "$RC|$(sed -n 1p <<<"$ERR")" \
+  "1|oversee-succeed: pi-handoff-unmarked reason=compaction-on file=$PI_AGENT/settings.json" \
+  "--print-launch-line refuses a pi line whose settings leave compaction on"
+jq -n '{compaction: {enabled: false}}' > "$PI_AGENT/settings.json"
+# A settings file pi cannot read leaves compaction unjudged, and a carrier
+# sending no window leaves the mark nothing to be read against: each refuses.
+printf '{"compaction": {' > "$PI_AGENT/settings.json"
+pi_print_row
+assert_eq "$RC|$(sed -n 1p <<<"$ERR")" \
+  "1|oversee-succeed: pi-handoff-unmarked reason=settings-unreadable file=$PI_AGENT/settings.json" \
+  "--print-launch-line refuses a pi line whose settings cannot be read"
+jq -n '{compaction: {enabled: false}}' > "$PI_AGENT/settings.json"
+PI_CARRIER="$PI_AGENT/packages/@vanillagreen/pi-hooks/extensions/stop.ts"
+printf 'payload.stop = true;\n' > "$PI_CARRIER"
+pi_print_row
+assert_eq "$RC|$(sed -n 1p <<<"$ERR")" \
+  "1|oversee-succeed: pi-handoff-unmarked reason=no-window-read dir=$(tm display-message -p -t "$CALLER_PANE" '#{pane_current_path}')" \
+  "--print-launch-line refuses a pi line whose pi-hooks carrier sends no window"
+printf 'payload.context_window = usage.contextWindow;\n' > "$PI_CARRIER"
 
 # --- a dead-pane relaunch -------------------------------------------------
 # The relaunched session is identified by the record of the line it replays:
@@ -413,7 +690,7 @@ assert_eq "$RC|$(jq -r '.pending.launch_line // "none"' <<<"$SNAP")" "0|none" \
 # The directory rule's control: a caller that ignores its recorded directory
 # opens the successor in the pane's own.
 CWDCTL="$(mutant_scripts cwdctl oversee-succeed)" || exit 1
-mutate_file "$CWDCTL/oversee-succeed" '[[ -z "$OL_CUR_CWD" ]] || CALLER_PATH="$OL_CUR_CWD"' ':'
+mutate_file "$CWDCTL/oversee-succeed" '  [[ -z "$OL_KNOWN_CWD" ]] || CALLER_PATH="$OL_KNOWN_CWD"' '  :'
 pending_run "$CWDCTL"
 assert_eq "$RC|$SUCC_CWD" "0|$CALLER_CWD" \
   "control: a caller that ignores its recorded directory opens the successor in the pane's"

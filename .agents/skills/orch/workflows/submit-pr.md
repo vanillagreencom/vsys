@@ -82,7 +82,9 @@ When a cut follows the last review pass, set the existing `pre_delegate_sha` wor
    .agents/skills/orch/scripts/worktree-push --worktree "[WORKTREE_PATH]" --issue [ISSUE_ID] --set-upstream
    ```
 
-   The push auto-rebases onto the updated base and reconciles every SHA workflow state records. Route its exit code and its `sha-reconcile:` line by `worktree-push --help`, which owns the reconciliation and repair contract.
+   The push rebases onto the updated base where that base needs it and reconciles every SHA workflow state records. A merge-queue base whose rules demand no up-to-date branch takes a branch that merges cleanly as it stands; `worktree push --help` § Merge-queue base owns that rule. Route its exit code and its `sha-reconcile:` line by `worktree-push --help`, which owns the reconciliation and repair contract.
+
+   A `worktree-push-base-conflict` refusal pushed and rebased nothing: the branch conflicts with that base, and the guarded restack is its one rebase. Run [merge-pr-restack.md](merge-pr-restack.md) steps 1-3, which unarm the PR where one exists, restack and push through `worktree-push`, then continue here.
 
    Measure the pushed branch before constructing publication text. The issue's optional `**Expected delta**` line supplies the comparison.
 
@@ -147,6 +149,36 @@ When a cut follows the last review pass, set the existing `pre_delegate_sha` wor
    ```
 
    `[ISSUE_TITLE]` comes from `linear.sh cache issues get [ISSUE_ID]` or `gh issue view [N] --json title --jq '.title'`.
+
+5. **Arm auto-merge** as soon as the PR exists, on every pass through this section. **Skip if** `orch-env ORCH_MERGE_AUTONOMY auto` prints anything but `auto`: the arm is the merge consent that setting holds back.
+
+   Read the bot token as [merge-pr.md § 4](merge-pr.md#4-prepare) does. `.configured: false` arms nothing here: whose name a merge lands under is the decision [merge-pr.md](merge-pr.md) § 4 owns, and § 4-§ 5 there make the arm.
+
+   ```bash
+   .agents/skills/github/scripts/github.sh bot-token
+   ```
+
+   Detach orphaned children next, before any arm: once the PR is armed GitHub can merge it before [merge-pr.md](merge-pr.md) reaches its own detach, and the merge's cascade-Done would close them. Run [merge-pr.md § 4.1](merge-pr.md#41-detach-orphaned-children) for this item, `[ISSUE]` being `[ISSUE_ID]`, with its skip conditions and its per-orphan ask, which a lane sends through its ask gate. **Skip if** workflow state already records `children_detached`, the detach running once per item. An abort there arms nothing: skip the rest of this step, and [merge-pr.md](merge-pr.md) § 4.1 runs the detach again. Record the detach once it completes, or once § 4.1's own conditions skip it:
+
+   ```bash
+   .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] children_detached true
+   ```
+
+   Read the review gate's context and the pushed head:
+
+   ```bash
+   .agents/skills/orch/scripts/orch-env REVIEW_GATE_CONTEXT "Review gate"
+   ```
+
+   ```bash
+   git -C "[WORKTREE_PATH]" rev-parse HEAD
+   ```
+
+   ```bash
+   env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/github/scripts/github.sh -C "[WORKTREE_PATH]" pr-merge [PR_NUMBER] --auto --require-context "[GATE_CONTEXT]" --expected-head [HEAD_SHA]
+   ```
+
+   Exit `75` armed it. GitHub then holds the merge until the review gate, every required check and thread resolution pass, so the CI wait, the gate wait and § 6.1 are the lane's triage and fix work, not preconditions of the arm, and a turn that ends mid-chain leaves the PR armed. The late-findings guard starts where [merge-pr.md](merge-pr.md) § 5 step 1 arms the prepared head again and waits in `queue-wait`; the window before it is the accepted gap [merge-pr.md](merge-pr.md) § 5 step 5 answers. Exit `0` merged it: § 6 enters [merge-pr.md](merge-pr.md), whose § 3.2 takes a merged PR straight to its post-merge steps. Every exit `1` armed nothing new, but an arm an earlier pass of this step made may still be live (`pr-merge --help`: a pre-existing queue entry or auto-merge request may remain active), and it would merge without what this refusal names. So on any exit `1` take [merge-pr-restack.md § Unarm at a stop](merge-pr-restack.md#unarm-at-a-stop) before going on, with `[STATE_KEY]` being `[ISSUE_ID]` and `[STOP_DIR]` being `[WORKTREE_PATH]/tmp`; it unarms only what it finds live. Exit `1` with first line `arm: no-merge-gate=unverified repo=<owner/repo>` armed nothing because the base branch's rules could not be read: a read failure, not a ruleset gap. Report it and continue; [merge-pr.md](merge-pr.md) § 5 arms the prepared head after § 6.1. Exit `1` with any other `arm: no-merge-gate=<gap>` armed nothing because that base branch does not require `[GATE_CONTEXT]`, or has no merge gate at all, and an arm there would merge before review: report the line once and continue. That repository's merge keeps the route [merge-pr.md](merge-pr.md) § 5 sets out, after § 6.1, and the fix that lets it arm here is its ruleset requiring the review gate. Any other exit `1` armed nothing, an open review thread among its causes: continue, and [merge-pr.md](merge-pr.md) § 5 arms the prepared head after § 6.1.
 
 Once the PR exists, this run is a continuing action. Clear any stop a capped run left before entering another post-PR gate:
 
@@ -365,6 +397,8 @@ Re-run the gate-3 command once. If threads remain and the external-round cap is 
 
 `MERGE_READY = true` only when all four gates are met.
 
+**No stop leaves an armed PR.** Once `MERGE_READY` is false, whether by these gates or by a stop that sent the run here, take [merge-pr-restack.md § Unarm at a stop](merge-pr-restack.md#unarm-at-a-stop) before § 6.2 or § 7 reports the stop, with `[STATE_KEY]` being `[ISSUE_ID]` and `[STOP_DIR]` being `[WORKTREE_PATH]/tmp`.
+
 ### 6.2 Standalone Summary
 
 **Skip if** managed → § 7.
@@ -425,7 +459,7 @@ Output: [Lane Output](../references/skill-rules.md#lane-output).
 .agents/skills/orch/scripts/orch-env ORCH_MERGE_AUTONOMY auto
 ```
 
-`auto` → merge without asking: `⤵ workflows/merge-pr.md [PR_NUMBER] § 1-7 → end`. Anything else → ask `orch merge-pr [PR_NUMBER]` | `Skip`, and on merge run the same workflows. `MERGE_READY = false` never auto-merges.
+`auto` → merge without asking: `⤵ workflows/merge-pr.md [PR_NUMBER] § 1-7 → end`. Anything else → ask `orch merge-pr [PR_NUMBER]` | `Skip`, and on merge run the same workflows. `MERGE_READY = false` never auto-merges: § 6.1 disarmed a PR § 2 step 5 armed. On a PR that step armed, [merge-pr.md](merge-pr.md) keeps only the queue wait, the late-thread answers and the post-merge steps: its § 5 arm re-arms the prepared head and answers exit `75`.
 
 ---
 

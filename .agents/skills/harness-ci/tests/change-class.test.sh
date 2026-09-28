@@ -131,10 +131,15 @@ reset_case() {
 # producer still writes.
 first_line() { printf '%s' "${1%%$'\n'*}"; }
 
-# LINES lines of content under PATH, so a row names the size it means.
-write_lines() { # REPO PATH COUNT
+# LINES lines of content under PATH, so a row names the size it means, or a
+# few NUL bytes where COUNT is `binary`, which git's numstat counts as `-`.
+write_lines() { # REPO PATH COUNT|binary
   local n=0
   mkdir -p "$1/$(dirname "$2")"
+  if [ "$3" = binary ]; then
+    printf 'bin\000ary\000' >>"$1/$2"
+    return
+  fi
   while [ "$n" -lt "$3" ]; do
     n=$((n + 1))
     printf 'line %d\n' "$n" >>"$1/$2"
@@ -175,7 +180,7 @@ render-verifier-prints-human-rows|standard|human|CLAUDE.md:2
 render-verifier-other-document-version|standard|other-version|CLAUDE.md:2
 render-path-no-passing-position-covers|standard|clean|.codex/agents/rust.md:4
 render-inventory-gain|standard|clean|.kendex-generated.json:1
-instruction-source|standard|clean|AGENTS.md:10
+instruction-source|small|clean|AGENTS.md:10
 configuration-source|standard|clean|kendex.settings.toml:2 runtime/product.ts:2
 trivial-at-ceiling|trivial|dirty|docs/guide.md:20
 trivial-docs-one-over|small|dirty|docs/guide.md:21
@@ -188,6 +193,10 @@ micro-one-over|small|dirty|runtime/product.ts:21
 small-at-ceiling|small|dirty|runtime/product.ts:150
 small-one-over|standard|dirty|runtime/product.ts:151
 small-two-subsystems|standard|dirty|runtime/product.ts:30 payload/data.conf:30
+small-test-path-in-another-subsystem|small|dirty|runtime/product.ts:30 payload/tests/data.conf:30
+small-test-path-and-its-render-in-another-subsystem|small|dirty|runtime/product.ts:30 skills/x/tests/data.conf:30 .claude/skills/x/tests/data.conf:30
+unpaired-render-root-test|small|dirty|runtime/product.ts:30 .claude/hooks/tests/data.conf:30
+small-binary-test-path-in-another-subsystem|small|dirty|runtime/product.ts:30 payload/tests/image.png:binary
 render-root-is-one-subsystem|small|dirty|runtime/one.ts:30 .agents/runtime/two.ts:30
 excluded-path|standard|dirty|.github/workflows/ci.yml:3
 CASES
@@ -567,8 +576,11 @@ while IFS='|' read -r expected git_read; do
   assert_eq "the header names what it reads: $git_read" "$expected" \
     "$(grep -qF -- "$git_read" <<<"$help_text" && echo present || echo absent)"
 done <<'GIT_READS'
-present|one read and no write
+present|four reads and no write
 present|where its object store is
+present|the commit the base endpoint names
+present|settings files that commit holds
+present|The private env file is never read
 present|never the judged checkout's working tree
 present|cause=render-path-unowned
 present|cause=render-path-partial
@@ -593,7 +605,7 @@ git_read_sites="$(grep -c 'git -C "$repo"' "$CHANGE_CLASS" | tr -d ' ')"
 git_read_word="$(grep -oE '[a-z]+ reads? and no write' <<<"$help_text" |
   tail -1 | cut -d' ' -f1)"
 assert_eq "the header spells the number of git call sites the script holds" \
-  "1 one" "$git_read_sites $git_read_word"
+  "4 four" "$git_read_sites $git_read_word"
 
 # A refresh that adds a rendered file gains an inventory entry, and the shipped
 # harness-only rule refuses a gain: a branch could otherwise name a product
@@ -715,14 +727,17 @@ ln -s "$(cd "$TEST_DIR/../../orch" && pwd)" "$stub_pkg/orch"
 cat >"$stub_pkg/harness-ci/scripts/harness-only" <<'ONLY'
 #!/usr/bin/env bash
 # The dependency double for the causes a fixture cannot drive: it answers
-# false with the cause the row names, over the paths the row names.
+# false with the cause the row names, over the paths the row names, and names
+# the base it was handed as the range's base revision, as harness-only does.
 set -euo pipefail
 mode=harness
 paths_output=""
+base=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --mode) mode="$2"; shift 2 ;;
     --paths-output) paths_output="$2"; shift 2 ;;
+    --base) base="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -737,6 +752,7 @@ while IFS= read -r stub_path; do
 done <<<"$STUB_ONLY_PATHS"
 printf 'fallback: %s\n' "$STUB_ONLY_CAUSE" >&2
 printf 'harness-only: stubbed refusal; running every lane\n' >&2
+[ -z "$base" ] || printf 'base-rev: %s\n' "$base" >&2
 printf 'harness_only=false\n'
 ONLY
 chmod +x "$stub_pkg/harness-ci/scripts/harness-only"
@@ -1080,34 +1096,51 @@ PATH="$stub_bin:$PATH" assert_class "a checkout whose default branch is not main
 # beside it. Without the contract the library answers `command not found` for
 # the roots call and drops the base endpoint from the measurement, and errexit
 # is off inside `measure`, so the run would carry on and publish a class
-# measured over a range nobody named.
-skewed_root="$SANDBOX/skewed-orch"
-skewed_class="$(plant_package "$skewed_root" none)"
-mkdir -p "$skewed_root/orch/scripts/lib" "$skewed_root/orch/references"
-cp "$ORCH_PACKAGE/references/narrow-change.conf" "$skewed_root/orch/references/"
-cp -R "$ORCH_PACKAGE/scripts/." "$skewed_root/orch/scripts/"
-skewed_lib="$skewed_root/orch/scripts/lib/branch-growth.sh"
-assert_eq "the skewed library drops exactly one contract line" 1 \
-  "$(grep -c '^BRANCH_GROWTH_CONTRACT=' "$skewed_lib")"
-grep -v '^BRANCH_GROWTH_CONTRACT=' "$skewed_lib" >"$skewed_lib.old"
-mv "$skewed_lib.old" "$skewed_lib"
+# measured over a range nobody named. An orch at contract 1 sets no
+# BRANCH_SIZE_TEST_FILES, which the subsystem rule reads. Each row plants an
+# orch whose contract line is the row's, or has none.
 reset_case
 set_verifier dirty
 write_lines "$repo" runtime/product.ts 3
 git -C "$repo" add -A
 git -C "$repo" commit -q -m "a diff a skewed orch would misjudge"
-skewed_err="$(PATH="$stub_bin:$PATH" "$skewed_class" --repo "$repo" \
-  --event pull_request --base "$base" --head HEAD 2>&1 >/dev/null)"
-assert_eq "an orch without the measurement contract is refused" \
-  "class: class=standard measured=false cause=orch-too-old path=$skewed_root/harness-ci/scripts/../../orch contract=0" \
-  "$(printf '%s\n' "$skewed_err" | grep '^class: ')"
+skewed_rows=0
+while IFS='|' read -r contract_line reported; do
+  skewed_rows=$((skewed_rows + 1))
+  skewed_root="$SANDBOX/skewed-orch-$skewed_rows"
+  skewed_class="$(plant_package "$skewed_root" none)"
+  mkdir -p "$skewed_root/orch/references"
+  cp "$ORCH_PACKAGE/references/narrow-change.conf" "$skewed_root/orch/references/"
+  cp -R "$ORCH_PACKAGE/scripts" "$skewed_root/orch/"
+  skewed_lib="$skewed_root/orch/scripts/lib/branch-growth.sh"
+  CONTRACT_LINE="$contract_line" awk '/^BRANCH_GROWTH_CONTRACT=/ {
+      if (ENVIRON["CONTRACT_LINE"] != "") print ENVIRON["CONTRACT_LINE"]
+      next
+    } { print }' "$ORCH_PACKAGE/scripts/lib/branch-growth.sh" >"$skewed_lib"
+  assert_eq "the contract-$reported library replaces the one contract line" \
+    "1 ${contract_line:-none}" \
+    "$(grep -c '^BRANCH_GROWTH_CONTRACT=' "$ORCH_PACKAGE/scripts/lib/branch-growth.sh") $(grep '^BRANCH_GROWTH_CONTRACT=' "$skewed_lib" || echo none)"
+  skewed_err="$(PATH="$stub_bin:$PATH" "$skewed_class" --repo "$repo" \
+    --event pull_request --base "$base" --head HEAD 2>&1 >/dev/null)"
+  assert_eq "an orch at measurement contract $reported is refused" \
+    "class: class=standard measured=false cause=orch-too-old path=$skewed_root/harness-ci/scripts/../../orch contract=$reported" \
+    "$(printf '%s\n' "$skewed_err" | grep '^class: ')"
+done <<'CONTRACTS'
+|0
+BRANCH_GROWTH_CONTRACT=1|1
+CONTRACTS
+require_rows change-class-skewed-orch "$skewed_rows"
 
-# The judged tree's configuration decides nothing. Its render roots do not
-# move the measurement, and the file its KENDEX_ENV_FILE names is never run.
+# The judged tree's configuration decides nothing. A render root its working
+# tree names does not move the measurement, and the private env file the
+# settings name never runs, whether the base revision or the working tree
+# names it. The working tree is the only place a branch can put a setting the
+# diff does not carry: one committed on the branch is a configuration source,
+# refused above, so a classifier reading the judged checkout's own settings
+# file answers micro here.
 hostile="$(new_repo change-class-hostile)"
 cat >"$hostile/kendex.settings.toml" <<'SETTINGS'
 [env]
-ORCH_SIZE_RENDER_ROOTS = "runtime"
 KENDEX_ENV_FILE = "ci/env.sh"
 SETTINGS
 mkdir -p "$hostile/ci"
@@ -1120,12 +1153,276 @@ write_lines "$hostile" runtime/agent.conf 300
 write_lines "$hostile" agent.conf 1
 git -C "$hostile" add -A
 git -C "$hostile" commit -q -m "a tree that would rather be small"
+cat >"$hostile/kendex.settings.toml" <<'SETTINGS'
+[env]
+ORCH_SIZE_RENDER_ROOTS = "runtime"
+KENDEX_ENV_FILE = "ci/env.sh"
+SETTINGS
 set_verifier dirty
 PATH="$stub_bin:$PATH" assert_class \
   "the judged tree cannot choose the roots it is scored against" standard \
   --repo "$hostile" --event pull_request --base "$hostile_base" --head HEAD
 assert_eq "and the file its settings name never ran" "absent" \
   "$([ -e "$marker" ] && echo present || echo absent)"
+
+# change-class reads the base tip's settings files and branch-size-check the
+# worktree's, through the same reader. They count the same lines where the
+# base tip and the branch hold the same settings, as here, and can differ for
+# a branch forked before main changed one, which the fork-point rows below
+# build. A test glob in the settings file moves a 30-line script from
+# production to test in both; read from nowhere, it stays production and
+# change-class answers small. The process environment still outranks the
+# file.
+ladder="$(new_repo change-class-ladder)"
+printf '[env]\nORCH_SIZE_TEST_PATHS = "checks/*"\n' >"$ladder/kendex.settings.toml"
+commit_paths "$ladder" baseline seed.txt
+ladder_base="$(git -C "$ladder" rev-parse HEAD)"
+git -C "$ladder" checkout -q -B case "$ladder_base"
+write_lines "$ladder" checks/probe.sh 30
+git -C "$ladder" add -A
+git -C "$ladder" commit -q -m "a check script the base settings call a test"
+while IFS='|' read -r label test_paths expected; do
+  [ -n "$label" ] || continue
+  ladder_err="$(env -u ORCH_SIZE_TEST_PATHS -u ORCH_SIZE_RENDER_ROOTS ${test_paths:+ORCH_SIZE_TEST_PATHS="$test_paths"} \
+    "$CHANGE_CLASS" --repo "$ladder" --event pull_request --base "$ladder_base" \
+    --head HEAD 2>&1 >/dev/null)" || true
+  assert_eq "$label" "$expected" "$(printf '%s\n' "$ladder_err" | grep '^class: ')"
+done <<'LADDER'
+change-class reads the test glob from the base revision's settings||class: class=micro measured=true cause=production-within-micro production=0
+and the process environment outranks that file|none/*|class: class=small measured=true cause=production-within-small subsystem=checks
+LADDER
+ladder_state="$SANDBOX/ladder-state"
+"$TEST_DIR/../../orch/scripts/workflow-state" --state-dir "$ladder_state" \
+  init pr-1 --worktree "$ladder" --branch case >/dev/null
+ladder_json="$(env -u ORCH_SIZE_TEST_PATHS -u ORCH_SIZE_RENDER_ROOTS \
+  WORKTREE_DEFAULT_BRANCH=main "$TEST_DIR/../../orch/scripts/branch-size-check" \
+  --worktree "$ladder" --issue pr-1 --state-dir "$ladder_state" --json 2>/dev/null)" || true
+assert_eq "branch-size-check counts the same lines from the same file" "0,30" \
+  "$(jq -r '[.production_lines, .test_lines] | map(tostring) | join(",")' <<<"$ladder_json" 2>/dev/null)"
+
+# Both settings files load in the ladder's order, so .kendex/settings.toml
+# outranks kendex.settings.toml in change-class as it does in
+# branch-size-check.
+order="$(new_repo change-class-ladder-order)"
+printf '[env]\nORCH_SIZE_TEST_PATHS = "none/*"\n' >"$order/kendex.settings.toml"
+mkdir -p "$order/.kendex"
+printf '[env]\nORCH_SIZE_TEST_PATHS = "checks/*"\n' >"$order/.kendex/settings.toml"
+commit_paths "$order" baseline seed.txt
+order_base="$(git -C "$order" rev-parse HEAD)"
+git -C "$order" checkout -q -B case "$order_base"
+write_lines "$order" checks/probe.sh 30
+git -C "$order" add -A
+git -C "$order" commit -q -m "a check script the two base files disagree about"
+order_err="$(env -u ORCH_SIZE_TEST_PATHS -u ORCH_SIZE_RENDER_ROOTS \
+  "$CHANGE_CLASS" --repo "$order" --event pull_request --base "$order_base" \
+  --head HEAD 2>&1 >/dev/null)" || true
+assert_eq ".kendex/settings.toml outranks kendex.settings.toml" \
+  "class: class=micro measured=true cause=production-within-micro production=0" \
+  "$(printf '%s\n' "$order_err" | grep '^class: ')"
+order_state="$SANDBOX/ladder-order-state"
+"$TEST_DIR/../../orch/scripts/workflow-state" --state-dir "$order_state" \
+  init pr-2 --worktree "$order" --branch case >/dev/null
+order_json="$(env -u ORCH_SIZE_TEST_PATHS -u ORCH_SIZE_RENDER_ROOTS \
+  WORKTREE_DEFAULT_BRANCH=main "$TEST_DIR/../../orch/scripts/branch-size-check" \
+  --worktree "$order" --issue pr-2 --state-dir "$order_state" --json 2>/dev/null)" || true
+assert_eq "and branch-size-check ranks the two files the same way" "0,30" \
+  "$(jq -r '[.production_lines, .test_lines] | map(tostring) | join(",")' <<<"$order_json" 2>/dev/null)"
+
+# The settings are the base endpoint's, never the merge base's: the author
+# picks the merge base by choosing where to fork. Main allowlists src/ after
+# the fork point, which takes away the plan exemption, so a 500-line plan
+# forked before that commit is classed as one forked at the tip is.
+forked="$(new_repo change-class-fork-point)"
+commit_paths "$forked" baseline seed.txt
+fork_old="$(git -C "$forked" rev-parse HEAD)"
+printf '[env]\nHARNESS_CI_TRIVIAL_PATHS = "src/*"\n' >"$forked/kendex.settings.toml"
+commit_paths "$forked" "main tightens the trivial allowlist" seed.txt
+fork_tip="$(git -C "$forked" rev-parse HEAD)"
+fork_rows=0
+while IFS='|' read -r label fork_at; do
+  fork_rows=$((fork_rows + 1))
+  git -C "$forked" checkout -q -B "case-$fork_rows" "$fork_at"
+  write_lines "$forked" docs/plans/p.md 500
+  git -C "$forked" add -A
+  git -C "$forked" commit -q -m "a long plan"
+  fork_err="$(env -u HARNESS_CI_TRIVIAL_PATHS -u HARNESS_CI_TRIVIAL_MAX_LINES \
+    -u ORCH_SIZE_TEST_PATHS -u ORCH_SIZE_RENDER_ROOTS \
+    "$CHANGE_CLASS" --repo "$forked" --event pull_request --base "$fork_tip" \
+    --head HEAD 2>&1 >/dev/null)" || true
+  assert_eq "$label" \
+    "class: class=standard measured=true cause=production-past-small production=500" \
+    "$(printf '%s\n' "$fork_err" | grep '^class: ')"
+done <<FORKS
+a plan forked at the tip is classed under the tip's allowlist|$fork_tip
+a plan forked before main tightened it is classed the same way|$fork_old
+FORKS
+require_rows change-class-fork-point "$fork_rows"
+
+# A base settings file kendex-env.sh refuses measures nothing: a
+# single-quoted value is outside the settings contract.
+refused="$(new_repo change-class-base-refused)"
+printf "[env]\nORCH_SIZE_TEST_PATHS = 'checks/*'\n" >"$refused/kendex.settings.toml"
+commit_paths "$refused" baseline seed.txt
+refused_base="$(git -C "$refused" rev-parse HEAD)"
+git -C "$refused" checkout -q -B case "$refused_base"
+write_lines "$refused" checks/probe.sh 3
+git -C "$refused" add -A
+git -C "$refused" commit -q -m "a small diff over a refused settings file"
+refused_err="$(env -u ORCH_SIZE_TEST_PATHS -u ORCH_SIZE_RENDER_ROOTS \
+  "$CHANGE_CLASS" --repo "$refused" --event pull_request --base "$refused_base" \
+  --head HEAD 2>&1 >/dev/null)" || true
+assert_eq "a base settings file the reader refuses answers standard, unmeasured" \
+  "class: class=standard measured=false cause=base-settings-unreadable base=$refused_base" \
+  "$(printf '%s\n' "$refused_err" | grep '^class: ')"
+
+# A test path belongs to no subsystem. The table rows from
+# small-test-path-in-another-subsystem to
+# small-binary-test-path-in-another-subsystem pin it for a test file, a test
+# source beside its render mirror, a test under a render root with no source
+# and a binary test file. Each control below plants a copy that loses one side
+# of it, the classifier no longer setting the measurement's list aside or the
+# measurement no longer listing anything, and each of those diffs falls back
+# to several-subsystems.
+subsystem_class() { # CLASSIFIER PATH:LINES... -> the class: line for the diff
+  local err spec classifier="$1"
+  shift
+  reset_case
+  set_verifier dirty
+  for spec in "$@"; do
+    write_lines "$repo" "${spec%:*}" "${spec##*:}"
+  done
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "a script beside its test data in another directory"
+  err="$(PATH="$stub_bin:$PATH" "$classifier" --repo "$repo" --event pull_request \
+    --base "$base" --head HEAD 2>&1 >/dev/null)" || true
+  printf '%s\n' "$err" | sed -n '/^class: /p'
+}
+# Read outside a command substitution: Bash 3.2 cannot find the end of one
+# around a heredoc holding this line's unbalanced `)`.
+IFS= read -r skip_line <<'LINE'
+  case "$test_files" in *$'\n'"$path"$'\n'*) continue ;; esac
+LINE
+unskipped_class="$(plant_package "$SANDBOX/unskipped" link)"
+# The line reaches awk through the environment: a -v value has its
+# backslashes read as escapes.
+DROP_LINE="$skip_line" awk '$0 != ENVIRON["DROP_LINE"]' "$CHANGE_CLASS" >"$unskipped_class"
+assert_eq "the classifier control drops the one test-path skip" "1 0" \
+  "$(grep -cxF -- "$skip_line" "$CHANGE_CLASS") $(grep -cxF -- "$skip_line" "$unskipped_class" || true)"
+unlisted_root="$SANDBOX/unlisted-orch"
+unlisted_class="$(plant_package "$unlisted_root" none)"
+mkdir -p "$unlisted_root/orch/references"
+cp "$ORCH_PACKAGE/references/narrow-change.conf" "$unlisted_root/orch/references/"
+cp -R "$ORCH_PACKAGE/scripts" "$unlisted_root/orch/"
+list_line='      if (is_test(p) || (rest != "" && is_test(rest))) { listed[p] = 1; test_files = test_files "\n" p }'
+DROP_LINE="$list_line" awk '$0 != ENVIRON["DROP_LINE"]' "$ORCH_PACKAGE/scripts/lib/branch-growth.sh" \
+  >"$unlisted_root/orch/scripts/lib/branch-growth.sh"
+assert_eq "the measurement control drops the one test-path record" "1 0" \
+  "$(grep -cxF -- "$list_line" "$ORCH_PACKAGE/scripts/lib/branch-growth.sh") $(grep -cxF -- "$list_line" "$unlisted_root/orch/scripts/lib/branch-growth.sh" || true)"
+control_rows=0
+# A measurement that lists nothing also counts every test line as production,
+# so its row names the production count it reaches.
+while IFS='|' read -r label listless_production specs; do
+  control_rows=$((control_rows + 1))
+  # shellcheck disable=SC2086
+  assert_eq "a classifier that sets no test path aside counts two subsystems: $label" \
+    "class: class=standard measured=true cause=several-subsystems production=30" \
+    "$(subsystem_class "$unskipped_class" $specs)"
+  # shellcheck disable=SC2086
+  assert_eq "a measurement that lists no test path leaves two subsystems: $label" \
+    "class: class=standard measured=true cause=several-subsystems production=$listless_production" \
+    "$(subsystem_class "$unlisted_class" $specs)"
+done <<'CONTROLS'
+a test file|60|runtime/product.ts:30 payload/tests/data.conf:30
+a test source beside its render mirror|60|runtime/product.ts:30 skills/x/tests/data.conf:30 .claude/skills/x/tests/data.conf:30
+a test under a render root with no source|60|runtime/product.ts:30 .claude/hooks/tests/data.conf:30
+a binary test file|30|runtime/product.ts:30 payload/tests/image.png:binary
+CONTROLS
+require_rows change-class-subsystem-controls "$control_rows"
+
+# A lane and CI classify one diff alike. CI's classify step may carry
+# ORCH_SIZE_TEST_PATHS in its environment; a lane's run carries none, whether
+# item-tier or dev-validate-run through orch's lib/change-class.sh, which the
+# lane rows call, or review-policy, which calls change-class itself, and the
+# classifier takes the glob from the base endpoint's settings instead. A
+# script beside a fixture only that glob calls a test answers one class both
+# ways: the fixture's lines are test lines, and the fixture, moved a level
+# down or up, sits in no subsystem. So does a render-root copy only the
+# glob's reading of the path past the render root calls a test, a mirror of
+# a source beside it or one with none, and its lines are test lines too.
+# Each end of a rename is judged on its own: a production file moved into a
+# test directory still leaves its old subsystem behind, and a test file moved
+# out of one leaves none.
+fixture="$(new_repo change-class-fixture)"
+fixture_globs='bin/fixtures/* skills/*/fixtures/*'
+printf '[env]\nORCH_SIZE_TEST_PATHS = "%s"\n' "$fixture_globs" >"$fixture/kendex.settings.toml"
+write_lines "$fixture" bin/fixtures/kept.txt 40
+write_lines "$fixture" bin/fixtures/deep/nested.txt 43
+write_lines "$fixture" lib/core.sh 41
+write_lines "$fixture" payload/tests/data.conf 42
+commit_paths "$fixture" baseline seed.txt
+fixture_base="$(git -C "$fixture" rev-parse HEAD)"
+fixture_rows=0
+while IFS='|' read -r label script_lines fixture_edit expected; do
+  fixture_rows=$((fixture_rows + 1))
+  git -C "$fixture" checkout -q -B "case-$fixture_rows" "$fixture_base"
+  write_lines "$fixture" runtime/probe.sh "$script_lines"
+  case "$fixture_edit" in
+    add) write_lines "$fixture" bin/fixtures/probe.txt 40 ;;
+    mirror)
+      write_lines "$fixture" bin/fixtures/probe.txt 40
+      write_lines "$fixture" .agents/bin/fixtures/probe.txt 40 ;;
+    unpaired-mirror) write_lines "$fixture" .claude/skills/x/fixtures/data 40 ;;
+    move)
+      mkdir -p "$fixture/bin/fixtures/moved"
+      git -C "$fixture" mv bin/fixtures/kept.txt bin/fixtures/moved/kept.txt ;;
+    move-up) git -C "$fixture" mv bin/fixtures/deep/nested.txt bin/fixtures/nested.txt ;;
+    into-test)
+      mkdir -p "$fixture/runtime/tests"
+      git -C "$fixture" mv lib/core.sh runtime/tests/core.sh ;;
+    out-of-test)
+      mkdir -p "$fixture/runtime/data"
+      git -C "$fixture" mv payload/tests/data.conf runtime/data/data.conf ;;
+    *) echo "unknown fixture edit $fixture_edit" >&2; exit 1 ;;
+  esac
+  git -C "$fixture" add -A
+  git -C "$fixture" commit -q -m "$label"
+  ci_err="$(env -u ORCH_SIZE_RENDER_ROOTS ORCH_SIZE_TEST_PATHS="$fixture_globs" \
+    "$CHANGE_CLASS" --repo "$fixture" --event pull_request --base "$fixture_base" \
+    --head HEAD 2>&1 >/dev/null)" || true
+  assert_eq "$label, in CI" "$expected" "$(printf '%s\n' "$ci_err" | sed -n '/^class: /p')"
+  lane_err="$SANDBOX/lane-$fixture_rows.err"
+  (
+    unset ORCH_SIZE_TEST_PATHS ORCH_SIZE_RENDER_ROOTS
+    # shellcheck source=../../orch/scripts/lib/change-class.sh
+    . "$ORCH_PACKAGE/scripts/lib/change-class.sh"
+    change_class_read "$fixture_base" HEAD "$fixture" "$lane_err"
+  ) || true
+  assert_eq "$label, in a lane" "$expected" "$(sed -n '/^class: /p' "$lane_err")"
+done <<'FIXTURES'
+a script within micro beside a new fixture|10|add|class: class=micro measured=true cause=production-within-micro production=10
+a script within small beside a new fixture|30|add|class: class=small measured=true cause=production-within-small subsystem=runtime
+a script within micro beside a render-root fixture with no source|10|unpaired-mirror|class: class=micro measured=true cause=production-within-micro production=10
+a script within small beside a fixture and its render mirror|30|mirror|class: class=small measured=true cause=production-within-small subsystem=runtime
+a script within small beside a fixture moved a level down|30|move|class: class=small measured=true cause=production-within-small subsystem=runtime
+a script within small beside a fixture moved a level up|30|move-up|class: class=small measured=true cause=production-within-small subsystem=runtime
+a script beside a production file moved into a test directory|30|into-test|class: class=standard measured=true cause=several-subsystems production=30
+a script beside a test file moved out beside it|30|out-of-test|class: class=small measured=true cause=production-within-small subsystem=runtime
+FIXTURES
+require_rows change-class-fixture "$fixture_rows"
+# The listing control on the render-root fixture row: a measurement that lists
+# nothing scores the fixture's lines as production and its top-level
+# directory as a subsystem.
+git -C "$fixture" checkout -q -B case-unlisted "$fixture_base"
+write_lines "$fixture" runtime/probe.sh 10
+write_lines "$fixture" .claude/skills/x/fixtures/data 40
+git -C "$fixture" add -A
+git -C "$fixture" commit -q -m "a render-root fixture under a measurement that lists nothing"
+unlisted_err="$(env -u ORCH_SIZE_RENDER_ROOTS ORCH_SIZE_TEST_PATHS="$fixture_globs" \
+  "$unlisted_class" --repo "$fixture" --event pull_request --base "$fixture_base" \
+  --head HEAD 2>&1 >/dev/null)" || true
+assert_eq "a measurement that lists no test path scores a render-root fixture as production" \
+  "class: class=standard measured=true cause=several-subsystems production=50" \
+  "$(printf '%s\n' "$unlisted_err" | sed -n '/^class: /p')"
 
 # The render rows the issue names, built from a REAL render rather than a stub
 # exit code. The consumer's manifest carries its own project instructions, so
@@ -1395,10 +1692,11 @@ TOML
   # The other half of that chain, as it measures: a commit cut from the
   # de-listing that hand edits the path the de-listing dropped. That path is
   # in the inventory at neither endpoint, so harness-only calls it product
-  # source and the diff takes the class its own size earns. `micro` waives no
-  # CI lane, and the de-listing that precedes it is refused the render class
-  # above, so it reaches nobody as a waiver. A change in this line is a change
-  # in what the classifier ships and is reviewed as one.
+  # source and the diff is measured: its size earns micro, and a SKILL.md
+  # takes no class below small. `small` waives no CI lane, and the de-listing
+  # that precedes it is refused the render class above, so it reaches nobody
+  # as a waiver. A change in this line is a change in what the classifier
+  # ships and is reviewed as one.
   git -C "$consumer" checkout -q -B de-listed-edited de-listed
   printf '\nA LINE NO RENDER PRODUCED.\n' \
     >>"$consumer/.claude/skills/second/SKILL.md"
@@ -1407,7 +1705,7 @@ TOML
   de_listed_edit_err="$(classify_stderr --repo "$consumer" \
     --event pull_request --base de-listed --head HEAD)"
   assert_eq "a hand edit to a de-listed path measures as product code after a refused de-listing" \
-    "class: class=micro measured=true cause=production-within-micro production=2" \
+    "class: class=small measured=true cause=instruction-file path=.claude/skills/second/SKILL.md glob=*/SKILL.md measured-class=micro" \
     "$(printf '%s\n' "$de_listed_edit_err" | grep '^class: ')"
 
   # Must-fail inverse: the render proof replaced by a comparison with the

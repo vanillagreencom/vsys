@@ -32,17 +32,21 @@
 #        and a second one is never opened beside it: `overseer-live` names
 #        it and its generation. Two overseers never act at once; a live one
 #        is replaced through `oversee-succeed`, never launched over.
-#     4. Walk ORCH_OVERSEER_PREFERENCE, comma-separated `harness:rank:effort`
+#     4. Walk ORCH_OVERSEER_PREFERENCE, comma-separated `harness:model:effort`
 #        entries, in order, and open on the first whose harness has a lane
-#        above ORCH_OVERSEER_HEADROOM_PCT: `kendex tier-model` names the
-#        entry's model, `lanes pick` the lane, judged on the bucket that
+#        above ORCH_OVERSEER_HEADROOM_PCT: the entry names its model, or a
+#        rank `kendex tier-model` names it for, and unset the setting is
+#        lib/overseer-launch.sh's OL_DEFAULT_PREFERENCE; `lanes pick` names
+#        the lane, judged on the bucket that
 #        walls that model and held to the reading the session will take of
 #        itself (lib/overseer-launch.sh § ol_pick_lane). A rank the tier
 #        ladder cannot answer refuses `model-failed`; an entry with no
-#        qualifying lane is skipped; an empty preference refuses
-#        `preference-empty`, because a first launch has no caller whose own
-#        harness and lane could stand in; a walk that ends empty refuses
-#        `no-lane-qualifies` at exit 3 with the counts each sweep found.
+#        qualifying lane is skipped, and so is one whose harness row names no
+#        full-bypass word to launch it under, pi's, before its pick, with
+#        `entry-permission-unwritable` on stderr; a preference set to empty
+#        refuses `preference-empty`, because a first launch has no caller
+#        whose own harness and lane could stand in; a walk that ends empty
+#        refuses `no-lane-qualifies` at exit 3 with the counts each sweep found.
 #     5. Build the command: the entry's model and effort words, the harness's
 #        full-bypass permission words, its launch settings, its question-tool
 #        words where ORCH_QUESTION_TOOL is off, its default, and the brief
@@ -70,12 +74,19 @@
 #        and lane, at exit 0.
 #   register writes the session record for the session this command runs in,
 #            a tmux pane a person opened by hand: runtime tmux, the tmux
-#            server, $TMUX_PANE, its window, the account, --account or else
-#            the one this session's own account variable names through
-#            lib/lane-context.sh, the harness the pane's foreground process
-#            names, the home (a private CODEX_HOME where the session carries
-#            one, the account otherwise) and the pane's directory. Model and
-#            effort are recorded as unknown. The generation is one past the record's,
+#            server, $TMUX_PANE, its window, the file its event rows land in,
+#            and the launch identity its SessionStart row states
+#            (lib/session-rows.sh): the harness, the account (--account
+#            ahead of it), the model and the directory. With no such row it
+#            reads them as the named fallback, notice `identity-fallback` on
+#            stderr: the account --account or this session's own account
+#            variable names through lib/lane-context.sh, the harness the
+#            pane's foreground process names, or copilot where the pane reads
+#            node or copilot and a Copilot process runs at most two levels
+#            under it (its account --account's alone), and the pane's
+#            directory, the model unknown. The home is a private CODEX_HOME
+#            where the session carries one, the account otherwise; effort is
+#            recorded as unknown. The generation is one past the record's,
 #            or the record's own where it already names this pane, so
 #            registering twice launches nothing and counts nothing twice.
 #            Prints `registered` naming the session and generation.
@@ -125,13 +136,14 @@ message() { # KEY FIELD=VALUE...
     tmux-failed) text='The tmux call the operation field names failed on the server the server field names, for another reason than an absent session: no server may be running at that socket. Nothing was opened; tmux says why below.' ;;
     state-unwritable) text='The oversee workflow state could not be created or read, so no session record can be kept. Nothing was launched.' ;;
     overseer-live) text='The fleet state names an overseer session this tmux server still lists, so a second one is not opened beside it. Two overseers never act at once: replace a live one through oversee-succeed, or stop it and clear the record.' ;;
-    invalid-preference) text='ORCH_OVERSEER_PREFERENCE entries are harness:rank:effort with harness claude or codex.' ;;
+    invalid-preference) text='ORCH_OVERSEER_PREFERENCE entries are harness:model:effort with harness claude, codex or pi and model a model name or a tier ladder rank, or on pi a lowercase provider/id. A first launch skips pi entries.' ;;
     preference-empty) text='A first launch has no caller whose own harness and lane could stand in, so ORCH_OVERSEER_PREFERENCE must name at least one entry.' ;;
     invalid-headroom-trigger) text='ORCH_OVERSEER_HEADROOM_PCT takes a whole number of percent from 0 to 100.' ;;
     invalid-question-tool) text='ORCH_QUESTION_TOOL takes off or overseer.' ;;
-    model-failed) text='kendex tier-model named no model for this entry; a preference naming a rank the ladder cannot answer is a setting to fix, not an entry to pass over.' ;;
+    model-failed) text='kendex tier-model named no model for this entry: its rank is past the tier ladder, or its model name is none the ladder names for its harness. Either is a setting to fix, not an entry to pass over.' ;;
     lanes-failed) text='A lanes read failed on a path about to launch; no lane is chosen on a guess.' ;;
     no-lane-qualifies) text='No lane of any harness the preference names is above the headroom trigger; nothing was launched. entries counts the preference entries walked; walled and unmeasured are the accounts the sweeps refused and the accounts nothing could measure.' ;;
+    entry-permission-unwritable) text='The launch flag table names no full-bypass permission word for this entry'\''s harness, so a first launch there would stop at its first approval prompt with nobody at the pane. The entry is skipped and the walk goes on; oversee-succeed takes such an entry for a caller of the same harness.' ;;
     launch-choice-failed) text='The launch flag table cannot state this harness'\''s model, effort or permission words. Nothing was launched.' ;;
     launch-trust-missing) text='The folder-trust entry for the launch directory could not be made in the config this session would read, so nothing was launched; the reason field is lib/lane-launch.sh'\''s.' ;;
     launch-failed) text='The session could not be opened or read; the step field names the call that failed.' ;;
@@ -146,6 +158,7 @@ message() { # KEY FIELD=VALUE...
     interrupted) text='A signal stopped the launch; the session was closed and the record put back.' ;;
     pane-unreadable) text='This session'\''s own pane could not be read; tmux says why below.' ;;
     registered) text='The session record names this session.' ;;
+    identity-fallback) text='No SessionStart row of this session stands, so its harness, account and directory are read off its pane and environment, the named fallback, and its model is recorded as unknown.' ;;
   esac
   printf 'oversee: %s' "$key"
   printf ' %s' "$@"
@@ -257,24 +270,68 @@ if [[ "$COMMAND" == register ]]; then
   server="${key%% *}"
   window="$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>"$DEP_ERR")" \
     || die pane-unreadable "pane=$TMUX_PANE" field=window_id
-  cwd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_path}' 2>"$DEP_ERR")" \
-    || die pane-unreadable "pane=$TMUX_PANE" field=pane_current_path
-  cmd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_command}' 2>"$DEP_ERR")" \
-    || die pane-unreadable "pane=$TMUX_PANE" field=pane_current_command
-  shape="$(lane_context_shape "${cmd#-}")"
-  [[ -n "$ACCOUNT" ]] || ACCOUNT="$(lane_context_caller_cfg "$shape")"
-  # The launch identity a hand-opened session can state: the harness its
-  # foreground process names, the account, the home its own variable carries
-  # where that is a private codex home and the account otherwise, and its
-  # directory. Nothing here launched it, so no model or effort is known; any
-  # model is the pane's context.json (schemas/workflow-state.md).
+  # The launch identity a hand-opened session can state, from what its own
+  # harness said at its start where its SessionStart row stands
+  # (lib/session-rows.sh): the harness its hook install names, the account its
+  # environment carries, its model and its directory. Nothing here launched
+  # it, so no effort is known. Where no row stands, a harness with no such
+  # hook or a session started before its install, the pane's foreground
+  # process and directory are read instead, the named fallback, said as
+  # `identity-fallback`, and no model is known.
+  model="" start_rc=0
+  session_rows_start "$(session_rows_overseer_file "$PWD" "$server" "$TMUX_PANE")" || start_rc=$?
+  if (( start_rc == 0 )) && [[ -n "$SR_HARNESS" && -n "$SR_CWD" ]]; then
+    cwd="$SR_CWD" model="$SR_MODEL" shape="$SR_HARNESS"
+    [[ -n "$ACCOUNT" ]] || ACCOUNT="$SR_ACCOUNT"
+  else
+    cause=no-start-row
+    [[ "$start_rc" -ne 2 ]] || cause=unreadable
+    message identity-fallback "session=$TMUX_PANE" "cause=$cause" >&2
+    cwd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_path}' 2>"$DEP_ERR")" \
+      || die pane-unreadable "pane=$TMUX_PANE" field=pane_current_path
+    cmd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_command}' 2>"$DEP_ERR")" \
+      || die pane-unreadable "pane=$TMUX_PANE" field=pane_current_command
+    shape="$(lane_context_shape "${cmd#-}")"
+    # The account --account named, kept apart from the one derived below,
+    # which reads the Claude and Codex variables and so answers for no
+    # Copilot pane.
+    given_account="$ACCOUNT"
+    [[ -n "$ACCOUNT" ]] || ACCOUNT="$(lane_context_caller_cfg "$shape")"
+    # A Copilot pane reads `node`, its npm loader, or `copilot`, the binary
+    # started directly, and neither names a shape, so its harness is the
+    # process carrying one of Copilot's own names (lib/lane-state.sh §
+    # lane_harness_process_re) at most two levels under the pane: its shell,
+    # the loader, the binary. A Codex pane also reads `node`, and a Copilot
+    # run it starts sits deeper, under its own tool shell, so it is not this
+    # pane's harness. Its account is --account's alone: nothing here reads
+    # COPILOT_HOME for a session.
+    if [[ "$shape" == both ]]; then
+      case "${cmd#-}" in
+        node | copilot)
+          pane_pid="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_pid}' 2>"$DEP_ERR")" \
+            || die pane-unreadable "pane=$TMUX_PANE" field=pane_pid
+          table="$(lane_process_table)" || die pane-unreadable "pane=$TMUX_PANE" field=process-table
+          name_re="$(lane_harness_process_re copilot)" || die pane-unreadable "pane=$TMUX_PANE" field=process-table
+          if ! below="$(lane_process_below "$table" "$pane_pid" "$name_re" 1 2)"; then
+            die pane-unreadable "pane=$TMUX_PANE" field=process-table
+          fi
+          if [[ "$below" == found ]]; then
+            shape=copilot ACCOUNT="$given_account"
+          fi
+          ;;
+      esac
+    fi
+  fi
+  # The home its own variable carries where that is a private codex home, and
+  # the account otherwise.
   harness="" home="$ACCOUNT"
   case "$shape" in
     claude) harness=claude ;;
     codex) harness=codex; home="${CODEX_HOME:-$ACCOUNT}" ;;
-    both) ;;
+    copilot) harness=copilot ;;
+    *) ;;
   esac
-  ol_identity "$harness" "$ACCOUNT" "$home" "" "" "$cwd" || die record-unwritten field=overseer step=identity
+  ol_identity "$harness" "$ACCOUNT" "$home" "$model" "" "$cwd" || die record-unwritten field=overseer step=identity
   state_ready
   ol_record_write tmux "$TMUX_PANE" "$window" "$server" "$OL_IDENTITY" "" \
     || die record-unwritten field=overseer
@@ -328,14 +385,20 @@ if ! question_policy="$(launch_overseer_question_tool)"; then
   die invalid-question-tool "ORCH_QUESTION_TOOL=${ORCH_QUESTION_TOOL:-}"
 fi
 [[ "$question_policy" != off ]] || QUESTION_OFF=(--question-off)
-ol_preference_entries "${ORCH_OVERSEER_PREFERENCE:-}" || die invalid-preference "entry=$OL_BAD_ENTRY"
+ol_preference_entries "$(ol_preference)" || die invalid-preference "entry=$OL_BAD_ENTRY"
 (( OL_NAMED > 0 )) || die preference-empty setting=ORCH_OVERSEER_PREFERENCE
 
 chosen="" harness="" model="" effort="" lane_dir=""
 for entry in "${OL_ENTRIES[@]}"; do
-  IFS=: read -r harness rank effort <<<"$entry"
-  model="$(kendex tier-model "$harness" "$rank" 2>"$DEP_ERR")" && [[ -n "$model" ]] \
-    || die model-failed "entry=$entry"
+  ol_entry_model "$entry" || die model-failed "entry=$entry"
+  harness="$OL_ENTRY_HARNESS" model="$OL_ENTRY_MODEL" effort="$OL_ENTRY_EFFORT"
+  # A first launch runs under the full-bypass word the harness row writes;
+  # a row naming none, pi's, has no unattended launch to open, so the entry
+  # is skipped rather than chosen and refused after the walk.
+  if ! launch_choice_permission_write "$harness" >/dev/null; then
+    message entry-permission-unwritable "entry=$entry" "harness=$harness" >&2
+    continue
+  fi
   rc=0
   ol_pick_lane "$harness" "$model" "$HEADROOM_TRIGGER" || rc=$?
   case "$rc" in

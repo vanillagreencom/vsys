@@ -194,6 +194,12 @@ ORCH_LANE_HOST_BUSY_WAIT_SECS = "30"
 # ORCH_LANE_EXCLUDE = "sclaude"
 # ORCH_LANE_RETIRE = "nclaude=YYYY-MM-DD"
 
+# The owner's reading of each Copilot pool a Pi lane on a github-copilot/
+# model spends, as account-dir=credits-used/credits-granted pairs, the
+# account dir an absolute path. With none set, such a launch is refused
+# rather than judged on a Claude window.
+# ORCH_LANE_COPILOT_POOL = "/home/me/.1pi=250000/1000000"
+
 # Seconds a lane's usage figure is reused before it is fetched again. 0
 # fetches it every time. Keep it at or above the longest watch interval on
 # this machine, or every watch pass fetches the figure again.
@@ -208,6 +214,14 @@ ORCH_LANE_HOST_BUSY_WAIT_SECS = "30"
 # read against the account's own allowance, or against the chosen model's
 # window where one is named.
 # ORCH_LANE_MAX_PCT = "95"
+
+# How much of an account's 5-hour allowance one running lane is expected to
+# use in an hour, where no rate has been measured for the account yet; a
+# weekly allowance is charged its share by length. A lane is not launched on
+# an account whose running lanes would carry its usage to ORCH_LANE_MAX_PCT
+# within the hour, whether the account is picked or named. 0 turns the charge
+# off.
+# ORCH_LANE_BURN_PCT_PER_HOUR = "5"
 
 # The allowance left on an account at which a running lane is marked for
 # handover. The overseer asks a marked lane to hand over at its next safe
@@ -257,7 +271,8 @@ ORCH_OVERSEER_SUCCESSOR_ACCOUNTS = "1"
 
 # How many checks in a row must find the overseer gone, or out of account
 # allowance, before it is replaced. One check alone can catch a healthy
-# session between programs.
+# session between programs. A limit the overseer's own session reports, or
+# an account with no allowance left, replaces it on the first check.
 # ORCH_OVERSEER_DEAD_PASSES = "2"
 
 # The allowance left on an account at which the overseer hands over. No
@@ -275,6 +290,11 @@ ORCH_OVERSEER_SUCCESSOR_ACCOUNTS = "1"
 # Seconds a hosted lane handed to a background launch job may read preparing
 # before oversee-watch reports it as lane-prepare-stuck.
 # ORCH_WATCH_PREPARE_SECS = "1800"
+
+# Seconds after a lane's record goes running, at a launch or a relaunch, its
+# status file may still be missing before oversee-watch reports it as
+# start-stalled, on every harness.
+# ORCH_WATCH_START_STALL_SECS = "600"
 
 # Seconds from the start of one oversee-watch mail pass to the next; a mail
 # pass reads every lane mailbox and the overseer's own apart from the
@@ -294,7 +314,8 @@ ORCH_OVERSEER_SUCCESSOR_ACCOUNTS = "1"
 # ORCH_SIZE_RENDER_ROOTS = ".agents .claude .codex .pi"
 
 # Extra test-file patterns added to the built-in ones, separated by spaces.
-# A pattern matches the whole path from the project root. Empty leaves the
+# A pattern matches the whole path from the project root or, for a file
+# under a generated-copy folder, the path past that folder. Empty leaves the
 # built-in rule alone.
 # ORCH_SIZE_TEST_PATHS = "scripts/check-*.py"
 

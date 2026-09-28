@@ -137,11 +137,15 @@ lane_context_shape() {
 # that can answer with that variable go through the rule: the codex shape, and
 # the shape naming no harness, which is what a pane running `lanes` itself
 # offers. A claude answer passes through it unchanged, carrying no such shape.
+# `pi` is no shape a pane offers: it is the Copilot pool's account harness a
+# pi overseer names (lib/overseer-launch.sh § ol_account), whose account is the
+# Pi root it runs on, PI_CODING_AGENT_DIR or the home's `.pi/agent`.
 lane_context_caller_cfg() { # SHAPE
   local home="${LANES_HOME:-$HOME}"
   case "${1:-}" in
     claude) printf '%s\n' "${CLAUDE_CONFIG_DIR:-$home/.claude}" ;;
     codex) lane_launch_home_account "${CODEX_HOME:-$home/.codex}" ;;
+    pi) lane_adapter_pi_agent_dir ;;
     *)
       [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -n "${CODEX_HOME:-}" ] ||
         lane_launch_home_account "${CLAUDE_CONFIG_DIR:-${CODEX_HOME:-}}"
@@ -154,6 +158,9 @@ lane_context_caller_cfg() { # SHAPE
 # its recorded reading names. A claude session's account mark is judged on
 # MODEL's own buckets; a codex session's is judged on the account's binding
 # bucket, the reading the fleet has always taken of one, and this answers empty.
+# A pi session's is MODEL as pi spells it, `provider/id`, which
+# lib/overseer-launch.sh § ol_account turns into the account and model `lanes`
+# judges.
 #
 # It exists so a caller CHOOSING an account for a session it is about to
 # launch holds that account to the reading the session will take of itself. A
@@ -162,7 +169,7 @@ lane_context_caller_cfg() { # SHAPE
 # and a handoff every cycle.
 lane_context_mark_model() { # HARNESS MODEL
   case "${1:-}" in
-    claude) printf '%s\n' "${2:-}" ;;
+    claude | pi) printf '%s\n' "${2:-}" ;;
     *) printf '\n' ;;
   esac
 }
