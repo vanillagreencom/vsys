@@ -53,7 +53,7 @@ CASE_REPO_ROOT="$(git -C "$TMP_ROOT/repo" rev-parse --show-toplevel)" \
 #                 merged.<SLUG>.json answers that --repo alone, <SLUG> being
 #                 the repo with everything outside [A-Za-z0-9._-] as `_`
 #   open.txt      lines for `pr list --state open` (default: empty), with
-#                 open.<SLUG>.txt per repo the same way
+#                 open.<SLUG>.txt per repo the same way; --limit caps them
 #   repoview.txt  what `repo view` reports — the repository the watch resolves
 #                 when no --repo is given (default: owner/repo)
 #   auth-fail     present → keyring `auth status` fails
@@ -108,8 +108,11 @@ case "${1:-} ${2:-}" in
                 | (.headRepositoryOwner //= {login: $owner}) ] | .[:$limit]' "$src" 2>/dev/null || echo '[]'
       exit 0
     fi
-    if [[ -f "$STUB_DIR/open.$slug.txt" ]]; then cat "$STUB_DIR/open.$slug.txt"
-    elif [[ -f "$STUB_DIR/open.txt" ]]; then cat "$STUB_DIR/open.txt"; fi
+    # --limit caps the page, as gh does; the fixture is newest first already.
+    src=""
+    if [[ -f "$STUB_DIR/open.$slug.txt" ]]; then src="$STUB_DIR/open.$slug.txt"
+    elif [[ -f "$STUB_DIR/open.txt" ]]; then src="$STUB_DIR/open.txt"; fi
+    [[ -z "$src" ]] || awk -v n="${limit:-0}" 'n == 0 || NR <= n' "$src"
     exit 0 ;;
 esac
 printf 'unexpected gh call: %s\n' "$*" >&2
@@ -328,11 +331,19 @@ EOF
 
 # Fake live tracker list. tracker.out is the safe-format issue array (default
 # empty), tracker.err is stderr, and tracker.rc is the exit status. Every argv
-# reaches tracker.args so cases can pin the live-list contract.
+# reaches tracker.args so cases can pin the live-list contract. A `--state`
+# argument filters an array to the comma-separated state names it lists, as
+# Linear's own list does, so a case's other items are the server's to drop; any
+# other reply passes as it stands.
 cat > "$TMP_ROOT/bin/linear-stub.sh" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
 printf '%s\n' "$*" > "$STUB_DIR/tracker.args"
+states=""
+args=("$@")
+for i in "${!args[@]}"; do
+  [[ "${args[$i]}" != --state ]] || states="${args[$((i + 1))]:-}"
+done
 if [[ -f "$STUB_DIR/tracker.want-created-since" ]]; then
   want="$(cat "$STUB_DIR/tracker.want-created-since")"
   [[ " $* " == *" --created-since ${want}d "* ]] || {
@@ -343,7 +354,10 @@ fi
 [[ -f "$STUB_DIR/tracker.err" ]] && cat "$STUB_DIR/tracker.err" >&2
 rc=0; [[ -f "$STUB_DIR/tracker.rc" ]] && rc="$(cat "$STUB_DIR/tracker.rc")"
 [[ "$rc" -eq 0 ]] || exit "$rc"
-if [[ -f "$STUB_DIR/tracker.out" ]]; then
+if [[ -f "$STUB_DIR/tracker.out" && -n "$states" ]]; then
+  jq -c --arg states "$states" 'if type == "array" then [.[] | select(.state as $s | $states | split(",") | index($s))] else . end' \
+    "$STUB_DIR/tracker.out" || exit 2
+elif [[ -f "$STUB_DIR/tracker.out" ]]; then
   cat "$STUB_DIR/tracker.out"
 else
   printf '[]\n'
@@ -452,17 +466,46 @@ EOF
 # call of the case and lanes.json otherwise, `[]` with neither, so no case
 # reads the accounts of the machine running it. lanes.rc is the exit status,
 # lanes.sleep the seconds to wait before answering, every call's argv lands in
-# lanes.args and the usage age it was handed in lanes.max-age.
+# lanes.args and the usage age it was handed in lanes.max-age. With
+# lanes.notice present, a listing that answers also writes one keyed notice
+# naming the call's ORCH_LANE_HOST to stderr, as `lanes` does for a provider
+# it could not ask.
+# `lanes pick --harness H [--model M]` is answered apart and counts no list
+# call: pick-<HOST>-<H>-<M>.rc and .json where the call's ORCH_LANE_HOST has
+# them, else pick-<H>-<M> (M `-` with no --model), default exit 0 and `{}`,
+# and a harness but claude or codex refused exit 1 as the real one does.
+# Every call's ORCH_LANE_HOST and argv land in lanes.hosts, `unset` for none.
 cat > "$TMP_ROOT/bin/lanes-stub.sh" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
 printf '%s\n' "$*" >> "$STUB_DIR/lanes.args"
+printf '%s %s\n' "${ORCH_LANE_HOST:-unset}" "$*" >> "$STUB_DIR/lanes.hosts"
+if [[ "${1:-}" == pick ]]; then
+  harness="" model=-
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --harness) harness="$2"; shift ;;
+      --model) model="$2"; shift ;;
+    esac
+    shift
+  done
+  case "$harness" in
+    claude | codex) ;;
+    *) printf 'lanes: invalid-pick-harness option=--harness\n' >&2; exit 1 ;;
+  esac
+  base="$STUB_DIR/pick-${ORCH_LANE_HOST:-unset}-$harness-$model"
+  [[ -f "$base.rc" || -f "$base.json" ]] || base="$STUB_DIR/pick-$harness-$model"
+  if [[ -f "$base.json" ]]; then cat "$base.json"; else printf '{}\n'; fi
+  rc=0; [[ -f "$base.rc" ]] && rc="$(cat "$base.rc")"
+  exit "$rc"
+fi
 printf '%s\n' "${ORCH_LANES_USAGE_MAX_AGE:-unset}" >> "$STUB_DIR/lanes.max-age"
 [[ ! -f "$STUB_DIR/lanes.sleep" ]] || sleep "$(cat "$STUB_DIR/lanes.sleep")"
 n=0; [[ -f "$STUB_DIR/lanes.calls" ]] && n="$(cat "$STUB_DIR/lanes.calls")"
 n=$((n + 1)); printf '%s' "$n" > "$STUB_DIR/lanes.calls"
 rc=0; [[ -f "$STUB_DIR/lanes.rc" ]] && rc="$(cat "$STUB_DIR/lanes.rc")"
 [[ "$rc" -eq 0 ]] || { printf 'lanes: stub-refused rc=%s\n' "$rc" >&2; exit "$rc"; }
+[[ ! -f "$STUB_DIR/lanes.notice" ]] || printf 'lanes: stub-notice host=%s\n' "${ORCH_LANE_HOST:-unset}" >&2
 if [[ -f "$STUB_DIR/lanes.$n.json" ]]; then cat "$STUB_DIR/lanes.$n.json"
 elif [[ -f "$STUB_DIR/lanes.json" ]]; then cat "$STUB_DIR/lanes.json"
 else printf '[]\n'; fi
@@ -557,8 +600,8 @@ run_watch() {
   done
   (cd "${WATCH_CWD:-$TMP_ROOT/repo}" \
     && PATH="$TMP_ROOT/bin:$PATH" \
-       env -u GH_TOKEN -u GITHUB_TOKEN -u GH_BOT_TOKEN -u ORCH_STATE_DIR \
-           -u ORCH_WATCH_TAIL_LINES -u ORCH_WATCH_PREPARE_SECS -u LINEAR_TEAM -u ORCH_DIRECTIVE_UNREAD_SECS \
+       env -u GH_TOKEN -u GITHUB_TOKEN -u GH_BOT_TOKEN -u ORCH_STATE_DIR -u ORCH_LANE_HOST \
+           -u ORCH_WATCH_TAIL_LINES -u ORCH_WATCH_PREPARE_SECS -u ORCH_WATCH_START_STALL_SECS -u ORCH_OVERSEER_MARK_REPEAT -u LINEAR_TEAM -u ORCH_DIRECTIVE_UNREAD_SECS \
            -u ORCH_REPORT_EVERY_MINUTES -u ORCH_REPORT_EVERY_ISSUES -u ORCH_REPORT_UPCOMING \
            -u ORCH_REPORT_COLUMNS -u ORCH_PROGRESS_REPORT_DIR -u OVERSEE_WATCH_REPORT \
            -u OVERSEE_REPORT_WORKFLOW_STATE -u OVERSEE_REPORT_TRACKER -u OVERSEE_REPORT_GITHUB \

@@ -14,12 +14,12 @@
 #
 # Usage:
 #   lanes list [--harness claude|codex|all] [--local] [--no-cache] [--json]
-#   lanes pick [--harness claude|codex] [--max-pct N | --min-headroom-pct N]
+#   lanes pick [--harness claude|codex|pi] [--max-pct N | --min-headroom-pct N]
 #              [--model NAME] [--binding-floor] [--exclude-lane DIR]
-#              [--no-cache] [--json]
-#   lanes pick --lane <config-dir> [--harness claude|codex]
+#              [--for-overseer] [--no-cache] [--json]
+#   lanes pick --lane <config-dir> [--harness claude|codex|pi]
 #              [--max-pct N | --min-headroom-pct N] [--model NAME]
-#              [--binding-floor] [--no-cache] [--json]
+#              [--binding-floor] [--projected] [--no-cache] [--json]
 #   lanes host-accounts [--harness claude|codex|all] [--no-cache] [--json]
 #   lanes context [--json]
 #   lanes check <config-dir|name>
@@ -30,11 +30,16 @@
 #         RENEWED first and then measured like any other, its record marked
 #         `refreshable`; one that cannot be renewed reports the status its
 #         refusal took, with the cause. Table by default, --json for the
-#         structured record. Each --json record carries `verdict`: `room`,
-#         `walled` or `unmeasured`, its binding bucket judged against
-#         ORCH_LANE_MAX_PCT by the rule `pick` with no --model refuses on, so
-#         a reader of the listing never holds a second copy of that threshold
-#         or its default.
+#         structured record; the table's last column, DETAIL, is the record's
+#         `detail`, `-` where it carries none, so two lanes under one status
+#         word still show which refusal each met. Each --json record carries
+#         `verdict`: `room`, `walled` or `unmeasured`, its binding bucket
+#         judged against ORCH_LANE_MAX_PCT by the rule `pick` with no --model
+#         refuses on, so a reader of the listing never holds a second copy of
+#         that threshold or its default. The verdict is the reading's, a wall
+#         that lifts at binding_resets_at; `burn_pct_per_lane_hour` and
+#         `projected_headroom_pct` beside it are the projection `pick` also
+#         drops a lane on.
 #         The STATUS words are `ok`; `rate_limited`, an endpoint that answered
 #         HTTP 429; `unreachable`, one that answered 5xx or that nothing could
 #         be read from at all, or a renewal another tool's credentials lock kept
@@ -91,21 +96,46 @@
 #   pick  Print the launch env prefix for the lane to launch on (e.g.
 #         `CLAUDE_CONFIG_DIR=/home/me/.eclaude`): among the lanes under
 #         --max-pct, the one with the fewest launches already in flight, the
-#         room under that same threshold breaking the tie. --json prints that
-#         lane's whole record, which carries headroom_pct, binding_bucket
-#         (session, weekly or model), the matching binding_resets_at, and
-#         qualifying_count from that same judgement. With
+#         projected room under that same threshold breaking the tie. A lane is
+#         judged on its PROJECTED wall: the reading plus, for each live claim
+#         on it, the burn one lane is expected to spend in the next hour, the
+#         account's measured rate shared out across its claims where the rate
+#         is measured and ORCH_LANE_BURN_PCT_PER_HOUR, scaled to the window,
+#         where it is not. So an
+#         account whose room the lanes already on it will spend is dropped the
+#         way a walled one is. It never returns an OVERSEER SEAT, an account
+#         `.overseer.account` of a fleet state names: this checkout's fleet
+#         state, and every fleet state a live claim in the store names, which
+#         is each fleet sharing OVERSEE_WATCH_STATE_DIR that runs a lane; a
+#         fleet state that cannot be read refuses the pick with exit 1.
+#         --for-overseer keeps the seats, for a pick that seats an overseer.
+#         --json prints that lane's whole record, which carries headroom_pct,
+#         binding_bucket (session, weekly or model), the matching
+#         binding_resets_at, claims, burn_pct_per_lane_hour,
+#         projected_headroom_pct, and qualifying_count from that same
+#         judgement. With
 #         --model those fields name the most-consumed
 #         bucket among the shared 5-hour window, the all-model weekly window,
-#         and the named model's scoped weekly window. Exit 3 when no lane
+#         the named model's scoped weekly window, and for a Pi launch on the
+#         Copilot pool the monthly pool (see --harness). Exit 3 when no lane
 #         qualifies, so a caller can fail closed rather than launch into a
 #         wall; its keyed line on stderr says how many candidates were WALLED
 #         at or above --max-pct and how many measured nothing for the launch,
 #         and `no-candidate-unmeasured` is every candidate unmeasured, which is
-#         a read to fix rather than an allowance to wait out. Under --json
-#         that exit also prints `{"walled":N,"unmeasured":N}` on stdout, the
-#         same two counts, so a caller walking several picks can report what
-#         each sweep found instead of parsing the message written for a person.
+#         a read to fix rather than an allowance to wait out. The table under
+#         that line is `list`'s, DETAIL included, so each candidate's refusal
+#         (a 429, a 403, an expired login) reads there. Two more causes
+#         read differently from a reset to wait for. A lane counted WALLED can
+#         be one whose reading has room and whose live lanes project past the
+#         bound: `lanes list --json` shows its `claims` and
+#         `projected_headroom_pct`, and it comes back as those lanes end, not
+#         at a reset. And `seats=N` counts the overseer seats omitted before
+#         any judgement, each named on a `lanes: pick-seat-omitted` line: a
+#         fleet whose every account is a seat has none a lane may launch on,
+#         and the remedy is a lane on another account. Under --json that exit
+#         also prints `{"walled":N,"unmeasured":N,"seats":N}` on stdout, the
+#         same counts, so a caller walking several picks can report what each
+#         sweep found instead of parsing the message written for a person.
 #         Where ORCH_LANE_HOST names a provider that answers `accounts`, the
 #         candidates are the rows `list` merges, with each account the provider
 #         reports judged on the provider's reading IN PLACE OF this machine's:
@@ -140,6 +170,12 @@
 #         With --lane <config-dir> it judges that ONE account instead of
 #         choosing among the fleet, measuring only that directory. A launcher
 #         that was handed a lane asks this rather than rebuilding the rule.
+#         It judges the wall READING, the question every caller asking whether
+#         an account is out of room now puts: a lane's handoff mark, a lane
+#         close, an overseer's own mark. --projected judges the projected wall
+#         the chooser judges instead, for a launcher about to add a lane, so a
+#         lane a person names is refused on the rule the chooser drops it on.
+#         It omits no overseer seat: the account named is the one judged.
 #         Exit 0 has room and prints the env prefix, or the lane's record under
 #         --json; 3 is a wall at or above --max-pct; 5 is a lane nothing
 #         measured for this launch, whether no window names --model or the
@@ -150,10 +186,14 @@
 #         judge rather than as a refusal; 1 is the judge itself failing, on a
 #         measurement or on a --max-pct this parser refused. Every exit but 0
 #         puts its keyed line on stderr. A claim store that could not be read is
-#         a NOTICE on stderr and no exit of its own: this form judges the wall,
-#         which no claim count enters, and the record's `claims` is null. The
-#         record printed on 3 under --json carries `wall`, the percentage
-#         judged, so a caller names what it refused on.
+#         a NOTICE on stderr and no exit of its own: the record's `claims` and
+#         `projected_headroom_pct` are null and the wall reading alone is
+#         judged. Under --projected it is exit 6 instead, keyed
+#         `pick-lane-claims-refused`, before anything is measured: that verdict
+#         charges the claims, and none counted is not none in flight. The
+#         record printed on 3 under --json carries `wall`, the
+#         reading, and `projected_headroom_pct`, so a caller names what it
+#         refused on.
 #   context  Print context use for each live work lane in this fleet, as its
 #         own turn-end hook recorded it: the tokens the last response left in the
 #         context, read from the transcript by the harness adapter
@@ -188,7 +228,15 @@
 #          the whole name selects the pane, and its window part alone is the
 #          item the hosted probe below names. The lane's pane on this tmux server
 #          is the whole reading, so this answers exactly as oversee-watch does
-#          about the same lane. A name no pane on this server carries is
+#          about the same lane, except for a window a running fleet lane
+#          record names as a Pi lane: that one is judged from the rows its
+#          lane-mail-check hook writes in its mailbox (lib/session-rows.sh),
+#          through its host where the record names one, and never from its
+#          pane, so a Pi lane with no row is `unjudged` and never `asking`;
+#          a fleet state whose records cannot be read refuses as
+#          `lanes: state-fleet`. The pane judge is the last-resort fallback
+#          for a window no such record names, whatever harness runs there.
+#          A name no pane on this server carries is
 #          `unjudged`: a window that closed and a name two windows share are
 #          the same silence from here. `gone` is the judge's answer for a
 #          window a caller has already found absent, which this verb never
@@ -206,7 +254,19 @@
 #         read. `open-terminal` asks it for every named --lane.
 #
 # Options:
-#   --harness NAME   claude, codex, or all (default: all for list, claude for pick)
+#   --harness NAME   claude, codex, or all (default: all for list, claude for pick).
+#                    pick also takes pi with a `github-copilot/` --model: such
+#                    a launch spends the Copilot pool rather than any Claude or
+#                    Codex window, and is judged on that pool alone, as
+#                    ORCH_LANE_COPILOT_POOL states it. Its candidates are the
+#                    accounts that setting names; with no entry at all the
+#                    pick exits 5 as `copilot-pool-unstated`, a setting to
+#                    state rather than a window to wait out, and under --lane
+#                    a directory it names no reading for is unmeasured (exit
+#                    5), never unlisted. A walled pool stays walled until the
+#                    owner states a new reading. Its records say
+#                    `measured_through: "stated"`, its printed prefix is
+#                    PI_CODING_AGENT_DIR, and `list` does not show them.
 #   --max-pct N      pick: refuse a lane whose binding bucket is at or above N
 #                    percent used (default: 95, or $ORCH_LANE_MAX_PCT). The
 #                    setting is read through the kendex settings ladder below,
@@ -222,8 +282,9 @@
 #                    the fleet; no other lane is measured
 #   --model NAME     pick: judge the bound against the bucket that walls a
 #                    launch on NAME — the 5-hour session window, the plan-wide
-#                    weekly window, and the model-scoped weekly window whose
-#                    label names NAME — instead of the binding bucket. A lane
+#                    weekly window, the model-scoped weekly window whose
+#                    label names NAME, and the monthly Copilot pool a Pi
+#                    launch spends — instead of the binding bucket. A lane
 #                    whose windows answer nothing for NAME is never picked.
 #                    The scoped model window alone is not enough because either
 #                    shared window can wall every model on the account.
@@ -243,6 +304,12 @@
 #   --exclude-lane DIR  pick: omit this config dir before the chooser judges
 #                    the remaining accounts. Used when the caller needs a
 #                    different account rather than capacity on its own.
+#   --for-overseer   pick: keep the overseer seats among the candidates. For a
+#                    pick that seats an overseer; refused with --lane, which
+#                    judges one named account and omits nothing.
+#   --projected      pick --lane: judge the projected wall rather than the
+#                    reading, for a launch about to add a lane to the account.
+#                    Refused without --lane, since the chooser always judges it.
 #   --local          list: this machine's config dirs alone. The provider is
 #                    not asked, so a caller looking a config dir up by alias
 #                    costs no round trip and meets no hosted row.
@@ -300,6 +367,13 @@
 #                      walls that model, and never compared with
 #                      ORCH_HANDOFF_HEADROOM_PCT. Refused, before any lane is
 #                      measured, when it is not an integer 0-100.
+#   ORCH_LANE_BURN_PCT_PER_HOUR  Percentage points of the 5-hour session window
+#                      one live lane is expected to spend in an hour, charged
+#                      per claim where the account's rate is not measured or
+#                      nothing is claimed on it; a weekly window, plan-wide or
+#                      model-scoped, is charged 5/168 of it (default 5; 0
+#                      charges nothing). Refused, before any lane is measured,
+#                      when it is not an integer 0-100.
 #   ORCH_LANES_USAGE_TTL  Seconds a cached usage figure is reused (default 300;
 #                      0 fetches every run). Keep it at least the longest watch
 #                      interval on the host — `oversee-watch --interval`
@@ -327,6 +401,18 @@
 #                      read is refused as `host-accounts-unbounded` rather than
 #                      waiting: the cache covers a listing or a pick, not a
 #                      read that asked to ask the provider now.
+#   ORCH_LANE_COPILOT_POOL  Comma-separated `<account dir>=<used>/<granted>`
+#                      entries: the owner's reading of the Copilot credits
+#                      each Pi account's pool has used of its monthly grant,
+#                      the account dir an absolute path to the Pi root a lane
+#                      on that pool is launched on, as its PI_CODING_AGENT_DIR. `pick --harness pi`
+#                      judges it as a `monthly` bucket at the used share,
+#                      rounded up, against --max-pct; a pool at or past its
+#                      grant is walled, whatever overage the account permits.
+#                      No provider or endpoint is asked: the reading is what
+#                      the setting says, and an account it names none for is
+#                      unmeasured. A malformed entry, or a second one for an
+#                      account already stated, refuses that pick.
 #   ORCH_LANES_CLAUDE_CLIENT_ID  The OAuth client id the renewal posts with.
 #                      Required for it: with this unset every Claude account
 #                      whose access token has expired reads `error` with the
@@ -408,7 +494,10 @@
 # <project root>/tmp/oversee-watch/claims; a claim whose pane is gone is
 # pruned on read). Usage numbers lag a launch by minutes, so `pick` called
 # twice in a row would hand the same account both lanes; the claim count is
-# the correction, and it orders `pick` ahead of headroom.
+# the correction, and it orders `pick` ahead of headroom. Each claim is also
+# charged its expected burn in the projected wall the chooser and
+# `pick --lane --projected` judge; `pick --lane` alone and `list` keep the
+# reading's verdict, with the projection beside it.
 #
 # LAUNCHERS decide how a picked lane reaches the harness. A command named for
 # the lane's config directory — its basename without the leading dot, so
@@ -511,7 +600,11 @@ message() {
       ;;
     pick-lane-claims)
       printf 'lanes: pick-lane-claims claims=%s\n' "null"
-      printf '%s\n' "in-flight lane claims could not be read; this lane's claims field is null and its wall verdict stands (fix the claims directory, or set OVERSEE_WATCH_STATE_DIR)"
+      printf '%s\n' "in-flight lane claims could not be read; this lane's claims and projection are null and it is judged on its wall reading alone (fix the claims directory, or set OVERSEE_WATCH_STATE_DIR)"
+      ;;
+    pick-lane-claims-refused)
+      printf 'lanes: pick-lane-claims-refused lane=%s\n' "$1"
+      printf '%s\n' "in-flight lane claims could not be read, so the lanes already on that account cannot be charged; refusing rather than judge it as running none (fix the claims directory, or set OVERSEE_WATCH_STATE_DIR)"
       ;;
     missing-value)
       printf 'lanes: missing-value arg1=%s\n' "$1"
@@ -526,8 +619,8 @@ message() {
       printf '%s\n' "$1 must be an integer 0-100"
       ;;
     pick-lane-walled)
-      printf 'lanes: pick-lane-walled lane=%s wall=%s bucket=%s max-pct=%s\n' "$1" "$2" "$3" "$4"
-      printf '%s\n' "that account's window for this model is at or above the threshold; launching it would open on a usage banner"
+      printf 'lanes: pick-lane-walled lane=%s wall=%s bucket=%s max-pct=%s projected-headroom=%s\n' "$1" "$2" "$3" "$4" "$5"
+      printf '%s\n' "that account's window for this model is at or above the threshold, under --projected once the lanes already on it are charged their expected burn; launching it would open on a usage banner"
       ;;
     pick-lane-unmeasured)
       printf 'lanes: pick-lane-unmeasured lane=%s model=%s\n' "$1" "$2"
@@ -551,7 +644,15 @@ message() {
       ;;
     invalid-pick-harness)
       printf 'lanes: invalid-pick-harness option=%s\n' "--harness"
-      printf '%s\n' "pick --harness must be claude or codex"
+      printf '%s\n' "pick --harness must be claude or codex, or pi with a github-copilot/ --model, whose Copilot pool ORCH_LANE_COPILOT_POOL states"
+      ;;
+    copilot-pool-unstated)
+      printf 'lanes: copilot-pool-unstated model=%s setting=%s\n' "$1" "ORCH_LANE_COPILOT_POOL"
+      printf '%s\n' "no Pi account has a stated Copilot pool reading, so nothing measures what this launch spends, and an unmeasured pool is not an empty one"
+      ;;
+    invalid-copilot-pool)
+      printf 'lanes: invalid-copilot-pool entry=%s\n' "$1"
+      printf '%s\n' "ORCH_LANE_COPILOT_POOL entries must be <absolute account dir>=<credits used>/<credits granted>, the grant above 0 and one entry per account; a pool reading nobody can parse, or two for one account, is not judged as room"
       ;;
     invalid-retire)
       printf 'lanes: invalid-retire entry=%s\n' "$1"
@@ -624,6 +725,15 @@ message() {
       ;;
     invalid-handoff-headroom) printf 'lanes: invalid-handoff-headroom value=%s\nORCH_HANDOFF_HEADROOM_PCT must be an integer 0-100\n' "$1" ;;
     invalid-lane-max-pct) printf 'lanes: invalid-lane-max-pct value=%s\nORCH_LANE_MAX_PCT must be an integer 0-100\n' "$1" ;;
+    invalid-lane-burn) printf 'lanes: invalid-lane-burn value=%s\nORCH_LANE_BURN_PCT_PER_HOUR must be an integer 0-100\n' "$1" ;;
+    pick-overseer-seats)
+      printf 'lanes: pick-overseer-seats step=%s state=%s\n' "$1" "$2"
+      printf '%s\n' "the fleet state naming an overseer's account could not be read at that step; refusing to pick rather than hand a lane the seat an overseer runs on (fix the fleet state, or pass --for-overseer for an overseer's own pick)"
+      ;;
+    pick-seat-omitted)
+      printf 'lanes: pick-seat-omitted lane=%s\n' "$1"
+      printf '%s\n' "a fleet runs its overseer on that account, so no lane is launched there"
+      ;;
     time-failed)
       printf 'lanes: time-failed clock=%s\n' "UTC"
       printf '%s\n' "the current UTC date could not be read; no retirement can be judged without it"
@@ -648,6 +758,10 @@ message() {
       printf 'lanes: invalid-handoff-context value=%s\n' "$1"
       printf '%s\n' "ORCH_HANDOFF_CONTEXT_PCT must be a whole number of percent from 1 to 100"
       ;;
+    state-fleet)
+      printf 'lanes: state-fleet window=%s\n' "$1"
+      printf '%s\n' "the fleet state's lane records could not be read, so whether this window is a Pi lane, judged from the rows its hook writes and never from its pane, is unknown; refusing to answer rather than read a Pi lane's pane"
+      ;;
     context-fleet)
       printf 'lanes: context-fleet item=%s\n' "$1"
       printf '%s\n' "the fleet state's lane records could not be read, so no lane's mailbox, where its turn-end hook records its context, can be found; refusing to report context rather than report every lane unrecorded"
@@ -661,7 +775,7 @@ message() {
       printf 'The settings load failed. No lane can be selected from partial settings.\n'
       ;;
     no-candidate)
-      printf 'lanes: no-candidate harness=%s max-pct=%s model=%s walled=%s unmeasured=%s\n' "$1" "$2" "$3" "$4" "$5"
+      printf 'lanes: no-candidate harness=%s max-pct=%s model=%s walled=%s unmeasured=%s seats=%s\n' "$1" "$2" "$3" "$4" "$5" "$6"
       printf 'No lane has room for this launch. Lanes considered:\n'
       ;;
     no-candidate-unmeasured)
@@ -807,6 +921,14 @@ configured_lane_dirs() {
 # account is counted and claimed twice.
 lane_dirs() {
 	local configured="" home="${LANES_HOME:-$HOME}" d
+	# A Pi account on the Copilot pool is one the owner states a reading for:
+	# nothing on this machine is discovered as one.
+	if [[ "$1" == pi ]]; then
+		copilot_pool_entries 2>/dev/null | cut -f1 | while IFS= read -r d; do
+			lane_excluded "$d" || printf '%s\n' "$d"
+		done
+		return
+	fi
 	[[ -z "${ORCH_LANE_DIRS:-}" ]] || configured="$(configured_lane_dirs "$1")"
 	{
 		if [[ -n "$configured" ]]; then
@@ -1060,6 +1182,62 @@ emit_refusal() { # ALIAS HARNESS DIR PLAN RECORD
 # Emit one lane record. Never fails the whole run for one bad lane: an
 # unreadable or unauthenticated lane is reported with a status and skipped by
 # `pick`, because a fleet launch must still see the lanes that DO work.
+# ORCH_LANE_COPILOT_POOL, one `DIR<tab>PCT<tab>USED<tab>LIMIT` line per
+# entry: the account DIR a Pi launch on a `github-copilot/` model opens on, and
+# the credits of its Copilot pool the owner states used and granted, one entry
+# per account. PCT is the
+# share used, rounded UP, so a pool with one credit short of its grant left is
+# never read as having more, and a pool at or past its grant is 100: spent,
+# whatever overage the account permits, since no paid overage is authorised.
+# Returns 1 with the refusal on stderr at the first entry it cannot read: a
+# reading nobody can parse is not judged as room. The chooser reads it before
+# any lane is judged and measure_copilot_pool before its one account is, each
+# refusing on that status; lane_dirs, which only lists the accounts, leaves the
+# refusal to them.
+copilot_pool_entries() {
+	local item dir value used limit canon seen=$'\n'
+	while IFS= read -r item; do
+		dir="$(trim "${item%=*}")"
+		value="$(trim "${item##*=}")"
+		if [[ "$item" != *=* || "$dir" != /* || ! "$value" =~ ^([0-9]{1,12})/([0-9]{1,12})$ ]]; then
+			message invalid-copilot-pool "$item" >&2
+			return 1
+		fi
+		used=$((10#${BASH_REMATCH[1]}))
+		limit=$((10#${BASH_REMATCH[2]}))
+		(( limit > 0 )) || { message invalid-copilot-pool "$item" >&2; return 1; }
+		# One reading per account, compared through the one lane-path
+		# normaliser: a second one, agreeing or not, is refused rather than
+		# losing to the first, which could be the reading with room.
+		canon="$(lane_claims_canon "$dir")"
+		case "$seen" in *$'\n'"$canon"$'\n'*) message invalid-copilot-pool "$item" >&2; return 1 ;; esac
+		seen+="$canon"$'\n'
+		if (( used >= limit )); then
+			printf '%s\t100\t%s\t%s\n' "$dir" "$used" "$limit"
+		else
+			printf '%s\t%s\t%s\t%s\n' "$dir" $(( (used * 100 + limit - 1) / limit )) "$used" "$limit"
+		fi
+	done < <(setting_items "${ORCH_LANE_COPILOT_POOL:-}")
+}
+
+# The Copilot pool record for the Pi account at DIR: the stated reading as a
+# `monthly` bucket, judged by lib/lane-model.sh like every other window, or
+# `no_usage_data` where the setting states none for DIR, which that judge reads
+# as unmeasured and never as room. `measured_through` is `stated`: neither this
+# machine nor a provider read it.
+measure_copilot_pool() { # ALIAS DIR
+	local entries target d pct used limit
+	entries="$(copilot_pool_entries)" || return 1
+	target="$(lane_claims_canon "$2")"
+	while IFS=$'\t' read -r d pct used limit; do
+		[[ -n "$d" && "$(lane_claims_canon "$d")" == "$target" ]] || continue
+		emit_lane "$1" pi "$2" ok "Copilot pool: $used of $limit credits used, as ORCH_LANE_COPILOT_POOL states" "" \
+			"{\"monthly_pct\":$pct}" null false stated
+		return
+	done <<<"$entries"
+	emit_lane "$1" pi "$2" no_usage_data "ORCH_LANE_COPILOT_POOL states no Copilot pool reading for this account" "" '{}' null false stated
+}
+
 measure_lane() {
 	local harness="$1" dir="$2"
 	local alias creds status="ok" detail="" plan="" token="" account_id="" expires_ms=0 now_s
@@ -1072,6 +1250,10 @@ measure_lane() {
 	local retire
 	if retire="$(lane_retired "$dir")"; then
 		emit_lane "$alias" "$harness" "$dir" "retired" "retired on $retire (ORCH_LANE_RETIRE)" "" '{}'
+		return
+	fi
+	if [[ "$harness" == pi ]]; then
+		measure_copilot_pool "$alias" "$dir"
 		return
 	fi
 
@@ -1800,7 +1982,7 @@ emit_lane() {
 		--arg through "$through" --argjson b "$buckets" \
 		--argjson pb "$prior" --argjson elapsed "$elapsed" "$LANE_MODEL_JQ"'
 		($b // {} | utc_resets) as $b
-		| [$b.session_5h_pct, $b.weekly_pct, $b.model_pct] | map(select(. != null)) as $known
+		| [$b.session_5h_pct, $b.weekly_pct, $b.model_pct, $b.monthly_pct] | map(select(. != null)) as $known
 		| (if ($status == "ok" and ($known | length) == 0) then "no_usage_data" else $status end) as $st
 		| ({status: $st} | lane_measured) as $measured
 		| ([{k: "weekly", p: $b.weekly_pct}, {k: "model", p: $b.model_pct}, {k: "session", p: $b.session_5h_pct}]
@@ -1818,6 +2000,7 @@ emit_lane() {
 		    model_pct: ($b.model_pct // null),
 		    model_label: ($b.model_label // null),
 		    model_buckets: ($b.model_buckets // []),
+		    monthly_pct: ($b.monthly_pct // null),
 		    claims: $claims,
 		    headroom_pct: (if ($measured and ($known | length) > 0) then (100 - ($known | max)) else null end),
 		    binding_bucket: (if ($measured and $bind != null) then $bind.k else null end),
@@ -1842,27 +2025,35 @@ load_lane_claims() {
 	LANE_CLAIMS_LIVE="$(lane_claims_read "$(lane_claims_dir "$PROJECT_ROOT")" "${1:-}")" || LANE_CLAIMS_RC=$?
 }
 
-# HOSTED is a JSON array of host rows that STAND IN for this machine's reading
-# of the same config dir, which `pick` passes and `list` does not: a launch on a
-# hosted fleet runs under the provider's copy, so the chooser judges that copy,
-# while a listing shows both readings. Which reading stands for a local dir the
-# host reports is host_row_or_local's answer, and each host row passes the same
-# --exclude-lane test. Each row is matched on the `_id` host_lane_rows stamped
-# on it; a host row discovery reaches is emitted from the local loop, in the
-# local dir's place, and the tail carries only the rows naming a dir discovery
-# does not reach.
+# EXCLUDE is the config dirs, one a line, that `pick` omits before the chooser
+# judges the rest: --exclude-lane and the overseer seats. An omitted dir is
+# never measured. HOSTED is a JSON array of host rows that STAND IN for this
+# machine's reading of the same config dir, which `pick` passes and `list` does
+# not: a launch on a hosted fleet runs under the provider's copy, so the chooser
+# judges that copy, while a listing shows both readings. Which reading stands
+# for a local dir the host reports is host_row_or_local's answer, and each host
+# row passes the same exclusion test. Each row is matched on the `_id`
+# host_lane_rows stamped on it; a host row discovery reaches is emitted from the
+# local loop, in the local dir's place, and the tail carries only the rows
+# naming a dir discovery does not reach.
 collect_lanes() {
-	local harness_filter="$1" exclude="${2:-}" hosted="${3:-[]}" exclude_id="" held="" reached="" id d h row
-	[[ -z "$exclude" ]] || exclude_id="$(lane_claims_canon "$exclude")"
+	local harness_filter="$1" exclude="${2:-}" hosted="${3:-[]}" excluded="" held="" reached="" id d h row x
+	while IFS= read -r x; do
+		[[ -z "$x" ]] || excluded+="$(lane_claims_canon "$x")"$'\n'
+	done <<<"$exclude"
 	[[ "$hosted" == "[]" ]] || held="$(jq -r '.[]._id' <<<"$hosted")" || return 1
 	{
-		for h in claude codex; do
-			[[ "$harness_filter" == "all" || "$harness_filter" == "$h" ]] || continue
+		# `all` is the two harnesses whose accounts this machine measures; the
+		# Copilot pool a Pi launch spends is asked for by name alone.
+		for h in claude codex pi; do
+			[[ "$harness_filter" == "$h" || ( "$harness_filter" == "all" && "$h" != pi ) ]] || continue
 			while IFS= read -r d; do
 				[[ -n "$d" ]] || continue
-				if [[ -n "$exclude_id" || -n "$held" ]]; then
+				if [[ -n "$excluded" || -n "$held" ]]; then
 					id="$(lane_claims_canon "$d")"
-					[[ "$id" != "$exclude_id" ]] || continue
+					case $'\n'"$excluded" in
+						*$'\n'"$id"$'\n'*) continue ;;
+					esac
 					case $'\n'"$held"$'\n' in
 						*$'\n'"$id"$'\n'*)
 							reached+="$id"$'\n'
@@ -1880,9 +2071,11 @@ collect_lanes() {
 				measure_lane "$h" "$d"
 			done < <(lane_dirs "$h")
 		done
-		jq -c --arg x "$exclude_id" --arg r "$reached" '
-			($r | split("\n") | map(select(. != ""))) as $reached
-			| .[] | select(._id != $x) | select(._id as $i | any($reached[]; . == $i) | not)' <<<"$hosted"
+		jq -c --arg x "$excluded" --arg r "$reached" '
+			($x | split("\n") | map(select(. != ""))) as $excluded
+			| ($r | split("\n") | map(select(. != ""))) as $reached
+			| .[] | select(._id as $i | any($excluded[]; . == $i) | not)
+			| select(._id as $i | any($reached[]; . == $i) | not)' <<<"$hosted"
 	} | jq -s '.'
 }
 
@@ -1993,13 +2186,17 @@ host_lane_rows() { # HARNESS [READINGS]
 # that rather than matching the provider's bytes for itself, and the account
 # field, the harness match and the dropped invalid row are decided once.
 #
-# Fields: `account` and `harness`, plus the optional `status`,
+# Fields: `account` and `harness`, plus the optional `status`, `detail`,
 # `session-5h-pct`, `weekly-pct`, `model-pct`, `model-label`,
 # `session-resets`, `weekly-resets` and `model-resets`. A percentage the row
 # omits is a window the provider did not measure, which emit_lane reports as
-# no_usage_data rather than as an idle account. A field this script cannot
-# read drops the whole row with a notice: a percentage nobody can parse must
-# not be judged as room.
+# no_usage_data rather than as an idle account. `detail` is the provider's own
+# words for the row's status, carried into the record's `detail` as written,
+# so the refusal it names (`http-429-rate_limit_error`,
+# `http-403-permission_error`) reaches a reader of the record whatever status
+# word the provider chose. It judges nothing: the status alone decides the
+# row. A field this script cannot read drops the whole row with a notice: a
+# percentage nobody can parse must not be judged as room.
 #
 # Status: 0 the provider answered, rows or none; 2 the optional verb is absent,
 # with nothing on stderr; 1 the verb failed or this function could not run it,
@@ -2030,11 +2227,11 @@ host_account_records() { # HOST HARNESS [READINGS] — one lane record per accou
 # map included, and the day, and is a miss under any other.
 host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 	local rows="$1" want="$2" mode="${3:-}" line field key value bad retire said
-	local account harness status s_pct w_pct m_pct m_label s_reset w_reset m_reset
+	local account harness status detail s_pct w_pct m_pct m_label s_reset w_reset m_reset
 	local buckets
 	while IFS= read -r line; do
 		[[ -n "$line" ]] || continue
-		account=""; harness=""; status="ok"; bad=""; said=""
+		account=""; harness=""; status="ok"; detail=""; bad=""; said=""
 		s_pct=null; w_pct=null; m_pct=null
 		m_label=""; s_reset=""; w_reset=""; m_reset=""
 		# The row's fields, one per line. `printf '%s\n'`, never `%s`: a last
@@ -2049,6 +2246,7 @@ host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 				account) account="$value" ;;
 				harness) harness="$value" ;;
 				status) status="$value"; said="${value:+status}" ;;
+				detail) detail="$value" ;;
 				model-label) m_label="$value" ;;
 				session-resets) s_reset="$value" ;;
 				weekly-resets) w_reset="$value" ;;
@@ -2114,7 +2312,7 @@ host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 			message host-account-invalid "$account" buckets >&2
 			continue
 		}
-		emit_lane "$(lane_alias_for "$account")" "$harness" "$account" "$status" "" "" "$buckets" null false host
+		emit_lane "$(lane_alias_for "$account")" "$harness" "$account" "$status" "$detail" "" "$buckets" null false host
 	done <<<"$rows"
 }
 
@@ -2234,7 +2432,7 @@ host_accounts_answer() { # HOST — the provider's rows on stdout, its status ba
 # read. A row whose window a running fleet lane record names is that lane, read
 # in its own mailbox, through its host where the record names one.
 context_record_fetch() { # LANE CALLER
-	local lane="$1" caller="$2" rec fields item host root path out rc=0 probe_rc=0
+	local lane="$1" caller="$2" rec
 	rec="$(jq -c --arg w "$lane" 'map(select(((.window // "") | sub("^.*:"; "")) == $w)) | first // empty' <<<"$CONTEXT_LANES")" \
 		|| { printf 'the fleet lane records could not be searched for window %s\n' "$lane"; return 2; }
 	if [[ -z "$rec" ]]; then
@@ -2245,12 +2443,20 @@ context_record_fetch() { # LANE CALLER
 		printf 'no running fleet lane record names the window %s, so the mailbox its reading is recorded in is unknown\n' "$lane"
 		return 2
 	fi
+	mailbox_file_fetch "$rec" "$LANE_CONTEXT_RECORD"
+}
+
+# The file NAME in the lane mailbox the fleet lane record REC names, under the
+# same contract: its bytes on stdout and exit 0, exit 1 where it is not there
+# or is empty, exit 2 with the cause on stdout where it could not be read.
+mailbox_file_fetch() { # REC NAME
+	local rec="$1" fields item host root path out rc=0 probe_rc=0
 	fields="$(jq -r '[(.item // ""), (.host // ""), (.mail_root // "")] | join("\t")' <<<"$rec")" \
-		|| { printf 'the fleet lane record for window %s could not be read\n' "$lane"; return 2; }
+		|| { printf 'the fleet lane record %s could not be read\n' "$rec"; return 2; }
 	item="${fields%%$'\t'*}"; fields="${fields#*$'\t'}"
 	host="${fields%%$'\t'*}"; root="${fields#*$'\t'}"
-	[[ -n "$item" && -n "$root" ]] || { printf 'the fleet lane record for window %s names no item or no mail_root\n' "$lane"; return 2; }
-	path="$root/tmp/lane-mail/$item/$LANE_CONTEXT_RECORD"
+	[[ -n "$item" && -n "$root" ]] || { printf 'the fleet lane record %s names no item or no mail_root\n' "$rec"; return 2; }
+	path="$root/tmp/lane-mail/$item/$2"
 	if [[ -z "$host" ]]; then
 		[[ -e "$path" ]] || return 1
 		out="$(cat -- "$path" 2>&1)" || { printf '%s\n' "$out"; return 2; }
@@ -2274,17 +2480,47 @@ context_record_fetch() { # LANE CALLER
 	return 2
 }
 
+# What a Pi lane emitted, for `state`: STATE_ROWS is the verdict
+# lib/session-rows.sh § session_rows_lane_verdict reads off the rows its hook
+# wrote in its mailbox, through its host where its record names one, and
+# `unreadable` where they could not be read; it is empty for a window no
+# running fleet lane record names as a Pi lane's, whose pane is judged. Exit 2
+# where the fleet state is there and its records could not be read, since a Pi
+# lane read as any other would be judged by its pane.
+STATE_ROWS=""
+state_rows_read() { # WINDOW
+	local exists records rec rows rc=0
+	STATE_ROWS=""
+	exists="$("$SCRIPT_DIR/workflow-state" exists --json oversee 2>/dev/null | jq -r '.exists')" || return 2
+	[[ "$exists" == true ]] || return 0
+	records="$("$SCRIPT_DIR/workflow-state" get oversee '.lanes // []' 2>/dev/null)" || return 2
+	rec="$(jq -c --arg w "${1#*:}" "$LANE_RUNNING_JQ"'
+		map(select(running and .harness == "pi" and ((.window // "") | sub("^.*:"; "")) == $w)) | first // empty' \
+		<<<"$records")" || return 2
+	[[ -n "$rec" ]] || return 0
+	STATE_ROWS=unreadable
+	rows="$(mailbox_file_fetch "$rec" "$SESSION_ROWS_LANE")" || rc=$?
+	case "$rc" in
+		0) ;;
+		1) rows="" ;;
+		*) return 0 ;;
+	esac
+	session_rows_lane_verdict /dev/stdin <<<"$rows" || return 0
+	STATE_ROWS="$SESSION_ROWS_VERDICT"
+}
+
 render_table() {
 	jq -r '
 		def col($s; $n): ($s | tostring) as $t
 		  | if ($t | length) >= $n then $t else $t + (" " * ($n - ($t | length))) end;
 		def num($v): if $v == null then "-" else ($v | tostring) + "%" end;
-		(["LANE","HARNESS","THROUGH","STATUS","PLAN","5H","WEEK","MODEL","HEADROOM","CLAIMS","AGE"] | @tsv),
+		(["LANE","HARNESS","THROUGH","STATUS","PLAN","5H","WEEK","MODEL","HEADROOM","CLAIMS","AGE","DETAIL"] | @tsv),
 		(.[] | [ .alias, .harness, (.measured_through // "local"), .status, (.plan // "-"),
 		         num(.session_5h_pct), num(.weekly_pct), num(.model_pct),
 		         (if .headroom_pct == null then "-" else (.headroom_pct | tostring) + "%" end),
 		         (if .claims == null then "?" else .claims end),
-		         (if .usage_age_s == null then "-" else (.usage_age_s | tostring) + "s" end)
+		         (if .usage_age_s == null then "-" else (.usage_age_s | tostring) + "s" end),
+		         (.detail // "-")
 		       ] | @tsv)
 	' | lane_context_columns
 }
@@ -2293,14 +2529,35 @@ render_table() {
 # "every lane is full" (actionable: wait, or raise the threshold) apart from
 # "the helper broke" (exit 1).
 #
-# Among the lanes under the threshold, the fewest live claims wins and the wall
-# only breaks the tie: back-to-back picks measure usage that has not moved yet,
-# so ordering by room alone hands one account the whole fleet. The wall that
+# The threshold is judged on the PROJECTED wall, lib/lane-model.sh's
+# judged_wall: the wall reading plus the expected burn of the lanes already
+# live on the account. A reading lags the launches in flight by minutes, so an
+# account with room now and ten lanes burning it walls in the middle of a
+# shift; charging each claim its burn drops it before it is handed another.
+#
+# Among the lanes that clear it, the fewest live claims wins, then the most
+# projected room, then the wall. The claim count leads because a measured rate
+# lags a launch the way the reading does: back-to-back picks read the same
+# rate, and a rate shared out across more claims projects each one cheaper, so
+# ordering on the projection first would hand the account that looked best the
+# whole batch. The count moves the moment a launch is claimed. The wall that
 # orders is the one that filtered — the binding bucket, or the model's own
 # under --model — so the lane chosen is the one with the most room for the
 # launch actually being made.
-# The threshold is never traded away for a claim count — a lane at or above
-# --max-pct is out before this ordering runs.
+# The threshold is never traded away for a claim count — a lane whose
+# projection is at or above --max-pct is out before this ordering runs.
+#
+# The chooser never returns an OVERSEER SEAT, an account a fleet state records
+# as its overseer's (`.overseer.account`): a lane launched there spends the
+# window the overseer needs to watch and succeed, and the overseer then names
+# lanes by hand to keep off it. The seats are overseer_seats' answer and are
+# omitted before anything is measured. --for-overseer keeps them, for the
+# overseer's own picks (lib/overseer-launch.sh), which seat an overseer.
+#
+# So exit 3 has two causes a reset does not answer, and the refusal names
+# both: a lane counted walled on its projection comes back as its live lanes
+# end, and `seats=` counts the accounts omitted as seats, each named on its
+# own line, which no wait returns to the candidates.
 #
 # With --model the threshold reads the bucket that walls THAT model
 # (lib/lane-model.sh) instead of the binding bucket: an account whose weekly
@@ -2350,24 +2607,38 @@ render_table() {
 # tell a window naming no model from a credential this machine cannot renew:
 # only the second has a remedy, and only that one leaves an account whose
 # copy on another host may still be live.
+# The provider rows both pick forms judge HARNESS on, host_lane_rows' readings.
+# A Pi pick is judged on the Copilot pool the owner states, which no provider
+# copy measures, so it asks no provider and gets none.
+pick_host_rows() { # HARNESS
+	if [[ "$1" == pi ]]; then printf '[]\n'; return 0; fi
+	host_lane_rows "$1" readings
+}
+
 cmd_pick_lane() {
-	local dir="$1" harness="$2" max_pct="$3" model="$4" as_json="$5" binding_floor="$6"
-	local target found="" d record="" wall bucket verdict hosted
+	local dir="$1" harness="$2" max_pct="$3" model="$4" as_json="$5" binding_floor="$6" burn="$7" projected_verdict="$8"
+	local target found="" d record="" wall bucket verdict hosted projected
 	# The same claim load `list` does, for the same reason: the record this form
-	# hands back carries `claims`, and without the store read it would carry 0
-	# for an account with sessions in flight — the one value emit_lane says that
-	# field must never invent. emit_lane leaves it null when the store could not
-	# be read, and that is the whole of what an unreadable store costs here.
+	# hands back carries `claims` and the projection beside it, which the
+	# verdict judges under --projected. Without the
+	# store read it would carry 0 for an account with sessions in flight — the
+	# one value emit_lane says that field must never invent. emit_lane leaves it
+	# null when the store could not be read.
 	load_lane_claims
-	# A NOTICE, never a refusal. This form's verdict is the wall and nothing
-	# else: no arm below reads `claims`, and neither does the launcher that
-	# dispatches on the status, so refusing would stop a launch over a field
-	# nobody consults. The chooser is the other case — it SORTS on `claims`, so
-	# an unreadable store there can stack a second session onto an account
-	# already running one, and it dies. Same policy as the claim write in
-	# open-terminal, which is never fatal: a launch that worked is not a failure
-	# because its bookkeeping did not.
-	[[ "$LANE_CLAIMS_RC" -eq 0 ]] || message pick-lane-claims >&2
+	# Under --projected, a REFUSAL, exit 6, before anything is measured: the
+	# verdict charges the claims, and an unread store judged as none is the
+	# launch the chooser dies rather than make. Otherwise a NOTICE: the verdict
+	# is the wall reading, which no claim count enters, and the record's claims
+	# and projection are null. Same policy as the claim write in open-terminal,
+	# which is never fatal: a read that worked is not a failure because its
+	# bookkeeping did not.
+	if [[ "$LANE_CLAIMS_RC" -ne 0 ]]; then
+		if [[ "$projected_verdict" == true ]]; then
+			message pick-lane-claims-refused "$dir" >&2
+			return 6
+		fi
+		message pick-lane-claims >&2
+	fi
 	target="$(lane_claims_canon "$dir")"
 	# Both sides through the one normaliser, so a dir given with a trailing
 	# slash or through a symlink reaches the record discovered for it.
@@ -2381,26 +2652,34 @@ cmd_pick_lane() {
 	# `lanes: pick-local-reading` line. A dir the provider holds and discovery
 	# does not reach is judged on the provider's row alone, which is then no
 	# longer a lane with no record.
-	hosted="$(host_lane_rows "$harness" readings)"
+	hosted="$(pick_host_rows "$harness")"
 	record="$(jq -c --arg t "$target" 'map(select(._id == $t)) | first // empty' <<<"$hosted")" || { message pick-lane-failed "$dir" host >&2; return 1; }
 	if [[ -n "$record" && -z "$found" ]]; then
 		found="$(jq -r '.config_dir' <<<"$record")" || { message pick-lane-failed "$dir" host >&2; return 1; }
 	elif [[ -n "$record" ]]; then
 		record="$(host_row_or_local "$harness" "$found" "$record")" || { message pick-lane-failed "$dir" local-reading >&2; return 1; }
 	fi
+	# Every directory is a Pi account the Copilot pool reading can be asked
+	# about: one the setting states nothing for is unmeasured, never unlisted,
+	# which a launcher reads as nothing to judge and launches.
+	[[ -n "$found" || "$harness" != pi ]] || found="$dir"
 	if [[ -z "$found" ]]; then
 		message pick-lane-unlisted "$dir" "$harness" >&2
 		return 4
 	fi
 	[[ -n "$record" ]] || record="$(measure_lane "$harness" "$found")" || { message pick-lane-failed "$dir" measure >&2; return 1; }
-	record="$(jq -c --arg model "$model" --argjson floor "$binding_floor" "$LANE_MODEL_JQ"'
-		with_lane_binding($model; $floor)
+	record="$(jq -c --arg model "$model" --argjson floor "$binding_floor" --argjson burn "$burn" "$LANE_MODEL_JQ"'
+		with_lane_binding($model; $floor) | with_lane_projection($burn)
 	' <<<"$record")" || { message pick-lane-failed "$dir" wall >&2; return 1; }
 	# The classifier is lib/lane-model.sh's, shared with the fleet chooser: one
 	# definition of room, walled and unmeasured, so this form cannot answer a
-	# question the chooser answers differently.
-	verdict="$(jq -r --argjson max "$max_pct" "$LANE_MODEL_JQ"'
-		.wall | wall_verdict($max)
+	# question the chooser answers differently. The reading by default, which
+	# is what a caller asking whether the account is out of room now reads: a
+	# lane's own claim is among the ones charged, so a projection would send
+	# every lane on a busy account to hand off with room left. --projected is
+	# the launch question, the chooser's own wall.
+	verdict="$(jq -r --argjson max "$max_pct" --argjson projected "$projected_verdict" "$LANE_MODEL_JQ"'
+		(if $projected then judged_wall else .wall end) | wall_verdict($max)
 	' <<<"$record")" || { message pick-lane-failed "$dir" verdict >&2; return 1; }
 	record="$(jq -c "$LANE_MODEL_JQ"' lane_public' <<<"$record")" || return 1
 	case "$verdict" in
@@ -2408,8 +2687,9 @@ cmd_pick_lane() {
 			if [[ "$as_json" == "true" ]]; then printf '%s\n' "$record"; return 0; fi
 			# The mapping is lib/lane-launch.sh's, shared with the launchers
 			# that render this prefix into a command; `pick --harness` is
-			# validated to claude or codex, so the harness here is one it names.
-			lane_env_prefix "$harness" "$found"
+			# validated through lane_pick_harness, so the harness here is one
+			# it names.
+			lane_env_prefix "$harness" "$found" "$model"
 			return
 			;;
 		walled)
@@ -2421,7 +2701,12 @@ cmd_pick_lane() {
 				message pick-lane-failed "$dir" bucket >&2
 				return 1
 			}
-			message pick-lane-walled "$dir" "$wall" "$bucket" "$max_pct" >&2
+			# `none` where the claims were unknown and the wall alone walled it.
+			projected="$(jq -r '.projected_headroom_pct // "none"' <<<"$record")" || {
+				message pick-lane-failed "$dir" projection >&2
+				return 1
+			}
+			message pick-lane-walled "$dir" "$wall" "$bucket" "$max_pct" "$projected" >&2
 			# Under --json only, as on exit 0: the plain form speaks env prefixes
 			# and keyed lines, and its refusal detail is the wall= field above.
 			[[ "$as_json" != "true" ]] || printf '%s\n' "$record"
@@ -2445,26 +2730,95 @@ cmd_pick_lane() {
 	esac
 }
 
+# The overseer seats, one canonical config dir a line: `.overseer.account` of
+# this checkout's fleet state, and of every fleet state a live claim in the
+# store names. Claims carry the state file of the fleet that launched them, so
+# where OVERSEE_WATCH_STATE_DIR puts several fleets on one store, each peer
+# fleet running a lane is found through it; a peer running none has no lane on
+# any account to spread, and its seat is not found. A named fleet state that is
+# gone is a fleet that ended and holds no seat. One that is there and cannot be
+# read fails the call, which the chooser refuses on: a seat nobody could read
+# is not a seat nobody holds. Reads LANE_CLAIMS_LIVE in load_lane_claims'
+# `fleet` form, whose fifth field is that state file.
+#
+# A seat stays while its fleet state records it, whether or not that overseer
+# still runs: no liveness judgement of a recorded overseer exists as a callable
+# owner (`oversee launch` inlines its own), so a stopped fleet's seat stays
+# omitted until an overseer launch or register rewrites the record.
+#
+# The seats land in SEATS; a failure leaves SEATS_STEP and SEATS_STATE naming
+# the step and the state it could not read, for the caller's refusal.
+SEATS="" SEATS_STEP="" SEATS_STATE=""
+overseer_seats() {
+	local fleets claimed f account
+	SEATS="" SEATS_STATE=oversee
+	SEATS_STEP=fleet-state
+	fleets="$("$SCRIPT_DIR/workflow-state" exists --json oversee | jq -r 'if .exists then .path else empty end')" || return 1
+	SEATS_STEP=claims
+	claimed="$(awk -F'\t' '$5 != "" { print $5 }' <<<"$LANE_CLAIMS_LIVE")" || return 1
+	SEATS_STEP=seat
+	while IFS= read -r f; do
+		[[ -n "$f" && -e "$f" ]] || continue
+		SEATS_STATE="$f"
+		account="$(jq -r '.overseer.account // empty' <"$f")" || return 1
+		[[ -z "$account" ]] || SEATS+="$(lane_claims_canon "$account")"$'\n'
+	done < <(printf '%s\n%s\n' "$fleets" "$claimed" | sort -u)
+}
+
+# The seats that name a candidate of HARNESS, one a line: a config dir
+# discovery reaches or a row HOSTED holds. What `seats=` counts and the
+# refusal names, so a codex overseer's account is not reported as omitted from
+# a claude pick.
+omitted_seats() { # HARNESS HOSTED
+	local d id
+	{ lane_dirs "$1"; jq -r '.[]._id' <<<"$2"; } | while IFS= read -r d; do
+		[[ -n "$d" ]] || continue
+		id="$(lane_claims_canon "$d")"
+		case $'\n'"$SEATS" in
+			*$'\n'"$id"$'\n'*) printf '%s\n' "$id" ;;
+		esac
+	done | sort -u
+}
+
 cmd_pick() {
-	local harness="$1" max_pct="$2" as_json="$3" model="$4" binding_floor="$5" exclude="$6"
-	local lanes hosted judged chosen walled unmeasured
-	load_lane_claims
-	# After the claim load: emit_lane counts claims on every host row it writes.
-	hosted="$(host_lane_rows "$harness" readings)"
-	lanes="$(collect_lanes "$harness" "$exclude" "$hosted")"
+	local harness="$1" max_pct="$2" as_json="$3" model="$4" binding_floor="$5" exclude="$6" for_overseer="$7" burn="$8"
+	local lanes hosted judged chosen walled unmeasured omitted="" seats=0 seat
+	# A Pi account on the Copilot pool is one the setting names, so with no
+	# entry at all nothing measures this launch: exit 5, which is a setting
+	# to state and never a window to wait out. Entries that exclusion removed
+	# are a pick with no candidate, answered as one below.
+	local pool_entries
+	if [[ "$harness" == pi ]]; then
+		pool_entries="$(copilot_pool_entries)" || return 1
+		if [[ -z "$pool_entries" ]]; then
+			message copilot-pool-unstated "${model:-none}" >&2
+			return 5
+		fi
+	fi
+	load_lane_claims fleet
 	# An unreadable claim store reads as "no launches in flight", which is the
 	# one thing it must not read as: picking on it can stack a second session
 	# onto an account already running one.
 	[[ "$LANE_CLAIMS_RC" -eq 0 ]] || die pick-claims "$@"
+	SEATS=""
+	if [[ "$for_overseer" != true ]]; then
+		overseer_seats || die pick-overseer-seats "$SEATS_STEP" "$SEATS_STATE"
+	fi
+	# After the claim load: emit_lane counts claims on every host row it writes.
+	hosted="$(pick_host_rows "$harness")"
+	lanes="$(collect_lanes "$harness" "$exclude"$'\n'"$SEATS" "$hosted")"
 	# PARTITIONED on lib/lane-model.sh's verdict, never filtered on a predicate
 	# written out again here: the named form reads the same definition, so the
 	# chooser cannot lose a state that form knows. The counts are what the
 	# refusal below reports, which is why nothing qualifying is not one answer.
-	judged="$(jq -c --argjson max "$max_pct" --arg model "$model" --argjson floor "$binding_floor" "$LANE_MODEL_JQ"'
-		[ .[] | with_lane_binding($model; $floor)
-		  | . + {verdict: (.wall | wall_verdict($max))} ]
+	# A room lane's claims and projection are numbers: the store was read, and
+	# a room verdict needs a wall.
+	judged="$(jq -c --argjson max "$max_pct" --arg model "$model" --argjson floor "$binding_floor" \
+		--argjson burn "$burn" "$LANE_MODEL_JQ"'
+		[ .[] | with_lane_binding($model; $floor) | with_lane_projection($burn)
+		  | . + {verdict: (judged_wall | wall_verdict($max))} ]
 		| { chosen: ([ .[] | select(.verdict == "room") ]
-		              | sort_by([(.claims // 0), .wall]) | first
+		              | sort_by([.claims, (0 - .projected_headroom_pct), .wall]) | first
 		              | if . == null then null
 		                else . + {effective_headroom_pct: (if .wall == null then null else 100 - .wall end)}
 		                | del(.wall, .verdict) | lane_public end),
@@ -2476,6 +2830,8 @@ cmd_pick() {
 	if [[ -z "$chosen" || "$chosen" == "null" ]]; then
 		walled="$(jq -r '.walled // 0' <<<"$judged" 2>/dev/null || true)"
 		unmeasured="$(jq -r '.unmeasured // 0' <<<"$judged" 2>/dev/null || true)"
+		[[ -z "$SEATS" ]] || omitted="$(omitted_seats "$harness" "$hosted")" || die pick-overseer-seats omitted oversee
+		[[ -z "$omitted" ]] || seats="$(grep -c . <<<"$omitted")"
 		{
 			# Walled and unmeasured are different news for an operator: one
 			# allowance is spent and will reset, the other was never read, and
@@ -2484,32 +2840,36 @@ cmd_pick() {
 			if [[ "${walled:-0}" -eq 0 && "${unmeasured:-0}" -gt 0 ]]; then
 				message no-candidate-unmeasured "$harness" "${model:-none}" "$unmeasured"
 			else
-				message no-candidate "$harness" "$max_pct" "${model:-none}" "${walled:-0}" "${unmeasured:-0}"
+				message no-candidate "$harness" "$max_pct" "${model:-none}" "${walled:-0}" "${unmeasured:-0}" "$seats"
 			fi
+			while IFS= read -r seat; do
+				[[ -z "$seat" ]] || message pick-seat-omitted "$seat"
+			done <<<"$omitted"
 			render_table <<<"$lanes"
 		} >&2
-		# The two counts on STDOUT under --json, as the named form prints its
+		# The counts on STDOUT under --json, as the named form prints its
 		# record there on the same exit: a caller walking several picks reports
 		# what each sweep found, and the keyed line above is a message for a
-		# person. `{"walled":N,"unmeasured":N}` is the whole object; nothing
-		# else is printed on this path, so a caller reading `.walled` gets the
-		# count or a jq error, never a lane record it would mistake for a pick.
+		# person. `{"walled":N,"unmeasured":N,"seats":N,"qualifying_count":0}`
+		# is the whole object; nothing else is printed on this path, so a
+		# caller reading `.walled` gets the count or a jq error, never a lane
+		# record it would mistake for a pick. `seats` is grep's count or 0.
 		#
-		# Both are proven digits before jq is handed them: the reads above
+		# The first two are proven digits before jq is handed them: the reads above
 		# swallow a failure into an empty string, and --argjson on one is jq
 		# refusing its own arguments, which would abort this refusal instead of
 		# returning it.
 		[[ "${walled:-}" =~ ^[0-9]+$ ]] || walled=0
 		[[ "${unmeasured:-}" =~ ^[0-9]+$ ]] || unmeasured=0
-		[[ "$as_json" != "true" ]] || jq -nc --argjson w "$walled" --argjson u "$unmeasured" \
-			'{walled: $w, unmeasured: $u, qualifying_count: 0}'
+		[[ "$as_json" != "true" ]] || jq -nc --argjson w "$walled" --argjson u "$unmeasured" --argjson s "$seats" \
+			'{walled: $w, unmeasured: $u, seats: $s, qualifying_count: 0}'
 		return 3
 	fi
 	if [[ "$as_json" == "true" ]]; then
 		jq -c --argjson n "$(jq -r '.qualifying' <<<"$judged")" '. + {qualifying_count: $n}' <<<"$chosen"
 		return 0
 	fi
-	lane_env_prefix "$harness" "$(jq -r '.config_dir' <<<"$chosen")"
+	lane_env_prefix "$harness" "$(jq -r '.config_dir' <<<"$chosen")" "$model"
 }
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -2555,6 +2915,8 @@ parse_argv() {
 	EXCLUDE_LANE=""
 	MODEL=""
 	BINDING_FLOOR=false
+	FOR_OVERSEER=false
+	PROJECTED=false
 	LOCAL_ONLY=false
 
 	SUB="${1:-}"
@@ -2577,6 +2939,8 @@ parse_argv() {
 			--model) need_val "$@"; MODEL="$2"; shift 2 ;;
 			--model=*) MODEL="${1#--model=}"; need_val --model "$MODEL"; shift ;;
 			--binding-floor) BINDING_FLOOR=true; shift ;;
+			--for-overseer) FOR_OVERSEER=true; shift ;;
+			--projected) PROJECTED=true; shift ;;
 			--local) LOCAL_ONLY=true; shift ;;
 			--lane) need_val "$@"; LANE_ARG="$2"; shift 2 ;;
 			--lane=*) LANE_ARG="${1#--lane=}"; need_val --lane "$LANE_ARG"; shift ;;
@@ -2617,6 +2981,12 @@ parse_argv() {
 		pct_valid "$MAX_PCT" || die invalid-lane-max-pct "$MAX_PCT"
 		MAX_PCT=$((10#$MAX_PCT))
 	fi
+	# The expected burn of one live lane where its account measured no rate,
+	# read here for the reason MAX_PCT is and refused on the same terms: a
+	# figure nobody can read must not become one of this script's own.
+	BURN_PCT="${ORCH_LANE_BURN_PCT_PER_HOUR:-5}"
+	pct_valid "$BURN_PCT" || die invalid-lane-burn "$BURN_PCT"
+	BURN_PCT=$((10#$BURN_PCT))
 
 	# Refused rather than dropped: an interval nobody can read would silently
 	# leave this caller on the TTL alone, which is the fetch-every-pass burst
@@ -2675,6 +3045,9 @@ source "$SCRIPT_DIR/lib/lane-launch.sh"
 source "$SCRIPT_DIR/lib/lane-host-slots.sh"
 # shellcheck source=lib/lane-state.sh
 source "$SCRIPT_DIR/lib/lane-state.sh"
+# The caller's own launch record and SessionStart row, for `context`.
+# shellcheck source=lib/overseer-launch.sh
+source "$SCRIPT_DIR/lib/overseer-launch.sh"
 # The lib carries the strict mode its other callers run under. This one is
 # deliberately errexit-free — one unreadable lane must not fail the whole
 # inventory — so restore that posture at the seam.
@@ -2815,7 +3188,11 @@ case "$SUB" in
 			hosted="$(host_lane_rows "$HARNESS")"
 			out="$(jq -c --argjson hosted "$hosted" '. + $hosted' <<<"$out")"
 		fi
-		out="$(jq -c --argjson max "$MAX_PCT" "$LANE_MODEL_JQ"' map(. + {verdict: (.wall | wall_verdict($max))} | lane_public)' <<<"$out")"
+		# The verdict is the reading's: `walled` tells oversee-watch the wall is
+		# reached and lifts at binding_resets_at, which a projection does not
+		# say. The projection rides beside it for a reader weighing the claims.
+		out="$(jq -c --argjson max "$MAX_PCT" --argjson burn "$BURN_PCT" "$LANE_MODEL_JQ"'
+			map(with_lane_projection($burn) | . + {verdict: (.wall | wall_verdict($max))} | lane_public)' <<<"$out")"
 		if [[ "$AS_JSON" == "true" ]]; then printf '%s\n' "$out"; else render_table <<<"$out"; fi
 		;;
 	host-accounts)
@@ -2851,13 +3228,15 @@ case "$SUB" in
 		;;
 	pick)
 		HARNESS="${HARNESS:-claude}"
-		[[ "$HARNESS" =~ ^(claude|codex)$ ]] || die invalid-pick-harness "$@"
+		[[ "$(lane_pick_harness "$HARNESS" "$MODEL")" == "$HARNESS" ]] || die invalid-pick-harness "$@"
 		validate_lane_settings
 		if [[ -n "$LANE_ARG" ]]; then
 			[[ -z "$EXCLUDE_LANE" ]] || die unknown-option --exclude-lane
-			cmd_pick_lane "$LANE_ARG" "$HARNESS" "$MAX_PCT" "$MODEL" "$AS_JSON" "$BINDING_FLOOR"
+			[[ "$FOR_OVERSEER" != true ]] || die unknown-option --for-overseer
+			cmd_pick_lane "$LANE_ARG" "$HARNESS" "$MAX_PCT" "$MODEL" "$AS_JSON" "$BINDING_FLOOR" "$BURN_PCT" "$PROJECTED"
 		else
-			cmd_pick "$HARNESS" "$MAX_PCT" "$AS_JSON" "$MODEL" "$BINDING_FLOOR" "$EXCLUDE_LANE"
+			[[ "$PROJECTED" != true ]] || die unknown-option --projected
+			cmd_pick "$HARNESS" "$MAX_PCT" "$AS_JSON" "$MODEL" "$BINDING_FLOOR" "$EXCLUDE_LANE" "$FOR_OVERSEER" "$BURN_PCT"
 		fi
 		;;
 	check)
@@ -2883,8 +3262,15 @@ case "$SUB" in
 		# same one oversee-watch reads, so the two cannot disagree. A caller
 		# that also holds the lane's worktree — `open-terminal --wake` — passes
 		# the harness process as the sixth argument instead.
+		# A Pi lane is judged from the rows its own hook wrote, never its pane;
+		# the pane is read only for a window no running Pi record names.
+		state_rows_read "$LANE_ARG" || die state-fleet "$LANE_ARG"
+		# No pane on this server carries the name: nothing here sees the lane's
+		# harness, so its rows answer nothing either and the judge says unjudged.
+		[[ -n "$LANE_PANE_ID" ]] || STATE_ROWS=""
 		lane_state_rc=0
-		lane_state LANE_STATE_ANSWER listed "$LANE_PANE_CMD" "$LANE_PANE_PID" "$LANE_PANE_SCREEN" || lane_state_rc=$?
+		lane_state LANE_STATE_ANSWER listed "$LANE_PANE_CMD" "$LANE_PANE_PID" "$LANE_PANE_SCREEN" "" "" "$STATE_ROWS" \
+			|| lane_state_rc=$?
 		[[ "$lane_state_rc" -ne 2 ]] || die lane-scan-failed "$LANE_ARG"
 		# A hosted lane's harness is on another machine, so `unjudged` here is
 		# "no pane on this server carries the name", never "the lane is dead".
@@ -2930,15 +3316,29 @@ case "$SUB" in
 		# would read as "every lane has room", which is the answer that sends
 		# a lane into its wall.
 		[[ "$LANE_CLAIMS_RC" -eq 0 ]] || die context-claims "$@"
-		# The caller's pane names the SHAPE; lib/lane-context.sh's
-		# lane_context_caller_cfg turns that into the account, and owns the
-		# rule. oversee-succeed's own caller entry pairs them this way, and the
-		# lane's turn-end handoff hook asks the same function about itself, so
-		# no session is one account in this report and another there.
+		# The caller's account: the one its overseer launch record or its
+		# SessionStart row names (lib/overseer-launch.sh § ol_caller_known, the
+		# reader oversee-succeed asks too), else the SHAPE its pane names turned
+		# into an account by lib/lane-context.sh's lane_context_caller_cfg, the
+		# rule the lane's turn-end handoff hook asks about itself, so no session
+		# is one account in this report and another there. A launched overseer
+		# runs under overseer-run, whose bash is the pane's foreground command,
+		# so its pane names no harness and the records answer.
 		caller_cfg=""
 		if [[ -n "${TMUX_PANE:-}" ]]; then
-			caller_cmd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_command}' 2>/dev/null)" || caller_cmd=""
-			caller_cfg="$(lane_context_caller_cfg "$(lane_context_shape "${caller_cmd#-}")")"
+			OL_KNOWN_ACCOUNT="" OL_KNOWN_HARNESS=""
+			if caller_key="$(lane_context_caller_key)"; then
+				DEP_ERR=/dev/null ol_caller_known "${caller_key%% *}" "$TMUX_PANE" "$PWD" || true
+			fi
+			caller_cfg="$OL_KNOWN_ACCOUNT"
+			if [[ -z "$caller_cfg" ]]; then
+				caller_shape="$OL_KNOWN_HARNESS"
+				if [[ -z "$caller_shape" ]]; then
+					caller_cmd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_command}' 2>/dev/null)" || caller_cmd=""
+					caller_shape="$(lane_context_shape "${caller_cmd#-}")"
+				fi
+				caller_cfg="$(lane_context_caller_cfg "$caller_shape")"
+			fi
 		fi
 		# Where each row's reading is recorded: a lane's in its own mailbox, which
 		# its fleet lane record places.

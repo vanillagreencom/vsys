@@ -70,7 +70,7 @@ cat > "$BIN/kendex" <<'STUB'
 #!/bin/sh
 case "$1:$2:$3" in
   tier-model:claude:1) echo fable ;;
-  tier-model:claude:3) echo sonnet ;;
+  tier-model:claude:3) echo claude-sonnet-4-6 ;;
   tier-model:codex:1) echo gpt-6-astra ;;
   *) exit 1 ;;
 esac
@@ -142,6 +142,10 @@ SRC_DIR="$(cd "$(dirname "$SUCCEED")" && pwd)"
 # a second copy of its test. See § The account the pane is really on.
 # shellcheck source=../scripts/lib/lane-launch.sh
 source "$SRC_DIR/lib/lane-launch.sh"
+# The caller's full-bypass permission word, from the launch table, for the rows
+# whose preference names a codex entry: only a transferable posture lets the
+# walk reach an entry of another harness, and this file spells no switch.
+BYPASS="$(launch_choice_permission_write claude)" || { echo "fixture: no claude permission word in the launch table" >&2; exit 1; }
 # The owner of which reading a session takes of its own account, asked directly
 # by the row that pins the pick's bound. See § the pick reading.
 # shellcheck source=../scripts/lib/lane-context.sh
@@ -523,7 +527,9 @@ assert_eq "$RC|$(overseers)|$(recorded codex)" \
   "0|1|lane=$ALT_HOME;-m;gpt-6-astra;-c;model_reasoning_effort=high;--dangerously-bypass-approvals-and-sandbox;-c;check_for_update_on_startup=false;$CODEX_COMPACT;--verbose;$BRIEF;" \
   "an alternate claude full-bypass spelling transfers to codex"
 
-# Permission modes without exact full-bypass equivalence refuse before launch.
+# Permission modes without exact full-bypass equivalence skip the cross-harness
+# entry before its pick: nothing of that harness is launched, and the walk goes
+# on to the caller's own harness, whose one other account is walled here.
 cross_permission_refuses() { # NAME FLAGS...
   local name="$1"
   shift
@@ -532,9 +538,9 @@ cross_permission_refuses() { # NAME FLAGS...
   claude_usage 95 20 5 Opus > "$FIXTURE_DIR/.claude.json"
   codex_usage 20 > "$FIXTURE_DIR/.codex.json"
   run_succeed "$name" 'codex:1:high' -- --model fable --effort high "$@"
-  assert_eq "$RC|$(keyed launch-choice-failed "$OUT" | sed -n 1p)|$(overseers)|$(recorded codex)" \
-    "1|oversee-succeed: launch-choice-failed reason=permission-transfer source=claude target=codex|0|none" \
-    "$name refuses before cross-harness launch"
+  assert_eq "$RC|$(keyed entry-permission-untransferable "$OUT" | sed -n 1p)|$(overseers)|$(recorded codex)" \
+    "3|oversee-succeed: entry-permission-untransferable entry=codex:1:high source=claude target=codex|0|none" \
+    "$name skips the cross-harness entry"
 }
 cross_permission_refuses restricted --permission-mode dontAsk
 cross_permission_refuses absent
@@ -552,25 +558,25 @@ codex_usage 95 > "$FIXTURE_DIR/.codex.json"
 claude_usage 20 20 5 Opus > "$FIXTURE_DIR/.claude.json"
 CALLER_LANE="CODEX_HOME=$H/.codex" run_succeed codex-restricted 'claude:1:high' -- \
   -m caller-model -c model_reasoning_effort=high --approve-for-me
-assert_eq "$RC|$(keyed launch-choice-failed "$OUT" | sed -n 1p)|$(overseers)|$(recorded claude)" \
-  "1|oversee-succeed: launch-choice-failed reason=permission-transfer source=codex target=claude|0|none" \
-  "codex approve-for-me refuses before cross-harness launch"
+assert_eq "$RC|$(keyed entry-permission-untransferable "$OUT" | sed -n 1p)|$(overseers)|$(recorded claude)" \
+  "3|oversee-succeed: entry-permission-untransferable entry=claude:1:high source=codex target=claude|0|none" \
+  "codex approve-for-me skips the cross-harness entry"
 
 new_caller "$CODEX_SCREEN" 'Context 48% left'
 fleet_state
 CALLER_LANE="CODEX_HOME=$H/.codex" run_succeed codex-never 'claude:1:high' -- \
   -m caller-model -c model_reasoning_effort=high -a never
-assert_eq "$RC|$(keyed launch-choice-failed "$OUT" | sed -n 1p)|$(overseers)|$(recorded claude)" \
-  "1|oversee-succeed: launch-choice-failed reason=permission-transfer source=codex target=claude|0|none" \
-  "codex ask-for-approval never refuses before cross-harness launch"
+assert_eq "$RC|$(keyed entry-permission-untransferable "$OUT" | sed -n 1p)|$(overseers)|$(recorded claude)" \
+  "3|oversee-succeed: entry-permission-untransferable entry=claude:1:high source=codex target=claude|0|none" \
+  "codex ask-for-approval never skips the cross-harness entry"
 
 new_caller "$CODEX_SCREEN" 'Context 48% left'
 fleet_state
 CALLER_LANE="CODEX_HOME=$H/.codex" run_succeed codex-mixed 'claude:1:high' -- \
   -m caller-model -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox -a never
-assert_eq "$RC|$(keyed launch-choice-failed "$OUT" | sed -n 1p)|$(overseers)|$(recorded claude)" \
-  "1|oversee-succeed: launch-choice-failed reason=permission-transfer source=codex target=claude|0|none" \
-  "codex full bypass beside ask-for-approval never refuses before cross-harness launch"
+assert_eq "$RC|$(keyed entry-permission-untransferable "$OUT" | sed -n 1p)|$(overseers)|$(recorded claude)" \
+  "3|oversee-succeed: entry-permission-untransferable entry=claude:1:high source=codex target=claude|0|none" \
+  "codex full bypass beside ask-for-approval never skips the cross-harness entry"
 codex_usage 20 > "$FIXTURE_DIR/.codex.json"
 
 # The caller entry is the inverse contract. It names no choices of its own and
@@ -581,6 +587,11 @@ run_succeed callerflags '' -- --model fable --effort high --permission-mode bypa
 assert_eq "$RC|$(overseers)|$(recorded claude)" \
   "0|1|lane=$H/.claude;-n;overseer;$CLAUDE_COMPACT;--model;fable;--effort;high;--permission-mode;bypassPermissions;--verbose;$BRIEF;" \
   "the caller entry carries the caller's model, effort and permission words whole"
+new_caller "$MARK"
+run_succeed attachedcaller '' -- --model=sonnet --effort high --permission-mode bypassPermissions --verbose
+assert_eq "$RC|$(overseers)|$(recorded claude)" \
+  "0|1|lane=$H/.claude;-n;overseer;$CLAUDE_COMPACT;--model=claude-sonnet-5;--effort;high;--permission-mode;bypassPermissions;--verbose;$BRIEF;" \
+  "a caller's attached sonnet model word is carried as the model id"
 
 claude_usage 95 20 5 Opus > "$FIXTURE_DIR/.claude.json"
 
@@ -601,9 +612,17 @@ roundtrip() { # HARNESS MODEL EFFORT — the model and effort read back, `;`-joi
     "$(launch_choice_value "$(launch_choice_model_spellings "$1")" "$words")" \
     "$(launch_choice_effort "$1" "$words" '')"
 }
-assert_eq "$(roundtrip claude fable high)|$(roundtrip codex gpt-6-astra high)|$(roundtrip opencode grok-5 high)|$(roundtrip pi sonnet high)" \
-  "fable;high|gpt-6-astra;high|grok-5;|sonnet;high" \
+assert_eq "$(roundtrip claude fable high)|$(roundtrip codex gpt-6-astra high)|$(roundtrip opencode grok-5 high)|$(roundtrip pi sonnet high)|$(roundtrip copilot claude-fable-5.1 high)" \
+  "fable;high|gpt-6-astra;high|grok-5;|sonnet;high|claude-fable-5.1;high" \
   "every row's written words read back as the model and effort they were written from"
+# A claude successor on the sonnet or haiku rank is written with the model id,
+# which no ANTHROPIC_DEFAULT_*_MODEL pin moves; another harness keeps its word.
+assert_eq "$(roundtrip claude sonnet high)|$(roundtrip claude haiku high)|$(roundtrip pi sonnet high)" \
+  "claude-sonnet-5;high|claude-haiku-4-5;high|sonnet;high" "a claude alias is written as its model id"
+IDCTL="$(mutant_scripts idctl lib/lane-launch.sh)" || exit 1
+mutate_file "$IDCTL/lib/lane-launch.sh" '$(printf %q "$(launch_choice_model_id "$1" "$2")")' '$(printf %q "$2")'
+assert_eq "$(source "$IDCTL/lib/lane-launch.sh"; roundtrip claude sonnet high)" "sonnet;high" \
+  "control: a writer that names the model as given writes the bare alias"
 
 # Control: the reader answers from the row's own spellings. The same launches
 # with a character in front of every word read back neither choice, so the row
@@ -618,8 +637,8 @@ misspelt() { # HARNESS MODEL EFFORT — the same, read back from words no row na
     "$(launch_choice_value "$(launch_choice_model_spellings "$1")" "$out")" \
     "$(launch_choice_effort "$1" "$out" '')"
 }
-assert_eq "$(misspelt claude fable high)|$(misspelt codex gpt-6-astra high)|$(misspelt opencode grok-5 high)|$(misspelt pi sonnet high)" \
-  ";|;|;|;" \
+assert_eq "$(misspelt claude fable high)|$(misspelt codex gpt-6-astra high)|$(misspelt opencode grok-5 high)|$(misspelt pi sonnet high)|$(misspelt copilot claude-fable-5.1 high)" \
+  ";|;|;|;|;" \
   "control: those words spelt as ones no row names read back neither choice"
 
 # The same table's effort spellings, which open-terminal prints in its
@@ -629,8 +648,8 @@ assert_eq "$(misspelt claude fable high)|$(misspelt codex gpt-6-astra high)|$(mi
 # effort flag for one; one that answered for a harness the table does not name
 # would refuse every custom launch. Both are pinned here, beside the row list
 # they are read from.
-assert_eq "$(launch_choice_effort_spellings claude)|$(launch_choice_effort_spellings codex)|$(launch_choice_effort_spellings pi)|$(launch_choice_effort_spellings opencode)|$(launch_choice_effort_spellings nosuch)|$(launch_choice_effort_spellings '')" \
-  "--effort|model_reasoning_effort=|--thinking|||" \
+assert_eq "$(launch_choice_effort_spellings claude)|$(launch_choice_effort_spellings codex)|$(launch_choice_effort_spellings pi)|$(launch_choice_effort_spellings copilot)|$(launch_choice_effort_spellings opencode)|$(launch_choice_effort_spellings nosuch)|$(launch_choice_effort_spellings '')" \
+  "--effort|model_reasoning_effort=|--thinking|--reasoning-effort|||" \
   "the effort spellings accessor answers each row's list, and nothing for a flagless or unnamed harness"
 
 permission_write_status() {
@@ -638,20 +657,20 @@ permission_write_status() {
   launch_choice_permission_write "$1" >/dev/null 2>&1 || rc=$?
   printf '%s\n' "$rc"
 }
-assert_eq "$(launch_choice_permission_write claude)|$(launch_choice_permission_write codex)|$(permission_write_status opencode)|$(permission_write_status nosuch)" \
-  "--dangerously-skip-permissions|--dangerously-bypass-approvals-and-sandbox|1|1" \
+assert_eq "$(launch_choice_permission_write claude)|$(launch_choice_permission_write codex)|$(launch_choice_permission_write copilot)|$(permission_write_status opencode)|$(permission_write_status nosuch)" \
+  "--dangerously-skip-permissions|--dangerously-bypass-approvals-and-sandbox|--allow-all|1|1" \
   "the permission writer answers required rows and refuses sentinel and unknown rows"
-assert_eq "$(launch_choice_transfer_permission_spellings claude)|$(launch_choice_transfer_permission_spellings codex)" \
-  "--dangerously-skip-permissions --permission-mode=bypassPermissions|--dangerously-bypass-approvals-and-sandbox" \
-  "the transfer set excludes restricted unattended modes"
+assert_eq "$(launch_choice_transfer_permission_spellings claude)|$(launch_choice_transfer_permission_spellings codex)|$(launch_choice_transfer_permission_spellings copilot)" \
+  "--dangerously-skip-permissions --permission-mode=bypassPermissions|--dangerously-bypass-approvals-and-sandbox|--allow-all --yolo" \
+  "the transfer set excludes restricted unattended modes, and copilot's tools-only word among them"
 transferable_status() { # HARNESS TEXT
   local rc=0
   launch_choice_permission_transferable "$1" "$2" || rc=$?
   printf '%s\n' "$rc"
 }
-assert_eq "$(transferable_status claude '--model fable --dangerously-skip-permissions --verbose')|$(transferable_status claude '--permission-mode bypassPermissions')|$(transferable_status claude '--dangerously-skip-permissions --permission-mode dontAsk')|$(transferable_status claude '--dangerously-skip-permissions --permission-mode plan')|$(transferable_status claude '--permission-mode dontAsk')|$(transferable_status claude '--model fable')|$(transferable_status codex '--dangerously-bypass-approvals-and-sandbox -a never')|$(transferable_status opencode '--model x')" \
-  "0|0|1|1|1|1|1|1" \
-  "the transfer judge admits one full bypass alone and refuses a mix, a restricted word, and nothing"
+assert_eq "$(transferable_status claude '--model fable --dangerously-skip-permissions --verbose')|$(transferable_status claude '--permission-mode bypassPermissions')|$(transferable_status claude '--dangerously-skip-permissions --permission-mode dontAsk')|$(transferable_status claude '--dangerously-skip-permissions --permission-mode plan')|$(transferable_status claude '--permission-mode dontAsk')|$(transferable_status claude '--model fable')|$(transferable_status codex '--dangerously-bypass-approvals-and-sandbox -a never')|$(transferable_status opencode '--model x')|$(transferable_status copilot '--allow-all --context long_context')|$(transferable_status copilot '--yolo')|$(transferable_status copilot '--allow-all-tools')|$(transferable_status copilot '--allow-all --yolo')" \
+  "0|0|1|1|1|1|1|1|0|0|1|1" \
+  "the transfer judge admits one full bypass alone and refuses a mix, a restricted word, and nothing; copilot's tools-only word is restricted"
 
 # The account mark, with the context well under the context mark: the caller's
 # own account is at headroom 5 and the successor goes to the claude lane
@@ -676,7 +695,7 @@ claude_usage 95 20 5 Opus > "$FIXTURE_DIR/.eclaude.json"
 # caller's own account and when its binding bucket frees up, not a silent park.
 new_caller "$UNDER_MARK"
 codex_usage 95 > "$FIXTURE_DIR/.codex.json"
-run_succeed headroom-wall 'claude:1:high,codex:1:high'
+run_succeed headroom-wall 'claude:1:high,codex:1:high' -- "$BYPASS"
 codex_usage 20 > "$FIXTURE_DIR/.codex.json"
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded claude)|$(recorded codex)" \
   "3|oversee-succeed: no-lane-qualifies entries=2 fallback=claude walled=5 unmeasured=0 mark=headroom account=claude resets=2026-07-27T06:00:00Z|yes|0|none|none" \
@@ -697,17 +716,17 @@ assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded cod
 # model's window, so an entry whose claude model has none would open a successor
 # that compacts rather than hands off: the same setting to fix, ending the run
 # before any window opens. The caller's own entry is judged on the model its
-# flags carry, so a sonnet overseer with an empty preference is refused too.
+# flags carry, so such an overseer with an empty preference is refused too.
 new_caller "$MARK"
 run_succeed nowindow 'claude:3:high,codex:1:high'
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded codex)" \
-  "1|oversee-succeed: model-window-unknown entry=claude:3:high model=sonnet|yes|0|none" \
+  "1|oversee-succeed: model-window-unknown entry=claude:3:high model=claude-sonnet-4-6|yes|0|none" \
   "an entry whose claude model has no window refuses model-window-unknown and stops the walk"
 new_caller "$MARK"
-run_succeed sonnetcaller '' -- --model sonnet --effort high
+run_succeed sonnetcaller '' -- --model claude-sonnet-4-6 --effort high
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)" \
-  "1|oversee-succeed: model-window-unknown entry=caller model=sonnet|yes|0" \
-  "a sonnet overseer with an empty preference is refused on its own entry"
+  "1|oversee-succeed: model-window-unknown entry=caller model=claude-sonnet-4-6|yes|0" \
+  "an overseer on a model with no window and an empty preference is refused on its own entry"
 
 # An overseer started by hand names no account in its environment, and the one
 # it is spending is the harness's own default. The caller entry launches its
@@ -762,9 +781,9 @@ assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(overseers)|$(recorded claude)" \
 # with nine claude accounts unexamined, which is the fleet this was measured on.
 new_caller "$MARK"
 codex_usage 95 > "$FIXTURE_DIR/.codex.json"
-run_succeed crossharness 'codex:1:high'
+run_succeed crossharness 'codex:1:high' -- "$BYPASS"
 assert_eq "$RC|$(layout)|$(caller_open)|$(recorded claude)|$(recorded codex)" \
-  "0|1 overseer;|no|lane=$H/.claude;-n;overseer;$CLAUDE_COMPACT;$BRIEF;|none" \
+  "0|1 overseer;|no|lane=$H/.claude;-n;overseer;$CLAUDE_COMPACT;$BYPASS;$BRIEF;|none" \
   "a one-entry preference whose harness is walled falls through to the caller-harness sweep"
 
 # The must-fail inverse of that row, on the same fixture: with the fallback
@@ -774,7 +793,7 @@ assert_eq "$RC|$(layout)|$(caller_open)|$(recorded claude)|$(recorded codex)" \
 NOFALLBACK="$(mutant_scripts nofallback oversee-succeed)" || exit 1
 mutate_file "$NOFALLBACK/oversee-succeed" '  ENTRIES+=(caller)' ''
 new_caller "$MARK"
-SUCCEED_BIN="$NOFALLBACK/oversee-succeed" run_succeed nofallback 'codex:1:high'
+SUCCEED_BIN="$NOFALLBACK/oversee-succeed" run_succeed nofallback 'codex:1:high' -- "$BYPASS"
 codex_usage 20 > "$FIXTURE_DIR/.codex.json"
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded claude)" \
   "3|oversee-succeed: no-lane-qualifies entries=1 fallback=none walled=1 unmeasured=0 mark=context|yes|0|none" \
@@ -1079,13 +1098,13 @@ SUCCESSOR_ACCOUNTS=bad run_succeed badsuccessors '' --check-marks
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
   "1|oversee-succeed: invalid-successor-accounts ORCH_OVERSEER_SUCCESSOR_ACCOUNTS=bad" \
   "a malformed successor-account setting is refused before judgement"
-# A preference entry outside harness:rank:effort is refused before any pick,
+# A preference entry outside harness:model:effort is refused before any pick,
 # by lib/overseer-launch.sh's parser, the one `oversee launch` reads the same
 # setting with.
 new_caller "$MARK"
-run_succeed badpreference 'claude:one:high' --wait-secs 5
+run_succeed badpreference 'claude:Opus:high' --wait-secs 5
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(overseers)" \
-  "1|oversee-succeed: invalid-preference entry=claude:one:high|0" \
+  "1|oversee-succeed: invalid-preference entry=claude:Opus:high|0" \
   "a preference entry outside the shape is refused before any pick, nothing opened"
 # A runtime other than tmux is refused before anything is printed, written or
 # opened, by the library rule `oversee launch` reads: this script verifies the
@@ -1164,10 +1183,12 @@ assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
   "a count no successor settles does not fire the qualifying-set trigger"
 # The judgement walks the preference as a succession would: a codex entry whose
 # successor finds no other codex account above the trigger settles the same
-# count, and a preference the walk cannot read refuses the judgement.
+# count, a pi entry on a provider no lane measures reads no count and is passed
+# over, and a preference the walk cannot read refuses the judgement.
 codex_usage 20 > "$FIXTURE_DIR/.codex.json"
 for pref_row in \
   "codex:1:high|0|oversee-succeed: mark-reached kind=qualifying value=2 mark=2 succession=on headroom=40" \
+  "pi:openai/gpt-5:high,codex:1:high|0|oversee-succeed: mark-reached kind=qualifying value=2 mark=2 succession=on headroom=40" \
   "bogus|1|oversee-succeed: invalid-preference entry=bogus"; do
   IFS='|' read -r pref_value pref_rc pref_want <<<"$pref_row"
   new_caller "$UNDER_MARK"
@@ -1176,6 +1197,60 @@ for pref_row in \
   assert_eq "$RC|$(sed -n 1p <<<"$OUT")" "$pref_rc|$pref_want" \
     "a qualifying judgement walks the preference $pref_value"
 done
+# A cross-harness entry no permission posture can cross, which a succession
+# skips, is skipped by the judgement too, though it is handed no flags: pi's
+# row writes no permission word and names none to transfer. A claude caller's
+# pi-claude entry on Fable would settle the count, the caller's account, whose
+# record names Sonnet, being walled for Fable alone; a pi caller's codex entry
+# would settle it as the claude caller's does above. Neither fires the mark.
+qualifying_cross_row() { # ROW PREFERENCE [SUCCEED_BIN]
+  SUCCESSOR_ACCOUNTS=2 LANE_DIRS="$THREE_LANES:$H/.codex" SUCCEED_BIN="${3:-}" \
+    run_succeed "$1" "$2" --check-marks
+}
+# caller_record HARNESS MODEL — this pane's launch record on .claude.
+caller_record() {
+  jq --arg server "$SERVER_PID" --arg pane "$CALLER_PANE" --arg account "$H/.claude" \
+    --arg harness "$1" --arg model "$2" \
+    '.overseer = {runtime: "tmux", generation: 1, server: $server, pane: $pane, harness: $harness,
+      account: $account, home: $account, model: $model, effort: "high"}' \
+    "$FLEET_STATE" > "$FLEET_STATE.tmp" && mv -- "$FLEET_STATE.tmp" "$FLEET_STATE"
+}
+cp -p -- "$FLEET_STATE" "$FLEET_STATE.held"
+claude_usage 60 20 99 "Fable 5.1" > "$FIXTURE_DIR/.claude.json"
+new_caller "$UNDER_MARK"
+caller_record claude claude-sonnet-5
+qualifying_cross_row qualifyingpi 'pi:pi-claude/claude-fable-5-1:high'
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
+  "0|oversee-succeed: context-below-mark tokens=100000 window=1000000 mark=50 headroom=40" \
+  "a claude caller's judgement skips a pi entry no permission posture crosses to"
+claude_usage 60 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+new_caller "$UNDER_MARK"
+caller_record pi pi-claude/claude-fable-5-1
+qualifying_cross_row qualifyingpicaller 'codex:1:high'
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
+  "0|oversee-succeed: context-below-mark tokens=100000 window=1000000 mark=50 headroom=40" \
+  "a pi caller's judgement skips a codex entry no permission posture crosses from pi to"
+# Their control: a judgement that leaves the transfer test to the succession
+# fires the mark on each entry that succession would skip.
+CROSSCTL="$(mutant_scripts crossctl oversee-succeed)" || exit 1
+mutate_file "$CROSSCTL/oversee-succeed" \
+  '      if [[ "$harness" != "$CALLER_HARNESS" ]] && ! entry_transferable "$harness"; then' \
+  '      if [[ "$MODE" != check && "$harness" != "$CALLER_HARNESS" ]] && ! entry_transferable "$harness"; then'
+claude_usage 60 20 99 "Fable 5.1" > "$FIXTURE_DIR/.claude.json"
+new_caller "$UNDER_MARK"
+caller_record claude claude-sonnet-5
+qualifying_cross_row crossctlpi 'pi:pi-claude/claude-fable-5-1:high' "$CROSSCTL/oversee-succeed"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
+  "0|oversee-succeed: mark-reached kind=qualifying value=2 mark=2 succession=on headroom=40" \
+  "control: a judgement without the transfer test fires on the claude caller's pi entry"
+claude_usage 60 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+new_caller "$UNDER_MARK"
+caller_record pi pi-claude/claude-fable-5-1
+qualifying_cross_row crossctlpicaller 'codex:1:high' "$CROSSCTL/oversee-succeed"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")" \
+  "0|oversee-succeed: mark-reached kind=qualifying value=2 mark=2 succession=on headroom=40" \
+  "control: a judgement without the transfer test fires on the pi caller's codex entry"
+mv -- "$FLEET_STATE.held" "$FLEET_STATE"
 new_caller "$UNDER_MARK"
 SUCCESSOR_ACCOUNTS=2 LANE_DIRS="$THREE_LANES" run_succeed qualifyingrefires ''
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded claude)" \
@@ -1370,7 +1445,7 @@ ROWS
 new_caller "$MARK"
 for row in "badcontext|--check-marks --context 12|1|oversee-succeed: invalid-context value=12" \
            "printcontext|--print-launch-line --context 12:100|1|oversee-succeed: mode-conflict mode=print context=12:100" \
-           "badharness|--print-launch-line --harness pi|1|oversee-succeed: invalid-harness value=pi"; do
+           "badharness|--print-launch-line --harness opencode|1|oversee-succeed: invalid-harness value=opencode"; do
   IFS='|' read -r row_name row_args row_rc row_first <<<"$row"
   # shellcheck disable=SC2086
   NO_CONTEXT=1 run_succeed "$row_name" '' $row_args
@@ -1465,13 +1540,58 @@ assert_eq "$RC|$OUT" \
 # The control on the record fallback: a copy that never reads the recorded
 # account prints the environment's for the pane the record names.
 PRINTREC="$(mutant_scripts printrec oversee-succeed)" || exit 1
-mutate_file "$PRINTREC/oversee-succeed" 'CALLER_CFG="${OL_CUR_ACCOUNT:-$(lane_context_caller_cfg "$CALLER_HARNESS")}"' 'CALLER_CFG="$(lane_context_caller_cfg "$CALLER_HARNESS")"'
+mutate_file "$PRINTREC/oversee-succeed" 'CALLER_CFG="$OL_KNOWN_ACCOUNT"' 'CALLER_CFG=""'
 new_caller "$UNDER_MARK"
 record_account "$CALLER_PANE" "$H/.eclaude"
 SUCCEED_BIN="$PRINTREC/oversee-succeed" run_succeed printrecctl '' --print-launch-line --harness claude
 assert_eq "$RC|$OUT" \
   "0|env CLAUDE_CONFIG_DIR='$H/.claude' claude -n overseer $CLAUDE_COMPACT_LINE '$BRIEF'" \
   "control: a print that ignores the record names the environment's account for the recorded pane"
+fleet_state
+
+# A Copilot overseer: the printed line is its own row's, the brief on -i and
+# the account its record names under COPILOT_HOME. Every other mode needs a
+# reading of a Copilot account, which lanes does not make, and refuses before
+# any; a record naming no account refuses the line rather than print one on
+# an account nothing named.
+COPILOT_LINE="env COPILOT_HOME='$H/.1copilot' copilot --autopilot --max-autopilot-continues 3 --allow-all -i '$BRIEF'"
+copilot_row() { # NAME [SUCCEED_BIN] ARGS... — the run on a pane whose record names $H/.1copilot
+  local name="$1" bin="$2"
+  shift 2
+  new_caller "$UNDER_MARK"
+  record_account "$CALLER_PANE" "$H/.1copilot"
+  SUCCEED_BIN="${bin:-$SUCCEED}" run_succeed "$name" '' "$@"
+}
+copilot_row printcopilot '' --print-launch-line --harness copilot -- --allow-all
+assert_eq "$RC|$OUT|$(overseers)" "0|$COPILOT_LINE|0" \
+  "a copilot overseer's printed line runs copilot on its recorded account with the brief on -i"
+copilot_row checkcopilot '' --check-marks --harness copilot
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")" "1|oversee-succeed: copilot-unmeasured pane=$CALLER_PANE mode=check" \
+  "a copilot overseer's marks are refused before any account reading, lanes measuring none"
+fleet_state
+new_caller "$UNDER_MARK"
+run_succeed printcopilotnone '' --print-launch-line --harness copilot -- --allow-all
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")" "1|oversee-succeed: copilot-account-unknown pane=$CALLER_PANE" \
+  "a copilot overseer whose record names no account prints no line"
+# Controls, one per rule: the builder's copilot arm, the refusal of every
+# judging mode, and the refusal of a line with no account.
+COPILOTARM="$(mutant_scripts copilotarm lib/overseer-launch.sh)" || exit 1
+mutate_file "$COPILOTARM/lib/overseer-launch.sh" '    copilot) cmd="copilot" brief_flag=" -i" ;;' '    copilot-x) ;;'
+copilot_row printcopilotctl "$COPILOTARM/oversee-succeed" --print-launch-line --harness copilot -- --allow-all
+assert_eq "$RC|$(grep -c "^env COPILOT_HOME='$H/.1copilot' codex " <<<"$OUT")" "0|1" \
+  "control: without its arm the copilot line is built as codex's"
+COPILOTMODE="$(mutant_scripts copilotmode oversee-succeed)" || exit 1
+mutate_file "$COPILOTMODE/oversee-succeed" '[[ "$CALLER_HARNESS" != copilot || "$MODE" == print ]]' '[[ "$CALLER_HARNESS" != copilot || "$MODE" != print ]]'
+copilot_row checkcopilotctl "$COPILOTMODE/oversee-succeed" --check-marks --harness copilot
+assert_eq "$RC|$(grep -c '^oversee-succeed: copilot-unmeasured ' <<<"$OUT")" "0|0" \
+  "control: without the refusal a copilot overseer's marks are judged on a reading lanes cannot make"
+COPILOTACCT="$(mutant_scripts copilotacct oversee-succeed)" || exit 1
+mutate_file "$COPILOTACCT/oversee-succeed" '[[ "$CALLER_HARNESS" != copilot || -n "$CALLER_CFG" ]] || die copilot-account-unknown' ': || die copilot-account-unknown'
+fleet_state
+new_caller "$UNDER_MARK"
+SUCCEED_BIN="$COPILOTACCT/oversee-succeed" run_succeed printcopilotnonectl '' --print-launch-line --harness copilot -- --allow-all
+assert_eq "$RC|$(grep -c "^copilot " <<<"$OUT")" "0|1" \
+  "control: without the refusal the line opens copilot on no account"
 fleet_state
 
 # The printed line is replayed verbatim into a DEAD pane, and nobody is at that
@@ -1861,7 +1981,7 @@ assert_eq "$RC|$(layout)|$(caller_open)|$(recorded claude)" \
   "a spent window scoped to the model this overseer runs fires the account mark"
 
 # The model reaches the account mark on every claude tier, not only the ones
-# the window table names. This caller runs Sonnet, which that table leaves out,
+# the window table names. This caller runs Sonnet 4.5, which that table leaves out,
 # so its reading carries no window. Judged with no model at all, this account's
 # only spent window, scoped to Opus at exactly the trigger, would fire and hand
 # the session over for a window no Sonnet turn draws on.
@@ -1964,7 +2084,7 @@ chmod +x "$STUB_LANES"
 FLOORFWD="$(mutant_scripts floorfwd lanes)" || exit 1
 cp "$STUB_LANES" "$FLOORFWD/lanes"
 new_caller "$MARK"
-SUCCEED_BIN="$FLOORFWD/oversee-succeed" run_succeed floorfwd 'codex:1:high'
+SUCCEED_BIN="$FLOORFWD/oversee-succeed" run_succeed floorfwd 'codex:1:high' -- "$BYPASS"
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded codex)" \
   "3|oversee-succeed: no-lane-qualifies entries=1 fallback=claude walled=2 unmeasured=0 mark=headroom account=fixture@example.com resets=2026-09-22T00:00:00Z|yes|0|none" \
   "the codex sweep is asked with the binding floor, so an account walled on its own bucket is refused"
@@ -2279,57 +2399,66 @@ assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded cla
 # `lanes pick` itself answers "no lane clears the bound" with, so the caller
 # can tell a fleet with no room from a launch that broke; it carries
 # `mark=wall` and names no account, no mark having been judged to name one by.
+# The sweep counts one walled account: the walled pane's own is left out of it.
 new_caller "$MARK"
 claude_usage "$AT_TRIGGER" 0 0 Opus > "$FIXTURE_DIR/.claude.json"
 claude_usage "$AT_TRIGGER" 0 0 Opus > "$FIXTURE_DIR/.eclaude.json"
 run_succeed wallednoroom '' --walled-pane "$CALLER_PANE"
 walled_world
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded claude)" \
-  "3|oversee-succeed: no-lane-qualifies entries=0 fallback=claude walled=2 unmeasured=0 mark=wall|yes|0|none" \
+  "3|oversee-succeed: no-lane-qualifies entries=0 fallback=claude walled=1 unmeasured=0 mark=wall|yes|0|none" \
   "no account above the trigger: the walled recovery refuses at exit 3 under mark=wall"
 
-# The successor keeps THIS session's model, effort and permission flags and
-# changes the account alone. The preference names where a later successor
-# goes at a MARK and is not walked here, so launch_choice_write writes no
-# model or effort beside the ones the caller's own flags already carry: a
-# command naming two models runs on whichever the harness reads last, which
-# is a model no pick judged.
+# The caller entry's successor keeps THIS session's model, effort and
+# permission flags and changes the account alone, so launch_choice_write
+# writes no model or effort beside the ones the caller's own flags already
+# carry: a command naming two models runs on whichever the harness reads last,
+# which is a model no pick judged. A named entry walked ahead of it is
+# oversee_succeed_ladder.sh's.
 new_caller "$MARK"
 walled_world
-run_succeed walledflags 'codex:1:high' --walled-pane "$CALLER_PANE" -- --model fable --effort high --permission-mode bypassPermissions --verbose
+run_succeed walledflags '' --walled-pane "$CALLER_PANE" -- --model fable --effort high --permission-mode bypassPermissions --verbose
 assert_eq "$RC|$(recorded claude)|$(recorded codex)" \
   "0|lane=$H/.eclaude;-n;overseer;$CLAUDE_COMPACT;--model;fable;--effort;high;--permission-mode;bypassPermissions;--verbose;$BRIEF;|none" \
-  "--walled-pane keeps this session's own model, effort and permission words"
+  "--walled-pane's caller entry keeps this session's own model, effort and permission words"
 
 # The one account this recovery may never open on is the one it is recovering
-# from. The caller's own lane is given the MOST room here, so the pick names
-# it: an inventory that has not caught up with the wall on that pane reads
-# exactly like this. The entry is skipped and the run refuses rather than
-# relaunching into the wall.
+# from. The caller's own lane is given the MOST room here, so a pick that
+# judged it would name it; the pick leaves it out, and the successor opens on
+# the next account.
 new_caller "$MARK"
 claude_usage 10 0 0 Opus > "$FIXTURE_DIR/.claude.json"
 claude_usage 50 0 0 Opus > "$FIXTURE_DIR/.eclaude.json"
 run_succeed walledspent '' --walled-pane "$CALLER_PANE"
 walled_world
-assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(keyed successor-lane-spent "$OUT" | sed -n 1p)|$(caller_open)|$(overseers)|$(recorded claude)" \
-  "3|oversee-succeed: successor-lane-spent lane=$H/.claude entry=caller|oversee-succeed: successor-lane-spent lane=$H/.claude entry=caller|yes|0|none" \
-  "a pick naming the walled account itself is skipped, not opened on"
+assert_eq "$RC|$(caller_open)|$(recorded claude)" \
+  "0|no|lane=$H/.eclaude;-n;overseer;$CLAUDE_COMPACT;$BRIEF;" \
+  "the walled account is left out of the pick, although it reads the most room"
 
-# The same account under a spelling the pick does not use. This side is
-# whatever the operator's shell exported and the pick's side is whatever lane
-# discovery produced, so the two are compared through the pairing
-# lane_account_check compares an observed account against a picked one with,
-# and never as strings. A trailing slash is the cheapest way to have one
-# account spelled twice; without that pairing the guard does not fire and the
-# successor opens on the account that just walled.
+# The backstop for an inventory that names it anyway: a `lanes` that answers
+# every pick with the walled account. The entry is skipped and the run refuses
+# rather than relaunching into the wall. The account is spelled with a
+# trailing slash on this side, the cheapest way to have one account spelled
+# twice: the two are compared through the pairing lane_account_check compares
+# an observed account against a picked one with, never as strings, so without
+# that pairing the guard does not fire and the successor opens on the account
+# that just walled.
+cat > "$TMP_ROOT/spent-lanes" <<STUB
+#!/bin/sh
+case " \$* " in
+  *" pick "*) printf '%s\n' '{"config_dir": "$H/.claude"}'; exit 0 ;;
+esac
+exit 3
+STUB
+chmod +x "$TMP_ROOT/spent-lanes"
+SPENTINV="$(mutant_scripts spentinv lanes)" || exit 1
+cp "$TMP_ROOT/spent-lanes" "$SPENTINV/lanes"
 new_caller "$MARK"
-claude_usage 10 0 0 Opus > "$FIXTURE_DIR/.claude.json"
-claude_usage 50 0 0 Opus > "$FIXTURE_DIR/.eclaude.json"
-CALLER_LANE="CLAUDE_CONFIG_DIR=$H/.claude/" run_succeed walledspentslash '' --walled-pane "$CALLER_PANE"
-walled_world
+CALLER_LANE="CLAUDE_CONFIG_DIR=$H/.claude/" SUCCEED_BIN="$SPENTINV/oversee-succeed" \
+  run_succeed walledspentslash '' --walled-pane "$CALLER_PANE"
 assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(caller_open)|$(overseers)|$(recorded claude)" \
   "3|oversee-succeed: successor-lane-spent lane=$H/.claude/ entry=caller|yes|0|none" \
-  "the walled account spelled another way is still the walled account"
+  "an inventory naming the walled account, spelled another way, is still refused"
 
 # What this mode refuses of the other four. A combination read as one of them
 # would send a line built for another pane, judge a mark against a pane that

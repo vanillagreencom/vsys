@@ -66,14 +66,15 @@ pi_carrier() { # sends|old|none
 # refused before the gate cannot read as one the gate passed.
 GATE_KEYS='unsupported-for-oversee|compaction-on|launch-window-unknown|launch-compaction-missing|pi-settings-unreadable|launch-question-tool-missing|launch-model-missing|launch-effort-missing'
 # launch NAME ARGS... — the gate's line open-terminal wrote, or `passed` where it
-# wrote none, for a GUI launch of CC-1 under ARGS; OT names another copy.
+# wrote none, for a GUI launch of CC-1 under ARGS; OT names another copy. Its
+# stdout is kept in $TMP_ROOT/NAME.out.
 launch() { # NAME ARGS...
   local name="$1" rc=0 line
   shift
   ( cd "$REPO" && PATH="$BIN:$PATH" ORCH_STATE_DIR="$TMP_ROOT/$name.state" WORKTREE_CLI="$BIN/worktree-stub" \
     OT_TERM_LOG="$TMP_ROOT/$name.term" TERMINAL=term TMUX= PI_CODING_AGENT_DIR="$PI_AGENT" \
     "${OT:-$REPO/scripts/open-terminal}" --ghostty "$@" CC-1 ) \
-    >/dev/null 2>"$TMP_ROOT/$name.err" || rc=$?
+    >"$TMP_ROOT/$name.out" 2>"$TMP_ROOT/$name.err" || rc=$?
   line="$(grep -E "^open-terminal: ($GATE_KEYS) " "$TMP_ROOT/$name.err" || true)"
   printf '%s' "${line:-passed}"
 }
@@ -93,7 +94,11 @@ while IFS='|' read -r label want args; do
   assert_eq "$(launch row "$@")" "$want" "$label"
 done <<ROWS
 claude on a model with a window passes|passed|${FLEET[*]} --harness claude --launch-flags '--model opus --effort high'
-claude on a model whose window no row names is refused|open-terminal: launch-window-unknown harness=claude model=sonnet|${FLEET[*]} --harness claude --launch-flags '--model sonnet --effort high'
+claude on sonnet, written as claude-sonnet-5, passes|passed|${FLEET[*]} --harness claude --launch-flags '--model sonnet --effort high'
+claude on haiku, written as claude-haiku-4-5, passes|passed|${FLEET[*]} --harness claude --launch-flags '--model haiku --effort high'
+claude on the attached --model=sonnet passes the same way|passed|${FLEET[*]} --harness claude --launch-flags '--model=sonnet --effort high'
+a claude --cmd on the bare sonnet alias, run as written, is refused|open-terminal: launch-window-unknown harness=claude model=sonnet|${FLEET[*]} --harness claude --cmd "claude --model sonnet --effort high \$CLAUDE_QUESTION \$CLAUDE_WORDS {item}"
+claude on a model whose window no row names is refused|open-terminal: launch-window-unknown harness=claude model=claude-sonnet-4-6|${FLEET[*]} --harness claude --launch-flags '--model claude-sonnet-4-6 --effort high'
 claude naming no model is refused the same way|open-terminal: launch-window-unknown harness=claude model=none|${FLEET[*]} --harness claude
 codex passes, its rollout naming its window|passed|${FLEET[*]} --harness codex --launch-flags '-m gpt-6-astra -c model_reasoning_effort=high'
 a claude --cmd carrying the compaction words passes|passed|${FLEET[*]} --harness claude --cmd "\$CLAUDE_TEMPLATE"
@@ -104,8 +109,10 @@ a codex --cmd without them is refused, one word field per word|open-terminal: la
 a codex --cmd carrying them passes|passed|${FLEET[*]} --harness codex --cmd 'codex -m gpt-6-astra -c model_reasoning_effort=high $CODEX_QUESTION $CODEX_WORDS {item}'
 a fleet --cmd naming no harness is refused|open-terminal: unsupported-for-oversee harness=none|${FLEET[*]} --cmd 'claude --model opus {item}'
 opencode in a fleet is refused|open-terminal: unsupported-for-oversee harness=opencode|${FLEET[*]} --harness opencode --launch-flags '--model m'
+copilot in a fleet is refused, no switch turning its compaction off and no adapter reading its window|open-terminal: unsupported-for-oversee harness=copilot|${FLEET[*]} --harness copilot --launch-flags '--model claude-opus-5 --reasoning-effort high'
+copilot with no fleet passes|passed|--harness copilot --launch-flags '--model claude-opus-5 --reasoning-effort high'
 opencode with no fleet passes|passed|--harness opencode --launch-flags '--model m'
-claude on a model with no window, with no fleet, passes|passed|--harness claude --launch-flags '--model sonnet --effort high'
+claude on a model with no window, with no fleet, passes|passed|--harness claude --launch-flags '--model claude-sonnet-4-6 --effort high'
 ROWS
 
 echo "=== a Pi fleet launch runs only where Pi will not compact and its window reaches the hook ==="
@@ -134,6 +141,52 @@ rm -f -- "$PI_AGENT/settings.json" "$REPO/.pi/settings.json"
 assert_eq "$(grep -c 'jq: error\|parse error' "$TMP_ROOT/pi.err" || true)" "0" \
   "the last row's run carries no jq words; the unreadable row's did, under its key"
 
+echo "=== a local Pi fleet launch on a Copilot model is judged on the Pi root its lane leaves ==="
+# Such a launch's gate waits for its lane. A lane `lanes pick` chose from
+# ORCH_LANE_COPILOT_POOL runs under PI_CODING_AGENT_DIR naming that account, so
+# its settings and carrier are read there and not under the root this launcher
+# inherited (PI_AGENT); a lane an `auto:claude` spec picked leaves the
+# inherited root, which is judged; a hosted lane is judged on its host.
+# pool_launch prints the gate line and the lane selected, as its variable and
+# the directory's name.
+POOL_ROOT="$TMP_ROOT/pool-root"
+mkdir -p "$POOL_ROOT/packages/@vanillagreen/pi-hooks/extensions"
+printf 'export const f = { context_window: 1 };\n' > "$POOL_ROOT/packages/@vanillagreen/pi-hooks/extensions/vocab.ts"
+pi_carrier sends
+POOL_FLAGS='--model github-copilot/claude-sonnet-5 --thinking high'
+# One measured Claude account for the `auto:claude` pick, under a home of the
+# suite's own so no pick reads the operator's accounts.
+# shellcheck source=lib/lanes-fixture.sh
+source "$TEST_DIR/lib/lanes-fixture.sh"
+new_home lanes-home
+make_lane "$H" claude 3600
+claude_usage 10 20 5 Opus > "$FIXTURE_DIR/.claude.json"
+make_fetcher "$TMP_ROOT/fetch"
+export LANES_HOME="$H" ORCH_LANES_FETCH_CMD="$TMP_ROOT/fetch" OVERSEE_WATCH_STATE_DIR="$TMP_ROOT/lanes-state"
+pool_launch() { # NAME POOL_SETTINGS AGENT_SETTINGS ARGS...
+  local name="$1" gate selected
+  printf '%s\n' "$2" > "$POOL_ROOT/settings.json"
+  printf '%s\n' "$3" > "$PI_AGENT/settings.json"
+  shift 3
+  gate="$(ORCH_LANE_COPILOT_POOL="$POOL_ROOT=1/10" launch "$name" "${FLEET[@]}" --harness pi --launch-flags "$POOL_FLAGS" "$@")"
+  selected="$(sed -n 's/^open-terminal: lane-selected lane=//p' "$TMP_ROOT/$name.out")"
+  printf '%s selected=%s:%s' "$gate" "${selected%%=*}" "$(basename -- "${selected#*=}")"
+}
+POOL_OFF='{"compaction":{"enabled":false}}'
+POOL_ON='{"compaction":{"enabled":true}}'
+assert_eq "$(pool_launch pool-off "$POOL_OFF" "$POOL_ON" --lane auto)" "passed selected=PI_CODING_AGENT_DIR:pool-root" \
+  "the pool account's own settings turning compaction off pass, whatever the inherited root says"
+assert_eq "$(pool_launch pool-on "$POOL_ON" "$POOL_OFF" --lane auto)" \
+  "open-terminal: compaction-on harness=pi file=$POOL_ROOT/settings.json selected=PI_CODING_AGENT_DIR:pool-root" \
+  "the pool account's own settings turning compaction on are refused, naming that file"
+assert_eq "$(pool_launch pool-claude "$POOL_OFF" "$POOL_ON" --lane auto:claude)" \
+  "open-terminal: compaction-on harness=pi file=$PI_AGENT/settings.json selected=CLAUDE_CONFIG_DIR:.claude" \
+  "a lane the spec picked on a Claude account leaves the inherited root, whose compaction on is refused"
+assert_eq "$(pool_launch pool-hosted "$POOL_ON" "$POOL_OFF" --lane auto --host "$BIN/provider")" \
+  "passed selected=PI_CODING_AGENT_DIR:pool-root" \
+  "a hosted lane on the pool is not judged on this machine's copy of the account"
+rm -f -- "${PI_AGENT:?}/settings.json" "${POOL_ROOT:?}/settings.json"
+
 echo "=== must-fail controls ==="
 # Each rule's refusal replaced by a pass: the row it holds reads as passed.
 # control NAME OLD NEW — a staged copy with OLD replaced by NEW, in CTRL_OT.
@@ -146,8 +199,12 @@ control unsupported-ctrl '*) ot_message unsupported-for-oversee "harness=${LAUNC
 assert_eq "$(OT="$CTRL_OT" launch unsupported-ctrl "${FLEET[@]}" --harness opencode --launch-flags '--model m')" passed \
   "control: without its refusal an opencode fleet launch passes the gate"
 control window-ctrl 'ot_message launch-window-unknown "harness=$LAUNCH_HARNESS" "model=${LAUNCH_MODEL:-none}" >&2' ': '
-assert_eq "$(OT="$CTRL_OT" launch window-ctrl "${FLEET[@]}" --harness claude --launch-flags '--model sonnet --effort high')" passed \
+assert_eq "$(OT="$CTRL_OT" launch window-ctrl "${FLEET[@]}" --harness claude --launch-flags '--model claude-sonnet-4-6 --effort high')" passed \
   "control: without its refusal a claude fleet lane on a model with no window passes"
+control alias-id-ctrl '        [[ "$LAUNCH_CHOICE_COMPACTION" == on ]] || gate_window=false' '        launch_choice_compaction "$LAUNCH_HARNESS" "$LAUNCH_MODEL" >/dev/null || gate_window=false'
+assert_eq "$(OT="$CTRL_OT" launch alias-id-ctrl "${FLEET[@]}" --harness claude --launch-flags '--model sonnet --effort high')" \
+  "open-terminal: launch-window-unknown harness=claude model=sonnet" \
+  "control: judged on the alias rather than the id it is written as, a sonnet fleet lane is refused"
 control compaction-missing-ctrl 'ot_message launch-compaction-missing "harness=$LAUNCH_HARNESS" "${compaction_fields[@]}" >&2' ': '
 assert_eq "$(OT="$CTRL_OT" launch compaction-missing-ctrl "${FLEET[@]}" --harness claude --cmd "claude --model opus --effort high $CLAUDE_QUESTION {item}")" passed \
   "control: without its refusal a --cmd fleet lane keeps its compaction on"
@@ -162,7 +219,7 @@ assert_eq "$(OT="$TMP_ROOT/strip-ctrl/scripts/open-terminal" launch strip-ctrl "
   "control: compared unquoted, a word whose JSON the shell strips passes the gate"
 printf '{"compaction":{"enabled":false}}\n' > "$PI_AGENT/settings.json"
 pi_carrier old
-control window-read-ctrl 'ot_message unsupported-for-oversee "harness=pi" "reason=no-window-read" >&2; exit 1;' ': ;'
+control window-read-ctrl '"$CLAIM_ROOT" || { ot_message unsupported-for-oversee "harness=pi" "reason=no-window-read" >&2; return 1; }' '"$CLAIM_ROOT" || :'
 assert_eq "$(OT="$CTRL_OT" launch window-read-ctrl "${FLEET[@]}" --harness pi)" passed \
   "control: without its refusal a Pi fleet lane whose carrier sends no window passes"
 rm -f -- "$PI_AGENT/settings.json"
@@ -172,6 +229,18 @@ control hosted-pi-ctrl '      if [[ "$LANE_HOST" == local ]]; then' '      if tr
 assert_eq "$(OT="$CTRL_OT" launch hosted-pi-ctrl "${FLEET[@]}" --harness pi --host "$BIN/provider")" "open-terminal: compaction-on harness=pi $PI_FILE" \
   "control: judged on this machine's files, a hosted Pi fleet lane is refused on settings that are not its own"
 rm -f -- "$PI_AGENT/settings.json"
+assert_eq "$(OT="$CTRL_OT" pool_launch hosted-pool-ctrl "$POOL_ON" "$POOL_OFF" --lane auto --host "$BIN/provider")" \
+  "open-terminal: compaction-on harness=pi file=$POOL_ROOT/settings.json selected=PI_CODING_AGENT_DIR:pool-root" \
+  "control: judged on this machine's files, a hosted Pi lane on the pool is refused on its local account copy"
+control pool-root-ctrl '  PI_CODING_AGENT_DIR="${LANE_ENV#*=}"' '  :'
+assert_eq "$(OT="$CTRL_OT" pool_launch pool-root-ctrl "$POOL_OFF" "$POOL_ON" --lane auto)" \
+  "open-terminal: compaction-on harness=pi file=$PI_AGENT/settings.json selected=PI_CODING_AGENT_DIR:pool-root" \
+  "control: judged on the inherited root, a Pi fleet lane on the Copilot pool is refused on settings that are not its own"
+control deferred-gate-ctrl '[[ "$PI_GATE_DEFERRED" != true ]] || pi_local_gate' '[[ "${LANE_ENV%%=*}" != PI_CODING_AGENT_DIR ]] || pi_local_gate'
+assert_eq "$(OT="$CTRL_OT" pool_launch deferred-gate-ctrl "$POOL_OFF" "$POOL_ON" --lane auto:claude)" \
+  "passed selected=CLAUDE_CONFIG_DIR:.claude" \
+  "control: a deferred gate run only on the pool's own variable lets a Claude-picked Pi fleet lane start unchecked"
+rm -f -- "${PI_AGENT:?}/settings.json" "${POOL_ROOT:?}/settings.json"
 control compaction-ctrl '0) ot_message compaction-on "harness=pi" "file=$LANE_ADAPTER_PI_FILE"' '0) : ot_message compaction-on "harness=pi" "file=$LANE_ADAPTER_PI_FILE"'
 assert_eq "$(OT="$CTRL_OT" launch compaction-ctrl "${FLEET[@]}" --harness pi)" passed \
   "control: without its refusal a Pi fleet lane Pi would compact passes the gate"

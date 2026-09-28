@@ -41,6 +41,11 @@ Options:
                    Never bypasses actionable unresolved review threads.
   --expected-head SHA
                    Bind GitHub's match-head merge guard to prepared SHA.
+  --require-context NAME
+                   With --auto only: arm only where the base branch requires
+                   the status-check context NAME, read from the same required
+                   set the CI gate uses. The arm right after a PR opens passes
+                   the review gate's context, so nothing merges before review.
   --dry-run        Show what would happen without merging
 
 Modes:
@@ -59,8 +64,10 @@ Merge-mode exit codes:
        Classic auto-merge is armed until protection clears.
   1    BLOCKED PR #N
        The requested operation failed; a pre-existing queue entry or auto-merge request may remain active.
-  1    arm: no-merge-gate=<allow_auto_merge|required_check|unverified> repo=<owner/repo>
-       --auto refused, nothing mutated: GitHub would merge at once with nothing to wait on.
+  1    arm: no-merge-gate=<allow_auto_merge|required_check|required_context|unverified> repo=<owner/repo>
+       --auto refused, nothing mutated: GitHub would merge at once with nothing to wait on,
+       or, for required_context, without the --require-context check. unverified is a
+       rules read that failed, which proves no gate.
   1    CLOSED (not merged) PR #N
        The PR is closed unmerged. Nothing was attempted.
   1    pr-merge: retired-setting key=<NAME>
@@ -339,19 +346,30 @@ RULESET_CONTEXTS_JQ='
   , (select($type == "required_status_checks")
      | .parameters.required_status_checks[]?
      | "ctx:" + (.context // ""))'
-required_contexts() {
+# The rules behind that set, one line each: `ctx:<context>` for a context a
+# ruleset or classic protection names, `unnameable:<type>` for a ruleset rule
+# gating on a check it does not name. Exits 1 when a read fails, so a caller
+# can tell a failed read from a set that lacks a context.
+required_rule_lines() {
     local pr_num="$1" base="" rules="" classic="" branch_json=""
     if ! base=$(gh pr view "$pr_num" --json baseRefName --jq '.baseRefName' 2>/dev/null) || [ -z "$base" ] \
         || ! base=$(jq -nr --arg v "$base" '$v | @uri') \
         || ! rules=$(gh api "repos/{owner}/{repo}/rules/branches/$base" --paginate --jq "$RULESET_CONTEXTS_JQ" 2>/dev/null) \
         || ! branch_json=$(gh api "repos/{owner}/{repo}/branches/$base" 2>/dev/null) \
         || ! jq -e 'type == "object" and has("protection")' >/dev/null 2>&1 <<<"$branch_json" \
-        || ! classic=$(jq -r '.protection.required_status_checks | (.contexts // []) + [(.checks // [])[] | .context] | .[] | "ctx:" + .' <<<"$branch_json" 2>/dev/null) \
-        || grep -q '^unnameable:' <<<"$rules"; then
+        || ! classic=$(jq -r '.protection.required_status_checks | (.contexts // []) + [(.checks // [])[] | .context] | .[] | "ctx:" + .' <<<"$branch_json" 2>/dev/null); then
+        return 1
+    fi
+    printf '%s\n%s\n' "$rules" "$classic"
+}
+
+required_contexts() {
+    local lines=""
+    if ! lines=$(required_rule_lines "$1") || grep -q '^unnameable:' <<<"$lines"; then
         echo '[]'
         return 0
     fi
-    printf '%s\n%s\n' "$rules" "$classic" | jq -R -s -c 'split("\n") | map(select(startswith("ctx:")) | ltrimstr("ctx:")) | unique'
+    printf '%s\n' "$lines" | jq -R -s -c 'split("\n") | map(select(startswith("ctx:")) | ltrimstr("ctx:")) | unique'
 }
 
 # Every child this command runs out of the checkout — the review gate's
@@ -1040,7 +1058,7 @@ refuse_retired_settings() {
 
 main() {
     local pr_num="" method="--squash" delete_branch=true
-    local check_only=false dry_run=false auto=false supplied_head=""
+    local check_only=false dry_run=false auto=false supplied_head="" require_context=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -1073,6 +1091,15 @@ main() {
             shift
             ;;
         --expected-head) supplied_head="${2:-}"; shift 2 ;;
+        --require-context)
+            # An empty name would read as the option being absent and skip
+            # the arm's required-context check, so it is refused here.
+            if [ -z "${2:-}" ]; then
+                echo "Error: --require-context needs a non-empty context name" >&2; exit 1
+            fi
+            require_context="$2"
+            shift 2
+            ;;
         --dry-run)
             dry_run=true
             shift
@@ -1100,6 +1127,9 @@ main() {
     fi
     if [ -n "$supplied_head" ] && ! [[ "$supplied_head" =~ ^[0-9a-fA-F]{40}$ ]]; then
         echo "Error: --expected-head must be a 40-character commit SHA" >&2; exit 1
+    fi
+    if [ -n "$require_context" ] && [ "$auto" != true ]; then
+        echo "Error: --require-context gates the --auto arm and needs --auto" >&2; exit 1
     fi
 
     if [ "$check_only" = true ]; then
@@ -1156,10 +1186,26 @@ main() {
     # Before any other stderr: callers route on this refusal's first line.
     local gate_gap slug
     [ "$auto" = false ] || [ "$dry_run" = true ] || gate_gap=$(merge_gate_gap "$pr_num" "$token")
+    # Read on its own rather than from the check result, which carries the
+    # required set only when the checks rollup was readable: a PR opened
+    # seconds ago has no check yet, and its rollup read fails. A failed read
+    # proves no gate either way, which the ruleset remedy would misstate.
+    local rule_lines=""
+    if [ -z "${gate_gap:-}" ] && [ -n "$require_context" ] && [ "$dry_run" != true ]; then
+        if ! rule_lines=$(with_token "$token" required_rule_lines "$pr_num"); then
+            gate_gap=unverified
+        elif ! grep -qxF -- "ctx:$require_context" <<<"$rule_lines"; then
+            gate_gap=required_context
+        fi
+    fi
     if [ -n "${gate_gap:-}" ]; then
         slug=$(kendex_github_resolve_gh_repo "${PROJECT_ROOT:-$PWD}" 2>/dev/null) || slug=unresolved
         echo "arm: no-merge-gate=$gate_gap repo=$slug" >&2
-        echo "  Nothing mutated. Enable auto-merge and a required status check or review rule on the base branch." >&2
+        case "$gate_gap" in
+            required_context) echo "  Nothing mutated. The base branch does not require '$require_context'; require it in the repository's ruleset." >&2 ;;
+            unverified) echo "  Nothing mutated. The base branch's rules could not be read, so no merge gate is proven; retry once they read." >&2 ;;
+            *) echo "  Nothing mutated. Enable auto-merge and a required status check or review rule on the base branch." >&2 ;;
+        esac
         exit 1
     fi
 

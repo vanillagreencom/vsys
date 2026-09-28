@@ -31,6 +31,11 @@ fi
   printf 'review-gate-error=diagnostics-load value=%q\n%s\n' "$SCRIPT_DIR/lib/diagnostics.sh" 'Could not load the diagnostics library.' >&2
   exit 2
 }
+if [ ! -r "$SCRIPT_DIR/lib/settings.sh" ]; then
+  rg_message error settings-load "$SCRIPT_DIR/lib/settings.sh" 'Could not load the settings library.' >&2
+  exit 2
+fi
+. "$SCRIPT_DIR/lib/settings.sh" || exit 2
 
 print_usage() {
   cat <<'USAGE'
@@ -38,6 +43,16 @@ Usage: validate-workflow.sh [--adopt] [--templates-dir DIR] [--adopted-path-file
 
 Checks that THIS repository's adopted review-gate writer workflow is still
 the shipped template.
+
+A repository with no writer passes only when it posts no gate status:
+REVIEW_GATE_WRITER=optional together with REVIEW_GATE_MODE=off, both read
+from the environment and the committed kendex.settings.toml only, prints one
+`ok check=workflow-absent` line. A tracked workflow that names the engine
+outside a comment is still a writer there, and fails as
+`workflow-reference-count`. REVIEW_GATE_WRITER=optional under an enforced
+mode is one `FAIL check=workflow-absent-mode` line, and the default
+REVIEW_GATE_WRITER=required keeps `FAIL check=workflow-count`. A writer that
+is executed is checked in full whatever REVIEW_GATE_WRITER says.
 
 --adopt re-installs the template over an adopted copy that still equals a
 version of the template this repository's history shipped, so a refresh that
@@ -81,8 +96,9 @@ clean exits 0 with that prerequisite unverified.
 libraries stay with this script. Default: the templates beside this script.
 
 --adopted-path-file writes the selected repository-relative writer path to FILE
-only after all checks pass. The path has no added newline. Adoption consumes
-this file so workflow discovery has one owner.
+only after all checks pass. The path has no added newline, and a writer absent
+by setting writes an empty FILE. Adoption consumes this file so workflow
+discovery has one owner.
 
 Output: one verdict line per check: STATUS check=KEY value=VALUE.
 STATUS is ok, FAIL or note. VALUE uses Bash printf %q escaping.
@@ -93,7 +109,10 @@ Exit codes:
      `ok check=workflow-readopted` line names)
   1  at least one FAIL line
   2  the check could not run at all (bad arguments, not a git repository, no
-     shipped template to compare against, a history or write failure)
+     shipped template to compare against, a history or write failure). With
+     no writer found, an unreadable or invalid REVIEW_GATE_WRITER exits 2,
+     and so does REVIEW_GATE_MODE, which is read only when
+     REVIEW_GATE_WRITER=optional
 USAGE
 }
 
@@ -199,6 +218,20 @@ code_lines() { # FILE — YAML comment-only lines dropped outside block scalars
   ' "$1"
 }
 
+# Ends every run that reached a verdict. The selected path is empty when the
+# writer is absent by setting.
+adopted=""
+finish() {
+  printf '\n'
+  if [ "$FAILED" -gt 0 ]; then
+    exit 1
+  fi
+  if [ -n "$ADOPTED_PATH_FILE" ]; then
+    printf '%s' "$adopted" >"$ADOPTED_PATH_FILE" || die adopted-path-write "$ADOPTED_PATH_FILE" "could not write the selected workflow path"
+  fi
+  exit 0
+}
+
 # ========================= find the adopted copy ===========================
 
 # TRACKED files only: Actions runs what is committed, so an untracked
@@ -233,7 +266,6 @@ while IFS= read -r -d '' wf; do
   printf '%s\0' "$wf" >>"$TMP/workflows"
 done <"$TMP/listing"
 
-adopted=""
 adopted_count=0
 while IFS= read -r -d '' wf; do
   [ -n "$wf" ] || continue
@@ -257,13 +289,50 @@ while IFS= read -r -d '' wf; do
   adopted="$wf"
 done <"$TMP/workflows"
 
+# The single-writer contract is about how many workflows can post the gate
+# status, and an INVOCATION has no closed set of spellings — `exec X`,
+# `bash X`, `sh -c`, a variable holding the path. Rather than keep a list
+# nobody can finish, this counts tracked workflows whose CODE mentions the
+# engine at all. It over-approximates on purpose and says only what it
+# proves: a second workflow naming the engine outside a comment is something
+# a person has to look at, whether or not it turns out to run it.
+engine_refs=0
+engine_ref_files=""
+while IFS= read -r -d '' wf; do
+  [ -n "$wf" ] && [ -f "$wf" ] && [ ! -L "$wf" ] || continue
+  code_lines "$wf" >"$TMP/wf.code"
+  ref_rc=0
+  grep -qF -- 'review-writer.sh' "$TMP/wf.code" || ref_rc=$?
+  [ "$ref_rc" -le 1 ] || die workflow-reference-read "$wf" "$wf: unreadable while counting engine references (grep exit $ref_rc)"
+  [ "$ref_rc" -eq 0 ] || continue
+  engine_refs=$((engine_refs + 1))
+  engine_ref_files="${engine_ref_files:+$engine_ref_files, }$wf"
+done <"$TMP/workflows"
+
 if [ "$adopted_count" -eq 0 ]; then
-  bad workflow-count "$adopted_count" "no tracked workflow under .github/workflows/ EXECUTES review-writer.sh — nothing writes this repo's gate status; copy templates/review-gate-writer.yml in (references/adoption.md)"
+  # A missing writer passes only where the engine's own switch is off: under
+  # an enforced mode every consumer of the gate status would wait on a status
+  # nothing posts. lib/settings.sh judges both keys for every reader. A
+  # workflow naming the engine by another spelling is still a writer, so the
+  # reference count above has to be zero. Settings resolve against the
+  # repository root, where CI runs.
+  writer_state="$(rg_writer_state)" || exit 2
+  case "$writer_state" in
+    none)
+      if [ "$engine_refs" -gt 0 ]; then
+        bad workflow-reference-count "$engine_refs" "no tracked workflow executes review-writer.sh, yet $engine_refs name it outside a comment ($engine_ref_files) — a workflow reaching the engine by another spelling is a writer this check cannot compare. Read it, and delete the reference or adopt the template"
+      else
+        ok workflow-absent optional "no tracked workflow executes review-writer.sh, and REVIEW_GATE_WRITER=optional with REVIEW_GATE_MODE=off says this repository posts no gate status"
+      fi
+      ;;
+    enforced) bad workflow-absent-mode enforce "no tracked workflow executes review-writer.sh, and REVIEW_GATE_WRITER=optional permits that only while REVIEW_GATE_MODE=off — with the gate enforced, every pull request waits on a gate status nothing posts. Set REVIEW_GATE_MODE = \"off\" in kendex.settings.toml, or copy templates/review-gate-writer.yml in (references/adoption.md)" ;;
+    required) bad workflow-count "$adopted_count" "no tracked workflow under .github/workflows/ EXECUTES review-writer.sh — nothing writes this repo's gate status; copy templates/review-gate-writer.yml in (references/adoption.md), or, for a repository that posts no gate status, set REVIEW_GATE_WRITER = \"optional\" and REVIEW_GATE_MODE = \"off\" in kendex.settings.toml" ;;
+    *) die writer-state "$writer_state" "lib/settings.sh rg_writer_state printed a state it does not define" ;;
+  esac
   if [ -n "$nested_engine" ]; then
     rg_report note workflow-nested "$nested_engine" "a NESTED file does execute the engine ($nested_engine), and GitHub runs only direct children of .github/workflows/ — move it up one level"
   fi
-  printf '\n'
-  exit 1
+  finish
 fi
 if [ "$adopted_count" -gt 1 ]; then
   bad workflow-count "$adopted_count" "$adopted_count tracked workflows execute review-writer.sh — the gate has exactly one writer by design; delete the copies that are not the adopted one"
@@ -285,26 +354,6 @@ elif git ls-files --error-unmatch -- "$exec_target" >/dev/null 2>&1; then
 else
   bad workflow-target-untracked "$exec_target" "$adopted execs $exec_target, which is NOT tracked — Actions checks out tracked files only, so that path is absent in CI and the writer fails to execute on every leg (\`git add $exec_target\`)"
 fi
-
-# The single-writer contract is about how many workflows can post the gate
-# status, and an INVOCATION has no closed set of spellings — `exec X`,
-# `bash X`, `sh -c`, a variable holding the path. Rather than keep a list
-# nobody can finish, this counts tracked workflows whose CODE mentions the
-# engine at all. It over-approximates on purpose and says only what it
-# proves: a second workflow naming the engine outside a comment is something
-# a person has to look at, whether or not it turns out to run it.
-engine_refs=0
-engine_ref_files=""
-while IFS= read -r -d '' wf; do
-  [ -n "$wf" ] && [ -f "$wf" ] && [ ! -L "$wf" ] || continue
-  code_lines "$wf" >"$TMP/wf.code"
-  ref_rc=0
-  grep -qF -- 'review-writer.sh' "$TMP/wf.code" || ref_rc=$?
-  [ "$ref_rc" -le 1 ] || die workflow-reference-read "$wf" "$wf: unreadable while counting engine references (grep exit $ref_rc)"
-  [ "$ref_rc" -eq 0 ] || continue
-  engine_refs=$((engine_refs + 1))
-  engine_ref_files="${engine_ref_files:+$engine_ref_files, }$wf"
-done <"$TMP/workflows"
 
 if [ "$engine_refs" -gt 1 ]; then
   bad workflow-reference-count "$engine_refs" "$engine_refs tracked workflows name review-writer.sh outside a comment ($engine_ref_files) — the gate has exactly one writer by design, and a second workflow reaching the engine by any spelling can post gate statuses outside the single-writer group. Read it and delete the reference, or the workflow"
@@ -470,11 +519,4 @@ if [ "$CHECK_RUN_ENABLED" -eq 1 ]; then
   rg_report note workflow-check-name "REVIEW_GATE_CHECK_RUN_NAME" "the check_run opt-in is enabled, so the repository variable REVIEW_GATE_CHECK_RUN_NAME must carry the reviewer's check name (Settings → Secrets and variables → Actions), or the trigger relays nothing. NOT CHECKED HERE — this tool reads files, and that value is not in one; confirm it yourself"
 fi
 
-printf '\n'
-if [ "$FAILED" -gt 0 ]; then
-  exit 1
-fi
-if [ -n "$ADOPTED_PATH_FILE" ]; then
-  printf '%s' "$adopted" >"$ADOPTED_PATH_FILE" || die adopted-path-write "$ADOPTED_PATH_FILE" "could not write the selected workflow path"
-fi
-exit 0
+finish

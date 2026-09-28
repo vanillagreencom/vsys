@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Line readers for a GitHub Actions workflow file, shared by the suites that
 # ask which of a workflow's jobs run: this package's ci-template suite and
-# kendex's own tools/tests/ci-class-job-set.test.sh. gh-eval.py beside this
+# kendex's own tools/tests/ci-aggregate.test.sh. gh-eval.py beside this
 # file evaluates what they read.
 #
 # Sourced, never run. Each reader takes the workflow path and reads only the
@@ -76,6 +76,17 @@ triggers() { # WORKFLOW
     on && /^[^ ]/ { exit }
     on && /^  [a-z_]+:/ { sub(/:.*/, ""); sub(/^  /, ""); print }
   ' "$1" | LC_ALL=C sort
+}
+
+# The entries of JOB's own `permissions:` block, `scope: level` each, sorted
+# and blank-separated; the workflow-level block is never read.
+job_permissions() { # WORKFLOW JOB
+  awk -v job="$2" '
+    /^  [A-Za-z0-9_-]+:/ { in_job = ($1 == job ":"); in_perms = 0; next }
+    in_job && /^    permissions:/ { in_perms = 1; next }
+    in_job && in_perms && /^      [a-z-]+: / { sub(/^ +/, ""); print; next }
+    in_perms { in_perms = 0 }
+  ' "$1" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'
 }
 
 # Whether the job named CI runs on EVENT with every job it needs at RESULT:

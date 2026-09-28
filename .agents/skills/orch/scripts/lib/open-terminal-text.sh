@@ -18,9 +18,14 @@ ot_message() { # REASON FIELD=VALUE...
     items-missing) text='Specify a work item.' ;;
     tracker-invalid) text='The tracker must be linear or github.' ;;
     command-missing) text='Select a harness or a custom command.' ;;
-    cmd-unbalanced-quote) text='Put the brief in a file and reference it, or escape the quote.' ;;
+    cmd-unbalanced-quote) text='The --cmd command leaves a quote open, so the shell that runs it would read the rest of the line as quoted text and either refuse it or wait for a closing quote, and the harness would never start. Write the brief to a file, pass it as --brief-file PATH and put a bare {brief} in the --cmd command where the brief goes: open-terminal quotes it for the GUI, the pane and the hosted remote shell alike. Nothing was launched.' ;;
+    brief-quoted) text='The --cmd command puts {brief} inside a quote or behind a backslash. open-terminal supplies the brief'"'"'s own quotes, so a quote around them would close early, split the brief into words or expand its $ and backticks. Write {brief} bare, outside every quote. Nothing was launched.' ;;
+    brief-unreferenced) text='No --cmd command carries {brief}, so the brief file would reach no harness. A brief file goes with a --cmd command that has {brief} where the brief goes; a --harness launch without --cmd writes its own brief. Nothing was launched.' ;;
+    brief-file-missing) text='The --cmd command carries {brief} but no --brief-file names the brief, so the harness would start on an empty brief. Write the brief to a file and pass it as --brief-file PATH. Nothing was launched.' ;;
+    brief-file-unreadable) text='The --brief-file path is not a readable file. Write the brief to a regular file and pass its path. Nothing was launched.' ;;
+    brief-file-empty) text='The --brief-file holds no text but whitespace, so the harness would start with nothing to do and hold its seat idle. Write the brief into the file. Nothing was launched.' ;;
     desktop-harness) text='Use the Codex Desktop thread tools for this harness.' ;;
-    unsupported-for-oversee) text='No harness adapter reads this fleet lane'"'"'s context window, so nothing would judge its handoff mark. Nothing was launched. harness=none is a launch naming no harness; reason=no-window-read is a Pi whose installed pi-hooks sends no context_window on its Stop payload, so install the current pi-hooks. A hosted lane'"'"'s host keeps the item its create made, so launch it again with --relaunch after the fix. Launch the lane on claude, codex or pi.' ;;
+    unsupported-for-oversee) text='No harness adapter reads this fleet lane'"'"'s context window, so nothing would judge its handoff mark. Nothing was launched. harness=none is a launch naming no harness; reason=no-window-read is a Pi whose installed pi-hooks sends no context_window on its Stop payload, so install the current pi-hooks. harness=copilot stays refused until two things exist: a reader of a Copilot session'"'"'s context window, and a shared handoff judge for a harness whose compaction stays on, as Copilot 1.0.88'"'"'s does, no switch turning it off. A hosted lane'"'"'s host keeps the item its create made, so launch it again with --relaunch after the fix. Launch the lane on claude, codex or pi.' ;;
     launch-window-unknown) text='The claude adapter names no context window for this model, so this fleet lane would run with compaction off and no capacity for the shared rule to judge. Nothing was launched. Launch it on a model the window table in scripts/lib/adapters/claude.sh names.' ;;
     launch-compaction-missing) text='This fleet --cmd command lacks the required compaction policy settings, so the handoff rule cannot rely on the expected capacity. Nothing was launched. Add the words this line names, in that order, inside the command, each quoted so the shell passes it whole: the claude word as --settings='"'"'{"env":{"DISABLE_AUTO_COMPACT":"1"}}'"'"'.' ;;
     compaction-on) text='Pi would compact this fleet lane on its own before its handoff mark. Nothing was launched. Set compaction.enabled to false in the settings file named, and leave no project .pi/settings.json setting it back to true; the shared context rule controls handoff. A hosted lane'"'"'s host keeps the item its create made, so launch it again with --relaunch after the fix.' ;;
@@ -36,6 +41,8 @@ ot_message() { # REASON FIELD=VALUE...
     lane-harness-missing) text='Select a harness for automatic lane selection.' ;;
     lane-unavailable) text='No lane meets the usage threshold. Wait for a reset, raise the threshold or select a lane. The keyed lanes: line above names what each lane was and, where a threshold applied, the threshold.' ;;
     lane-resolution-failed) text='The lanes helper failed to select an account.' ;;
+    copilot-pool-walled) text='Every Pi account this launch could spend is at or above the usage threshold on its Copilot pool, as ORCH_LANE_COPILOT_POOL states it. Nothing was launched. The reading is the owner'"'"'s statement and moves only when the owner restates it; waiting for a reset changes nothing here. The keyed lanes: line above names the pool and the threshold.' ;;
+    copilot-pool-unstated) text='This Pi launch spends the Copilot pool, and ORCH_LANE_COPILOT_POOL states no reading for any account, so nothing measures what it would spend. Nothing was launched. State the owner'"'"'s reading in that setting (lanes --help); waiting changes nothing.' ;;
     lane-directory-missing) text='The specified lane directory does not exist.' ;;
     lane-unknown) text='The lane is neither a known alias nor a directory.' ;;
     lane-refused) text='A lane setting excludes or retires this lane. No window was opened.' ;;
@@ -46,11 +53,12 @@ ot_message() { # REASON FIELD=VALUE...
     lane-selected) text='The launch account is selected.' ;;
     launch-trusted) text='The launch directory is trusted in the config this launch will read, so the harness starts into it rather than onto the folder-trust question. route=preapproved is the account config already carrying the entry; route=launch-home is a CODEX_HOME built for this launch under the account, holding the account files by link and a config of its own, because the account config is a link the account shim repoints at every launch; route=account-config is the entry written into the claude config dir .claude.json, the file that harness keeps its own answer in.' ;;
     launch-trust-missing) text='The folder-trust entry for this launch directory could not be made in the config this launch would read. Nothing was launched: the harness would open on the folder-trust question and wait there for an answer nobody at the pane gives. Remedy by reason: trust-refused is an answer already recorded for this directory that is not trust, which this will not overwrite, so change it where it was written or launch somewhere else; config-unreadable is the account config present and unreadable or unparseable, a dangling shim link being the usual codex cause, so relink or repair it, and for a claude config dir .claude.json the parser'"'"'s own words are printed under this line, the position to repair the file at; account-store is the account transcript directory that could not be made; home-create is the private CODEX_HOME under the account, or the claude config dir, that could not be made, and home-path, home-link and home-entry are that CODEX_HOME that could not be built, so check that the account directory is writable, home-entry naming a real file or directory sitting where a link to the account belongs; config-write is that home config.toml, or a claude config dir .claude.json, that could not be written, the claude writer'"'"'s own words printed under this line the same way, and config-install the rename over it that failed; entry-unreadable is the entry written and not read back. The lane host provider makes this entry for a sandboxed lane instead.' ;;
-    lane-model-walled) text='The account has no usage window left for the model this launch passes; bucket names the shared or model window that decided, and pct names how much of it is used. Nothing was launched: the session would open on a usage banner. A window nobody could measure is lane-model-unreadable instead. The threshold that judged is on the keyed lanes: line above.' ;;
+    lane-model-walled) text='The account has no usage window left for the model this launch passes, once the lanes already on it spend what they are expected to; bucket names the shared or model window that decided, pct names how much of it is used, and projected-headroom the room left after that expected burn, or none where the claims could not be read. Nothing was launched: the session would open on a usage banner. A window nobody could measure is lane-model-unreadable instead. The threshold that judged is on the keyed lanes: line above.' ;;
     lane-model-unreadable) text='The lane could not be read for the model this launch passes. Nothing was launched: an unread window is not an empty one.' ;;
     host-credential-dead) text='The account read expired, and the lane host reports holding that same account. Nothing was launched. The expired copy is the credential this machine holds, which could not be renewed, or the copy the provider holds where its accounts row reports the account expired: lanes list names which in its THROUGH column. Remedy for THROUGH local: log in again on this machine for that config directory; a provider that re-seeds the host from that directory at every create, as the reference provider does, sends this dead copy again. For THROUGH host, renew the credential the provider holds. A RELAUNCH onto this same account proceeds instead, on the copy the provider installed; a window read for the account walls either shape.' ;;
     host-relaunch-credential) text='Nothing here measured this account, and the lane host reports holding it, so the relaunch proceeds on the copy the provider installed. Nothing checked that copy is live. The resumed session reports its own usage banner, which the watch reads as usage-limit. A window this machine CAN read still walls a relaunch: an account at or above --lane-max-pct is refused as lane-model-walled, hosted or not.' ;;
     host-accounts-unanswered) text='The lane host could not say which accounts it holds, so this launch is judged on the usage windows this machine reads, exactly as an unhosted one is. Where a keyed lanes: line sits above this one, it names the provider failure; where none does, the read of that answer failed here. A provider that does not implement the optional accounts verb is not reported at all.' ;;
+    lane-claims-unreadable) text='The in-flight lane claims could not be read, so the lanes already on this account cannot be charged against its window. Nothing was launched. The keyed lanes: line above names the store; fix it, or set OVERSEE_WATCH_STATE_DIR.' ;;
     lane-judge-failed) text='The lane judge refused before it answered for this lane. Nothing was launched. The keyed lanes: line above names the cause.' ;;
     lane-premise-unmet) text='The pane never drew either harness at its own screen inside the verification timeout, so nothing places the account read after the harness started. The launch stands and that read is reported as unobserved rather than as a verified account.' ;;
     lane-verified) text='The pane runs the account that was picked.' ;;
@@ -98,7 +106,7 @@ ot_message() { # REASON FIELD=VALUE...
     worktree-failed) text='The worktree helper failed to create this item.' ;;
     worktree-reuse-merged) text='The item pull request merged, so its tree is kept as it stands and no rebase is attempted.' ;;
     worktree-links-failed) text='The kept tree has configured symlinks the repair could not restore, so the lane could not reach its own .agents scripts. The item was not launched.' ;;
-    resume-lineless) text='The hosted codex resume carries no continuation line, because codex resume refuses a prompt beside --last. The lane is up and idle: paste its continuation line into the pane per oversee.md section Talking to a lane, Pane paste.' ;;
+    resume-lineless) text='The hosted codex resume carries no continuation line, because codex resume refuses a prompt beside --last. The lane is up and idle: paste its continuation line into the pane per oversee-lanes.md section Talking to a lane, Pane paste.' ;;
     host-resolve-failed) text='The lane-host helper could not resolve the host.' ;;
     host-invalid) text='A hosted launch needs tmux mode, a resolved lane and --harness claude, codex or pi. Nothing was created.' ;;
     host-create-failed) text='The lane host failed to create this item. No local lane was started.' ;;
@@ -143,7 +151,7 @@ usage() {
 Usage: open-terminal [--tracker linear|github] [--repo OWNER/REPO] ITEM... [options]
 
 Options:
-  --harness <name>  claude, codex, opencode, pi
+  --harness <name>  claude, codex, opencode, pi, copilot
   --tmux            Open tmux windows in the fleet's tmux session: the
                     session ORCH_TMUX_SESSION names; else, under --state-dir,
                     the session the fleet state records as tmux.session;
@@ -167,6 +175,12 @@ Options:
                     overrides the auto-detected tmux mode and still opens GUI
                     terminals, which receive no TMUX or TMUX_PANE.
   --cmd "..."       Custom command; {issue}, {item}, and {repo} are replaced.
+                    {brief} is replaced by the --brief-file text, quoted so
+                    every shell on the way reads it back verbatim, so {brief}
+                    stands bare: one inside a quote or behind a backslash is
+                    refused as brief-quoted. A brief written inline must
+                    balance its own quotes, and one that leaves a quote open
+                    is refused as cmd-unbalanced-quote.
                     It is the WHOLE command: it is rendered verbatim and no
                     launch flag is appended to it, so a --cmd launch names its
                     own model, reasoning effort, permission posture and
@@ -174,9 +188,19 @@ Options:
                     command. --launch-flags beside it reach nothing and are
                     refused as launch-flags-unreachable, rather than gating and
                     recording a model the harness never runs.
+  --brief-file PATH The brief a --cmd command places as {brief}: the file's
+                    text less its trailing newlines, the one route for a brief
+                    holding any quote, `$` or backtick. The two come as a pair:
+                    a --brief-file with no --cmd carrying {brief} is refused
+                    as brief-unreferenced, a {brief} with no --brief-file as
+                    brief-file-missing, a path that is not a readable file as
+                    brief-file-unreadable, and a file holding only whitespace
+                    as brief-file-empty.
   --lane <spec>     Launch under a chosen harness account. `auto` picks the
                     qualifying account with the fewest launches in flight for
-                    --harness; `auto:<h>` picks for harness <h>; a config dir
+                    --harness, never an account a fleet records as its
+                    overseer's (`lanes --help`, pick); `auto:<h>` picks for
+                    harness <h>; a config dir
                     is used literally; any other value is looked up as a lane
                     alias. A named lane (alias or config dir) that
                     ORCH_LANE_EXCLUDE or ORCH_LANE_RETIRE covers is refused,
@@ -197,8 +221,20 @@ Options:
                     a --cmd launch on a named config dir or alias, with no
                     --harness — has no row there and reaches no such gate, its
                     argv being the caller's own. A NAMED lane is then judged
-                    on the window for that model, claude and codex only:
-                    refused when it is at or above --lane-max-pct, and
+                    on the window for that model, claude and codex only, and
+                    pi on a github-copilot/ model (--provider github-copilot
+                    beside a bare --model counts) on the Copilot pool
+                    ORCH_LANE_COPILOT_POOL states (`lanes --help`), which
+                    `auto` with --harness pi picks on too, refusing as
+                    copilot-pool-unstated where no pool is stated and
+                    copilot-pool-walled where every stated one is spent; such
+                    a lane runs under PI_CODING_AGENT_DIR, its settings and
+                    carrier read there for a fleet launch:
+                    refused when it is at or above --lane-max-pct once the
+                    lanes already on it are charged their expected burn, the
+                    projection `auto` judges on, refused as
+                    lane-claims-unreadable when the claim store that
+                    projection counts cannot be read, and
                     refused as unreadable when nothing measures it. A config
                     dir that neither a lane record nor a provider reading
                     covers is used as given, there being nothing to judge it
@@ -260,7 +296,7 @@ Options:
                     positional beside --last is the session id. A hosted codex
                     lane therefore resumes with no line, reported as
                     resume-lineless; paste its line into the pane per
-                    oversee.md § Talking to a lane, Pane paste.
+                    oversee-lanes.md § Talking to a lane, Pane paste.
                     WHICH CREDENTIAL RUNS THE LANE: the copy the provider
                     installed on the host. `create` receives the lane's config
                     dir as --account on every call, a relaunch included, and
@@ -349,6 +385,7 @@ Options:
                       pi        --model, --thinking; pi also spells the level on
                                 the model value, `--model sonnet:high`, which
                                 names both choices in one token
+                      copilot   --model, --reasoning-effort
                     The model also gates the lane, which is judged on that
                     model's own window rather than the account's binding one.
                     Every codex command built here, fresh launch, relaunch
@@ -356,12 +393,17 @@ Options:
                     check_for_update_on_startup=false ahead of these flags,
                     so Codex never opens its startup update prompt, where a
                     pasted line would install the update and end the session.
+                    Every copilot command built here carries --autopilot
+                    --max-autopilot-continues 3 ahead of these flags, so a
+                    turn that stops short is continued with nobody at the
+                    pane, at most three times.
                     EVERY COMMAND BUILT HERE TAKES THE HARNESS QUESTION TOOL
                     AWAY WHERE A ROW BELOW NAMES WORDS, ahead of these flags;
                     a lane asks through lane-mail.
                       claude    --disallowedTools=AskUserQuestion,EnterPlanMode
                       codex     -c features.default_mode_request_user_input=false
                       pi        --exclude-tools question
+                      copilot   --no-ask-user
                     An opencode lane keeps its tool: no flag turns it off. A
                     --cmd launch on a harness with words carries them in its
                     command, --lane or not, or is refused as
@@ -369,12 +411,14 @@ Options:
   --relaunch        Replace a dead session on items that may already have a
                     worktree: an existing tree is reused instead of being read
                     as another session's claim. The newest matching Claude,
-                    Codex, or Pi session resumes natively, and the resumed
-                    command carries one continuation line telling the lane to
-                    resume its orch workflow and read `lane-mail inbox`, and a
-                    claude or pi lane to re-arm its mailbox monitor
-                    (`lane-mail watch`), so no follow-up is pasted into the
-                    pane. A codex lane arms no monitor: Codex starts no turn
+                    Codex, Pi or Copilot session resumes natively, a Copilot
+                    one being the newest whose session record names the lane's
+                    worktree, and the resumed command carries one continuation
+                    line telling the lane to resume its orch workflow and read
+                    `lane-mail inbox`, and a claude or pi lane to re-arm its
+                    mailbox monitor (`lane-mail watch`), a copilot lane its
+                    `lane-mail watch --once`, so no follow-up is pasted into
+                    the pane. A codex lane arms no monitor: Codex starts no turn
                     for its output. A hosted codex lane is
                     the exception: it resumes with no line, reported as
                     resume-lineless, and its line is pasted into the pane

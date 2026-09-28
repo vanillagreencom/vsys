@@ -14,7 +14,7 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 # Every lane this suite measures lives under LANES_HOME; an inherited lane
 # setting would point discovery at the operator's real accounts.
-unset ORCH_LANE_DIRS ORCH_LANE_ALIASES ORCH_LANE_EXCLUDE ORCH_LANE_RETIRE ORCH_LANES_USAGE_TTL CODEX_HOME
+unset ORCH_LANE_DIRS ORCH_LANE_ALIASES ORCH_LANE_EXCLUDE ORCH_LANE_RETIRE ORCH_LANE_COPILOT_POOL ORCH_LANES_USAGE_TTL CODEX_HOME
 # The two thresholds the checkout configures. Every run that asserts a threshold
 # goes through run_lanes or claims_table, which run from outside the checkout as
 # well, so neither the environment nor kendex.settings.toml supplies one: those
@@ -195,6 +195,15 @@ observe() {
         value="$(awk -v a="${name#considered.}" '$1 == a { print $3 }' "$ERR" 2>/dev/null | paste -sd, - || true)"
         value="${value:-none}"
         ;;
+      # The STATUS and DETAIL the refusal's stderr table gives that lane, as
+      # `status:detail`, or none. DETAIL is the last column and holds spaces,
+      # so it is cut at the header's own offset; underscored, since `expect`
+      # splits on whitespace.
+      tabled.*)
+        value="$(awk -v a="${name#tabled.}" '$1 == "LANE" && $NF == "DETAIL" { c = index($0, "DETAIL") }
+          c && $1 == a { print $4 ":" substr($0, c) }' "$ERR" 2>/dev/null | paste -sd, - || true)"
+        value="${value// /_}"; value="${value:-none}"
+        ;;
       # A notice another keyed line can precede: a state directory that cannot
       # hold a refusal cannot hold the refresh lock either, and that notice is
       # printed first.
@@ -301,6 +310,106 @@ table \
   "pick --json returns the whole lane record and the qualifying set size||pick --harness claude --json|alias=claude qualifying_count=2" \
   "excluding the caller leaves the one other qualifying account|ORCH_LANE_DIRS=$H/.claude:$H/.eclaude:$H/.nclaude|pick --harness claude --exclude-lane $H/.claude --json|alias=eclaude qualifying_count=1" \
   "pick exits 3 when no lane is under the threshold||pick --harness claude --max-pct 15|rc=3"
+
+echo "=== pick: a Pi launch on a Copilot model is judged on the stated Copilot pool ==="
+# Such a launch spends Copilot credits and no Claude or Codex window, so the
+# owner's ORCH_LANE_COPILOT_POOL reading is its whole judgement: a monthly
+# bucket at the used share rounded up and held at 100 past the grant, handed
+# back under Pi's own root variable. One named account unstated is unmeasured
+# rather than unlisted (which a launcher would launch on), no entry at all is
+# exit 5 by the setting's name, and entries exclusion removed are a pick with
+# no candidate. `list` stays the measured harnesses.
+mkdir -p "$H/.pi1"
+POOL="ORCH_LANE_COPILOT_POOL=$H/.pi1"
+COPILOT='--model github-copilot/claude-sonnet-5'
+table \
+  "a stated pool with room is picked as a monthly bucket, measured through the statement|$POOL=100000/1000000|pick --harness pi $COPILOT --json|rc=0 alias=pi1 binding_bucket=monthly headroom_pct=90 measured_through=stated" \
+  "the picked Pi account comes back as Pi's own root variable|$POOL=100000/1000000|pick --harness pi $COPILOT|rc=0 out=PI_CODING_AGENT_DIR=$H/.pi1" \
+  "a pool at its grant is walled even under a bound of 100|$POOL=1000000/1000000|pick --harness pi $COPILOT --max-pct 100|rc=3 key=no-candidate,harness=pi,max-pct=100,model=github-copilot/claude-sonnet-5,walled=1,unmeasured=0,seats=0" \
+  "one credit short of the grant rounds up to a spent pool|$POOL=999999/1000000|pick --lane $H/.pi1 --harness pi $COPILOT --max-pct 100 --json|rc=3 wall=100 binding_bucket=monthly" \
+  "a pool used past its grant reads 100, with no negative headroom|$POOL=1500/1000|pick --lane $H/.pi1 --harness pi $COPILOT --json|rc=3 wall=100 headroom_pct=0" \
+  "no stated pool is exit 5 by the setting's name||pick --harness pi $COPILOT|rc=5 key=copilot-pool-unstated,model=github-copilot/claude-sonnet-5,setting=ORCH_LANE_COPILOT_POOL" \
+  "a stated pool every entry of which is excluded is a pick with no candidate, not an unstated one|$POOL=1/10;ORCH_LANE_EXCLUDE=pi1|pick --harness pi $COPILOT|rc=3 key=no-candidate,harness=pi,max-pct=95,model=github-copilot/claude-sonnet-5,walled=0,unmeasured=0,seats=0" \
+  "a named account the setting states nothing for is unmeasured, never unlisted|$POOL=1/10|pick --lane $H/.eclaude --harness pi $COPILOT --json|rc=5 status=no_usage_data" \
+  "a Pi launch on a model outside the Copilot pool has no reading to pick on|$POOL=1/10|pick --harness pi --model sonnet|rc=1 key=invalid-pick-harness,option=--harness" \
+  "a listing of every harness leaves the stated pool out|$POOL=1/10|list --json|aliases=claude,eclaude,nclaude,openclaude"
+# An entry nothing can read refuses the pick, one row per shape, and the named
+# form refuses it too.
+table \
+  "a relative account dir is refused|ORCH_LANE_COPILOT_POOL=pi1=1/10|pick --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=pi1=1/10" \
+  "an entry with no reading is refused|ORCH_LANE_COPILOT_POOL=$H/.pi1|pick --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=$H/.pi1" \
+  "a grant of 0 is refused|$POOL=0/0|pick --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=$H/.pi1=0/0" \
+  "a percentage in place of the credits is refused|$POOL=10%|pick --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=$H/.pi1=10%" \
+  "a fractional credit count is refused, never read as its tail|$POOL=12.5/300|pick --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=$H/.pi1=12.5/300" \
+  "a second reading for one account is refused, never losing to the first|$POOL=1/10,$H/.pi1=10/10|pick --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=$H/.pi1=10/10" \
+  "a second reading spelling the account another way is the same account|$POOL=1/10,$H/.pi1/=10/10|pick --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=$H/.pi1/=10/10" \
+  "the named form refuses a second reading too|$POOL=1/10,$H/.pi1=10/10|pick --lane $H/.pi1 --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=$H/.pi1=10/10" \
+  "the named form refuses an entry nothing can read|$POOL=12.5/300|pick --lane $H/.pi1 --harness pi $COPILOT|rc=1 key=invalid-copilot-pool,entry=$H/.pi1=12.5/300"
+# Controls, one per rule, each turning the row it names: the share rounded
+# down reads one credit short as room; the clamp gone reads a pool past its
+# grant as a wall past 100; a named account the setting skips read as unlisted
+# exits 4; the monthly bucket dropped from the shared windows leaves the stated
+# pool measuring nothing; the absolute-path test gone picks a relative dir; the
+# grant test gone reads 0/0 as a spent pool; the chooser's and the named form's
+# refusal on an unreadable entry gone read it as no entry; the credits anchors
+# gone read 12.5/300 as 5/300; the duplicate check gone lets the first of two
+# readings for one account win; and a Pi pick admitted on any model picks one
+# outside the pool.
+pool_control() { # NAME FILE PATTERN REPLACEMENT|- ROW
+  if [[ "$4" == - ]]; then lanes_mutant "$1" "$2" "$3"; else lanes_mutant "$1" "$2" "$3" "$4"; fi
+  LANES="$TMP_ROOT/$1/scripts/lanes"
+  table "$5"
+  LANES="$SCRIPTS_DIR/lanes"
+}
+pool_control mutant-pool-floor lanes '(used \* 100 + limit - 1)' '(used * 100)' \
+  "control: rounded down, one credit short of the grant reads as room|$POOL=999999/1000000|pick --lane $H/.pi1 --harness pi $COPILOT --max-pct 100 --json|rc=0"
+pool_control mutant-pool-clamp lanes '(( used >= limit ))' 'false' \
+  "control: with no clamp a pool past its grant reads past 100 and below 0 headroom|$POOL=1500/1000|pick --lane $H/.pi1 --harness pi $COPILOT --json|wall=150 headroom_pct=-50"
+pool_control mutant-pool-unlisted lanes '\[\[ -n "\$found" || "\$harness" != pi \]\] || found="\$dir"' - \
+  "control: an unstated account read as unlisted exits 4, which a launcher launches on|$POOL=1/10|pick --lane $H/.eclaude --harness pi $COPILOT --json|rc=4"
+pool_control mutant-pool-bucket lib/lane-model.sh 'pct: (.monthly_pct' 'pct: (null' \
+  "control: with the monthly bucket out of the shared windows the stated pool measures nothing|$POOL=100000/1000000|pick --harness pi $COPILOT|rc=3"
+pool_control mutant-pool-relative lanes '"\$dir" != .\* || ' '' \
+  "control: with no absolute-path test a relative account dir is picked|ORCH_LANE_COPILOT_POOL=pi1=1/10|pick --harness pi $COPILOT|rc=0"
+pool_control mutant-pool-grant lanes '(( limit > 0 ))' '(( limit >= 0 ))' \
+  "control: with no grant test 0/0 is judged, as a spent pool|$POOL=0/0|pick --harness pi $COPILOT|rc=3"
+pool_control mutant-pool-status lanes 'pool_entries="\$(copilot_pool_entries)" || return 1$' 'pool_entries="$(copilot_pool_entries)"' \
+  "control: the chooser ignoring the refusal reads an unreadable entry as no entry|$POOL=12.5/300|pick --harness pi $COPILOT|rc=5"
+pool_control mutant-pool-lane-status lanes '[[:space:]]entries="\$(copilot_pool_entries)" || return 1$' ' entries="$(copilot_pool_entries)"' \
+  "control: the named form ignoring the refusal reads an unreadable entry as no reading|$POOL=12.5/300|pick --lane $H/.pi1 --harness pi $COPILOT|rc=5"
+pool_control mutant-pool-anchors lanes '=~ \^(\[0-9]{1,12})' '=~ ([0-9]{1,12})' \
+  "control: with the credits anchors gone 12.5/300 is read as its tail|$POOL=12.5/300|pick --harness pi $COPILOT|rc=0"
+pool_control mutant-pool-duplicate lanes 'case "\$seen" in' - \
+  "control: with no duplicate check the first of two readings for one account wins|$POOL=1/10,$H/.pi1=10/10|pick --harness pi $COPILOT --json|rc=0 monthly_pct=10 qualifying_count=2"
+pool_control mutant-pool-any-model lib/lane-launch.sh '\[\[ "\$2" != github-copilot.* || printf' 'printf' \
+  "control: a Pi pick admitted on any model is judged on the pool it does not spend|$POOL=1/10|pick --harness pi --model sonnet|rc=0"
+
+# The pool reading is the owner's statement, so a Pi pick asks no lane
+# provider, in either form, even with one configured: the stub logs every verb
+# it is asked. The control makes Pi picks ask again, and both rows read the
+# accounts call.
+PI_HOST_LOG="$TMP_ROOT/pi-host.log"
+PI_HOST="ORCH_LANE_HOST=$TEST_DIR/fixtures/lane-host;LANE_HOST_STUB_LOG=$PI_HOST_LOG;$POOL=1/10"
+# Run in this shell, never a command substitution: run_lanes numbers its run
+# directory, and a subshell's number is lost, so a second pick would reuse the
+# first one's usage cache and its cached provider answer.
+pi_host_calls() { # ARGS... — sets PI_CALLS to rc and the provider verbs asked
+  : > "$PI_HOST_LOG"
+  run_lanes "$PI_HOST" "$@"
+  PI_CALLS="$(awk '{ print $1 }' "$PI_HOST_LOG" | paste -sd, - || true)"
+  PI_CALLS="rc=$RC calls=${PI_CALLS:-none}"
+}
+pi_host_rows() { # EXPECT_CALLS LABEL_PREFIX
+  pi_host_calls pick --harness pi $COPILOT
+  assert_eq "$PI_CALLS" "rc=0 calls=$1" "$2 the chooser"
+  pi_host_calls pick --lane "$H/.pi1" --harness pi $COPILOT
+  assert_eq "$PI_CALLS" "rc=0 calls=$1" "$2 the named form"
+}
+pi_host_rows none "a Pi pick under a configured provider asks it nothing:"
+lanes_mutant mutant-pool-host lanes 'if \[\[ "\$1" == pi \]\]; then printf'
+LANES="$TMP_ROOT/mutant-pool-host/scripts/lanes"
+pi_host_rows accounts "control: a Pi pick that asks the provider calls its accounts verb:"
+LANES="$SCRIPTS_DIR/lanes"
 
 echo "=== unmeasurable lanes are never idle ==="
 # An expired login, an authenticated lane whose usage body carries none of the
@@ -1593,6 +1702,48 @@ stage_raw_rate unlabeled-model \
   "$(unlabeled_usage 60 2026-08-02T06:00:00Z)"
 table "an unlabeled model bucket matches its prior raw null identity|ORCH_LANE_DIRS=$H/.claude;OVERSEE_WATCH_STATE_DIR=$CACHE_STATE|$RATE_LIST|claude.usage_rate_state=measured claude.projected_wall_minutes=10"
 
+# An account bound by its Fable window, read twice ten minutes apart through
+# the overseer's own call. The endpoint does not hold the window's reset stamp
+# or its label spelling stable between two reads, so each row varies one of
+# them on the prior sample, and a reset between the readings still forms no
+# rate. Four controls, one per rule of same_window: the reset tolerance, the
+# window it must stay below, the label identity, and the equality fallback for
+# a stamp that does not parse.
+fable_usage() { # PERCENT RESET LABEL
+  jq -nc --argjson pct "$1" --arg reset "$2" --arg label "$3" '{
+    five_hour: {utilization: 5, resets_at: "2026-07-27T06:00:00Z"},
+    seven_day: {utilization: 20, resets_at: "2026-08-01T06:00:00Z"},
+    limits: [{kind: "weekly_scoped", percent: $pct, resets_at: $reset,
+              scope: {model: {display_name: $label}}}]}'
+}
+FABLE_RATE="pick --lane $H/.claude --harness claude --model claude-fable-5-1 --json"
+fable_env() { printf 'ORCH_LANE_DIRS=%s;OVERSEE_WATCH_STATE_DIR=%s' "$H/.claude" "$TMP_ROOT/model-identity-$1"; }
+stage_raw_rate fable-drift \
+  "$(fable_usage 45 2026-08-01T06:00:00.100000+00:00 'Fable 5.1')" \
+  "$(fable_usage 40 2026-08-01T05:59:59.900000+00:00 'Fable 5.1')"
+stage_raw_rate fable-reset \
+  "$(fable_usage 45 2026-08-01T06:00:00Z 'Fable 5.1')" \
+  "$(fable_usage 30 2026-07-25T06:00:00Z 'Fable 5.1')"
+stage_raw_rate fable-label \
+  "$(fable_usage 45 2026-08-01T06:00:00Z 'Fable 5.1')" \
+  "$(fable_usage 40 2026-08-01T06:00:00Z 'fable-5.1')"
+stage_raw_rate fable-unparsed \
+  "$(fable_usage 45 next-week 'Fable 5.1')" \
+  "$(fable_usage 40 next-week 'Fable 5.1')"
+table \
+  "a model window whose reset stamp crossed a second between the readings is still one window|$(fable_env fable-drift)|$FABLE_RATE|binding_bucket=model usage_rate_state=measured projected_wall_minutes=110" \
+  "a model window that reset between the readings forms no rate|$(fable_env fable-reset)|$FABLE_RATE|binding_bucket=model usage_rate_state=one-sample projected_wall_minutes=null" \
+  "a model window whose label is spelled another way on the prior sample is still one window|$(fable_env fable-label)|$FABLE_RATE|binding_bucket=model usage_rate_state=measured projected_wall_minutes=110" \
+  "a reset stamp that does not parse is matched by equality|$(fable_env fable-unparsed)|$FABLE_RATE|binding_bucket=model usage_rate_state=measured projected_wall_minutes=110"
+pool_control mutant-rate-exact-reset lib/lane-model.sh 'def reset_drift_s: 300;' 'def reset_drift_s: 0;' \
+  "control: with no tolerance the drifted stamp reads as a new window|$(fable_env fable-drift)|$FABLE_RATE|usage_rate_state=one-sample"
+pool_control mutant-rate-joins-windows lib/lane-model.sh 'def reset_drift_s: 300;' 'def reset_drift_s: 99999999;' \
+  "control: a tolerance wider than a window joins a reset onto the window before it|$(fable_env fable-reset)|$FABLE_RATE|usage_rate_state=measured"
+pool_control mutant-rate-raw-label lib/lane-model.sh 'def label_identity: if \. == null then null else lane_norm end;' 'def label_identity: .;' \
+  "control: a raw label comparison misses the respelled window|$(fable_env fable-label)|$FABLE_RATE|usage_rate_state=one-sample"
+pool_control mutant-rate-no-fallback lib/lane-model.sh 'else \.resets_at == \$binding\.resets_at end);' 'else false end);' \
+  "control: with no equality fallback an unparsed stamp never matches|$(fable_env fable-unparsed)|$FABLE_RATE|usage_rate_state=one-sample"
+
 echo "=== pick --model judges shared and scoped buckets together ==="
 # The account-wide 5-hour and weekly windows wall every model. A model launch
 # therefore uses the largest matching bucket, and the returned binding fields
@@ -1609,7 +1760,7 @@ jq -n '{
             scope: {model: {display_name: "Opus"}}}]
 }' > "$FIXTURE_DIR/.claude.json"
 table \
-  "a shared 5-hour wall outranks the named model bucket and names itself||$SHARED_PICK|rc=3 binding_bucket=session binding_resets_at=2026-07-27T06:00:00Z wall=85 key=pick-lane-walled,lane=$H/.claude,wall=85,bucket=session,max-pct=80"
+  "a shared 5-hour wall outranks the named model bucket and names itself||$SHARED_PICK|rc=3 binding_bucket=session binding_resets_at=2026-07-27T06:00:00Z wall=85 key=pick-lane-walled,lane=$H/.claude,wall=85,bucket=session,max-pct=80,projected-headroom=15"
 
 jq -n '{
   five_hour: {utilization: 10, resets_at: "2026-07-27T06:00:00Z"},
@@ -1620,7 +1771,7 @@ jq -n '{
             scope: {model: {display_name: "Opus"}}}]
 }' > "$FIXTURE_DIR/.claude.json"
 table \
-  "the named model wall outranks both shared buckets and names itself||$SHARED_PICK|rc=3 binding_bucket=model binding_resets_at=2026-08-02T06:00:00Z wall=85 key=pick-lane-walled,lane=$H/.claude,wall=85,bucket=model,max-pct=80"
+  "the named model wall outranks both shared buckets and names itself||$SHARED_PICK|rc=3 binding_bucket=model binding_resets_at=2026-08-02T06:00:00Z wall=85 key=pick-lane-walled,lane=$H/.claude,wall=85,bucket=model,max-pct=80,projected-headroom=15"
 
 jq -n '{
   five_hour: {utilization: 10, resets_at: "2026-07-27T06:00:00Z"},
@@ -1698,7 +1849,7 @@ table \
   "room prints the env prefix and nothing else||$ONE --model opus|rc=0 out=CLAUDE_CONFIG_DIR=$H/.eclaude key=none" \
   "room under --json prints the lane record instead||$ONE --model opus --json|rc=0 alias=eclaude key=none" \
   "the record carries the wall it was judged on, so a caller names the percentage it refused||pick --lane $H/.claude --harness claude --model fable --json|rc=3 wall=95" \
-  "a walled lane refuses 3 and names the wall on the keyed line||pick --lane $H/.claude --harness claude --model fable|rc=3 out= key=pick-lane-walled,lane=$H/.claude,wall=95,bucket=model,max-pct=95" \
+  "a walled lane refuses 3 and names the wall on the keyed line||pick --lane $H/.claude --harness claude --model fable|rc=3 out= key=pick-lane-walled,lane=$H/.claude,wall=95,bucket=model,max-pct=95,projected-headroom=5" \
   "a lane no window measures for this model refuses 5, never 3||pick --lane $H/.uclaude --harness claude --model sonnet|rc=5 key=pick-lane-unmeasured,lane=$H/.uclaude,model=sonnet" \
   "the record comes back on 5 too, whose status says the account read fine and its one window names another model||pick --lane $H/.uclaude --harness claude --model sonnet --json|rc=5 status=ok model_label=Opus wall=null" \
   "a directory no lane record covers refuses 4, which a launcher reads as nothing to judge||pick --lane $TMP_ROOT/not-a-lane --harness claude --model opus|rc=4 key=pick-lane-unlisted,lane=$TMP_ROOT/not-a-lane,harness=claude" \
@@ -1758,6 +1909,19 @@ printf 'account=%s\tharness=claude\tsession-5h-pct=3\tweekly-pct=8\naccount=%s\t
 # fixture is what the rows below read it from both.
 printf 'account=%s\tharness=codex\tsession-5h-pct=5\tweekly-pct=6\n' \
   "$H/.codex" > "$TMP_ROOT/accounts-mixed.tsv"
+# The refusals a provider names for its copy, each with the endpoint's own
+# words in `detail`. The 403 is `refused`, as the accounts contract has it; the
+# 429 is a provider choosing `unreachable` against that contract, which names
+# `rate_limited` for it. `detail` carries the endpoint's words whatever status
+# the provider chose.
+printf 'account=%s\tharness=claude\tstatus=unreachable\tdetail=http-429-rate_limit_error\naccount=%s\tharness=claude\tstatus=refused\tdetail=http-403-permission_error\n' \
+  "$H/.claude" "$H/.eclaude" > "$TMP_ROOT/accounts-refusals.tsv"
+printf 'account=%s\tharness=claude\tstatus=unreachable\tdetail=http-429-rate_limit_error\n' \
+  "$H/.claude" > "$TMP_ROOT/accounts-429.tsv"
+# A refused account, then a measured one naming no detail: the second row must
+# not inherit the first row's refusal.
+printf 'account=%s\tharness=claude\tstatus=refused\tdetail=http-403-permission_error\naccount=%s\tharness=claude\tsession-5h-pct=4\tweekly-pct=9\n' \
+  "$H/.claude" "$H/.eclaude" > "$TMP_ROOT/accounts-refused-then-ok.tsv"
 table \
   "with no provider the local config dirs are the whole listing|ORCH_LANE_HOST=local|list --harness claude --json|through=claude:local length=1 key=none" \
   "the provider's own reading of the same account is listed beside this machine's|$HOST_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-ok.tsv|list --harness claude --json|through=claude:local,claude:host length=2" \
@@ -1771,7 +1935,23 @@ table \
   "an excluded account is not listed through the host either, while the rest of the answer stands|$HOST_ENV;ORCH_LANE_EXCLUDE=eclaude;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-two.tsv|list --harness claude --json|through=claude:local,claude:host length=2" \
   "a retired account the provider reports is listed retired, with no headroom to place an item on|$HOST_ENV;ORCH_LANE_RETIRE=eclaude=2000-01-01;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-two.tsv|list --harness claude --json|length=3 eclaude.status=retired eclaude.headroom_pct=null eclaude.measured_through=host" \
   "a codex account the provider holds is not listed in a claude listing|$HOST_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-mixed.tsv|list --harness claude --json|rc=0 through=claude:local length=1 key=none" \
-  "the default listing carries the host row, so the harness a caller did not name is every harness|$HOST_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-ok.tsv|list --json|rc=0 through=claude:local,claude:host length=2 key=none"
+  "the default listing carries the host row, so the harness a caller did not name is every harness|$HOST_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-ok.tsv|list --json|rc=0 through=claude:local,claude:host length=2 key=none" \
+  "the refusal the provider names is each host record's detail, so a 429 and a 403 stay apart|$HOST_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-refusals.tsv|host-accounts --harness claude --json|rc=0 length=2 claude.status=unreachable claude.cause=http-429-rate_limit_error eclaude.status=refused eclaude.cause=http-403-permission_error" \
+  "a host row's 429 stays apart from the local copy's expired login in one listing|$HOST_ENV;ORCH_LANES_CLAUDE_CLIENT_ID=client-1;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-429.tsv|list --harness claude --json|through=claude:local,claude:host first.status=expired last.status=unreachable last.detail=http-429-rate_limit_error last.headroom_pct=null" \
+  "a host row naming no detail keeps a null one, even after a row that names one|$HOST_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-refused-then-ok.tsv|host-accounts --harness claude --json|rc=0 length=2 claude.cause=http-403-permission_error eclaude.status=ok eclaude.detail=null"
+# Control: a parser that drops the field reports every refusal with no detail.
+lanes_mutant mutant-host-detail-dropped lanes 'detail) detail='
+LANES_PATCHED="$LANES"
+LANES="$TMP_ROOT/mutant-host-detail-dropped/scripts/lanes"
+table \
+  "control: without the field the 429 and the 403 carry no detail|$HOST_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-refusals.tsv|host-accounts --harness claude --json|rc=0 claude.cause=null eclaude.cause=null"
+LANES="$LANES_PATCHED"
+# Control: a parser that never clears the field hands one row's refusal to the next.
+lanes_mutant mutant-host-detail-leaks lanes 'status="ok"; detail=""; ' 'status="ok"; '
+LANES="$TMP_ROOT/mutant-host-detail-leaks/scripts/lanes"
+table \
+  "control: without the per-row reset the measured account carries the refused one's 403|$HOST_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/accounts-refused-then-ok.tsv|host-accounts --harness claude --json|rc=0 eclaude.status=ok eclaude.detail=http-403-permission_error"
+LANES="$LANES_PATCHED"
 
 # The verb is OPTIONAL: a provider without it gives no answer, which is not a
 # failure. Both listings are captured whole and compared, because the claim is
@@ -1955,6 +2135,12 @@ make_dead_lane "$H" dclaude
 PICK_ENV="ORCH_LANE_HOST=$HOST_FIXTURE;LANE_HOST_STUB_LOG=$TMP_ROOT/accounts.log;ORCH_LANES_CLAUDE_CLIENT_ID=client-1"
 printf 'account=%s\tharness=claude\tsession-5h-pct=10\tweekly-pct=20\n' "$H/.tclaude" > "$TMP_ROOT/pick-token.tsv"
 printf 'account=%s\tharness=claude\tstatus=unreachable\n' "$H/.tclaude" > "$TMP_ROOT/pick-unreachable.tsv"
+printf 'account=%s\tharness=claude\tstatus=unreachable\tdetail=http-429-rate_limit_error\n' "$H/.tclaude" > "$TMP_ROOT/pick-429.tsv"
+printf 'account=%s\tharness=claude\tstatus=refused\tdetail=http-403-permission_error\n' "$H/.tclaude" > "$TMP_ROOT/pick-403.tsv"
+# Both refusals in one sweep, the 403 on an account discovery does not reach,
+# beside dclaude's local expired login, which no host row names.
+printf 'account=%s\tharness=claude\tstatus=unreachable\tdetail=http-429-rate_limit_error\naccount=%s\tharness=claude\tstatus=refused\tdetail=http-403-permission_error\n' \
+  "$H/.tclaude" "$H/.hostonly" > "$TMP_ROOT/pick-refusals.tsv"
 printf 'account=%s\tharness=claude\tsession-5h-pct=10\tweekly-pct=20\n' "$H/.dclaude" > "$TMP_ROOT/pick-dead-ok.tsv"
 printf 'account=%s\tharness=claude\tsession-5h-pct=10\tweekly-pct=99\n' "$H/.dclaude" > "$TMP_ROOT/pick-dead-walled.tsv"
 : > "$TMP_ROOT/pick-none.tsv"
@@ -1971,18 +2157,26 @@ PICK='pick --harness claude --json'
 table \
   "a token-only folder the provider measures with room is picked through the host|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-token.tsv|$PICK|rc=0 config_dir=$H/.tclaude measured_through=host hasid=false" \
   "the same folder's host row read unreachable is dropped, not free, and the refusal's table names it through the host|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-unreachable.tsv|$PICK|rc=3 key=no-candidate-unmeasured,harness=claude,model=none,unmeasured=3 considered.tclaude=host considered.oclaude=local" \
+  "a host row carrying the provider's 429 detail is dropped the same way, never free|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-429.tsv|$PICK|rc=3 key=no-candidate-unmeasured,harness=claude,model=none,unmeasured=3 considered.tclaude=host" \
+  "the refusal's table names each candidate's detail, so a 429, a 403 and an expired login read apart|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-refusals.tsv|$PICK|rc=3 key=no-candidate-unmeasured,harness=claude,model=none,unmeasured=4 tabled.tclaude=unreachable:http-429-rate_limit_error tabled.hostonly=refused:http-403-permission_error tabled.dclaude=expired:access_token_expired_and_could_not_be_renewed:_there_is_no_refresh_token_in_$H/.dclaude/.credentials.json_to_renew_with" \
   "a folder with neither a local file nor a host row is never picked|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-none.tsv|$PICK|rc=3 key=no-candidate-unmeasured,harness=claude,model=none,unmeasured=3 considered.oclaude=local" \
   "a local copy proven dead is judged on the provider's reading, which has room|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-dead-ok.tsv|$PICK|rc=0 config_dir=$H/.dclaude measured_through=host" \
-  "the provider's reading replaces the local one rather than joining it, so a walled host row is the account's only candidate|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-dead-walled.tsv|$PICK|rc=3 key=no-candidate,harness=claude,max-pct=95,model=none,walled=1,unmeasured=2 considered.dclaude=host" \
+  "the provider's reading replaces the local one rather than joining it, so a walled host row is the account's only candidate|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-dead-walled.tsv|$PICK|rc=3 key=no-candidate,harness=claude,max-pct=95,model=none,walled=1,unmeasured=2,seats=0 considered.dclaude=host" \
   "--exclude-lane drops the host row it names too|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-token.tsv|$PICK --exclude-lane $H/.tclaude|rc=3 key=no-candidate-unmeasured,harness=claude,model=none,unmeasured=2 considered.tclaude=none" \
   "a host row with no reading of its own leaves this machine's reading of the account in place|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-token-bare.tsv|$PICK|rc=3 key=no-candidate-unmeasured,harness=claude,model=none,unmeasured=3 considered.tclaude=local"
 # Control: a pick that never asks for the host rows reads the token-only folder
 # as this machine's no_credentials, and nothing is picked.
-lanes_mutant mutant-pick-local-only lanes 'lanes="\$(collect_lanes "\$harness" "\$exclude" "\$hosted")"' 'lanes="$(collect_lanes "$harness" "$exclude")"'
+lanes_mutant mutant-pick-local-only lanes '"\$SEATS" "\$hosted")"' '"$SEATS")"'
 LANES_PATCHED="$LANES"
 LANES="$TMP_ROOT/mutant-pick-local-only/scripts/lanes"
 table \
   "control: without the host rows the token-only folder is listed local and never picked|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-token.tsv|$PICK|rc=3 considered.tclaude=local"
+LANES="$LANES_PATCHED"
+# Control: a table that drops the column prints no candidate's refusal.
+lanes_mutant mutant-table-detail-dropped lanes '(\.detail ' '("-" '
+LANES="$TMP_ROOT/mutant-table-detail-dropped/scripts/lanes"
+table \
+  "control: without the column the refusal's table names neither the 429 nor the 403|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-refusals.tsv|$PICK|rc=3 tabled.tclaude=unreachable:- tabled.hostonly=refused:-"
 LANES="$LANES_PATCHED"
 
 # `pick --lane` judges its one account by the chooser's rule, so a launcher
@@ -1991,6 +2185,8 @@ PICK_LANE='pick --harness claude --json --lane'
 table \
   "a named token-only folder the provider measures with room is room through the host|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-token.tsv|$PICK_LANE $H/.tclaude|rc=0 config_dir=$H/.tclaude measured_through=host hasid=false" \
   "its host row read unreachable answers unmeasured, never room|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-unreachable.tsv|$PICK_LANE $H/.tclaude|rc=5 status=unreachable measured_through=host" \
+  "the unmeasured record names the provider's 429 as its detail|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-429.tsv|$PICK_LANE $H/.tclaude|rc=5 status=unreachable measured_through=host detail=http-429-rate_limit_error" \
+  "and a 403 the provider read through its copy answers refused with that detail, never expired|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-403.tsv|$PICK_LANE $H/.tclaude|rc=5 status=refused measured_through=host detail=http-403-permission_error" \
   "a named folder with neither a local file nor a host row stays no_credentials|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-token.tsv|$PICK_LANE $H/.oclaude|rc=5 status=no_credentials measured_through=local" \
   "a named local copy proven dead is judged on the provider's reading|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-dead-ok.tsv|$PICK_LANE $H/.dclaude|rc=0 measured_through=host" \
   "a host row with no reading of its own leaves the named account's local reading in place|$PICK_ENV;LANE_HOST_STUB_ACCOUNTS=$TMP_ROOT/pick-dead-bare.tsv|$PICK_LANE $H/.dclaude|rc=5 status=expired measured_through=local" \
@@ -2233,7 +2429,7 @@ make_lane "$H" claude 3600
 claude_usage 94 10 5 Opus > "$FIXTURE_DIR/.claude.json"
 table \
   "an account at 94 percent used is picked||pick --harness claude|rc=0 out=CLAUDE_CONFIG_DIR=$H/.claude" \
-  "the setting is the default of --max-pct, and lowering it refuses that account|ORCH_LANE_MAX_PCT=94|pick --harness claude|rc=3 key=no-candidate,harness=claude,max-pct=94,model=none,walled=1,unmeasured=0" \
+  "the setting is the default of --max-pct, and lowering it refuses that account|ORCH_LANE_MAX_PCT=94|pick --harness claude|rc=3 key=no-candidate,harness=claude,max-pct=94,model=none,walled=1,unmeasured=0,seats=0" \
   "the flag still outranks the setting|ORCH_LANE_MAX_PCT=94|pick --harness claude --max-pct 95|rc=0 out=CLAUDE_CONFIG_DIR=$H/.claude" \
   "a setting outside 0-100 is refused before any lane is measured|ORCH_LANE_MAX_PCT=94%|pick --harness claude|rc=1 key=invalid-lane-max-pct,value=94%"
 
@@ -2244,14 +2440,14 @@ MUTANT_DIR="$(mutant_scripts mutant-default lanes)" || exit 1
 mutate_file "$MUTANT_DIR/lanes" 'ORCH_LANE_MAX_PCT:-95' 'ORCH_LANE_MAX_PCT:-90'
 LANES_REAL="$LANES"; LANES="$MUTANT_DIR/lanes"
 table \
-  "control: with the default back at 90 the account at 94 percent is refused||pick --harness claude|rc=3 key=no-candidate,harness=claude,max-pct=90,model=none,walled=1,unmeasured=0"
+  "control: with the default back at 90 the account at 94 percent is refused||pick --harness claude|rc=3 key=no-candidate,harness=claude,max-pct=90,model=none,walled=1,unmeasured=0,seats=0"
 LANES="$LANES_REAL"
 
 new_home default-bound-spent
 make_lane "$H" claude 3600
 claude_usage 95 10 5 Opus > "$FIXTURE_DIR/.claude.json"
 table \
-  "an account at 95 percent used is refused, five percent headroom being the wall||pick --harness claude|rc=3 key=no-candidate,harness=claude,max-pct=95,model=none,walled=1,unmeasured=0" \
+  "an account at 95 percent used is refused, five percent headroom being the wall||pick --harness claude|rc=3 key=no-candidate,harness=claude,max-pct=95,model=none,walled=1,unmeasured=0,seats=0" \
   "the setting raises the same bound, and that account is picked|ORCH_LANE_MAX_PCT=96|pick --harness claude|rc=0 out=CLAUDE_CONFIG_DIR=$H/.claude"
 
 echo "=== argument handling ==="

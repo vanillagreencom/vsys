@@ -47,12 +47,22 @@ cat > "$BIN/claude" <<STUB
 #!/bin/sh
 { printf 'lane=%s\n' "\${CLAUDE_CONFIG_DIR:-}"; printf '%s\n' "\$@"; } > "$TMP_ROOT/argv.claude"
 if [ -f "$TMP_ROOT/idle" ]; then echo 'FIXTURE overseer startup waiting'; else echo 'esc to interrupt'; fi
+# With the row flag, the SessionStart row its hook would write, in the rows
+# file for this pane under the directory it started in (lib/session-rows.sh).
+if [ -f "$TMP_ROOT/row" ]; then
+  box="\$PWD/tmp/lane-mail/overseer"
+  mkdir -p "\$box"
+  printf '{"at":%s,"event":"SessionStart","harness":"claude","source":"startup"}\n' "\$(date +%s)" \
+    >> "\$box/session-\$(tmux display-message -p '#{pid}')-\${TMUX_PANE#%}.jsonl"
+fi
 exec sleep 100000
 STUB
 cat > "$BIN/kendex" <<'STUB'
 #!/bin/sh
 case "$1:$2:$3" in
   tier-model:claude:1) echo fable ;;
+  tier-model:codex:1) echo gpt-6-astra ;;
+  tier-model:codex:2) echo gpt-5.6-sol ;;
   *) exit 1 ;;
 esac
 STUB
@@ -80,10 +90,12 @@ TMUX_ADDR="$(tm display-message -p '#{socket_path},#{pid},0')"
 
 # run_oversee ENV=VAL... -- ARGS... — the script under an explicit, whole
 # environment with no $TMUX, from the work directory workflow-state resolves
-# `tmp` under, or from RUN_DIR where a row sets it. Sets OUT (both streams)
-# and RC.
+# `tmp` under, or from RUN_DIR where a row sets it. ORCH_OVERSEER_PREFERENCE is
+# claude:1:high, or LAUNCH_PREF where a row sets it, `unset` exporting none.
+# Sets OUT (both streams) and RC.
 run_oversee() {
-  local env_args=()
+  local env_args=() pref=(ORCH_OVERSEER_PREFERENCE="${LAUNCH_PREF:-claude:1:high}")
+  [[ "${LAUNCH_PREF:-}" != unset ]] || pref=()
   while [[ $# -gt 0 && "$1" != -- ]]; do env_args+=("$1"); shift; done
   shift
   rm -f "${TMP_ROOT:?}"/argv.*
@@ -91,7 +103,7 @@ run_oversee() {
   OUT="$(cd "${RUN_DIR:-$TMP_ROOT/work}" && env -i HOME="$H" PATH="$BIN:$PATH" TMUX_TMPDIR="$TMUX_DIR" \
     LANES_HOME="$H" FIXTURE_DIR="$FIXTURE_DIR" OVERSEE_WATCH_STATE_DIR="$TMP_ROOT/state" \
     ORCH_LANES_FETCH_CMD="$FETCHER" ORCH_LANE_DIRS="$H/.claude:$H/.eclaude" ORCH_LANES_USAGE_TTL=0 \
-    ORCH_OVERSEER_PREFERENCE="claude:1:high" ORCH_TMUX_SESSION=fleet \
+    ${pref[@]+"${pref[@]}"} ORCH_TMUX_SESSION=fleet \
     ${env_args[@]+"${env_args[@]}"} "${OVERSEE_BIN:-$OVERSEE}" "$@" 2>&1 </dev/null)" || RC=$?
 }
 FLEET_STATE="$TMP_ROOT/work/tmp/workflow-state-oversee.json"
@@ -161,7 +173,8 @@ assert_eq "$RC|$(keyed overseer-not-working "$OUT" | sed -n 1p | sed 's/session=
 # The refusals before anything opens.
 for row in \
   "ORCH_OVERSEER_PREFERENCE=|preference-empty setting=ORCH_OVERSEER_PREFERENCE|an empty preference" \
-  "ORCH_OVERSEER_PREFERENCE=claude:one:high|invalid-preference entry=claude:one:high|an entry outside the shape" \
+  "ORCH_OVERSEER_PREFERENCE=claude:Opus:high|invalid-preference entry=claude:Opus:high|an entry outside the shape" \
+  "ORCH_OVERSEER_PREFERENCE=codex:gpt-5.6-sl:high|model-failed entry=codex:gpt-5.6-sl:high|a codex model name the tier ladder does not name" \
   "ORCH_TMUX_SESSION=|session-unresolved consulted=--session,ORCH_TMUX_SESSION|no session named" \
   "ORCH_TMUX_SESSION=fleetz|tmux-session-missing session=fleetz server=$SOCKET|a session tmux does not hold" \
   "ORCH_OVERSEER_HOST=$TMP_ROOT/other|runtime-unsupported host=$TMP_ROOT/other|a runtime other than tmux" \
@@ -217,9 +230,9 @@ assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(overseers)" \
 HAND="$(tm new-window -d -t fleet:4 -n hand -P -F '#{pane_id}' "exec '$BIN/hclaude' 100000")"
 PRIOR_LINE="$(recorded launch_line)"
 run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$HAND" CLAUDE_CONFIG_DIR="$H/.eclaude" -- register
-assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(recorded runtime)|$(recorded account)|$(recorded launch_line)" \
-  "0|oversee: registered session=$HAND window=$(tm display-message -p -t "$HAND" '#{window_id}') server=$SERVER_PID generation=4 account=$H/.eclaude|tmux|$H/.eclaude|none" \
-  "register writes the record for the caller's pane, one generation past the record, and drops the launch line the record held"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(keyed registered "$OUT" | sed -n 1p)|$(recorded runtime)|$(recorded account)|$(recorded launch_line)" \
+  "0|oversee: identity-fallback session=$HAND cause=no-start-row|oversee: registered session=$HAND window=$(tm display-message -p -t "$HAND" '#{window_id}') server=$SERVER_PID generation=4 account=$H/.eclaude|tmux|$H/.eclaude|none" \
+  "register with no SessionStart row reads the pane as the named fallback, says so, writes the record one generation past it, and drops the launch line the record held"
 # The line's control: a writer that keeps the prior's fields whole leaves the
 # launched session's line on the hand-opened one, and a death of the latter
 # would replay the former's command. The line the real register just dropped
@@ -227,7 +240,7 @@ assert_eq "$RC|$(sed -n 1p <<<"$OUT")|$(recorded runtime)|$(recorded account)|$(
 [[ "$PRIOR_LINE" != none ]] || fail "control premise: the record held no launch line before register"
 jq --arg line "$PRIOR_LINE" '.overseer.launch_line = $line' "$FLEET_STATE" > "$FLEET_STATE.tmp" && mv -- "$FLEET_STATE.tmp" "$FLEET_STATE"
 LINECTL="$(mutant_scripts linectl lib/overseer-launch.sh)" || exit 1
-mutate_file "$LINECTL/lib/overseer-launch.sh" '($p | del(.pending, .launch_line))' '($p | del(.pending))'
+mutate_file "$LINECTL/lib/overseer-launch.sh" '($p | del(.pending, .exit, .launch_line))' '($p | del(.pending, .exit))'
 OVERSEE_BIN="$LINECTL/oversee" run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$HAND" CLAUDE_CONFIG_DIR="$H/.eclaude" -- register
 assert_eq "$RC|$(recorded launch_line)" "0|$PRIOR_LINE" \
   "control: a register that keeps the prior fields whole carries the launched session's line"
@@ -240,6 +253,27 @@ mutate_file "$REGCTL/oversee" '    claude) harness=claude ;;' '    claude) ;;'
 OVERSEE_BIN="$REGCTL/oversee" run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$HAND" CLAUDE_CONFIG_DIR="$H/.eclaude" -- register
 assert_eq "$RC|$(recorded harness)" "0|none" \
   "control: a register that reads no harness records none"
+# register from the session's own SessionStart row (lib/session-rows.sh), in
+# the shape Claude Code 2.1.283's hook emits it: the harness, account and
+# model the row states, not the environment's, and the rows file recorded.
+HAND_ROWS="$WORK_REAL/tmp/lane-mail/overseer/session-$SERVER_PID-${HAND#%}.jsonl"
+mkdir -p "${HAND_ROWS%/*}"
+hand_start_row() {
+  jq -cn --arg account "$H/.claude" --arg cwd "$WORK_REAL" '{at: 1, event: "SessionStart",
+    harness: "claude", session_id: "5f0c", transcript_path: "/t/5f0c.jsonl", cwd: $cwd,
+    source: "startup", model: "claude-fable-5-1", account: $account}' > "$HAND_ROWS"
+}
+hand_start_row
+run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$HAND" CLAUDE_CONFIG_DIR="$H/.eclaude" -- register
+assert_eq "$RC|$(sed -n 1p <<<"$OUT" | cut -d' ' -f1-2)|$(identity)$(recorded session_rows)" \
+  "0|oversee: registered|claude|$H/.claude|$H/.claude|claude-fable-5-1|none|$WORK_REAL|$HAND_ROWS" \
+  "register takes the identity its SessionStart row states and records the rows file"
+ROWCTL="$(mutant_scripts rowctl oversee)" || exit 1
+mutate_file "$ROWCTL/oversee" '  if (( start_rc == 0 )) && [[ -n "$SR_HARNESS" && -n "$SR_CWD" ]]; then' '  if false; then'
+OVERSEE_BIN="$ROWCTL/oversee" run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$HAND" CLAUDE_CONFIG_DIR="$H/.eclaude" -- register
+assert_eq "$RC|$(recorded model)" "0|none" \
+  "control: a register that reads no row records the pane's identity, with no model"
+: > "$HAND_ROWS"
 run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$HAND" -- register --account "$H/.claude"
 assert_eq "$RC|$(recorded generation)|$(recorded account)" \
   "0|4|$H/.claude" \
@@ -272,6 +306,32 @@ assert_eq "$RC|$(recorded_argv)" \
   "ORCH_QUESTION_TOOL=overseer launches the overseer with its question tool"
 tm kill-window -t "$(recorded window)"
 
+# A fleet whose settings name no preference: the first launch walks the default
+# ladder and opens on its Fable rung, a model name the tier ladder knows.
+LAUNCH_PREF=unset run_oversee -- launch --wait-secs 20
+assert_eq "$RC|$(recorded model)|$(recorded_argv)" \
+  "0|fable|lane=$H/.claude;-n;overseer;--model;fable;--effort;high;$BYPASS;$QUESTION_OFF;$BRIEF;" \
+  "an unset preference launches the first overseer on the default ladder's Fable rung"
+tm kill-window -t "$(recorded window)"
+
+# A pi entry ahead of a claude entry with room: the launch table names no
+# permission word to open pi unattended, so the first launch skips it before
+# its pick and opens on the claude entry.
+pi_first_row() { # [OVERSEE_BIN]
+  OVERSEE_BIN="${1:-}" LAUNCH_PREF='pi:openai/gpt-5:high,claude:1:high' run_oversee -- launch --wait-secs 20
+}
+pi_first_row
+assert_eq "$RC|$(keyed entry-permission-unwritable "$OUT" | sed -n 1p)|$(recorded harness)|$(recorded model)" \
+  "0|oversee: entry-permission-unwritable entry=pi:openai/gpt-5:high harness=pi|claude|fable" \
+  "a first launch skips a pi entry and opens on the claude entry after it"
+tm kill-window -t "$(recorded window)"
+# Its control: a walk that chooses the pi entry refuses the whole launch.
+PIFIRSTCTL="$(mutant_scripts pifirstctl oversee)" || exit 1
+mutate_file "$PIFIRSTCTL/oversee" '  if ! launch_choice_permission_write "$harness" >/dev/null; then' '  if false; then'
+pi_first_row "$PIFIRSTCTL/oversee"
+assert_eq "$RC|$(sed -n 1p <<<"$OUT" | awk '{print $2, $3}')|$(overseers)" "1|launch-choice-failed harness=pi|0" \
+  "control: a first launch that chooses the pi entry refuses and opens nothing"
+
 # The writer's control: a record write that leaves the launch identity out,
 # over a fleet with no prior record, records a session nothing says the
 # harness or model of.
@@ -302,6 +362,102 @@ mutate_file "$CODEXCTL/oversee" 'codex) harness=codex; home="${CODEX_HOME:-$ACCO
 register_codex "$CODEXCTL/oversee"
 assert_eq "$RC|$(recorded home)" "0|$H/.codex" \
   "control: a register that takes the account for the home loses the private CODEX_HOME"
+
+# The successor-up wait asks for a working turn: a SessionStart row is written
+# at startup, before any turn runs, so a session whose screen never shows one
+# is refused whatever rows it wrote.
+tm kill-window -t "$(recorded window)"
+touch "$TMP_ROOT/idle" "$TMP_ROOT/row"
+run_oversee -- launch --wait-secs 3
+rm -f "$TMP_ROOT/idle" "$TMP_ROOT/row"
+assert_eq "$RC|$(keyed overseer-not-working "$OUT" | sed -n 1p | cut -d' ' -f1-2)|$(overseers)" \
+  "1|oversee: overseer-not-working|0" \
+  "a session whose SessionStart row stands and whose turn never runs is refused"
+run_oversee -- launch --wait-secs 20
+assert_eq "$RC|$(keyed overseer-launched "$OUT" | sed -n 1p | cut -d' ' -f1-2)|$(overseers)" \
+  "0|oversee: overseer-launched|1" \
+  "a session whose turn runs is up"
+# The launch line runs under overseer-run: a harness that ends, here killed
+# before any hook of its own could run, leaves its exit status on the record.
+harness_ended() { # -> the recorded exit status, once overseer-run wrote one
+  local run_pid harness_pid waited=0
+  run_pid="$(pgrep -P "$(tm display-message -p -t "$(recorded pane)" '#{pane_pid}')")" || return 1
+  harness_pid="$(pgrep -P "$run_pid")" || return 1
+  harness_pid="${harness_pid%%$'\n'*}"
+  kill -TERM "$harness_pid"
+  # A real wait: the wrapper writes the record after its child is reaped.
+  until [[ "$(recorded exit.status)" != none || "$waited" -ge 50 ]]; do sleep 0.1; waited=$((waited + 1)); done
+  recorded exit.status
+}
+assert_eq "$(harness_ended)|$(recorded exit.at | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T')" "143|1" \
+  "a harness that ends leaves its exit status and time on the session record"
+tm kill-window -t "$(recorded window)"
+# register on a Copilot pane. Its command reads node, the npm loader, here a
+# copy of bash under that name whose child carries Copilot's Linux name,
+# MainThread, a copy of sleep. The account is --account's, never the Claude
+# or Codex variable the session happens to carry.
+CP="$TMP_ROOT/copilot-bin"
+mkdir -p "$CP"
+cp "$(command -v bash)" "$CP/node"
+cp "$(command -v bash)" "$CP/wrap"
+cp "$(command -v sleep)" "$CP/MainThread"
+printf '%s\n' "'$CP/MainThread' 100000; :" > "$CP/binary.sh"
+printf '%s\n' "'$CP/wrap' '$CP/binary.sh'; :" > "$CP/tool.sh"
+printf '%s\n' "'$CP/wrap' '$CP/tool.sh'; :" > "$CP/deep.sh"
+# copilot_pane NAME PROGRAM SCRIPT — a pane whose own process is PROGRAM
+# running SCRIPT.
+copilot_pane() { tm new-window -d -t "fleet:$1" -n "cp$1" -P -F '#{pane_id}' "exec '$CP/$2' '$CP/$3'"; }
+COPILOT_PANE="$(copilot_pane 7 node binary.sh)"
+# A Claude overseer behind a wrapper with a Copilot run under it: the pane
+# reads wrap, which names no harness and is no Copilot pane.
+WRAPPED_PANE="$(copilot_pane 8 wrap binary.sh)"
+# A Codex overseer's pane also reads node, and a Copilot run it starts sits
+# three levels down, under its tool shell.
+DEEP_PANE="$(copilot_pane 9 node deep.sh)"
+register_on() { # PANE [OVERSEE_BIN] [ARGS...]
+  local pane="$1" bin="${2:-}"
+  shift 2
+  OVERSEE_BIN="$bin" run_oversee TMUX="$TMUX_ADDR" TMUX_PANE="$pane" CLAUDE_CONFIG_DIR="$H/.claude" -- register "$@"
+}
+# A real wait: each pane's program starts its children a moment after the
+# window opens, and the process read must find them there.
+sleep 0.5
+register_on "$COPILOT_PANE" '' --account "$H/.1copilot"
+assert_eq "$RC|$(recorded harness)|$(recorded account)|$(recorded home)" \
+  "0|copilot|$H/.1copilot|$H/.1copilot" \
+  "register on a copilot pane records harness copilot, read off the process under it, on --account"
+register_on "$COPILOT_PANE" ''
+assert_eq "$RC|$(recorded harness)|$(recorded account)|$(recorded home)" \
+  "0|copilot|none|none" \
+  "register on a copilot pane with no --account records no account, never the claude one its session carries"
+register_on "$WRAPPED_PANE" ''
+assert_eq "$RC|$(recorded harness)" "0|none" \
+  "a pane reading neither node nor copilot is no copilot pane, whatever runs under it"
+register_on "$DEEP_PANE" ''
+assert_eq "$RC|$(recorded harness)" "0|none" \
+  "a node pane whose Copilot run sits three levels down is not a copilot pane"
+# One control per rule: the process read, the given account, the command
+# gate and the depth bound.
+COPILOTCTL="$(mutant_scripts copilotctl oversee)" || exit 1
+mutate_file "$COPILOTCTL/oversee" '          if [[ "$below" == found ]]; then' '          if false; then'
+register_on "$COPILOT_PANE" "$COPILOTCTL/oversee" --account "$H/.1copilot"
+assert_eq "$RC|$(recorded harness)" "0|none" \
+  "control: a register that reads no process under the pane records no harness for copilot"
+ACCTCTL="$(mutant_scripts acctctl oversee)" || exit 1
+mutate_file "$ACCTCTL/oversee" 'shape=copilot ACCOUNT="$given_account"' 'shape=copilot'
+register_on "$COPILOT_PANE" "$ACCTCTL/oversee"
+assert_eq "$RC|$(recorded account)" "0|$H/.claude" \
+  "control: a register that keeps the derived account records the claude one for a copilot pane"
+GATECTL="$(mutant_scripts gatectl oversee)" || exit 1
+mutate_file "$GATECTL/oversee" '        node | copilot)' '        *)'
+register_on "$WRAPPED_PANE" "$GATECTL/oversee"
+assert_eq "$RC|$(recorded harness)" "0|copilot" \
+  "control: without the command gate a wrapper pane with a Copilot run under it reads copilot"
+DEPTHCTL="$(mutant_scripts depthctl oversee)" || exit 1
+mutate_file "$DEPTHCTL/oversee" '"$name_re" 1 2)"' '"$name_re" 1)"'
+register_on "$DEEP_PANE" "$DEPTHCTL/oversee"
+assert_eq "$RC|$(recorded harness)" "0|copilot" \
+  "control: without the depth bound a Copilot run deep under a node pane reads copilot"
 
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
