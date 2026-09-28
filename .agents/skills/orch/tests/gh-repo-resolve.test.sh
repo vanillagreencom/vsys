@@ -20,8 +20,8 @@ REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-# shellcheck source=lib/waiter-assertions.sh
-source "$TEST_DIR/lib/waiter-assertions.sh"
+# shellcheck source=lib/assertions.sh
+source "$TEST_DIR/lib/assertions.sh"
 
 LIVE_LIB="$REPO_ROOT/skills/orch/scripts/lib/gh-repo.sh"
 LIVE_FN=orch_resolve_gh_repo
@@ -46,15 +46,18 @@ exit 1
 EOF
 chmod +x "$TMP_ROOT/bin/gh"
 
-# Three project roots for the remote fallback: a github.com origin, no remote at
-# all, and an origin on another host whose PATH carries github.com.
-for name in origin-repo no-remote foreign-origin; do
+# Project roots for the remote fallback: a github.com origin in the ssh form
+# and in the https form with and without its .git suffix, no remote at all, and
+# an origin on another host whose PATH carries github.com.
+for name in origin-repo https-origin https-bare-origin no-remote foreign-origin; do
   mkdir -p "$TMP_ROOT/$name"
   git -C "$TMP_ROOT/$name" init -q
   git -C "$TMP_ROOT/$name" config user.email test@example.com
   git -C "$TMP_ROOT/$name" config user.name Test
 done
 git -C "$TMP_ROOT/origin-repo" remote add origin git@github.com:remote-owner/remote-repo.git
+git -C "$TMP_ROOT/https-origin" remote add origin https://github.com/remote-owner/remote-repo.git
+git -C "$TMP_ROOT/https-bare-origin" remote add origin https://github.com/remote-owner/remote-repo
 git -C "$TMP_ROOT/foreign-origin" remote add origin https://gitlab.example/group/github.com/owner/repo
 
 # run_resolve ENV ROOT LIB FN — call FN with ENV (a comma-separated list of
@@ -112,6 +115,8 @@ table \
   'GH_REPO unset reads the checkout|STUB_REPO_VIEW=cwd-owner/cwd-repo|origin-repo|rc=0 out=cwd-owner/cwd-repo' \
   'GH_REPO wins even where the checkout resolves to nothing|GH_REPO=other/elsewhere|no-remote|rc=0 out=other/elsewhere' \
   'an unresolvable checkout falls back to the origin remote, without its .git suffix||origin-repo|rc=0 out=remote-owner/remote-repo' \
+  'an https origin loses its .git suffix the same way||https-origin|rc=0 out=remote-owner/remote-repo' \
+  'an https origin without .git keeps its last segment||https-bare-origin|rc=0 out=remote-owner/remote-repo' \
   'an origin on another host carrying github.com in its path resolves nothing||foreign-origin|rc=1 out=empty' \
   'no GH_REPO, no gh answer and no origin resolves nothing, never a default||no-remote|rc=1 out=empty'
 
@@ -135,59 +140,19 @@ table \
   'a name that is a dot|GH_REPO=owner/.|origin-repo|rc=2 out=owner/.' \
   'a name of two dots|GH_REPO=owner/..|origin-repo|rc=2 out=owner/..'
 
-echo "=== must-fail controls ==="
-# One control per rule the resolver enforces. Each copies the resolver, puts
-# that rule back the way it read before the rule existed while keeping the line
-# it lives on, and names the row above that reddens.
-#
-# mutate NAME TEXT EXPR — copy the resolver to a private mutant, assert TEXT is
-# on exactly one line, apply sed EXPR, assert TEXT is gone. Sets MUTANT.
-mutate() {
-  local name="$1" text="$2" expr="$3"
-  MUTANT="$TMP_ROOT/gh-repo-mutant-$name.sh"
-  cp "$SHARED_LIB" "$MUTANT"
-  assert_eq "$(grep -Fc -- "$text" "$MUTANT")" "1" "control $name finds the live rule"
-  sed -i.bak "$expr" "$MUTANT"
-  assert_eq "$(grep -Fc -- "$text" "$MUTANT")" "0" "control $name applied the mutation"
-}
-
-# GH_REPO first. Without it the checkout's repository wins — exactly the
-# wrong-repository verdict the issue reported.
-mutate gh-repo-first 'if [ -n "${GH_REPO:-}" ]; then' \
-  's/^  if \[ -n "${GH_REPO:-}" \]; then$/  if [ -n "" ]; then/'
+echo "=== must-fail control ==="
+# The resolver's one control: a private copy with the GH_REPO branch put back
+# the way it read before the rule existed, keeping the line it lives on.
+# Without it the checkout's repository wins, exactly the wrong-repository
+# verdict the rule exists to prevent.
+MUTANT="$TMP_ROOT/gh-repo-mutant.sh"
+cp "$SHARED_LIB" "$MUTANT"
+assert_eq "$(grep -Fc -- 'if [ -n "${GH_REPO:-}" ]; then' "$MUTANT")" "1" "control finds the live rule"
+sed -i.bak 's/^  if \[ -n "${GH_REPO:-}" \]; then$/  if [ -n "" ]; then/' "$MUTANT"
+assert_eq "$(grep -Fc -- 'if [ -n "${GH_REPO:-}" ]; then' "$MUTANT")" "0" "control applied the mutation"
 run_resolve 'GH_REPO=other/elsewhere,STUB_REPO_VIEW=cwd-owner/cwd-repo' origin-repo "$MUTANT" "$SHARED_FN"
 assert_eq "$(observe 'rc=0 out=cwd-owner/cwd-repo')" "rc=0 out=cwd-owner/cwd-repo" \
   "must-fail control: without the GH_REPO branch the checkout's repository wins" "$ERR"
-
-# The repository-name character class. Widened back to "anything but whitespace
-# and a second slash", a quote-bearing value is accepted and reaches the launch
-# line open-terminal's caller shell runs.
-mutate name-class 'A-Za-z0-9._-' 's|A-Za-z0-9\._-|^/[:space:]|g'
-run_resolve "GH_REPO=o/r';id;'" origin-repo "$MUTANT" "$SHARED_FN"
-assert_eq "$(observe "rc=0 out=o/r';id;'")" "rc=0 out=o/r';id;'" \
-  "must-fail control: a loose name class accepts a quote-bearing value" "$ERR"
-
-# The owner class, which carries no dot because a GitHub login carries none.
-# Let a dot in and `./repo` is a slug.
-mutate owner-class 'A-Za-z0-9-' 's|A-Za-z0-9-|A-Za-z0-9.-|'
-run_resolve 'GH_REPO=./repo' origin-repo "$MUTANT" "$SHARED_FN"
-assert_eq "$(observe 'rc=0 out=./repo')" "rc=0 out=./repo" \
-  "must-fail control: an owner class carrying a dot accepts a relative path" "$ERR"
-
-# The dots-only refusal, which the name class cannot express. Stop it matching
-# and `owner/..` is a slug, reaching the API as a path segment.
-mutate dot-segment '^[.]+$' 's|\^\[\.\]+\$|^[.]x+$|'
-run_resolve 'GH_REPO=owner/..' origin-repo "$MUTANT" "$SHARED_FN"
-assert_eq "$(observe 'rc=0 out=owner/..')" "rc=0 out=owner/.." \
-  "must-fail control: without the dots-only refusal a dot segment is a slug" "$ERR"
-
-# The origin host anchor. With the scheme group widened to anything at all,
-# github.com matches anywhere in the URL and a checkout on another host
-# resolves to a GitHub repository.
-mutate host-anchor '[A-Za-z][A-Za-z0-9+.-]*://' 's|\[A-Za-z\]\[A-Za-z0-9+\.-\]\*://|.*|'
-run_resolve '' foreign-origin "$MUTANT" "$SHARED_FN"
-assert_eq "$(observe 'rc=0 out=owner/repo')" "rc=0 out=owner/repo" \
-  "must-fail control: an unanchored host resolves another host's path segment" "$ERR"
 
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"

@@ -10,6 +10,7 @@
 # Usage:
 #   harness-only [--mode harness|docs] --event EVENT [--base REF] [--head REF]
 #                [--repo DIR] [--output FILE] [--paths-output FILE]
+#                [--outside-output FILE]
 #
 #   --mode    harness (default) | docs.
 #   --event   pull_request | merge_group | push. Any other event answers false.
@@ -20,6 +21,13 @@
 #   --output  append the verdict line to this file. Default $GITHUB_OUTPUT.
 #   --paths-output  overwrite this file with the changed paths used by the
 #             classifier, one path per line. Default: do not write a file.
+#   --outside-output  docs mode: overwrite this file with every changed path
+#             outside the docs set, one path per line, empty on a true
+#             verdict, on a false one reached before any path was read,
+#             and in harness mode, which reads no docs set.
+#             The change-class action reads it to tell an unclaimed path
+#             the docs set holds from one it does not. Default: do not
+#             write a file.
 #
 # stdout carries the selected verdict line and nothing else:
 # harness_only=true|false or docs_only=true|false.
@@ -30,9 +38,10 @@
 # stderr also carries `changed-path: path=<q>` per changed path and, in
 # harness mode once the range's base end is resolved, one `base-rev: <rev>`
 # line naming the revision the diff was taken from — the merge base on a
-# pull request, the base endpoint on the others. A caller that must read the
-# same range's committed state reads that line rather than resolving the
-# endpoint a second time.
+# pull request, the commit the base endpoint resolved to on the others — and
+# one `head-rev: <rev>` line naming the commit the head endpoint resolved to.
+# A caller that must read the same range's committed state reads those lines
+# rather than resolving either endpoint a second time.
 #
 # Exit 0 on any verdict. Exit 2 on a WIRING error — an unknown flag, a missing
 # --event, a flag where a value belongs, an unwritable --output. Those are
@@ -54,8 +63,11 @@ head="HEAD"
 repo="."
 output="${GITHUB_OUTPUT:-}"
 paths_output=""
+outside_output=""
 changed=""
+outside=""
 base_rev=""
+head_rev=""
 classification="harness"
 verdict_key="harness_only"
 tool_name="harness-only"
@@ -64,6 +76,7 @@ usage() {
   cat <<'USAGE'
 Usage: harness-only [--mode harness|docs] --event EVENT [--base REF] [--head REF]
                     [--repo DIR] [--output FILE] [--paths-output FILE]
+                    [--outside-output FILE]
 
   --mode    harness (default): accept generated harness files.
             docs: accept docs/, changelog.d/, and root .md or .markdown files.
@@ -75,6 +88,8 @@ Usage: harness-only [--mode harness|docs] --event EVENT [--base REF] [--head REF
   --output  append the verdict line to this file. Default $GITHUB_OUTPUT.
   --paths-output  overwrite this file with the changed paths used by the
             classifier, one path per line.
+  --outside-output  docs mode: overwrite this file with the changed paths
+            outside the docs set, one path per line.
 
 Prints harness_only=true|false, or docs_only=true|false in docs mode.
 Exit 2 on a wiring error.
@@ -126,6 +141,7 @@ while [ "$#" -gt 0 ]; do
     --repo) need_value "$1" "$#" "${2:-}"; repo="$2"; shift 2 ;;
     --output) need_value "$1" "$#" "${2:-}"; output="$2"; shift 2 ;;
     --paths-output) need_value "$1" "$#" "${2:-}"; paths_output="$2"; shift 2 ;;
+    --outside-output) need_value "$1" "$#" "${2:-}"; outside_output="$2"; shift 2 ;;
     --mode)
       need_value "$1" "$#" "${2:-}"
       case "$2" in
@@ -160,17 +176,21 @@ done
 # proves only that the file opens — /dev/full and a full filesystem both accept
 # it and fail the real write — so a verdict printed first would already be on
 # stdout when the append died, and exit 2 is documented to carry no verdict.
-verdict() { # true|false [FIELDS REASON]
-  if [ -n "$paths_output" ]; then
-    if ! { if [ -n "$changed" ]; then
-      printf '%s\n' "$changed" >"$paths_output"
-    else
-      : >"$paths_output"
-    fi; } 2>/dev/null; then
-      die "cause=paths-output-write-failed" \
-        "could not write the changed paths to '$paths_output'"
-    fi
+write_paths() { # FILE LIST CAUSE — overwrite FILE with LIST, one per line
+  if ! { if [ -n "$2" ]; then
+    printf '%s\n' "$2" >"$1"
+  else
+    : >"$1"
+  fi; } 2>/dev/null; then
+    die "cause=$3" "could not write the changed paths to '$1'"
   fi
+}
+
+verdict() { # true|false [FIELDS REASON]
+  [ -z "$paths_output" ] ||
+    write_paths "$paths_output" "$changed" paths-output-write-failed
+  [ -z "$outside_output" ] ||
+    write_paths "$outside_output" "$outside" outside-output-write-failed
   if [ -n "$output" ]; then
     if ! { printf '%s=%s\n' "$verdict_key" "$1" >>"$output"; } 2>/dev/null; then
       die "cause=output-write-failed" \
@@ -183,6 +203,7 @@ verdict() { # true|false [FIELDS REASON]
   fi
   report_changed_paths
   [ -z "$base_rev" ] || printf 'base-rev: %s\n' "$base_rev" >&2
+  [ -z "$head_rev" ] || printf 'head-rev: %s\n' "$head_rev" >&2
   printf '%s=%s\n' "$verdict_key" "$1"
   exit 0
 }
@@ -241,20 +262,26 @@ fi
     "cause=empty-diff base=$(stable_value "$base") head=$(stable_value "$head")" \
     "the diff between '$base' and '$head' is empty"
 
+# Every changed path is read, not only up to the first outside the set, so
+# --outside-output lists them all; the verdict names the first.
 if [ "$classification" = docs ]; then
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     case "$path" in
-      docs/* | changelog.d/*) ;;
-      */*) verdict false \
-        "cause=path-outside-docs-only path=$(stable_value "$path")" \
-        "changed path '$path' is outside the docs-only set" ;;
-      *.md | *.markdown) ;;
-      *) verdict false \
-        "cause=path-outside-docs-only path=$(stable_value "$path")" \
-        "changed path '$path' is outside the docs-only set" ;;
+      docs/* | changelog.d/*) continue ;;
+      */*) ;;
+      *.md | *.markdown) continue ;;
     esac
+    outside="${outside:+$outside
+}$path"
   done <<<"$changed"
+  [ -z "$outside" ] || {
+    first="${outside%%
+*}"
+    verdict false \
+      "cause=path-outside-docs-only path=$(stable_value "$first")" \
+      "changed path '$first' is outside the docs-only set"
+  }
   verdict true
 fi
 
@@ -263,10 +290,18 @@ fi
 if [ "$range_style" = merge_base ]; then
   base="$(git_repo merge-base "$base" "$head")" || verdict false \
     "cause=unreadable-merge-base" "merge base is unreadable"
+else
+  named_base="$base"
+  base="$(git_repo rev-parse --verify --quiet "${base}^{commit}")" || verdict false \
+    "cause=unresolved-endpoint endpoint=$(stable_value "$named_base")" \
+    "endpoint '$named_base' does not resolve to a commit"
 fi
-# The base end of the range, resolved. Published on every verdict from here
-# on, so a caller reading the same range's committed state takes this revision
-# instead of resolving the endpoint itself and disagreeing about the range.
+# Both ends of the range, resolved. Published on every verdict from here on,
+# so a caller reading the same range's committed state takes these revisions
+# instead of resolving an endpoint itself and disagreeing about the range.
+head_rev="$(git_repo rev-parse --verify --quiet "${head}^{commit}")" || verdict false \
+  "cause=unresolved-endpoint endpoint=$(stable_value "$head")" \
+  "endpoint '$head' does not resolve to a commit"
 base_rev="$base"
 base_inventory="$(git_repo show "$base:.kendex-generated.json" 2>/dev/null)" || verdict false \
   "cause=unreadable-base-inventory base=$(stable_value "$base")" \
@@ -276,11 +311,25 @@ head_inventory="$(git_repo show "$head:.kendex-generated.json" 2>/dev/null)" || 
   "head generated paths are absent or unreadable"
 # The array contains files, never folder prefixes. A file must be generated
 # at each endpoint where it exists, so adopting a render as source runs checks.
-for inventory in "$base_inventory" "$head_inventory"; do
-  jq -e 'type == "array" and all(.[]; type == "string")' <<<"$inventory" >/dev/null 2>&1 \
-    || verdict false "cause=invalid-generated-paths" \
-      "generated paths are invalid"
-done
+inventory_paths() { # JSON — validate writer entries and retain only their paths
+  jq -ecs '
+    def path_string: type == "string" and length > 0
+      and (contains("\n") or contains("\u0000") | not);
+    def entry: if type == "string" then path_string
+      elif type == "object" then
+        keys == ["path", "template", "templateHash"]
+        and (.path | path_string) and (.template | path_string)
+        and (.templateHash | type == "string" and length == 71 and test("^sha256:[0-9a-f]{64}$"))
+      else false end;
+    if length == 1 and (.[0] | type == "array" and all(.[]; entry))
+    then .[0] | map(if type == "string" then . else .path end)
+    else "" | halt_error(21) end
+  ' <<<"$1"
+}
+base_inventory="$(inventory_paths "$base_inventory" 2>/dev/null)" \
+  || verdict false "cause=invalid-generated-paths" "generated paths are invalid"
+head_inventory="$(inventory_paths "$head_inventory" 2>/dev/null)" \
+  || verdict false "cause=invalid-generated-paths" "generated paths are invalid"
 printf '%s\n%s\n' "$base_inventory" "$head_inventory" | jq -es '
   .[0] as $base | .[1] | all(.[]; . as $path | ($base | index($path)) != null)
 ' >/dev/null 2>&1 || verdict false "cause=generated-ownership-gain" \

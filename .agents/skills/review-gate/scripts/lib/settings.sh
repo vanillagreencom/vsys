@@ -352,3 +352,32 @@ rg_setting() { # NAME DEFAULT — resolved value on stdout; nonzero + ::error on
   done
   printf '%s' "$default"
 }
+
+# A packed list setting as one trimmed, non-empty entry per line. pipefail
+# inside, checked at every caller: a list decides a trust boundary, and the
+# last stage of the pipeline returns 0 on empty output. A `tr` that died would
+# leave a RESTRICTED list looking empty, which the evidence read takes as "any
+# non-author" — the trust list would open the gate it was set to close. A
+# broken pipeline is a refusal instead.
+rg_pack() { # RAW SEPARATORS -> one trimmed, non-empty entry per line
+  ( set -o pipefail
+    printf '%s\n' "$1" | tr "$2" '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d' )
+}
+
+# The writer's per-pull-request share of its converge step, validated here
+# because two callers must agree on what a legal value is: the writer that
+# spends it, and the configuration check a repository adopts a settings file
+# through. A shape judged in only one of those passes adoption and fails every
+# run. Prints the value, or the keyed refusal and status 2.
+rg_pr_deadline_seconds() {
+  local value
+  value="$(rg_setting REVIEW_GATE_PR_DEADLINE_SECONDS 120)" || return 2
+  case "$value" in
+    '' | *[!0-9]* | 0)
+      rg_message error writer-deadline-value "$value" \
+        "::error::REVIEW_GATE_PR_DEADLINE_SECONDS must be a positive whole number of seconds" >&2
+      return 2
+      ;;
+  esac
+  printf '%s' "$value"
+}

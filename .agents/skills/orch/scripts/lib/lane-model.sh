@@ -62,6 +62,18 @@
 LANE_MODEL_JQ='
 def lane_norm: ascii_downcase | gsub("[^a-z0-9]"; "");
 
+# The statuses that can carry a usage reading, named once so both guards below
+# and the record `lanes` emits agree. `rate_limited` carries one only where the
+# endpoint refused a usage REFRESH while the host still held its last figures:
+# those windows were read from the account, and usage_age_s says how old they
+# are. Treating that lane as unmeasured would wall every launch on the host for
+# the length of a transient burst, which is the whole cost the status exists
+# to remove. A `rate_limited` lane with no figure, a token renewal refused with
+# 429 or a usage 429 with nothing cached, passes this test too and reaches null
+# only through the headroom_pct check in binding_bucket and the null-pct filter
+# in max_binding, which must stay.
+def lane_measured: (.status == "ok" or .status == "rate_limited");
+
 def wall_rank:
   if .bucket == "weekly" then 2
   elif .bucket == "model" then 1
@@ -86,7 +98,7 @@ def model_binding($model):
          | select(.label == null
                   or ($l != "" and $m != ""
                       and (($l | contains($m)) or ($m | contains($l)))))
-         | {bucket: "model", pct: .pct,
+         | {bucket: "model", label: (.label // null), pct: .pct,
             resets_at: (.resets_at // null)} ])
   | max_binding;
 
@@ -97,14 +109,16 @@ def model_binding($model):
 # A record whose usage could not be read answers null whatever its other fields
 # say: a window nobody read is not an empty one.
 def binding_bucket:
-  if (.status != "ok" or .headroom_pct == null
+  if ((lane_measured | not) or .headroom_pct == null
       or .binding_bucket == null) then null
-  else {bucket: .binding_bucket, pct: (100 - .headroom_pct),
+  else {bucket: .binding_bucket,
+        label: (if .binding_bucket == "model" then ([.model_buckets[]] | max_by(.pct).label // null) else null end),
+        pct: (100 - .headroom_pct),
         resets_at: (.binding_resets_at // null)}
   end;
 
 def lane_binding($model):
-  if .status != "ok" then null
+  if (lane_measured | not) then null
   elif $model != "" then model_binding($model)
   else binding_bucket
   end;
@@ -137,9 +151,46 @@ def lane_binding($model; $binding_floor):
 
 def with_lane_binding($model; $binding_floor):
   lane_binding($model; $binding_floor) as $binding
+  | (if $binding == null then [] elif $binding.bucket == "model" then (._rate_prior.model_buckets // [])
+     else [{label: null,
+            pct: (if $binding.bucket == "session" then ._rate_prior.session_5h_pct
+                  elif $binding.bucket == "weekly" then ._rate_prior.weekly_pct else null end),
+            resets_at: ._rate_prior.resets[$binding.bucket]}] end
+     | map(select((.label // null) == ($binding.label // null)
+                  and .resets_at != null and .resets_at == $binding.resets_at))
+     | first.pct // null) as $prior
+  | (if $binding == null or $prior == null then null
+     else ($binding.pct - $prior) end) as $delta
+  | (if $delta == null then "one-sample"
+     elif ._rate_elapsed_s < 60 then "samples-too-close"
+     elif $delta <= 0 then "not-increasing"
+     else "measured" end) as $rate_state
   | . + {wall: ($binding.pct // null),
          binding_bucket: ($binding.bucket // null),
-         binding_resets_at: ($binding.resets_at // null)};
+         binding_resets_at: ($binding.resets_at // null),
+         usage_rate_state: $rate_state,
+         usage_rate_pct_per_min:
+           (if $rate_state == "measured" then ($delta * 60 / ._rate_elapsed_s) else null end),
+         projected_wall_minutes:
+           (if $rate_state == "measured"
+            then (((100 - $binding.pct) * ._rate_elapsed_s / ($delta * 60)) | ceil)
+            else null end)};
+
+def lane_public: del(._rate_prior, ._rate_elapsed_s, ._id);
+
+# One spelling for every reset a lane record carries: whole-second UTC with a
+# Z, the form Codex resets are rendered in. The Claude usage endpoint writes
+# fractional seconds and +00:00, and a provider row carries whatever its
+# timestamp is; a reader parsing the stamp (the BSD `date` arm cannot read the
+# fraction) or comparing two of them by equality, as with_lane_binding does
+# with the prior sample, needs one form. emit_lane applies it to the current
+# windows and to the prior sample alike, so the comparison stays like with like.
+def utc_stamp: if type == "string" then sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") else . end;
+def utc_resets:
+  (if (.resets | type) == "object" then .resets |= map_values(utc_stamp) else . end)
+  | (if (.model_buckets | type) == "array"
+     then .model_buckets |= map(if type == "object" then .resets_at |= utc_stamp else . end)
+     else . end);
 
 # wall_verdict($max) over ONE percentage from lane_binding above: the
 # one word both pick forms answer with. Room, walled, or unmeasured.

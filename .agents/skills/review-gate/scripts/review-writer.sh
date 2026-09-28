@@ -168,12 +168,71 @@ if [ -z "${PR_NUMBER:-}" ]; then
   }
   count="$(jq length <<<"$prs")"
   rg_message notice writer-converging "$count" "converging $count open PR(s)"
+  # One pull request spends only its own share of the converge step. The work
+  # each evaluation does is partly the pull request's own to choose — its
+  # manifest decides how much source preparation the class policy asks for —
+  # so without a bound one head leaves every head behind it unevaluated for
+  # that pass. An overrun is that pull request's convergence failure and
+  # nothing more: the loop records it and moves to the next, and the
+  # unconverged status stays pending for the next pass, which is the same
+  # fail-safe direction as any other failure here.
+  #
+  # PER_PR_DEADLINE_SECONDS is a fraction of the step's own budget, so a pass
+  # still reaches several pull requests where every one of them overruns.
+  # `timeout` is coreutils and this writer runs where it exists; a host with
+  # neither spelling keeps the unbounded behaviour rather than lose the gate.
+  PER_PR_DEADLINE_SECONDS="$(rg_pr_deadline_seconds)" || exit 2
+  pr_bound=()
+  if command -v timeout >/dev/null 2>&1; then
+    pr_bound=(timeout "$PER_PR_DEADLINE_SECONDS")
+  elif command -v gtimeout >/dev/null 2>&1; then
+    pr_bound=(gtimeout "$PER_PR_DEADLINE_SECONDS")
+  else
+    rg_message warning writer-unbounded "$PER_PR_DEADLINE_SECONDS" \
+      "no timeout utility here, so each PR's evaluation runs unbounded"
+  fi
+  converge_pr() { # NUMBER HEAD BASE AUTHOR -> the single-head run's status
+    EVENT_NAME="$EVENT_NAME" PR_NUMBER="$1" \
+      HEAD_SHA="$2" PR_BASE_SHA="$3" PR_AUTHOR="$4" \
+      ${pr_bound[@]+"${pr_bound[@]}"} bash "$self" </dev/null
+  }
   failed=0
   while read -r number head base author; do
     [ -z "$number" ] && continue
-    if ! EVENT_NAME="$EVENT_NAME" PR_NUMBER="$number" \
-        HEAD_SHA="$head" PR_BASE_SHA="$base" PR_AUTHOR="$author" bash "$self" </dev/null; then
-      rg_message error writer-convergence-failed "$number" "::error::convergence failed for PR #$number (see log above)"
+    pr_status=0
+    converge_pr "$number" "$head" "$base" "$author" || pr_status=$?
+    # The listing is read once at the start of the pass, so a lane pushing
+    # before this PR's turn leaves a head the predicate may no longer be able
+    # to fetch. A failed evaluation of a head the PR no longer has says
+    # nothing about the PR, so the PR is re-read once: a moved head is walked
+    # on the current one, a closed PR is left for the next pass, and a
+    # failure on the head the PR still has, or an unreadable PR, stays a
+    # failure. An overrun is not a moved head and is not re-read.
+    if [ "$pr_status" -ne 0 ] && [ "$pr_status" -ne 124 ]; then
+      current=""
+      if raw_pr="$(gh api "repos/$GH_REPO/pulls/$number")" && [ -n "$raw_pr" ]; then
+        current="$(jq -r 'if type == "object" and all(.state, .head.sha, .base.sha; type == "string")
+                          then "\(.state) \(.head.sha) \(.base.sha)"
+                          else error("not a pull request object") end' <<<"$raw_pr" 2>/dev/null)" || current=""
+      fi
+      read -r cur_state cur_head cur_base <<<"$current"
+      if [ -z "$current" ]; then
+        rg_message error writer-pr-read-failed "$number" "::error::could not re-read PR #$number after its evaluation failed; the failure stands"
+      elif [ "$cur_state" != "open" ]; then
+        rg_message notice writer-head-moved "$number" "PR #$number is $cur_state since the listing; left for the next pass"
+        pr_status=0
+      elif [ "$cur_head" != "$head" ]; then
+        rg_message notice writer-head-moved "$number" "PR #$number moved from $head to $cur_head during the pass; evaluating the current head"
+        pr_status=0
+        converge_pr "$number" "$cur_head" "$cur_base" "$author" || pr_status=$?
+      fi
+    fi
+    if [ "$pr_status" -ne 0 ]; then
+      if [ "$pr_status" -eq 124 ]; then
+        rg_message error writer-convergence-deadline "$number" "::error::PR #$number passed its ${PER_PR_DEADLINE_SECONDS}s share of the converge step; left for the next pass"
+      else
+        rg_message error writer-convergence-failed "$number" "::error::convergence failed for PR #$number (see log above)"
+      fi
       failed=1
     fi
   done < <(jq -r '.[] | "\(.number) \(.headRefOid) \(.baseRefOid) \(.author.login // "")"' <<<"$prs")

@@ -8,7 +8,7 @@ Delegate fix items to a specialist dev agent. Standalone (user-initiated) or man
 | `dev-fix [ISSUE_ID]` | Fix items for a specific issue |
 | (from a review workflow) | Managed lifecycle with caller context |
 
-**Caller context** (via `⤵`): `worktree`; `lifecycle` — `"managed"` (return at § 3) or `"self"` (default); `dev_agent` — a live dev agent; `issue_id` — the workflow-state key, the normalized issue ID (`issue-N` for GitHub, `PROJ-123` for Linear), never the bare GitHub issue number; `items` — formatted review items; `source` — `pr-review` | `qa-review` | `review` | `local-review` (default `conversation`); `qa_agent`.
+**Caller context** (via `⤵`): `worktree`; `lifecycle` — `"managed"` (return at § 3) or `"self"` (default); `dev_agent` — a live dev agent; `issue_id` — the workflow-state key, whose forms `workflow-state --help` § Keys enumerates, never the bare GitHub issue number; `items` — formatted review items; `source` — `pr-review` | `qa-review` | `review` | `local-review` (default `conversation`); `qa_agent`.
 
 **Standalone init** (`lifecycle: "self"`). Use the argument as `ISSUE_ID`, else `git-context issue-from-branch .`. Apply [Worktree Scope](../SKILL.md#workflow-execution) and resolve `WT_PATH` as `git-context repo-root "[DIR]"` (inside a worktree `[DIR]` is `.`; from the main repo, `worktree path [ISSUE_ID]`, asking before creating).
 
@@ -74,17 +74,27 @@ Cancel ends the workflow; a selection goes to § 2.
 
    A failed check omits the path and carries `- decision index lookup failed for [DECISION_ID]` instead.
 
-4. **Stamp the round**, as separate tool calls immediately before delegating, then arm the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure):
-
-   ```bash
-   .agents/skills/orch/scripts/workflow-state set-now [ISSUE_ID] dev_delegated_at
-   ```
+4. **Stamp the round**, as separate tool calls immediately before delegating, the round-start prune between the two stamps, then arm the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure):
 
    ```bash
    .agents/skills/orch/scripts/workflow-state new-round-id [ISSUE_ID] dev_round_id
    ```
 
+   ```bash
+   .agents/skills/orch/scripts/round-prune [ISSUE_ID]
+   ```
+
+   ```bash
+   .agents/skills/orch/scripts/workflow-state set-now [ISSUE_ID] dev_delegated_at
+   ```
+
    Then persist the delegated item set on disk. Write `[WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json` with the harness file-write tool as a JSON array of `{"n": [N], "text": "[ITEM_TEXT]", "reach": "[REACH]"}`, one per delegated item. `[ITEM_TEXT]` is that item's formatted block verbatim. `[REACH]` names the shipped producer, user action, or fixture that reaches the finding — a command a person runs, a file a shipped writer emits, a test in the tree. An item with no reach is a `Declined:` reply, not a fix: disposition it per [`../references/finding-disposition.md` § Filing bar](../references/finding-disposition.md#filing-bar) instead of delegating it. The writer refuses a short list of shapes, enumerated in [`../schemas/dev-round.md`](../schemas/dev-round.md) and in `dev-round-write --help`; it is a backstop and not the judgement — a reach it accepts has been recorded, not approved.
+
+   Read the near-ceiling lines the last recorded round left, and render one `Near-ceiling:` line per entry in the delegation. The key is the one carrier: the artifact's own path is addressed by `dev_round_id`, which the stamp above has already overwritten.
+
+   ```bash
+   .agents/skills/orch/scripts/workflow-state get [ISSUE_ID] '.near_ceiling // []'
+   ```
 
    Decide whether this fix round may add protected files. [`../schemas/dev-round.md` § Protected additions](../schemas/dev-round.md#protected-additions) is the sole scope definition. The default is none.
 
@@ -122,6 +132,7 @@ Cancel ends the workflow; a selection goes to § 2.
    Artifact Key: [ISSUE_ID]
    QA: [QA_AGENT]
    [If the round may add files: "Adds: [REPO_RELATIVE_PATHS]"]
+   [For each near_ceiling line read from workflow state: "Near-ceiling: [LINE]"]
 
    Decisions:
    [For each verified decision: "- [DECISION_ID]: [ONE_LINE_SUMMARY] — [DECISION_FILE_PATH]"]
@@ -155,13 +166,17 @@ Cancel ends the workflow; a selection goes to § 2.
 
    `B = pass` when the worktree is clean and the reported fix commit resolves in the log — or when the round applied nothing and made no commit.
 
+   A round that meets the Stalled round conditions of [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure) goes to `round-recover` whatever B reads, and its agent is never nudged or re-messaged; the table below covers every other round.
+
+   First run [dev-start.md § Store Validation Time](dev-start.md#store-validation-time) for every `reason` but `missing` and `invalid`, before B or the reason routes the round, as [dev-start.md § 3](dev-start.md#3-accept-the-round) states; no row below names it again.
+
    | A (verdict) | B (git) | Action |
    |---|---|---|
-| `accept` | pass | **Accept.** First confirm exact-commit binding: the artifact's `.commit` equals `git -C [WORKTREE_PATH] rev-parse HEAD` (an all-skipped round's `.commit` is the unchanged HEAD). Then read the item decisions, commits, and validate status from the return when present, else from the artifact. Run [dev-start.md § Store Proposed Rules](dev-start.md#store-proposed-rules). → step 6. |
+| `accept` | pass | **Accept.** First confirm exact-commit binding: the artifact's `.commit` equals `git -C [WORKTREE_PATH] rev-parse HEAD` (an all-skipped round's `.commit` is the unchanged HEAD). Then read the item decisions, commits, and validate status from the return when present, else from the artifact. Run [dev-start.md § Store Proposed Rules](dev-start.md#store-proposed-rules), then [dev-start.md § Store Near-Ceiling Lines](dev-start.md#store-near-ceiling-lines) — a fix round records its own list, so a file it split stops being carried and a file it pushed into the warn band starts being. → step 6. |
    | `accept` | fail | The artifact claims done but the worktree is dirty or the commit is missing. Re-read git ONCE after a brief pause, then re-delegate only the missing step: commit, or revert leftover work. |
    | `wait` | pass | Do NOT re-run the fix and do NOT accept on git alone. Send ONE report-only nudge: *"re-run only your completion tail — write your dev-return artifact (`dev-return-write --kind fix … --round-id [DEV_ROUND_ID]` with one `--item` per review item; if the delegation is gone from your context, your item set is on disk at `tmp/dev-round-[ISSUE_ID]-[DEV_ROUND_ID].json`) and re-report your item decisions; do NOT re-run the fix."* Accept only when a valid artifact for THIS round appears. |
    | `wait` | fail | **Not done.** Wait to the deadline, then escalate per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure). |
-| `retry` | any | An artifact for THIS round exists but fails a gate. The check's `reason` names it. `unapproved_additions` also returns every refused path in `files`; start a fresh round that names each deliberate path in `Adds:`, or order the files cut. For a structurally valid artifact with a failing `validate`, run [dev-start.md § Store Proposed Rules](dev-start.md#store-proposed-rules), then end the workflow and report without another validation round. An identity/schema failure gets the report-only tail-rewrite nudge. `comparison_failed` means git cannot compare the round's recorded base commit against HEAD, so the dev agent has nothing to repair; mint a fresh round. `additions_unattributable` means a rebase moved that base off the branch, so the round's additions were never gated and no path is named. A fresh round does not recover the gate — `dev-round-write` stamps its `base_sha` at the rebased HEAD, which already contains anything this round added — so read the blocked round's own commits for paths in [`../schemas/dev-round.md` § Protected additions](../schemas/dev-round.md#protected-additions), name each deliberate one in the fresh round's `Adds:` line, and cut the rest before delegating it. That `Adds:` line is the authorization itself here, not something the fresh round's gate re-derives from its base, which is why the reading is not optional. The blocked round then closes through the fresh round, as it does for any other retry reason. `cut_not_shrunk` means the branch exceeds the recorded comparison. Before minting the retry ID, keep the failed round's record path returned by `dev-round-write` in step 4. Pass that path to `--cut-from-round` for the remaining cut. `cut_unmeasurable` means the recorded comparison or branch measurement could not be read. Restore the record or base ref and re-run the check. Never accept, and never treat it as absent. |
+| `retry` | any | An artifact for THIS round exists but fails a gate. The check's `reason` names it. `unapproved_additions` also returns every refused path in `files`; start a fresh round that names each deliberate path in `Adds:`, or order the files cut. For a structurally valid artifact with a failing `validate`, run [dev-start.md § Store Proposed Rules](dev-start.md#store-proposed-rules) and [dev-start.md § Store Near-Ceiling Lines](dev-start.md#store-near-ceiling-lines), then end the workflow and report without another validation round. An identity/schema failure gets the report-only tail-rewrite nudge. `comparison_failed` means git cannot compare the round's recorded base commit against HEAD, so the dev agent has nothing to repair; mint a fresh round. `additions_unattributable` means a rebase moved that base off the branch, so the round's additions were never gated and no path is named. A fresh round does not recover the gate — `dev-round-write` stamps its `base_sha` at the rebased HEAD, which already contains anything this round added — so read the blocked round's own commits for paths in [`../schemas/dev-round.md` § Protected additions](../schemas/dev-round.md#protected-additions), name each deliberate one in the fresh round's `Adds:` line, and cut the rest before delegating it. That `Adds:` line is the authorization itself here, not something the fresh round's gate re-derives from its base, which is why the reading is not optional. The blocked round then closes through the fresh round, as it does for any other retry reason. `cut_not_shrunk` means the branch exceeds the recorded comparison. Before minting the retry ID, keep the failed round's record path returned by `dev-round-write` in step 4. Pass that path to `--cut-from-round` for the remaining cut. `cut_unmeasurable` means the recorded comparison or branch measurement could not be read. Restore the record or base ref and re-run the check. Never accept, and never treat it as absent. `mode_mismatch` means the receipt records another validation mode than this round runs, so its pass does not cover the round the way submit reads it; send ONE nudge to validate as [dev-fix.md § 3](../../dev/workflows/dev-fix.md#3-validate-and-commit) starts the run and rewrite the artifact, without re-running the fix. |
 
 6. **Record the outcome** — one write per item, and the item's own text never enters a shell word:
 
@@ -171,7 +186,7 @@ Cancel ends the workflow; a selection goes to § 2.
    {"description":"[DESC]","location":"[LOC]","commit":"[SHA]","source":"[SOURCE]"}
    ```
 
-   Escalated, `[OUTCOME]` carrying the item's accepted decision — Blocked → `"blocked"`, Skipped → `"skipped"`:
+   Escalated, `[OUTCOME]` carrying the item's accepted decision — Blocked → `"blocked"`, Skipped → `"skipped"`; a Skipped item whose disposition is introduced-or-armed, the fix having introduced or armed the defect it names, lands here with outcome `"skipped"` and the orchestrator re-delegates it in the next fix round instead of ending the review on it:
 
    ```json
    {"description":"[DESC]","location":"[LOC]","reason":"[REASON]","outcome":"[OUTCOME]","source":"[SOURCE]"}

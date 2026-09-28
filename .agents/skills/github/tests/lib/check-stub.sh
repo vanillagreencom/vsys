@@ -6,18 +6,14 @@
 # STUB_STATE_STDERR, STUB_STATE_EXIT, STUB_STATE_SILENT_FAIL, STUB_PR_MISSING
 # and STUB_STATE_FAIL_ONCE, a marker path the first lookup of a run creates;
 # the branch-rule reads' failures through STUB_RULES_EXIT and
-# STUB_BRANCH_EXIT).
-# The admin-credential world adds STUB_BASE_OID, STUB_BEHIND_BY,
-# STUB_COMPARE_FAIL, STUB_ADMIN_IN_QUEUE, STUB_ADMIN_AUTO, STUB_PR_NODE_ID,
-# STUB_DEQUEUE_FAIL, STUB_QUEUE_PARTIAL and STUB_POST_GRAPHQL_PARTIAL (a
-# GraphQL 200 carrying an errors array beside data, on the queue-state read and
-# on the post-merge read), STUB_QUEUE_CLEARED_FILE, the marker a successful
-# dequeue writes so the re-read answers cleared, and
-# STUB_THREADS_AFTER_DEQUEUE_JSON, the review threads the query answers once
-# that marker exists, which is a gate turning red inside the dequeue window.
-# Its classic branch protection is STUB_CLASSIC_PROTECTION_JSON, unset being
-# GitHub's not-protected 404, and STUB_CLASSIC_PROTECTION_EXIT a read that
-# failed some other way.
+# STUB_BRANCH_EXIT). STUB_POST_GRAPHQL_PARTIAL makes the post-merge read a
+# GraphQL 200 carrying an errors array beside data, STUB_POST_VIEW_FAIL fails
+# its pr-view fallback, and STUB_BASE_OID is the base end of the class-policy
+# range, whose head end is STUB_POLICY_HEAD where set, else STUB_HEAD. STUB_REVIEW_DECISION and STUB_REVIEW_LATEST are the readiness check's
+# reviewDecision and latestReviews. STUB_REPLY_FAIL and STUB_RESOLVE_FAIL
+# make the review-thread reply and resolve mutations answer a GraphQL error,
+# STUB_REOPEN_FAIL the unresolve mutation,
+# and STUB_REQUIRE_TOKEN refuses either without the bot token.
 # Sourced, never run — CI's suite glob picks up skills/*/tests/*.sh only, so
 # this file lives one level down.
 #
@@ -73,7 +69,7 @@ set -euo pipefail
 if [[ -n "${STUB_CALL_LOG:-}" ]]; then
     printf '%s\n' "$*" >>"$STUB_CALL_LOG"
 fi
-[[ -z "${STUB_AUTH_LOG:-}" ]] || printf 'GH=%s|GITHUB=%s|CFG=%s|%s\n' "${GH_TOKEN-<unset>}" "${GITHUB_TOKEN-<unset>}" "${GH_CONFIG_DIR-<unset>}" "$*" >>"$STUB_AUTH_LOG"
+[[ -z "${STUB_AUTH_LOG:-}" ]] || printf 'GH=%s|GITHUB=%s|%s\n' "${GH_TOKEN-<unset>}" "${GITHUB_TOKEN-<unset>}" "$*" >>"$STUB_AUTH_LOG"
 
 case "${1:-}" in
     auth)
@@ -121,35 +117,7 @@ case "${1:-}" in
                 echo stub-user
                 exit 0
                 ;;
-            # The admin gate's classic branch-protection read, before the
-            # unencoded-name patterns below, whose `*/*` shape its own path
-            # matches. An unset fixture is GitHub's answer for an unprotected
-            # branch: a 404 naming it, which the gate reads as no protection
-            # rather than a failed read.
-            'repos/{owner}/{repo}/branches/'*/*/protection) ;;
-            'repos/{owner}/{repo}/branches/'*/protection)
-                if [[ "${STUB_CLASSIC_PROTECTION_EXIT:-0}" != "0" ]]; then
-                    echo "gh: Server Error (HTTP 500)" >&2
-                    exit "$STUB_CLASSIC_PROTECTION_EXIT"
-                fi
-                if [[ -z "${STUB_CLASSIC_PROTECTION_JSON:-}" ]]; then
-                    echo "gh: Branch not protected (HTTP 404)" >&2
-                    exit 1
-                fi
-                printf '%s\n' "$STUB_CLASSIC_PROTECTION_JSON"
-                exit 0
-                ;;
             'repos/{owner}/{repo}/rules/branches/'*/* | 'repos/{owner}/{repo}/branches/'*/*) ;;
-            # The base-containment read: how many commits the base has that the
-            # PR head does not.
-            'repos/{owner}/{repo}/compare/'*)
-                if [[ "${STUB_COMPARE_FAIL:-false}" == "true" ]]; then
-                    echo "gh: Not Found (HTTP 404)" >&2
-                    exit 1
-                fi
-                echo "${STUB_BEHIND_BY:-0}"
-                exit 0
-                ;;
             'repos/{owner}/{repo}') echo "${STUB_ALLOW_AUTO_MERGE:-true}"; exit 0 ;;
             'repos/{owner}/{repo}/rules/branches/'*)
                 if [[ "${STUB_RULES_EXIT:-0}" != "0" ]]; then
@@ -171,52 +139,6 @@ case "${1:-}" in
                 ;;
         esac
         if [[ "${2:-}" == "graphql" ]]; then
-            # The admin-credential route's own reads and mutations: its queue
-            # snapshot asks for the node id beside the two merge-state facts,
-            # and a successful dequeue clears the state the next read returns.
-            if [[ "$*" == *"dequeuePullRequest"* || "$*" == *"disablePullRequestAutoMerge"* ]]; then
-                if [[ "${STUB_DEQUEUE_FAIL:-false}" == "true" ]] \
-                    || { [[ "${STUB_DEQUEUE_ONLY_FAIL:-false}" == "true" ]] && [[ "$*" == *"dequeuePullRequest"* ]]; }; then
-                    echo '{"errors":[{"message":"queue mutation refused"}]}'
-                    exit 1
-                fi
-                [[ -z "${STUB_QUEUE_CLEARED_FILE:-}" ]] || : >"$STUB_QUEUE_CLEARED_FILE"
-                # The shared verb checks the mutation's own payload is present, so
-                # the response names it rather than an empty data object.
-                if [[ "$*" == *"dequeuePullRequest"* ]]; then
-                    echo '{"data":{"dequeuePullRequest":{"mergeQueueEntry":null}}}'
-                else
-                    echo '{"data":{"disablePullRequestAutoMerge":{"clientMutationId":"x"}}}'
-                fi
-                exit 0
-            fi
-            if [[ "$*" == *"isInMergeQueue"* && "$*" != *"mergeQueueEntry"* ]]; then
-                # GitHub's field-level GraphQL failure: HTTP 200, an errors
-                # array beside data, and null for the field that failed.
-                if [[ "${STUB_QUEUE_PARTIAL:-false}" == "true" ]]; then
-                    echo '{"errors":[{"message":"partial"}],"data":{"repository":{"pullRequest":{"id":"PR_node_1","isInMergeQueue":null,"autoMergeRequest":null}}}}'
-                    exit 0
-                fi
-                in_queue="${STUB_ADMIN_IN_QUEUE:-false}"
-                auto="${STUB_ADMIN_AUTO:-false}"
-                # After a successful dequeue the same read answers cleared.
-                if [[ -n "${STUB_QUEUE_CLEARED_FILE:-}" && -f "$STUB_QUEUE_CLEARED_FILE" ]]; then
-                    # The post-dequeue re-read (the cleared marker is present).
-                    # STUB_REREAD_FAIL makes only that read fail.
-                    if [[ "${STUB_REREAD_FAIL:-false}" == "true" ]]; then
-                        echo "queue re-read unavailable" >&2
-                        exit 1
-                    fi
-                    in_queue=false
-                    auto=false
-                fi
-                jq -cn \
-                    --arg id "${STUB_PR_NODE_ID-PR_node_1}" \
-                    --argjson in_queue "$in_queue" \
-                    --argjson auto "$auto" \
-                    '{data:{repository:{pullRequest:{id:(if $id == "" then null else $id end),isInMergeQueue:$in_queue,autoMergeRequest:(if $auto then {enabledAt:"2026-09-21T00:00:00Z"} else null end)}}}}'
-                exit 0
-            fi
             if [[ "$*" == *"mergeQueueEntry"* ]]; then
                 if [[ "${STUB_POST_GRAPHQL_FAIL:-false}" == "true" ]]; then
                     echo '{"errors":[{"message":"queue fields unavailable"}]}'
@@ -244,6 +166,35 @@ case "${1:-}" in
                     --argjson in_queue "${STUB_POST_IN_QUEUE:-false}" \
                     --argjson queue_entry "${STUB_POST_QUEUE_ENTRY_JSON:-null}" \
                     '{data:{repository:{pullRequest:{state:$state,headRefOid:$head,headRefName:$branch,mergeCommit:(if $commit == "" then null else {oid:$commit} end),autoMergeRequest:$auto,isInMergeQueue:$in_queue,mergeQueueEntry:$queue_entry}}}}'
+                exit 0
+            fi
+            # The thread mutations post-reply.sh and resolve-thread.sh send.
+            if [[ "$*" == *unresolveReviewThread* ]]; then
+                if [[ "${STUB_REOPEN_FAIL:-false}" == "true" ]]; then
+                    echo '{"errors":[{"message":"reopen refused"}]}'
+                    exit 1
+                fi
+                echo '{"data":{"unresolveReviewThread":{"thread":{"id":"PRRT_x","isResolved":false}}}}'
+                exit 0
+            fi
+            if [[ "$*" == *addPullRequestReviewThreadReply* || "$*" == *resolveReviewThread* ]]; then
+                if [[ "${STUB_REQUIRE_TOKEN:-false}" == "true" && "${GH_TOKEN:-}" != "ghp_test_token" ]]; then
+                    echo "missing effective token for thread mutation" >&2
+                    exit 45
+                fi
+                if [[ "$*" == *addPullRequestReviewThreadReply* ]]; then
+                    if [[ "${STUB_REPLY_FAIL:-false}" == "true" ]]; then
+                        echo '{"errors":[{"message":"reply refused"}]}'
+                        exit 1
+                    fi
+                    echo '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"C_1","url":"https://github.com/owner/repo/pull/123#discussion_r1"}}}}'
+                    exit 0
+                fi
+                if [[ "${STUB_RESOLVE_FAIL:-false}" == "true" ]]; then
+                    echo '{"errors":[{"message":"resolve refused"}]}'
+                    exit 1
+                fi
+                echo '{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_x","isResolved":true}}}}'
                 exit 0
             fi
             if [[ "${STUB_THREADS_FETCH_FAIL:-false}" == "true" ]]; then
@@ -278,17 +229,11 @@ case "${1:-}" in
                     '{data:{repository:{pullRequest:{reviewThreads:{nodes:$nodes,pageInfo:{hasNextPage:false,endCursor:null}}}}}}'
                 exit 0
             fi
-            threads_now="${STUB_THREADS_JSON:-[]}"
-            # A thread opened while the dequeue ran: the cleared marker is the
-            # only in-stub evidence that the mutation has already happened.
-            if [[ -n "${STUB_THREADS_AFTER_DEQUEUE_JSON:-}" && -n "${STUB_QUEUE_CLEARED_FILE:-}" && -f "$STUB_QUEUE_CLEARED_FILE" ]]; then
-                threads_now="$STUB_THREADS_AFTER_DEQUEUE_JSON"
-            fi
             if [[ -n "${STUB_THREADS_PAGE2_JSON:-}" ]]; then
-                jq -cn --argjson nodes "$threads_now" \
+                jq -cn --argjson nodes "${STUB_THREADS_JSON:-[]}" \
                     '{data:{repository:{pullRequest:{reviewThreads:{nodes:$nodes,pageInfo:{hasNextPage:true,endCursor:"cursor-page-2"}}}}}}'
             else
-                jq -cn --argjson nodes "$threads_now" \
+                jq -cn --argjson nodes "${STUB_THREADS_JSON:-[]}" \
                     '{data:{repository:{pullRequest:{reviewThreads:{nodes:$nodes,pageInfo:{hasNextPage:false,endCursor:null}}}}}}'
             fi
             exit 0
@@ -325,23 +270,16 @@ case "${1:-}" in
                         '{state:$state,mergedAt:(if $merged_at == "" then null else $merged_at end)}'
                     exit 0
                 fi
-                # The admin route reads the head and the base in one call; it
-                # must match before the headRefOid and baseRefName,baseRefOid
-                # handlers, whose patterns it contains as substrings.
-                if [[ "$*" == *"--json headRefOid,baseRefName,baseRefOid"* ]]; then
-                    jq -cn --arg h "${STUB_HEAD:-test-head}" --arg b "${STUB_BASE:-main}" \
-                        --arg oid "${STUB_BASE_OID-base-oid}" \
-                        '{headRefOid:$h,baseRefName:$b,baseRefOid:(if $oid == "" then null else $oid end)}'
-                    exit 0
-                fi
-                if [[ "$*" == *"--json baseRefName,baseRefOid"* ]]; then
-                    # The admin route's pre-merge base re-read. STUB_BASE_MOVED
-                    # makes it differ from the preflight combined read, so the
-                    # base-moved guard fires.
-                    oid="${STUB_BASE_OID-base-oid}"
-                    [[ "${STUB_BASE_MOVED:-false}" != "true" ]] || oid="base-oid-moved"
-                    jq -cn --arg b "${STUB_BASE:-main}" --arg oid "$oid" \
-                        '{baseRefName:$b,baseRefOid:(if $oid == "" then null else $oid end)}'
+                # The review gate's class-policy range, read only where a
+                # class policy is active. Matched before the headRefOid
+                # handler, whose pattern this one contains.
+                if [[ "$*" == *"--json baseRefOid,headRefOid"* ]]; then
+                    if [[ "${STUB_POLICY_RANGE_FAIL:-false}" == "true" ]]; then
+                        echo "could not read the pull request endpoints" >&2
+                        exit 1
+                    fi
+                    jq -cn --arg b "${STUB_BASE_OID-base-oid}" --arg h "${STUB_POLICY_HEAD:-${STUB_HEAD:-test-head}}" \
+                        '{baseRefOid:(if $b == "" then null else $b end),headRefOid:$h}'
                     exit 0
                 fi
                 if [[ "$*" == *"--json baseRefName"* ]]; then
@@ -367,7 +305,11 @@ case "${1:-}" in
                 if [[ "$*" == *"--json reviewDecision,latestReviews"* ]]; then
                     latest="${STUB_REVIEW_LATEST:-}"
                     [[ -n "$latest" ]] || latest='[{"state":"APPROVED"}]'
-                    jq -cn --arg d "${STUB_REVIEW_DECISION:-APPROVED}" --argjson l "$latest" \
+                    # Unset is a PR nobody set a decision for, which GitHub
+                    # answers APPROVED here. Set-but-empty is the answer a base
+                    # with no required-review rule gives, so the default must
+                    # not swallow it: `-`, never `:-`.
+                    jq -cn --arg d "${STUB_REVIEW_DECISION-APPROVED}" --argjson l "$latest" \
                         '{reviewDecision:$d,latestReviews:$l}'
                     exit 0
                 fi

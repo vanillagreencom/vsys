@@ -4,7 +4,7 @@ description: "Load to create, list, remove, push, or repair a git worktree."
 summary: "Git worktree management: create, list, remove isolated working copies with env and config symlinks."
 license: MIT
 user-invocable: true
-argument-hint: "create <ID> [<branch>] [--base <branch>|--from <ref>|--pr <N>] [--reuse|--restack] [--replay] | create <ID> --transfer <branch> (not with <branch>, --base, --from, --pr, --reuse, --restack, or --replay) | restack continue|skip|abort <ID|path> | list | remove <ID|path>"
+argument-hint: "create <ID> [<branch>] [--base <branch>|--from <ref>|--pr <N>] [--reuse|--restack] [--replay] [--hosted] | create <ID> --transfer <branch> (not with <branch>, --base, --from, --pr, --reuse, --restack, or --replay) | restack continue|skip|abort <ID|path> | list | remove <ID|path>"
 metadata:
   author: vanillagreen
   source: kendex
@@ -20,7 +20,7 @@ tags: [git]
 .agents/skills/worktree/scripts/worktree <command> [options]
 ```
 
-Worktrees live at `<parent-of-checkout>/.worktrees/<checkout-name>/{id}`, outside the repo root. Every command's contract is its `--help`: flags, exit codes, failure semantics, recovery. The top-level `worktree --help` carries the command index, path and issue-ID rules, configuration variables, and setup-path hardening.
+Worktrees live at `<parent-of-checkout>/.worktrees/<checkout-name>/{id}`, outside the repo root. A hosted lane's worktree lives at one path beside its clone instead, so a compile cache keyed by absolute source path hits across lanes: `create --help`, `--hosted`. Every command's contract is its `--help`: flags, exit codes, failure semantics, recovery. The top-level `worktree --help` carries the command index, path and issue-ID rules, configuration variables, and setup-path hardening.
 
 ## Commands
 
@@ -31,7 +31,7 @@ Worktrees live at `<parent-of-checkout>/.worktrees/<checkout-name>/{id}`, outsid
 | `list` | List all worktrees |
 | `remove` | Remove worktree, clean symlinks, prune branches |
 | `cleanup` | Remove worktrees whose branches are merged; `--targets-only` prunes build output instead, keeping every worktree and branch |
-| `path` / `exists` | Print / check the worktree path for an issue ID |
+| `path` / `exists` | Print / check the worktree path for an issue ID; `path --hosted` prints the hosted lane path |
 | `merged` | Print the commit the issue tree's pull request merged as, asking about the branch that tree has checked out; exit 1 when none did, 2 when the lookup could not answer, a detached tree included (`merged --help`) |
 | `check` | Pre-create git state check (JSON: uncommitted, unpushed) |
 | `push` | Push worktree branch with auto-rebase and pinned `--force-with-lease`; the `rebase-map:` contract for remapping pre-rebase SHAs is in `push --help` |
@@ -63,7 +63,7 @@ A consumer wanting this file locally gets a pointer, never a copy: `cat "$(dirna
 
 ## Reclaiming build output
 
-`cleanup --targets-only` prunes build output and keeps the worktree, its branch and every tracked and untracked source file. It runs on a worktree with uncommitted work: output is written by a compiler or a package manager, so uncommitted work is no reason to leave it on disk, and on a machine hosting many worktrees the trees holding the output are the ones still in use. It previews by default and deletes only under `--apply`, and wherever it cannot establish that a path is safe to remove it keeps that path and says why. Run it from the main checkout, read the preview, then repeat with `--apply`.
+`cleanup --targets-only` prunes build output and keeps the worktree, its branch and every tracked and untracked source file. It runs on a worktree with uncommitted work: output is written by a compiler or a package manager, so uncommitted work is no reason to leave it on disk, and on a machine hosting many worktrees the trees holding the output are the ones still in use. It previews by default and deletes only under `--apply`, and wherever it cannot establish that a path is safe to remove it keeps that path and says why. Run it from the main checkout, read the preview, then repeat with `--apply`. It skips every leased worktree, with one exception: `--worktree PATH --owner ID` lets the session holding a worktree's lease prune that one worktree's Cargo profiles, with no retention window.
 
 The layout table is data, one row per ecosystem, in `scripts/worktree-output-prune`; covering a further ecosystem is a new row there and no other change. `cleanup --help` owns everything else: the flags, the layouts, the locking, what the walk excludes, every reason a path is kept, and the recovery for an `--apply` that did not finish.
 

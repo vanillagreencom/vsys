@@ -13,13 +13,16 @@ kendex also installs docs-writing, which supplies the markdown rules.
 ## Features
 
 - Define how agents handle errors and remove unused code.
-- Require checks to fail on the defects they claim to catch.
+- Set structure rules for resource ownership and exports, and abstraction rules for shared decisions.
+- Keep test-only setup and readback out of shipped code.
+- Require checks to fail on the defects they claim to catch, one control for each independent rule a guard enforces.
+- Set test rules: at least one control per tested surface, one assertion library per tree, no tests that pin prose, and checks selected from what a change affects.
 - Supply language rules for Rust, Bash and TypeScript.
 - Direct markdown work to the docs-writing skill.
 
 ## How it works
 
-The agent loads [SKILL.md](SKILL.md) before it changes code. It reads the shared rules together with your project instructions. It applies those rules while implementing the change and validating the result.
+The agent loads [SKILL.md](SKILL.md) before it changes code. It reads the shared rules together with your project instructions. It applies those rules while implementing the change and validating the result. The test rules are [SKILL.md § Prove Your Guards](SKILL.md#prove-your-guards) and [§ Tests](SKILL.md#tests).
 
 ## Settings
 

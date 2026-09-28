@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # The aggregate accepts only successful dependencies and skips that a
-# successful classifier authorized for the named jobs.
+# successful classifier authorized for the named jobs: through its one waiver
+# for a --skippable job, or through the lane's own verdict, read out of the
+# results, for a --lane job.
 set -euo pipefail
 
 unset GITHUB_OUTPUT
@@ -28,9 +30,15 @@ assert_eq() { # LABEL EXPECTED ACTUAL
 }
 
 run_case() { # LABEL EXPECTED_STATUS WAIVER RESULTS SKIPPABLE...
-  local label="$1" expected="$2" waiver="$3" results="$4" out status
+  local label="$1" expected="$2" waiver="$3" results="$4"
   shift 4
-  set -- --results "$results" --classifier changes --waiver "$waiver" "$@"
+  run_args "$label" "$expected" --results "$results" --classifier changes \
+    --waiver "$waiver" "$@"
+}
+
+run_args() { # LABEL EXPECTED_STATUS ARGS...
+  local label="$1" expected="$2" out status record
+  shift 2
   if out="$(env -i PATH="$PATH" "$AGGREGATE" "$@" 2>&1)"; then
     status=0
   else
@@ -75,13 +83,88 @@ run_case invalid-json "exit=2 aggregate-needs: invalid-results=json" \
 run_case empty-object "exit=2 aggregate-needs: invalid-results=json" \
   true '{}' --skippable test
 
+# The lane verdicts are the classifier job's own outputs, as toJSON(needs)
+# carries them. A lane stands a job down only where its verdict is false.
+# EXTRA_OUTPUTS defaults by count, not as `${5:-{\}}`: Bash 3.2 keeps the
+# backslash in that default and hands jq `{\}`.
+lanes_needs() { # TEST_VERDICT BUILD_VERDICT TEST_RESULT BUILD_RESULT [EXTRA_OUTPUTS]
+  local extra='{}'
+  [ "$#" -lt 5 ] || extra="$5"
+  jq -cn --arg t "$1" --arg b "$2" --arg tr "$3" --arg br "$4" --argjson extra "$extra" '
+    {changes: {result: "success", outputs: ({lane_test: $t, lane_build: $b} + $extra)},
+     test: {result: $tr}, build: {result: $br}}'
+}
+run_args lane-false-skip "exit=0 aggregate-needs: accepted" \
+  --results "$(lanes_needs false true skipped success)" --classifier changes \
+  --lane test=test --lane build=build
+run_args lane-true-skip "exit=1 aggregate-needs: rejected classifier=changes" \
+  --results "$(lanes_needs true true skipped success)" --classifier changes \
+  --lane test=test --lane build=build
+run_args lane-verdict-absent "exit=1 aggregate-needs: rejected classifier=changes" \
+  --results '{"changes":{"result":"success","outputs":{}},"test":{"result":"skipped"}}' \
+  --classifier changes --lane test=test
+run_args lane-of-another-job "exit=1 aggregate-needs: rejected classifier=changes" \
+  --results "$(lanes_needs true false skipped success)" --classifier changes \
+  --lane test=test --lane build=build
+run_args lane-named-for-another-lane "exit=0 aggregate-needs: accepted" \
+  --results "$(lanes_needs true false skipped success)" --classifier changes \
+  --lane test=build
+run_args job-in-no-lane "exit=1 aggregate-needs: rejected classifier=changes" \
+  --results "$(lanes_needs false false success skipped '{"lane_null":"false"}')" \
+  --classifier changes --lane test=test
+run_args lane-beside-waiver "exit=0 aggregate-needs: accepted" \
+  --results "$(lanes_needs false true skipped skipped)" --classifier changes \
+  --waiver true --skippable build --lane test=test
+run_args lane-classifier-failed "exit=1 aggregate-needs: rejected classifier=changes" \
+  --results '{"changes":{"result":"failure","outputs":{"lane_test":"false"}},"test":{"result":"skipped"}}' \
+  --classifier changes --lane test=test
+# LABEL|--lane VALUE: every shape but JOB=LANE is refused before any result
+# is read.
+lane_shape_rows=0
+while IFS='|' read -r label value; do
+  lane_shape_rows=$((lane_shape_rows + 1))
+  run_args "$label" "exit=2 aggregate-needs: invalid-arguments=invalid-lane value=$value" \
+    --results "$(lanes_needs false false skipped success)" --classifier changes --lane "$value"
+done <<'ROWS'
+lane-without-equals|test
+lane-with-two-equals|test=test=x
+lane-without-job|=test
+lane-without-lane|test=
+ROWS
+[ "$lane_shape_rows" -eq 4 ] || { echo "the lane shape table read $lane_shape_rows rows" >&2; exit 1; }
+
+# A job takes one --lane, whichever order two would come in: with one lane
+# standing it down and the other not, the order would otherwise decide.
+run_args duplicate-lane-false-last "exit=2 aggregate-needs: invalid-arguments=duplicate-lane job=test" \
+  --results "$(lanes_needs true false skipped success)" --classifier changes \
+  --lane test=test --lane test=build
+run_args duplicate-lane-false-first "exit=2 aggregate-needs: invalid-arguments=duplicate-lane job=test" \
+  --results "$(lanes_needs true false skipped success)" --classifier changes \
+  --lane test=build --lane test=test
+
+# The rejection names each job it did not accept, and the verdict a --lane
+# job's skip was judged by.
+status=0
+out="$(env -i PATH="$PATH" "$AGGREGATE" --classifier changes --lane test=test --lane build=gone \
+  --results '{"changes":{"result":"success","outputs":{"lane_test":"true"}},"test":{"result":"skipped"},"build":{"result":"skipped"},"docs":{"result":"failure"}}' \
+  2>&1)" || status=$?
+assert_eq "a rejection names every unaccepted job and the verdict read" \
+  "exit=1 aggregate-needs: rejected classifier=changes
+aggregate-needs: unaccepted job=test result=skipped lane=test verdict=true
+aggregate-needs: unaccepted job=build result=skipped lane=gone verdict=absent
+aggregate-needs: unaccepted job=docs result=failure" "exit=$status $out"
+run_args skippable-without-waiver "exit=2 aggregate-needs: invalid-arguments=missing option=--waiver" \
+  --results "$all_success" --classifier changes --skippable test
+run_args nothing-skippable "exit=2 aggregate-needs: invalid-arguments=missing option=--skippable" \
+  --results "$all_success" --classifier changes
+
 if [ -z "${AGGREGATE_NEEDS_CONTROL:-}" ]; then
   [ ! -L "$AGGREGATE" ] || { echo "the aggregate control refuses a symlink" >&2; exit 1; }
   build_mutant() { # RULE OUTPUT
     awk -v rule="$1" '
       BEGIN { changed = 0 }
-      rule == "classifier" && index($0, ".[$classifier].result == \"success\" and") {
-        print "    true and"
+      rule == "classifier" && index($0, "(if .[$classifier].result == \"success\" then empty") {
+        print "    (if true then empty"
         changed += 1
         next
       }
@@ -95,8 +178,28 @@ if [ -z "${AGGREGATE_NEEDS_CONTROL:-}" ]; then
         changed += 1
         next
       }
-      rule == "membership" && index($0, "($skippable | split(\"\\n\") | index($entry.key)) != null)") {
-        print "       true)"
+      rule == "membership" && index($0, "($skippable | split(\"\\n\") | index($entry.key)) != null) or") {
+        print "       true) or"
+        changed += 1
+        next
+      }
+      rule == "lane" && index($0, "$verdicts.outputs[\"lane_\\($lane_of[$entry.key])\"] == \"false\")") {
+        print "         true)"
+        changed += 1
+        next
+      }
+      rule == "lane-shape" && index($0, "*=*=* | =* | *=) die") {
+        print "        never-a-lane) die \"invalid-arguments=invalid-lane value=$2\" \\"
+        changed += 1
+        next
+      }
+      rule == "duplicate-lane" && index($0, "[ \"${seen%%=*}\" != \"${2%%=*}\" ] ||") {
+        print "        true ||"
+        changed += 1
+        next
+      }
+      rule == "lane-membership" && index($0, "($lane_of[$entry.key] != null and") {
+        print "        (true and"
         changed += 1
         next
       }
@@ -140,6 +243,14 @@ if [ -z "${AGGREGATE_NEEDS_CONTROL:-}" ]; then
     "the waiver mutant turns the aggregate suite red"
   run_mutant_control membership \
     "the skippable-membership mutant turns the aggregate suite red"
+  run_mutant_control lane \
+    "the lane-verdict mutant turns the aggregate suite red"
+  run_mutant_control lane-membership \
+    "the lane-membership mutant turns the aggregate suite red"
+  run_mutant_control lane-shape \
+    "the lane-shape mutant turns the aggregate suite red"
+  run_mutant_control duplicate-lane \
+    "the duplicate-lane mutant turns the aggregate suite red"
 fi
 
 printf 'aggregate-needs: %d passed, %d failed\n' "$PASS" "$FAIL"
