@@ -5,6 +5,7 @@
 | 2026-09-09 | D001 | — | Build the OSC 52 clipboard sequence in vsys | The renderer's own call writes through its native core, where no test can read it | The renderer exposes the bytes it sends, or a writable test stream | Active | [Full](D001-clipboard-sequence.md) |
 | 2026-09-09 | D002 | — | Freeze and thaw a lane by writing its cgroup.freeze | It reaches the lane's own cgroup with no unit lookup and no second name to resolve | A lane can run in a cgroup systemd does not own | Active | [Full](D002-lane-action-mechanism.md) |
 | 2026-09-09 | D003 | — | Derive a lane action's effect at the keypress, not at the confirmation | What a screen holds carries no effect, so a stale command cannot reach the system from any call site | A lane gains an identity independent of its cgroup path and leading process | Active | [Full](D003-action-resolved-at-the-keypress.md) |
+| 2026-09-28 | D004 | VGS agent-warden research | Ship the warden as a separate vsys component | Keeps automatic correction outside the dashboard promise | Bun ffi port matches Python safety | Active | [Full](D004-warden-separate-component.md) |
 
 ---
 

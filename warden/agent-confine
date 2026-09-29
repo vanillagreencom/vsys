@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+#
+# Run an agent harness inside agents.slice (CPUWeight=25 -- agents use the whole
+# idle machine but yield to interactive work under contention), with build/test
+# concurrency capped. Used by the per-account wrappers (1claude/nclaude/...) and
+# safe to put in front of any harness command.
+#
+# WHY: agents run `cargo test`, and libtest defaults to one thread per core --
+# a single test binary was measured at 65 threads / 2883% CPU on this 32-thread
+# box (2026-07-29). Two independent limits, because either alone is leaky:
+#
+#   1. The env caps stop self-oversubscription at the source. Test threads stay
+#      low (they explode; extra threads rarely help wall-clock). Build jobs get
+#      half the box so a lone agent still builds fast; the slice weight -- not
+#      the cap -- is what keeps the desktop responsive.
+#   2. The slice weight holds even when an agent overrides the env or passes an
+#      explicit --test-threads. Weight needs the in-kernel scheduler (EEVDF);
+#      sched_ext ignores it (see AGENTS.md "CPU scheduler").
+#
+# Fail-soft by design: if systemd-run or the user manager is unavailable (cron,
+# no session D-Bus, a stripped container), the agent still launches -- capped by
+# the env but outside the slice -- rather than not launching at all.
+
+set -euo pipefail
+
+# No real-time scheduling for agent work. A lane that requests SCHED_FIFO/RR
+# outranks the desktop and the warden on the CPU and can freeze the machine,
+# right past CPUWeight (weights only order NORMAL tasks). Lower RLIMIT_RTPRIO to
+# 0 (both soft and hard: hard alone fails while soft is higher) so neither this
+# process nor anything it starts can take a real-time priority; a non-root
+# process cannot raise a hard limit back, and it survives `systemd-run --scope`
+# (verified: chrt is refused inside the scope). Set before every exec path.
+ulimit -r 0 2>/dev/null || true
+
+CAPS=(
+	"RUST_TEST_THREADS=${AGENT_TEST_THREADS:-8}"
+	"NEXTEST_TEST_THREADS=${AGENT_TEST_THREADS:-8}"
+	"CARGO_BUILD_JOBS=${AGENT_BUILD_JOBS:-16}"
+	# Agent harnesses pick their exec shell from $SHELL. The login shell is fish
+	# (unsupported), which made Claude Code fall back to zsh (nomatch/alias
+	# traps) and tell agents they were "in fish". Force bash: it's what models
+	# emit. Codex ignores $SHELL (reads passwd) but already falls back to bash.
+	"SHELL=/bin/bash"
+	# Agent scratch belongs off RAM. AGENT_TMPDIR can point at a
+	# workstation-specific scratch subvolume; otherwise use XDG cache.
+	# One mold link at a time, machine-wide (lock under /tmp, shared by every
+	# lane whatever its TMPDIR). Fourteen concurrent links from one lane wrote
+	# ~200 MB each per 5 s on 2026-09-08 and stalled the desktop on disk; mold
+	# is multithreaded, so one at a time keeps link throughput and drops the
+	# burst. Measured +0.3 s on a 1.0 s twelve-binary build. AGENT_MOLD_JOBS=
+	# (empty) disables it for a launch; mold ignores every value except 1.
+	"MOLD_JOBS=${AGENT_MOLD_JOBS-1}"
+)
+
+AGENT_DEFAULT_TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp"
+AGENT_EFFECTIVE_TMPDIR="${AGENT_TMPDIR:-$AGENT_DEFAULT_TMPDIR}"
+if mkdir -p -m 700 -- "$AGENT_EFFECTIVE_TMPDIR" 2>/dev/null && [ -d "$AGENT_EFFECTIVE_TMPDIR" ] && [ -w "$AGENT_EFFECTIVE_TMPDIR" ]; then
+	CAPS+=("TMPDIR=$AGENT_EFFECTIVE_TMPDIR")
+else
+	echo "agent-confine: TMPDIR unavailable at $AGENT_EFFECTIVE_TMPDIR; keeping inherited TMPDIR" >&2
+fi
+
+[ $# -gt 0 ] || {
+	echo "usage: agent-confine COMMAND [ARGS...]" >&2
+	exit 2
+}
+
+# Shared build-slot pool (see agent-jobserver). Cargo, rustc, make and ninja
+# take a token from this fifo before each unit of work, so the whole fleet
+# shares AGENT_JOBSERVER_SLOTS slots plus one implicit slot per Cargo process.
+# Exported only when the fifo is really there and the service is up: a stale
+# path makes Cargo warn on every build. CARGO_BUILD_JOBS stays as the per-lane
+# ceiling for a launch without the pool.
+JOBSERVER_FIFO="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-jobserver.fifo"
+if [ -p "$JOBSERVER_FIFO" ] && systemctl --user is-active --quiet agent-jobserver.service 2>/dev/null; then
+	CAPS+=("MAKEFLAGS=--jobserver-auth=fifo:$JOBSERVER_FIFO")
+fi
+
+# AGENT_CONFINE marks everything launched through here (children inherit the
+# environment). agent-warden classifies by this marker first and by names only
+# for what no launcher touched, so a renamed or unlisted CLI cannot hide.
+CAPS+=("AGENT_CONFINE=1")
+
+# Already inside the slice: a nested launch (an agent starting an agent) is a
+# new session and gets its own sibling scope, so it holds its own CPU share
+# instead of splitting its parent's. One exception: when any cgroup between
+# here and agents.slice carries a limit of its own (a lane's deliberate
+# systemd-run -p MemoryMax=... scope), the child stays inside that limit.
+# The helper is named by directory. Exit 0 = capped, 3 = confirmed plain
+# lineage; any other outcome (missing helper, python failure, which exits 1
+# or 2) keeps the current cgroup: staying inside a limit is the safe error.
+if grep -qs 'agents\.slice' /proc/self/cgroup; then
+	here=${BASH_SOURCE[0]%/*}
+	[ "$here" != "${BASH_SOURCE[0]}" ] || here=$HOME/.local/bin
+	cap_status=0
+	"$here/agent-confine-lineage-capped" || cap_status=$?
+	case $cap_status in
+	3) : ;;
+	*) exec env "${CAPS[@]}" "$@" ;;
+	esac
+fi
+
+# Probe before committing: `systemd-run --scope` fails outright without a user
+# manager, and that must not take the agent down with it.
+#
+# --unit names the scope ourselves. systemd-run builds its default name from its
+# own pid, and a launch from inside another transient scope can hit a name
+# systemd still holds ("Unit run-p<pid>-i<id>.scope was already loaded"). That
+# ends the launch: the exec below has replaced this script, so no fallback is
+# left to catch it (seen 2026-09-07).
+#
+# A failure after the probe passes stays fatal on purpose. Nothing here starts
+# the agent outside the slice as a consolation: an agent that runs unconfined
+# but looks fine is the failure that went unseen for weeks.
+if command -v systemd-run >/dev/null 2>&1 &&
+	systemd-run --user --quiet --collect --scope --slice=agents.slice \
+		true >/dev/null 2>&1; then
+	# Sibling scopes share the slice's CPU equally only while the CPU controller
+	# is enabled inside agents.slice, and systemd enables it only when some
+	# child carries a non-default CPU setting. An explicit CPUWeight=100 was
+	# measured not to enable it; CPUWeight=99 did.
+	#
+	# TasksMax bounds ONE session's threads+processes so a runaway lane cannot
+	# eat the whole slice's ceiling and starve every other lane of thread
+	# creation. Twice (2026-09-09/10) one lane leaked thousands of processes
+	# (5140 `npm view`, 21 `bun` servers) and filled the 16384-task slice limit;
+	# every other agent then died with "Resource temporarily unavailable"
+	# (EAGAIN) on thread spawn. Per-scope this contains the blast to the
+	# offending lane: it hits 8192 and fails its own spawns; the others keep
+	# running. 8192 is ~8x any real lane (largest measured 260 tasks), so it
+	# never bites legit work; a runaway capped there still leaves half the
+	# 16384-task slice for every other lane. Override: AGENT_SCOPE_TASKS_MAX.
+	# MemoryHigh: a soft per-lane ceiling. A lane leaking memory then reclaims
+	# its OWN pages first (throttled at this point) instead of pressuring other
+	# lanes and pushing the slice toward its 112G hard cap, where the OOM kill
+	# could land on a different lane. 64G is ~2x the largest measured single-lane
+	# peak (31 GiB), so it never bites a real build; it is soft, so it only slows
+	# a leak, never kills legit work. Override: AGENT_SCOPE_MEM_HIGH.
+	# (Real-time scheduling is blocked by the RLIMIT_RTPRIO=0 set near the top,
+	# not here: LimitRTPRIO is not a valid property on a scope.)
+	exec systemd-run --user --quiet --collect --scope --slice=agents.slice \
+		-p "CPUWeight=99" \
+		-p "TasksMax=${AGENT_SCOPE_TASKS_MAX:-8192}" \
+		-p "MemoryHigh=${AGENT_SCOPE_MEM_HIGH:-64G}" \
+		--unit="agent-confine-$$-${RANDOM}" env "${CAPS[@]}" "$@"
+fi
+
+# No user manager at all (cron, no session D-Bus, a stripped container). The env
+# caps still apply but the slice does not, so say so instead of starting quietly.
+echo "agent-confine: no user systemd manager; running OUTSIDE agents.slice" >&2
+exec env "${CAPS[@]}" "$@"

@@ -2,7 +2,7 @@
 
 # vsys
 
-vsys is a Linux terminal dashboard for agent processes and system health. It uses Bun, TypeScript, and OpenTUI. It reads system information without changing processes or system settings. The repository currently contains the application plan and development tools.
+vsys is a Linux terminal dashboard for agent processes and system health. It uses Bun, TypeScript, and OpenTUI. The dashboard reads system information without changing processes or system settings. The separate warden component corrects agent process placement.
 
 ## Code review
 

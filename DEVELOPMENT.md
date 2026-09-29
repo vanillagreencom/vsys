@@ -12,6 +12,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `src/runtime.ts`: the sampling scheduler and the settings-change path. `src/main.ts` is the entry point and `src/effect.ts` performs a confirmed lane action.
 - `src/test/`: the temporary-file fixture and the mounted-app harness the suites share.
 - `scripts/`: the CI runner and the two benchmarks.
+- `warden/`: the optional Python agent warden, its launcher scripts, its systemd user-unit templates and its unit tests.
 
 ## Constraints
 
@@ -43,7 +44,8 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 - `src/store/*.test.ts`: checkpoint replay, retention, the SQLite schema guard, the load-path migration and the timeline event derivation.
 - `src/ui/*.test.tsx`: the mounted shell through OpenTUI's terminal test renderer. These drive the real screens from the keyboard and the mouse and read the rendered frame back.
 - `src/main.test.ts`: the CLI in terminals created for the test, including that quit and a failed shutdown each restore their own terminal settings.
-- `scripts/ci_test.py`: that the CI runner rejects incomplete configuration and a failed command. Run it with `python3 -m unittest discover -s scripts -p '*_test.py' -v`.
+- `scripts/ci_test.py`: that the CI runner rejects incomplete configuration, a failed command, a missing warden script and a failed warden selftest. Run it with `python3 -m unittest discover -s scripts -p '*_test.py' -v`.
+- `warden/agent_warden_test.py`: classification, planning, job-unit containment, orphan rules, portability, mutant controls and launcher scratch creation. Run it with `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s warden -p '*_test.py'`.
 
 ## Benchmarks and what they do not prove
 

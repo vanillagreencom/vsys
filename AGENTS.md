@@ -1,6 +1,6 @@
 # vsys
 
-vsys is a Linux terminal dashboard for agent processes and system health, written in TypeScript on Bun with React and OpenTUI. It reads cgroup v2 and procfs without changing them, and touches the system only through a lane action the reader confirms with write mode on.
+vsys is a Linux terminal dashboard for agent processes and system health, written in TypeScript on Bun with React and OpenTUI. The dashboard reads cgroup v2 and procfs without changing them, and touches the system only through a lane action the reader confirms with write mode on. The optional warden in `warden/` is the exception: it corrects agent process placement automatically.
 
 ## Commands
 
@@ -16,13 +16,14 @@ vsys is a Linux terminal dashboard for agent processes and system health, writte
 - Collection reads only the settings declared in `collectionKeys` in `src/collect/settings.ts`. A new collection setting goes there, or the runtime will not rebuild the collector when it changes.
 - Nothing is appended to a lane name to make it unique. The process id is a column of its own, and prose names a lane through `laneText()`.
 - No screen names a colour value. Colour comes from the role table in `src/ui/theme.ts`.
-- Only `runEffect()` in `src/effect.ts` changes system state, and only from a command `resolveIntent()` rebuilt against the current sample.
+- Only `runEffect()` in `src/effect.ts` changes system state for the dashboard, and only from a command `resolveIntent()` rebuilt against the current sample. The optional warden changes process placement outside the dashboard runtime.
 - Docs change in the same commit as the code they describe. Every architecture topic file carries a `Covers:` line, and a claim that something is enforced names the test that enforces it.
 
 ## Read next
 
 - `docs/architecture/overview.md`: before structural work, and for the layer boundaries.
 - `docs/architecture/<topic>.md`: the subsystem you are changing. The overview indexes them.
+- `docs/architecture/warden.md`: before changing the optional process-placement corrector under `warden/`.
 - `docs/decisions/INDEX.md`: before reversing a mechanism; cite a decision by ID rather than restating it.
 - `DEVELOPMENT.md`: the layout, the checks, the test strategy and the benchmarks.
 

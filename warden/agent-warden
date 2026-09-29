@@ -1,0 +1,1394 @@
+#!/usr/bin/env python3
+"""Find agent and build processes that run outside agents.slice and move them in.
+
+Why this exists: the launchers (agent-cli, agent-confine) are user-writable
+scripts. On 2026-09-08 an agent put a four-line "agent-confine" first on PATH
+for its workers and two lanes ran in app.slice for hours while the launcher
+audit passed. Placement (every tmux pane starts through agent-confine) confines
+lanes before a launcher runs; this warden catches what still lands outside: a
+shadowed launcher, a `systemd-run --user --scope` without --slice, a CLI
+started by a desktop app, or a build a lane detached.
+
+Modes
+  --report    (default) list what would move; log it; change nothing
+  --correct   move it
+  --status    every agent and build process with its cgroup, env markers,
+              scan age, skips and unmatched suspects
+  --selftest  classification and planning against injected process records
+
+Rules, per process, never per pane
+  * Launched work carries AGENT_CONFINE=1 in its environment (agent-confine
+    stamps it; children inherit). A marked process outside the slice is an
+    escape whatever its name, and its marked descendants go with it. Names
+    below are for what no launcher touched: a CLI a desktop app started.
+  * Agent CLIs match by comm, or by a mise install path in argv[0] or argv[1]
+    for node/bun/python-hosted CLIs. Claude's embedded search mode
+    (argv[0] "ugrep") is a helper, not a session. A bundled CLI under /opt
+    (codex-desktop ships one) is an agent by name; the app around it is not.
+  * Build tools match by comm or by the script they run. They are adopted only
+    when the nearest marker above them is an agent or the tmux server; a
+    desktop app, an excluded helper, or nothing leaves them alone (reported).
+  * Descendants ride along with a root only from a bounded set: build tools,
+    shells and interpreters, agent helper binaries, and executables under the
+    toolchain directories (~/.cargo, ~/.rustup, mise, bun, pnpm, node_modules,
+    rustlib, gcc, llvm). Anything else under an escaped lane stays where it
+    is, and so does its subtree.
+  * A process already inside agents.slice is never moved as a descendant.
+  * Sessions sharing a scope: in a cgroup that holds several agent sessions,
+    the earliest-started one is the owner and every other one is moved to its
+    own scope, so every session holds one equal CPU share (owner's rule,
+    2026-09-08). Ancestry is not required: headless workers (codex exec,
+    `claude -p &`) are often reparented. Never split when a cgroup between the
+    session and agents.slice carries a limit tighter than the slice's own; the
+    check is repeated right before the move. AGENT_WARDEN_SPLIT_SESSIONS=0
+    turns the split off. A nested launch through the shim already gets its
+    own scope from agent-confine, so most sessions never need this.
+  * Exclusions are matched on argv tokens before any `--` (a flag is a flag,
+    a prompt is not). Excluded processes and their subtrees stay put.
+  * Identity is a pidfd. Each process is re-read (identity, cgroup,
+    classification) and a pidfd opened just before the move; the move passes
+    the pidfds to systemd (StartTransientUnit PIDFDs= through libsystemd), so
+    a pid that changes hands cannot be attached. If the root fails its recheck
+    the whole tree is dropped and replanned next tick. Placement is verified
+    after the move by cgroup and start time.
+
+Memory: moving a process moves its future charges only. Pages it already owns
+stay charged to the old cgroup (cgroup v2). The headroom guard skips moves when
+agents.slice is above 90% of memory.max, or when the counters cannot be read,
+and alerts; it promises nothing about OOM safety.
+
+Runs from background.slice with its own small MemoryMax and a runtime cap so
+it does not stall with the workload it corrects. State under
+$XDG_RUNTIME_DIR/agent-warden/ behind a lock. Logs: stdout, which the service
+sends to the journal. AGENT_WARDEN_ONLY="pid,pid" restricts every candidate,
+root or descendant, to those pids (fixture runs).
+"""
+import ctypes
+import fcntl
+import fnmatch
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+UID = os.getuid()
+SLICE = "agents.slice"
+CG_ROOT = Path(f"/sys/fs/cgroup/user.slice/user-{UID}.slice/user@{UID}.service")
+STATE_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{UID}")) / "agent-warden"
+STATE = STATE_DIR / "state.json"
+LOCK = STATE_DIR / "lock"
+HEADROOM = 0.90
+MOVE_VERIFY_SECONDS = 3.0
+BUS_TIMEOUT_USEC = 10_000_000
+HOME = os.path.expanduser("~")
+MISE_DATA = os.environ.get("MISE_DATA_DIR") or os.path.join(
+    os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local/share"), "mise")
+
+AGENT_COMMS = {
+    "claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "dsh",
+    "grok", "antigravity", "agy", "omp", "ori", "fx", "cursor-agent", "muse",
+}
+HELPER_NAMES = {"codex-code-mode-host", "node_repl", "codex-computer-use", "claude-computer-use"}
+HOST_COMMS = {"node", "bun", "python", "python3", "python3.13", "python3.14"}
+AGENT_PATH_RE = re.compile(
+    "^" + re.escape(MISE_DATA) +
+    r"/installs/(claude|codex|pi|opencode|gemini|copilot|crush|cursor-agent|"
+    r"npm-deepseek-ai-dsh|npm-xai-official-grok|aqua-google-antigravity|"
+    r"github-can1357-oh-my-pi|github-open-router-labs-ori-releases|github-vercel-labs-fx|"
+    r"http-muse)/"
+)
+BUILD_COMMS = {
+    "cargo", "rustc", "rustdoc", "ld.mold", "mold", "ld.lld", "rust-lld", "ld",
+    "cc", "cc1", "cc1plus", "gcc", "g++", "clang", "clang++", "collect2",
+    "make", "ninja", "cmake", "sccache", "bun", "tsc", "esbuild", "vitest", "jest",
+}
+BUILD_SCRIPT_RE = re.compile(r"(^|/)(vitest|jest|tsc|esbuild)(\.js|\.mjs)?$")
+SHELL_COMMS = {"bash", "sh", "fish", "zsh", "dash", "env", "timeout", "nice", "ionice",
+               "node", "bun", "python", "python3", "python3.13", "python3.14", "tee", "cat", "sleep"}
+EXCLUDE_FLAGS = {"--chrome-native-host", "--lsp", "--stdio"}
+EXCLUDE_PROGRAMS = {"rust-analyzer", "typescript-language-server", "ugrep"}
+DESKTOP_EXE_PREFIXES = ("/opt/", "/tmp/.mount_", "/usr/lib/chromium", "/usr/lib/electron",
+                        "/usr/lib/firefox", "/usr/lib/slack", "/usr/lib/code")
+# Desktop apps that ship a real CLI engine beside their UI: that engine is an
+# agent session even though it lives under a desktop prefix. Matched by path
+# suffix, never by name: Claude Desktop's own Electron binary is named
+# "claude" (2026-09-09, nine UI processes were moved before this rule).
+BUNDLED_CLI_SUFFIXES = ("/codex-desktop/resources/codex",)
+# An Electron/Chromium helper process, whatever its binary is called
+CHROMIUM_CHILD_FLAG = "--type="
+DESKTOP_COMMS = {"chromium", "chrome", "electron", "ChatGPT", "slack", "spotify", "code",
+                 "codium", "ghostty", "alacritty", "kitty", "nautilus", "Hyprland", "qs"}
+TOOLCHAIN_PREFIXES = (f"{HOME}/.cargo/", f"{HOME}/.rustup/", MISE_DATA + "/",
+                      f"{HOME}/.bun/", f"{HOME}/.local/share/pnpm/", "/usr/lib/rustlib",
+                      "/usr/lib/gcc", "/usr/lib/llvm", "/usr/lib/node_modules")
+TMUX_COMM = "tmux: server"
+ENV_MARKERS = ("MAKEFLAGS", "CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "MOLD_JOBS")
+CAP_FILES = (("memory.max", "max"), ("memory.high", "max"), ("memory.swap.max", "max"),
+             ("pids.max", "max"))
+# Orphan reaper: a scope under agents.slice whose launching agent has exited but
+# whose leftover processes keep running. Twice on 2026-09-09/10 this took the
+# machine down: an exited lane left 21 `bun` dev servers (16 cores, 7 GiB), and
+# another left 5140 `npm view` processes that filled TasksMax and SIGABRT-killed
+# every agent on the box. Placement and the mover cannot help: the work is
+# already inside the slice, just abandoned. A scope is an orphan when every one
+# of its processes has been reparented to init or the user systemd manager (its
+# real parent died) and none holds a controlling terminal (nothing interactive
+# is attached). Reaped only after ORPHAN_GRACE seconds in that state, so a brief
+# reparenting during startup or teardown is never touched.
+ORPHAN_GRACE = float(os.environ.get("AGENT_WARDEN_ORPHAN_GRACE", "300"))
+REAP = os.environ.get("AGENT_WARDEN_REAP", "1") != "0"
+JOB_UNIT_PATTERNS = tuple(x for x in os.environ.get("AGENT_WARDEN_JOB_UNITS", "orch-*.service").split() if x)
+SCOPE_RE = re.compile(r"/agents\.slice/([^/]+\.scope)(?:/|$)")
+# An orphan is reaped only when it is also HARMFUL, so a quiet abandoned dev or
+# preview server (a few idle processes, no CPU) is reported and left alone. The
+# two outages both crossed one of these: the npm storm reached 5140 processes in
+# one scope; the bun servers each burned ~0.8 of a core. A normal orphaned dev
+# server is ~6 idle processes.
+ORPHAN_PROC_MAX = int(os.environ.get("AGENT_WARDEN_ORPHAN_PROCS", "40"))
+ORPHAN_CPU_CORES = float(os.environ.get("AGENT_WARDEN_ORPHAN_CPU", "0.5"))
+# Per-scope task ceiling. The slice as a whole caps at 16384 tasks; without a
+# per-scope cap one runaway lane consumes all of it and every other lane dies on
+# thread creation (EAGAIN). The cap must protect against a clearly-pathological
+# runaway, never bite legitimate work: the largest real lane measured 260 tasks
+# and a heavy build peaks in the low hundreds, so 8192 is ~8x any real lane. A
+# runaway capped at 8192 still leaves 8192 of the 16384 slice for every other
+# lane. The warden warns (below) if a lane ever climbs past SCOPE_TASKS_WARN, so
+# a genuinely large legit workload is seen before the cap could limit it.
+# agent-confine sets the cap at scope creation; the warden caps only a scope
+# left UNBOUNDED (an escapee, a raw systemd-run, an old scope) -- a smaller
+# explicit cap or a deliberate larger one is left alone.
+SCOPE_CPU_WEIGHT = 99
+SCOPE_TASKS_MAX = int(os.environ.get("AGENT_SCOPE_TASKS_MAX", "8192"))
+SCOPE_TASKS_WARN = int(os.environ.get("AGENT_SCOPE_TASKS_WARN", str(SCOPE_TASKS_MAX * 3 // 4)))
+# Per-scope soft memory ceiling (bytes). A leaking lane reclaims its own pages
+# first instead of pressuring the others; soft, so a real build (peak 31 GiB) is
+# never killed. Applied to scopes the warden creates; agent-confine sets it at
+# launch. 64 GiB default.
+SCOPE_MEM_HIGH = int(os.environ.get("AGENT_SCOPE_MEM_HIGH_BYTES", str(64 * 1024**3)))
+SCOPE_MEM_WARN = int(os.environ.get("AGENT_SCOPE_MEM_WARN_BYTES", str(SCOPE_MEM_HIGH * 3 // 4)))
+
+
+def scope_harm(nproc, cores):
+    """A past-grace orphan is reaped only if it is heavy on one axis."""
+    return nproc >= ORPHAN_PROC_MAX or cores >= ORPHAN_CPU_CORES
+
+
+def _unit_rel(cgroup):
+    marker = f"user@{UID}.service/"
+    if marker in cgroup:
+        return cgroup.split(marker, 1)[1]
+    m = re.search(r"user@\d+\.service/(.*)", cgroup)
+    return m.group(1) if m else ""
+
+
+def _unit_parts(cgroup):
+    rel = _unit_rel(cgroup).strip("/")
+    if not rel:
+        return None, None
+    parts = rel.split("/")
+    kept = []
+    for part in parts:
+        kept.append(part)
+        if part.endswith((".service", ".scope")):
+            return part, "/".join(kept)
+    return None, None
+
+
+def unit_of(cgroup):
+    unit, _ = _unit_parts(cgroup)
+    return unit
+
+
+def _unit_has_own_limit(unit_path):
+    d = CG_ROOT / unit_path
+    for name in ("memory.max", "memory.high", "memory.swap.max"):
+        v = read(d / name)
+        if v is not None and v.strip() and v.strip() != "max":
+            return True
+    v = read(d / "cpu.max")
+    if v is not None and v.strip() and not v.lstrip().startswith("max"):
+        return True
+    for name in ("io.max", "cpuset.cpus", "cpuset.mems"):
+        v = read(d / name)
+        if v is not None and v.strip():
+            return True
+    return False
+
+
+def contained_unit(cgroup):
+    unit, unit_path = _unit_parts(cgroup)
+    if unit is None or unit_path is None:
+        return False
+    if any(fnmatch.fnmatchcase(unit, pat) for pat in JOB_UNIT_PATTERNS):
+        return True
+    if f"/{SLICE}/" in "/" + _unit_rel(cgroup).strip("/") + "/":
+        return False
+    return _unit_has_own_limit(unit_path)
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def read(path, default=None):
+    try:
+        return Path(path).read_bytes().decode("utf-8", "replace")
+    except OSError:
+        return default
+
+
+class Proc:
+    __slots__ = ("pid", "ppid", "comm", "argv", "exe", "cgroup", "start", "uid", "tty", "_marked")
+
+    def __init__(self, pid, *, ppid=None, comm=None, argv=None, exe="", cgroup=None,
+                 start=0, uid=None, marked=False, tty=0):
+        self.pid = pid
+        self._marked = None
+        if comm is not None:  # injected record
+            self.ppid, self.comm, self.argv, self.exe = ppid, comm, list(argv or []), exe
+            self.cgroup, self.start, self.uid = cgroup, start, UID if uid is None else uid
+            self.tty = tty
+            self._marked = marked
+            return
+        stat = read(f"/proc/{pid}/stat")
+        if not stat:
+            raise OSError
+        head, _, tail = stat.rpartition(")")
+        self.comm = head.split("(", 1)[1]
+        fields = tail.split()
+        self.ppid = int(fields[1])
+        self.tty = int(fields[4])   # tty_nr; 0 = no controlling terminal
+        self.start = int(fields[19])
+        m = re.search(r"^Uid:\s+(\d+)", read(f"/proc/{pid}/status", ""), re.M)
+        self.uid = int(m.group(1)) if m else -1
+        raw = read(f"/proc/{pid}/cmdline", "")
+        self.argv = [a for a in raw.split("\0") if a] if raw else []
+        try:
+            self.exe = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            self.exe = ""
+        cg = (read(f"/proc/{pid}/cgroup", "") or "").strip()
+        self.cgroup = cg.split("::", 1)[1] if "::" in cg else cg
+
+    @property
+    def confined(self):
+        return f"/{SLICE}/" in self.cgroup + "/"
+
+    @property
+    def marked(self):
+        """launched through agent-confine (or descended from such a launch)"""
+        if self._marked is None:
+            env = read(f"/proc/{self.pid}/environ", "") or ""
+            self._marked = "\0AGENT_CONFINE=1\0" in "\0" + env
+        return self._marked
+
+    @property
+    def exe_name(self):
+        return os.path.basename(self.exe) if self.exe else self.comm
+
+    @property
+    def program(self):
+        if self.comm in HOST_COMMS and len(self.argv) > 1 and not self.argv[1].startswith("-"):
+            return os.path.basename(self.argv[1])
+        return os.path.basename(self.argv[0]) if self.argv else self.comm
+
+    @property
+    def flags(self):
+        """option tokens: after argv[0], before the first `--`"""
+        out = []
+        for a in self.argv[1:]:
+            if a == "--":
+                break
+            if a.startswith("-"):
+                out.append(a)
+        return out
+
+    @property
+    def excluded(self):
+        if any(f in EXCLUDE_FLAGS for f in self.flags):
+            return True
+        if self.program in EXCLUDE_PROGRAMS:
+            return True
+        return bool(self.argv) and os.path.basename(self.argv[0]) in EXCLUDE_PROGRAMS
+
+    @property
+    def is_desktop(self):
+        if self.comm in DESKTOP_COMMS:
+            return True
+        if any(a.startswith(CHROMIUM_CHILD_FLAG) for a in self.argv[1:]):
+            return True  # zygote, gpu-process, renderer, utility
+        if "/claude-desktop/" in self.exe or "/Claude" in self.exe:
+            return True
+        if self.exe.startswith(DESKTOP_EXE_PREFIXES):
+            return not (self.exe.endswith(BUNDLED_CLI_SUFFIXES) or self.exe_name in HELPER_NAMES)
+        return False
+
+    @property
+    def is_agent(self):
+        if self.excluded or self.is_desktop:
+            return False
+        if self.comm in AGENT_COMMS:
+            return True
+        return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])
+
+    @property
+    def is_build(self):
+        if self.excluded or self.is_desktop:
+            return False
+        if self.comm in BUILD_COMMS:
+            return True
+        return self.comm in HOST_COMMS and len(self.argv) > 1 and bool(BUILD_SCRIPT_RE.search(self.argv[1]))
+
+    @property
+    def rides_along(self):
+        if self.excluded or self.is_desktop:
+            return False
+        if self.is_build or self.comm in SHELL_COMMS or self.exe_name in HELPER_NAMES or self.marked:
+            return True
+        return bool(self.exe) and self.exe.startswith(TOOLCHAIN_PREFIXES)
+
+    def short_cg(self):
+        return self.cgroup.split(f"user@{UID}.service/", 1)[-1]
+
+    def describe(self):
+        return f"pid {self.pid} {self.comm} [{self.short_cg()}] {' '.join(self.argv)[:70]}"
+
+
+# --- process tree -----------------------------------------------------------
+def scan():
+    procs = {}
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            p = Proc(int(entry.name))
+        except (OSError, IndexError, ValueError):
+            continue
+        if p.uid == UID:
+            procs[p.pid] = p
+    return procs
+
+
+def index(procs):
+    children = {}
+    for p in procs.values():
+        children.setdefault(p.ppid, []).append(p.pid)
+    return children
+
+
+def ancestors(procs, pid):
+    seen = set()
+    while pid in procs and pid not in seen:
+        seen.add(pid)
+        pid = procs[pid].ppid
+        if pid in procs:
+            yield procs[pid]
+
+
+def depth(procs, p):
+    return sum(1 for _ in ancestors(procs, p.pid))
+
+
+def nearest_marker(procs, p):
+    return next((a for a in ancestors(procs, p.pid)
+                 if a.is_agent or a.comm == TMUX_COMM or a.is_desktop or a.excluded), None)
+
+
+def has_agent_or_tmux_above(procs, p):
+    m = nearest_marker(procs, p)
+    return m is not None and (m.is_agent or m.comm == TMUX_COMM)
+
+
+def subtree(procs, children, root, stop):
+    out = [root]
+    stack = list(children.get(root.pid, []))
+    while stack:
+        pid = stack.pop()
+        p = procs.get(pid)
+        if p is None or stop(p):
+            continue
+        out.append(p)
+        stack.extend(children.get(pid, []))
+    return out
+
+
+def manager_pids(procs):
+    """PIDs that adopt a reparented process: init (1) and the user's
+    `systemd --user` manager. A member whose parent is one of these has lost the
+    process that launched it."""
+    out = {0, 1}
+    for p in procs.values():
+        if p.comm == "systemd" and any("--user" in a for a in p.argv):
+            out.add(p.pid)
+    return out
+
+
+def scope_members(procs):
+    """Group every agents.slice process by its top-level scope unit, INCLUDING
+    processes in delegated child cgroups under that scope (a live agent can sit
+    in `<scope>/child`; missing it would let the reaper stop the scope out from
+    under it)."""
+    by_scope = {}
+    for p in procs.values():
+        m = SCOPE_RE.search(p.cgroup or "")
+        if m:
+            by_scope.setdefault(m.group(1), []).append(p)
+    return by_scope
+
+
+def launch_root_alive(unit, members):
+    """True when a scope still contains the non-build process its name identifies."""
+    m = re.fullmatch(r"agent-confine-(\d+)-[^/]+\.scope", unit or "")
+    needs_start = False
+    if m is None:
+        m = re.fullmatch(r"agent-warden-(\d+)-(\d+)\.scope", unit or "")
+        needs_start = True
+    if m is None:
+        return False
+    root_pid = int(m.group(1))
+    pids = {p.pid for p in members}
+    root = next((p for p in members if p.pid == root_pid), None)
+    if root is None or root.ppid in pids:
+        return False
+    return not needs_start or root.start == int(m.group(2))
+
+
+def _is_orphan(unit, members, managers):
+    """True when a scope's whole membership is abandoned leftover work: no member
+    holds a controlling terminal, no member is itself a live agent session, and
+    every member is either parented inside the scope or was reparented to
+    init/the manager. A live agent (even headless, even with its launch shell
+    gone) is never junk to reap; nor is a scope still held by a live external
+    process (a pane shell, another subreaper). A still-running launch root in an
+    agent-confine and non-build agent-warden scopes also protect unlisted agent CLIs. Only leftover
+    non-agent processes (dev servers, npm/bun, a stuck build) qualify."""
+    if not members or any(p.tty for p in members):
+        return False
+    if any(p.is_agent for p in members):
+        return False                 # a live agent session, headless or not
+    if launch_root_alive(unit, members):
+        return False
+    pids = {p.pid for p in members}
+    reparented = False
+    for p in members:
+        if p.ppid in pids:
+            continue                 # parent is inside the scope subtree
+        if p.ppid in managers:
+            reparented = True        # its launcher is gone
+        else:
+            return False             # a live external process still holds it
+    return reparented
+
+
+def orphans(procs, managers):
+    """(scope_unit, [pids]) for every fully-orphaned agents.slice scope."""
+    return [(unit, sorted(p.pid for p in members))
+            for unit, members in scope_members(procs).items()
+            if _is_orphan(unit, members, managers)]
+
+
+def _scope_procfiles(base):
+    try:
+        return [base / "cgroup.procs", *base.glob("**/cgroup.procs")]
+    except OSError as e:
+        log(f"orphan recheck incomplete: cannot enumerate {base}: {e}")
+        return None
+
+
+def scope_still_orphan(unit, managers):
+    """Re-read one scope's live membership straight from the cgroup tree and
+    re-test it, immediately before stopping. Guards against a scope that gained
+    an attached process, or was recreated under the same name, between the scan
+    and the stop."""
+    base = CG_ROOT / SLICE / unit
+    if not base.is_dir():
+        return False
+    procfiles = _scope_procfiles(base)
+    if procfiles is None:
+        return False
+    members = []
+    for procfile in procfiles:
+        txt = read(procfile)
+        if txt is None:
+            if procfile.parent.exists():
+                log(f"orphan recheck incomplete: cannot read {procfile}")
+                return False
+            continue
+        for line in txt.split():
+            try:
+                pid = int(line)
+            except ValueError:
+                continue
+            try:
+                members.append(Proc(pid))
+            except (OSError, IndexError, ValueError):
+                # a live member we cannot read is unknown, not absent: refuse to
+                # reap on a partial view (it could be an attached process the
+                # safety check would otherwise miss). A pid that simply vanished
+                # is fine to skip.
+                if os.path.exists(f"/proc/{pid}"):
+                    return False
+    return bool(members) and _is_orphan(unit, members, managers)
+
+
+def scope_units():
+    """Every scope unit directly under agents.slice, with its pids.max."""
+    out = {}
+    base = CG_ROOT / SLICE
+    try:
+        for d in base.iterdir():
+            if d.is_dir() and d.name.endswith(".scope"):
+                out[d.name] = (read(d / "pids.max", "") or "").strip()
+    except OSError:
+        pass
+    return out
+
+
+def slice_tasks_max():
+    """The agents.slice task ceiling (the whole-slice cap), or a safe default."""
+    v = (read(CG_ROOT / SLICE / "pids.max", "") or "").strip()
+    try:
+        return int(v)
+    except ValueError:
+        return 16384
+
+
+def enforce_task_caps(correct):
+    """Cap any agents.slice scope left UNBOUNDED (TasksMax `max`, or at/above the
+    whole-slice ceiling, i.e. one scope free to consume the entire slice). Covers
+    a scope created without the cap: a shadowed launcher, a raw systemd-run, one
+    predating the cap. A scope with any smaller explicit cap, or a deliberate
+    larger one still below the slice ceiling, is left alone, so an
+    AGENT_SCOPE_TASKS_MAX override survives. agent-confine sets the cap at
+    creation, so this is a backstop: a fast storm from an uncapped scope can
+    still fill the slice inside one 30 s tick. Returns the units capped."""
+    ceiling = slice_tasks_max()
+    capped = []
+    for unit, cur in scope_units().items():
+        try:
+            unbounded = cur == "max" or int(cur) >= ceiling
+        except ValueError:
+            unbounded = True
+        if not unbounded:
+            continue
+        if not correct:
+            log(f"scope {unit}: TasksMax {cur} is unbounded (>= slice {ceiling}); would cap (report mode)")
+            continue
+        r = subprocess.run(["systemctl", "--user", "set-property", "--runtime", unit,
+                           f"TasksMax={SCOPE_TASKS_MAX}"], capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            capped.append(unit)
+            log(f"  capped {unit} TasksMax {cur} -> {SCOPE_TASKS_MAX} (was unbounded)")
+        else:
+            log(f"  cap of {unit} failed: {(r.stderr or '').strip()}")
+    return capped
+
+
+def warn_near_cap():
+    """A lane climbing toward its own task or memory ceiling: either a legit
+    workload bigger than expected (raise the ceiling) or a runaway starting
+    (intervene). Surfaced so a real workload is seen before a ceiling could ever
+    limit it. Returns [(unit, kind, human)] for each scope over a warn line."""
+    near = []
+    base = CG_ROOT / SLICE
+    try:
+        for d in base.iterdir():
+            if not (d.is_dir() and d.name.endswith(".scope")):
+                continue
+            try:
+                n = int((read(d / "pids.current", "") or "").strip())
+            except ValueError:
+                n = 0
+            if n >= SCOPE_TASKS_WARN:
+                near.append((d.name, "tasks", f"{n} of {(read(d / 'pids.max', '') or '').strip()}"))
+            try:
+                mem = int((read(d / "memory.current", "") or "").strip())
+            except ValueError:
+                mem = 0
+            if mem >= SCOPE_MEM_WARN:
+                near.append((d.name, "memory", f"{mem >> 30} GiB (soft cap {SCOPE_MEM_HIGH >> 30})"))
+    except OSError:
+        pass
+    return near
+
+
+def reap(unit):
+    """Stop one orphaned scope. systemd kills its members and removes the unit.
+    Precise (one unit by exact name), so it never touches another session."""
+    r = subprocess.run(["systemctl", "--user", "stop", unit],
+                       capture_output=True, text=True, timeout=15)
+    return r.returncode == 0, (r.stderr or "").strip()
+
+
+def scope_usage_usec(unit):
+    """Total CPU microseconds the scope has used, from its cpu.stat, or None."""
+    txt = read(CG_ROOT / SLICE / unit / "cpu.stat")
+    if not txt:
+        return None
+    m = re.search(r"^usage_usec\s+(\d+)", txt, re.M)
+    return int(m.group(1)) if m else None
+
+
+def reap_orphans(procs, st, correct, only=None):
+    """Carry orphaned scopes across ticks; reap those that stay orphaned past the
+    grace period AND are harmful (many processes or steady CPU) on two ticks in a
+    row. CPU is measured across ticks from cpu.stat, so nothing is stopped on its
+    first sighting, and a one-tick spike in an otherwise idle server never trips
+    it. A quiet abandoned server is reported and left running. Membership is
+    re-read from the cgroup right before a stop. Restricted runs
+    (AGENT_WARDEN_ONLY) never reap. Returns the units reaped."""
+    managers = manager_pids(procs)
+    seen = dict(orphans(procs, managers))
+    prev = st.get("orphans") or {}
+    now = time.time()
+    tracked, reaped = {}, []
+    for unit, pids in seen.items():
+        p = prev.get(unit)
+        p = p if isinstance(p, dict) else {}
+        first = p.get("first", now)
+        n = len(pids)
+        usage = scope_usage_usec(unit)
+        cores = 0.0
+        prev_usage, prev_ts = p.get("usage"), p.get("usage_ts")
+        if usage is not None and prev_usage is not None and prev_ts and now > prev_ts:
+            cores = max(0.0, (usage - prev_usage) / 1e6 / (now - prev_ts))
+        age = now - first
+        harmful = age >= ORPHAN_GRACE and scope_harm(n, cores)
+        # reap only when harmful on this tick and the one before it
+        do_reap = harmful and p.get("harmful", False)
+        entry = {"first": first, "usage": usage, "usage_ts": now, "harmful": harmful}
+        tracked[unit] = entry
+        if age < ORPHAN_GRACE:
+            log(f"orphan scope {unit}: {n} process(es), launcher gone, {int(age)}s "
+                f"of {int(ORPHAN_GRACE)}s grace; watching")
+            continue
+        if not harmful:
+            log(f"orphan scope {unit}: {n} process(es), {cores:.1f} core(s), idle "
+                f"and abandoned {int(age)}s; watching, not reaping")
+            continue
+        why = f"{n} process(es)" if n >= ORPHAN_PROC_MAX else f"{cores:.1f} core(s)"
+        if not do_reap:
+            log(f"orphan scope {unit}: harmful ({why}) for the first tick; reaping on the next if it holds")
+            continue
+        if only is not None:
+            log(f"orphan scope {unit}: harmful ({why}) but AGENT_WARDEN_ONLY is set; not reaping")
+            continue
+        if not (correct and REAP):
+            log(f"orphan scope {unit}: harmful ({why}), abandoned {int(age)}s"
+                + (" (report mode, not reaping)" if not correct else " (REAP disabled)"))
+            continue
+        if not scope_still_orphan(unit, managers):
+            log(f"orphan scope {unit}: no longer orphaned on recheck; not reaping")
+            tracked.pop(unit, None)
+            continue
+        ok, err = reap(unit)
+        if ok:
+            st["reaped"] += 1
+            reaped.append(f"{unit} ({why})")
+            log(f"  reaped orphan scope {unit}: stopped {n} process(es), {why}, after {int(age)}s")
+            tracked.pop(unit, None)
+        else:
+            st["move_failures"] += 1
+            log(f"  reap of {unit} failed: {err}")
+    st["orphans"] = tracked
+    return reaped
+
+
+def _limit(v):
+    v = (v or "").strip()
+    return float("inf") if v == "max" else int(v)
+
+
+def lineage_is_capped(cgroup):
+    """True when any cgroup from the process's own up to (excluding) agents.slice
+    carries a limit tighter than normal (systemd gives every scope a pids.max of
+    DefaultTasksMax, which is wider than the slice's, not a cap). "Normal" for
+    pids.max and memory.high is the standard per-scope cap: every scope now
+    carries it, so it is the baseline, not a deliberate extra limit. Only a
+    pids.max or memory.high below that baseline, or a memory/cpu/io/cpuset
+    limit tighter than the slice, marks a scope the owner limited on purpose
+    (a GPU run, a nested launch that asked for less), which is never split and
+    never left."""
+    rel = cgroup.split(f"user@{UID}.service/", 1)[-1]
+    parts = rel.split("/")
+    if not parts or parts[0] != SLICE:
+        return True
+    baseline = {}
+    for name, _ in CAP_FILES:
+        v = read(CG_ROOT / SLICE / name)
+        if v is None:
+            return True
+        baseline[name] = _limit(v)
+    baseline["pids.max"] = min(baseline["pids.max"], SCOPE_TASKS_MAX)
+    baseline["memory.high"] = min(baseline["memory.high"], SCOPE_MEM_HIGH)
+    for i in range(len(parts), 1, -1):
+        d = CG_ROOT / "/".join(parts[:i])
+        for name, _ in CAP_FILES:
+            v = read(d / name)
+            if v is None or _limit(v) < baseline[name]:
+                return True
+        v = read(d / "cpu.max")
+        if v is None or not v.startswith("max"):
+            return True
+        for name in ("io.max", "cpuset.cpus", "cpuset.mems"):
+            v = read(d / name)
+            if v is not None and v.strip():
+                return True
+    return False
+
+
+def plan(procs, only=None, capped=lineage_is_capped, split=None, contained=contained_unit):
+    """Return (moves, unmatched, held, units). moves: (reason, [Proc...]) with [0] the root."""
+    children = index(procs)
+    moves, unmatched, held, units = [], [], [], []
+    claimed = set()
+    if split is None:
+        split = os.environ.get("AGENT_WARDEN_SPLIT_SESSIONS", "1") != "0"
+
+    def allowed(p):
+        return only is None or p.pid in only
+
+    def is_contained(p):
+        return contained(p.cgroup)
+
+    def stop_default(p):
+        return (p.confined or p.excluded or p.is_agent or is_contained(p)
+                or not p.rides_along or not allowed(p))
+
+    def desktop_owned(p):
+        m = nearest_marker(procs, p)
+        return m is not None and (m.is_desktop or m.excluded)
+
+    def note_unit(p):
+        if p.pid in claimed or p.confined or p.excluded or p.is_desktop:
+            return
+        if p.marked and (p.is_agent or not desktop_owned(p)):
+            units.append(p)
+        elif p.is_agent:
+            units.append(p)
+        elif p.is_build and has_agent_or_tmux_above(procs, p):
+            units.append(p)
+
+    for p in procs.values():
+        if allowed(p) and is_contained(p):
+            note_unit(p)
+
+    def take(reason, tree):
+        tree = [p for p in tree if p.pid not in claimed]
+        if tree:
+            moves.append((reason, tree))
+            claimed.update(p.pid for p in tree)
+
+    # 1. escaped launches: marked and outside the slice; root = topmost such.
+    #    A marked non-agent (a shell, a build) stays when the nearest marker
+    #    above it is a desktop app or an excluded helper; an agent CLI a
+    #    desktop app started is still its own session.
+    escaped = [p for p in procs.values() if allowed(p) and not p.confined and p.marked
+               and not is_contained(p) and not p.is_desktop and not p.excluded
+               and (p.is_agent or not desktop_owned(p))]
+    for p in sorted(escaped, key=lambda x: (depth(procs, x), x.pid)):
+        if p.pid not in claimed:
+            take("escaped launch", subtree(procs, children, p, stop_default))
+
+    # 2. unmarked agents outside the slice (a CLI a desktop app started)
+    unconf_agents = [p for p in procs.values() if allowed(p) and not p.confined and not is_contained(p)
+                     and p.is_agent and p.pid not in claimed]
+    unconf_builds = []
+    for p in procs.values():
+        if not allowed(p) or p.confined or is_contained(p) or not p.is_build or p.pid in claimed:
+            continue
+        if has_agent_or_tmux_above(procs, p):
+            unconf_builds.append(p)
+        else:
+            unmatched.append(p)
+
+    # shallowest first, so a parent's tree claims its descendants before they
+    # are considered as roots of their own (pid order is not ancestry order)
+    for p in sorted(unconf_agents, key=lambda x: (depth(procs, x), x.pid)):
+        if p.pid not in claimed:
+            take("unconfined agent", subtree(procs, children, p, stop_default))
+    for p in sorted(unconf_builds, key=lambda x: (depth(procs, x), x.pid)):
+        if p.pid not in claimed:
+            take("unconfined build", subtree(procs, children, p, stop_default))
+
+    # 3. sessions sharing a scope. The earliest-started agent in a cgroup is
+    #    its owner; every other agent in that cgroup is another session and
+    #    gets its own scope. Ancestry is not required: a headless worker may be
+    #    reparented after its spawning shell exits (codex exec, `claude -p &`).
+    by_cg = {}
+    for p in procs.values():
+        if p.is_agent and p.confined and not is_contained(p):
+            by_cg.setdefault(p.cgroup, []).append(p)
+    for cg, members in by_cg.items():
+        if len(members) < 2:
+            continue
+        owner = min(members, key=lambda x: (x.start, x.pid))
+        for p in sorted(members, key=lambda x: (x.start, x.pid)):
+            if p is owner or not allowed(p) or p.pid in claimed:
+                continue
+            if not split or capped(cg):
+                held.append(p)
+                continue
+            take("nested session", subtree(procs, children, p,
+                                           lambda x: x.excluded or x.is_agent or x.cgroup != cg
+                                           or contained(x.cgroup) or not x.rides_along or not allowed(x)))
+    return moves, unmatched, held, units
+
+
+# --- moving -------------------------------------------------------------------
+def headroom():
+    slice_dir = CG_ROOT / SLICE
+    if not slice_dir.is_dir():
+        return True, 0, 0
+    cur = read(slice_dir / "memory.current")
+    mx = read(slice_dir / "memory.max")
+    if cur is None or mx is None:
+        return False, -1, -1
+    cur, mx = cur.strip(), mx.strip()
+    try:
+        current = int(cur)
+        if mx == "max":
+            return True, current, 0
+        maximum = int(mx)
+    except ValueError:
+        return False, -1, -1
+    return current < HEADROOM * maximum, current, maximum
+
+
+def recheck(p, nested):
+    """fresh Proc + pidfd when identity, cgroup and classification still hold, else None"""
+    try:
+        fd = os.pidfd_open(p.pid)
+    except OSError:
+        return None
+    try:
+        q = Proc(p.pid)
+    except (OSError, IndexError, ValueError):
+        os.close(fd)
+        return None
+    bad = (q.start != p.start or q.cgroup != p.cgroup or q.excluded or q.is_desktop
+           or (p.is_agent and not q.is_agent) or (p.is_build and not q.is_build)
+           or not (q.is_agent or q.is_build or q.rides_along)
+           or contained_unit(q.cgroup) or (nested and lineage_is_capped(q.cgroup)))
+    if bad:
+        os.close(fd)
+        return None
+    return q, fd
+
+
+class Bus:
+    """StartTransientUnit with PIDFDs through libsystemd; identity travels with the fd."""
+
+    class Error(ctypes.Structure):
+        _fields_ = [("name", ctypes.c_char_p), ("message", ctypes.c_char_p), ("need_free", ctypes.c_int)]
+
+    def __init__(self):
+        self.lib = ctypes.CDLL("libsystemd.so.0")
+        self.bus = ctypes.c_void_p()
+        if self.lib.sd_bus_default_user(ctypes.byref(self.bus)) < 0:
+            raise OSError("no user bus")
+
+    def start_scope(self, name, fds):
+        lib, m, reply, err = self.lib, ctypes.c_void_p(), ctypes.c_void_p(), self.Error()
+        c = ctypes.c_char_p
+        if lib.sd_bus_message_new_method_call(self.bus, ctypes.byref(m), b"org.freedesktop.systemd1",
+                                              b"/org/freedesktop/systemd1",
+                                              b"org.freedesktop.systemd1.Manager", b"StartTransientUnit") < 0:
+            raise OSError("message")
+        ok = lib.sd_bus_message_append(m, b"ss", c(name.encode()), c(b"fail")) >= 0
+        ok &= lib.sd_bus_message_open_container(m, ctypes.c_char(b"a"), b"(sv)") >= 0
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"PIDFDs"), c(b"ah"), ctypes.c_int(len(fds)),
+                                        *[ctypes.c_int(fd) for fd in fds]) >= 0
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"Slice"), c(b"s"), c(SLICE.encode())) >= 0
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"Delegate"), c(b"b"), ctypes.c_int(1)) >= 0
+        # A non-default weight enables the CPU controller inside agents.slice; 100 was measured not to.
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"CPUWeight"), c(b"t"), ctypes.c_uint64(SCOPE_CPU_WEIGHT)) >= 0
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"TasksMax"), c(b"t"), ctypes.c_uint64(SCOPE_TASKS_MAX)) >= 0
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"MemoryHigh"), c(b"t"), ctypes.c_uint64(SCOPE_MEM_HIGH)) >= 0
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"CollectMode"), c(b"s"), c(b"inactive-or-failed")) >= 0
+        ok &= lib.sd_bus_message_close_container(m) >= 0
+        ok &= lib.sd_bus_message_append(m, b"a(sa(sv))", ctypes.c_int(0)) >= 0
+        if not ok:
+            lib.sd_bus_message_unref(m)
+            raise OSError("append")
+        try:
+            r = lib.sd_bus_call(self.bus, m, ctypes.c_uint64(BUS_TIMEOUT_USEC), ctypes.byref(err), ctypes.byref(reply))
+            if r < 0:
+                raise OSError(f"{(err.name or b'?').decode()}: {(err.message or b'').decode()}")
+        finally:
+            lib.sd_bus_error_free(ctypes.byref(err))
+            lib.sd_bus_message_unref(m)
+            if reply.value:
+                lib.sd_bus_message_unref(reply)
+
+    def close(self):
+        self.lib.sd_bus_flush_close_unref(self.bus)
+
+
+def branch_ok(fresh, member, root, reason):
+    """the member still hangs off the root through non-desktop, non-excluded
+    processes, and the root's reason for moving still holds"""
+    if member.pid == root.pid:
+        if reason == "unconfined build" and not has_agent_or_tmux_above(fresh, member):
+            return False
+        if reason == "escaped launch" and not member.is_agent:
+            m = nearest_marker(fresh, member)
+            if m is not None and (m.is_desktop or m.excluded):
+                return False
+        return True
+    for a in ancestors(fresh, member.pid):
+        if a.pid == root.pid:
+            return True
+        if a.is_desktop or a.excluded:
+            return False
+    return False
+
+
+def warden_scope_name(root, reason):
+    prefix = "agent-warden-build" if reason == "unconfined build" or (reason == "escaped launch" and root.is_build) else "agent-warden"
+    return f"{prefix}-{root.pid}-{root.start}.scope"
+
+
+def move(tree, reason, bus):
+    root = tree[0]
+    nested = reason == "nested session"
+    name = warden_scope_name(root, reason)
+    live, fds = [], []
+    try:
+        fresh = scan()  # ancestry is re-read, not trusted from the planning snapshot
+        for i, p in enumerate(tree):
+            r = recheck(p, nested)
+            if r is not None and not branch_ok(fresh, r[0], root, reason):
+                os.close(r[1])
+                r = None
+            if r is None:
+                if i == 0:
+                    log(f"  drop tree: root pid {p.pid} ({p.comm}) changed since scan; replanned next tick")
+                    return False, name, [], []
+                log(f"  skip pid {p.pid} ({p.comm}): identity, cgroup, ancestry or classification changed since scan")
+                continue
+            live.append(r[0])
+            fds.append(r[1])
+        try:
+            bus.start_scope(name, fds)
+        except OSError as e:
+            log(f"  StartTransientUnit {name} failed: {e}")
+            return False, name, [], live
+    finally:
+        for fd in fds:
+            os.close(fd)
+    moved, missing = [], live
+    deadline = time.monotonic() + MOVE_VERIFY_SECONDS
+    while time.monotonic() < deadline:
+        moved, missing = [], []
+        for p in live:
+            cg = read(f"/proc/{p.pid}/cgroup", "") or ""
+            stat = read(f"/proc/{p.pid}/stat", "") or ""
+            same = bool(stat) and int(stat.rpartition(")")[2].split()[19]) == p.start
+            (moved if same and f"/{name}" in cg else missing).append(p)
+        if not missing:
+            break
+        time.sleep(0.1)
+    return not missing, name, moved, missing
+
+
+def notify(summary, body):
+    try:
+        subprocess.run(["notify-send", "-a", "agent-warden", summary, body], timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def record_move_result(st, summary, failures, root, reason, done, name, moved, missing):
+    if done and moved:
+        st["moves"] += 1
+        summary.append(f"{root.comm} {root.pid} (+{len(moved) - 1}, {reason})")
+        log(f"  moved {len(moved)} pid(s) into {SLICE}/{name} ({reason})")
+    elif moved:
+        st["partial"] += 1
+        summary.append(f"PARTIAL {root.comm} {root.pid}: {len(moved)} moved, {len(missing)} not")
+        log(f"  PARTIAL {name}: moved {[p.pid for p in moved]} missing {[p.pid for p in missing]}")
+    elif missing:
+        st["move_failures"] += 1
+        failures.append(f"FAILED {root.comm} {root.pid}: 0 moved, {len(missing)} not")
+        log(f"  FAILED {name}: moved [] missing {[p.pid for p in missing]}")
+
+
+# --- state, behind a lock -----------------------------------------------------
+DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "partial": 0,
+                 "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {}}
+
+
+class State:
+    def __enter__(self):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self.lockfd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self.lockfd, fcntl.LOCK_EX)
+        try:
+            self.st = {**DEFAULT_STATE, **json.loads(STATE.read_text())}
+        except (OSError, ValueError):
+            self.st = dict(DEFAULT_STATE)
+        return self.st
+
+    def __exit__(self, *exc):
+        tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps(self.st))
+        os.replace(tmp, STATE)
+        fcntl.flock(self.lockfd, fcntl.LOCK_UN)
+        os.close(self.lockfd)
+
+
+def only_pids():
+    v = os.environ.get("AGENT_WARDEN_ONLY")
+    return {int(x) for x in v.split(",") if x.strip()} if v else None
+
+
+def run(correct):
+    with State() as st:
+        only = only_pids()
+        summary = []  # moved-tree notices; without this the first move raised NameError
+        failures = []
+        try:
+            procs = scan()
+            moves, unmatched, held, units = plan(procs, only)
+        except Exception as e:  # noqa: BLE001
+            st["scan_failures"] += 1
+            log(f"scan failed: {e!r}")
+            return 1
+        st["last_correct" if correct else "last_report"] = time.time()
+        for p in unmatched:
+            log(f"unmatched build process, nearest marker above is not an agent: {p.describe()}")
+        for p in held:
+            log(f"shared scope: session {p.describe()} shares its parent's scope; not split "
+                f"({'capped lineage' if lineage_is_capped(p.cgroup) else 'AGENT_WARDEN_SPLIT_SESSIONS=0'})")
+        unit_counts = {}
+        for p in units:
+            unit = unit_of(p.cgroup) or "unknown"
+            unit_counts[unit] = unit_counts.get(unit, 0) + 1
+        for unit, count in sorted(unit_counts.items()):
+            log(f"job unit {unit}: {count} process(es) carry their own containment; left in place")
+        if only is None:
+            try:
+                enforce_task_caps(correct)
+                for unit, kind, human in warn_near_cap():
+                    log(f"scope {unit} near its {kind} ceiling: {human}")
+                    notify(f"agent-warden: a lane is near its {kind} ceiling",
+                           f"{unit}: {human}. A big legit build (raise the ceiling) "
+                           f"or a runaway starting.")
+            except Exception as e:  # noqa: BLE001
+                log(f"task-cap enforcement raised {e!r}")
+        try:
+            reaped = reap_orphans(procs, st, correct, only)
+        except Exception as e:  # noqa: BLE001
+            reaped = []
+            log(f"orphan reap raised {e!r}")
+        if reaped:
+            notify(f"agent-warden: reaped {len(reaped)} orphan scope(s)", "\n".join(reaped[:6])
+                   + ("\n..." if len(reaped) > 6 else ""))
+        if not moves:
+            st["skips"] = 0
+            return 0
+        for reason, tree in moves:
+            log(f"{reason}: root {tree[0].describe()} (+{len(tree) - 1} descendants)")
+        if not correct:
+            log(f"report mode: {len(moves)} tree(s) would move")
+            return 0
+        try:
+            bus = Bus()
+        except OSError as e:
+            st["move_failures"] += 1
+            log(f"cannot reach the user bus: {e}")
+            return 1
+        for reason, tree in moves:
+            ok, cur, mx = headroom()
+            if not ok:
+                st["skips"] += 1
+                where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
+                log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
+                if st["skips"] >= 3:
+                    notify("agent-warden: not moving", f"{tree[0].comm} pid {tree[0].pid} waits; {SLICE} headroom {where}")
+                continue
+            st["skips"] = 0
+            try:
+                done, name, moved, missing = move(tree, reason, bus)
+            except Exception as e:  # noqa: BLE001
+                st["move_failures"] += 1
+                log(f"  move of pid {tree[0].pid} raised {e!r}")
+                continue
+            record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
+        bus.close()
+        if summary:
+            notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))
+        if failures:
+            notify(f"agent-warden: {len(failures)} move failure(s)", "\n".join(failures[:6]) + ("\n..." if len(failures) > 6 else ""))
+    return 0
+
+
+def status():
+    with State() as st:
+        pass
+    procs = scan()
+    moves, unmatched, held, units = plan(procs)
+    pending = {p.pid for _, t in moves for p in t}
+    unitp = {p.pid for p in units}
+    now = time.time()
+
+    def age(k):
+        return "never" if not st.get(k) else f"{int(now - st[k])} s ago"
+
+    print(f"last correct scan {age('last_correct')}, last report scan {age('last_report')}; "
+          f"moves {st['moves']}, partial {st['partial']}, reaped {st.get('reaped', 0)}, "
+          f"move failures {st['move_failures']}, scan failures {st['scan_failures']}, "
+          f"consecutive skips {st['skips']}")
+    for unit, pids in orphans(procs, manager_pids(procs)):
+        rec = (st.get("orphans") or {}).get(unit); rec = rec if isinstance(rec, dict) else {}
+        first = rec.get("first")
+        waited = f"{int(now - first)}s" if first else "new this scan"
+        n = len(pids)
+        gate = "harmful" if n >= ORPHAN_PROC_MAX else f"reaped when >= {ORPHAN_PROC_MAX} procs or >= {ORPHAN_CPU_CORES} cores"
+        print(f"  ORPHAN {unit}: {n} process(es), launcher gone, {waited}; {gate}")
+    ok, cur, mx = headroom()
+    print(f"{SLICE} memory: " + ("unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30 if mx else 'unlimited'}"
+                                   + ("" if ok else "  (above headroom)")))
+    print(f"{'pid':>8} {'state':9} {'comm':14} {'env':6} cgroup")
+    heldp = {p.pid for p in held}
+    for p in sorted(procs.values(), key=lambda x: (not x.is_agent, x.pid)):
+        if not (p.is_agent or p.pid in pending or p.pid in unitp or (p.is_build and has_agent_or_tmux_above(procs, p))):
+            continue
+        env = (read(f"/proc/{p.pid}/environ", "") or "").split("\0")
+        marks = ("A" if p.marked else "") + "".join(l for m, l in zip(ENV_MARKERS, "JCRL") if any(e.startswith(m + "=") for e in env))
+        state = ("unit" if p.pid in unitp else "held" if p.pid in heldp else "pending" if p.pid in pending
+                 else "ok" if p.confined else "OUTSIDE")
+        print(f"{p.pid:>8} {state:9} {p.comm[:14]:14} {marks or '-':6} {p.short_cg()}")
+    for p in unmatched:
+        print(f"{p.pid:>8} {'unmatched':9} {p.comm[:14]:14} {'-':5} {p.short_cg()}  (nearest marker not an agent)")
+    print("env: A=launched through agent-confine J=MAKEFLAGS(jobserver) C=CARGO_BUILD_JOBS R=RUST_TEST_THREADS L=MOLD_JOBS; "
+          "held = session sharing a capped lineage, left alone")
+    return 0
+
+
+# --- self-test with injected records --------------------------------------------
+def selftest():
+    A = "/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope"
+    S = "/user.slice/user-1000.slice/user@1000.service/agents.slice/lane.scope"
+    T = "/user.slice/user-1000.slice/user@1000.service/agents.slice/tight.scope"
+    TC = T + "/child"
+    mise = f"{MISE_DATA}/installs"
+
+    def P(pid, ppid, comm, argv, cg, exe="/usr/bin/x", start=1, marked=False, tty=0):
+        return Proc(pid, ppid=ppid, comm=comm, argv=argv, exe=exe, cgroup=cg, start=start, marked=marked, tty=tty)
+
+    fails = 0
+
+    def check(name, cond):
+        nonlocal fails
+        print(f"  {'ok  ' if cond else 'FAIL'} {name}")
+        fails += not cond
+
+    recs = {
+        1: P(1, 0, "tmux: server", ["tmux"], A.replace("x.scope", "tmux.service")),
+        10: P(10, 1, "claude", [f"{mise}/claude/latest/claude", "--help"], A, exe=f"{mise}/claude/latest/claude"),
+        11: P(11, 10, "bash", ["bash", "-c", "cargo test"], A, exe="/usr/bin/bash"),
+        12: P(12, 11, "cargo", ["cargo", "test"], A, exe=f"{HOME}/.cargo/bin/cargo"),
+        13: P(13, 12, "rustc", ["rustc", "x.rs"], A, exe=f"{HOME}/.rustup/x/rustc"),
+        14: P(14, 10, "ChatGPT", ["/opt/codex-desktop/ChatGPT"], A, exe="/opt/codex-desktop/ChatGPT"),
+        15: P(15, 14, "cargo", ["cargo", "build"], A, exe=f"{HOME}/.cargo/bin/cargo"),
+        16: P(16, 10, "claude", ["ugrep", "-G", "chrome-native-host", "src"], A, exe=f"{mise}/claude/latest/claude"),
+        17: P(17, 10, "claude", [f"{mise}/claude/latest/claude", "--chrome-native-host"], A, exe=f"{mise}/claude/latest/claude"),
+        18: P(18, 10, "sleep", ["sleep", "300"], S.replace("lane", "nested-capped")),
+        19: P(19, 10, "gnome-text-edit", ["/usr/bin/gnome-text-editor"], A, exe="/usr/bin/gnome-text-editor"),
+        20: P(20, 1, "codex", ["codex", "exec", "say chrome-native-host please"], S, exe=f"{mise}/codex/latest/bin/codex"),
+        21: P(21, 20, "bash", ["bash", "-c", "claude -p hi"], S, exe="/usr/bin/bash"),
+        22: P(22, 21, "claude", ["claude", "-p", "hi"], S, exe=f"{mise}/claude/latest/claude"),
+        23: P(23, 20, "codex", ["codex", "exec", "--", "--stdio"], S, exe=f"{mise}/codex/latest/bin/codex"),
+        30: P(30, 1, "codex", ["codex"], T, exe=f"{mise}/codex/latest/bin/codex", start=0),
+        31: P(31, 30, "claude", ["claude", "-p", "x"], T, exe=f"{mise}/claude/latest/claude"),
+        33: P(33, 1, "codex", ["codex"], TC, exe=f"{mise}/codex/latest/bin/codex", start=0),
+        32: P(32, 33, "claude", ["claude", "-p", "y"], TC, exe=f"{mise}/claude/latest/claude"),
+        39: P(39, 0, "ghostty", ["ghostty"], A.replace("x.scope", "term.scope"), exe="/usr/bin/ghostty"),
+        40: P(40, 39, "fish", ["fish"], A.replace("x.scope", "term.scope"), exe="/usr/bin/fish"),
+        41: P(41, 40, "cargo", ["cargo", "build"], A.replace("x.scope", "term.scope"), exe=f"{HOME}/.cargo/bin/cargo"),
+        50: P(50, 1, "node", ["node", "/data/notes/mise/installs/claude/latest/claude.txt"], A, exe="/usr/bin/node"),
+        51: P(51, 1, "node", [f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"], A, exe="/usr/bin/node"),
+        52: P(52, 1, "codex", ["/opt/codex-desktop/resources/codex", "exec", "x"], A, exe="/opt/codex-desktop/resources/codex"),
+        53: P(53, 1, "claude", ["/tmp/.mount_claudeXYZ/usr/lib/claude-desktop/claude", "--enable-transparent-visuals"], A, exe="/tmp/.mount_claudeXYZ/usr/lib/claude-desktop/claude"),
+        54: P(54, 53, "claude", ["/tmp/.mount_claudeXYZ/usr/lib/claude-desktop/claude", "--type=renderer"], A, exe="/tmp/.mount_claudeXYZ/usr/lib/claude-desktop/claude"),
+        55: P(55, 53, "claude", [f"{mise}/claude/latest/claude", "-p", "hi"], A, exe=f"{mise}/claude/latest/claude"),
+        # pid-order inversion: tmux(1) -> cargo(100) -> bash(60) -> make(61)
+        100: P(100, 1, "cargo", ["cargo", "build"], A, exe=f"{HOME}/.cargo/bin/cargo"),
+        60: P(60, 100, "bash", ["bash", "-c", "make"], A, exe="/usr/bin/bash"),
+        61: P(61, 60, "make", ["make"], A, exe="/usr/bin/make"),
+        # escaped claude -> confined bash -> escaped cargo: the cargo is its own root
+        70: P(70, 1, "claude", ["claude"], A, exe=f"{mise}/claude/latest/claude"),
+        71: P(71, 70, "bash", ["bash"], S.replace("lane", "other"), exe="/usr/bin/bash"),
+        72: P(72, 71, "cargo", ["cargo", "build"], A, exe=f"{HOME}/.cargo/bin/cargo"),
+    }
+    recs[80] = P(80, 1, "zsh", ["zsh"], A, exe="/usr/bin/zsh", marked=True)          # a renamed/unlisted CLI under a launch
+    recs[81] = P(81, 80, "mystery-agent", ["mystery-agent"], A, exe=f"{HOME}/x/mystery-agent", marked=True)
+    recs[82] = P(82, 81, "ChatGPT", ["/opt/codex-desktop/ChatGPT"], A, exe="/opt/codex-desktop/ChatGPT", marked=True)
+    recs[83] = P(83, 82, "cargo", ["cargo", "build"], A, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
+    recs[90] = P(90, 1, "claude", ["claude", "-p", "orphan"], S, exe=f"{mise}/claude/latest/claude", start=5)  # reparented worker sharing lane.scope with codex 20 (start 1)
+    recs[84] = P(84, 82, "codex", ["codex", "exec", "x"], A, exe=f"{mise}/codex/latest/bin/codex", marked=True)
+    ORCH = "/user.slice/user-1000.slice/user@1000.service/app.slice/orch-validate-vsy-50-12345.service"
+    LIMIT = "/user.slice/user-1000.slice/user@1000.service/app.slice/build-with-memory.service"
+    PLAIN_SCOPE = "/user.slice/user-1000.slice/user@1000.service/app.slice/app-foo.scope"
+    TMUX_SERVICE = "/user.slice/user-1000.slice/user@1000.service/app.slice/tmux.service"
+    recs[500] = P(500, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice")
+    recs[501] = P(501, 500, "bash", ["bash", "run"], ORCH, exe="/usr/bin/bash", marked=True)
+    recs[502] = P(502, 501, "python3", ["python3", "build.py"], ORCH, exe="/usr/bin/python3", marked=True)
+    recs[503] = P(503, 502, "cargo", ["cargo", "build"], ORCH, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
+    recs[504] = P(504, 503, "rustc", ["rustc", "lib.rs"], ORCH, exe=f"{HOME}/.rustup/x/rustc", marked=True)
+    recs[505] = P(505, 500, "codex", ["codex", "exec", "ci"], ORCH, exe=f"{mise}/codex/latest/bin/codex", marked=True)
+    recs[506] = P(506, 500, "bash", ["bash", "run"], LIMIT, exe="/usr/bin/bash", marked=True)
+    recs[507] = P(507, 506, "cargo", ["cargo", "build"], LIMIT, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
+    recs[508] = P(508, 500, "bash", ["bash", "run"], PLAIN_SCOPE, exe="/usr/bin/bash", marked=True)
+    recs[509] = P(509, 508, "cargo", ["cargo", "build"], PLAIN_SCOPE, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
+    recs[510] = P(510, 500, "bash", ["bash", "run"], TMUX_SERVICE, exe="/usr/bin/bash", marked=True)
+    recs[511] = P(511, 510, "cargo", ["cargo", "build"], TMUX_SERVICE, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
+    DESC_LIMIT = "/user.slice/user-1000.slice/user@1000.service/app.slice/desc-memory.service"
+    recs[512] = P(512, 500, "bash", ["bash", "outer"], A.replace("x.scope", "outer.scope"), exe="/usr/bin/bash", marked=True)
+    recs[513] = P(513, 512, "cargo", ["cargo", "build"], DESC_LIMIT, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
+    CONTAINED_CG = "/user.slice/user-1000.slice/user@1000.service/agents.slice/contained.scope"
+    recs[520] = P(520, 1, "codex", ["codex"], CONTAINED_CG, exe=f"{mise}/codex/latest/bin/codex", start=1)
+    recs[521] = P(521, 520, "claude", ["claude", "-p", "z"], CONTAINED_CG, exe=f"{mise}/claude/latest/claude", start=2)
+    capped = lambda cg: cg in (T, TC)  # noqa: E731
+    def contained(cg):
+        unit = unit_of(cg)
+        return bool(unit and (fnmatch.fnmatchcase(unit, "orch-*.service")
+                             or unit in {"build-with-memory.service", "desc-memory.service", "contained.scope"}))
+    moves, unmatched, held, units = plan(recs, capped=capped, split=True, contained=contained)
+    by = {}
+    for reason, tree in moves:
+        by.setdefault(reason, []).append(sorted(p.pid for p in tree))
+    moved = {p.pid for _, t in moves for p in t}
+    print("selftest: classification and planning on injected records")
+    check("escaped claude tree moves with shell, cargo, rustc", [10, 11, 12, 13] in by.get("unconfined agent", []))
+    check("desktop app under the lane stays (ChatGPT)", 14 not in moved)
+    check("build under the desktop app is unmatched, not moved", 15 in {p.pid for p in unmatched} and 15 not in moved)
+    check("claude in ugrep mode is a helper, not a session", 16 not in moved)
+    check("chrome-native-host claude stays", 17 not in moved)
+    check("already-confined child stays where it is", 18 not in moved)
+    check("unlisted /usr/bin program under the lane stays (gnome-text-editor)", 19 not in moved)
+    check("prompt text containing an exclusion word is not an exclusion", recs[20].is_agent)
+    check("a flag-shaped token after -- is data, not a flag", recs[23].is_agent)
+    check("claude -p under codex in an uncapped lane becomes its own session", [22] in by.get("nested session", []))
+    check("nested session in a capped cgroup is held", 31 in {p.pid for p in held} and 31 not in moved)
+    check("nested session under a capped ancestor is held", 32 in {p.pid for p in held} and 32 not in moved)
+    check("owner's cargo in a plain terminal is unmatched, not moved", 41 in {p.pid for p in unmatched} and 41 not in moved)
+    check("mise path in a data argument does not make node an agent", not recs[50].is_agent)
+    check("node running pi's cli.js is an agent", recs[51].is_agent)
+    check("the bundled codex CLI under /opt is an agent", recs[52].is_agent and 52 in moved)
+    check("Claude Desktop's Electron main process, named claude, is not an agent", not recs[53].is_agent and 53 not in moved)
+    check("its renderer (--type=) is not an agent", not recs[54].is_agent and 54 not in moved)
+    check("the real claude CLI started by Claude Desktop is a session", recs[55].is_agent and 55 in moved)
+    builds = by.get("unconfined build", [])
+    check("pid-order inversion still yields one build tree", [60, 61, 100] in builds and [61] not in builds)
+    check("escaped cargo beyond a confined shell is its own build root", [72] in builds)
+    check("no pid appears in two moves", len(moved) == sum(len(t) for _, t in moves))
+    esc = by.get("escaped launch", [])
+    check("marked launch outside the slice moves whatever its names", [80, 81] in esc)
+    check("desktop app under a marked launch still stays", 82 not in moved)
+    check("marked build under that desktop app stays too", 83 not in moved)
+    check("agent CLI under that desktop app is its own session", 84 in moved)
+    check("orphaned worker sharing a scope is split; the earliest agent stays", [90] in by.get("nested session", []) and 20 not in moved)
+    unitp = {p.pid for p in units}
+    check("orch validation service with marked build tree stays in its own unit", {501, 502, 503, 504}.issubset(unitp) and not ({501, 502, 503, 504} & moved))
+    check("agent CLI inside an orch unit stays in its own unit", 505 in unitp and 505 not in moved)
+    check("non-orch service carrying its own limit stays in its own unit", {506, 507}.issubset(unitp) and not ({506, 507} & moved))
+    check("plain app scope with no limit still moves as an escaped launch", [508, 509] in esc)
+    check("plain tmux service with no limit behaves like an escaped launch", [510, 511] in esc)
+    check("unit_of finds the owning transient service", unit_of(ORCH + "/child") == "orch-validate-vsy-50-12345.service")
+    check("contained descendant in a moved tree stays in its own unit", [512] in esc and 513 in unitp and 513 not in moved)
+    check("contained agent scope is not split as a nested session", 521 not in moved and 521 not in unitp)
+    only_moves, _, _, _ = plan(recs, only={10}, capped=capped, split=True, contained=contained)
+    check("AGENT_WARDEN_ONLY uses injected containment", [p.pid for _, t in only_moves for p in t] == [10])
+    dmoves, _, _, _ = plan(recs, capped=capped, split=False, contained=contained)
+    check("AGENT_WARDEN_SPLIT_SESSIONS=0 reports instead of moving", 22 not in {p.pid for _, t in dmoves for p in t})
+
+    # orphan reaper: MGR is the user systemd manager; 1 is init.
+    MGR = 4000
+    O1 = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-leak.scope"
+    O2 = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-npm.scope"
+    LIVE = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-live.scope"
+    ROOTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-300-123.scope"
+    ROOT_GONE = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-301-123.scope"
+    INSIDE_PARENT = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-302-123.scope"
+    ADOPTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-build-303-123.scope"
+    WARDEN_ROOTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-304-123.scope"
+    WARDEN_GONE = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-305-123.scope"
+    WARDEN_REUSED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-306-123.scope"
+    orec = {
+        MGR: P(MGR, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
+        # leaked bun servers reparented to the manager, no terminal -> orphan
+        200: P(200, MGR, "bun", ["bun", "src/main.ts"], O1, exe="/usr/bin/bun"),
+        201: P(201, MGR, "bun", ["bun", "src/main.ts"], O1, exe="/usr/bin/bun"),
+        # leaked npm view processes whose args name agent CLIs; still an orphan
+        210: P(210, MGR, "node", ["node", "/usr/bin/npm", "view", "@google/gemini-cli"], O2, exe="/usr/bin/node"),
+        211: P(211, 210, "node", ["node", "/usr/bin/npm", "view", "dsh"], O2, exe="/usr/bin/node"),
+        # a live attached session: agent has a terminal, child shares the scope
+        220: P(220, 40, "claude", ["claude"], LIVE, exe=f"{mise}/claude/latest/claude", tty=34817),
+        221: P(221, 220, "node", ["node", "/usr/bin/npm", "view", "vercel"], LIVE, exe="/usr/bin/node"),
+        300: P(300, MGR, "goose", ["goose"], ROOTED, exe=f"{HOME}/bin/goose", marked=True),
+        **{400 + i: P(400 + i, 300, "rustc", ["rustc"], ROOTED, exe=f"{HOME}/.rustup/x/rustc", marked=True) for i in range(50)},
+        4010: P(4010, MGR, "rustc", ["rustc"], ROOT_GONE, exe=f"{HOME}/.rustup/x/rustc", marked=True),
+        4011: P(4011, 4010, "rustc", ["rustc"], ROOT_GONE, exe=f"{HOME}/.rustup/x/rustc", marked=True),
+        302: P(302, 4020, "goose", ["goose"], INSIDE_PARENT, exe=f"{HOME}/bin/goose", marked=True),
+        4020: P(4020, MGR, "bash", ["bash"], INSIDE_PARENT, exe="/usr/bin/bash", marked=True),
+        303: P(303, MGR, "rustc", ["rustc"], ADOPTED, exe=f"{HOME}/.rustup/x/rustc"),
+        4030: P(4030, 303, "rustc", ["rustc"], ADOPTED, exe=f"{HOME}/.rustup/x/rustc"),
+        304: P(304, MGR, "goose", ["goose"], WARDEN_ROOTED, exe=f"{HOME}/bin/goose", marked=True, start=123),
+        **{500 + i: P(500 + i, 304, "rustc", ["rustc"], WARDEN_ROOTED, exe=f"{HOME}/.rustup/x/rustc", marked=True) for i in range(50)},
+        4050: P(4050, MGR, "rustc", ["rustc"], WARDEN_GONE, exe=f"{HOME}/.rustup/x/rustc", marked=True),
+        306: P(306, MGR, "goose", ["goose"], WARDEN_REUSED, exe=f"{HOME}/bin/goose", marked=True, start=999),
+        4060: P(4060, 306, "rustc", ["rustc"], WARDEN_REUSED, exe=f"{HOME}/.rustup/x/rustc", marked=True),
+    }
+    units = {u for u, _ in orphans(orec, manager_pids(orec))}
+    check("orphaned bun scope (reparented, no tty) is an orphan", "agent-confine-leak.scope" in units)
+    check("orphaned npm scope is an orphan despite agent names in argv", "agent-confine-npm.scope" in units)
+    check("attached session with a terminal is never an orphan", "agent-confine-live.scope" not in units)
+    # a live agent sits in a DELEGATED CHILD cgroup of the scope; it must protect
+    # the whole scope even though reparented leftovers sit at the scope root
+    child_case = {
+        MGR: orec[MGR],
+        230: P(230, MGR, "node", ["node", "x"], O1, exe="/usr/bin/node"),  # reparented leftover at root
+        231: P(231, 40, "claude", ["claude"], O1 + "/worker", exe=f"{mise}/claude/latest/claude", tty=34817),
+    }
+    check("agent-confine scope with a live launch root is not an orphan", "agent-confine-300-123.scope" not in units)
+    check("agent-confine scope with the launch root gone is still an orphan", "agent-confine-301-123.scope" in units)
+    check("agent-confine root pid parented inside the scope does not protect", "agent-confine-302-123.scope" in units)
+    check("agent-warden adopted build root stays reapable", "agent-warden-build-303-123.scope" in units)
+    check("agent-warden scope with a live launch root is not an orphan", "agent-warden-304-123.scope" not in units)
+    check("agent-warden scope with the launch root gone is still an orphan", "agent-warden-305-123.scope" in units)
+    check("agent-warden scope with reused root pid is still an orphan", "agent-warden-306-123.scope" in units)
+    check("a live agent in a delegated child cgroup protects the whole scope",
+          not orphans(child_case, manager_pids(child_case)))
+    # a scope still parented by a live pane shell (no tty on the members) is attached
+    held_by_live = {
+        300: P(300, 40, "claude", ["claude"], O1.replace("leak", "held"), exe=f"{mise}/claude/latest/claude"),
+    }
+    check("scope held by a live external parent is not an orphan",
+          not orphans(held_by_live, manager_pids(held_by_live)))
+    check("npm storm (5140 procs, idle) is harmful by process count", scope_harm(5140, 0.0))
+    check("bun server (1 proc, 0.8 core) is harmful by CPU", scope_harm(1, 0.8))
+    check("quiet dev server (6 procs, 0 core) is not harmful", not scope_harm(6, 0.0))
+    print(f"selftest: {'PASS' if not fails else f'{fails} FAILED'}")
+    return 1 if fails else 0
+
+
+def main(argv):
+    mode = argv[1] if len(argv) > 1 else "--report"
+    if mode == "--status":
+        return status()
+    if mode == "--selftest":
+        return selftest()
+    if mode in ("--report", "--correct"):
+        return run(mode == "--correct")
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
