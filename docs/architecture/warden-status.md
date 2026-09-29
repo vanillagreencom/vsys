@@ -12,7 +12,7 @@ The writer writes `status.tmp.<pid>` in the same directory, sets mode `0644`, an
 
 A failed scan still writes `status.json`. It sets `error` to a stable id and sets `outside`, `waiting`, `orphans` and `contained` to `null`. It still reads `slice` and `lanes` from the cgroup tree. `AgentWardenRules.test_failed_scan_tick_writes_error_status` checks this rule.
 
-The warden does not write `status.json` for `--status`, `--selftest`, or when `AGENT_WARDEN_ONLY` is set. Restricted fixture runs therefore do not overwrite the live status file.
+The warden does not write `status.json` for `--status`, `--selftest`, or when `AGENT_WARDEN_ONLY` is set. Restricted fixture runs therefore do not overwrite the live status file. `AgentWardenRules.test_status_and_only_runs_do_not_write_status` checks this rule with a sentinel file.
 
 A write failure logs `status write failed` and does not fail the tick. The next tick tries again.
 
@@ -105,7 +105,7 @@ An absent `agents.slice` makes `slice` null. The move guard still treats an abse
 
 | Field | Type | Unit | Null meaning |
 | --- | --- | --- | --- |
-| `id` | integer | sequence | Never null. It increases across ticks. |
+| `id` | integer | sequence | Never null. It is at least the current Unix epoch millisecond and never less than the prior persisted sequence plus one. |
 | `time` | number | Unix epoch seconds | Never null. |
 | `kind` | `moved`, `partial`, `reaped`, `near-cap`, `waiting`, or `failed` | id | Never null. |
 | `scope` | string or null | systemd unit name | Null means no single scope owns the event. |
@@ -113,7 +113,7 @@ An absent `agents.slice` makes `slice` null. The move guard still treats an abse
 | `processes` | integer or null | process count | Null means the event has no process count. |
 | `near` | `tasks`, `memory`, or null | id | Null except for `near-cap`. |
 
-`near-cap` and `waiting` events open once per episode. A still-near scope does not add a new event on each tick. `AgentWardenRules.test_status_event_ring_and_episode_dedupe` checks the ring size, increasing ids and episode rule.
+`near-cap` and `waiting` events open once per episode. A still-near scope does not add a new event on each tick. `AgentWardenRules.test_status_event_ring_and_episode_dedupe` checks the ring size, increasing ids and episode rule. `AgentWardenRules.test_event_ids_increase_across_state_reopen_and_reset` checks persisted ids and ids after a missing `state.json`.
 
 ### `counters`
 
@@ -142,6 +142,6 @@ A missing `state.json` means a fresh runtime directory. The counters are zero in
 
 `status_errors()` validates the schema major, required keys, enums, event count, increasing ids, nullable lanes and nullable counters.
 
-`warden/agent-warden --selftest` validates the calm, near-limit, holding-off, partial, reaped and failed-scan documents. It also checks that an unknown schema major fails.
+`warden/agent-warden --selftest` validates the calm, near-limit, holding-off, partial, reaped and failed-scan documents. It also drives a normal and failed tick through `status_from_tick()`, and checks that an unknown schema major fails.
 
-`AgentWardenRules.test_unreadable_status_counters_stay_null` checks that unreadable cgroup counters and a corrupt `state.json` become null, not zero. `AgentWardenRules.test_unreadable_lane_listing_stays_null` checks that a failed scope listing becomes null, not an empty list. `AgentWardenRules.test_orphan_reap_exception_status_is_null` checks that a failed orphan pass becomes null, not an empty list.
+`AgentWardenRules.test_unreadable_status_counters_stay_null` checks that unreadable cgroup counters and a corrupt or wrongly typed `state.json` become null, not zero. `AgentWardenRules.test_unreadable_lane_listing_stays_null` checks that a failed scope listing becomes null, not an empty list. `AgentWardenRules.test_orphan_reap_exception_status_is_null` checks that a failed orphan pass becomes null, not an empty list.

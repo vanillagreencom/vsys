@@ -765,6 +765,30 @@ class AgentWardenRules(unittest.TestCase):
     def restore_status_state(self, module, old):
         module.STATE_DIR, module.STATE, module.STATUS, module.LOCK, module.CG_ROOT = old
 
+    def write_status_cgroup(self, module, *, scope="agent-warden-1-2.scope", lane_memory="24"):
+        slice_dir = module.CG_ROOT / module.SLICE
+        lane = slice_dir / scope
+        lane.mkdir(parents=True, exist_ok=True)
+        values = {
+            slice_dir: {
+                "memory.current": "38",
+                "memory.high": "64",
+                "memory.max": "80",
+                "pids.current": "300",
+                "pids.max": "16384",
+            },
+            lane: {
+                "memory.current": lane_memory,
+                "memory.high": "64",
+                "pids.current": "120",
+                "pids.max": "8192",
+            },
+        }
+        for directory, files in values.items():
+            for name, value in files.items():
+                (directory / name).write_text(value)
+        return lane
+
     def status_writer_is_atomic(self, module):
         with scratch() as tmp:
             base = Path(tmp)
@@ -825,10 +849,14 @@ class AgentWardenRules(unittest.TestCase):
                 self.assertIsNone(doc["lanes"][0]["memory"])
                 self.assertNotEqual(doc["slice"]["memory"], 0)
                 self.w.STATE_DIR.mkdir(parents=True, exist_ok=True)
-                self.w.STATE.write_text("{")
-                with self.w.State() as st:
-                    counters = self.w.status_counters(st)
-                self.assertEqual(counters, {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
+                for bad_state in ("{", "[]", json.dumps({"moves": "wrong"}), json.dumps({"events": {}}), json.dumps({"event_seq": "1"})):
+                    with self.subTest(bad_state=bad_state):
+                        self.w.STATE.write_text(bad_state)
+                        with self.w.State() as st:
+                            counters = self.w.status_counters(st)
+                            st.setdefault("events", []).append({"test": True})
+                        self.assertEqual(counters, {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
+                        self.assertEqual(self.w.DEFAULT_STATE["events"], [])
             finally:
                 self.restore_status_state(self.w, old)
 
@@ -881,6 +909,7 @@ class AgentWardenRules(unittest.TestCase):
         with scratch() as tmp:
             base = Path(tmp)
             old = self.point_status_state(self.w, base)
+            self.write_status_cgroup(self.w)
             old_scan = self.w.scan
             self.w.scan = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
             try:
@@ -891,18 +920,120 @@ class AgentWardenRules(unittest.TestCase):
                 self.restore_status_state(self.w, old)
         self.assertEqual(result, 1)
         self.assertEqual(doc["error"], "scan")
+        self.assertEqual(doc["slice"]["memory"], 38)
+        self.assertEqual(doc["slice"]["tasks"], 300)
+        self.assertEqual(doc["lanes"][0]["scope"], "agent-warden-1-2.scope")
+        self.assertEqual(doc["lanes"][0]["memory"], 24)
+        self.assertEqual(doc["lanes"][0]["tasks"], 120)
         self.assertIsNone(doc["outside"])
         self.assertIsNone(doc["waiting"])
         self.assertIsNone(doc["orphans"])
         self.assertIsNone(doc["contained"])
         self.assertFalse(self.w.status_errors(doc))
 
+
+    def test_status_and_only_runs_do_not_write_status(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            sentinel = {"sentinel": True}
+            self.w.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            self.w.STATUS.write_text(json.dumps(sentinel))
+            root = self.P(9200, 1, "claude", ["claude"], self.S, start=7)
+            old_scan, old_plan = self.w.scan, self.w.plan
+            self.w.scan = lambda: {root.pid: root}
+            self.w.plan = lambda procs, only=None: ([], [], [], [])
+            try:
+                self.assertEqual(self.w.status(), 0)
+                self.assertEqual(json.loads(self.w.STATUS.read_text()), sentinel)
+            finally:
+                self.w.scan, self.w.plan = old_scan, old_plan
+                self.restore_status_state(self.w, old)
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            sentinel = {"sentinel": True}
+            self.w.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            self.w.STATUS.write_text(json.dumps(sentinel))
+            old_scan, old_plan = self.w.scan, self.w.plan
+            old_env = os.environ.get("AGENT_WARDEN_ONLY")
+            root = self.P(9300, 1, "claude", ["claude"], self.A, start=8)
+            self.w.scan = lambda: {root.pid: root}
+            self.w.plan = lambda procs, only=None: ([], [], [], [])
+            os.environ["AGENT_WARDEN_ONLY"] = str(root.pid)
+            try:
+                self.assertEqual(self.w.run(True), 0)
+                self.assertEqual(json.loads(self.w.STATUS.read_text()), sentinel)
+            finally:
+                if old_env is None:
+                    os.environ.pop("AGENT_WARDEN_ONLY", None)
+                else:
+                    os.environ["AGENT_WARDEN_ONLY"] = old_env
+                self.w.scan, self.w.plan = old_scan, old_plan
+                self.restore_status_state(self.w, old)
+
+    def test_event_ids_increase_across_state_reopen_and_reset(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            try:
+                with self.w.State() as st:
+                    first = self.w.emit_event(st, "moved", now=1)["id"]
+                with self.w.State() as st:
+                    second = self.w.emit_event(st, "moved", now=1)["id"]
+                self.assertGreater(second, first)
+                self.w.STATE.unlink()
+                with self.w.State() as st:
+                    third = self.w.emit_event(st, "moved", now=2)["id"]
+                self.assertGreater(third, second)
+            finally:
+                self.restore_status_state(self.w, old)
+
+    def test_correct_move_status_rescans_labels(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            self.write_status_cgroup(self.w, scope="agent-warden-321-654.scope")
+            before = self.P(321, 1, "claude", ["claude"], self.A, start=654)
+            after = self.P(321, 1, "claude", ["claude"], self._cg("agent-warden-321-654.scope"), start=654)
+            calls = iter([{before.pid: before}, {after.pid: after}])
+            old_scan, old_plan, old_reap = self.w.scan, self.w.plan, self.w.reap_orphans
+            old_enforce, old_warn, old_headroom = self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom
+            old_bus, old_move, old_worktree, old_notify = self.w.Bus, self.w.move, self.w._worktree_label, self.w.notify
+            class FakeBus:
+                def close(self):
+                    pass
+            self.w.scan = lambda: next(calls)
+            self.w.plan = lambda procs, only=None: ([("escaped launch", [before])], [], [], [])
+            self.w.reap_orphans = lambda procs, st, correct, only=None: ([], [])
+            self.w.enforce_task_caps = lambda correct: []
+            self.w.warn_near_cap = lambda: []
+            self.w.headroom = lambda: (True, 1, 100)
+            self.w.Bus = FakeBus
+            self.w.move = lambda tree, reason, bus: (True, "agent-warden-321-654.scope", [after], [])
+            self.w._worktree_label = lambda pid: "vsy-52"
+            self.w.notify = lambda summary, body: None
+            try:
+                self.assertEqual(self.w.run(True), 0)
+                doc = json.loads(self.w.STATUS.read_text())
+            finally:
+                self.w.scan, self.w.plan, self.w.reap_orphans = old_scan, old_plan, old_reap
+                self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom = old_enforce, old_warn, old_headroom
+                self.w.Bus, self.w.move, self.w._worktree_label, self.w.notify = old_bus, old_move, old_worktree, old_notify
+                self.restore_status_state(self.w, old)
+        lane = doc["lanes"][0]
+        self.assertEqual(lane["scope"], "agent-warden-321-654.scope")
+        self.assertEqual(lane["label"], {"tool": "claude", "worktree": "vsy-52"})
+
     def test_status_event_ring_and_episode_dedupe(self):
         st = {}
         for i in range(60):
             self.w.emit_event(st, "moved", scope=f"s{i}.scope", now=i)
         self.assertEqual(len(st["events"]), 50)
-        self.assertEqual([event["id"] for event in st["events"]], list(range(11, 61)))
+        ids = [event["id"] for event in st["events"]]
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(ids[0], 10000)
+        self.assertEqual(ids[-1], 59000)
         st = {}
         self.w.record_near_events(st, [("lane.scope", "tasks", "6200 of 8192")], now=1)
         self.w.record_near_events(st, [("lane.scope", "tasks", "6201 of 8192")], now=2)

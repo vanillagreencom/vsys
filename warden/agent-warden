@@ -65,6 +65,7 @@ sends to the journal. AGENT_WARDEN_ONLY="pid,pid" restricts every candidate,
 root or descendant, to those pids (fixture runs).
 """
 import ctypes
+from copy import deepcopy
 import errno
 import fcntl
 import fnmatch
@@ -1162,6 +1163,10 @@ def _now_seconds(now=None):
     return int(time.time() if now is None else now)
 
 
+def _now_millis(now=None):
+    return int((time.time() if now is None else now) * 1000)
+
+
 def _read_int(path):
     v = read(path)
     if v is None:
@@ -1310,9 +1315,10 @@ def emit_event(st, kind, *, scope=None, pid=None, processes=None, near=None, now
     if kind not in STATUS_EVENT_KINDS:
         raise ValueError(f"unknown event kind {kind}")
     try:
-        seq = int(st.get("event_seq") or 0) + 1
+        previous = int(st.get("event_seq") or 0)
     except (TypeError, ValueError):
-        seq = 1
+        previous = 0
+    seq = max(previous + 1, _now_millis(now))
     st["event_seq"] = seq
     event = {
         "id": seq,
@@ -1369,8 +1375,15 @@ def status_document(mode, st, *, slice_reading, lanes, moves=None, waiting=None,
     }
 
 
-def status_from_tick(mode, st, tick):
-    return status_document(mode, st, slice_reading=slice_status(), lanes=lane_statuses(tick.get("procs")),
+def status_from_tick(mode, st, tick, *, slice_reading=None, lanes=None):
+    procs = tick.get("procs")
+    if tick.get("fresh_labels"):
+        try:
+            procs = scan()
+        except Exception:  # noqa: BLE001
+            procs = tick.get("procs")
+    return status_document(mode, st, slice_reading=slice_status() if slice_reading is None else slice_reading,
+                           lanes=lane_statuses(procs) if lanes is None else lanes,
                            moves=tick.get("moves"), waiting=tick.get("waiting"),
                            orphans_status=tick.get("orphans"), contained=tick.get("contained"),
                            error=tick.get("error"))
@@ -1671,6 +1684,27 @@ def record_move_result(st, summary, failures, root, reason, done, name, moved, m
 DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "partial": 0,
                  "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {},
                  "events": [], "event_seq": 0, "near_open": [], "waiting_open": []}
+STATE_COUNTER_KEYS = ("skips", "moves", "partial", "scan_failures", "move_failures", "reaped")
+
+
+def default_state():
+    return deepcopy(DEFAULT_STATE)
+
+
+def state_object(raw):
+    if not isinstance(raw, dict):
+        return None
+    if any(not isinstance(raw.get(key, 0), int) or isinstance(raw.get(key, 0), bool) for key in STATE_COUNTER_KEYS):
+        return None
+    if not isinstance(raw.get("event_seq", 0), int) or isinstance(raw.get("event_seq", 0), bool):
+        return None
+    if not isinstance(raw.get("events", []), list):
+        return None
+    if not isinstance(raw.get("near_open", []), list) or not isinstance(raw.get("waiting_open", []), list):
+        return None
+    if not isinstance(raw.get("orphans", {}), dict):
+        return None
+    return raw
 
 
 class State:
@@ -1682,13 +1716,18 @@ class State:
         self.lockfd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(self.lockfd, fcntl.LOCK_EX)
         try:
-            self.st = {**DEFAULT_STATE, **json.loads(STATE.read_text())}
-            self.st["_state_readable"] = True
+            raw = state_object(json.loads(STATE.read_text()))
+            if raw is None:
+                self.st = default_state()
+                self.st["_state_readable"] = False
+            else:
+                self.st = {**default_state(), **raw}
+                self.st["_state_readable"] = True
         except OSError:
-            self.st = dict(DEFAULT_STATE)
+            self.st = default_state()
             self.st["_state_readable"] = not STATE.exists()
         except ValueError:
-            self.st = dict(DEFAULT_STATE)
+            self.st = default_state()
             self.st["_state_readable"] = False
         return self.st
 
@@ -1717,7 +1756,7 @@ def run(correct):
     only = only_pids()
     with State(status=None if only is not None else ("correct" if correct else "report")) as st:
         st["_tick"] = {"procs": None, "moves": [], "waiting": [], "orphans": [],
-                       "contained": [], "error": None}
+                       "contained": [], "error": None, "fresh_labels": False}
         summary = []  # moved-tree notices; without this the first move raised NameError
         failures = []
         try:
@@ -1800,6 +1839,8 @@ def run(correct):
                 log(f"  move of pid {tree[0].pid} raised {e!r}")
                 continue
             record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
+            if moved:
+                st["_tick"]["fresh_labels"] = True
         bus.close()
         record_waiting_events(st, waiting)
         if summary:
@@ -2056,6 +2097,15 @@ def selftest():
     check("npm storm (5140 procs, idle) is harmful by process count", scope_harm(5140, 0.0))
     check("bun server (1 proc, 0.8 core) is harmful by CPU", scope_harm(1, 0.8))
     check("quiet dev server (6 procs, 0 core) is not harmful", not scope_harm(6, 0.0))
+    synthetic_st = _fixture_state()
+    synthetic_tick = {"moves": [("escaped launch", _fixture_tree())], "waiting": [],
+                      "orphans": [], "contained": [], "error": None, "procs": {}}
+    check("status_from_tick normal validates", not status_errors(status_from_tick("report", synthetic_st, synthetic_tick,
+          slice_reading=_fixture_slice(), lanes=_fixture_lanes())))
+    synthetic_error_st = _fixture_state(scan_failures=1)
+    synthetic_error_tick = {"moves": None, "waiting": None, "orphans": None, "contained": None, "error": "scan", "procs": {}}
+    check("status_from_tick error validates", not status_errors(status_from_tick("report", synthetic_error_st, synthetic_error_tick,
+          slice_reading=_fixture_slice(), lanes=_fixture_lanes())))
     for name, doc in {**status_fixture_docs(), "failed-scan": status_failed_scan_fixture()}.items():
         check(f"status {name} validates", not status_errors(doc))
     bad = status_fixture_docs()["calm"] | {"schema": "2.0"}
