@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { createCollector } from "./collect/collector";
 import { capturePane, insideTmux } from "./collect/tmux";
+import { agentToolsPath } from "./config/agent-tools";
 import { configPath, loadConfig } from "./config/config";
 import { runEffect, switchToPane } from "./effect";
 import { exportSnapshot } from "./model/export";
@@ -115,14 +116,23 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     ...(insideTmux(process.env) ? { onSwitch: switchToPane } : {}),
     output: process.stdout,
   });
-  const session = new Session(config, path, collector, history, {
-    frame: screen.update,
-    error: (error) => {
-      stop();
-      console.error(`vsys: ${error instanceof Error ? error.message : error}`);
-      process.exitCode = 1;
+  const session = new Session(
+    config,
+    path,
+    collector,
+    history,
+    {
+      frame: screen.update,
+      error: (error) => {
+        stop();
+        console.error(
+          `vsys: ${error instanceof Error ? error.message : error}`,
+        );
+        process.exitCode = 1;
+      },
     },
-  });
+    { agentToolsPath },
+  );
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   session.start();

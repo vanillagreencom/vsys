@@ -1,0 +1,1 @@
+- Settings saves no longer pin the default agent list in `config.toml`. They keep overlay-only tools, a newer overlay edit and a hand-written list that removes shipped names.
