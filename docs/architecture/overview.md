@@ -41,7 +41,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - `src/store/`: owns application persistence and derives the timeline events. The collector does not depend on SQLite.
 - `src/runtime.ts`: owns scheduling and settings changes. Samples never overlap, and a replaced source is handed its predecessor so readings measured since vsys started survive the replacement.
 - `src/ui/`: consumes snapshots. It opens views and exports evidence, and reaches the system only through a confirmed lane action.
-- `runEffect()` in `src/effect.ts` is the one dashboard function that changes system state. Moving the reader's own tmux view is not one of its effects, because it changes no process. The optional warden changes process placement outside the dashboard runtime.
+- `runEffect()` in `src/effect.ts` is the one dashboard function that changes system state. Moving the reader's own tmux view is not one of its effects, because it changes no process. `src/warden.ts` only dispatches to the optional warden before the dashboard starts. The optional warden changes process placement outside the dashboard runtime.
 - OpenTUI's React root builds a new reconciler container on each `render` call, so `mountScreen` renders once and live samples reach the tree through React's external-store subscription.
 
 ## Invariants

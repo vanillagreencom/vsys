@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""Install the vsys agent warden systemd user units."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+from typing import Iterable, NamedTuple
+
+MARKER = "# vsys-warden: written by 'vsys warden install'; 'vsys warden uninstall' removes it"
+UNIT_NAMES = ("agent-warden.service", "agent-warden.timer", "agents.slice")
+CONTROLLERS = frozenset({"cpu", "memory", "pids"})
+
+
+class UnitState(NamedTuple):
+    path: Path
+    state: str
+
+
+class CommandFailure(Exception):
+    def __init__(self, command: Iterable[str], stderr: str) -> None:
+        self.command = tuple(command)
+        self.stderr = stderr.strip()
+        super().__init__(self.message)
+
+    @property
+    def message(self) -> str:
+        command = " ".join(self.command)
+        if self.stderr:
+            return f"command failed: {command}\n{self.stderr}"
+        return f"command failed: {command}"
+
+
+def target_dir(env: dict[str, str] | None = None) -> Path:
+    values = os.environ if env is None else env
+    config_home = values.get("XDG_CONFIG_HOME")
+    if config_home:
+        return Path(config_home) / "systemd" / "user"
+    home = values.get("HOME")
+    if not home:
+        raise ValueError("HOME is required when XDG_CONFIG_HOME is unset")
+    return Path(home) / ".config" / "systemd" / "user"
+
+
+def first_line(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return handle.readline().rstrip("\n")
+    except OSError:
+        return None
+
+
+def classify(path: Path) -> str:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    if path.is_symlink():
+        return "foreign"
+    if not path.is_file():
+        return "foreign"
+    if first_line(path) == MARKER:
+        return "installed-by-vsys"
+    return "foreign"
+
+
+def unit_states(directory: Path) -> list[UnitState]:
+    return [UnitState(directory / name, classify(directory / name)) for name in UNIT_NAMES]
+
+
+def has_foreign_units(states: Iterable[UnitState], action: str) -> bool:
+    foreign = [state.path for state in states if state.state == "foreign"]
+    if not foreign:
+        return False
+    print(f"vsys-warden: foreign-units action={action}", file=sys.stderr)
+    for path in foreign:
+        print(f"foreign: {path}", file=sys.stderr)
+    return True
+
+
+def systemd_exec_path(path: Path) -> str:
+    text = str(path)
+    if any(ord(char) < 32 for char in text):
+        raise ValueError(f"ExecStart path contains a control character: {text!r}")
+    text = text.replace("%", "%%")
+    if re.search(r"[\s\"\\]", text):
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return text
+
+
+def render_unit(warden_dir: Path, name: str) -> str:
+    template = (warden_dir / "systemd" / name).read_text(encoding="utf-8")
+    if name == "agent-warden.service":
+        exe = warden_dir / "agent-warden"
+        if not exe.is_file() or not os.access(exe, os.X_OK):
+            raise ValueError(f"agent-warden is not executable: {exe}")
+        start = systemd_exec_path(exe)
+        template = template.replace("@WARDEN_DIR@/agent-warden", start)
+        if "@WARDEN_DIR@" in template:
+            raise ValueError("agent-warden.service contains an unresolved @WARDEN_DIR@ placeholder")
+    return MARKER + "\n" + template
+
+
+def atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.new"
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(tmp, flags, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def run_systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    command = ["systemctl", "--user", *args]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise CommandFailure(command, str(error)) from error
+    if check and result.returncode != 0:
+        raise CommandFailure(command, result.stderr or result.stdout)
+    return result
+
+
+def install(warden_dir: Path, directory: Path) -> int:
+    resolved = warden_dir.resolve()
+    states = unit_states(directory)
+    if has_foreign_units(states, "install"):
+        return 1
+    rendered = {name: render_unit(resolved, name) for name in UNIT_NAMES}
+    for name, text in rendered.items():
+        atomic_write(directory / name, text)
+    run_systemctl("daemon-reload")
+    run_systemctl("enable", "--now", "agent-warden.timer")
+    print(f"vsys-warden: installed dir={resolved}")
+    return 0
+
+
+def symlink_points_to(path: Path, target: Path) -> bool:
+    if not path.is_symlink():
+        return False
+    link = os.readlink(path)
+    linked = Path(link)
+    if not linked.is_absolute():
+        linked = path.parent / linked
+    return linked.resolve(strict=False) == target.resolve(strict=False)
+
+
+def uninstall(directory: Path) -> int:
+    states = unit_states(directory)
+    ours = [state for state in states if state.state == "installed-by-vsys"]
+    foreign = [state for state in states if state.state == "foreign"]
+    for state in foreign:
+        print(f"vsys-warden: foreign-left path={state.path}")
+    if not ours:
+        print("vsys-warden: nothing-installed")
+        return 0
+    timer = directory / "agent-warden.timer"
+    if classify(timer) == "installed-by-vsys":
+        run_systemctl("disable", "--now", "agent-warden.timer")
+    for state in ours:
+        state.path.unlink(missing_ok=True)
+    wants = directory / "timers.target.wants" / "agent-warden.timer"
+    if symlink_points_to(wants, timer):
+        wants.unlink()
+    try:
+        wants.parent.rmdir()
+    except OSError:
+        pass
+    run_systemctl("daemon-reload")
+    print("vsys-warden: uninstalled")
+    return 0
+
+
+def systemctl_text(*args: str) -> str:
+    try:
+        result = run_systemctl(*args, check=False)
+    except CommandFailure:
+        return "unknown"
+    text = (result.stdout or result.stderr).strip()
+    if text:
+        return text
+    return "unknown" if result.returncode != 0 else ""
+
+
+def delegation_path(uid: int | None = None) -> Path:
+    user_id = os.getuid() if uid is None else uid
+    return Path("/sys/fs/cgroup") / "user.slice" / f"user-{user_id}.slice" / f"user@{user_id}.service" / "cgroup.controllers"
+
+
+def read_delegation(path: Path) -> tuple[str, bool]:
+    try:
+        found = set(path.read_text(encoding="utf-8").split())
+    except OSError:
+        return "unknown", False
+    missing = sorted(CONTROLLERS - found)
+    if missing:
+        return "missing " + " ".join(missing), False
+    return "complete", True
+
+
+def status(directory: Path, controllers_path: Path | None = None) -> int:
+    states = unit_states(directory)
+    for state in states:
+        print(f"file {state.path.name}: {state.state}")
+    enabled = systemctl_text("is-enabled", "agent-warden.timer")
+    active = systemctl_text("is-active", "agent-warden.timer")
+    last_tick = systemctl_text("show", "agent-warden.timer", "-p", "LastTriggerUSec", "--value")
+    service_result = systemctl_text("show", "agent-warden.service", "-p", "Result", "--value")
+    delegation, delegated = read_delegation(controllers_path or delegation_path())
+    print(f"timer enabled: {enabled}")
+    print(f"timer active: {active}")
+    print(f"timer last tick: {last_tick or 'unknown'}")
+    print(f"service result: {service_result or 'unknown'}")
+    print(f"delegation cpu memory pids: {delegation}")
+    installed = all(state.state == "installed-by-vsys" for state in states)
+    ok = installed and enabled == "enabled" and active == "active" and delegated
+    return 0 if ok else 1
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="vsys warden", description="Install and inspect the vsys agent warden user units.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("install", help="install and enable the agent warden user timer")
+    sub.add_parser("uninstall", help="disable and remove files written by this installer")
+    sub.add_parser("status", help="report installed files, timer state and user-manager delegation")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    warden_dir = Path(__file__).resolve().parent
+    directory = target_dir()
+    try:
+        if args.command == "install":
+            return install(warden_dir, directory)
+        if args.command == "uninstall":
+            return uninstall(directory)
+        if args.command == "status":
+            return status(directory)
+    except (CommandFailure, OSError, ValueError) as error:
+        print(f"vsys-warden: error={error}", file=sys.stderr)
+        return 1
+    raise AssertionError(f"unknown command: {args.command}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

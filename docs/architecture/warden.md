@@ -1,6 +1,6 @@
 # Agent warden
 
-Covers: warden/
+Covers: warden/ src/warden.ts
 
 The agent warden is an optional Python component shipped beside the `vsys` dashboard. The dashboard observes the machine. The warden changes process placement automatically.
 
@@ -89,16 +89,21 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 
 ## Files and install
 
-The install path is manual until VSY-54 adds `vsys warden install`.
+`vsys warden install` installs the systemd user units in `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/`. It writes `agent-warden.service`, `agent-warden.timer` and `agents.slice`, then reloads the user manager and enables `agent-warden.timer`. `warden/install_test.py` checks the written files, the reload call and the enable call with a stub `systemctl`.
 
-- Install scripts with `install -D -m 755 warden/agent-warden ~/.local/bin/agent-warden`, repeated for `agent-confine` and `agent-confine-lineage-capped`.
-- Install classification data with `install -D -m 644 data/agent-tools.json "${XDG_DATA_HOME:-$HOME/.local/share}/vsys/agent-tools.json"`.
-- Install units with `install -D -m 644 warden/systemd/agent-warden.service ~/.config/systemd/user/agent-warden.service`, repeated for the timer and slice.
-- If a target path is a symlink, remove the symlink first or use a copy command with `--remove-destination`; do not write through a dotfiles stow link.
-- Run `systemctl --user daemon-reload`.
-- Run `systemctl --user enable --now agent-warden.timer`.
+`src/warden.ts` resolves the warden directory in one place and dispatches to `warden/install`. The source checkout wins when `../warden/install` exists beside `src/`. An installed `vsys` binary otherwise looks for `../lib/vsys/warden` relative to the real path of the executable. This is the packaging contract for release archives and `install.sh`. `src/warden.test.ts` checks the order and the error that lists every path tried.
 
-The service runs `%h/.local/bin/agent-warden --correct`. The install shell and the user service must see the same `XDG_DATA_HOME`, or the warden will look in a different data directory.
+The service template keeps `ExecStart=@WARDEN_DIR@/agent-warden --correct`. The installer fills it with the resolved warden tree. It escapes `%` for systemd and quotes paths with whitespace or quotes. It refuses the install when `agent-warden` is not executable. `warden/install_test.py` covers the path substitution and percent escaping.
+
+Each installed unit starts with the vsys warden marker. The installer refuses the whole install when any target is a symlink or an unmarked file, so it does not write through a dotfiles stow link. A marked file is ours and can be rewritten. `warden/install_test.py` covers foreign files, symlinks and reinstalling marked files.
+
+`vsys warden uninstall` disables only `agent-warden.timer`, removes only marked files, and removes a leftover `timers.target.wants/agent-warden.timer` symlink only when it points at the marked timer. It never stops `agents.slice` and never touches scopes, so running agents keep running. After daemon reload, removing the slice file removes the template limits for future units. `warden/install_test.py` covers removal and foreign files left in place.
+
+`vsys warden status` is read-only. It reports whether each unit is installed by vsys, foreign or missing. It reports whether the timer is enabled and active, the timer's last trigger, the service result and whether `cpu`, `memory` and `pids` are delegated to `user@.service`. A failed read stays unknown. `warden/install_test.py` covers complete delegation, missing delegation and unknown delegation.
+
+The installer does not install the root desktop-protection pack. That pack owns the `MemoryLow` chain and cgroup recursive protection. It remains a separate root-owned setup.
+
+The manual fallback is to copy `warden/agent-warden`, `warden/agent-confine` and `warden/agent-confine-lineage-capped` into a directory on `PATH`, copy the templates from `warden/systemd/` into the systemd user-unit directory, replace `@WARDEN_DIR@` with the script directory, then reload the user manager and enable `agent-warden.timer`. Remove any symlink target first; do not write through it.
 
 On a fresh install, `agents.slice` can be absent until the first scope enters it. The warden treats an absent slice as empty headroom so the first move can create it. It still fails closed when the slice exists but its memory counters are missing or unparsable.
 
@@ -114,20 +119,16 @@ On a fresh install, `agents.slice` can be absent until the first scope enters it
 
 Do not run two wardens.
 
-The owner workstation currently gets the scripts and units from dotfiles. In the migration pass, dotfiles stops stowing `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`. The owner installs the vsys copies in the same locations. The owner keeps the absolute `agents.slice` memory values tuned for that machine by skipping the template slice or by using a local drop-in.
+The owner workstation currently gets the scripts and units from dotfiles. In the migration pass, dotfiles stops stowing `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`. `vsys warden install` then writes the marked unit files. The owner keeps the absolute `agents.slice` memory values tuned for that machine as a local drop-in under `agents.slice.d/*.conf`, because the installer writes the percentage template.
 
 Migration order:
 
 1. Set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` in the environment that starts agent wrappers.
-2. Install `data/owner-agent-tools.json` as `$HOME/.config/vsys/agent-tools.json` through dotfiles before switching the warden.
-3. Remove the dotfiles stow links for `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`.
-4. Install the vsys scripts, classification data and units into the now-unlinked target paths.
-5. Keep the owner `agents.slice` values instead of the percentage template, or install those values as a local drop-in.
-6. Run `systemctl --user daemon-reload`.
-7. Restart `agent-warden.timer`.
-8. Verify with `systemctl --user cat agent-warden.service` and `readlink` that no warden script or unit points into dotfiles.
-9. Check that exactly one `agent-warden.timer` exists.
-10. Run `python3 ~/.local/bin/agent-warden --selftest` with the same user environment that starts the timer.
+2. Remove the dotfiles stow links for `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`.
+3. Run `vsys warden install`.
+4. Put the owner `agents.slice` values in a local drop-in under `agents.slice.d/*.conf`.
+5. Verify that no warden script or unit points into dotfiles.
+6. Check that exactly one `agent-warden.timer` exists.
 
 ## History
 
