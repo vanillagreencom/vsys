@@ -1898,8 +1898,24 @@ def _read_status_doc():
         return None
 
 
+def _same_major_status_doc():
+    doc = _read_status_doc()
+    if not isinstance(doc, dict):
+        return None
+    schema = doc.get("schema")
+    if not isinstance(schema, str) or not re.fullmatch(r"1\.\d+", schema):
+        return None
+    return doc
+
+
 def status_event_floor():
-    return max((event["id"] for event in published_status_events()), default=0)
+    doc = _same_major_status_doc()
+    events = doc.get("events") if isinstance(doc, dict) else []
+    if not isinstance(events, list):
+        return 0
+    return max((event.get("id") for event in events
+                if isinstance(event, dict) and isinstance(event.get("id"), int)
+                and not isinstance(event.get("id"), bool) and event.get("id") >= 0), default=0)
 
 
 def published_status_counters():
@@ -1925,7 +1941,7 @@ def published_status_counters():
 
 
 def published_status_events():
-    doc = _read_status_doc()
+    doc = _same_major_status_doc()
     events = doc.get("events") if isinstance(doc, dict) else None
     errors = []
     _check_events(errors, events, "status.events")

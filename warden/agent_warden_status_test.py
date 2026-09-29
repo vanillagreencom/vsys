@@ -445,7 +445,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                                              moves=[], waiting=[], orphans_status=[], contained=[], now=1)
                 self.assertFalse(self.w.status_errors(doc))
                 self.w.STATE.unlink(missing_ok=True)
-                self.w.STATUS.write_text(json.dumps({"events": [
+                self.w.STATUS.write_text(json.dumps({"schema": "1.0", "events": [
                     {"id": 9000, "time": 1, "kind": "moved", "scope": None, "pid": None, "processes": None, "near": None},
                 ], "counters": {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0}}))
                 with self.w.State(status="report") as st:
@@ -463,10 +463,17 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                 with self.w.State() as st:
                     fourth = self.w.emit_event(st, "moved", now=1)["id"]
                 self.assertGreater(fourth, 9000)
+                self.w.STATE.unlink(missing_ok=True)
+                self.w.STATUS.write_text(json.dumps({"schema": "1.1", "events": [
+                    {"id": 9000, "time": 1, "kind": "future-kind", "scope": None, "pid": None, "processes": None, "near": None},
+                ], "counters": {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0}}))
+                with self.w.State() as st:
+                    self.assertEqual(st["events"], [])
+                    self.assertGreater(self.w.emit_event(st, "moved", now=1)["id"], 9000)
                 for bad_id in (-1, True):
                     with self.subTest(bad_id=bad_id):
                         self.w.STATE.unlink(missing_ok=True)
-                        self.w.STATUS.write_text(json.dumps({"events": [
+                        self.w.STATUS.write_text(json.dumps({"schema": "1.0", "events": [
                             {"id": bad_id, "time": 1, "kind": "moved", "scope": None, "pid": None, "processes": None, "near": None},
                         ], "counters": {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0}}))
                         with self.w.State() as st:

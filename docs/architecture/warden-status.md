@@ -105,7 +105,7 @@ An absent `agents.slice` makes `slice` null. The move guard still treats an abse
 
 | Field | Type | Unit | Null meaning |
 | --- | --- | --- | --- |
-| `id` | integer | sequence | Never null. It is at least the current Unix epoch millisecond, the prior persisted sequence plus one, the last kept event plus one, and, after missing or unreadable state, the highest published `status.json` event id plus one. |
+| `id` | integer | sequence | Never null. It is at least the current Unix epoch millisecond, the prior persisted sequence plus one, the last kept event plus one, and, after missing or unreadable state, the highest non-negative event id in a same-major published `status.json` plus one. |
 | `time` | number | Unix epoch seconds | Never null. |
 | `kind` | `moved`, `partial`, `reaped`, `near-cap`, `waiting`, or `failed` | id | Never null. |
 | `scope` | string or null | systemd unit name | Null means no single scope owns the event. |
