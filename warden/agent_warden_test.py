@@ -647,6 +647,51 @@ class AgentWardenRules(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
 
+
+    def test_reap_orphans_returns_status_rows_and_reaped_event(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_root, old_reap, old_still = self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan
+            self.w.CG_ROOT = base / "cg"
+            try:
+                mgr = 4000
+                reaped_unit = "agent-confine-reap.scope"
+                quiet_unit = "agent-confine-watch.scope"
+                reaped_cg = self._cg(reaped_unit)
+                quiet_cg = self._cg(quiet_unit)
+                recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice")}
+                for i in range(self.w.ORPHAN_PROC_MAX):
+                    recs[5000 + i] = self.P(5000 + i, mgr, "bun", ["bun"], reaped_cg, exe="/usr/bin/bun")
+                recs[6000] = self.P(6000, mgr, "bun", ["bun"], quiet_cg, exe="/usr/bin/bun")
+                for unit in (reaped_unit, quiet_unit):
+                    d = self.w.CG_ROOT / self.w.SLICE / unit
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / "cpu.stat").write_text("")
+                now = self.w.time.time()
+                st = {
+                    "reaped": 0,
+                    "move_failures": 0,
+                    "event_seq": 0,
+                    "events": [],
+                    "orphans": {
+                        reaped_unit: {"first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": True},
+                    },
+                }
+                self.w.reap = lambda unit: (True, "")
+                self.w.scope_still_orphan = lambda unit, managers: unit == reaped_unit
+                reaped, rows = self.w.reap_orphans(recs, st, True)
+            finally:
+                self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan = old_root, old_reap, old_still
+        self.assertEqual(len(reaped), 1)
+        self.assertIn(reaped_unit, reaped[0])
+        self.assertEqual([row["scope"] for row in rows], [quiet_unit])
+        self.assertIsNone(rows[0]["cores"])
+        self.assertNotIn(reaped_unit, st["orphans"])
+        events = [event for event in st["events"] if event["kind"] == "reaped"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["scope"], reaped_unit)
+        self.assertEqual(events[0]["processes"], self.w.ORPHAN_PROC_MAX)
+
     def test_scope_still_orphan_refuses_incomplete_membership(self):
         with scratch() as tmp:
             old_root, old_proc = self.w.CG_ROOT, self.w.Proc
@@ -1016,6 +1061,47 @@ class AgentWardenRules(unittest.TestCase):
                 self.assertFalse(self.w.status_errors(doc))
             finally:
                 self.restore_status_state(self.w, old)
+
+
+    def test_waiting_episode_reopens_after_no_moves_tick(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            self.write_status_cgroup(self.w)
+            root = self.P(9400, 1, "claude", ["claude"], self.A, start=42)
+            plans = iter((
+                ([("escaped launch", [root])], [], [], []),
+                ([], [], [], []),
+                ([("escaped launch", [root])], [], [], []),
+            ))
+            old_scan, old_plan, old_reap = self.w.scan, self.w.plan, self.w.reap_orphans
+            old_enforce, old_warn, old_headroom = self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom
+            old_bus, old_notify = self.w.Bus, self.w.notify
+            class FakeBus:
+                def close(self):
+                    pass
+            self.w.scan = lambda: {root.pid: root}
+            self.w.plan = lambda procs, only=None: next(plans)
+            self.w.reap_orphans = lambda procs, st, correct, only=None: ([], [])
+            self.w.enforce_task_caps = lambda correct: []
+            self.w.warn_near_cap = lambda: []
+            self.w.headroom = lambda: (False, 95, 100)
+            self.w.Bus = FakeBus
+            self.w.notify = lambda summary, body: None
+            try:
+                self.assertEqual(self.w.run(True), 0)
+                self.assertEqual(self.w.run(True), 0)
+                self.assertEqual(self.w.run(True), 0)
+                state = json.loads(self.w.STATE.read_text())
+            finally:
+                self.w.scan, self.w.plan, self.w.reap_orphans = old_scan, old_plan, old_reap
+                self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom = old_enforce, old_warn, old_headroom
+                self.w.Bus, self.w.notify = old_bus, old_notify
+                self.restore_status_state(self.w, old)
+        waiting = [event for event in state["events"] if event["kind"] == "waiting"]
+        self.assertEqual(len(waiting), 2)
+        self.assertEqual(waiting[0]["pid"], root.pid)
+        self.assertEqual(waiting[1]["pid"], root.pid)
 
     def test_correct_move_status_rescans_labels(self):
         with scratch() as tmp:

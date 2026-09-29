@@ -1748,15 +1748,18 @@ class State:
 
     def __exit__(self, *exc):
         try:
+            if self.status is not None:
+                try:
+                    tick = self.st.get("_tick") or {}
+                    if tick.get("waiting") is not None:
+                        record_waiting_events(self.st, tick.get("waiting") or [])
+                    write_status(status_from_tick(self.status, self.st, tick))
+                except Exception as e:  # noqa: BLE001
+                    log(f"status write failed: {e!r}")
             tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
             stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
             tmp.write_text(json.dumps(stored))
             os.replace(tmp, STATE)
-            if self.status is not None:
-                try:
-                    write_status(status_from_tick(self.status, self.st, self.st.get("_tick") or {}))
-                except Exception as e:  # noqa: BLE001
-                    log(f"status write failed: {e!r}")
         finally:
             fcntl.flock(self.lockfd, fcntl.LOCK_UN)
             os.close(self.lockfd)
@@ -1857,7 +1860,6 @@ def run(correct):
             if moved:
                 st["_tick"]["fresh_labels"] = True
         bus.close()
-        record_waiting_events(st, waiting)
         if summary:
             notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))
         if failures:
