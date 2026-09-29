@@ -1747,6 +1747,9 @@ def deliver_notice(summary, body, consumer_fresh, sender=None):
     return bool((sender or notify)(summary, body))
 
 
+EPISODE_KINDS = {"tasks", "memory", "not-moving", "move-failure"}
+
+
 def episode_key(kind, scope):
     return f"{kind}:{scope}"
 
@@ -1759,6 +1762,8 @@ def _episodes(st):
 
 
 def open_episode(st, kind, scope, now):
+    if kind not in EPISODE_KINDS:
+        raise ValueError(f"unknown episode kind {kind}")
     episodes = _episodes(st)
     key = episode_key(kind, scope)
     rec = episodes.get(key)
@@ -1912,16 +1917,18 @@ def _valid_orphan_state_record(record):
     return not errors
 
 
-def _valid_episode_record(record):
+def _valid_episode_record(key, record):
     errors = []
     if not isinstance(record, dict):
         return False
     kind = record.get("kind")
-    if not isinstance(kind, str):
-        errors.append("state.episode.kind must be a string")
+    if not isinstance(kind, str) or kind not in EPISODE_KINDS:
+        errors.append("state.episode.kind must be a known string")
     scope = record.get("scope")
     if not isinstance(scope, str):
         errors.append("state.episode.scope must be a string")
+    if not errors and key != episode_key(kind, scope):
+        errors.append("state.episode key must match kind and scope")
     _check_number(errors, record.get("since"), "state.episode.since")
     if not isinstance(record.get("notified"), bool):
         errors.append("state.episode.notified must be a boolean")
@@ -1954,7 +1961,7 @@ def state_object(raw):
     checked["orphans"] = {unit: record for unit, record in raw_orphans.items()
                             if isinstance(unit, str) and _valid_orphan_state_record(record)}
     checked["episodes"] = {key: record for key, record in raw_episodes.items()
-                             if isinstance(key, str) and _valid_episode_record(record)}
+                             if isinstance(key, str) and _valid_episode_record(key, record)}
     return checked
 
 

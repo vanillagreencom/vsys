@@ -394,6 +394,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
                 "episodes": {
                     "tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 6, "notified": True},
                     "tasks:bad.scope": [],
+                    "x": {"kind": "bogus", "scope": "lane.scope", "since": 6, "notified": True},
                 },
             }, sort_keys=True).encode()
             state.write_bytes(body)
@@ -407,6 +408,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(after_mtime, before_mtime)
         self.assertFalse(lock_exists)
         self.assertIn("EPISODE tasks lane.scope", result.stdout)
+        self.assertNotIn("bogus", result.stdout)
 
     def test_invalid_episode_state_is_dropped_on_tick(self):
         with scratch() as tmp:
@@ -422,6 +424,8 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
                 "episodes": {
                     "tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 6, "notified": True},
                     "tasks:bad.scope": [],
+                    "x": {"kind": "bogus", "scope": "lane.scope", "since": 6, "notified": True},
+                    "tasks:wrong.scope": {"kind": "tasks", "scope": "lane.scope", "since": 6, "notified": True},
                 }
             }))
             try:
