@@ -1,7 +1,22 @@
+import { readFile, rm } from "node:fs/promises";
 import { createCollector } from "./collect/collector";
 import type { SccacheCollector } from "./collect/sccache";
 import { collectionKeys } from "./collect/settings";
-import { type Config, saveConfig, validate } from "./config/config";
+import {
+  type AgentToolNamesSave,
+  agentToolsPath as defaultAgentToolsPath,
+  prepareAgentToolNamesSave,
+  shippedAgentTools,
+  writeAgentToolNamesSave,
+} from "./config/agent-tools";
+import { writeFileAtomic } from "./config/atomic";
+import {
+  type Config,
+  configBody,
+  loadConfigState,
+  sameStringSet,
+  validate,
+} from "./config/config";
 import { notify } from "./model/alerts";
 import type { Snapshot } from "./model/types";
 import type { History } from "./store/history";
@@ -13,9 +28,59 @@ interface Source {
   sccache?: SccacheCollector;
 }
 type SourceFactory = (config: Config, previous: Source) => Promise<Source>;
+interface SessionOptions {
+  makeSource?: SourceFactory;
+  agentToolsPath?: string;
+  writeConfig?: (path: string, body: string) => Promise<void>;
+}
 interface Events {
   frame(snapshot: Snapshot, history: History, config: Config): void;
   error(error: unknown): void;
+}
+
+async function readOptionalFile(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function restoreOptionalFile(
+  path: string,
+  body: string | null,
+  expectedCurrentBody: string,
+): Promise<void> {
+  const current = await readOptionalFile(path);
+  if (current !== expectedCurrentBody)
+    throw new Error(
+      "Agent-tools rollback skipped because the overlay changed after this save",
+    );
+  if (body === null) {
+    await rm(path, { force: true });
+    return;
+  }
+  await writeFileAtomic(path, body);
+}
+
+function rebaseAgentToolEdit(
+  previous: string[],
+  edited: string[],
+  current: string[],
+): string[] {
+  const previousSet = new Set(previous);
+  const editedSet = new Set(edited);
+  const removed = new Set(previous.filter((name) => !editedSet.has(name)));
+  const rebased = current.filter((name) => !removed.has(name));
+  const rebasedSet = new Set(rebased);
+  for (const name of edited) {
+    if (!previousSet.has(name) && !rebasedSet.has(name)) {
+      rebased.push(name);
+      rebasedSet.add(name);
+    }
+  }
+  return rebased;
 }
 
 /** Collection and setting changes share a scheduler, so sources never overlap. */
@@ -27,15 +92,23 @@ export class Session {
   private generation = 0;
   private immediate = false;
   private latest?: Snapshot;
+  private makeSource: SourceFactory;
+  private agentToolsPath: string;
+  private writeConfig: (path: string, body: string) => Promise<void>;
   constructor(
     private config: Config,
     private configPath: string,
     private source: Source,
     private history: History,
     private events: Events,
-    private makeSource: SourceFactory = (config, previous) =>
-      createCollector(config, true, previous),
-  ) {}
+    options: SessionOptions = {},
+  ) {
+    this.makeSource =
+      options.makeSource ??
+      ((config, previous) => createCollector(config, true, previous));
+    this.agentToolsPath = options.agentToolsPath ?? defaultAgentToolsPath;
+    this.writeConfig = options.writeConfig ?? writeFileAtomic;
+  }
   start(): void {
     this.schedule(0);
   }
@@ -102,15 +175,62 @@ export class Session {
   async configure(input: Config): Promise<void> {
     if (this.stopped) throw new Error("Session has stopped");
     if (this.applying) throw new Error("Settings are already being saved");
-    const next = validate(input);
+    let next = validate(input);
     this.applying = true;
     this.generation++;
     clearTimeout(this.timer);
     let nextHistory = this.history;
     let nextSource = this.source;
     try {
-      const collectionChanged = collectionKeys.some(
-        (k) => JSON.stringify(this.config[k]) !== JSON.stringify(next[k]),
+      const agentToolsChanged = !sameStringSet(
+        this.config.agentTools,
+        next.agentTools,
+      );
+      const currentState = await loadConfigState(
+        this.configPath,
+        this.agentToolsPath,
+      );
+      let agentToolSave: AgentToolNamesSave | null = null;
+      if (agentToolsChanged) {
+        if (currentState.agentToolsPinned) {
+          const pinnedNames = new Set(currentState.config.agentTools);
+          const missingShippedNames = shippedAgentTools.tools
+            .map((tool) => tool.name)
+            .filter((name) => !pinnedNames.has(name));
+          if (missingShippedNames.length)
+            throw new Error(
+              `Pinned agentTools omits shipped agent tools: ${missingShippedNames.join(", ")}. Edit agentTools in config.toml, or remove it there to use the shared list.`,
+            );
+        }
+        const currentAgentTools = [...currentState.config.agentTools];
+        const currentAgentToolSet = new Set(currentAgentTools);
+        for (const name of currentState.layeredAgentTools) {
+          if (!currentAgentToolSet.has(name)) {
+            currentAgentTools.push(name);
+            currentAgentToolSet.add(name);
+          }
+        }
+        const requested = rebaseAgentToolEdit(
+          this.config.agentTools,
+          next.agentTools,
+          currentAgentTools,
+        );
+        agentToolSave = await prepareAgentToolNamesSave(
+          requested,
+          this.agentToolsPath,
+        );
+        next = { ...next, agentTools: agentToolSave.agentTools };
+      } else if (!currentState.agentToolsPinned) {
+        next = { ...next, agentTools: currentState.config.agentTools };
+      }
+      const configText = configBody(
+        next,
+        agentToolSave?.agentTools ?? currentState.layeredAgentTools,
+      );
+      const collectionChanged = collectionKeys.some((k) =>
+        k === "agentTools"
+          ? !sameStringSet(this.config.agentTools, next.agentTools)
+          : JSON.stringify(this.config[k]) !== JSON.stringify(next[k]),
       );
       nextSource = collectionChanged
         ? await this.makeSource(next, this.source)
@@ -122,7 +242,38 @@ export class Session {
         )
       )
         nextHistory = this.history.reconfigure(next);
-      await saveConfig(next, this.configPath);
+      const previousOverlay =
+        agentToolSave === null
+          ? null
+          : await readOptionalFile(this.agentToolsPath);
+      let overlayWritten = false;
+      if (agentToolSave !== null) {
+        await writeAgentToolNamesSave(agentToolSave, this.agentToolsPath);
+        overlayWritten = agentToolSave.body !== null;
+      }
+      const writtenOverlayBody = agentToolSave?.body ?? null;
+      try {
+        await this.writeConfig(this.configPath, configText);
+      } catch (error) {
+        if (overlayWritten && writtenOverlayBody !== null) {
+          try {
+            await restoreOptionalFile(
+              this.agentToolsPath,
+              previousOverlay,
+              writtenOverlayBody,
+            );
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              rollbackError instanceof Error &&
+                rollbackError.message.includes("rollback skipped")
+                ? "Config save failed and agent-tools rollback skipped because the overlay changed after this save"
+                : "Config save failed and agent-tools rollback failed",
+            );
+          }
+        }
+        throw error;
+      }
       if (this.stopped) {
         if (nextHistory !== this.history) nextHistory.close();
         return;

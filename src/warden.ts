@@ -8,11 +8,10 @@ export function defaultWardenCandidates(
   execPath = process.execPath,
 ): string[] {
   const checkout = resolve(sourceDir, "../warden");
-  const installed = resolve(
-    dirname(realpathSync(execPath)),
-    "../lib/vsys/warden",
-  );
-  return [checkout, installed];
+  const execDir = dirname(realpathSync(execPath));
+  const installed = resolve(execDir, "../lib/vsys/warden");
+  const archive = resolve(execDir, "lib/vsys/warden");
+  return [checkout, installed, archive];
 }
 
 export function resolveWardenDir(

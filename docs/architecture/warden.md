@@ -52,9 +52,9 @@ The shipped classification data is `data/agent-tools.json`. It contains publishe
 
 At startup, the warden first looks beside a checkout at `data/agent-tools.json`. If that file is absent, it looks at `${XDG_DATA_HOME:-$HOME/.local/share}/vsys/agent-tools.json`. If neither file exists, it exits with `agent-tools=missing`.
 
-The local overlay is `$HOME/.config/vsys/agent-tools.json`. It uses the same schema and adds entries. A missing overlay is normal. A malformed shipped file or overlay exits with `agent-tools=invalid` and names the file. In the dashboard, `config.toml` `agentTools` wins over the overlay once that key exists, including after a Settings save. Remove that key to follow the overlay again.
+The local overlay is `$HOME/.config/vsys/agent-tools.json`. It uses the same schema and adds entries. A missing overlay is normal. A malformed shipped file or overlay exits with `agent-tools=invalid` and names the file. The dashboard reads the same overlay. A diverging hand-written `config.toml` `agentTools` value still replaces the shared list for the dashboard.
 
-D005 records why the dashboard and the warden share this data file.
+D005 records why the dashboard and the warden share this data file. D006 records which Settings saves update the overlay and why they do not pin the layered list.
 
 ## Scratch and mise paths
 

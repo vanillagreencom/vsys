@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import shippedAgentToolsJson from "../../data/agent-tools.json";
+import { writeFileAtomic } from "./atomic";
 
 const documentKeys = new Set([
   "version",
@@ -140,6 +141,13 @@ export const shippedAgentTools = parseAgentToolsDocument(
   "data/agent-tools.json",
 );
 
+const emptyAgentToolsDocument = (): AgentToolsDocument => ({
+  version: 1,
+  tools: [],
+  desktopExePrefixes: [],
+  bundledCliSuffixes: [],
+});
+
 function mergeAgentTools(
   shipped: AgentToolsDocument,
   overlay: AgentToolsDocument,
@@ -177,22 +185,101 @@ function mergeAgentTools(
   return merged;
 }
 
-export async function loadAgentToolNames(
-  overlayPath = agentToolsPath,
-): Promise<string[]> {
-  let overlay: AgentToolsDocument | null = null;
+async function loadOverlayDocument(
+  overlayPath: string,
+): Promise<AgentToolsDocument | null> {
   try {
-    overlay = parseAgentToolsDocument(
+    return parseAgentToolsDocument(
       JSON.parse(await readFile(overlayPath, "utf8")),
       overlayPath,
     );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      return shippedAgentTools.tools.map((tool) => tool.name);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     if (error instanceof SyntaxError) invalid(overlayPath, error.message);
     throw error;
   }
+}
+
+export async function loadAgentToolNames(
+  overlayPath = agentToolsPath,
+): Promise<string[]> {
+  const overlay = await loadOverlayDocument(overlayPath);
+  if (!overlay) return shippedAgentTools.tools.map((tool) => tool.name);
   return mergeAgentTools(shippedAgentTools, overlay, overlayPath).tools.map(
     (tool) => tool.name,
   );
+}
+
+export interface AgentToolNamesSave {
+  agentTools: string[];
+  body: string | null;
+}
+
+/** Validate a Settings edit and build the overlay body without writing it. */
+export async function prepareAgentToolNamesSave(
+  names: string[],
+  overlayPath = agentToolsPath,
+): Promise<AgentToolNamesSave> {
+  const shippedNames = new Set(
+    shippedAgentTools.tools.map((tool) => tool.name),
+  );
+  const requestedNames = new Set(names);
+  if (requestedNames.size !== names.length)
+    throw new Error("Agent tool names contain duplicates");
+  const missing = [...shippedNames].filter((name) => !requestedNames.has(name));
+  if (missing.length)
+    throw new Error(
+      `Missing shipped agent tools: ${missing.join(", ")}. Shipped names cannot be removed because the shipped list is shared with the warden.`,
+    );
+  const existing = await loadOverlayDocument(overlayPath);
+  if (existing) mergeAgentTools(shippedAgentTools, existing, overlayPath);
+  const overlay = existing ?? emptyAgentToolsDocument();
+  const existingTools = new Map(
+    overlay.tools.map((tool) => [tool.name, tool] as const),
+  );
+  const nextOverlay = parseAgentToolsDocument(
+    {
+      version: 1,
+      tools: names
+        .filter((name) => !shippedNames.has(name))
+        .map((name) => ({
+          name,
+          mise: [...(existingTools.get(name)?.mise ?? [])],
+        })),
+      desktopExePrefixes: [...overlay.desktopExePrefixes],
+      bundledCliSuffixes: [...overlay.bundledCliSuffixes],
+    },
+    overlayPath,
+  );
+  const merged = mergeAgentTools(shippedAgentTools, nextOverlay, overlayPath);
+  if (
+    !existing &&
+    nextOverlay.tools.length === 0 &&
+    nextOverlay.desktopExePrefixes.length === 0 &&
+    nextOverlay.bundledCliSuffixes.length === 0
+  )
+    return { agentTools: merged.tools.map((tool) => tool.name), body: null };
+  return {
+    agentTools: merged.tools.map((tool) => tool.name),
+    body: `${JSON.stringify(nextOverlay, null, 2)}\n`,
+  };
+}
+
+/** Persist a prepared overlay body. */
+export async function writeAgentToolNamesSave(
+  save: AgentToolNamesSave,
+  overlayPath = agentToolsPath,
+): Promise<void> {
+  if (save.body === null) return;
+  await writeFileAtomic(overlayPath, save.body);
+}
+
+/** Save Settings agent-program edits into the shared overlay. */
+export async function saveAgentToolNames(
+  names: string[],
+  overlayPath = agentToolsPath,
+): Promise<string[]> {
+  const save = await prepareAgentToolNamesSave(names, overlayPath);
+  await writeAgentToolNamesSave(save, overlayPath);
+  return save.agentTools;
 }

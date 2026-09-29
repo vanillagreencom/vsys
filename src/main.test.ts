@@ -7,8 +7,12 @@ test("once exports structured evidence and fails visibly on source errors", asyn
   const f = fixture();
   try {
     const path = join(f.root, "config.toml");
-    await saveConfig(f.config, path);
-    await saveConfig(f.config, join(f.root, ".config/vsys/config.toml"));
+    await saveConfig(f.config, path, f.agentToolsPath);
+    await saveConfig(
+      f.config,
+      join(f.root, ".config/vsys/config.toml"),
+      f.agentToolsPath,
+    );
     const run = async (extra: string[] = []) => {
       const child = Bun.spawn(
         [process.execPath, "src/main.ts", "--once", "--config", path, ...extra],
@@ -47,7 +51,7 @@ test("quit and failed shutdown restore their own terminal settings", async () =>
   const f = fixture();
   try {
     const path = join(f.root, "config.toml");
-    await saveConfig({ ...f.config, refreshMs: 100 }, path);
+    await saveConfig({ ...f.config, refreshMs: 100 }, path, f.agentToolsPath);
     const script = `import os, pty, select, subprocess, sys, termios, time
 master, slave = pty.openpty()
 before = termios.tcgetattr(slave)
@@ -55,7 +59,7 @@ argv = [sys.argv[1], "src/main.ts", "--config", sys.argv[2]]
 if sys.argv[3] == "fault":
     code = 'import { History } from "./src/store/history"; import { main } from "./src/main"; const close = History.prototype.close; History.prototype.close = function() { close.call(this); throw new Error("injected shutdown failure"); }; await main(["--config", process.argv.at(-1)]);'
     argv = [sys.argv[1], "-e", code, sys.argv[2]]
-child = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, env={**os.environ, "TERM": "xterm-256color"})
+child = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, env={**os.environ, "TERM": "xterm-256color", "HOME": sys.argv[4]})
 output = b""
 sent = False
 ready_at = None
@@ -88,10 +92,11 @@ finally:
 `;
     for (const mode of ["q", "ctrl+c", "fault", "refresh"]) {
       const child = Bun.spawn(
-        ["python3", "-c", script, process.execPath, path, mode],
+        ["python3", "-c", script, process.execPath, path, mode, f.root],
         {
           stdout: "pipe",
           stderr: "pipe",
+          env: { ...process.env, HOME: f.root },
         },
       );
       const [code, stderr] = await Promise.all([

@@ -22,6 +22,8 @@ The installer downloads the correct release for your CPU. It checks the download
 
 vsys requires Linux with cgroup v2. It does not run on macOS or Windows.
 
+The release archive, installer and Arch packages include the optional warden. Run `vsys warden install` if you want automatic agent correction. No package enables the warden for you.
+
 ## Features
 
 - Lists each watched agent with its tool, account, worktree or branch, process ID, and tmux pane.
@@ -52,7 +54,7 @@ Settings are in `~/.config/vsys/config.toml`. You can edit them from the Setting
 | Setting | What it changes |
 | --- | --- |
 | `watchedSlices` | The Linux resource groups that appear in the agent list. |
-| `agentTools` | The program names that vsys treats as agents. The default comes from `data/agent-tools.json`. Add machine-local names in `~/.config/vsys/agent-tools.json`, or replace the list here. If `config.toml` contains `agentTools`, including after a Settings save, that key wins over the overlay; remove it to follow the overlay again. |
+| `agentTools` | The program names that vsys treats as agents. The default comes from `data/agent-tools.json`. Settings saves machine-local additions in `~/.config/vsys/agent-tools.json`, which the warden also reads. Shipped names cannot be removed from that overlay. A diverging hand-written `agentTools` value in `config.toml` still replaces the shared list for the dashboard. Lists equal to the shipped or layered names migrate away. |
 | `laneNameParts` | The information used to name each agent. |
 | `historyHours` | The time range available in charts and the timeline. |
 | `persistence` | Saves history across restarts. It is off by default. |
