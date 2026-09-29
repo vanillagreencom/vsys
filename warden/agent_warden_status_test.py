@@ -216,22 +216,30 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                 with self.w.State() as st:
                     self.assertEqual(self.w.status_counters(st), {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0})
                 self.w.STATE.unlink(missing_ok=True)
-                self.w.STATUS.write_text(json.dumps({"counters": {"moves": 7, "partial": 6, "reaped": 5, "moveFailures": 4, "scanFailures": 3, "skips": 2}}))
+                self.w.STATUS.write_text(json.dumps({"schema": "1.0", "counters": {"moves": 7, "partial": 6, "reaped": 5, "moveFailures": 4, "scanFailures": 3, "skips": 2}}))
                 with self.w.State() as st:
                     self.assertEqual(self.w.status_counters(st), {"moves": 7, "partial": 6, "reaped": 5, "moveFailures": 4, "scanFailures": 3, "skips": 2})
                 self.assertEqual(json.loads(self.w.STATE.read_text())["moves"], 7)
                 self.w.STATE.unlink(missing_ok=True)
-                self.w.STATUS.write_text(json.dumps({"counters": {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None}}))
+                self.w.STATUS.write_text(json.dumps({"schema": "1.0", "counters": {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None}}))
                 with self.w.State() as st:
                     self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
                 stored = json.loads(self.w.STATE.read_text())
                 self.assertTrue(stored["counters_unknown"])
                 self.w.STATE.unlink(missing_ok=True)
-                self.w.STATUS.write_text(json.dumps({"counters": {"moves": -1, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0}}))
+                self.w.STATUS.write_text(json.dumps({"schema": "1.0", "counters": {"moves": -1, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0}}))
                 with self.w.State() as st:
                     self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
                 with self.w.State() as st:
                     self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
+                self.w.STATE.unlink(missing_ok=True)
+                self.w.STATUS.write_text(json.dumps({"schema": "2.0", "events": [
+                    {"id": 9000, "time": 1, "kind": "moved", "scope": None, "pid": None, "processes": None, "near": None},
+                ], "counters": {"moves": 7, "partial": 6, "reaped": 5, "moveFailures": 4, "scanFailures": 3, "skips": 2}}))
+                with self.w.State() as st:
+                    self.assertEqual(st["events"], [])
+                    self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
+                    self.assertEqual(self.w.emit_event(st, "moved", now=1)["id"], 1000)
                 mgr = 4000
                 unit = "agent-confine-counter-unknown.scope"
                 recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),

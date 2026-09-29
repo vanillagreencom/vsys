@@ -1923,10 +1923,10 @@ def published_status_counters():
         exists = STATUS.exists()
     except OSError:
         exists = True
-    doc = _read_status_doc()
+    doc = _same_major_status_doc()
     if doc is None:
         return ("unknown" if exists else "fresh"), {}
-    counters = doc.get("counters") if isinstance(doc, dict) else None
+    counters = doc.get("counters")
     if not isinstance(counters, dict):
         return "unknown", {}
     recovered = {}
