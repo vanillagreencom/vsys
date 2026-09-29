@@ -281,6 +281,35 @@ class AgentWardenRules(unittest.TestCase):
     def _cg(self, unit):
         return f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service/{self.w.SLICE}/{unit}"
 
+    def test_headroom_rows(self):
+        with scratch() as tmp:
+            old_root = self.w.CG_ROOT
+            self.w.CG_ROOT = Path(tmp) / "cg"
+            try:
+                rows = [("absent slice", self.w.headroom(), (True, 0, 0))]
+                slice_dir = self.w.CG_ROOT / self.w.SLICE
+                slice_dir.mkdir(parents=True)
+                (slice_dir / "memory.max").write_text("100")
+                rows.append(("missing current", self.w.headroom(), (False, -1, -1)))
+                (slice_dir / "memory.current").write_text("89")
+                rows.append(("below headroom", self.w.headroom(), (True, 89, 100)))
+                (slice_dir / "memory.current").write_text("90")
+                rows.append(("at headroom", self.w.headroom(), (False, 90, 100)))
+                (slice_dir / "memory.max").write_text("max")
+                rows.append(("unlimited max", self.w.headroom(), (True, 90, 0)))
+                (slice_dir / "memory.current").write_text("not-a-number")
+                rows.append(("unparsable current", self.w.headroom(), (False, -1, -1)))
+                for name, actual, expected in rows:
+                    with self.subTest(name=name):
+                        self.assertEqual(actual, expected)
+            finally:
+                self.w.CG_ROOT = old_root
+
+    def test_cpu_weight_rows(self):
+        self.assertEqual(self.w.SCOPE_CPU_WEIGHT, 99)
+        source = WARDEN.read_text()
+        self.assertIn("ctypes.c_uint64(SCOPE_CPU_WEIGHT)", source)
+
     def test_job_unit_rows(self):
         orch = "/user.slice/user-1000.slice/user@1000.service/app.slice/orch-validate-vsy-50-12345.service"
         limited = "/user.slice/user-1000.slice/user@1000.service/app.slice/build-with-memory.service"
@@ -321,6 +350,10 @@ class AgentWardenRules(unittest.TestCase):
         leak = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-leak.scope"
         live = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-live.scope"
         orch_service = "/user.slice/user-1000.slice/user@1000.service/agents.slice/orch-validate-vsy-50.service"
+        rooted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-300-123.scope"
+        root_gone = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-301-123.scope"
+        inside_parent = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-302-123.scope"
+        adopted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-303-123.scope"
         recs = {
             mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
             200: self.P(200, mgr, "bun", ["bun"], leak, exe="/usr/bin/bun"),
@@ -328,12 +361,24 @@ class AgentWardenRules(unittest.TestCase):
             210: self.P(210, 30, "claude", ["claude"], live, tty=111),
             211: self.P(211, 210, "node", ["node"], live, exe="/usr/bin/node"),
             220: self.P(220, mgr, "cargo", ["cargo"], orch_service, exe=f"{self.w.HOME}/.cargo/bin/cargo"),
+            300: self.P(300, mgr, "goose", ["goose"], rooted, exe=f"{self.w.HOME}/bin/goose", marked=True),
+            **{400 + i: self.P(400 + i, 300, "rustc", ["rustc"], rooted, exe=f"{self.w.HOME}/.rustup/x/rustc", marked=True) for i in range(50)},
+            4010: self.P(4010, mgr, "rustc", ["rustc"], root_gone, exe=f"{self.w.HOME}/.rustup/x/rustc", marked=True),
+            4011: self.P(4011, 4010, "rustc", ["rustc"], root_gone, exe=f"{self.w.HOME}/.rustup/x/rustc", marked=True),
+            302: self.P(302, 4020, "goose", ["goose"], inside_parent, exe=f"{self.w.HOME}/bin/goose", marked=True),
+            4020: self.P(4020, mgr, "bash", ["bash"], inside_parent, exe="/usr/bin/bash", marked=True),
+            303: self.P(303, mgr, "rustc", ["rustc"], adopted, exe=f"{self.w.HOME}/.rustup/x/rustc"),
+            4030: self.P(4030, 303, "rustc", ["rustc"], adopted, exe=f"{self.w.HOME}/.rustup/x/rustc"),
         }
         units = {unit for unit, _ in self.w.orphans(recs, self.w.manager_pids(recs))}
         rows = [
             ("orphan leak found", "agent-confine-leak.scope" in units, True),
             ("live tty session protected", "agent-confine-live.scope" in units, False),
             ("job service is not a scope orphan", "orch-validate-vsy-50.service" in units, False),
+            ("agent-confine live launch root protects unlisted agent", "agent-confine-300-123.scope" in units, False),
+            ("agent-confine scope with missing launch root is orphan", "agent-confine-301-123.scope" in units, True),
+            ("root pid parented inside scope does not protect", "agent-confine-302-123.scope" in units, True),
+            ("agent-warden scope with live root stays reapable", "agent-warden-303-123.scope" in units, True),
             ("process count harm", self.w.scope_harm(5140, 0.0), True),
             ("cpu harm", self.w.scope_harm(1, 0.8), True),
             ("quiet orphan not harmful", self.w.scope_harm(6, 0.0), False),
@@ -417,6 +462,21 @@ class AgentWardenRules(unittest.TestCase):
         self.assertIn([100, 101], [sorted(p.pid for p in tree) for _, tree in moves])
         self.assertEqual(units, [])
 
+    def test_agent_confine_root_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '    if agent_confine_root_alive(unit, members):\n        return False\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, ""), "agent_warden_mutant_launch_root")
+        mgr = 4000
+        rooted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-300-123.scope"
+        recs = {
+            mgr: mutant.Proc(mgr, ppid=1, comm="systemd", argv=["/usr/lib/systemd/systemd", "--user"], exe="/usr/lib/systemd/systemd", cgroup="/user.slice", start=1),
+            300: mutant.Proc(300, ppid=mgr, comm="goose", argv=["goose"], exe=f"{mutant.HOME}/bin/goose", cgroup=rooted, start=1, marked=True),
+            301: mutant.Proc(301, ppid=300, comm="rustc", argv=["rustc"], exe=f"{mutant.HOME}/.rustup/x/rustc", cgroup=rooted, start=1, marked=True),
+        }
+        units = {unit for unit, _ in mutant.orphans(recs, mutant.manager_pids(recs))}
+        self.assertIn("agent-confine-300-123.scope", units)
+
     def _confine_env(self, base, bin_dir):
         env = clean_env({
             "HOME": base / "home",
@@ -477,6 +537,28 @@ class AgentWardenRules(unittest.TestCase):
         for name, actual, expected_value in rows:
             with self.subTest(name=name):
                 self.assertEqual(actual, expected_value)
+
+    def test_agent_confine_systemd_run_uses_cpu_weight_99(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir(parents=True)
+            log = base / "systemd-run.log"
+            (bin_dir / "grep").write_text("#!/bin/sh\nexit 1\n")
+            (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+            (bin_dir / "systemd-run").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >> {log}\n"
+                "exit 0\n"
+            )
+            for path in bin_dir.iterdir():
+                path.chmod(0o755)
+            env = self._confine_env(base, bin_dir)
+            result = subprocess.run([str(ROOT / "warden" / "agent-confine"), "echo", "ok"], env=env, capture_output=True, text=True)
+            lines = log.read_text().splitlines()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertIn("-p CPUWeight=99", lines[-1])
 
 
 if __name__ == "__main__":

@@ -160,6 +160,7 @@ ORPHAN_CPU_CORES = float(os.environ.get("AGENT_WARDEN_ORPHAN_CPU", "0.5"))
 # agent-confine sets the cap at scope creation; the warden caps only a scope
 # left UNBOUNDED (an escapee, a raw systemd-run, an old scope) -- a smaller
 # explicit cap or a deliberate larger one is left alone.
+SCOPE_CPU_WEIGHT = 99
 SCOPE_TASKS_MAX = int(os.environ.get("AGENT_SCOPE_TASKS_MAX", "8192"))
 SCOPE_TASKS_WARN = int(os.environ.get("AGENT_SCOPE_TASKS_WARN", str(SCOPE_TASKS_MAX * 3 // 4)))
 # Per-scope soft memory ceiling (bytes). A leaking lane reclaims its own pages
@@ -438,18 +439,32 @@ def scope_members(procs):
     return by_scope
 
 
-def _is_orphan(members, managers):
+def agent_confine_root_alive(unit, members):
+    """True when an agent-confine scope still contains the process it launched."""
+    m = re.fullmatch(r"agent-confine-(\d+)-[^/]+\.scope", unit or "")
+    if not m:
+        return False
+    root_pid = int(m.group(1))
+    pids = {p.pid for p in members}
+    root = next((p for p in members if p.pid == root_pid), None)
+    return root is not None and root.ppid not in pids
+
+
+def _is_orphan(unit, members, managers):
     """True when a scope's whole membership is abandoned leftover work: no member
     holds a controlling terminal, no member is itself a live agent session, and
     every member is either parented inside the scope or was reparented to
     init/the manager. A live agent (even headless, even with its launch shell
     gone) is never junk to reap; nor is a scope still held by a live external
-    process (a pane shell, another subreaper). Only leftover non-agent processes
-    (dev servers, npm/bun, a stuck build) qualify."""
+    process (a pane shell, another subreaper). A still-running launch root in an
+    agent-confine scope also protects unlisted agent CLIs. Only leftover
+    non-agent processes (dev servers, npm/bun, a stuck build) qualify."""
     if not members or any(p.tty for p in members):
         return False
     if any(p.is_agent for p in members):
         return False                 # a live agent session, headless or not
+    if agent_confine_root_alive(unit, members):
+        return False
     pids = {p.pid for p in members}
     reparented = False
     for p in members:
@@ -466,7 +481,7 @@ def orphans(procs, managers):
     """(scope_unit, [pids]) for every fully-orphaned agents.slice scope."""
     return [(unit, sorted(p.pid for p in members))
             for unit, members in scope_members(procs).items()
-            if _is_orphan(members, managers)]
+            if _is_orphan(unit, members, managers)]
 
 
 def scope_still_orphan(unit, managers):
@@ -493,7 +508,7 @@ def scope_still_orphan(unit, managers):
                 # is fine to skip.
                 if os.path.exists(f"/proc/{pid}"):
                     return False
-    return bool(members) and _is_orphan(members, managers)
+    return bool(members) and _is_orphan(unit, members, managers)
 
 
 def scope_units():
@@ -800,14 +815,22 @@ def plan(procs, only=None, capped=lineage_is_capped, split=None, contained=conta
 
 # --- moving -------------------------------------------------------------------
 def headroom():
-    cur = read(CG_ROOT / SLICE / "memory.current")
-    mx = read(CG_ROOT / SLICE / "memory.max")
+    slice_dir = CG_ROOT / SLICE
+    if not slice_dir.is_dir():
+        return True, 0, 0
+    cur = read(slice_dir / "memory.current")
+    mx = read(slice_dir / "memory.max")
     if cur is None or mx is None:
         return False, -1, -1
     cur, mx = cur.strip(), mx.strip()
-    if mx == "max":
-        return True, int(cur), 0
-    return int(cur) < HEADROOM * int(mx), int(cur), int(mx)
+    try:
+        current = int(cur)
+        if mx == "max":
+            return True, current, 0
+        maximum = int(mx)
+    except ValueError:
+        return False, -1, -1
+    return current < HEADROOM * maximum, current, maximum
 
 
 def recheck(p, nested):
@@ -856,7 +879,8 @@ class Bus:
                                         *[ctypes.c_int(fd) for fd in fds]) >= 0
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"Slice"), c(b"s"), c(SLICE.encode())) >= 0
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"Delegate"), c(b"b"), ctypes.c_int(1)) >= 0
-        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"CPUWeight"), c(b"t"), ctypes.c_uint64(100)) >= 0
+        # A non-default weight enables the CPU controller inside agents.slice; 100 was measured not to.
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"CPUWeight"), c(b"t"), ctypes.c_uint64(SCOPE_CPU_WEIGHT)) >= 0
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"TasksMax"), c(b"t"), ctypes.c_uint64(SCOPE_TASKS_MAX)) >= 0
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"MemoryHigh"), c(b"t"), ctypes.c_uint64(SCOPE_MEM_HIGH)) >= 0
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"CollectMode"), c(b"s"), c(b"inactive-or-failed")) >= 0
@@ -1248,6 +1272,10 @@ def selftest():
     O1 = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-leak.scope"
     O2 = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-npm.scope"
     LIVE = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-live.scope"
+    ROOTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-300-123.scope"
+    ROOT_GONE = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-301-123.scope"
+    INSIDE_PARENT = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-302-123.scope"
+    ADOPTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-303-123.scope"
     orec = {
         MGR: P(MGR, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
         # leaked bun servers reparented to the manager, no terminal -> orphan
@@ -1259,6 +1287,14 @@ def selftest():
         # a live attached session: agent has a terminal, child shares the scope
         220: P(220, 40, "claude", ["claude"], LIVE, exe=f"{mise}/claude/latest/claude", tty=34817),
         221: P(221, 220, "node", ["node", "/usr/bin/npm", "view", "vercel"], LIVE, exe="/usr/bin/node"),
+        300: P(300, MGR, "goose", ["goose"], ROOTED, exe=f"{HOME}/bin/goose", marked=True),
+        **{400 + i: P(400 + i, 300, "rustc", ["rustc"], ROOTED, exe=f"{HOME}/.rustup/x/rustc", marked=True) for i in range(50)},
+        4010: P(4010, MGR, "rustc", ["rustc"], ROOT_GONE, exe=f"{HOME}/.rustup/x/rustc", marked=True),
+        4011: P(4011, 4010, "rustc", ["rustc"], ROOT_GONE, exe=f"{HOME}/.rustup/x/rustc", marked=True),
+        302: P(302, 4020, "goose", ["goose"], INSIDE_PARENT, exe=f"{HOME}/bin/goose", marked=True),
+        4020: P(4020, MGR, "bash", ["bash"], INSIDE_PARENT, exe="/usr/bin/bash", marked=True),
+        303: P(303, MGR, "rustc", ["rustc"], ADOPTED, exe=f"{HOME}/.rustup/x/rustc"),
+        4030: P(4030, 303, "rustc", ["rustc"], ADOPTED, exe=f"{HOME}/.rustup/x/rustc"),
     }
     units = {u for u, _ in orphans(orec, manager_pids(orec))}
     check("orphaned bun scope (reparented, no tty) is an orphan", "agent-confine-leak.scope" in units)
@@ -1271,6 +1307,10 @@ def selftest():
         230: P(230, MGR, "node", ["node", "x"], O1, exe="/usr/bin/node"),  # reparented leftover at root
         231: P(231, 40, "claude", ["claude"], O1 + "/worker", exe=f"{mise}/claude/latest/claude", tty=34817),
     }
+    check("agent-confine scope with a live launch root is not an orphan", "agent-confine-300-123.scope" not in units)
+    check("agent-confine scope with the launch root gone is still an orphan", "agent-confine-301-123.scope" in units)
+    check("agent-confine root pid parented inside the scope does not protect", "agent-confine-302-123.scope" in units)
+    check("agent-warden adopted build root stays reapable", "agent-warden-303-123.scope" in units)
     check("a live agent in a delegated child cgroup protects the whole scope",
           not orphans(child_case, manager_pids(child_case)))
     # a scope still parented by a live pane shell (no tty on the members) is attached

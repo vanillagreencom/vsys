@@ -116,10 +116,8 @@ if command -v systemd-run >/dev/null 2>&1 &&
 		true >/dev/null 2>&1; then
 	# Sibling scopes share the slice's CPU equally only while the CPU controller
 	# is enabled inside agents.slice, and systemd enables it only when some
-	# child carries a non-default CPU setting (measured 2026-09-08: an explicit
-	# CPUWeight=100 changed nothing, CPUWeight=99 enabled it). sccache.service
-	# carries CPUWeight=50 for that reason, so lane scopes keep the default 100
-	# and get one equal share each.
+	# child carries a non-default CPU setting. An explicit CPUWeight=100 was
+	# measured not to enable it; CPUWeight=99 did.
 	#
 	# TasksMax bounds ONE session's threads+processes so a runaway lane cannot
 	# eat the whole slice's ceiling and starve every other lane of thread
@@ -140,6 +138,7 @@ if command -v systemd-run >/dev/null 2>&1 &&
 	# (Real-time scheduling is blocked by the RLIMIT_RTPRIO=0 set near the top,
 	# not here: LimitRTPRIO is not a valid property on a scope.)
 	exec systemd-run --user --quiet --collect --scope --slice=agents.slice \
+		-p "CPUWeight=99" \
 		-p "TasksMax=${AGENT_SCOPE_TASKS_MAX:-8192}" \
 		-p "MemoryHigh=${AGENT_SCOPE_MEM_HIGH:-64G}" \
 		--unit="agent-confine-$$-${RANDOM}" env "${CAPS[@]}" "$@"
