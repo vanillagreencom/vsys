@@ -1,0 +1,64 @@
+{
+  "contained": [],
+  "counters": {
+    "moveFailures": 0,
+    "moves": 0,
+    "partial": 0,
+    "reaped": 0,
+    "scanFailures": 0,
+    "skips": 0
+  },
+  "error": null,
+  "events": [
+    {
+      "id": 1700000030000,
+      "kind": "near-cap",
+      "near": "memory",
+      "pid": null,
+      "processes": null,
+      "scope": "agent-warden-100-200.scope",
+      "time": 1700000030
+    },
+    {
+      "id": 1700000030001,
+      "kind": "near-cap",
+      "near": "tasks",
+      "pid": null,
+      "processes": null,
+      "scope": "agent-warden-100-200.scope",
+      "time": 1700000030
+    }
+  ],
+  "interval": 30,
+  "lanes": [
+    {
+      "label": {
+        "tool": "claude",
+        "worktree": "vsy-52"
+      },
+      "memory": 53687091200,
+      "memoryHigh": 68719476736,
+      "near": [
+        "tasks",
+        "memory"
+      ],
+      "scope": "agent-warden-100-200.scope",
+      "tasks": 6200,
+      "tasksMax": 8192
+    }
+  ],
+  "mode": "report",
+  "orphans": [],
+  "outside": [],
+  "schema": "1.0",
+  "slice": {
+    "headroomOk": true,
+    "high": 68719476736,
+    "max": 85899345920,
+    "memory": 40802189312,
+    "tasks": 300,
+    "tasksMax": 16384
+  },
+  "time": 1700000030,
+  "waiting": []
+}

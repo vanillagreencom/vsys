@@ -391,7 +391,11 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
                 "move_failures": 4,
                 "reaped": 5,
                 "orphans": {},
-                "episodes": {"tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 6, "notified": True}},
+                "episodes": {
+                    "tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 6, "notified": True},
+                    "tasks:bad.scope": [],
+                    "x": {"kind": "bogus", "scope": "lane.scope", "since": 6, "notified": True},
+                },
             }, sort_keys=True).encode()
             state.write_bytes(body)
             before_mtime = state.stat().st_mtime_ns
@@ -403,6 +407,34 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(after, body)
         self.assertEqual(after_mtime, before_mtime)
         self.assertFalse(lock_exists)
+        self.assertIn("EPISODE tasks lane.scope", result.stdout)
+        self.assertNotIn("bogus", result.stdout)
+
+    def test_invalid_episode_state_is_dropped_on_tick(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_state = self.w.STATE_DIR, self.w.STATE, self.w.STATUS, self.w.LOCK, self.w.CG_ROOT
+            self.w.STATE_DIR = base / "state"
+            self.w.STATE = self.w.STATE_DIR / "state.json"
+            self.w.STATUS = self.w.STATE_DIR / "status.json"
+            self.w.LOCK = self.w.STATE_DIR / "lock"
+            self.w.CG_ROOT = base / "cg"
+            self.w.STATE_DIR.mkdir(parents=True)
+            self.w.STATE.write_text(json.dumps({
+                "episodes": {
+                    "tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 6, "notified": True},
+                    "tasks:bad.scope": [],
+                    "x": {"kind": "bogus", "scope": "lane.scope", "since": 6, "notified": True},
+                    "tasks:wrong.scope": {"kind": "tasks", "scope": "lane.scope", "since": 6, "notified": True},
+                }
+            }))
+            try:
+                with self.w.State() as st:
+                    self.assertEqual(set(st["episodes"]), {"tasks:lane.scope"})
+                stored = json.loads(self.w.STATE.read_text())
+                self.assertEqual(set(stored["episodes"]), {"tasks:lane.scope"})
+            finally:
+                self.w.STATE_DIR, self.w.STATE, self.w.STATUS, self.w.LOCK, self.w.CG_ROOT = old_state
 
     def test_status_absent_directory_rows(self):
         with scratch() as tmp:

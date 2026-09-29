@@ -192,6 +192,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         rows = [
             ("agent by comm", self.P(1, 0, "claude", ["claude"]).is_agent, True),
             ("hosted mise cli", self.P(2, 0, "node", [f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"], exe="/usr/bin/node").is_agent, True),
+            ("hosted mise label", self.w._tool_label(self.P(8, 0, "node", [f"{mise}/npm-xai-official-grok/latest/bin/grok"], exe="/usr/bin/node")), "grok"),
             ("build by comm", self.P(3, 0, "cargo", ["cargo", "test"]).is_build, True),
             ("desktop by executable", self.P(4, 0, "ChatGPT", ["/opt/codex-desktop/ChatGPT"], exe="/opt/codex-desktop/ChatGPT").is_desktop, True),
             ("excluded flag", self.P(5, 0, "claude", ["claude", "--chrome-native-host"]).excluded, True),
@@ -481,7 +482,9 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 summary = []
                 failures = []
                 self.w.record_move_result(state, summary, failures, root, "escaped launch", done, "unit.scope", moved, missing)
-                self.assertEqual(state, expected)
+                self.assertEqual({key: state[key] for key in expected}, expected)
+                self.assertEqual(len(state.get("events", [])), 1)
+                self.assertEqual(state["events"][0]["kind"], "moved" if done else "partial" if moved else "failed")
                 self.assertEqual(len(summary), summary_len)
                 self.assertEqual(len(failures), failures_len)
 
@@ -594,6 +597,51 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
 
+
+    def test_reap_orphans_returns_status_rows_and_reaped_event(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_root, old_reap, old_still = self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan
+            self.w.CG_ROOT = base / "cg"
+            try:
+                mgr = 4000
+                reaped_unit = "agent-confine-reap.scope"
+                quiet_unit = "agent-confine-watch.scope"
+                reaped_cg = self._cg(reaped_unit)
+                quiet_cg = self._cg(quiet_unit)
+                recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice")}
+                for i in range(self.w.ORPHAN_PROC_MAX):
+                    recs[5000 + i] = self.P(5000 + i, mgr, "bun", ["bun"], reaped_cg, exe="/usr/bin/bun")
+                recs[6000] = self.P(6000, mgr, "bun", ["bun"], quiet_cg, exe="/usr/bin/bun")
+                for unit in (reaped_unit, quiet_unit):
+                    d = self.w.CG_ROOT / self.w.SLICE / unit
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / "cpu.stat").write_text("")
+                now = self.w.time.time()
+                st = {
+                    "reaped": 0,
+                    "move_failures": 0,
+                    "event_seq": 0,
+                    "events": [],
+                    "orphans": {
+                        reaped_unit: {"first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": True},
+                    },
+                }
+                self.w.reap = lambda unit: (True, "")
+                self.w.scope_still_orphan = lambda unit, managers: unit == reaped_unit
+                reaped, rows = self.w.reap_orphans(recs, st, True)
+            finally:
+                self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan = old_root, old_reap, old_still
+        self.assertEqual(len(reaped), 1)
+        self.assertIn(reaped_unit, reaped[0])
+        self.assertEqual([row["scope"] for row in rows], [quiet_unit])
+        self.assertIsNone(rows[0]["cores"])
+        self.assertNotIn(reaped_unit, st["orphans"])
+        events = [event for event in st["events"] if event["kind"] == "reaped"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["scope"], reaped_unit)
+        self.assertEqual(events[0]["processes"], self.w.ORPHAN_PROC_MAX)
+
     def test_scope_still_orphan_refuses_incomplete_membership(self):
         with scratch() as tmp:
             old_root, old_proc = self.w.CG_ROOT, self.w.Proc
@@ -698,6 +746,36 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                         self.assertEqual(actual, expected)
             finally:
                 self.w.CG_ROOT = old_root
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     def test_selftest_subprocess_exits_zero(self):
         with scratch() as tmp:
