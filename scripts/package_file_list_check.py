@@ -134,9 +134,11 @@ def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:
             fail(f"{name} enables or installs user units value={value}")
     if re.search(r"^install=", text, flags=re.MULTILINE):
         fail(f"{name} declares an install hook")
+    if re.search(r"\bcp\s+-a\b", text) or "--preserve=ownership" in text:
+        fail(f"{name} preserves archive ownership while copying payload files")
     if release:
-        if 'cp -a "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"' not in text:
-            fail("vsys PKGBUILD does not copy the release lib/vsys tree")
+        if 'cp -R --no-preserve=ownership "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"' not in text:
+            fail("vsys PKGBUILD does not copy the release lib/vsys tree without ownership")
     elif 'packaging/stage-runtime-files.sh "${pkgdir}/usr"' not in text:
         fail("vsys-git PKGBUILD does not use the runtime staging script")
 
@@ -153,7 +155,7 @@ def check_install_sh(repo: Path) -> None:
     for value in required:
         if value not in text:
             fail(f"install.sh missing package contract value={value}")
-    if "mktemp" in text or "/tmp" in text or "/var/tmp" in text:
+    if "/tmp" in text or "/var/tmp" in text:
         fail("install.sh writes scratch outside the user prefix or cache")
 
 

@@ -12,6 +12,13 @@ set -euo pipefail
 REPO="vanillagreencom/vsys"
 INSTALL_DIR="${VSYS_INSTALL_DIR:-${HOME}/.local/bin}"
 WORK_PARENT="${XDG_CACHE_HOME:-${HOME}/.cache}/vsys"
+INSTALL_WARDEN=0
+BINARY_STAGE=""
+LIB_COMMITTED=0
+WARDEN_LIB_PARENT=""
+WARDEN_LIB_ROOT=""
+WARDEN_NEW_ROOT=""
+WARDEN_OLD_ROOT=""
 
 die() {
 	printf 'vsys install: %s\n' "$1" >&2
@@ -51,11 +58,18 @@ fi
 make_work_dir() {
 	mkdir -p "$WORK_PARENT" ||
 		die "could not create ${WORK_PARENT} for installer scratch files."
-	WORK_DIR="${WORK_PARENT}/install.$$"
-	[ ! -e "$WORK_DIR" ] ||
-		die "scratch path already exists: ${WORK_DIR}"
-	mkdir -m 700 "$WORK_DIR" ||
-		die "could not create scratch path: ${WORK_DIR}"
+	WORK_DIR=$(mktemp -d "${WORK_PARENT}/install.XXXXXX") ||
+		die "could not create scratch path under ${WORK_PARENT}."
+}
+
+cleanup() {
+	rm -rf "$TMP"
+	if [ -n "$BINARY_STAGE" ]; then
+		rm -f "$BINARY_STAGE"
+	fi
+	if [ -n "$WARDEN_NEW_ROOT" ] && [ -e "$WARDEN_NEW_ROOT" ]; then
+		rm -rf "$WARDEN_NEW_ROOT"
+	fi
 }
 
 require_archive_file() {
@@ -71,44 +85,100 @@ require_archive_file() {
 	esac
 }
 
-replace_lib_tree() {
+validate_archive_payload() {
+	require_archive_file "vsys" x
+	if [ ! -e "${TMP}/lib/vsys" ]; then
+		if [ -e "${TMP}/lib" ]; then
+			die "the archive holds a partial lib tree without lib/vsys."
+		fi
+		INSTALL_WARDEN=0
+		return
+	fi
+	INSTALL_WARDEN=1
+	require_archive_file "lib/vsys/warden/install" x
+	require_archive_file "lib/vsys/warden/agent-warden" x
+	require_archive_file "lib/vsys/warden/agent-confine" x
+	require_archive_file "lib/vsys/warden/agent-confine-lineage-capped" x
+	require_archive_file "lib/vsys/warden/systemd/agent-warden.service" r
+	require_archive_file "lib/vsys/warden/systemd/agent-warden.timer" r
+	require_archive_file "lib/vsys/warden/systemd/agents.slice" r
+	require_archive_file "lib/vsys/data/agent-tools.json" r
+}
+
+stage_binary() {
+	mkdir -p "$INSTALL_DIR" ||
+		die "could not create ${INSTALL_DIR}. Set VSYS_INSTALL_DIR to a writable directory."
+	INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd -P) ||
+		die "could not resolve ${INSTALL_DIR}."
+	PREFIX=$(dirname "$INSTALL_DIR")
+	BINARY_STAGE="${INSTALL_DIR}/.vsys.new.$$"
+	[ ! -e "$BINARY_STAGE" ] || die "staging path already exists: ${BINARY_STAGE}"
+	install -m 755 "${TMP}/vsys" "$BINARY_STAGE" ||
+		die "could not write to ${INSTALL_DIR}. Set VSYS_INSTALL_DIR to a writable directory."
+}
+
+prepare_lib_tree() {
 	prefix="$1"
 	source_root="${TMP}/lib/vsys"
-	lib_parent="${prefix}/lib"
-	lib_root="${lib_parent}/vsys"
-	new_root="${lib_parent}/.vsys.new.$$"
-	old_root="${lib_parent}/.vsys.old.$$"
+	WARDEN_LIB_PARENT="${prefix}/lib"
+	WARDEN_LIB_ROOT="${WARDEN_LIB_PARENT}/vsys"
+	WARDEN_NEW_ROOT="${WARDEN_LIB_PARENT}/.vsys.new.$$"
+	WARDEN_OLD_ROOT="${WARDEN_LIB_PARENT}/.vsys.old.$$"
 
 	[ -d "$source_root" ] || die "the archive holds no lib/vsys tree."
 	symlink=$(find "$source_root" -type l -print -quit) ||
 		die "could not inspect the archive lib/vsys tree."
 	[ -z "$symlink" ] || die "the archive lib/vsys tree contains a symlink: ${symlink}"
 
-	if [ -L "$lib_parent" ] || [ -L "$lib_root" ]; then
-		die "refusing to replace symlink under ${lib_parent}"
+	if [ -L "$WARDEN_LIB_PARENT" ] || [ -L "$WARDEN_LIB_ROOT" ]; then
+		die "refusing to replace symlink under ${WARDEN_LIB_PARENT}"
 	fi
-	if [ -e "$lib_root" ] && [ ! -d "$lib_root" ]; then
-		die "${lib_root} exists and is not a directory."
+	if [ -e "$WARDEN_LIB_ROOT" ] && [ ! -d "$WARDEN_LIB_ROOT" ]; then
+		die "${WARDEN_LIB_ROOT} exists and is not a directory."
 	fi
-	mkdir -p "$lib_parent" ||
-		die "could not create ${lib_parent}."
-	[ ! -e "$new_root" ] || die "staging path already exists: ${new_root}"
-	[ ! -e "$old_root" ] || die "old-tree path already exists: ${old_root}"
-	mkdir "$new_root" ||
-		die "could not create ${new_root}."
-	cp -Rp "${source_root}/." "$new_root/" ||
-		die "could not stage the warden files under ${new_root}."
-	if [ -e "$lib_root" ]; then
-		mv "$lib_root" "$old_root" ||
-			die "could not move the previous ${lib_root} aside."
-	fi
-	if ! mv "$new_root" "$lib_root"; then
-		if [ -e "$old_root" ] && [ ! -e "$lib_root" ]; then
-			mv "$old_root" "$lib_root" || true
+	mkdir -p "$WARDEN_LIB_PARENT" ||
+		die "could not create ${WARDEN_LIB_PARENT}."
+	[ ! -e "$WARDEN_NEW_ROOT" ] || die "staging path already exists: ${WARDEN_NEW_ROOT}"
+	[ ! -e "$WARDEN_OLD_ROOT" ] || die "old-tree path already exists: ${WARDEN_OLD_ROOT}"
+	mkdir "$WARDEN_NEW_ROOT" ||
+		die "could not create ${WARDEN_NEW_ROOT}."
+	cp -Rp "${source_root}/." "$WARDEN_NEW_ROOT/" ||
+		die "could not stage the warden files under ${WARDEN_NEW_ROOT}."
+}
+
+rollback_lib_tree() {
+	if [ "$LIB_COMMITTED" -eq 1 ]; then
+		rm -rf "$WARDEN_LIB_ROOT"
+		if [ -e "$WARDEN_OLD_ROOT" ]; then
+			mv "$WARDEN_OLD_ROOT" "$WARDEN_LIB_ROOT" || true
 		fi
-		die "could not replace ${lib_root}."
 	fi
-	rm -rf "$old_root"
+}
+
+commit_lib_tree() {
+	[ "$INSTALL_WARDEN" -eq 1 ] || return 0
+	if [ -e "$WARDEN_LIB_ROOT" ]; then
+		mv "$WARDEN_LIB_ROOT" "$WARDEN_OLD_ROOT" ||
+			die "could not move the previous ${WARDEN_LIB_ROOT} aside."
+	fi
+	if ! mv "$WARDEN_NEW_ROOT" "$WARDEN_LIB_ROOT"; then
+		if [ -e "$WARDEN_OLD_ROOT" ] && [ ! -e "$WARDEN_LIB_ROOT" ]; then
+			mv "$WARDEN_OLD_ROOT" "$WARDEN_LIB_ROOT" || true
+		fi
+		die "could not replace ${WARDEN_LIB_ROOT}."
+	fi
+	LIB_COMMITTED=1
+}
+
+commit_binary() {
+	if ! mv "$BINARY_STAGE" "${INSTALL_DIR}/vsys"; then
+		rollback_lib_tree
+		die "could not replace ${INSTALL_DIR}/vsys."
+	fi
+	BINARY_STAGE=""
+	if [ "$LIB_COMMITTED" -eq 1 ]; then
+		rm -rf "$WARDEN_OLD_ROOT"
+	fi
 }
 
 VERSION="${VSYS_VERSION:-}"
@@ -125,7 +195,7 @@ BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 
 make_work_dir
 TMP="$WORK_DIR"
-trap 'rm -rf "$TMP"' EXIT INT TERM
+trap cleanup EXIT INT TERM
 
 printf 'Downloading vsys %s for linux-%s\n' "$VERSION" "$ARCH"
 fetch "${BASE}/${ASSET}" "${TMP}/${ASSET}" ||
@@ -141,31 +211,24 @@ fi
 [ "$SUM" = "$EXPECTED" ] || die "checksum mismatch for ${ASSET}; nothing was installed."
 
 tar -xzf "${TMP}/${ASSET}" -C "$TMP"
-require_archive_file "vsys" x
-require_archive_file "lib/vsys/warden/install" x
-require_archive_file "lib/vsys/warden/agent-warden" x
-require_archive_file "lib/vsys/warden/agent-confine" x
-require_archive_file "lib/vsys/warden/agent-confine-lineage-capped" x
-require_archive_file "lib/vsys/warden/systemd/agent-warden.service" r
-require_archive_file "lib/vsys/warden/systemd/agent-warden.timer" r
-require_archive_file "lib/vsys/warden/systemd/agents.slice" r
-require_archive_file "lib/vsys/data/agent-tools.json" r
-
-mkdir -p "$INSTALL_DIR" ||
-	die "could not create ${INSTALL_DIR}. Set VSYS_INSTALL_DIR to a writable directory."
-INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd -P) ||
-	die "could not resolve ${INSTALL_DIR}."
-PREFIX=$(dirname "$INSTALL_DIR")
-install -m 755 "${TMP}/vsys" "${INSTALL_DIR}/vsys" ||
-	die "could not write to ${INSTALL_DIR}. Set VSYS_INSTALL_DIR to a writable directory."
-replace_lib_tree "$PREFIX"
+validate_archive_payload
+stage_binary
+if [ "$INSTALL_WARDEN" -eq 1 ]; then
+	prepare_lib_tree "$PREFIX"
+fi
+commit_lib_tree
+commit_binary
 
 printf 'Installed vsys %s to %s/vsys\n' "$VERSION" "$INSTALL_DIR"
-printf 'Installed the warden files to %s/lib/vsys/warden\n' "$PREFIX"
-if ! command -v python3 >/dev/null 2>&1; then
-	printf 'The optional warden needs python3 on PATH before you run: vsys warden install\n'
+if [ "$INSTALL_WARDEN" -eq 1 ]; then
+	printf 'Installed the warden files to %s/lib/vsys/warden\n' "$PREFIX"
+	if ! command -v python3 >/dev/null 2>&1; then
+		printf 'The optional warden needs python3 on PATH before you run: vsys warden install\n'
+	fi
+	printf 'Optional warden setup: vsys warden install\n'
+else
+	printf 'This release does not include the optional warden.\n'
 fi
-printf 'Optional warden setup: vsys warden install\n'
 
 case ":${PATH}:" in
 *":${INSTALL_DIR}:"*) printf 'Run: vsys\n' ;;
@@ -173,6 +236,8 @@ case ":${PATH}:" in
 	printf '\n%s is not on your PATH. Add this line to your shell profile:\n' "$INSTALL_DIR"
 	printf '    export PATH="%s:$PATH"\n' "$INSTALL_DIR"
 	printf 'Until then, run: %s/vsys\n' "$INSTALL_DIR"
-	printf 'Until then, install the optional warden with: %s/vsys warden install\n' "$INSTALL_DIR"
+	if [ "$INSTALL_WARDEN" -eq 1 ]; then
+		printf 'Until then, install the optional warden with: %s/vsys warden install\n' "$INSTALL_DIR"
+	fi
 	;;
 esac
