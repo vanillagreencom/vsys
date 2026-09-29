@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SccacheCollector } from "./collect/sccache";
 import { loadConfig } from "./config/config";
@@ -398,9 +398,9 @@ test("unpinned settings saves reload current agent tools before writing config",
 test("agent tool overlay rolls back when config writing fails", async () => {
   for (const existingOverlay of [false, true]) {
     const f = fixture();
-    const configDir = join(f.root, "readonly");
-    const configPath = join(configDir, "config.toml");
-    f.write(configPath, "");
+    const configParent = join(f.root, "config-parent");
+    const configPath = join(configParent, "config.toml");
+    f.write(configParent, "not a directory");
     const overlayBody = `${JSON.stringify(
       {
         version: 1,
@@ -429,7 +429,6 @@ test("agent tool overlay rolls back when config writing fails", async () => {
     );
     try {
       // Control: keeping the overlay write before a failed config write leaks this.
-      chmodSync(configDir, 0o500);
       await expect(
         session.configure({
           ...config,
@@ -440,7 +439,76 @@ test("agent tool overlay rolls back when config writing fails", async () => {
         expect(readFileSync(f.agentToolsPath, "utf8")).toBe(overlayBody);
       else expect(existsSync(f.agentToolsPath)).toBe(false);
     } finally {
-      chmodSync(configDir, 0o700);
+      session.stop();
+      f.cleanup();
+    }
+  }
+});
+
+test("agent tool overlay rollback leaves a newer overlay after config writing fails", async () => {
+  for (const existingOverlay of [false, true]) {
+    const f = fixture();
+    const configPath = join(f.root, "config.toml");
+    const overlayBody = `${JSON.stringify(
+      {
+        version: 1,
+        tools: [{ name: "local-agent", mise: ["local-agent"] }],
+        desktopExePrefixes: ["/apps/"],
+        bundledCliSuffixes: ["/bin/agent"],
+      },
+      null,
+      2,
+    )}\n`;
+    const newerOverlayBody = `${JSON.stringify(
+      {
+        version: 1,
+        tools: [
+          { name: "local-agent", mise: ["local-agent"] },
+          { name: "external-agent", mise: ["external-agent"] },
+        ],
+        desktopExePrefixes: ["/apps/"],
+        bundledCliSuffixes: ["/bin/agent"],
+      },
+      null,
+      2,
+    )}\n`;
+    if (existingOverlay) f.write(f.agentToolsPath, overlayBody);
+    const config = existingOverlay
+      ? { ...f.config, agentTools: [...f.config.agentTools, "local-agent"] }
+      : f.config;
+    const h = new History(config);
+    const configError = new Error("config write failed");
+    const session = new Session(
+      config,
+      configPath,
+      { sample: async () => emptySnapshot(1000) },
+      h,
+      { frame: () => {}, error: () => {} },
+      {
+        makeSource: async () => ({ sample: async () => emptySnapshot(2000) }),
+        agentToolsPath: f.agentToolsPath,
+        writeConfig: async () => {
+          f.write(f.agentToolsPath, newerOverlayBody);
+          throw configError;
+        },
+      },
+    );
+    try {
+      // Control: unconditional rollback restores or removes the overlay here.
+      let thrown: unknown;
+      try {
+        await session.configure({
+          ...config,
+          agentTools: [...config.agentTools, "new-agent"],
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(AggregateError);
+      expect((thrown as AggregateError).errors[0]).toBe(configError);
+      expect(String((thrown as Error).message)).toContain("rollback skipped");
+      expect(readFileSync(f.agentToolsPath, "utf8")).toBe(newerOverlayBody);
+    } finally {
       session.stop();
       f.cleanup();
     }

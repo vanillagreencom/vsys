@@ -30,6 +30,7 @@ type SourceFactory = (config: Config, previous: Source) => Promise<Source>;
 interface SessionOptions {
   makeSource?: SourceFactory;
   agentToolsPath?: string;
+  writeConfig?: (path: string, body: string) => Promise<void>;
 }
 interface Events {
   frame(snapshot: Snapshot, history: History, config: Config): void;
@@ -48,7 +49,13 @@ async function readOptionalFile(path: string): Promise<string | null> {
 async function restoreOptionalFile(
   path: string,
   body: string | null,
+  expectedCurrentBody: string,
 ): Promise<void> {
+  const current = await readOptionalFile(path);
+  if (current !== expectedCurrentBody)
+    throw new Error(
+      "Agent-tools rollback skipped because the overlay changed after this save",
+    );
   if (body === null) {
     await rm(path, { force: true });
     return;
@@ -86,6 +93,7 @@ export class Session {
   private latest?: Snapshot;
   private makeSource: SourceFactory;
   private agentToolsPath: string;
+  private writeConfig: (path: string, body: string) => Promise<void>;
   constructor(
     private config: Config,
     private configPath: string,
@@ -98,6 +106,7 @@ export class Session {
       options.makeSource ??
       ((config, previous) => createCollector(config, true, previous));
     this.agentToolsPath = options.agentToolsPath ?? defaultAgentToolsPath;
+    this.writeConfig = options.writeConfig ?? writeFileAtomic;
   }
   start(): void {
     this.schedule(0);
@@ -225,16 +234,24 @@ export class Session {
         await writeAgentToolNamesSave(agentToolSave, this.agentToolsPath);
         overlayWritten = agentToolSave.body !== null;
       }
+      const writtenOverlayBody = agentToolSave?.body ?? null;
       try {
-        await writeFileAtomic(this.configPath, configText);
+        await this.writeConfig(this.configPath, configText);
       } catch (error) {
-        if (overlayWritten) {
+        if (overlayWritten && writtenOverlayBody !== null) {
           try {
-            await restoreOptionalFile(this.agentToolsPath, previousOverlay);
+            await restoreOptionalFile(
+              this.agentToolsPath,
+              previousOverlay,
+              writtenOverlayBody,
+            );
           } catch (rollbackError) {
             throw new AggregateError(
               [error, rollbackError],
-              "Config save failed and agent-tools rollback failed",
+              rollbackError instanceof Error &&
+                rollbackError.message.includes("rollback skipped")
+                ? "Config save failed and agent-tools rollback skipped because the overlay changed after this save"
+                : "Config save failed and agent-tools rollback failed",
             );
           }
         }
