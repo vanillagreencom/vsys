@@ -170,6 +170,10 @@ def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:
             fail(f"{name} enables or installs user units value={value}")
     if re.search(r"^install=", text, flags=re.MULTILINE):
         fail(f"{name} declares an install hook")
+    if "'!strip'" not in text:
+        fail(f"{name} does not disable binary stripping")
+    if "'!debug'" not in text:
+        fail(f"{name} does not disable debug package splitting")
     if re.search(r"\bcp\s+-a\b", text) or "--preserve=ownership" in text:
         fail(f"{name} preserves archive ownership while copying payload files")
     if release:

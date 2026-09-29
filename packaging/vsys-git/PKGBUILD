@@ -10,6 +10,7 @@ depends=('python' 'systemd-libs')
 provides=('vsys')
 conflicts=('vsys')
 makedepends=('git' 'bun')
+options=('!strip' '!debug')
 source=("${pkgname}::git+${url}.git")
 sha256sums=('SKIP')
 

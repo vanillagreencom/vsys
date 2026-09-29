@@ -76,6 +76,13 @@ class PackageFileListCheck(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("systemd/user", result.stderr)
 
+    def test_strip_enabled_pkgbuild_fails(self) -> None:
+        pkgbuild = self.repo / "packaging" / "vsys-git" / "PKGBUILD"
+        pkgbuild.write_text(pkgbuild.read_text().replace("options=('!strip' '!debug')\n", ""))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not disable binary stripping", result.stderr)
+
     def test_arch_package_source_without_commit_fails(self) -> None:
         workflow = self.repo / ".github" / "workflows" / "ci.yml"
         workflow.write_text(workflow.read_text().replace("#commit={commit}", ""))

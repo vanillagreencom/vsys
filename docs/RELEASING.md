@@ -44,6 +44,8 @@ Running the publish script by hand takes `AUR_SSH_KEY_FILE` instead, the path to
 
 Both AUR packages depend on `python` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`. They install no systemd user units and enable no timer. The user runs `vsys warden install` to write units into the user's config directory.
 
+Both AUR packages disable makepkg strip and debug splitting, because stripping a Bun compiled binary removes its appended program bundle.
+
 Both AUR packages are created by their first push, so bootstrap each one with the same script CI runs. It pins the version, fills in the published checksums, and refuses to push a recipe that still carries a `SKIP` placeholder.
 
 ```sh
