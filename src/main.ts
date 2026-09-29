@@ -131,8 +131,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         process.exitCode = 1;
       },
     },
-    undefined,
-    agentToolsPath,
+    { agentToolsPath },
   );
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);

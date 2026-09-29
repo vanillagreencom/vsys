@@ -210,10 +210,16 @@ export async function loadAgentToolNames(
   );
 }
 
-export async function saveAgentToolNames(
+export interface AgentToolNamesSave {
+  agentTools: string[];
+  body: string | null;
+}
+
+/** Validate a Settings edit and build the overlay body without writing it. */
+export async function prepareAgentToolNamesSave(
   names: string[],
   overlayPath = agentToolsPath,
-): Promise<string[]> {
+): Promise<AgentToolNamesSave> {
   const shippedNames = new Set(
     shippedAgentTools.tools.map((tool) => tool.name),
   );
@@ -252,10 +258,28 @@ export async function saveAgentToolNames(
     nextOverlay.desktopExePrefixes.length === 0 &&
     nextOverlay.bundledCliSuffixes.length === 0
   )
-    return merged.tools.map((tool) => tool.name);
-  await writeFileAtomic(
-    overlayPath,
-    `${JSON.stringify(nextOverlay, null, 2)}\n`,
-  );
-  return merged.tools.map((tool) => tool.name);
+    return { agentTools: merged.tools.map((tool) => tool.name), body: null };
+  return {
+    agentTools: merged.tools.map((tool) => tool.name),
+    body: `${JSON.stringify(nextOverlay, null, 2)}\n`,
+  };
+}
+
+/** Persist a prepared overlay body. */
+export async function writeAgentToolNamesSave(
+  save: AgentToolNamesSave,
+  overlayPath = agentToolsPath,
+): Promise<void> {
+  if (save.body === null) return;
+  await writeFileAtomic(overlayPath, save.body);
+}
+
+/** Save Settings agent-program edits into the shared overlay. */
+export async function saveAgentToolNames(
+  names: string[],
+  overlayPath = agentToolsPath,
+): Promise<string[]> {
+  const save = await prepareAgentToolNamesSave(names, overlayPath);
+  await writeAgentToolNamesSave(save, overlayPath);
+  return save.agentTools;
 }

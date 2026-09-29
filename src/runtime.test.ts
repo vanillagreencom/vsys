@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SccacheCollector } from "./collect/sccache";
 import { loadConfig } from "./config/config";
@@ -33,8 +33,7 @@ test("refresh changes apply immediately and preserve collected history", async (
         collectedAgain.reject(error);
       },
     },
-    undefined,
-    f.agentToolsPath,
+    { agentToolsPath: f.agentToolsPath },
   );
   try {
     session.start();
@@ -73,8 +72,7 @@ test("a config change waits for the in-flight source before sampling again", asy
     },
     h,
     { frame: () => resumed.resolve(), error: (error) => resumed.reject(error) },
-    undefined,
-    f.agentToolsPath,
+    { agentToolsPath: f.agentToolsPath },
   );
   try {
     session.start();
@@ -101,8 +99,7 @@ test("failed settings writes leave the active history and source usable", async 
     { sample: async () => emptySnapshot(2000) },
     h,
     { frame: () => {}, error: () => {} },
-    undefined,
-    f.agentToolsPath,
+    { agentToolsPath: f.agentToolsPath },
   );
   try {
     await expect(
@@ -132,8 +129,7 @@ test("source jobs close even when history shutdown fails", () => {
     },
     h,
     { frame: () => {}, error: () => {} },
-    undefined,
-    f.agentToolsPath,
+    { agentToolsPath: f.agentToolsPath },
   );
   try {
     expect(() => session.stop()).toThrow();
@@ -161,8 +157,7 @@ test("a source failure still reaches terminal cleanup when history close fails",
     },
     h,
     { frame: () => {}, error: reported.resolve },
-    undefined,
-    f.agentToolsPath,
+    { agentToolsPath: f.agentToolsPath },
   );
   try {
     session.start();
@@ -188,11 +183,13 @@ test("a settings change hands the running source to its replacement", async () =
     first,
     h,
     { frame: () => {}, error: () => {} },
-    async (_config, previous) => {
-      handed = previous;
-      return { sample, sccache: previous.sccache };
+    {
+      makeSource: async (_config, previous) => {
+        handed = previous;
+        return { sample, sccache: previous.sccache };
+      },
+      agentToolsPath: f.agentToolsPath,
     },
-    f.agentToolsPath,
   );
   try {
     session.start();
@@ -218,11 +215,13 @@ test("a saved collection setting rebuilds the source before the next sample", as
       frame: () => collected.resolve(),
       error: (error) => collected.reject(error),
     },
-    async (c) => {
-      built.push(c.smartDir);
-      return { sample: async () => emptySnapshot(2000) };
+    {
+      makeSource: async (c) => {
+        built.push(c.smartDir);
+        return { sample: async () => emptySnapshot(2000) };
+      },
+      agentToolsPath: f.agentToolsPath,
     },
-    f.agentToolsPath,
   );
   try {
     session.start();
@@ -270,24 +269,49 @@ test("editing agent tools saves the shared overlay and leaves config unpinned", 
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },
-    async (next) => {
-      built.push(next.agentTools);
-      return { sample: async () => emptySnapshot(2000) };
+    {
+      makeSource: async (next) => {
+        built.push(next.agentTools);
+        return { sample: async () => emptySnapshot(2000) };
+      },
+      agentToolsPath: f.agentToolsPath,
     },
-    f.agentToolsPath,
   );
   try {
+    // Control: replacing the overlay from the stale Settings list drops this.
+    f.write(
+      f.agentToolsPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          tools: [
+            { name: "local-agent", mise: ["local-agent"] },
+            { name: "external-agent", mise: ["external-agent"] },
+          ],
+          desktopExePrefixes: ["/apps/"],
+          bundledCliSuffixes: ["/bin/agent"],
+        },
+        null,
+        2,
+      )}\n`,
+    );
     await session.configure({
       ...config,
       agentTools: [...config.agentTools, "new-agent"],
     });
-    const expected = [...f.config.agentTools, "local-agent", "new-agent"];
+    const expected = [
+      ...f.config.agentTools,
+      "local-agent",
+      "external-agent",
+      "new-agent",
+    ];
     expect(built).toEqual([expected]);
     expect(readFileSync(configPath, "utf8")).not.toContain("agentTools");
     expect(JSON.parse(readFileSync(f.agentToolsPath, "utf8"))).toEqual({
       version: 1,
       tools: [
         { name: "local-agent", mise: ["local-agent"] },
+        { name: "external-agent", mise: ["external-agent"] },
         { name: "new-agent", mise: [] },
       ],
       desktopExePrefixes: ["/apps/"],
@@ -302,6 +326,127 @@ test("editing agent tools saves the shared overlay and leaves config unpinned", 
   }
 });
 
+test("unpinned settings saves reload current agent tools before writing config", async () => {
+  const f = fixture();
+  const configPath = join(f.root, "config.toml");
+  f.write(
+    f.agentToolsPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        tools: [{ name: "local-agent", mise: ["local-agent"] }],
+        desktopExePrefixes: [],
+        bundledCliSuffixes: [],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const config = {
+    ...f.config,
+    agentTools: [...f.config.agentTools, "local-agent"],
+  };
+  const h = new History(config);
+  const built: string[][] = [];
+  const session = new Session(
+    config,
+    configPath,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    {
+      makeSource: async (next) => {
+        built.push(next.agentTools);
+        return { sample: async () => emptySnapshot(2000) };
+      },
+      agentToolsPath: f.agentToolsPath,
+    },
+  );
+  try {
+    // Control: using the session's stale list pins config and hides this.
+    f.write(
+      f.agentToolsPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          tools: [
+            { name: "local-agent", mise: ["local-agent"] },
+            { name: "external-agent", mise: ["external-agent"] },
+          ],
+          desktopExePrefixes: [],
+          bundledCliSuffixes: [],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await session.configure({ ...config, refreshMs: 2000 });
+    const expected = [...config.agentTools, "external-agent"];
+    expect(built).toEqual([expected]);
+    const saved = readFileSync(configPath, "utf8");
+    expect(saved).toContain("refreshMs = 2000");
+    expect(saved).not.toContain("agentTools");
+    expect((await loadConfig(configPath, f.agentToolsPath)).agentTools).toEqual(
+      expected,
+    );
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+
+test("agent tool overlay rolls back when config writing fails", async () => {
+  for (const existingOverlay of [false, true]) {
+    const f = fixture();
+    const configDir = join(f.root, "readonly");
+    const configPath = join(configDir, "config.toml");
+    f.write(configPath, "");
+    const overlayBody = `${JSON.stringify(
+      {
+        version: 1,
+        tools: [{ name: "local-agent", mise: ["local-agent"] }],
+        desktopExePrefixes: ["/apps/"],
+        bundledCliSuffixes: ["/bin/agent"],
+      },
+      null,
+      2,
+    )}\n`;
+    if (existingOverlay) f.write(f.agentToolsPath, overlayBody);
+    const config = existingOverlay
+      ? { ...f.config, agentTools: [...f.config.agentTools, "local-agent"] }
+      : f.config;
+    const h = new History(config);
+    const session = new Session(
+      config,
+      configPath,
+      { sample: async () => emptySnapshot(1000) },
+      h,
+      { frame: () => {}, error: () => {} },
+      {
+        makeSource: async () => ({ sample: async () => emptySnapshot(2000) }),
+        agentToolsPath: f.agentToolsPath,
+      },
+    );
+    try {
+      // Control: keeping the overlay write before a failed config write leaks this.
+      chmodSync(configDir, 0o500);
+      await expect(
+        session.configure({
+          ...config,
+          agentTools: [...config.agentTools, "new-agent"],
+        }),
+      ).rejects.toThrow();
+      if (existingOverlay)
+        expect(readFileSync(f.agentToolsPath, "utf8")).toBe(overlayBody);
+      else expect(existsSync(f.agentToolsPath)).toBe(false);
+    } finally {
+      chmodSync(configDir, 0o700);
+      session.stop();
+      f.cleanup();
+    }
+  }
+});
+
 test("removing a shipped agent tool is refused before settings writes", async () => {
   const f = fixture();
   const configPath = join(f.root, "config.toml");
@@ -312,10 +457,12 @@ test("removing a shipped agent tool is refused before settings writes", async ()
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },
-    async () => {
-      throw new Error("source should not rebuild after refused agent tools");
+    {
+      makeSource: async () => {
+        throw new Error("source should not rebuild after refused agent tools");
+      },
+      agentToolsPath: f.agentToolsPath,
     },
-    f.agentToolsPath,
   );
   try {
     await expect(
@@ -342,8 +489,10 @@ test("settings agent tools edits match the warden overlay loader", async () => {
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },
-    async () => ({ sample: async () => emptySnapshot(2000) }),
-    f.agentToolsPath,
+    {
+      makeSource: async () => ({ sample: async () => emptySnapshot(2000) }),
+      agentToolsPath: f.agentToolsPath,
+    },
   );
   try {
     await session.configure({

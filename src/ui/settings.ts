@@ -68,7 +68,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   },
   agentTools: {
     label: "Agent programs",
-    help: "Program names saved to the shared agent-tools file. Shipped names cannot be removed.",
+    help: "Machine-local program names saved to the shared agent-tools overlay. Shipped names cannot be removed.",
   },
   excludeArgv: {
     label: "Not an agent",

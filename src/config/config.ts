@@ -249,6 +249,14 @@ export function sameStringSet(left: string[], right: string[]): boolean {
   );
 }
 
+export interface LoadedConfig {
+  config: Config;
+  /** True when config.toml carries an agentTools list that migration keeps. */
+  agentToolsPinned: boolean;
+  /** The shipped list plus the machine overlay, before any config.toml pin. */
+  layeredAgentTools: string[];
+}
+
 function sameValue(key: string, left: unknown, right: unknown): boolean {
   if (key === "agentTools" && Array.isArray(left) && Array.isArray(right))
     return sameStringSet(left, right);
@@ -380,36 +388,66 @@ export function validate(value: unknown, base = defaults()): Config {
   return c;
 }
 
+function validAgentToolList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((name) => typeof name === "string") &&
+    new Set(value).size === value.length
+  );
+}
+
+function prepareConfigInput(
+  input: Record<string, unknown>,
+  base: Config,
+): { input: Record<string, unknown>; agentToolsPinned: boolean } {
+  if (
+    validAgentToolList(input.agentTools) &&
+    (sameStringSet(
+      input.agentTools,
+      shippedAgentTools.tools.map((tool) => tool.name),
+    ) ||
+      sameStringSet(input.agentTools, base.agentTools))
+  ) {
+    const rest = { ...input };
+    delete rest.agentTools;
+    return { input: rest, agentToolsPinned: false };
+  }
+  return {
+    input,
+    agentToolsPinned: Object.hasOwn(input, "agentTools"),
+  };
+}
+
 /** Parse with Bun's TOML parser; a missing file uses defaults. */
-export async function loadConfig(
+export async function loadConfigState(
   path = configPath,
   toolsPath = agentToolsPath,
-): Promise<Config> {
-  const base = defaults(await loadAgentToolNames(toolsPath));
+): Promise<LoadedConfig> {
+  const layeredAgentTools = await loadAgentToolNames(toolsPath);
+  const base = defaults(layeredAgentTools);
   try {
     const input = Bun.TOML.parse(await readFile(path, "utf8")) as Record<
       string,
       unknown
     >;
-    if (
-      Array.isArray(input.agentTools) &&
-      input.agentTools.every((name) => typeof name === "string") &&
-      new Set(input.agentTools).size === input.agentTools.length &&
-      (sameStringSet(
-        input.agentTools,
-        shippedAgentTools.tools.map((tool) => tool.name),
-      ) ||
-        sameStringSet(input.agentTools, base.agentTools))
-    ) {
-      const rest = { ...input };
-      delete rest.agentTools;
-      return validate(rest, base);
-    }
-    return validate(input, base);
+    const prepared = prepareConfigInput(input, base);
+    return {
+      config: validate(prepared.input, base),
+      agentToolsPinned: prepared.agentToolsPinned,
+      layeredAgentTools,
+    };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return base;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return { config: base, agentToolsPinned: false, layeredAgentTools };
     throw error;
   }
+}
+
+export async function loadConfig(
+  path = configPath,
+  toolsPath = agentToolsPath,
+): Promise<Config> {
+  return (await loadConfigState(path, toolsPath)).config;
 }
 /** TOML values here are strings, numbers, booleans and arrays of strings. */
 export function serialize(c: Config, base = defaults()): string {
@@ -432,6 +470,11 @@ export async function saveConfig(
   path = configPath,
   toolsPath = agentToolsPath,
 ): Promise<void> {
-  const body = serialize(c, defaults(await loadAgentToolNames(toolsPath)));
+  const body = configBody(c, await loadAgentToolNames(toolsPath));
   await writeFileAtomic(path, body);
+}
+
+/** Serialize against an explicit layered agent-tool list. */
+export function configBody(c: Config, agentTools: string[]): string {
+  return serialize(c, defaults(agentTools));
 }
