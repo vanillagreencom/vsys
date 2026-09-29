@@ -77,6 +77,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -1631,10 +1632,8 @@ def selftest():
     dmoves, _, _, _ = plan(recs, capped=capped, split=False, contained=contained)
     check("AGENT_WARDEN_SPLIT_SESSIONS=0 reports instead of moving", 22 not in {p.pid for _, t in dmoves for p in t})
 
-    hbdir = (STATE_DIR.parent if STATE_DIR.parent.exists() else Path.cwd()) / f"agent-warden-selftest-{os.getpid()}"
-    hb = hbdir / "notifier"
-    try:
-        hbdir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="agent-warden-selftest-") as tmp:
+        hb = Path(tmp) / "notifier"
         for name, mtime, expected in (
             ("fresh heartbeat suppresses", 940.0, True),
             ("stale heartbeat notifies", 879.0, False),
@@ -1645,15 +1644,6 @@ def selftest():
             check(name, notifier_fresh(hb, now=1000.0) is expected)
         hb.unlink()
         check("absent heartbeat is stale", not notifier_fresh(hb, now=1000.0))
-    finally:
-        try:
-            hb.unlink()
-        except OSError:
-            pass
-        try:
-            hbdir.rmdir()
-        except OSError:
-            pass
 
     calls = []
     logs = []

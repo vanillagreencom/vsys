@@ -992,20 +992,21 @@ class AgentWardenRules(unittest.TestCase):
 
     def test_selftest_state_dir_mutant_fails(self):
         text = WARDEN.read_text()
-        old = '    hbdir = (STATE_DIR.parent if STATE_DIR.parent.exists() else Path.cwd()) / f"agent-warden-selftest-{os.getpid()}"\n'
+        old = '    with tempfile.TemporaryDirectory(prefix="agent-warden-selftest-") as tmp:\n        hb = Path(tmp) / "notifier"\n'
+        new = '    hbdir = STATE_DIR / f"selftest-{os.getpid()}"\n    hbdir.mkdir(parents=True, exist_ok=True)\n    with tempfile.TemporaryDirectory(prefix="agent-warden-selftest-") as tmp:\n        hb = hbdir / "notifier"\n'
         self.assertEqual(text.count(old), 1)
         with scratch() as tmp:
             base = Path(tmp)
             mutant = base / "agent-warden"
-            mutant.write_text(text.replace(old, '    hbdir = STATE_DIR / f"selftest-{os.getpid()}"\n'))
+            mutant.write_text(text.replace(old, new))
             mutant.chmod(0o755)
-            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
-            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise", "TMPDIR": base / "scratch"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR", "TMPDIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
             result = subprocess.run([sys.executable, str(mutant), "--selftest"], env=env, capture_output=True, text=True)
-            state_dir_exists = (Path(env["XDG_RUNTIME_DIR"]) / "agent-warden").exists()
+            run_entries = os.listdir(env["XDG_RUNTIME_DIR"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTrue(state_dir_exists)
+        self.assertNotEqual(run_entries, [])
 
     def test_status_read_only_mutant_fails(self):
         text = WARDEN.read_text()
@@ -1031,8 +1032,8 @@ class AgentWardenRules(unittest.TestCase):
     def test_selftest_subprocess_exits_zero(self):
         with scratch() as tmp:
             base = Path(tmp)
-            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
-            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise", "TMPDIR": base / "scratch"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR", "TMPDIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
             result = subprocess.run([sys.executable, str(WARDEN), "--selftest"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1040,13 +1041,13 @@ class AgentWardenRules(unittest.TestCase):
     def test_selftest_subprocess_leaves_no_state_dir(self):
         with scratch() as tmp:
             base = Path(tmp)
-            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
-            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise", "TMPDIR": base / "scratch"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR", "TMPDIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
             result = subprocess.run([sys.executable, str(WARDEN), "--selftest"], env=env, capture_output=True, text=True)
-            state_dir_exists = (Path(env["XDG_RUNTIME_DIR"]) / "agent-warden").exists()
+            run_entries = os.listdir(env["XDG_RUNTIME_DIR"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse(state_dir_exists)
+        self.assertEqual(run_entries, [])
 
     def test_job_unit_guard_mutant_fails(self):
         text = WARDEN.read_text()
