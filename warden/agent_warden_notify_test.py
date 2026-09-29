@@ -517,9 +517,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(text.count(old), 1)
         with scratch() as tmp:
             base = Path(tmp)
-            mutant = base / "agent-warden"
-            mutant.write_text(text.replace(old, 'def status():\n    st = read_state_unlocked()\n    STATE.write_text(STATE.read_text() + "\\n")\n'))
-            mutant.chmod(0o755)
+            mutant = materialize_warden_script(base, text.replace(old, 'def status():\n    st = read_state_unlocked()\n    STATE.write_text(STATE.read_text() + "\\n")\n'))
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
             for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
