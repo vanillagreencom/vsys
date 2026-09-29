@@ -942,6 +942,25 @@ class AgentWardenRules(unittest.TestCase):
                 plan_moves=[("escaped launch", [other])], only={11})
             self.assertIn("move-failure:10:1", state["episodes"])
 
+    def test_not_moving_episode_lifetime_rows(self):
+        with scratch() as tmp:
+            state_dir = Path(tmp) / "state"
+            for _ in range(2):
+                _result, _state, notifications = self._run_move_fixture(self.w, state_dir, headrooms=[(False, -1, -1)])
+                self.assertEqual(notifications, [])
+            _result, state, notifications = self._run_move_fixture(self.w, state_dir, headrooms=[(False, -1, -1)])
+            self.assertEqual(notifications[0][0], "agent-warden: not moving")
+            self.assertTrue(state["episodes"]["not-moving:agents.slice"].get("notified"))
+
+            _result, state, notifications = self._run_move_fixture(self.w, state_dir, plan_moves=[], only={999})
+            self.assertIn("not-moving:agents.slice", state["episodes"])
+            self.assertEqual(notifications, [])
+
+            for _ in range(3):
+                _result, state, notifications = self._run_move_fixture(self.w, state_dir, headrooms=[(False, -1, -1)])
+                self.assertIn("not-moving:agents.slice", state["episodes"])
+                self.assertEqual(notifications, [])
+
     def test_status_read_only_subprocess_rows(self):
         with scratch() as tmp:
             base = Path(tmp)
@@ -1014,6 +1033,22 @@ class AgentWardenRules(unittest.TestCase):
             initial["episodes"] = {"move-failure:10:1": {"kind": "move-failure", "scope": "10:1", "since": 900.0, "notified": True}}
             _, state, _notifications = self._run_move_fixture(mutant, Path(tmp) / "state", initial_state=initial, headrooms=[(False, -1, -1)])
         self.assertNotIn("move-failure:10:1", state["episodes"])
+
+    def test_not_moving_seen_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '                    seen_move_conditions.add(episode_key("not-moving", SLICE))\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, ''), "agent_warden_mutant_not_moving_seen")
+        with scratch() as tmp:
+            state_dir = Path(tmp) / "state"
+            for _ in range(3):
+                self._run_move_fixture(mutant, state_dir, headrooms=[(False, -1, -1)])
+            self._run_move_fixture(mutant, state_dir, plan_moves=[], only={999})
+            notifications = []
+            for _ in range(3):
+                _result, _state, notifications = self._run_move_fixture(mutant, state_dir, headrooms=[(False, -1, -1)])
+        self.assertNotEqual(notifications, [])
+        self.assertEqual(notifications[0][0], "agent-warden: not moving")
 
     def test_restricted_run_clear_mutant_fails(self):
         text = WARDEN.read_text()

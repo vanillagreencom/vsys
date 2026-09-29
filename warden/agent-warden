@@ -1397,6 +1397,7 @@ def run(correct):
                 if not ok:
                     st["skips"] += 1
                     seen_move_conditions.add(episode_key("move-failure", root_scope))
+                    seen_move_conditions.add(episode_key("not-moving", SLICE))
                     where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
                     log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
                     if st["skips"] >= 3:
