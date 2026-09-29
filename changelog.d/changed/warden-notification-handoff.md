@@ -1,0 +1,1 @@
+- Agent Warden no longer duplicates a consumer's desktop notices, repeats near-limit or headroom warnings only after the condition clears, and reads status without rewriting its state file.
