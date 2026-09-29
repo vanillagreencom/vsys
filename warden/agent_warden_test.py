@@ -935,6 +935,7 @@ class AgentWardenRules(unittest.TestCase):
                     json.dumps({"moves": -1}),
                     json.dumps({"events": {}}),
                     json.dumps({"events": [{}]}),
+                    json.dumps({"events": [{"id": 1, "time": 1, "kind": [], "scope": None, "pid": None, "processes": None, "near": None}]}),
                     json.dumps({"event_seq": "1"}),
                     json.dumps({"near_open": [1]}),
                 ):
@@ -1093,6 +1094,13 @@ class AgentWardenRules(unittest.TestCase):
                 doc = self.w.status_document("report", st, slice_reading=None, lanes=[],
                                              moves=[], waiting=[], orphans_status=[], contained=[], now=1)
                 self.assertFalse(self.w.status_errors(doc))
+                self.w.STATE.unlink(missing_ok=True)
+                self.w.STATUS.write_text(json.dumps({"events": [
+                    {"id": 9000, "time": 1, "kind": "moved", "scope": None, "pid": None, "processes": None, "near": None},
+                ]}))
+                with self.w.State() as st:
+                    fourth = self.w.emit_event(st, "moved", now=1)["id"]
+                self.assertGreater(fourth, 9000)
             finally:
                 self.restore_status_state(self.w, old)
 
@@ -1183,6 +1191,51 @@ class AgentWardenRules(unittest.TestCase):
         results, waiting = run_sequence((True, True, True), (FakeBus, RaisingBus, FakeBus))
         self.assertEqual(results, [0, 1, 0])
         self.assertEqual(len(waiting), 1)
+
+
+    def test_bad_orphan_state_is_dropped_before_reap(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            try:
+                unit = "agent-confine-bad.scope"
+                now = self.w.time.time()
+                self.w.STATE_DIR.mkdir(parents=True, exist_ok=True)
+                self.w.STATE.write_text(json.dumps({"orphans": {unit: {"first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": "yes"}}}))
+                with self.w.State() as st:
+                    self.assertEqual(st["orphans"], {})
+                    mgr = 4000
+                    cg = self._cg(unit)
+                    recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice")}
+                    for i in range(self.w.ORPHAN_PROC_MAX):
+                        recs[7000 + i] = self.P(7000 + i, mgr, "bun", ["bun"], cg, exe="/usr/bin/bun")
+                    reaped, rows = self.w.reap_orphans(recs, st, True)
+                self.assertEqual(reaped, [])
+                self.assertEqual([row["scope"] for row in rows], [unit])
+            finally:
+                self.restore_status_state(self.w, old)
+
+    def test_state_write_survives_status_write_failure(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_write = self.w.write_status
+            self.w.write_status = lambda doc: (_ for _ in ()).throw(RuntimeError("status boom"))
+            try:
+                with self.w.State(status="report") as st:
+                    st["moves"] = 3
+                    st["_tick"] = {"procs": {}, "moves": [], "waiting": [], "waiting_events": [], "orphans": [], "contained": [], "error": None}
+                stored = json.loads(self.w.STATE.read_text())
+                self.assertEqual(stored["moves"], 3)
+                fd = os.open(self.w.LOCK, os.O_RDWR)
+                try:
+                    self.w.fcntl.flock(fd, self.w.fcntl.LOCK_EX | self.w.fcntl.LOCK_NB)
+                finally:
+                    self.w.fcntl.flock(fd, self.w.fcntl.LOCK_UN)
+                    os.close(fd)
+            finally:
+                self.w.write_status = old_write
+                self.restore_status_state(self.w, old)
 
     def test_correct_move_status_rescans_labels(self):
         with scratch() as tmp:
@@ -1278,6 +1331,24 @@ class AgentWardenRules(unittest.TestCase):
         doc = json.loads(json.dumps(base))
         doc["interval"] = 0
         rows.append(("interval zero", doc))
+        doc = json.loads(json.dumps(base))
+        doc["lanes"] = [{"scope": [], "label": {"tool": None, "worktree": None}, "tasks": 1, "tasksMax": 2, "memory": 3, "memoryHigh": 4, "near": []}]
+        rows.append(("lane scope list", doc))
+        doc = json.loads(json.dumps(base))
+        doc["lanes"][0]["near"] = [[]]
+        rows.append(("lane near list", doc))
+        doc = json.loads(json.dumps(base))
+        doc["outside"][0]["reason"] = []
+        rows.append(("outside reason list", doc))
+        doc = json.loads(json.dumps(base))
+        doc["events"][0]["kind"] = []
+        rows.append(("event kind list", doc))
+        doc = json.loads(json.dumps(base))
+        doc["events"][0]["near"] = []
+        rows.append(("event near list", doc))
+        doc = json.loads(json.dumps(base))
+        doc["mode"] = []
+        rows.append(("mode list", doc))
         for name, doc in rows:
             with self.subTest(name=name):
                 self.assertTrue(self.w.status_errors(doc))

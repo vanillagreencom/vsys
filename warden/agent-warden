@@ -1334,7 +1334,11 @@ def emit_event(st, kind, *, scope=None, pid=None, processes=None, near=None, now
     last_event = max((event.get("id") for event in events
                       if isinstance(event, dict) and isinstance(event.get("id"), int)
                       and not isinstance(event.get("id"), bool)), default=0)
-    seq = max(previous + 1, last_event + 1, _now_millis(now))
+    try:
+        status_floor = int(st.get("_event_id_floor") or 0)
+    except (TypeError, ValueError):
+        status_floor = 0
+    seq = max(previous + 1, last_event + 1, status_floor + 1, _now_millis(now))
     st["event_seq"] = seq
     event = {
         "id": seq,
@@ -1472,14 +1476,16 @@ def _check_events(errors, events, where):
             errors.append(f"{row}.id must increase")
         last = event.get("id") if isinstance(event.get("id"), int) and not isinstance(event.get("id"), bool) else last
         _check_number(errors, event.get("time"), f"{row}.time")
-        if event.get("kind") not in STATUS_EVENT_KINDS:
+        kind = event.get("kind")
+        if not isinstance(kind, str) or kind not in STATUS_EVENT_KINDS:
             errors.append(f"{row}.kind has an unknown id")
         if event.get("scope") is not None and not isinstance(event.get("scope"), str):
             errors.append(f"{row}.scope must be a string or null")
         _check_int_or_null(errors, event.get("pid"), f"{row}.pid")
         _check_int_or_null(errors, event.get("processes"), f"{row}.processes")
-        if event.get("kind") == "near-cap":
-            if event.get("near") not in STATUS_NEAR_KINDS:
+        if kind == "near-cap":
+            near = event.get("near")
+            if not isinstance(near, str) or near not in STATUS_NEAR_KINDS:
                 errors.append(f"{row}.near must be tasks or memory")
         elif event.get("near") is not None:
             errors.append(f"{row}.near must be null except for near-cap")
@@ -1495,7 +1501,8 @@ def status_errors(doc):
     if not isinstance(schema, str) or not re.fullmatch(r"1\.\d+", schema):
         errors.append("schema major must be 1")
     _check_number(errors, doc.get("time"), "time")
-    if doc.get("mode") not in {"correct", "report"}:
+    mode = doc.get("mode")
+    if not isinstance(mode, str) or mode not in {"correct", "report"}:
         errors.append("mode must be correct or report")
     _check_number(errors, doc.get("interval"), "interval")
     if isinstance(doc.get("interval"), (int, float)) and not isinstance(doc.get("interval"), bool) and math.isfinite(doc.get("interval")) and doc.get("interval") <= 0:
@@ -1525,9 +1532,11 @@ def status_errors(doc):
             where = f"lanes[{i}]"
             if not _check_keys(errors, lane, ("scope", "label", "tasks", "tasksMax", "memory", "memoryHigh", "near"), where):
                 continue
-            if not isinstance(lane.get("scope"), str) or not lane["scope"].endswith(".scope"):
+            scope = lane.get("scope")
+            if not isinstance(scope, str) or not scope.endswith(".scope"):
                 errors.append(f"{where}.scope must be a scope name")
-            scopes.append(lane.get("scope"))
+            else:
+                scopes.append(scope)
             if _check_keys(errors, lane.get("label"), ("tool", "worktree"), f"{where}.label"):
                 for key in ("tool", "worktree"):
                     if lane["label"].get(key) is not None and not isinstance(lane["label"].get(key), str):
@@ -1536,7 +1545,7 @@ def status_errors(doc):
             _check_limit(errors, lane.get("tasksMax"), f"{where}.tasksMax")
             _check_int_or_null(errors, lane.get("memory"), f"{where}.memory")
             _check_limit(errors, lane.get("memoryHigh"), f"{where}.memoryHigh")
-            if not isinstance(lane.get("near"), list) or any(k not in STATUS_NEAR_KINDS for k in lane.get("near", [])):
+            if not isinstance(lane.get("near"), list) or any(not isinstance(k, str) or k not in STATUS_NEAR_KINDS for k in lane.get("near", [])):
                 errors.append(f"{where}.near must contain only tasks or memory")
         if scopes != sorted(scopes):
             errors.append("lanes must be sorted by scope")
@@ -1551,7 +1560,8 @@ def status_errors(doc):
             where = f"{key}[{i}]"
             if not _check_keys(errors, row, ("reason", "pid", "start", "tool", "processes"), where):
                 continue
-            if row.get("reason") not in {"escaped-launch", "unconfined-agent", "unconfined-build", "nested-session"}:
+            reason = row.get("reason")
+            if not isinstance(reason, str) or reason not in {"escaped-launch", "unconfined-agent", "unconfined-build", "nested-session"}:
                 errors.append(f"{where}.reason has an unknown id")
             for sub in ("pid", "start", "processes"):
                 _check_int(errors, row.get(sub), f"{where}.{sub}")
@@ -1717,6 +1727,19 @@ DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "p
 STATE_COUNTER_KEYS = ("skips", "moves", "partial", "scan_failures", "move_failures", "reaped")
 
 
+def status_event_floor():
+    try:
+        doc = json.loads(STATUS.read_text())
+        events = doc.get("events") if isinstance(doc, dict) else []
+        if not isinstance(events, list):
+            return 0
+        return max((event.get("id") for event in events
+                    if isinstance(event, dict) and isinstance(event.get("id"), int)
+                    and not isinstance(event.get("id"), bool)), default=0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def default_state():
     return deepcopy(DEFAULT_STATE)
 
@@ -1726,19 +1749,39 @@ def _check_string_list(errors, value, where):
         errors.append(f"{where} must be a list of strings")
 
 
+def _valid_orphan_state_record(record):
+    errors = []
+    if not isinstance(record, dict):
+        return False
+    _check_number(errors, record.get("first"), "state.orphan.first")
+    _check_int_or_null(errors, record.get("usage"), "state.orphan.usage")
+    _check_number(errors, record.get("usage_ts"), "state.orphan.usage_ts")
+    if not isinstance(record.get("harmful"), bool):
+        errors.append("state.orphan.harmful must be a boolean")
+    return not errors
+
+
 def state_object(raw):
     if not isinstance(raw, dict):
         return None
     errors = []
     for key in STATE_COUNTER_KEYS:
         _check_int(errors, raw.get(key, 0), f"state.{key}")
+    for key in ("last_report", "last_correct"):
+        _check_number(errors, raw.get(key, 0), f"state.{key}")
     _check_int(errors, raw.get("event_seq", 0), "state.event_seq")
     _check_events(errors, raw.get("events", []), "state.events")
     _check_string_list(errors, raw.get("near_open", []), "state.near_open")
     _check_string_list(errors, raw.get("waiting_open", []), "state.waiting_open")
-    if not isinstance(raw.get("orphans", {}), dict):
+    raw_orphans = raw.get("orphans", {})
+    if not isinstance(raw_orphans, dict):
         errors.append("state.orphans must be an object")
-    return None if errors else raw
+    if errors:
+        return None
+    checked = dict(raw)
+    checked["orphans"] = {unit: record for unit, record in raw_orphans.items()
+                            if isinstance(unit, str) and _valid_orphan_state_record(record)}
+    return checked
 
 
 class State:
@@ -1750,6 +1793,7 @@ class State:
         self.lockfd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(self.lockfd, fcntl.LOCK_EX)
         try:
+            missing = not STATE.exists()
             raw = state_object(json.loads(STATE.read_text()))
             if raw is None:
                 self.st = default_state()
@@ -1757,12 +1801,12 @@ class State:
             else:
                 self.st = {**default_state(), **raw}
                 self.st["_state_readable"] = True
-        except OSError:
+        except Exception:  # noqa: BLE001
+            missing = not STATE.exists()
             self.st = default_state()
-            self.st["_state_readable"] = not STATE.exists()
-        except ValueError:
-            self.st = default_state()
-            self.st["_state_readable"] = False
+            self.st["_state_readable"] = missing
+        if missing or not self.st["_state_readable"]:
+            self.st["_event_id_floor"] = status_event_floor()
         return self.st
 
     def __exit__(self, *exc):
