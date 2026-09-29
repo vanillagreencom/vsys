@@ -718,8 +718,18 @@ def plan(procs, only=None, capped=lineage_is_capped, split=None, contained=conta
         return (p.confined or p.excluded or p.is_agent or is_contained(p)
                 or not p.rides_along or not allowed(p))
 
+    def desktop_owned(p):
+        m = nearest_marker(procs, p)
+        return m is not None and (m.is_desktop or m.excluded)
+
     def note_unit(p):
-        if p.pid not in claimed and not p.excluded and not p.is_desktop and (p.marked or p.is_agent or p.is_build or p.rides_along):
+        if p.pid in claimed or p.confined or p.excluded or p.is_desktop:
+            return
+        if p.marked and (p.is_agent or not desktop_owned(p)):
+            units.append(p)
+        elif p.is_agent:
+            units.append(p)
+        elif p.is_build and has_agent_or_tmux_above(procs, p):
             units.append(p)
 
     for p in procs.values():
@@ -736,10 +746,6 @@ def plan(procs, only=None, capped=lineage_is_capped, split=None, contained=conta
     #    A marked non-agent (a shell, a build) stays when the nearest marker
     #    above it is a desktop app or an excluded helper; an agent CLI a
     #    desktop app started is still its own session.
-    def desktop_owned(p):
-        m = nearest_marker(procs, p)
-        return m is not None and (m.is_desktop or m.excluded)
-
     escaped = [p for p in procs.values() if allowed(p) and not p.confined and p.marked
                and not is_contained(p) and not p.is_desktop and not p.excluded
                and (p.is_agent or not desktop_owned(p))]
@@ -1177,8 +1183,17 @@ def selftest():
     recs[509] = P(509, 508, "cargo", ["cargo", "build"], PLAIN_SCOPE, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
     recs[510] = P(510, 500, "bash", ["bash", "run"], TMUX_SERVICE, exe="/usr/bin/bash", marked=True)
     recs[511] = P(511, 510, "cargo", ["cargo", "build"], TMUX_SERVICE, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
+    DESC_LIMIT = "/user.slice/user-1000.slice/user@1000.service/app.slice/desc-memory.service"
+    recs[512] = P(512, 500, "bash", ["bash", "outer"], A.replace("x.scope", "outer.scope"), exe="/usr/bin/bash", marked=True)
+    recs[513] = P(513, 512, "cargo", ["cargo", "build"], DESC_LIMIT, exe=f"{HOME}/.cargo/bin/cargo", marked=True)
+    CONTAINED_CG = "/user.slice/user-1000.slice/user@1000.service/agents.slice/contained.scope"
+    recs[520] = P(520, 1, "codex", ["codex"], CONTAINED_CG, exe=f"{mise}/codex/latest/bin/codex", start=1)
+    recs[521] = P(521, 520, "claude", ["claude", "-p", "z"], CONTAINED_CG, exe=f"{mise}/claude/latest/claude", start=2)
     capped = lambda cg: cg in (T, TC)  # noqa: E731
-    contained = lambda cg: contained_unit(cg) or unit_of(cg) == "build-with-memory.service"  # noqa: E731
+    def contained(cg):
+        unit = unit_of(cg)
+        return bool(unit and (fnmatch.fnmatchcase(unit, "orch-*.service")
+                             or unit in {"build-with-memory.service", "desc-memory.service", "contained.scope"}))
     moves, unmatched, held, units = plan(recs, capped=capped, split=True, contained=contained)
     by = {}
     for reason, tree in moves:
@@ -1208,8 +1223,6 @@ def selftest():
     check("pid-order inversion still yields one build tree", [60, 61, 100] in builds and [61] not in builds)
     check("escaped cargo beyond a confined shell is its own build root", [72] in builds)
     check("no pid appears in two moves", len(moved) == sum(len(t) for _, t in moves))
-    only_moves, _, _, _ = plan(recs, only={10}, capped=capped, split=True)
-    check("AGENT_WARDEN_ONLY bounds descendants too", [p.pid for _, t in only_moves for p in t] == [10])
     esc = by.get("escaped launch", [])
     check("marked launch outside the slice moves whatever its names", [80, 81] in esc)
     check("desktop app under a marked launch still stays", 82 not in moved)
@@ -1223,6 +1236,10 @@ def selftest():
     check("plain app scope with no limit still moves as an escaped launch", [508, 509] in esc)
     check("plain tmux service with no limit behaves like an escaped launch", [510, 511] in esc)
     check("unit_of finds the owning transient service", unit_of(ORCH + "/child") == "orch-validate-vsy-50-12345.service")
+    check("contained descendant in a moved tree stays in its own unit", [512] in esc and 513 in unitp and 513 not in moved)
+    check("contained agent scope is not split as a nested session", 521 not in moved and 521 not in unitp)
+    only_moves, _, _, _ = plan(recs, only={10}, capped=capped, split=True, contained=contained)
+    check("AGENT_WARDEN_ONLY uses injected containment", [p.pid for _, t in only_moves for p in t] == [10])
     dmoves, _, _, _ = plan(recs, capped=capped, split=False, contained=contained)
     check("AGENT_WARDEN_SPLIT_SESSIONS=0 reports instead of moving", 22 not in {p.pid for _, t in dmoves for p in t})
 

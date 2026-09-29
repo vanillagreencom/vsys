@@ -21,7 +21,7 @@
 # no session D-Bus, a stripped container), the agent still launches -- capped by
 # the env but outside the slice -- rather than not launching at all.
 
-set -euo pipefail
+set -uo pipefail
 
 # No real-time scheduling for agent work. A lane that requests SCHED_FIFO/RR
 # outranks the desktop and the warden on the CPU and can freeze the machine,
@@ -54,7 +54,7 @@ CAPS=(
 
 AGENT_DEFAULT_TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp"
 AGENT_EFFECTIVE_TMPDIR="${AGENT_TMPDIR:-$AGENT_DEFAULT_TMPDIR}"
-if mkdir -p -m 700 -- "$AGENT_EFFECTIVE_TMPDIR" 2>/dev/null && chmod 700 -- "$AGENT_EFFECTIVE_TMPDIR" 2>/dev/null; then
+if mkdir -p -m 700 -- "$AGENT_EFFECTIVE_TMPDIR" 2>/dev/null && [ -d "$AGENT_EFFECTIVE_TMPDIR" ] && [ -w "$AGENT_EFFECTIVE_TMPDIR" ]; then
 	CAPS+=("TMPDIR=$AGENT_EFFECTIVE_TMPDIR")
 else
 	echo "agent-confine: TMPDIR unavailable at $AGENT_EFFECTIVE_TMPDIR; keeping inherited TMPDIR" >&2
@@ -92,9 +92,8 @@ CAPS+=("AGENT_CONFINE=1")
 if grep -qs 'agents\.slice' /proc/self/cgroup; then
 	here=${BASH_SOURCE[0]%/*}
 	[ "$here" != "${BASH_SOURCE[0]}" ] || here=$HOME/.local/bin
-	cap_status=0
-	"$here/agent-confine-lineage-capped" || cap_status=$?
-	case $cap_status in
+	"$here/agent-confine-lineage-capped"
+	case $? in
 	3) : ;;
 	*) exec env "${CAPS[@]}" "$@" ;;
 	esac

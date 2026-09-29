@@ -13,6 +13,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 WARDEN = ROOT / "warden" / "agent-warden"
 SCRATCH_ROOT = ROOT / "tmp" / "warden-tests"
+BASE_PATH = os.environ.get("PATH", "/usr/bin:/bin")
 
 
 def scratch():
@@ -20,15 +21,20 @@ def scratch():
     return tempfile.TemporaryDirectory(dir=SCRATCH_ROOT)
 
 
-def load_warden(env=None, name="agent_warden_under_test"):
+def clean_env(base, *, path=False):
+    env = {key: str(value) for key, value in base.items()}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if path:
+        env["PATH"] = BASE_PATH
+    return env
+
+
+def load_warden(env, name="agent_warden_under_test", path=WARDEN):
     old = os.environ.copy()
-    merged = old.copy()
-    if env:
-        merged.update(env)
     os.environ.clear()
-    os.environ.update(merged)
+    os.environ.update(env)
     try:
-        loader = importlib.machinery.SourceFileLoader(name, str(WARDEN))
+        loader = importlib.machinery.SourceFileLoader(name, str(path))
         spec = importlib.util.spec_from_loader(loader.name, loader)
         if spec is None:
             raise RuntimeError("agent-warden import spec unavailable")
@@ -45,12 +51,11 @@ class AgentWardenRules(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = scratch()
         base = Path(cls.tmp.name)
-        cls.env = {
-            "HOME": str(base / "home"),
-            "XDG_RUNTIME_DIR": str(base / "run"),
-            "MISE_DATA_DIR": str(base / "mise-data"),
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
+        cls.env = clean_env({
+            "HOME": base / "home",
+            "XDG_RUNTIME_DIR": base / "run",
+            "MISE_DATA_DIR": base / "mise-data",
+        })
         for path in (base / "home", base / "run", base / "mise-data"):
             path.mkdir(parents=True, exist_ok=True)
         cls.w = load_warden(cls.env)
@@ -113,6 +118,168 @@ class AgentWardenRules(unittest.TestCase):
         for reason, tree in moves:
             out.setdefault(reason, []).append(tree)
         return out
+
+    def load_mutant(self, text, name):
+        with scratch() as tmp:
+            base = Path(tmp)
+            path = base / "agent-warden"
+            path.write_text(text)
+            path.chmod(0o755)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            return load_warden(env, name, path)
+
+    def test_contained_planning_guard_rows(self):
+        limited = "/user.slice/user-1000.slice/user@1000.service/app.slice/limited.service"
+        contained_scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/contained.scope"
+        plain_limited = "/user.slice/user-1000.slice/user@1000.service/app.slice/plain-limited.service"
+        recs = {
+            1: self.P(1, 0, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
+            10: self.P(10, 1, "bash", ["bash"], marked=True),
+            11: self.P(11, 10, "cargo", ["cargo", "build"], limited, exe=f"{self.w.HOME}/.cargo/bin/cargo", marked=True),
+            20: self.P(20, 1, "codex", ["codex"], contained_scope, start=1),
+            21: self.P(21, 20, "claude", ["claude", "-p", "x"], contained_scope, start=2),
+            30: self.P(30, 1, "bash", ["bash"], plain_limited, exe="/usr/bin/bash"),
+            31: self.P(31, 30, "sleep", ["sleep", "10"], plain_limited, exe="/usr/bin/sleep"),
+        }
+        contained = lambda cg: self.w.unit_of(cg) in {"limited.service", "contained.scope", "plain-limited.service"}
+        moves, _, _, units = self.w.plan(recs, contained=contained, split=True)
+        moved = {p.pid for _, tree in moves for p in tree}
+        unitp = {p.pid for p in units}
+        by = self._group(moves)
+        rows = [
+            ("contained descendant stays out of moved tree", [10] in [sorted(p.pid for p in t) for t in by.get("escaped launch", [])] and 11 not in moved, True),
+            ("contained descendant is listed as a contained candidate", 11 in unitp, True),
+            ("contained agent scope is not split", 21 not in moved, True),
+            ("unmarked limited service is not listed", {30, 31} & unitp, set()),
+        ]
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_recheck_refuses_contained_unit(self):
+        p = self.P(70, 1, "cargo", ["cargo", "build"], exe=f"{self.w.HOME}/.cargo/bin/cargo", start=7)
+        q = self.P(70, 1, "cargo", ["cargo", "build"], exe=f"{self.w.HOME}/.cargo/bin/cargo", start=7)
+        old_pidfd, old_close, old_proc, old_contained = self.w.os.pidfd_open, self.w.os.close, self.w.Proc, self.w.contained_unit
+        self.w.os.pidfd_open = lambda pid: 99
+        self.w.os.close = lambda fd: None
+        self.w.Proc = lambda pid: q
+        self.w.contained_unit = lambda cg: True
+        try:
+            self.assertIsNone(self.w.recheck(p, nested=False))
+        finally:
+            self.w.os.pidfd_open, self.w.os.close, self.w.Proc, self.w.contained_unit = old_pidfd, old_close, old_proc, old_contained
+
+    def test_containment_mutant_controls(self):
+        text = WARDEN.read_text()
+        mutations = [
+            (
+                "stop_default",
+                " or is_contained(p)\n                or not p.rides_along",
+                "\n                or not p.rides_along",
+                lambda m: self._mutant_moves_contained_descendant(m),
+            ),
+            (
+                "by_cg",
+                "if p.is_agent and p.confined and not is_contained(p):",
+                "if p.is_agent and p.confined:",
+                lambda m: self._mutant_splits_contained_scope(m),
+            ),
+            (
+                "recheck",
+                "or contained_unit(q.cgroup) or (nested and lineage_is_capped(q.cgroup))",
+                "or False or (nested and lineage_is_capped(q.cgroup))",
+                lambda m: self._mutant_recheck_accepts_contained(m),
+            ),
+        ]
+        for name, old, new, probe in mutations:
+            with self.subTest(name=name):
+                self.assertEqual(text.count(old), 1)
+                mutant = self.load_mutant(text.replace(old, new), f"agent_warden_mutant_{name}")
+                self.assertTrue(probe(mutant))
+
+    def _mutant_moves_contained_descendant(self, m):
+        limited = "/user.slice/user-1000.slice/user@1000.service/app.slice/limited.service"
+        recs = {
+            10: m.Proc(10, ppid=1, comm="bash", argv=["bash"], exe="/usr/bin/bash", cgroup=self.A, start=1, marked=True),
+            11: m.Proc(11, ppid=10, comm="cargo", argv=["cargo"], exe=f"{m.HOME}/.cargo/bin/cargo", cgroup=limited, start=1, marked=True),
+        }
+        moves, _, _, _ = m.plan(recs, contained=lambda cg: m.unit_of(cg) == "limited.service")
+        return [10, 11] in [sorted(p.pid for p in tree) for _, tree in moves]
+
+    def _mutant_splits_contained_scope(self, m):
+        contained_scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/contained.scope"
+        recs = {
+            20: m.Proc(20, ppid=1, comm="codex", argv=["codex"], exe=f"{m.HOME}/.local/bin/codex", cgroup=contained_scope, start=1),
+            21: m.Proc(21, ppid=20, comm="claude", argv=["claude"], exe=f"{m.HOME}/.local/bin/claude", cgroup=contained_scope, start=2),
+        }
+        moves, _, _, _ = m.plan(recs, capped=lambda cg: False, contained=lambda cg: m.unit_of(cg) == "contained.scope", split=True)
+        return any([21] == [p.pid for p in tree] for reason, tree in moves if reason == "nested session")
+
+    def _mutant_recheck_accepts_contained(self, m):
+        p = m.Proc(70, ppid=1, comm="cargo", argv=["cargo"], exe=f"{m.HOME}/.cargo/bin/cargo", cgroup=self.A, start=7)
+        q = m.Proc(70, ppid=1, comm="cargo", argv=["cargo"], exe=f"{m.HOME}/.cargo/bin/cargo", cgroup=self.A, start=7)
+        old_pidfd, old_close, old_proc, old_contained = m.os.pidfd_open, m.os.close, m.Proc, m.contained_unit
+        m.os.pidfd_open = lambda pid: 99
+        m.os.close = lambda fd: None
+        m.Proc = lambda pid: q
+        m.contained_unit = lambda cg: True
+        try:
+            return m.recheck(p, nested=False) is not None
+        finally:
+            m.os.pidfd_open, m.os.close, m.Proc, m.contained_unit = old_pidfd, old_close, old_proc, old_contained
+
+    def test_lineage_and_task_cap_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp) / "cg"
+            old_root = self.w.CG_ROOT
+            self.w.CG_ROOT = base
+            try:
+                agent_slice = base / self.w.SLICE
+                plain = agent_slice / "plain.scope"
+                tight = agent_slice / "tight.scope"
+                for directory in (agent_slice, plain, tight):
+                    directory.mkdir(parents=True, exist_ok=True)
+                for directory, pids in ((agent_slice, "100"), (plain, "100"), (tight, "100")):
+                    (directory / "pids.max").write_text(pids)
+                    (directory / "memory.max").write_text("1000")
+                    (directory / "memory.high").write_text("max")
+                    (directory / "memory.swap.max").write_text("max")
+                    (directory / "cpu.max").write_text("max 100000")
+                    (directory / "io.max").write_text("")
+                    (directory / "cpuset.cpus").write_text("")
+                    (directory / "cpuset.mems").write_text("")
+                (tight / "memory.max").write_text("10")
+                rows = [
+                    ("plain lineage", self.w.lineage_is_capped(self._cg("plain.scope")), False),
+                    ("tight memory lineage", self.w.lineage_is_capped(self._cg("tight.scope")), True),
+                    ("outside agents slice", self.w.lineage_is_capped("/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope"), True),
+                ]
+                for name, actual, expected in rows:
+                    with self.subTest(name=name):
+                        self.assertEqual(actual, expected)
+                (agent_slice / "pids.max").write_text("1000")
+                unbounded = agent_slice / "unbounded.scope"
+                bounded = agent_slice / "bounded.scope"
+                unbounded.mkdir()
+                bounded.mkdir()
+                (unbounded / "pids.max").write_text("max")
+                (bounded / "pids.max").write_text("10")
+                logs = []
+                old_log = self.w.log
+                self.w.log = logs.append
+                try:
+                    self.assertEqual(self.w.enforce_task_caps(False), [])
+                finally:
+                    self.w.log = old_log
+                self.assertTrue(any("unbounded.scope" in line and "would cap" in line for line in logs))
+                self.assertFalse(any("scope bounded.scope:" in line for line in logs))
+            finally:
+                self.w.CG_ROOT = old_root
+
+    def _cg(self, unit):
+        return f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service/{self.w.SLICE}/{unit}"
 
     def test_job_unit_rows(self):
         orch = "/user.slice/user-1000.slice/user@1000.service/app.slice/orch-validate-vsy-50-12345.service"
@@ -178,9 +345,9 @@ class AgentWardenRules(unittest.TestCase):
     def test_portability_rows(self):
         with scratch() as tmp:
             base = Path(tmp)
-            env = {"HOME": str(base / "home"), "XDG_RUNTIME_DIR": str(base / "run"), "XDG_DATA_HOME": str(base / "data")}
-            for value in env.values():
-                Path(value).mkdir(parents=True, exist_ok=True)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "XDG_DATA_HOME": base / "data"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "XDG_DATA_HOME"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
             default_w = load_warden(env, "agent_warden_default_mise")
         rows = [
             ("mise dir follows MISE_DATA_DIR", self.w.MISE_DATA, self.env["MISE_DATA_DIR"]),
@@ -230,23 +397,36 @@ class AgentWardenRules(unittest.TestCase):
     def test_selftest_subprocess_exits_zero(self):
         with scratch() as tmp:
             base = Path(tmp)
-            env = {**self.env, "HOME": str(base / "home"), "XDG_RUNTIME_DIR": str(base / "run"), "MISE_DATA_DIR": str(base / "mise")}
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
             for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
             result = subprocess.run([sys.executable, str(WARDEN), "--selftest"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_job_unit_guard_mutant_fails_selftest(self):
-        with scratch() as tmp:
-            copy = Path(tmp) / "agent-warden"
-            text = WARDEN.read_text()
-            old = 'os.environ.get("AGENT_WARDEN_JOB_UNITS", "orch-*.service")'
-            self.assertEqual(text.count(old), 1)
-            copy.write_text(text.replace(old, 'os.environ.get("AGENT_WARDEN_JOB_UNITS", "")'))
-            copy.chmod(0o755)
-            env = {**self.env, "PYTHONDONTWRITEBYTECODE": "1"}
-            result = subprocess.run([sys.executable, str(copy), "--selftest"], env=env, capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+    def test_job_unit_guard_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = 'os.environ.get("AGENT_WARDEN_JOB_UNITS", "orch-*.service")'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, 'os.environ.get("AGENT_WARDEN_JOB_UNITS", "")'), "agent_warden_mutant_job_units")
+        orch = "/user.slice/user-1000.slice/user@1000.service/app.slice/orch-validate-vsy-50.service"
+        recs = {
+            100: mutant.Proc(100, ppid=1, comm="bash", argv=["bash"], exe="/usr/bin/bash", cgroup=orch, start=1, marked=True),
+            101: mutant.Proc(101, ppid=100, comm="cargo", argv=["cargo"], exe=f"{mutant.HOME}/.cargo/bin/cargo", cgroup=orch, start=1, marked=True),
+        }
+        moves, _, _, units = mutant.plan(recs, contained=mutant.contained_unit)
+        self.assertIn([100, 101], [sorted(p.pid for p in tree) for _, tree in moves])
+        self.assertEqual(units, [])
+
+    def _confine_env(self, base, bin_dir):
+        env = clean_env({
+            "HOME": base / "home",
+            "XDG_CACHE_HOME": base / "cache",
+            "XDG_RUNTIME_DIR": base / "run",
+            "PATH": str(bin_dir) + os.pathsep + BASE_PATH,
+        })
+        for key in ("HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
+            Path(env[key]).mkdir(parents=True, exist_ok=True)
+        return env
 
     def test_agent_confine_tmpdir_rows(self):
         with scratch() as tmp:
@@ -255,23 +435,44 @@ class AgentWardenRules(unittest.TestCase):
             bin_dir.mkdir(parents=True)
             (bin_dir / "systemd-run").write_text("#!/bin/sh\nexit 1\n")
             (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+            (bin_dir / "grep").write_text("#!/bin/sh\nexit 1\n")
             for path in bin_dir.iterdir():
                 path.chmod(0o755)
-            env = {
-                "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
-                "HOME": str(base / "home"),
-                "XDG_CACHE_HOME": str(base / "cache"),
-                "XDG_RUNTIME_DIR": str(base / "run"),
-            }
-            for key in ("HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
-                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            env = self._confine_env(base, bin_dir)
             result = subprocess.run([str(ROOT / "warden" / "agent-confine"), "env"], env=env, capture_output=True, text=True)
             expected = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
             created = Path(expected).is_dir()
         rows = [
-            ("launcher succeeds with systemd-run unavailable", result.returncode, 0),
-            ("exports default TMPDIR", f"TMPDIR={expected}" in result.stdout.splitlines(), True),
-            ("creates default TMPDIR", created, True),
+            ("outside-slice branch succeeds with systemd-run unavailable", result.returncode, 0),
+            ("outside-slice branch exports default TMPDIR", f"TMPDIR={expected}" in result.stdout.splitlines(), True),
+            ("outside-slice branch creates default TMPDIR", created, True),
+        ]
+        for name, actual, expected_value in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected_value)
+
+    def test_agent_confine_tmpdir_nested_plain_lineage_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir(parents=True)
+            launcher = base / "agent-confine"
+            shutil.copy2(ROOT / "warden" / "agent-confine", launcher)
+            helper = base / "agent-confine-lineage-capped"
+            helper.write_text("#!/bin/sh\nexit 3\n")
+            (bin_dir / "grep").write_text("#!/bin/sh\nexit 0\n")
+            (bin_dir / "systemd-run").write_text("#!/bin/sh\nexit 1\n")
+            (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+            for path in [launcher, helper, *bin_dir.iterdir()]:
+                path.chmod(0o755)
+            env = self._confine_env(base, bin_dir)
+            result = subprocess.run([str(launcher), "env"], env=env, capture_output=True, text=True)
+            expected = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
+            created = Path(expected).is_dir()
+        rows = [
+            ("nested plain-lineage branch succeeds with systemd-run unavailable", result.returncode, 0),
+            ("nested plain-lineage branch exports default TMPDIR", f"TMPDIR={expected}" in result.stdout.splitlines(), True),
+            ("nested plain-lineage branch creates default TMPDIR", created, True),
         ]
         for name, actual, expected_value in rows:
             with self.subTest(name=name):

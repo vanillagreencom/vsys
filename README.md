@@ -39,7 +39,6 @@ vsys requires Linux with cgroup v2. It does not run on macOS or Windows.
 
 vsys reads Linux cgroup v2, process files, and configured system reports with your user permissions. It finds configured AI tools and watched systemd scopes. It groups their processes by cgroup and records resource use over time. It reads compiler, linker, build cache, and GNU make data from the same processes. It can freeze, thaw, or stop a systemd scope only when write mode is on and you confirm the action.
 
-
 ## vsys observes; the warden corrects
 
 The vsys dashboard reads system state and only changes a lane after you enable write mode and confirm the action. The optional agent warden is separate. It runs from a systemd user timer, moves escaped agent processes back into `agents.slice`, caps unbounded agent scopes, and stops abandoned harmful scopes.
