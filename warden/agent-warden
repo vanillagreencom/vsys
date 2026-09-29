@@ -1334,11 +1334,7 @@ def emit_event(st, kind, *, scope=None, pid=None, processes=None, near=None, now
     last_event = max((event.get("id") for event in events
                       if isinstance(event, dict) and isinstance(event.get("id"), int)
                       and not isinstance(event.get("id"), bool)), default=0)
-    try:
-        status_floor = int(st.get("_event_id_floor") or 0)
-    except (TypeError, ValueError):
-        status_floor = 0
-    seq = max(previous + 1, last_event + 1, status_floor + 1, _now_millis(now))
+    seq = max(previous + 1, last_event + 1, _now_millis(now))
     st["event_seq"] = seq
     event = {
         "id": seq,
@@ -1806,7 +1802,7 @@ class State:
             self.st = default_state()
             self.st["_state_readable"] = missing
         if missing or not self.st["_state_readable"]:
-            self.st["_event_id_floor"] = status_event_floor()
+            self.st["event_seq"] = max(int(self.st.get("event_seq") or 0), status_event_floor())
         return self.st
 
     def __exit__(self, *exc):

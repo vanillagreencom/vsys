@@ -1098,6 +1098,16 @@ class AgentWardenRules(unittest.TestCase):
                 self.w.STATUS.write_text(json.dumps({"events": [
                     {"id": 9000, "time": 1, "kind": "moved", "scope": None, "pid": None, "processes": None, "near": None},
                 ]}))
+                with self.w.State(status="report") as st:
+                    st["_tick"] = {"procs": {}, "moves": [], "waiting": [], "waiting_events": [], "orphans": [], "contained": [], "error": None}
+                self.assertEqual(json.loads(self.w.STATE.read_text())["event_seq"], 9000)
+                old_scan, old_plan = self.w.scan, self.w.plan
+                self.w.scan = lambda: {}
+                self.w.plan = lambda procs, only=None: ([], [], [], [])
+                try:
+                    self.assertEqual(self.w.status(), 0)
+                finally:
+                    self.w.scan, self.w.plan = old_scan, old_plan
                 with self.w.State() as st:
                     fourth = self.w.emit_event(st, "moved", now=1)["id"]
                 self.assertGreater(fourth, 9000)
