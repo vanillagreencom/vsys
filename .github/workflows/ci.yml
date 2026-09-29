@@ -49,13 +49,18 @@ jobs:
           cp packaging/vsys-git/PKGBUILD build/arch-package/PKGBUILD
           python3 - <<'PY'
           from pathlib import Path
+          import subprocess
           path = Path("build/arch-package/PKGBUILD")
           text = path.read_text()
           old = 'source=("${pkgname}::git+${url}.git")'
-          new = f'source=("${{pkgname}}::git+file://{Path.cwd()}")'
-          if old not in text:
+          commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          new = f'source=("${{pkgname}}::git+file://{Path.cwd()}#commit={commit}")'
+          if text.count(old) != 1:
               raise SystemExit("source line not found")
-          path.write_text(text.replace(old, new))
+          updated = text.replace(old, new)
+          if new not in updated:
+              raise SystemExit("source rewrite failed")
+          path.write_text(updated)
           PY
           cd build/arch-package
           makepkg --noconfirm

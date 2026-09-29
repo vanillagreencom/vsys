@@ -28,6 +28,7 @@ class PackageFileListCheck(unittest.TestCase):
         for path in (
             ".github/workflows/release.yml",
             ".github/workflows/aur-git.yml",
+            ".github/workflows/ci.yml",
             "packaging/vsys-runtime-files.txt",
             "packaging/stage-runtime-files.sh",
             "packaging/vsys/PKGBUILD",
@@ -75,6 +76,13 @@ class PackageFileListCheck(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("systemd/user", result.stderr)
 
+    def test_arch_package_source_without_commit_fails(self) -> None:
+        workflow = self.repo / ".github" / "workflows" / "ci.yml"
+        workflow.write_text(workflow.read_text().replace("#commit={commit}", ""))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pin the local git source", result.stderr)
+
     def test_ownership_preserving_release_copy_fails(self) -> None:
         pkgbuild = self.repo / "packaging" / "vsys" / "PKGBUILD"
         pkgbuild.write_text(pkgbuild.read_text().replace(
@@ -97,6 +105,7 @@ class InstallScript(unittest.TestCase):
         self.asset = "vsys-vfixture-linux-x86_64.tar.gz"
         self.bin_dir = self.root / "home" / ".local" / "bin"
         self.cache = self.root / "cache"
+        self.fail_binary_replace = False
 
     def make_archive(self, shape: str) -> None:
         stage = self.root / f"stage-{shape}"
@@ -155,6 +164,19 @@ class InstallScript(unittest.TestCase):
             "esac\n"
         )
         curl.chmod(0o755)
+        if self.fail_binary_replace:
+            system_mv = shutil.which("mv", path=os.environ["PATH"])
+            if system_mv is None:
+                raise AssertionError("mv not found")
+            mv = commands / "mv"
+            mv.write_text(
+                "#!/bin/sh\n"
+                "case \"$1:$2\" in\n"
+                "  */.vsys.new.*:*/bin/vsys) exit 37 ;;\n"
+                "esac\n"
+                f"exec {system_mv} \"$@\"\n"
+            )
+            mv.chmod(0o755)
         return commands
 
     def run_install(self) -> subprocess.CompletedProcess[str]:
@@ -168,6 +190,17 @@ class InstallScript(unittest.TestCase):
             "XDG_CACHE_HOME": str(self.cache),
         }
         return subprocess.run(["bash", str(INSTALL)], env=env, capture_output=True, text=True)
+
+    def lib_root(self) -> Path:
+        return self.root / "home" / ".local" / "lib" / "vsys"
+
+    def assert_full_warden_tree_installed(self) -> None:
+        root = self.lib_root()
+        self.assertTrue((root / "warden" / "install").is_file())
+        self.assertTrue(os.access(root / "warden" / "install", os.X_OK))
+        self.assertTrue((root / "warden" / "agent-warden").is_file())
+        self.assertTrue((root / "warden" / "systemd" / "agent-warden.service").is_file())
+        self.assertTrue((root / "data" / "agent-tools.json").is_file())
 
     def test_symlinked_lib_refusal_leaves_existing_binary(self) -> None:
         self.make_archive("full")
@@ -185,6 +218,46 @@ class InstallScript(unittest.TestCase):
         self.assertIn("refusing to replace symlink", result.stderr)
         self.assertEqual(binary.read_text(), "old binary\n")
         self.assertTrue((lib / "vsys").is_symlink())
+
+    def test_full_archive_installs_binary_and_warden_tree(self) -> None:
+        self.make_archive("full")
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
+        self.assert_full_warden_tree_installed()
+        self.assertIn("Optional warden setup: vsys warden install", result.stdout)
+
+    def test_full_archive_replaces_existing_warden_tree(self) -> None:
+        self.make_archive("full")
+        self.bin_dir.mkdir(parents=True)
+        old_binary = self.bin_dir / "vsys"
+        old_binary.write_text("old binary\n")
+        old_binary.chmod(0o755)
+        old_marker = self.lib_root() / "old.txt"
+        old_marker.parent.mkdir(parents=True)
+        old_marker.write_text("old tree\n")
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(old_binary.read_text(), "full binary\n")
+        self.assert_full_warden_tree_installed()
+        self.assertFalse(old_marker.exists())
+
+    def test_binary_replace_failure_rolls_back_warden_tree(self) -> None:
+        self.make_archive("full")
+        self.fail_binary_replace = True
+        self.bin_dir.mkdir(parents=True)
+        old_binary = self.bin_dir / "vsys"
+        old_binary.write_text("old binary\n")
+        old_binary.chmod(0o755)
+        old_marker = self.lib_root() / "old.txt"
+        old_marker.parent.mkdir(parents=True)
+        old_marker.write_text("old tree\n")
+        result = self.run_install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not replace", result.stderr)
+        self.assertEqual(old_binary.read_text(), "old binary\n")
+        self.assertEqual(old_marker.read_text(), "old tree\n")
+        self.assertFalse((self.lib_root() / "warden" / "install").exists())
 
     def test_legacy_archive_installs_binary_without_warden(self) -> None:
         self.make_archive("legacy")

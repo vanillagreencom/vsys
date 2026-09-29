@@ -123,6 +123,12 @@ def check_aur_git_workflow(repo: Path) -> None:
             fail(f"aur-git workflow path missing value={required}")
 
 
+def check_ci_workflow(repo: Path) -> None:
+    text = read_text(repo / ".github" / "workflows" / "ci.yml")
+    if "#commit={commit}" not in text:
+        fail("arch-package workflow does not pin the local git source to HEAD")
+
+
 def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:
     text = read_text(repo / "packaging" / name / "PKGBUILD")
     for dependency in ("'python'", "'systemd-libs'"):
@@ -190,6 +196,7 @@ def run(repo: Path, installed_root: Path | None) -> None:
     check_stage_script(repo, rows)
     check_release_workflow(repo)
     check_aur_git_workflow(repo)
+    check_ci_workflow(repo)
     check_pkgbuild(repo, "vsys", release=True)
     check_pkgbuild(repo, "vsys-git", release=False)
     check_install_sh(repo)
