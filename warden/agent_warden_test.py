@@ -339,6 +339,27 @@ class AgentWardenRules(unittest.TestCase):
         source = WARDEN.read_text()
         self.assertIn("ctypes.c_uint64(SCOPE_CPU_WEIGHT)", source)
 
+    def test_warden_scope_name_rows(self):
+        build = self.P(810, 1, "cargo", ["cargo"], exe=f"{self.w.HOME}/.cargo/bin/cargo", start=44)
+        session = self.P(811, 1, "goose", ["goose"], exe=f"{self.w.HOME}/bin/goose", start=45, marked=True)
+        rows = [
+            ("unconfined build", self.w.warden_scope_name(build, "unconfined build"), "agent-warden-build-810-44.scope"),
+            ("escaped build root", self.w.warden_scope_name(build, "escaped launch"), "agent-warden-build-810-44.scope"),
+            ("escaped session root", self.w.warden_scope_name(session, "escaped launch"), "agent-warden-811-45.scope"),
+            ("nested session", self.w.warden_scope_name(session, "nested session"), "agent-warden-811-45.scope"),
+        ]
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_warden_scope_name_build_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = 'prefix = "agent-warden-build" if reason == "unconfined build" or (reason == "escaped launch" and root.is_build) else "agent-warden"'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, 'prefix = "agent-warden"'), "agent_warden_mutant_scope_name")
+        build = mutant.Proc(810, ppid=1, comm="cargo", argv=["cargo"], exe=f"{mutant.HOME}/.cargo/bin/cargo", cgroup=self.A, start=44)
+        self.assertNotEqual(mutant.warden_scope_name(build, "unconfined build"), "agent-warden-build-810-44.scope")
+
     def test_move_result_classification_rows(self):
         root = self.P(900, 1, "codex", ["codex"], self.S)
         child = self.P(901, 900, "bash", ["bash"], self.S)
@@ -421,7 +442,10 @@ class AgentWardenRules(unittest.TestCase):
         rooted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-300-123.scope"
         root_gone = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-301-123.scope"
         inside_parent = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-302-123.scope"
-        adopted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-303-123.scope"
+        adopted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-build-303-123.scope"
+        warden_rooted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-304-123.scope"
+        warden_gone = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-305-123.scope"
+        warden_reused = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-306-123.scope"
         recs = {
             mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
             200: self.P(200, mgr, "bun", ["bun"], leak, exe="/usr/bin/bun"),
@@ -437,6 +461,11 @@ class AgentWardenRules(unittest.TestCase):
             4020: self.P(4020, mgr, "bash", ["bash"], inside_parent, exe="/usr/bin/bash", marked=True),
             303: self.P(303, mgr, "rustc", ["rustc"], adopted, exe=f"{self.w.HOME}/.rustup/x/rustc"),
             4030: self.P(4030, 303, "rustc", ["rustc"], adopted, exe=f"{self.w.HOME}/.rustup/x/rustc"),
+            304: self.P(304, mgr, "goose", ["goose"], warden_rooted, exe=f"{self.w.HOME}/bin/goose", marked=True, start=123),
+            **{500 + i: self.P(500 + i, 304, "rustc", ["rustc"], warden_rooted, exe=f"{self.w.HOME}/.rustup/x/rustc", marked=True) for i in range(50)},
+            4050: self.P(4050, mgr, "rustc", ["rustc"], warden_gone, exe=f"{self.w.HOME}/.rustup/x/rustc", marked=True),
+            306: self.P(306, mgr, "goose", ["goose"], warden_reused, exe=f"{self.w.HOME}/bin/goose", marked=True, start=999),
+            4060: self.P(4060, 306, "rustc", ["rustc"], warden_reused, exe=f"{self.w.HOME}/.rustup/x/rustc", marked=True),
         }
         units = {unit for unit, _ in self.w.orphans(recs, self.w.manager_pids(recs))}
         rows = [
@@ -446,7 +475,10 @@ class AgentWardenRules(unittest.TestCase):
             ("agent-confine live launch root protects unlisted agent", "agent-confine-300-123.scope" in units, False),
             ("agent-confine scope with missing launch root is orphan", "agent-confine-301-123.scope" in units, True),
             ("root pid parented inside scope does not protect", "agent-confine-302-123.scope" in units, True),
-            ("agent-warden scope with live root stays reapable", "agent-warden-303-123.scope" in units, True),
+            ("agent-warden build scope with live root stays reapable", "agent-warden-build-303-123.scope" in units, True),
+            ("agent-warden session scope with live root is protected", "agent-warden-304-123.scope" in units, False),
+            ("agent-warden session scope with missing root is orphan", "agent-warden-305-123.scope" in units, True),
+            ("agent-warden session scope with reused pid is orphan", "agent-warden-306-123.scope" in units, True),
             ("process count harm", self.w.scope_harm(5140, 0.0), True),
             ("cpu harm", self.w.scope_harm(1, 0.8), True),
             ("quiet orphan not harmful", self.w.scope_harm(6, 0.0), False),
@@ -583,20 +615,20 @@ class AgentWardenRules(unittest.TestCase):
         self.assertIn([100, 101], [sorted(p.pid for p in tree) for _, tree in moves])
         self.assertEqual(units, [])
 
-    def test_agent_confine_root_mutant_fails(self):
+    def test_launch_root_mutant_fails(self):
         text = WARDEN.read_text()
-        old = '    if agent_confine_root_alive(unit, members):\n        return False\n'
+        old = '    if launch_root_alive(unit, members):\n        return False\n'
         self.assertEqual(text.count(old), 1)
         mutant = self.load_mutant(text.replace(old, ""), "agent_warden_mutant_launch_root")
         mgr = 4000
-        rooted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-300-123.scope"
+        rooted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-300-123.scope"
         recs = {
             mgr: mutant.Proc(mgr, ppid=1, comm="systemd", argv=["/usr/lib/systemd/systemd", "--user"], exe="/usr/lib/systemd/systemd", cgroup="/user.slice", start=1),
-            300: mutant.Proc(300, ppid=mgr, comm="goose", argv=["goose"], exe=f"{mutant.HOME}/bin/goose", cgroup=rooted, start=1, marked=True),
+            300: mutant.Proc(300, ppid=mgr, comm="goose", argv=["goose"], exe=f"{mutant.HOME}/bin/goose", cgroup=rooted, start=123, marked=True),
             301: mutant.Proc(301, ppid=300, comm="rustc", argv=["rustc"], exe=f"{mutant.HOME}/.rustup/x/rustc", cgroup=rooted, start=1, marked=True),
         }
         units = {unit for unit, _ in mutant.orphans(recs, mutant.manager_pids(recs))}
-        self.assertIn("agent-confine-300-123.scope", units)
+        self.assertIn("agent-warden-300-123.scope", units)
 
     def _confine_env(self, base, bin_dir):
         env = clean_env({

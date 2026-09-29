@@ -439,15 +439,21 @@ def scope_members(procs):
     return by_scope
 
 
-def agent_confine_root_alive(unit, members):
-    """True when an agent-confine scope still contains the process it launched."""
+def launch_root_alive(unit, members):
+    """True when a scope still contains the non-build process its name identifies."""
     m = re.fullmatch(r"agent-confine-(\d+)-[^/]+\.scope", unit or "")
-    if not m:
+    needs_start = False
+    if m is None:
+        m = re.fullmatch(r"agent-warden-(\d+)-(\d+)\.scope", unit or "")
+        needs_start = True
+    if m is None:
         return False
     root_pid = int(m.group(1))
     pids = {p.pid for p in members}
     root = next((p for p in members if p.pid == root_pid), None)
-    return root is not None and root.ppid not in pids
+    if root is None or root.ppid in pids:
+        return False
+    return not needs_start or root.start == int(m.group(2))
 
 
 def _is_orphan(unit, members, managers):
@@ -457,13 +463,13 @@ def _is_orphan(unit, members, managers):
     init/the manager. A live agent (even headless, even with its launch shell
     gone) is never junk to reap; nor is a scope still held by a live external
     process (a pane shell, another subreaper). A still-running launch root in an
-    agent-confine scope also protects unlisted agent CLIs. Only leftover
+    agent-confine and non-build agent-warden scopes also protect unlisted agent CLIs. Only leftover
     non-agent processes (dev servers, npm/bun, a stuck build) qualify."""
     if not members or any(p.tty for p in members):
         return False
     if any(p.is_agent for p in members):
         return False                 # a live agent session, headless or not
-    if agent_confine_root_alive(unit, members):
+    if launch_root_alive(unit, members):
         return False
     pids = {p.pid for p in members}
     reparented = False
@@ -941,10 +947,15 @@ def branch_ok(fresh, member, root, reason):
     return False
 
 
+def warden_scope_name(root, reason):
+    prefix = "agent-warden-build" if reason == "unconfined build" or (reason == "escaped launch" and root.is_build) else "agent-warden"
+    return f"{prefix}-{root.pid}-{root.start}.scope"
+
+
 def move(tree, reason, bus):
     root = tree[0]
     nested = reason == "nested session"
-    name = f"agent-warden-{root.pid}-{root.start}.scope"
+    name = warden_scope_name(root, reason)
     live, fds = [], []
     try:
         fresh = scan()  # ancestry is re-read, not trusted from the planning snapshot
@@ -1305,7 +1316,10 @@ def selftest():
     ROOTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-300-123.scope"
     ROOT_GONE = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-301-123.scope"
     INSIDE_PARENT = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-302-123.scope"
-    ADOPTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-303-123.scope"
+    ADOPTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-build-303-123.scope"
+    WARDEN_ROOTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-304-123.scope"
+    WARDEN_GONE = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-305-123.scope"
+    WARDEN_REUSED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-306-123.scope"
     orec = {
         MGR: P(MGR, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
         # leaked bun servers reparented to the manager, no terminal -> orphan
@@ -1325,6 +1339,11 @@ def selftest():
         4020: P(4020, MGR, "bash", ["bash"], INSIDE_PARENT, exe="/usr/bin/bash", marked=True),
         303: P(303, MGR, "rustc", ["rustc"], ADOPTED, exe=f"{HOME}/.rustup/x/rustc"),
         4030: P(4030, 303, "rustc", ["rustc"], ADOPTED, exe=f"{HOME}/.rustup/x/rustc"),
+        304: P(304, MGR, "goose", ["goose"], WARDEN_ROOTED, exe=f"{HOME}/bin/goose", marked=True, start=123),
+        **{500 + i: P(500 + i, 304, "rustc", ["rustc"], WARDEN_ROOTED, exe=f"{HOME}/.rustup/x/rustc", marked=True) for i in range(50)},
+        4050: P(4050, MGR, "rustc", ["rustc"], WARDEN_GONE, exe=f"{HOME}/.rustup/x/rustc", marked=True),
+        306: P(306, MGR, "goose", ["goose"], WARDEN_REUSED, exe=f"{HOME}/bin/goose", marked=True, start=999),
+        4060: P(4060, 306, "rustc", ["rustc"], WARDEN_REUSED, exe=f"{HOME}/.rustup/x/rustc", marked=True),
     }
     units = {u for u, _ in orphans(orec, manager_pids(orec))}
     check("orphaned bun scope (reparented, no tty) is an orphan", "agent-confine-leak.scope" in units)
@@ -1340,7 +1359,10 @@ def selftest():
     check("agent-confine scope with a live launch root is not an orphan", "agent-confine-300-123.scope" not in units)
     check("agent-confine scope with the launch root gone is still an orphan", "agent-confine-301-123.scope" in units)
     check("agent-confine root pid parented inside the scope does not protect", "agent-confine-302-123.scope" in units)
-    check("agent-warden adopted build root stays reapable", "agent-warden-303-123.scope" in units)
+    check("agent-warden adopted build root stays reapable", "agent-warden-build-303-123.scope" in units)
+    check("agent-warden scope with a live launch root is not an orphan", "agent-warden-304-123.scope" not in units)
+    check("agent-warden scope with the launch root gone is still an orphan", "agent-warden-305-123.scope" in units)
+    check("agent-warden scope with reused root pid is still an orphan", "agent-warden-306-123.scope" in units)
     check("a live agent in a delegated child cgroup protects the whole scope",
           not orphans(child_case, manager_pids(child_case)))
     # a scope still parented by a live pane shell (no tty on the members) is attached
