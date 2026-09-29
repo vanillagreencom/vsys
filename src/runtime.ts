@@ -1,7 +1,16 @@
 import { createCollector } from "./collect/collector";
 import type { SccacheCollector } from "./collect/sccache";
 import { collectionKeys } from "./collect/settings";
-import { type Config, saveConfig, validate } from "./config/config";
+import {
+  agentToolsPath as defaultAgentToolsPath,
+  saveAgentToolNames,
+} from "./config/agent-tools";
+import {
+  type Config,
+  sameStringSet,
+  saveConfig,
+  validate,
+} from "./config/config";
 import { notify } from "./model/alerts";
 import type { Snapshot } from "./model/types";
 import type { History } from "./store/history";
@@ -35,6 +44,7 @@ export class Session {
     private events: Events,
     private makeSource: SourceFactory = (config, previous) =>
       createCollector(config, true, previous),
+    private agentToolsPath = defaultAgentToolsPath,
   ) {}
   start(): void {
     this.schedule(0);
@@ -102,16 +112,27 @@ export class Session {
   async configure(input: Config): Promise<void> {
     if (this.stopped) throw new Error("Session has stopped");
     if (this.applying) throw new Error("Settings are already being saved");
-    const next = validate(input);
+    let next = validate(input);
     this.applying = true;
     this.generation++;
     clearTimeout(this.timer);
     let nextHistory = this.history;
     let nextSource = this.source;
     try {
-      const collectionChanged = collectionKeys.some(
-        (k) => JSON.stringify(this.config[k]) !== JSON.stringify(next[k]),
+      const collectionChanged = collectionKeys.some((k) =>
+        k === "agentTools"
+          ? !sameStringSet(this.config.agentTools, next.agentTools)
+          : JSON.stringify(this.config[k]) !== JSON.stringify(next[k]),
       );
+      if (!sameStringSet(this.config.agentTools, next.agentTools)) {
+        const agentTools = await saveAgentToolNames(
+          next.agentTools,
+          this.agentToolsPath,
+        );
+        // The shared overlay may update before a later config write fails; the
+        // active session still changes only after every save succeeds.
+        next = { ...next, agentTools };
+      }
       nextSource = collectionChanged
         ? await this.makeSource(next, this.source)
         : this.source;
@@ -122,7 +143,7 @@ export class Session {
         )
       )
         nextHistory = this.history.reconfigure(next);
-      await saveConfig(next, this.configPath);
+      await saveConfig(next, this.configPath, this.agentToolsPath);
       if (this.stopped) {
         if (nextHistory !== this.history) nextHistory.close();
         return;

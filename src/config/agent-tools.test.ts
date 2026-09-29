@@ -6,10 +6,11 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   loadAgentToolNames,
   parseAgentToolsDocument,
+  saveAgentToolNames,
   shippedAgentTools,
 } from "./agent-tools";
 
@@ -95,6 +96,70 @@ test("agent tools loader refuses malformed overlay and names the path", async ()
   const path = join(root, "agent-tools.json");
   writeFileSync(path, "{");
   expect(loadAgentToolNames(path)).rejects.toThrow(path);
+});
+
+test("agent tools writer saves only overlay tools and preserves overlay signals", async () => {
+  const root = scratch("agent-tools-save");
+  const path = join(root, ".config/vsys/agent-tools.json");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        version: 1,
+        tools: [
+          { name: "local-agent", mise: ["local-agent"] },
+          { name: "removed-agent", mise: ["removed-agent"] },
+        ],
+        desktopExePrefixes: ["/apps/"],
+        bundledCliSuffixes: ["/bin/agent"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const names = [...shippedNames, "local-agent", "new-agent"];
+  expect(await saveAgentToolNames(names, path)).toEqual(names);
+  expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+    version: 1,
+    tools: [
+      { name: "local-agent", mise: ["local-agent"] },
+      { name: "new-agent", mise: [] },
+    ],
+    desktopExePrefixes: ["/apps/"],
+    bundledCliSuffixes: ["/bin/agent"],
+  });
+  expect(await loadAgentToolNames(path)).toEqual(names);
+});
+
+test("agent tools writer refuses removing shipped names before writing", async () => {
+  const root = scratch("agent-tools-save-missing-shipped");
+  const path = join(root, ".config/vsys/agent-tools.json");
+  await expect(saveAgentToolNames(shippedNames.slice(1), path)).rejects.toThrow(
+    "Shipped names cannot be removed",
+  );
+  await expect(loadAgentToolNames(path)).resolves.toEqual(shippedNames);
+});
+
+test("agent tools writer refuses malformed existing overlays", async () => {
+  const root = scratch("agent-tools-save-bad-existing");
+  const path = join(root, ".config/vsys/agent-tools.json");
+  mkdirSync(dirname(path), { recursive: true });
+  const body = `${JSON.stringify(
+    {
+      version: 1,
+      tools: [{ name: shippedNames[0], mise: [] }],
+      desktopExePrefixes: [],
+      bundledCliSuffixes: [],
+    },
+    null,
+    2,
+  )}\n`;
+  writeFileSync(path, body);
+  await expect(
+    saveAgentToolNames([...shippedNames, "new-agent"], path),
+  ).rejects.toThrow(path);
+  expect(readFileSync(path, "utf8")).toBe(body);
 });
 
 test("agent tool defaults match the shipped JSON file", () => {

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SccacheCollector } from "./collect/sccache";
 import { loadConfig } from "./config/config";
@@ -32,6 +33,8 @@ test("refresh changes apply immediately and preserve collected history", async (
         collectedAgain.reject(error);
       },
     },
+    undefined,
+    f.agentToolsPath,
   );
   try {
     session.start();
@@ -70,6 +73,8 @@ test("a config change waits for the in-flight source before sampling again", asy
     },
     h,
     { frame: () => resumed.resolve(), error: (error) => resumed.reject(error) },
+    undefined,
+    f.agentToolsPath,
   );
   try {
     session.start();
@@ -96,6 +101,8 @@ test("failed settings writes leave the active history and source usable", async 
     { sample: async () => emptySnapshot(2000) },
     h,
     { frame: () => {}, error: () => {} },
+    undefined,
+    f.agentToolsPath,
   );
   try {
     await expect(
@@ -125,6 +132,8 @@ test("source jobs close even when history shutdown fails", () => {
     },
     h,
     { frame: () => {}, error: () => {} },
+    undefined,
+    f.agentToolsPath,
   );
   try {
     expect(() => session.stop()).toThrow();
@@ -152,6 +161,8 @@ test("a source failure still reaches terminal cleanup when history close fails",
     },
     h,
     { frame: () => {}, error: reported.resolve },
+    undefined,
+    f.agentToolsPath,
   );
   try {
     session.start();
@@ -181,6 +192,7 @@ test("a settings change hands the running source to its replacement", async () =
       handed = previous;
       return { sample, sccache: previous.sccache };
     },
+    f.agentToolsPath,
   );
   try {
     session.start();
@@ -210,6 +222,7 @@ test("a saved collection setting rebuilds the source before the next sample", as
       built.push(c.smartDir);
       return { sample: async () => emptySnapshot(2000) };
     },
+    f.agentToolsPath,
   );
   try {
     session.start();
@@ -223,6 +236,147 @@ test("a saved collection setting rebuilds the source before the next sample", as
     expect(built).toEqual([]);
     await session.configure({ ...f.config, smartDir: join(f.root, "smart2") });
     expect(built).toEqual([join(f.root, "smart2")]);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+
+test("editing agent tools saves the shared overlay and leaves config unpinned", async () => {
+  const f = fixture();
+  const configPath = join(f.root, "config.toml");
+  f.write(
+    f.agentToolsPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        tools: [{ name: "local-agent", mise: ["local-agent"] }],
+        desktopExePrefixes: ["/apps/"],
+        bundledCliSuffixes: ["/bin/agent"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const config = {
+    ...f.config,
+    agentTools: [...f.config.agentTools, "local-agent"],
+  };
+  const h = new History(config);
+  const built: string[][] = [];
+  const session = new Session(
+    config,
+    configPath,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    async (next) => {
+      built.push(next.agentTools);
+      return { sample: async () => emptySnapshot(2000) };
+    },
+    f.agentToolsPath,
+  );
+  try {
+    await session.configure({
+      ...config,
+      agentTools: [...config.agentTools, "new-agent"],
+    });
+    const expected = [...f.config.agentTools, "local-agent", "new-agent"];
+    expect(built).toEqual([expected]);
+    expect(readFileSync(configPath, "utf8")).not.toContain("agentTools");
+    expect(JSON.parse(readFileSync(f.agentToolsPath, "utf8"))).toEqual({
+      version: 1,
+      tools: [
+        { name: "local-agent", mise: ["local-agent"] },
+        { name: "new-agent", mise: [] },
+      ],
+      desktopExePrefixes: ["/apps/"],
+      bundledCliSuffixes: ["/bin/agent"],
+    });
+    expect((await loadConfig(configPath, f.agentToolsPath)).agentTools).toEqual(
+      expected,
+    );
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+
+test("removing a shipped agent tool is refused before settings writes", async () => {
+  const f = fixture();
+  const configPath = join(f.root, "config.toml");
+  const h = new History(f.config);
+  const session = new Session(
+    f.config,
+    configPath,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    async () => {
+      throw new Error("source should not rebuild after refused agent tools");
+    },
+    f.agentToolsPath,
+  );
+  try {
+    await expect(
+      session.configure({
+        ...f.config,
+        agentTools: f.config.agentTools.slice(1),
+      }),
+    ).rejects.toThrow("Shipped names cannot be removed");
+    expect(existsSync(configPath)).toBe(false);
+    expect(existsSync(f.agentToolsPath)).toBe(false);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+
+test("settings agent tools edits match the warden overlay loader", async () => {
+  const f = fixture();
+  const configPath = join(f.root, ".config/vsys/config.toml");
+  const h = new History(f.config);
+  const session = new Session(
+    f.config,
+    configPath,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    async () => ({ sample: async () => emptySnapshot(2000) }),
+    f.agentToolsPath,
+  );
+  try {
+    await session.configure({
+      ...f.config,
+      agentTools: [...f.config.agentTools, "parity-agent"],
+    });
+    const vsysNames = (await loadConfig(configPath, f.agentToolsPath))
+      .agentTools;
+    const child = Bun.spawn(
+      [
+        "python3",
+        "-c",
+        'import importlib.machinery, json; module = importlib.machinery.SourceFileLoader("agent_warden_vsys_test", "warden/agent-warden").load_module(); print(json.dumps([tool["name"] for tool in module.AGENT_TOOLS["tools"]]))',
+      ],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: f.root,
+          XDG_DATA_HOME: join(f.root, ".local/share"),
+          XDG_RUNTIME_DIR: join(f.root, "run"),
+          PYTHONDONTWRITEBYTECODE: "1",
+        },
+      },
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(code, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(vsysNames);
   } finally {
     session.stop();
     f.cleanup();

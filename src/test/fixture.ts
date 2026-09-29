@@ -1,11 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
@@ -21,7 +14,8 @@ import type {
 
 /** Fake kernel files never require systemd, mounted test disks, or live agents. */
 export function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "vsys-test-"));
+  const root = join(process.cwd(), "tmp", `vsys-test-${crypto.randomUUID()}`);
+  mkdirSync(root, { recursive: true });
   const config = defaults();
   config.cgroupRoot = join(root, "cgroup");
   config.cgroupTop = join(root, "cgroup-root");

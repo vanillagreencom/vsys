@@ -68,7 +68,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   },
   agentTools: {
     label: "Agent programs",
-    help: "Program names vsys counts as an agent.",
+    help: "Program names saved to the shared agent-tools file. Shipped names cannot be removed.",
   },
   excludeArgv: {
     label: "Not an agent",

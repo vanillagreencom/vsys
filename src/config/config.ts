@@ -1,20 +1,13 @@
-import {
-  lstat,
-  mkdir,
-  readFile,
-  realpath,
-  rename,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { Rule } from "../model/types";
 import {
   agentToolsPath,
   loadAgentToolNames,
   shippedAgentTools,
 } from "./agent-tools";
+import { writeFileAtomic } from "./atomic";
 import { normalizeKey } from "./keys";
 
 export const columns = [
@@ -248,6 +241,20 @@ export function defaults(
   };
 }
 
+export function sameStringSet(left: string[], right: string[]): boolean {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return (
+    leftSet.size === rightSet.size && [...leftSet].every((v) => rightSet.has(v))
+  );
+}
+
+function sameValue(key: string, left: unknown, right: unknown): boolean {
+  if (key === "agentTools" && Array.isArray(left) && Array.isArray(right))
+    return sameStringSet(left, right);
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 /** Reject unknown settings and invalid values before changing a running collector. */
 export function validate(value: unknown, base = defaults()): Config {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -380,43 +387,51 @@ export async function loadConfig(
 ): Promise<Config> {
   const base = defaults(await loadAgentToolNames(toolsPath));
   try {
-    return validate(Bun.TOML.parse(await readFile(path, "utf8")), base);
+    const input = Bun.TOML.parse(await readFile(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    if (
+      Array.isArray(input.agentTools) &&
+      input.agentTools.every((name) => typeof name === "string") &&
+      new Set(input.agentTools).size === input.agentTools.length &&
+      (sameStringSet(
+        input.agentTools,
+        shippedAgentTools.tools.map((tool) => tool.name),
+      ) ||
+        sameStringSet(input.agentTools, base.agentTools))
+    ) {
+      const rest = { ...input };
+      delete rest.agentTools;
+      return validate(rest, base);
+    }
+    return validate(input, base);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return base;
     throw error;
   }
 }
 /** TOML values here are strings, numbers, booleans and arrays of strings. */
-export function serialize(c: Config): string {
-  const { keys, ...values } = validate(c);
-  return `${Object.entries(values)
-    .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
-    .join("\n")}\n\n[keys]\n${Object.entries(keys)
-    .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
-    .join("\n")}\n`;
+export function serialize(c: Config, base = defaults()): string {
+  const { keys, ...values } = validate(c, base);
+  const valueLines = Object.entries(values)
+    .filter(([key, value]) => !sameValue(key, value, base[key as keyof Config]))
+    .map(([key, value]) => `${key} = ${JSON.stringify(value)}`);
+  const keyLines = Object.entries(keys)
+    .filter(([key, value]) => value !== base.keys[key])
+    .map(([key, value]) => `${key} = ${JSON.stringify(value)}`);
+  if (!keyLines.length)
+    return valueLines.length ? `${valueLines.join("\n")}\n` : "";
+  const keysTable = `[keys]\n${keyLines.join("\n")}\n`;
+  return valueLines.length
+    ? `${valueLines.join("\n")}\n\n${keysTable}`
+    : keysTable;
 }
-/** Atomic replacement prevents a partial config when a write is interrupted. */
-export async function saveConfig(c: Config, path = configPath): Promise<void> {
-  const body = serialize(c);
-  const existing = await lstat(path).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error;
-    return null;
-  });
-  if (existing?.isSymbolicLink()) path = await realpath(path);
-  await mkdir(dirname(path), { recursive: true });
-  const temp = `${path}.${crypto.randomUUID()}.tmp`;
-  await writeFile(temp, body, { mode: 0o600, flag: "wx" });
-  try {
-    await rename(temp, path);
-  } catch (error) {
-    try {
-      await unlink(temp);
-    } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        "Config replacement and temporary file cleanup failed",
-      );
-    }
-    throw error;
-  }
+export async function saveConfig(
+  c: Config,
+  path = configPath,
+  toolsPath = agentToolsPath,
+): Promise<void> {
+  const body = serialize(c, defaults(await loadAgentToolNames(toolsPath)));
+  await writeFileAtomic(path, body);
 }

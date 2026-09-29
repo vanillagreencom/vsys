@@ -1,0 +1,1 @@
+- Settings saves no longer pin the default agent-program list into `config.toml`, so later shared overlay edits still reach the dashboard.

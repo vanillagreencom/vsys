@@ -59,6 +59,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [D003](../decisions/D003-action-resolved-at-the-keypress.md): what a screen holds carries no effect, so a stale confirmation cannot reach the system.
 - [D004](../decisions/D004-warden-separate-component.md): the warden ships as a separate optional component, so the dashboard observes while the warden corrects.
 - [D005](../decisions/D005-shared-agent-tool-data.md): the dashboard and the warden read the shipped agent-tool classification data instead of copying lists.
+- [D006](../decisions/D006-settings-save-writes-only-changed-keys.md): Settings saves only changed keys, and agent-tool edits go to the shared overlay.
 
 ## Topics
 

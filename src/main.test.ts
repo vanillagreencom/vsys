@@ -7,8 +7,12 @@ test("once exports structured evidence and fails visibly on source errors", asyn
   const f = fixture();
   try {
     const path = join(f.root, "config.toml");
-    await saveConfig(f.config, path);
-    await saveConfig(f.config, join(f.root, ".config/vsys/config.toml"));
+    await saveConfig(f.config, path, f.agentToolsPath);
+    await saveConfig(
+      f.config,
+      join(f.root, ".config/vsys/config.toml"),
+      f.agentToolsPath,
+    );
     const run = async (extra: string[] = []) => {
       const child = Bun.spawn(
         [process.execPath, "src/main.ts", "--once", "--config", path, ...extra],
@@ -47,7 +51,7 @@ test("quit and failed shutdown restore their own terminal settings", async () =>
   const f = fixture();
   try {
     const path = join(f.root, "config.toml");
-    await saveConfig({ ...f.config, refreshMs: 100 }, path);
+    await saveConfig({ ...f.config, refreshMs: 100 }, path, f.agentToolsPath);
     const script = `import os, pty, select, subprocess, sys, termios, time
 master, slave = pty.openpty()
 before = termios.tcgetattr(slave)
