@@ -3,16 +3,10 @@ import os
 from pathlib import Path
 import unittest
 
-import agent_warden_test as base
-
-ROOT = base.ROOT
-WARDEN = base.WARDEN
-scratch = base.scratch
-clean_env = base.clean_env
-load_warden = base.load_warden
+from agent_warden_testlib import ROOT, WARDEN, WardenMutantMixin, clean_env, load_warden, scratch
 
 
-class AgentWardenStatusRules(unittest.TestCase):
+class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = scratch()
@@ -37,21 +31,6 @@ class AgentWardenStatusRules(unittest.TestCase):
 
     def _cg(self, unit):
         return f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service/{self.w.SLICE}/{unit}"
-
-    def load_mutant(self, text, name):
-        with scratch() as tmp:
-            root = Path(tmp)
-            path = root / "warden" / "agent-warden"
-            path.parent.mkdir(parents=True)
-            path.write_text(text)
-            path.chmod(0o755)
-            data_dir = root / "data"
-            data_dir.mkdir()
-            base.shutil.copy2(ROOT / "data" / "agent-tools.json", data_dir / "agent-tools.json")
-            env = clean_env({"HOME": root / "home", "XDG_RUNTIME_DIR": root / "run", "MISE_DATA_DIR": root / "mise"})
-            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
-                Path(env[key]).mkdir(parents=True, exist_ok=True)
-            return load_warden(env, name, path)
 
     def point_status_state(self, module, base):
         old = module.STATE_DIR, module.STATE, module.STATUS, module.LOCK, module.CG_ROOT

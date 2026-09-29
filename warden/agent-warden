@@ -12,8 +12,9 @@ started by a desktop app, or a build a lane detached.
 Modes
   --report    (default) list what would move; log it; change nothing
   --correct   move it
-  --status    every agent and build process with its cgroup, env markers,
-              scan age, skips and unmatched suspects
+  --status    read state without locking or writing it, then list every agent
+              and build process with its cgroup, env markers, scan age, skips
+              and unmatched suspects
   --selftest  classification and planning against injected process records
 
 Rules, per process, never per pane
@@ -60,9 +61,12 @@ and alerts; it promises nothing about OOM safety.
 
 Runs from background.slice with its own small MemoryMax and a runtime cap so
 it does not stall with the workload it corrects. State under
-$XDG_RUNTIME_DIR/agent-warden/ behind a lock. Logs: stdout, which the service
-sends to the journal. AGENT_WARDEN_ONLY="pid,pid" restricts every candidate,
-root or descendant, to those pids (fixture runs).
+$XDG_RUNTIME_DIR/agent-warden/ sits behind a lock for writers. The status mode
+reads state without that lock and without creating files. A consumer can touch
+$XDG_RUNTIME_DIR/agent-warden/notifier to take over desktop notifications while
+that heartbeat is fresh. Logs: stdout, which the service sends to the journal.
+AGENT_WARDEN_ONLY="pid,pid" restricts every candidate, root or descendant, to
+those pids (fixture runs).
 """
 import ctypes
 from copy import deepcopy
@@ -75,6 +79,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -85,6 +90,8 @@ STATE_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{UID}")) / "agent
 STATE = STATE_DIR / "state.json"
 STATUS = STATE_DIR / "status.json"
 LOCK = STATE_DIR / "lock"
+NOTIFIER = STATE_DIR / "notifier"
+NOTIFIER_FRESH_SECONDS = 120.0
 HEADROOM = 0.90
 MOVE_VERIFY_SECONDS = 3.0
 BUS_TIMEOUT_USEC = 10_000_000
@@ -758,28 +765,37 @@ def warn_near_cap():
     """A lane climbing toward its own task or memory ceiling: either a legit
     workload bigger than expected (raise the ceiling) or a runaway starting
     (intervene). Surfaced so a real workload is seen before a ceiling could ever
-    limit it. Returns [(unit, kind, human)] for each scope over a warn line."""
-    near = []
+    limit it. Returns (near, unknown, complete) where near is [(unit, kind,
+    human)], unknown is {(unit, kind)} for unreadable metrics, and complete says
+    the scope list itself was read."""
+    near, unknown = [], set()
     base = CG_ROOT / SLICE
+    if not base.is_dir():
+        return near, unknown, True
     try:
-        for d in base.iterdir():
-            if not (d.is_dir() and d.name.endswith(".scope")):
-                continue
-            try:
-                n = int((read(d / "pids.current", "") or "").strip())
-            except ValueError:
-                n = 0
+        entries = list(base.iterdir())
+    except OSError:
+        return near, unknown, False
+    for d in entries:
+        if not (d.is_dir() and d.name.endswith(".scope")):
+            continue
+        txt = read(d / "pids.current")
+        try:
+            n = int((txt or "").strip())
+        except ValueError:
+            unknown.add((d.name, "tasks"))
+        else:
             if n >= SCOPE_TASKS_WARN:
                 near.append((d.name, "tasks", f"{n} of {(read(d / 'pids.max', '') or '').strip()}"))
-            try:
-                mem = int((read(d / "memory.current", "") or "").strip())
-            except ValueError:
-                mem = 0
+        txt = read(d / "memory.current")
+        try:
+            mem = int((txt or "").strip())
+        except ValueError:
+            unknown.add((d.name, "memory"))
+        else:
             if mem >= SCOPE_MEM_WARN:
                 near.append((d.name, "memory", f"{mem >> 30} GiB (soft cap {SCOPE_MEM_HIGH >> 30})"))
-    except OSError:
-        pass
-    return near
+    return near, unknown, True
 
 
 def reap(unit):
@@ -1698,9 +1714,103 @@ def status_failed_scan_fixture():
 
 def notify(summary, body):
     try:
-        subprocess.run(["notify-send", "-a", "agent-warden", summary, body], timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        pass
+        result = subprocess.run(["notify-send", "-a", "agent-warden", summary, body], timeout=5)
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"notify-send failed: error={type(e).__name__} summary={summary}")
+        return False
+    if result.returncode != 0:
+        log(f"notify-send failed: exit={result.returncode} summary={summary}")
+        return False
+    return True
+
+
+def notifier_fresh(path=NOTIFIER, now=None):
+    """True when a notification consumer heartbeat is recent enough to own notices."""
+    now = time.time() if now is None else now
+    try:
+        mtime = Path(path).stat().st_mtime
+    except OSError:
+        return False
+    age = now - mtime
+    return age < NOTIFIER_FRESH_SECONDS and age >= -NOTIFIER_FRESH_SECONDS
+
+
+def deliver_notice(summary, body, consumer_fresh, sender=None):
+    if consumer_fresh:
+        log(f"notice left to consumer: {summary}")
+        return False
+    return bool((sender or notify)(summary, body))
+
+
+def episode_key(kind, scope):
+    return f"{kind}:{scope}"
+
+
+def _episodes(st):
+    episodes = st.get("episodes")
+    if not isinstance(episodes, dict):
+        episodes = {}
+    return dict(episodes)
+
+
+def open_episode(st, kind, scope, now):
+    episodes = _episodes(st)
+    key = episode_key(kind, scope)
+    rec = episodes.get(key)
+    rec = rec if isinstance(rec, dict) else None
+    if rec is None or rec.get("kind") != kind or rec.get("scope") != scope:
+        rec = {"kind": kind, "scope": scope, "since": now, "notified": False}
+    else:
+        rec = dict(rec)
+        rec.setdefault("since", now)
+        rec["kind"] = kind
+        rec["scope"] = scope
+        rec["notified"] = bool(rec.get("notified"))
+    episodes[key] = rec
+    st["episodes"] = episodes
+    return key, rec
+
+
+def clear_episodes(st, kinds, seen_keys=()):
+    kinds = set(kinds)
+    seen_keys = set(seen_keys)
+    episodes = {
+        key: value for key, value in _episodes(st).items()
+        if key in seen_keys or not (isinstance(value, dict) and value.get("kind") in kinds)
+    }
+    st["episodes"] = episodes
+
+
+def episode_delivery(st, kind, scope, consumer_fresh, now):
+    key, rec = open_episode(st, kind, scope, now)
+    if rec.get("notified"):
+        return "none", key
+    if consumer_fresh:
+        return "consumer", key
+    return "send", key
+
+
+def mark_episode_notified(st, key):
+    episodes = _episodes(st)
+    rec = episodes.get(key)
+    if isinstance(rec, dict):
+        rec = dict(rec)
+        rec["notified"] = True
+        episodes[key] = rec
+        st["episodes"] = episodes
+
+
+def deliver_episode_notice(st, kind, scope, summary, body, consumer_fresh, now, sender=None):
+    action, key = episode_delivery(st, kind, scope, consumer_fresh, now)
+    if action == "consumer":
+        log(f"notice left to consumer: {summary}")
+        return False, key
+    if action == "send":
+        if (sender or notify)(summary, body):
+            mark_episode_notified(st, key)
+            return True, key
+        return False, key
+    return False, key
 
 
 def record_move_result(st, summary, failures, root, reason, done, name, moved, missing, now=None):
@@ -1717,14 +1827,14 @@ def record_move_result(st, summary, failures, root, reason, done, name, moved, m
     elif missing:
         st["move_failures"] += 1
         emit_event(st, "failed", scope=name, pid=root.pid, processes=0, now=now)
-        failures.append(f"FAILED {root.comm} {root.pid}: 0 moved, {len(missing)} not")
+        failures.append((f"{root.pid}:{root.start}", f"FAILED {root.comm} {root.pid}: 0 moved, {len(missing)} not"))
         log(f"  FAILED {name}: moved [] missing {[p.pid for p in missing]}")
 
 
 # --- state, behind a lock -----------------------------------------------------
 DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "partial": 0,
                  "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {},
-                 "events": [], "event_seq": 0, "near_open": [], "waiting_open": []}
+                 "episodes": {}, "events": [], "event_seq": 0, "near_open": [], "waiting_open": []}
 STATE_COUNTER_KEYS = ("skips", "moves", "partial", "scan_failures", "move_failures", "reaped")
 
 
@@ -1775,14 +1885,35 @@ def state_object(raw):
     _check_string_list(errors, raw.get("near_open", []), "state.near_open")
     _check_string_list(errors, raw.get("waiting_open", []), "state.waiting_open")
     raw_orphans = raw.get("orphans", {})
+    raw_episodes = raw.get("episodes", {})
     if not isinstance(raw_orphans, dict):
         errors.append("state.orphans must be an object")
+    if not isinstance(raw_episodes, dict):
+        errors.append("state.episodes must be an object")
     if errors:
         return None
     checked = dict(raw)
     checked["orphans"] = {unit: record for unit, record in raw_orphans.items()
                             if isinstance(unit, str) and _valid_orphan_state_record(record)}
+    checked["episodes"] = dict(raw_episodes)
     return checked
+
+
+def state_from_text(text):
+    raw = state_object(json.loads(text))
+    return {**default_state(), **raw} if raw is not None else default_state()
+
+
+def read_state_unlocked():
+    try:
+        return state_from_text(STATE.read_text())
+    except FileNotFoundError:
+        return default_state()
+    except OSError:
+        print(f"agent-warden: state=unreadable {STATE}", file=sys.stderr)
+        raise
+    except Exception:  # noqa: BLE001
+        return default_state()
 
 
 class State:
@@ -1839,12 +1970,17 @@ def only_pids():
 
 
 def run(correct):
+    tick_now = time.time()
+    consumer_fresh = notifier_fresh(now=tick_now)
     only = only_pids()
     with State(status=None if only is not None else ("correct" if correct else "report")) as st:
         st["_tick"] = {"procs": None, "moves": [], "waiting": [], "waiting_events": None,
                        "orphans": [], "contained": [], "error": None, "fresh_labels": False}
         summary = []  # moved-tree notices; without this the first move raised NameError
         failures = []
+        seen_near = set()
+        seen_move_conditions = set()
+        move_conditions_evaluated = False
         try:
             procs = scan()
             moves, unmatched, held, units = plan(procs, only)
@@ -1855,7 +1991,7 @@ def run(correct):
             log(f"scan failed: {e!r}")
             return 1
         st["_tick"].update({"procs": procs, "moves": moves, "contained": units})
-        st["last_correct" if correct else "last_report"] = time.time()
+        st["last_correct" if correct else "last_report"] = tick_now
         for p in unmatched:
             log(f"unmatched build process, nearest marker above is not an agent: {p.describe()}")
         for p in held:
@@ -1870,13 +2006,26 @@ def run(correct):
         if only is None:
             try:
                 enforce_task_caps(correct)
-                near_rows = warn_near_cap()
-                record_near_events(st, near_rows)
-                for unit, kind, human in near_rows:
+                near, unknown_near, near_complete = warn_near_cap()
+                record_near_events(st, near)
+                for unit, kind, human in near:
                     log(f"scope {unit} near its {kind} ceiling: {human}")
-                    notify(f"agent-warden: a lane is near its {kind} ceiling",
-                           f"{unit}: {human}. A big legit build (raise the ceiling) "
-                           f"or a runaway starting.")
+                    sent, key = deliver_episode_notice(
+                        st, kind, unit,
+                        f"agent-warden: a lane is near its {kind} ceiling",
+                        f"{unit}: {human}. A big legit build (raise the ceiling) "
+                        f"or a runaway starting.",
+                        consumer_fresh, tick_now)
+                    seen_near.add(key)
+                for unit, kind in sorted(unknown_near):
+                    log(f"near-cap unreadable: scope={unit} kind={kind}")
+                    seen_near.add(episode_key(kind, unit))
+                if not near_complete:
+                    log("near-cap unreadable: scope-list")
+                    for key, rec in _episodes(st).items():
+                        if isinstance(rec, dict) and rec.get("kind") in {"tasks", "memory"}:
+                            seen_near.add(key)
+                clear_episodes(st, {"tasks", "memory"}, seen_near)
             except Exception as e:  # noqa: BLE001
                 log(f"task-cap enforcement raised {e!r}")
         try:
@@ -1887,12 +2036,14 @@ def run(correct):
             st["_tick"]["orphans"] = None
             log(f"orphan reap raised {e!r}")
         if reaped:
-            notify(f"agent-warden: reaped {len(reaped)} orphan scope(s)", "\n".join(reaped[:6])
-                   + ("\n..." if len(reaped) > 6 else ""))
+            deliver_notice(f"agent-warden: reaped {len(reaped)} orphan scope(s)", "\n".join(reaped[:6])
+                           + ("\n..." if len(reaped) > 6 else ""), consumer_fresh)
         if not moves:
             st["skips"] = 0
             if correct:
                 st["_tick"]["waiting_events"] = []
+            if correct and only is None:
+                clear_episodes(st, {"not-moving", "move-failure"})
             return 0
         for reason, tree in moves:
             log(f"{reason}: root {tree[0].describe()} (+{len(tree) - 1} descendants)")
@@ -1907,40 +2058,72 @@ def run(correct):
             log(f"cannot reach the user bus: {e}")
             return 1
         waiting = []
-        for reason, tree in moves:
-            ok, cur, mx = headroom()
-            if not ok:
-                st["skips"] += 1
-                waiting.append((reason, tree))
-                st["_tick"]["waiting"] = waiting
-                where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
-                log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
-                if st["skips"] >= 3:
-                    notify("agent-warden: not moving", f"{tree[0].comm} pid {tree[0].pid} waits; {SLICE} headroom {where}")
-                continue
-            st["skips"] = 0
-            try:
-                done, name, moved, missing = move(tree, reason, bus)
-            except Exception as e:  # noqa: BLE001
-                st["move_failures"] += 1
-                emit_event(st, "failed", scope=warden_scope_name(tree[0], reason), pid=tree[0].pid, processes=0)
-                log(f"  move of pid {tree[0].pid} raised {e!r}")
-                continue
-            record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
-            if moved:
-                st["_tick"]["fresh_labels"] = True
+        move_conditions_evaluated = True
+        try:
+            for reason, tree in moves:
+                ok, cur, mx = headroom()
+                root_scope = f"{tree[0].pid}:{tree[0].start}"
+                if not ok:
+                    st["skips"] += 1
+                    waiting.append((reason, tree))
+                    st["_tick"]["waiting"] = waiting
+                    seen_move_conditions.add(episode_key("move-failure", root_scope))
+                    seen_move_conditions.add(episode_key("not-moving", SLICE))
+                    open_episode(st, "not-moving", SLICE, tick_now)
+                    where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
+                    log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
+                    if st["skips"] >= 3:
+                        sent, key = deliver_episode_notice(
+                            st, "not-moving", SLICE, "agent-warden: not moving",
+                            f"{tree[0].comm} pid {tree[0].pid} waits; {SLICE} headroom {where}",
+                            consumer_fresh, tick_now)
+                        seen_move_conditions.add(key)
+                    continue
+                st["skips"] = 0
+                try:
+                    done, name, moved, missing = move(tree, reason, bus)
+                except Exception as e:  # noqa: BLE001
+                    st["move_failures"] += 1
+                    emit_event(st, "failed", scope=warden_scope_name(tree[0], reason), pid=tree[0].pid, processes=0)
+                    failures.append((root_scope, f"FAILED {tree[0].comm} {tree[0].pid}: move raised {e!r}"))
+                    log(f"  move of pid {tree[0].pid} raised {e!r}")
+                    continue
+                record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
+                if moved:
+                    st["_tick"]["fresh_labels"] = True
+        finally:
+            bus.close()
         st["_tick"]["waiting_events"] = waiting
-        bus.close()
         if summary:
-            notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))
-        if failures:
-            notify(f"agent-warden: {len(failures)} move failure(s)", "\n".join(failures[:6]) + ("\n..." if len(failures) > 6 else ""))
+            deliver_notice(f"agent-warden: {len(summary)} move(s) into agents.slice",
+                           "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""), consumer_fresh)
+        failure_notice_lines = []
+        failure_notice_keys = []
+        failure_left_to_consumer = False
+        for scope, line in failures:
+            action, key = episode_delivery(st, "move-failure", scope, consumer_fresh, tick_now)
+            seen_move_conditions.add(key)
+            if action == "send":
+                failure_notice_lines.append(line)
+                failure_notice_keys.append(key)
+            elif action == "consumer":
+                failure_left_to_consumer = True
+        if failure_notice_lines:
+            if notify(f"agent-warden: {len(failure_notice_lines)} move failure(s)",
+                      "\n".join(failure_notice_lines[:6]) + ("\n..." if len(failure_notice_lines) > 6 else "")):
+                for key in failure_notice_keys:
+                    mark_episode_notified(st, key)
+        elif failure_left_to_consumer:
+            log("notice left to consumer: agent-warden: move failure(s)")
+        if move_conditions_evaluated and only is None:
+            clear_episodes(st, {"not-moving", "move-failure"}, seen_move_conditions)
     return 0
 
-
 def status():
-    with State() as st:
-        pass
+    try:
+        st = read_state_unlocked()
+    except OSError:
+        return 1
     procs = scan()
     moves, unmatched, held, units = plan(procs)
     pending = {p.pid for _, t in moves for p in t}
@@ -1954,6 +2137,15 @@ def status():
           f"moves {st['moves']}, partial {st['partial']}, reaped {st.get('reaped', 0)}, "
           f"move failures {st['move_failures']}, scan failures {st['scan_failures']}, "
           f"consecutive skips {st['skips']}")
+    print("notifier heartbeat " + ("fresh" if notifier_fresh(now=now) else "stale"))
+    episodes = _episodes(st)
+    if episodes:
+        print(f"open episodes {len(episodes)}")
+        for rec in sorted(episodes.values(), key=lambda item: (str(item.get("kind")), str(item.get("scope")))):
+            since = rec.get("since")
+            waited = f", open {int(now - since)}s" if isinstance(since, (int, float)) else ""
+            notified = "notified" if rec.get("notified") else "pending"
+            print(f"  EPISODE {rec.get('kind')} {rec.get('scope')}: {notified}{waited}")
     for unit, pids in orphans(procs, manager_pids(procs)):
         rec = (st.get("orphans") or {}).get(unit); rec = rec if isinstance(rec, dict) else {}
         first = rec.get("first")
@@ -2118,6 +2310,42 @@ def selftest():
     check("AGENT_WARDEN_ONLY uses injected containment", [p.pid for _, t in only_moves for p in t] == [10])
     dmoves, _, _, _ = plan(recs, capped=capped, split=False, contained=contained)
     check("AGENT_WARDEN_SPLIT_SESSIONS=0 reports instead of moving", 22 not in {p.pid for _, t in dmoves for p in t})
+
+    with tempfile.TemporaryDirectory(prefix="agent-warden-selftest-") as tmp:
+        hb = Path(tmp) / "notifier"
+        for name, mtime, expected in (
+            ("fresh heartbeat suppresses", 940.0, True),
+            ("stale heartbeat notifies", 879.0, False),
+            ("future heartbeat outside trust window is stale", 1121.0, False),
+        ):
+            hb.write_text("")
+            os.utime(hb, (mtime, mtime))
+            check(name, notifier_fresh(hb, now=1000.0) is expected)
+        hb.unlink()
+        check("absent heartbeat is stale", not notifier_fresh(hb, now=1000.0))
+
+    calls = []
+    logs = []
+    old_log = globals()["log"]
+    globals()["log"] = logs.append
+    try:
+        deliver_notice("summary", "body", True, lambda s, b: calls.append((s, b)) or True)
+        check("fresh consumer suppresses event notify-send", calls == [] and logs[-1] == "notice left to consumer: summary")
+        deliver_notice("summary", "body", False, lambda s, b: calls.append((s, b)) or True)
+        check("stale consumer uses fallback notify-send", calls == [("summary", "body")])
+        st = default_state()
+        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda s, b: calls.append((s, b)) or True)
+        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda s, b: calls.append((s, b)) or True)
+        check("episode fallback notifies once across ticks", calls.count(("near", "body")) == 1)
+        clear_episodes(st, {"tasks"})
+        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1002.0, lambda s, b: calls.append((s, b)) or True)
+        check("episode fallback re-notifies after clear", calls.count(("near", "body")) == 2)
+        st = default_state()
+        deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", True, 1000.0, lambda s, b: calls.append((s, b)) or True)
+        deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", False, 1001.0, lambda s, b: calls.append((s, b)) or True)
+        check("fallback resumes once after consumer heartbeat goes stale", calls.count(("memory", "body")) == 1)
+    finally:
+        globals()["log"] = old_log
 
     # orphan reaper: MGR is the user systemd manager; 1 is init.
     MGR = 4000
