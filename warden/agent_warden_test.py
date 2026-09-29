@@ -868,6 +868,39 @@ class AgentWardenRules(unittest.TestCase):
             finally:
                 self.restore_status_state(module, old)
 
+
+    def test_status_interval_env_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            rows = [
+                ("0", 30),
+                ("-5", 30),
+                ("nan", 30),
+                ("inf", 30),
+                ("abc", 30),
+                ("2.5", 2.5),
+            ]
+            for raw, expected in rows:
+                with self.subTest(raw=raw):
+                    safe = raw.replace("-", "neg").replace(".", "_")
+                    env = clean_env({"HOME": base / f"home-{safe}", "XDG_RUNTIME_DIR": base / f"run-{safe}", "MISE_DATA_DIR": base / f"mise-{safe}", "AGENT_WARDEN_INTERVAL": raw})
+                    for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                        Path(env[key]).mkdir(parents=True, exist_ok=True)
+                    loaded = load_warden(env, "agent_warden_interval_" + safe)
+                    self.assertEqual(loaded.STATUS_INTERVAL, expected)
+        with scratch() as tmp:
+            base = Path(tmp)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            loaded = load_warden(env, "agent_warden_interval_allow_nan")
+            old = self.point_status_state(loaded, base)
+            try:
+                with self.assertRaises(ValueError):
+                    loaded.write_status({"bad": float("nan")})
+            finally:
+                self.restore_status_state(loaded, old)
+
     def test_status_writer_uses_rename_and_mode(self):
         self.assertTrue(self.status_writer_is_atomic(self.w))
 
@@ -1208,6 +1241,45 @@ class AgentWardenRules(unittest.TestCase):
         self.w.record_waiting_events(st, tree, now=6)
         waiting = [event for event in st["events"] if event["kind"] == "waiting"]
         self.assertEqual(len(waiting), 1)
+
+
+    def test_status_validator_rejects_document_type_mismatches(self):
+        base = self.w.status_fixture_docs()["holding-off"]
+        rows = []
+        for field in ("pid", "start", "processes"):
+            doc = json.loads(json.dumps(base))
+            doc["outside"][0][field] = None
+            rows.append((f"outside {field} null", doc))
+            doc = json.loads(json.dumps(base))
+            doc["waiting"][0][field] = None
+            rows.append((f"waiting {field} null", doc))
+        doc = json.loads(json.dumps(base))
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": None, "cores": None, "since": 1, "harmful": False}]
+        rows.append(("orphan processes null", doc))
+        doc = json.loads(json.dumps(base))
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": True, "since": 1, "harmful": False}]
+        rows.append(("orphan cores bool", doc))
+        doc = json.loads(json.dumps(base))
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": float("inf"), "since": 1, "harmful": False}]
+        rows.append(("orphan cores infinite", doc))
+        doc = json.loads(json.dumps(base))
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "since": True, "harmful": False}]
+        rows.append(("orphan since bool", doc))
+        doc = json.loads(json.dumps(base))
+        doc["contained"] = [{"unit": "orch.service", "processes": None}]
+        rows.append(("contained processes null", doc))
+        doc = json.loads(json.dumps(base))
+        doc["events"][0]["time"] = float("nan")
+        rows.append(("event time nan", doc))
+        doc = json.loads(json.dumps(base))
+        doc["time"] = float("inf")
+        rows.append(("top time infinite", doc))
+        doc = json.loads(json.dumps(base))
+        doc["interval"] = 0
+        rows.append(("interval zero", doc))
+        for name, doc in rows:
+            with self.subTest(name=name):
+                self.assertTrue(self.w.status_errors(doc))
 
     def test_status_fixtures_validate_and_match_builders(self):
         expected = self.w.status_fixture_docs()

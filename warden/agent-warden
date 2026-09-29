@@ -70,6 +70,7 @@ import errno
 import fcntl
 import fnmatch
 import json
+import math
 import os
 import re
 import subprocess
@@ -321,9 +322,19 @@ STATUS_SCHEMA = "1.0"
 STATUS_EVENT_LIMIT = 50
 STATUS_EVENT_KINDS = {"moved", "partial", "reaped", "near-cap", "waiting", "failed"}
 STATUS_NEAR_KINDS = {"tasks", "memory"}
-STATUS_INTERVAL = float(os.environ.get("AGENT_WARDEN_INTERVAL", "30"))
-if STATUS_INTERVAL.is_integer():
-    STATUS_INTERVAL = int(STATUS_INTERVAL)
+def parse_status_interval(raw):
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        print(f"invalid AGENT_WARDEN_INTERVAL={raw!r}; using 30", flush=True)
+        return 30
+    if not math.isfinite(value) or value <= 0:
+        print(f"invalid AGENT_WARDEN_INTERVAL={raw!r}; using 30", flush=True)
+        return 30
+    return int(value) if value.is_integer() else value
+
+
+STATUS_INTERVAL = parse_status_interval(os.environ.get("AGENT_WARDEN_INTERVAL", "30"))
 
 
 def scope_harm(nproc, cores):
@@ -1396,7 +1407,7 @@ def write_status(doc):
     STATUS_DIR = STATE_DIR
     STATUS_DIR.mkdir(parents=True, exist_ok=True)
     tmp = STATUS_DIR / f"status.tmp.{os.getpid()}"
-    data = (json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    data = (json.dumps(doc, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
     if tmp.exists():
         tmp.unlink()
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -1429,6 +1440,16 @@ def _check_int_or_null(errors, value, where):
         _check_int(errors, value, where)
 
 
+def _check_number(errors, value, where):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        errors.append(f"{where} must be a finite number")
+
+
+def _check_number_or_null(errors, value, where):
+    if value is not None:
+        _check_number(errors, value, where)
+
+
 def _check_limit(errors, value, where):
     if value == "max" or value is None:
         return
@@ -1449,8 +1470,7 @@ def _check_events(errors, events, where):
         if not isinstance(event.get("id"), int) or isinstance(event.get("id"), bool) or event["id"] <= last:
             errors.append(f"{row}.id must increase")
         last = event.get("id") if isinstance(event.get("id"), int) and not isinstance(event.get("id"), bool) else last
-        if not isinstance(event.get("time"), (int, float)) or isinstance(event.get("time"), bool):
-            errors.append(f"{row}.time must be a number")
+        _check_number(errors, event.get("time"), f"{row}.time")
         if event.get("kind") not in STATUS_EVENT_KINDS:
             errors.append(f"{row}.kind has an unknown id")
         if event.get("scope") is not None and not isinstance(event.get("scope"), str):
@@ -1473,12 +1493,12 @@ def status_errors(doc):
     schema = doc.get("schema")
     if not isinstance(schema, str) or not re.fullmatch(r"1\.\d+", schema):
         errors.append("schema major must be 1")
-    if not isinstance(doc.get("time"), (int, float)) or isinstance(doc.get("time"), bool):
-        errors.append("time must be a number")
+    _check_number(errors, doc.get("time"), "time")
     if doc.get("mode") not in {"correct", "report"}:
         errors.append("mode must be correct or report")
-    if not isinstance(doc.get("interval"), (int, float)) or isinstance(doc.get("interval"), bool) or doc.get("interval") <= 0:
-        errors.append("interval must be a positive number")
+    _check_number(errors, doc.get("interval"), "interval")
+    if isinstance(doc.get("interval"), (int, float)) and not isinstance(doc.get("interval"), bool) and math.isfinite(doc.get("interval")) and doc.get("interval") <= 0:
+        errors.append("interval must be positive")
     if doc.get("error") is not None and not isinstance(doc.get("error"), str):
         errors.append("error must be a string or null")
     if doc.get("error") is not None:
@@ -1533,7 +1553,7 @@ def status_errors(doc):
             if row.get("reason") not in {"escaped-launch", "unconfined-agent", "unconfined-build", "nested-session"}:
                 errors.append(f"{where}.reason has an unknown id")
             for sub in ("pid", "start", "processes"):
-                _check_int_or_null(errors, row.get(sub), f"{where}.{sub}")
+                _check_int(errors, row.get(sub), f"{where}.{sub}")
             if not isinstance(row.get("tool"), str):
                 errors.append(f"{where}.tool must be a string")
     rows = doc.get("orphans")
@@ -1547,11 +1567,9 @@ def status_errors(doc):
                     continue
                 if not isinstance(row.get("scope"), str):
                     errors.append(f"{where}.scope must be a string")
-                _check_int_or_null(errors, row.get("processes"), f"{where}.processes")
-                if row.get("cores") is not None and not isinstance(row.get("cores"), (int, float)):
-                    errors.append(f"{where}.cores must be a number or null")
-                if not isinstance(row.get("since"), (int, float)):
-                    errors.append(f"{where}.since must be a number")
+                _check_int(errors, row.get("processes"), f"{where}.processes")
+                _check_number_or_null(errors, row.get("cores"), f"{where}.cores")
+                _check_number(errors, row.get("since"), f"{where}.since")
                 if not isinstance(row.get("harmful"), bool):
                     errors.append(f"{where}.harmful must be a boolean")
     rows = doc.get("contained")
@@ -1565,7 +1583,7 @@ def status_errors(doc):
                     continue
                 if not isinstance(row.get("unit"), str):
                     errors.append(f"{where}.unit must be a string")
-                _check_int_or_null(errors, row.get("processes"), f"{where}.processes")
+                _check_int(errors, row.get("processes"), f"{where}.processes")
     _check_events(errors, doc.get("events"), "events")
     if _check_keys(errors, doc.get("counters"), ("moves", "partial", "reaped", "moveFailures", "scanFailures", "skips"), "counters"):
         for key, value in doc["counters"].items():
