@@ -4,6 +4,8 @@ Covers: warden/
 
 The agent warden is an optional Python component shipped beside the `vsys` dashboard. The dashboard observes the machine. The warden changes process placement automatically.
 
+[`warden-status.md`](warden-status.md) describes the machine-readable status file that the warden writes for consumers.
+
 ## Boundary
 
 - `warden/agent-confine` starts agent harnesses in `agents.slice`, exports `AGENT_CONFINE=1`, exports build caps, and exports `TMPDIR` for scratch discovery.
@@ -69,6 +71,7 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 | Variable | Consumer | Default | Effect |
 | --- | --- | --- | --- |
 | `AGENT_WARDEN_ONLY` | warden | unset | Limits one scan to listed process ids. |
+| `AGENT_WARDEN_INTERVAL` | warden | `30` | Seconds between status ticks. Keep it equal to `OnUnitActiveSec` in `warden/systemd/agent-warden.timer`. |
 | `AGENT_WARDEN_SPLIT_SESSIONS` | warden | `1` | Splits nested agent sessions when the lineage is not capped. |
 | `AGENT_WARDEN_ORPHAN_GRACE` | warden | `300` | Seconds an orphan must stay orphaned before a reap can happen. |
 | `AGENT_WARDEN_REAP` | warden | `1` | Enables orphan reaping. |

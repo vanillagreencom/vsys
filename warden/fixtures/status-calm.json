@@ -1,0 +1,42 @@
+{
+  "contained": [],
+  "counters": {
+    "moveFailures": 0,
+    "moves": 0,
+    "partial": 0,
+    "reaped": 0,
+    "scanFailures": 0,
+    "skips": 0
+  },
+  "error": null,
+  "events": [],
+  "interval": 30,
+  "lanes": [
+    {
+      "label": {
+        "tool": "claude",
+        "worktree": "vsy-52"
+      },
+      "memory": 25769803776,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-warden-100-200.scope",
+      "tasks": 120,
+      "tasksMax": 8192
+    }
+  ],
+  "mode": "report",
+  "orphans": [],
+  "outside": [],
+  "schema": "1.0",
+  "slice": {
+    "headroomOk": true,
+    "high": 68719476736,
+    "max": 85899345920,
+    "memory": 40802189312,
+    "tasks": 300,
+    "tasksMax": 16384
+  },
+  "time": 1700000000,
+  "waiting": []
+}

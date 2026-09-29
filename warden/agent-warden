@@ -81,6 +81,7 @@ SLICE = "agents.slice"
 CG_ROOT = Path(f"/sys/fs/cgroup/user.slice/user-{UID}.slice/user@{UID}.service")
 STATE_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{UID}")) / "agent-warden"
 STATE = STATE_DIR / "state.json"
+STATUS = STATE_DIR / "status.json"
 LOCK = STATE_DIR / "lock"
 HEADROOM = 0.90
 MOVE_VERIFY_SECONDS = 3.0
@@ -315,6 +316,13 @@ SCOPE_TASKS_WARN = int(os.environ.get("AGENT_SCOPE_TASKS_WARN", str(SCOPE_TASKS_
 # launch. 64 GiB default.
 SCOPE_MEM_HIGH = int(os.environ.get("AGENT_SCOPE_MEM_HIGH_BYTES", str(64 * 1024**3)))
 SCOPE_MEM_WARN = int(os.environ.get("AGENT_SCOPE_MEM_WARN_BYTES", str(SCOPE_MEM_HIGH * 3 // 4)))
+STATUS_SCHEMA = "1.0"
+STATUS_EVENT_LIMIT = 50
+STATUS_EVENT_KINDS = {"moved", "partial", "reaped", "near-cap", "waiting", "failed"}
+STATUS_NEAR_KINDS = {"tasks", "memory"}
+STATUS_INTERVAL = float(os.environ.get("AGENT_WARDEN_INTERVAL", "30"))
+if STATUS_INTERVAL.is_integer():
+    STATUS_INTERVAL = int(STATUS_INTERVAL)
 
 
 def scope_harm(nproc, cores):
@@ -790,39 +798,46 @@ def reap_orphans(procs, st, correct, only=None):
     seen = dict(orphans(procs, managers))
     prev = st.get("orphans") or {}
     now = time.time()
-    tracked, reaped = {}, []
+    tracked, reaped, status_rows = {}, [], []
     for unit, pids in seen.items():
         p = prev.get(unit)
         p = p if isinstance(p, dict) else {}
         first = p.get("first", now)
         n = len(pids)
         usage = scope_usage_usec(unit)
-        cores = 0.0
+        cores = None
         prev_usage, prev_ts = p.get("usage"), p.get("usage_ts")
         if usage is not None and prev_usage is not None and prev_ts and now > prev_ts:
             cores = max(0.0, (usage - prev_usage) / 1e6 / (now - prev_ts))
         age = now - first
-        harmful = age >= ORPHAN_GRACE and scope_harm(n, cores)
+        harmful = age >= ORPHAN_GRACE and (n >= ORPHAN_PROC_MAX or (cores is not None and cores >= ORPHAN_CPU_CORES))
         # reap only when harmful on this tick and the one before it
         do_reap = harmful and p.get("harmful", False)
         entry = {"first": first, "usage": usage, "usage_ts": now, "harmful": harmful}
         tracked[unit] = entry
+        status_row = {"scope": unit, "processes": n, "cores": cores, "since": first, "harmful": harmful}
+        display_cores = 0.0 if cores is None else cores
         if age < ORPHAN_GRACE:
+            status_rows.append(status_row)
             log(f"orphan scope {unit}: {n} process(es), launcher gone, {int(age)}s "
                 f"of {int(ORPHAN_GRACE)}s grace; watching")
             continue
         if not harmful:
-            log(f"orphan scope {unit}: {n} process(es), {cores:.1f} core(s), idle "
+            status_rows.append(status_row)
+            log(f"orphan scope {unit}: {n} process(es), {display_cores:.1f} core(s), idle "
                 f"and abandoned {int(age)}s; watching, not reaping")
             continue
-        why = f"{n} process(es)" if n >= ORPHAN_PROC_MAX else f"{cores:.1f} core(s)"
+        why = f"{n} process(es)" if n >= ORPHAN_PROC_MAX else f"{display_cores:.1f} core(s)"
         if not do_reap:
+            status_rows.append(status_row)
             log(f"orphan scope {unit}: harmful ({why}) for the first tick; reaping on the next if it holds")
             continue
         if only is not None:
+            status_rows.append(status_row)
             log(f"orphan scope {unit}: harmful ({why}) but AGENT_WARDEN_ONLY is set; not reaping")
             continue
         if not (correct and REAP):
+            status_rows.append(status_row)
             log(f"orphan scope {unit}: harmful ({why}), abandoned {int(age)}s"
                 + (" (report mode, not reaping)" if not correct else " (REAP disabled)"))
             continue
@@ -833,15 +848,17 @@ def reap_orphans(procs, st, correct, only=None):
         ok, err = reap(unit)
         if ok:
             st["reaped"] += 1
+            emit_event(st, "reaped", scope=unit, processes=n)
             reaped.append(f"{unit} ({why})")
             log(f"  reaped orphan scope {unit}: stopped {n} process(es), {why}, after {int(age)}s")
             tracked.pop(unit, None)
         else:
             st["move_failures"] += 1
+            status_rows.append(status_row)
             log(f"  reap of {unit} failed: {err}")
     st["orphans"] = tracked
+    st["_status_orphans"] = status_rows
     return reaped
-
 
 def _limit(v):
     v = (v or "").strip()
@@ -1141,6 +1158,446 @@ def move(tree, reason, bus):
     return not missing, name, moved, missing
 
 
+# --- machine-readable status --------------------------------------------------
+def _now_seconds(now=None):
+    return int(time.time() if now is None else now)
+
+
+def _read_int(path):
+    v = read(path)
+    if v is None:
+        return None
+    try:
+        return int(v.strip())
+    except ValueError:
+        return None
+
+
+def _read_limit(path):
+    v = read(path)
+    if v is None:
+        return None
+    v = v.strip()
+    if v == "max":
+        return "max"
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
+def _headroom_status(memory, maximum):
+    if memory is None or maximum is None:
+        return None
+    if maximum == "max":
+        return True
+    return memory < HEADROOM * maximum
+
+
+def slice_status():
+    base = CG_ROOT / SLICE
+    if not base.is_dir():
+        return None
+    memory = _read_int(base / "memory.current")
+    maximum = _read_limit(base / "memory.max")
+    return {
+        "memory": memory,
+        "high": _read_limit(base / "memory.high"),
+        "max": maximum,
+        "tasks": _read_int(base / "pids.current"),
+        "tasksMax": _read_limit(base / "pids.max"),
+        "headroomOk": _headroom_status(memory, maximum),
+    }
+
+
+def _tool_label(p):
+    for arg in p.argv[:2]:
+        m = AGENT_PATH_RE.search(arg)
+        if m:
+            return m.group(1)
+    return p.comm if p.comm in AGENT_COMMS else p.program or p.comm or None
+
+
+def _worktree_label(pid):
+    try:
+        return os.path.basename(os.readlink(f"/proc/{pid}/cwd")) or None
+    except OSError:
+        return None
+
+
+def _scope_of_proc(p):
+    m = SCOPE_RE.search(p.cgroup or "")
+    return m.group(1) if m else None
+
+
+def lane_label(scope, procs):
+    members = [p for p in (procs or {}).values() if _scope_of_proc(p) == scope and p.is_agent]
+    if not members:
+        return {"tool": None, "worktree": None}
+    root = min(members, key=lambda p: (p.start, p.pid))
+    return {"tool": _tool_label(root), "worktree": _worktree_label(root.pid)}
+
+
+def lane_statuses(procs=None):
+    base = CG_ROOT / SLICE
+    lanes = []
+    try:
+        dirs = [d for d in base.iterdir() if d.is_dir() and d.name.endswith(".scope")]
+    except OSError:
+        return lanes
+    for d in sorted(dirs, key=lambda p: p.name):
+        tasks = _read_int(d / "pids.current")
+        memory = _read_int(d / "memory.current")
+        near = []
+        if tasks is not None and tasks >= SCOPE_TASKS_WARN:
+            near.append("tasks")
+        if memory is not None and memory >= SCOPE_MEM_WARN:
+            near.append("memory")
+        lanes.append({
+            "scope": d.name,
+            "label": lane_label(d.name, procs),
+            "tasks": tasks,
+            "tasksMax": _read_limit(d / "pids.max"),
+            "memory": memory,
+            "memoryHigh": _read_limit(d / "memory.high"),
+            "near": near,
+        })
+    return lanes
+
+
+def _reason_id(reason):
+    return {
+        "escaped launch": "escaped-launch",
+        "unconfined agent": "unconfined-agent",
+        "unconfined build": "unconfined-build",
+        "nested session": "nested-session",
+    }.get(reason, reason.replace(" ", "-"))
+
+
+def _tree_status(reason, tree):
+    root = tree[0]
+    return {
+        "reason": _reason_id(reason),
+        "pid": root.pid,
+        "start": root.start,
+        "tool": root.comm,
+        "processes": len(tree),
+    }
+
+
+def contained_status(units):
+    counts = {}
+    for p in units or []:
+        unit = unit_of(p.cgroup) or "unknown"
+        counts[unit] = counts.get(unit, 0) + 1
+    return [{"unit": unit, "processes": counts[unit]} for unit in sorted(counts)]
+
+
+def _state_readable(st):
+    return st.get("_state_readable", True) is not False
+
+
+def status_counters(st):
+    keys = (("moves", "moves"), ("partial", "partial"), ("reaped", "reaped"),
+            ("moveFailures", "move_failures"), ("scanFailures", "scan_failures"), ("skips", "skips"))
+    if not _state_readable(st):
+        return {public: None for public, _ in keys}
+    return {public: int(st.get(internal, 0)) for public, internal in keys}
+
+
+def emit_event(st, kind, *, scope=None, pid=None, processes=None, near=None, now=None):
+    if kind not in STATUS_EVENT_KINDS:
+        raise ValueError(f"unknown event kind {kind}")
+    try:
+        seq = int(st.get("event_seq") or 0) + 1
+    except (TypeError, ValueError):
+        seq = 1
+    st["event_seq"] = seq
+    event = {
+        "id": seq,
+        "time": _now_seconds(now),
+        "kind": kind,
+        "scope": scope,
+        "pid": pid,
+        "processes": processes,
+        "near": near if kind == "near-cap" else None,
+    }
+    events = st.get("events") if isinstance(st.get("events"), list) else []
+    events.append(event)
+    st["events"] = events[-STATUS_EVENT_LIMIT:]
+    return event
+
+
+def record_near_events(st, near_rows, now=None):
+    current = {f"{unit}:{kind}" for unit, kind, _ in near_rows}
+    previous = set(st.get("near_open") or [])
+    for unit, kind, _ in sorted(near_rows, key=lambda row: (row[0], row[1])):
+        key = f"{unit}:{kind}"
+        if key not in previous:
+            emit_event(st, "near-cap", scope=unit, near=kind, now=now)
+    st["near_open"] = sorted(current)
+
+
+def record_waiting_events(st, waiting, now=None):
+    current = {f"{tree[0].pid}:{tree[0].start}" for _, tree in waiting}
+    previous = set(st.get("waiting_open") or [])
+    for reason, tree in sorted(waiting, key=lambda item: (item[1][0].pid, item[1][0].start)):
+        key = f"{tree[0].pid}:{tree[0].start}"
+        if key not in previous:
+            emit_event(st, "waiting", scope=warden_scope_name(tree[0], reason),
+                       pid=tree[0].pid, processes=len(tree), now=now)
+    st["waiting_open"] = sorted(current)
+
+
+def status_document(mode, st, *, procs=None, moves=None, waiting=None, orphans_status=None,
+                    contained=None, error=None, now=None):
+    return {
+        "schema": STATUS_SCHEMA,
+        "time": _now_seconds(now),
+        "mode": mode,
+        "interval": STATUS_INTERVAL,
+        "error": error,
+        "slice": slice_status(),
+        "lanes": lane_statuses(procs),
+        "outside": None if moves is None else [_tree_status(reason, tree) for reason, tree in moves],
+        "waiting": None if waiting is None else [_tree_status(reason, tree) for reason, tree in waiting],
+        "orphans": None if orphans_status is None else sorted(orphans_status, key=lambda row: row["scope"]),
+        "contained": None if contained is None else contained_status(contained),
+        "events": list(st.get("events") if isinstance(st.get("events"), list) else []),
+        "counters": status_counters(st),
+    }
+
+
+def write_status(doc):
+    STATUS_DIR = STATE_DIR
+    STATUS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATUS_DIR / f"status.tmp.{os.getpid()}"
+    data = (json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if tmp.exists():
+        tmp.unlink()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        os.fchmod(fd, 0o644)
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    os.replace(tmp, STATUS)
+
+
+def _check_keys(errors, obj, keys, where):
+    if not isinstance(obj, dict):
+        errors.append(f"{where} must be an object")
+        return False
+    missing = [k for k in keys if k not in obj]
+    if missing:
+        errors.append(f"{where} missing {', '.join(missing)}")
+        return False
+    return True
+
+
+def _check_int_or_null(errors, value, where):
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+        errors.append(f"{where} must be a non-negative integer or null")
+
+
+def _check_limit(errors, value, where):
+    if value == "max" or value is None:
+        return
+    _check_int_or_null(errors, value, where)
+
+
+def status_errors(doc):
+    errors = []
+    top = ("schema", "time", "mode", "interval", "error", "slice", "lanes", "outside",
+           "waiting", "orphans", "contained", "events", "counters")
+    if not _check_keys(errors, doc, top, "status"):
+        return errors
+    schema = doc.get("schema")
+    if not isinstance(schema, str) or not re.fullmatch(r"1\.\d+", schema):
+        errors.append("schema major must be 1")
+    if not isinstance(doc.get("time"), (int, float)) or isinstance(doc.get("time"), bool):
+        errors.append("time must be a number")
+    if doc.get("mode") not in {"correct", "report"}:
+        errors.append("mode must be correct or report")
+    if not isinstance(doc.get("interval"), (int, float)) or isinstance(doc.get("interval"), bool) or doc.get("interval") <= 0:
+        errors.append("interval must be a positive number")
+    if doc.get("error") is not None and not isinstance(doc.get("error"), str):
+        errors.append("error must be a string or null")
+    if doc.get("error") is not None:
+        for key in ("outside", "waiting", "orphans", "contained"):
+            if doc.get(key) is not None:
+                errors.append(f"{key} must be null when error is set")
+    if doc.get("slice") is not None:
+        if _check_keys(errors, doc["slice"], ("memory", "high", "max", "tasks", "tasksMax", "headroomOk"), "slice"):
+            _check_int_or_null(errors, doc["slice"].get("memory"), "slice.memory")
+            _check_limit(errors, doc["slice"].get("high"), "slice.high")
+            _check_limit(errors, doc["slice"].get("max"), "slice.max")
+            _check_int_or_null(errors, doc["slice"].get("tasks"), "slice.tasks")
+            _check_limit(errors, doc["slice"].get("tasksMax"), "slice.tasksMax")
+            if doc["slice"].get("headroomOk") is not None and not isinstance(doc["slice"].get("headroomOk"), bool):
+                errors.append("slice.headroomOk must be a boolean or null")
+    if not isinstance(doc.get("lanes"), list):
+        errors.append("lanes must be a list")
+    else:
+        scopes = []
+        for i, lane in enumerate(doc["lanes"]):
+            where = f"lanes[{i}]"
+            if not _check_keys(errors, lane, ("scope", "label", "tasks", "tasksMax", "memory", "memoryHigh", "near"), where):
+                continue
+            if not isinstance(lane.get("scope"), str) or not lane["scope"].endswith(".scope"):
+                errors.append(f"{where}.scope must be a scope name")
+            scopes.append(lane.get("scope"))
+            if _check_keys(errors, lane.get("label"), ("tool", "worktree"), f"{where}.label"):
+                for key in ("tool", "worktree"):
+                    if lane["label"].get(key) is not None and not isinstance(lane["label"].get(key), str):
+                        errors.append(f"{where}.label.{key} must be a string or null")
+            _check_int_or_null(errors, lane.get("tasks"), f"{where}.tasks")
+            _check_limit(errors, lane.get("tasksMax"), f"{where}.tasksMax")
+            _check_int_or_null(errors, lane.get("memory"), f"{where}.memory")
+            _check_limit(errors, lane.get("memoryHigh"), f"{where}.memoryHigh")
+            if not isinstance(lane.get("near"), list) or any(k not in STATUS_NEAR_KINDS for k in lane.get("near", [])):
+                errors.append(f"{where}.near must contain only tasks or memory")
+        if scopes != sorted(scopes):
+            errors.append("lanes must be sorted by scope")
+    for key in ("outside", "waiting"):
+        rows = doc.get(key)
+        if rows is None:
+            continue
+        if not isinstance(rows, list):
+            errors.append(f"{key} must be a list or null")
+            continue
+        for i, row in enumerate(rows):
+            where = f"{key}[{i}]"
+            if not _check_keys(errors, row, ("reason", "pid", "start", "tool", "processes"), where):
+                continue
+            if row.get("reason") not in {"escaped-launch", "unconfined-agent", "unconfined-build", "nested-session"}:
+                errors.append(f"{where}.reason has an unknown id")
+            for sub in ("pid", "start", "processes"):
+                _check_int_or_null(errors, row.get(sub), f"{where}.{sub}")
+            if not isinstance(row.get("tool"), str):
+                errors.append(f"{where}.tool must be a string")
+    rows = doc.get("orphans")
+    if rows is not None:
+        if not isinstance(rows, list):
+            errors.append("orphans must be a list or null")
+        else:
+            for i, row in enumerate(rows):
+                where = f"orphans[{i}]"
+                if not _check_keys(errors, row, ("scope", "processes", "cores", "since", "harmful"), where):
+                    continue
+                if not isinstance(row.get("scope"), str):
+                    errors.append(f"{where}.scope must be a string")
+                _check_int_or_null(errors, row.get("processes"), f"{where}.processes")
+                if row.get("cores") is not None and not isinstance(row.get("cores"), (int, float)):
+                    errors.append(f"{where}.cores must be a number or null")
+                if not isinstance(row.get("since"), (int, float)):
+                    errors.append(f"{where}.since must be a number")
+                if not isinstance(row.get("harmful"), bool):
+                    errors.append(f"{where}.harmful must be a boolean")
+    rows = doc.get("contained")
+    if rows is not None:
+        if not isinstance(rows, list):
+            errors.append("contained must be a list or null")
+        else:
+            for i, row in enumerate(rows):
+                where = f"contained[{i}]"
+                if not _check_keys(errors, row, ("unit", "processes"), where):
+                    continue
+                if not isinstance(row.get("unit"), str):
+                    errors.append(f"{where}.unit must be a string")
+                _check_int_or_null(errors, row.get("processes"), f"{where}.processes")
+    events = doc.get("events")
+    if not isinstance(events, list):
+        errors.append("events must be a list")
+    else:
+        if len(events) > STATUS_EVENT_LIMIT:
+            errors.append("events must contain at most 50 rows")
+        last = -1
+        for i, event in enumerate(events):
+            where = f"events[{i}]"
+            if not _check_keys(errors, event, ("id", "time", "kind", "scope", "pid", "processes", "near"), where):
+                continue
+            if not isinstance(event.get("id"), int) or event["id"] <= last:
+                errors.append(f"{where}.id must increase")
+            last = event.get("id") if isinstance(event.get("id"), int) else last
+            if not isinstance(event.get("time"), (int, float)):
+                errors.append(f"{where}.time must be a number")
+            if event.get("kind") not in STATUS_EVENT_KINDS:
+                errors.append(f"{where}.kind has an unknown id")
+            if event.get("scope") is not None and not isinstance(event.get("scope"), str):
+                errors.append(f"{where}.scope must be a string or null")
+            _check_int_or_null(errors, event.get("pid"), f"{where}.pid")
+            _check_int_or_null(errors, event.get("processes"), f"{where}.processes")
+            if event.get("kind") == "near-cap":
+                if event.get("near") not in STATUS_NEAR_KINDS:
+                    errors.append(f"{where}.near must be tasks or memory")
+            elif event.get("near") is not None:
+                errors.append(f"{where}.near must be null except for near-cap")
+    if _check_keys(errors, doc.get("counters"), ("moves", "partial", "reaped", "moveFailures", "scanFailures", "skips"), "counters"):
+        for key, value in doc["counters"].items():
+            _check_int_or_null(errors, value, f"counters.{key}")
+    return errors
+
+
+def _gib(n):
+    return n * 1024 ** 3
+
+
+def _fixture_base(now):
+    return {
+        "schema": STATUS_SCHEMA,
+        "time": now,
+        "mode": "report",
+        "interval": STATUS_INTERVAL,
+        "error": None,
+        "slice": {"memory": _gib(38), "high": _gib(64), "max": _gib(80), "tasks": 300, "tasksMax": 16384, "headroomOk": True},
+        "lanes": [{"scope": "agent-warden-100-200.scope", "label": {"tool": "claude", "worktree": "vsy-52"}, "tasks": 120, "tasksMax": 8192, "memory": _gib(24), "memoryHigh": _gib(64), "near": []}],
+        "outside": [],
+        "waiting": [],
+        "orphans": [],
+        "contained": [],
+        "events": [],
+        "counters": {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0},
+    }
+
+
+def status_fixture_docs():
+    now = 1700000000
+    docs = {"calm": _fixture_base(now)}
+    near = _fixture_base(now + 30)
+    near["lanes"][0].update({"tasks": 6200, "memory": _gib(50), "near": ["tasks", "memory"]})
+    near["events"] = [
+        {"id": 1, "time": now + 30, "kind": "near-cap", "scope": "agent-warden-100-200.scope", "pid": None, "processes": None, "near": "tasks"},
+        {"id": 2, "time": now + 30, "kind": "near-cap", "scope": "agent-warden-100-200.scope", "pid": None, "processes": None, "near": "memory"},
+    ]
+    docs["near-limit"] = near
+    hold = _fixture_base(now + 60)
+    hold.update({"mode": "correct"})
+    hold["slice"].update({"memory": _gib(73), "headroomOk": False})
+    tree = {"reason": "escaped-launch", "pid": 321, "start": 654, "tool": "claude", "processes": 3}
+    hold["outside"] = [tree]
+    hold["waiting"] = [tree]
+    hold["events"] = [{"id": 3, "time": now + 60, "kind": "waiting", "scope": "agent-warden-321-654.scope", "pid": 321, "processes": 3, "near": None}]
+    hold["counters"].update({"skips": 1})
+    docs["holding-off"] = hold
+    partial = _fixture_base(now + 90)
+    partial["events"] = [{"id": 4, "time": now + 90, "kind": "partial", "scope": "agent-warden-777-888.scope", "pid": 777, "processes": 1, "near": None}]
+    partial["counters"].update({"partial": 1})
+    docs["partial"] = partial
+    reaped = _fixture_base(now + 120)
+    reaped["events"] = [{"id": 5, "time": now + 120, "kind": "reaped", "scope": "agent-confine-leak.scope", "pid": None, "processes": 42, "near": None}]
+    reaped["counters"].update({"reaped": 1})
+    docs["reaped"] = reaped
+    return docs
+
+
+def status_failed_scan_fixture():
+    doc = _fixture_base(1700000150)
+    doc.update({"error": "scan", "outside": None, "waiting": None, "orphans": None, "contained": None})
+    doc["counters"].update({"scanFailures": 1})
+    return doc
+
+
 def notify(summary, body):
     try:
         subprocess.run(["notify-send", "-a", "agent-warden", summary, body], timeout=5)
@@ -1151,21 +1608,25 @@ def notify(summary, body):
 def record_move_result(st, summary, failures, root, reason, done, name, moved, missing):
     if done and moved:
         st["moves"] += 1
+        emit_event(st, "moved", scope=name, pid=root.pid, processes=len(moved))
         summary.append(f"{root.comm} {root.pid} (+{len(moved) - 1}, {reason})")
         log(f"  moved {len(moved)} pid(s) into {SLICE}/{name} ({reason})")
     elif moved:
         st["partial"] += 1
+        emit_event(st, "partial", scope=name, pid=root.pid, processes=len(moved))
         summary.append(f"PARTIAL {root.comm} {root.pid}: {len(moved)} moved, {len(missing)} not")
         log(f"  PARTIAL {name}: moved {[p.pid for p in moved]} missing {[p.pid for p in missing]}")
     elif missing:
         st["move_failures"] += 1
+        emit_event(st, "failed", scope=name, pid=root.pid, processes=0)
         failures.append(f"FAILED {root.comm} {root.pid}: 0 moved, {len(missing)} not")
         log(f"  FAILED {name}: moved [] missing {[p.pid for p in missing]}")
 
 
 # --- state, behind a lock -----------------------------------------------------
 DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "partial": 0,
-                 "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {}}
+                 "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {},
+                 "events": [], "event_seq": 0, "near_open": [], "waiting_open": []}
 
 
 class State:
@@ -1175,13 +1636,19 @@ class State:
         fcntl.flock(self.lockfd, fcntl.LOCK_EX)
         try:
             self.st = {**DEFAULT_STATE, **json.loads(STATE.read_text())}
-        except (OSError, ValueError):
+            self.st["_state_readable"] = True
+        except OSError:
             self.st = dict(DEFAULT_STATE)
+            self.st["_state_readable"] = not STATE.exists()
+        except ValueError:
+            self.st = dict(DEFAULT_STATE)
+            self.st["_state_readable"] = False
         return self.st
 
     def __exit__(self, *exc):
         tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps(self.st))
+        stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
+        tmp.write_text(json.dumps(stored))
         os.replace(tmp, STATE)
         fcntl.flock(self.lockfd, fcntl.LOCK_UN)
         os.close(self.lockfd)
@@ -1195,83 +1662,124 @@ def only_pids():
 def run(correct):
     with State() as st:
         only = only_pids()
-        summary = []  # moved-tree notices; without this the first move raised NameError
+        mode = "correct" if correct else "report"
+        summary = []
         failures = []
+        procs = None
+        moves = []
+        units = []
+        waiting = []
+        error = None
+        moves_for_status = []
+        waiting_for_status = []
+        orphans_for_status = []
+        contained_for_status = []
+        rc = 0
         try:
-            procs = scan()
-            moves, unmatched, held, units = plan(procs, only)
-        except Exception as e:  # noqa: BLE001
-            st["scan_failures"] += 1
-            log(f"scan failed: {e!r}")
-            return 1
-        st["last_correct" if correct else "last_report"] = time.time()
-        for p in unmatched:
-            log(f"unmatched build process, nearest marker above is not an agent: {p.describe()}")
-        for p in held:
-            log(f"shared scope: session {p.describe()} shares its parent's scope; not split "
-                f"({'capped lineage' if lineage_is_capped(p.cgroup) else 'AGENT_WARDEN_SPLIT_SESSIONS=0'})")
-        unit_counts = {}
-        for p in units:
-            unit = unit_of(p.cgroup) or "unknown"
-            unit_counts[unit] = unit_counts.get(unit, 0) + 1
-        for unit, count in sorted(unit_counts.items()):
-            log(f"job unit {unit}: {count} process(es) carry their own containment; left in place")
-        if only is None:
             try:
-                enforce_task_caps(correct)
-                for unit, kind, human in warn_near_cap():
-                    log(f"scope {unit} near its {kind} ceiling: {human}")
-                    notify(f"agent-warden: a lane is near its {kind} ceiling",
-                           f"{unit}: {human}. A big legit build (raise the ceiling) "
-                           f"or a runaway starting.")
+                procs = scan()
+                moves, unmatched, held, units = plan(procs, only)
             except Exception as e:  # noqa: BLE001
-                log(f"task-cap enforcement raised {e!r}")
-        try:
-            reaped = reap_orphans(procs, st, correct, only)
-        except Exception as e:  # noqa: BLE001
-            reaped = []
-            log(f"orphan reap raised {e!r}")
-        if reaped:
-            notify(f"agent-warden: reaped {len(reaped)} orphan scope(s)", "\n".join(reaped[:6])
-                   + ("\n..." if len(reaped) > 6 else ""))
-        if not moves:
-            st["skips"] = 0
-            return 0
-        for reason, tree in moves:
-            log(f"{reason}: root {tree[0].describe()} (+{len(tree) - 1} descendants)")
-        if not correct:
-            log(f"report mode: {len(moves)} tree(s) would move")
-            return 0
-        try:
-            bus = Bus()
-        except OSError as e:
-            st["move_failures"] += 1
-            log(f"cannot reach the user bus: {e}")
-            return 1
-        for reason, tree in moves:
-            ok, cur, mx = headroom()
-            if not ok:
-                st["skips"] += 1
-                where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
-                log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
-                if st["skips"] >= 3:
-                    notify("agent-warden: not moving", f"{tree[0].comm} pid {tree[0].pid} waits; {SLICE} headroom {where}")
-                continue
-            st["skips"] = 0
-            try:
-                done, name, moved, missing = move(tree, reason, bus)
-            except Exception as e:  # noqa: BLE001
-                st["move_failures"] += 1
-                log(f"  move of pid {tree[0].pid} raised {e!r}")
-                continue
-            record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
-        bus.close()
-        if summary:
-            notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))
-        if failures:
-            notify(f"agent-warden: {len(failures)} move failure(s)", "\n".join(failures[:6]) + ("\n..." if len(failures) > 6 else ""))
-    return 0
-
+                st["scan_failures"] += 1
+                error = "scan"
+                rc = 1
+                log(f"scan failed: {e!r}")
+                moves_for_status = None
+                waiting_for_status = None
+                orphans_for_status = None
+                contained_for_status = None
+            else:
+                st["last_correct" if correct else "last_report"] = time.time()
+                for p in unmatched:
+                    log(f"unmatched build process, nearest marker above is not an agent: {p.describe()}")
+                for p in held:
+                    log(f"shared scope: session {p.describe()} shares its parent's scope; not split "
+                        f"({'capped lineage' if lineage_is_capped(p.cgroup) else 'AGENT_WARDEN_SPLIT_SESSIONS=0'})")
+                unit_counts = {}
+                for p in units:
+                    unit = unit_of(p.cgroup) or "unknown"
+                    unit_counts[unit] = unit_counts.get(unit, 0) + 1
+                for unit, count in sorted(unit_counts.items()):
+                    log(f"job unit {unit}: {count} process(es) carry their own containment; left in place")
+                near_rows = []
+                if only is None:
+                    try:
+                        enforce_task_caps(correct)
+                        near_rows = warn_near_cap()
+                        record_near_events(st, near_rows)
+                        for unit, kind, human in near_rows:
+                            log(f"scope {unit} near its {kind} ceiling: {human}")
+                            notify(f"agent-warden: a lane is near its {kind} ceiling",
+                                   f"{unit}: {human}. A big legit build (raise the ceiling) "
+                                   f"or a runaway starting.")
+                    except Exception as e:  # noqa: BLE001
+                        log(f"task-cap enforcement raised {e!r}")
+                try:
+                    reaped = reap_orphans(procs, st, correct, only)
+                except Exception as e:  # noqa: BLE001
+                    reaped = []
+                    st["_status_orphans"] = []
+                    log(f"orphan reap raised {e!r}")
+                if reaped:
+                    notify(f"agent-warden: reaped {len(reaped)} orphan scope(s)", "\n".join(reaped[:6])
+                           + ("\n..." if len(reaped) > 6 else ""))
+                if not moves:
+                    st["skips"] = 0
+                else:
+                    for reason, tree in moves:
+                        log(f"{reason}: root {tree[0].describe()} (+{len(tree) - 1} descendants)")
+                    if not correct:
+                        log(f"report mode: {len(moves)} tree(s) would move")
+                    else:
+                        try:
+                            bus = Bus()
+                        except OSError as e:
+                            st["move_failures"] += 1
+                            emit_event(st, "failed")
+                            log(f"cannot reach the user bus: {e}")
+                            rc = 1
+                        else:
+                            try:
+                                for reason, tree in moves:
+                                    ok, cur, mx = headroom()
+                                    if not ok:
+                                        st["skips"] += 1
+                                        waiting.append((reason, tree))
+                                        where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
+                                        log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
+                                        if st["skips"] >= 3:
+                                            notify("agent-warden: not moving", f"{tree[0].comm} pid {tree[0].pid} waits; {SLICE} headroom {where}")
+                                        continue
+                                    st["skips"] = 0
+                                    try:
+                                        done, name, moved, missing = move(tree, reason, bus)
+                                    except Exception as e:  # noqa: BLE001
+                                        st["move_failures"] += 1
+                                        emit_event(st, "failed", scope=warden_scope_name(tree[0], reason), pid=tree[0].pid, processes=0)
+                                        log(f"  move of pid {tree[0].pid} raised {e!r}")
+                                        continue
+                                    record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
+                            finally:
+                                bus.close()
+                record_waiting_events(st, waiting if correct else [])
+                if summary:
+                    notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))
+                if failures:
+                    notify(f"agent-warden: {len(failures)} move failure(s)", "\n".join(failures[:6]) + ("\n..." if len(failures) > 6 else ""))
+                moves_for_status = moves
+                waiting_for_status = waiting if correct else []
+                orphans_for_status = st.get("_status_orphans", [])
+                contained_for_status = units
+        finally:
+            if only is None:
+                try:
+                    doc = status_document(mode, st, procs=procs, moves=moves_for_status,
+                                          waiting=waiting_for_status, orphans_status=orphans_for_status,
+                                          contained=contained_for_status, error=error)
+                    write_status(doc)
+                except Exception as e:  # noqa: BLE001
+                    log(f"status write failed: {e!r}")
+    return rc
 
 def status():
     with State() as st:
@@ -1520,6 +2028,10 @@ def selftest():
     check("npm storm (5140 procs, idle) is harmful by process count", scope_harm(5140, 0.0))
     check("bun server (1 proc, 0.8 core) is harmful by CPU", scope_harm(1, 0.8))
     check("quiet dev server (6 procs, 0 core) is not harmful", not scope_harm(6, 0.0))
+    for name, doc in {**status_fixture_docs(), "failed-scan": status_failed_scan_fixture()}.items():
+        check(f"status {name} validates", not status_errors(doc))
+    bad = status_fixture_docs()["calm"] | {"schema": "2.0"}
+    check("status validator rejects an unknown schema major", bool(status_errors(bad)))
     print(f"selftest: {'PASS' if not fails else f'{fails} FAILED'}")
     return 1 if fails else 0
 

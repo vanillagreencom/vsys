@@ -532,7 +532,9 @@ class AgentWardenRules(unittest.TestCase):
                 summary = []
                 failures = []
                 self.w.record_move_result(state, summary, failures, root, "escaped launch", done, "unit.scope", moved, missing)
-                self.assertEqual(state, expected)
+                self.assertEqual({key: state[key] for key in expected}, expected)
+                self.assertEqual(len(state.get("events", [])), 1)
+                self.assertEqual(state["events"][0]["kind"], "moved" if done else "partial" if moved else "failed")
                 self.assertEqual(len(summary), summary_len)
                 self.assertEqual(len(failures), failures_len)
 
@@ -749,6 +751,142 @@ class AgentWardenRules(unittest.TestCase):
                         self.assertEqual(actual, expected)
             finally:
                 self.w.CG_ROOT = old_root
+
+
+    def point_status_state(self, module, base):
+        old = module.STATE_DIR, module.STATE, module.STATUS, module.LOCK, module.CG_ROOT
+        module.STATE_DIR = base / "state"
+        module.STATE = module.STATE_DIR / "state.json"
+        module.STATUS = module.STATE_DIR / "status.json"
+        module.LOCK = module.STATE_DIR / "lock"
+        module.CG_ROOT = base / "cg"
+        return old
+
+    def restore_status_state(self, module, old):
+        module.STATE_DIR, module.STATE, module.STATUS, module.LOCK, module.CG_ROOT = old
+
+    def status_writer_is_atomic(self, module):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(module, base)
+            try:
+                first = module.status_fixture_docs()["calm"]
+                second = module.status_fixture_docs()["near-limit"]
+                module.write_status(first)
+                before_inode = module.STATUS.stat().st_ino
+                observed = []
+                old_replace = module.os.replace
+
+                def spy_replace(src, dst):
+                    observed.append(json.loads(Path(dst).read_text()))
+                    old_replace(src, dst)
+
+                module.os.replace = spy_replace
+                old_umask = os.umask(0o077)
+                try:
+                    module.write_status(second)
+                finally:
+                    os.umask(old_umask)
+                    module.os.replace = old_replace
+                after = module.STATUS.stat()
+                return (
+                    observed == [first]
+                    and after.st_ino != before_inode
+                    and (after.st_mode & 0o777) == 0o644
+                    and json.loads(module.STATUS.read_text()) == second
+                    and not list(module.STATE_DIR.glob("status.tmp.*"))
+                )
+            finally:
+                self.restore_status_state(module, old)
+
+    def test_status_writer_uses_rename_and_mode(self):
+        self.assertTrue(self.status_writer_is_atomic(self.w))
+
+    def test_status_writer_in_place_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "    os.replace(tmp, STATUS)\n"
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, "    STATUS.write_bytes(data)\n"), "agent_warden_mutant_status_in_place")
+        self.assertFalse(self.status_writer_is_atomic(mutant))
+
+    def test_unreadable_status_counters_stay_null(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            try:
+                lane = self.w.CG_ROOT / self.w.SLICE / "agent-warden-1-2.scope"
+                lane.mkdir(parents=True)
+                doc = self.w.status_document("report", {"_state_readable": True}, moves=[], waiting=[], orphans_status=[], contained=[], now=1)
+                self.assertIsNone(doc["slice"]["memory"])
+                self.assertIsNone(doc["slice"]["tasks"])
+                self.assertIsNone(doc["lanes"][0]["tasks"])
+                self.assertIsNone(doc["lanes"][0]["memory"])
+                self.assertNotEqual(doc["slice"]["memory"], 0)
+                self.w.STATE_DIR.mkdir(parents=True, exist_ok=True)
+                self.w.STATE.write_text("{")
+                with self.w.State() as st:
+                    counters = self.w.status_counters(st)
+                self.assertEqual(counters, {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
+            finally:
+                self.restore_status_state(self.w, old)
+
+    def test_failed_scan_tick_writes_error_status(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_scan = self.w.scan
+            self.w.scan = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+            try:
+                result = self.w.run(False)
+                doc = json.loads(self.w.STATUS.read_text())
+            finally:
+                self.w.scan = old_scan
+                self.restore_status_state(self.w, old)
+        self.assertEqual(result, 1)
+        self.assertEqual(doc["error"], "scan")
+        self.assertIsNone(doc["outside"])
+        self.assertIsNone(doc["waiting"])
+        self.assertIsNone(doc["orphans"])
+        self.assertIsNone(doc["contained"])
+        self.assertFalse(self.w.status_errors(doc))
+
+    def test_status_event_ring_and_episode_dedupe(self):
+        st = {}
+        for i in range(60):
+            self.w.emit_event(st, "moved", scope=f"s{i}.scope", now=i)
+        self.assertEqual(len(st["events"]), 50)
+        self.assertEqual([event["id"] for event in st["events"]], list(range(11, 61)))
+        st = {}
+        self.w.record_near_events(st, [("lane.scope", "tasks", "6200 of 8192")], now=1)
+        self.w.record_near_events(st, [("lane.scope", "tasks", "6201 of 8192")], now=2)
+        self.assertEqual(len(st["events"]), 1)
+        self.w.record_near_events(st, [], now=3)
+        self.w.record_near_events(st, [("lane.scope", "tasks", "6202 of 8192")], now=4)
+        self.assertEqual(len(st["events"]), 2)
+        root = self.P(9000, 1, "claude", ["claude"], self.A, start=123)
+        tree = [("escaped launch", [root])]
+        self.w.record_waiting_events(st, tree, now=5)
+        self.w.record_waiting_events(st, tree, now=6)
+        waiting = [event for event in st["events"] if event["kind"] == "waiting"]
+        self.assertEqual(len(waiting), 1)
+
+    def test_status_fixtures_validate_and_match_builders(self):
+        expected = self.w.status_fixture_docs()
+        actual_names = {path.name.removeprefix("status-").removesuffix(".json") for path in (ROOT / "warden" / "fixtures").glob("status-*.json")}
+        self.assertEqual(actual_names, set(expected))
+        for name, doc in expected.items():
+            with self.subTest(name=name):
+                fixture = json.loads((ROOT / "warden" / "fixtures" / f"status-{name}.json").read_text())
+                self.assertEqual(fixture, doc)
+                self.assertFalse(self.w.status_errors(fixture))
+        self.assertEqual(expected["calm"]["events"], [])
+        self.assertEqual(expected["near-limit"]["lanes"][0]["near"], ["tasks", "memory"])
+        self.assertGreaterEqual(expected["holding-off"]["counters"]["skips"], 1)
+        self.assertTrue(expected["holding-off"]["waiting"])
+        self.assertEqual(expected["partial"]["events"][0]["kind"], "partial")
+        self.assertGreaterEqual(expected["partial"]["counters"]["partial"], 1)
+        self.assertEqual(expected["reaped"]["events"][0]["kind"], "reaped")
+        self.assertGreaterEqual(expected["reaped"]["counters"]["reaped"], 1)
 
     def test_selftest_subprocess_exits_zero(self):
         with scratch() as tmp:
