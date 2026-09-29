@@ -810,7 +810,7 @@ def reap_orphans(procs, st, correct, only=None):
         if usage is not None and prev_usage is not None and prev_ts and now > prev_ts:
             cores = max(0.0, (usage - prev_usage) / 1e6 / (now - prev_ts))
         age = now - first
-        harmful = age >= ORPHAN_GRACE and (n >= ORPHAN_PROC_MAX or (cores is not None and cores >= ORPHAN_CPU_CORES))
+        harmful = age >= ORPHAN_GRACE and scope_harm(n, 0.0 if cores is None else cores)
         # reap only when harmful on this tick and the one before it
         do_reap = harmful and p.get("harmful", False)
         entry = {"first": first, "usage": usage, "usage_ts": now, "harmful": harmful}
@@ -857,8 +857,7 @@ def reap_orphans(procs, st, correct, only=None):
             status_rows.append(status_row)
             log(f"  reap of {unit} failed: {err}")
     st["orphans"] = tracked
-    st["_status_orphans"] = status_rows
-    return reaped
+    return reaped, status_rows
 
 def _limit(v):
     v = (v or "").strip()
@@ -1240,11 +1239,13 @@ def lane_label(scope, procs):
 
 def lane_statuses(procs=None):
     base = CG_ROOT / SLICE
+    if not base.is_dir():
+        return []
     lanes = []
     try:
         dirs = [d for d in base.iterdir() if d.is_dir() and d.name.endswith(".scope")]
     except OSError:
-        return lanes
+        return None
     for d in sorted(dirs, key=lambda p: p.name):
         tasks = _read_int(d / "pids.current")
         memory = _read_int(d / "memory.current")
@@ -1349,16 +1350,16 @@ def record_waiting_events(st, waiting, now=None):
     st["waiting_open"] = sorted(current)
 
 
-def status_document(mode, st, *, procs=None, moves=None, waiting=None, orphans_status=None,
-                    contained=None, error=None, now=None):
+def status_document(mode, st, *, slice_reading, lanes, moves=None, waiting=None,
+                    orphans_status=None, contained=None, error=None, now=None):
     return {
         "schema": STATUS_SCHEMA,
         "time": _now_seconds(now),
         "mode": mode,
         "interval": STATUS_INTERVAL,
         "error": error,
-        "slice": slice_status(),
-        "lanes": lane_statuses(procs),
+        "slice": slice_reading,
+        "lanes": lanes,
         "outside": None if moves is None else [_tree_status(reason, tree) for reason, tree in moves],
         "waiting": None if waiting is None else [_tree_status(reason, tree) for reason, tree in waiting],
         "orphans": None if orphans_status is None else sorted(orphans_status, key=lambda row: row["scope"]),
@@ -1366,6 +1367,13 @@ def status_document(mode, st, *, procs=None, moves=None, waiting=None, orphans_s
         "events": list(st.get("events") if isinstance(st.get("events"), list) else []),
         "counters": status_counters(st),
     }
+
+
+def status_from_tick(mode, st, tick):
+    return status_document(mode, st, slice_reading=slice_status(), lanes=lane_statuses(tick.get("procs")),
+                           moves=tick.get("moves"), waiting=tick.get("waiting"),
+                           orphans_status=tick.get("orphans"), contained=tick.get("contained"),
+                           error=tick.get("error"))
 
 
 def write_status(doc):
@@ -1436,8 +1444,10 @@ def status_errors(doc):
             _check_limit(errors, doc["slice"].get("tasksMax"), "slice.tasksMax")
             if doc["slice"].get("headroomOk") is not None and not isinstance(doc["slice"].get("headroomOk"), bool):
                 errors.append("slice.headroomOk must be a boolean or null")
-    if not isinstance(doc.get("lanes"), list):
-        errors.append("lanes must be a list")
+    if doc.get("lanes") is None:
+        pass
+    elif not isinstance(doc.get("lanes"), list):
+        errors.append("lanes must be a list or null")
     else:
         scopes = []
         for i, lane in enumerate(doc["lanes"]):
@@ -1543,59 +1553,93 @@ def _gib(n):
     return n * 1024 ** 3
 
 
-def _fixture_base(now):
-    return {
-        "schema": STATUS_SCHEMA,
-        "time": now,
-        "mode": "report",
-        "interval": STATUS_INTERVAL,
-        "error": None,
-        "slice": {"memory": _gib(38), "high": _gib(64), "max": _gib(80), "tasks": 300, "tasksMax": 16384, "headroomOk": True},
-        "lanes": [{"scope": "agent-warden-100-200.scope", "label": {"tool": "claude", "worktree": "vsy-52"}, "tasks": 120, "tasksMax": 8192, "memory": _gib(24), "memoryHigh": _gib(64), "near": []}],
-        "outside": [],
-        "waiting": [],
-        "orphans": [],
-        "contained": [],
-        "events": [],
-        "counters": {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0},
-    }
+FIXTURE_NOW = 1700000000
+FIXTURE_CG = f"/user.slice/user-{UID}.slice/user@{UID}.service/{SLICE}/agent-warden-100-200.scope"
+FIXTURE_OUTSIDE_CG = f"/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/x.scope"
+
+
+def _fixture_proc(pid, ppid, comm, argv=None, cg=FIXTURE_CG, start=1):
+    return Proc(pid, ppid=ppid, comm=comm, argv=argv or [comm], exe=f"/usr/bin/{comm}", cgroup=cg, start=start)
+
+
+def _fixture_state(**values):
+    st = {"_state_readable": True, "moves": 0, "partial": 0, "reaped": 0,
+          "move_failures": 0, "scan_failures": 0, "skips": 0, "events": [],
+          "event_seq": 0, "near_open": [], "waiting_open": []}
+    st.update(values)
+    return st
+
+
+def _fixture_slice(memory=_gib(38), headroom=True):
+    return {"memory": memory, "high": _gib(64), "max": _gib(80), "tasks": 300,
+            "tasksMax": 16384, "headroomOk": headroom}
+
+
+def _fixture_lanes(tasks=120, memory=_gib(24), near=None):
+    return [{"scope": "agent-warden-100-200.scope", "label": {"tool": "claude", "worktree": "vsy-52"},
+             "tasks": tasks, "tasksMax": 8192, "memory": memory,
+             "memoryHigh": _gib(64), "near": list(near or [])}]
+
+
+def _fixture_tree():
+    root = _fixture_proc(321, 1, "claude", ["claude"], FIXTURE_OUTSIDE_CG, start=654)
+    return [root, _fixture_proc(322, 321, "bash", ["bash"], FIXTURE_OUTSIDE_CG, start=655),
+            _fixture_proc(323, 322, "cargo", ["cargo"], FIXTURE_OUTSIDE_CG, start=656)]
+
+
+def _fixture_doc(mode, st, *, now, slice_reading=None, lanes=None, moves=None, waiting=None,
+                 orphans_status=None, contained=None, error=None):
+    return status_document(mode, st, slice_reading=_fixture_slice() if slice_reading is None else slice_reading,
+                           lanes=_fixture_lanes() if lanes is None else lanes, moves=moves,
+                           waiting=waiting, orphans_status=orphans_status, contained=contained,
+                           error=error, now=now)
 
 
 def status_fixture_docs():
-    now = 1700000000
-    docs = {"calm": _fixture_base(now)}
-    near = _fixture_base(now + 30)
-    near["lanes"][0].update({"tasks": 6200, "memory": _gib(50), "near": ["tasks", "memory"]})
-    near["events"] = [
-        {"id": 1, "time": now + 30, "kind": "near-cap", "scope": "agent-warden-100-200.scope", "pid": None, "processes": None, "near": "tasks"},
-        {"id": 2, "time": now + 30, "kind": "near-cap", "scope": "agent-warden-100-200.scope", "pid": None, "processes": None, "near": "memory"},
-    ]
-    docs["near-limit"] = near
-    hold = _fixture_base(now + 60)
-    hold.update({"mode": "correct"})
-    hold["slice"].update({"memory": _gib(73), "headroomOk": False})
-    tree = {"reason": "escaped-launch", "pid": 321, "start": 654, "tool": "claude", "processes": 3}
-    hold["outside"] = [tree]
-    hold["waiting"] = [tree]
-    hold["events"] = [{"id": 3, "time": now + 60, "kind": "waiting", "scope": "agent-warden-321-654.scope", "pid": 321, "processes": 3, "near": None}]
-    hold["counters"].update({"skips": 1})
-    docs["holding-off"] = hold
-    partial = _fixture_base(now + 90)
-    partial["events"] = [{"id": 4, "time": now + 90, "kind": "partial", "scope": "agent-warden-777-888.scope", "pid": 777, "processes": 1, "near": None}]
-    partial["counters"].update({"partial": 1})
-    docs["partial"] = partial
-    reaped = _fixture_base(now + 120)
-    reaped["events"] = [{"id": 5, "time": now + 120, "kind": "reaped", "scope": "agent-confine-leak.scope", "pid": None, "processes": 42, "near": None}]
-    reaped["counters"].update({"reaped": 1})
-    docs["reaped"] = reaped
+    now = FIXTURE_NOW
+    docs = {}
+    docs["calm"] = _fixture_doc("report", _fixture_state(), now=now, moves=[], waiting=[],
+                                 orphans_status=[], contained=[])
+
+    st = _fixture_state()
+    near_rows = [("agent-warden-100-200.scope", "tasks", "6200 of 8192"),
+                 ("agent-warden-100-200.scope", "memory", "50 GiB (soft cap 64)")]
+    record_near_events(st, near_rows, now=now + 30)
+    docs["near-limit"] = _fixture_doc("report", st, now=now + 30,
+                                      lanes=_fixture_lanes(tasks=6200, memory=_gib(50), near=["tasks", "memory"]),
+                                      moves=[], waiting=[], orphans_status=[], contained=[])
+
+    st = _fixture_state(skips=1)
+    tree = _fixture_tree()
+    waiting = [("escaped launch", tree)]
+    record_waiting_events(st, waiting, now=now + 60)
+    docs["holding-off"] = _fixture_doc("correct", st, now=now + 60,
+                                       slice_reading=_fixture_slice(memory=_gib(73), headroom=False),
+                                       moves=waiting, waiting=waiting, orphans_status=[], contained=[])
+
+    st = _fixture_state()
+    root = _fixture_proc(777, 1, "claude", ["claude"], FIXTURE_OUTSIDE_CG, start=888)
+    child = _fixture_proc(778, 777, "bash", ["bash"], FIXTURE_OUTSIDE_CG, start=889)
+    old_log = globals()["log"]
+    try:
+        globals()["log"] = lambda msg: None
+        record_move_result(st, [], [], root, "escaped launch", False, "agent-warden-777-888.scope", [root], [child], now=now + 90)
+    finally:
+        globals()["log"] = old_log
+    docs["partial"] = _fixture_doc("correct", st, now=now + 90, moves=[], waiting=[],
+                                   orphans_status=[], contained=[])
+
+    st = _fixture_state(reaped=1)
+    emit_event(st, "reaped", scope="agent-confine-leak.scope", processes=42, now=now + 120)
+    docs["reaped"] = _fixture_doc("correct", st, now=now + 120, moves=[], waiting=[],
+                                  orphans_status=[], contained=[])
     return docs
 
 
 def status_failed_scan_fixture():
-    doc = _fixture_base(1700000150)
-    doc.update({"error": "scan", "outside": None, "waiting": None, "orphans": None, "contained": None})
-    doc["counters"].update({"scanFailures": 1})
-    return doc
+    st = _fixture_state(scan_failures=1)
+    return _fixture_doc("report", st, now=FIXTURE_NOW + 150, moves=None, waiting=None,
+                        orphans_status=None, contained=None, error="scan")
 
 
 def notify(summary, body):
@@ -1605,20 +1649,20 @@ def notify(summary, body):
         pass
 
 
-def record_move_result(st, summary, failures, root, reason, done, name, moved, missing):
+def record_move_result(st, summary, failures, root, reason, done, name, moved, missing, now=None):
     if done and moved:
         st["moves"] += 1
-        emit_event(st, "moved", scope=name, pid=root.pid, processes=len(moved))
+        emit_event(st, "moved", scope=name, pid=root.pid, processes=len(moved), now=now)
         summary.append(f"{root.comm} {root.pid} (+{len(moved) - 1}, {reason})")
         log(f"  moved {len(moved)} pid(s) into {SLICE}/{name} ({reason})")
     elif moved:
         st["partial"] += 1
-        emit_event(st, "partial", scope=name, pid=root.pid, processes=len(moved))
+        emit_event(st, "partial", scope=name, pid=root.pid, processes=len(moved), now=now)
         summary.append(f"PARTIAL {root.comm} {root.pid}: {len(moved)} moved, {len(missing)} not")
         log(f"  PARTIAL {name}: moved {[p.pid for p in moved]} missing {[p.pid for p in missing]}")
     elif missing:
         st["move_failures"] += 1
-        emit_event(st, "failed", scope=name, pid=root.pid, processes=0)
+        emit_event(st, "failed", scope=name, pid=root.pid, processes=0, now=now)
         failures.append(f"FAILED {root.comm} {root.pid}: 0 moved, {len(missing)} not")
         log(f"  FAILED {name}: moved [] missing {[p.pid for p in missing]}")
 
@@ -1630,6 +1674,9 @@ DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "p
 
 
 class State:
+    def __init__(self, status=None):
+        self.status = status
+
     def __enter__(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         self.lockfd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o600)
@@ -1646,12 +1693,19 @@ class State:
         return self.st
 
     def __exit__(self, *exc):
-        tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
-        stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
-        tmp.write_text(json.dumps(stored))
-        os.replace(tmp, STATE)
-        fcntl.flock(self.lockfd, fcntl.LOCK_UN)
-        os.close(self.lockfd)
+        try:
+            tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
+            stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
+            tmp.write_text(json.dumps(stored))
+            os.replace(tmp, STATE)
+            if self.status is not None:
+                try:
+                    write_status(status_from_tick(self.status, self.st, self.st.get("_tick") or {}))
+                except Exception as e:  # noqa: BLE001
+                    log(f"status write failed: {e!r}")
+        finally:
+            fcntl.flock(self.lockfd, fcntl.LOCK_UN)
+            os.close(self.lockfd)
 
 
 def only_pids():
@@ -1660,126 +1714,100 @@ def only_pids():
 
 
 def run(correct):
-    with State() as st:
-        only = only_pids()
-        mode = "correct" if correct else "report"
-        summary = []
+    only = only_pids()
+    with State(status=None if only is not None else ("correct" if correct else "report")) as st:
+        st["_tick"] = {"procs": None, "moves": [], "waiting": [], "orphans": [],
+                       "contained": [], "error": None}
+        summary = []  # moved-tree notices; without this the first move raised NameError
         failures = []
-        procs = None
-        moves = []
-        units = []
-        waiting = []
-        error = None
-        moves_for_status = []
-        waiting_for_status = []
-        orphans_for_status = []
-        contained_for_status = []
-        rc = 0
         try:
+            procs = scan()
+            moves, unmatched, held, units = plan(procs, only)
+        except Exception as e:  # noqa: BLE001
+            st["scan_failures"] += 1
+            st["_tick"].update({"moves": None, "waiting": None, "orphans": None,
+                                "contained": None, "error": "scan"})
+            log(f"scan failed: {e!r}")
+            return 1
+        st["_tick"].update({"procs": procs, "moves": moves, "contained": units})
+        st["last_correct" if correct else "last_report"] = time.time()
+        for p in unmatched:
+            log(f"unmatched build process, nearest marker above is not an agent: {p.describe()}")
+        for p in held:
+            log(f"shared scope: session {p.describe()} shares its parent's scope; not split "
+                f"({'capped lineage' if lineage_is_capped(p.cgroup) else 'AGENT_WARDEN_SPLIT_SESSIONS=0'})")
+        unit_counts = {}
+        for p in units:
+            unit = unit_of(p.cgroup) or "unknown"
+            unit_counts[unit] = unit_counts.get(unit, 0) + 1
+        for unit, count in sorted(unit_counts.items()):
+            log(f"job unit {unit}: {count} process(es) carry their own containment; left in place")
+        if only is None:
             try:
-                procs = scan()
-                moves, unmatched, held, units = plan(procs, only)
+                enforce_task_caps(correct)
+                near_rows = warn_near_cap()
+                record_near_events(st, near_rows)
+                for unit, kind, human in near_rows:
+                    log(f"scope {unit} near its {kind} ceiling: {human}")
+                    notify(f"agent-warden: a lane is near its {kind} ceiling",
+                           f"{unit}: {human}. A big legit build (raise the ceiling) "
+                           f"or a runaway starting.")
             except Exception as e:  # noqa: BLE001
-                st["scan_failures"] += 1
-                error = "scan"
-                rc = 1
-                log(f"scan failed: {e!r}")
-                moves_for_status = None
-                waiting_for_status = None
-                orphans_for_status = None
-                contained_for_status = None
-            else:
-                st["last_correct" if correct else "last_report"] = time.time()
-                for p in unmatched:
-                    log(f"unmatched build process, nearest marker above is not an agent: {p.describe()}")
-                for p in held:
-                    log(f"shared scope: session {p.describe()} shares its parent's scope; not split "
-                        f"({'capped lineage' if lineage_is_capped(p.cgroup) else 'AGENT_WARDEN_SPLIT_SESSIONS=0'})")
-                unit_counts = {}
-                for p in units:
-                    unit = unit_of(p.cgroup) or "unknown"
-                    unit_counts[unit] = unit_counts.get(unit, 0) + 1
-                for unit, count in sorted(unit_counts.items()):
-                    log(f"job unit {unit}: {count} process(es) carry their own containment; left in place")
-                near_rows = []
-                if only is None:
-                    try:
-                        enforce_task_caps(correct)
-                        near_rows = warn_near_cap()
-                        record_near_events(st, near_rows)
-                        for unit, kind, human in near_rows:
-                            log(f"scope {unit} near its {kind} ceiling: {human}")
-                            notify(f"agent-warden: a lane is near its {kind} ceiling",
-                                   f"{unit}: {human}. A big legit build (raise the ceiling) "
-                                   f"or a runaway starting.")
-                    except Exception as e:  # noqa: BLE001
-                        log(f"task-cap enforcement raised {e!r}")
-                try:
-                    reaped = reap_orphans(procs, st, correct, only)
-                except Exception as e:  # noqa: BLE001
-                    reaped = []
-                    st["_status_orphans"] = []
-                    log(f"orphan reap raised {e!r}")
-                if reaped:
-                    notify(f"agent-warden: reaped {len(reaped)} orphan scope(s)", "\n".join(reaped[:6])
-                           + ("\n..." if len(reaped) > 6 else ""))
-                if not moves:
-                    st["skips"] = 0
-                else:
-                    for reason, tree in moves:
-                        log(f"{reason}: root {tree[0].describe()} (+{len(tree) - 1} descendants)")
-                    if not correct:
-                        log(f"report mode: {len(moves)} tree(s) would move")
-                    else:
-                        try:
-                            bus = Bus()
-                        except OSError as e:
-                            st["move_failures"] += 1
-                            emit_event(st, "failed")
-                            log(f"cannot reach the user bus: {e}")
-                            rc = 1
-                        else:
-                            try:
-                                for reason, tree in moves:
-                                    ok, cur, mx = headroom()
-                                    if not ok:
-                                        st["skips"] += 1
-                                        waiting.append((reason, tree))
-                                        where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
-                                        log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
-                                        if st["skips"] >= 3:
-                                            notify("agent-warden: not moving", f"{tree[0].comm} pid {tree[0].pid} waits; {SLICE} headroom {where}")
-                                        continue
-                                    st["skips"] = 0
-                                    try:
-                                        done, name, moved, missing = move(tree, reason, bus)
-                                    except Exception as e:  # noqa: BLE001
-                                        st["move_failures"] += 1
-                                        emit_event(st, "failed", scope=warden_scope_name(tree[0], reason), pid=tree[0].pid, processes=0)
-                                        log(f"  move of pid {tree[0].pid} raised {e!r}")
-                                        continue
-                                    record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
-                            finally:
-                                bus.close()
-                record_waiting_events(st, waiting if correct else [])
-                if summary:
-                    notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))
-                if failures:
-                    notify(f"agent-warden: {len(failures)} move failure(s)", "\n".join(failures[:6]) + ("\n..." if len(failures) > 6 else ""))
-                moves_for_status = moves
-                waiting_for_status = waiting if correct else []
-                orphans_for_status = st.get("_status_orphans", [])
-                contained_for_status = units
-        finally:
-            if only is None:
-                try:
-                    doc = status_document(mode, st, procs=procs, moves=moves_for_status,
-                                          waiting=waiting_for_status, orphans_status=orphans_for_status,
-                                          contained=contained_for_status, error=error)
-                    write_status(doc)
-                except Exception as e:  # noqa: BLE001
-                    log(f"status write failed: {e!r}")
-    return rc
+                log(f"task-cap enforcement raised {e!r}")
+        try:
+            reaped, orphan_rows = reap_orphans(procs, st, correct, only)
+            st["_tick"]["orphans"] = orphan_rows
+        except Exception as e:  # noqa: BLE001
+            reaped = []
+            st["_tick"]["orphans"] = None
+            log(f"orphan reap raised {e!r}")
+        if reaped:
+            notify(f"agent-warden: reaped {len(reaped)} orphan scope(s)", "\n".join(reaped[:6])
+                   + ("\n..." if len(reaped) > 6 else ""))
+        if not moves:
+            st["skips"] = 0
+            return 0
+        for reason, tree in moves:
+            log(f"{reason}: root {tree[0].describe()} (+{len(tree) - 1} descendants)")
+        if not correct:
+            log(f"report mode: {len(moves)} tree(s) would move")
+            return 0
+        try:
+            bus = Bus()
+        except OSError as e:
+            st["move_failures"] += 1
+            emit_event(st, "failed")
+            log(f"cannot reach the user bus: {e}")
+            return 1
+        waiting = []
+        for reason, tree in moves:
+            ok, cur, mx = headroom()
+            if not ok:
+                st["skips"] += 1
+                waiting.append((reason, tree))
+                st["_tick"]["waiting"] = waiting
+                where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
+                log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
+                if st["skips"] >= 3:
+                    notify("agent-warden: not moving", f"{tree[0].comm} pid {tree[0].pid} waits; {SLICE} headroom {where}")
+                continue
+            st["skips"] = 0
+            try:
+                done, name, moved, missing = move(tree, reason, bus)
+            except Exception as e:  # noqa: BLE001
+                st["move_failures"] += 1
+                emit_event(st, "failed", scope=warden_scope_name(tree[0], reason), pid=tree[0].pid, processes=0)
+                log(f"  move of pid {tree[0].pid} raised {e!r}")
+                continue
+            record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
+        bus.close()
+        record_waiting_events(st, waiting)
+        if summary:
+            notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))
+        if failures:
+            notify(f"agent-warden: {len(failures)} move failure(s)", "\n".join(failures[:6]) + ("\n..." if len(failures) > 6 else ""))
+    return 0
+
 
 def status():
     with State() as st:

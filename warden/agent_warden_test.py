@@ -816,7 +816,9 @@ class AgentWardenRules(unittest.TestCase):
             try:
                 lane = self.w.CG_ROOT / self.w.SLICE / "agent-warden-1-2.scope"
                 lane.mkdir(parents=True)
-                doc = self.w.status_document("report", {"_state_readable": True}, moves=[], waiting=[], orphans_status=[], contained=[], now=1)
+                doc = self.w.status_document("report", {"_state_readable": True},
+                                             slice_reading=self.w.slice_status(), lanes=self.w.lane_statuses(),
+                                             moves=[], waiting=[], orphans_status=[], contained=[], now=1)
                 self.assertIsNone(doc["slice"]["memory"])
                 self.assertIsNone(doc["slice"]["tasks"])
                 self.assertIsNone(doc["lanes"][0]["tasks"])
@@ -829,6 +831,51 @@ class AgentWardenRules(unittest.TestCase):
                 self.assertEqual(counters, {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
             finally:
                 self.restore_status_state(self.w, old)
+
+
+    def test_unreadable_lane_listing_stays_null(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_iterdir = Path.iterdir
+            try:
+                slice_dir = self.w.CG_ROOT / self.w.SLICE
+                slice_dir.mkdir(parents=True)
+
+                def checked_iterdir(path):
+                    if path == slice_dir:
+                        raise OSError("blocked")
+                    return old_iterdir(path)
+
+                Path.iterdir = checked_iterdir
+                lanes = self.w.lane_statuses()
+                doc = self.w.status_document("report", {"_state_readable": True},
+                                             slice_reading=self.w.slice_status(), lanes=lanes,
+                                             moves=[], waiting=[], orphans_status=[], contained=[], now=1)
+                self.assertIsNone(doc["lanes"])
+                self.assertFalse(self.w.status_errors(doc))
+            finally:
+                Path.iterdir = old_iterdir
+                self.restore_status_state(self.w, old)
+
+    def test_orphan_reap_exception_status_is_null(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_scan, old_plan, old_reap = self.w.scan, self.w.plan, self.w.reap_orphans
+            root = self.P(9100, 1, "claude", ["claude"], self.A, start=7)
+            self.w.scan = lambda: {root.pid: root}
+            self.w.plan = lambda procs, only=None: ([], [], [], [])
+            self.w.reap_orphans = lambda procs, st, correct, only=None: (_ for _ in ()).throw(RuntimeError("orphan boom"))
+            try:
+                result = self.w.run(False)
+                doc = json.loads(self.w.STATUS.read_text())
+            finally:
+                self.w.scan, self.w.plan, self.w.reap_orphans = old_scan, old_plan, old_reap
+                self.restore_status_state(self.w, old)
+        self.assertEqual(result, 0)
+        self.assertIsNone(doc["orphans"])
+        self.assertFalse(self.w.status_errors(doc))
 
     def test_failed_scan_tick_writes_error_status(self):
         with scratch() as tmp:

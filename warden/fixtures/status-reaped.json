@@ -11,7 +11,7 @@
   "error": null,
   "events": [
     {
-      "id": 5,
+      "id": 1,
       "kind": "reaped",
       "near": null,
       "pid": null,
@@ -35,7 +35,7 @@
       "tasksMax": 8192
     }
   ],
-  "mode": "report",
+  "mode": "correct",
   "orphans": [],
   "outside": [],
   "schema": "1.0",

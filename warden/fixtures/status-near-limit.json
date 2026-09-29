@@ -13,7 +13,7 @@
     {
       "id": 1,
       "kind": "near-cap",
-      "near": "tasks",
+      "near": "memory",
       "pid": null,
       "processes": null,
       "scope": "agent-warden-100-200.scope",
@@ -22,7 +22,7 @@
     {
       "id": 2,
       "kind": "near-cap",
-      "near": "memory",
+      "near": "tasks",
       "pid": null,
       "processes": null,
       "scope": "agent-warden-100-200.scope",

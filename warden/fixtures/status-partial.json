@@ -11,7 +11,7 @@
   "error": null,
   "events": [
     {
-      "id": 4,
+      "id": 1,
       "kind": "partial",
       "near": null,
       "pid": 777,
@@ -35,7 +35,7 @@
       "tasksMax": 8192
     }
   ],
-  "mode": "report",
+  "mode": "correct",
   "orphans": [],
   "outside": [],
   "schema": "1.0",
