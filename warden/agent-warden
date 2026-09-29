@@ -1465,8 +1465,9 @@ def write_status(doc):
     data = (json.dumps(doc, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
     if tmp.exists():
         tmp.unlink()
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    fd = None
     try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         os.fchmod(fd, 0o644)
         view = memoryview(data)
         while view:
@@ -1474,9 +1475,20 @@ def write_status(doc):
             if written <= 0:
                 raise OSError("short status write")
             view = view[written:]
-    finally:
         os.close(fd)
-    os.replace(tmp, STATUS)
+        fd = None
+        os.replace(tmp, STATUS)
+    except Exception:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _check_keys(errors, obj, keys, where):
@@ -2186,7 +2198,7 @@ def run(correct):
                     done, name, moved, missing = move(tree, reason, bus)
                 except Exception as e:  # noqa: BLE001
                     st["move_failures"] += 1
-                    emit_event(st, "failed", scope=warden_scope_name(tree[0], reason), pid=tree[0].pid, processes=0)
+                    emit_event(st, "failed", scope=warden_scope_name(tree[0], reason), pid=tree[0].pid, processes=None)
                     failures.append((root_scope, f"FAILED {tree[0].comm} {tree[0].pid}: move raised {e!r}"))
                     log(f"  move of pid {tree[0].pid} raised {e!r}")
                     continue

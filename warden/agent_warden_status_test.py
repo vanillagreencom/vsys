@@ -156,6 +156,20 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                 self.w.os.write = old_write
                 self.restore_status_state(self.w, old)
 
+    def test_status_writer_cleans_temp_on_replace_failure(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_replace = self.w.os.replace
+            self.w.os.replace = lambda src, dst: (_ for _ in ()).throw(OSError("replace failed"))
+            try:
+                with self.assertRaises(OSError):
+                    self.w.write_status(self.w.status_fixture_docs()["calm"])
+                self.assertEqual(list(self.w.STATE_DIR.glob("status.tmp.*")), [])
+            finally:
+                self.w.os.replace = old_replace
+                self.restore_status_state(self.w, old)
+
     def test_status_writer_in_place_mutant_fails(self):
         text = WARDEN.read_text()
         old = "    os.replace(tmp, STATUS)\n"
@@ -603,6 +617,39 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
             finally:
                 self.w.write_status = old_write
                 self.restore_status_state(self.w, old)
+
+    def test_move_exception_failed_event_processes_unknown(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            self.write_status_cgroup(self.w)
+            root = self.P(9600, 1, "claude", ["claude"], self.A, start=44)
+            old_scan, old_plan, old_reap = self.w.scan, self.w.plan, self.w.reap_orphans
+            old_enforce, old_warn, old_headroom = self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom
+            old_bus, old_move, old_notify = self.w.Bus, self.w.move, self.w.notify
+            class FakeBus:
+                def close(self):
+                    pass
+            self.w.scan = lambda: {root.pid: root}
+            self.w.plan = lambda procs, only=None: ([('escaped launch', [root])], [], [], [])
+            self.w.reap_orphans = lambda procs, st, correct, only=None: ([], [])
+            self.w.enforce_task_caps = lambda correct: []
+            self.w.warn_near_cap = lambda: ([], set(), True)
+            self.w.headroom = lambda: (True, 1, 100)
+            self.w.Bus = FakeBus
+            self.w.move = lambda tree, reason, bus: (_ for _ in ()).throw(RuntimeError("boom"))
+            self.w.notify = lambda summary, body: None
+            try:
+                self.assertEqual(self.w.run(True), 0)
+                doc = json.loads(self.w.STATUS.read_text())
+            finally:
+                self.w.scan, self.w.plan, self.w.reap_orphans = old_scan, old_plan, old_reap
+                self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom = old_enforce, old_warn, old_headroom
+                self.w.Bus, self.w.move, self.w.notify = old_bus, old_move, old_notify
+                self.restore_status_state(self.w, old)
+        failed = [event for event in doc["events"] if event["kind"] == "failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIsNone(failed[0]["processes"])
 
     def test_correct_move_status_rescans_labels(self):
         with scratch() as tmp:
