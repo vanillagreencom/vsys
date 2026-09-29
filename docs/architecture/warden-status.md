@@ -40,7 +40,7 @@ A major version can remove fields, change a type, change a unit, or change an en
 | `orphans` | list or null | tracked scopes | Null means the scan failed or the orphan pass raised. Reaped scopes are not listed. |
 | `contained` | list or null | job units | Null means the scan failed. |
 | `events` | list | event ids | Empty means no recent event. The ring keeps the last 50 events. |
-| `counters` | object | state counters | A field is null when `state.json` existed but could not be read or parsed. |
+| `counters` | object | state counters | A field is null when cumulative counters could not be recovered. |
 
 ### `slice`
 
@@ -119,14 +119,14 @@ An absent `agents.slice` makes `slice` null. The move guard still treats an abse
 
 | Field | Type | Unit | Null meaning |
 | --- | --- | --- | --- |
-| `moves` | integer or null | count | `state.json` existed but could not be read or parsed. |
-| `partial` | integer or null | count | `state.json` existed but could not be read or parsed. |
-| `reaped` | integer or null | count | `state.json` existed but could not be read or parsed. |
-| `moveFailures` | integer or null | count | `state.json` existed but could not be read or parsed. |
-| `scanFailures` | integer or null | count | `state.json` existed but could not be read or parsed. |
-| `skips` | integer or null | count | `state.json` existed but could not be read or parsed. |
+| `moves` | integer or null | count | The total could not be recovered from `state.json` or `status.json`. |
+| `partial` | integer or null | count | The total could not be recovered from `state.json` or `status.json`. |
+| `reaped` | integer or null | count | The total could not be recovered from `state.json` or `status.json`. |
+| `moveFailures` | integer or null | count | The total could not be recovered from `state.json` or `status.json`. |
+| `scanFailures` | integer or null | count | The total could not be recovered from `state.json` or `status.json`. |
+| `skips` | integer or null | count | The total could not be recovered from `state.json` or `status.json`. |
 
-A missing `state.json` means a fresh runtime directory only when no usable `status.json` counters exist. The counters are zero in that case. If `state.json` is missing or unreadable and `status.json` holds integer counters, the warden seeds state from those last published totals. If published counters are unusable, the warden writes `state.json` with `counters_unknown: true`, and counters stay null until the runtime directory starts fresh. A state file with invalid persisted event or episode fields is unreadable state. An invalid orphan record is dropped, so the orphan must be observed again before reaping.
+A missing `state.json` means a fresh runtime directory only when no usable `status.json` counters exist. The counters are zero in that case. If `state.json` is missing or unreadable and `status.json` holds integer counters, the warden seeds state from those last published totals. If published counters are unusable, the warden writes `state.json` with `counters_unknown: true`, and counters stay null until the runtime directory starts fresh. A state file is unreadable when persisted counters, `last_report`, `last_correct`, `event_seq`, event rows, `near_open`, `waiting_open`, `counters_unknown`, the `orphans` object, or the `episodes` object have invalid types or values. Invalid orphan and episode records are dropped one record at a time, so an orphan must be observed again before reaping and a notice episode can at most send again.
 
 ## Fixtures
 
@@ -144,4 +144,4 @@ A missing `state.json` means a fresh runtime directory only when no usable `stat
 
 `warden/agent-warden --selftest` validates the calm, near-limit, holding-off, partial, reaped and failed-scan documents. It also drives a normal and failed tick through `status_from_tick()`, and checks that an unknown schema major fails.
 
-`AgentWardenStatusRules.test_unreadable_status_counters_stay_null` checks that unreadable cgroup counters and a corrupt or wrongly typed `state.json` become null, not zero. `AgentWardenStatusRules.test_bad_orphan_state_is_dropped_before_reap` checks that an invalid orphan state record is re-observed instead of trusted. `AgentWardenStatusRules.test_unreadable_lane_listing_stays_null` checks that a failed scope listing becomes null, not an empty list. `AgentWardenStatusRules.test_orphan_reap_exception_status_is_null` checks that a failed orphan pass becomes null, not an empty list.
+`AgentWardenStatusRules.test_unreadable_status_counters_stay_null` checks cgroup counter nulls, corrupt state, status counter recovery, fresh zero counters and persisted unknown counters. `AgentWardenStatusRules.test_bad_orphan_state_is_dropped_before_reap` checks that an invalid orphan state record is re-observed instead of trusted. `AgentWardenNotifyRules.test_invalid_episode_state_is_dropped_on_tick` checks that an invalid episode record is dropped before status reads it. `AgentWardenStatusRules.test_unreadable_lane_listing_stays_null` checks that a failed scope listing becomes null, not an empty list. `AgentWardenStatusRules.test_orphan_reap_exception_status_is_null` checks that a failed orphan pass becomes null, not an empty list.
