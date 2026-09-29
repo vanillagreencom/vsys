@@ -1006,6 +1006,14 @@ class AgentWardenRules(unittest.TestCase):
                 with self.w.State() as st:
                     third = self.w.emit_event(st, "moved", now=2)["id"]
                 self.assertGreater(third, second)
+                st = {"_state_readable": True, "event_seq": 0, "events": [
+                    {"id": 5000, "time": 1, "kind": "moved", "scope": None, "pid": None, "processes": None, "near": None},
+                ]}
+                event = self.w.emit_event(st, "moved", now=1)
+                self.assertGreater(event["id"], 5000)
+                doc = self.w.status_document("report", st, slice_reading=None, lanes=[],
+                                             moves=[], waiting=[], orphans_status=[], contained=[], now=1)
+                self.assertFalse(self.w.status_errors(doc))
             finally:
                 self.restore_status_state(self.w, old)
 

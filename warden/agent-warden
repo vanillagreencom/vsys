@@ -1318,7 +1318,11 @@ def emit_event(st, kind, *, scope=None, pid=None, processes=None, near=None, now
         previous = int(st.get("event_seq") or 0)
     except (TypeError, ValueError):
         previous = 0
-    seq = max(previous + 1, _now_millis(now))
+    events = st.get("events") if isinstance(st.get("events"), list) else []
+    last_event = max((event.get("id") for event in events
+                      if isinstance(event, dict) and isinstance(event.get("id"), int)
+                      and not isinstance(event.get("id"), bool)), default=0)
+    seq = max(previous + 1, last_event + 1, _now_millis(now))
     st["event_seq"] = seq
     event = {
         "id": seq,
@@ -1329,7 +1333,6 @@ def emit_event(st, kind, *, scope=None, pid=None, processes=None, near=None, now
         "processes": processes,
         "near": near if kind == "near-cap" else None,
     }
-    events = st.get("events") if isinstance(st.get("events"), list) else []
     events.append(event)
     st["events"] = events[-STATUS_EVENT_LIMIT:]
     return event
