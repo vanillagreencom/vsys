@@ -750,6 +750,135 @@ class AgentWardenRules(unittest.TestCase):
             finally:
                 self.w.CG_ROOT = old_root
 
+    def test_notifier_heartbeat_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            heartbeat = base / "run" / "agent-warden" / "notifier"
+            heartbeat.parent.mkdir(parents=True)
+            rows = []
+            for name, mtime, expected in (
+                ("fresh", 940.0, True),
+                ("stale", 879.0, False),
+                ("future outside trust window", 1121.0, False),
+            ):
+                heartbeat.write_text("")
+                os.utime(heartbeat, (mtime, mtime))
+                rows.append((name, self.w.notifier_fresh(heartbeat, now=1000.0), expected))
+            heartbeat.unlink()
+            rows.append(("absent", self.w.notifier_fresh(heartbeat, now=1000.0), False))
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_notice_handoff_rows(self):
+        calls = []
+        logs = []
+        old_log = self.w.log
+        self.w.log = logs.append
+        try:
+            self.assertFalse(self.w.deliver_notice("summary", "body", True, lambda s, b: calls.append((s, b))))
+            self.assertEqual(calls, [])
+            self.assertEqual(logs[-1], "notice left to consumer: summary")
+            self.assertTrue(self.w.deliver_notice("summary", "body", False, lambda s, b: calls.append((s, b))))
+            self.assertEqual(calls, [("summary", "body")])
+        finally:
+            self.w.log = old_log
+
+    def test_episode_dedupe_rows(self):
+        calls = []
+        logs = []
+        old_log = self.w.log
+        self.w.log = logs.append
+        try:
+            st = self.w.default_state()
+            self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda s, b: calls.append((s, b)))
+            self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda s, b: calls.append((s, b)))
+            self.assertEqual(calls.count(("near", "body")), 1)
+            self.w.clear_episodes(st, {"tasks"})
+            self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1002.0, lambda s, b: calls.append((s, b)))
+            self.assertEqual(calls.count(("near", "body")), 2)
+            st = self.w.default_state()
+            self.w.deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", True, 1000.0, lambda s, b: calls.append((s, b)))
+            self.assertEqual(calls.count(("memory", "body")), 0)
+            self.assertEqual(logs[-1], "notice left to consumer: memory")
+            self.w.deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", False, 1001.0, lambda s, b: calls.append((s, b)))
+            self.assertEqual(calls.count(("memory", "body")), 1)
+        finally:
+            self.w.log = old_log
+
+    def test_status_read_only_subprocess_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            state_dir = Path(env["XDG_RUNTIME_DIR"]) / "agent-warden"
+            state_dir.mkdir(parents=True)
+            state = state_dir / "state.json"
+            body = json.dumps({
+                "skips": 7,
+                "last_report": 10,
+                "last_correct": 20,
+                "moves": 1,
+                "partial": 2,
+                "scan_failures": 3,
+                "move_failures": 4,
+                "reaped": 5,
+                "orphans": {},
+                "episodes": {"tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 6, "notified": True}},
+            }, sort_keys=True).encode()
+            state.write_bytes(body)
+            before_mtime = state.stat().st_mtime_ns
+            result = subprocess.run([sys.executable, str(WARDEN), "--status"], env=env, capture_output=True, text=True)
+            after = state.read_bytes()
+            after_mtime = state.stat().st_mtime_ns
+            lock_exists = (state_dir / "lock").exists()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(after, body)
+        self.assertEqual(after_mtime, before_mtime)
+        self.assertFalse(lock_exists)
+
+    def test_notification_handoff_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '    if consumer_fresh:\n        log(f"notice left to consumer: {summary}")\n        return False\n    (sender or notify)(summary, body)\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, old.replace("if consumer_fresh:", "if False:")), "agent_warden_mutant_notifier_handoff")
+        calls = []
+        mutant.deliver_notice("summary", "body", True, lambda s, b: calls.append((s, b)))
+        self.assertEqual(calls, [("summary", "body")])
+
+    def test_episode_dedupe_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '    if rec.get("notified"):\n        return "none", key\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, '    if False:\n        return "none", key\n'), "agent_warden_mutant_episode_dedupe")
+        calls = []
+        st = mutant.default_state()
+        mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda s, b: calls.append((s, b)))
+        mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda s, b: calls.append((s, b)))
+        self.assertEqual(calls.count(("near", "body")), 2)
+
+    def test_status_read_only_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = 'def status():\n    st = read_state_unlocked()\n'
+        self.assertEqual(text.count(old), 1)
+        with scratch() as tmp:
+            base = Path(tmp)
+            mutant = base / "agent-warden"
+            mutant.write_text(text.replace(old, 'def status():\n    with State() as st:\n        pass\n'))
+            mutant.chmod(0o755)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            state_dir = Path(env["XDG_RUNTIME_DIR"]) / "agent-warden"
+            state_dir.mkdir(parents=True)
+            state = state_dir / "state.json"
+            state.write_text(json.dumps(self.w.default_state(), sort_keys=True))
+            result = subprocess.run([sys.executable, str(mutant), "--status"], env=env, capture_output=True, text=True)
+            lock_exists = (state_dir / "lock").exists()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(lock_exists)
+
     def test_selftest_subprocess_exits_zero(self):
         with scratch() as tmp:
             base = Path(tmp)

@@ -87,6 +87,16 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 
 `AGENT_SCOPE_MEM_HIGH` and `AGENT_SCOPE_MEM_HIGH_BYTES` must name the same size. The launcher reads the systemd size string. The warden reads the byte value for warden-created scopes and for the lineage baseline.
 
+## Notifications
+
+The warden sends desktop notices through `notify-send` only when no consumer owns them. A consumer owns notices by touching `$XDG_RUNTIME_DIR/agent-warden/notifier`. The warden trusts that heartbeat while its mtime is under 120 s old, and treats an absent, unreadable or far-future heartbeat as stale. A consumer should touch the file every 60 s. `warden/agent-warden --selftest` covers the heartbeat rows. `warden/agent_warden_test.py` covers the module path and event suppression in `AgentWardenRules.test_notifier_heartbeat_rows` and `AgentWardenRules.test_notice_handoff_rows`.
+
+The fallback notifier records open episodes in `state.json` under `episodes`. Each key has the shape `<kind>:<scope>`. Each value carries `kind`, `scope`, `since` and `notified`. Near-cap episodes use kind `tasks` or `memory` and scope the lane unit. Headroom episodes use kind `not-moving` and scope `agents.slice`. Move-failure episodes use kind `move-failure` and scope the root pid plus start time. The warden sends one notice while an episode is open. It sends again only after the condition clears and opens again. `warden/agent-warden --selftest` covers one notice across ticks and re-notify after clear. `warden/agent_warden_test.py` covers the module path and the mutant control in `AgentWardenRules.test_episode_dedupe_rows` and `AgentWardenRules.test_episode_dedupe_mutant_fails`.
+
+A fresh consumer suppresses event notices too. Reap and move notices still log their journal lines. The warden logs `notice left to consumer` for a notice that the heartbeat suppresses. `warden/agent_warden_test.py` covers the suppression guard in `AgentWardenRules.test_notification_handoff_mutant_fails`.
+
+`--status` reads `state.json` without taking the lock and without writing `state.json`. It does not create the state directory or the lock file. A missing or invalid state file reads as the default state. `warden/agent_warden_test.py` covers the subprocess path, byte-for-byte state preservation and the absent lock file in `AgentWardenRules.test_status_read_only_subprocess_rows`. `AgentWardenRules.test_status_read_only_mutant_fails` covers the mutant control.
+
 ## Files and install
 
 The install path is manual until VSY-54 adds `vsys warden install`.
