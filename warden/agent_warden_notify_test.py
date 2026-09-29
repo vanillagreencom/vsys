@@ -443,6 +443,20 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             heartbeat.unlink()
             self.assertFalse(mutant.notifier_fresh(heartbeat, now=1000.0))
 
+    def test_status_unreadable_state_fails(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            state_dir = Path(env["XDG_RUNTIME_DIR"]) / "agent-warden"
+            state_dir.mkdir(parents=True)
+            (state_dir / "state.json").mkdir()
+            result = subprocess.run([sys.executable, str(WARDEN), "--status"], env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(result.stderr.splitlines()[0].startswith("agent-warden: state=unreadable "))
+        self.assertNotIn("last correct scan", result.stdout)
+
     def test_notification_handoff_mutant_fails(self):
         text = WARDEN.read_text()
         old = '    if consumer_fresh:\n        log(f"notice left to consumer: {summary}")\n        return False\n    return bool((sender or notify)(summary, body))\n'
@@ -589,13 +603,31 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotEqual(run_entries, [])
 
-    def test_status_directory_creation_mutant_fails(self):
+    def test_status_unreadable_state_mutant_fails(self):
         text = WARDEN.read_text()
-        old = 'def status():\n    st = read_state_unlocked()\n'
+        old = '    except FileNotFoundError:\n        return default_state()\n    except OSError:\n        print(f"agent-warden: state=unreadable {STATE}", file=sys.stderr)\n        raise\n'
+        new = '    except OSError:\n        return default_state()\n'
         self.assertEqual(text.count(old), 1)
         with scratch() as tmp:
             base = Path(tmp)
-            mutant = materialize_warden_script(base, text.replace(old, 'def status():\n    STATE_DIR.mkdir(parents=True, exist_ok=True)\n    st = read_state_unlocked()\n'))
+            mutant = materialize_warden_script(base, text.replace(old, new))
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            state_dir = Path(env["XDG_RUNTIME_DIR"]) / "agent-warden"
+            state_dir.mkdir(parents=True)
+            (state_dir / "state.json").mkdir()
+            result = subprocess.run([sys.executable, str(mutant), "--status"], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("last correct scan", result.stdout)
+
+    def test_status_directory_creation_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = 'def status():\n    try:\n        st = read_state_unlocked()\n'
+        self.assertEqual(text.count(old), 1)
+        with scratch() as tmp:
+            base = Path(tmp)
+            mutant = materialize_warden_script(base, text.replace(old, 'def status():\n    STATE_DIR.mkdir(parents=True, exist_ok=True)\n    try:\n        st = read_state_unlocked()\n'))
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
             for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
@@ -606,11 +638,11 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
 
     def test_status_rewrite_mutant_fails(self):
         text = WARDEN.read_text()
-        old = 'def status():\n    st = read_state_unlocked()\n'
+        old = '        st = read_state_unlocked()\n'
         self.assertEqual(text.count(old), 1)
         with scratch() as tmp:
             base = Path(tmp)
-            mutant = materialize_warden_script(base, text.replace(old, 'def status():\n    st = read_state_unlocked()\n    STATE.write_text(STATE.read_text() + "\\n")\n'))
+            mutant = materialize_warden_script(base, text.replace(old, '        st = read_state_unlocked()\n        STATE.write_text(STATE.read_text() + "\\n")\n'))
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
             for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
@@ -631,7 +663,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
 
     def test_status_read_only_mutant_fails(self):
         text = WARDEN.read_text()
-        old = 'def status():\n    st = read_state_unlocked()\n'
+        old = 'def status():\n    try:\n        st = read_state_unlocked()\n    except OSError:\n        return 1\n'
         self.assertEqual(text.count(old), 1)
         with scratch() as tmp:
             base = Path(tmp)

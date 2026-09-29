@@ -1301,8 +1301,11 @@ def state_from_text(text):
 def read_state_unlocked():
     try:
         return state_from_text(STATE.read_text())
-    except OSError:
+    except FileNotFoundError:
         return default_state()
+    except OSError:
+        print(f"agent-warden: state=unreadable {STATE}", file=sys.stderr)
+        raise
 
 
 class State:
@@ -1463,7 +1466,10 @@ def run(correct):
 
 
 def status():
-    st = read_state_unlocked()
+    try:
+        st = read_state_unlocked()
+    except OSError:
+        return 1
     procs = scan()
     moves, unmatched, held, units = plan(procs)
     pending = {p.pid for _, t in moves for p in t}
