@@ -1902,6 +1902,22 @@ def _valid_orphan_state_record(record):
     return not errors
 
 
+def _valid_episode_record(record):
+    errors = []
+    if not isinstance(record, dict):
+        return False
+    kind = record.get("kind")
+    if not isinstance(kind, str):
+        errors.append("state.episode.kind must be a string")
+    scope = record.get("scope")
+    if not isinstance(scope, str):
+        errors.append("state.episode.scope must be a string")
+    _check_number(errors, record.get("since"), "state.episode.since")
+    if not isinstance(record.get("notified"), bool):
+        errors.append("state.episode.notified must be a boolean")
+    return not errors
+
+
 def state_object(raw):
     if not isinstance(raw, dict):
         return None
@@ -1927,7 +1943,8 @@ def state_object(raw):
     checked = dict(raw)
     checked["orphans"] = {unit: record for unit, record in raw_orphans.items()
                             if isinstance(unit, str) and _valid_orphan_state_record(record)}
-    checked["episodes"] = dict(raw_episodes)
+    checked["episodes"] = {key: record for key, record in raw_episodes.items()
+                             if isinstance(key, str) and _valid_episode_record(record)}
     return checked
 
 
