@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -14,8 +15,8 @@ import unittest
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[1]
-WARDEN = ROOT / "warden"
-INSTALL = WARDEN / "install"
+REAL_WARDEN = ROOT / "warden"
+INSTALL = REAL_WARDEN / "install"
 SCRATCH_ROOT = ROOT / "tmp" / "warden-install-tests"
 
 
@@ -50,18 +51,31 @@ class Env:
 
 
 class WardenInstallTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.installer = load_install()
+    def make_warden(self, base, *, with_data=True, data=b'{"tools":["claude"]}\n'):
+        package = base / "package"
+        warden = package / "warden"
+        (warden / "systemd").mkdir(parents=True)
+        shutil.copy2(INSTALL, warden / "install")
+        shutil.copy2(REAL_WARDEN / "systemd" / "agent-warden.service", warden / "systemd" / "agent-warden.service")
+        shutil.copy2(REAL_WARDEN / "systemd" / "agent-warden.timer", warden / "systemd" / "agent-warden.timer")
+        shutil.copy2(REAL_WARDEN / "systemd" / "agents.slice", warden / "systemd" / "agents.slice")
+        agent = warden / "agent-warden"
+        agent.write_text("#!/bin/sh\n", encoding="utf-8")
+        agent.chmod(0o755)
+        if with_data:
+            data_path = package / "data" / "agent-tools.json"
+            data_path.parent.mkdir(parents=True)
+            data_path.write_bytes(data)
+        return load_install(warden / "install", f"warden_install_under_test_{id(base)}"), warden, data
 
-    def fixture(self, base):
+    def fixture(self, base, *, with_data=True, data=b'{"tools":["claude"]}\n'):
         home = base / "home"
         xdg = base / "xdg"
-        run = base / "run"
+        data_home = base / "data-home"
         stub = base / "bin"
         user_dir = xdg / "systemd" / "user"
         log = base / "systemctl.jsonl"
-        for path in (home, xdg, run, stub, user_dir):
+        for path in (home, xdg, data_home, stub, user_dir):
             path.mkdir(parents=True, exist_ok=True)
         systemctl = stub / "systemctl"
         systemctl.write_text(
@@ -108,39 +122,49 @@ class WardenInstallTest(unittest.TestCase):
         env = {
             "HOME": str(home),
             "XDG_CONFIG_HOME": str(xdg),
+            "XDG_DATA_HOME": str(data_home),
             "PATH": str(stub),
             "PYTHONDONTWRITEBYTECODE": "1",
             "STUB_LOG": str(log),
             "STUB_USER_DIR": str(user_dir),
         }
-        return env, user_dir, log
+        installer, warden, source_data = self.make_warden(base, with_data=with_data, data=data)
+        return installer, warden, source_data, env, user_dir, data_home / "vsys" / "agent-tools.json", log
 
     def calls(self, log):
         if not log.exists():
             return []
         return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
 
-    def run_main(self, argv, env):
+    def run_main(self, installer, argv, env):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with Env(env), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = self.installer.main(argv)
+            code = installer.main(argv)
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def test_install_writes_marked_units_and_enables_timer(self):
+    def test_install_writes_marked_units_data_and_enables_timer(self):
         with scratch() as tmp:
-            env, user_dir, log = self.fixture(Path(tmp))
-            code, stdout, stderr = self.run_main(["install"], env)
+            installer, warden, source_data, env, user_dir, data_target, log = self.fixture(Path(tmp))
+            local = Path(env["XDG_CONFIG_HOME"]) / "vsys" / "agent-tools.json"
+            local.parent.mkdir(parents=True)
+            local.write_text("local\n", encoding="utf-8")
+            code, stdout, stderr = self.run_main(installer, ["install"], env)
             self.assertEqual((code, stderr), (0, ""))
             self.assertIn("vsys-warden: installed", stdout)
-            for name in self.installer.UNIT_NAMES:
+            source_hash = hashlib.sha256(source_data).hexdigest()
+            for name in installer.UNIT_NAMES:
                 path = user_dir / name
                 text = path.read_text(encoding="utf-8")
-                self.assertEqual(text.splitlines()[0], self.installer.MARKER)
+                self.assertEqual(text.splitlines()[0], installer.MARKER)
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
             service = (user_dir / "agent-warden.service").read_text(encoding="utf-8")
-            self.assertIn(f"ExecStart={WARDEN / 'agent-warden'} --correct", service)
+            self.assertEqual(service.splitlines()[1], installer.DATA_MARKER_PREFIX + source_hash)
+            self.assertIn(f"ExecStart={warden / 'agent-warden'} --correct", service)
             self.assertNotIn("%h/.local/bin", service)
+            self.assertEqual(data_target.read_bytes(), source_data)
+            self.assertEqual(stat.S_IMODE(data_target.stat().st_mode), 0o644)
+            self.assertEqual(local.read_text(encoding="utf-8"), "local\n")
             self.assertEqual(
                 self.calls(log),
                 [
@@ -150,47 +174,70 @@ class WardenInstallTest(unittest.TestCase):
             )
             self.assertTrue((user_dir / "timers.target.wants" / "agent-warden.timer").is_symlink())
 
-    def test_install_refuses_foreign_file_and_symlink_before_writing(self):
+    def test_install_refuses_missing_agent_tools_before_writing(self):
         with scratch() as tmp:
-            env, user_dir, log = self.fixture(Path(tmp))
+            installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp), with_data=False)
+            code, stdout, stderr = self.run_main(installer, ["install"], env)
+            self.assertEqual(code, 1, stdout)
+            self.assertIn("agent-warden: agent-tools=missing", stderr)
+            self.assertFalse(data_target.exists())
+            self.assertFalse((user_dir / "agent-warden.service").exists())
+            self.assertEqual(self.calls(log), [])
+
+    def test_install_refuses_foreign_file_symlink_and_data_before_writing(self):
+        with scratch() as tmp:
+            installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp))
             service = user_dir / "agent-warden.service"
             timer = user_dir / "agent-warden.timer"
             service.write_text("foreign\n", encoding="utf-8")
             target = user_dir / "target.timer"
             target.write_text("target\n", encoding="utf-8")
             timer.symlink_to(target)
-            code, stdout, stderr = self.run_main(["install"], env)
+            data_target.parent.mkdir(parents=True)
+            data_target.write_text("foreign data\n", encoding="utf-8")
+            code, stdout, stderr = self.run_main(installer, ["install"], env)
             self.assertEqual(code, 1, stdout)
             self.assertIn(f"foreign: {service}", stderr)
             self.assertIn(f"foreign: {timer}", stderr)
+            self.assertIn(f"foreign: {data_target}", stderr)
             self.assertEqual(service.read_text(encoding="utf-8"), "foreign\n")
             self.assertTrue(timer.is_symlink())
+            self.assertEqual(data_target.read_text(encoding="utf-8"), "foreign data\n")
             self.assertFalse((user_dir / "agents.slice").exists())
             self.assertEqual(self.calls(log), [])
 
-    def test_install_rewrites_its_own_units(self):
+    def test_install_rewrites_its_own_units_and_data(self):
         with scratch() as tmp:
-            env, user_dir, _ = self.fixture(Path(tmp))
-            code, _, stderr = self.run_main(["install"], env)
+            installer, warden, _, env, user_dir, data_target, _ = self.fixture(Path(tmp))
+            code, _, stderr = self.run_main(installer, ["install"], env)
             self.assertEqual((code, stderr), (0, ""))
+            next_data = b'{"tools":["codex"]}\n'
+            (warden / ".." / "data" / "agent-tools.json").write_bytes(next_data)
             service = user_dir / "agent-warden.service"
-            service.write_text(self.installer.MARKER + "\nold\n", encoding="utf-8")
-            code, _, stderr = self.run_main(["install"], env)
+            service.write_text(service.read_text(encoding="utf-8") + "old\n", encoding="utf-8")
+            code, _, stderr = self.run_main(installer, ["install"], env)
             self.assertEqual((code, stderr), (0, ""))
-            self.assertIn("ExecStart=", service.read_text(encoding="utf-8"))
-            self.assertNotIn("\nold\n", service.read_text(encoding="utf-8"))
+            self.assertEqual(data_target.read_bytes(), next_data)
+            text = service.read_text(encoding="utf-8")
+            self.assertEqual(text.splitlines()[1], installer.DATA_MARKER_PREFIX + hashlib.sha256(next_data).hexdigest())
+            self.assertNotIn("\nold\n", text)
 
-    def test_uninstall_removes_only_marked_files_and_timer_link(self):
+    def test_uninstall_removes_marked_files_data_and_leaves_local_config(self):
         with scratch() as tmp:
-            env, user_dir, log = self.fixture(Path(tmp))
+            installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp))
+            local = Path(env["XDG_CONFIG_HOME"]) / "vsys" / "agent-tools.json"
+            local.parent.mkdir(parents=True)
+            local.write_text("local\n", encoding="utf-8")
             before = sorted(path.relative_to(user_dir) for path in user_dir.rglob("*"))
-            code, _, stderr = self.run_main(["install"], env)
+            code, _, stderr = self.run_main(installer, ["install"], env)
             self.assertEqual((code, stderr), (0, ""))
-            code, stdout, stderr = self.run_main(["uninstall"], env)
+            code, stdout, stderr = self.run_main(installer, ["uninstall"], env)
             self.assertEqual((code, stderr), (0, ""))
             self.assertIn("vsys-warden: uninstalled", stdout)
             after = sorted(path.relative_to(user_dir) for path in user_dir.rglob("*"))
             self.assertEqual(before, after)
+            self.assertFalse(data_target.exists())
+            self.assertEqual(local.read_text(encoding="utf-8"), "local\n")
             self.assertEqual(
                 self.calls(log),
                 [
@@ -201,42 +248,47 @@ class WardenInstallTest(unittest.TestCase):
                 ],
             )
 
-    def test_uninstall_leaves_foreign_units_and_is_idempotent(self):
+    def test_uninstall_leaves_foreign_units_and_data_and_is_idempotent(self):
         with scratch() as tmp:
-            env, user_dir, log = self.fixture(Path(tmp))
+            installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp))
             foreign = user_dir / "agents.slice"
             foreign.write_text("foreign\n", encoding="utf-8")
-            code, stdout, stderr = self.run_main(["uninstall"], env)
+            data_target.parent.mkdir(parents=True)
+            data_target.write_text("foreign data\n", encoding="utf-8")
+            code, stdout, stderr = self.run_main(installer, ["uninstall"], env)
             self.assertEqual((code, stderr), (0, ""))
             self.assertIn(f"vsys-warden: foreign-left path={foreign}", stdout)
+            self.assertIn(f"vsys-warden: foreign-left path={data_target}", stdout)
             self.assertIn("vsys-warden: nothing-installed", stdout)
             self.assertEqual(foreign.read_text(encoding="utf-8"), "foreign\n")
+            self.assertEqual(data_target.read_text(encoding="utf-8"), "foreign data\n")
             self.assertEqual(self.calls(log), [])
 
     def test_status_reports_ok_missing_delegation_and_unknown(self):
         with scratch() as tmp:
             base = Path(tmp)
-            env, user_dir, _ = self.fixture(base)
-            code, _, stderr = self.run_main(["install"], env)
+            installer, _, _, env, user_dir, _, _ = self.fixture(base)
+            code, _, stderr = self.run_main(installer, ["install"], env)
             self.assertEqual((code, stderr), (0, ""))
             full = base / "controllers-full"
             full.write_text("cpu io memory pids\n", encoding="utf-8")
             missing = base / "controllers-missing"
             missing.write_text("io memory pids\n", encoding="utf-8")
             with Env(env), contextlib.redirect_stdout(io.StringIO()) as output:
-                code = self.installer.status(user_dir, full)
+                code = installer.status(user_dir, full)
             self.assertEqual(code, 0)
             text = output.getvalue()
             self.assertIn("file agent-warden.service: installed-by-vsys", text)
+            self.assertIn("file agent-tools.json: installed-by-vsys", text)
             self.assertIn("timer enabled: enabled", text)
             self.assertIn("timer active: active", text)
             self.assertIn("delegation cpu memory pids: complete", text)
             with Env(env), contextlib.redirect_stdout(io.StringIO()) as output:
-                code = self.installer.status(user_dir, missing)
+                code = installer.status(user_dir, missing)
             self.assertEqual(code, 1)
             self.assertIn("delegation cpu memory pids: missing cpu", output.getvalue())
             with Env(env), contextlib.redirect_stdout(io.StringIO()) as output:
-                code = self.installer.status(user_dir, base / "absent-controllers")
+                code = installer.status(user_dir, base / "absent-controllers")
             self.assertEqual(code, 1)
             self.assertIn("delegation cpu memory pids: unknown", output.getvalue())
 
@@ -245,12 +297,14 @@ class WardenInstallTest(unittest.TestCase):
             base = Path(tmp)
             fake = base / "ward% en"
             (fake / "systemd").mkdir(parents=True)
-            shutil.copy2(WARDEN / "systemd" / "agent-warden.service", fake / "systemd" / "agent-warden.service")
+            shutil.copy2(REAL_WARDEN / "systemd" / "agent-warden.service", fake / "systemd" / "agent-warden.service")
             agent = fake / "agent-warden"
             agent.write_text("#!/bin/sh\n", encoding="utf-8")
             agent.chmod(0o755)
-            rendered = self.installer.render_unit(fake, "agent-warden.service")
+            installer = load_install()
+            rendered = installer.render_unit(fake, "agent-warden.service", "0" * 64)
             self.assertIn('ExecStart="' + str(agent).replace("%", "%%") + '" --correct', rendered)
+            self.assertIn(installer.DATA_MARKER_PREFIX + "0" * 64, rendered)
             self.assertNotIn("@WARDEN_DIR@", rendered)
 
     def load_mutant(self, old, new, name):
@@ -270,11 +324,11 @@ class WardenInstallTest(unittest.TestCase):
             "warden_install_mutant_marker",
         )
         with scratch() as tmp:
-            env, user_dir, _ = self.fixture(Path(tmp))
+            _, warden, _, env, user_dir, _, _ = self.fixture(Path(tmp))
             foreign = user_dir / "agent-warden.service"
             foreign.write_text("foreign\n", encoding="utf-8")
             with Env(env), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                code = mutant.install(WARDEN, user_dir)
+                code = mutant.install(warden, user_dir)
             self.assertEqual(code, 0)
             self.assertNotEqual(foreign.read_text(encoding="utf-8"), "foreign\n")
 

@@ -46,7 +46,7 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 - `src/ui/*.test.tsx`: the mounted shell through OpenTUI's terminal test renderer. These drive the real screens from the keyboard and the mouse and read the rendered frame back.
 - `src/main.test.ts`: the CLI in terminals created for the test, including that quit and a failed shutdown each restore their own terminal settings.
 - `scripts/ci_test.py`: that the CI runner rejects incomplete configuration, a failed command, a missing warden script and a failed warden selftest. Run it with `python3 -m unittest discover -s scripts -p '*_test.py' -v`.
-- `warden/agent_warden_test.py` and `warden/install_test.py`: classification, planning, job-unit containment, orphan rules, portability, mutant controls, launcher scratch creation, user-unit install, uninstall and status. Run them with `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s warden -p '*_test.py'`.
+- `warden/agent_warden_test.py` and `warden/install_test.py`: classification, planning, job-unit containment, orphan rules, portability, mutant controls, launcher scratch creation, user-unit install, shared-list copy, uninstall and status. Run them with `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s warden -p '*_test.py'`.
 
 ## Benchmarks and what they do not prove
 
