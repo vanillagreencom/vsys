@@ -19,7 +19,7 @@ export interface SummaryMeter {
   id: Meter["id"];
   value: number | null;
   max: number | null;
-  level: Level | null;
+  level: Level;
 }
 export interface Summary {
   schema: typeof summarySchema;

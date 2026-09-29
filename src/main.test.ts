@@ -144,6 +144,15 @@ test("once summary exports verdict schema and skips scratch collection", async (
         ],
       }
     `);
+    const sccache = join(bin, "sccache");
+    writeFileSync(sccache, '#!/bin/sh\necho "server down" >&2\nexit 1\n');
+    chmodSync(sccache, 0o755);
+    const failedSummary = await run(["--summary"]);
+    expect(failedSummary.code).toBe(2);
+    expect(JSON.parse(failedSummary.stdout).errors).toContainEqual({
+      source: "sccache --show-stats",
+      message: expect.stringContaining("server down"),
+    });
     const full = await run();
     expect(full.code).toBe(2);
     expect(JSON.parse(full.stdout).errors).toContainEqual({

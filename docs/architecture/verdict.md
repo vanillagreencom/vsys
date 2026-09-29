@@ -29,7 +29,7 @@ One detection produces one cause. The ladder ranks the causes worst first, its f
 }
 ```
 
-`schema` is the summary contract identifier. `time` is the sample time in milliseconds since the Unix epoch. `verdict[].cause` is a `CauseId`. `verdict[].level` is a `Level`, or null when the value was not measured. `verdict[].subject` is the first affected lane id, affected cgroup path, affected filesystem path or null. A navigation-only `at` target never becomes a subject. `meters[].id` is a meter id. `meters[].value` and `meters[].max` are raw numbers or null. `meters[].level` is a `Level`, or null when the value was not measured. `errors` uses the same source-error records as `--once`.
+`schema` is the summary contract identifier. `time` is the sample time in milliseconds since the Unix epoch. `verdict[].cause` is a `CauseId`. `verdict[].level` is a `Level`, or null when the value was not measured. `verdict[].subject` is the first affected lane id, affected cgroup path, affected filesystem path or null. A navigation-only `at` target never becomes a subject. `meters[].id` is a meter id. `meters[].value` and `meters[].max` are raw numbers or null. A null meter value means the reading was not measured. `meters[].level` is always a `Level`, and an unread quantity grades `warn` by the model's unknown-reading rule. `errors` uses the same source-error records as `--once`.
 
 The summary path takes two samples. The second sample gives CPU and I/O rates a baseline. It skips scratch collection through the collector sample option. The scratch cause is still present with null level and null subject, so a skipped scratch scan never reads as healthy. No scratch size enters a meter.
 
@@ -41,7 +41,7 @@ The summary path takes two samples. The second sample gives CPU and I/O rates a 
 4. A lane stalling on a resource that a specific cause already reports joins that card, so one contention never produces two cards. `src/model/verdict.test.ts` checks storage stallers against a CPU one.
 5. A slice name appearing at two paths is summed once, and a slice total is unknown unless every root reported the counter. `src/model/verdict.test.ts` checks a nested copy against root selection.
 6. A filesystem below the configured free-space floor is a cause of its own, and a parent slice never becomes the top writer or the top swap holder. `src/model/verdict.test.ts` checks both against nested groups.
-7. A quantity a meter's level depends on that could not be read is a warning, never an untroubled reading. `src/model/verdict.test.ts` checks the four meters and their consumers.
+7. A quantity a meter's level depends on that could not be read is a warning, never an untroubled reading, and the summary keeps that warning level while the missing reading stays null. `src/model/verdict.test.ts` checks the four meters and their consumers.
 8. Build load counts the configured linkers separately, machine wide and per lane. `src/model/verdict.test.ts` checks both.
 9. One cause produces one attention card whatever the number of lanes, and every card ends with a next step of its own. `src/ui/attention.test.ts` checks nine stalling lanes and every card kind.
 10. Source read failures are not a machine problem and raise no card. `src/ui/attention.test.ts` checks them.
