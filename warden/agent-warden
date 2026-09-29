@@ -1414,7 +1414,12 @@ def write_status(doc):
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     try:
         os.fchmod(fd, 0o644)
-        os.write(fd, data)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short status write")
+            view = view[written:]
     finally:
         os.close(fd)
     os.replace(tmp, STATUS)
@@ -1801,24 +1806,29 @@ class State:
             missing = not STATE.exists()
             self.st = default_state()
             self.st["_state_readable"] = missing
-        if missing or not self.st["_state_readable"]:
-            self.st["event_seq"] = max(int(self.st.get("event_seq") or 0), status_event_floor())
+        self.st["event_seq"] = max(int(self.st.get("event_seq") or 0), status_event_floor())
         return self.st
 
     def __exit__(self, *exc):
         try:
+            status_doc = None
             if self.status is not None:
                 try:
                     tick = self.st.get("_tick") or {}
                     if tick.get("waiting_events") is not None:
                         record_waiting_events(self.st, tick.get("waiting_events") or [])
-                    write_status(status_from_tick(self.status, self.st, tick))
+                    status_doc = status_from_tick(self.status, self.st, tick)
                 except Exception as e:  # noqa: BLE001
-                    log(f"status write failed: {e!r}")
+                    log(f"status build failed: {e!r}")
             tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
             stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
             tmp.write_text(json.dumps(stored))
             os.replace(tmp, STATE)
+            if status_doc is not None:
+                try:
+                    write_status(status_doc)
+                except Exception as e:  # noqa: BLE001
+                    log(f"status write failed: {e!r}")
         finally:
             fcntl.flock(self.lockfd, fcntl.LOCK_UN)
             os.close(self.lockfd)

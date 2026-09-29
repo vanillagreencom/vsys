@@ -905,6 +905,25 @@ class AgentWardenRules(unittest.TestCase):
     def test_status_writer_uses_rename_and_mode(self):
         self.assertTrue(self.status_writer_is_atomic(self.w))
 
+    def test_status_writer_handles_short_writes(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_write = self.w.os.write
+            calls = []
+            def short_write(fd, data):
+                calls.append(len(data))
+                return old_write(fd, data[:1])
+            self.w.os.write = short_write
+            try:
+                doc = self.w.status_fixture_docs()["holding-off"]
+                self.w.write_status(doc)
+                self.assertEqual(json.loads(self.w.STATUS.read_text()), doc)
+                self.assertGreater(len(calls), 1)
+            finally:
+                self.w.os.write = old_write
+                self.restore_status_state(self.w, old)
+
     def test_status_writer_in_place_mutant_fails(self):
         text = WARDEN.read_text()
         old = "    os.replace(tmp, STATUS)\n"
@@ -1237,12 +1256,25 @@ class AgentWardenRules(unittest.TestCase):
                     st["_tick"] = {"procs": {}, "moves": [], "waiting": [], "waiting_events": [], "orphans": [], "contained": [], "error": None}
                 stored = json.loads(self.w.STATE.read_text())
                 self.assertEqual(stored["moves"], 3)
-                fd = os.open(self.w.LOCK, os.O_RDWR)
-                try:
-                    self.w.fcntl.flock(fd, self.w.fcntl.LOCK_EX | self.w.fcntl.LOCK_NB)
-                finally:
-                    self.w.fcntl.flock(fd, self.w.fcntl.LOCK_UN)
-                    os.close(fd)
+                with os.fdopen(os.open(self.w.LOCK, os.O_RDWR), "r+") as lock_file:
+                    self.w.fcntl.flock(lock_file, self.w.fcntl.LOCK_EX | self.w.fcntl.LOCK_NB)
+                    self.w.fcntl.flock(lock_file, self.w.fcntl.LOCK_UN)
+            finally:
+                self.w.write_status = old_write
+                self.restore_status_state(self.w, old)
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_write = self.w.write_status
+            observed = []
+            def record_after_state(doc):
+                observed.append(json.loads(self.w.STATE.read_text())["moves"])
+            self.w.write_status = record_after_state
+            try:
+                with self.w.State(status="report") as st:
+                    st["moves"] = 4
+                    st["_tick"] = {"procs": {}, "moves": [], "waiting": [], "waiting_events": [], "orphans": [], "contained": [], "error": None}
+                self.assertEqual(observed, [4])
             finally:
                 self.w.write_status = old_write
                 self.restore_status_state(self.w, old)

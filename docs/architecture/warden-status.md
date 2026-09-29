@@ -8,13 +8,13 @@ The agent warden writes `status.json` for programs that watch agent health. The 
 
 `warden/agent-warden` writes `$XDG_RUNTIME_DIR/agent-warden/status.json` at the end of each `--report` or `--correct` tick.
 
-The writer writes `status.tmp.<pid>` in the same directory, sets mode `0644`, and replaces `status.json` with `os.replace`. `AgentWardenRules.test_status_writer_uses_rename_and_mode` checks the mode, the inode change and the complete old file seen before rename. `AgentWardenRules.test_status_writer_in_place_mutant_fails` checks that a writer without rename fails that control.
+The writer writes all bytes to `status.tmp.<pid>` in the same directory, sets mode `0644`, and replaces `status.json` with `os.replace`. `AgentWardenRules.test_status_writer_uses_rename_and_mode` checks the mode, the inode change and the complete old file seen before rename. `AgentWardenRules.test_status_writer_handles_short_writes` checks short writes. `AgentWardenRules.test_status_writer_in_place_mutant_fails` checks that a writer without rename fails that control.
 
 A failed scan still writes `status.json`. It sets `error` to a stable id and sets `outside`, `waiting`, `orphans` and `contained` to `null`. It still reads `slice` and `lanes` from the cgroup tree. `AgentWardenRules.test_failed_scan_tick_writes_error_status` checks this rule.
 
 The warden does not write `status.json` for `--status`, `--selftest`, or when `AGENT_WARDEN_ONLY` is set. Restricted fixture runs therefore do not overwrite the live status file. `AgentWardenRules.test_status_and_only_runs_do_not_write_status` checks this rule with a sentinel file.
 
-A write failure logs `status write failed` and does not fail the tick. The state write still completes and the lock is released. `AgentWardenRules.test_state_write_survives_status_write_failure` checks this rule.
+A write failure logs `status write failed` and does not fail the tick. The state write happens before the status write, still completes when the status write fails, and the lock is released. `AgentWardenRules.test_state_write_survives_status_write_failure` checks this rule.
 
 ## Versioning
 
@@ -49,8 +49,8 @@ A major version can remove fields, change a type, change a unit, or change an en
 | `memory` | integer or null | bytes | `memory.current` could not be read or parsed. |
 | `high` | integer, `max`, or null | bytes | `memory.high` could not be read or parsed. `max` means unlimited. |
 | `max` | integer, `max`, or null | bytes | `memory.max` could not be read or parsed. `max` means unlimited. |
-| `tasks` | integer or null | process count | `pids.current` could not be read or parsed. |
-| `tasksMax` | integer, `max`, or null | process count | `pids.max` could not be read or parsed. `max` means unlimited. |
+| `tasks` | integer or null | Linux task count | `pids.current` could not be read or parsed. This includes threads. |
+| `tasksMax` | integer, `max`, or null | Linux task count | `pids.max` could not be read or parsed. `max` means unlimited. This includes threads. |
 | `headroomOk` | boolean or null | id | Null means the memory counters needed for the headroom rule were unknown. |
 
 An absent `agents.slice` makes `slice` null. The move guard still treats an absent slice as empty headroom, so the first move can create it. If the slice exists and a needed counter is unreadable, the move guard still fails closed.
@@ -62,8 +62,8 @@ An absent `agents.slice` makes `slice` null. The move guard still treats an abse
 | `scope` | string | systemd unit name | Never null. |
 | `label.tool` | string or null | id | Null means no agent process in the scope could be identified. |
 | `label.worktree` | string or null | basename | Null means the process working directory could not be read. |
-| `tasks` | integer or null | process count | `pids.current` could not be read or parsed. |
-| `tasksMax` | integer, `max`, or null | process count | `pids.max` could not be read or parsed. `max` means unlimited. |
+| `tasks` | integer or null | Linux task count | `pids.current` could not be read or parsed. This includes threads. |
+| `tasksMax` | integer, `max`, or null | Linux task count | `pids.max` could not be read or parsed. `max` means unlimited. This includes threads. |
 | `memory` | integer or null | bytes | `memory.current` could not be read or parsed. |
 | `memoryHigh` | integer, `max`, or null | bytes | `memory.high` could not be read or parsed. `max` means unlimited. |
 | `near` | list of `tasks` and `memory` | ids | Empty means no readable counter crossed its warning threshold. |
