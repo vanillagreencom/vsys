@@ -68,6 +68,7 @@ that heartbeat is fresh. Logs: stdout, which the service sends to the journal.
 AGENT_WARDEN_ONLY="pid,pid" restricts every candidate, root or descendant, to
 those pids (fixture runs).
 """
+import contextlib
 import ctypes
 from copy import deepcopy
 import errno
@@ -1480,14 +1481,10 @@ def write_status(doc):
         os.replace(tmp, STATUS)
     except Exception:
         if fd is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
-        try:
+        with contextlib.suppress(FileNotFoundError):
             tmp.unlink()
-        except FileNotFoundError:
-            pass
         raise
 
 
