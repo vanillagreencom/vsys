@@ -398,9 +398,7 @@ test("unpinned settings saves reload current agent tools before writing config",
 test("agent tool overlay rolls back when config writing fails", async () => {
   for (const existingOverlay of [false, true]) {
     const f = fixture();
-    const configParent = join(f.root, "config-parent");
-    const configPath = join(configParent, "config.toml");
-    f.write(configParent, "not a directory");
+    const configPath = join(f.root, "config.toml");
     const overlayBody = `${JSON.stringify(
       {
         version: 1,
@@ -416,6 +414,7 @@ test("agent tool overlay rolls back when config writing fails", async () => {
       ? { ...f.config, agentTools: [...f.config.agentTools, "local-agent"] }
       : f.config;
     const h = new History(config);
+    const configError = new Error("config write failed");
     const session = new Session(
       config,
       configPath,
@@ -425,6 +424,15 @@ test("agent tool overlay rolls back when config writing fails", async () => {
       {
         makeSource: async () => ({ sample: async () => emptySnapshot(2000) }),
         agentToolsPath: f.agentToolsPath,
+        writeConfig: async () => {
+          const editedOverlay = JSON.parse(
+            readFileSync(f.agentToolsPath, "utf8"),
+          ) as { tools: Array<{ name: string }> };
+          expect(editedOverlay.tools.map((tool) => tool.name)).toContain(
+            "new-agent",
+          );
+          throw configError;
+        },
       },
     );
     try {
@@ -434,7 +442,7 @@ test("agent tool overlay rolls back when config writing fails", async () => {
           ...config,
           agentTools: [...config.agentTools, "new-agent"],
         }),
-      ).rejects.toThrow();
+      ).rejects.toBe(configError);
       if (existingOverlay)
         expect(readFileSync(f.agentToolsPath, "utf8")).toBe(overlayBody);
       else expect(existsSync(f.agentToolsPath)).toBe(false);
