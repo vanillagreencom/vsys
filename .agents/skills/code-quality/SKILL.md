@@ -49,7 +49,7 @@ Build only what was asked. No speculative abstractions, no extension point for a
 
 One judge per question: never re-implement a decision (classify, validate, parse, detect state) another component or language already owns; delegate. When real consumers would each make the same decision, one shared owner makes it; caller count neither justifies nor removes that owner. A decision re-derived at each use site in one file is the same defect: compute it once and let each site match on the result. A second spelling is a defect even when both copies agree.
 
-Integrate through the system's own interface. Before building on another system (a service, an API, a CLI, an agent harness), read its current documentation and use the interface it provides for the purpose: its API, SDK, events, hooks, settings or connector. Deriving its state indirectly (parsing text meant for people, reading its internal files, or re-implementing a feature it already offers) is a last resort: the code names it as the fallback, the interface it stands in for, and why that interface cannot serve.
+Integrate through the system's own interface. Before building on another system (a service, an API, a CLI, an agent harness), read its current documentation and use the interface it provides for the purpose. Check the system's documented extension points in this order: SDK, extension or plugin API, events or RPC, hooks, settings; name the one used and why. Deriving its state indirectly (reading a status line, parsing a file or screen text, scraping a pane, reading its internal files, or re-implementing a feature it already offers) is a last resort: the code names it as the fallback, the interface it stands in for, and why that interface cannot serve.
 
 ## Prove Your Guards
 
