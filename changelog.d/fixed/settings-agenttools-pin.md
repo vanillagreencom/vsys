@@ -1,1 +1,1 @@
-- Settings saves no longer pin the default agent-program list in `config.toml`, preserve hidden overlay tools, refuse pins that remove shipped names and keep newer overlay edits after a failed save.
+- Settings saves no longer pin default agent programs in `config.toml`; keep overlay tools, failed-save edits and hand-written shipped-name removals; and refuse Settings edits to those lists.
