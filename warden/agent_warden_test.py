@@ -1,53 +1,17 @@
-import importlib.machinery
-import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
+
+from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, load_warden, scratch
 
 sys.dont_write_bytecode = True
 
-ROOT = Path(__file__).resolve().parents[1]
-WARDEN = ROOT / "warden" / "agent-warden"
-SCRATCH_ROOT = ROOT / "tmp" / "warden-tests"
-BASE_PATH = os.environ.get("PATH", "/usr/bin:/bin")
 
-
-def scratch():
-    SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-    return tempfile.TemporaryDirectory(dir=SCRATCH_ROOT)
-
-
-def clean_env(base, *, path=False):
-    env = {key: str(value) for key, value in base.items()}
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    if path:
-        env["PATH"] = BASE_PATH
-    return env
-
-
-def load_warden(env, name="agent_warden_under_test", path=WARDEN):
-    old = os.environ.copy()
-    os.environ.clear()
-    os.environ.update(env)
-    try:
-        loader = importlib.machinery.SourceFileLoader(name, str(path))
-        spec = importlib.util.spec_from_loader(loader.name, loader)
-        if spec is None:
-            raise RuntimeError("agent-warden import spec unavailable")
-        module = importlib.util.module_from_spec(spec)
-        loader.exec_module(module)
-        return module
-    finally:
-        os.environ.clear()
-        os.environ.update(old)
-
-
-class AgentWardenRules(unittest.TestCase):
+class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = scratch()
@@ -272,21 +236,6 @@ class AgentWardenRules(unittest.TestCase):
         for reason, tree in moves:
             out.setdefault(reason, []).append(tree)
         return out
-
-    def load_mutant(self, text, name):
-        with scratch() as tmp:
-            base = Path(tmp)
-            path = base / "warden" / "agent-warden"
-            path.parent.mkdir(parents=True)
-            path.write_text(text)
-            path.chmod(0o755)
-            data_dir = base / "data"
-            data_dir.mkdir()
-            shutil.copy2(ROOT / "data" / "agent-tools.json", data_dir / "agent-tools.json")
-            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
-            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
-                Path(env[key]).mkdir(parents=True, exist_ok=True)
-            return load_warden(env, name, path)
 
     def test_contained_planning_guard_rows(self):
         limited = "/user.slice/user-1000.slice/user@1000.service/app.slice/limited.service"
@@ -753,8 +702,8 @@ class AgentWardenRules(unittest.TestCase):
     def test_selftest_subprocess_exits_zero(self):
         with scratch() as tmp:
             base = Path(tmp)
-            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
-            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise", "TMPDIR": base / "scratch"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR", "TMPDIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
             result = subprocess.run([sys.executable, str(WARDEN), "--selftest"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
