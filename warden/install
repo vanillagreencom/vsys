@@ -73,19 +73,22 @@ def first_line(path: Path) -> str | None:
         return None
 
 
-def service_data_hash(path: Path) -> str | None:
+def service_data_hashes(path: Path) -> set[str]:
+    hashes: set[str] = set()
     try:
         with path.open("r", encoding="utf-8") as handle:
             if handle.readline().rstrip("\n") != MARKER:
-                return None
-            line = handle.readline().rstrip("\n")
+                return hashes
+            for line in handle:
+                line = line.rstrip("\n")
+                if not line.startswith(DATA_MARKER_PREFIX):
+                    break
+                value = line.removeprefix(DATA_MARKER_PREFIX)
+                if re.fullmatch(r"[0-9a-f]{64}", value):
+                    hashes.add(value)
     except OSError:
-        return None
-    if line.startswith(DATA_MARKER_PREFIX):
-        value = line.removeprefix(DATA_MARKER_PREFIX)
-        if re.fullmatch(r"[0-9a-f]{64}", value):
-            return value
-    return None
+        return set()
+    return hashes
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -122,8 +125,9 @@ def classify_data(path: Path, service_path: Path) -> str:
         return "foreign"
     if not path.is_file():
         return "foreign"
-    recorded = service_data_hash(service_path)
-    if recorded is not None and sha256_file(path) == recorded:
+    recorded = service_data_hashes(service_path)
+    current = sha256_file(path)
+    if current is not None and current in recorded:
         return "installed-by-vsys"
     return "foreign"
 
@@ -170,7 +174,7 @@ def systemd_exec_path(path: Path) -> str:
     return text
 
 
-def render_unit(warden_dir: Path, name: str, data_hash: str) -> str:
+def render_unit(warden_dir: Path, name: str, data_hashes: Iterable[str]) -> str:
     template = (warden_dir / "systemd" / name).read_text(encoding="utf-8")
     header = MARKER + "\n"
     if name == "agent-warden.service":
@@ -181,7 +185,8 @@ def render_unit(warden_dir: Path, name: str, data_hash: str) -> str:
         template = template.replace("@WARDEN_DIR@/agent-warden", start)
         if "@WARDEN_DIR@" in template:
             raise ValueError("agent-warden.service contains an unresolved @WARDEN_DIR@ placeholder")
-        header += DATA_MARKER_PREFIX + data_hash + "\n"
+        for data_hash in sorted(data_hashes):
+            header += DATA_MARKER_PREFIX + data_hash + "\n"
     return header + template
 
 
@@ -252,13 +257,18 @@ def install(warden_dir: Path, directory: Path) -> int:
     target = data_target()
     if has_symlink_dirs([directory.parent, directory, target.parent], "install"):
         return 1
+    service = directory / "agent-warden.service"
     states = unit_states(directory)
-    data_state = classify_data(target, directory / "agent-warden.service")
+    data_state = classify_data(target, service)
     units_foreign = has_foreign_units(states, "install")
     data_foreign = has_foreign_data(target, data_state, "install")
     if units_foreign or data_foreign:
         return 1
-    rendered = {name: render_unit(resolved, name, source_hash) for name in UNIT_NAMES}
+    data_hashes = {source_hash}
+    existing_hash = sha256_file(target) if data_state == "installed-by-vsys" else None
+    if existing_hash is not None:
+        data_hashes.add(existing_hash)
+    rendered = {name: render_unit(resolved, name, data_hashes) for name in UNIT_NAMES}
     for name, text in rendered.items():
         atomic_write(directory / name, text)
     atomic_write_bytes(target, source_data)

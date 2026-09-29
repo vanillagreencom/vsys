@@ -259,8 +259,19 @@ class WardenInstallTest(unittest.TestCase):
             self.assertEqual((code, stderr), (0, ""))
             self.assertEqual(data_target.read_bytes(), next_data)
             text = service.read_text(encoding="utf-8")
-            self.assertEqual(text.splitlines()[1], installer.DATA_MARKER_PREFIX + hashlib.sha256(next_data).hexdigest())
+            markers = [line for line in text.splitlines() if line.startswith(installer.DATA_MARKER_PREFIX)]
+            self.assertEqual(
+                set(markers),
+                {
+                    installer.DATA_MARKER_PREFIX + hashlib.sha256(b'{"tools":["claude"]}\n').hexdigest(),
+                    installer.DATA_MARKER_PREFIX + hashlib.sha256(next_data).hexdigest(),
+                },
+            )
             self.assertNotIn("\nold\n", text)
+            code, _, stderr = self.run_main(installer, ["install"], env)
+            self.assertEqual((code, stderr), (0, ""))
+            markers = [line for line in service.read_text(encoding="utf-8").splitlines() if line.startswith(installer.DATA_MARKER_PREFIX)]
+            self.assertEqual(markers, [installer.DATA_MARKER_PREFIX + hashlib.sha256(next_data).hexdigest()])
 
     def test_install_retry_succeeds_after_data_write_failure(self):
         with scratch() as tmp:
@@ -290,6 +301,56 @@ class WardenInstallTest(unittest.TestCase):
                 [
                     ["--user", "daemon-reload"],
                     ["--user", "enable", "--now", "agent-warden.timer"],
+                ],
+            )
+
+    def test_upgrade_retry_succeeds_after_data_write_failure_and_uninstall_removes_data(self):
+        with scratch() as tmp:
+            installer, warden, _, env, user_dir, data_target, log = self.fixture(Path(tmp))
+            code, _, stderr = self.run_main(installer, ["install"], env)
+            self.assertEqual((code, stderr), (0, ""))
+            old_data = data_target.read_bytes()
+            new_data = b'{"tools":["codex"]}\n'
+            (warden / ".." / "data" / "agent-tools.json").write_bytes(new_data)
+            original = installer.atomic_write_bytes
+
+            def fail_once(path, data):
+                raise OSError("injected data write failure")
+
+            installer.atomic_write_bytes = fail_once
+            try:
+                with Env(env), self.assertRaises(OSError):
+                    installer.install(warden, user_dir)
+            finally:
+                installer.atomic_write_bytes = original
+            self.assertEqual(data_target.read_bytes(), old_data)
+            service = user_dir / "agent-warden.service"
+            markers = [line for line in service.read_text(encoding="utf-8").splitlines() if line.startswith(installer.DATA_MARKER_PREFIX)]
+            self.assertEqual(
+                set(markers),
+                {
+                    installer.DATA_MARKER_PREFIX + hashlib.sha256(old_data).hexdigest(),
+                    installer.DATA_MARKER_PREFIX + hashlib.sha256(new_data).hexdigest(),
+                },
+            )
+            with Env(env), contextlib.redirect_stdout(io.StringIO()):
+                code = installer.install(warden, user_dir)
+            self.assertEqual(code, 0)
+            self.assertEqual(data_target.read_bytes(), new_data)
+            with Env(env), contextlib.redirect_stdout(io.StringIO()):
+                code = installer.uninstall(user_dir)
+            self.assertEqual(code, 0)
+            self.assertFalse(data_target.exists())
+            self.assertEqual(
+                self.calls(log),
+                [
+                    ["--user", "daemon-reload"],
+                    ["--user", "enable", "--now", "agent-warden.timer"],
+                    ["--user", "daemon-reload"],
+                    ["--user", "enable", "--now", "agent-warden.timer"],
+                    ["--user", "disable", "--now", "agent-warden.timer"],
+                    ["--user", "stop", "agent-warden.service"],
+                    ["--user", "daemon-reload"],
                 ],
             )
 
@@ -471,7 +532,7 @@ class WardenInstallTest(unittest.TestCase):
                     agent = fake / "agent-warden"
                     agent.write_text("#!/bin/sh\n", encoding="utf-8")
                     agent.chmod(0o755)
-                    rendered = installer.render_unit(fake, "agent-warden.service", "0" * 64)
+                    rendered = installer.render_unit(fake, "agent-warden.service", {"0" * 64})
                     self.assertIn('ExecStart="' + escaped_agent + '" --correct', rendered)
                     self.assertIn(installer.DATA_MARKER_PREFIX + "0" * 64, rendered)
                     self.assertNotIn("@WARDEN_DIR@", rendered)
