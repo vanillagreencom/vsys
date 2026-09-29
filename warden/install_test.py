@@ -111,6 +111,9 @@ class WardenInstallTest(unittest.TestCase):
             "    print(value)\n"
             "    raise SystemExit(0 if value == 'active' else 3)\n"
             "if args == ['--user', 'show', 'agent-warden.timer', '-p', 'LastTriggerUSec', '--value']:\n"
+            "    if 'STUB_LAST_TRIGGER_STDERR' in os.environ:\n"
+            "        print(os.environ['STUB_LAST_TRIGGER_STDERR'], file=sys.stderr)\n"
+            "        raise SystemExit(1)\n"
             "    print(os.environ.get('STUB_LAST_TRIGGER', 'Mon 2026-09-28 01:02:03 PDT'))\n"
             "    raise SystemExit(0)\n"
             "if args == ['--user', 'show', 'agent-warden.service', '-p', 'Result', '--value']:\n"
@@ -550,6 +553,16 @@ class WardenInstallTest(unittest.TestCase):
             self.assertIn("timer enabled: enabled", text)
             self.assertIn("timer active: active", text)
             self.assertIn("delegation cpu memory pids: complete", text)
+            never_triggered = {**env, "STUB_LAST_TRIGGER": "n/a"}
+            with Env(never_triggered), contextlib.redirect_stdout(io.StringIO()) as output:
+                code = installer.status(user_dir, full)
+            self.assertEqual(code, 0)
+            self.assertIn("timer last tick: n/a", output.getvalue())
+            last_tick_failed = {**env, "STUB_LAST_TRIGGER_STDERR": "timer read failed"}
+            with Env(last_tick_failed), contextlib.redirect_stdout(io.StringIO()) as output:
+                code = installer.status(user_dir, full)
+            self.assertEqual(code, 1)
+            self.assertIn("timer last tick: unknown", output.getvalue())
             failed = {**env, "STUB_RESULT": "exit-code"}
             with Env(failed), contextlib.redirect_stdout(io.StringIO()) as output:
                 code = installer.status(user_dir, full)
