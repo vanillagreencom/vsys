@@ -139,8 +139,11 @@ failures=0
 run() { # case-name, expected-verdict, expected-exit
   local name="$1" want="$2" want_exit="${3:-0}" line rc verdict
   cases=$((cases + 1))
+  # The class policy is assigned empty: this table pins the evidence engine,
+  # and an active policy would ask the classifier for a local git range these
+  # fixtures do not have. class-policy-gate.test.sh drives the active policy.
   line="$(PATH="$shim:$PATH" GH_SHIM_FIXTURES="$fixtures" \
-    REVIEW_GATE_SETTINGS_FILE=/dev/null \
+    REVIEW_GATE_SETTINGS_FILE=/dev/null REVIEW_GATE_CLASS_POLICY="" \
     REVIEW_GATE_TRUSTED_STATUS_CONTEXTS="$CFG_CONTEXTS" \
     REVIEW_GATE_CHECKRUN_SKIP_PATTERNS="$CFG_SKIPS" \
     REVIEW_GATE_COMMENT_REVIEWERS="$CFG_REVIEWERS" \
@@ -186,6 +189,7 @@ run() { # case-name, expected-verdict, expected-exit
 reset() {
   printf '[]\n' >"$fixtures/reviews.json"
   printf '[]\n' >"$fixtures/comments.json"
+  printf '[]\n' >"$fixtures/review-comments.json"
   printf '{"check_runs":[]}\n' >"$fixtures/checkruns.json"
   printf '[]\n' >"$fixtures/statuses.json"
   threads >"$fixtures/graphql.json"
@@ -211,7 +215,7 @@ reset() {
   # own explicit cases below.
   CFG_GATE_MODE="enforce"
   CFG_SNAPSHOT=""
-  rm -f "$fixtures/compare.json"
+  rm -f "$fixtures/compare.json" "$fixtures"/compare-*.json
   CFG_PR_AUTHOR="$AUTHOR"
   CFG_CONTEXTS="$ACTIVE_CONTEXTS"
   CFG_SKIPS="$ACTIVE_SKIPS"

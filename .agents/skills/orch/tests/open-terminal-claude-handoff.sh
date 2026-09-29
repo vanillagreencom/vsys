@@ -7,8 +7,8 @@
 #    FIRST tool call with nobody attached, so launch-only autonomy needs a
 #    permission-mode argument. Model, effort, and permission posture arrive as
 #    --launch-flags, chosen per task at launch time rather than stored
-#    anywhere, and a lane whose flags carry no permission bypass must warn
-#    that handoff autonomy is void.
+#    anywhere. Each harness row that names a permission posture warns when the
+#    launch flags carry none of its accepted spellings.
 #
 # 2. The brief (initial '/orch start …' prompt) rides as a CLI arg; first-run
 #    dialogs (theme/trust/browser-integration) consume it, leaving a healthy
@@ -43,14 +43,18 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
 SRC_OT="$SCRIPTS_DIR/open-terminal"
 SRC_LIB_DIR="$SCRIPTS_DIR/lib"
-REAL_TMUX="$(command -v tmux)" || exit 1
-# shellcheck source=lib/waiter-assertions.sh
-source "$TEST_DIR/lib/waiter-assertions.sh"
-TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
+# shellcheck source=lib/assertions.sh
+source "$TEST_DIR/lib/assertions.sh"
+# mutant_scripts and mutate_file, the two halves of the control below.
+# shellcheck source=lib/growth-state.sh
+source "$TEST_DIR/lib/growth-state.sh"
+TMP_ROOT="$(mktemp -d)" || { echo "open-terminal-claude-handoff: scratch=mktemp-failed" >&2; exit 1; }
+[[ -d $TMP_ROOT && ! -L $TMP_ROOT ]] || { echo "open-terminal-claude-handoff: scratch=not-a-directory value=[$TMP_ROOT]" >&2; exit 1; }
+TMP_ROOT="$(cd -- "$TMP_ROOT" && pwd -P)" || { echo "open-terminal-claude-handoff: scratch=resolve-failed" >&2; exit 1; }
 # The fleet home every launch here runs under; see run() below.
 FLEET_HOME="$TMP_ROOT/fleet-home"
 mkdir -p "$FLEET_HOME"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+trap 'rm -rf -- "${TMP_ROOT:?}"' EXIT
 
 # The composer's prompt marker is `❯` followed by a NON-BREAKING space; a
 # SUBMITTED message is echoed into the transcript as `❯` followed by an
@@ -94,6 +98,14 @@ fi
 case "${1:-}" in
   list-windows) echo "1" ;;
   new-window) echo "%7" ;;
+  # The pane writer's identity read: the window's shell until the launch line
+  # is pasted, the harness after it, or $OT_PANE_RUNNING throughout.
+  list-panes)
+    if [[ "$*" == *pane_current_command* ]]; then
+      running="${OT_PANE_RUNNING:-bash}"
+      [[ -n "${OT_PANE_RUNNING:-}" ]] || ! grep -q '^paste-buffer ' "$OT_TMUX_LOG" || running=claude
+      printf '%%7\t4242\t%s\n' "$running"
+    fi ;;
   load-buffer) printf 'loaded-text %s\n' "$(cat "${!#}")" >> "$OT_TMUX_LOG" ;;
   display-message) echo 0 ;;
   capture-pane)
@@ -150,13 +162,13 @@ cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-cont
 # `lanes` is what a --lane row's lane_check calls; without it the row refuses
 # with helper-missing before reaching the gate it is about.
 cp "$SCRIPTS_DIR/lanes" "$REPO/scripts/lanes"
-cp "$SRC_LIB_DIR"/*.sh "$REPO/scripts/lib/"
+cp -R "$SRC_LIB_DIR/." "$REPO/scripts/lib/"
 orch_fixture_shared_libs "$REPO"
 chmod +x "$REPO/scripts/open-terminal" "$REPO/scripts/lanes"
 git -C "$REPO" init -q
 OT="$REPO/scripts/open-terminal"
-# Every row runs whatever binary this names; `mutant` repoints it at a copy
-# with the working predicate rewritten, and `unmutate` puts it back.
+# Every row runs whatever binary this names; the control repoints it at a
+# mutant and puts it back.
 OT_UNDER_TEST="$OT"
 
 # screen NAME — prints one pane capture, by name.
@@ -244,6 +256,7 @@ run() {
   fi
   case "$mode" in
     gui) envs=(TMUX=); args=(--ghostty --harness claude) ;;
+    gui-codex) envs=(TMUX=); args=(--ghostty --harness codex) ;;
     github) envs=(TMUX=); args=(--tracker github --repo acme/widgets --ghostty --harness claude) ;;
     custom) envs=(TMUX=); args=(--ghostty --cmd "claude 'Read the agent\\'s brief'") ;;
     custom-tmux) envs=(TMUX=stub,1,0); args=(--tmux --cmd "claude 'Read the agent\\'s brief'") ;;
@@ -257,13 +270,16 @@ run() {
     tmux-codex-lane) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1)
       args=(--tmux --harness codex --lane "$CODEX_LANE"
             --launch-flags "-m gpt-6-astra -c model_reasoning_effort=high") ;;
+    tmux-copilot-lane) envs=(TMUX=stub,1,0 ORCH_TMUX_VERIFY_SECS=1)
+      args=(--tmux --harness copilot --lane "$CODEX_LANE"
+            --launch-flags "--model claude-opus-5 --reasoning-effort high") ;;
     *) echo "run: unknown mode $mode" >&2; exit 1 ;;
   esac
   # A codex launch here names no --lane, so it prepares its folder trust under
   # the account LANES_HOME points at. Pinned to the fixture before a row's own
   # pairs are appended, so nothing derives that account from the developer's
   # HOME and writes a private launch home into their live codex account.
-  envs+=(LANES_HOME="$FLEET_HOME")
+  envs+=(LANES_HOME="$FLEET_HOME" ORCH_TMUX_SESSION=stub)
   if [[ "$envspec" != - ]]; then
     IFS=',' read -ra pairs <<<"$envspec"
     for pair in "${pairs[@]}"; do envs+=("$pair"); done
@@ -306,7 +322,10 @@ observe() {
   local got="" token name value needle
   set -f
   for token in $1; do
+    # A needle can hold `=` and is ended by the last one; the tail's value can
+    # hold one too and follows the first.
     name="${token%=*}"
+    [[ "$token" != tail=* ]] || name=tail
     needle="${name#*~}"; needle="${needle//+/ }"
     case "$name" in
       rc) value="$RC" ;;
@@ -328,36 +347,6 @@ observe() {
   set +f
   printf '%s' "${got# }"
 }
-
-# mutant NAME FILE SED WHAT — stage open-terminal and its libs in a git repo of
-# its own, so PROJECT_ROOT still resolves hermetically, with SED applied to
-# FILE (a path under scripts/), and point every following row at it. The copy
-# is proven to differ from the original first, so a mutation whose anchor moved
-# cannot pass as a silent no-op.
-mutant() {
-  local name="$1" file="$2" expr="$3" what="$4" dir src
-  dir="$TMP_ROOT/mutants/$name"
-  src="$SCRIPTS_DIR/$file"
-  mkdir -p "$dir/scripts/lib"
-  cp "$SRC_OT" "$dir/scripts/open-terminal"
-  cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$dir/scripts/"
-  cp "$SCRIPTS_DIR/lanes" "$dir/scripts/lanes"
-  chmod +x "$dir/scripts/lanes"
-  cp "$SRC_LIB_DIR"/*.sh "$dir/scripts/lib/"
-  orch_fixture_shared_libs "$dir"
-  sed "$expr" "$src" > "$dir/scripts/$file"
-  if cmp -s "$src" "$dir/scripts/$file"; then
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  control: the %s mutant is byte-identical to %s\n' "$name" "$file"
-  else
-    pass "control: the $name mutant really rewrites $what"
-  fi
-  chmod +x "$dir/scripts/open-terminal"
-  git -C "$dir" init -q
-  OT_UNDER_TEST="$dir/scripts/open-terminal"
-}
-
-unmutate() { OT_UNDER_TEST="$OT"; }
 
 # launch_table ROW... — `label|mode|env|flags|screens|expect`, one launch and
 # one assertion per row.
@@ -383,8 +372,10 @@ echo "=== open-terminal claude handoff: per-task launch flags ==="
 launch_table \
   "linear:claude renders the caller's launch flags before the brief, no warning|gui|-|--model opus[1m] --effort max --dangerously-skip-permissions|-|rc=0 cmd~'--model'+'opus[1m]'+'--effort'+'max'+'--dangerously-skip-permissions'+'$BRIEFN'=true stderr~open-terminal:+permission-prompt=false" \
   "github:claude renders the same|github|-|--effort max --dangerously-skip-permissions|-|rc=0 cmd~'--effort'+'max'+'--dangerously-skip-permissions'+'/orch+start+github+acme/widgets#42'=true" \
-  "a second launch renders its own flags, nothing leaking from another launch or a stored default|gui|-|--model sonnet --permission-mode bypassPermissions|-|rc=0 cmd~'--model'+'sonnet'+'--permission-mode'+'bypassPermissions'+'$BRIEFN'=true cmd~'--effort'+'max'=false stderr~open-terminal:+permission-prompt=false" \
-  "an unflagged launch renders no model, effort or permission default, and warns it will stall unattended|gui|-|-|-|rc=0 tail=claude+-n+CC-737+'$BRIEFN' stderr~open-terminal:+permission-prompt+flags==true" \
+  "a second launch renders its own flags, nothing leaking from another launch or a stored default|gui|-|--model claude-sonnet-4-6 --permission-mode bypassPermissions|-|rc=0 cmd~'--model'+'claude-sonnet-4-6'+'--permission-mode'+'bypassPermissions'+'$BRIEFN'=true cmd~'--effort'+'max'=false stderr~open-terminal:+permission-prompt=false" \
+  "an unflagged launch renders no model, effort or permission default, and warns it will stall unattended|gui|-|-|-|rc=0 tail=claude+-n+CC-737+'--disallowedTools=AskUserQuestion,EnterPlanMode'+'$BRIEFN' stderr~open-terminal:+permission-prompt+flags==true" \
+  "an unflagged codex launch warns for the same unattended prompt|gui-codex|-|-|-|rc=0 stderr~open-terminal:+permission-prompt+flags==true" \
+  "codex's unattended permission word suppresses the warning|gui-codex|-|--dangerously-bypass-approvals-and-sandbox|-|rc=0 cmd~--dangerously-bypass-approvals-and-sandbox=true stderr~open-terminal:+permission-prompt=false" \
   "a prompting override still launches, rendered as given, and warns loudly|gui|-|--permission-mode plan|-|rc=0 cmd~'--permission-mode'+'plan'+'$BRIEFN'=true stderr~open-terminal:+permission-prompt+flags=--permission-mode+plan=true" \
   "metacharacter launch flags refuse to launch, naming the option, and nothing runs|gui|-|--flag; touch $TMP_ROOT/pwned|-|rc=1 stderr~open-terminal:+flags-invalid+option=--launch-flags+value=--flag;+touch+$TMP_ROOT/pwned=true launched=false" \
   "a backslash cannot escape an apostrophe inside a single-quoted GUI brief|custom|-|-|-|rc=1 stderr1~open-terminal:+cmd-unbalanced-quote+item=CC-737=true creates=0 launched=false" \
@@ -393,10 +384,16 @@ launch_table \
   "the portable apostrophe spelling stays balanced and reaches the pane shell|custom-portable|-|-|-|rc=0 creates=1 log~new-window=true stderr~open-terminal:+cmd-unbalanced-quote=false" \
   "a broken tmux-only verify setting does not abort a GUI launch, which never reads it|gui|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false"
 
-assert_eq "$(grep -Fc 'cmd_has_unbalanced_quote "$cmd" &&' "$SRC_OT")" 1 'control locates the command quote guard'
-mutant quote-guard-removed open-terminal 's/cmd_has_unbalanced_quote "$cmd" &&/false \&\&/' 'the command quote guard'
+# The suite's one must-fail control: a copy of open-terminal, beside links to
+# its helpers in a git repo of its own so PROJECT_ROOT still resolves
+# hermetically, with the command quote guard removed.
+QUOTE_OT="$(mutant_scripts quote-guard-removed open-terminal)/open-terminal" || exit 1
+git -C "$TMP_ROOT/quote-guard-removed" init -q
+orch_fixture_shared_libs "$TMP_ROOT/quote-guard-removed"
+mutate_file "$QUOTE_OT" "[[ -z \"\$quote\" ]] || printf 'cmd-unbalanced-quote" "true || printf 'cmd-unbalanced-quote"
+OT_UNDER_TEST="$QUOTE_OT"
 launch_table "control: without the quote guard the apostrophe command creates a tmux worktree and window|custom-tmux|-|-|-|rc=0 creates=1 log~new-window=true stderr~open-terminal:+cmd-unbalanced-quote=false"
-unmutate
+OT_UNDER_TEST="$OT"
 
 # The rendered line is executed by a shell in the launch directory, so a
 # bracketed model id is glob syntax there. With the tokens unquoted, a single
@@ -420,11 +417,10 @@ if wait_capture; then
   # rendered line through a login shell, which is the shape under test.
   (cd "$globbait" && OT_ARGV_CAPTURE="$TMP_ROOT/argv" bash -lc "PATH=\"$BIN:\$PATH\"; ${cmd##*&& }") >/dev/null 2>&1 || true
   rm -f "$BIN/claude"
-  assert_eq "$(tr '\n' ' ' < "$TMP_ROOT/argv" 2>/dev/null || echo unrun)" "-n CC-737 --model opus[1m] --dangerously-skip-permissions $BRIEF " \
+  assert_eq "$(tr '\n' ' ' < "$TMP_ROOT/argv" 2>/dev/null || echo unrun)" "-n CC-737 --settings={\"env\":{\"DISABLE_AUTO_COMPACT\":\"1\"}} --disallowedTools=AskUserQuestion,EnterPlanMode --model opus[1m] --dangerously-skip-permissions $BRIEF " \
     "the argv claude receives is the flags as given: a same-named file cannot rewrite the model id"
 else
-  FAIL=$((FAIL + 1))
-  printf '  FAIL  the bracketed model id row never invoked the terminal stub, so its argv cannot be read\n'
+  fail "the bracketed model id row never invoked the terminal stub, so its argv cannot be read"
 fi
 
 echo "=== open-terminal claude handoff: tmux brief delivery ==="
@@ -465,61 +461,19 @@ launch_table \
   "launch keystrokes failing on a briefless lane is a failed lane too|tmux-codex|OT_TMUX_FAIL=send-keys|-|-|rc=1 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=true out~open-terminal:+summary+launched=1=false" \
   "a buffer load failure is a failed launch|tmux-codex|OT_TMUX_FAIL=load-buffer|-|-|rc=1 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=true out~open-terminal:+summary+launched=1=false" \
   "a buffer paste failure is a failed launch|tmux-codex|OT_TMUX_FAIL=paste-buffer|-|-|rc=1 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=true out~open-terminal:+summary+launched=1=false" \
-  "a pane mode read failure is a failed launch|tmux-codex|OT_TMUX_FAIL=display-message|-|-|rc=1 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=true out~open-terminal:+summary+launched=1=false"
+  "a pane mode read failure is a failed launch|tmux-codex|OT_TMUX_FAIL=display-message|-|-|rc=1 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=true out~open-terminal:+summary+launched=1=false" \
+  "a window not at its shell is refused as such, with nothing typed, and never called a tmux failure|tmux-codex|OT_PANE_RUNNING=vim|-|-|rc=1 stderr~open-terminal:+pane-refused+operation=paste+item=CC-737=true stderr~open-terminal:+tmux-failed=false enters=0 out~open-terminal:+summary+launched=1=false"
 
-assert_eq "$(grep -cF 'if ! tmux_paste "$pane" "$line"; then' "$SRC_OT")" 1 'control locates the launch paste check'
-mutant paste-failure-ignored open-terminal 's/if ! tmux_paste "$pane" "$line"; then/if tmux_paste "$pane" "$line"; then/' 'the launch paste failure check'
-launch_table "control: ignoring a failed paste reports the lane launched|tmux-codex|OT_TMUX_FAIL=load-buffer|-|-|rc=0 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=false out~open-terminal:+summary+launched=1=true"
-unmutate
-
-echo "=== the turn-in-flight reading can fail, both ways ==="
-# `pane_working` is the whole of it, so it is the mutation both controls take.
-# Cut it to always-false and the two working rows go back to the false alarm
-# this closed: a healthy mid-turn lane reported as a stuck composer, exit 1.
-mutant working-blind lib/lane-state.sh 's/^pane_working() {/pane_working() { return 1;/' pane_working
-launch_table \
-  "control: with the turn reading gone, a turn in flight fails as a stuck composer|tmux|-|-|working|rc=1 stderr~open-terminal:+composer-stuck+item=CC-737=true out~open-terminal:+summary+launched=1=false" \
-  "control: and so does a lane that starts working during the composer wait|tmux|-|-|echo,working|rc=1 stderr~open-terminal:+composer-stuck+item=CC-737=true"
-# Widen it to the spinner frames — the shape this fix was first written with —
-# and the failure exit stops covering the pane it is for: Claude Code animates
-# one frame set across every long-running screen, sign-in included, so the
-# stuck lane above reports launched and an unattended login prompt is called a
-# success.
-mutant working-spinner lib/lane-state.sh "s/^pane_working() {/pane_working() { grep -q '\xe2\x9c\xbb' <<<\"\$1\" \&\& return 0;/" pane_working
-launch_table \
-  "control: keyed on the spinner instead, the sign-in step reports launched|tmux|-|-|signin|rc=0 out~open-terminal:+summary+launched=1=true stderr~open-terminal:+composer-stuck+item=CC-737=false"
-# The composer read can fail the same two ways. Drop the composer filter and
-# the draft above passes as a submitted prompt: the │ the old filter looks for
-# is on none of the 146 captures of v2.1.261, so nothing else stands between a
-# half-typed brief and a lane called launched.
-mutant composer-blind open-terminal 's/ | grep -Ev -- "\$CLAUDE_COMPOSER_RE"//' 'the composer filter'
-launch_table \
-  "control: without the composer filter, a draft the operator is still typing reports launched|tmux|-|-|draft|rc=0 out~open-terminal:+summary+launched=1=true resends=0"
-# Key readiness on the old footer alone and the re-send path goes unreachable:
-# v2.1.261 never draws it, so a dialog that ate the brief can only ever reach
-# the failure exit, never the recovery the launcher exists to perform.
-mutant ready-legacy-only open-terminal 's/^READY_RE=.*/READY_RE="\\? for shortcuts"/' 'the readiness marker'
-launch_table \
-  "control: keyed on the old footer alone, a dialog that ate the brief can never be recovered|tmux|-|-|echo,ready,ready|rc=1 stderr~open-terminal:+composer-stuck+item=CC-737=true resends=0"
-# Readiness that does not insist on an EMPTY composer types into an occupied
-# one, and `send-keys -l` appends: the lane is handed
-# `/orch start CC-737/orch start CC-737` and submits it.
-mutant ready-occupied open-terminal 's/^READY_RE=.*/READY_RE="$CLAUDE_COMPOSER_RE"/' 'the empty-composer requirement'
-launch_table \
-  "control: readiness without the empty test types a second brief into an occupied composer|tmux|-|-|draft|resends=1"
-# Test the nudge budget BEFORE the capture and the last Enter's result is
-# never looked at: the lane that came up on it is reported stuck.
-mutant last-pass-blind open-terminal 's@^    screen="$(tmux capture-pane -pJ -t "$pane" 2>/dev/null)" || return 1$@    (( waited < TMUX_VERIFY_SECS )) || return 1; screen="$(tmux capture-pane -pJ -t "$pane" 2>/dev/null)" || return 1@;/^    (( waited < TMUX_VERIFY_SECS )) || return 1$/d' 'the read-before-budget order'
-launch_table \
-  "control: deciding before the capture reports a lane that came up on the last nudge as stuck|tmux|-|-|echo,echo,delivered|rc=1 stderr~open-terminal:+composer-stuck+item=CC-737=true"
-# Require a transcript-activity marker on top of the brief and the first
-# frames of a turn read as an idle, ready composer: the counter is not drawn
-# yet, the spinner frame is one this script does not read, and the composer is
-# already empty — so a second brief goes into the turn.
-mutant activity-required open-terminal 's@^  \[\[ "$filtered" == \*"$brief"\* \]\]$@  [[ "$filtered" == *"$brief"* ]] || return 1; [[ "$screen" == *"\xe2\x97\x8f"* ]]@' 'the delivery read'
-launch_table \
-  "control: with a marker required on top, a turn in its first frames takes a second brief|tmux|-|-|earlyturn|resends=1"
-unmutate
+# The refusal arm's control: the same launch against a copy whose refusal
+# falls to the write-failure arm reports a tmux fault on a window that typed
+# nothing.
+REFUSAL_OT="$(mutant_scripts refusal-as-failure open-terminal)/open-terminal" || exit 1
+git -C "$TMP_ROOT/refusal-as-failure" init -q
+orch_fixture_shared_libs "$TMP_ROOT/refusal-as-failure"
+mutate_file "$REFUSAL_OT" '    1) ot_message pane-refused' '    9) ot_message pane-refused'
+OT_UNDER_TEST="$REFUSAL_OT"
+launch_table "control: a refusal read as a write failure is reported as tmux-failed|tmux-codex|OT_PANE_RUNNING=vim|-|-|rc=1 stderr~open-terminal:+tmux-failed+operation=paste+item=CC-737=true"
+OT_UNDER_TEST="$OT"
 
 echo "=== open-terminal claude handoff: the verify timeout ==="
 # ORCH_TMUX_VERIFY_SECS is validated where it is read, and only there: a
@@ -527,9 +481,9 @@ echo "=== open-terminal claude handoff: the verify timeout ==="
 # zero-pass loop misreported as a delivery failure; leading zeros are base
 # 10, not octal, and never inflate the digit count into the clamp; a runaway or overflow-sized value is clamped loudly rather
 # than hanging the launch or wrapping into negative arithmetic and an
-# instant resend. A codex tmux lane reads it only under --lane, where the
-# account check waits on it; without one it reads nothing and a broken setting
-# leaves that launch alone.
+# instant resend. A codex or copilot tmux lane reads it only under --lane,
+# where the account check waits on it; without one it reads nothing and a
+# broken setting leaves that launch alone.
 launch_table \
   "a non-integer is a config error naming the setting, not a delivery failure|tmux|ORCH_TMUX_VERIFY_SECS=abc|-|delivered|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true stderr~open-terminal:+brief-undelivered=false" \
   "zero is rejected the same way|tmux|ORCH_TMUX_VERIFY_SECS=0|-|delivered|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=0=true" \
@@ -537,29 +491,9 @@ launch_table \
   "an overflow-sized value is clamped loudly, with no instant resend|tmux|ORCH_TMUX_VERIFY_SECS=10000000000000000000|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+setting=ORCH_TMUX_VERIFY_SECS+value=10000000000000000000+limit=120=true resends=0" \
   "a runaway value is clamped loudly and still verifies|tmux|ORCH_TMUX_VERIFY_SECS=99999|-|delivered|rc=0 stderr~open-terminal:+verify-seconds-clamped+setting=ORCH_TMUX_VERIFY_SECS+value=99999+limit=120=true" \
   "a codex tmux lane with no --lane reads the timeout nowhere and is not aborted by a broken one|tmux-codex|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false" \
-  "a codex lane launch refuses a broken timeout, which its account check waits on|tmux-codex-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true"
+  "a codex lane launch refuses a broken timeout, which its account check waits on|tmux-codex-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true" \
+  "a copilot lane launch refuses it the same way, its account check waiting on it too|tmux-copilot-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=1 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS+value=abc=true"
 
-mutant codex-lane-unvalidated open-terminal 's/      codex) \[\[ -z "$LANE" \]\] || TIMEOUT_IS_READ=true ;;//' 'the codex lane timeout reader'
-launch_table \
-  "control: without the codex lane reader a broken timeout is discarded on the path that waits on it|tmux-codex-lane|ORCH_TMUX_VERIFY_SECS=abc|-|-|rc=0 stderr~open-terminal:+verify-seconds-invalid+setting=ORCH_TMUX_VERIFY_SECS=false"
-unmutate
-
-tmux() { "$REAL_TMUX" -L "ot-paste-$$" "$@"; }
-pane="$(tmux -f /dev/null new-session -d -P -F '#{pane_id}' "cat >> '$TMP_ROOT/received'")"
-trap 'tmux kill-server; rm -rf "$TMP_ROOT"' EXIT
-sed -n '/^tmux_enter()/,/^tmux_wait_composer()/p' "$SRC_OT" | sed '$d' > "$TMP_ROOT/paste.sh"
-source "$TMP_ROOT/paste.sh"
-for mode in legacy-copy copy normal; do
-  : > "$TMP_ROOT/received"
-  if [[ "$mode" != normal ]]; then tmux copy-mode -t "$pane"; fi
-  if [[ "$mode" == legacy-copy ]]; then
-    tmux send-keys -t "$pane" -l hello
-    tmux send-keys -t "$pane" Enter
-  else tmux_paste "$pane" hello; fi
-  sleep 1
-  expected=hello; [[ "$mode" != legacy-copy ]] || expected=""
-  assert_eq "$(cat "$TMP_ROOT/received")" "$expected" "program input: $mode"
-done
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

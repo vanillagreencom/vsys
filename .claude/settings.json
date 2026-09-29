@@ -45,16 +45,10 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/reviewer-read-only.sh\"",
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/skill-load-check.sh\"",
-            "timeout": 15
           }
         ]
       },
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -66,7 +60,6 @@
     ],
     "Stop": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -83,7 +76,6 @@
     ],
     "SubagentStop": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -106,7 +98,6 @@
     ],
     "TaskCompleted": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -118,7 +109,6 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",

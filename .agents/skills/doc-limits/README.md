@@ -8,14 +8,16 @@ A byte-size check for repository documents. It limits the Markdown that agents r
 kendex add vanillagreencom/kendex --skill doc-limits
 ```
 
-Requires Git, Bash, jq, the commit-guards skill and standard POSIX tools. Bash 3.2 is supported. The commit-guards pre-commit and pre-push hooks run the installed check.
+Requires Git, Bash, jq, the commit-guards skill and standard POSIX tools. Bash 3.2 is supported. kendex also installs docs-writing, whose per-file-type rules each over-limit finding names. The commit-guards pre-commit and pre-push hooks run the installed check.
 
 ## Features
 
 - Check document sizes against byte limits.
+- Name the docs-writing rule that decides how an over-limit document may change.
 - Apply project limits by path pattern.
 - Exclude generated files through the render inventory and other exceptions through reasoned rows.
 - Check staged documents with staged policy.
+- Fail a document a pull request grows to within a margin of its limit.
 
 ## How it works
 
@@ -23,7 +25,7 @@ The checker selects tracked Markdown documents and HTML files under `docs/`. It 
 
 ## Settings
 
-Set project values in `kendex.settings.toml` under `[env]`. Local overrides use `.kendex/settings.toml` or `.env.local`. Process values have priority. `doc-limits --help` lists the settings and flags.
+Set project values in `kendex.settings.toml` under `[env]`. Local overrides use `.kendex/settings.toml` or `.env.local`. Process values have priority. `DOC_LIMITS_MARGIN_PCT` sets the pull request growth margin as a percent of each limit. `doc-limits --help` lists the settings and flags.
 
 ## Path classes
 

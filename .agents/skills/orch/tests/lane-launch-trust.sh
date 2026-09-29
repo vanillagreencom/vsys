@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# Tests for the folder trust a codex launch needs before it reads the arguments
-# it was launched with: lib/lane-launch.sh's lane_codex_trust_prepare, and the
-# two launchers that refuse rather than open a pane on the question.
+# Tests for the folder trust a launch needs before it reads the arguments it
+# was launched with: lib/lane-launch.sh's lane_trust_prepare, its codex and
+# claude arms, and the two launchers that refuse rather than open a pane on
+# the question.
 #
 # A Codex session started into a directory its config does not trust stops on
-# `Do you trust the contents of this directory?` and waits. Every unattended
-# launch — an overseer succession, a lane opened into a worktree nothing has
-# trusted yet — has nobody at that pane, so the launch is spent on a question.
-# The sections here are that contract:
+# `Do you trust the contents of this directory?` and waits; a Claude session
+# stops on `Do you trust the files in this folder?`. Every unattended launch —
+# an overseer succession, a lane opened into a worktree nothing has trusted
+# yet — has nobody at that pane, so the launch is spent on a question. The
+# sections here are that contract:
 #
 #   § prepare   one row per shape the configs a launch reads can be in — the
 #               account's own, and the private home's where one already stands
 #               — each asserted on the EFFECTIVE config a launch would open,
 #               through the production reader rather than a second scanner here
+#   § claude    one row per shape the config dir's .claude.json can be in,
+#               asserted on the file the launch would read, and the dispatcher
+#               that hands each harness to its arm
 #   § form      the private home is reached by the environment variable that
 #               names it, even on a machine whose account launcher is on PATH,
 #               with the account dir beside it as the inverse
@@ -20,27 +25,27 @@
 #               launchers carry that refusal's key
 #   § account   the readers that ask which account a session is spending get
 #               the account back, whatever CODEX_HOME holds
-#   § control   six must-fail inverses, one per rule: the entry is read back
-#               before the launch, the directory's own table is replaced and
-#               never duplicated, the private home is never reached through an
-#               account launcher, a home names the account it sits under, an
-#               answer recorded in the private home is read, and the account's
-#               own transcript store is made before the link loop
+#   § control   one must-fail inverse per function under test: the
+#               preparation reads its entry back before the launch, the form
+#               never reaches the private home through an account launcher,
+#               and the account reader names the account a home sits under
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/git-env.sh"
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 SCRIPTS_DIR="$REPO_ROOT/skills/orch/scripts"
-# shellcheck source=lib/waiter-assertions.sh
-source "$TEST_DIR/lib/waiter-assertions.sh"
-# copy_scripts and mutate_file, the two halves of the controls below.
+# shellcheck source=lib/assertions.sh
+source "$TEST_DIR/lib/assertions.sh"
+# mutant_scripts and mutate_file, the two halves of the controls below.
 # shellcheck source=lib/growth-state.sh
 source "$TEST_DIR/lib/growth-state.sh"
 
 # Physical: on macOS the temp root sits under /var -> /private/var, and a
 # config entry names the path the launch directory really is.
-TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
-trap 'chmod -R u+rwX "$TMP_ROOT" 2>/dev/null; rm -rf "$TMP_ROOT"' EXIT
+TMP_ROOT="$(mktemp -d)" || { echo "lane-launch-trust: scratch=mktemp-failed" >&2; exit 1; }
+[[ -d $TMP_ROOT && ! -L $TMP_ROOT ]] || { echo "lane-launch-trust: scratch=not-a-directory value=[$TMP_ROOT]" >&2; exit 1; }
+TMP_ROOT="$(cd -- "$TMP_ROOT" && pwd -P)" || { echo "lane-launch-trust: scratch=resolve-failed" >&2; exit 1; }
+trap 'chmod -R u+rwX "$TMP_ROOT" 2>/dev/null; rm -rf -- "${TMP_ROOT:?}"' EXIT
 
 # The library under test, sourced into this shell: the preparation is a
 # function, and a call to it is the smallest surface that can fail.
@@ -91,7 +96,7 @@ prepare_row() { # NAME CONFIG_BODY
   local lane="$TMP_ROOT/$1/.1codex" dir="$TMP_ROOT/$1/wt" rc=0 config trusted private
   mkdir -p "$dir"
   account_config "$1" "$2"
-  lane_codex_trust_prepare codex "$lane" "$dir" || rc=$?
+  lane_codex_trust_prepare "$lane" "$dir" || rc=$?
   if [ "$rc" -ne 0 ]; then printf 'refused reason=%s\n' "$LANE_TRUST_REASON"; return 0; fi
   config="$LANE_TRUST_HOME/config.toml"
   trusted=no; ! lane_codex_trusted "$config" "$dir" || trusted=yes
@@ -165,7 +170,7 @@ printf 'private\n' > "$LINK_HOME/models_cache.json"
 printf 'shipped\n' > "$LINK_LANE/models_cache.json"
 mkdir -p "$LINK_LANE/plugins"
 printf 'shipped\n' > "$LINK_LANE/plugins/one.json"
-lane_codex_trust_prepare codex "$LINK_LANE" "$TMP_ROOT/trusts-another/wt"
+lane_codex_trust_prepare "$LINK_LANE" "$TMP_ROOT/trusts-another/wt"
 assert_eq "$(readlink "$LINK_HOME/models_cache.json" || printf none) $(cat "$LINK_HOME/models_cache.json") $(readlink "$LINK_HOME/plugins" || printf none) $(cat "$LINK_HOME/auth.json")" \
   "$LINK_LANE/models_cache.json shipped $LINK_LANE/plugins renewed" \
   "a second preparation links a private file at a name the account has since gained, and a directory the account gained"
@@ -175,7 +180,7 @@ assert_eq "$(readlink "$LINK_HOME/models_cache.json" || printf none) $(cat "$LIN
 rm -f -- "${LINK_HOME:?}/plugins"
 mkdir -p "$LINK_HOME/plugins"
 link_rc=0
-lane_codex_trust_prepare codex "$LINK_LANE" "$TMP_ROOT/trusts-another/wt" || link_rc=$?
+lane_codex_trust_prepare "$LINK_LANE" "$TMP_ROOT/trusts-another/wt" || link_rc=$?
 assert_eq "$link_rc reason=$LANE_TRUST_REASON $(ls "$LINK_HOME/plugins" | wc -l | tr -d ' ')" \
   "1 reason=home-entry 0" \
   "a real directory where a link belongs refuses, and nothing is created inside it"
@@ -191,11 +196,11 @@ HOME_ANSWER_LANE="$TMP_ROOT/home-answered/.1codex"
 HOME_ANSWER_DIR="$TMP_ROOT/home-answered/wt"
 mkdir -p "$HOME_ANSWER_DIR"
 account_config home-answered ""
-lane_codex_trust_prepare codex "$HOME_ANSWER_LANE" "$HOME_ANSWER_DIR"
+lane_codex_trust_prepare "$HOME_ANSWER_LANE" "$HOME_ANSWER_DIR"
 HOME_ANSWER_HOME="$LANE_TRUST_HOME"
 printf '\n[projects."%s"]\ntrust_level = "untrusted"\n' "$HOME_ANSWER_DIR" > "$HOME_ANSWER_HOME/config.toml"
 home_answer_rc=0
-lane_codex_trust_prepare codex "$HOME_ANSWER_LANE" "$HOME_ANSWER_DIR" || home_answer_rc=$?
+lane_codex_trust_prepare "$HOME_ANSWER_LANE" "$HOME_ANSWER_DIR" || home_answer_rc=$?
 assert_eq "$home_answer_rc reason=$LANE_TRUST_REASON $(lane_codex_trusted "$HOME_ANSWER_HOME/config.toml" "$HOME_ANSWER_DIR" && printf trusted || printf refused)" \
   "1 reason=trust-refused refused" \
   "an answer recorded in the private home refuses the next launch and is left where it was written"
@@ -210,11 +215,99 @@ STORE_LANE="$TMP_ROOT/no-store/.1codex"
 STORE_DIR="$TMP_ROOT/no-store/wt"
 mkdir -p "$STORE_DIR"
 account_config no-store "" no-store
-lane_codex_trust_prepare codex "$STORE_LANE" "$STORE_DIR"
+lane_codex_trust_prepare "$STORE_LANE" "$STORE_DIR"
 printf 'rollout\n' > "$LANE_TRUST_HOME/sessions/one.jsonl"
 assert_eq "$(readlink "$LANE_TRUST_HOME/sessions" || printf none) $(cat "$STORE_LANE/sessions/one.jsonl")" \
   "$STORE_LANE/sessions rollout" \
   "an account with no transcript store gains one, and a rollout written through the private home lands in it"
+
+# --- § claude ---------------------------------------------------------------
+#
+# The claude arm writes `projects.<dir>.hasTrustDialogAccepted` beside
+# `hasCompletedOnboarding` into the config dir's own .claude.json, the file
+# the harness keeps its account and every per-project answer in, so the row
+# reads back what else that file held: userID, and the tool allowances of
+# another project and of the launch directory's own entry, which the write
+# merges into rather than replaces. The launch runs under the config dir
+# itself, never a private home: `home=` is the dispatcher's answer, so the
+# rows go through it. A refusal carries the writer's own words as its
+# detail where it has any, jq's parse position for a file that is not JSON,
+# and `detail=` is that text's first word, jq's own prefix.
+echo "=== claude: the config dir a claude launch reads ==="
+claude_row() { # NAME CONFIG_JSON
+  local lane="$TMP_ROOT/$1/.1claude" dir="$TMP_ROOT/$1/wt" rc=0 config
+  mkdir -p "$lane" "$dir"
+  config="$lane/.claude.json"
+  [ -z "$2" ] || printf '%s\n' "$2" > "$config"
+  lane_trust_prepare claude "$lane" "$dir" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'refused reason=%s detail=%s\n' "$LANE_TRUST_REASON" "${LANE_TRUST_DETAIL%% *}"
+    return 0
+  fi
+  printf 'route=%s home=%s %s\n' "$LANE_TRUST_ROUTE" "${LANE_TRUST_HOME#"$TMP_ROOT/"}" \
+    "$(jq -r --arg d "$dir" '"trusted=\(.projects[$d].hasTrustDialogAccepted) onboarded=\(.hasCompletedOnboarding) user=\(.userID // "-") other_tools=\(.projects["/elsewhere"].allowedTools // [] | length) own_tools=\(.projects[$d].allowedTools // [] | length)"' < "$config")"
+}
+claude_config_for() { # NAME
+  case "$1" in
+    no-config) printf '' ;;
+    trusts-another) printf '{"userID": "u", "projects": {"/elsewhere": {"hasTrustDialogAccepted": true, "allowedTools": ["Bash"]}}}' ;;
+    already-trusted) printf '{"userID": "u", "hasCompletedOnboarding": true, "projects": {"$DIR": {"hasTrustDialogAccepted": true, "allowedTools": ["Bash"]}}}' ;;
+    entry-without-answer) printf '{"projects": {"$DIR": {"allowedTools": ["Bash", "Read"]}}}' ;;
+    answered-no) printf '{"userID": "u", "projects": {"$DIR": {"hasTrustDialogAccepted": false}}}' ;;
+    not-json) printf '{"projects": ' ;;
+  esac
+}
+CLAUDE_ROWS=(
+  'no-config|route=account-config home=no-config/.1claude trusted=true onboarded=true user=- other_tools=0 own_tools=0'
+  'trusts-another|route=account-config home=trusts-another/.1claude trusted=true onboarded=true user=u other_tools=1 own_tools=0'
+  'already-trusted|route=preapproved home=already-trusted/.1claude trusted=true onboarded=true user=u other_tools=0 own_tools=1'
+  'entry-without-answer|route=account-config home=entry-without-answer/.1claude trusted=true onboarded=true user=- other_tools=0 own_tools=2'
+  'answered-no|refused reason=trust-refused detail='
+  'not-json|refused reason=config-unreadable detail=jq:'
+)
+for row in "${CLAUDE_ROWS[@]}"; do
+  name="${row%%|*}"; want="${row#*|}"
+  body="$(claude_config_for "$name")"
+  assert_eq "$(claude_row "$name" "${body//\$DIR/$TMP_ROOT/$name/wt}")" "$want" "claude: $name"
+done
+# The two files the arm must leave exactly as it found them: a recorded
+# refusal, and a config that already trusts the directory.
+for name in answered-no already-trusted; do
+  assert_eq "$(cat "$TMP_ROOT/$name/.1claude/.claude.json")" \
+    "$(claude_config_for "$name" | sed "s|\$DIR|$TMP_ROOT/$name/wt|")" \
+    "claude: the $name file is left as it was written"
+done
+# The file the arm writes is private whatever the caller's umask and whatever
+# mode the file had: it holds the account's address, user id and every
+# per-project tool allowance, and the harness itself makes it 0600, so a
+# rewrite that took the caller's umask would leave a logged-in account's
+# file world-readable under 022 and group-writable under 002. One row per
+# shape the file can be in before the write, PRIOR_MODE|UMASK, the mode read
+# back off the installed file through ls, which spells it the same way on
+# every platform the suites run on.
+mode_of() { ls -ld -- "$1" | cut -c1-10; }
+for row in 'none|022' '600|022' '644|002'; do
+  prior="${row%%|*}"; mask="${row#*|}"
+  name="mode-$prior-$mask"
+  mkdir -p "$TMP_ROOT/$name/.1claude" "$TMP_ROOT/$name/wt"
+  if [ "$prior" != none ]; then
+    printf '{"userID": "u"}\n' > "$TMP_ROOT/$name/.1claude/.claude.json"
+    chmod "$prior" "$TMP_ROOT/$name/.1claude/.claude.json"
+  fi
+  ( umask "$mask" && lane_trust_prepare claude "$TMP_ROOT/$name/.1claude" "$TMP_ROOT/$name/wt" ) \
+    || fail "mode row $name: the preparation refused as $LANE_TRUST_REASON"
+  assert_eq "$(mode_of "$TMP_ROOT/$name/.1claude/.claude.json")" "-rw-------" \
+    "claude: a config file written from prior mode $prior under umask $mask is private"
+done
+# The dispatcher: one arm per harness, and none for a harness that asks no
+# such question. HARNESS|ROUTE, each on a lane of its own.
+for row in 'claude|account-config' 'codex|launch-home' 'pi|none'; do
+  harness="${row%%|*}"; want="${row#*|}"
+  mkdir -p "$TMP_ROOT/dispatch-$harness/.1$harness" "$TMP_ROOT/dispatch-$harness/wt"
+  [ "$harness" != codex ] || printf 'token\n' > "$TMP_ROOT/dispatch-$harness/.1codex/auth.json"
+  lane_trust_prepare "$harness" "$TMP_ROOT/dispatch-$harness/.1$harness" "$TMP_ROOT/dispatch-$harness/wt"
+  assert_eq "route=$LANE_TRUST_ROUTE" "route=$want" "dispatch: $harness takes its own arm"
+done
 
 # --- § form -----------------------------------------------------------------
 #
@@ -230,7 +323,7 @@ form_answers() { # SCRIPTS_LIB
   PATH="$TMP_ROOT/bin:$PATH" bash -c '
     set -uo pipefail
     source "$1"
-    lane_codex_trust_prepare codex "$2" "$3" || exit 1
+    lane_codex_trust_prepare "$2" "$3" || exit 1
     printf "private=%s account=%s\n" \
       "$(lane_launch_form "codex -m gpt" codex "$LANE_TRUST_HOME" "")" \
       "$(lane_launch_form "codex -m gpt" codex "$2" "")"
@@ -254,7 +347,7 @@ refuse_rc=0
 # The failing mkdir's own diagnostic is the operator's cause and belongs on the
 # launcher's stderr; here it is the expected outcome and would only clutter the
 # row it belongs to.
-lane_codex_trust_prepare codex "$TMP_ROOT/blocked/.1codex" "$TMP_ROOT/blocked-wt" 2>/dev/null || refuse_rc=$?
+lane_codex_trust_prepare "$TMP_ROOT/blocked/.1codex" "$TMP_ROOT/blocked-wt" 2>/dev/null || refuse_rc=$?
 assert_eq "$refuse_rc reason=$LANE_TRUST_REASON" "1 reason=home-create" \
   "a home that cannot be created refuses, naming the step"
 
@@ -271,7 +364,7 @@ unreadable_reason() { # NAME MAKER
   mkdir -p "$lane" "$dir"
   printf 'token\n' > "$lane/auth.json"
   "$2" "$lane/config.toml"
-  lane_codex_trust_prepare codex "$lane" "$dir" 2>/dev/null || rc=$?
+  lane_codex_trust_prepare "$lane" "$dir" 2>/dev/null || rc=$?
   printf '%s reason=%s\n' "$rc" "$LANE_TRUST_REASON"
 }
 make_dangling() { ln -s "$TMP_ROOT/no-such-render.toml" "$1"; }
@@ -280,6 +373,20 @@ make_directory() { mkdir -p "$1"; }
 for row in 'dangling|make_dangling' 'mode000|make_unreadable' 'adirectory|make_directory'; do
   assert_eq "$(unreadable_reason "${row%%|*}" "${row#*|}")" "1 reason=config-unreadable" \
     "an account config that is ${row%%|*} refuses rather than staging an empty one"
+done
+
+# The claude arm's same refusal: a .claude.json that exists and cannot be read refuses rather than being
+# rebuilt: the rebuild would drop the account the harness keeps there.
+claude_unreadable() { # NAME MAKER
+  local lane="$TMP_ROOT/$1/.1claude" dir="$TMP_ROOT/$1/wt" rc=0
+  mkdir -p "$lane" "$dir"
+  "$2" "$lane/.claude.json"
+  lane_claude_trust_prepare "$lane" "$dir" 2>/dev/null || rc=$?
+  printf '%s reason=%s\n' "$rc" "$LANE_TRUST_REASON"
+}
+for row in 'cdangling|make_dangling' 'cmode000|make_unreadable' 'cadirectory|make_directory'; do
+  assert_eq "$(claude_unreadable "${row%%|*}" "${row#*|}")" "1 reason=config-unreadable" \
+    "claude: a config that is ${row%%|*} refuses rather than being rebuilt"
 done
 
 # What each launcher DOES with that answer is its own behaviour and is pinned
@@ -345,17 +452,49 @@ INV_HOME="$(lane_codex_home_path "$TMP_ROOT/inv/.1codex" "$TMP_ROOT/inv/wt")"
 assert_eq "$(lanes_inventory "$INV_HOME")" "$TMP_ROOT/inv/.1codex" \
   "a launch home in CODEX_HOME lists as the one account it was built under"
 
+# The child receives evidence from the same command that supplied its argv.
+# Run the rendered line through a stub process, including an account shim.
+mkdir -p "$TMP_ROOT/compaction-bin"
+cat > "$TMP_ROOT/compaction-bin/codex" <<'STUB'
+#!/usr/bin/env bash
+jq -cn --arg evidence "${ORCH_COMPACTION_OVERRIDES:-}" \
+  '{evidence:(try ($evidence | fromjson) catch null)}'
+STUB
+chmod +x "$TMP_ROOT/compaction-bin/codex"
+cat > "$TMP_ROOT/compaction-bin/account" <<'STUB'
+#!/usr/bin/env bash
+exec codex "$@"
+STUB
+chmod +x "$TMP_ROOT/compaction-bin/account"
+compaction_child() { # LIB FORM CMD
+  PATH="$TMP_ROOT/compaction-bin:$PATH" ORCH_COMPACTION_OVERRIDES='stale-parent-value' \
+    bash -c 'source "$1"; line=$(lane_launch_line "$3" codex CODEX_HOME "$4" "$2") || exit; bash -c "$line"' \
+    _ "$1" "$2" "$3" "$TMP_ROOT/compaction-home"
+}
+# form|actual arguments|effective threshold,scope,post. Later overrides win;
+# an incomplete or custom command cannot borrow the parent process evidence.
+while IFS='|' read -r form args want; do
+  [[ "$form" != account ]] || form="launcher:$TMP_ROOT/compaction-bin/account"
+  actual=$(compaction_child "$SCRIPTS_DIR/lib/lane-launch.sh" "$form" "codex $args" |
+    jq -c '.evidence | if . == null then null else [.settings.model_auto_compact_token_limit,.settings.model_auto_compact_token_limit_scope,.settings.model_post_turn_compact_threshold_percent] end')
+  assert_eq "$actual" "$want" "executed compaction arguments $form $args"
+done <<'ROWS'
+prefix|-c model_auto_compact_token_limit=300000 -c model_auto_compact_token_limit_scope=body_after_prefix -c model_post_turn_compact_threshold_percent=0|["300000","body_after_prefix","0"]
+account|-c model_auto_compact_token_limit=300000 --config model_auto_compact_token_limit=200000 --config=model_auto_compact_token_limit_scope=total -cmodel_post_turn_compact_threshold_percent=80|["200000","total","80"]
+prefix|-c model_auto_compact_token_limit=300000|["300000",null,null]
+unchecked|-c model_auto_compact_token_limit=300000|null
+ROWS
+
 # --- § control --------------------------------------------------------------
 #
-# One inverse per rule the preparation enforces. Each mutates a private copy of
-# the library, so the shipped one is never edited, and each asserts the shape
-# its rule exists to prevent.
+# One inverse per function under test. Each mutates a private copy of one
+# library, so the shipped one is never edited, and each asserts the shape its
+# rule exists to prevent.
 echo "=== control: the must-fail inverses ==="
-MUTANT_SCRIPTS="$(copy_scripts lane-launch-mutant)"
-MUTANT_LIB="$MUTANT_SCRIPTS/lib/lane-launch.sh"
+MUTANT_LIB="$(mutant_scripts lane-launch-mutant lib/lane-launch.sh)/lib/lane-launch.sh" || exit 1
 
-# Rule 1: the entry is read back off the written config before the launch. A
-# preparation that writes something the harness would not read as trust must
+# lane_codex_trust_prepare: the entry is read back off the written config
+# before the launch. A preparation that writes something the harness would not read as trust must
 # refuse, not return a home.
 mutate_file "$MUTANT_LIB" "\\ntrust_level = \"trusted\"\\n" "\\ntrust_level = \"asked\"\\n"
 # The outcome AND the table count at the home the preparation would use, so a
@@ -365,7 +504,7 @@ mutant_prepare() { # LIB LANE DIR
     set -uo pipefail
     source "$1"
     outcome=prepared
-    lane_codex_trust_prepare codex "$2" "$3" 2>/dev/null || outcome="refused:$LANE_TRUST_REASON"
+    lane_codex_trust_prepare "$2" "$3" 2>/dev/null || outcome="refused:$LANE_TRUST_REASON"
     home="$(lane_codex_home_path "$2" "$3")"
     tables="$(grep -c -F -e "[projects.\"$3\"]" "$home/config.toml" 2>/dev/null)" || tables=0
     printf "%s route=%s tables=%s\n" "$outcome" "${LANE_TRUST_ROUTE:-none}" "$tables"
@@ -377,41 +516,41 @@ assert_eq "$(mutant_prepare "$MUTANT_LIB" "$TMP_ROOT/control-1/.1codex" "$TMP_RO
   "refused:entry-unreadable route=none tables=1" \
   "control: an entry the reader does not read back as trust refuses the launch"
 
-# Rule 2: the directory's own table is replaced. Carrying the account's config
-# through unchanged leaves that table in place beside the new one, which is a
-# duplicate key rather than an override.
-#
-# The account here carries a table for the launch directory that says nothing
-# about trust, which is the shape that both reaches this rule and is a table:
-# a table answering `trusted` takes the preapproved route and one answering
-# anything else is refused, so neither gets this far.
-MUTANT_TWO="$(copy_scripts lane-launch-mutant-two)/lib/lane-launch.sh"
-mutate_file "$MUTANT_TWO" 'toml_without_table "$config" "projects.\"$dir\""' 'cat -- "$config"'
-mkdir -p "$TMP_ROOT/control-2/wt"
-account_config control-2 "$(printf '[projects."%s"]\napproval_policy = "never"\n' "$TMP_ROOT/control-2/wt")"
-# The mutant reports success: its own read-back finds the trust it appended, in
-# the second of two headers for one key. That is the harm exactly — a config the
-# harness rejects whole, handed to the launch as ready. The shipped side is the
-# tables=1 every prepare row above pins.
-assert_eq "$(mutant_prepare "$MUTANT_TWO" "$TMP_ROOT/control-2/.1codex" "$TMP_ROOT/control-2/wt")" \
-  "prepared route=launch-home tables=2" \
-  "control: carrying the account config through duplicates the directory's table"
+# lane_claude_trust_prepare: the entry is read back off the written file
+# before the launch. A write the harness would not read as trust refuses
+# rather than returning the config dir as ready. The one merge filter serves
+# a present file and an absent one alike, so the mutation is at that filter
+# and the row starts from no file, the shape that once took a filter of its
+# own.
+MUTANT_CLAUDE_LIB="$(mutant_scripts lane-launch-mutant-claude lib/lane-launch.sh)/lib/lane-launch.sh" || exit 1
+mutate_file "$MUTANT_CLAUDE_LIB" "+ {hasTrustDialogAccepted: true})" "+ {hasTrustDialogAccepted: \"asked\"})"
+mkdir -p "$TMP_ROOT/control-claude/.1claude" "$TMP_ROOT/control-claude/wt"
+assert_eq "$(bash -c '
+    set -uo pipefail
+    source "$1"
+    outcome=prepared
+    lane_claude_trust_prepare "$2" "$3" 2>/dev/null || outcome="refused:$LANE_TRUST_REASON"
+    printf "%s route=%s written=%s\n" "$outcome" "${LANE_TRUST_ROUTE:-none}" \
+      "$(jq -r --arg d "$3" ".projects[\$d].hasTrustDialogAccepted" < "$2/.claude.json")"
+  ' bash "$MUTANT_CLAUDE_LIB" "$TMP_ROOT/control-claude/.1claude" "$TMP_ROOT/control-claude/wt")" \
+  "refused:entry-unreadable route=none written=asked" \
+  "control: a claude entry the reader does not read back as trust refuses the launch"
 
-# Rule 3: the private home's leaf carries no harness word, so the form judge
-# never mistakes it for an account a launcher on PATH selects. The shape lives
-# in lane-home.sh, so that is the file this one mutates; the launch library
-# beside it in the copied tree sources the mutated one.
-MUTANT_THREE_SCRIPTS="$(copy_scripts lane-launch-mutant-three)"
+# lane_launch_form: the private home's leaf carries no harness word, so the
+# form judge never mistakes it for an account a launcher on PATH selects. The
+# shape lives in lane-home.sh, so that is the file this one mutates; the launch
+# library linked beside it sources the mutated one.
+MUTANT_THREE_SCRIPTS="$(mutant_scripts lane-launch-mutant-three lib/lane-home.sh)" || exit 1
 mutate_file "$MUTANT_THREE_SCRIPTS/lib/lane-home.sh" \
   "printf '%s/lane-launch/%s-%s/home\\n'" "printf '%s/lane-launch/%s-%s/1codex\\n'"
 assert_eq "$(form_answers "$MUTANT_THREE_SCRIPTS/lib/lane-launch.sh")" \
   "private=launcher:$TMP_ROOT/bin/1codex account=launcher:$TMP_ROOT/bin/1codex" \
   "control: a private home named for the account is reached through the launcher"
 
-# Rule 4: a launch home answers with the account it sits under. Without the
-# rule the reader inside a session answers with the home, which is the account
-# spent under a second name.
-MUTANT_FOUR_SCRIPTS="$(copy_scripts lane-launch-mutant-four)"
+# lane_context_caller_cfg: a launch home answers with the account it sits
+# under. Without the rule the reader inside a session answers with the home,
+# which is the account spent under a second name.
+MUTANT_FOUR_SCRIPTS="$(mutant_scripts lane-launch-mutant-four lib/lane-home.sh)" || exit 1
 mutate_file "$MUTANT_FOUR_SCRIPTS/lib/lane-home.sh" \
   '*/lane-launch/*/home) printf' '*/lane-launch/*/nowhere) printf'
 assert_eq "$(CODEX_HOME="$ACCOUNT_HOME" bash -c '
@@ -422,44 +561,11 @@ assert_eq "$(CODEX_HOME="$ACCOUNT_HOME" bash -c '
   "$ACCOUNT_HOME" \
   "control: without the home-to-account rule a session reports the home as its account"
 
-# Rule 5: the recorded answer is read from the private home too. Reading the
-# account alone leaves the home's own `untrusted` invisible, and the rebuild
-# appends trust over it — the launch then runs at full trust against the answer
-# somebody gave at the pane. The fixture is the refused home from § prepare,
-# which still carries that answer.
-MUTANT_FIVE="$(copy_scripts lane-launch-mutant-five)/lib/lane-launch.sh"
-mutate_file "$MUTANT_FIVE" 'lane_codex_recorded "$dir" "$config" "$home/config.toml"' 'lane_codex_recorded "$dir" "$config"'
-assert_eq "$(bash -c '
-    set -uo pipefail
-    source "$1"
-    outcome=prepared
-    lane_codex_trust_prepare codex "$2" "$3" 2>/dev/null || outcome="refused:$LANE_TRUST_REASON"
-    printf "%s %s\n" "$outcome" \
-      "$(lane_codex_trusted "$(lane_codex_home_path "$2" "$3")/config.toml" "$3" && printf trusted || printf refused)"
-  ' bash "$MUTANT_FIVE" "$HOME_ANSWER_LANE" "$HOME_ANSWER_DIR")" \
-  "prepared trusted" \
-  "control: reading the account config alone rebuilds the home at full trust over the answer recorded in it"
-
-# Rule 6: the account's own transcript store is made before the link loop, so
-# the loop has a name to link. Without it the harness makes a REAL directory
-# inside the private home, the account never sees the rollout, and every
-# relaunch of that lane starts a fresh thread.
-MUTANT_SIX="$(copy_scripts lane-launch-mutant-six)/lib/lane-launch.sh"
-mutate_file "$MUTANT_SIX" '( umask 077 && mkdir -p -- "$lane/sessions" ) || { LANE_TRUST_REASON=account-store; return 1; }' 'true'
-mkdir -p "$TMP_ROOT/control-6/wt"
-account_config control-6 "" no-store
-assert_eq "$(bash -c '
-    set -uo pipefail
-    source "$1"
-    lane_codex_trust_prepare codex "$2" "$3" || exit 1
-    mkdir -p "$LANE_TRUST_HOME/sessions"
-    printf "rollout\n" > "$LANE_TRUST_HOME/sessions/one.jsonl"
-    printf "home=%s account=%s\n" \
-      "$(readlink "$LANE_TRUST_HOME/sessions" || printf real)" \
-      "$([ -e "$2/sessions/one.jsonl" ] && printf has || printf none)"
-  ' bash "$MUTANT_SIX" "$TMP_ROOT/control-6/.1codex" "$TMP_ROOT/control-6/wt")" \
-  "home=real account=none" \
-  "control: without the account's own store the rollout stays inside the private home and the account never sees it"
+# Removing transport leaves the stub with only its inherited, invalid value.
+MUTANT_COMPACTION="$(mutant_scripts lane-launch-compaction lib/lane-launch.sh)/lib/lane-launch.sh" || exit 1
+mutate_file "$MUTANT_COMPACTION" '"${compaction:+$compaction }"' '""'
+assert_eq "$(compaction_child "$MUTANT_COMPACTION" prefix 'codex -c model_auto_compact_token_limit=300000' | jq -c '.evidence')" \
+  null 'control: the child loses evidence when the launch line omits transport'
 
 printf '\npass: %d   fail: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

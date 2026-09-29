@@ -26,20 +26,21 @@ export ORCH_LANE_HOST=local
 source "$(dirname "${BASH_SOURCE[0]}")/lib/shared-skill-libs.sh"
 # shellcheck source=lib/process-table.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/process-table.sh"
-# mutate_file, for a control whose substitution carries bracket and quote
-# characters a sed expression would have to escape one by one.
+# mutant_scripts and mutate_file, the two halves of the control below.
 # shellcheck source=lib/growth-state.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/growth-state.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)/scripts"
-SRC_OT="${OPEN_TERMINAL_UNDER_TEST:-$SCRIPTS_DIR/open-terminal}"
+SRC_OT="$SCRIPTS_DIR/open-terminal"
 SRC_LIB_DIR="$SCRIPTS_DIR/lib"
 # lane_codex_home_path, so the relaunch row below names a private launch home
 # the way the launcher builds one rather than spelling its checksum.
 # shellcheck source=../scripts/lib/lane-home.sh
 source "$SRC_LIB_DIR/lane-home.sh"
-TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
+TMP_ROOT="$(mktemp -d)" || { echo "open-terminal-owned-skip: scratch=mktemp-failed" >&2; exit 1; }
+[[ -d $TMP_ROOT && ! -L $TMP_ROOT ]] || { echo "open-terminal-owned-skip: scratch=not-a-directory value=[$TMP_ROOT]" >&2; exit 1; }
+TMP_ROOT="$(cd -- "$TMP_ROOT" && pwd -P)" || { echo "open-terminal-owned-skip: scratch=resolve-failed" >&2; exit 1; }
 # The fleet home every row runs under unless it names its own. A codex launch
 # with no --lane prepares its folder trust under the account this names, so a
 # row leaving it unset would derive that account from the developer's own HOME
@@ -47,43 +48,10 @@ TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
 FLEET_HOME="$TMP_ROOT/fleet-home"
 # The fixture sessions this suite started; nothing else is killed.
 LIVE_PIDS=""
-trap 'kill $LIVE_PIDS 2>/dev/null || :; rm -rf "$TMP_ROOT"' EXIT
+trap 'kill $LIVE_PIDS 2>/dev/null || :; rm -rf -- "${TMP_ROOT:?}"' EXIT
 
-PASS=0
-FAIL=0
-
-assert_eq() {
-  local got="$1" want="$2" name="$3"
-  if [[ "$got" == "$want" ]]; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        expected: %s\n        got:      %s\n' "$name" "$want" "$got"
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" name="$3"
-  if grep -qF -- "$needle" <<<"$haystack"; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        wanted substring: %s\n        in: %s\n' "$name" "$needle" "$haystack"
-  fi
-}
-
-assert_not_contains() {
-  local haystack="$1" needle="$2" name="$3"
-  if grep -qF -- "$needle" <<<"$haystack"; then
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        forbidden substring: %s\n        in: %s\n' "$name" "$needle" "$haystack"
-  else
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  fi
-}
+# shellcheck source=lib/assertions.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assertions.sh"
 
 # Shared stub bin: a fake GUI terminal (exit 0 so open_gui's success echo runs)
 # and a fake gh (exit 1 so resolve_repo yields empty without touching network).
@@ -201,7 +169,7 @@ REPO="$TMP_ROOT/repo"
 mkdir -p "$REPO/scripts/lib"
 cp "$SRC_OT" "$REPO/scripts/open-terminal"
 cp "$SCRIPTS_DIR/lane-host" "$SCRIPTS_DIR/workflow-state" "$SCRIPTS_DIR/git-context" "$SCRIPTS_DIR/lane-marker" "$REPO/scripts/"
-cp "$SRC_LIB_DIR"/*.sh "$REPO/scripts/lib/"
+cp -R "$SRC_LIB_DIR/." "$REPO/scripts/lib/"
 orch_fixture_shared_libs "$REPO"
 chmod +x "$REPO/scripts/open-terminal"
 git -C "$REPO" init -q
@@ -366,28 +334,95 @@ cp "$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222.jsonl" "$SESSION_HOME/
 mkdir -p "$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222/subagents"
 printf '%s\n' '{"type":"user","message":{"content":"start cc-1"}}' >"$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222/subagents/child-agent.jsonl"; touch -t 203001010000 "$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222/subagents/child-agent.jsonl"
 printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$CODEX444\"}}" '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"repository instructions"}]}}' '{"type":"event_msg","payload":{"type":"user_message","message":"start CC-1"}}' >"$SESSION_HOME/.selected-codex/sessions/2026/session.jsonl"
-printf '%s\n' '{"type":"message","message":{"role":"user","content":"start CC-1"}}' >"$SESSION_HOME/.pi/agent/sessions/repo/session.jsonl"
+PI_SESSION_ID=55555555-5555-5555-5555-555555555555
+printf '%s\n' "{\"type\":\"session\",\"id\":\"$PI_SESSION_ID\"}" '{"type":"message","message":{"role":"user","content":"start CC-1"}}' >"$SESSION_HOME/.pi/agent/sessions/repo/session.jsonl"
 EXIT_DIR="$TMP_ROOT/resume-exit"; EXISTS_DIR="$TMP_ROOT/resume-exists"; mkdir -p "$EXIT_DIR" "$EXISTS_DIR"; touch "$EXISTS_DIR/CC-1"
 #
 # The resumed command carries the continuation line itself on every harness, so
 # the relaunch is one call and nobody pastes a follow-up into the pane. Each
 # harness takes it as the last positional argument of its own resume form.
 CMD_ARGS=()
-RELAUNCH_LINE="Resume the orch workflow for CC-1 from where this session stopped. Run .agents/skills/orch/scripts/lane-mail inbox --item CC-1 first and act on every directive it prints."
-for row in "claude|claude -n CC-1 --resume $CLAUDE222" "codex|codex resume $CODEX444" "pi|pi --session $SESSION_HOME/.pi/agent/sessions/repo/session.jsonl"; do
-  IFS='|' read -r harness expected <<<"$row"
+# Every codex command open-terminal builds leads with the launch-only setting
+# that keeps Codex off its startup update prompt, quoted per token as start_cmd
+# quotes each flag.
+CODEX_SETTINGS="'-c' 'check_for_update_on_startup=false'"
+# And the words that turn codex's own compaction off, so a lane hands off at its
+# own mark first. A claude resume below names no model, so no window names its
+# mark and it keeps its compaction.
+CODEX_COMPACTION="'-c' 'model_auto_compact_token_limit=9223372036854775807' '-c' 'model_auto_compact_token_limit_scope=body_after_prefix' '-c' 'model_post_turn_compact_threshold_percent=0'"
+# Every command it builds also takes the harness question tool away, in the
+# same quoting: a lane asks its overseer through lane-mail ask.
+CLAUDE_QUESTION_OFF="'--disallowedTools=AskUserQuestion,EnterPlanMode'"
+CODEX_QUESTION_OFF="'-c' 'features.default_mode_request_user_input=false'"
+PI_QUESTION_OFF="'--exclude-tools' 'question'"
+# occurrences TEXT NEEDLE — how many times NEEDLE stands in TEXT.
+occurrences() { local rest="${1//"$2"/}"; printf '%s\n' "$(( (${#1} - ${#rest}) / ${#2} ))"; }
+# A claude or pi lane re-arms its mailbox monitor; a codex lane arms none,
+# since Codex starts no turn for a monitor's output.
+RELAUNCH_LINE="Resume the orch workflow for CC-1 from where this session stopped. Run .agents/skills/orch/scripts/lane-mail inbox --item CC-1 first and act on every directive it prints"
+REARM=", then re-arm your mailbox monitor on .agents/skills/orch/scripts/lane-mail watch --item CC-1 through your harness background wake"
+CONTEXT_FILE="$TMP_ROOT/wt/CC-1/tmp/lane-mail/CC-1/context.json"
+mkdir -p "${CONTEXT_FILE%/*}"
+for row in "claude|claude -n CC-1 $CLAUDE_QUESTION_OFF --resume $CLAUDE222|$REARM|$CLAUDE222" "codex|codex resume $CODEX_SETTINGS $CODEX_COMPACTION $CODEX_QUESTION_OFF $CODEX444||$CODEX444" "pi|pi $PI_QUESTION_OFF --session $SESSION_HOME/.pi/agent/sessions/repo/session.jsonl|$REARM|$PI_SESSION_ID"; do
+  IFS='|' read -r harness expected rearm context_session <<<"$row"
+  context_record="$(jq -nc --arg h "$harness" --arg s "$context_session" '{harness:$h,session_id:$s,tokens:400000,window:1000000}')"
+  printf '%s\n' "$context_record" > "$CONTEXT_FILE"
   capture="$TMP_ROOT/resume-$harness.cmd"
   OT_CAPTURE="$capture" LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" run_case "resume-$harness" -- --relaunch --harness "$harness" CC-1
-  for _ in {1..10000}; do [[ -f "$capture" ]] && break; done; assert_contains "$(cat "$capture")" "$expected '$RELAUNCH_LINE'" "$harness relaunch resumes with the continuation line"
+  for _ in {1..10000}; do [[ -f "$capture" ]] && break; done; assert_contains "$(cat "$capture")" "$expected '$RELAUNCH_LINE$rearm.'" "$harness relaunch resumes with the continuation line"
+  assert_eq "rc=$RC context=$(cat "$CONTEXT_FILE" 2>/dev/null || true)" "rc=0 context=$context_record" \
+    "$harness relaunch keeps the selected session's exact context reading"
+  for lifetime in different fresh; do
+    context_args=(--relaunch)
+    prior_session=other-session
+    if [[ "$lifetime" == fresh ]]; then context_args=(); prior_session="$context_session"; fi
+    jq -nc --arg h "$harness" --arg s "$prior_session" '{harness:$h,session_id:$s,tokens:400000,window:1000000}' > "$CONTEXT_FILE"
+    LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" run_case "context-$harness-$lifetime" -- ${context_args[@]+"${context_args[@]}"} --harness "$harness" CC-1
+    assert_eq "rc=$RC context=$([[ -e "$CONTEXT_FILE" ]] && echo present || echo absent)" "rc=0 context=absent" \
+      "$harness clears the predecessor reading for a $lifetime session"
+  done
 done
+# Without forwarding the selected identity, the marker clears a resumed
+# session's reading. Keep the real session lookup and marker in this control.
+CONTEXT_CONTROL="$REPO/scripts/open-terminal-context-control"
+cp "$OT" "$CONTEXT_CONTROL"
+mutate_file "$CONTEXT_CONTROL" '"$remote_path" "$HARNESS" "$context_session"' '"$remote_path" "$HARNESS" ""'
+jq -nc --arg s "$CLAUDE222" '{harness:"claude",session_id:$s,tokens:400000,window:1000000}' > "$CONTEXT_FILE"
+OT="$CONTEXT_CONTROL" LANES_HOME="$SESSION_HOME" run_case context-control -- --relaunch --harness claude CC-1
+assert_eq "rc=$RC context=$([[ -e "$CONTEXT_FILE" ]] && echo present || echo absent)" "rc=0 context=absent" \
+  "control: dropping the selected identity loses the matching resumed reading"
 OT_CAPTURE="$TMP_ROOT/fresh.cmd" LANES_HOME="$SESSION_HOME" run_case fresh -- --relaunch --harness codex CC-9
 for _ in {1..10000}; do [[ -f "$TMP_ROOT/fresh.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/fresh.cmd")" "execute the orch start workflow for CC-9" "a relaunch with no matching session uses the fresh brief"
 assert_not_contains "$(cat "$TMP_ROOT/fresh.cmd")" "Resume the orch workflow" "the fresh brief carries no continuation line to repeat itself"
+# The startup update prompt answers the first paste a lane receives by
+# installing the update and exiting the session, so every codex command carries
+# the setting that suppresses it exactly once: a fresh launch, a relaunch's
+# resume form, and the fresh brief a relaunch falls back to.
+OT_CAPTURE="$TMP_ROOT/launch-codex.cmd" LANES_HOME="$SESSION_HOME" run_case launch-codex -- --harness codex CC-7
+for _ in {1..10000}; do [[ -f "$TMP_ROOT/launch-codex.cmd" ]] && break; done
+# Launch flags that already name the setting do not add a second copy.
+OT_CAPTURE="$TMP_ROOT/launch-codex-flagged.cmd" LANES_HOME="$SESSION_HOME" run_case launch-codex-flagged -- \
+  --harness codex --launch-flags "-c check_for_update_on_startup=false" CC-10
+for _ in {1..10000}; do [[ -f "$TMP_ROOT/launch-codex-flagged.cmd" ]] && break; done
+for capture in launch-codex launch-codex-flagged resume-codex fresh; do
+  assert_eq "$(occurrences "$(cat "$TMP_ROOT/$capture.cmd")" "$CODEX_SETTINGS")" "1" \
+    "a codex command ($capture) carries check_for_update_on_startup=false exactly once"
+done
+# A --cmd template is the caller's whole command and gains no setting: the
+# pane runs the substituted template exactly as written.
+CMD_TEMPLATE_CODEX="codex -m gpt-6-astra -c model_reasoning_effort=high -c features.default_mode_request_user_input=false {issue}"
+OT_CAPTURE="$TMP_ROOT/launch-codex-cmd.cmd" LANES_HOME="$SESSION_HOME" run_case launch-codex-cmd -- \
+  --harness codex --cmd "$CMD_TEMPLATE_CODEX" CC-11
+for _ in {1..10000}; do [[ -f "$TMP_ROOT/launch-codex-cmd.cmd" ]] && break; done
+LAUNCH_CODEX_CMD="$(cat "$TMP_ROOT/launch-codex-cmd.cmd")"
+assert_eq "${LAUNCH_CODEX_CMD##* && }" \
+  "env CODEX_HOME='$(lane_codex_home_path "$SESSION_HOME/.codex" "$TMP_ROOT/wt/CC-11")' ORCH_COMPACTION_OVERRIDES='' codex -m gpt-6-astra -c model_reasoning_effort=high -c features.default_mode_request_user_input=false CC-11" \
+  "a codex --cmd launch runs its substituted template exactly, with no update setting added"
 
 OLD_CODEX="$SESSION_HOME/.old-codex"; CROSS_CODEX=55555555-5555-5555-5555-555555555555; mkdir -p "$OLD_CODEX/sessions/2026"
 printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$CROSS_CODEX\"}}" '{"type":"event_msg","payload":{"type":"user_message","message":"start CC-2"}}' >"$OLD_CODEX/sessions/2026/cross.jsonl"
 CODEX_INVENTORY="$(jq -nc --arg d "$OLD_CODEX" '[{config_dir:$d}]')"; OT_CAPTURE="$TMP_ROOT/resume-codex-cross.cmd" LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" run_case resume-codex-cross -- --relaunch --harness codex CC-2
-for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-codex-cross.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-codex-cross.cmd")" "codex resume $CROSS_CODEX" "codex relaunch finds a session in another account store"
+for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-codex-cross.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-codex-cross.cmd")" "codex resume $CODEX_SETTINGS $CODEX_COMPACTION $CODEX_QUESTION_OFF $CROSS_CODEX" "codex relaunch finds a session in another account store"
 assert_eq "$(cat "$SESSION_HOME/.selected-codex/sessions/2026/cross.jsonl")" "$(cat "$OLD_CODEX/sessions/2026/cross.jsonl")" "the destination account can read the discovered transcript"
 
 # A relaunch run from INSIDE a private launch home carries that home in
@@ -401,26 +436,26 @@ printf '%s\n' "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$LAUNCH_HOME_COD
 OT_CAPTURE="$TMP_ROOT/resume-codex-home.cmd" LANES_HOME="$SESSION_HOME" \
   CODEX_HOME_OVERRIDE="$(lane_codex_home_path "$SESSION_HOME/.selected-codex" "$TMP_ROOT/wt/CC-6")" \
   run_case resume-codex-home -- --relaunch --harness codex CC-6
-for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-codex-home.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-codex-home.cmd")" "codex resume $LAUNCH_HOME_CODEX" "a codex relaunch from inside a private launch home scans the account's own transcript store"
+for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-codex-home.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-codex-home.cmd")" "codex resume $CODEX_SETTINGS $CODEX_COMPACTION $CODEX_QUESTION_OFF $LAUNCH_HOME_CODEX" "a codex relaunch from inside a private launch home scans the account's own transcript store"
 
 PI_ABSOLUTE="$TMP_ROOT/pi-absolute"; mkdir -p "$PI_ABSOLUTE" "$SESSION_HOME/.pi/agent"
 printf '%s\n' '{"type":"message","message":{"role":"user","content":"start CC-3"}}' >"$PI_ABSOLUTE/session.jsonl"
 printf '{"sessionDir":"%s"}\n' "$PI_ABSOLUTE" >"$SESSION_HOME/.pi/agent/settings.json"
 OT_CAPTURE="$TMP_ROOT/resume-pi-absolute.cmd" LANES_HOME="$SESSION_HOME" run_case resume-pi-absolute -- --relaunch --harness pi CC-3
-for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-pi-absolute.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-pi-absolute.cmd")" "pi --session $PI_ABSOLUTE/session.jsonl" "pi relaunch reads an absolute sessionDir from global settings"
+for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-pi-absolute.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-pi-absolute.cmd")" "pi $PI_QUESTION_OFF --session $PI_ABSOLUTE/session.jsonl" "pi relaunch reads an absolute sessionDir from global settings"
 
 PI_WORKTREE="$TMP_ROOT/wt/CC-4"; PI_RELATIVE="$PI_WORKTREE/pi-sessions"; mkdir -p "$PI_WORKTREE/.pi" "$PI_RELATIVE"
 printf '%s\n' '{"type":"message","message":{"role":"user","content":"start CC-4"}}' >"$PI_RELATIVE/session.jsonl"
 printf '%s\n' '{"sessionDir":"pi-sessions"}' >"$PI_WORKTREE/.pi/settings.json"
 jq -nc --arg p "$(cd "$PI_WORKTREE" && pwd -P)" '{($p):true}' >"$SESSION_HOME/.pi/agent/trust.json"
 OT_CAPTURE="$TMP_ROOT/resume-pi-relative.cmd" LANES_HOME="$SESSION_HOME" run_case resume-pi-relative -- --relaunch --harness pi CC-4
-for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-pi-relative.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-pi-relative.cmd")" "pi --session $PI_RELATIVE/session.jsonl" "pi relaunch resolves a project sessionDir from the launched worktree"
+for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-pi-relative.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-pi-relative.cmd")" "pi $PI_QUESTION_OFF --session $PI_RELATIVE/session.jsonl" "pi relaunch resolves a project sessionDir from the launched worktree"
 
 PI_UNTRUSTED="$TMP_ROOT/wt/CC-5"; mkdir -p "$PI_UNTRUSTED/.pi" "$PI_UNTRUSTED/pi-sessions"
 printf '%s\n' '{"type":"message","message":{"role":"user","content":"start CC-5"}}' >"$PI_UNTRUSTED/pi-sessions/session.jsonl"
 printf '%s\n' '{"sessionDir":"pi-sessions"}' >"$PI_UNTRUSTED/.pi/settings.json"
 OT_CAPTURE="$TMP_ROOT/resume-pi-untrusted.cmd" LANES_HOME="$SESSION_HOME" run_case resume-pi-untrusted -- --relaunch --harness pi CC-5
-for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-pi-untrusted.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-pi-untrusted.cmd")" "pi '/skill:orch start CC-5'" "pi relaunch ignores an untrusted project sessionDir"
+for _ in {1..10000}; do [[ -f "$TMP_ROOT/resume-pi-untrusted.cmd" ]] && break; done; assert_contains "$(cat "$TMP_ROOT/resume-pi-untrusted.cmd")" "pi $PI_QUESTION_OFF '/skill:orch start CC-5'" "pi relaunch ignores an untrusted project sessionDir"
 
 # --wake hands the lane's own session the line that reads its inbox, through
 # the harness's native resume, from a detached command.
@@ -437,13 +472,26 @@ exit "${WAKE_STUB_RC:-0}"
 EOF
 chmod +x "$BIN/claude"; ln -s claude "$BIN/codex"; ln -s claude "$BIN/pi-bridge"
 WAKE_LINE="Run .agents/skills/orch/scripts/lane-mail inbox --item CC-1 and act on every directive it prints."
-for row in "claude|claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE" "codex|codex exec resume $CODEX444 $WAKE_LINE" "pi|pi-bridge send --cwd $TMP_ROOT/wt/CC-1 $WAKE_LINE"; do
+for row in "claude|claude -n CC-1 --disallowedTools=AskUserQuestion,EnterPlanMode --resume $CLAUDE222 -p $WAKE_LINE" "codex|codex exec resume -c check_for_update_on_startup=false -c model_auto_compact_token_limit=9223372036854775807 -c model_auto_compact_token_limit_scope=body_after_prefix -c model_post_turn_compact_threshold_percent=0 -c features.default_mode_request_user_input=false $CODEX444 $WAKE_LINE" "pi|pi-bridge send --cwd $TMP_ROOT/wt/CC-1 $WAKE_LINE"; do
   IFS='|' read -r harness expected <<<"$row"
   capture="$TMP_ROOT/wake-$harness.cmd"
   OT_CAPTURE="$capture" LANES_HOME="$SESSION_HOME" CODEX_HOME_OVERRIDE="$SESSION_HOME/.selected-codex" run_case "wake-$harness" -- --wake --harness "$harness" CC-1
   assert_contains "$OUT" "open-terminal: lane-woken item=CC-1 harness=$harness log=$TMP_ROOT/wt/CC-1/tmp/lane-wake-CC-1.log" "$harness wake names its log"
   assert_eq "$(cat "$capture" 2>/dev/null)" "$expected" "$harness wake delivers the inbox line through its native resume"
 done
+# A wake starts a new claude process, which takes none of the first launch's
+# settings. The session above names no model, so it keeps its compaction; one
+# whose transcript names a model the claude adapter holds a window for is woken
+# with its compaction off, as its own launch was.
+CLAUDE_TRANSCRIPT="$SESSION_HOME/.claude-shared/projects/repo/$CLAUDE222.jsonl"
+cp -p -- "$CLAUDE_TRANSCRIPT" "$TMP_ROOT/claude-transcript.keep"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":1,"cache_read_input_tokens":500000,"output_tokens":7}}}' >>"$CLAUDE_TRANSCRIPT"
+touch -r "$TMP_ROOT/claude-transcript.keep" "$CLAUDE_TRANSCRIPT"
+OT_CAPTURE="$TMP_ROOT/wake-claude-opus.cmd" LANES_HOME="$SESSION_HOME" run_case wake-claude-opus -- --wake --harness claude CC-1
+assert_eq "$(cat "$TMP_ROOT/wake-claude-opus.cmd" 2>/dev/null)" \
+  "claude -n CC-1 --settings={\"env\":{\"DISABLE_AUTO_COMPACT\":\"1\"}} --disallowedTools=AskUserQuestion,EnterPlanMode --resume $CLAUDE222 -p $WAKE_LINE" \
+  "a claude wake of a session on a model with a named window turns its compaction off"
+mv -- "$TMP_ROOT/claude-transcript.keep" "$CLAUDE_TRANSCRIPT"
 # A GitHub item is the issue number while its worktree id is issue-<n>, and the
 # mailbox is bound under the worktree id: write_lane_marker writes it there and
 # the overseer's `lane-mail send --item` writes the same id. A line built from
@@ -465,9 +513,9 @@ assert_not_contains "$OUT" "open-terminal: lane-woken" "a failed delivery is not
 # bound. open-terminal's validation gate names both settings' readers, and all
 # of them are reached only from open_tmux.
 # So a malformed ORCH_TMUX_VERIFY_SECS must not abort one, in the shape
-# oversee.md hands a wake: from inside tmux, with the lane argument and its
-# launch flags kept, a lane launch naming no model and no effort being refused
-# before the timeout is ever read.
+# oversee-lanes.md hands a wake: from inside tmux, with the lane argument and
+# its launch flags kept, a lane launch naming no model and no effort being
+# refused before the timeout is ever read.
 WAKE_LANE_BIN="$TMP_ROOT/wake-lane-bin"; mkdir -p "$WAKE_LANE_BIN"
 cat > "$WAKE_LANE_BIN/lanes" <<EOF
 #!/usr/bin/env bash
@@ -502,18 +550,6 @@ mkdir -p "$TMP_ROOT/exit-none"
 assert_eq "$(woken_under "$OT" wake-timeout)" "rc=0 woken=1 aborted=0" \
   "a codex wake with a lane resumes under a malformed timeout it never reads"
 
-# The mutant: the wake exclusion gone, so the gate refuses a setting the wake
-# reaches no reader of. A whole copy of the fixture repo, because the script
-# resolves its libs beside itself and a lone file finds none.
-WAKE_MUTANT_REPO="$TMP_ROOT/wake-mutant-repo"
-cp -a "$REPO" "$WAKE_MUTANT_REPO"
-WAKE_MUTANT="$WAKE_MUTANT_REPO/scripts/open-terminal"
-sed -i.bak 's/if \[\[ "$TERMINAL_MODE" == "tmux" && "$WAKE" != true \]\]; then/if [[ "$TERMINAL_MODE" == "tmux" ]]; then/' "$WAKE_MUTANT"
-assert_eq "$(cmp -s "$OT" "$WAKE_MUTANT" && echo same || echo changed)" "changed" \
-  "control: the wake-validated mutant really rewrites the timeout gate"
-assert_eq "$(woken_under "$WAKE_MUTANT" wake-timeout-mutant)" "rc=1 woken=0 aborted=1" \
-  "control: without the wake exclusion a malformed timeout aborts a resume that never reads it"
-
 # WHICH ACCOUNT a no-lane codex wake spends. Every other launcher here opens the
 # harness in a tmux pane, which inherits the tmux SERVER's environment and not
 # this process's, so the account is read off the server. A --wake does not: it
@@ -524,9 +560,8 @@ assert_eq "$(woken_under "$WAKE_MUTANT" wake-timeout-mutant)" "rc=1 woken=0 abor
 # the turn spends an account nothing claimed and the transcript copy lands in
 # that account's store.
 #
-# The stub server names an account of its OWN, so each side of the control names
-# the account it ran on rather than falling to a default that could come from
-# anywhere.
+# The stub server names an account of its OWN, so the row names the account it
+# ran on rather than falling to a default that could come from anywhere.
 WAKE_TMUX_BIN="$TMP_ROOT/wake-tmux-bin"; mkdir -p "$WAKE_TMUX_BIN"
 WAKE_SERVER_HOME="$SESSION_HOME/.server-codex"; mkdir -p "$WAKE_SERVER_HOME"
 cat > "$WAKE_TMUX_BIN/tmux" <<EOF
@@ -564,19 +599,6 @@ wake_account_under() { # SCRIPT NAME
 assert_eq "$(wake_account_under "$OT" wake-account)" "rc=0 account=.selected-codex" \
   "a no-lane codex wake resumes on this process's own account, which its detached child inherits"
 
-# Control: the account reader gated on the terminal mode rather than on the
-# launcher, which is what asking only about tmux amounted to. The wake then
-# reads the server it never opens a pane on and resumes the lane on that
-# account instead.
-WAKE_HOME_REPO="$TMP_ROOT/wake-home-mutant-repo"
-cp -a "$REPO" "$WAKE_HOME_REPO"
-WAKE_HOME_MUTANT="$WAKE_HOME_REPO/scripts/open-terminal"
-mutate_file "$WAKE_HOME_MUTANT" \
-  'if [[ "$TERMINAL_MODE" == tmux && "$WAKE" != true ]]; then' \
-  'if [[ "$TERMINAL_MODE" == tmux ]]; then'
-assert_eq "$(wake_account_under "$WAKE_HOME_MUTANT" wake-account-mutant)" "rc=0 account=.server-codex" \
-  "control: a wake that reads the tmux server resumes the lane on an account nothing claimed"
-
 # A wake with no session, no worktree, or a fresh-start option is refused and starts nothing.
 for row in "session-missing item=CC-9 harness=claude|--harness claude CC-9" "directory-missing item=CC-8|--harness codex CC-8" "wake-invalid option=--wake harness=codex relaunch=true|--relaunch --harness codex CC-1"; do
   IFS='|' read -r key rest <<<"$row"
@@ -593,26 +615,29 @@ done
 # nothing else: it runs the shared ownership reader deliberately, with
 # PROC_BIN off the PATH.
 #
-# That reader is a `ps -A` piped through an awk that moves the command name
-# into a field of its own and strips the executable path macOS puts in `comm`,
-# and a matcher that compares the harness name against the third field it
-# prints. Let either transform regress and no name matches, the pid loop never
+# That reader captures `ps -A` before an awk moves the command name into a
+# field of its own and strips the executable path macOS puts in `comm`. Its
+# matcher compares the name the transform prints against the process names
+# lane_harness_process_re gives the harness, read on the line above it. Let
+# either transform regress and no name matches, the pid loop never
 # runs, lane_session_state prints idle, the pane's idle rung stands and the
 # wake resumes beside a live session: the fail-open this branch closes, with
 # every wake row still green.
 #
-# The row reads the two lines out of the shared library under test rather than
-# spelling them again, so a change to either moves it. Only the two transforms
+# The row reads the four lines out of the shared library under test rather
+# than spelling them again, so a change to any moves it. Only the transforms
 # are pinned, not the awk's every detail: the substr offset that trims ps's column
 # padding has no consumer, since the matcher and the parent-tree scan below it
 # both re-split on whitespace, and a row asserting it would be pinning a
 # spelling rather than a guarantee. The path strip is pinned by a wake row
 # instead, the macOS one in the table below, which asserts what the wake does
 # rather than a count.
-REAL_TABLE_READ="$(sed -n 's/^  table="\$(\(ps -A.*\))".*$/\1/p' "$SRC_LIB_DIR/lane-state.sh")"
-REAL_PID_MATCH="$(sed -n 's/^  candidates="\$(\(awk .*\))".*$/\1/p' "$SRC_LIB_DIR/lane-state.sh")"
-assert_eq "table=$(grep -c . <<<"$REAL_TABLE_READ") match=$(grep -c . <<<"$REAL_PID_MATCH")" \
-  "table=1 match=1" "the real reader and its matcher are each one line of the script under test"
+REAL_TABLE_READ="$(sed -n 's/^  raw="\$(\(ps -A.*\))".*$/\1/p' "$SRC_LIB_DIR/lane-state.sh")"
+REAL_TABLE_TRANSFORM="$(sed -n 's/^  table="\$(\(awk .*\))".*$/\1/p' "$SRC_LIB_DIR/lane-state.sh")"
+REAL_NAME_RE="$(sed -n 's/^  name_re="\$(\(lane_harness_process_re .*\))".*$/\1/p' "$SRC_LIB_DIR/lane-state.sh")"
+REAL_PID_MATCH="$(sed -n 's/^  candidates="\$(\(LANE_OWNED_RE=.* awk .*\))".*$/\1/p' "$SRC_LIB_DIR/lane-state.sh")"
+assert_eq "read=$(grep -c . <<<"$REAL_TABLE_READ") transform=$(grep -c . <<<"$REAL_TABLE_TRANSFORM") names=$(grep -c . <<<"$REAL_NAME_RE") match=$(grep -c . <<<"$REAL_PID_MATCH")" \
+  "read=1 transform=1 names=1 match=1" "the real reader, transform, name ERE and matcher are each one line of the script under test"
 
 # The first runs both against THIS box, with PROC_BIN off the PATH, and asks
 # for the pid of the shell running this suite under its own command name. It
@@ -622,7 +647,12 @@ real_rc=0
 real_found="$(
   HARNESS="${BASH##*/}"
   set -- unused "$HARNESS"
-  table="$(eval "$REAL_TABLE_READ")" || exit 3
+  raw="$(eval "$REAL_TABLE_READ")" || exit 3
+  table="$(eval "$REAL_TABLE_TRANSFORM")" || exit 3
+  # The function the name ERE line calls, from the library it is read out of.
+  # shellcheck source=../scripts/lib/lane-state.sh
+  source "$SRC_LIB_DIR/lane-state.sh"
+  name_re="$(eval "$REAL_NAME_RE")" || exit 4
   pids="$(eval "$REAL_PID_MATCH")" || exit 4
   grep -cx -- "$SUITE_PID" <<<"$pids" || true
 )" || real_rc=$?
@@ -640,8 +670,8 @@ WT_CC1="$TMP_ROOT/wt/CC-1"; mkdir -p "$WT_CC1"
 # holds session files named for live pids, and a collision there would decide
 # the row.
 WAKE_HOME="$TMP_ROOT/wake-home"; mkdir -p "$WAKE_HOME/.claude/sessions"
-LIVE_RESUME_claude="claude -n CC-1 --resume $CLAUDE222 -p $WAKE_LINE"
-LIVE_RESUME_codex="codex exec resume $CODEX444 $WAKE_LINE"
+LIVE_RESUME_claude="claude -n CC-1 --disallowedTools=AskUserQuestion,EnterPlanMode --resume $CLAUDE222 -p $WAKE_LINE"
+LIVE_RESUME_codex="codex exec resume -c check_for_update_on_startup=false -c model_auto_compact_token_limit=9223372036854775807 -c model_auto_compact_token_limit_scope=body_after_prefix -c model_post_turn_compact_threshold_percent=0 -c features.default_mode_request_user_input=false $CODEX444 $WAKE_LINE"
 
 # table_wake HARNESS [SCRIPT] — a HARNESS wake on CC-1 through SCRIPT, over the
 # table the caller staged. Nothing is started and nothing is waited for, so the
@@ -795,33 +825,17 @@ claude|$CLAUDE_IDLE_PID 1 claude,$CLAUDE_IDLE_SHELL $CLAUDE_IDLE_PID bash|$(prin
 codex|$CODEX_PID 1 codex|$(printf '\xe2\x80\xba')|unjudged|nothing it could tell
 ROWS
 
-# The mutant: the refusal gone, the session state still read.
-BUSY_MUTANT_REPO="$TMP_ROOT/busy-mutant-repo"
-cp -a "$REPO" "$BUSY_MUTANT_REPO"
-BUSY_MUTANT="$BUSY_MUTANT_REPO/scripts/open-terminal"
-sed -i.bak 's/\[\[ "$wake_state" == idle \]\] ||/true ||/' "$BUSY_MUTANT"
-assert_eq "$(cmp -s "$OT" "$BUSY_MUTANT" && echo same || echo changed)" "changed" "control: the busy mutant really drops the refusal"
+# The suite's one must-fail control: the refusal gone from a copy of
+# open-terminal beside links to its helpers, the session state still read.
+BUSY_MUTANT="$(mutant_scripts busy-mutant-repo open-terminal)/open-terminal" || exit 1
+git -C "$TMP_ROOT/busy-mutant-repo" init -q
+orch_fixture_shared_libs "$TMP_ROOT/busy-mutant-repo"
+mutate_file "$BUSY_MUTANT" '[[ "$wake_state" == idle ]] ||' 'true ||'
 proc_table_write "$PROC_TABLE" "$CLAUDE_IDLE_PID 1 claude" "$CLAUDE_IDLE_SHELL $CLAUDE_IDLE_PID bash"
 proc_cwd_write "$PROC_CWD_FILE" "$CLAUDE_IDLE_PID=$WT_CC1"
 table_wake claude "$BUSY_MUTANT"
 assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_claude" \
   "control: without the refusal a wake resumes beside a working session"
-# The mutant: a codex session with no shell under it read as idle again. With
-# no /proc the wake is unjudged before any session is read, so the control has
-# nothing to turn.
-if proc_table_readable; then
-  CODEX_IDLE_MUTANT_REPO="$TMP_ROOT/codex-idle-mutant-repo"
-  cp -a "$REPO" "$CODEX_IDLE_MUTANT_REPO"
-  CODEX_IDLE_MUTANT="$CODEX_IDLE_MUTANT_REPO/scripts/open-terminal"
-  sed -i.bak 's/^    \[\[ "$HARNESS" == claude \]\] || { printf unjudged; return 0; }$/    [[ "$HARNESS" == claude ]] || continue/' "$CODEX_IDLE_MUTANT"
-  assert_eq "$(cmp -s "$OT" "$CODEX_IDLE_MUTANT" && echo same || echo changed)" "changed" \
-    "control: the codex-idle mutant really reads a shell-less codex session as idle"
-  proc_table_write "$PROC_TABLE" "$CODEX_PID 1 codex"
-  proc_cwd_write "$PROC_CWD_FILE" "$CODEX_PID=$WT_CC1"
-  table_wake codex "$CODEX_IDLE_MUTANT"
-  assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_codex" \
-    "control: without the codex arm a wake resumes beside a live codex session"
-fi
 # A live session whose cwd cannot be read is unjudged, never idle. The pid here
 # is this test shell's own, the one pid the row can be sure /proc still holds:
 # the producer refuses only a process that has NOT exited, and a fake pid would
@@ -834,86 +848,7 @@ assert_eq "RC=$RC resumed=$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "RC=1 re
   "a wake beside a session whose cwd cannot be read exits 1 and resumes nothing"
 assert_contains "$ERR" "open-terminal: wake-refused item=CC-1 reason=unjudged" \
   "a wake beside a session whose cwd cannot be read is refused as unjudged"
-# The mutant: a failed cwd read skips the process again. With no /proc the
-# wake is unjudged before any cwd is read, so the control has nothing to turn.
-if proc_table_readable; then
-  UNREAD_MUTANT_REPO="$TMP_ROOT/unread-mutant-repo"
-  cp -a "$REPO" "$UNREAD_MUTANT_REPO"
-  UNREAD_MUTANT="$UNREAD_MUTANT_REPO/scripts/open-terminal"
-  UNREAD_MUTANT_LIB="$UNREAD_MUTANT_REPO/scripts/lib/lane-state.sh"
-  sed -i.bak 's/^      return 2$/      continue/' "$UNREAD_MUTANT_LIB"
-  assert_eq "$(cmp -s "$SRC_LIB_DIR/lane-state.sh" "$UNREAD_MUTANT_LIB" && echo same || echo changed)" "changed" \
-    "control: the unread-cwd mutant really skips the process"
-  table_wake claude "$UNREAD_MUTANT"
-  assert_eq "$(cat "$TMP_ROOT/live-wake.cmd" 2>/dev/null)" "$LIVE_RESUME_claude" \
-    "control: without the unjudged arm a wake resumes beside a session it never read"
-fi
 PROC_HIDDEN_PIDS=""
-
-if [[ "${OPEN_TERMINAL_SKIP_CONTROL:-}" != 1 ]]; then
-  CLAUDE_MUTANT="$TMP_ROOT/open-terminal-claude-recursive"
-  cp "$SRC_OT" "$CLAUDE_MUTANT"
-  assert_eq "$(grep -cF 'find -H "$root" -mindepth 2 -maxdepth 2 -type f' "$CLAUDE_MUTANT")" "1" "control finds the Claude lead-only scan"
-  sed -i.bak 's/find -H "$root" -mindepth 2 -maxdepth 2 -type f/find -H "$root" -type f/' "$CLAUDE_MUTANT"
-  rm -f -- "$CLAUDE_MUTANT.bak"
-  assert_eq "$(grep -cF 'find -H "$root" -mindepth 2 -maxdepth 2 -type f' "$CLAUDE_MUTANT")" "0" "control removes the Claude lead-only scan"
-  if cmp -s "$SRC_OT" "$CLAUDE_MUTANT"; then FAIL=$((FAIL + 1)); printf '  FAIL  control did not change the Claude scan\n'; else PASS=$((PASS + 1)); printf '  ok    control changed the Claude scan\n'; fi
-  set +e
-  OPEN_TERMINAL_UNDER_TEST="$CLAUDE_MUTANT" OPEN_TERMINAL_SKIP_CONTROL=1 "$0" >"$TMP_ROOT/claude-control.out" 2>&1
-  CLAUDE_CONTROL_RC=$?
-  set -e
-  assert_eq "$CLAUDE_CONTROL_RC" "1" "control: recursive Claude selection chooses the newer child transcript"
-
-  LINE_MUTANT="$TMP_ROOT/open-terminal-no-continuation"
-  cp "$SRC_OT" "$LINE_MUTANT"
-  assert_eq "$(grep -cF 'elif [[ "$RELAUNCH" == true ]]; then' "$LINE_MUTANT")" "1" "control finds the relaunch continuation arm"
-  sed -i.bak 's/elif \[\[ "$RELAUNCH" == true \]\]; then/elif [[ "$RELAUNCH" == false ]]; then/' "$LINE_MUTANT"
-  rm -f -- "$LINE_MUTANT.bak"
-  if cmp -s "$SRC_OT" "$LINE_MUTANT"; then FAIL=$((FAIL + 1)); printf '  FAIL  control did not disarm the continuation arm\n'; else PASS=$((PASS + 1)); printf '  ok    control disarmed the continuation arm\n'; fi
-  set +e
-  OPEN_TERMINAL_UNDER_TEST="$LINE_MUTANT" OPEN_TERMINAL_SKIP_CONTROL=1 "$0" >"$TMP_ROOT/line-control.out" 2>&1
-  LINE_CONTROL_RC=$?
-  set -e
-  assert_eq "$LINE_CONTROL_RC" "1" "control: without the arm a relaunch resumes with no continuation line"
-
-  MERGED_MUTANT="$TMP_ROOT/open-terminal-merged-ignored"
-  cp "$SRC_OT" "$MERGED_MUTANT"
-  assert_eq "$(grep -cF 'if [[ "$merged_rc" -eq 0 && -n "$reuse_merged" ]]; then' "$MERGED_MUTANT")" "1" "control finds the merged-tree arm"
-  sed -i.bak 's/if \[\[ "$merged_rc" -eq 0 \&\& -n "$reuse_merged" \]\]; then/if [[ "$merged_rc" -eq 0 \&\& -z "$reuse_merged" ]]; then/' "$MERGED_MUTANT"
-  rm -f -- "$MERGED_MUTANT.bak"
-  if cmp -s "$SRC_OT" "$MERGED_MUTANT"; then FAIL=$((FAIL + 1)); printf '  FAIL  control did not disarm the merged-tree arm\n'; else PASS=$((PASS + 1)); printf '  ok    control disarmed the merged-tree arm\n'; fi
-  set +e
-  OPEN_TERMINAL_UNDER_TEST="$MERGED_MUTANT" OPEN_TERMINAL_SKIP_CONTROL=1 "$0" >"$TMP_ROOT/merged-control.out" 2>&1
-  MERGED_CONTROL_RC=$?
-  set -e
-  assert_eq "$MERGED_CONTROL_RC" "1" "control: without the arm a merged item is handed to the reuse rebase"
-
-  MUTANT="$TMP_ROOT/open-terminal-pi-default"
-  cp "$SRC_OT" "$MUTANT"
-  assert_eq "$(grep -cF 'roots="$(pi_relaunch_root "$cwd" "$home")" || return 2' "$MUTANT")" "1" "control finds the Pi settings root"
-  sed -i.bak 's@roots="$(pi_relaunch_root "$cwd" "$home")" || return 2@roots="${PI_CODING_AGENT_SESSION_DIR:-${PI_CODING_AGENT_DIR:-$home/.pi/agent}/sessions}"@' "$MUTANT"
-  rm -f -- "$MUTANT.bak"
-  assert_eq "$(grep -cF 'roots="${PI_CODING_AGENT_SESSION_DIR:-${PI_CODING_AGENT_DIR:-$home/.pi/agent}/sessions}"' "$MUTANT")" "1" "control changes the Pi session root"
-  if cmp -s "$SRC_OT" "$MUTANT"; then FAIL=$((FAIL + 1)); printf '  FAIL  control did not change the launcher\n'; else PASS=$((PASS + 1)); printf '  ok    control changed the launcher\n'; fi
-  set +e
-  OPEN_TERMINAL_UNDER_TEST="$MUTANT" OPEN_TERMINAL_SKIP_CONTROL=1 "$0" >"$TMP_ROOT/control.out" 2>&1
-  CONTROL_RC=$?
-  set -e
-  assert_eq "$CONTROL_RC" "1" "control: the old Pi root misses settings-based sessions"
-
-  HOME_MUTANT="$TMP_ROOT/open-terminal-codex-home-raw"
-  cp "$SRC_OT" "$HOME_MUTANT"
-  assert_eq "$(grep -cF 'config="$(launch_ambient_codex_home)"' "$HOME_MUTANT")" "1" "control finds the codex scan's account"
-  sed -i.bak 's@config="$(launch_ambient_codex_home)"@config="${CODEX_HOME:-$home/.codex}"@' "$HOME_MUTANT"
-  rm -f -- "${HOME_MUTANT:?}.bak"
-  assert_eq "$(grep -cF 'config="${CODEX_HOME:-$home/.codex}"' "$HOME_MUTANT")" "1" "control takes the codex scan's account raw"
-  if cmp -s "$SRC_OT" "$HOME_MUTANT"; then FAIL=$((FAIL + 1)); printf '  FAIL  control did not change the codex scan\n'; else PASS=$((PASS + 1)); printf '  ok    control changed the codex scan\n'; fi
-  set +e
-  OPEN_TERMINAL_UNDER_TEST="$HOME_MUTANT" OPEN_TERMINAL_SKIP_CONTROL=1 "$0" >"$TMP_ROOT/home-control.out" 2>&1
-  HOME_CONTROL_RC=$?
-  set -e
-  assert_eq "$HOME_CONTROL_RC" "1" "control: a private launch home taken raw scans a store the account's rollouts are not in"
-fi
 
 echo
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"

@@ -6,7 +6,7 @@ How a repo wires the shared engine: the writer workflow, the validate step, rule
 
 The gate never polices CI. A repo must satisfy ONE of these:
 
-1. **A merge queue** whose required contexts include the repo's test aggregate (recommended).
+1. **A merge queue** whose required contexts include the repo's `CI` aggregate (recommended).
 2. **No held-back jobs** — every required check runs on every push.
 
 Held-back jobs report `skipped`, and GitHub counts skipped as satisfied.
@@ -14,11 +14,11 @@ Held-back jobs report `skipped`, and GitHub counts skipped as satisfied.
 ## What an adoption PR contains
 
 1. **Vendor the skill** (`kendex refresh` places `.agents/skills/review-gate/scripts/` and these references). The consumer's drift check asserts the vendored copy matches the catalog byte-for-byte.
-2. **Copy `.agents/skills/review-gate/templates/review-gate-writer.yml`** into `.github/workflows/`, VERBATIM. It carries no per-repo values. Repo-owned after the copy — workflow YAML is not an ongoing sync target. The one workflow is the ONLY writer of the gate status; every leg that runs the engine runs the DEFAULT-branch one (PR-attached legs relay). Renaming the copy needs no further change. Keep every line of the relay's `env:` block (`GH_REPO`, `DISPATCH_REF`, `WORKFLOW_REF`, `EVENT_NAME`, `CHECK_NAME`).
+2. **Copy `.agents/skills/review-gate/templates/review-gate-writer.yml`** into `.github/workflows/`, VERBATIM. It carries no per-repo values. `kendex refresh` updates the vendored template but never writes `.github/workflows/`; a template update reaches the copy through `.agents/skills/review-gate/scripts/validate-workflow.sh --adopt`, run after `kendex refresh` (§ Updating an already-adopted copy). The one workflow is the ONLY writer of the gate status; every leg that runs the engine runs the DEFAULT-branch one (PR-attached legs relay). Renaming the copy needs no further change. Keep every line of the relay's `env:` block (`GH_REPO`, `DISPATCH_REF`, `WORKFLOW_REF`, `EVENT_NAME`, `CHECK_NAME`).
 3. **Add the validate job** to the repo's CI (below).
 4. **Set the repo's `REVIEW_GATE_*` keys** in `kendex.settings.toml` (decision axes below; full key table in [settings.md](settings.md)).
 5. **Delete everything the writer supersedes in the same PR** — gate jobs that read the predicate to condition CI, rerun/refire/sweep workflows and scripts, local predicate copies, duplicated gate steps.
-6. **Repo-side wiring** (below): rulesets, merge queue, bypass actor.
+6. **Repo-side wiring** (below): rulesets and merge queue, with no standing bypass actor.
 7. **Reviewer instruction for the vendored tree** — wire the remedy-locus rule from [vendored-paths.md](vendored-paths.md), never a reviewer path exclusion.
 
 ## Recommended CI shape — the fast/full split
@@ -44,19 +44,61 @@ Recommended split: cheap fast checks (lint, typecheck, unit) run on every push u
 
 Each check emits an `ok` or `FAIL` record with `check=CODE value=VALUE`. Indented lines give the explanation and repair. Exit 0 means clean, 1 means findings, and 2 means the check could not run. It answers repo-own questions only — the engine is installed and runnable here, the committed `REVIEW_GATE_*` values are legal, the carry-forward exclusions still match tracked paths, and the adopted workflow still meets this template's contract. It re-runs no engine test suite: the selftest and the wrapper suites are the ENGINE's proofs and run in the kendex repo on every change to it.
 
-Value rules come from the engine, not from a copy of it: the settings half calls `review-predicate.sh --check-config`, which resolves and validates every key and exits without reading any evidence or needing a PR.
+Value rules come from the engine, not from a copy of it: the settings half calls the engine's own value judges, which `validate.sh --help` names, and none of them reads evidence or needs a PR.
 
 ## Repo-side wiring
 
-- **Ruleset**: require the gate context (the repo's `REVIEW_GATE_CONTEXT` value) alongside the test aggregate in the merge queue's required checks.
-- **Thread resolution**: keep (or add) the zero-bypass `required_review_thread_resolution` ruleset.
-- **Bypass actor**: the queue ruleset needs one (e.g. repository admin). It is the sanctioned merge path for gate-repair and settings-change PRs. State the bypass in the merge commit.
-- **Merge queue**: the writer's `merge_group` leg posts the gate context on queue shas unconditionally. Verify the queue's required checks include both the gate context and the test aggregate.
+The organization rulesets carry this shape for every repository. Until they stand, the repository's own ruleset carries it. `scripts/validate-standard.sh` reports each part of it.
+
+A repository reaches this shape in one order. The workflow change that reports `CI` on `pull_request` and `merge_group`, both under `on:`, and the ruleset change to exactly `CI` and `Review gate` apply back to back. Where the workflow change renames an existing aggregate, the ruleset changes first and the rename merges through the queue at once. After the first merge through the queue, `scripts/validate-standard.sh` runs: its `standard-ci-context` ok confirms the workflow change on both legs, and its `standard-required-contexts` and `standard-merge-queue` oks confirm the ruleset change.
+
+- **Required contexts**: exactly two, `CI` and `Review gate`, the `ci_context` and `gate_context` of the skill's `standard.json`. `Review gate` is the repo's `REVIEW_GATE_CONTEXT` value. `CI` is the aggregate [harness-ci wiring.md § The CI context](../../harness-ci/references/wiring.md#the-ci-context) describes.
+- **Merge queue**: required on the default branch. The writer's `merge_group` leg posts the gate context on queue shas unconditionally.
+- **Thread resolution**: a pull-request rule requires every review thread resolved.
+- **Copilot review**: a rule requests a Copilot review, which holds no merge.
+- **No bypass actor**: no ruleset carries one, a Repository-admin actor included, so every merge goes through the merge queue. A gate-repair PR takes the break-glass procedure in [../SKILL.md](../SKILL.md#4-operations); a settings-change PR takes normal review.
+- **No classic branch protection** beside the rulesets.
 - **Required checks must NOT include the writer's own job names.** Require the commit STATUS context only.
+- **App-secret environment**: the organization owner runs `.agents/skills/review-gate/scripts/provision-environment.sh --org ORG` from their own machine. It creates the environment `standard.json` names, with a default-branch-only deployment policy and the secrets it names, in every repository of the organization that is not archived; run it again for a new repository. An adoption never creates the environment.
 
-## Updating an already-adopted copy (relay/converge split)
+## Updating an already-adopted copy
 
-Consumer copies are repo-owned; `kendex refresh` does NOT deliver this — each repo takes it as its own PR. Template delta:
+After `kendex refresh` brings a new template, run `.agents/skills/review-gate/scripts/validate-workflow.sh --adopt` from the repository root and commit its write with the refresh. It compares the copy against every version of the template this repository's history holds:
+
+- A copy equal to the current template is left as it is: `ok check=workflow-equality`.
+- A copy equal to an earlier shipped version is re-installed from the current template, keeping its script path and its `check_run` opt-in: `ok check=workflow-readopted`. The re-install writes the template's bytes, so a comment-only edit to the copy is replaced.
+- A copy whose code lines equal no shipped version is one a person edited. It is left untouched and named on one `FAIL check=workflow-edited` line, with the first divergent line under it. Re-copy the template by hand.
+
+Run it after every `kendex refresh` so template changes land with the refresh. The consumer refresh workflow calls it through `scripts/adopt-refresh.sh`.
+
+### Automatic consumer refresh
+
+The shipped `templates/kendex-refresh.yml` checks for updates every 30 minutes. A manual run uses the same path. Each run updates `kendex/refresh`, keeps one open pull request, and enables auto-merge with the repository's app token. Required CI checks and the merge queue still control merging. An unchanged result opens no pull request.
+
+Provision the `kendex` environment before adoption. It must contain `FLEET_GH_APP_ID` and `FLEET_GH_APP_PRIVATE_KEY` and allow deployments from the default branch only. The organization owner uses `scripts/provision-environment.sh --org ORG` from their own machine. `scripts/adopt-refresh.sh` reads the existing environment through `validate-standard.sh --environment-only`. A missing secret or branch policy stops adoption with the failed check and provisioning remedy.
+
+After installing the skill and copying the writer verbatim, stage that writer so the validator can find it. Run from the consumer root:
+
+```bash
+git add .github/workflows/review-gate-writer.yml
+.agents/skills/review-gate/scripts/adopt-refresh.sh
+kendex verify --scope project
+git add .github/workflows/kendex-refresh.yml .kendex-generated.json
+```
+
+A repository that posts no gate status adopts the refresh workflow with no writer. It sets `REVIEW_GATE_WRITER = "optional"` and `REVIEW_GATE_MODE = "off"` in its committed `kendex.settings.toml`, where both keys are read from, copies no writer, and runs `adopt-refresh.sh` and `kendex verify` as above. Adoption then records only the refresh copy and retires any earlier writer record. Either setting alone still refuses a missing writer, a workflow that names `review-writer.sh` outside a comment still fails, and a writer that is present is still checked and updated. The class policy still applies: a change it resolves to `bot` still needs review evidence, which no status reports without a writer. `REVIEW_GATE_MODE = "off"` also skips orch's review wait, except where the class policy resolves a change to `bot` and `PR_REVIEW_GATE` then decides ([orch gates](../../orch/references/gates.md)).
+
+Commit the workflow copies and inventory with the installed skill. Adoption records each byte-identical copy's template path and SHA-256 hash. `kendex refresh` updates the template and its expected hash. Adoption then updates an unedited copy. Verification and the shared change classifier compare the copy with the declared package template. Verification rejects a registered copy that differs from its template. A writer with local path or trigger changes is not an exact copy and is not registered as a render by this command.
+
+Schedule and manual refresh work in a consumer with the app installation and environment above. Instant refresh also needs organization dispatch wiring. The catalog's `.github/workflows/kendex-dispatch.yml` signals every non-archived consumer repository visible to its app installation after a push to `main`. Adoption and dispatch exclude `vanillagreencom/kendex`, whose build-bound lock workflow owns its refresh under D007. It attempts all destinations and fails the run if any dispatch fails.
+
+Only the default-branch workflow can use the private key. It checks out the default branch before minting a repository-scoped app token. It rebuilds the rolling branch from that checkout and proves the full diff is a render before pushing. It preserves the default-branch review scripts in a detached worktree before refreshing. Those scripts prove that each rolling pull request has class `render` and policy `none` before replying to automatic review findings, resolving threads, or posting suppressed-finding dispositions. Findings on other classes remain unchanged.
+
+A separate step requests an Issues-write token scoped only to `vanillagreencom/kendex`. It files accepted automatic findings that name verified rendered paths for upstream confirmation. GitHub-to-Linear sync sends the reports to KEN Triage. The report carries the review evidence, rendered path, consumer run and package label from `kendex report`. Its stable title fingerprint finds an existing open issue on later runs. If the token lacks Issues access, the Actions summary supplies filing links. Policy replies do not prevent later filing.
+
+### The relay/converge split
+
+The template delta that split the writer into a relay and a converge leg:
 
 - A `request-converge` job (the relay) runs every PR-attached leg; the `write` job's `if:` is narrowed to `workflow_dispatch`/`schedule`.
 - **Permissions**: the relay holds `actions: write` and nothing else — no `contents`, no `statuses`, no `issues`. `actions: write` authorizes dispatching **any** workflow in the repo plus cancelling, re-running and deleting runs, logs and artifacts. The relay checks nothing out and executes no PR-controlled code — never add a checkout to this job. The `write` job holds no `actions` scope.
@@ -103,9 +145,12 @@ Concrete per-consumer values are tracked on the org adoption issue, not here. Ev
 | `REVIEW_GATE_THREADS` | `enforce`, unless a server-side zero-bypass thread ruleset is the enforcement point. |
 | `REVIEW_GATE_CARRY_FORWARD` | Off by default. Turn on `docs`/`comments` where re-review of review-inert deltas is unwanted; `vendored` where `kendex refresh` pushes should carry, with the render trees listed in `REVIEW_GATE_VENDORED_PATHS`. |
 | `REVIEW_GATE_VENDORED_PATHS` | The render trees `vendored` trusts as kendex output, e.g. `.agents/*;.claude/skills/*`. A hand-edit under them rides; keep hook scripts and instruction markdown in `REVIEW_GATE_CARRY_FORWARD_EXCLUDE`, which wins. |
-| `REVIEW_GATE_DOCS_ONLY` | `bot` keeps review evidence mandatory. `none` lets the shared CI docs classifier replace missing bot evidence while objections, suppressed findings, unresolved threads, and paths in `REVIEW_GATE_CARRY_FORWARD_EXCLUDE` still block. The writer fetches missing commit objects for this check without checking out PR files. |
-| `REVIEW_GATE_RENDER_PATHS` | The harness render trees a PR may consist of entirely and merge on CI alone, e.g. `.agents/*;.claude/*;AGENTS.md;kendex.lock.json`. The exclusion list does not apply here, so list nothing this repo edits by hand. Empty is the lane off. |
-| `REVIEW_GATE_MODE` | `enforce`. `off` is the one-switch disable, and it attests rather than evaluates. |
+| `REVIEW_GATE_CLASS_POLICY` | Leave it unassigned. The built-in default is the active value in the [README class table](../README.md#class-policy): it exempts `render`, `trivial` and `micro`, requires one bot round for `small`, and keeps the current policy for `standard`. An adoption never writes an empty value. |
+| `REVIEW_GATE_CLASS_POLICY_DECISION` | Leave it empty. A repository that assigns other rows, or `REVIEW_GATE_CLASS_POLICY = ""` to turn the policy off, names here, by its path from the repository root, the tracked decision record behind that choice. |
+| `REVIEW_GATE_DOCS_ONLY` | Leave it unassigned under the default class policy. The lane applies only after a recorded opt-out from the class policy. After an opt-out, `bot` keeps review evidence mandatory, and `none` lets the shared CI docs classifier replace missing bot evidence while objections, suppressed findings, unresolved threads, and excluded paths still block. |
+| `REVIEW_GATE_RENDER_PATHS` | Leave it unassigned under the default class policy. The lane applies only after a recorded opt-out from the class policy. After an opt-out, it names render trees that may merge on CI alone. Empty disables the lane. |
+| `REVIEW_GATE_MODE` | `enforce`. `off` disables an inactive or `current` class policy and attests rather than evaluates. A `bot` class still requires review. |
+| `REVIEW_GATE_WRITER` | `required`. `optional`, with `REVIEW_GATE_MODE = "off"`, only in a repository that runs the automatic refresh and posts no gate status. |
 
 ## Repair by verdict line
 
@@ -115,8 +160,15 @@ Concrete per-consumer values are tracked on the org adoption issue, not here. Ev
 | `settings-values` | Read the indented engine diagnostic. Its first record identifies the setting error; the following lines explain the accepted values. A nested `predicate-pattern` record means the path pattern uses an unsupported anchor or metacharacter. |
 | `carry-unmatched` | Fix the glob, or declare it in `REVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC` when it guards paths that do not exist yet. |
 | `carry-declaration-matched` or `carry-declaration-missing` | Reconcile the ledger — every declaration names an active exclusion that still matches nothing. |
-| `workflow-count` | Adopt (§ What an adoption PR contains), or `git add` the workflow: Actions runs only what is committed. |
-| `workflow-equality` | Re-copy `templates/review-gate-writer.yml` over the adopted file. The template carries no per-repo values, so a copy that differs is a copy someone edited; the line named under the verdict says where. Keep only the `check_run` opt-in's two trigger lines if that opt-in is on. |
+| `workflow-count` | Adopt (§ What an adoption PR contains), or `git add` the workflow: Actions runs only what is committed. A repository that posts no gate status sets `REVIEW_GATE_WRITER = "optional"` and `REVIEW_GATE_MODE = "off"` instead. |
+| `workflow-absent-mode` | The writer is optional but the gate is enforced. Set `REVIEW_GATE_MODE = "off"`, or adopt the writer. |
+| `settings-writer` or `settings-writer-source` | Set `REVIEW_GATE_WRITER` to `required` or `optional` in the committed `kendex.settings.toml`, never in `.kendex/settings.toml`. |
+| `workflow-equality` | Run `validate-workflow.sh --adopt` (§ Updating an already-adopted copy) and commit its write. The `note check=workflow-template` line under the verdict names the template blob the copy was compared against. |
+| `workflow-edited` | A person edited the copy. Re-copy `templates/review-gate-writer.yml` over it; the line named under the verdict says where it diverges. Keep only the `check_run` opt-in's two trigger lines if that opt-in is on. |
+| `class-policy-undecided` | Delete the `REVIEW_GATE_CLASS_POLICY` assignment so the default applies. A departure from the default needs a decision record named in `REVIEW_GATE_CLASS_POLICY_DECISION`. |
+| `class-policy-decision-untracked` | Commit the decision record, or correct the path in `REVIEW_GATE_CLASS_POLICY_DECISION`. |
+| `class-policy-unresolved` | Read the indented `review-policy` diagnostic. |
+| `settings-values` with `policy-classifier` | The `harness-ci` skill is not installed beside review-gate: install it with `kendex add`. |
 | `carry-load` | Read the nested `settings-unreadable` or `settings-syntax` diagnostic. It names the key and the shape the loader rejected. Fix the assignment; an unreadable value is never an empty one. |
 | `runtime-mode` or `runtime-syntax` | Re-run `kendex refresh` and commit the result. |
 

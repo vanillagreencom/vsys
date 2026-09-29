@@ -23,20 +23,12 @@ TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 ORCH_ENV="$REPO_ROOT/skills/orch/scripts/orch-env"
+# mutant_scripts and mutate_file, the two halves of the control at the end.
+# shellcheck source=lib/growth-state.sh
+source "$TEST_DIR/lib/growth-state.sh"
 
-PASS=0
-FAIL=0
-
-assert_eq() {
-  local got="$1" want="$2" name="$3"
-  if [[ "$got" == "$want" ]]; then
-    PASS=$((PASS + 1))
-    printf '  ok    %s\n' "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        expected: %s\n        got:      %s\n' "$name" "$want" "$got"
-  fi
-}
+# shellcheck source=lib/assertions.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assertions.sh"
 
 echo "=== orch-env effective-setting reader ==="
 
@@ -149,9 +141,8 @@ got="$(cd "$proj_mode" && env -u PM_CREATE_AUTONOMY ORCH_USER_MODE=CEO "$ORCH_EN
 assert_eq "$got" "ask" "an unrecognized mode is treated as engineer"
 
 # Test 13: the same unrecognized value read directly. ../workflows/oversee.md
-# § 3 Launch and ../workflows/submit-pr.md § 6.2 pick a question template from
-# what this prints, so it reads back as the mode the composition above already
-# took it for.
+# § 3 Launch picks a question template from what this prints, so it reads
+# back as the mode the composition above already took it for.
 got="$(cd "$proj_mode" && ORCH_USER_MODE=CEO "$ORCH_ENV" ORCH_USER_MODE ceo)"
 assert_eq "$got" "engineer" "an unrecognized mode reads back as engineer"
 
@@ -162,18 +153,59 @@ got="$(cd "$proj_override" && env -u ORCH_USER_MODE "$ORCH_ENV" ORCH_USER_MODE e
 assert_eq "$got" "ceo" "a defined mode the ladder sets reads back unchanged"
 
 # Must-fail control: a private copy with the composition branch removed must
-# hand back the caller's default where test 8 read the composed value. The copy
-# takes the whole scripts directory because orch-env sources lib/ beside it.
-MUTANT_SCRIPTS="$TMP_ROOT/mutant-scripts"
-cp -R "$REPO_ROOT/skills/orch/scripts" "$MUTANT_SCRIPTS"
-MUTANT="$MUTANT_SCRIPTS/orch-env"
-assert_eq "$(grep -Fc '  composed_value "$VAR_NAME"' "$MUTANT")" "1" \
-  "composition control finds exactly one live mapping call"
-sed -i.bak 's/^    composed_value "\$VAR_NAME"$/    COMPOSED=/' "$MUTANT"
-assert_eq "$([[ ! -L "$MUTANT" ]] && ! cmp -s "$MUTANT" "$ORCH_ENV" && echo changed)" "changed" \
-  "composition control changes the private copy"
+# hand back the caller's default where test 8 read the composed value.
+MUTANT="$(mutant_scripts mutant-scripts orch-env)/orch-env" || exit 1
+mutate_file "$MUTANT" '    composed_value "$VAR_NAME"' '    COMPOSED='
 got="$(cd "$proj_mode" && env -u ORCH_USER_MODE -u ORCH_MERGE_AUTONOMY "$MUTANT" ORCH_MERGE_AUTONOMY ask)"
 assert_eq "$got" "ask" "must-fail control: without the mapping ceo falls back to the caller default"
+
+# Overseer startup reads ORCH_OVERSEER_LANES through orch-env. A consumer
+# setting left by the removed train must refuse that unrelated read too.
+for row in \
+  'environment|/consumer' 'environment|' \
+  'settings|/consumer' 'settings|' \
+  'nested|/consumer' 'nested|' \
+  'private|/consumer' 'private|' \
+  'named-private|/consumer' 'named-private|'; do
+  source_kind="${row%%|*}"
+  configured="${row#*|}"
+  project="$TMP_ROOT/retired-$source_kind-${configured:+value}"
+  mkdir -p "$project/.kendex"
+  git init -q "$project"
+  git -C "$project" config gc.auto 0
+  git -C "$project" config maintenance.auto false
+  retired_env=(env -i "PATH=$PATH" "HOME=$TMP_ROOT")
+  case "$source_kind" in
+    environment) retired_env+=("ORCH_CONSUMER_REPOS=$configured") ;;
+    settings) printf '[env]\nORCH_CONSUMER_REPOS = "%s"\n' "$configured" > "$project/kendex.settings.toml" ;;
+    nested) printf '[env]\nORCH_CONSUMER_REPOS = "%s"\n' "$configured" > "$project/.kendex/settings.toml" ;;
+    private) printf 'ORCH_CONSUMER_REPOS="%s"\n' "$configured" > "$project/.env.local" ;;
+    named-private)
+      printf '[env]\nKENDEX_ENV_FILE = "private.env"\n' > "$project/kendex.settings.toml"
+      printf 'ORCH_CONSUMER_REPOS="%s"\n' "$configured" > "$project/private.env"
+      ;;
+  esac
+  status=0
+  got="$(cd "$project" && "${retired_env[@]}" "$ORCH_ENV" ORCH_OVERSEER_LANES 3 2>"$TMP_ROOT/retired.err")" || status=$?
+  diagnostic=''
+  IFS= read -r diagnostic < "$TMP_ROOT/retired.err" || true
+  assert_eq "$status|$got|$diagnostic" '1||orch-env: retired-setting key=ORCH_CONSUMER_REPOS' \
+    "retired setting from $source_kind is refused, including empty values ($configured)"
+done
+
+got="$(cd "$proj_bare" && env -i "PATH=$PATH" "HOME=$TMP_ROOT" "$ORCH_ENV" ORCH_OVERSEER_LANES 3)"
+assert_eq "$got" "3" "overseer startup succeeds when the retired key is absent"
+
+# Guard control: keep the diagnostic and setting name, but suppress the
+# refusal branch. The same startup read must then succeed incorrectly.
+RETIRED_MUTANT="$(mutant_scripts retired-mutant orch-env)/orch-env" || exit 1
+mutate_file "$RETIRED_MUTANT" 'if [[ -n "${ORCH_CONSUMER_REPOS+set}" ]]; then' \
+  'if [[ -n "${ORCH_CONSUMER_REPOS+set}" ]] && false; then'
+status=0
+got="$(cd "$proj_bare" && env -i "PATH=$PATH" "HOME=$TMP_ROOT" ORCH_CONSUMER_REPOS= \
+  "$RETIRED_MUTANT" ORCH_OVERSEER_LANES 3 2>"$TMP_ROOT/retired-mutant.err")" || status=$?
+assert_eq "$status|$got|$(cat "$TMP_ROOT/retired-mutant.err")" '0|3|' \
+  "must-fail control: disabled retirement guard accepts the retired setting"
 
 printf 'pass: %d   fail: %d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -26,8 +26,14 @@ source "$TEST_DIR/lib/growth-state.sh"
 
 # Physical: on macOS the temp root sits under /var -> /private/var, and the
 # scripts print the resolved path.
-TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+TMP_ROOT="$(mktemp -d)" || { echo "worktree_push: scratch=mktemp-failed" >&2; exit 1; }
+[[ -d $TMP_ROOT && ! -L $TMP_ROOT ]] || { echo "worktree_push: scratch=not-a-directory value=[$TMP_ROOT]" >&2; exit 1; }
+TMP_ROOT="$(cd -- "$TMP_ROOT" && pwd -P)" || { echo "worktree_push: scratch=resolve-failed" >&2; exit 1; }
+trap 'rm -rf -- "${TMP_ROOT:?}"' EXIT
+# The mode a fix round runs is read from the project's settings, and orch-env
+# reads the process environment first: a developer's own range command would
+# otherwise decide the fix receipts' acceptance.
+unset DEV_VALIDATE_RANGE_CMD
 mkdir -p "$TMP_ROOT/linear/scripts"
 cat > "$TMP_ROOT/linear/scripts/linear.sh" <<'SH'
 #!/usr/bin/env bash
@@ -37,33 +43,10 @@ row="$(jq -c --arg id "$4" '.[] | select(.identifier == $id)' .cache/linear/issu
 jq -n --argjson issue "$row" '{issue: $issue}'
 SH
 chmod +x "$TMP_ROOT/linear/scripts/linear.sh"
-ROUND_WRITE_BIN="$(copy_scripts live)/dev-round-write"
+ROUND_WRITE_BIN="$(mutant_scripts live)/dev-round-write" || exit 1
 
-PASS=0
-FAIL=0
-
-pass() { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
-
-assert_eq() {
-  local got="$1" want="$2" name="$3"
-  if [[ "$got" == "$want" ]]; then
-    pass "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        expected: %s\n        got:      %s\n' "$name" "$want" "$got"
-  fi
-}
-
-assert_contains() {
-  local haystack="$1" needle="$2" name="$3"
-  if grep -qF -- "$needle" <<<"$haystack"; then
-    pass "$name"
-  else
-    FAIL=$((FAIL + 1))
-    printf '  FAIL  %s\n        wanted substring: %s\n        in: %s\n' "$name" "$needle" "$haystack"
-  fi
-}
+# shellcheck source=lib/assertions.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assertions.sh"
 
 round_write() {
   growth_round_write "$STATE" "$ROUND_WRITE_BIN" "$@"
@@ -441,7 +424,7 @@ assert_eq "$(cat "$live_state/tmp/workflow-state-KEN-LIVE.json" | jq -r '.rebase
 
 # The round closes when its dev-return receipt lands: the push then proceeds.
 "$RETURN_WRITE" --worktree "$live_wt" --kind fix --issue KEN-LIVE --round-id 1-1 \
-  --branch main --commit "$live_head" --validate pass --item 1 Applied done >/dev/null
+  --branch main --commit "$live_head" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-livewt-1-1-1" "$live_wt" KEN-LIVE 1-1)" --item 1 Applied done >/dev/null
 assert_eq "$("$ARTIFACT_CHECK" --worktree "$live_wt" --issue KEN-LIVE --round-id 1-1 \
   --expect-items-from-round | jq -r '.reason')" "valid" "the returned round accepts"
 : > "$live_args"
@@ -473,18 +456,10 @@ assert_eq "$(cat "$live_state/tmp/workflow-state-KEN-LIVE.json" | jq -r ".rebase
 (cd "$live_state" && "$STATE" set KEN-LIVE dev_round_id 1-1)
 
 # Must-fail control: with the refusal removed, the live round is pushed over.
-# The copy carries the whole scripts directory so the mutant resolves its
-# siblings (workflow-state) exactly as the real script does.
-mutant_root="$TMP_ROOT/live-refusal-mutant"
-mkdir -p "$mutant_root"
-cp -R "$REPO_ROOT/skills/orch/scripts" "$mutant_root/"
-live_mutant="$mutant_root/scripts/worktree-push"
-assert_eq "$(grep -c 'refuse_live_round "\$active_round"' "$live_mutant")" "1" \
-  "control finds exactly one live-round refusal to remove"
-sed -i.bak 's/refuse_live_round "\$active_round"/: "no refusal"/' "$live_mutant"
-chmod +x "$live_mutant"
-assert_eq "$(grep -c 'refuse_live_round "\$active_round"' "$live_mutant")" "0" \
-  "control removes the refusal only from its private copy"
+# The mutant resolves its siblings (workflow-state) through the links beside
+# it, exactly as the real script does.
+live_mutant="$(mutant_scripts live-refusal-mutant worktree-push)/worktree-push" || exit 1
+mutate_file "$live_mutant" 'refuse_live_round "$active_round"' ': "no refusal"'
 rm -f "$live_wt/tmp/dev-return-KEN-LIVE-1-1.json"
 : > "$live_args"
 mutant_rc=0
@@ -505,7 +480,7 @@ check_args="$TMP_ROOT/check-args.log"
 # The must-fail control above left -1 live; land its receipt again so
 # this block starts from a branch that may be rebased.
 "$RETURN_WRITE" --worktree "$live_wt" --kind fix --issue KEN-LIVE --round-id 1-1 \
-  --branch main --commit "$live_head" --validate pass --item 1 Applied done >/dev/null
+  --branch main --commit "$live_head" --validate pass --validate-run-dir "$(round_run_dir "$TMP_ROOT/run-livewt-1-1-2" "$live_wt" KEN-LIVE 1-1)" --item 1 Applied done >/dev/null
 STUB_ARGS_LOG="$check_args" run_push "$live_state" --check-live-round \
   --worktree "$live_wt" --issue KEN-LIVE
 assert_eq "$RUN_RC" "0" "with no live round the check permits the rebase"
@@ -522,11 +497,9 @@ assert_eq "$([[ -s "$check_args" ]] && echo ran || echo no)" "no" \
 
 # A state that cannot be read is not a state with no round. Each arm stubs one
 # answer, and the honest stub above is the control that they are the cause.
-check_stub_root="$TMP_ROOT/check-stub"
-mkdir -p "$check_stub_root"
-cp -R "$REPO_ROOT/skills/orch/scripts" "$check_stub_root/"
-check_stub="$check_stub_root/scripts/worktree-push"
-cat > "$check_stub_root/scripts/workflow-state" <<'EOF'
+check_stub_scripts="$(mutant_scripts check-stub workflow-state)" || exit 1
+check_stub="$check_stub_scripts/worktree-push"
+cat > "$check_stub_scripts/workflow-state" <<'EOF'
 #!/usr/bin/env bash
 # Answers the two state reads worktree-push makes, honestly unless told
 # otherwise: the identity reads must pass so each case fails for its own
@@ -554,7 +527,7 @@ if [[ "$mode" == exists ]]; then
 fi
 exit 0
 EOF
-chmod +x "$check_stub_root/scripts/workflow-state" "$check_stub"
+chmod +x "$check_stub_scripts/workflow-state"
 # Every refusal in this script exits 1, so the exit code alone cannot tell one
 # arm from the one below it: each case asserts the message its own arm prints.
 check_err="$TMP_ROOT/check-stub.err"

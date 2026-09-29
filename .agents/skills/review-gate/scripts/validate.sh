@@ -58,8 +58,17 @@ Four groups run, in this order:
               every REVIEW_GATE_* assignment is one the engine reads, spelt
               the ONE way it reads them (a bare key, then its own `=`), and
               legal. Unknown keys, per-invocation seams and repository
-              variables are each named as what they are; the value rules come
-              from `review-predicate.sh --check-config`, never a copy of them.
+              variables are each named as what they are. The value rules
+              come from two engine judges, never a copy of them:
+              `review-predicate.sh --check-config` for every key the
+              predicate reads (`settings-values`), and lib/settings.sh
+              rg_writer_state for REVIEW_GATE_WRITER, judged whether or not
+              a writer exists (`settings-writer`). Neither it nor
+              REVIEW_GATE_MODE may sit in .kendex/settings.toml.
+              The class policy is the default, or
+              REVIEW_GATE_CLASS_POLICY_DECISION names the tracked decision
+              record behind other rows or an empty value
+              (`review-policy --check-choice` says which).
   carry       every REVIEW_GATE_CARRY_FORWARD_EXCLUDE policy glob matches
               a tracked path and is not universal; every prophylactic
               declaration names an active exclusion that still matches
@@ -72,8 +81,8 @@ Four groups run, in this order:
               whose --help states the model and the two allowed deltas.
 
 The environment is scrubbed of every REVIEW_GATE_* key before settings are
-read: what is validated is what the repository COMMITS, not what this shell
-happens to export. REVIEW_GATE_SETTINGS_FILE is honoured (it names the file
+read, the workflow group's included: what is validated is what the
+repository COMMITS, not what this shell happens to export. REVIEW_GATE_SETTINGS_FILE is honoured (it names the file
 to validate) and is resolved to an absolute path first.
 USAGE
 }
@@ -121,7 +130,7 @@ group() { printf '\n== %s ==\n' "$1"; }
 
 group "runtime"
 
-# lib/settings.sh is sourced, never executed, so it is checked for syntax
+# The lib/ files are sourced, never executed, so each is checked for syntax
 # but not for an executable bit.
 #
 # Paths below are SKILL-relative, and every remediation naming one has to be
@@ -130,8 +139,9 @@ group "runtime"
 # unstripped, which is an absolute path and still names the right file.
 SKILL_REL="${SKILL_DIR#"$REPO_ROOT"/}"
 for rel in scripts/review-predicate.sh scripts/review-writer.sh \
-  scripts/pr-watch.sh scripts/validate.sh \
-  scripts/validate-workflow.sh scripts/lib/settings.sh scripts/lib/diagnostics.sh; do
+  scripts/review-policy scripts/pr-watch.sh scripts/validate.sh \
+  scripts/validate-workflow.sh scripts/lib/settings.sh scripts/lib/diagnostics.sh \
+  scripts/lib/waiver.sh; do
   path="$SKILL_DIR/$rel"
   if [ ! -f "$path" ]; then
     bad runtime-missing "$rel" "$rel is missing from the installed skill ($SKILL_DIR) — re-run \`kendex refresh\` and commit the result"
@@ -300,16 +310,23 @@ EOF_ASSIGNED
   else
     ok settings-env-table "$sf" "every REVIEW_GATE_* assignment sits inside the [env] table"
   fi
-  # The engine reads REVIEW_GATE_MODE from env and the COMMITTED root file
-  # only, so a nested assignment of it is read by nothing: the mode set
-  # here validates while the gate keeps enforcing. Same never-reads class
-  # as a misspelled key, pointed at the file the engine does read.
+  # The engine reads REVIEW_GATE_MODE and REVIEW_GATE_WRITER from env and
+  # the COMMITTED root file only, so a nested assignment of either is read by
+  # nothing: the value set here validates while CI runs on another. Same
+  # never-reads class as a misspelled key, pointed at the file the engine
+  # does read.
   if [ "$sf" = ".kendex/settings.toml" ]; then
-    if printf '%s\n' "$assigned" | grep -qx "REVIEW_GATE_MODE"; then
-      bad settings-mode-source "$sf" "$sf assigns REVIEW_GATE_MODE, which the engine never reads from this file — that key resolves from env and the committed kendex.settings.toml only; move the assignment to kendex.settings.toml"
-    else
-      ok settings-mode-source "$sf" "REVIEW_GATE_MODE is not assigned in the machine-local file the engine skips for it"
-    fi
+    for committed_key in MODE WRITER; do
+      case "$committed_key" in
+        MODE) source_check=settings-mode-source ;;
+        WRITER) source_check=settings-writer-source ;;
+      esac
+      if grep -qx -- "REVIEW_GATE_$committed_key" <<<"$assigned"; then
+        bad "$source_check" "$sf" "$sf assigns REVIEW_GATE_$committed_key, which the engine never reads from this file — that key resolves from env and the committed kendex.settings.toml only; move the assignment to kendex.settings.toml"
+      else
+        ok "$source_check" "$sf" "REVIEW_GATE_$committed_key is not assigned in the machine-local file the engine skips for it"
+      fi
+    done
   fi
   # Headers decide which assignments load, so a header shape the loader
   # cannot parse corrupts every classification after it: `[env] # comment`
@@ -406,12 +423,71 @@ else
   fi
 fi
 
+SCRATCH="$(mktemp -d)" || die scratch "${TMPDIR:-/tmp}" "could not create a scratch directory"
+trap 'rm -rf -- "${SCRATCH:?}"' EXIT
+
+# read_setting KEY DEFAULT — sets SETTING_VALUE to the key as the committed
+# sources resolve it, through the engine's own loader under the scrubbed
+# environment. A refused load returns nonzero with the loader's diagnostic in
+# $SCRATCH/err; the caller reports it, and never reads it as an empty value.
+read_setting() {
+  SETTING_VALUE="$("${scrub[@]}" bash -c '
+    . "$1/scripts/lib/settings.sh"
+    rg_setting "$2" "$3"
+  ' _ "$SKILL_DIR" "$1" "$2" 2>"$SCRATCH/err")"
+}
+
+# REVIEW_GATE_WRITER decides only once a repository has no writer, so its
+# value is judged here whether or not one exists: a typo would otherwise
+# surface only when the writer is removed. lib/settings.sh owns the rule.
+writer_rc=0
+writer_state="$("${scrub[@]}" bash -c '
+  . "$1/scripts/lib/settings.sh"
+  rg_writer_state
+' _ "$SKILL_DIR" 2>"$SCRATCH/err")" || writer_rc=$?
+if [ "$writer_rc" -eq 0 ]; then
+  ok settings-writer "$writer_state" "REVIEW_GATE_WRITER and, for an optional writer, REVIEW_GATE_MODE resolve to legal values (lib/settings.sh rg_writer_state)"
+else
+  bad settings-writer "$writer_rc" "the committed writer setting is not legal:"
+  sed 's/^/        /' "$SCRATCH/err"
+fi
+
+# Every repository runs one class policy. review-policy owns how the
+# repository chose it: the default, the default assigned, custom rows, or off.
+# A departure from the default is legal only when the repository names the
+# tracked decision record behind it.
+#
+# Every branch of this block carries one row in tests/validate.test.sh that
+# goes red when the branch is removed.
+choice_rc=0
+policy_choice="$("${scrub[@]}" "$SKILL_DIR/scripts/review-policy" --check-choice 2>"$SCRATCH/err")" || choice_rc=$?
+if [ "$choice_rc" -ne 0 ]; then
+  bad class-policy-unresolved "$choice_rc" "the class policy could not be resolved (scripts/review-policy --check-choice):
+$(sed 's/^/        /' "$SCRATCH/err")"
+else
+  case "$policy_choice" in
+    review-policy-choice=default | review-policy-choice=default-assigned)
+      ok class-policy-default "${policy_choice#review-policy-choice=}" "the class policy is the default (README.md § Class policy)"
+      ;;
+    review-policy-choice=custom | review-policy-choice=off)
+      if ! read_setting REVIEW_GATE_CLASS_POLICY_DECISION ""; then
+        bad class-policy-setting-unreadable REVIEW_GATE_CLASS_POLICY_DECISION "REVIEW_GATE_CLASS_POLICY_DECISION could not be read, so the class-policy check cannot judge it:
+$(sed 's/^/        /' "$SCRATCH/err")"
+      elif [ -z "$SETTING_VALUE" ]; then
+        bad class-policy-undecided "${policy_choice#review-policy-choice=}" "REVIEW_GATE_CLASS_POLICY departs from the default class policy with no decision record behind it. Every repository runs the default (README.md § Class policy): delete the REVIEW_GATE_CLASS_POLICY assignment, or set REVIEW_GATE_CLASS_POLICY_DECISION to the tracked decision record that made this choice"
+      elif [ -f "$SETTING_VALUE" ] && git ls-files --error-unmatch -- "$SETTING_VALUE" >/dev/null 2>&1; then
+        ok class-policy-decision "$SETTING_VALUE" "REVIEW_GATE_CLASS_POLICY_DECISION names the committed file $SETTING_VALUE as the decision record for this class policy"
+      else
+        bad class-policy-decision-untracked "$SETTING_VALUE" "REVIEW_GATE_CLASS_POLICY_DECISION names $SETTING_VALUE, which is not a tracked file in this repository; name the decision record by its path from the repository root"
+      fi
+      ;;
+    *) bad class-policy-protocol "$policy_choice" "scripts/review-policy --check-choice printed a record it does not define" ;;
+  esac
+fi
+
 # ----------------------------------------------------------------- carry ---
 
 group "review-policy exclusions"
-
-CARRY_TMP="$(mktemp -d)" || die scratch "${TMPDIR:-/tmp}" "could not create a scratch directory"
-trap 'rm -rf "$CARRY_TMP"' EXIT
 
 # The loader's DIAGNOSTIC is kept and a refusal is a finding: collapsing a
 # failed read into an empty value would read as "no exclusions configured"
@@ -419,17 +495,15 @@ trap 'rm -rf "$CARRY_TMP"' EXIT
 # validates — the predicate never reads it — so here is its only reader.
 CARRY_LOAD_FAILED=0
 carry_setting() { # KEY — sets CARRY_VALUE; a refusal is a FAIL row, not ""
-  local rc=0
   CARRY_VALUE=""
-  CARRY_VALUE="$("${scrub[@]}" bash -c '
-    . "$1/scripts/lib/settings.sh"
-    rg_setting "$2" ""
-  ' _ "$SKILL_DIR" "$1" 2>"$CARRY_TMP/err")" || rc=$?
-  [ "$rc" -eq 0 ] && return 0
+  if read_setting "$1" ""; then
+    CARRY_VALUE="$SETTING_VALUE"
+    return 0
+  fi
   CARRY_LOAD_FAILED=1
   CARRY_VALUE=""
   bad carry-load "$1" "$SETTINGS_FILE: $1 could not be read — a refused load is a configuration error, never an empty value:
-$(sed 's/^/        /' "$CARRY_TMP/err")"
+$(sed 's/^/        /' "$SCRATCH/err")"
   return 0
 }
 
@@ -554,7 +628,7 @@ if [ ! -x "$workflow_tool" ]; then
   bad workflow-tool "scripts/validate-workflow.sh" "cannot check the adopted workflow: scripts/validate-workflow.sh is missing or not executable (the runtime group above says which)"
 else
   wf_rc=0
-  wf_out="$("$workflow_tool")" || wf_rc=$?
+  wf_out="$("${scrub[@]}" "$workflow_tool")" || wf_rc=$?
   printf '%s\n' "$wf_out"
   [ "$wf_rc" -le 1 ] ||
     die workflow-exit "$wf_rc" "the adopted-workflow check could not run (validate-workflow.sh exit $wf_rc); its ::error above says why"

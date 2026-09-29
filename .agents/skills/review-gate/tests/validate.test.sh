@@ -6,6 +6,7 @@ SKILL_DIR="$(cd "$TEST_DIR/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "${TMP:?}"' EXIT
 . "$TEST_DIR/lib/sandbox.sh"
+. "$TEST_DIR/lib/workflow-edit.sh"
 
 sandbox
 expect_clean 'sound installation' "$DIR"
@@ -26,6 +27,7 @@ settings-known|kendex.settings.toml
 settings-env-table|kendex.settings.toml
 settings-key-shapes|kendex.settings.toml
 settings-values|0
+class-policy-default|default
 ROWS
 [ "$rows" -gt 0 ] && [ "$((PASS + FAIL - before))" -eq "$rows" ] || { printf 'fixture-error=report-table value=%q\n' "$rows" >&2; exit 2; }
 
@@ -73,7 +75,7 @@ while IFS='~' read -r label action data want check value error_code error_value 
   fi
   rows=$((rows + 1))
   sandbox
-  override=''; exported=''
+  override=''; exported=''; writer_exported=''
   case "$action" in
     append) printf '%b\n' "$data" >>"$DIR/kendex.settings.toml" ;;
     replace) printf '%b\n' "$data" >"$DIR/kendex.settings.toml" ;;
@@ -82,6 +84,9 @@ while IFS='~' read -r label action data want check value error_code error_value 
       printf '%b\n' "$data" >"$DIR/.kendex/settings.toml"
       commit "$DIR" ;;
     exported) settings "$DIR" REVIEW_GATE_MODE bogus; exported=enforce ;;
+    exported-writer)
+      rm -- "${DIR:?}/.github/workflows/review-gate-writer.yml"
+      commit "$DIR"; writer_exported=optional ;;
     untracked|explicit)
       (cd "$DIR" && git rm -q --cached kendex.settings.toml && git commit -q -m "untrack settings")
       [ "$action" != explicit ] || override=kendex.settings.toml ;;
@@ -92,6 +97,17 @@ while IFS='~' read -r label action data want check value error_code error_value 
       printf '[env]\nREVIEW_GATE_CONTEXT = "Review gate"\n' >"$DIR/unreadable.settings.toml"
       chmod 000 "$DIR/unreadable.settings.toml"; override=unreadable.settings.toml ;;
     absent) override=absent.settings.toml ;;
+    no-classifier) rm -r -- "${DIR:?}/.agents/skills/harness-ci"; commit "$DIR" ;;
+    dotenv) printf '%b\n' "$data" >"$DIR/.env.local" ;;
+    choice-protocol)
+      # A policy owner answering --check-choice outside its protocol, while its
+      # --check-config answer stays legal for the predicate.
+      printf '#!/usr/bin/env bash\ncase "$1" in --check-choice) echo review-policy-choice=unknown ;; *) echo review-policy=active ;; esac\n' \
+        >"$DIR/.agents/skills/review-gate/scripts/review-policy"
+      commit "$DIR" ;;
+    uncommitted-record)
+      printf '%b\n' "$data" >>"$DIR/kendex.settings.toml"
+      printf 'decision\n' >"$DIR/uncommitted-decision.md" ;;
     settings-symlink)
       mv "$DIR/kendex.settings.toml" "$DIR/real-settings.toml"
       ln -s real-settings.toml "$DIR/kendex.settings.toml"
@@ -102,13 +118,18 @@ while IFS='~' read -r label action data want check value error_code error_value 
     REVIEW_GATE_SETTINGS_FILE="$override" run_validate "$DIR"
   elif [ "$exported" != '' ]; then
     REVIEW_GATE_MODE="$exported" run_validate "$DIR"
+  elif [ "$writer_exported" != '' ]; then
+    REVIEW_GATE_WRITER="$writer_exported" REVIEW_GATE_MODE=off run_validate "$DIR"
   else
     run_validate "$DIR"
   fi
   case "$value" in @/*) value="$DIR/${value#@/}" ;; esac
   case "$note_value" in @/*) note_value="$DIR/${note_value#@/}" ;; esac
+  case "$error_value" in @/*) error_value="$DIR/${error_value#@/}" ;; esac
   expected=''; diagnostic=''; note=''
-  [ -z "$check" ] || printf -v expected '%s check=%s value=%q' "$want" "$check" "$value"
+  verdict="$want"
+  [ "$want" != clean ] || verdict=ok
+  [ -z "$check" ] || printf -v expected '%s check=%s value=%q' "$verdict" "$check" "$value"
   [ -z "$error_code" ] || printf -v diagnostic '        review-gate-error=%s value=%q' "$error_code" "$error_value"
   [ -z "$note_check" ] || printf -v note 'note check=%s value=%q' "$note_check" "$note_value"
   want_rc=1
@@ -128,6 +149,9 @@ unknown key~append~REVIEW_GATE_CONTXET = "Review gate"~FAIL~settings-unknown~ken
 caller handle in settings~append~REVIEW_GATE_SETTINGS_FILE = "other.toml"~FAIL~settings-seam~REVIEW_GATE_SETTINGS_FILE~~~~~
 illegal mode with predicate diagnostic~append~REVIEW_GATE_MODE = "bogus"~FAIL~settings-values~2~predicate-mode~bogus~~~
 illegal docs-only policy with predicate diagnostic~append~REVIEW_GATE_DOCS_ONLY = "bogus"~FAIL~settings-values~2~predicate-docs-only~bogus~~~
+incomplete class policy with owner diagnostic~append~REVIEW_GATE_CLASS_POLICY = "render:none"~FAIL~settings-values~2~policy-invalid~render:none~~~
+illegal writer deadline with its own diagnostic~append~REVIEW_GATE_PR_DEADLINE_SECONDS = "bogus"~FAIL~settings-values~2~writer-deadline-value~bogus~~~
+zero writer deadline is not a share~append~REVIEW_GATE_PR_DEADLINE_SECONDS = "0"~FAIL~settings-values~2~writer-deadline-value~0~~~
 numeric bound~append~REVIEW_GATE_SHA_PREFIX_FLOOR = "2"~FAIL~settings-values~2~~~~~
 duplicate key~append~REVIEW_GATE_MODE = "off"\nREVIEW_GATE_MODE = "enforce"~FAIL~settings-values~2~~~~~
 exported legal mode cannot hide committed error~exported~~FAIL~settings-values~2~~~~~
@@ -135,6 +159,11 @@ untracked settings~untracked~~FAIL~settings-untracked~kendex.settings.toml~~~~~
 nested unknown key names its source~nested~[env]\nREVIEW_GATE_REVIEW_OBJECT_TRUSTED_LOGIN = "x"~FAIL~settings-unknown~.kendex/settings.toml:REVIEW_GATE_REVIEW_OBJECT_TRUSTED_LOGIN~~~~~
 nested mode is unread~nested~[env]\nREVIEW_GATE_MODE = "off"~FAIL~settings-mode-source~.kendex/settings.toml~~~~~
 root mode is read~append~REVIEW_GATE_MODE = "off"~clean~~~~~~~
+illegal writer setting with a writer present~append~REVIEW_GATE_WRITER = "bogus"~FAIL~settings-writer~2~writer-setting~bogus~~~
+optional writer setting is legal with a writer present~append~REVIEW_GATE_WRITER = "optional"~clean~settings-writer~enforced~~~~~
+nested writer is unread~nested~[env]\nREVIEW_GATE_WRITER = "optional"~FAIL~settings-writer-source~.kendex/settings.toml~~~~~
+exported writer settings cannot hide a missing writer~exported-writer~~FAIL~workflow-count~0~~~~~
+the default assigned explicitly~append~REVIEW_GATE_CLASS_POLICY = "render:none;trivial:none;micro:none;small:bot;standard:current"~clean~class-policy-default~default-assigned~~~~~
 explicit untracked source~explicit~~clean~~~~~settings-explicit~@/kendex.settings.toml~
 double-quoted key~append~"REVIEW_GATE_THREADS" = "off"~FAIL~settings-key-shape~kendex.settings.toml:"REVIEW_GATE_THREADS" = "off"~~~~~
 single-quoted key~append~'REVIEW_GATE_THREADS' = "off"~FAIL~settings-key-shape~kendex.settings.toml:'REVIEW_GATE_THREADS' = "off"~~~~~
@@ -171,8 +200,32 @@ universal exclusion~append~REVIEW_GATE_CARRY_FORWARD_EXCLUDE = "*"~FAIL~carry-un
 declared unmatched exclusion is reported~append~REVIEW_GATE_CARRY_FORWARD_EXCLUDE = "no-such-directory/*.md"\nREVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC = "no-such-directory/*.md"~clean~~~~~carry-prophylactic~no-such-directory/*.md~
 orphan declaration~append~REVIEW_GATE_CARRY_FORWARD_EXCLUDE = "AGENTS.md"\nREVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC = "docs/*"~FAIL~carry-declaration-missing~docs/*~~~~~
 declaration now matches~append~REVIEW_GATE_CARRY_FORWARD_EXCLUDE = "docs/*"\nREVIEW_GATE_CARRY_FORWARD_EXCLUDE_PROPHYLACTIC = "docs/*"~FAIL~carry-declaration-matched~docs/*~~~~~
+class policy off with no decision record~append~REVIEW_GATE_CLASS_POLICY = ""~FAIL~class-policy-undecided~off~~~~~
+custom class policy with no decision record~append~REVIEW_GATE_CLASS_POLICY = "render:none;trivial:none;micro:none;small:none;standard:none"~FAIL~class-policy-undecided~custom~~~~~
+custom class policy with a tracked decision record~append~REVIEW_GATE_CLASS_POLICY = "render:none;trivial:none;micro:none;small:none;standard:none"\nREVIEW_GATE_CLASS_POLICY_DECISION = "docs/guide.md"~clean~class-policy-decision~docs/guide.md~~~~~
+class policy off with a tracked decision record~append~REVIEW_GATE_CLASS_POLICY = ""\nREVIEW_GATE_CLASS_POLICY_DECISION = "docs/guide.md"~clean~class-policy-decision~docs/guide.md~~~~~
+decision record that does not exist~append~REVIEW_GATE_CLASS_POLICY = ""\nREVIEW_GATE_CLASS_POLICY_DECISION = "docs/decisions/D001-no-class-policy.md"~FAIL~class-policy-decision-untracked~docs/decisions/D001-no-class-policy.md~~~~~
+decision record on disk but never committed~uncommitted-record~REVIEW_GATE_CLASS_POLICY = ""\nREVIEW_GATE_CLASS_POLICY_DECISION = "uncommitted-decision.md"~FAIL~class-policy-decision-untracked~uncommitted-decision.md~~~~~
+decision record that is a tracked directory~append~REVIEW_GATE_CLASS_POLICY = ""\nREVIEW_GATE_CLASS_POLICY_DECISION = "docs"~FAIL~class-policy-decision-untracked~docs~~~~~
+class policy the owner refuses~append~REVIEW_GATE_CLASS_POLICY = "render:none"~FAIL~class-policy-unresolved~2~~~~~
+class policy choice outside the owner protocol~choice-protocol~~FAIL~class-policy-protocol~review-policy-choice=unknown~~~~~
+decision record the loader refuses~dotenv~REVIEW_GATE_CLASS_POLICY=""\nREVIEW_GATE_CLASS_POLICY_DECISION="docs/guide.md"x~FAIL~class-policy-setting-unreadable~REVIEW_GATE_CLASS_POLICY_DECISION~~~~~
+default class policy with no classifier installed~no-classifier~~FAIL~settings-values~2~policy-classifier~@/.agents/skills/review-gate/scripts/../../harness-ci/scripts/change-class~~~
 ROWS
 [ "$rows" -gt 0 ] && [ "$((PASS + FAIL - before))" -eq "$rows" ] || { printf 'fixture-error=settings-table value=%q\n' "$rows" >&2; exit 2; }
+
+# The workflow group's scrub: without it the exported writer settings above
+# pass a repository whose committed settings require a writer.
+sandbox
+rm -- "${DIR:?}/.github/workflows/review-gate-writer.yml"
+commit "$DIR"
+file_edit "$DIR" "$VALIDATE_REL" 1 '^  wf_out="\$\("\$\{scrub\[@\]\}" "\$workflow_tool"\)" \|\| wf_rc=\$\?$' \
+  's/"\${scrub\[@\]}" "\$workflow_tool"/"$workflow_tool"/'
+chmod +x "$DIR/$VALIDATE_REL"
+REVIEW_GATE_WRITER=optional REVIEW_GATE_MODE=off run_validate "$DIR"
+if grep -qxF 'ok check=workflow-absent value=optional' <<<"$OUT"; then
+  ok 'control: an unscrubbed workflow check reads the exported writer settings'
+else bad "control: workflow scrub (rc=$RC)" "$OUT"; fi
 
 rows=0; before=$((PASS + FAIL))
 while IFS='|' read -r shape target check value; do
@@ -190,11 +243,13 @@ while IFS='|' read -r shape target check value; do
       commit "$DIR" ;;
     syntax) printf 'if [ then\n' >>"$path" ;;
   esac
-  expect_fail "$shape" "$DIR" "$check" "$value"
+  expect_fail "$shape $target" "$DIR" "$check" "$value"
 done <<'ROWS'
 mode|scripts/review-writer.sh|runtime-mode|scripts/review-writer.sh
 missing|scripts/pr-watch.sh|runtime-missing|scripts/pr-watch.sh
+missing|scripts/lib/waiver.sh|runtime-missing|scripts/lib/waiver.sh
 untracked|scripts/pr-watch.sh|runtime-untracked|scripts/pr-watch.sh
+untracked|scripts/review-policy|runtime-untracked|scripts/review-policy
 symlink|scripts/pr-watch.sh|runtime-symlink|scripts/pr-watch.sh
 untracked-target|scripts/review-writer.sh|workflow-target-untracked|.agents/skills/review-gate/scripts/review-writer.sh
 symlink-target|scripts/review-writer.sh|workflow-target-symlink|.agents/skills/review-gate/scripts/review-writer.sh

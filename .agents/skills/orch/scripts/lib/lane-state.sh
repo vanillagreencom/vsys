@@ -42,7 +42,14 @@
 # the key hint is matched with the words, so a transcript quoting the phrase
 # in prose is not read as a scrolled frame; the key name is left out, since
 # the hint differs by platform and a missed marker is the worse direction.
-WORKING_RE='to interrupt|to run in background|↓ [0-9][0-9.]*[kKmM]? tokens|Jump to bottom [(]'
+#
+# Copilot CLI 1.0.88 draws `esc interrupt` in its footer while a command runs,
+# the key drawn bold and the word after it plain, measured on a `!` shell
+# command at the pane (fixtures/oversee-watch/copilot-working.txt). Its footer
+# during a model turn is not measured; the same hint there is assumed, and a
+# turn it does not draw reads as not working, the direction the counter's first
+# seconds already take.
+WORKING_RE='to interrupt|to run in background|↓ [0-9][0-9.]*[kKmM]? tokens|Jump to bottom [(]|esc interrupt'
 
 # A dialog waiting on an answer: the selected numbered row, drawn with each
 # harness's marker, and Claude Code's question and key hints.
@@ -70,13 +77,20 @@ PANE_MARKER_RE='^❯|^›'
 #   dialog row all as the marker, a blank and text — the same shape as a turn —
 #   and always draws one of them below the transcript. So every Codex screen
 #   ends in a live-input marker line, and its marker alone is the signature.
-# The last marker line is the live input when it carries any of the three
+#   Copilot CLI 1.0.88 draws its composer as the marker and plain spaces,
+#   draft or not, the same shape as a submitted turn, and frames it between
+#   two rules of U+2500, so its signature is the marker line with a rule on
+#   the line directly under it (fixtures/oversee-watch/copilot-idle.txt and
+#   copilot-composer-draft.txt). How it echoes a submitted turn is not
+#   measured. Its dialog rows sit inside a box border, never at column 0.
+# The last marker line is the live input when it carries any of the four
 # signatures; pane_below_last_turn holds the rest of the rule.
 # Byte escapes, never `\u`: bash leaves a `\u` escape unexpanded in the C
 # locale, and an awk that does not expand one either then matches nothing.
 # gawk does expand it, so no test on a gawk runner can catch that spelling.
 CLAUDE_COMPOSER_RE=$'^\xe2\x9d\xaf\xc2\xa0'
 CODEX_MARKER_RE='^›'
+FRAME_RULE_RE=$'^\xe2\x94\x80'
 # A dialog's selected row, drawn at column 0: measured on Claude Code's
 # AskUserQuestion screen (fixtures/oversee-watch/claude-dialog-askuserquestion),
 # where `❯ 1. Yes` opens the row and the question sits ABOVE it, and on every
@@ -89,16 +103,6 @@ CODEX_MARKER_RE='^›'
 # turn a human typed opens that way. `[.]`, not `\.`: awk expands escapes in
 # a -v value.
 DIALOG_ROW_RE='^(❯|›) [0-9]+[.] '
-
-# The live input line with NOTHING typed into it, one signature per harness and
-# both measured off the same running sessions as the signatures above. Claude
-# Code's empty composer is the marker, U+00A0 and nothing else; Codex draws a
-# fixed placeholder into its empty composer
-# (fixtures/oversee-watch/codex-composer-idle.txt), which a draft replaces
-# (codex-composer-draft.txt). Trailing blanks are tmux padding the row it drew,
-# never typed text: `capture-pane -J` keeps them.
-CLAUDE_COMPOSER_EMPTY_RE=$'^\xe2\x9d\xaf\xc2\xa0[[:blank:]]*$'
-CODEX_COMPOSER_EMPTY_RE='^› Ask Codex to do anything[[:blank:]]*$'
 
 # pane_working SCREEN — the turn-in-flight predicate over one captured pane.
 pane_working() { grep -Eq -- "$WORKING_RE" <<<"$1"; }
@@ -151,10 +155,17 @@ CLAUDE_FOOTER_RE='\? for shortcuts'
 # so, which is the safe direction — a dialog row is also the shape of a
 # submitted turn that opens with a numbered item, and reading one as the
 # harness's own live input would place a read on a screen that proves nothing.
+#
+# Copilot's composer is two lines, the marker line and the rule under it, so
+# it is asked of pane_turn_slice, which owns that signature, rather than of
+# this one-line pattern. Its folder-trust dialog draws neither and answers no.
 HARNESS_UP_RE="$CLAUDE_COMPOSER_RE|$CODEX_MARKER_RE|$CLAUDE_FOOTER_RE"
 
 # pane_harness_up SCREEN — the predicate over one captured pane.
-pane_harness_up() { pane_working "$1" || grep -Eq -- "$HARNESS_UP_RE" <<<"$1"; }
+pane_harness_up() {
+  pane_working "$1" || grep -Eq -- "$HARNESS_UP_RE" <<<"$1" \
+    || [[ "$(pane_turn_slice "$1" framed)" == framed ]]
+}
 
 # The pane lines strictly below the last user turn — the whole pane when the
 # screen holds none. A banner the lane has since taken another turn past is
@@ -171,11 +182,18 @@ pane_harness_up() { pane_working "$1" || grep -Eq -- "$HARNESS_UP_RE" <<<"$1"; }
 # becoming the boundary itself: that would empty the slice and turn
 # usage-limit into a silent no-op for the lane. Unrecognized fails toward a
 # stale banner, never toward silence.
+#
+# MODE is `below` or `before`, the slice either side of the boundary, or
+# `framed`, which prints `framed` where the last marker line is Copilot's
+# composer and nothing otherwise: pane_harness_up's question, answered by the
+# one owner of that signature.
 pane_turn_slice() {
-  awk -v mode="$2" -v marker="$PANE_MARKER_RE" -v composer="$CLAUDE_COMPOSER_RE" -v codex="$CODEX_MARKER_RE" -v dialog="$DIALOG_ROW_RE" '
+  awk -v mode="$2" -v marker="$PANE_MARKER_RE" -v composer="$CLAUDE_COMPOSER_RE" -v codex="$CODEX_MARKER_RE" -v dialog="$DIALOG_ROW_RE" -v rule="$FRAME_RULE_RE" '
     { line[NR] = $0; if ($0 ~ marker) { prev = last; last = NR } }
     END {
-      live = (last > 0 && (last == NR || line[last] ~ composer || line[last] ~ codex || line[last] ~ dialog))
+      framed = (last > 0 && last < NR && line[last + 1] ~ rule)
+      if (mode == "framed") { if (framed) print "framed"; exit }
+      live = (last > 0 && (last == NR || framed || line[last] ~ composer || line[last] ~ codex || line[last] ~ dialog))
       turn = live ? prev : last
       first = mode == "before" ? 1 : turn + 1
       final = mode == "before" ? turn : NR
@@ -186,37 +204,6 @@ pane_turn_slice() {
 
 pane_below_last_turn() { pane_turn_slice "$1" below; }
 pane_turn_identity() { pane_turn_slice "$1" before | cksum; }
-
-# Is the lane's live input line EMPTY — nothing typed and waiting unsent?
-#
-# The rule lives here, beside the composer signatures it reads, because the
-# caller that needs it is about to TYPE into the pane: `lane-close` pastes
-# `/exit` at the cursor, and a composer already holding a draft submits the
-# draft together with it, starting a turn on a lane the fleet has called
-# finished. Asking what a lane is doing needs none of this — `lane_state` calls
-# a lane sitting at its composer idle, draft or no draft — so the two questions
-# stay apart and no caller has to invent this one.
-#
-# The line read is the last marker line below the last turn: the same live
-# input line pane_turn_slice refuses to take as the turn boundary.
-#
-#   0  the line is one of the two measured empty composers
-#   1  the line carries a draft
-#   2  no line below the last turn carries a marker, or the marker line matches
-#      neither harness's composer. Nothing was measured, so a caller about to
-#      type must refuse rather than read it as empty.
-lane_composer_empty() { # SCREEN
-  local slice matched line
-  # Every failure below is status 2, the "nothing measured" answer: a slice the
-  # scan could not take and a slice with no marker in it are equally no reading
-  # of a composer, and neither may reach a caller as permission to type.
-  slice="$(pane_below_last_turn "$1")" || return 2
-  matched="$(grep -E -- "$PANE_MARKER_RE" <<<"$slice")" || return 2
-  line="${matched##*$'\n'}"
-  if grep -Eq -- "$CLAUDE_COMPOSER_EMPTY_RE|$CODEX_COMPOSER_EMPTY_RE" <<<"$line"; then return 0; fi
-  if grep -Eq -- "$CLAUDE_COMPOSER_RE|$CODEX_MARKER_RE" <<<"$line"; then return 1; fi
-  return 2
-}
 
 # The limit banner in SLICE as the ACCOUNT speaking, empty when it is not.
 # A slice with no banner is empty, and so is one on a lane with a turn in
@@ -271,34 +258,220 @@ pane_has_child() {
 }
 
 # The harness processes whose current directory is one worktree. This is the
-# ownership read used before a wake starts a second harness and before a hosted
-# stop signals one. The worktree path is canonical, and a process that still
-# exists but whose cwd cannot be read makes the whole answer unreadable.
+# ownership read used before a wake starts a second harness and before
+# lane_stop_owned signals one. The worktree path is canonical, and a process
+# that still exists but whose cwd cannot be read makes the whole answer
+# unreadable.
 #
 # On success LANE_OWNED_PROCESS_TABLE holds `pid ppid name` rows for the host,
-# and LANE_OWNED_PROCESS_PIDS holds the matching top-level harness pids. A host
-# with no matching harness is a successful empty answer. Status 2 means the
-# process table or an existing candidate could not be read.
+# LANE_OWNED_PROCESS_CANDIDATES every pid named for the harness, and
+# LANE_OWNED_PROCESS_PIDS those of them whose directory is the worktree, the
+# harness's own child processes included. A host with no matching harness is a
+# successful empty answer. Status 2 means the process table or an existing
+# candidate could not be read; status 3 is a host with no reader for a
+# process's directory at all (lane_process_cwd).
 LANE_OWNED_PROCESS_TABLE=""
+LANE_OWNED_PROCESS_CANDIDATES=""
 LANE_OWNED_PROCESS_PIDS=""
+
+# Whether this host exposes processes through /proc. Linux does; macOS has no
+# /proc, and the readers below take its tools there instead.
+lane_proc_readable() { [[ -d /proc/self ]]; }
+
+# Print a process's one-letter state, or an empty line when the process has
+# gone. From /proc the command name can contain spaces and `)`, so the state
+# begins after the last closing parenthesis rather than at a fixed field
+# number. Without /proc, `ps` answers: it exits 1 and prints nothing for a pid
+# that does not exist, and any other failure is status 2, no answer.
+lane_process_state() { # PID
+  local stat rest rc=0
+  if lane_proc_readable; then
+    stat="$(cat -- "/proc/$1/stat" 2>/dev/null)" || stat=""
+    rest="${stat##*)}"
+    rest="${rest# }"
+    printf '%s\n' "${rest%% *}"
+    return 0
+  fi
+  stat="$(ps -o stat= -p "$1" 2>/dev/null)" || rc=$?
+  stat="${stat//[[:space:]]/}"
+  if [[ "$rc" -ne 0 ]]; then
+    [[ "$rc" -eq 1 && -z "$stat" ]] || return 2
+  fi
+  printf '%s\n' "${stat:0:1}"
+}
+
+# Print a process's current directory. /proc answers on Linux; where there is
+# none, `lsof`, which macOS ships, answers instead. Status 1 is a directory the
+# read did not return, which a caller settles by lane_process_state: a process
+# gone or a zombie has none, and a live one is unreadable. Status 3 is a host
+# with neither reader, where no directory can be read at all.
+lane_process_cwd() { # PID
+  local out
+  if lane_proc_readable; then
+    readlink -- "/proc/$1/cwd" 2>/dev/null || return 1
+    return 0
+  fi
+  command -v lsof >/dev/null 2>&1 || return 3
+  out="$(lsof -a -p "$1" -d cwd -Fn 2>/dev/null)" || return 1
+  out="$(awk '/^n/ { print substr($0, 2); exit }' <<<"$out")" || return 1
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out"
+}
+
+# Print the host's process table as `pid ppid name` rows, the name with any
+# directory stripped: macOS `ps` prints an executable's path where Linux prints
+# its bare name. Status 1 is a table that could not be read.
+lane_process_table() {
+  local raw table
+  raw="$(ps -A -o pid= -o ppid= -o comm=)" || return 1
+  table="$(awk '{ pid = $1; ppid = $2; $1 = ""; $2 = ""; name = substr($0, 3); sub(/.*\//, "", name); print pid, ppid, name }' <<<"$raw")" \
+    || return 1
+  printf '%s\n' "$table"
+}
+
+# Whether a process whose name matches the ERE NAME_RE sits below ROOT in a
+# lane_process_table TABLE, or is ROOT itself where INCLUDE_ROOT is 1. Prints
+# `found` or `none`. The walk up each parent chain is bounded by the table's
+# row count: no real chain is longer, and a table read mid-reparent that holds
+# a cycle cannot loop it. DEPTH, where given, bounds how far below ROOT the
+# match may sit: 1 is a child of ROOT, 2 a grandchild.
+lane_process_below() { # TABLE ROOT NAME_RE INCLUDE_ROOT [DEPTH]
+  # The ERE crosses in the environment: awk -v would read its backslashes as
+  # escape sequences and unescape the metacharacters the caller escaped.
+  LANE_BELOW_RE="$3" awk -v root="$2" -v self="$4" -v depth="${5:-}" '
+    BEGIN { re = ENVIRON["LANE_BELOW_RE"] }
+    { n = $0; sub(/^[^ ]+ [^ ]+ /, "", n); parent[$1] = $2; name[$1] = n; pid[NR] = $1 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (name[pid[i]] !~ re) continue
+        q = (self == 1) ? pid[i] : parent[pid[i]]
+        for (hops = (self == 1) ? 0 : 1; q != "" && hops < NR + 1 && (depth == "" || hops <= depth + 0); hops++) {
+          if (q == root) { print "found"; exit }
+          q = parent[q]
+        }
+      }
+      print "none"
+    }' <<<"$1"
+}
+
+# The names a harness's own process carries in a lane_process_table, as a
+# whole-name ERE: the ownership read below and pane-write's process check both
+# match on it. Every harness runs under its own name but one.
+#
+# Copilot CLI 1.0.88 does not. Its npm loader is a node script, and node names
+# its main thread `node-MainThread`; the loader spawns the native binary,
+# whose name on Linux is its main thread's, `MainThread`. Only the native
+# binary is named: SIGTERM to it ends the loader too, while a signal to the
+# loader alone leaves the native binary running and the pane back at its
+# shell, read as exited (both measured). A pane that started the binary
+# directly, and a `ps` that prints the executable path, as macOS's does, read
+# `copilot`; the macOS reading is not measured. `MainThread` is not Copilot's
+# alone, so another program naming its main thread so, with a lane's worktree
+# as its directory, is read as that lane's harness too.
+lane_harness_process_re() { # HARNESS
+  case "$1" in
+    copilot) printf '%s\n' '^(copilot|MainThread)$' ;;
+    *) printf '^%s$\n' "$(printf '%s' "$1" | sed 's/[][\\.*^$+?(){}|]/\\&/g')" ;;
+  esac
+}
+
 lane_owned_processes() { # WORKTREE HARNESS
-  local root table candidates pid cwd
+  local root table candidates pid cwd state rc name_re
   LANE_OWNED_PROCESS_TABLE=""
+  LANE_OWNED_PROCESS_CANDIDATES=""
   LANE_OWNED_PROCESS_PIDS=""
   root="$(cd -- "$1" && pwd -P)" || return 2
-  table="$(ps -A -o pid= -o ppid= -o comm= | awk '{ pid = $1; ppid = $2; $1 = ""; $2 = ""; name = substr($0, 3); sub(/.*\//, "", name); print pid, ppid, name }')" \
-    || return 2
-  candidates="$(awk -v harness="$2" '$3 == harness { print $1 }' <<<"$table")" || return 2
+  table="$(lane_process_table)" || return 2
+  name_re="$(lane_harness_process_re "$2")" || return 2
+  # The whole name after the two id columns, as lane_process_below reads it,
+  # and the ERE through the environment for the reason given there.
+  candidates="$(LANE_OWNED_RE="$name_re" awk 'BEGIN { re = ENVIRON["LANE_OWNED_RE"] } { n = $0; sub(/^[^ ]+ [^ ]+ /, "", n); if (n ~ re) print $1 }' <<<"$table")" || return 2
   for pid in $candidates; do
-    [[ -d /proc/self ]] || return 2
-    if ! cwd="$(readlink -- "/proc/$pid/cwd" 2>/dev/null)"; then
-      [[ -d "/proc/$pid" ]] || continue
-      return 2
-    fi
+    rc=0
+    cwd="$(lane_process_cwd "$pid")" || rc=$?
+    case "$rc" in
+      0) ;;
+      1)
+        state="$(lane_process_state "$pid")" || return 2
+        [[ -z "$state" || "$state" == Z ]] && continue
+        return 2 ;;
+      *) return 3 ;;
+    esac
     [[ "$cwd" == "$root" ]] || continue
     LANE_OWNED_PROCESS_PIDS+="${LANE_OWNED_PROCESS_PIDS:+ }$pid"
   done
+  LANE_OWNED_PROCESS_CANDIDATES="$candidates"
   LANE_OWNED_PROCESS_TABLE="$table"
+}
+
+# End one worktree's harness by signal: SIGTERM to every process
+# lane_owned_processes names, each one's directory read again just before its
+# signal, then a bounded wait for every signalled process to exit. The one stop
+# the hosted provider's `stop` verb and a local `lane-close` both run, so
+# nothing ever types into a lane to end it.
+#
+# A process that exits or becomes a zombie before its signal or during the
+# wait counts as stopped. On status 0 LANE_STOP_COUNT is how many were
+# signalled, 0 where none was found. On status 1 LANE_STOP_CAUSE names the step
+# that failed and LANE_STOP_PID the process it failed on, empty where the step
+# reads no single process:
+#   worktree-read-failed  the worktree does not resolve
+#   process-read-failed   the ownership read answered nothing (its status 2)
+#   cwd-reader-missing    this host has neither /proc nor lsof to read a
+#                         process's directory (its status 3)
+#   state-read-failed     a process state could not be read
+#   cwd-read-failed       a live process whose directory cannot be read
+#   owner-changed         a process left the worktree before its signal
+#   signal-refused        the signal failed on a process still live
+#   timeout               a signalled process outlived LANE_STOP_WAIT_PASSES
+LANE_STOP_COUNT=0
+LANE_STOP_CAUSE=""
+LANE_STOP_PID=""
+LANE_STOP_WAIT_PASSES=50
+lane_stop_owned() { # WORKTREE HARNESS
+  local root pid current state rc signaled="" live="" passes="$LANE_STOP_WAIT_PASSES"
+  LANE_STOP_COUNT=0
+  LANE_STOP_CAUSE=""
+  LANE_STOP_PID=""
+  root="$(cd -- "$1" && pwd -P)" || { LANE_STOP_CAUSE=worktree-read-failed; return 1; }
+  rc=0
+  lane_owned_processes "$root" "$2" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) LANE_STOP_CAUSE=cwd-reader-missing; return 1 ;;
+    *) LANE_STOP_CAUSE=process-read-failed; return 1 ;;
+  esac
+  for pid in $LANE_OWNED_PROCESS_PIDS; do
+    LANE_STOP_PID="$pid"
+    if ! current="$(lane_process_cwd "$pid")"; then
+      state="$(lane_process_state "$pid")" || { LANE_STOP_CAUSE=state-read-failed; return 1; }
+      if [[ -z "$state" || "$state" == Z ]]; then continue; fi
+      LANE_STOP_CAUSE=cwd-read-failed
+      return 1
+    fi
+    [[ "$current" == "$root" ]] || { LANE_STOP_CAUSE=owner-changed; return 1; }
+    if ! kill -TERM "$pid" 2>/dev/null; then
+      state="$(lane_process_state "$pid")" || { LANE_STOP_CAUSE=state-read-failed; return 1; }
+      if [[ -z "$state" || "$state" == Z ]]; then continue; fi
+      LANE_STOP_CAUSE=signal-refused
+      return 1
+    fi
+    signaled+="${signaled:+ }$pid"
+  done
+  LANE_STOP_PID=""
+  while [[ "$passes" -gt 0 ]]; do
+    live=""
+    for pid in $signaled; do
+      state="$(lane_process_state "$pid")" \
+        || { LANE_STOP_CAUSE=state-read-failed; LANE_STOP_PID="$pid"; return 1; }
+      [[ -z "$state" || "$state" == Z ]] || live+="${live:+ }$pid"
+    done
+    [[ -n "$live" ]] || break
+    sleep 0.1
+    passes=$((passes - 1))
+  done
+  [[ -z "$live" ]] || { LANE_STOP_CAUSE=timeout; LANE_STOP_PID="${live%% *}"; return 1; }
+  for pid in $signaled; do LANE_STOP_COUNT=$((LANE_STOP_COUNT + 1)); done
 }
 
 # ---------------------------------------------------------------------------
@@ -352,6 +525,24 @@ lane_pane_resolve() { # WINDOW
   }
 }
 
+# The pane a caller already holds by id, `%N`, read from the same list the
+# resolution above reads: LANE_PANE_ID, LANE_PANE_PID and LANE_PANE_CMD hold it
+# on status 0. Status 1 is a pane this server does not list, and status 2 the
+# list failing, with the three empty on both.
+#
+# The separator is a space, never a tab: tmux prints a tab in a format as `_`
+# to a client outside tmux whose environment names no UTF-8 locale, which is
+# what a launcher run from a job unit is. A pane id and a pid hold no space,
+# and the command is last, so it keeps the rest of the line.
+lane_pane_by_id() { # PANE_ID
+  local rows row
+  LANE_PANE_ID=""; LANE_PANE_PID=""; LANE_PANE_CMD=""
+  rows="$(tmux list-panes -a -F '#{pane_id} #{pane_pid} #{pane_current_command}' 2>/dev/null)" || return 2
+  row="$(awk -v p="$1" '$1 == p { print; exit }' <<<"$rows")" || return 2
+  [[ -n "$row" ]] || return 1
+  read -r LANE_PANE_ID LANE_PANE_PID LANE_PANE_CMD <<<"$row"
+}
+
 # The lane's tmux pane, as the three raw observations `lane_state` judges
 # from: the pane's foreground command, its process id, and its screen, found
 # through the resolution above. For a caller whose own window is on the lane's
@@ -388,14 +579,15 @@ lane_pane_observe() { # WINDOW
 # The judge.
 # ---------------------------------------------------------------------------
 
-# lane_state OUT_VAR WINDOW CMD PID SCREEN [SESSION] — assigns OUT_VAR
-# exactly one of:
+# lane_state OUT_VAR WINDOW CMD PID SCREEN [SESSION] [ACCOUNT] [ROWS] —
+# assigns OUT_VAR exactly one of:
 #
 #   gone      no window: there is no lane here to ask about
 #   exited    the window outlived its harness — a bare shell with nothing
 #             under it, the shape a session that quit, crashed or hit its
 #             limit leaves behind
-#   walled    the account is spent and said so below the lane's last turn
+#   walled    the account is spent and said so below the lane's last turn,
+#             and no ACCOUNT reading says the wall has lifted
 #   asking    a dialog is up and waiting on an answer
 #   idle      the harness is at its input prompt with nothing in flight
 #   working   a turn is in flight
@@ -410,6 +602,21 @@ lane_pane_observe() { # WINDOW
 #   SCREEN   the pane capture, whole
 #   SESSION  `busy`, `idle` or `unjudged` from the harness process read
 #            through /proc, and "" where the caller has no /proc to read
+#   ACCOUNT  `room` where the caller measured the lane's account and found
+#            the wall its banner reports lifted, `walled` where it found the
+#            wall standing, and "" where it measured nothing
+#   ROWS     for a Pi lane, lib/session-rows.sh § session_rows_lane_verdict's
+#            word, `unreadable` where that read failed; "" for any other lane
+#
+# A PI LANE IS JUDGED FROM WHAT PI EMITS, NEVER FROM ITS PANE, by every caller
+# that passes ROWS: the Stop and PreToolUse rows the lane-mail-check hook
+# writes under the pi-hooks carrier, which oversee-watch and `lanes state`
+# pass. lane-close's close guard passes none, so it still reads a Pi lane's
+# pane. Past `gone` and `exited`, which are the window and the process and no screen,
+# ROWS answers `idle`, `working` or `walled` alone, under the same ACCOUNT and
+# SESSION rules the pane rungs keep, and a lane with no row, or rows that could
+# not be read, is `unjudged`. Pi's carrier sends no dialog event, so a Pi lane
+# is never `asking`.
 #
 # THE PANE IS ASKED FIRST FOR EVERY RUNG THAT IS NOT `idle`, which the
 # supplied process read decides; the session rule below carries that half.
@@ -421,10 +628,13 @@ lane_pane_observe() { # WINDOW
 #
 # Rung order is load-bearing and is the order the watch has always used:
 # `walled` outranks `asking` because a limit banner can sit above a stale
-# prompt and the spent account is the news; `asking` outranks `working`
-# because a dialog is up whatever the transcript above it is doing; and
-# `idle` demands the absence of a turn in flight, so a working lane can never
-# take that rung.
+# prompt and the spent account is the news. A banner stays on the screen after
+# its window resets, since a lane parked by it takes no turn to scroll it
+# away, so an ACCOUNT of `room` passes the banner over and the rungs below
+# answer; `walled` and "" keep it, and any other value is `unjudged`.
+# `asking` outranks `working` because a dialog is up whatever the transcript
+# above it is doing; and `idle` demands the absence of a turn in flight, so a
+# working lane can never take that rung.
 #
 # THE WHOLE SESSION RULE, in one sentence: a SUPPLIED SESSION that is not
 # `idle` answers on its own and the pane's `idle` rung is never reached, so a
@@ -450,8 +660,8 @@ lane_pane_observe() { # WINDOW
 # Exit 2, with OUT_VAR set to `unjudged`, means a scan failed rather than
 # answered. The caller decides whether that ends its run.
 lane_state() {
-  local _ls_out="$1" _ls_window="$2" _ls_cmd="$3" _ls_pid="$4" _ls_screen="$5" _ls_session="${6:-}"
-  local _ls_slice _ls_banner _ls_rc=0
+  local _ls_out="$1" _ls_window="$2" _ls_cmd="$3" _ls_pid="$4" _ls_screen="$5" _ls_session="${6:-}" _ls_account="${7:-}"
+  local _ls_rows="${8:-}" _ls_slice _ls_banner _ls_rc=0
   LANE_PROBE_RC=0
   if [[ "$_ls_window" != listed ]]; then printf -v "$_ls_out" gone; return 0; fi
   if is_bare_shell "$_ls_cmd" && [[ -n "$_ls_pid" ]]; then
@@ -461,11 +671,36 @@ lane_state() {
     # LANE_PROBE_RC carries the status for the caller's note.
     if [[ "$_ls_rc" -eq 1 ]]; then printf -v "$_ls_out" exited; return 0; fi
   fi
+  if [[ "$_ls_rows" == walled ]]; then
+    case "$_ls_account" in
+      "" | walled) printf -v "$_ls_out" walled; return 0 ;;
+      room) _ls_rows=idle ;;
+      *) printf -v "$_ls_out" unjudged; return 0 ;;
+    esac
+  fi
+  case "$_ls_rows" in
+    "") ;;
+    working) printf -v "$_ls_out" working; return 0 ;;
+    idle)
+      case "$_ls_session" in
+        "" | idle) printf -v "$_ls_out" idle ;;
+        busy) printf -v "$_ls_out" working ;;
+        *) printf -v "$_ls_out" unjudged ;;
+      esac
+      return 0 ;;
+    *) printf -v "$_ls_out" unjudged; return 0 ;;
+  esac
   _ls_slice="$(pane_below_last_turn "$_ls_screen")"
   _ls_rc=0
   _ls_banner="$(lane_limit_banner "$_ls_slice")" || _ls_rc=$?
   if [[ "$_ls_rc" -eq 2 ]]; then printf -v "$_ls_out" unjudged; return 2; fi
-  if [[ -n "$_ls_banner" ]]; then printf -v "$_ls_out" walled; return 0; fi
+  if [[ -n "$_ls_banner" ]]; then
+    case "$_ls_account" in
+      "" | walled) printf -v "$_ls_out" walled; return 0 ;;
+      room) ;;
+      *) printf -v "$_ls_out" unjudged; return 0 ;;
+    esac
+  fi
   if grep -Eq -- "$LANE_ASKING_RE" <<<"$_ls_slice"; then printf -v "$_ls_out" asking; return 0; fi
   if pane_working "$_ls_slice"; then printf -v "$_ls_out" working; return 0; fi
   # The supplied process read, whole, before any rung that could answer `idle`.
@@ -488,3 +723,43 @@ lane_state() {
     *) printf -v "$_ls_out" unjudged ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# A lane's work item: which tracker its key names, and which merged pull
+# requests are its own. The watch, lane-close and oversee-report each ask one
+# of these here, so each gets the same answer for the same key and pull
+# request.
+# ---------------------------------------------------------------------------
+
+# lane_key_tracker ITEM — prints the tracker the item key alone names: `linear`
+# for a tracker-identifier key, nothing for an issue-N key. open-terminal
+# canonicalizes a tracker-identifier key under its default tracker, Linear. An
+# issue-N key names no tracker: it is the spelling open-terminal writes for a
+# GitHub item AND the spelling a Linear item is keyed by wherever
+# GH_ISSUE_PATTERN accepts it, so nothing in the key picks between them, and
+# guessing github would read whatever repository is at hand on an unrelated
+# issue. The repository behind a GitHub item is in no field but the record's
+# own `repo`, so nothing here supplies one.
+lane_key_tracker() {
+  case "$1" in
+    issue-*) ;;
+    *) printf 'linear' ;;
+  esac
+}
+
+# LANE_MERGED_JQ defines `lane_merged($branch; $owner; $since)`, the one
+# filter over a `gh pr list --state merged` array answering which pull requests
+# are a lane's own: head branch equal to the item key lower-cased, head owner
+# equal to the repository owner (a head GitHub returns with no owner, a
+# deleted fork, is not the lane's), merged at or after the epoch $since. Each
+# kept pull request gains `at`, its merge epoch. A caller prepends it to its
+# own program: jq -r "$LANE_MERGED_JQ"' lane_merged($b; $o; $s)[] | ...'.
+# mergedAt carries fractional seconds on some responses, which fromdateiso8601
+# refuses, so they are cut first.
+LANE_MERGED_JQ='def lane_merged($branch; $owner; $since):
+  [ .[]
+    | select((.headRefName | ascii_downcase) == ($branch | ascii_downcase))
+    | select(((.headRepositoryOwner.login // "") | ascii_downcase) == ($owner | ascii_downcase))
+    | select(.mergedAt != null)
+    | . + {at: (.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)}
+    | select(.at >= $since) ];'

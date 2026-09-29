@@ -34,11 +34,32 @@ The full session from inside a worktree: implement → review → submit → fin
 
    Do **not** pass `--repo` (`claim` and `refresh` reject it). Exit 75 means another session holds the lease — coordinate with that owner instead of proceeding. A flock-less host still serializes through the guard's mkdir mutex; exit 1 means the guard itself failed — stop and read its message, never continue unguarded.
 
-4. **Initialize state**:
+4. **Initialize state unless it exists.** `init` overwrites, and a restarted item's state file carries its round history (`cycles`, `fixed_items`, `patched_causes`), so read existence and the branch first:
 
    ```bash
+   .agents/skills/orch/scripts/workflow-state exists --json [ISSUE_ID]
    .agents/skills/orch/scripts/git-context branch [WORKTREE_PATH]
-   .agents/skills/orch/scripts/workflow-state init [ISSUE_ID] --worktree [WORKTREE_PATH] --branch "[BRANCH_FROM_PREVIOUS_COMMAND]"
+   ```
+
+   `exists` false → initialize:
+
+   ```bash
+   .agents/skills/orch/scripts/workflow-state init [ISSUE_ID] --worktree [WORKTREE_PATH] --branch "[BRANCH]"
+   ```
+
+   `exists` true → keep the state and record where this session runs:
+
+   ```bash
+   .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] worktree "[WORKTREE_PATH]"
+   .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] branch "[BRANCH]"
+   ```
+
+   `[BRANCH]` is the `git-context branch` output.
+
+   Record the tier this session runs at. It lifts any bound a `small` run left in the state; [small.md](small.md) § 1 records `small` after this step:
+
+   ```bash
+   .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] tier standard
    ```
 
 5. **Gate on base freshness.** Every route into a worktree lands here — fresh or reused:
@@ -47,7 +68,7 @@ The full session from inside a worktree: implement → review → submit → fin
    .agents/skills/orch/scripts/base-freshness [WORKTREE_PATH]
    ```
 
-   - Exit 0 → step 6.
+   - Exit 0 → step 6. On a merge-queue base whose rules demand no up-to-date branch, a branch behind it that merges cleanly is fresh; the JSON's `reading` names what decided (`base-freshness --help`).
    - Exit 4 → rebase through the supported reuse path, then re-run the gate; it must exit 0 before step 6:
 
      ```bash
@@ -172,4 +193,4 @@ Terminate every still-active agent in `child_sessions`, then retire the records:
 .agents/skills/orch/scripts/orch-env ORCH_MERGE_AUTONOMY auto
 ```
 
-`auto` → merge without asking: `⤵ workflows/merge-pr.md [PR_NUMBER] § 1-7 → end`. Anything else → ask: `orch merge-pr [PR_NUMBER]` | `Skip`, and on merge run the same workflows. A `MERGE_READY = false` state never auto-merges.
+`auto` → merge without asking: `⤵ workflows/merge-pr.md [PR_NUMBER] § 1-7 → end`. Anything else → ask: `orch merge-pr [PR_NUMBER]` | `Skip`, and on merge run the same workflows. A `MERGE_READY = false` state never auto-merges: `submit-pr.md` § 6.1 disarmed a PR its § 2 step 5 armed before it returned the stop.

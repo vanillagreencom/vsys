@@ -32,6 +32,7 @@ Commands:
   pr-data            Get PR with threads, comments, and files
   pr-view            View PR details (current branch or by number)
   pr-threads         Get PR review threads (optionally filtered)
+  pr-timeline        One PR's phase stamps and CI wall times
   pr-list-ready      List PRs ready for merge
   pr-list-failing    List PRs with CI failures
   pr-create          Create PR as bot account
@@ -159,11 +160,6 @@ EOF
 
 command="${1:-help}"
 shift || true
-_current_user_admin=false
-[[ "$command" == pr-merge && " $* " == *" --admin "* ]] && _current_user_admin=true
-# --admin-credential acts as the owner credential in its own gh config
-# directory: the router must promote no token into its environment either.
-[[ "$command" == pr-merge && " $* " == *" --admin-credential "* ]] && _current_user_admin=true
 
 # Help is answered before project configuration or auth is touched:
 # sourcing a repo's .env.local under --help would execute
@@ -196,6 +192,7 @@ _takes_value() {
         pr-create:--base | pr-create:--head | pr-create:--label) return 0 ;;
         pr-data:--format | pr-threads:--format) return 0 ;;
         pr-edit-body:--body-file) return 0 ;;
+        pr-timeline:--repo | pr-timeline:--gate-context) return 0 ;;
         pr-view:--json | pr-view:--jq | pr-view:--template | pr-view:--repo) return 0 ;;
         pr-view:-q | pr-view:-t | pr-view:-R) return 0 ;;
         sticky-comment:--bot) return 0 ;;
@@ -251,21 +248,17 @@ if [ -z "$_help_route" ]; then
     if [ -n "$_CALLER_GH_BOT_TOKEN_SET" ]; then
         export GH_BOT_TOKEN="$_CALLER_GH_BOT_TOKEN"
     fi
-    if [ "$_current_user_admin" = true ]; then
-        unset GH_TOKEN GITHUB_TOKEN
-    else
-        kendex_github_apply_selected_auth_token router || true
-    fi
+    kendex_github_apply_selected_auth_token router || true
     kendex_github_sanitize_gh_env
     unset _env_root _CALLER_GH_TOKEN_SET _CALLER_GH_TOKEN _CALLER_GITHUB_TOKEN_SET _CALLER_GITHUB_TOKEN _CALLER_GH_BOT_TOKEN_SET _CALLER_GH_BOT_TOKEN
 fi
-unset _help_route _current_user_admin
+unset _help_route
 
 
 
 
 case "$command" in
-    pr-data|pr-view|pr-threads|pr-list-ready|pr-list-failing|pr-create|pr-edit-body|pr-merge|ci-classify-refusal|pr-cross-check|pr-issue|label-add|label-remove|await-mergeable|ci-logs|bot-token|dismiss-review|resolve-thread|unresolve-thread|post-reply|post-comment|find-comment|edit-comment|sticky-comment)
+    pr-data|pr-view|pr-threads|pr-timeline|pr-list-ready|pr-list-failing|pr-create|pr-edit-body|pr-merge|ci-classify-refusal|pr-cross-check|pr-issue|label-add|label-remove|await-mergeable|ci-logs|bot-token|dismiss-review|resolve-thread|unresolve-thread|post-reply|post-comment|find-comment|edit-comment|sticky-comment)
         script="$SCRIPT_DIR/commands/${command}.sh"
         if [ -f "$script" ]; then
             if [ -n "$WORK_DIR" ]; then

@@ -1,21 +1,29 @@
 # Micro Workflow
 
-The tier for an item whose whole change is a few lines. One agent reads the item, edits, commits, pushes, opens the pull request and waits the merge out: no dev subagent, no review cycle, no QA cycle, and no full validation battery. [oversee.md](oversee.md) § Item Tier picks the tier; every other item runs [start.md](start.md).
+The tier for an item whose whole change is a few lines. One agent reads the item, edits, commits, pushes, opens the pull request and waits the merge out: no dev subagent, no review cycle, no QA cycle, and no full validation battery. [oversee.md](oversee.md) § Item Tier picks the tier through `item-tier`, and § 4 holds the branch to the classifier that script reads. A `small` item runs [small.md](small.md); every other item runs [start.md](start.md).
 
 | Command | Flow |
 |---------|------|
 | `micro [ISSUE_ID]` | § 1 → § 5 |
 | `micro github OWNER/REPO#N` | normalize to `ISSUE_ID=issue-N`, then § 1 → § 5 |
 
-The runner is a lane in the item's worktree, or the overseer in the main checkout with no worktree for the item. `[WT_PATH]` is that checkout's root throughout. Steps marked **Main checkout only** are the second route's alone.
+The runner is a lane in the item's worktree, or the overseer in the main checkout with no worktree for the item. `[WT_PATH]` is that checkout's root throughout. Steps marked **Main checkout only** are the second route's alone. A lane never waits on the overseer for a step this workflow permits: [skill-rules.md § Coordination](../references/skill-rules.md#coordination), Lane asks.
 
-**Main checkout only.** The run returns that checkout to `[BASE_BRANCH]` before it reports anything: at § 3, at an escape, and at any stop in between. The supported transfer in § Escape moves the item's branch and any uncommitted edit into its worktree first. The fleet runs `sync-base`, `post-merge` and [consumer-train.md](consumer-train.md) in that checkout at every merge ([oversee-events.md § Event kinds](../references/oversee-events.md#event-kinds)), and `sync-base` refuses a tracked-dirty tree. § 5 reports the branch the checkout ends on.
+**Main checkout only.** The run returns that checkout to `[BASE_BRANCH]` before it reports anything: at § 3, at an escape, and at any stop in between. The supported transfer in § Escape moves the item's branch and any uncommitted edit into its worktree first. The fleet runs its merge handling in that checkout at every merge ([oversee-events.md § Event kinds](../references/oversee-events.md#event-kinds), `merged`), and `sync-base` refuses a tracked-dirty tree. § 5 reports the branch the checkout ends on.
 
 ## Budget
 
 § 1 through § 3 take about 8 minutes in a lane and about 3 in the overseer's own session. A run past that target finishes and reports the overrun in § 5.
 
 ## 1. Open The Session
+
+**Main checkout only.** Read the lane host before anything else:
+
+```bash
+.agents/skills/orch/scripts/lane-host resolve
+```
+
+Any answer but `local` refuses the run here, with nothing read, activated or changed; [SKILL.md](../SKILL.md) § The Cycle, Item work stays in lanes, holds the rule. The report's first line is `micro-control-host host=[HOST]`, and its next line is the fix: launch the item as a hosted lane through [oversee.md](oversee.md) § 3 Lane directive, Placement, with its `/orch micro [ISSUE_ID]` brief.
 
 Resolve `TRACKER` and `ISSUE_REF` from `[ISSUE_ID]` per [SKILL.md § Tracker Resolution](../SKILL.md#tracker-resolution), then the main checkout:
 
@@ -60,8 +68,23 @@ Read the branch both routes now stand on and initialize the item's workflow stat
 .agents/skills/orch/scripts/git-context branch [WT_PATH]
 ```
 
+`init` overwrites, and a restarted item's state file carries its round history, so read existence first:
+
 ```bash
-.agents/skills/orch/scripts/workflow-state init [ISSUE_ID] --worktree [WT_PATH] --branch "[BRANCH_FROM_PREVIOUS_COMMAND]"
+.agents/skills/orch/scripts/workflow-state exists --json [ISSUE_ID]
+```
+
+`exists` false → initialize:
+
+```bash
+.agents/skills/orch/scripts/workflow-state init [ISSUE_ID] --worktree [WT_PATH] --branch "[BRANCH]"
+```
+
+`exists` true → keep the state and record where this run stands:
+
+```bash
+.agents/skills/orch/scripts/workflow-state set [ISSUE_ID] worktree "[WT_PATH]"
+.agents/skills/orch/scripts/workflow-state set [ISSUE_ID] branch "[BRANCH]"
 ```
 
 ## 2. Edit And Commit
@@ -96,7 +119,7 @@ Read the branch both routes now stand on and initialize the item's workflow stat
 
 ## 3. Push And Open The PR
 
-**Run Workflow**: `⤵ workflows/submit-pr.md § 2 steps 1-4 → § 3 tail` with context `worktree`, `lifecycle: "managed"`, `issue_id`. That range owns the push and its `sha-reconcile:` routing, the size measurement against the `**Expected delta**` line the tier was selected from, and the create. This tier changes two things inside it:
+**Run Workflow**: `⤵ workflows/submit-pr.md § 2 steps 1-4 → § 3 tail` with context `worktree`, `lifecycle: "managed"`, `issue_id`. That range owns the push and its `sha-reconcile:` routing, the size measurement against the item's optional `**Expected delta**` allowance, and the create. This tier changes two things inside it:
 
 - The body is the three lines below rather than step 3's template. No headings and no other section.
 - Step 1's measured verdict routes here: `over` escapes (§ Escape condition 5); `pass` and `allowance_missing` continue.
@@ -115,7 +138,7 @@ git -C [MAIN_REPO_ROOT] checkout [BASE_BRANCH]
 
 ## 4. Arm And Wait
 
-Bind what [merge-pr.md](merge-pr.md) § 1 binds once per run, which its §§ 4-7 consume and this entry skips. `[MAIN_REPO_ROOT]` is § 1's here, `merge_mode` stays `normal`, and `[ALREADY_MERGED]` is unset. The directory is where every stop in that range renders its comment:
+Bind what [merge-pr.md](merge-pr.md) § 1 binds once per run, which its §§ 4-7 consume and this entry skips. `[MAIN_REPO_ROOT]` is § 1's here, and `[ALREADY_MERGED]` is unset. The directory is where every stop in that range renders its comment:
 
 ```bash
 .agents/skills/orch/scripts/orch-env ORCH_DECISION_MODE auto-recommended
@@ -125,11 +148,19 @@ Bind what [merge-pr.md](merge-pr.md) § 1 binds once per run, which its §§ 4-7
 mkdir -p [MAIN_REPO_ROOT]/tmp
 ```
 
-Resolve the project's reviewer-gate mode, which merge-pr.md § 3 would have resolved ([references/gates.md](../references/gates.md)). Only `approval` can supply GitHub's required-review decision. `off` and `review` escape (§ Escape condition 7):
+Read the pull request's exact endpoints through the GitHub skill and bind them as `[BASE_SHA]` and `[HEAD_SHA]`:
 
 ```bash
-env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait --resolve-mode
+env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/github/scripts/github.sh -C [MAIN_REPO_ROOT] pr-view [PR_NUMBER] --json baseRefOid,headRefOid
 ```
+
+Ask the review gate's policy owner to classify that range. It calls the shared harness-ci classifier and accepts no asserted class:
+
+```bash
+[MAIN_REPO_ROOT]/.agents/skills/review-gate/scripts/review-policy --event pull_request --base [BASE_SHA] --head [HEAD_SHA] --repo [WT_PATH]
+```
+
+The accepted set is every class at or below this tier that needs no review evidence under an active policy: `change_class=render`, `change_class=trivial` or `change_class=micro`, each followed by `review_evidence=none policy=active`. Any such answer continues. Every other answer escapes (§ Escape condition 7): a command failure, an inactive policy, an unresolved class, a class above this tier (`small`, `standard`), or another evidence policy. This route is independent of the repository's `approval` or `review` gate mode because the review gate owns the class exemption. Its [README per-class table](../../review-gate/README.md#class-policy) is the policy statement.
 
 Ask the canonical merge gate for its readiness object before any merge attempt:
 
@@ -137,27 +168,17 @@ Ask the canonical merge gate for its readiness object before any merge attempt:
 env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/github/scripts/github.sh -C [MAIN_REPO_ROOT] pr-merge [PR_NUMBER] --check
 ```
 
-Its JSON stdout is `[CHECK]`. Require a valid readiness object for an open pull request with no `review_fetch_failed:` issue. That issue means the review-status read was unavailable, whatever value `.review` carries. Read `.review` once as `[MICRO_REVIEW_STATE]` and route it by this table:
+Its JSON stdout is `[CHECK]`. Require a valid readiness object for an open pull request. A command failure, an unreadable object, or a non-open pull request escapes (§ Escape condition 7). A red required check or a merge conflict never reaches a merge: `pr-merge` refuses both, and § 5 step 1 routes that refusal.
 
-| `[MICRO_REVIEW_STATE]` | Route |
-|------------------------|-------|
-| `REVIEW_REQUIRED` | Continue. Save this state as proof that GitHub has a required review still pending. |
-| `APPROVED` | Continue. Save this state as proof that GitHub's required review is complete. |
-| Any other value, including an empty value | Escape (§ Escape condition 7). The value does not prove a safe required-review state. |
+**Run Workflow**: `⤵ workflows/merge-pr.md [PR_NUMBER] § 4-7 → § 5` with `[ISSUE]` as `[ISSUE_ID]`, `[PR_BRANCH]` as `[BRANCH]`, and `[STATE_KEY]` as `[ISSUE_ID]`, binding `[MICRO_ENTRY]` to `true` and `[MICRO_HEAD]` to `[HEAD_SHA]`. The exemption was proved over that head alone, so the head is what carries it across the handoff: § 5 step 1 refuses a prepared head that is not this one.
 
-A command failure, unreadable object, non-open pull request, or unavailable review-status read escapes too. This check happens before merge-pr can attempt or arm a merge.
+Its § 3 is skipped, so nothing waits on CI or on a reviewer before the arm. § 5 step 1 attempts the prepared head and owns the queue wait to a terminal verdict. A refusal returns to its § 3.2, which reads the `[CHECK]` object only the skipped § 3 produces. That return escapes (§ Escape condition 8).
 
-**Run Workflow**: `⤵ workflows/merge-pr.md [PR_NUMBER] § 4-7 → § 5` with `[ISSUE]` as `[ISSUE_ID]`, `[PR_BRANCH]` as `[BRANCH]`, `[STATE_KEY]` as `[ISSUE_ID]`, and `[MICRO_REVIEW_STATE]` as the saved value.
-
-Its § 3 is skipped, so nothing waits on CI or on a reviewer before the arm. § 5 step 1 attempts the prepared head and owns the queue wait to a terminal verdict. A saved `REVIEW_REQUIRED` state lets an otherwise clear `cause: none` refusal arm auto-merge for that pending decision. A saved `APPROVED` state grants no such exception. The gate mode resolved above is what an arm waits on.
-
-A § 5 step 1 refusal outside `ci_pending` and the guarded `REVIEW_REQUIRED` plus `cause: none` route returns to its § 3.2, which reads the `CHECK` object only the skipped § 3 produces. That return escapes (§ Escape condition 8).
-
-A `dequeued` verdict routes to that step's late-findings triage. A finding there that needs a change § Escape excludes ends this run at the escape instead.
+A `dequeued` verdict routes to that step's late-findings triage. A finding there that needs a change § Escape excludes ends this run at the escape instead. A wording, naming or index finding is answered by reply and starts no fix push: [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow).
 
 ## 5. Return
 
-Output: [Lane Output](../references/skill-rules.md#lane-output).
+Output: [Lane Output](../references/skill-rules.md#lane-output). The § 1 control-host refusal is the one return that is not this table: it returns its own two-line report.
 
 <output_format>
 
@@ -180,26 +201,29 @@ The tier holds only while the item and its change stay inside it. Each condition
 
 1. § 1 read a container, a blocked child, or a bundle. This tier implements one item's own Done-when and nothing else.
 2. The repository's commit chain is not armed, or the answer could not be read.
-3. The edit reached a file that gates a merge, runs in a commit or turn hook, enforces a guard rule, launches a lane, or sets this tier's own boundary: this workflow, [oversee.md](oversee.md) § Item Tier, and the scripts §§ 2-3 measure the run with, `install-git-hooks` and `branch-size-check`. § 2 step 3 reads the changed paths against this class. [references/narrow-change.conf](../references/narrow-change.conf) holds that class as globs a script can read, together with the schema, lock-format and manifest paths the wider `small` class also refuses; every `path` line there escapes this tier, so a reader checks a path against the whole list. It also carries this tier's production ceiling, which [oversee.md](oversee.md) § Item Tier selects on.
+3. The edit reached a file that gates a merge, runs in a commit or turn hook, enforces a guard rule, launches a lane, or sets this tier's own boundary: this workflow, [small.md](small.md), [oversee.md](oversee.md) § Item Tier and the `item-tier` script it runs, `install-git-hooks`, and the measurement `branch-size-check` runs, whose files are the `# [boundary]` group of [references/narrow-change.conf](../references/narrow-change.conf) under the rule that group states. § 2 step 3 reads the changed paths against this class. [references/narrow-change.conf](../references/narrow-change.conf) holds that class as globs a script can read, together with the lock-format, manifest-parser and render-inventory paths the wider `small` class also refuses; every `path` line there escapes this tier except one a `superseded` line names, which is kept for older readers and skipped as the list's header states, so a reader checks a path against every other `path` line. Its `instruction` lines name the agent instruction files, `AGENTS.md` and `SKILL.md` at any depth: an edit reaching one answers `small` where it would earn micro, so it escapes this tier too. It also carries this tier's production ceiling, which `item-tier` selects on.
 4. The commit chain refuses the commit over a repository rule. A missing changelog fragment and a rejected commit message are this workflow's own to fix and are not escapes.
 5. `branch-size-check` reports `over`.
 6. A review finding on the pull request needs a change condition 3 or 5 excludes.
-7. § 4 cannot prove through `pr-merge --check` that GitHub's required-review state is `REVIEW_REQUIRED` or `APPROVED`. This includes `off`, `review`, an unreadable gate result, a `review_fetch_failed:` issue, and an empty or other `.review` value. An unavailable review-status read stays a fetch failure; an empty value alone proves no safe review state.
+7. § 4 cannot prove both halves of its precheck. Either the review gate's answer is outside the accepted set § 4 states, or `pr-merge --check` returns no valid readiness object for an open pull request.
 8. merge-pr.md § 5 step 1 returns to its § 3.2.
+9. merge-pr.md § 5 step 1 refuses: the mode it resolves over the prepared endpoints is not `exempt`, or `[PREPARED_HEAD]` is not `[MICRO_HEAD]`. The endpoints moved between § 4's classification and that step, by a push or by a retarget that changes the class without moving the head.
+
+The § 1 control-host refusal also ends the run, before any condition above can apply. It is not an escape: the item stays at the `micro` tier and launches as a hosted lane.
 
 Ending the run leaves the branch and its commits where they stand and reports the condition in § 5. **Main checkout only**, use the route below before reporting. It owns the base-branch restore this file opens with.
 
-The item then relaunches at the `standard` tier, by the route the checkout leaves it on:
+The item then relaunches at the next class up, as [oversee.md](oversee.md) § Item Tier assigns it from the branch's state, by the route the checkout leaves it on. `[BRIEF]` is that assignment's `brief=` word:
 
-- **In a lane**, `/orch start [ISSUE_ID]` routes a worktree cwd to [start-worktree.md](start-worktree.md) ([start.md](start.md) § 1 step 3), whose § 1 resolves the item from the existing branch and whose § 2 implements against it.
-- **From the main checkout at condition 1**, no branch was cut: the item takes plain `/orch start [ISSUE_ID]`.
-- **From the main checkout at conditions 2 through 4**, the branch is local-only and can be dirty. Transfer it through the worktree owner's guarded path, which restores the main checkout to its default branch and moves staged, unstaged and untracked changes with the branch. Run `/orch start [ISSUE_ID]` from the path it prints:
+- **In a lane**, run `/orch [BRIEF] [ISSUE_ID]`. `small` runs [small.md](small.md), and `start` routes a worktree cwd to [start-worktree.md](start-worktree.md) ([start.md](start.md) § 1 step 3). Either session's § 1 resolves the item from the existing branch, and its § 2 implements against it.
+- **From the main checkout at condition 1**, no branch was cut: the item takes plain `/orch [BRIEF] [ISSUE_ID]`.
+- **From the main checkout at conditions 2 through 4**, the branch is local-only and can be dirty. Transfer it through the worktree owner's guarded path, which restores the main checkout to its default branch and moves staged, unstaged and untracked changes with the branch. Run `/orch [BRIEF] [ISSUE_ID]` from the path it prints:
 
   ```bash
   .agents/skills/worktree/scripts/worktree create [ISSUE_ID] --transfer [BRANCH]
   ```
 
-- **From the main checkout at conditions 5 through 8**, the branch was pushed. Restore `[BASE_BRANCH]`, then attach the remote branch with `--pr [PR_NUMBER]` when the pull request exists, or `--base [BRANCH]` before it exists. Run `/orch start [ISSUE_ID]` from the path the command prints:
+- **From the main checkout at conditions 5 through 8**, the branch was pushed. Restore `[BASE_BRANCH]`, then attach the remote branch with `--pr [PR_NUMBER]` when the pull request exists, or `--base [BRANCH]` before it exists. Run `/orch [BRIEF] [ISSUE_ID]` from the path the command prints:
 
   ```bash
   git -C [MAIN_REPO_ROOT] checkout [BASE_BRANCH]
