@@ -168,7 +168,7 @@ SCOPE_TASKS_WARN = int(os.environ.get("AGENT_SCOPE_TASKS_WARN", str(SCOPE_TASKS_
 # never killed. Applied to scopes the warden creates; agent-confine sets it at
 # launch. 64 GiB default.
 SCOPE_MEM_HIGH = int(os.environ.get("AGENT_SCOPE_MEM_HIGH_BYTES", str(64 * 1024**3)))
-SCOPE_MEM_WARN = int(os.environ.get("AGENT_SCOPE_MEM_WARN_BYTES", str(48 * 1024**3)))
+SCOPE_MEM_WARN = int(os.environ.get("AGENT_SCOPE_MEM_WARN_BYTES", str(SCOPE_MEM_HIGH * 3 // 4)))
 
 
 def scope_harm(nproc, cores):
@@ -204,7 +204,7 @@ def unit_of(cgroup):
 
 def _unit_has_own_limit(unit_path):
     d = CG_ROOT / unit_path
-    for name in ("memory.max", "memory.high"):
+    for name in ("memory.max", "memory.high", "memory.swap.max"):
         v = read(d / name)
         if v is not None and v.strip() and v.strip() != "max":
             return True

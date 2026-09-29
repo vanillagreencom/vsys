@@ -26,7 +26,7 @@ Before a move, the warden opens a pidfd for each process. It re-reads identity, 
 
 A contained job unit is never a move root and never rides along with a moved tree. The default job-unit pattern is `orch-*.service`.
 
-A unit also counts as contained when it is outside `agents.slice` and its own cgroup directory has a real memory, CPU, I/O or cpuset limit. `pids.max` is not enough, because systemd can set a default task limit on every unit.
+A unit also counts as contained when it is outside `agents.slice` and its own cgroup directory has a real memory, swap, CPU, I/O or cpuset limit. `pids.max` is not enough, because systemd can set a default task limit on every unit.
 
 This rule protects transient validation services such as `orch-validate-vsy-50-12345.service`. The service owns its own process group and time limit. Moving it into an `agent-warden-*.scope` would make the orphan reaper stop a long validation run after the launcher exits. The job-unit rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` cover this regression.
 
@@ -56,23 +56,26 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 
 ## Tunables
 
-| Variable | Default | Effect |
-| --- | --- | --- |
-| `AGENT_WARDEN_ONLY` | unset | Limits one scan to listed process ids. |
-| `AGENT_WARDEN_SPLIT_SESSIONS` | `1` | Splits nested agent sessions when the lineage is not capped. |
-| `AGENT_WARDEN_ORPHAN_GRACE` | `300` | Seconds an orphan must stay orphaned before a reap can happen. |
-| `AGENT_WARDEN_REAP` | `1` | Enables orphan reaping. |
-| `AGENT_WARDEN_JOB_UNITS` | `orch-*.service` | Whitespace-separated systemd unit patterns left in place. |
-| `AGENT_WARDEN_ORPHAN_PROCS` | `40` | Process count that makes an orphan harmful. |
-| `AGENT_WARDEN_ORPHAN_CPU` | `0.5` | CPU cores that make an orphan harmful. |
-| `AGENT_SCOPE_TASKS_MAX` | `8192` | Per-session task ceiling. |
-| `AGENT_SCOPE_TASKS_WARN` | `6144` | Per-session task warning threshold. |
-| `AGENT_SCOPE_MEM_HIGH_BYTES` | `68719476736` | Per-session soft memory ceiling. |
-| `AGENT_SCOPE_MEM_WARN_BYTES` | `51539607552` | Per-session memory warning threshold. |
-| `AGENT_TMPDIR` | unset | Overrides the launcher scratch directory. |
-| `AGENT_TEST_THREADS` | `8` | Test-thread cap exported by the launcher. |
-| `AGENT_BUILD_JOBS` | `16` | Build-job cap exported by the launcher. |
-| `AGENT_MOLD_JOBS` | `1` | Mold linker concurrency cap. Empty disables it. |
+| Variable | Consumer | Default | Effect |
+| --- | --- | --- | --- |
+| `AGENT_WARDEN_ONLY` | warden | unset | Limits one scan to listed process ids. |
+| `AGENT_WARDEN_SPLIT_SESSIONS` | warden | `1` | Splits nested agent sessions when the lineage is not capped. |
+| `AGENT_WARDEN_ORPHAN_GRACE` | warden | `300` | Seconds an orphan must stay orphaned before a reap can happen. |
+| `AGENT_WARDEN_REAP` | warden | `1` | Enables orphan reaping. |
+| `AGENT_WARDEN_JOB_UNITS` | warden | `orch-*.service` | Whitespace-separated systemd unit patterns left in place. |
+| `AGENT_WARDEN_ORPHAN_PROCS` | warden | `40` | Process count that makes an orphan harmful. |
+| `AGENT_WARDEN_ORPHAN_CPU` | warden | `0.5` | CPU cores that make an orphan harmful. |
+| `AGENT_SCOPE_TASKS_MAX` | both | `8192` | Per-session task ceiling. |
+| `AGENT_SCOPE_TASKS_WARN` | warden | `6144` | Per-session task warning threshold. |
+| `AGENT_SCOPE_MEM_HIGH` | launcher | `64G` | Per-session soft memory ceiling passed to systemd. |
+| `AGENT_SCOPE_MEM_HIGH_BYTES` | warden | `68719476736` | Per-session soft memory ceiling used for warden-created scopes and lineage baseline. |
+| `AGENT_SCOPE_MEM_WARN_BYTES` | warden | 75% of `AGENT_SCOPE_MEM_HIGH_BYTES` | Per-session memory warning threshold. |
+| `AGENT_TMPDIR` | launcher | unset | Overrides the launcher scratch directory. |
+| `AGENT_TEST_THREADS` | launcher | `8` | Test-thread cap exported by the launcher. |
+| `AGENT_BUILD_JOBS` | launcher | `16` | Build-job cap exported by the launcher. |
+| `AGENT_MOLD_JOBS` | launcher | `1` | Mold linker concurrency cap. Empty disables it. |
+
+`AGENT_SCOPE_MEM_HIGH` and `AGENT_SCOPE_MEM_HIGH_BYTES` must name the same size. The launcher reads the systemd size string. The warden reads the byte value for warden-created scopes and for the lineage baseline.
 
 ## Files and install
 

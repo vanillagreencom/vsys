@@ -15,6 +15,9 @@ def run_warden_checks() -> None:
     script = warden / "agent-warden"
     if not script.is_file():
         raise ValueError("warden/ exists without warden/agent-warden")
+    tests = warden / "agent_warden_test.py"
+    if not tests.is_file():
+        raise ValueError("warden/ exists without warden/agent_warden_test.py")
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     subprocess.run([sys.executable, str(script), "--selftest"], check=True, env=env)
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "warden", "-p", "*_test.py"], check=True, env=env)

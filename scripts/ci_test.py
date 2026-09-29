@@ -127,6 +127,13 @@ class ApplicationChecks(unittest.TestCase):
         self.assertNotEqual(self.run_ci().returncode, 0)
         self.assertFalse(self.commands.exists())
 
+    def test_warden_without_test_file_fails(self):
+        self.package()
+        self.make_warden()
+        (self.root / "warden" / "agent_warden_test.py").unlink()
+        self.assertNotEqual(self.run_ci().returncode, 0)
+        self.assertFalse(self.commands.exists())
+
     def test_check_order_and_each_command_failure(self):
         commands = ["install --frozen-lockfile", "run lint", "run typecheck", "run test", "run build"]
         self.package()

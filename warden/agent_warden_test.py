@@ -339,6 +339,27 @@ class AgentWardenRules(unittest.TestCase):
         source = WARDEN.read_text()
         self.assertIn("ctypes.c_uint64(SCOPE_CPU_WEIGHT)", source)
 
+    def test_memory_warn_default_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            default_env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            low_env = clean_env({"HOME": base / "home-low", "XDG_RUNTIME_DIR": base / "run-low", "MISE_DATA_DIR": base / "mise-low", "AGENT_SCOPE_MEM_HIGH_BYTES": str(8 * 1024**3)})
+            explicit_env = clean_env({"HOME": base / "home-explicit", "XDG_RUNTIME_DIR": base / "run-explicit", "MISE_DATA_DIR": base / "mise-explicit", "AGENT_SCOPE_MEM_HIGH_BYTES": str(8 * 1024**3), "AGENT_SCOPE_MEM_WARN_BYTES": str(7 * 1024**3)})
+            for env in (default_env, low_env, explicit_env):
+                for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                    Path(env[key]).mkdir(parents=True, exist_ok=True)
+            default_w = load_warden(default_env, "agent_warden_default_mem_warn")
+            low_w = load_warden(low_env, "agent_warden_low_mem_warn")
+            explicit_w = load_warden(explicit_env, "agent_warden_explicit_mem_warn")
+        rows = [
+            ("default warning stays 48 GiB", default_w.SCOPE_MEM_WARN, 48 * 1024**3),
+            ("lowered high derives warning", low_w.SCOPE_MEM_WARN, 6 * 1024**3),
+            ("explicit warning wins", explicit_w.SCOPE_MEM_WARN, 7 * 1024**3),
+        ]
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
     def test_job_unit_rows(self):
         orch = "/user.slice/user-1000.slice/user@1000.service/app.slice/orch-validate-vsy-50-12345.service"
         limited = "/user.slice/user-1000.slice/user@1000.service/app.slice/build-with-memory.service"
@@ -501,6 +522,7 @@ class AgentWardenRules(unittest.TestCase):
                 for name, file_name, value in (
                     ("memory max", "memory.max", "1"),
                     ("memory high", "memory.high", "1"),
+                    ("memory swap max", "memory.swap.max", "1"),
                     ("cpu max", "cpu.max", "1000 10000"),
                     ("io max", "io.max", "8:0 rbps=1"),
                     ("cpuset cpus", "cpuset.cpus", "0"),
