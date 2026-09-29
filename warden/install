@@ -358,7 +358,7 @@ def status(directory: Path, controllers_path: Path | None = None) -> int:
     print(f"service result: {service_result or 'unknown'}")
     print(f"delegation cpu memory pids: {delegation}")
     installed = all(state.state == "installed-by-vsys" for state in states) and data_state == "installed-by-vsys"
-    ok = installed and enabled == "enabled" and active == "active" and delegated
+    ok = installed and enabled == "enabled" and active == "active" and service_result == "success" and delegated
     return 0 if ok else 1
 
 

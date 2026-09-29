@@ -103,7 +103,7 @@ Machine-local agent names live in `${XDG_CONFIG_HOME:-$HOME/.config}/vsys/agent-
 
 `vsys warden uninstall` disables only `agent-warden.timer`, removes only marked files, removes the copied shared agent-tool list only when its hash matches the service unit record, and removes a leftover `timers.target.wants/agent-warden.timer` symlink only when it points at the marked timer. It never stops `agents.slice` and never touches scopes, so running agents keep running. After daemon reload, removing the slice file removes the template limits for future units. `warden/install_test.py` covers removal and foreign files left in place.
 
-`vsys warden status` is read-only. It reports whether each unit and the copied shared agent-tool list are installed by vsys, foreign or missing. It reports whether the timer is enabled and active, the timer's last trigger, the service result and whether `cpu`, `memory` and `pids` are delegated to `user@.service`. A failed read stays unknown. `warden/install_test.py` covers complete delegation, missing delegation and unknown delegation.
+`vsys warden status` is read-only. It reports whether each unit and the copied shared agent-tool list are installed by vsys, foreign or missing. It reports whether the timer is enabled and active, the timer's last trigger, the service result and whether `cpu`, `memory` and `pids` are delegated to `user@.service`. It exits successfully only when the service result is `success`. A failed read stays unknown. `warden/install_test.py` covers complete delegation, missing delegation, failed service result and unknown delegation.
 
 The installer does not install the root desktop-protection pack. That pack owns the `MemoryLow` chain and cgroup recursive protection. It remains a separate root-owned setup.
 
@@ -129,7 +129,7 @@ Migration order:
 
 1. Set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` in the environment that starts agent wrappers.
 2. Remove the dotfiles stow links for `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`.
-3. Link or copy `<warden dir>/agent-confine` and `<warden dir>/agent-confine-lineage-capped` into one directory on `PATH`, such as `~/.local/bin`, before new panes depend on them. Keep both launchers from the same warden tree.
+3. Link or copy `<warden dir>/agent-warden`, `<warden dir>/agent-confine` and `<warden dir>/agent-confine-lineage-capped` into one directory on `PATH`, such as `~/.local/bin`, before new panes depend on them. Keep all three scripts from the same warden tree, because the launcher and lineage helper resolve their sibling scripts from their invoked directory.
 4. Run `vsys warden install`.
 5. Put the owner `agents.slice` values in a local drop-in under `agents.slice.d/*.conf`.
 6. Verify that no warden script or unit points into dotfiles.

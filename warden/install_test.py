@@ -344,6 +344,11 @@ class WardenInstallTest(unittest.TestCase):
             self.assertIn("timer enabled: enabled", text)
             self.assertIn("timer active: active", text)
             self.assertIn("delegation cpu memory pids: complete", text)
+            failed = {**env, "STUB_RESULT": "exit-code"}
+            with Env(failed), contextlib.redirect_stdout(io.StringIO()) as output:
+                code = installer.status(user_dir, full)
+            self.assertEqual(code, 1)
+            self.assertIn("service result: exit-code", output.getvalue())
             with Env(env), contextlib.redirect_stdout(io.StringIO()) as output:
                 code = installer.status(user_dir, missing)
             self.assertEqual(code, 1)
