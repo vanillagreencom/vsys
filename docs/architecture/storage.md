@@ -7,7 +7,7 @@ Storage collection reads filesystem state, device counters, drive reports and sc
 ## Boundaries
 
 - The mount parser owns mount roots and path escaping for both cgroup and filesystem collection, including namespace and bind-mounted paths.
-- Scratch traversal runs as a cooperative background task during interactive collection, so a snapshot carries its measurement time and pending state. Scripted collection waits for a complete scan.
+- Scratch traversal runs as a cooperative background task during interactive collection, so a snapshot carries its measurement time and pending state. Plain `--once` waits for a complete scan. `--once --summary` skips scratch through the collector sample option, so scratch reads as not measured; [verdict.md](verdict.md) owns that summary contract.
 - vsys runs no privileged helper. Drive lifetime writes come from `smartctl -A` reports a privileged timer leaves in the configured directory, one file per `/sys/block` device name with at most one extension, and a file matching no device is ignored.
 - Btrfs subvolumes of one filesystem mount separately and each reports the whole device's free space and error counters, so Storage groups them under their device and a mount row carries only what differs between mounts.
 - The filesystem, not the mount and not the device, is the unit of integrity. `volumesByDevice` in `src/model/integrity.ts` forms that group, and the cause ladder, the Storage line and the drill-down all read the one `integrity()` reading per group.

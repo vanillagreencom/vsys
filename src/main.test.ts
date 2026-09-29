@@ -153,6 +153,20 @@ test("once summary exports verdict schema and skips scratch collection", async (
     });
     const invalid = await run(["--summary", "--markdown"]);
     expect(invalid.code).toBe(1);
+    const missingOnce = Bun.spawn(
+      [process.execPath, "src/main.ts", "--summary", "--config", path],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { HOME: f.root, PATH: bin },
+      },
+    );
+    const [missingOnceStderr, missingOnceCode] = await Promise.all([
+      new Response(missingOnce.stderr).text(),
+      missingOnce.exited,
+    ]);
+    expect(missingOnceCode).toBe(1);
+    expect(missingOnceStderr).toContain("vsys: --summary requires --once");
   } finally {
     f.cleanup();
   }
