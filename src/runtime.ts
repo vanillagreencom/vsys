@@ -191,13 +191,19 @@ export class Session {
       );
       let agentToolSave: AgentToolNamesSave | null = null;
       if (agentToolsChanged) {
-        const requested = currentState.agentToolsPinned
-          ? next.agentTools
-          : rebaseAgentToolEdit(
-              this.config.agentTools,
-              next.agentTools,
-              currentState.config.agentTools,
-            );
+        const currentAgentTools = [...currentState.config.agentTools];
+        const currentAgentToolSet = new Set(currentAgentTools);
+        for (const name of currentState.layeredAgentTools) {
+          if (!currentAgentToolSet.has(name)) {
+            currentAgentTools.push(name);
+            currentAgentToolSet.add(name);
+          }
+        }
+        const requested = rebaseAgentToolEdit(
+          this.config.agentTools,
+          next.agentTools,
+          currentAgentTools,
+        );
         agentToolSave = await prepareAgentToolNamesSave(
           requested,
           this.agentToolsPath,
