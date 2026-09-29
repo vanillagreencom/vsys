@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Collector } from "./collect/collector";
 import { saveConfig } from "./config/config";
+import { sampleSummary } from "./main";
+import { summarySnapshot } from "./model/export";
 import { fixture } from "./test/fixture";
 
 function hermeticBin(root: string): string {
@@ -167,6 +170,49 @@ test("once summary exports verdict schema and skips scratch collection", async (
     ]);
     expect(missingOnceCode).toBe(1);
     expect(missingOnceStderr).toContain("vsys: --summary requires --once");
+  } finally {
+    f.cleanup();
+  }
+});
+test("summary sampling gives rate-backed activity a baseline", async () => {
+  const f = fixture();
+  try {
+    let time = 1000;
+    f.group("agents.slice/rate.scope", [40]);
+    f.proc(40, "agents.slice/rate.scope");
+    f.write(
+      join(f.config.procRoot, "pressure/io"),
+      "some avg10=70.00 avg60=0.00 avg300=0.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    );
+    const firstOnly = await new Collector(f.config, 100, 4096).sample(
+      time,
+      undefined,
+      { skipScratch: true },
+    );
+    expect(
+      summarySnapshot(firstOnly, f.config).verdict.find(
+        (cause) => cause.cause === "disk",
+      ),
+    ).toBeUndefined();
+    const { snapshot } = await sampleSummary(
+      new Collector(f.config, 100, 4096),
+      async () => {
+        time = 2000;
+        f.write(
+          join(f.config.cgroupRoot, "agents.slice/rate.scope/io.stat"),
+          "259:0 rbytes=1000 wbytes=2102000 rios=1 wios=2\n",
+        );
+      },
+      () => time,
+    );
+    expect(
+      summarySnapshot(snapshot, f.config).verdict.find(
+        (cause) => cause.cause === "disk",
+      ),
+    ).toMatchObject({
+      cause: "disk",
+      subject: "agents.slice/rate.scope",
+    });
   } finally {
     f.cleanup();
   }

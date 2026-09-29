@@ -2,7 +2,7 @@
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { createCollector } from "./collect/collector";
+import { type Collector, createCollector } from "./collect/collector";
 import { capturePane, insideTmux } from "./collect/tmux";
 import { agentToolsPath } from "./config/agent-tools";
 import { configPath, loadConfig } from "./config/config";
@@ -11,6 +11,21 @@ import { exportSnapshot, exportSummary } from "./model/export";
 import { Session } from "./runtime";
 import { History } from "./store/history";
 import { dispatchWarden } from "./warden";
+
+export async function sampleSummary(
+  collector: Pick<Collector, "sample">,
+  pause: () => Promise<void> = () => Bun.sleep(100),
+  now: () => number = Date.now,
+) {
+  const first = await collector.sample(now(), undefined, {
+    skipScratch: true,
+  });
+  await pause();
+  const snapshot = await collector.sample(now(), undefined, {
+    skipScratch: true,
+  });
+  return { snapshot, errors: [...first.errors, ...snapshot.errors] };
+}
 
 /** --once produces a sample without starting a terminal renderer. */
 export async function main(args = process.argv.slice(2)): Promise<void> {
@@ -48,15 +63,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   if (values.once) {
     try {
       if (values.summary) {
-        const first = await collector.sample(Date.now(), undefined, {
-          skipScratch: true,
-        });
-        // Rate fields need one earlier sample with a positive elapsed window.
-        await Bun.sleep(100);
-        const snapshot = await collector.sample(Date.now(), undefined, {
-          skipScratch: true,
-        });
-        const errors = [...first.errors, ...snapshot.errors];
+        const { snapshot, errors } = await sampleSummary(collector);
         console.log(
           exportSummary(snapshot, config, errors, { scratchMeasured: false }),
         );
