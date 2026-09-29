@@ -95,7 +95,7 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 
 The service template keeps `ExecStart=@WARDEN_DIR@/agent-warden --correct`. The installer fills it with the resolved warden tree. It escapes `%` for systemd and quotes paths with whitespace or quotes. It refuses the install when `agent-warden` is not executable. `warden/install_test.py` covers the path substitution and percent escaping.
 
-Each installed unit starts with the vsys warden marker. The installer refuses the whole install when any target is a symlink or an unmarked file, so it does not write through a dotfiles stow link. A marked file is ours and can be rewritten. `warden/install_test.py` covers foreign files, symlinks and reinstalling marked files.
+Each installed unit starts with the vsys warden marker. The installer refuses the whole install when any target is a symlink or an unmarked file, so it does not write through a dotfiles stow link. It also refuses when the systemd unit directory, its `user` child, or the vsys data directory is itself a symlink, because stow can fold whole directories. A marked file is ours and can be rewritten. `warden/install_test.py` covers foreign files, symlinks, folded directory symlinks and reinstalling marked files.
 
 The shared agent-tool list is JSON, so the installer does not add a marker to it or add schema keys to it. Instead, the installer records `# vsys-warden-data: sha256=<hex>` in the marked service unit. A later install overwrites `${XDG_DATA_HOME:-$HOME/.local/share}/vsys/agent-tools.json` only when the file is absent or its hash matches the hash in the existing service unit. Otherwise the data file is foreign and the whole install refuses. `warden/install_test.py` covers the hash record, reinstall and foreign-data refusal.
 
@@ -123,16 +123,17 @@ On a fresh install, `agents.slice` can be absent until the first scope enters it
 
 Do not run two wardens.
 
-The owner workstation currently gets the scripts and units from dotfiles. In the migration pass, dotfiles stops stowing `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`. `vsys warden install` then writes the marked unit files. The owner keeps the absolute `agents.slice` memory values tuned for that machine as a local drop-in under `agents.slice.d/*.conf`, because the installer writes the percentage template.
+The owner workstation currently gets the scripts and units from dotfiles. In the migration pass, dotfiles stops stowing `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`. `vsys warden install` writes only the marked unit files and shared data file. It does not install the launchers. The owner keeps the absolute `agents.slice` memory values tuned for that machine as a local drop-in under `agents.slice.d/*.conf`, because the installer writes the percentage template.
 
 Migration order:
 
 1. Set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` in the environment that starts agent wrappers.
 2. Remove the dotfiles stow links for `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`.
-3. Run `vsys warden install`.
-4. Put the owner `agents.slice` values in a local drop-in under `agents.slice.d/*.conf`.
-5. Verify that no warden script or unit points into dotfiles.
-6. Check that exactly one `agent-warden.timer` exists.
+3. Link or copy `<warden dir>/agent-confine` and `<warden dir>/agent-confine-lineage-capped` into one directory on `PATH`, such as `~/.local/bin`, before new panes depend on them. Keep both launchers from the same warden tree.
+4. Run `vsys warden install`.
+5. Put the owner `agents.slice` values in a local drop-in under `agents.slice.d/*.conf`.
+6. Verify that no warden script or unit points into dotfiles.
+7. Check that exactly one `agent-warden.timer` exists.
 
 ## History
 

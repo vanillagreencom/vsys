@@ -149,12 +149,22 @@ def has_foreign_data(path: Path, state: str, action: str) -> bool:
     return True
 
 
+def has_symlink_dirs(paths: Iterable[Path], action: str) -> bool:
+    found = [path for path in paths if path.is_symlink()]
+    if not found:
+        return False
+    print(f"vsys-warden: symlink-dir action={action}", file=sys.stderr)
+    for path in found:
+        print(f"symlink: {path}", file=sys.stderr)
+    return True
+
+
 def systemd_exec_path(path: Path) -> str:
     text = str(path)
     if any(ord(char) < 32 for char in text):
         raise ValueError(f"ExecStart path contains a control character: {text!r}")
     text = text.replace("%", "%%")
-    if re.search(r"[\s\"\\]", text):
+    if re.search(r"[\s\"'\\]", text):
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return text
 
@@ -228,10 +238,10 @@ def read_source_data(warden_dir: Path) -> bytes | None:
     try:
         source.lstat()
     except FileNotFoundError:
-        print(f"agent-warden: agent-tools=missing path={source}", file=sys.stderr)
+        print(f"vsys-warden: agent-tools=missing path={source}", file=sys.stderr)
         return None
     if source.is_symlink() or not source.is_file():
-        print(f"agent-warden: agent-tools=missing path={source}", file=sys.stderr)
+        print(f"vsys-warden: agent-tools=missing path={source}", file=sys.stderr)
         return None
     return source.read_bytes()
 
@@ -242,8 +252,10 @@ def install(warden_dir: Path, directory: Path) -> int:
     if source_data is None:
         return 1
     source_hash = sha256_bytes(source_data)
-    states = unit_states(directory)
     target = data_target()
+    if has_symlink_dirs([directory.parent, directory, target.parent], "install"):
+        return 1
+    states = unit_states(directory)
     data_state = classify_data(target, directory / "agent-warden.service")
     units_foreign = has_foreign_units(states, "install")
     data_foreign = has_foreign_data(target, data_state, "install")
@@ -283,14 +295,15 @@ def uninstall(directory: Path) -> int:
         print("vsys-warden: nothing-installed")
         return 0
     timer = directory / "agent-warden.timer"
-    if classify(timer) == "installed-by-vsys":
+    timer_ours = classify(timer) == "installed-by-vsys"
+    if timer_ours:
         run_systemctl("disable", "--now", "agent-warden.timer")
     if data_state == "installed-by-vsys":
         target.unlink(missing_ok=True)
     for state in ours:
         state.path.unlink(missing_ok=True)
     wants = directory / "timers.target.wants" / "agent-warden.timer"
-    if symlink_points_to(wants, timer):
+    if timer_ours and symlink_points_to(wants, timer):
         wants.unlink()
     try:
         wants.parent.rmdir()

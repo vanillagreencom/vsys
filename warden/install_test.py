@@ -179,7 +179,7 @@ class WardenInstallTest(unittest.TestCase):
             installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp), with_data=False)
             code, stdout, stderr = self.run_main(installer, ["install"], env)
             self.assertEqual(code, 1, stdout)
-            self.assertIn("agent-warden: agent-tools=missing", stderr)
+            self.assertIn("vsys-warden: agent-tools=missing", stderr)
             self.assertFalse(data_target.exists())
             self.assertFalse((user_dir / "agent-warden.service").exists())
             self.assertEqual(self.calls(log), [])
@@ -205,6 +205,41 @@ class WardenInstallTest(unittest.TestCase):
             self.assertEqual(data_target.read_text(encoding="utf-8"), "foreign data\n")
             self.assertFalse((user_dir / "agents.slice").exists())
             self.assertEqual(self.calls(log), [])
+
+    def test_install_refuses_folded_stow_directory_symlinks_before_writing(self):
+        rows = [
+            "systemd",
+            "systemd-user",
+            "data-dir",
+        ]
+        for row in rows:
+            with self.subTest(row=row), scratch() as tmp:
+                base = Path(tmp)
+                installer, _, _, env, user_dir, data_target, log = self.fixture(base)
+                if row == "systemd":
+                    shutil.rmtree(user_dir.parent)
+                    folded = base / "folded-systemd"
+                    folded.mkdir()
+                    user_dir.parent.symlink_to(folded)
+                    expected = user_dir.parent
+                elif row == "systemd-user":
+                    shutil.rmtree(user_dir)
+                    folded = base / "folded-user"
+                    folded.mkdir()
+                    user_dir.symlink_to(folded)
+                    expected = user_dir
+                else:
+                    folded = base / "folded-vsys"
+                    folded.mkdir()
+                    data_target.parent.symlink_to(folded)
+                    expected = data_target.parent
+                code, stdout, stderr = self.run_main(installer, ["install"], env)
+                self.assertEqual(code, 1, stdout)
+                self.assertIn("vsys-warden: symlink-dir action=install", stderr)
+                self.assertIn(f"symlink: {expected}", stderr)
+                self.assertFalse((user_dir / "agent-warden.service").exists())
+                self.assertFalse(data_target.exists())
+                self.assertEqual(self.calls(log), [])
 
     def test_install_rewrites_its_own_units_and_data(self):
         with scratch() as tmp:
@@ -264,6 +299,32 @@ class WardenInstallTest(unittest.TestCase):
             self.assertEqual(data_target.read_text(encoding="utf-8"), "foreign data\n")
             self.assertEqual(self.calls(log), [])
 
+    def test_uninstall_keeps_enable_link_when_timer_is_foreign(self):
+        with scratch() as tmp:
+            installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp))
+            code, _, stderr = self.run_main(installer, ["install"], env)
+            self.assertEqual((code, stderr), (0, ""))
+            timer = user_dir / "agent-warden.timer"
+            timer.write_text("foreign timer\n", encoding="utf-8")
+            link = user_dir / "timers.target.wants" / "agent-warden.timer"
+            self.assertTrue(link.is_symlink())
+            code, stdout, stderr = self.run_main(installer, ["uninstall"], env)
+            self.assertEqual((code, stderr), (0, ""))
+            self.assertIn(f"vsys-warden: foreign-left path={timer}", stdout)
+            self.assertFalse((user_dir / "agent-warden.service").exists())
+            self.assertFalse((user_dir / "agents.slice").exists())
+            self.assertEqual(timer.read_text(encoding="utf-8"), "foreign timer\n")
+            self.assertTrue(link.is_symlink())
+            self.assertFalse(data_target.exists())
+            self.assertEqual(
+                self.calls(log),
+                [
+                    ["--user", "daemon-reload"],
+                    ["--user", "enable", "--now", "agent-warden.timer"],
+                    ["--user", "daemon-reload"],
+                ],
+            )
+
     def test_status_reports_ok_missing_delegation_and_unknown(self):
         with scratch() as tmp:
             base = Path(tmp)
@@ -292,20 +353,25 @@ class WardenInstallTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("delegation cpu memory pids: unknown", output.getvalue())
 
-    def test_execstart_escapes_percent_and_quotes_spaces(self):
+    def test_execstart_escapes_percent_spaces_and_apostrophes(self):
         with scratch() as tmp:
             base = Path(tmp)
-            fake = base / "ward% en"
-            (fake / "systemd").mkdir(parents=True)
-            shutil.copy2(REAL_WARDEN / "systemd" / "agent-warden.service", fake / "systemd" / "agent-warden.service")
-            agent = fake / "agent-warden"
-            agent.write_text("#!/bin/sh\n", encoding="utf-8")
-            agent.chmod(0o755)
             installer = load_install()
-            rendered = installer.render_unit(fake, "agent-warden.service", "0" * 64)
-            self.assertIn('ExecStart="' + str(agent).replace("%", "%%") + '" --correct', rendered)
-            self.assertIn(installer.DATA_MARKER_PREFIX + "0" * 64, rendered)
-            self.assertNotIn("@WARDEN_DIR@", rendered)
+            rows = [
+                (base / "ward% en", str(base / "ward%% en" / "agent-warden")),
+                (base / "oneil's", str(base / "oneil's" / "agent-warden")),
+            ]
+            for fake, escaped_agent in rows:
+                with self.subTest(fake=fake):
+                    (fake / "systemd").mkdir(parents=True)
+                    shutil.copy2(REAL_WARDEN / "systemd" / "agent-warden.service", fake / "systemd" / "agent-warden.service")
+                    agent = fake / "agent-warden"
+                    agent.write_text("#!/bin/sh\n", encoding="utf-8")
+                    agent.chmod(0o755)
+                    rendered = installer.render_unit(fake, "agent-warden.service", "0" * 64)
+                    self.assertIn('ExecStart="' + escaped_agent + '" --correct', rendered)
+                    self.assertIn(installer.DATA_MARKER_PREFIX + "0" * 64, rendered)
+                    self.assertNotIn("@WARDEN_DIR@", rendered)
 
     def load_mutant(self, old, new, name):
         text = INSTALL.read_text(encoding="utf-8")
