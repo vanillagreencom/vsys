@@ -78,6 +78,7 @@ import math
 import os
 import re
 import subprocess
+import stat
 import sys
 import tempfile
 import time
@@ -1195,6 +1196,16 @@ def _now_millis(now=None):
     return int((time.time() if now is None else now) * 1000)
 
 
+def cgroup_dir_state(path):
+    try:
+        mode = Path(path).stat().st_mode
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unknown"
+    return "present" if stat.S_ISDIR(mode) else "unknown"
+
+
 def _read_int(path):
     v = read(path)
     if v is None:
@@ -1228,8 +1239,18 @@ def _headroom_status(memory, maximum):
 
 def slice_status():
     base = CG_ROOT / SLICE
-    if not base.is_dir():
+    state = cgroup_dir_state(base)
+    if state == "absent":
         return None
+    if state == "unknown":
+        return {
+            "memory": None,
+            "high": None,
+            "max": None,
+            "tasks": None,
+            "tasksMax": None,
+            "headroomOk": None,
+        }
     memory = _read_int(base / "memory.current")
     maximum = _read_limit(base / "memory.max")
     return {
@@ -1272,14 +1293,26 @@ def lane_label(scope, procs):
 
 def lane_statuses(procs=None):
     base = CG_ROOT / SLICE
-    if not base.is_dir():
+    state = cgroup_dir_state(base)
+    if state == "absent":
         return []
+    if state == "unknown":
+        return None
     lanes = []
     try:
-        dirs = [d for d in base.iterdir() if d.is_dir() and d.name.endswith(".scope")]
+        entries = list(base.iterdir())
+    except FileNotFoundError:
+        return []
     except OSError:
         return None
-    for d in sorted(dirs, key=lambda p: p.name):
+    for d in sorted(entries, key=lambda p: p.name):
+        if not d.name.endswith(".scope"):
+            continue
+        state = cgroup_dir_state(d)
+        if state == "absent":
+            continue
+        if state == "unknown":
+            return None
         tasks = _read_int(d / "pids.current")
         memory = _read_int(d / "memory.current")
         near = []

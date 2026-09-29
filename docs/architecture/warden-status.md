@@ -33,7 +33,7 @@ A major version can remove fields, change a type, change a unit, or change an en
 | `mode` | `correct` or `report` | id | Never null. |
 | `interval` | number | seconds | Never null. The default is `30`. `AGENT_WARDEN_INTERVAL` can override it and must match `OnUnitActiveSec` in `warden/systemd/agent-warden.timer`. |
 | `error` | string or null | id | Null means scan and plan completed. `scan` means scan or plan failed. |
-| `slice` | object or null | cgroup counters | Null means `agents.slice` is absent. |
+| `slice` | object or null | cgroup counters | Null means `agents.slice` is absent. If the slice directory cannot be statted for another reason, `slice` is an object with all fields null. |
 | `lanes` | list or null | cgroup scopes | Null means `agents.slice` exists but its direct scopes could not be listed. Empty means the slice is absent or has no direct scopes. |
 | `outside` | list or null | planned process trees | Null means the scan failed. |
 | `waiting` | list or null | planned process trees | Null means the scan failed. An empty list in report mode means the warden did not try to move. |
@@ -68,7 +68,7 @@ An absent `agents.slice` makes `slice` null. The move guard still treats an abse
 | `memoryHigh` | integer, `max`, or null | bytes | `memory.high` could not be read or parsed. `max` means unlimited. |
 | `near` | list of `tasks` and `memory` | ids | Empty means no readable counter crossed its warning threshold. |
 
-`lanes` is null when `agents.slice` exists but cannot be listed. Lanes sort by `scope` for stable output. The `near` thresholds are `AGENT_SCOPE_TASKS_WARN` and `AGENT_SCOPE_MEM_WARN_BYTES`.
+`lanes` is null when `agents.slice` exists but cannot be listed or a direct scope cannot be statted. Lanes sort by `scope` for stable output. The `near` thresholds are `AGENT_SCOPE_TASKS_WARN` and `AGENT_SCOPE_MEM_WARN_BYTES`.
 
 ### `outside[]` and `waiting[]`
 

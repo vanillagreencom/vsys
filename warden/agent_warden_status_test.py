@@ -231,6 +231,62 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
             finally:
                 self.restore_status_state(self.w, old)
 
+
+    def test_status_slice_stat_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_stat = Path.stat
+            try:
+                slice_dir = self.w.CG_ROOT / self.w.SLICE
+                slice_dir.mkdir(parents=True)
+
+                def blocked_stat(path, *args, **kwargs):
+                    if path == slice_dir:
+                        raise PermissionError("blocked")
+                    return old_stat(path, *args, **kwargs)
+
+                Path.stat = blocked_stat
+                self.assertEqual(self.w.slice_status(), {"memory": None, "high": None, "max": None, "tasks": None, "tasksMax": None, "headroomOk": None})
+                self.assertIsNone(self.w.lane_statuses())
+                def missing_stat(path, *args, **kwargs):
+                    if path == slice_dir:
+                        raise FileNotFoundError("missing")
+                    return old_stat(path, *args, **kwargs)
+
+                Path.stat = missing_stat
+                self.assertIsNone(self.w.slice_status())
+                self.assertEqual(self.w.lane_statuses(), [])
+            finally:
+                Path.stat = old_stat
+                self.restore_status_state(self.w, old)
+
+    def test_status_lane_entry_stat_error_stays_unknown(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            old_stat = Path.stat
+            try:
+                lane = self.write_status_cgroup(self.w)
+
+                def checked_stat(path, *args, **kwargs):
+                    if path == lane:
+                        raise PermissionError("blocked")
+                    return old_stat(path, *args, **kwargs)
+
+                Path.stat = checked_stat
+                self.assertIsNone(self.w.lane_statuses())
+                def missing_stat(path, *args, **kwargs):
+                    if path == lane:
+                        raise FileNotFoundError("missing")
+                    return old_stat(path, *args, **kwargs)
+
+                Path.stat = missing_stat
+                self.assertEqual(self.w.lane_statuses(), [])
+            finally:
+                Path.stat = old_stat
+                self.restore_status_state(self.w, old)
+
     def test_unreadable_lane_listing_stays_null(self):
         with scratch() as tmp:
             base = Path(tmp)
