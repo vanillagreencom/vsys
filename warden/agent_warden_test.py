@@ -230,35 +230,50 @@ class AgentWardenRules(unittest.TestCase):
         finally:
             m.os.pidfd_open, m.os.close, m.Proc, m.contained_unit = old_pidfd, old_close, old_proc, old_contained
 
+    def write_lineage_files(self, module, base):
+        agent_slice = base / module.SLICE
+        plain = agent_slice / "plain.scope"
+        tight = agent_slice / "tight.scope"
+        for directory in (agent_slice, plain, tight):
+            directory.mkdir(parents=True, exist_ok=True)
+        values = {
+            agent_slice: ("1000", "1000", str(80 * 1024**3)),
+            plain: (str(module.SCOPE_TASKS_MAX), "1000", str(module.SCOPE_MEM_HIGH)),
+            tight: (str(module.SCOPE_TASKS_MAX), "1000", str(8 * 1024**3)),
+        }
+        for directory, (pids, mem_max, mem_high) in values.items():
+            (directory / "pids.max").write_text(pids)
+            (directory / "memory.max").write_text(mem_max)
+            (directory / "memory.high").write_text(mem_high)
+            (directory / "memory.swap.max").write_text("max")
+            (directory / "cpu.max").write_text("max 100000")
+            (directory / "io.max").write_text("")
+            (directory / "cpuset.cpus").write_text("")
+            (directory / "cpuset.mems").write_text("")
+        return agent_slice
+
     def test_lineage_and_task_cap_rows(self):
         with scratch() as tmp:
             base = Path(tmp) / "cg"
             old_root = self.w.CG_ROOT
             self.w.CG_ROOT = base
             try:
-                agent_slice = base / self.w.SLICE
-                plain = agent_slice / "plain.scope"
-                tight = agent_slice / "tight.scope"
-                for directory in (agent_slice, plain, tight):
-                    directory.mkdir(parents=True, exist_ok=True)
-                for directory, pids in ((agent_slice, "100"), (plain, "100"), (tight, "100")):
-                    (directory / "pids.max").write_text(pids)
-                    (directory / "memory.max").write_text("1000")
-                    (directory / "memory.high").write_text("max")
-                    (directory / "memory.swap.max").write_text("max")
-                    (directory / "cpu.max").write_text("max 100000")
-                    (directory / "io.max").write_text("")
-                    (directory / "cpuset.cpus").write_text("")
-                    (directory / "cpuset.mems").write_text("")
-                (tight / "memory.max").write_text("10")
+                agent_slice = self.write_lineage_files(self.w, base)
                 rows = [
-                    ("plain lineage", self.w.lineage_is_capped(self._cg("plain.scope")), False),
-                    ("tight memory lineage", self.w.lineage_is_capped(self._cg("tight.scope")), True),
+                    ("default scope memory high is plain", self.w.lineage_is_capped(self._cg("plain.scope")), False),
+                    ("tighter memory high is capped", self.w.lineage_is_capped(self._cg("tight.scope")), True),
                     ("outside agents slice", self.w.lineage_is_capped("/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope"), True),
                 ]
                 for name, actual, expected in rows:
                     with self.subTest(name=name):
                         self.assertEqual(actual, expected)
+                recs = {
+                    10: self.P(10, 1, "codex", ["codex"], self._cg("plain.scope"), start=1),
+                    11: self.P(11, 10, "claude", ["claude", "-p", "x"], self._cg("plain.scope"), start=2),
+                }
+                moves, _, held, _ = self.w.plan(recs, capped=self.w.lineage_is_capped, split=True, contained=lambda cg: False)
+                self.assertIn([11], [[p.pid for p in tree] for reason, tree in moves if reason == "nested session"])
+                self.assertEqual(held, [])
                 (agent_slice / "pids.max").write_text("1000")
                 unbounded = agent_slice / "unbounded.scope"
                 bounded = agent_slice / "bounded.scope"
@@ -277,6 +292,20 @@ class AgentWardenRules(unittest.TestCase):
                 self.assertFalse(any("scope bounded.scope:" in line for line in logs))
             finally:
                 self.w.CG_ROOT = old_root
+
+    def test_lineage_memory_high_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '    baseline["memory.high"] = min(baseline["memory.high"], SCOPE_MEM_HIGH)\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, ""), "agent_warden_mutant_lineage_memory_high")
+        with scratch() as tmp:
+            old_root = mutant.CG_ROOT
+            mutant.CG_ROOT = Path(tmp) / "cg"
+            try:
+                self.write_lineage_files(mutant, mutant.CG_ROOT)
+                self.assertTrue(mutant.lineage_is_capped(f"/user.slice/user-{mutant.UID}.slice/user@{mutant.UID}.service/{mutant.SLICE}/plain.scope"))
+            finally:
+                mutant.CG_ROOT = old_root
 
     def _cg(self, unit):
         return f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service/{self.w.SLICE}/{unit}"
@@ -386,6 +415,58 @@ class AgentWardenRules(unittest.TestCase):
         for name, actual, expected in rows:
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
+
+    def test_scope_still_orphan_refuses_incomplete_membership(self):
+        with scratch() as tmp:
+            old_root, old_proc = self.w.CG_ROOT, self.w.Proc
+            self.w.CG_ROOT = Path(tmp) / "cg"
+            try:
+                unit = "agent-confine-leak.scope"
+                scope = self.w.CG_ROOT / self.w.SLICE / unit
+                child = scope / "child"
+                child.mkdir(parents=True)
+                (scope / "cgroup.procs").write_text("200\n")
+                (child / "cgroup.procs").mkdir()
+                self.w.Proc = lambda pid: old_proc(pid, ppid=4000, comm="bun", argv=["bun"], exe="/usr/bin/bun", cgroup=f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service/{self.w.SLICE}/{unit}", start=1)
+                self.assertFalse(self.w.scope_still_orphan(unit, {4000}))
+            finally:
+                self.w.CG_ROOT, self.w.Proc = old_root, old_proc
+
+    def test_scope_still_orphan_skips_vanished_child(self):
+        with scratch() as tmp:
+            old_root, old_proc, old_procfiles = self.w.CG_ROOT, self.w.Proc, self.w._scope_procfiles
+            self.w.CG_ROOT = Path(tmp) / "cg"
+            try:
+                unit = "agent-confine-leak.scope"
+                scope = self.w.CG_ROOT / self.w.SLICE / unit
+                vanished = scope / "gone" / "cgroup.procs"
+                scope.mkdir(parents=True)
+                (scope / "cgroup.procs").write_text("200\n")
+                self.w._scope_procfiles = lambda base: [scope / "cgroup.procs", vanished]
+                self.w.Proc = lambda pid: old_proc(pid, ppid=4000, comm="bun", argv=["bun"], exe="/usr/bin/bun", cgroup=f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service/{self.w.SLICE}/{unit}", start=1)
+                self.assertTrue(self.w.scope_still_orphan(unit, {4000}))
+            finally:
+                self.w.CG_ROOT, self.w.Proc, self.w._scope_procfiles = old_root, old_proc, old_procfiles
+
+    def test_scope_still_orphan_incomplete_membership_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '        txt = read(procfile)\n        if txt is None:\n            if procfile.parent.exists():\n                log(f"orphan recheck incomplete: cannot read {procfile}")\n                return False\n            continue\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, '        txt = read(procfile, "") or ""\n'), "agent_warden_mutant_scope_recheck")
+        with scratch() as tmp:
+            old_root, old_proc = mutant.CG_ROOT, mutant.Proc
+            mutant.CG_ROOT = Path(tmp) / "cg"
+            try:
+                unit = "agent-confine-leak.scope"
+                scope = mutant.CG_ROOT / mutant.SLICE / unit
+                child = scope / "child"
+                child.mkdir(parents=True)
+                (scope / "cgroup.procs").write_text("200\n")
+                (child / "cgroup.procs").mkdir()
+                mutant.Proc = lambda pid: old_proc(pid, ppid=4000, comm="bun", argv=["bun"], exe="/usr/bin/bun", cgroup=f"/user.slice/user-{mutant.UID}.slice/user@{mutant.UID}.service/{mutant.SLICE}/{unit}", start=1)
+                self.assertTrue(mutant.scope_still_orphan(unit, {4000}))
+            finally:
+                mutant.CG_ROOT, mutant.Proc = old_root, old_proc
 
     def test_portability_rows(self):
         with scratch() as tmp:

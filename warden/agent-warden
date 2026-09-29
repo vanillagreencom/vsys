@@ -484,6 +484,14 @@ def orphans(procs, managers):
             if _is_orphan(unit, members, managers)]
 
 
+def _scope_procfiles(base):
+    try:
+        return [base / "cgroup.procs", *base.glob("**/cgroup.procs")]
+    except OSError as e:
+        log(f"orphan recheck incomplete: cannot enumerate {base}: {e}")
+        return None
+
+
 def scope_still_orphan(unit, managers):
     """Re-read one scope's live membership straight from the cgroup tree and
     re-test it, immediately before stopping. Guards against a scope that gained
@@ -492,9 +500,18 @@ def scope_still_orphan(unit, managers):
     base = CG_ROOT / SLICE / unit
     if not base.is_dir():
         return False
+    procfiles = _scope_procfiles(base)
+    if procfiles is None:
+        return False
     members = []
-    for procfile in [base / "cgroup.procs", *base.glob("**/cgroup.procs")]:
-        for line in (read(procfile, "") or "").split():
+    for procfile in procfiles:
+        txt = read(procfile)
+        if txt is None:
+            if procfile.parent.exists():
+                log(f"orphan recheck incomplete: cannot read {procfile}")
+                return False
+            continue
+        for line in txt.split():
             try:
                 pid = int(line)
             except ValueError:
@@ -683,11 +700,12 @@ def lineage_is_capped(cgroup):
     """True when any cgroup from the process's own up to (excluding) agents.slice
     carries a limit tighter than normal (systemd gives every scope a pids.max of
     DefaultTasksMax, which is wider than the slice's, not a cap). "Normal" for
-    pids.max is the standard per-scope cap SCOPE_TASKS_MAX: every scope now
+    pids.max and memory.high is the standard per-scope cap: every scope now
     carries it, so it is the baseline, not a deliberate extra limit. Only a
-    pids.max below that, or a memory/cpu/io/cpuset limit tighter than the slice,
-    marks a scope the owner limited on purpose (a GPU run, a nested launch that
-    asked for less), which is never split and never left."""
+    pids.max or memory.high below that baseline, or a memory/cpu/io/cpuset
+    limit tighter than the slice, marks a scope the owner limited on purpose
+    (a GPU run, a nested launch that asked for less), which is never split and
+    never left."""
     rel = cgroup.split(f"user@{UID}.service/", 1)[-1]
     parts = rel.split("/")
     if not parts or parts[0] != SLICE:
@@ -699,6 +717,7 @@ def lineage_is_capped(cgroup):
             return True
         baseline[name] = _limit(v)
     baseline["pids.max"] = min(baseline["pids.max"], SCOPE_TASKS_MAX)
+    baseline["memory.high"] = min(baseline["memory.high"], SCOPE_MEM_HIGH)
     for i in range(len(parts), 1, -1):
         d = CG_ROOT / "/".join(parts[:i])
         for name, _ in CAP_FILES:
