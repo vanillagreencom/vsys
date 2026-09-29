@@ -99,46 +99,47 @@ class AgentToolsError(Exception):
 
 
 def _invalid_agent_tools(path, reason):
-    raise AgentToolsError("invalid", str(path), reason)
+    return AgentToolsError("invalid", str(path), reason)
 
 
 def _object(value, path, context):
     if not isinstance(value, dict):
-        _invalid_agent_tools(path, f"{context} must be an object")
+        raise _invalid_agent_tools(path, f"{context} must be an object")
     return value
 
 
 def _reject_unknown_keys(value, allowed, path, context):
     for key in value:
         if key not in allowed:
-            _invalid_agent_tools(path, f"{context} has unknown key {key}")
+            raise _invalid_agent_tools(path, f"{context} has unknown key {key}")
 
 
 def _string_array(value, path, context, valid, rule):
     if not isinstance(value, list):
-        _invalid_agent_tools(path, f"{context} must be an array")
+        raise _invalid_agent_tools(path, f"{context} must be an array")
     out = []
     for index, item in enumerate(value):
         if not isinstance(item, str) or not valid(item):
-            _invalid_agent_tools(path, f"{context}[{index}] {rule}")
+            raise _invalid_agent_tools(path, f"{context}[{index}] {rule}")
         out.append(item)
     return out
 
 
 def _reject_duplicate(seen, value, path, context):
     if value in seen:
-        _invalid_agent_tools(path, f"{context} duplicates {value}")
+        raise _invalid_agent_tools(path, f"{context} duplicates {value}")
     seen.add(value)
 
 
 def _parse_agent_tools(value, path):
     value = _object(value, path, "document")
     _reject_unknown_keys(value, {"version", "tools", "desktopExePrefixes", "bundledCliSuffixes"}, path, "document")
-    if value.get("version") != 1:
-        _invalid_agent_tools(path, "version must be 1")
+    version = value.get("version")
+    if type(version) is not int or version != 1:
+        raise _invalid_agent_tools(path, "version must be 1")
     tools_raw = value.get("tools")
     if not isinstance(tools_raw, list):
-        _invalid_agent_tools(path, "tools must be an array")
+        raise _invalid_agent_tools(path, "tools must be an array")
     names, mise_dirs = set(), set()
     tools = []
     for index, raw_tool in enumerate(tools_raw):
@@ -146,7 +147,7 @@ def _parse_agent_tools(value, path):
         _reject_unknown_keys(tool, {"name", "mise"}, path, f"tools[{index}]")
         name = tool.get("name")
         if not isinstance(name, str) or not name or re.search(r"\s", name) or "/" in name:
-            _invalid_agent_tools(path, f"tools[{index}].name is invalid")
+            raise _invalid_agent_tools(path, f"tools[{index}].name is invalid")
         _reject_duplicate(names, name, path, "tool name")
         mise = [] if "mise" not in tool else _string_array(
             tool["mise"], path, f"tools[{index}].mise",
@@ -174,13 +175,13 @@ def _read_agent_tools(path):
         with open(path, "r", encoding="utf-8") as handle:
             return _parse_agent_tools(json.load(handle), str(path))
     except json.JSONDecodeError as error:
-        _invalid_agent_tools(path, error.msg)
+        raise _invalid_agent_tools(path, error.msg) from error
     except UnicodeDecodeError as error:
-        _invalid_agent_tools(path, str(error))
+        raise _invalid_agent_tools(path, str(error)) from error
     except OSError as error:
         if error.errno == errno.ENOENT:
             raise
-        _invalid_agent_tools(path, str(error))
+        raise _invalid_agent_tools(path, str(error)) from error
 
 
 def _merge_agent_tools(documents):

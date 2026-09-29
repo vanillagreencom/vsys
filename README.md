@@ -52,7 +52,7 @@ Settings are in `~/.config/vsys/config.toml`. You can edit them from the Setting
 | Setting | What it changes |
 | --- | --- |
 | `watchedSlices` | The Linux resource groups that appear in the agent list. |
-| `agentTools` | The program names that vsys treats as agents. The default comes from `data/agent-tools.json`. Add machine-local names in `~/.config/vsys/agent-tools.json`, or replace the list here. |
+| `agentTools` | The program names that vsys treats as agents. The default comes from `data/agent-tools.json`. Add machine-local names in `~/.config/vsys/agent-tools.json`, or replace the list here. If `config.toml` contains `agentTools`, including after a Settings save, that key wins over the overlay; remove it to follow the overlay again. |
 | `laneNameParts` | The information used to name each agent. |
 | `historyHours` | The time range available in charts and the timeline. |
 | `persistence` | Saves history across restarts. It is off by default. |

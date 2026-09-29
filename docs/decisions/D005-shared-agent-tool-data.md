@@ -15,7 +15,7 @@
 **Rationale**:
 
 - A JSON file is language neutral, so TypeScript and Python can read the same contract without a generated code step.
-- A fail-closed parser stops a bad classification set before the dashboard or warden runs with an empty or stale list.
+- A fail-closed parser refuses a malformed document, so neither component runs on a list it misread. It does not judge whether a valid list is complete or current.
 - The overlay keeps local and owner-only tools out of the shipped default while preserving workstation behaviour.
 
 **Revisit When**: Packaging generates per-component data from a richer schema, or the dashboard needs the warden-only path signals at runtime.

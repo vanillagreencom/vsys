@@ -182,6 +182,7 @@ class AgentWardenRules(unittest.TestCase):
     def test_malformed_agent_tool_documents_are_refused(self):
         rows = [
             ("bad shipped version", {"version": 2, "tools": []}, None, "agent-tools.json"),
+            ("version true", {"version": True, "tools": []}, None, "agent-tools.json"),
             ("unknown overlay key", {"version": 1, "tools": []}, {"version": 1, "tools": [], "extra": True}, ".config/vsys/agent-tools.json"),
             ("duplicate overlay name", {"version": 1, "tools": [{"name": "claude"}]}, {"version": 1, "tools": [{"name": "claude"}]}, ".config/vsys/agent-tools.json"),
             ("mise slash", {"version": 1, "tools": [{"name": "ok", "mise": ["bad/dir"]}]}, None, "agent-tools.json"),
