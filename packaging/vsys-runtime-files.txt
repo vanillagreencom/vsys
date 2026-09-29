@@ -1,0 +1,9 @@
+# mode archive-path source-path
+755 lib/vsys/warden/install warden/install
+755 lib/vsys/warden/agent-warden warden/agent-warden
+755 lib/vsys/warden/agent-confine warden/agent-confine
+755 lib/vsys/warden/agent-confine-lineage-capped warden/agent-confine-lineage-capped
+644 lib/vsys/warden/systemd/agent-warden.service warden/systemd/agent-warden.service
+644 lib/vsys/warden/systemd/agent-warden.timer warden/systemd/agent-warden.timer
+644 lib/vsys/warden/systemd/agents.slice warden/systemd/agents.slice
+644 lib/vsys/data/agent-tools.json data/agent-tools.json

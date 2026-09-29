@@ -27,6 +27,66 @@ jobs:
       - name: Check the application
         run: python3 scripts/ci.py
 
+  arch-package:
+    name: Arch package warden status
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: archlinux:base-devel
+    steps:
+      - name: Install the packaging tools
+        run: pacman -Sy --noconfirm --needed git bun python systemd-libs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build the local vsys-git package
+        run: |
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- bash -euo pipefail <<'BUILD'
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p build/arch-package
+          cp packaging/vsys-git/PKGBUILD build/arch-package/PKGBUILD
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = Path("build/arch-package/PKGBUILD")
+          text = path.read_text()
+          old = 'source=("${pkgname}::git+${url}.git")'
+          commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          pkg_var = "$" + "{pkgname}"
+          new = f'source=("{pkg_var}::git+file://{Path.cwd()}#commit={commit}")'
+          if text.count(old) != 1:
+              raise SystemExit("source line not found")
+          updated = text.replace(old, new)
+          if new not in updated:
+              raise SystemExit("source rewrite failed")
+          path.write_text(updated)
+          PY
+          cd build/arch-package
+          makepkg --noconfirm
+          BUILD
+      - name: Install the package and check the warden path
+        run: |
+          pacman -U --noconfirm build/arch-package/vsys-git-*.pkg.tar.zst
+          mkdir -p build/arch-home/.config build/arch-home/.local/share build/arch-runtime
+          set +e
+          output=$(HOME="$GITHUB_WORKSPACE/build/arch-home" \
+            XDG_CONFIG_HOME="$GITHUB_WORKSPACE/build/arch-home/.config" \
+            XDG_DATA_HOME="$GITHUB_WORKSPACE/build/arch-home/.local/share" \
+            XDG_RUNTIME_DIR="$GITHUB_WORKSPACE/build/arch-runtime" \
+            vsys warden status 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          printf 'vsys warden status exit=%s\n' "$status"
+          case "$output" in
+            *"installer not found"*) exit 1 ;;
+            *"file agent-warden.service:"*) ;;
+            *) exit 1 ;;
+          esac
+          python3 scripts/package_file_list_check.py --installed-root /
+
   review-gate-validate:
     name: Review gate configuration
     runs-on: ubuntu-latest

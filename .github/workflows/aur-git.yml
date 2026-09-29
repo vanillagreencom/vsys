@@ -6,7 +6,10 @@ on:
     paths:
       - "src/**"
       - "data/**"
+      - "warden/**"
       - "packaging/vsys-git/**"
+      - "packaging/stage-runtime-files.sh"
+      - "packaging/vsys-runtime-files.txt"
       - "package.json"
       - "bun.lock"
       - ".bun-version"

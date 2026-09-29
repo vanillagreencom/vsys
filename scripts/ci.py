@@ -23,9 +23,16 @@ def run_warden_checks() -> None:
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "warden", "-p", "*_test.py"], check=True, env=env)
 
 
+def run_packaging_checks() -> None:
+    if not Path("packaging").exists():
+        return
+    subprocess.run([sys.executable, "scripts/package_file_list_check.py"], check=True)
+
+
 def main() -> int:
     """Allow a planning-only tree, or require the complete check contract."""
     run_warden_checks()
+    run_packaging_checks()
     manifest = Path("package.json")
     if not manifest.exists():
         if Path("src").exists() or Path("bun.lock").exists():

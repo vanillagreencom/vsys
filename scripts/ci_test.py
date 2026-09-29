@@ -46,11 +46,37 @@ class ApplicationChecks(unittest.TestCase):
         (self.root / "package.json").write_text(json.dumps({"scripts": scripts}))
         (self.root / "bun.lock").write_text("fixture")
 
+    def make_packaging_check(self, exit_code=0):
+        (self.root / "packaging").mkdir()
+        scripts = self.root / "scripts"
+        scripts.mkdir()
+        check = scripts / "package_file_list_check.py"
+        check.write_text(
+            "import os\n"
+            "import sys\n"
+            "with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
+            "    handle.write('package check\\n')\n"
+            f"sys.exit({exit_code})\n"
+        )
+
     def test_planning_tree_reports_no_application_checks(self):
         result = self.run_ci()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("application checks are not available", result.stdout)
         self.assertFalse(self.commands.exists())
+
+    def test_packaging_check_runs_when_packaging_exists(self):
+        self.make_packaging_check()
+        result = self.run_ci()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("application checks are not available", result.stdout)
+        self.assertEqual(self.commands.read_text().splitlines(), ["package check"])
+
+    def test_failing_packaging_check_fails_ci(self):
+        self.make_packaging_check(exit_code=29)
+        result = self.run_ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.commands.read_text().splitlines(), ["package check"])
 
     def test_application_without_manifest_fails(self):
         for path in ("src", "bun.lock"):
