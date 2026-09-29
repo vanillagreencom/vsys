@@ -33,6 +33,7 @@ export function fixture() {
   config.errorMemoryPath = join(root, "state/filesystem-errors.json");
   config.scratchDirs = [];
   config.sqlitePath = join(root, "history.db");
+  const agentToolsPath = join(root, ".config/vsys/agent-tools.json");
   const write = (path: string, text: string) => {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, text);
@@ -129,6 +130,7 @@ export function fixture() {
   return {
     root,
     config,
+    agentToolsPath,
     write,
     group,
     proc,

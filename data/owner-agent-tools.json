@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "tools": [
+    {"name": "dsh", "mise": ["npm-deepseek-ai-dsh"]},
+    {"name": "agy", "mise": []},
+    {"name": "omp", "mise": ["github-can1357-oh-my-pi"]},
+    {"name": "ori", "mise": ["github-open-router-labs-ori-releases"]},
+    {"name": "fx", "mise": ["github-vercel-labs-fx"]},
+    {"name": "muse", "mise": ["http-muse"]}
+  ]
+}

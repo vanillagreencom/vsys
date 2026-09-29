@@ -10,6 +10,11 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Rule } from "../model/types";
+import {
+  agentToolsPath,
+  loadAgentToolNames,
+  shippedAgentTools,
+} from "./agent-tools";
 import { normalizeKey } from "./keys";
 
 export const columns = [
@@ -127,7 +132,9 @@ export interface Config {
   keys: Record<string, string>;
 }
 export const configPath = join(homedir(), ".config/vsys/config.toml");
-export function defaults(): Config {
+export function defaults(
+  agentTools = shippedAgentTools.tools.map((tool) => tool.name),
+): Config {
   return {
     refreshMs: 1000,
     historyHours: 24,
@@ -141,18 +148,7 @@ export function defaults(): Config {
     watchedSlices: ["agents.slice", "app.slice"],
     agentSlice: "agents.slice",
     desktopSlice: "app.slice",
-    agentTools: [
-      "claude",
-      "codex",
-      "pi",
-      "opencode",
-      "gemini",
-      "copilot",
-      "grok",
-      "agy",
-      "crush",
-      "dsh",
-    ],
+    agentTools: [...agentTools],
     excludeArgv: [
       "--chrome-native-host",
       "--type=renderer",
@@ -253,10 +249,9 @@ export function defaults(): Config {
 }
 
 /** Reject unknown settings and invalid values before changing a running collector. */
-export function validate(value: unknown): Config {
+export function validate(value: unknown, base = defaults()): Config {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Config must be a TOML table");
-  const base = defaults();
   const input = value as Record<string, unknown>;
   for (const [key, v] of Object.entries(input)) {
     if (!(key in base)) throw new Error(`Unknown setting: ${key}`);
@@ -379,11 +374,15 @@ export function validate(value: unknown): Config {
 }
 
 /** Parse with Bun's TOML parser; a missing file uses defaults. */
-export async function loadConfig(path = configPath): Promise<Config> {
+export async function loadConfig(
+  path = configPath,
+  toolsPath = agentToolsPath,
+): Promise<Config> {
+  const base = defaults(await loadAgentToolNames(toolsPath));
   try {
-    return validate(Bun.TOML.parse(await readFile(path, "utf8")));
+    return validate(Bun.TOML.parse(await readFile(path, "utf8")), base);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaults();
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return base;
     throw error;
   }
 }

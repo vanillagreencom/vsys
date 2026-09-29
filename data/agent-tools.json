@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "tools": [
+    {"name": "claude", "mise": ["claude"]},
+    {"name": "codex", "mise": ["codex"]},
+    {"name": "gemini", "mise": ["gemini"]},
+    {"name": "copilot", "mise": ["copilot"]},
+    {"name": "opencode", "mise": ["opencode"]},
+    {"name": "crush", "mise": ["crush"]},
+    {"name": "cursor-agent", "mise": ["cursor-agent"]},
+    {"name": "pi", "mise": ["pi"]},
+    {"name": "grok", "mise": ["npm-xai-official-grok"]},
+    {"name": "antigravity", "mise": ["aqua-google-antigravity"]}
+  ],
+  "desktopExePrefixes": ["/opt/", "/tmp/.mount_", "/usr/lib/chromium", "/usr/lib/electron", "/usr/lib/firefox", "/usr/lib/slack", "/usr/lib/code"],
+  "bundledCliSuffixes": ["/codex-desktop/resources/codex"]
+}

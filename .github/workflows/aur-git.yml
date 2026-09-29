@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "src/**"
+      - "data/**"
       - "packaging/vsys-git/**"
       - "package.json"
       - "bun.lock"

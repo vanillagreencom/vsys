@@ -39,7 +39,10 @@ test("refresh changes apply immediately and preserve collected history", async (
     await session.configure({ ...f.config, refreshMs: 100 });
     expect(settingsFrames).toBe(1);
     await collectedAgain.promise;
-    expect((await loadConfig(join(f.root, "config.toml"))).refreshMs).toBe(100);
+    expect(
+      (await loadConfig(join(f.root, "config.toml"), f.agentToolsPath))
+        .refreshMs,
+    ).toBe(100);
   } finally {
     session.stop();
     f.cleanup();
