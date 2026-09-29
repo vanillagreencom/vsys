@@ -886,7 +886,7 @@ class AgentWardenRules(unittest.TestCase):
         module.notify = fake_notify
         module.notifier_fresh = lambda now=None: False
         module.enforce_task_caps = lambda correct: []
-        module.warn_near_cap = lambda: []
+        module.warn_near_cap = lambda: ([], set(), True)
         module.reap_orphans = lambda procs, st, correct, only=None: []
         module.time = Clock
         try:
@@ -961,6 +961,79 @@ class AgentWardenRules(unittest.TestCase):
                 self.assertIn("not-moving:agents.slice", state["episodes"])
                 self.assertEqual(notifications, [])
 
+    def _run_near_cap_fixture(self, module, state_dir, cg_root, *, initial_state=None):
+        state_dir.mkdir(parents=True, exist_ok=True)
+        old = {name: getattr(module, name) for name in (
+            "STATE_DIR", "STATE", "LOCK", "CG_ROOT", "scan", "plan", "only_pids", "enforce_task_caps",
+            "reap_orphans", "notify", "notifier_fresh", "time",
+        )}
+        module.STATE_DIR = state_dir
+        module.STATE = state_dir / "state.json"
+        module.LOCK = state_dir / "lock"
+        module.CG_ROOT = cg_root
+        if initial_state is not None:
+            module.STATE.write_text(json.dumps(initial_state))
+        notifications = []
+        logs = []
+
+        class Clock:
+            @staticmethod
+            def time():
+                return 1000.0
+
+        module.scan = lambda: {}
+        module.plan = lambda _procs, only=None: ([], [], [], [])
+        module.only_pids = lambda: None
+        module.enforce_task_caps = lambda correct: []
+        module.reap_orphans = lambda procs, st, correct, only=None: []
+        module.notify = lambda summary, body: notifications.append((summary, body)) or True
+        module.notifier_fresh = lambda now=None: False
+        module.time = Clock
+        old_log = module.log
+        module.log = logs.append
+        try:
+            result = module.run(True)
+            state = json.loads(module.STATE.read_text())
+            return result, state, notifications, logs
+        finally:
+            module.log = old_log
+            for name, value in old.items():
+                setattr(module, name, value)
+
+    def write_near_cap_scope(self, root, unit, *, tasks=None, memory=None):
+        scope = root / self.w.SLICE / unit
+        scope.mkdir(parents=True, exist_ok=True)
+        (scope / "pids.current").write_text(str(tasks) if tasks is not None else "bad")
+        (scope / "pids.max").write_text(str(self.w.SCOPE_TASKS_MAX))
+        (scope / "memory.current").write_text(str(memory) if memory is not None else "0")
+        return scope
+
+    def test_near_cap_unknown_keeps_episode_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            state_dir = base / "state"
+            cg = base / "cg"
+            initial = self.w.default_state()
+            initial["episodes"] = {"tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 900.0, "notified": True}}
+            self.write_near_cap_scope(cg, "lane.scope", tasks=None, memory=0)
+            _result, state, notifications, logs = self._run_near_cap_fixture(self.w, state_dir, cg, initial_state=initial)
+            self.assertIn("tasks:lane.scope", state["episodes"])
+            self.assertEqual(notifications, [])
+            self.assertIn("near-cap unreadable: scope=lane.scope kind=tasks", logs)
+
+            scope = cg / self.w.SLICE / "lane.scope"
+            for child in scope.iterdir():
+                child.unlink()
+            scope.rmdir()
+            _result, state, _notifications, _logs = self._run_near_cap_fixture(self.w, state_dir, cg)
+            self.assertNotIn("tasks:lane.scope", state["episodes"])
+
+            initial = self.w.default_state()
+            initial["episodes"] = {"memory:missing.scope": {"kind": "memory", "scope": "missing.scope", "since": 900.0, "notified": True}}
+            empty_cg = base / "empty-cg"
+            _result, state, _notifications, _logs = self._run_near_cap_fixture(self.w, base / "empty-state", empty_cg, initial_state=initial)
+            self.assertNotIn("memory:missing.scope", state["episodes"])
+
     def test_status_read_only_subprocess_rows(self):
         with scratch() as tmp:
             base = Path(tmp)
@@ -992,6 +1065,17 @@ class AgentWardenRules(unittest.TestCase):
         self.assertEqual(after, body)
         self.assertEqual(after_mtime, before_mtime)
         self.assertFalse(lock_exists)
+
+    def test_status_absent_directory_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            result = subprocess.run([sys.executable, str(WARDEN), "--status"], env=env, capture_output=True, text=True)
+            run_entries = os.listdir(env["XDG_RUNTIME_DIR"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(run_entries, [])
 
     def test_notification_handoff_mutant_fails(self):
         text = WARDEN.read_text()
@@ -1033,6 +1117,19 @@ class AgentWardenRules(unittest.TestCase):
             initial["episodes"] = {"move-failure:10:1": {"kind": "move-failure", "scope": "10:1", "since": 900.0, "notified": True}}
             _, state, _notifications = self._run_move_fixture(mutant, Path(tmp) / "state", initial_state=initial, headrooms=[(False, -1, -1)])
         self.assertNotIn("move-failure:10:1", state["episodes"])
+
+    def test_near_cap_unknown_clear_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '                    seen_near.add(episode_key(kind, unit))\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, ''), "agent_warden_mutant_near_cap_unknown_clear")
+        with scratch() as tmp:
+            base = Path(tmp)
+            initial = mutant.default_state()
+            initial["episodes"] = {"tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 900.0, "notified": True}}
+            self.write_near_cap_scope(base / "cg", "lane.scope", tasks=None, memory=0)
+            _result, state, _notifications, _logs = self._run_near_cap_fixture(mutant, base / "state", base / "cg", initial_state=initial)
+        self.assertNotIn("tasks:lane.scope", state["episodes"])
 
     def test_not_moving_seen_mutant_fails(self):
         text = WARDEN.read_text()
@@ -1089,6 +1186,23 @@ class AgentWardenRules(unittest.TestCase):
             for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR", "TMPDIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
             result = subprocess.run([sys.executable, str(mutant), "--selftest"], env=env, capture_output=True, text=True)
+            run_entries = os.listdir(env["XDG_RUNTIME_DIR"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(run_entries, [])
+
+    def test_status_directory_creation_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = 'def status():\n    st = read_state_unlocked()\n'
+        self.assertEqual(text.count(old), 1)
+        with scratch() as tmp:
+            base = Path(tmp)
+            mutant = base / "agent-warden"
+            mutant.write_text(text.replace(old, 'def status():\n    STATE_DIR.mkdir(parents=True, exist_ok=True)\n    st = read_state_unlocked()\n'))
+            mutant.chmod(0o755)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            result = subprocess.run([sys.executable, str(mutant), "--status"], env=env, capture_output=True, text=True)
             run_entries = os.listdir(env["XDG_RUNTIME_DIR"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotEqual(run_entries, [])

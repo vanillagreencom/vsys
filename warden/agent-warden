@@ -744,28 +744,37 @@ def warn_near_cap():
     """A lane climbing toward its own task or memory ceiling: either a legit
     workload bigger than expected (raise the ceiling) or a runaway starting
     (intervene). Surfaced so a real workload is seen before a ceiling could ever
-    limit it. Returns [(unit, kind, human)] for each scope over a warn line."""
-    near = []
+    limit it. Returns (near, unknown, complete) where near is [(unit, kind,
+    human)], unknown is {(unit, kind)} for unreadable metrics, and complete says
+    the scope list itself was read."""
+    near, unknown = [], set()
     base = CG_ROOT / SLICE
+    if not base.is_dir():
+        return near, unknown, True
     try:
-        for d in base.iterdir():
-            if not (d.is_dir() and d.name.endswith(".scope")):
-                continue
-            try:
-                n = int((read(d / "pids.current", "") or "").strip())
-            except ValueError:
-                n = 0
+        entries = list(base.iterdir())
+    except OSError:
+        return near, unknown, False
+    for d in entries:
+        if not (d.is_dir() and d.name.endswith(".scope")):
+            continue
+        txt = read(d / "pids.current")
+        try:
+            n = int((txt or "").strip())
+        except ValueError:
+            unknown.add((d.name, "tasks"))
+        else:
             if n >= SCOPE_TASKS_WARN:
                 near.append((d.name, "tasks", f"{n} of {(read(d / 'pids.max', '') or '').strip()}"))
-            try:
-                mem = int((read(d / "memory.current", "") or "").strip())
-            except ValueError:
-                mem = 0
+        txt = read(d / "memory.current")
+        try:
+            mem = int((txt or "").strip())
+        except ValueError:
+            unknown.add((d.name, "memory"))
+        else:
             if mem >= SCOPE_MEM_WARN:
                 near.append((d.name, "memory", f"{mem >> 30} GiB (soft cap {SCOPE_MEM_HIGH >> 30})"))
-    except OSError:
-        pass
-    return near
+    return near, unknown, True
 
 
 def reap(unit):
@@ -1352,7 +1361,7 @@ def run(correct):
         if only is None:
             try:
                 enforce_task_caps(correct)
-                near = warn_near_cap()
+                near, unknown_near, near_complete = warn_near_cap()
                 for unit, kind, human in near:
                     log(f"scope {unit} near its {kind} ceiling: {human}")
                     sent, key = deliver_episode_notice(
@@ -1362,6 +1371,14 @@ def run(correct):
                         f"or a runaway starting.",
                         consumer_fresh, tick_now)
                     seen_near.add(key)
+                for unit, kind in sorted(unknown_near):
+                    log(f"near-cap unreadable: scope={unit} kind={kind}")
+                    seen_near.add(episode_key(kind, unit))
+                if not near_complete:
+                    log("near-cap unreadable: scope-list")
+                    for key, rec in _episodes(st).items():
+                        if isinstance(rec, dict) and rec.get("kind") in {"tasks", "memory"}:
+                            seen_near.add(key)
                 clear_episodes(st, {"tasks", "memory"}, seen_near)
             except Exception as e:  # noqa: BLE001
                 log(f"task-cap enforcement raised {e!r}")
