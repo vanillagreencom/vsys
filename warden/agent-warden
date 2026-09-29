@@ -65,6 +65,7 @@ sends to the journal. AGENT_WARDEN_ONLY="pid,pid" restricts every candidate,
 root or descendant, to those pids (fixture runs).
 """
 import ctypes
+import errno
 import fcntl
 import fnmatch
 import json
@@ -174,8 +175,10 @@ def _read_agent_tools(path):
             return _parse_agent_tools(json.load(handle), str(path))
     except json.JSONDecodeError as error:
         _invalid_agent_tools(path, error.msg)
+    except UnicodeDecodeError as error:
+        _invalid_agent_tools(path, str(error))
     except OSError as error:
-        if error.errno == 2:
+        if error.errno == errno.ENOENT:
             raise
         _invalid_agent_tools(path, str(error))
 

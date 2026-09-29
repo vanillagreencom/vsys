@@ -187,6 +187,7 @@ class AgentWardenRules(unittest.TestCase):
             ("mise slash", {"version": 1, "tools": [{"name": "ok", "mise": ["bad/dir"]}]}, None, "agent-tools.json"),
             ("prefix relative", {"version": 1, "tools": [], "desktopExePrefixes": ["relative"]}, None, "agent-tools.json"),
             ("non json", "{", None, "agent-tools.json"),
+            ("invalid utf8", b"\xff", None, "agent-tools.json"),
         ]
         for name, shipped, overlay, bad_path in rows:
             with self.subTest(name=name):
@@ -206,7 +207,9 @@ class AgentWardenRules(unittest.TestCase):
             data_dir = base / "data"
             data_dir.mkdir()
             data_path = data_dir / "agent-tools.json"
-            if isinstance(shipped, str):
+            if isinstance(shipped, bytes):
+                data_path.write_bytes(shipped)
+            elif isinstance(shipped, str):
                 data_path.write_text(shipped)
             else:
                 data_path.write_text(json.dumps(shipped))

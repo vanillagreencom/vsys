@@ -92,13 +92,13 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 The install path is manual until VSY-54 adds `vsys warden install`.
 
 - Install scripts with `install -D -m 755 warden/agent-warden ~/.local/bin/agent-warden`, repeated for `agent-confine` and `agent-confine-lineage-capped`.
-- Install classification data with `install -D -m 644 data/agent-tools.json ~/.local/share/vsys/agent-tools.json`.
+- Install classification data with `install -D -m 644 data/agent-tools.json "${XDG_DATA_HOME:-$HOME/.local/share}/vsys/agent-tools.json"`.
 - Install units with `install -D -m 644 warden/systemd/agent-warden.service ~/.config/systemd/user/agent-warden.service`, repeated for the timer and slice.
 - If a target path is a symlink, remove the symlink first or use a copy command with `--remove-destination`; do not write through a dotfiles stow link.
 - Run `systemctl --user daemon-reload`.
 - Run `systemctl --user enable --now agent-warden.timer`.
 
-The service runs `%h/.local/bin/agent-warden --correct`.
+The service runs `%h/.local/bin/agent-warden --correct`. The install shell and the user service must see the same `XDG_DATA_HOME`, or the warden will look in a different data directory.
 
 On a fresh install, `agents.slice` can be absent until the first scope enters it. The warden treats an absent slice as empty headroom so the first move can create it. It still fails closed when the slice exists but its memory counters are missing or unparsable.
 
