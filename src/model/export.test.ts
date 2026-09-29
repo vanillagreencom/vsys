@@ -59,3 +59,29 @@ test("summary subjects never use navigation-only targets", () => {
     subject: "app.slice/shell.scope",
   });
 });
+
+test("summary meters keep unknown readings null and graded warn", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.system.pressure = {};
+  s.system.memory = {};
+  const summary = summarySnapshot(s, c);
+  expect(summary.meters).toContainEqual({
+    id: "cpu",
+    value: null,
+    max: 100,
+    level: "warn",
+  });
+  expect(summary.meters).toContainEqual({
+    id: "memory",
+    value: null,
+    max: null,
+    level: "warn",
+  });
+  expect(summary.meters).toContainEqual({
+    id: "disk",
+    value: null,
+    max: 100,
+    level: "warn",
+  });
+});

@@ -91,19 +91,11 @@ test("once summary exports verdict schema and skips scratch collection", async (
     expect({
       ...parsed,
       time: typeof parsed.time,
-      meters: parsed.meters.map(
-        (meter: {
-          id: string;
-          value: unknown;
-          max: unknown;
-          level: string;
-        }) => ({
-          id: meter.id,
-          value: meter.value === null ? null : typeof meter.value,
-          max: meter.max === null ? null : typeof meter.max,
-          level: meter.level,
-        }),
-      ),
+      meters: parsed.meters.map((meter: { value: unknown; max: unknown }) => ({
+        ...meter,
+        value: meter.value === null ? null : typeof meter.value,
+        max: meter.max === null ? null : typeof meter.max,
+      })),
     }).toMatchInlineSnapshot(`
       {
         "errors": [],
