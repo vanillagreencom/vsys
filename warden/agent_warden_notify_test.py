@@ -224,9 +224,14 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
     def test_not_moving_episode_lifetime_rows(self):
         with scratch() as tmp:
             state_dir = Path(tmp) / "state"
-            for _ in range(2):
-                _result, _state, notifications = self._run_move_fixture(self.w, state_dir, headrooms=[(False, -1, -1)])
-                self.assertEqual(notifications, [])
+            _result, state, notifications = self._run_move_fixture(self.w, state_dir, headrooms=[(False, -1, -1)])
+            rec = state["episodes"]["not-moving:agents.slice"]
+            self.assertEqual(rec["since"], 1000.0)
+            self.assertFalse(rec.get("notified"))
+            self.assertEqual(notifications, [])
+            _result, state, notifications = self._run_move_fixture(self.w, state_dir, headrooms=[(False, -1, -1)])
+            self.assertEqual(state["episodes"]["not-moving:agents.slice"]["since"], 1000.0)
+            self.assertEqual(notifications, [])
             _result, state, notifications = self._run_move_fixture(self.w, state_dir, headrooms=[(False, -1, -1)])
             self.assertEqual(notifications[0][0], "agent-warden: not moving")
             self.assertTrue(state["episodes"]["not-moving:agents.slice"].get("notified"))
@@ -240,12 +245,13 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
                 self.assertIn("not-moving:agents.slice", state["episodes"])
                 self.assertEqual(notifications, [])
 
-    def _run_near_cap_fixture(self, module, state_dir, cg_root, *, initial_state=None):
+    def _run_near_cap_fixture(self, module, state_dir, cg_root, *, initial_state=None, listing_raises=False):
         state_dir.mkdir(parents=True, exist_ok=True)
         old = {name: getattr(module, name) for name in (
             "STATE_DIR", "STATE", "LOCK", "CG_ROOT", "scan", "plan", "only_pids", "enforce_task_caps",
             "reap_orphans", "notify", "notifier_fresh", "time",
         )}
+        old_iterdir = module.Path.iterdir
         module.STATE_DIR = state_dir
         module.STATE = state_dir / "state.json"
         module.LOCK = state_dir / "lock"
@@ -268,6 +274,12 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         module.notify = lambda summary, body: notifications.append((summary, body)) or True
         module.notifier_fresh = lambda now=None: False
         module.time = Clock
+        if listing_raises:
+            def raising_iterdir(path):
+                if path == module.CG_ROOT / module.SLICE:
+                    raise OSError("blocked")
+                return old_iterdir(path)
+            module.Path.iterdir = raising_iterdir
         old_log = module.log
         module.log = logs.append
         try:
@@ -276,6 +288,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             return result, state, notifications, logs
         finally:
             module.log = old_log
+            module.Path.iterdir = old_iterdir
             for name, value in old.items():
                 setattr(module, name, value)
 
@@ -312,6 +325,22 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             empty_cg = base / "empty-cg"
             _result, state, _notifications, _logs = self._run_near_cap_fixture(self.w, base / "empty-state", empty_cg, initial_state=initial)
             self.assertNotIn("memory:missing.scope", state["episodes"])
+
+    def test_near_cap_listing_failure_keeps_episode_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            cg = base / "cg"
+            (cg / self.w.SLICE).mkdir(parents=True)
+            initial = self.w.default_state()
+            initial["episodes"] = {
+                "tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 900.0, "notified": True},
+                "memory:lane.scope": {"kind": "memory", "scope": "lane.scope", "since": 900.0, "notified": True},
+            }
+            _result, state, _notifications, logs = self._run_near_cap_fixture(
+                self.w, base / "state-listing", cg, initial_state=initial, listing_raises=True)
+            self.assertIn("tasks:lane.scope", state["episodes"])
+            self.assertIn("memory:lane.scope", state["episodes"])
+            self.assertIn("near-cap unreadable: scope-list", logs)
 
     def test_status_read_only_subprocess_rows(self):
         with scratch() as tmp:
@@ -355,6 +384,21 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             run_entries = os.listdir(env["XDG_RUNTIME_DIR"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(run_entries, [])
+
+    def test_near_cap_listing_failure_clear_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '    except OSError:\n        return near, unknown, False\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, '    except OSError:\n        return near, unknown, True\n'), "agent_warden_mutant_near_cap_listing_complete")
+        with scratch() as tmp:
+            base = Path(tmp)
+            cg = base / "cg"
+            (cg / mutant.SLICE).mkdir(parents=True)
+            initial = mutant.default_state()
+            initial["episodes"] = {"tasks:lane.scope": {"kind": "tasks", "scope": "lane.scope", "since": 900.0, "notified": True}}
+            _result, state, _notifications, _logs = self._run_near_cap_fixture(
+                mutant, base / "state", cg, initial_state=initial, listing_raises=True)
+        self.assertNotIn("tasks:lane.scope", state["episodes"])
 
     def test_notifier_fresh_stale_mutant_fails(self):
         text = WARDEN.read_text()
@@ -441,19 +485,14 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
 
     def test_not_moving_seen_mutant_fails(self):
         text = WARDEN.read_text()
-        old = '                    seen_move_conditions.add(episode_key("not-moving", SLICE))\n'
+        old = '                    open_episode(st, "not-moving", SLICE, tick_now)\n'
         self.assertEqual(text.count(old), 1)
         mutant = self.load_mutant(text.replace(old, ''), "agent_warden_mutant_not_moving_seen")
         with scratch() as tmp:
             state_dir = Path(tmp) / "state"
-            for _ in range(3):
-                self._run_move_fixture(mutant, state_dir, headrooms=[(False, -1, -1)])
-            self._run_move_fixture(mutant, state_dir, plan_moves=[], only={999})
-            notifications = []
-            for _ in range(3):
-                _result, _state, notifications = self._run_move_fixture(mutant, state_dir, headrooms=[(False, -1, -1)])
-        self.assertNotEqual(notifications, [])
-        self.assertEqual(notifications[0][0], "agent-warden: not moving")
+            _result, state, notifications = self._run_move_fixture(mutant, state_dir, headrooms=[(False, -1, -1)])
+        self.assertNotIn("not-moving:agents.slice", state["episodes"])
+        self.assertEqual(notifications, [])
 
     def test_restricted_run_clear_mutant_fails(self):
         text = WARDEN.read_text()
