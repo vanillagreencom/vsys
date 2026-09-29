@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Exit 0 when a cgroup between this process and agents.slice carries a limit
+tighter than the slice's own (memory, pids, cpu quota, io, cpuset). Exit 3 for
+a confirmed plain lineage. Any other exit, including a Python failure (which
+exits 1), means "unknown": the launcher then keeps the current cgroup, because
+staying inside a limit is the safe error. Same rule as agent-warden's."""
+import os
+import sys
+# Loading agent-warden writes its bytecode cache. Without a prefix the cache
+# lands in a __pycache__ beside this file: a real directory in ~/.local/bin and
+# another in the repo, which stow then refuses to link over (2026-09-11).
+if sys.pycache_prefix is None:
+    sys.pycache_prefix = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "python-pycache")
+try:
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("agent_warden_runtime", __file__.rsplit("/", 1)[0] + "/agent-warden")
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("agent-warden import spec unavailable")
+    w = importlib.util.module_from_spec(spec)
+    loader.exec_module(w)
+    cg = open("/proc/self/cgroup").read().strip().split("::", 1)[1]
+    sys.exit(0 if w.lineage_is_capped(cg) else 3)
+except SystemExit:
+    raise
+except Exception as e:  # noqa: BLE001
+    print(f"agent-confine-lineage-capped: {e!r}", file=sys.stderr)
+    sys.exit(2)

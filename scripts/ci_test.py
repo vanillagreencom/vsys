@@ -14,7 +14,9 @@ CI = Path(__file__).with_name("ci.py").resolve()
 
 class ApplicationChecks(unittest.TestCase):
     def setUp(self):
-        self.scratch = tempfile.TemporaryDirectory()
+        scratch_root = Path(__file__).resolve().parents[1] / "tmp" / "ci-tests"
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        self.scratch = tempfile.TemporaryDirectory(dir=scratch_root)
         self.addCleanup(self.scratch.cleanup)
         self.root = Path(self.scratch.name)
         self.commands = self.root / "commands"
@@ -80,6 +82,50 @@ class ApplicationChecks(unittest.TestCase):
                 (self.root / "package.json").write_text(contents)
                 self.assertNotEqual(self.run_ci().returncode, 0)
                 self.assertFalse(self.commands.exists())
+
+    def make_warden(self, exit_code=0):
+        warden = self.root / "warden"
+        warden.mkdir()
+        script = warden / "agent-warden"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "import sys\n"
+            "with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
+            "    handle.write('warden ' + ' '.join(sys.argv[1:]) + '\\n')\n"
+            f"sys.exit({exit_code})\n"
+        )
+        script.chmod(0o755)
+        test = warden / "agent_warden_test.py"
+        test.write_text(
+            "import os\n"
+            "import unittest\n"
+            "class Fixture(unittest.TestCase):\n"
+            "    def test_env(self):\n"
+            "        self.assertEqual(os.environ.get('PYTHONDONTWRITEBYTECODE'), '1')\n"
+        )
+
+    def test_warden_checks_run_when_warden_exists(self):
+        self.package()
+        self.make_warden()
+        result = self.run_ci()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.commands.read_text().splitlines()
+        self.assertEqual(lines[0], "warden --selftest")
+        self.assertEqual(lines[1:], ["install --frozen-lockfile", "run lint", "run typecheck", "run test", "run build"])
+
+    def test_failing_warden_selftest_fails_ci(self):
+        self.package()
+        self.make_warden(exit_code=19)
+        result = self.run_ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.commands.read_text().splitlines(), ["warden --selftest"])
+
+    def test_warden_without_agent_warden_fails(self):
+        self.package()
+        (self.root / "warden").mkdir()
+        self.assertNotEqual(self.run_ci().returncode, 0)
+        self.assertFalse(self.commands.exists())
 
     def test_check_order_and_each_command_failure(self):
         commands = ["install --frozen-lockfile", "run lint", "run typecheck", "run test", "run build"]

@@ -1,0 +1,11 @@
+[Unit]
+Description=Agent harness sessions (Claude Code / codex) -- weight-limited
+
+[Slice]
+CPUWeight=25
+# Template percentages approximate the owner's absolute slice limits.
+# The owner workstation can keep its tuned absolute values instead.
+MemoryHigh=65%
+MemoryMax=90%
+MemorySwapMax=32G
+TasksMax=16384

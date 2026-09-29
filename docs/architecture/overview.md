@@ -1,6 +1,6 @@
 # vsys architecture
 
-vsys is a Linux terminal dashboard for agent processes and system health. It reads cgroup v2, procfs and a few user-space reports, derives one ranked account of what is wrong, and draws it in one mounted terminal tree. It changes system state only through a confirmed lane action.
+vsys is a Linux terminal dashboard for agent processes and system health. The dashboard reads cgroup v2, procfs and a few user-space reports, derives one ranked account of what is wrong, and draws it in one mounted terminal tree. It changes system state only through a confirmed lane action. The optional warden in `warden/` is the exception: it corrects agent process placement automatically.
 
 ## The one idea
 
@@ -41,7 +41,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - `src/store/`: owns application persistence and derives the timeline events. The collector does not depend on SQLite.
 - `src/runtime.ts`: owns scheduling and settings changes. Samples never overlap, and a replaced source is handed its predecessor so readings measured since vsys started survive the replacement.
 - `src/ui/`: consumes snapshots. It opens views and exports evidence, and reaches the system only through a confirmed lane action.
-- `runEffect()` in `src/effect.ts` is the one function that changes system state. Moving the reader's own tmux view is not one of its effects, because it changes no process.
+- `runEffect()` in `src/effect.ts` is the one dashboard function that changes system state. Moving the reader's own tmux view is not one of its effects, because it changes no process. The optional warden changes process placement outside the dashboard runtime.
 - OpenTUI's React root builds a new reconciler container on each `render` call, so `mountScreen` renders once and live samples reach the tree through React's external-store subscription.
 
 ## Invariants
@@ -57,6 +57,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [D001](../decisions/D001-clipboard-sequence.md): vsys builds its own OSC 52 clipboard sequence, because the renderer's own call writes through a native core no test can read.
 - [D002](../decisions/D002-lane-action-mechanism.md): Freeze and Thaw write the lane's own `cgroup.freeze`; Stop asks systemd to signal the scope.
 - [D003](../decisions/D003-action-resolved-at-the-keypress.md): what a screen holds carries no effect, so a stale confirmation cannot reach the system.
+- [D004](../decisions/D004-warden-separate-component.md): the warden ships as a separate optional component, so the dashboard observes while the warden corrects.
 
 ## Topics
 
@@ -68,5 +69,6 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [history.md](history.md): read when changing replay, retention or persistence.
 - [settings.md](settings.md): read when adding a setting or changing what a settings change replaces.
 - [ui.md](ui.md): read when changing the shell, a screen, colour, or what the reader can act on.
+- [warden.md](warden.md): read when changing the optional process-placement corrector under `warden/`.
 
 Subsystems with no topic file of their own: `src/model/export.ts` writes the JSON and Markdown exports and strips terminal controls from display text; `src/model/shell.ts` quotes a copied command so a paste survives an escaped scope name; `src/collect/io.ts` holds the `Reader` that records a source error against the source that failed; `src/collect/system.ts` and `src/collect/cgroups.ts` read machine totals and the cgroup tree; `src/config/editor.ts` parses a setting a reader typed.

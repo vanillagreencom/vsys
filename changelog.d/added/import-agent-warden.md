@@ -1,0 +1,1 @@
+- Add the optional agent warden component with launcher scripts, user-unit templates, documentation, and CI checks.

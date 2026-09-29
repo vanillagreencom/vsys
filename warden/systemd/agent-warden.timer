@@ -1,0 +1,10 @@
+[Unit]
+Description=Sweep for agent and build processes outside agents.slice
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Move agent and build processes that escaped agents.slice back in
+Documentation=https://github.com/vanillagreencom/vsys/blob/main/docs/architecture/warden.md
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/agent-warden --correct
+TimeoutStartSec=25
+Slice=background.slice
+MemoryMax=512M
+TasksMax=64
+Nice=5
