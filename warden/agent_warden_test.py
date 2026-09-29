@@ -839,11 +839,11 @@ class AgentWardenRules(unittest.TestCase):
         finally:
             self.w.subprocess.run, self.w.log = old_run, old_log
 
-    def _run_move_fixture(self, module, state_dir, *, initial_state=None, headrooms=None, move_impl=None, notify_results=None):
+    def _run_move_fixture(self, module, state_dir, *, initial_state=None, headrooms=None, move_impl=None, notify_results=None, plan_moves=None, only=None):
         state_dir.mkdir(parents=True, exist_ok=True)
         old = {name: getattr(module, name) for name in (
             "STATE_DIR", "STATE", "LOCK", "scan", "plan", "Bus", "headroom", "move", "notify",
-            "notifier_fresh", "enforce_task_caps", "warn_near_cap", "reap_orphans", "time",
+            "notifier_fresh", "enforce_task_caps", "warn_near_cap", "reap_orphans", "time", "only_pids",
         )}
         module.STATE_DIR = state_dir
         module.STATE = state_dir / "state.json"
@@ -876,8 +876,10 @@ class AgentWardenRules(unittest.TestCase):
             notifications.append((summary, body))
             return notify_results.pop(0) if notify_results else True
 
+        moves = [("escaped launch", [root])] if plan_moves is None else plan_moves
         module.scan = lambda: {}
-        module.plan = lambda _procs, only=None: ([("escaped launch", [root])], [], [], [])
+        module.plan = lambda _procs, only=None: (moves, [], [], [])
+        module.only_pids = lambda: only
         module.Bus = lambda: FakeBus()
         module.headroom = lambda: headrooms.pop(0)
         module.move = move_impl or (lambda tree, reason, bus: (False, "unit.scope", [], tree))
@@ -916,6 +918,29 @@ class AgentWardenRules(unittest.TestCase):
             _, state, notifications = self._run_move_fixture(self.w, base / "state-retry", notify_results=[False])
             self.assertFalse(state["episodes"]["move-failure:10:1"].get("notified"))
             self.assertEqual(notifications[0][0], "agent-warden: 1 move failure(s)")
+
+    def test_restricted_run_preserves_episodes(self):
+        with scratch() as tmp:
+            state_dir = Path(tmp) / "state"
+            _, state, notifications = self._run_move_fixture(self.w, state_dir)
+            self.assertTrue(state["episodes"]["move-failure:10:1"].get("notified"))
+            self.assertEqual(len(notifications), 1)
+
+            _, state, notifications = self._run_move_fixture(self.w, state_dir, plan_moves=[], only={999})
+            self.assertIn("move-failure:10:1", state["episodes"])
+            self.assertEqual(notifications, [])
+
+            _, state, notifications = self._run_move_fixture(self.w, state_dir)
+            self.assertTrue(state["episodes"]["move-failure:10:1"].get("notified"))
+            self.assertEqual(notifications, [])
+
+            initial = self.w.default_state()
+            initial["episodes"] = {"move-failure:10:1": {"kind": "move-failure", "scope": "10:1", "since": 900.0, "notified": True}}
+            other = self.w.Proc(11, ppid=1, comm="claude", argv=["claude"], exe="/usr/bin/claude", cgroup=self.A, start=1)
+            _, state, _notifications = self._run_move_fixture(
+                self.w, Path(tmp) / "state-restricted-other", initial_state=initial,
+                plan_moves=[("escaped launch", [other])], only={11})
+            self.assertIn("move-failure:10:1", state["episodes"])
 
     def test_status_read_only_subprocess_rows(self):
         with scratch() as tmp:
@@ -988,6 +1013,31 @@ class AgentWardenRules(unittest.TestCase):
             initial = mutant.default_state()
             initial["episodes"] = {"move-failure:10:1": {"kind": "move-failure", "scope": "10:1", "since": 900.0, "notified": True}}
             _, state, _notifications = self._run_move_fixture(mutant, Path(tmp) / "state", initial_state=initial, headrooms=[(False, -1, -1)])
+        self.assertNotIn("move-failure:10:1", state["episodes"])
+
+    def test_restricted_run_clear_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '            if correct and only is None:\n                clear_episodes(st, {"not-moving", "move-failure"})\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, old.replace(" and only is None", "")), "agent_warden_mutant_restricted_clear")
+        with scratch() as tmp:
+            state_dir = Path(tmp) / "state"
+            self._run_move_fixture(mutant, state_dir)
+            _result, state, _notifications = self._run_move_fixture(mutant, state_dir, plan_moves=[], only={999})
+        self.assertNotIn("move-failure:10:1", state["episodes"])
+
+    def test_restricted_run_final_clear_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '        if move_conditions_evaluated and only is None:\n            clear_episodes(st, {"not-moving", "move-failure"}, seen_move_conditions)\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, old.replace(" and only is None", "")), "agent_warden_mutant_restricted_final_clear")
+        with scratch() as tmp:
+            initial = mutant.default_state()
+            initial["episodes"] = {"move-failure:10:1": {"kind": "move-failure", "scope": "10:1", "since": 900.0, "notified": True}}
+            other = mutant.Proc(11, ppid=1, comm="claude", argv=["claude"], exe="/usr/bin/claude", cgroup=self.A, start=1)
+            _result, state, _notifications = self._run_move_fixture(
+                mutant, Path(tmp) / "state", initial_state=initial,
+                plan_moves=[("escaped launch", [other])], only={11})
         self.assertNotIn("move-failure:10:1", state["episodes"])
 
     def test_selftest_state_dir_mutant_fails(self):

@@ -1375,7 +1375,7 @@ def run(correct):
                            + ("\n..." if len(reaped) > 6 else ""), consumer_fresh)
         if not moves:
             st["skips"] = 0
-            if correct:
+            if correct and only is None:
                 clear_episodes(st, {"not-moving", "move-failure"})
             return 0
         for reason, tree in moves:
@@ -1438,7 +1438,7 @@ def run(correct):
                     mark_episode_notified(st, key)
         elif failure_left_to_consumer:
             log("notice left to consumer: agent-warden: move failure(s)")
-        if move_conditions_evaluated:
+        if move_conditions_evaluated and only is None:
             clear_episodes(st, {"not-moving", "move-failure"}, seen_move_conditions)
     return 0
 
