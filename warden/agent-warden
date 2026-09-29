@@ -1794,7 +1794,6 @@ class State:
         self.lockfd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(self.lockfd, fcntl.LOCK_EX)
         try:
-            missing = not STATE.exists()
             raw = state_object(json.loads(STATE.read_text()))
             if raw is None:
                 self.st = default_state()
