@@ -6,6 +6,7 @@ pkgdesc="Terminal dashboard for Linux machines that run AI agents (tracks main)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/vanillagreencom/vsys"
 license=('MIT')
+depends=('python' 'systemd-libs')
 provides=('vsys')
 conflicts=('vsys')
 makedepends=('git' 'bun')
@@ -28,6 +29,7 @@ build() {
 package() {
 	cd "${srcdir}/${pkgname}"
 	install -Dm755 vsys "${pkgdir}/usr/bin/vsys"
+	packaging/stage-runtime-files.sh "${pkgdir}/usr"
 	install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 	install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
 }

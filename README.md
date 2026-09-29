@@ -22,6 +22,8 @@ The installer downloads the correct release for your CPU. It checks the download
 
 vsys requires Linux with cgroup v2. It does not run on macOS or Windows.
 
+The release archive, installer and Arch packages include the optional warden. Run `vsys warden install` if you want automatic agent correction. No package enables the warden for you.
+
 ## Features
 
 - Lists each watched agent with its tool, account, worktree or branch, process ID, and tmux pane.

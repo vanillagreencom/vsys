@@ -1,0 +1,1 @@
+- Ship the warden files, unit templates and shared agent-tool data in release archives, AUR packages and the curl installer. Run `vsys warden install` to enable the optional user timer.

@@ -85,7 +85,8 @@ jobs:
           asset="vsys-${TAG}-linux-${{ matrix.arch }}.tar.gz"
           mkdir -p stage
           cp vsys LICENSE README.md stage/
-          tar -czf "$asset" -C stage vsys LICENSE README.md
+          packaging/stage-runtime-files.sh stage
+          tar -czf "$asset" -C stage vsys LICENSE README.md lib
           sha256sum "$asset" > "${asset}.sha256"
           echo "ASSET=$asset" >> "$GITHUB_ENV"
       - name: Upload the archive to the release

@@ -14,11 +14,19 @@
 
 | Job | Runner | Output |
 | --- | --- | --- |
-| `build` | `ubuntu-latest`, `ubuntu-24.04-arm` | `vsys-<tag>-linux-<arch>.tar.gz`, each holding `vsys`, `LICENSE` and `README.md` |
+| `build` | `ubuntu-latest`, `ubuntu-24.04-arm` | `vsys-<tag>-linux-<arch>.tar.gz`, each holding `vsys`, `LICENSE`, `README.md` and `lib/vsys/` |
 | `release` | `ubuntu-latest` | A GitHub Release carrying both archives and `SHA256SUMS` |
 | `aur` | `ubuntu-latest` | The `vsys` AUR package, updated to the new `pkgver` and checksums |
 
-`install.sh` reads the latest release tag, downloads the archive for the running architecture, checks it against `SHA256SUMS`, and refuses to install when either is missing.
+`install.sh` reads the latest release tag, downloads the archive for the running architecture, checks it against `SHA256SUMS`, and refuses to install when either is missing. It installs the warden tree beside the binary at `<prefix>/lib/vsys/warden`, so `vsys warden install` can find the installer.
+
+| Archive path | Use |
+| --- | --- |
+| `vsys` | Dashboard binary. |
+| `LICENSE` | License text for packages and archives. |
+| `README.md` | User documentation for packages and archives. |
+| `lib/vsys/warden/` | Warden installer, launcher scripts and systemd user-unit templates. |
+| `lib/vsys/data/agent-tools.json` | Shared agent-tool data for the dashboard and warden. |
 
 ## Secrets
 
@@ -30,9 +38,11 @@ Running the publish script by hand takes `AUR_SSH_KEY_FILE` instead, the path to
 
 ## AUR packages
 
-`packaging/vsys/PKGBUILD` installs the released binary. Its `pkgver` and `sha256sums_*` are rewritten by the release job.
+`packaging/vsys/PKGBUILD` installs the released binary and `lib/vsys/` from the release archive. Its `pkgver` and `sha256sums_*` are rewritten by the release job.
 
-`packaging/vsys-git/PKGBUILD` builds from `main` with Bun. Its `pkgver()` derives a version from `git describe`, so it needs no edit per release. `.github/workflows/aur-git.yml` pushes it when `main` moves.
+`packaging/vsys-git/PKGBUILD` builds from `main` with Bun and stages the same `lib/vsys/` files from the checkout. Its `pkgver()` derives a version from `git describe`, so it needs no edit per release. `.github/workflows/aur-git.yml` pushes it when `main` or the warden files move.
+
+Both AUR packages depend on `python` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`. They install no systemd user units and enable no timer. The user runs `vsys warden install` to write units into the user's config directory.
 
 Both AUR packages are created by their first push, so bootstrap each one with the same script CI runs. It pins the version, fills in the published checksums, and refuses to push a recipe that still carries a `SKIP` placeholder.
 
