@@ -13,14 +13,26 @@ import sys
 
 
 REQUIRED_FILES = {
-    "lib/vsys/warden/install": 0o755,
-    "lib/vsys/warden/agent-warden": 0o755,
-    "lib/vsys/warden/agent-confine": 0o755,
-    "lib/vsys/warden/agent-confine-lineage-capped": 0o755,
-    "lib/vsys/warden/systemd/agent-warden.service": 0o644,
-    "lib/vsys/warden/systemd/agent-warden.timer": 0o644,
-    "lib/vsys/warden/systemd/agents.slice": 0o644,
-    "lib/vsys/data/agent-tools.json": 0o644,
+    "lib/vsys/warden/install": (0o755, "warden/install"),
+    "lib/vsys/warden/agent-warden": (0o755, "warden/agent-warden"),
+    "lib/vsys/warden/agent-confine": (0o755, "warden/agent-confine"),
+    "lib/vsys/warden/agent-confine-lineage-capped": (
+        0o755,
+        "warden/agent-confine-lineage-capped",
+    ),
+    "lib/vsys/warden/systemd/agent-warden.service": (
+        0o644,
+        "warden/systemd/agent-warden.service",
+    ),
+    "lib/vsys/warden/systemd/agent-warden.timer": (
+        0o644,
+        "warden/systemd/agent-warden.timer",
+    ),
+    "lib/vsys/warden/systemd/agents.slice": (
+        0o644,
+        "warden/systemd/agents.slice",
+    ),
+    "lib/vsys/data/agent-tools.json": (0o644, "data/agent-tools.json"),
 }
 
 
@@ -59,10 +71,8 @@ def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
         except ValueError:
             fail(f"manifest bad mode line={number} mode={mode_text}")
         rows[archive_path] = (mode, source_path)
-    expected = {path: (mode, "") for path, mode in REQUIRED_FILES.items()}
-    actual = {path: (mode, "") for path, (mode, _source) in rows.items()}
-    if actual != expected:
-        fail(f"manifest payload mismatch actual={sorted(actual.items())}")
+    if rows != REQUIRED_FILES:
+        fail(f"manifest payload mismatch actual={sorted(rows.items())}")
     for archive_path, (_mode, source_path) in rows.items():
         source = repo / source_path
         if not source.is_file():
@@ -74,8 +84,20 @@ def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
     return rows
 
 
-def check_tree(root: Path, label: str, rows: dict[str, tuple[int, str]]) -> None:
-    for archive_path, (mode, _source_path) in rows.items():
+def read_bytes(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        fail(f"read failed path={path}: {error}")
+
+
+def check_tree(
+    root: Path,
+    label: str,
+    rows: dict[str, tuple[int, str]],
+    repo: Path | None = None,
+) -> None:
+    for archive_path, (mode, source_path) in rows.items():
         path = root / archive_path
         try:
             info = path.lstat()
@@ -88,6 +110,8 @@ def check_tree(root: Path, label: str, rows: dict[str, tuple[int, str]]) -> None
         actual = stat.S_IMODE(info.st_mode)
         if actual != mode:
             fail(f"{label} bad-mode path={archive_path} actual={actual:o} expected={mode:o}")
+        if repo is not None and read_bytes(path) != read_bytes(repo / source_path):
+            fail(f"{label} content mismatch path={archive_path} source={source_path}")
 
 
 def check_stage_script(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
@@ -96,7 +120,7 @@ def check_stage_script(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
         shutil.rmtree(scratch)
     scratch.mkdir(parents=True)
     subprocess.run([str(repo / "packaging" / "stage-runtime-files.sh"), str(scratch)], cwd=repo, check=True)
-    check_tree(scratch, "staged", rows)
+    check_tree(scratch, "staged", rows, repo)
     shipped = {
         str(path.relative_to(scratch))
         for path in scratch.rglob("*")
@@ -160,22 +184,14 @@ def check_install_sh(repo: Path) -> None:
     for value in required:
         if value not in text:
             fail(f"install.sh missing package contract value={value}")
+    if re.search(r"\bcp\s+-[A-Za-z]*p[A-Za-z]*\b", text) or "--preserve=ownership" in text:
+        fail("install.sh preserves archive ownership while copying payload files")
     if "/tmp" in text or "/var/tmp" in text:
         fail("install.sh writes scratch outside the user prefix or cache")
 
 
 def check_installed_root(root: Path, rows: dict[str, tuple[int, str]]) -> None:
-    installed = {f"lib/vsys/{path}": mode for path, mode in {
-        "warden/install": 0o755,
-        "warden/agent-warden": 0o755,
-        "warden/agent-confine": 0o755,
-        "warden/agent-confine-lineage-capped": 0o755,
-        "warden/systemd/agent-warden.service": 0o644,
-        "warden/systemd/agent-warden.timer": 0o644,
-        "warden/systemd/agents.slice": 0o644,
-        "data/agent-tools.json": 0o644,
-    }.items()}
-    check_tree(root / "usr", "installed", {path: (mode, "") for path, mode in installed.items()})
+    check_tree(root / "usr", "installed", rows)
     manifest_paths = {path.removeprefix("lib/vsys/") for path in rows}
     installed_paths = {
         str(path.relative_to(root / "usr" / "lib" / "vsys"))

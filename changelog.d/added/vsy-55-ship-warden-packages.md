@@ -1,1 +1,1 @@
-- Ship warden files and shared data in release archives, AUR packages and the curl installer. Older archives still install the dashboard, and failed warden installs leave the old binary.
+- Ship warden files and shared data in release archives, AUR packages and the curl installer. Older archives still install the dashboard, and failed warden installs leave old files.

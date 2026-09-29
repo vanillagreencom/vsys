@@ -93,6 +93,26 @@ class PackageFileListCheck(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("preserves archive ownership", result.stderr)
 
+    def test_ownership_preserving_installer_copy_fails(self) -> None:
+        installer = self.repo / "install.sh"
+        installer.write_text(installer.read_text().replace(
+            'cp -R --no-preserve=ownership "${source_root}/." "$WARDEN_NEW_ROOT/"',
+            'cp -Rp "${source_root}/." "$WARDEN_NEW_ROOT/"',
+        ))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("install.sh preserves archive ownership", result.stderr)
+
+    def test_staged_content_must_match_manifest_source(self) -> None:
+        stage_script = self.repo / "packaging" / "stage-runtime-files.sh"
+        stage_script.write_text(stage_script.read_text().replace(
+            'install -Dm"$mode" "$source" "$target"',
+            'install -Dm"$mode" "${repo_root}/warden/agent-warden" "$target"',
+        ))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("content mismatch", result.stderr)
+
 
 class InstallScript(unittest.TestCase):
     def setUp(self) -> None:
@@ -106,6 +126,7 @@ class InstallScript(unittest.TestCase):
         self.bin_dir = self.root / "home" / ".local" / "bin"
         self.cache = self.root / "cache"
         self.fail_binary_replace = False
+        self.fail_old_tree_delete = False
 
     def make_archive(self, shape: str) -> None:
         stage = self.root / f"stage-{shape}"
@@ -171,12 +192,28 @@ class InstallScript(unittest.TestCase):
             mv = commands / "mv"
             mv.write_text(
                 "#!/bin/sh\n"
-                "case \"$1:$2\" in\n"
+                "last=\n"
+                "previous=\n"
+                "for arg do previous=$last; last=$arg; done\n"
+                "case \"$previous:$last\" in\n"
                 "  */.vsys.new.*:*/bin/vsys) exit 37 ;;\n"
                 "esac\n"
                 f"exec {system_mv} \"$@\"\n"
             )
             mv.chmod(0o755)
+        if self.fail_old_tree_delete:
+            system_rm = shutil.which("rm", path=os.environ["PATH"])
+            if system_rm is None:
+                raise AssertionError("rm not found")
+            rm = commands / "rm"
+            rm.write_text(
+                "#!/bin/sh\n"
+                "for arg do\n"
+                "  case \"$arg\" in */.vsys.old.*) exit 41 ;; esac\n"
+                "done\n"
+                f"exec {system_rm} \"$@\"\n"
+            )
+            rm.chmod(0o755)
         return commands
 
     def run_install(self) -> subprocess.CompletedProcess[str]:
@@ -258,6 +295,39 @@ class InstallScript(unittest.TestCase):
         self.assertEqual(old_binary.read_text(), "old binary\n")
         self.assertEqual(old_marker.read_text(), "old tree\n")
         self.assertFalse((self.lib_root() / "warden" / "install").exists())
+
+    def test_binary_directory_replace_failure_rolls_back_warden_tree(self) -> None:
+        self.make_archive("full")
+        binary_dir = self.bin_dir / "vsys"
+        binary_dir.mkdir(parents=True)
+        old_marker = self.lib_root() / "old.txt"
+        old_marker.parent.mkdir(parents=True)
+        old_marker.write_text("old tree\n")
+        result = self.run_install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not replace", result.stderr)
+        self.assertTrue(binary_dir.is_dir())
+        self.assertEqual(old_marker.read_text(), "old tree\n")
+        self.assertFalse((self.lib_root() / "warden" / "install").exists())
+
+    def test_old_tree_delete_failure_is_a_warning_after_commit(self) -> None:
+        self.make_archive("full")
+        self.fail_old_tree_delete = True
+        self.bin_dir.mkdir(parents=True)
+        old_binary = self.bin_dir / "vsys"
+        old_binary.write_text("old binary\n")
+        old_binary.chmod(0o755)
+        old_marker = self.lib_root() / "old.txt"
+        old_marker.parent.mkdir(parents=True)
+        old_marker.write_text("old tree\n")
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("warning=old-tree-left", result.stderr)
+        self.assertEqual(old_binary.read_text(), "full binary\n")
+        self.assert_full_warden_tree_installed()
+        leftovers = list((self.root / "home" / ".local" / "lib").glob(".vsys.old.*"))
+        self.assertEqual(len(leftovers), 1)
+        self.assertEqual((leftovers[0] / "old.txt").read_text(), "old tree\n")
 
     def test_legacy_archive_installs_binary_without_warden(self) -> None:
         self.make_archive("legacy")

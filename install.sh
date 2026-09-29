@@ -142,15 +142,15 @@ prepare_lib_tree() {
 	[ ! -e "$WARDEN_OLD_ROOT" ] || die "old-tree path already exists: ${WARDEN_OLD_ROOT}"
 	mkdir "$WARDEN_NEW_ROOT" ||
 		die "could not create ${WARDEN_NEW_ROOT}."
-	cp -Rp "${source_root}/." "$WARDEN_NEW_ROOT/" ||
+	cp -R --no-preserve=ownership "${source_root}/." "$WARDEN_NEW_ROOT/" ||
 		die "could not stage the warden files under ${WARDEN_NEW_ROOT}."
 }
 
 rollback_lib_tree() {
 	if [ "$LIB_COMMITTED" -eq 1 ]; then
-		rm -rf "$WARDEN_LIB_ROOT"
+		rm -rf -- "$WARDEN_LIB_ROOT"
 		if [ -e "$WARDEN_OLD_ROOT" ]; then
-			mv "$WARDEN_OLD_ROOT" "$WARDEN_LIB_ROOT" || true
+			mv -T -- "$WARDEN_OLD_ROOT" "$WARDEN_LIB_ROOT" || true
 		fi
 	fi
 }
@@ -158,12 +158,12 @@ rollback_lib_tree() {
 commit_lib_tree() {
 	[ "$INSTALL_WARDEN" -eq 1 ] || return 0
 	if [ -e "$WARDEN_LIB_ROOT" ]; then
-		mv "$WARDEN_LIB_ROOT" "$WARDEN_OLD_ROOT" ||
+		mv -T -- "$WARDEN_LIB_ROOT" "$WARDEN_OLD_ROOT" ||
 			die "could not move the previous ${WARDEN_LIB_ROOT} aside."
 	fi
-	if ! mv "$WARDEN_NEW_ROOT" "$WARDEN_LIB_ROOT"; then
+	if ! mv -T -- "$WARDEN_NEW_ROOT" "$WARDEN_LIB_ROOT"; then
 		if [ -e "$WARDEN_OLD_ROOT" ] && [ ! -e "$WARDEN_LIB_ROOT" ]; then
-			mv "$WARDEN_OLD_ROOT" "$WARDEN_LIB_ROOT" || true
+			mv -T -- "$WARDEN_OLD_ROOT" "$WARDEN_LIB_ROOT" || true
 		fi
 		die "could not replace ${WARDEN_LIB_ROOT}."
 	fi
@@ -171,13 +171,15 @@ commit_lib_tree() {
 }
 
 commit_binary() {
-	if ! mv "$BINARY_STAGE" "${INSTALL_DIR}/vsys"; then
+	if ! mv -T -- "$BINARY_STAGE" "${INSTALL_DIR}/vsys"; then
 		rollback_lib_tree
 		die "could not replace ${INSTALL_DIR}/vsys."
 	fi
 	BINARY_STAGE=""
-	if [ "$LIB_COMMITTED" -eq 1 ]; then
-		rm -rf "$WARDEN_OLD_ROOT"
+	if [ "$LIB_COMMITTED" -eq 1 ] && [ -e "$WARDEN_OLD_ROOT" ]; then
+		if ! rm -rf -- "$WARDEN_OLD_ROOT"; then
+			printf 'vsys install: warning=old-tree-left path=%s\n' "$WARDEN_OLD_ROOT" >&2
+		fi
 	fi
 }
 
