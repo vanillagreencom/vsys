@@ -212,6 +212,10 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                     self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
                 stored = json.loads(self.w.STATE.read_text())
                 self.assertTrue(stored["counters_unknown"])
+                self.w.STATE.unlink(missing_ok=True)
+                self.w.STATUS.write_text(json.dumps({"counters": {"moves": -1, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0}}))
+                with self.w.State() as st:
+                    self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
                 with self.w.State() as st:
                     self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
                 mgr = 4000
@@ -389,6 +393,15 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                 with self.w.State() as st:
                     fourth = self.w.emit_event(st, "moved", now=1)["id"]
                 self.assertGreater(fourth, 9000)
+                for bad_id in (-1, True):
+                    with self.subTest(bad_id=bad_id):
+                        self.w.STATE.unlink(missing_ok=True)
+                        self.w.STATUS.write_text(json.dumps({"events": [
+                            {"id": bad_id, "time": 1, "kind": "moved", "scope": None, "pid": None, "processes": None, "near": None},
+                        ], "counters": {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0}}))
+                        with self.w.State() as st:
+                            self.assertEqual(st["events"], [])
+                            self.assertEqual(self.w.emit_event(st, "moved", now=1)["id"], 1000)
             finally:
                 self.restore_status_state(self.w, old)
 

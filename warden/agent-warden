@@ -1857,13 +1857,7 @@ def _read_status_doc():
 
 
 def status_event_floor():
-    doc = _read_status_doc()
-    events = doc.get("events") if isinstance(doc, dict) else []
-    if not isinstance(events, list):
-        return 0
-    return max((event.get("id") for event in events
-                if isinstance(event, dict) and isinstance(event.get("id"), int)
-                and not isinstance(event.get("id"), bool)), default=0)
+    return max((event["id"] for event in published_status_events()), default=0)
 
 
 def published_status_counters():
@@ -1880,7 +1874,9 @@ def published_status_counters():
     recovered = {}
     for public, internal in STATUS_COUNTER_KEYS_PUBLIC:
         value = counters.get(public)
-        if not isinstance(value, int) or isinstance(value, bool):
+        errors = []
+        _check_int(errors, value, f"status.counters.{public}")
+        if errors:
             return "unknown", {}
         recovered[internal] = value
     return "seeded", recovered
