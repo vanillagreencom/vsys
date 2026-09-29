@@ -377,6 +377,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                 with self.w.State(status="report") as st:
                     st["_tick"] = {"procs": {}, "moves": [], "waiting": [], "waiting_events": [], "orphans": [], "contained": [], "error": None}
                 self.assertEqual(json.loads(self.w.STATE.read_text())["event_seq"], 9000)
+                self.assertEqual(json.loads(self.w.STATUS.read_text())["events"][0]["id"], 9000)
                 old_scan, old_plan = self.w.scan, self.w.plan
                 self.w.scan = lambda: {}
                 self.w.plan = lambda procs, only=None: ([], [], [], [])
@@ -384,6 +385,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                     self.assertEqual(self.w.status(), 0)
                 finally:
                     self.w.scan, self.w.plan = old_scan, old_plan
+                self.w.STATE.unlink(missing_ok=True)
                 with self.w.State() as st:
                     fourth = self.w.emit_event(st, "moved", now=1)["id"]
                 self.assertGreater(fourth, 9000)

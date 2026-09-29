@@ -1881,6 +1881,16 @@ def published_status_counters():
     return "seeded", recovered
 
 
+def published_status_events():
+    doc = _read_status_doc()
+    events = doc.get("events") if isinstance(doc, dict) else None
+    errors = []
+    _check_events(errors, events, "status.events")
+    if errors:
+        return []
+    return list(events[-STATUS_EVENT_LIMIT:])
+
+
 def default_state():
     return deepcopy(DEFAULT_STATE)
 
@@ -1984,6 +1994,7 @@ class State:
             mode, recovered = published_status_counters()
             self.st = default_state()
             self.st.update(recovered)
+            self.st["events"] = published_status_events()
             if mode == "seeded":
                 self.st["_state_readable"] = True
             elif missing and mode == "fresh":
