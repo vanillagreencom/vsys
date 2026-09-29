@@ -589,7 +589,7 @@ class WardenInstallTest(unittest.TestCase):
             rows = [
                 (base / "ward% en", str(base / "ward%% en" / "agent-warden")),
                 (base / "oneil's", str(base / "oneil's" / "agent-warden")),
-                (base / "cash$ dir", str(base / "cash$$ dir" / "agent-warden")),
+                (base / "cash$ dir", str(base / "cash$ dir" / "agent-warden")),
             ]
             for fake, escaped_agent in rows:
                 with self.subTest(fake=fake):

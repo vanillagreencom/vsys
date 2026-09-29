@@ -196,7 +196,7 @@ def systemd_exec_path(path: Path) -> str:
     text = str(path)
     if any(ord(char) < 32 for char in text):
         raise ValueError(f"ExecStart path contains a control character: {text!r}")
-    text = text.replace("%", "%%").replace("$", "$$")
+    text = text.replace("%", "%%")
     if re.search(r"[\s\"'\\]", text):
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return text
