@@ -52,6 +52,12 @@ test("agent tools parser accepts valid documents and rejects malformed rows", ()
     "valid-source.json",
   );
   expect(parseAgentToolsDocument(valid, "valid.json")).toEqual(valid);
+  expect(
+    parseAgentToolsDocument(
+      JSON.parse(JSON.stringify({ ...valid, version: 1.0 })),
+      "version-one-point-zero.json",
+    ),
+  ).toEqual(valid);
   const rows: [string, unknown][] = [
     ["bad version", { ...valid, version: 2 }],
     ["version true", { ...valid, version: true }],

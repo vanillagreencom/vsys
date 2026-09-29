@@ -81,7 +81,7 @@ class AgentWardenRules(unittest.TestCase):
             data_dir = base / "data"
             data_dir.mkdir()
             (data_dir / "agent-tools.json").write_text(json.dumps({
-                "version": 1,
+                "version": 1.0,
                 "tools": [{"name": "zz-agent", "mise": ["zz-install"]}],
                 "desktopExePrefixes": ["/zz/"],
                 "bundledCliSuffixes": ["/zz/cli"],

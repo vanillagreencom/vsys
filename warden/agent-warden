@@ -135,7 +135,7 @@ def _parse_agent_tools(value, path):
     value = _object(value, path, "document")
     _reject_unknown_keys(value, {"version", "tools", "desktopExePrefixes", "bundledCliSuffixes"}, path, "document")
     version = value.get("version")
-    if type(version) is not int or version != 1:
+    if isinstance(version, bool) or not isinstance(version, (int, float)) or version != 1:
         raise _invalid_agent_tools(path, "version must be 1")
     tools_raw = value.get("tools")
     if not isinstance(tools_raw, list):
