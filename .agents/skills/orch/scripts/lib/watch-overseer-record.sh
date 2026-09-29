@@ -112,40 +112,53 @@ overseer_command_record() {
   # successor goes either way: the line this start records is the current
   # session's, as a start always replaced the pending line it met, so a
   # succession that died before its launch leaves nothing a later death would
-  # replay.
+  # replay. A kept record naming an account, no home and no harness takes the
+  # account as its home: `oversee register` and `oversee launch` wrote that
+  # shape before they recorded a launch identity, and the turn-end hook binds
+  # the overseer's transcript to the home and reads no context without one.
+  # The account is a claude session's home (ol_identity), so a record naming
+  # claude takes it too; a codex home is its own directory and is never read
+  # off the account.
   detail="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} \
     update oversee --arg server "$server" --arg pane "$pane" --arg window "$window" --arg line "$line" \
       --arg rows "$rows" "$OL_JQ_DEFS"'
       .overseer = ((((.overseer // {})
         | if ol_names($server; $pane) then . else {} end)
         + {server: $server, pane: $pane, window: $window, launch_line: $line, session_rows: $rows})
-        | del(.pending, .exit))' 2>&1)" \
+        | del(.pending, .exit)
+        | if (.harness // "claude") == "claude" and (.account // "") != "" and (.home // "") == ""
+          then .home = .account else . end)' 2>&1)" \
     || overseer_record_notice "$detail" "$held" overseer-unrecorded "pane=$pane" "step=write"
   return 0
 }
 
 # overseer_record_read SERVER PANE — the fleet state's overseer record as the
-# two questions this watch asks of it, into OVERSEER_RECORD_KEY and
-# OVERSEER_RECORD_LINE: the record's own `<server> <pane>` key, empty where
-# the state holds no record, and the line a death of SERVER PANE would
-# replay, a standing `pending.launch_line` ahead of `launch_line`, only where
-# the record names that pane on that server by `ol_names`, and empty
-# otherwise. One reader for the start's `held=` field and check_overseer's
+# three questions this watch asks of it, into OVERSEER_RECORD_KEY,
+# OVERSEER_RECORD_LINE and OVERSEER_RECORD_HARNESS: the record's own
+# `<server> <pane>` key, empty where the state holds no record; the line a
+# death of SERVER PANE would replay, a standing `pending.launch_line` ahead of
+# `launch_line`; and the harness the record names for that session. The last
+# two only where the record names that pane on that server by `ol_names`, and
+# empty otherwise. One reader for the start's `held=` field and check_overseer's
 # relaunch, so the two cannot disagree about which line a death replays.
 # SERVER and PANE are spelled into the filter: every caller matched them
 # against `^[0-9]+$` and `^%[0-9]+$` first, and the `get` verb takes no
 # binding. Returns 1 where the state could not be read, with the reader's
 # words on stderr.
-OVERSEER_RECORD_KEY="" OVERSEER_RECORD_LINE=""
+OVERSEER_RECORD_KEY="" OVERSEER_RECORD_LINE="" OVERSEER_RECORD_HARNESS=""
 overseer_record_read() { # SERVER PANE
   local out sep=$'\x1f'
-  OVERSEER_RECORD_KEY="" OVERSEER_RECORD_LINE=""
+  OVERSEER_RECORD_KEY="" OVERSEER_RECORD_LINE="" OVERSEER_RECORD_HARNESS=""
   out="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} \
     get oversee "$OL_JQ_DEFS"'
       .overseer as $o
+      | ($o | ol_names("'"$1"'"; "'"$2"'")) as $mine
       | [ (if ($o | type) == "object" then (($o.server // "") + " " + ($o.pane // $o.session // "")) else "" end),
-          (if ($o | ol_names("'"$1"'"; "'"$2"'")) then ($o.pending.launch_line // $o.launch_line // "") else "" end) ]
+          (if $mine then ($o.harness // "") else "" end),
+          (if $mine then ($o.pending.launch_line // $o.launch_line // "") else "" end) ]
       | join("\u001f")')" || return 1
   OVERSEER_RECORD_KEY="${out%%"$sep"*}"
+  out="${out#*"$sep"}"
+  OVERSEER_RECORD_HARNESS="${out%%"$sep"*}"
   OVERSEER_RECORD_LINE="${out#*"$sep"}"
 }
