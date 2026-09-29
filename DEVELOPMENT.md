@@ -7,11 +7,12 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `src/collect/`: reads cgroup v2, procfs, mounts, drive reports and the build cache. Takes `CollectionConfig` and nothing wider, and never imports the UI.
 - `src/model/`: derives lanes, names, the cause ladder, the meters, alert transitions and lane actions, all as numbers and identifiers.
 - `src/store/`: the in-memory archive, the optional SQLite history, the per-sample points and the timeline event derivation.
-- `src/config/`: the settings contract, validation, loading and saving, and the key bindings.
+- `src/config/`: the settings contract, validation, loading and saving, key bindings, and agent-tool classification data loading.
 - `src/ui/`: the shell, the seven screens and every word and formatted number on them.
 - `src/runtime.ts`: the sampling scheduler and the settings-change path. `src/main.ts` is the entry point and `src/effect.ts` performs a confirmed lane action.
 - `src/test/`: the temporary-file fixture and the mounted-app harness the suites share.
 - `scripts/`: the CI runner and the two benchmarks.
+- `data/`: shipped JSON data that both the dashboard and the warden read.
 - `warden/`: the optional Python agent warden, its launcher scripts, its systemd user-unit templates and its unit tests.
 
 ## Constraints

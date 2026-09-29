@@ -1,0 +1,1 @@
+- Default agent detection now matches the warden's published set: cursor-agent and antigravity are added, dsh and agy move to ~/.config/vsys/agent-tools.json or agentTools in config.toml.

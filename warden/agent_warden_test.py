@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -69,6 +70,155 @@ class AgentWardenRules(unittest.TestCase):
     def P(self, pid, ppid, comm, argv, cg=None, exe="/usr/bin/x", start=1, marked=False, tty=0):
         return self.w.Proc(pid, ppid=ppid, comm=comm, argv=argv, exe=exe, cgroup=cg or self.A, start=start, marked=marked, tty=tty)
 
+
+    def test_agent_tool_data_drives_classification_constants(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            script = base / "warden" / "agent-warden"
+            script.parent.mkdir(parents=True)
+            shutil.copy2(WARDEN, script)
+            script.chmod(0o755)
+            data_dir = base / "data"
+            data_dir.mkdir()
+            (data_dir / "agent-tools.json").write_text(json.dumps({
+                "version": 1,
+                "tools": [{"name": "zz-agent", "mise": ["zz-install"]}],
+                "desktopExePrefixes": ["/zz/"],
+                "bundledCliSuffixes": ["/zz/cli"],
+            }))
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            module = load_warden(env, "agent_warden_synthetic_tools", script)
+        rows = [
+            ("agent names from data", module.AGENT_COMMS, {"zz-agent"}),
+            ("mise path from data", bool(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/zz-install/bin/zz")), True),
+            ("old mise absent", bool(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/claude/bin/claude")), False),
+            ("desktop prefixes from data", module.DESKTOP_EXE_PREFIXES, ("/zz/",)),
+            ("bundled suffixes from data", module.BUNDLED_CLI_SUFFIXES, ("/zz/cli",)),
+        ]
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_agent_tool_data_inline_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = 'AGENT_COMMS = {tool["name"] for tool in AGENT_TOOLS["tools"]}'
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, 'AGENT_COMMS = {"claude"}')
+        with scratch() as tmp:
+            base = Path(tmp)
+            script = base / "warden" / "agent-warden"
+            script.parent.mkdir(parents=True)
+            script.write_text(mutant)
+            script.chmod(0o755)
+            data_dir = base / "data"
+            data_dir.mkdir()
+            (data_dir / "agent-tools.json").write_text(json.dumps({
+                "version": 1,
+                "tools": [{"name": "zz-agent", "mise": ["zz-install"]}],
+            }))
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            module = load_warden(env, "agent_warden_inline_mutant", script)
+        self.assertNotEqual(module.AGENT_COMMS, {"zz-agent"})
+
+    def test_installed_agent_tool_layout_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            script = base / "bin" / "agent-warden"
+            script.parent.mkdir(parents=True)
+            shutil.copy2(WARDEN, script)
+            script.chmod(0o755)
+            data_home = base / "xdg-data"
+            data_dir = data_home / "vsys"
+            data_dir.mkdir(parents=True)
+            (data_dir / "agent-tools.json").write_text(json.dumps({
+                "version": 1,
+                "tools": [{"name": "xi-agent", "mise": ["xi-install"]}],
+            }))
+            env = clean_env({
+                "HOME": base / "home",
+                "XDG_RUNTIME_DIR": base / "run",
+                "XDG_DATA_HOME": data_home,
+                "MISE_DATA_DIR": base / "mise",
+            })
+            for key in ("HOME", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            module = load_warden(env, "agent_warden_installed_layout", script)
+            self.assertEqual(module.AGENT_COMMS, {"xi-agent"})
+            (data_dir / "agent-tools.json").unlink()
+            result = subprocess.run([sys.executable, str(script), "--selftest"], env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(result.stderr.splitlines()[0].startswith("agent-warden: agent-tools=missing "))
+
+    def test_owner_agent_tool_overlay_pins_workstation_set(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            overlay = home / ".config" / "vsys" / "agent-tools.json"
+            overlay.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / "data" / "owner-agent-tools.json", overlay)
+            env = clean_env({"HOME": home, "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            module = load_warden(env, "agent_warden_owner_overlay")
+            no_overlay_home = base / "home-no-overlay"
+            env_no_overlay = clean_env({"HOME": no_overlay_home, "XDG_RUNTIME_DIR": base / "run-no-overlay", "MISE_DATA_DIR": base / "mise-no-overlay"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env_no_overlay[key]).mkdir(parents=True, exist_ok=True)
+            module_no_overlay = load_warden(env_no_overlay, "agent_warden_no_owner_overlay")
+        old_names = {"claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "dsh", "grok", "antigravity", "agy", "omp", "ori", "fx", "cursor-agent", "muse"}
+        shipped_names = {"claude", "codex", "gemini", "copilot", "opencode", "crush", "cursor-agent", "pi", "grok", "antigravity"}
+        old_mise = ["claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "cursor-agent", "npm-deepseek-ai-dsh", "npm-xai-official-grok", "aqua-google-antigravity", "github-can1357-oh-my-pi", "github-open-router-labs-ori-releases", "github-vercel-labs-fx", "http-muse"]
+        self.assertEqual(module.AGENT_COMMS, old_names)
+        self.assertEqual(module_no_overlay.AGENT_COMMS, shipped_names)
+        for directory in old_mise:
+            with self.subTest(directory=directory):
+                self.assertTrue(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/{directory}/bin/tool"))
+        self.assertFalse(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/unlisted/bin/tool"))
+
+    def test_malformed_agent_tool_documents_are_refused(self):
+        rows = [
+            ("bad shipped version", {"version": 2, "tools": []}, None, "agent-tools.json"),
+            ("unknown overlay key", {"version": 1, "tools": []}, {"version": 1, "tools": [], "extra": True}, ".config/vsys/agent-tools.json"),
+            ("duplicate overlay name", {"version": 1, "tools": [{"name": "claude"}]}, {"version": 1, "tools": [{"name": "claude"}]}, ".config/vsys/agent-tools.json"),
+            ("mise slash", {"version": 1, "tools": [{"name": "ok", "mise": ["bad/dir"]}]}, None, "agent-tools.json"),
+            ("prefix relative", {"version": 1, "tools": [], "desktopExePrefixes": ["relative"]}, None, "agent-tools.json"),
+            ("non json", "{", None, "agent-tools.json"),
+        ]
+        for name, shipped, overlay, bad_path in rows:
+            with self.subTest(name=name):
+                result = self._run_bad_agent_tools(shipped, overlay)
+                self.assertNotEqual(result.returncode, 0)
+                first = result.stderr.splitlines()[0]
+                self.assertIn("agent-warden: agent-tools=invalid ", first)
+                self.assertIn(bad_path, first)
+
+    def _run_bad_agent_tools(self, shipped, overlay):
+        with scratch() as tmp:
+            base = Path(tmp)
+            script = base / "warden" / "agent-warden"
+            script.parent.mkdir(parents=True)
+            shutil.copy2(WARDEN, script)
+            script.chmod(0o755)
+            data_dir = base / "data"
+            data_dir.mkdir()
+            data_path = data_dir / "agent-tools.json"
+            if isinstance(shipped, str):
+                data_path.write_text(shipped)
+            else:
+                data_path.write_text(json.dumps(shipped))
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            if overlay is not None:
+                overlay_path = Path(env["HOME"]) / ".config" / "vsys" / "agent-tools.json"
+                overlay_path.parent.mkdir(parents=True)
+                overlay_path.write_text(json.dumps(overlay))
+            return subprocess.run([sys.executable, str(script), "--selftest"], env=env, capture_output=True, text=True)
+
     def test_classification_rows(self):
         mise = f"{self.w.MISE_DATA}/installs"
         rows = [
@@ -122,9 +272,13 @@ class AgentWardenRules(unittest.TestCase):
     def load_mutant(self, text, name):
         with scratch() as tmp:
             base = Path(tmp)
-            path = base / "agent-warden"
+            path = base / "warden" / "agent-warden"
+            path.parent.mkdir(parents=True)
             path.write_text(text)
             path.chmod(0o755)
+            data_dir = base / "data"
+            data_dir.mkdir()
+            shutil.copy2(ROOT / "data" / "agent-tools.json", data_dir / "agent-tools.json")
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
             for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)

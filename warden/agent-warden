@@ -19,8 +19,9 @@ Modes
 Rules, per process, never per pane
   * Launched work carries AGENT_CONFINE=1 in its environment (agent-confine
     stamps it; children inherit). A marked process outside the slice is an
-    escape whatever its name, and its marked descendants go with it. Names
-    below are for what no launcher touched: a CLI a desktop app started.
+    escape whatever its name, and its marked descendants go with it.
+  * Agent CLI names and mise install directories come from agent-tools.json.
+    They classify what no launcher touched: a CLI a desktop app started.
   * Agent CLIs match by comm, or by a mise install path in argv[0] or argv[1]
     for node/bun/python-hosted CLIs. Claude's embedded search mode
     (argv[0] "ugrep") is a helper, not a session. A bundled CLI under /opt
@@ -87,18 +88,160 @@ HOME = os.path.expanduser("~")
 MISE_DATA = os.environ.get("MISE_DATA_DIR") or os.path.join(
     os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local/share"), "mise")
 
-AGENT_COMMS = {
-    "claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "dsh",
-    "grok", "antigravity", "agy", "omp", "ori", "fx", "cursor-agent", "muse",
-}
+class AgentToolsError(Exception):
+    def __init__(self, kind, path, reason="", paths=()):
+        super().__init__(reason)
+        self.kind = kind
+        self.path = path
+        self.reason = reason
+        self.paths = tuple(paths)
+
+
+def _invalid_agent_tools(path, reason):
+    raise AgentToolsError("invalid", str(path), reason)
+
+
+def _object(value, path, context):
+    if not isinstance(value, dict):
+        _invalid_agent_tools(path, f"{context} must be an object")
+    return value
+
+
+def _reject_unknown_keys(value, allowed, path, context):
+    for key in value:
+        if key not in allowed:
+            _invalid_agent_tools(path, f"{context} has unknown key {key}")
+
+
+def _string_array(value, path, context, valid, rule):
+    if not isinstance(value, list):
+        _invalid_agent_tools(path, f"{context} must be an array")
+    out = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not valid(item):
+            _invalid_agent_tools(path, f"{context}[{index}] {rule}")
+        out.append(item)
+    return out
+
+
+def _reject_duplicate(seen, value, path, context):
+    if value in seen:
+        _invalid_agent_tools(path, f"{context} duplicates {value}")
+    seen.add(value)
+
+
+def _parse_agent_tools(value, path):
+    value = _object(value, path, "document")
+    _reject_unknown_keys(value, {"version", "tools", "desktopExePrefixes", "bundledCliSuffixes"}, path, "document")
+    if value.get("version") != 1:
+        _invalid_agent_tools(path, "version must be 1")
+    tools_raw = value.get("tools")
+    if not isinstance(tools_raw, list):
+        _invalid_agent_tools(path, "tools must be an array")
+    names, mise_dirs = set(), set()
+    tools = []
+    for index, raw_tool in enumerate(tools_raw):
+        tool = _object(raw_tool, path, f"tools[{index}]")
+        _reject_unknown_keys(tool, {"name", "mise"}, path, f"tools[{index}]")
+        name = tool.get("name")
+        if not isinstance(name, str) or not name or re.search(r"\s", name) or "/" in name:
+            _invalid_agent_tools(path, f"tools[{index}].name is invalid")
+        _reject_duplicate(names, name, path, "tool name")
+        mise = [] if "mise" not in tool else _string_array(
+            tool["mise"], path, f"tools[{index}].mise",
+            lambda item: re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", item) is not None,
+            "must be a mise install directory name")
+        for directory in mise:
+            _reject_duplicate(mise_dirs, directory, path, "mise dir")
+        tools.append({"name": name, "mise": mise})
+    prefixes = _string_array(value.get("desktopExePrefixes", []), path, "desktopExePrefixes",
+                             lambda item: bool(item) and item.startswith("/"),
+                             "must be a nonempty absolute path prefix")
+    suffixes = _string_array(value.get("bundledCliSuffixes", []), path, "bundledCliSuffixes",
+                             lambda item: bool(item) and item.startswith("/"),
+                             "must be a nonempty absolute path suffix")
+    seen_prefixes, seen_suffixes = set(), set()
+    for prefix in prefixes:
+        _reject_duplicate(seen_prefixes, prefix, path, "desktop exe prefix")
+    for suffix in suffixes:
+        _reject_duplicate(seen_suffixes, suffix, path, "bundled cli suffix")
+    return {"tools": tools, "desktopExePrefixes": prefixes, "bundledCliSuffixes": suffixes}
+
+
+def _read_agent_tools(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return _parse_agent_tools(json.load(handle), str(path))
+    except json.JSONDecodeError as error:
+        _invalid_agent_tools(path, error.msg)
+    except OSError as error:
+        if error.errno == 2:
+            raise
+        _invalid_agent_tools(path, str(error))
+
+
+def _merge_agent_tools(documents):
+    merged = {"tools": [], "desktopExePrefixes": [], "bundledCliSuffixes": []}
+    names, mise_dirs, prefixes, suffixes = set(), set(), set(), set()
+    for path, document in documents:
+        for tool in document["tools"]:
+            _reject_duplicate(names, tool["name"], path, "tool name")
+            for directory in tool["mise"]:
+                _reject_duplicate(mise_dirs, directory, path, "mise dir")
+            merged["tools"].append({"name": tool["name"], "mise": list(tool["mise"])})
+        for prefix in document["desktopExePrefixes"]:
+            _reject_duplicate(prefixes, prefix, path, "desktop exe prefix")
+            merged["desktopExePrefixes"].append(prefix)
+        for suffix in document["bundledCliSuffixes"]:
+            _reject_duplicate(suffixes, suffix, path, "bundled cli suffix")
+            merged["bundledCliSuffixes"].append(suffix)
+    return merged
+
+
+def _agent_tools_paths():
+    repo = Path(__file__).resolve().parent.parent / "data" / "agent-tools.json"
+    installed = Path(os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local/share")) / "vsys" / "agent-tools.json"
+    return repo, installed
+
+
+def _load_agent_tools():
+    repo_path, installed_path = _agent_tools_paths()
+    if repo_path.exists():
+        shipped_path = repo_path
+    elif installed_path.exists():
+        shipped_path = installed_path
+    else:
+        raise AgentToolsError("missing", "", paths=(str(repo_path), str(installed_path)))
+    shipped = _read_agent_tools(shipped_path)
+    documents = [(str(shipped_path), shipped)]
+    overlay_path = Path(HOME) / ".config" / "vsys" / "agent-tools.json"
+    try:
+        overlay = _read_agent_tools(overlay_path)
+    except FileNotFoundError:
+        overlay = None
+    if overlay is not None:
+        documents.append((str(overlay_path), overlay))
+    return _merge_agent_tools(documents)
+
+
+try:
+    AGENT_TOOLS = _load_agent_tools()
+except AgentToolsError as error:
+    if error.kind == "missing":
+        print("agent-warden: agent-tools=missing " + " ".join(error.paths), file=sys.stderr)
+    else:
+        print(f"agent-warden: agent-tools=invalid {error.path}", file=sys.stderr)
+        if error.reason:
+            print(error.reason, file=sys.stderr)
+    sys.exit(78)
+
+AGENT_COMMS = {tool["name"] for tool in AGENT_TOOLS["tools"]}
 HELPER_NAMES = {"codex-code-mode-host", "node_repl", "codex-computer-use", "claude-computer-use"}
 HOST_COMMS = {"node", "bun", "python", "python3", "python3.13", "python3.14"}
+MISE_AGENT_DIRS = [directory for tool in AGENT_TOOLS["tools"] for directory in tool["mise"]]
 AGENT_PATH_RE = re.compile(
-    "^" + re.escape(MISE_DATA) +
-    r"/installs/(claude|codex|pi|opencode|gemini|copilot|crush|cursor-agent|"
-    r"npm-deepseek-ai-dsh|npm-xai-official-grok|aqua-google-antigravity|"
-    r"github-can1357-oh-my-pi|github-open-router-labs-ori-releases|github-vercel-labs-fx|"
-    r"http-muse)/"
+    "^" + re.escape(MISE_DATA) + "/installs/(" + "|".join(re.escape(directory) for directory in MISE_AGENT_DIRS) + ")/"
+    if MISE_AGENT_DIRS else r"a\A"
 )
 BUILD_COMMS = {
     "cargo", "rustc", "rustdoc", "ld.mold", "mold", "ld.lld", "rust-lld", "ld",
@@ -110,13 +253,12 @@ SHELL_COMMS = {"bash", "sh", "fish", "zsh", "dash", "env", "timeout", "nice", "i
                "node", "bun", "python", "python3", "python3.13", "python3.14", "tee", "cat", "sleep"}
 EXCLUDE_FLAGS = {"--chrome-native-host", "--lsp", "--stdio"}
 EXCLUDE_PROGRAMS = {"rust-analyzer", "typescript-language-server", "ugrep"}
-DESKTOP_EXE_PREFIXES = ("/opt/", "/tmp/.mount_", "/usr/lib/chromium", "/usr/lib/electron",
-                        "/usr/lib/firefox", "/usr/lib/slack", "/usr/lib/code")
+DESKTOP_EXE_PREFIXES = tuple(AGENT_TOOLS["desktopExePrefixes"])
 # Desktop apps that ship a real CLI engine beside their UI: that engine is an
 # agent session even though it lives under a desktop prefix. Matched by path
 # suffix, never by name: Claude Desktop's own Electron binary is named
 # "claude" (2026-09-09, nine UI processes were moved before this rule).
-BUNDLED_CLI_SUFFIXES = ("/codex-desktop/resources/codex",)
+BUNDLED_CLI_SUFFIXES = tuple(AGENT_TOOLS["bundledCliSuffixes"])
 # An Electron/Chromium helper process, whatever its binary is called
 CHROMIUM_CHILD_FLAG = "--type="
 DESKTOP_COMMS = {"chromium", "chrome", "electron", "ChatGPT", "slack", "spotify", "code",

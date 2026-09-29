@@ -17,7 +17,7 @@ The agent warden is an optional Python component shipped beside the `vsys` dashb
 The warden moves three process classes into `agents.slice`.
 
 - Escaped launches carry `AGENT_CONFINE=1` but run outside `agents.slice`.
-- Unconfined agent CLIs or build tools run outside `agents.slice` and match the warden classification table.
+- Unconfined agent CLIs or build tools run outside `agents.slice` and match the classification data in `data/agent-tools.json` plus the local overlay.
 - Nested agent sessions share one scope and need a sibling scope so each session gets its own CPU share.
 
 Before a move, the warden opens a pidfd for each process. It re-reads identity, cgroup and classification. It then asks the user systemd manager to create one transient scope with those pidfds. `warden/agent_warden_test.py` and `warden/agent-warden --selftest` cover these planning rules.
@@ -43,6 +43,16 @@ The warden reaps only orphaned `.scope` units under `agents.slice`.
 A scope is an orphan only when every member has lost its launcher, no member has a controlling terminal, no member is a live agent session and no live external parent still holds it. A scope named `agent-confine-<pid>-<n>.scope` is not an orphan while `<pid>` is a live member and its parent is outside the scope. A scope named `agent-warden-<pid>-<start>.scope` uses the same rule and also requires the member start time to match. Those rules protect unlisted agent CLIs started through `agent-confine` or adopted by the warden, such as a marked `node server.js`, while their launch root runs. A scope named `agent-warden-build-<pid>-<start>.scope` is not protected by its root, because an adopted build root can still leak leftover work. The reaper waits at least 300 s. It then stops the whole scope only when it is harmful: at least 40 processes or at least 0.5 core on two ticks.
 
 The warden never kills an individual process. It never kills a live session. A scope with a tty, a live agent, a live launch root or a live external parent is not an orphan. The final pre-stop recheck refuses to reap when it cannot enumerate every `cgroup.procs` file that still exists under the scope. The orphan rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` enforce this claim.
+
+## Classification data
+
+The shipped classification data is `data/agent-tools.json`. It contains published agent CLI names, mise install directory names, desktop executable prefixes and bundled CLI suffixes.
+
+At startup, the warden first looks beside a checkout at `data/agent-tools.json`. If that file is absent, it looks at `${XDG_DATA_HOME:-$HOME/.local/share}/vsys/agent-tools.json`. If neither file exists, it exits with `agent-tools=missing`.
+
+The local overlay is `$HOME/.config/vsys/agent-tools.json`. It uses the same schema and adds entries. A missing overlay is normal. A malformed shipped file or overlay exits with `agent-tools=invalid` and names the file.
+
+D005 records why the dashboard and the warden share this data file.
 
 ## Scratch and mise paths
 
@@ -82,6 +92,7 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 The install path is manual until VSY-54 adds `vsys warden install`.
 
 - Install scripts with `install -D -m 755 warden/agent-warden ~/.local/bin/agent-warden`, repeated for `agent-confine` and `agent-confine-lineage-capped`.
+- Install classification data with `install -D -m 644 data/agent-tools.json ~/.local/share/vsys/agent-tools.json`.
 - Install units with `install -D -m 644 warden/systemd/agent-warden.service ~/.config/systemd/user/agent-warden.service`, repeated for the timer and slice.
 - If a target path is a symlink, remove the symlink first or use a copy command with `--remove-destination`; do not write through a dotfiles stow link.
 - Run `systemctl --user daemon-reload`.
@@ -108,13 +119,15 @@ The owner workstation currently gets the scripts and units from dotfiles. In the
 Migration order:
 
 1. Set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` in the environment that starts agent wrappers.
-2. Remove the dotfiles stow links for `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`.
-3. Install the vsys scripts and units into the now-unlinked target paths.
-4. Keep the owner `agents.slice` values instead of the percentage template, or install those values as a local drop-in.
-5. Run `systemctl --user daemon-reload`.
-6. Restart `agent-warden.timer`.
-7. Verify with `systemctl --user cat agent-warden.service` and `readlink` that no warden script or unit points into dotfiles.
-8. Check that exactly one `agent-warden.timer` exists.
+2. Install `data/owner-agent-tools.json` as `$HOME/.config/vsys/agent-tools.json` through dotfiles before switching the warden.
+3. Remove the dotfiles stow links for `agent-warden`, `agent-confine`, `agent-confine-lineage-capped`, `agent-warden.service`, `agent-warden.timer` and `agents.slice`.
+4. Install the vsys scripts, classification data and units into the now-unlinked target paths.
+5. Keep the owner `agents.slice` values instead of the percentage template, or install those values as a local drop-in.
+6. Run `systemctl --user daemon-reload`.
+7. Restart `agent-warden.timer`.
+8. Verify with `systemctl --user cat agent-warden.service` and `readlink` that no warden script or unit points into dotfiles.
+9. Check that exactly one `agent-warden.timer` exists.
+10. Run `python3 ~/.local/bin/agent-warden --selftest` with the same user environment that starts the timer.
 
 ## History
 
@@ -137,5 +150,5 @@ Dotfiles commits read for the import history:
 ## Verification
 
 - `python3 warden/agent-warden --selftest` covers classification, planning, job units, orphan rules and scope harm with injected records.
-- `python3 -m unittest discover -s warden -p '*_test.py'` covers module loading, portability, mutant controls, launcher scratch creation and the job-unit regression.
+- `python3 -m unittest discover -s warden -p '*_test.py'` covers module loading, classification data lookup, the owner overlay, portability, mutant controls, launcher scratch creation and the job-unit regression.
 - `python3 scripts/ci.py` runs both warden checks before the Bun checks when `warden/` exists.

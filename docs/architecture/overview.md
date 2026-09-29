@@ -58,6 +58,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [D002](../decisions/D002-lane-action-mechanism.md): Freeze and Thaw write the lane's own `cgroup.freeze`; Stop asks systemd to signal the scope.
 - [D003](../decisions/D003-action-resolved-at-the-keypress.md): what a screen holds carries no effect, so a stale confirmation cannot reach the system.
 - [D004](../decisions/D004-warden-separate-component.md): the warden ships as a separate optional component, so the dashboard observes while the warden corrects.
+- [D005](../decisions/D005-shared-agent-tool-data.md): the dashboard and the warden read the shipped agent-tool classification data instead of copying lists.
 
 ## Topics
 

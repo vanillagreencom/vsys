@@ -1,13 +1,28 @@
 import { afterEach, expect, test } from "bun:test";
-import { lstatSync, symlinkSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
 import { defaults, loadConfig, saveConfig, validate } from "./config";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
+const scratchRoots: string[] = [];
 afterEach(() => {
   for (const f of fixtures.splice(0)) f.cleanup();
+  for (const root of scratchRoots.splice(0))
+    rmSync(root, { recursive: true, force: true });
 });
+
+function scratchRoot(name: string) {
+  const root = join(process.cwd(), "tmp", `${name}-${crypto.randomUUID()}`);
+  mkdirSync(root, { recursive: true });
+  return root;
+}
 test("TOML settings round-trip, including quotes and custom keys", async () => {
   const f = fixture();
   fixtures.push(f);
@@ -97,4 +112,33 @@ test("vsys observes only: the reserved write mode defaults off", async () => {
   const path = join(f.root, "settings/write-mode.toml");
   await saveConfig(defaults(), path);
   expect((await loadConfig(path)).writeMode).toBe(false);
+});
+
+test("agent tool overlay reaches defaults and config overrides it", async () => {
+  const root = scratchRoot("config-agent-tools");
+  scratchRoots.push(root);
+  const configPath = join(root, "config.toml");
+  const toolsPath = join(process.cwd(), "data/owner-agent-tools.json");
+  expect((await loadConfig(configPath, toolsPath)).agentTools).toEqual([
+    "claude",
+    "codex",
+    "gemini",
+    "copilot",
+    "opencode",
+    "crush",
+    "cursor-agent",
+    "pi",
+    "grok",
+    "antigravity",
+    "dsh",
+    "agy",
+    "omp",
+    "ori",
+    "fx",
+    "muse",
+  ]);
+  writeFileSync(configPath, 'agentTools = ["local-agent"]\n');
+  expect((await loadConfig(configPath, toolsPath)).agentTools).toEqual([
+    "local-agent",
+  ]);
 });
