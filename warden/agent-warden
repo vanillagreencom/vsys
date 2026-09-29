@@ -1751,8 +1751,8 @@ class State:
             if self.status is not None:
                 try:
                     tick = self.st.get("_tick") or {}
-                    if tick.get("waiting") is not None:
-                        record_waiting_events(self.st, tick.get("waiting") or [])
+                    if tick.get("waiting_events") is not None:
+                        record_waiting_events(self.st, tick.get("waiting_events") or [])
                     write_status(status_from_tick(self.status, self.st, tick))
                 except Exception as e:  # noqa: BLE001
                     log(f"status write failed: {e!r}")
@@ -1773,8 +1773,8 @@ def only_pids():
 def run(correct):
     only = only_pids()
     with State(status=None if only is not None else ("correct" if correct else "report")) as st:
-        st["_tick"] = {"procs": None, "moves": [], "waiting": [], "orphans": [],
-                       "contained": [], "error": None, "fresh_labels": False}
+        st["_tick"] = {"procs": None, "moves": [], "waiting": [], "waiting_events": None,
+                       "orphans": [], "contained": [], "error": None, "fresh_labels": False}
         summary = []  # moved-tree notices; without this the first move raised NameError
         failures = []
         try:
@@ -1823,6 +1823,8 @@ def run(correct):
                    + ("\n..." if len(reaped) > 6 else ""))
         if not moves:
             st["skips"] = 0
+            if correct:
+                st["_tick"]["waiting_events"] = []
             return 0
         for reason, tree in moves:
             log(f"{reason}: root {tree[0].describe()} (+{len(tree) - 1} descendants)")
@@ -1859,6 +1861,7 @@ def run(correct):
             record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
             if moved:
                 st["_tick"]["fresh_labels"] = True
+        st["_tick"]["waiting_events"] = waiting
         bus.close()
         if summary:
             notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))

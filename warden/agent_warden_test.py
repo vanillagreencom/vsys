@@ -1103,6 +1103,53 @@ class AgentWardenRules(unittest.TestCase):
         self.assertEqual(waiting[0]["pid"], root.pid)
         self.assertEqual(waiting[1]["pid"], root.pid)
 
+
+    def test_report_and_bus_failure_keep_waiting_episode_open(self):
+        class FakeBus:
+            def close(self):
+                pass
+
+        class RaisingBus:
+            def __init__(self):
+                raise OSError("no bus")
+
+        def run_sequence(correct_flags, bus_classes):
+            with scratch() as tmp:
+                base = Path(tmp)
+                old = self.point_status_state(self.w, base)
+                self.write_status_cgroup(self.w)
+                root = self.P(9500, 1, "claude", ["claude"], self.A, start=43)
+                wait_plan = ([('escaped launch', [root])], [], [], [])
+                plans = iter((wait_plan, wait_plan, wait_plan))
+                buses = iter(bus_classes)
+                old_scan, old_plan, old_reap = self.w.scan, self.w.plan, self.w.reap_orphans
+                old_enforce, old_warn, old_headroom = self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom
+                old_bus, old_notify = self.w.Bus, self.w.notify
+                self.w.scan = lambda: {root.pid: root}
+                self.w.plan = lambda procs, only=None: next(plans)
+                self.w.reap_orphans = lambda procs, st, correct, only=None: ([], [])
+                self.w.enforce_task_caps = lambda correct: []
+                self.w.warn_near_cap = lambda: []
+                self.w.headroom = lambda: (False, 95, 100)
+                self.w.Bus = lambda: next(buses)()
+                self.w.notify = lambda summary, body: None
+                try:
+                    results = [self.w.run(correct) for correct in correct_flags]
+                    state = json.loads(self.w.STATE.read_text())
+                finally:
+                    self.w.scan, self.w.plan, self.w.reap_orphans = old_scan, old_plan, old_reap
+                    self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom = old_enforce, old_warn, old_headroom
+                    self.w.Bus, self.w.notify = old_bus, old_notify
+                    self.restore_status_state(self.w, old)
+            return results, [event for event in state["events"] if event["kind"] == "waiting"]
+
+        results, waiting = run_sequence((True, False, True), (FakeBus, FakeBus))
+        self.assertEqual(results, [0, 0, 0])
+        self.assertEqual(len(waiting), 1)
+        results, waiting = run_sequence((True, True, True), (FakeBus, RaisingBus, FakeBus))
+        self.assertEqual(results, [0, 1, 0])
+        self.assertEqual(len(waiting), 1)
+
     def test_correct_move_status_rescans_labels(self):
         with scratch() as tmp:
             base = Path(tmp)
