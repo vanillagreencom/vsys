@@ -150,6 +150,13 @@ def check_ci_workflow(repo: Path) -> None:
     text = read_text(repo / ".github" / "workflows" / "ci.yml")
     if "#commit={commit}" not in text:
         fail("arch-package workflow does not pin the local git source to HEAD")
+    start = text.find("name: Build the local vsys-git package")
+    end = text.find("name: Install the package and check the warden path", start)
+    if start == -1 or end == -1:
+        fail("arch-package workflow build step not found")
+    build_step = text[start:end]
+    if "${{" in build_step:
+        fail("arch-package workflow build step contains a GitHub expression")
 
 
 def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:

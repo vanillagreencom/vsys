@@ -54,7 +54,8 @@ jobs:
           text = path.read_text()
           old = 'source=("${pkgname}::git+${url}.git")'
           commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-          new = f'source=("${{pkgname}}::git+file://{Path.cwd()}#commit={commit}")'
+          pkg_var = "$" + "{pkgname}"
+          new = f'source=("{pkg_var}::git+file://{Path.cwd()}#commit={commit}")'
           if text.count(old) != 1:
               raise SystemExit("source line not found")
           updated = text.replace(old, new)

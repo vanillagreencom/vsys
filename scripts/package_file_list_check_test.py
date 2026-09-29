@@ -83,6 +83,16 @@ class PackageFileListCheck(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("pin the local git source", result.stderr)
 
+    def test_arch_package_build_step_github_expression_fails(self) -> None:
+        workflow = self.repo / ".github" / "workflows" / "ci.yml"
+        workflow.write_text(workflow.read_text().replace(
+            'pkg_var = "$" + "{pkgname}"',
+            'pkg_var = "${{pkgname}}"',
+        ))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GitHub expression", result.stderr)
+
     def test_ownership_preserving_release_copy_fails(self) -> None:
         pkgbuild = self.repo / "packaging" / "vsys" / "PKGBUILD"
         pkgbuild.write_text(pkgbuild.read_text().replace(
