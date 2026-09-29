@@ -33,13 +33,14 @@ The release archive, installer and Arch packages include the optional warden. Ru
 - Attributes compiler and linker processes to each agent, and shows active build jobs, GNU make job slots, and sccache use.
 - Breaks disk writes down by systemd slice and storage device, and shows filesystem space, Btrfs errors, damaged files, scrub reports, drive lifetime writes, and scratch directory sizes.
 - Records agent starts, stops, cgroup moves, resource alerts, and system resource history.
+- Prints a cheap verdict summary for scripts with `vsys --once --summary`.
 - Shows an agent's process tree, launch command, open files, and tmux output.
 - Lets you change which slices, agent tools, build tools, resource thresholds, and columns it tracks.
 - Can freeze, thaw, or stop an agent's systemd scope after you enable write mode and confirm the action.
 
 ## How it works
 
-vsys reads Linux cgroup v2, process files, and configured system reports with your user permissions. It finds configured AI tools and watched systemd scopes. It groups their processes by cgroup and records resource use over time. It reads compiler, linker, build cache, and GNU make data from the same processes. It can freeze, thaw, or stop a systemd scope only when write mode is on and you confirm the action.
+vsys reads Linux cgroup v2, process files, and configured system reports with your user permissions. It finds configured AI tools and watched systemd scopes. It groups their processes by cgroup and records resource use over time. It reads compiler, linker, build cache, and GNU make data from the same processes. `vsys --once --summary` takes two short-interval samples and skips scratch collection, so a flyout can read the current verdict without paying for a scratch scan. It can freeze, thaw, or stop a systemd scope only when write mode is on and you confirm the action.
 
 ## vsys observes; the warden corrects
 

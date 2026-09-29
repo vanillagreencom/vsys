@@ -141,6 +141,7 @@ export class StorageCollector {
     time: number,
     mountInfo: MountInfo[] | null = readMounts(r, c.procRoot),
     waitForScratch = true,
+    skipScratch = false,
   ): Promise<Storage> {
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
@@ -356,12 +357,17 @@ export class StorageCollector {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT")
         r.error(c.scrubDir, e);
     }
-    const scratch = await this.scratch.collect(c, time, waitForScratch);
-    storage.scratch = scratch.scratch;
-    storage.sessions = scratch.sessions;
-    storage.scratchTime = scratch.time;
-    storage.scratchPending = this.scratch.pending;
-    r.errors.push(...scratch.errors);
+    if (!skipScratch) {
+      const scratch = await this.scratch.collect(c, time, waitForScratch);
+      storage.scratch = scratch.scratch;
+      storage.sessions = scratch.sessions;
+      storage.scratchTime = scratch.time;
+      storage.scratchPending = this.scratch.pending;
+      r.errors.push(...scratch.errors);
+    } else {
+      storage.scratchTime = null;
+      storage.scratchPending = false;
+    }
     return storage;
   }
 }

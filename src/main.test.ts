@@ -47,6 +47,100 @@ test("once exports structured evidence and fails visibly on source errors", asyn
     f.cleanup();
   }
 });
+
+test("once summary exports verdict schema and skips scratch collection", async () => {
+  const f = fixture();
+  try {
+    f.config.scratchDirs = [join(f.root, "missing-scratch")];
+    const path = join(f.root, "config.toml");
+    await saveConfig(f.config, path, f.agentToolsPath);
+    const run = async (extra: string[] = []) => {
+      const child = Bun.spawn(
+        [process.execPath, "src/main.ts", "--once", "--config", path, ...extra],
+        {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, HOME: f.root },
+        },
+      );
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      return { stdout, stderr, code };
+    };
+    const summary = await run(["--summary"]);
+    expect(summary.code).toBe(0);
+    const parsed = JSON.parse(summary.stdout);
+    expect({
+      ...parsed,
+      time: typeof parsed.time,
+      meters: parsed.meters.map(
+        (meter: {
+          id: string;
+          value: unknown;
+          max: unknown;
+          level: string;
+        }) => ({
+          id: meter.id,
+          value: meter.value === null ? null : typeof meter.value,
+          max: meter.max === null ? null : typeof meter.max,
+          level: meter.level,
+        }),
+      ),
+    }).toMatchInlineSnapshot(`
+      {
+        "errors": [],
+        "meters": [
+          {
+            "id": "cpu",
+            "level": "ok",
+            "max": "number",
+            "value": "number",
+          },
+          {
+            "id": "memory",
+            "level": "ok",
+            "max": "number",
+            "value": "number",
+          },
+          {
+            "id": "disk",
+            "level": "ok",
+            "max": "number",
+            "value": "number",
+          },
+          {
+            "id": "builds",
+            "level": "ok",
+            "max": "number",
+            "value": "number",
+          },
+        ],
+        "schema": "vsys.summary.v1",
+        "time": "number",
+        "verdict": [
+          {
+            "cause": "scratch",
+            "level": null,
+            "subject": null,
+          },
+        ],
+      }
+    `);
+    const full = await run();
+    expect(full.code).toBe(2);
+    expect(JSON.parse(full.stdout).errors).toContainEqual({
+      source: f.config.scratchDirs[0],
+      message: expect.stringContaining("ENOENT"),
+    });
+    const invalid = await run(["--summary", "--markdown"]);
+    expect(invalid.code).toBe(1);
+  } finally {
+    f.cleanup();
+  }
+});
 test("quit and failed shutdown restore their own terminal settings", async () => {
   const f = fixture();
   try {
