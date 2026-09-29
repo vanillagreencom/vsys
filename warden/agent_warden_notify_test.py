@@ -356,6 +356,19 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(run_entries, [])
 
+    def test_notifier_fresh_stale_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '    return age < NOTIFIER_FRESH_SECONDS and age >= -NOTIFIER_FRESH_SECONDS\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, '    return True\n'), "agent_warden_mutant_notifier_fresh_stale")
+        with scratch() as tmp:
+            heartbeat = Path(tmp) / "notifier"
+            heartbeat.write_text("")
+            os.utime(heartbeat, (879.0, 879.0))
+            self.assertTrue(mutant.notifier_fresh(heartbeat, now=1000.0))
+            heartbeat.unlink()
+            self.assertFalse(mutant.notifier_fresh(heartbeat, now=1000.0))
+
     def test_notification_handoff_mutant_fails(self):
         text = WARDEN.read_text()
         old = '    if consumer_fresh:\n        log(f"notice left to consumer: {summary}")\n        return False\n    return bool((sender or notify)(summary, body))\n'
@@ -385,6 +398,22 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         st = mutant.default_state()
         mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda s, b: False)
         self.assertTrue(st["episodes"]["tasks:lane.scope"].get("notified"))
+
+    def test_notify_send_exit_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '    if result.returncode != 0:\n        log(f"notify-send failed: exit={result.returncode} summary={summary}")\n        return False\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, old.replace('if result.returncode != 0:', 'if False:')), "agent_warden_mutant_notify_exit")
+
+        class Result:
+            returncode = 7
+
+        old_run = mutant.subprocess.run
+        mutant.subprocess.run = lambda *a, **kw: Result()
+        try:
+            self.assertTrue(mutant.notify("summary", "body"))
+        finally:
+            mutant.subprocess.run = old_run
 
     def test_run_headroom_preserves_move_failure_mutant_fails(self):
         text = WARDEN.read_text()
@@ -481,6 +510,33 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             run_entries = os.listdir(env["XDG_RUNTIME_DIR"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotEqual(run_entries, [])
+
+    def test_status_rewrite_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = 'def status():\n    st = read_state_unlocked()\n'
+        self.assertEqual(text.count(old), 1)
+        with scratch() as tmp:
+            base = Path(tmp)
+            mutant = base / "agent-warden"
+            mutant.write_text(text.replace(old, 'def status():\n    st = read_state_unlocked()\n    STATE.write_text(STATE.read_text() + "\\n")\n'))
+            mutant.chmod(0o755)
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"}, path=True)
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            state_dir = Path(env["XDG_RUNTIME_DIR"]) / "agent-warden"
+            state_dir.mkdir(parents=True)
+            state = state_dir / "state.json"
+            body = json.dumps(self.w.default_state(), sort_keys=True).encode()
+            state.write_bytes(body)
+            before_mtime = state.stat().st_mtime_ns
+            result = subprocess.run([sys.executable, str(mutant), "--status"], env=env, capture_output=True, text=True)
+            after = state.read_bytes()
+            after_mtime = state.stat().st_mtime_ns
+            lock_exists = (state_dir / "lock").exists()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(after, body)
+        self.assertNotEqual(after_mtime, before_mtime)
+        self.assertFalse(lock_exists)
 
     def test_status_read_only_mutant_fails(self):
         text = WARDEN.read_text()
