@@ -10,7 +10,7 @@
 
 **Context**: The Settings screen used to save the resolved configuration. That copied derived defaults into `config.toml`. For `agentTools`, the copy froze the dashboard on one agent list while the warden kept reading the shipped data and the machine overlay.
 
-**Decision**: Save only settings that differ from the layered defaults. Save Settings edits to `agentTools` in `~/.config/vsys/agent-tools.json`, not in `config.toml`. Keep a hand-written `config.toml` `agentTools` list only when it differs from both the shipped list and the layered list.
+**Decision**: Save only settings that differ from the layered defaults. Save Settings edits to `agentTools` in `~/.config/vsys/agent-tools.json`, not in `config.toml`. Keep a hand-written `config.toml` `agentTools` list only when it differs from both the shipped list and the layered list. Refuse a Settings edit to that list when the hand-written pin omits a shipped name.
 
 **Rationale**:
 
@@ -20,6 +20,6 @@
 
 **Revisit When**: The shared agent-tool schema can record removals.
 
-**Verification**: `src/config/config.test.ts` checks changed-key saves, unpinned `agentTools` saves, pinned-list controls and migration. `src/runtime.test.ts` checks pinned and unpinned Settings writes preserve the overlay and match the warden loader.
+**Verification**: `src/config/config.test.ts` checks changed-key saves, unpinned `agentTools` saves, pinned-list controls and migration. `src/runtime.test.ts` checks pinned and unpinned Settings writes preserve the overlay, refuse pinned shipped-name removals and match the warden loader.
 
 **References**: [D005](D005-shared-agent-tool-data.md)

@@ -6,6 +6,7 @@ import {
   type AgentToolNamesSave,
   agentToolsPath as defaultAgentToolsPath,
   prepareAgentToolNamesSave,
+  shippedAgentTools,
   writeAgentToolNamesSave,
 } from "./config/agent-tools";
 import { writeFileAtomic } from "./config/atomic";
@@ -191,6 +192,16 @@ export class Session {
       );
       let agentToolSave: AgentToolNamesSave | null = null;
       if (agentToolsChanged) {
+        if (currentState.agentToolsPinned) {
+          const pinnedNames = new Set(currentState.config.agentTools);
+          const missingShippedNames = shippedAgentTools.tools
+            .map((tool) => tool.name)
+            .filter((name) => !pinnedNames.has(name));
+          if (missingShippedNames.length)
+            throw new Error(
+              `Pinned agentTools omits shipped agent tools: ${missingShippedNames.join(", ")}. Edit agentTools in config.toml, or remove it there to use the shared list.`,
+            );
+        }
         const currentAgentTools = [...currentState.config.agentTools];
         const currentAgentToolSet = new Set(currentAgentTools);
         for (const name of currentState.layeredAgentTools) {

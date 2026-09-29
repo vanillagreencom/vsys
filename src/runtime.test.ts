@@ -326,6 +326,57 @@ test("editing agent tools saves the shared overlay and leaves config unpinned", 
   }
 });
 
+test("pinned agent tool edits that omit shipped tools are refused before writes", async () => {
+  const f = fixture();
+  const configPath = join(f.root, "config.toml");
+  const missingShipped = f.config.agentTools[0];
+  const pinned = f.config.agentTools.slice(1);
+  const configBody = `agentTools = ${JSON.stringify(pinned)}\n`;
+  const overlayBody = `${JSON.stringify(
+    {
+      version: 1,
+      tools: [{ name: "local-agent", mise: ["local-agent"] }],
+      desktopExePrefixes: ["/apps/"],
+      bundledCliSuffixes: ["/bin/agent"],
+    },
+    null,
+    2,
+  )}\n`;
+  f.write(configPath, configBody);
+  f.write(f.agentToolsPath, overlayBody);
+  const config = await loadConfig(configPath, f.agentToolsPath);
+  const h = new History(config);
+  const session = new Session(
+    config,
+    configPath,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    {
+      makeSource: async () => {
+        throw new Error("source should not rebuild after refused agent tools");
+      },
+      agentToolsPath: f.agentToolsPath,
+    },
+  );
+  try {
+    // Control: the union rebase path puts the missing shipped name back.
+    await expect(
+      session.configure({
+        ...config,
+        agentTools: [...config.agentTools, "new-agent"],
+      }),
+    ).rejects.toThrow(
+      `Pinned agentTools omits shipped agent tools: ${missingShipped}. Edit agentTools in config.toml, or remove it there to use the shared list.`,
+    );
+    expect(readFileSync(configPath, "utf8")).toBe(configBody);
+    expect(readFileSync(f.agentToolsPath, "utf8")).toBe(overlayBody);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+
 test("pinned agent tool edits preserve current overlay-only tools", async () => {
   const f = fixture();
   const configPath = join(f.root, "config.toml");
