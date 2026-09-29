@@ -126,7 +126,7 @@ An absent `agents.slice` makes `slice` null. The move guard still treats an abse
 | `scanFailures` | integer or null | count | `state.json` existed but could not be read or parsed. |
 | `skips` | integer or null | count | `state.json` existed but could not be read or parsed. |
 
-A missing `state.json` means a fresh runtime directory only when no usable `status.json` counters exist. The counters are zero in that case. If `state.json` is missing or unreadable and `status.json` holds integer counters, the warden seeds state from those last published totals. If published counters are unusable, counters stay null until state is readable again. A state file with invalid persisted event or episode fields is unreadable state. An invalid orphan record is dropped, so the orphan must be observed again before reaping.
+A missing `state.json` means a fresh runtime directory only when no usable `status.json` counters exist. The counters are zero in that case. If `state.json` is missing or unreadable and `status.json` holds integer counters, the warden seeds state from those last published totals. If published counters are unusable, the warden writes `state.json` with `counters_unknown: true`, and counters stay null until the runtime directory starts fresh. A state file with invalid persisted event or episode fields is unreadable state. An invalid orphan record is dropped, so the orphan must be observed again before reaping.
 
 ## Fixtures
 

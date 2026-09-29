@@ -210,7 +210,20 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                 self.w.STATUS.write_text(json.dumps({"counters": {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None}}))
                 with self.w.State() as st:
                     self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
-                self.assertFalse(self.w.STATE.exists())
+                stored = json.loads(self.w.STATE.read_text())
+                self.assertTrue(stored["counters_unknown"])
+                with self.w.State() as st:
+                    self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
+                mgr = 4000
+                unit = "agent-confine-counter-unknown.scope"
+                recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
+                        8000: self.P(8000, mgr, "bun", ["bun"], self._cg(unit), exe="/usr/bin/bun")}
+                with self.w.State() as st:
+                    _, rows = self.w.reap_orphans(recs, st, True)
+                    first = rows[0]["since"]
+                with self.w.State() as st:
+                    _, rows = self.w.reap_orphans(recs, st, True)
+                    self.assertEqual(rows[0]["since"], first)
             finally:
                 self.restore_status_state(self.w, old)
 

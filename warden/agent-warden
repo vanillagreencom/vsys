@@ -1337,7 +1337,7 @@ STATUS_COUNTER_KEYS_PUBLIC = (("moves", "moves"), ("partial", "partial"), ("reap
 
 
 def status_counters(st):
-    if not _state_readable(st):
+    if not _state_readable(st) or st.get("counters_unknown") is True:
         return {public: None for public, _ in STATUS_COUNTER_KEYS_PUBLIC}
     return {public: int(st.get(internal, 0)) for public, internal in STATUS_COUNTER_KEYS_PUBLIC}
 
@@ -1839,7 +1839,8 @@ def record_move_result(st, summary, failures, root, reason, done, name, moved, m
 # --- state, behind a lock -----------------------------------------------------
 DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "partial": 0,
                  "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {},
-                 "episodes": {}, "events": [], "event_seq": 0, "near_open": [], "waiting_open": []}
+                 "episodes": {}, "events": [], "event_seq": 0, "near_open": [], "waiting_open": [],
+                 "counters_unknown": False}
 STATE_COUNTER_KEYS = ("skips", "moves", "partial", "scan_failures", "move_failures", "reaped")
 
 
@@ -1913,6 +1914,8 @@ def state_object(raw):
     _check_events(errors, raw.get("events", []), "state.events")
     _check_string_list(errors, raw.get("near_open", []), "state.near_open")
     _check_string_list(errors, raw.get("waiting_open", []), "state.waiting_open")
+    if not isinstance(raw.get("counters_unknown", False), bool):
+        errors.append("state.counters_unknown must be a boolean")
     raw_orphans = raw.get("orphans", {})
     raw_episodes = raw.get("episodes", {})
     if not isinstance(raw_orphans, dict):
@@ -1969,8 +1972,8 @@ class State:
             elif missing and mode == "fresh":
                 self.st["_state_readable"] = True
             else:
-                self.st["_state_readable"] = False
-                self.st["_skip_state_write"] = True
+                self.st["_state_readable"] = True
+                self.st["counters_unknown"] = True
         self.st["event_seq"] = max(int(self.st.get("event_seq") or 0), status_event_floor())
         return self.st
 
@@ -1985,11 +1988,10 @@ class State:
                     status_doc = status_from_tick(self.status, self.st, tick)
                 except Exception as e:  # noqa: BLE001
                     log(f"status build failed: {e!r}")
-            if not self.st.get("_skip_state_write"):
-                tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
-                stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
-                tmp.write_text(json.dumps(stored))
-                os.replace(tmp, STATE)
+            tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
+            stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
+            tmp.write_text(json.dumps(stored))
+            os.replace(tmp, STATE)
             if status_doc is not None:
                 try:
                     write_status(status_doc)
