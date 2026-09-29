@@ -151,7 +151,7 @@ class WardenInstallTest(unittest.TestCase):
     def test_install_writes_marked_units_data_and_enables_timer(self):
         with scratch() as tmp:
             installer, warden, source_data, env, user_dir, data_target, log = self.fixture(Path(tmp))
-            local = Path(env["XDG_CONFIG_HOME"]) / "vsys" / "agent-tools.json"
+            local = Path(env["HOME"]) / ".config" / "vsys" / "agent-tools.json"
             local.parent.mkdir(parents=True)
             local.write_text("local\n", encoding="utf-8")
             code, stdout, stderr = self.run_main(installer, ["install"], env)
@@ -395,7 +395,7 @@ class WardenInstallTest(unittest.TestCase):
     def test_uninstall_removes_marked_files_data_and_leaves_local_config(self):
         with scratch() as tmp:
             installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp))
-            local = Path(env["XDG_CONFIG_HOME"]) / "vsys" / "agent-tools.json"
+            local = Path(env["HOME"]) / ".config" / "vsys" / "agent-tools.json"
             local.parent.mkdir(parents=True)
             local.write_text("local\n", encoding="utf-8")
             before = sorted(path.relative_to(user_dir) for path in user_dir.rglob("*"))
