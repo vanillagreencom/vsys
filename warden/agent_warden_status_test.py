@@ -621,6 +621,24 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(self.w.status_errors(doc))
 
+
+    def test_near_cap_status_episode_lifetime_rows(self):
+        st = {"_state_readable": True, "event_seq": 0, "events": [], "near_open": []}
+        self.w.record_near_events(st, [("lane.scope", "tasks", "6200 of 8192")], now=1)
+        self.assertEqual(len([event for event in st["events"] if event["kind"] == "near-cap"]), 1)
+        self.w.record_near_events(st, [], {("lane.scope", "tasks")}, True, now=2)
+        self.assertEqual(st["near_open"], ["lane.scope:tasks"])
+        self.w.record_near_events(st, [("lane.scope", "tasks", "6201 of 8192")], now=3)
+        self.assertEqual(len([event for event in st["events"] if event["kind"] == "near-cap"]), 1)
+        self.w.record_near_events(st, [], set(), False, now=4)
+        self.assertEqual(st["near_open"], ["lane.scope:tasks"])
+        self.w.record_near_events(st, [("lane.scope", "tasks", "6202 of 8192")], now=5)
+        self.assertEqual(len([event for event in st["events"] if event["kind"] == "near-cap"]), 1)
+        self.w.record_near_events(st, [], set(), True, now=6)
+        self.assertEqual(st["near_open"], [])
+        self.w.record_near_events(st, [("lane.scope", "tasks", "6203 of 8192")], now=7)
+        self.assertEqual(len([event for event in st["events"] if event["kind"] == "near-cap"]), 2)
+
     def test_status_fixtures_validate_and_match_builders(self):
         expected = self.w.status_fixture_docs()
         actual_names = {path.name.removeprefix("status-").removesuffix(".json") for path in (ROOT / "warden" / "fixtures").glob("status-*.json")}

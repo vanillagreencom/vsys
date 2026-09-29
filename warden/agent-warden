@@ -1366,14 +1366,16 @@ def emit_event(st, kind, *, scope=None, pid=None, processes=None, near=None, now
     return event
 
 
-def record_near_events(st, near_rows, now=None):
+def record_near_events(st, near_rows, unknown=(), complete=True, now=None):
     current = {f"{unit}:{kind}" for unit, kind, _ in near_rows}
     previous = set(st.get("near_open") or [])
+    unknown_keys = {f"{unit}:{kind}" for unit, kind in unknown}
+    kept = set(previous) if not complete else previous & unknown_keys
     for unit, kind, _ in sorted(near_rows, key=lambda row: (row[0], row[1])):
         key = f"{unit}:{kind}"
         if key not in previous:
             emit_event(st, "near-cap", scope=unit, near=kind, now=now)
-    st["near_open"] = sorted(current)
+    st["near_open"] = sorted(current | kept)
 
 
 def record_waiting_events(st, waiting, now=None):
@@ -2007,7 +2009,7 @@ def run(correct):
             try:
                 enforce_task_caps(correct)
                 near, unknown_near, near_complete = warn_near_cap()
-                record_near_events(st, near)
+                record_near_events(st, near, unknown_near, near_complete, now=tick_now)
                 for unit, kind, human in near:
                     log(f"scope {unit} near its {kind} ceiling: {human}")
                     sent, key = deliver_episode_notice(
