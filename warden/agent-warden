@@ -991,6 +991,21 @@ def notify(summary, body):
         pass
 
 
+def record_move_result(st, summary, failures, root, reason, done, name, moved, missing):
+    if done and moved:
+        st["moves"] += 1
+        summary.append(f"{root.comm} {root.pid} (+{len(moved) - 1}, {reason})")
+        log(f"  moved {len(moved)} pid(s) into {SLICE}/{name} ({reason})")
+    elif moved:
+        st["partial"] += 1
+        summary.append(f"PARTIAL {root.comm} {root.pid}: {len(moved)} moved, {len(missing)} not")
+        log(f"  PARTIAL {name}: moved {[p.pid for p in moved]} missing {[p.pid for p in missing]}")
+    elif missing:
+        st["move_failures"] += 1
+        failures.append(f"FAILED {root.comm} {root.pid}: 0 moved, {len(missing)} not")
+        log(f"  FAILED {name}: moved [] missing {[p.pid for p in missing]}")
+
+
 # --- state, behind a lock -----------------------------------------------------
 DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "partial": 0,
                  "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {}}
@@ -1024,6 +1039,7 @@ def run(correct):
     with State() as st:
         only = only_pids()
         summary = []  # moved-tree notices; without this the first move raised NameError
+        failures = []
         try:
             procs = scan()
             moves, unmatched, held, units = plan(procs, only)
@@ -1091,17 +1107,12 @@ def run(correct):
                 st["move_failures"] += 1
                 log(f"  move of pid {tree[0].pid} raised {e!r}")
                 continue
-            if done and moved:
-                st["moves"] += 1
-                summary.append(f"{tree[0].comm} {tree[0].pid} (+{len(moved) - 1}, {reason})")
-                log(f"  moved {len(moved)} pid(s) into {SLICE}/{name} ({reason})")
-            elif moved or missing:
-                st["partial"] += 1
-                summary.append(f"PARTIAL {tree[0].comm} {tree[0].pid}: {len(moved)} moved, {len(missing)} not")
-                log(f"  PARTIAL {name}: moved {[p.pid for p in moved]} missing {[p.pid for p in missing]}")
+            record_move_result(st, summary, failures, tree[0], reason, done, name, moved, missing)
         bus.close()
         if summary:
             notify(f"agent-warden: {len(summary)} move(s) into agents.slice", "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""))
+        if failures:
+            notify(f"agent-warden: {len(failures)} move failure(s)", "\n".join(failures[:6]) + ("\n..." if len(failures) > 6 else ""))
     return 0
 
 

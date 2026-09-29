@@ -339,6 +339,24 @@ class AgentWardenRules(unittest.TestCase):
         source = WARDEN.read_text()
         self.assertIn("ctypes.c_uint64(SCOPE_CPU_WEIGHT)", source)
 
+    def test_move_result_classification_rows(self):
+        root = self.P(900, 1, "codex", ["codex"], self.S)
+        child = self.P(901, 900, "bash", ["bash"], self.S)
+        rows = [
+            ("done", True, [root, child], [], {"moves": 1, "partial": 0, "move_failures": 0}, 1, 0),
+            ("partial", False, [root], [child], {"moves": 0, "partial": 1, "move_failures": 0}, 1, 0),
+            ("all missing", False, [], [root, child], {"moves": 0, "partial": 0, "move_failures": 1}, 0, 1),
+        ]
+        for name, done, moved, missing, expected, summary_len, failures_len in rows:
+            with self.subTest(name=name):
+                state = {"moves": 0, "partial": 0, "move_failures": 0}
+                summary = []
+                failures = []
+                self.w.record_move_result(state, summary, failures, root, "escaped launch", done, "unit.scope", moved, missing)
+                self.assertEqual(state, expected)
+                self.assertEqual(len(summary), summary_len)
+                self.assertEqual(len(failures), failures_len)
+
     def test_memory_warn_default_rows(self):
         with scratch() as tmp:
             base = Path(tmp)
@@ -641,27 +659,70 @@ class AgentWardenRules(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected_value)
 
+    def run_nested_launcher(self, status, launcher_text=None):
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir(parents=True)
+            launcher = base / "agent-confine"
+            if launcher_text is None:
+                shutil.copy2(ROOT / "warden" / "agent-confine", launcher)
+            else:
+                launcher.write_text(launcher_text)
+            helper = base / "agent-confine-lineage-capped"
+            helper.write_text(f"#!/bin/sh\nexit {status}\n")
+            log = base / "systemd-run.log"
+            (bin_dir / "grep").write_text("#!/bin/sh\nexit 0\n")
+            (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+            systemd_run = "\n".join([
+                "#!/bin/sh",
+                f"printf '%s\\n' \"$*\" >> {log}",
+                'case " $* " in',
+                '*" --unit=agent-confine-"*)',
+                '  while [ $# -gt 0 ]; do',
+                '    if [ "$1" = env ]; then shift; exec env "$@"; fi',
+                '    shift',
+                '  done',
+                '  exit 99;;',
+                '*) exit 0;;',
+                'esac',
+            ]) + "\n"
+            (bin_dir / "systemd-run").write_text(systemd_run)
+            for path in [launcher, helper, *bin_dir.iterdir()]:
+                path.chmod(0o755)
+            env = self._confine_env(base, bin_dir)
+            result = subprocess.run([str(launcher), "env"], env=env, capture_output=True, text=True)
+            expected = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
+            lines = log.read_text().splitlines() if log.exists() else []
+        return result, expected, lines
+
     def test_agent_confine_nested_helper_statuses_launch(self):
-        for status in (1, 3):
+        rows = [
+            (1, 0),
+            (3, 2),
+        ]
+        for status, systemd_runs in rows:
             with self.subTest(status=status):
-                with scratch() as tmp:
-                    base = Path(tmp)
-                    bin_dir = base / "bin"
-                    bin_dir.mkdir(parents=True)
-                    launcher = base / "agent-confine"
-                    shutil.copy2(ROOT / "warden" / "agent-confine", launcher)
-                    helper = base / "agent-confine-lineage-capped"
-                    helper.write_text(f"#!/bin/sh\nexit {status}\n")
-                    (bin_dir / "grep").write_text("#!/bin/sh\nexit 0\n")
-                    (bin_dir / "systemd-run").write_text("#!/bin/sh\nexit 1\n")
-                    (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
-                    for path in [launcher, helper, *bin_dir.iterdir()]:
-                        path.chmod(0o755)
-                    env = self._confine_env(base, bin_dir)
-                    result = subprocess.run([str(launcher), "env"], env=env, capture_output=True, text=True)
-                    expected = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
+                result, expected, lines = self.run_nested_launcher(status)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"TMPDIR={expected}", result.stdout.splitlines())
+                self.assertEqual(len(lines), systemd_runs)
+                if status == 3:
+                    self.assertIn("--scope", lines[-1])
+                    self.assertIn("-p CPUWeight=99", lines[-1])
+                    self.assertIn("-p TasksMax=8192", lines[-1])
+                    self.assertIn("-p MemoryHigh=64G", lines[-1])
+                    self.assertRegex(lines[-1], r"--unit=agent-confine-[0-9]+-")
+
+    def test_agent_confine_nested_status_three_mutant_fails(self):
+        text = (ROOT / "warden" / "agent-confine").read_text()
+        old = '3) : ;;'
+        new = '3) exec env "${CAPS[@]}" "$@" ;;'
+        self.assertEqual(text.count(old), 1)
+        result, expected, lines = self.run_nested_launcher(3, text.replace(old, new))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"TMPDIR={expected}", result.stdout.splitlines())
+        self.assertNotEqual(len(lines), 2)
 
     def test_agent_confine_systemd_run_uses_cpu_weight_99(self):
         with scratch() as tmp:

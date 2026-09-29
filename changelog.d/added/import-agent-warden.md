@@ -1,1 +1,1 @@
-- Add the optional agent warden component with launcher scripts, user-unit templates, documentation, and CI checks.
+- Add the optional agent warden component with launcher scripts, user-unit templates, documentation, and CI checks. Refuse warden CI when the warden unit test file is missing.

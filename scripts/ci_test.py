@@ -83,7 +83,7 @@ class ApplicationChecks(unittest.TestCase):
                 self.assertNotEqual(self.run_ci().returncode, 0)
                 self.assertFalse(self.commands.exists())
 
-    def make_warden(self, exit_code=0):
+    def make_warden(self, exit_code=0, test_fails=False):
         warden = self.root / "warden"
         warden.mkdir()
         script = warden / "agent-warden"
@@ -102,7 +102,10 @@ class ApplicationChecks(unittest.TestCase):
             "import unittest\n"
             "class Fixture(unittest.TestCase):\n"
             "    def test_env(self):\n"
+            "        with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
+            "            handle.write('warden unittest\\n')\n"
             "        self.assertEqual(os.environ.get('PYTHONDONTWRITEBYTECODE'), '1')\n"
+            f"        self.assertFalse({test_fails!r})\n"
         )
 
     def test_warden_checks_run_when_warden_exists(self):
@@ -111,8 +114,8 @@ class ApplicationChecks(unittest.TestCase):
         result = self.run_ci()
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = self.commands.read_text().splitlines()
-        self.assertEqual(lines[0], "warden --selftest")
-        self.assertEqual(lines[1:], ["install --frozen-lockfile", "run lint", "run typecheck", "run test", "run build"])
+        self.assertEqual(lines[:2], ["warden --selftest", "warden unittest"])
+        self.assertEqual(lines[2:], ["install --frozen-lockfile", "run lint", "run typecheck", "run test", "run build"])
 
     def test_failing_warden_selftest_fails_ci(self):
         self.package()
@@ -120,6 +123,13 @@ class ApplicationChecks(unittest.TestCase):
         result = self.run_ci()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.commands.read_text().splitlines(), ["warden --selftest"])
+
+    def test_failing_warden_unit_suite_fails_ci(self):
+        self.package()
+        self.make_warden(test_fails=True)
+        result = self.run_ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.commands.read_text().splitlines(), ["warden --selftest", "warden unittest"])
 
     def test_warden_without_agent_warden_fails(self):
         self.package()
