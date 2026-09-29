@@ -1571,12 +1571,17 @@ def status_errors(doc):
     _check_number(errors, doc.get("interval"), "interval")
     if isinstance(doc.get("interval"), (int, float)) and not isinstance(doc.get("interval"), bool) and math.isfinite(doc.get("interval")) and doc.get("interval") <= 0:
         errors.append("interval must be positive")
-    if doc.get("error") is not None and not isinstance(doc.get("error"), str):
-        errors.append("error must be a string or null")
-    if doc.get("error") is not None:
+    error = doc.get("error")
+    if error is not None and error != "scan":
+        errors.append("error must be scan or null")
+    if error is not None:
         for key in ("outside", "waiting", "orphans", "contained"):
             if doc.get(key) is not None:
                 errors.append(f"{key} must be null when error is set")
+    else:
+        for key in ("outside", "waiting", "contained"):
+            if not isinstance(doc.get(key), list):
+                errors.append(f"{key} must be a list when error is null")
     if doc.get("slice") is not None:
         if _check_keys(errors, doc["slice"], ("memory", "high", "max", "tasks", "tasksMax", "headroomOk"), "slice"):
             _check_int_or_null(errors, doc["slice"].get("memory"), "slice.memory")

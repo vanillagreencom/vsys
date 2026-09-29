@@ -777,9 +777,24 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
         doc = json.loads(json.dumps(base))
         doc["mode"] = []
         rows.append(("mode list", doc))
-        for name, doc in rows:
+        doc = json.loads(json.dumps(base))
+        doc["error"] = "other"
+        rows.append(("unknown error id", doc))
+        for key in ("outside", "waiting", "contained"):
+            doc = json.loads(json.dumps(base))
+            doc[key] = None
+            rows.append((f"{key} null without error", doc))
+        doc = json.loads(json.dumps(base))
+        doc["orphans"] = None
+        rows.append(("orphans null without error allowed", doc, False))
+        for row in rows:
+            if len(row) == 3:
+                name, doc, should_error = row
+            else:
+                name, doc = row
+                should_error = True
             with self.subTest(name=name):
-                self.assertTrue(self.w.status_errors(doc))
+                self.assertEqual(bool(self.w.status_errors(doc)), should_error)
 
 
     def test_near_cap_status_episode_lifetime_rows(self):
