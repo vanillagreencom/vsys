@@ -9,9 +9,11 @@ import { runEffect, switchToPane } from "./effect";
 import { exportSnapshot } from "./model/export";
 import { Session } from "./runtime";
 import { History } from "./store/history";
+import { dispatchWarden } from "./warden";
 
 /** --once produces a sample without starting a terminal renderer. */
 export async function main(args = process.argv.slice(2)): Promise<void> {
+  if (args[0] === "warden") await dispatchWarden(args.slice(1));
   const { values } = parseArgs({
     args,
     options: {
@@ -24,7 +26,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   });
   if (values.help) {
     console.log(
-      "vsys [--once] [--markdown] [--config PATH]\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
+      "vsys [--once] [--markdown] [--config PATH]\nvsys warden install|uninstall|status\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
     );
     return;
   }

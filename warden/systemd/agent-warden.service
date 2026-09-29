@@ -4,7 +4,7 @@ Documentation=https://github.com/vanillagreencom/vsys/blob/main/docs/architectur
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/agent-warden --correct
+ExecStart=@WARDEN_DIR@/agent-warden --correct
 TimeoutStartSec=25
 Slice=background.slice
 MemoryMax=512M

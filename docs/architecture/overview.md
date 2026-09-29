@@ -41,7 +41,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - `src/store/`: owns application persistence and derives the timeline events. The collector does not depend on SQLite.
 - `src/runtime.ts`: owns scheduling and settings changes. Samples never overlap, and a replaced source is handed its predecessor so readings measured since vsys started survive the replacement.
 - `src/ui/`: consumes snapshots. It opens views and exports evidence, and reaches the system only through a confirmed lane action.
-- `runEffect()` in `src/effect.ts` is the one dashboard function that changes system state. Moving the reader's own tmux view is not one of its effects, because it changes no process. The optional warden changes process placement outside the dashboard runtime.
+- `runEffect()` in `src/effect.ts` is the one dashboard function that changes system state. Moving the reader's own tmux view is not one of its effects, because it changes no process. `src/warden.ts` only dispatches to the optional warden before the dashboard starts. The optional warden changes process placement outside the dashboard runtime.
 - OpenTUI's React root builds a new reconciler container on each `render` call, so `mountScreen` renders once and live samples reach the tree through React's external-store subscription.
 
 ## Invariants
@@ -71,5 +71,6 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [settings.md](settings.md): read when adding a setting or changing what a settings change replaces.
 - [ui.md](ui.md): read when changing the shell, a screen, colour, or what the reader can act on.
 - [warden.md](warden.md): read when changing the optional process-placement corrector under `warden/`.
+- [warden-install.md](warden-install.md): read when changing `vsys warden install`, `warden/install` or the warden unit templates.
 
 Subsystems with no topic file of their own: `src/model/export.ts` writes the JSON and Markdown exports and strips terminal controls from display text; `src/model/shell.ts` quotes a copied command so a paste survives an escaped scope name; `src/collect/io.ts` holds the `Reader` that records a source error against the source that failed; `src/collect/system.ts` and `src/collect/cgroups.ts` read machine totals and the cgroup tree; `src/config/editor.ts` parses a setting a reader typed.
