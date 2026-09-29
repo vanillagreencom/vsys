@@ -245,6 +245,36 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
                 self.assertIn("not-moving:agents.slice", state["episodes"])
                 self.assertEqual(notifications, [])
 
+    def test_move_condition_recovery_clears_episode_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            initial = self.w.default_state()
+            initial["episodes"] = {"not-moving:agents.slice": {"kind": "not-moving", "scope": "agents.slice", "since": 900.0, "notified": True}}
+            _result, state, notifications = self._run_move_fixture(self.w, base / "state-no-moves", initial_state=initial, plan_moves=[])
+            self.assertNotIn("not-moving:agents.slice", state["episodes"])
+            self.assertEqual(notifications, [])
+            for _ in range(2):
+                _result, _state, notifications = self._run_move_fixture(self.w, base / "state-no-moves", headrooms=[(False, -1, -1)])
+                self.assertEqual(notifications, [])
+            _result, state, notifications = self._run_move_fixture(self.w, base / "state-no-moves", headrooms=[(False, -1, -1)])
+            self.assertEqual(notifications[0][0], "agent-warden: not moving")
+            self.assertTrue(state["episodes"]["not-moving:agents.slice"].get("notified"))
+
+            initial = self.w.default_state()
+            initial["episodes"] = {
+                "not-moving:agents.slice": {"kind": "not-moving", "scope": "agents.slice", "since": 900.0, "notified": True},
+                "move-failure:10:1": {"kind": "move-failure", "scope": "10:1", "since": 900.0, "notified": True},
+            }
+            _result, state, notifications = self._run_move_fixture(
+                self.w, base / "state-success", initial_state=initial,
+                move_impl=lambda tree, reason, bus: (True, "unit.scope", tree, []))
+            self.assertNotIn("not-moving:agents.slice", state["episodes"])
+            self.assertNotIn("move-failure:10:1", state["episodes"])
+            self.assertEqual(notifications[0][0], "agent-warden: 1 move(s) into agents.slice")
+            _result, state, notifications = self._run_move_fixture(self.w, base / "state-success")
+            self.assertEqual(notifications[0][0], "agent-warden: 1 move failure(s)")
+            self.assertTrue(state["episodes"]["move-failure:10:1"].get("notified"))
+
     def _run_near_cap_fixture(self, module, state_dir, cg_root, *, initial_state=None, listing_raises=False):
         state_dir.mkdir(parents=True, exist_ok=True)
         old = {name: getattr(module, name) for name in (
@@ -493,6 +523,30 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             _result, state, notifications = self._run_move_fixture(mutant, state_dir, headrooms=[(False, -1, -1)])
         self.assertNotIn("not-moving:agents.slice", state["episodes"])
         self.assertEqual(notifications, [])
+
+    def test_no_moves_clear_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '            if correct and only is None:\n                clear_episodes(st, {"not-moving", "move-failure"})\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, '            if False:\n                clear_episodes(st, {"not-moving", "move-failure"})\n'), "agent_warden_mutant_no_moves_clear")
+        with scratch() as tmp:
+            initial = mutant.default_state()
+            initial["episodes"] = {"not-moving:agents.slice": {"kind": "not-moving", "scope": "agents.slice", "since": 900.0, "notified": True}}
+            _result, state, _notifications = self._run_move_fixture(mutant, Path(tmp) / "state", initial_state=initial, plan_moves=[])
+        self.assertIn("not-moving:agents.slice", state["episodes"])
+
+    def test_final_selective_clear_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '        if move_conditions_evaluated and only is None:\n            clear_episodes(st, {"not-moving", "move-failure"}, seen_move_conditions)\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, ''), "agent_warden_mutant_final_selective_clear")
+        with scratch() as tmp:
+            initial = mutant.default_state()
+            initial["episodes"] = {"move-failure:10:1": {"kind": "move-failure", "scope": "10:1", "since": 900.0, "notified": True}}
+            _result, state, _notifications = self._run_move_fixture(
+                mutant, Path(tmp) / "state", initial_state=initial,
+                move_impl=lambda tree, reason, bus: (True, "unit.scope", tree, []))
+        self.assertIn("move-failure:10:1", state["episodes"])
 
     def test_restricted_run_clear_mutant_fails(self):
         text = WARDEN.read_text()
