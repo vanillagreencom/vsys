@@ -619,6 +619,28 @@ class AgentWardenRules(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected_value)
 
+    def test_agent_confine_nested_helper_statuses_launch(self):
+        for status in (1, 3):
+            with self.subTest(status=status):
+                with scratch() as tmp:
+                    base = Path(tmp)
+                    bin_dir = base / "bin"
+                    bin_dir.mkdir(parents=True)
+                    launcher = base / "agent-confine"
+                    shutil.copy2(ROOT / "warden" / "agent-confine", launcher)
+                    helper = base / "agent-confine-lineage-capped"
+                    helper.write_text(f"#!/bin/sh\nexit {status}\n")
+                    (bin_dir / "grep").write_text("#!/bin/sh\nexit 0\n")
+                    (bin_dir / "systemd-run").write_text("#!/bin/sh\nexit 1\n")
+                    (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+                    for path in [launcher, helper, *bin_dir.iterdir()]:
+                        path.chmod(0o755)
+                    env = self._confine_env(base, bin_dir)
+                    result = subprocess.run([str(launcher), "env"], env=env, capture_output=True, text=True)
+                    expected = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"TMPDIR={expected}", result.stdout.splitlines())
+
     def test_agent_confine_systemd_run_uses_cpu_weight_99(self):
         with scratch() as tmp:
             base = Path(tmp)

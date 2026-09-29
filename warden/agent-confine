@@ -21,7 +21,7 @@
 # no session D-Bus, a stripped container), the agent still launches -- capped by
 # the env but outside the slice -- rather than not launching at all.
 
-set -uo pipefail
+set -euo pipefail
 
 # No real-time scheduling for agent work. A lane that requests SCHED_FIFO/RR
 # outranks the desktop and the warden on the CPU and can freeze the machine,
@@ -92,8 +92,9 @@ CAPS+=("AGENT_CONFINE=1")
 if grep -qs 'agents\.slice' /proc/self/cgroup; then
 	here=${BASH_SOURCE[0]%/*}
 	[ "$here" != "${BASH_SOURCE[0]}" ] || here=$HOME/.local/bin
-	"$here/agent-confine-lineage-capped"
-	case $? in
+	cap_status=0
+	"$here/agent-confine-lineage-capped" || cap_status=$?
+	case $cap_status in
 	3) : ;;
 	*) exec env "${CAPS[@]}" "$@" ;;
 	esac
