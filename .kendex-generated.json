@@ -1012,7 +1012,7 @@
   ".claude/hooks/reviewer-read-only.sh",
   ".claude/hooks/reviewer-stop-check.sh",
   ".claude/hooks/session-drift-check.sh",
-  ".claude/hooks/skill-load-check.sh.disabled",
+  ".claude/hooks/skill-load-check.sh",
   ".claude/hooks/task-completed-check.sh",
   ".claude/settings.json",
   ".claude/skills/bot-instructions",

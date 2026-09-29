@@ -1889,7 +1889,7 @@
       "sourceHash": "f76d3eff14a43e4592730755ff2b1b2b329b97cc93e53da9a7619b71ac6e8857",
       "sourceCommit": "5d8ca6e0c23e73b573733c496d2af071d9067741",
       "renderedHash": "ff28060da12c894352f219e5a2440e5834439d8f2c6b36f8c6a8d999f72233c9",
-      "enabled": false,
+      "enabled": true,
       "registration": {
         "event": "PreToolUse",
         "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/skill-load-check.sh\"",
