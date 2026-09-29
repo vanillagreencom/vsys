@@ -65,20 +65,20 @@ def data_source(warden_dir: Path) -> Path:
     return warden_dir / ".." / "data" / DATA_NAME
 
 
-def first_line(path: Path) -> str | None:
+def first_line(path: Path) -> tuple[str, str]:
     try:
         with path.open("r", encoding="utf-8") as handle:
-            return handle.readline().rstrip("\n")
+            return "readable", handle.readline().rstrip("\n")
     except OSError:
-        return None
+        return "unknown", ""
 
 
-def service_data_hashes(path: Path) -> set[str]:
+def service_data_hashes(path: Path) -> tuple[set[str], str]:
     hashes: set[str] = set()
     try:
         with path.open("r", encoding="utf-8") as handle:
             if handle.readline().rstrip("\n") != MARKER:
-                return hashes
+                return hashes, "readable"
             for line in handle:
                 line = line.rstrip("\n")
                 if not line.startswith(DATA_MARKER_PREFIX):
@@ -86,9 +86,11 @@ def service_data_hashes(path: Path) -> set[str]:
                 value = line.removeprefix(DATA_MARKER_PREFIX)
                 if re.fullmatch(r"[0-9a-f]{64}", value):
                     hashes.add(value)
+    except FileNotFoundError:
+        return set(), "missing"
     except OSError:
-        return set()
-    return hashes
+        return set(), "unknown"
+    return hashes, "readable"
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -111,7 +113,10 @@ def classify(path: Path) -> str:
         return "foreign"
     if not path.is_file():
         return "foreign"
-    if first_line(path) == MARKER:
+    state, line = first_line(path)
+    if state == "unknown":
+        return "unknown"
+    if line == MARKER:
         return "installed-by-vsys"
     return "foreign"
 
@@ -125,9 +130,14 @@ def classify_data(path: Path, service_path: Path) -> str:
         return "foreign"
     if not path.is_file():
         return "foreign"
-    recorded = service_data_hashes(service_path)
-    current = sha256_file(path)
-    if current is not None and current in recorded:
+    recorded, service_state = service_data_hashes(service_path)
+    try:
+        current = sha256_bytes(path.read_bytes())
+    except OSError:
+        return "unknown"
+    if service_state == "unknown":
+        return "unknown"
+    if current in recorded:
         return "installed-by-vsys"
     return "foreign"
 
@@ -146,11 +156,29 @@ def has_foreign_units(states: Iterable[UnitState], action: str) -> bool:
     return True
 
 
+def has_unknown_units(states: Iterable[UnitState], action: str) -> bool:
+    unknown = [state.path for state in states if state.state == "unknown"]
+    if not unknown:
+        return False
+    print(f"vsys-warden: unknown-units action={action}", file=sys.stderr)
+    for path in unknown:
+        print(f"unknown: {path}", file=sys.stderr)
+    return True
+
+
 def has_foreign_data(path: Path, state: str, action: str) -> bool:
     if state != "foreign":
         return False
     print(f"vsys-warden: foreign-data action={action}", file=sys.stderr)
     print(f"foreign: {path}", file=sys.stderr)
+    return True
+
+
+def has_unknown_data(path: Path, state: str, action: str) -> bool:
+    if state != "unknown":
+        return False
+    print(f"vsys-warden: unknown-data action={action}", file=sys.stderr)
+    print(f"unknown: {path}", file=sys.stderr)
     return True
 
 
@@ -168,7 +196,7 @@ def systemd_exec_path(path: Path) -> str:
     text = str(path)
     if any(ord(char) < 32 for char in text):
         raise ValueError(f"ExecStart path contains a control character: {text!r}")
-    text = text.replace("%", "%%")
+    text = text.replace("%", "%%").replace("$", "$$")
     if re.search(r"[\s\"'\\]", text):
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return text
@@ -261,8 +289,10 @@ def install(warden_dir: Path, directory: Path) -> int:
     states = unit_states(directory)
     data_state = classify_data(target, service)
     units_foreign = has_foreign_units(states, "install")
+    units_unknown = has_unknown_units(states, "install")
     data_foreign = has_foreign_data(target, data_state, "install")
-    if units_foreign or data_foreign:
+    data_unknown = has_unknown_data(target, data_state, "install")
+    if units_foreign or units_unknown or data_foreign or data_unknown:
         return 1
     data_hashes = {source_hash}
     existing_hash = sha256_file(target) if data_state == "installed-by-vsys" else None
@@ -296,10 +326,15 @@ def uninstall(directory: Path) -> int:
     data_state = classify_data(target, directory / "agent-warden.service")
     ours = [state for state in states if state.state == "installed-by-vsys"]
     foreign = [state for state in states if state.state == "foreign"]
+    unknown = [state for state in states if state.state == "unknown"]
     for state in foreign:
         print(f"vsys-warden: foreign-left path={state.path}")
+    for state in unknown:
+        print(f"vsys-warden: unknown-left path={state.path}")
     if data_state == "foreign":
         print(f"vsys-warden: foreign-left path={target}")
+    if data_state == "unknown":
+        print(f"vsys-warden: unknown-left path={target}")
     if not ours and data_state != "installed-by-vsys":
         print("vsys-warden: nothing-installed")
         return 0

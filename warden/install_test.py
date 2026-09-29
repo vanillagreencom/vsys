@@ -246,6 +246,58 @@ class WardenInstallTest(unittest.TestCase):
                 self.assertFalse(data_target.exists())
                 self.assertEqual(self.calls(log), [])
 
+    @unittest.skipIf(os.geteuid() == 0, "chmod unreadable rows require non-root")
+    def test_unreadable_unit_reports_unknown_and_is_left_in_place(self):
+        with scratch() as tmp:
+            installer, _, _, env, user_dir, _, log = self.fixture(Path(tmp))
+            service = user_dir / "agent-warden.service"
+            service.write_text(installer.MARKER + "\n", encoding="utf-8")
+            service.chmod(0)
+            try:
+                code, stdout, stderr = self.run_main(installer, ["install"], env)
+                self.assertEqual(code, 1, stdout)
+                self.assertIn("vsys-warden: unknown-units action=install", stderr)
+                self.assertIn(f"unknown: {service}", stderr)
+                self.assertEqual(self.calls(log), [])
+                with Env(env), contextlib.redirect_stdout(io.StringIO()) as output:
+                    code = installer.status(user_dir, Path(tmp) / "controllers")
+                self.assertEqual(code, 1)
+                self.assertIn("file agent-warden.service: unknown", output.getvalue())
+                log.unlink(missing_ok=True)
+                code, stdout, stderr = self.run_main(installer, ["uninstall"], env)
+                self.assertEqual((code, stderr), (0, ""))
+                self.assertIn(f"vsys-warden: unknown-left path={service}", stdout)
+                self.assertTrue(service.exists())
+                self.assertEqual(self.calls(log), [])
+            finally:
+                service.chmod(0o644)
+
+    @unittest.skipIf(os.geteuid() == 0, "chmod unreadable rows require non-root")
+    def test_unreadable_data_reports_unknown_and_is_left_in_place(self):
+        with scratch() as tmp:
+            installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp))
+            data_target.parent.mkdir(parents=True)
+            data_target.write_text("owned maybe\n", encoding="utf-8")
+            data_target.chmod(0)
+            try:
+                code, stdout, stderr = self.run_main(installer, ["install"], env)
+                self.assertEqual(code, 1, stdout)
+                self.assertIn("vsys-warden: unknown-data action=install", stderr)
+                self.assertIn(f"unknown: {data_target}", stderr)
+                self.assertEqual(self.calls(log), [])
+                with Env(env), contextlib.redirect_stdout(io.StringIO()) as output:
+                    code = installer.status(user_dir, Path(tmp) / "controllers")
+                self.assertEqual(code, 1)
+                self.assertIn("file agent-tools.json: unknown", output.getvalue())
+                log.unlink(missing_ok=True)
+                code, stdout, stderr = self.run_main(installer, ["uninstall"], env)
+                self.assertEqual((code, stderr), (0, ""))
+                self.assertIn(f"vsys-warden: unknown-left path={data_target}", stdout)
+                self.assertTrue(data_target.exists())
+                self.assertEqual(self.calls(log), [])
+            finally:
+                data_target.chmod(0o644)
+
     def test_install_rewrites_its_own_units_and_data(self):
         with scratch() as tmp:
             installer, warden, _, env, user_dir, data_target, _ = self.fixture(Path(tmp))
@@ -524,6 +576,7 @@ class WardenInstallTest(unittest.TestCase):
             rows = [
                 (base / "ward% en", str(base / "ward%% en" / "agent-warden")),
                 (base / "oneil's", str(base / "oneil's" / "agent-warden")),
+                (base / "cash$ dir", str(base / "cash$$ dir" / "agent-warden")),
             ]
             for fake, escaped_agent in rows:
                 with self.subTest(fake=fake):
@@ -549,7 +602,7 @@ class WardenInstallTest(unittest.TestCase):
 
     def test_foreign_refusal_mutant_control(self):
         mutant = self.load_mutant(
-            "if first_line(path) == MARKER:\n        return \"installed-by-vsys\"",
+            "if line == MARKER:\n        return \"installed-by-vsys\"",
             "if True:\n        return \"installed-by-vsys\"",
             "warden_install_mutant_marker",
         )
