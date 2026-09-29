@@ -197,6 +197,20 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                             st.setdefault("events", []).append({"test": True})
                         self.assertEqual(counters, {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
                         self.assertEqual(self.w.DEFAULT_STATE["events"], [])
+                self.w.STATE.unlink(missing_ok=True)
+                self.w.STATUS.unlink(missing_ok=True)
+                with self.w.State() as st:
+                    self.assertEqual(self.w.status_counters(st), {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0})
+                self.w.STATE.unlink(missing_ok=True)
+                self.w.STATUS.write_text(json.dumps({"counters": {"moves": 7, "partial": 6, "reaped": 5, "moveFailures": 4, "scanFailures": 3, "skips": 2}}))
+                with self.w.State() as st:
+                    self.assertEqual(self.w.status_counters(st), {"moves": 7, "partial": 6, "reaped": 5, "moveFailures": 4, "scanFailures": 3, "skips": 2})
+                self.assertEqual(json.loads(self.w.STATE.read_text())["moves"], 7)
+                self.w.STATE.unlink(missing_ok=True)
+                self.w.STATUS.write_text(json.dumps({"counters": {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None}}))
+                with self.w.State() as st:
+                    self.assertEqual(self.w.status_counters(st), {"moves": None, "partial": None, "reaped": None, "moveFailures": None, "scanFailures": None, "skips": None})
+                self.assertFalse(self.w.STATE.exists())
             finally:
                 self.restore_status_state(self.w, old)
 
@@ -346,7 +360,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                 self.w.STATE.unlink(missing_ok=True)
                 self.w.STATUS.write_text(json.dumps({"events": [
                     {"id": 9000, "time": 1, "kind": "moved", "scope": None, "pid": None, "processes": None, "near": None},
-                ]}))
+                ], "counters": {"moves": 0, "partial": 0, "reaped": 0, "moveFailures": 0, "scanFailures": 0, "skips": 0}}))
                 with self.w.State(status="report") as st:
                     st["_tick"] = {"procs": {}, "moves": [], "waiting": [], "waiting_events": [], "orphans": [], "contained": [], "error": None}
                 self.assertEqual(json.loads(self.w.STATE.read_text())["event_seq"], 9000)

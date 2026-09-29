@@ -1331,12 +1331,15 @@ def _state_readable(st):
     return st.get("_state_readable", True) is not False
 
 
+STATUS_COUNTER_KEYS_PUBLIC = (("moves", "moves"), ("partial", "partial"), ("reaped", "reaped"),
+                              ("moveFailures", "move_failures"), ("scanFailures", "scan_failures"),
+                              ("skips", "skips"))
+
+
 def status_counters(st):
-    keys = (("moves", "moves"), ("partial", "partial"), ("reaped", "reaped"),
-            ("moveFailures", "move_failures"), ("scanFailures", "scan_failures"), ("skips", "skips"))
     if not _state_readable(st):
-        return {public: None for public, _ in keys}
-    return {public: int(st.get(internal, 0)) for public, internal in keys}
+        return {public: None for public, _ in STATUS_COUNTER_KEYS_PUBLIC}
+    return {public: int(st.get(internal, 0)) for public, internal in STATUS_COUNTER_KEYS_PUBLIC}
 
 
 def emit_event(st, kind, *, scope=None, pid=None, processes=None, near=None, now=None):
@@ -1840,17 +1843,41 @@ DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "p
 STATE_COUNTER_KEYS = ("skips", "moves", "partial", "scan_failures", "move_failures", "reaped")
 
 
-def status_event_floor():
+def _read_status_doc():
     try:
-        doc = json.loads(STATUS.read_text())
-        events = doc.get("events") if isinstance(doc, dict) else []
-        if not isinstance(events, list):
-            return 0
-        return max((event.get("id") for event in events
-                    if isinstance(event, dict) and isinstance(event.get("id"), int)
-                    and not isinstance(event.get("id"), bool)), default=0)
+        return json.loads(STATUS.read_text())
     except Exception:  # noqa: BLE001
+        return None
+
+
+def status_event_floor():
+    doc = _read_status_doc()
+    events = doc.get("events") if isinstance(doc, dict) else []
+    if not isinstance(events, list):
         return 0
+    return max((event.get("id") for event in events
+                if isinstance(event, dict) and isinstance(event.get("id"), int)
+                and not isinstance(event.get("id"), bool)), default=0)
+
+
+def published_status_counters():
+    try:
+        exists = STATUS.exists()
+    except OSError:
+        exists = True
+    doc = _read_status_doc()
+    if doc is None:
+        return ("unknown" if exists else "fresh"), {}
+    counters = doc.get("counters") if isinstance(doc, dict) else None
+    if not isinstance(counters, dict):
+        return "unknown", {}
+    recovered = {}
+    for public, internal in STATUS_COUNTER_KEYS_PUBLIC:
+        value = counters.get(public)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return "unknown", {}
+        recovered[internal] = value
+    return "seeded", recovered
 
 
 def default_state():
@@ -1929,15 +1956,21 @@ class State:
         try:
             raw = state_object(json.loads(STATE.read_text()))
             if raw is None:
-                self.st = default_state()
-                self.st["_state_readable"] = False
-            else:
-                self.st = {**default_state(), **raw}
-                self.st["_state_readable"] = True
+                raise ValueError("invalid state")
+            self.st = {**default_state(), **raw}
+            self.st["_state_readable"] = True
         except Exception:  # noqa: BLE001
             missing = not STATE.exists()
+            mode, recovered = published_status_counters()
             self.st = default_state()
-            self.st["_state_readable"] = missing
+            self.st.update(recovered)
+            if mode == "seeded":
+                self.st["_state_readable"] = True
+            elif missing and mode == "fresh":
+                self.st["_state_readable"] = True
+            else:
+                self.st["_state_readable"] = False
+                self.st["_skip_state_write"] = True
         self.st["event_seq"] = max(int(self.st.get("event_seq") or 0), status_event_floor())
         return self.st
 
@@ -1952,10 +1985,11 @@ class State:
                     status_doc = status_from_tick(self.status, self.st, tick)
                 except Exception as e:  # noqa: BLE001
                     log(f"status build failed: {e!r}")
-            tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
-            stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
-            tmp.write_text(json.dumps(stored))
-            os.replace(tmp, STATE)
+            if not self.st.get("_skip_state_write"):
+                tmp = STATE_DIR / f"state.{os.getpid()}.tmp"
+                stored = {k: v for k, v in self.st.items() if not k.startswith("_")}
+                tmp.write_text(json.dumps(stored))
+                os.replace(tmp, STATE)
             if status_doc is not None:
                 try:
                     write_status(status_doc)
