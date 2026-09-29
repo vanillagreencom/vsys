@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import { defaults } from "../config/config";
 import { emptySnapshot, groupSnapshot, processSnapshot } from "../test/fixture";
-import { exportSnapshot, safe } from "./export";
+import { exportSnapshot, safe, summarySnapshot } from "./export";
 
 test("reports retain process threads and the exact memory cap", () => {
   const s = emptySnapshot();
@@ -26,4 +27,35 @@ test("JSON preserves evidence and display text removes terminal controls", () =>
   const s = emptySnapshot();
   expect(JSON.parse(exportSnapshot(s, "json"))).toEqual(s);
   expect(safe("a\u001b[2J\nb")).toBe("a [2J b");
+});
+
+test("summary subjects never use navigation-only targets", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.system.pressure.memory = { some: c.pressureRed + 1, full: 0, total: 0 };
+  s.groups = [
+    groupSnapshot({
+      path: "app.slice",
+      name: c.desktopSlice,
+      swap: c.swapFloor + 1,
+    }),
+    groupSnapshot({
+      path: "app.slice/shell.scope",
+      name: "shell.scope",
+      swap: c.swapFloor + 1,
+    }),
+  ];
+  const summary = summarySnapshot(s, c);
+  expect(
+    summary.verdict.find((cause) => cause.cause === "system-memory"),
+  ).toMatchObject({
+    level: "warn",
+    subject: null,
+  });
+  expect(
+    summary.verdict.find((cause) => cause.cause === "desktop-swap"),
+  ).toMatchObject({
+    level: "danger",
+    subject: "app.slice/shell.scope",
+  });
 });

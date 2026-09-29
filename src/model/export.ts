@@ -44,9 +44,6 @@ function subject(cause: ReturnType<typeof causes>[number]): string | null {
   if (cause.lanes[0]) return cause.lanes[0].id;
   if (cause.groups[0]) return cause.groups[0].path;
   if (cause.paths[0]) return cause.paths[0];
-  if (cause.at?.kind === "lane") return cause.at.id;
-  if (cause.at?.kind === "group") return cause.at.path;
-  if (cause.at?.kind === "path") return cause.at.path;
   return null;
 }
 

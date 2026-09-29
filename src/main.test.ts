@@ -1,11 +1,25 @@
 import { expect, test } from "bun:test";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "./config/config";
 import { fixture } from "./test/fixture";
 
+function hermeticBin(root: string): string {
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  const getconf = join(bin, "getconf");
+  writeFileSync(
+    getconf,
+    '#!/bin/sh\ncase "$1" in\n  CLK_TCK) echo 100 ;;\n  PAGESIZE) echo 4096 ;;\n  *) exit 1 ;;\nesac\n',
+  );
+  chmodSync(getconf, 0o755);
+  return bin;
+}
+
 test("once exports structured evidence and fails visibly on source errors", async () => {
   const f = fixture();
   try {
+    const bin = hermeticBin(f.root);
     const path = join(f.root, "config.toml");
     await saveConfig(f.config, path, f.agentToolsPath);
     await saveConfig(
@@ -19,7 +33,7 @@ test("once exports structured evidence and fails visibly on source errors", asyn
         {
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, HOME: f.root },
+          env: { HOME: f.root, PATH: bin },
         },
       );
       const [stdout, stderr, code] = await Promise.all([
@@ -51,6 +65,7 @@ test("once exports structured evidence and fails visibly on source errors", asyn
 test("once summary exports verdict schema and skips scratch collection", async () => {
   const f = fixture();
   try {
+    const bin = hermeticBin(f.root);
     f.config.scratchDirs = [join(f.root, "missing-scratch")];
     const path = join(f.root, "config.toml");
     await saveConfig(f.config, path, f.agentToolsPath);
@@ -60,7 +75,7 @@ test("once summary exports verdict schema and skips scratch collection", async (
         {
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, HOME: f.root },
+          env: { HOME: f.root, PATH: bin },
         },
       );
       const [stdout, stderr, code] = await Promise.all([
