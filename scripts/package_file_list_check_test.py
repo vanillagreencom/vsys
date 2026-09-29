@@ -144,6 +144,7 @@ class InstallScript(unittest.TestCase):
         self.cache = self.root / "cache"
         self.fail_binary_replace = False
         self.fail_old_tree_delete = False
+        self.install_umask: int | None = None
 
     def make_archive(self, shape: str) -> None:
         stage = self.root / f"stage-{shape}"
@@ -243,7 +244,19 @@ class InstallScript(unittest.TestCase):
             "VSYS_VERSION": self.version,
             "XDG_CACHE_HOME": str(self.cache),
         }
-        return subprocess.run(["bash", str(INSTALL)], env=env, capture_output=True, text=True)
+        preexec_fn = None
+        if self.install_umask is not None:
+            def set_umask() -> None:
+                os.umask(self.install_umask)
+
+            preexec_fn = set_umask
+        return subprocess.run(
+            ["bash", str(INSTALL)],
+            env=env,
+            capture_output=True,
+            text=True,
+            preexec_fn=preexec_fn,
+        )
 
     def lib_root(self) -> Path:
         return self.root / "home" / ".local" / "lib" / "vsys"
@@ -255,6 +268,9 @@ class InstallScript(unittest.TestCase):
         self.assertTrue((root / "warden" / "agent-warden").is_file())
         self.assertTrue((root / "warden" / "systemd" / "agent-warden.service").is_file())
         self.assertTrue((root / "data" / "agent-tools.json").is_file())
+
+    def mode(self, path: Path) -> int:
+        return path.stat().st_mode & 0o777
 
     def test_symlinked_lib_refusal_leaves_existing_binary(self) -> None:
         self.make_archive("full")
@@ -280,6 +296,33 @@ class InstallScript(unittest.TestCase):
         self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
         self.assert_full_warden_tree_installed()
         self.assertIn("Optional warden setup: vsys warden install", result.stdout)
+
+    def test_restrictive_umask_keeps_shared_warden_modes(self) -> None:
+        self.make_archive("full")
+        (self.root / "home" / ".local" / "lib").mkdir(parents=True)
+        self.install_umask = 0o077
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        root = self.lib_root()
+        for path in (root, root / "warden", root / "warden" / "systemd", root / "data"):
+            with self.subTest(path=path):
+                self.assertEqual(self.mode(path), 0o755)
+        for path in (
+            root / "warden" / "install",
+            root / "warden" / "agent-warden",
+            root / "warden" / "agent-confine",
+            root / "warden" / "agent-confine-lineage-capped",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.mode(path), 0o755)
+        for path in (
+            root / "warden" / "systemd" / "agent-warden.service",
+            root / "warden" / "systemd" / "agent-warden.timer",
+            root / "warden" / "systemd" / "agents.slice",
+            root / "data" / "agent-tools.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.mode(path), 0o644)
 
     def test_full_archive_replaces_existing_warden_tree(self) -> None:
         self.make_archive("full")

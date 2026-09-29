@@ -144,6 +144,8 @@ prepare_lib_tree() {
 		die "could not create ${WARDEN_NEW_ROOT}."
 	cp -R --no-preserve=ownership "${source_root}/." "$WARDEN_NEW_ROOT/" ||
 		die "could not stage the warden files under ${WARDEN_NEW_ROOT}."
+	chmod -R u=rwX,go=rX "$WARDEN_NEW_ROOT" ||
+		die "could not set warden file modes under ${WARDEN_NEW_ROOT}."
 }
 
 rollback_lib_tree() {
