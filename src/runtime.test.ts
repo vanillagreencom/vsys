@@ -440,6 +440,69 @@ test("pinned agent tool edits preserve current overlay-only tools", async () => 
   }
 });
 
+test("pinned unrelated settings saves keep diverging agent tools", async () => {
+  const f = fixture();
+  const configPath = join(f.root, "config.toml");
+  const pinned = [...f.config.agentTools, "pinned-agent"];
+  const configBody = `agentTools = ${JSON.stringify(pinned)}\n`;
+  const overlayBody = `${JSON.stringify(
+    {
+      version: 1,
+      tools: [{ name: "local-agent", mise: ["local-agent"] }],
+      desktopExePrefixes: ["/apps/"],
+      bundledCliSuffixes: ["/bin/agent"],
+    },
+    null,
+    2,
+  )}\n`;
+  f.write(configPath, configBody);
+  f.write(f.agentToolsPath, overlayBody);
+  const config = await loadConfig(configPath, f.agentToolsPath);
+  const h = new History(config);
+  const initialFrame = Promise.withResolvers<void>();
+  let calls = 0;
+  const built: string[][] = [];
+  const frames: string[][] = [];
+  const session = new Session(
+    config,
+    configPath,
+    { sample: async () => emptySnapshot(++calls * 1000) },
+    h,
+    {
+      frame: (_sample, _history, current) => {
+        frames.push(current.agentTools);
+        initialFrame.resolve();
+      },
+      error: (error) => initialFrame.reject(error),
+    },
+    {
+      makeSource: async (next) => {
+        built.push(next.agentTools);
+        return { sample: async () => emptySnapshot(++calls * 1000) };
+      },
+      agentToolsPath: f.agentToolsPath,
+    },
+  );
+  try {
+    session.start();
+    await initialFrame.promise;
+    // Control: replacing the pinned list with the layered list drops this pin.
+    await session.configure({ ...config, refreshMs: 2000 });
+    expect(built).toEqual([]);
+    expect(frames.at(-1)).toEqual(pinned);
+    const saved = readFileSync(configPath, "utf8");
+    expect(saved).toContain("refreshMs = 2000");
+    expect(saved).toContain(`agentTools = ${JSON.stringify(pinned)}`);
+    expect(readFileSync(f.agentToolsPath, "utf8")).toBe(overlayBody);
+    expect((await loadConfig(configPath, f.agentToolsPath)).agentTools).toEqual(
+      pinned,
+    );
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+
 test("unpinned settings saves reload current agent tools before writing config", async () => {
   const f = fixture();
   const configPath = join(f.root, "config.toml");

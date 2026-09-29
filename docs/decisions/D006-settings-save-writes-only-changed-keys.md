@@ -20,6 +20,6 @@
 
 **Revisit When**: The shared agent-tool schema can record removals.
 
-**Verification**: `src/config/config.test.ts` checks changed-key saves, unpinned `agentTools` saves, pinned-list controls and migration. `src/runtime.test.ts` checks pinned and unpinned Settings writes preserve the overlay, refuse pinned shipped-name removals and match the warden loader.
+**Verification**: `src/config/config.test.ts` checks changed-key saves, unpinned `agentTools` saves, pinned-list controls and migration. `src/runtime.test.ts` checks pinned and unpinned Settings writes preserve the overlay, unrelated saves keep a diverging pin, pinned shipped-name removals are refused and the warden loader matches.
 
 **References**: [D005](D005-shared-agent-tool-data.md)
