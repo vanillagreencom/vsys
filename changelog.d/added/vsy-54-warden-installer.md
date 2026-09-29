@@ -1,1 +1,1 @@
-- Add `vsys warden install`, `vsys warden uninstall` and `vsys warden status` for the optional agent warden user units.
+- Add `vsys warden install`, `vsys warden uninstall` and `vsys warden status` for marked user units, copied warden data and safer status checks.

@@ -33,8 +33,10 @@ export function resolveWardenDir(
   );
 }
 
-export async function dispatchWarden(args: string[]): Promise<never> {
-  const dir = resolveWardenDir();
+export async function dispatchWarden(
+  args: string[],
+  dir = resolveWardenDir(),
+): Promise<never> {
   const child = Bun.spawn([join(dir, "install"), ...args], {
     stdin: "inherit",
     stdout: "inherit",

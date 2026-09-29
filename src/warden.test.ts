@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveWardenDir } from "./warden";
@@ -55,6 +61,36 @@ test("warden resolver candidate order mutant exposes reversed lookup", async () 
       process.execPath,
     );
     expect(candidates[0]).not.toBe(resolve("/repo/src", "../warden"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("warden dispatch forwards args and exits with installer status", async () => {
+  const dir = join(process.cwd(), "tmp", "warden-dispatch", randomUUID());
+  mkdirSync(dir, { recursive: true });
+  const install = join(dir, "install");
+  writeFileSync(
+    install,
+    '#!/bin/sh\nprintf "count=%s\\n" "$#"\nfor arg do printf "<%s>\\n" "$arg"; done\nexit 7\n',
+  );
+  chmodSync(install, 0o755);
+  try {
+    const code = `import { dispatchWarden } from "./src/warden"; await dispatchWarden(["alpha", "two words"], ${JSON.stringify(dir)});`;
+    const child = Bun.spawn([process.execPath, "-e", code], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, status] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ stdout, stderr, status }).toEqual({
+      stdout: "count=2\n<alpha>\n<two words>\n",
+      stderr: "",
+      status: 7,
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

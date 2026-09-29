@@ -259,9 +259,9 @@ def install(warden_dir: Path, directory: Path) -> int:
     if units_foreign or data_foreign:
         return 1
     rendered = {name: render_unit(resolved, name, source_hash) for name in UNIT_NAMES}
-    atomic_write_bytes(target, source_data)
     for name, text in rendered.items():
         atomic_write(directory / name, text)
+    atomic_write_bytes(target, source_data)
     run_systemctl("daemon-reload")
     run_systemctl("enable", "--now", "agent-warden.timer")
     print(f"vsys-warden: installed dir={resolved}")
@@ -279,8 +279,10 @@ def symlink_points_to(path: Path, target: Path) -> bool:
 
 
 def uninstall(directory: Path) -> int:
-    states = unit_states(directory)
     target = data_target()
+    if has_symlink_dirs([directory.parent, directory, target.parent], "uninstall"):
+        return 1
+    states = unit_states(directory)
     data_state = classify_data(target, directory / "agent-warden.service")
     ours = [state for state in states if state.state == "installed-by-vsys"]
     foreign = [state for state in states if state.state == "foreign"]
@@ -318,10 +320,10 @@ def systemctl_text(*args: str) -> str:
         result = run_systemctl(*args, check=False)
     except CommandFailure:
         return "unknown"
-    text = (result.stdout or result.stderr).strip()
+    text = result.stdout.strip()
     if text:
         return text
-    return "unknown" if result.returncode != 0 else ""
+    return "unknown"
 
 
 def delegation_path(uid: int | None = None) -> Path:

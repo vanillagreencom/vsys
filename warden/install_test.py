@@ -114,6 +114,9 @@ class WardenInstallTest(unittest.TestCase):
             "    print(os.environ.get('STUB_LAST_TRIGGER', 'Mon 2026-09-28 01:02:03 PDT'))\n"
             "    raise SystemExit(0)\n"
             "if args == ['--user', 'show', 'agent-warden.service', '-p', 'Result', '--value']:\n"
+            "    if 'STUB_RESULT_STDERR' in os.environ:\n"
+            "        print(os.environ['STUB_RESULT_STDERR'], file=sys.stderr)\n"
+            "        raise SystemExit(1)\n"
             "    print(os.environ.get('STUB_RESULT', 'success'))\n"
             "    raise SystemExit(0)\n"
             "print('unexpected systemctl args: ' + repr(args), file=sys.stderr)\n"
@@ -259,6 +262,75 @@ class WardenInstallTest(unittest.TestCase):
             self.assertEqual(text.splitlines()[1], installer.DATA_MARKER_PREFIX + hashlib.sha256(next_data).hexdigest())
             self.assertNotIn("\nold\n", text)
 
+    def test_install_retry_succeeds_after_data_write_failure(self):
+        with scratch() as tmp:
+            installer, warden, source_data, env, user_dir, data_target, log = self.fixture(Path(tmp))
+            original = installer.atomic_write_bytes
+
+            def fail_once(path, data):
+                raise OSError("injected data write failure")
+
+            installer.atomic_write_bytes = fail_once
+            try:
+                with Env(env), self.assertRaises(OSError):
+                    installer.install(warden, user_dir)
+            finally:
+                installer.atomic_write_bytes = original
+            service = user_dir / "agent-warden.service"
+            self.assertTrue(service.exists())
+            self.assertEqual(service.read_text(encoding="utf-8").splitlines()[0], installer.MARKER)
+            self.assertFalse(data_target.exists())
+            self.assertEqual(self.calls(log), [])
+            with Env(env), contextlib.redirect_stdout(io.StringIO()):
+                code = installer.install(warden, user_dir)
+            self.assertEqual(code, 0)
+            self.assertEqual(data_target.read_bytes(), source_data)
+            self.assertEqual(
+                self.calls(log),
+                [
+                    ["--user", "daemon-reload"],
+                    ["--user", "enable", "--now", "agent-warden.timer"],
+                ],
+            )
+
+    def test_uninstall_refuses_folded_stow_directory_symlinks_before_classifying(self):
+        rows = [
+            "systemd",
+            "systemd-user",
+            "data-dir",
+        ]
+        for row in rows:
+            with self.subTest(row=row), scratch() as tmp:
+                base = Path(tmp)
+                installer, _, _, env, user_dir, data_target, log = self.fixture(base)
+                if row == "systemd":
+                    shutil.rmtree(user_dir.parent)
+                    folded = base / "folded-systemd"
+                    (folded / "user").mkdir(parents=True)
+                    user_dir.parent.symlink_to(folded)
+                    protected = user_dir / "agent-warden.service"
+                    expected = user_dir.parent
+                elif row == "systemd-user":
+                    shutil.rmtree(user_dir)
+                    folded = base / "folded-user"
+                    folded.mkdir()
+                    user_dir.symlink_to(folded)
+                    protected = user_dir / "agent-warden.service"
+                    expected = user_dir
+                else:
+                    folded = base / "folded-vsys"
+                    folded.mkdir()
+                    data_target.parent.symlink_to(folded)
+                    protected = data_target
+                    expected = data_target.parent
+                protected.write_text("protected\n", encoding="utf-8")
+                code, stdout, stderr = self.run_main(installer, ["uninstall"], env)
+                self.assertEqual(code, 1, stdout)
+                self.assertIn("vsys-warden: symlink-dir action=uninstall", stderr)
+                self.assertIn(f"symlink: {expected}", stderr)
+                self.assertEqual(protected.read_text(encoding="utf-8"), "protected\n")
+                self.assertEqual(self.calls(log), [])
+
     def test_uninstall_removes_marked_files_data_and_leaves_local_config(self):
         with scratch() as tmp:
             installer, _, _, env, user_dir, data_target, log = self.fixture(Path(tmp))
@@ -370,6 +442,11 @@ class WardenInstallTest(unittest.TestCase):
                 code = installer.status(user_dir, full)
             self.assertEqual(code, 1)
             self.assertIn("service result: exit-code", output.getvalue())
+            stderr_only = {**env, "STUB_RESULT_STDERR": "dbus failed"}
+            with Env(stderr_only), contextlib.redirect_stdout(io.StringIO()) as output:
+                code = installer.status(user_dir, full)
+            self.assertEqual(code, 1)
+            self.assertIn("service result: unknown", output.getvalue())
             with Env(env), contextlib.redirect_stdout(io.StringIO()) as output:
                 code = installer.status(user_dir, missing)
             self.assertEqual(code, 1)
