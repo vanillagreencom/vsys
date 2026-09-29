@@ -245,7 +245,8 @@ except AgentToolsError as error:
 AGENT_COMMS = {tool["name"] for tool in AGENT_TOOLS["tools"]}
 HELPER_NAMES = {"codex-code-mode-host", "node_repl", "codex-computer-use", "claude-computer-use"}
 HOST_COMMS = {"node", "bun", "python", "python3", "python3.13", "python3.14"}
-MISE_AGENT_DIRS = [directory for tool in AGENT_TOOLS["tools"] for directory in tool["mise"]]
+MISE_AGENT_NAMES = {directory: tool["name"] for tool in AGENT_TOOLS["tools"] for directory in tool["mise"]}
+MISE_AGENT_DIRS = list(MISE_AGENT_NAMES)
 AGENT_PATH_RE = re.compile(
     "^" + re.escape(MISE_DATA) + "/installs/(" + "|".join(re.escape(directory) for directory in MISE_AGENT_DIRS) + ")/"
     if MISE_AGENT_DIRS else r"a\A"
@@ -1229,7 +1230,7 @@ def _tool_label(p):
     for arg in p.argv[:2]:
         m = AGENT_PATH_RE.search(arg)
         if m:
-            return m.group(1)
+            return MISE_AGENT_NAMES.get(m.group(1))
     return p.comm if p.comm in AGENT_COMMS else p.program or p.comm or None
 
 

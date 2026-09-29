@@ -228,6 +228,7 @@ class AgentWardenRules(unittest.TestCase):
         rows = [
             ("agent by comm", self.P(1, 0, "claude", ["claude"]).is_agent, True),
             ("hosted mise cli", self.P(2, 0, "node", [f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"], exe="/usr/bin/node").is_agent, True),
+            ("hosted mise label", self.w._tool_label(self.P(8, 0, "node", [f"{mise}/npm-xai-official-grok/latest/bin/grok"], exe="/usr/bin/node")), "grok"),
             ("build by comm", self.P(3, 0, "cargo", ["cargo", "test"]).is_build, True),
             ("desktop by executable", self.P(4, 0, "ChatGPT", ["/opt/codex-desktop/ChatGPT"], exe="/opt/codex-desktop/ChatGPT").is_desktop, True),
             ("excluded flag", self.P(5, 0, "claude", ["claude", "--chrome-native-host"]).excluded, True),
