@@ -101,6 +101,8 @@ class WardenInstallTest(unittest.TestCase):
             "    if link.exists() or link.is_symlink():\n"
             "        link.unlink()\n"
             "    raise SystemExit(0)\n"
+            "if args == ['--user', 'stop', 'agent-warden.service']:\n"
+            "    raise SystemExit(0)\n"
             "if args == ['--user', 'is-enabled', 'agent-warden.timer']:\n"
             "    print('enabled' if link.is_symlink() else 'disabled')\n"
             "    raise SystemExit(0 if link.is_symlink() else 1)\n"
@@ -279,6 +281,7 @@ class WardenInstallTest(unittest.TestCase):
                     ["--user", "daemon-reload"],
                     ["--user", "enable", "--now", "agent-warden.timer"],
                     ["--user", "disable", "--now", "agent-warden.timer"],
+                    ["--user", "stop", "agent-warden.service"],
                     ["--user", "daemon-reload"],
                 ],
             )
@@ -321,6 +324,24 @@ class WardenInstallTest(unittest.TestCase):
                 [
                     ["--user", "daemon-reload"],
                     ["--user", "enable", "--now", "agent-warden.timer"],
+                    ["--user", "stop", "agent-warden.service"],
+                    ["--user", "daemon-reload"],
+                ],
+            )
+
+    def test_uninstall_stops_marked_service_without_marked_timer(self):
+        with scratch() as tmp:
+            installer, _, _, env, user_dir, _, log = self.fixture(Path(tmp))
+            service = user_dir / "agent-warden.service"
+            service.write_text(installer.MARKER + "\n[Service]\n", encoding="utf-8")
+            code, stdout, stderr = self.run_main(installer, ["uninstall"], env)
+            self.assertEqual((code, stderr), (0, ""))
+            self.assertIn("vsys-warden: uninstalled", stdout)
+            self.assertFalse(service.exists())
+            self.assertEqual(
+                self.calls(log),
+                [
+                    ["--user", "stop", "agent-warden.service"],
                     ["--user", "daemon-reload"],
                 ],
             )

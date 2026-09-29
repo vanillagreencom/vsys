@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 from pathlib import Path
@@ -197,10 +198,8 @@ def atomic_write(path: Path, text: str) -> None:
         os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     finally:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             tmp.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -216,10 +215,8 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     finally:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             tmp.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def run_systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -295,9 +292,13 @@ def uninstall(directory: Path) -> int:
         print("vsys-warden: nothing-installed")
         return 0
     timer = directory / "agent-warden.timer"
+    service = directory / "agent-warden.service"
     timer_ours = classify(timer) == "installed-by-vsys"
+    service_ours = classify(service) == "installed-by-vsys"
     if timer_ours:
         run_systemctl("disable", "--now", "agent-warden.timer")
+    if service_ours:
+        run_systemctl("stop", "agent-warden.service")
     if data_state == "installed-by-vsys":
         target.unlink(missing_ok=True)
     for state in ours:
@@ -305,10 +306,8 @@ def uninstall(directory: Path) -> int:
     wants = directory / "timers.target.wants" / "agent-warden.timer"
     if timer_ours and symlink_points_to(wants, timer):
         wants.unlink()
-    try:
+    with contextlib.suppress(OSError):
         wants.parent.rmdir()
-    except OSError:
-        pass
     run_systemctl("daemon-reload")
     print("vsys-warden: uninstalled")
     return 0
