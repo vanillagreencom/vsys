@@ -29,6 +29,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 bun run start                 # the dashboard; needs a TTY
 bun src/main.ts --help        # options
 bun src/main.ts --once        # one JSON snapshot, exit 2 on source errors
+bun src/main.ts --once --summary # cheap verdict JSON, exit 2 on source errors
 bun src/main.ts --markdown --once
 bun src/main.ts --config PATH # another TOML settings file
 python3 scripts/ci.py         # install, lint, types, tests, build
@@ -44,7 +45,7 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 - `src/model/*.test.ts`: lane derivation and naming, the cause ladder and the meters, build classification, the exact command of each lane action, and shell quoting read back through `/bin/sh`.
 - `src/store/*.test.ts`: checkpoint replay, retention, the SQLite schema guard, the load-path migration and the timeline event derivation.
 - `src/ui/*.test.tsx`: the mounted shell through OpenTUI's terminal test renderer. These drive the real screens from the keyboard and the mouse and read the rendered frame back.
-- `src/main.test.ts`: the CLI in terminals created for the test, including that quit and a failed shutdown each restore their own terminal settings.
+- `src/main.test.ts`: the CLI in terminals created for the test, including the once JSON and summary JSON paths, and that quit and a failed shutdown each restore their own terminal settings.
 - `scripts/ci_test.py` and `scripts/package_file_list_check_test.py`: that the CI runner rejects incomplete configuration, failed packaging and application checks, a missing warden script and a failed warden selftest, that the package payload check catches a missing warden file, wrong staged source, ownership-preserving copy, unpinned local Arch package source and a package-owned user unit, and that `install.sh` installs, replaces, warns after committed cleanup failures and rolls back the warden tree while still accepting older binary-only archives. Run them with `python3 -m unittest discover -s scripts -p '*_test.py' -v`.
 - `warden/agent_warden_test.py`, `warden/agent_warden_status_test.py` and `warden/install_test.py`: classification, planning, job-unit containment, orphan rules, portability, mutant controls, launcher scratch creation, user-unit install, shared-list copy, uninstall and status. Run them with `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s warden -p '*_test.py'`.
 
@@ -53,6 +54,15 @@ bun run build                 # dist/main.js, run it with Bun from the project d
 `bun run bench` collects a fixture of 50 scopes and 2000 processes six times, discards the first, and reports the per-sample and per-phase timings against a 20 ms target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
 
 `bun run bench:history` fills the configured history window while replacing a process at each sample and moving every counter by a different amount per row, then compares selected replayed snapshots against their originals across checkpoint boundaries. It reports incomplete retention, memory use, and the median, 95th percentile and slowest append for both `History.add` and `Archive.add`. Its generated workload does not establish a memory bound for every command line or process mix, and its timings come from one machine under whatever else it was running.
+
+One-shot measurement for `--summary`:
+
+| Date | Machine | Kernel | Command | Wall seconds | CPU |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-29 | cachy | Linux 7.2.8-1-cachyos x86_64 GNU/Linux | `bun src/main.ts --once` | 1.11 | 138% |
+| 2026-09-29 | cachy | Linux 7.2.8-1-cachyos x86_64 GNU/Linux | `bun src/main.ts --once --summary` | 0.18 | 82% |
+
+Both measured commands exited with status 2 on this machine because source errors were present.
 
 ## Repository tooling
 

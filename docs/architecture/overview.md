@@ -64,7 +64,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 ## Topics
 
 - [lanes.md](lanes.md): read when changing how a lane is found, named, or traced back to its launcher.
-- [verdict.md](verdict.md): read when changing what counts as a problem or how problems rank.
+- [verdict.md](verdict.md): read when changing what counts as a problem, how problems rank, or the summary JSON.
 - [builds.md](builds.md): read when changing how compile and link work, the build cache or the token pools are counted.
 - [storage.md](storage.md): read when changing filesystem, device, drive or scratch collection.
 - [events.md](events.md): read when changing what the timeline records or when a change counts.
@@ -75,4 +75,4 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [warden-install.md](warden-install.md): read when changing `vsys warden install`, `warden/install` or the warden unit templates.
 - [warden-status.md](warden-status.md): read when changing the warden status file or its fixtures.
 
-Subsystems with no topic file of their own: `src/model/export.ts` writes the JSON and Markdown exports and strips terminal controls from display text; `src/model/shell.ts` quotes a copied command so a paste survives an escaped scope name; `src/collect/io.ts` holds the `Reader` that records a source error against the source that failed; `src/collect/system.ts` and `src/collect/cgroups.ts` read machine totals and the cgroup tree; `src/config/editor.ts` parses a setting a reader typed.
+Subsystems with no topic file of their own: `src/model/shell.ts` quotes a copied command so a paste survives an escaped scope name; `src/collect/io.ts` holds the `Reader` that records a source error against the source that failed; `src/collect/system.ts` and `src/collect/cgroups.ts` read machine totals and the cgroup tree; `src/config/editor.ts` parses a setting a reader typed.

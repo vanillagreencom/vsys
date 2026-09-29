@@ -1,6 +1,6 @@
 # Cause ladder and verdict
 
-Covers: src/model/verdict.ts
+Covers: src/model/verdict.ts src/model/export.ts
 
 One detection produces one cause. The ladder ranks the causes worst first, its first verdict-worthy element speaks for the machine, and every element is one attention card. The meters read the same numbers, so a tile and a card cannot disagree.
 
@@ -13,6 +13,25 @@ One detection produces one cause. The ladder ranks the causes worst first, its f
 - `sliceSum()` totals a slice from its root groups, and the ladder, the meters and the history point all read it.
 - `integrities()` in `src/model/integrity.ts` is the one reading of whether a filesystem's data is damaged. Four causes read it, one per non-ok state, and so does Storage, so a card and a line cannot disagree about one filesystem.
 - A report the damaged-files cause already speaks for raises no second card of its own: that cause names the filesystem and its files, where the scrub cause can only name a report path.
+- `summarySnapshot()` is the external verdict contract for `vsys --once --summary`. It reads `causes()` and `meters()`, and it adds no display copy.
+
+## Summary JSON
+
+`vsys --once --summary` prints one JSON object:
+
+```json
+{
+  "schema": "vsys.summary.v1",
+  "time": 0,
+  "verdict": [{ "cause": "scratch", "level": null, "subject": null }],
+  "meters": [{ "id": "cpu", "value": null, "max": 100, "level": "warn" }],
+  "errors": []
+}
+```
+
+`schema` is the summary contract identifier. `time` is the sample time in milliseconds since the Unix epoch. `verdict[].cause` is a `CauseId`. `verdict[].level` is a `Level`, or null when the value was not measured. `verdict[].subject` is the first affected lane id, affected cgroup path, affected filesystem path or null. A navigation-only `at` target never becomes a subject. `meters[].id` is a meter id. `meters[].value` and `meters[].max` are raw numbers or null. A null meter value means the reading was not measured. `meters[].level` is always a `Level`, and an unread quantity grades `warn` by the model's unknown-reading rule. `errors` uses the same source-error records as `--once`.
+
+The summary path takes two samples. The second sample gives CPU and I/O rates a baseline. It skips scratch collection through the collector sample option. The scratch cause is still present with null level and null subject, so a skipped scratch scan never reads as healthy. No scratch size enters a meter.
 
 ## Invariants
 
@@ -22,9 +41,10 @@ One detection produces one cause. The ladder ranks the causes worst first, its f
 4. A lane stalling on a resource that a specific cause already reports joins that card, so one contention never produces two cards. `src/model/verdict.test.ts` checks storage stallers against a CPU one.
 5. A slice name appearing at two paths is summed once, and a slice total is unknown unless every root reported the counter. `src/model/verdict.test.ts` checks a nested copy against root selection.
 6. A filesystem below the configured free-space floor is a cause of its own, and a parent slice never becomes the top writer or the top swap holder. `src/model/verdict.test.ts` checks both against nested groups.
-7. A quantity a meter's level depends on that could not be read is a warning, never an untroubled reading. `src/model/verdict.test.ts` checks the four meters and their consumers.
+7. A quantity a meter's level depends on that could not be read is a warning, never an untroubled reading, and the summary keeps that warning level while the missing reading stays null. `src/model/verdict.test.ts` checks the four meters and their consumers, and `src/model/export.test.ts` checks the summary meter shape.
 8. Build load counts the configured linkers separately, machine wide and per lane. `src/model/verdict.test.ts` checks both.
 9. One cause produces one attention card whatever the number of lanes, and every card ends with a next step of its own. `src/ui/attention.test.ts` checks nine stalling lanes and every card kind.
 10. Source read failures are not a machine problem and raise no card. `src/ui/attention.test.ts` checks them.
 11. A recorded event alone does not become a current concern. `src/ui/attention.test.ts` checks resolved events and missing source data.
 12. Every integrity state but healthy and checking raises a card, so Home can never read healthy while Storage reads otherwise about the same filesystem. `src/model/verdict.test.ts` drives one snapshot per state through the ladder and checks that a filesystem checked and found sound raises nothing.
+13. The summary schema contains only ids and raw numbers from the model, and the scratch collector is not called when summary sampling skips scratch. `src/main.test.ts` snapshots the summary schema against fixture sources, and `src/collect/collector.test.ts` checks the scratch collector call count.

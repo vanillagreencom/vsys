@@ -14,6 +14,10 @@ import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
 
+export interface SampleOptions {
+  /** Skip scratch collection for cheap consumers that must treat it as unknown. */
+  skipScratch?: boolean;
+}
 /**
  * Reading the tmux server: the probe that decides the capability, and the one
  * call per sample that resolves every lane's pane. A collector given none
@@ -86,6 +90,7 @@ export class Collector {
   async sample(
     time = Date.now(),
     measure?: (source: string, durationMs: number) => void,
+    options: SampleOptions = {},
   ): Promise<Snapshot> {
     this.controller.signal.throwIfAborted();
     const start = performance.now();
@@ -139,6 +144,7 @@ export class Collector {
       time,
       mountInfo,
       !this.live,
+      options.skipScratch ?? false,
     );
     // Device totals cover the whole machine, so they are read above the watched tree.
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);

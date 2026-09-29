@@ -21,6 +21,7 @@ Target: the row a card names, handed to the destination screen, which selects it
 ## Boundaries
 
 - `mountScreen` in `src/ui/screen.tsx` owns the React root and the subscription between collection and display. It mounts once and unmounts on shutdown.
+- `src/main.ts` owns CLI mode selection and `--once --summary`.
 - The shell owns the one keyboard subscription. A screen registers a handler through `useScreenKeys` and sees each key first, so an open search box or editor takes every key.
 - The footer names the keys the current screen handles and nothing else. The `hints` table in `src/ui/App.tsx` gives the agent detail and a vanished agent their own entries, because neither takes the list's keys.
 - Colour comes from `src/ui/theme.ts` alone, one meaning per role: red, amber and green are severity; cyan is what the reader can act on; grey sits behind the selected row. `metric` gives each quantity its own hue wherever it is drawn. No screen names a hex value, and every line renders through `Line`, because OpenTUI paints text in the terminal foreground when no colour is given.

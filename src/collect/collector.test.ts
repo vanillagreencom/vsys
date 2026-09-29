@@ -11,6 +11,7 @@ import { buildKind, toolName } from "./builds";
 import { Collector, createCollector } from "./collector";
 import { parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
+import { ScratchCollector } from "./scratch";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -59,6 +60,36 @@ test("scope CPU, memory, environment and process identity survive sampling", asy
   const reused = await collector.sample(3000);
   expect(reused.procs[0].cpuPercent).toBeNull();
   expect(reused.lanes[0].account).toBe("new");
+});
+test("summary sampling does not call the scratch collector", async () => {
+  const f = setup();
+  f.config.scratchDirs = [join(f.root, "scratch")];
+  const original = ScratchCollector.prototype.collect;
+  let calls = 0;
+  ScratchCollector.prototype.collect = async function (
+    ...args: Parameters<ScratchCollector["collect"]>
+  ): ReturnType<ScratchCollector["collect"]> {
+    calls++;
+    return original.apply(this, args);
+  };
+  try {
+    const summary = await new Collector(f.config, 100, 4096).sample(
+      1000,
+      undefined,
+      { skipScratch: true },
+    );
+    expect(calls).toBe(0);
+    expect(summary.storage).toMatchObject({
+      scratch: [],
+      sessions: [],
+      scratchTime: null,
+      scratchPending: false,
+    });
+    await new Collector(f.config, 100, 4096).sample(2000);
+    expect(calls).toBe(1);
+  } finally {
+    ScratchCollector.prototype.collect = original;
+  }
 });
 test("environment is collected for scope mains and agents, not other children", async () => {
   const f = setup();

@@ -1,0 +1,1 @@
+- `vsys --once --summary` prints a cheap verdict JSON for flyouts and skips scratch collection.

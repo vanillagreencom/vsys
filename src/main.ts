@@ -2,15 +2,30 @@
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { createCollector } from "./collect/collector";
+import { type Collector, createCollector } from "./collect/collector";
 import { capturePane, insideTmux } from "./collect/tmux";
 import { agentToolsPath } from "./config/agent-tools";
 import { configPath, loadConfig } from "./config/config";
 import { runEffect, switchToPane } from "./effect";
-import { exportSnapshot } from "./model/export";
+import { exportSnapshot, exportSummary } from "./model/export";
 import { Session } from "./runtime";
 import { History } from "./store/history";
 import { dispatchWarden } from "./warden";
+
+export async function sampleSummary(
+  collector: Pick<Collector, "sample">,
+  pause: () => Promise<void> = () => Bun.sleep(100),
+  now: () => number = Date.now,
+) {
+  const first = await collector.sample(now(), undefined, {
+    skipScratch: true,
+  });
+  await pause();
+  const snapshot = await collector.sample(now(), undefined, {
+    skipScratch: true,
+  });
+  return { snapshot, errors: [...first.errors, ...snapshot.errors] };
+}
 
 /** --once produces a sample without starting a terminal renderer. */
 export async function main(args = process.argv.slice(2)): Promise<void> {
@@ -19,6 +34,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     args,
     options: {
       once: { type: "boolean" },
+      summary: { type: "boolean" },
       markdown: { type: "boolean" },
       config: { type: "string" },
       help: { type: "boolean", short: "h" },
@@ -27,7 +43,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   });
   if (values.help) {
     console.log(
-      "vsys [--once] [--markdown] [--config PATH]\nvsys warden install|uninstall|status\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
+      "vsys [--once] [--summary] [--markdown] [--config PATH]\nvsys warden install|uninstall|status\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--summary   With --once, print a cheap verdict JSON and skip scratch collection.\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
     );
     return;
   }
@@ -35,17 +51,33 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     throw new Error("vsys requires Linux with cgroup v2");
   if (values.markdown && !values.once)
     throw new Error("--markdown requires --once");
+  if (values.summary && !values.once)
+    throw new Error("--summary requires --once");
+  if (values.summary && values.markdown)
+    throw new Error("--summary and --markdown cannot be combined");
   if (values.config === "") throw new Error("Config path cannot be empty");
   const path =
     values.config !== undefined ? resolve(values.config) : configPath;
   const config = await loadConfig(path);
   const collector = await createCollector(config, !values.once);
   if (values.once) {
-    const snapshot = await collector.sample().finally(() => collector.close());
-    console.log(
-      exportSnapshot(snapshot, values.markdown ? "markdown" : "json"),
-    );
-    if (snapshot.errors.length) process.exitCode = 2;
+    try {
+      if (values.summary) {
+        const { snapshot, errors } = await sampleSummary(collector);
+        console.log(
+          exportSummary(snapshot, config, errors, { scratchMeasured: false }),
+        );
+        if (errors.length) process.exitCode = 2;
+      } else {
+        const snapshot = await collector.sample();
+        console.log(
+          exportSnapshot(snapshot, values.markdown ? "markdown" : "json"),
+        );
+        if (snapshot.errors.length) process.exitCode = 2;
+      }
+    } finally {
+      collector.close();
+    }
     return;
   }
   if (!process.stdout.isTTY || !process.stdin.isTTY)
