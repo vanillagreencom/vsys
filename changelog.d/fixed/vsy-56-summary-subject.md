@@ -1,1 +1,0 @@
-- `vsys --once --summary` leaves machine-wide verdict subjects empty instead of exporting a navigation-only target.
