@@ -849,7 +849,16 @@ class AgentWardenRules(unittest.TestCase):
                 self.assertIsNone(doc["lanes"][0]["memory"])
                 self.assertNotEqual(doc["slice"]["memory"], 0)
                 self.w.STATE_DIR.mkdir(parents=True, exist_ok=True)
-                for bad_state in ("{", "[]", json.dumps({"moves": "wrong"}), json.dumps({"events": {}}), json.dumps({"event_seq": "1"})):
+                for bad_state in (
+                    "{",
+                    "[]",
+                    json.dumps({"moves": "wrong"}),
+                    json.dumps({"moves": -1}),
+                    json.dumps({"events": {}}),
+                    json.dumps({"events": [{}]}),
+                    json.dumps({"event_seq": "1"}),
+                    json.dumps({"near_open": [1]}),
+                ):
                     with self.subTest(bad_state=bad_state):
                         self.w.STATE.write_text(bad_state)
                         with self.w.State() as st:
@@ -970,6 +979,17 @@ class AgentWardenRules(unittest.TestCase):
                 else:
                     os.environ["AGENT_WARDEN_ONLY"] = old_env
                 self.w.scan, self.w.plan = old_scan, old_plan
+                self.restore_status_state(self.w, old)
+        with scratch() as tmp:
+            base = Path(tmp)
+            old = self.point_status_state(self.w, base)
+            sentinel = {"sentinel": True}
+            self.w.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            self.w.STATUS.write_text(json.dumps(sentinel))
+            try:
+                self.assertEqual(self.w.main(["agent-warden", "--selftest"]), 0)
+                self.assertEqual(json.loads(self.w.STATUS.read_text()), sentinel)
+            finally:
                 self.restore_status_state(self.w, old)
 
     def test_event_ids_increase_across_state_reopen_and_reset(self):

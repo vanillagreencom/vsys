@@ -1416,15 +1416,49 @@ def _check_keys(errors, obj, keys, where):
     return True
 
 
+def _check_int(errors, value, where):
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        errors.append(f"{where} must be a non-negative integer")
+
+
 def _check_int_or_null(errors, value, where):
-    if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
-        errors.append(f"{where} must be a non-negative integer or null")
+    if value is not None:
+        _check_int(errors, value, where)
 
 
 def _check_limit(errors, value, where):
     if value == "max" or value is None:
         return
     _check_int_or_null(errors, value, where)
+
+
+def _check_events(errors, events, where):
+    if not isinstance(events, list):
+        errors.append(f"{where} must be a list")
+        return
+    if len(events) > STATUS_EVENT_LIMIT:
+        errors.append(f"{where} must contain at most 50 rows")
+    last = -1
+    for i, event in enumerate(events):
+        row = f"{where}[{i}]"
+        if not _check_keys(errors, event, ("id", "time", "kind", "scope", "pid", "processes", "near"), row):
+            continue
+        if not isinstance(event.get("id"), int) or isinstance(event.get("id"), bool) or event["id"] <= last:
+            errors.append(f"{row}.id must increase")
+        last = event.get("id") if isinstance(event.get("id"), int) and not isinstance(event.get("id"), bool) else last
+        if not isinstance(event.get("time"), (int, float)) or isinstance(event.get("time"), bool):
+            errors.append(f"{row}.time must be a number")
+        if event.get("kind") not in STATUS_EVENT_KINDS:
+            errors.append(f"{row}.kind has an unknown id")
+        if event.get("scope") is not None and not isinstance(event.get("scope"), str):
+            errors.append(f"{row}.scope must be a string or null")
+        _check_int_or_null(errors, event.get("pid"), f"{row}.pid")
+        _check_int_or_null(errors, event.get("processes"), f"{row}.processes")
+        if event.get("kind") == "near-cap":
+            if event.get("near") not in STATUS_NEAR_KINDS:
+                errors.append(f"{row}.near must be tasks or memory")
+        elif event.get("near") is not None:
+            errors.append(f"{row}.near must be null except for near-cap")
 
 
 def status_errors(doc):
@@ -1529,33 +1563,7 @@ def status_errors(doc):
                 if not isinstance(row.get("unit"), str):
                     errors.append(f"{where}.unit must be a string")
                 _check_int_or_null(errors, row.get("processes"), f"{where}.processes")
-    events = doc.get("events")
-    if not isinstance(events, list):
-        errors.append("events must be a list")
-    else:
-        if len(events) > STATUS_EVENT_LIMIT:
-            errors.append("events must contain at most 50 rows")
-        last = -1
-        for i, event in enumerate(events):
-            where = f"events[{i}]"
-            if not _check_keys(errors, event, ("id", "time", "kind", "scope", "pid", "processes", "near"), where):
-                continue
-            if not isinstance(event.get("id"), int) or event["id"] <= last:
-                errors.append(f"{where}.id must increase")
-            last = event.get("id") if isinstance(event.get("id"), int) else last
-            if not isinstance(event.get("time"), (int, float)):
-                errors.append(f"{where}.time must be a number")
-            if event.get("kind") not in STATUS_EVENT_KINDS:
-                errors.append(f"{where}.kind has an unknown id")
-            if event.get("scope") is not None and not isinstance(event.get("scope"), str):
-                errors.append(f"{where}.scope must be a string or null")
-            _check_int_or_null(errors, event.get("pid"), f"{where}.pid")
-            _check_int_or_null(errors, event.get("processes"), f"{where}.processes")
-            if event.get("kind") == "near-cap":
-                if event.get("near") not in STATUS_NEAR_KINDS:
-                    errors.append(f"{where}.near must be tasks or memory")
-            elif event.get("near") is not None:
-                errors.append(f"{where}.near must be null except for near-cap")
+    _check_events(errors, doc.get("events"), "events")
     if _check_keys(errors, doc.get("counters"), ("moves", "partial", "reaped", "moveFailures", "scanFailures", "skips"), "counters"):
         for key, value in doc["counters"].items():
             _check_int_or_null(errors, value, f"counters.{key}")
@@ -1691,20 +1699,24 @@ def default_state():
     return deepcopy(DEFAULT_STATE)
 
 
+def _check_string_list(errors, value, where):
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        errors.append(f"{where} must be a list of strings")
+
+
 def state_object(raw):
     if not isinstance(raw, dict):
         return None
-    if any(not isinstance(raw.get(key, 0), int) or isinstance(raw.get(key, 0), bool) for key in STATE_COUNTER_KEYS):
-        return None
-    if not isinstance(raw.get("event_seq", 0), int) or isinstance(raw.get("event_seq", 0), bool):
-        return None
-    if not isinstance(raw.get("events", []), list):
-        return None
-    if not isinstance(raw.get("near_open", []), list) or not isinstance(raw.get("waiting_open", []), list):
-        return None
+    errors = []
+    for key in STATE_COUNTER_KEYS:
+        _check_int(errors, raw.get(key, 0), f"state.{key}")
+    _check_int(errors, raw.get("event_seq", 0), "state.event_seq")
+    _check_events(errors, raw.get("events", []), "state.events")
+    _check_string_list(errors, raw.get("near_open", []), "state.near_open")
+    _check_string_list(errors, raw.get("waiting_open", []), "state.waiting_open")
     if not isinstance(raw.get("orphans", {}), dict):
-        return None
-    return raw
+        errors.append("state.orphans must be an object")
+    return None if errors else raw
 
 
 class State:
