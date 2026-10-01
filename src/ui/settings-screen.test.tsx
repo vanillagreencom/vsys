@@ -477,9 +477,8 @@ test("the editor opens in view when the layout moves the row it edits", async ()
     // that moved it, not the selection, which did not change.
     await t.press("enter");
     // The scroll measures where the row currently sits, so it waits for the
-    // new layout to be drawn: the editor is in view on the frame after the
-    // collapse. Republishing the sample draws that frame and types nothing.
-    await t.update(s);
+    // new layout to be drawn: the editor is in view once that pass has landed.
+    await t.settle();
     const frame = t.frame();
     // This row's editor, named by the row it edits. Measuring on the old
     // layout scrolled to the top of the list, where the opened row is not.
