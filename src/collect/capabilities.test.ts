@@ -317,17 +317,35 @@ test("the agent slice is present, defined, absent, or unknown", () => {
       source: "control/agents.slice",
     },
     {
-      // One directory that cannot be read does not outweigh one that answers.
-      name: "a unit file beside a unit path that cannot be read",
+      // A drop-in cannot mask, so one directory whose drop-in cannot be read
+      // does not outweigh another whose drop-in answers.
+      name: "a drop-in beside a drop-in path that cannot be read",
       slice: "agents.slice",
       prepare: (root) => {
         gone(root);
-        loop(join(root, "user/agents.slice"));
+        loop(join(root, "user/agents.slice.d"));
         mkdirSync(join(root, "control/agents.slice.d"), { recursive: true });
       },
       groups: [],
       failure: null,
       source: "control/agents.slice.d",
+    },
+    {
+      // `systemctl --user mask` links the unit file to /dev/null in a
+      // directory systemd reads first, which shadows the unit file a later
+      // directory holds; systemd never starts a masked slice.
+      name: "a masked unit file before a defined one",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        mkdirSync(join(root, "user"), { recursive: true });
+        symlinkSync("/dev/null", join(root, "user/agents.slice"));
+        mkdirSync(join(root, "control/agents.slice.d"), { recursive: true });
+        writeFileSync(join(root, "control/agents.slice"), "[Slice]\n");
+      },
+      groups: [],
+      failure: "absent",
+      source: "user/agents.slice",
     },
   ];
   for (const row of rows) {
@@ -372,29 +390,28 @@ test("a slice that appears after vsys starts is present from the next sample", a
   expect(after.get("agent-slice")?.available).toBe(true);
 });
 
-test("unit files are looked for where the user manager loads them, the reader's own first", () => {
-  const user = (config: string, data: string) => [
-    join(config, "systemd/user"),
+test("unit files are looked for where the user manager loads them, in its order", () => {
+  // In the order the user manager reads them, so the first holding a unit file
+  // is the one systemd uses. The system manager's own directories are not
+  // read: the agent slice belongs to the user manager, which never loads them.
+  const ordered = (config: string, data: string) => [
     // Where the line Settings offers for a missing slice writes.
     join(config, "systemd/user.control"),
+    join(config, "systemd/user"),
+    "/etc/systemd/user",
     join(data, "systemd/user"),
+    "/usr/lib/systemd/user",
   ];
-  // The machine-wide user unit directories. The system manager's own are not
-  // read: the agent slice belongs to the user manager, which never loads them.
-  const shared = ["/etc/systemd/user", "/usr/lib/systemd/user"];
   const rows: [string, NodeJS.ProcessEnv, string[]][] = [
     [
       "XDG directories set",
       { XDG_CONFIG_HOME: "/x/config", XDG_DATA_HOME: "/x/data" },
-      [...user("/x/config", "/x/data"), ...shared],
+      ordered("/x/config", "/x/data"),
     ],
     [
       "XDG directories unset",
       {},
-      [
-        ...user(join(homedir(), ".config"), join(homedir(), ".local/share")),
-        ...shared,
-      ],
+      ordered(join(homedir(), ".config"), join(homedir(), ".local/share")),
     ],
   ];
   for (const [name, env, dirs] of rows)
