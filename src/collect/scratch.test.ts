@@ -290,6 +290,10 @@ test("the shipped list is default and any list the reader set is theirs", async 
 
 test("only running agents name scratch, by absolute path, once each", () => {
   const procs = [
+    // Process order is not path order: the agent holding the child directory
+    // comes first, and the parent must still come out ahead of it.
+    processSnapshot({ pid: 6, env: { TMPDIR: "/t/x" } }),
+    processSnapshot({ pid: 7, env: { TMPDIR: "/t" } }),
     processSnapshot({
       pid: 1,
       env: {
@@ -304,9 +308,13 @@ test("only running agents name scratch, by absolute path, once each", () => {
     processSnapshot({ pid: 4, tool: null, env: { TMPDIR: "/scratch/shell" } }),
     processSnapshot({ pid: 5, env: { HOME: "/home/x" } }),
   ];
-  expect(agentScratchDirs(procs)).toEqual([
+  const dirs = agentScratchDirs(procs);
+  expect(dirs).toEqual(["/scratch/agents", "/scratch/claude", "/t", "/t/x"]);
+  // A directory inside another agent's is measured there, never twice.
+  expect(scratchRoots([], dirs, [], 1000).map((root) => root.path)).toEqual([
     "/scratch/agents",
     "/scratch/claude",
+    "/t",
   ]);
 });
 

@@ -95,15 +95,8 @@ test("a running agent's temporary directory is measured as scratch it was found 
   const f = setup();
   const tmp = join(f.root, "agent-tmp");
   f.write(join(tmp, "session/file"), "1234");
-  f.group("agents.slice/a.scope", [40, 41]);
+  f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope", { env: `TMPDIR=${tmp}\0` });
-  // A process that is not an agent names a directory nobody measures.
-  f.proc(41, "agents.slice/a.scope", {
-    command: ["/bin/cat"],
-    comm: "cat",
-    env: `TMPDIR=${join(f.root, "other")}\0`,
-    parent: 40,
-  });
   const collector = new Collector(f.config, 100, 4096);
   try {
     const s = await collector.sample(1000);
