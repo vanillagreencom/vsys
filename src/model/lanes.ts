@@ -24,14 +24,13 @@ export function inSlice(path: string, slice: string): boolean {
 }
 /**
  * Whether agents are compared against the agent slice. Only a probe that found
- * the slice absent stops the comparison: a slice vsys could not read, and a
- * sample recorded before the probe existed, keep it, so a failed read never
- * silences an escaped agent.
+ * the slice absent or masked stops the comparison, since systemd never starts
+ * either: a slice vsys could not read, and a sample recorded before the probe
+ * existed, keep it, so a failed read never silences an escaped agent.
  */
 export function sliceCompared(capabilities: Capability[]): boolean {
-  return (
-    capabilities.find((cap) => cap.id === "agent-slice")?.failure !== "absent"
-  );
+  const failure = capabilities.find((cap) => cap.id === "agent-slice")?.failure;
+  return failure !== "absent" && failure !== "masked";
 }
 /**
  * One rule for an escaped agent: a configured tool outside the agent slice, on

@@ -240,4 +240,15 @@ test("a missing agent slice offers one line that limits it, and nothing else doe
   expect(capabilityLoss(slice("unreadable"))).not.toBe(
     capabilityLoss(slice("absent")),
   );
+  // systemctl refuses set-property on a masked unit, so a masked slice is
+  // offered nothing, says it is masked, and costs what an absent one does.
+  expect({
+    offer: capabilityOffer(slice("masked"), c),
+    reason: capabilityReason(slice("masked")),
+    loss: capabilityLoss(slice("masked")),
+  }).toEqual({
+    offer: null,
+    reason: "/fixture/agents.slice is masked, so systemd never starts it",
+    loss: capabilityLoss(slice("absent")),
+  });
 });

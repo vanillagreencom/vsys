@@ -202,9 +202,10 @@ export function slicePath(name: string): string {
  * and where that path does not exist a unit file or drop-in directory defining
  * the slice still makes it present (D009). The first directory holding a unit
  * file decides, as it does for systemd, and a unit file there that resolves to
- * /dev/null is masked: systemd never starts it, so the slice is absent. Only a
- * slice with no group, no unit and no drop-in is otherwise absent, and a path
- * that exists but cannot be told is never read as an absence.
+ * /dev/null is masked: systemd never starts it, and it cannot be given a
+ * limit until it is unmasked. Only a slice with no group, no unit and no
+ * drop-in is absent, and a path that exists but cannot be told is never read
+ * as an absence.
  */
 export function probeAgentSlice(
   c: CollectionConfig,
@@ -238,8 +239,8 @@ export function probeAgentSlice(
     }
     return target === "/dev/null"
       ? record("agent-slice", file.path, {
-          failure: "absent",
-          detail: "masked: the unit file links to /dev/null",
+          failure: "masked",
+          detail: "the unit file links to /dev/null",
         })
       : record("agent-slice", file.path, null, definedDetail);
   }

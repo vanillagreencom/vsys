@@ -694,7 +694,7 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
   expect(refused[1]?.pane).toBe(ownAt);
 });
 
-test("only a slice the probe found absent turns off the escape comparison", () => {
+test("only a slice the probe found absent or masked turns off the escape comparison", () => {
   const c = defaults();
   const probe = (failure: Capability["failure"]): Capability[] => [
     {
@@ -730,6 +730,13 @@ test("only a slice the probe found absent turns off the escape comparison", () =
     [
       "absent",
       probe("absent"),
+      false,
+      [["/background.slice/a.service", false]],
+    ],
+    // systemd never starts a masked slice, so no agent is outside it.
+    [
+      "masked",
+      probe("masked"),
       false,
       [["/background.slice/a.service", false]],
     ],

@@ -344,7 +344,7 @@ test("the agent slice is present, defined, absent, or unknown", () => {
         writeFileSync(join(root, "control/agents.slice"), "[Slice]\n");
       },
       groups: [],
-      failure: "absent",
+      failure: "masked",
       source: "user/agents.slice",
     },
   ];

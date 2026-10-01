@@ -335,7 +335,8 @@ const capabilityCost: Record<CapabilityId, string> = {
 };
 /**
  * What a present interface vsys could not read costs, where that differs from
- * its absence. A slice vsys cannot read is still compared against.
+ * its absence. A slice vsys cannot read is still compared against; a masked
+ * one is not, so it costs what an absent one does.
  */
 const unreadCost: Partial<Record<CapabilityId, string>> = {
   "agent-slice":
@@ -344,15 +345,15 @@ const unreadCost: Partial<Record<CapabilityId, string>> = {
 /** What a reader loses while this capability is missing. */
 export function capabilityLoss(cap: Capability): string {
   if (cap.available) return "";
-  return (
-    (cap.failure !== "absent" && unreadCost[cap.id]) || capabilityCost[cap.id]
-  );
+  const unread = cap.failure !== "absent" && cap.failure !== "masked";
+  return (unread && unreadCost[cap.id]) || capabilityCost[cap.id];
 }
 /**
  * A line a reader can copy to supply a missing capability, and what it does.
  * vsys never runs it. It carries the MemoryHigh and MemoryMax values of the
  * warden's slice template in `warden/systemd/agents.slice`, and none of that
- * template's other limits.
+ * template's other limits. A masked slice is offered nothing: systemctl
+ * refuses to set a property on a masked unit.
  */
 export function capabilityOffer(
   cap: Capability,
@@ -380,6 +381,8 @@ export function capabilityReason(cap: Capability): string {
   switch (cap.failure) {
     case "absent":
       return absentReasons[cap.id];
+    case "masked":
+      return `${cap.source} is masked, so systemd never starts it`;
     case "unreadable":
       return `${cap.source} exists but cannot be read`;
     case "malformed":

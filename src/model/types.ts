@@ -305,11 +305,13 @@ export type CapabilityId =
   | "agent-slice";
 /**
  * Why a source could not be used. The kinds are distinct diagnoses: a kernel
- * that never built the interface, a file the user cannot read, a file that did
- * not parse, and an interface present but not giving what a reading needs.
+ * that never built the interface, a unit the user masked so systemd never
+ * starts it, a file the user cannot read, a file that did not parse, and an
+ * interface present but not giving what a reading needs.
  */
 export type CapabilityFailure =
   | "absent"
+  | "masked"
   | "unreadable"
   | "malformed"
   | "incomplete";
