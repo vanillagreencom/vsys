@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { saveConfig } from "../src/config/config";
-import { fixture } from "../src/test/fixture";
+import { fixture, hermeticBin } from "../src/test/fixture";
+import { buildBinary } from "./build";
 
 /**
  * Takes one `--once` sample with a built program, the way src/main.test.ts
@@ -11,40 +12,42 @@ import { fixture } from "../src/test/fixture";
  * `--help` would still pass.
  *
  * Usage: bun scripts/sample-check.ts PROGRAM [ARGS...]
+ *        bun scripts/sample-check.ts --compile
  * PROGRAM is looked up on the caller's PATH unless it names a path; any
  * argument naming an existing file is passed as an absolute path.
+ * `--compile` builds the standalone binary into the fixture, the way the
+ * `compile` script builds it, and samples that.
  */
-const [program, ...rest] = process.argv.slice(2);
-if (!program) {
+const args = process.argv.slice(2);
+if (!args.length) {
   console.error("sample-check: usage=missing-program");
   process.exit(2);
 }
-const executable = program.includes("/")
-  ? resolve(program)
-  : Bun.which(program);
-if (!executable || !existsSync(executable)) {
-  console.error(`sample-check: program=not-found value=${program}`);
-  process.exit(1);
-}
-const argv = [
-  executable,
-  ...rest.map((arg) => (existsSync(arg) ? resolve(arg) : arg)),
-];
 
 const f = fixture();
 try {
+  let argv: string[];
+  if (args[0] === "--compile") {
+    const binary = join(f.root, "vsys");
+    await buildBinary(binary);
+    argv = [binary];
+  } else {
+    const [program, ...rest] = args;
+    const executable = program.includes("/")
+      ? resolve(program)
+      : Bun.which(program);
+    if (!executable || !existsSync(executable))
+      throw new Error(`sample-check: program=not-found value=${program}`);
+    argv = [
+      executable,
+      ...rest.map((arg) => (existsSync(arg) ? resolve(arg) : arg)),
+    ];
+  }
   f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope", {
     env: "CLAUDE_CONFIG_DIR=/accounts/work\0",
   });
-  const bin = join(f.root, "bin");
-  mkdirSync(bin, { recursive: true });
-  const getconf = join(bin, "getconf");
-  writeFileSync(
-    getconf,
-    '#!/bin/sh\ncase "$1" in\n  CLK_TCK) echo 100 ;;\n  PAGESIZE) echo 4096 ;;\n  *) exit 1 ;;\nesac\n',
-  );
-  chmodSync(getconf, 0o755);
+  const bin = hermeticBin(f.root);
   const config = join(f.root, "config.toml");
   await saveConfig(f.config, config, f.agentToolsPath);
   const child = Bun.spawn([...argv, "--once", "--config", config], {

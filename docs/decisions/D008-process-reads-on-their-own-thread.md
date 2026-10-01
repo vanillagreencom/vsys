@@ -6,7 +6,7 @@
 
 **Status**: Active
 
-**Research**: VSY-46, with the findings attached to [VSY-44](https://linear.app/vanillagreen/issue/VSY-44/reduce-dashboard-cpu-use-without-losing-sample-or-history-accuracy) as `cpu-performance.md`
+**Research**: [cpu-performance.md § Process reads](../research/cpu-performance.md#process-reads)
 
 **Context**: Process collection sent one asynchronous read for each process's `stat` and `cmdline`, in batches of 64, on the dashboard's own thread. The research measured that these reads cost more processor time than reading the same files synchronously. It also measured that synchronous reads on the dashboard's thread raise the elapsed sample time, and a keystroke would wait behind that time.
 
@@ -47,6 +47,6 @@ The decision accepts the missed elapsed target for lower processor time and a da
 
 **Revisit When**: The 20 ms elapsed fixture target becomes a requirement again, the extra resident memory matters on a target machine, or Bun's asynchronous file reads stop costing more processor time than synchronous ones.
 
-**Verification**: `bun run bench` reports elapsed and whole-process processor time on the shipped arrangement. `bun run smoke` and the release workflow take a sample with what they built. The invariants in [process collection](../architecture/processes.md) name the tests.
+**Verification**: `bun run bench` reports elapsed and whole-process processor time on the shipped arrangement. `bun run smoke` samples the bundle and a compiled binary built from the shared entry points, and the release workflow samples the binary it ships. The invariants in [process collection](../architecture/processes.md) name the tests.
 
 **References**: `src/collect/procs.ts`, `src/collect/process-thread.ts`, `src/collect/process-worker.ts`, [process collection](../architecture/processes.md)

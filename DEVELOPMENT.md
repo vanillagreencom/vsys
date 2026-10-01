@@ -40,7 +40,7 @@ bun test src/                 # the application suites alone
 bun run build                 # dist/main.js, dist/collect/process-worker.js and dist/scratch-worker.js; run main.js with Bun from the project directory
 bun run compile               # the standalone ./vsys binary the release and the vsys-git package ship
 bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh one without PATH
-bun run smoke                 # one --once sample with dist/main.js against a fixture
+bun run smoke                 # one --once fixture sample with dist/main.js, and one with a binary compiled into the fixture
 ```
 
 `--once` needs no terminal, which is the way to read a snapshot from a script or a test. Interactive mode refuses to start without a TTY and says so.

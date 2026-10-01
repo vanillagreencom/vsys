@@ -1,6 +1,6 @@
 # Process collection
 
-Covers: src/collect/procs.ts src/collect/process-thread.ts src/collect/process-worker.ts src/collect/collector.ts src/collect/process-thread.test.ts scripts/bench.ts scripts/sample-check.ts
+Covers: src/collect/procs.ts src/collect/process-thread.ts src/collect/process-worker.ts src/collect/collector.ts src/collect/process-thread.test.ts scripts/bench.ts scripts/sample-check.ts scripts/build.ts
 
 Process collection reads every process in the configured `/proc` once per sample. The program runs it on a thread of its own, so a keystroke no longer waits while `/proc` is read, and that thread keeps the state the next reading compares against. Parsing the thread's reply still runs on the dashboard's thread.
 
@@ -11,7 +11,7 @@ Process collection reads every process in the configured `/proc` once per sample
 - `Session` in `src/runtime.ts` stays the only sample scheduler. A sample sends one request holding the sample time, the uptime and the watched membership. The thread does no work between requests, and scratch traversal never shares it.
 - A change to a collection setting, one of `collectionKeys` in `src/collect/settings.ts`, builds a new collector, and with it a new thread that starts from nothing. Any other setting keeps the collector, its thread, the environment cache and the counters. Closing a collector ends its thread.
 - The reply crosses as JSON text. Bun hands a string to another thread without cloning it, and every value in a reading is a string, a finite number, a boolean or null.
-- Bun's bundler does not follow a worker URL. The `build` and `compile` scripts in `package.json` name `src/collect/process-worker.ts` as a second entry point, and the release workflow and the `vsys-git` package build through `bun run compile`. A build without that entry point fails its first sample with `No process worker beside <path>`. `scripts/sample-check.ts` takes one fixture sample with a built program, and both `bun run smoke` in the check contract and the release workflow run it on what they built.
+- Bun's bundler does not follow a worker URL. `scripts/build.ts` holds the one list of entry points, `src/main.ts` and `src/collect/process-worker.ts`, and builds both shipped forms from it: the `build` script's bundle and the `compile` script's standalone binary, which the release workflow and the `vsys-git` package use. A build without the worker fails its first sample with `No process worker beside <path>`. `scripts/sample-check.ts` takes one fixture sample with a built program. `bun run smoke` in the check contract samples the bundle and a freshly compiled binary, and the release workflow samples the binary it ships.
 
 ## Thread lifecycle
 

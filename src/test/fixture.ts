@@ -1,4 +1,10 @@
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
@@ -130,6 +136,22 @@ export function fixture() {
     proc,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
+}
+/**
+ * A PATH directory holding only a getconf stand-in with this fixture's clock
+ * and page units. A program run with it as its whole PATH reaches no tmux
+ * server and no build cache.
+ */
+export function hermeticBin(root: string): string {
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  const getconf = join(bin, "getconf");
+  writeFileSync(
+    getconf,
+    '#!/bin/sh\ncase "$1" in\n  CLK_TCK) echo 100 ;;\n  PAGESIZE) echo 4096 ;;\n  *) exit 1 ;;\nesac\n',
+  );
+  chmodSync(getconf, 0o755);
+  return bin;
 }
 /** Tests assume a complete host unless they remove a capability themselves. */
 export function capabilitySnapshot(): Capability[] {
