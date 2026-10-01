@@ -126,3 +126,20 @@ jobs:
             *) echo "::error::Could not compare review packages"; exit "$result" ;;
           esac
           "$checker" check --repo candidate --spec candidate/.agents/skills/bot-instructions
+
+  ci:
+    name: CI
+    # The one required check: it passes only when every job above succeeds.
+    # No job here is skipped by a change-classifier rule, so no skip is
+    # expected and a skipped, failed or cancelled job fails this one.
+    needs: [application, arch-package, review-gate-validate, bot-instructions]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "::error::\(.key) finished \(.value.result)"' <<<"$NEEDS")
+          if [ -n "$failed" ]; then printf '%s\n' "$failed"; exit 1; fi
