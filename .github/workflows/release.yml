@@ -81,6 +81,7 @@ jobs:
           bun run compile
           ./vsys --help >/dev/null
           bun run check:compiled ./vsys
+          bun scripts/sample-check.ts ./vsys
       - name: Pack the archive
         run: |
           asset="vsys-${TAG}-linux-${{ matrix.arch }}.tar.gz"

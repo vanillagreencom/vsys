@@ -8,6 +8,7 @@ import {
   groupSnapshot,
   processSnapshot,
 } from "../src/test/fixture";
+import { percentile } from "./percentile";
 
 const c = defaults();
 const history = new History(c);
@@ -82,10 +83,9 @@ function advance(i: number): void {
   snapshot.lanes = lanes(snapshot.groups, snapshot.procs, c);
 }
 
-function percentile(values: number[], fraction: number): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const at = Math.min(sorted.length - 1, Math.floor(sorted.length * fraction));
-  return Number((sorted[at] ?? 0).toFixed(3));
+/** A timing as the report prints it, to the microsecond. */
+function rank(values: number[], fraction: number): number {
+  return Number(percentile(values, fraction).toFixed(3));
 }
 
 let samples = 0;
@@ -159,12 +159,12 @@ try {
       warning: history.retentionWarning,
       elapsedMs: performance.now() - started,
       rssBytes: process.memoryUsage().rss,
-      historyAddMedianMs: percentile(addMs, 0.5),
-      historyAddP95Ms: percentile(addMs, 0.95),
-      historyAddMaxMs: percentile(addMs, 1),
-      archiveAddMedianMs: percentile(archiveMs, 0.5),
-      archiveAddP95Ms: percentile(archiveMs, 0.95),
-      archiveAddMaxMs: percentile(archiveMs, 1),
+      historyAddMedianMs: rank(addMs, 0.5),
+      historyAddP95Ms: rank(addMs, 0.95),
+      historyAddMaxMs: rank(addMs, 1),
+      archiveAddMedianMs: rank(archiveMs, 0.5),
+      archiveAddP95Ms: rank(archiveMs, 0.95),
+      archiveAddMaxMs: rank(archiveMs, 1),
     }),
   );
 } finally {

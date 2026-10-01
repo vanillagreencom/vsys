@@ -59,10 +59,11 @@ export interface ProcessPort {
 
 /**
  * Process collection on a thread of its own, kept for the life of one
- * collector's settings. The thread holds the environment cache and the last
- * reading's counters, so a sample sends only what changed since: the time,
- * the uptime and the watched membership. A settings change builds a new
- * collector, and with it a new thread that starts from nothing.
+ * collector. The thread holds the environment cache and the last reading's
+ * counters, so a sample sends only what changed since: the time, the uptime
+ * and the watched membership. A change to a collection setting, one of
+ * `collectionKeys` in `./settings`, builds a new collector, and with it a new
+ * thread that starts from nothing; any other setting keeps both.
  *
  * The thread does no work between requests. A request it has not answered is
  * the only one in flight, because the collector awaits each sample.
@@ -123,10 +124,16 @@ export class ProcessThread implements ProcessSource {
    * thread's environment cache and counters go with it, so the next request
    * starts a thread whose first reading has no rate, which is unknown rather
    * than a rate measured against a reading it never took.
+   *
+   * Ending a thread cannot interrupt a read blocked in the kernel, such as
+   * one on a stalled mount, and a referenced thread keeps the program alive
+   * until it exits. The thread is released first, so quitting never waits on
+   * a read nobody wants.
    */
   private fail(error: unknown): void {
     const pending = this.pending;
     this.pending = undefined;
+    this.worker?.unref();
     this.worker?.terminate();
     this.worker = undefined;
     pending?.release();

@@ -1,17 +1,17 @@
 # Process collection
 
-Covers: src/collect/procs.ts src/collect/process-thread.ts src/collect/process-worker.ts src/collect/collector.ts src/collect/process-thread.test.ts scripts/bench.ts
+Covers: src/collect/procs.ts src/collect/process-thread.ts src/collect/process-worker.ts src/collect/collector.ts src/collect/process-thread.test.ts scripts/bench.ts scripts/sample-check.ts
 
-Process collection reads every process in the configured `/proc` once per sample. The program runs it on a thread of its own, so a keystroke never waits behind the process table, and that thread keeps the state the next reading compares against.
+Process collection reads every process in the configured `/proc` once per sample. The program runs it on a thread of its own, so a keystroke no longer waits while `/proc` is read, and that thread keeps the state the next reading compares against. Parsing the thread's reply still runs on the dashboard's thread.
 
 ## Boundaries
 
 - `ProcessCollector.read()` in `src/collect/procs.ts` is the one reader. It reads each file synchronously, one after another, and owns the environment cache and the last reading's counters.
 - `ProcessThread` in `src/collect/process-thread.ts` is the one host of that reader on a thread. `createCollector()` gives every collector the program builds one, for the dashboard and `--once` alike. A collector given none runs the same reader in its caller's thread, which is how the collection suites run.
 - `Session` in `src/runtime.ts` stays the only sample scheduler. A sample sends one request holding the sample time, the uptime and the watched membership. The thread does no work between requests, and scratch traversal never shares it.
-- A settings change builds a new collector, and with it a new thread that starts from nothing. Closing a collector ends its thread.
+- A change to a collection setting, one of `collectionKeys` in `src/collect/settings.ts`, builds a new collector, and with it a new thread that starts from nothing. Any other setting keeps the collector, its thread, the environment cache and the counters. Closing a collector ends its thread.
 - The reply crosses as JSON text. Bun hands a string to another thread without cloning it, and every value in a reading is a string, a finite number, a boolean or null.
-- Bun's bundler does not follow a worker URL. The `build` and `compile` scripts in `package.json` name `src/collect/process-worker.ts` as a second entry point, and the release workflow and the `vsys-git` package build through `bun run compile`. A build without that entry point fails its first sample with `No process worker beside <path>`.
+- Bun's bundler does not follow a worker URL. The `build` and `compile` scripts in `package.json` name `src/collect/process-worker.ts` as a second entry point, and the release workflow and the `vsys-git` package build through `bun run compile`. A build without that entry point fails its first sample with `No process worker beside <path>`. `scripts/sample-check.ts` takes one fixture sample with a built program, and both `bun run smoke` in the check contract and the release workflow run it on what they built.
 
 ## Thread lifecycle
 
@@ -20,7 +20,8 @@ Process collection reads every process in the configured `/proc` once per sample
 - Failure: a reading that threw rejects the sample with its message and keeps the thread. A thread error or an exit before the answer rejects the sample and ends the thread.
 - Replacement: the next request after an ended thread starts a new one. Its first reading has no rate, which is unknown rather than a rate measured against a reading it never took.
 - Cancellation: an aborted request ends the thread, so no unwanted reading holds up the next request.
-- Stale replies: a reply naming another request, or arriving from a thread the host already replaced, is dropped.
+- Ending: every path that ends a thread releases it from the program's lifetime first. Ending a thread cannot interrupt a read blocked in the kernel, such as one on a stalled mount, but such a read no longer keeps the program from exiting. `src/collect/process-thread.test.ts` checks the order on the abort, error, exit and close paths.
+- Stale events: a reply naming another request is dropped, and so is a reply, an error or an exit from a thread the host already replaced. `src/collect/process-thread.test.ts` fires a late error and a late exit from an ended thread while its replacement waits.
 - Overlap: a second request while one is in flight is refused.
 
 ## Invariants
@@ -32,5 +33,5 @@ Process collection reads every process in the configured `/proc` once per sample
 
 ## Decisions
 
-- Synchronous reads cost less processor time than one asynchronous request per file. On the dashboard's own thread they would raise the time a keystroke waits, so they run on a thread vsys keeps for the life of its settings. A thread per sample would pay its startup every second and lose the environment cache each time.
+- Synchronous reads cost less processor time than one asynchronous request per file. On the dashboard's own thread they would raise the time a keystroke waits, so they run on a thread vsys keeps for the life of its collection settings. A thread per sample would pay its startup every second and lose the environment cache each time.
 - Starting the process read before the cgroup tree would shorten a sample, but it needs two messages per sample and a reading that waits halfway for membership. `DEVELOPMENT.md` records the elapsed time this leaves against the 20 ms fixture target.

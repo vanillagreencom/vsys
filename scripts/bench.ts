@@ -1,14 +1,12 @@
 import { Collector } from "../src/collect/collector";
 import { ProcessThread } from "../src/collect/process-thread";
 import { fixture } from "../src/test/fixture";
+import { percentile } from "./percentile";
 
 const measured = 20;
-/** The nearest-rank percentile: the smallest value with `p` of them at or below it. */
-const rank = (values: number[], p: number) =>
-  [...values].sort((a, b) => a - b)[Math.ceil(values.length * p) - 1];
 const spread = (values: number[]) => ({
-  median: rank(values, 0.5),
-  p95: rank(values, 0.95),
+  median: percentile(values, 0.5),
+  p95: percentile(values, 0.95),
 });
 
 const f = fixture();
@@ -78,7 +76,7 @@ try {
       phaseMedianMs: Object.fromEntries(
         Object.keys(phases[0]).map((key) => [
           key,
-          rank(
+          percentile(
             phases.map((p) => p[key]),
             0.5,
           ),

@@ -16,7 +16,10 @@ ARTIFACTS = ("dist/main.js", "dist/scratch-worker.js")
 # no unit test can see it: a staged clock records what the pace asks for and
 # returns at once. bench:scratch is the one instrument that measures the rest
 # taken, and it is in this list so the contract fails when the bound is gone.
-CHECKS = ("lint", "typecheck", "test", "build", "check:compiled", "bench:scratch")
+# smoke takes one sample with the bundle build just wrote. A build that
+# drops the process worker passes every check before it and fails only when
+# a sample starts that thread.
+CHECKS = ("lint", "typecheck", "test", "build", "check:compiled", "smoke", "bench:scratch")
 
 
 def run_warden_checks() -> None:

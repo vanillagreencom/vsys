@@ -107,7 +107,8 @@ export interface ProcessSource {
 /**
  * Identity-keyed environment caching prevents reuse of a former process's
  * metadata. Counters are compared against the last reading this collector
- * took, so its owner keeps one collector for the life of its settings.
+ * took, so its owner keeps one collector for the life of its collection
+ * settings.
  */
 export class ProcessCollector implements ProcessSource {
   private env = new Map<

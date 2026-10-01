@@ -12,6 +12,7 @@
     "build": "bun build src/main.ts src/collect/process-worker.ts --target=bun --packages=external --outdir=dist && bun build src/collect/scratch-worker.ts --target=bun --packages=external --outdir=dist",
     "compile": "bun build src/main.ts src/collect/process-worker.ts src/collect/scratch-worker.ts --compile --outfile vsys",
     "check:compiled": "bun scripts/check-compiled.ts",
+    "smoke": "bun scripts/sample-check.ts bun dist/main.js",
     "bench": "bun scripts/bench.ts",
     "bench:history": "bun scripts/bench-history.ts",
     "bench:scratch": "bun scripts/bench-scratch.ts"

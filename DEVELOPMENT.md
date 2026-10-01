@@ -11,7 +11,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `src/ui/`: the shell, the seven screens and every word and formatted number on them.
 - `src/runtime.ts`: the sampling scheduler and the settings-change path. `src/main.ts` is the entry point and `src/effect.ts` performs a confirmed lane action.
 - `src/test/`: the temporary-file fixture and the mounted-app harness the suites share.
-- `scripts/`: the CI runner, the standalone binary check and the three benchmarks.
+- `scripts/`: the CI runner, the standalone binary check, the sample check for a built program, and the three benchmarks with the percentile two of them share.
 - `data/`: shipped JSON data that both the dashboard and the warden read.
 - `warden/`: the optional Python agent warden, its launcher scripts, its systemd user-unit templates and its unit tests.
 
@@ -35,11 +35,12 @@ bun src/main.ts --once        # one JSON snapshot, exit 2 on source errors
 bun src/main.ts --once --summary # cheap verdict JSON, exit 2 on source errors
 bun src/main.ts --markdown --once
 bun src/main.ts --config PATH # another TOML settings file
-python3 scripts/ci.py         # install, lint, types, tests, build, compiled binary, scratch bound
+python3 scripts/ci.py         # install, lint, types, tests, build, compiled binary, one sample with the build, scratch bound
 bun test src/                 # the application suites alone
 bun run build                 # dist/main.js, dist/collect/process-worker.js and dist/scratch-worker.js; run main.js with Bun from the project directory
 bun run compile               # the standalone ./vsys binary the release and the vsys-git package ship
 bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh one without PATH
+bun run smoke                 # one --once sample with dist/main.js against a fixture
 ```
 
 `--once` needs no terminal, which is the way to read a snapshot from a script or a test. Interactive mode refuses to start without a TTY and says so.
@@ -56,28 +57,37 @@ bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh 
 
 ## Benchmarks and what they do not prove
 
-`bun run bench` collects a fixture of 50 scopes and 2000 processes 21 times with processes read on their own thread, as the program reads them. It reports the first sample alone, because that sample starts the thread, then the median and 95th percentile of elapsed time and of whole-process processor time for the other 20, the per-phase medians, and whether every sample met the 20 ms elapsed target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
+`bun run bench` collects a fixture of 50 scopes and 2000 processes 21 times with processes read on their own thread, as the program reads them. It reports the first sample alone, because that sample starts the thread, then the median and 95th percentile of elapsed time and of whole-process processor time for the other 20, the per-phase medians, and whether every sample met the 20 ms elapsed target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount. Both benchmarks report nearest-rank percentiles through `scripts/percentile.ts`.
 
-Process collection before and after moving it onto its own thread ([process collection](docs/architecture/processes.md)), measured on 2026-10-01 on cachy, Linux 7.2.8-1-cachyos, 32 logical cores, with other work running. Before is the asynchronous reader on the dashboard's thread; after is the shipped thread. Each fixture figure is the range over three alternating runs of 40 measured samples. Processor time counts every thread of the process, so the thread and the transfer are included.
+Process collection before and after moving it onto its own thread ([process collection](docs/architecture/processes.md)), measured on 2026-10-01 on cachy, Linux 7.2.8-1-cachyos, 32 logical cores, with other work running. Before is the asynchronous reader on the dashboard's thread; after is the shipped thread. Processor time counts every thread of the process, so the thread and the transfer are included. Percentiles are nearest-rank.
 
-| Measurement | Before | After |
-| --- | --- | --- |
-| Fixture complete sample, median processor time | 40.7 to 41.5 ms | 27.0 to 28.4 ms |
-| Fixture complete sample, 95th percentile processor time | 60.0 to 62.8 ms | 48.8 to 51.3 ms |
-| Fixture complete sample, median elapsed time | 17.6 to 18.3 ms | 23.0 to 23.8 ms |
-| Fixture complete sample, 95th percentile elapsed time | 21.8 to 23.7 ms | 26.5 to 31.2 ms |
-| Fixture samples under the 20 ms target | 32 to 35 of 40 | 0 of 40 |
-| Input event delay while sampling, median | 0.29 to 0.32 ms | 0.010 to 0.012 ms |
-| Input event delay while sampling, 95th percentile | 4.2 to 4.5 ms | 3.3 to 3.8 ms |
-| Input event delay while sampling, slowest | 5.6 to 11.8 ms | 5.0 to 7.0 ms |
-| Live `/proc` process collection, median processor time | 26.6 and 29.5 ms | 19.7 and 22.1 ms |
-| Live `/proc` process collection, 95th percentile processor time | 33.5 and 39.0 ms | 27.1 and 28.0 ms |
-| Live `/proc` process collection, median elapsed time | 13.3 and 15.4 ms | 17.2 and 20.0 ms |
-| `--once --summary` on the fixture, median wall time | 172.8 ms | 185.8 ms |
-| `--once --summary` on the fixture, median processor time | 154.1 ms | 129.8 ms |
+Only the `bun run bench` row is reproducible from the repository. The other rows come from one-off probes kept out of it, listed in the Source column:
 
-- Input event delay stands in for keyboard response: a second thread posts a timestamp every 2 ms while samples run back to back, and the delay is the time until the dashboard's thread handles it. What remains after the change is the cgroup tree, the model and the reply parse, which still run on the dashboard's thread.
-- The live rows are two alternating runs of 30 readings over 1010 to 1042 processes. They read process collection alone with no watched groups and with agent and build classification emptied, so every read stays inside `/proc`.
+- Fixture probe: the `bun run bench` fixture, before and after alternating, three runs of 40 measured samples each after two discarded ones. Ranges span the three runs.
+- Input probe: the fixture probe with a second thread posting a timestamp every 2 ms while samples run back to back. The delay is the time until the dashboard's thread handles the event, a stand-in for keyboard response.
+- Live probe: process collection alone over the live `/proc`, before and after alternating, two runs of 30 readings over 1010 to 1042 processes, with no watched groups and with agent and build classification emptied, so every read stays inside `/proc`.
+- One-shot probe: `src/main.ts --once --summary` against the fixture, before and after alternating, 10 measured runs each.
+
+| Measurement | Before | After | Source |
+| --- | --- | --- | --- |
+| Fixture sample, median processor time | 40.7 to 41.5 ms | 27.0 to 28.4 ms | Fixture probe |
+| Fixture sample, 95th percentile processor time | 60.0 to 62.8 ms | 48.8 to 51.3 ms | Fixture probe |
+| Fixture sample, median elapsed time | 17.6 to 18.3 ms | 23.0 to 23.8 ms | Fixture probe |
+| Fixture sample, 95th percentile elapsed time | 21.8 to 23.7 ms | 26.5 to 31.2 ms | Fixture probe |
+| Fixture samples under the 20 ms target | 32 to 35 of 40 | 0 of 40 | Fixture probe |
+| Resident memory after 42 samples and a full collection | 97.8 to 100.7 MiB | 107.7 to 108.8 MiB | Fixture probe |
+| Input event delay, median | 0.29 to 0.32 ms | 0.010 to 0.012 ms | Input probe |
+| Input event delay, 95th percentile | 4.2 to 4.5 ms | 3.3 to 3.8 ms | Input probe |
+| Input event delay, slowest | 5.6 to 11.8 ms | 5.0 to 7.0 ms | Input probe |
+| Live `/proc` process collection, median processor time | 26.6 and 29.5 ms | 19.7 and 22.1 ms | Live probe |
+| Live `/proc` process collection, 95th percentile processor time | 33.5 and 39.0 ms | 27.1 and 28.0 ms | Live probe |
+| Live `/proc` process collection, median elapsed time | 13.3 and 15.4 ms | 17.2 and 20.0 ms | Live probe |
+| `--once --summary`, median wall time | 172.8 ms | 185.8 ms | One-shot probe |
+| `--once --summary`, median processor time | 154.1 ms | 129.8 ms | One-shot probe |
+| Fixture, 20 samples: elapsed median and 95th percentile, processor time median and 95th percentile | not measured | 23.7 and 27.3 ms, 28.1 and 38.7 ms | `bun run bench` |
+
+- Every phase except reading processes still runs on the dashboard's thread: mounts, system totals, the cgroup tree, storage, device writes, the build cache and tmux reads, the model and parsing the thread's reply. That is the input delay left after the change.
+- The resident memory rows were taken in separate runs from the processor-time rows, under heavier load, so their processor times are not in the table.
 - The fixture's elapsed time no longer meets the 20 ms target. The thread reads files one after another, while the asynchronous reader overlapped them; the target is reported apart from the processor time it saves.
 
 `bun run bench:scratch` builds a scratch tree and measures three scans of it. Two run on a scan thread, a warm-up discarded before each, and report elapsed time and whole-process processor time for a scan that holds the whole thread and one held to the default share, with the rests the thread reports the second took. The third runs on the caller's thread through the shipped pace, wrapped so every rest the pace asks for is recorded before the timer takes it, and reports the slice it used, the rests it took and their total.

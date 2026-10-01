@@ -236,6 +236,7 @@ test("a new thread for new settings reads under those settings and the old one e
     command: ["/usr/bin/newagent"],
     comm: "newagent",
   });
+  const old = new ProcessThread(f.config, 100, 4096);
   const before = new Collector(
     f.config,
     100,
@@ -243,7 +244,7 @@ test("a new thread for new settings reads under those settings and the old one e
     false,
     undefined,
     undefined,
-    new ProcessThread(f.config, 100, 4096),
+    old,
   );
   expect((await before.sample(1000)).procs[0].tool).toBeNull();
   const next = {
@@ -262,6 +263,9 @@ test("a new thread for new settings reads under those settings and the old one e
     ),
   );
   before.close();
+  expect(() => old.collect(request(2000), live())).toThrow(
+    "Process thread has closed",
+  );
   expect((await after.sample(2000)).procs[0].tool).toBe("newagent");
 });
 
@@ -397,6 +401,48 @@ test("cancelling and closing end the thread, and a late reply publishes nothing"
     "Process thread has closed",
   );
   expect(ports.length).toBe(2);
+});
+
+test("a late error or exit from a thread already replaced leaves the thread now running alone", async () => {
+  const rows: [string, (port: FakePort) => void][] = [
+    ["exit", (port) => port.exit()],
+    ["error", (port) => port.fail("late")],
+  ];
+  for (const [name, late] of rows) {
+    const { ports, thread } = fakes();
+    const first = thread.collect(request(1000), live());
+    const [ended] = ports;
+    ended.fail("ended");
+    await expect(first, name).rejects.toThrow("Process thread failed: ended");
+    const second = thread.collect(request(2000), live());
+    const running = ports[1];
+    late(ended);
+    expect(running.calls, name).not.toContain("terminate");
+    running.reply({ kind: "collected", id: running.lastId(), reading });
+    expect(await second, name).toEqual(reading);
+  }
+});
+
+test("every ending releases the thread before ending it, so a blocked read never holds the program", async () => {
+  // How each path ends the thread waiting on a request.
+  const rows: [
+    string,
+    (port: FakePort, cancel: AbortController, thread: ProcessThread) => void,
+  ][] = [
+    ["abort", (_port, cancel) => cancel.abort(new Error("cancelled"))],
+    ["error", (port) => port.fail("boom")],
+    ["exit", (port) => port.exit()],
+    ["close", (_port, _cancel, thread) => thread.close()],
+  ];
+  for (const [name, end] of rows) {
+    const { ports, thread } = fakes();
+    const cancel = new AbortController();
+    const answer = thread.collect(request(1000), cancel.signal);
+    const [port] = ports;
+    end(port, cancel, thread);
+    await expect(answer, name).rejects.toThrow();
+    expect(port.calls, name).toEqual(["ref", "unref", "terminate"]);
+  }
 });
 
 test("a second request while one is in flight is refused rather than orphaning the first", async () => {

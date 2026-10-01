@@ -1,1 +1,1 @@
-- The dashboard reads processes on a thread of its own. Process collection uses a quarter to a third less processor time, and a keystroke no longer waits for the process table.
+- The dashboard reads processes on a thread of its own. Process collection uses a quarter to a third less processor time, and a keystroke no longer waits while `/proc` is read.
