@@ -404,35 +404,38 @@ test("two lanes sharing a display name keep separate identities", () => {
   expect(stopped.map((e) => e.subject)).toEqual(named);
 });
 
-test("host CPU pressure keys its alert on the busiest lane, not its display name", () => {
-  const log = started();
-  // Two lanes whose main PID could not be read show one name.
-  const twins = (time: number, busy: string) => {
-    const s = emptySnapshot(time);
-    s.system.pressure = { cpu: { some: c.pressureRed + 1, full: 0, total: 0 } };
-    s.lanes = ["a.scope", "b.scope"].map((id) =>
-      laneSnapshot({
-        id,
-        name: "kendex",
-        mainPid: 0,
-        cpu: id === busy ? 90 : 10,
-      }),
-    );
-    return s;
-  };
-  const cpu = (events: ReturnType<EventLog["advance"]>) =>
-    events
-      .filter((e) => e.cause === "system-cpu" && e.kind.startsWith("alert-"))
-      .map((e) => [e.kind, e.subjectId, e.subject]);
-  expect(cpu(log.advance(twins(2000, "a.scope"), c))).toEqual([
-    ["alert-open", "a.scope", "kendex"],
-  ]);
-  // The busiest lane changes to its namesake: a second watch, and the first
-  // one's duration does not carry over to it.
-  expect(cpu(log.advance(twins(3000, "b.scope"), c))).toEqual([
-    ["alert-open", "b.scope", "kendex"],
-    ["alert-close", "a.scope", "kendex"],
-  ]);
+test("host CPU pressure is one host alert while the busiest lane changes", () => {
+  const held = defaults();
+  // The busiest lane must change inside the hold, or this proves nothing.
+  expect(held.pressureHoldSeconds * 1000).toBeGreaterThan(held.refreshMs);
+  // Namesakes whose main PID could not be read, and two lanes told apart by
+  // their PID. Neither the shared name nor the lane id decides the alert.
+  for (const pids of [
+    [0, 0],
+    [4071, 9152],
+  ]) {
+    const log = new EventLog();
+    const alerts: [string, string][] = [];
+    for (let i = 0; i < 60; i++) {
+      const s = emptySnapshot(1000 + i * held.refreshMs);
+      s.system.pressure = {
+        cpu: { some: held.pressureRed + 1, full: 0, total: 0 },
+      };
+      // No lane stalls on CPU, and the two trade the busiest spot each sample.
+      s.lanes = ["a.scope", "b.scope"].map((id, n) =>
+        laneSnapshot({
+          id,
+          name: "kendex",
+          mainPid: pids[n],
+          cpu: n === i % 2 ? 90 : 89,
+        }),
+      );
+      for (const e of log.advance(s, held))
+        if (e.cause === "system-cpu" && e.kind.startsWith("alert-"))
+          alerts.push([e.kind, e.subjectId]);
+    }
+    expect(alerts).toEqual([["alert-open", ""]]);
+  }
 });
 
 test("memory reclaim alerts one per stalled lane, not one for the scope it points at", () => {

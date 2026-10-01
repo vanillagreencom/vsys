@@ -4,7 +4,6 @@ import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
 import {
   type Cause,
-  type CauseAt,
   type CauseId,
   causeEvidence,
   causeRank,
@@ -133,39 +132,17 @@ export function subjects(cause: Cause, s: Snapshot): Subject[] {
   // This changes what the one subject is, never how many there are. `at` is
   // not a subject and is not added to `named`: a cause with no lanes and no
   // groups already produced exactly one row here, and it still does.
-  const at = pointedAt(cause.at, s);
-  if (at) return [at];
-  // Nothing to point at either. The consumer is a display name, which two
-  // lanes can share, so it names the subject and never identifies it.
+  const at = cause.at;
+  const scope =
+    at?.kind === "group" ? s.groups.find((g) => g.path === at.path) : undefined;
+  if (scope)
+    return [{ id: scope.path, name: consumerName(scope, s), unit: scope.name }];
+  // Nothing to point at either, so the subject is the host. The consumer is
+  // only what the open reads as its name: it is a display name two lanes can
+  // share, and the busiest lane changes from sample to sample, so letting it
+  // decide the identity would merge namesakes and delete a pending watch each
+  // time the busiest lane changed.
   return [{ id: "", name: cause.consumer }];
-}
-/** The row a cause points at, as a subject, when the sample still holds it. */
-function pointedAt(at: CauseAt | undefined, s: Snapshot): Subject | undefined {
-  if (!at) return undefined;
-  switch (at.kind) {
-    case "lane": {
-      const lane = s.lanes.find((l) => l.id === at.id);
-      return lane && { id: lane.id, name: laneText(lane) };
-    }
-    case "group": {
-      const scope = s.groups.find((g) => g.path === at.path);
-      return (
-        scope && {
-          id: scope.path,
-          name: consumerName(scope, s),
-          unit: scope.name,
-        }
-      );
-    }
-    case "path":
-      return { id: at.path, name: at.path };
-    default: {
-      const unhandled: never = at;
-      throw new Error(
-        `A cause points at an unknown kind of row: ${JSON.stringify(unhandled)}`,
-      );
-    }
-  }
 }
 /**
  * Events come from successive snapshots and from the one cause ladder. An

@@ -9,7 +9,7 @@ One detection produces one cause. The ladder ranks the causes worst first, its f
 - `causes()` is the one detector. Nothing else decides that something is wrong, so an alert is a cause opening rather than a second detection.
 - `causeRank()` reads a fixed table covering every cause, so a new cause cannot be added without a rank, and nothing ranks a cause by its position in a ladder it may no longer appear in.
 - `causeEvidence` is a fixed table covering every cause that says whether its evidence is a level, which must hold before it alerts, or an event, such as a device error counter delta, which alerts on the sample that shows it. The Timeline reads it.
-- A cause's `lanes`, `groups` and `paths` are its subjects, and each becomes its own alert. `at` names where a card should land without claiming that row went wrong, so a cause pointing at a scope does not open an alert for it. Host CPU pressure points at the busiest lane, and the Timeline takes that lane as the identity of an alert that names no lane of its own.
+- A cause's `lanes`, `groups` and `paths` are its subjects, and each becomes its own alert. `at` names where a card should land without claiming that row went wrong, so a cause pointing at a scope does not open an alert for it.
 - `consumerName()` is the one place a cgroup becomes a name a reader reads: the lane name where the group is a lane, otherwise the decoded unit name.
 - `sliceSum()` totals a slice from its root groups, and the ladder, the meters and the history point all read it.
 - `integrities()` in `src/model/integrity.ts` is the one reading of whether a filesystem's data is damaged. Four causes read it, one per non-ok state, and so does Storage, so a card and a line cannot disagree about one filesystem.

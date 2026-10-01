@@ -401,17 +401,12 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       at: holderAt,
       values: { some: memory },
     });
-  if (cpuFired) {
-    // The busiest lane is where to look, not a lane that stalled, so it is
-    // named through `at` rather than added to the subjects.
-    const top = busiest(s.lanes);
+  if (cpuFired)
     add("system-cpu", "warn", {
       lanes: owned("cpu"),
-      at: top ? { kind: "lane", id: top.id } : undefined,
-      consumer: laneOrNone(top),
+      consumer: laneOrNone(busiest(s.lanes)),
       values: { some: cpu },
     });
-  }
   const near = s.groups.filter(
     (g) => g.memory !== null && g.high !== null && g.memory >= g.high * 0.9,
   );
