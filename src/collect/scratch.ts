@@ -7,27 +7,10 @@ import type {
 } from "./scratch-scan";
 import type { CollectionConfig } from "./settings";
 import { workerFile } from "./worker-file";
+import { WorkerHost, type WorkerPort } from "./worker-host";
 
-/** A scan its caller stopped. It is no reading, and it is no failure. */
-export class ScanCancelled extends Error {
-  constructor() {
-    super("Scratch scan cancelled");
-    this.name = "ScanCancelled";
-  }
-}
-
-/**
- * What this host calls on a scan thread, and all of it. A real `Worker`
- * satisfies it, so a test stands up its own and the compiler still checks
- * the fake against every member the host reaches for.
- */
-export interface ScanThread {
-  onmessage: ((event: MessageEvent<ScanReply>) => void) | null;
-  onerror: ((event: ErrorEvent) => void) | null;
-  addEventListener(kind: "close", handler: () => void): void;
-  postMessage(request: ScanRequest): void;
-  terminate(): void;
-}
+/** What this host calls on a scan thread. */
+export type ScanThread = WorkerPort<ScanRequest, ScanReply>;
 
 /**
  * Where a scan runs. The program runs it on a thread of its own; a test
@@ -47,74 +30,23 @@ export interface ScanRunner {
  * The scan thread, started at the first scan and kept: a dashboard scans
  * again every interval, and a thread started per scan pays its startup cost
  * on every one of them. One scan runs at a time, because the collector holds
- * a single job and only starts the next after that job settles.
+ * a single job and only starts the next after that job settles. A scan its
+ * caller abandons ends the thread, which is how a traversal is stopped.
  */
 export class WorkerScan implements ScanRunner {
+  private host: WorkerHost<ScanRequest, ScanReply, PacedScan>;
   /** The program starts a real thread; a test stands up its own. */
   constructor(
-    private start: () => ScanThread = () =>
-      new Worker(workerFile("scratch-worker"), { type: "module" }),
-  ) {}
-  private worker?: ScanThread;
-  private id = 0;
-  private pending?: {
-    id: number;
-    resolve: (paced: PacedScan) => void;
-    reject: (error: unknown) => void;
-  };
-  private closed = false;
-  private thread(): ScanThread {
-    if (this.worker) return this.worker;
-    const worker = this.start();
-    worker.onmessage = (event: MessageEvent<ScanReply>) => {
-      this.receive(event.data);
-    };
-    // A thread that died owes its caller an answer, and the next scan needs a
-    // thread. Leaving the promise open would hold the collector's single job
-    // forever, so scratch would read its last complete data and never refresh.
-    //
-    // Each listener names the thread it was registered on. A thread this host
-    // has already replaced still delivers its last events, and acting on one
-    // would end the thread now running and fail the scan on it.
-    worker.onerror = (event: ErrorEvent) => {
-      if (this.worker === worker)
-        this.fail(new Error(`Scratch scan thread failed: ${event.message}`));
-    };
-    worker.addEventListener("close", () => {
-      if (this.worker === worker)
-        this.fail(new Error("Scratch scan thread exited before it answered"));
+    start: () => ScanThread = () =>
+      new Worker(workerFile("scratch-worker"), {
+        type: "module",
+      }) as Bun.Worker,
+  ) {
+    this.host = new WorkerHost({
+      name: "Scratch scan thread",
+      start,
+      decode: (data) => data,
     });
-    this.worker = worker;
-    return worker;
-  }
-  /** The one teardown: end the thread, then settle whatever was waiting. */
-  private fail(error: Error): void {
-    const pending = this.pending;
-    this.pending = undefined;
-    this.worker?.terminate();
-    this.worker = undefined;
-    pending?.reject(error);
-  }
-  private receive(reply: ScanReply): void {
-    const pending = this.pending;
-    // A reply to a scan the caller already gave up on. Resolving with it
-    // would publish a reading taken under settings that have been replaced.
-    if (!pending || pending.id !== reply.id) return;
-    this.pending = undefined;
-    switch (reply.kind) {
-      case "scan":
-        pending.resolve(reply.paced);
-        return;
-      case "failed":
-        pending.reject(new Error(reply.message));
-        return;
-      default: {
-        const unhandled: never = reply;
-        throw new Error(
-          `Scratch scan thread sent an unknown reply: ${JSON.stringify(unhandled)}`,
-        );
-      }
-    }
   }
   run(
     c: CollectionConfig,
@@ -122,32 +54,13 @@ export class WorkerScan implements ScanRunner {
     budget: ScanBudget,
     signal: AbortSignal,
   ): Promise<PacedScan> {
-    if (this.closed) throw new Error("Scratch scan thread has closed");
-    if (this.pending)
-      throw new Error("Scratch scan thread is already scanning");
-    const id = ++this.id;
-    const worker = this.thread();
-    return new Promise<PacedScan>((resolve, reject) => {
-      this.pending = { id, resolve, reject };
-      // An abandoned scan owes its caller an answer now. Its thread keeps
-      // reading until the caller ends it, and its reply names a scan this
-      // host is no longer waiting for, so nothing publishes it.
-      signal.addEventListener(
-        "abort",
-        () => {
-          if (this.pending?.id !== id) return;
-          this.pending = undefined;
-          reject(new ScanCancelled());
-        },
-        { once: true },
-      );
-      worker.postMessage({ id, config: c, time, budget } satisfies ScanRequest);
-    });
+    return this.host.request(
+      (id) => ({ id, config: c, time, budget }) satisfies ScanRequest,
+      signal,
+    );
   }
   close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.fail(new ScanCancelled());
+    this.host.close();
   }
 }
 

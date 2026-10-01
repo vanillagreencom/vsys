@@ -2,6 +2,7 @@ import { lstatSync, readdirSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { Scratch, SourceError } from "../model/types";
 import type { CollectionConfig } from "./settings";
+import type { WorkerReply } from "./worker-host";
 
 export interface ScratchScan {
   scratch: Scratch[];
@@ -201,6 +202,4 @@ export interface ScanRequest {
 }
 
 /** What the scan worker answers, always naming the scan it answers for. */
-export type ScanReply =
-  | { kind: "scan"; id: number; paced: PacedScan }
-  | { kind: "failed"; id: number; message: string };
+export type ScanReply = WorkerReply<PacedScan>;

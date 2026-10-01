@@ -25,9 +25,9 @@ self.onmessage = (event: MessageEvent<ProcessMessage>) => {
         if (!collector)
           throw new Error("Process thread was asked to read before its setup");
         reply = {
-          kind: "collected",
+          kind: "answer",
           id: message.id,
-          reading: collector.read(message.request),
+          value: collector.read(message.request),
         };
       } catch (error) {
         reply = {

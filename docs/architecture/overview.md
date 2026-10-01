@@ -66,7 +66,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 ## Topics
 
 - [lanes.md](lanes.md): read when changing how a lane is found, named, or traced back to its launcher.
-- [processes.md](processes.md): read when changing how processes are read, or the thread that reads them.
+- [processes.md](processes.md): read when changing how processes are read, the thread that reads them, or the lifecycle every collection thread shares.
 - [verdict.md](verdict.md): read when changing what counts as a problem, how problems rank, or the summary JSON.
 - [builds.md](builds.md): read when changing how compile and link work, the build cache or the token pools are counted.
 - [storage.md](storage.md): read when changing filesystem, device, drive or scratch collection.
