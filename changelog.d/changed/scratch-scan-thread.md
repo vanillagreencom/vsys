@@ -1,0 +1,1 @@
+- Scratch measurement runs on a thread of its own and holds no more than the share of a processor core the new Scratch scan share setting allows. Readings arrive a little less often.

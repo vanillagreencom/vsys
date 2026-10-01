@@ -60,6 +60,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [D004](../decisions/D004-warden-separate-component.md): the warden ships as a separate optional component, so the dashboard observes while the warden corrects.
 - [D005](../decisions/D005-shared-agent-tool-data.md): the dashboard and the warden read the shipped agent-tool classification data instead of copying lists.
 - [D006](../decisions/D006-settings-save-writes-only-changed-keys.md): Settings saves only changed keys, and agent-tool edits go to the shared overlay.
+- [D007](../decisions/D007-scratch-scan-duty.md): scratch traversal runs on its own thread under a duty cycle, rather than keeping a filesystem index.
 
 ## Topics
 
