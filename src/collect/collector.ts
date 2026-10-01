@@ -8,7 +8,8 @@ import { type Outcome, probeCapabilities, probeTmux } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
 import { kernelCgroupRoot, readMounts } from "./mounts";
-import { ProcessCollector } from "./procs";
+import { ProcessThread } from "./process-thread";
+import { ProcessCollector, type ProcessSource } from "./procs";
 import { SccacheCollector } from "./sccache";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
@@ -38,7 +39,7 @@ export class Collector {
   private previous?: Snapshot;
   private storage = new StorageCollector();
   private engine = new AlertEngine();
-  private processes: ProcessCollector;
+  private processes: ProcessSource;
   private controller = new AbortController();
   /**
    * Probed once: a kernel interface does not appear or vanish between ticks.
@@ -60,8 +61,14 @@ export class Collector {
     readonly sccache?: SccacheCollector,
     /** Absent unless a caller supplies one, so no test spawns tmux. */
     private tmux?: TmuxReader,
+    /**
+     * The program reads processes on a thread of its own; a collector given
+     * none reads them in its caller's thread, with the same code.
+     */
+    processes?: ProcessSource,
   ) {
-    this.processes = new ProcessCollector(ticksPerSecond, pageSize);
+    this.processes =
+      processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
     this.capabilities = probeCapabilities(
       config,
       tmux?.probe ?? (() => noTmux),
@@ -85,6 +92,7 @@ export class Collector {
   }
   close(): void {
     this.controller.abort();
+    this.processes.close();
     this.storage.close();
   }
   async sample(
@@ -128,15 +136,16 @@ export class Collector {
       for (const group of groups)
         group.kernelPath = join(kernelRoot, group.path);
     mark("cgroups");
-    const procs = await this.processes.collect(
-      r,
-      c,
-      groups,
-      this.previous?.procs ?? [],
-      elapsed,
-      system.uptime,
+    const processes = await this.processes.collect(
+      {
+        time,
+        uptime: system.uptime,
+        groups: groups.map((g) => ({ pids: g.pids, kernelPath: g.kernelPath })),
+      },
       this.controller.signal,
     );
+    const procs = processes.procs;
+    r.errors.push(...processes.errors);
     mark("processes");
     const storage = await this.storage.collect(
       r,
@@ -239,8 +248,13 @@ export async function createCollector(
   const sccache = previous?.sccache ?? new SccacheCollector();
   // The program reads the real tmux server; a collector built any other way
   // reads none, which is what keeps tmux out of the test suite.
-  return new Collector(c, ticks, pages, live, sccache, {
-    probe: probeTmux,
-    panes: readPanes,
-  });
+  return new Collector(
+    c,
+    ticks,
+    pages,
+    live,
+    sccache,
+    { probe: probeTmux, panes: readPanes },
+    new ProcessThread(c, ticks, pages),
+  );
 }

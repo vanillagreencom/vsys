@@ -11,7 +11,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `src/ui/`: the shell, the seven screens and every word and formatted number on them.
 - `src/runtime.ts`: the sampling scheduler and the settings-change path. `src/main.ts` is the entry point and `src/effect.ts` performs a confirmed lane action.
 - `src/test/`: the temporary-file fixture and the mounted-app harness the suites share.
-- `scripts/`: the CI runner, the standalone binary check and the three benchmarks.
+- `scripts/`: the CI runner, the standalone binary check, the sample check for a built program, and the three benchmarks with the percentile two of them share.
 - `data/`: shipped JSON data that both the dashboard and the warden read.
 - `warden/`: the optional Python agent warden, its launcher scripts, its systemd user-unit templates and its unit tests.
 
@@ -22,7 +22,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `.github/workflows/ci.yml` ends in a job named `CI`. It fails when any job it lists in `needs` does not succeed, and it is the aggregate the main ruleset is to require in place of the per-job checks. Its "Require every needed job to succeed" step parses the workflow with `yq` and fails when that `needs` list differs from the other jobs in the workflow, so a new job must go into the list.
 - A new setting that collection reads must be added to `collectionKeys` in `src/collect/settings.ts`. Leaving it out compiles only because collection never reads it, and the runtime would then not rebuild the collector when it changes.
 - A display setting or a notification rule must stay out of that list, because rebuilding the collector discards the counters and alert state a sample compares against.
-- Scratch traversal runs in a worker. Bun's bundler does not follow the worker's URL, so every build names `src/collect/scratch-worker.ts` as a second entry point. `bun run build` emits it beside `dist/main.js`. `bun run compile` builds the standalone `vsys` binary and embeds it under `collect/` in the binary's own root; the release workflow and the `vsys-git` package both call that script rather than a command of their own. `src/collect/scratch.ts` resolves whichever of the three spellings is on disk. A build that leaves the worker out still prints snapshots and cannot measure scratch. `scripts/ci.py` fails on a `build` that emits only the entry point, and `bun run check:compiled` compiles a binary through `compile` and fails unless its `--once` measures a scratch root of its own exactly, with no scratch source error. The release runs the same check on the binary it ships.
+- Scratch traversal and process reads each run in a worker, and Bun's bundler does not follow a worker's URL. A new worker goes into the entry list in `scripts/build.ts` and the `ARTIFACTS` in `scripts/ci.py`, or a shipped build cannot start it; [process collection](docs/architecture/processes.md) states the whole chain and the checks that enforce it.
 - The traversal's processor bound lives in a timer on a worker thread, where a unit test stages the clock and no test can see the wait. `bun run bench:scratch` measures it, and the Benchmarks section below says what it proves and what it refuses.
 - Docs change in the same commit as the code they describe. The `doc-drift-check` hook reads the `Covers:` line of each file in `docs/architecture/` and shows a notice when covered code changed without them.
 
@@ -35,18 +35,19 @@ bun src/main.ts --once        # one JSON snapshot, exit 2 on source errors
 bun src/main.ts --once --summary # cheap verdict JSON, exit 2 on source errors
 bun src/main.ts --markdown --once
 bun src/main.ts --config PATH # another TOML settings file
-python3 scripts/ci.py         # install, lint, types, tests, build, compiled binary, scratch bound
+python3 scripts/ci.py         # install, lint, types, tests, build, a sample with the bundle and a compiled binary, scratch bound
 bun test src/                 # the application suites alone
-bun run build                 # dist/main.js, run it with Bun from the project directory
-bun run compile               # the standalone ./vsys binary
-bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh one without PATH
+bun run build                 # dist/main.js and both workers under dist/collect/; run main.js with Bun from the project directory
+bun run compile               # the standalone ./vsys binary the release and the vsys-git package ship
+bun run smoke                 # one --once fixture sample with dist/main.js, and one with a binary compiled into the fixture
+bun scripts/sample-check.ts PATH # the same sample with a binary already built
 ```
 
 `--once` needs no terminal, which is the way to read a snapshot from a script or a test. Interactive mode refuses to start without a TTY and says so.
 
 ## Tests
 
-- `src/collect/*.test.ts`: collection against temporary procfs, cgroup and storage fixtures. No test spawns tmux or a build cache server, because a collector is only given those readers when the program builds it. `src/collect/scratch-worker.test.ts` starts the real scan thread against a temporary directory, which is what proves the worker file resolves in the source tree, and reads back from its replies that it rested under a duty of 50 and not at 100.
+- `src/collect/*.test.ts`: collection against temporary procfs, cgroup and storage fixtures. No test spawns tmux or a build cache server, because a collector is only given those readers when the program builds it. `src/collect/scratch-worker.test.ts` starts the real scan thread against a temporary directory, which is what proves the worker file resolves in the source tree, and reads back from its replies that it rested under a duty of 50 and not at 100. A collector built in a test reads processes in the test's own thread; `src/collect/process-thread.test.ts` compares the real process thread against that reader and drives each thread failure through a stand-in thread.
 - `src/model/*.test.ts`: lane derivation and naming, the cause ladder and the meters, build classification, the exact command of each lane action, and shell quoting read back through `/bin/sh`.
 - `src/store/*.test.ts`: checkpoint replay, retention, the SQLite schema guard, the load-path migration and the timeline event derivation.
 - `src/ui/*.test.tsx`: the mounted shell through OpenTUI's terminal test renderer. These drive the real screens from the keyboard and the mouse and read the rendered frame back.
@@ -56,7 +57,38 @@ bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh 
 
 ## Benchmarks and what they do not prove
 
-`bun run bench` collects a fixture of 50 scopes and 2000 processes six times, discards the first, and reports the per-sample and per-phase timings against a 20 ms target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
+`bun run bench` collects a fixture of 50 scopes and 2000 processes 21 times with processes read on their own thread, as the program reads them. It reports the first sample alone, because that sample starts the thread, then the median and 95th percentile of elapsed time and of whole-process processor time for the other 20, the per-phase medians, and whether every sample met the 20 ms elapsed target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount. Both benchmarks report nearest-rank percentiles through `scripts/percentile.ts`.
+
+Process collection before and after moving it onto its own thread ([process collection](docs/architecture/processes.md)), measured on 2026-10-01 on cachy, Linux 7.2.8-1-cachyos, 32 logical cores, with other work running. Before is the asynchronous reader on the dashboard's thread; after is the shipped thread. Processor time counts every thread of the process, so the thread and the transfer are included. Percentiles are nearest-rank.
+
+Only the `bun run bench` row is reproducible from the repository. The other rows come from one-off probes kept out of it, listed in the Source column:
+
+- Fixture probe: the `bun run bench` fixture, before and after alternating, three runs of 40 measured samples each after two discarded ones. Ranges span the three runs.
+- Input probe: the fixture probe with a second thread posting a timestamp every 2 ms while samples run back to back. The delay is the time until the dashboard's thread handles the event, a stand-in for keyboard response.
+- Live probe: process collection alone over the live `/proc`, before and after alternating, two runs of 30 readings over 1010 to 1042 processes, with no watched groups and with agent and build classification emptied, so every read stays inside `/proc`.
+- One-shot probe: `src/main.ts --once --summary` against the fixture, before and after alternating, 10 measured runs each.
+
+| Measurement | Before | After | Source |
+| --- | --- | --- | --- |
+| Fixture sample, median processor time | 40.7 to 41.5 ms | 27.0 to 28.4 ms | Fixture probe |
+| Fixture sample, 95th percentile processor time | 60.0 to 62.8 ms | 48.8 to 51.3 ms | Fixture probe |
+| Fixture sample, median elapsed time | 17.6 to 18.3 ms | 23.0 to 23.8 ms | Fixture probe |
+| Fixture sample, 95th percentile elapsed time | 21.8 to 23.7 ms | 26.5 to 31.2 ms | Fixture probe |
+| Fixture samples under the 20 ms target | 32 to 35 of 40 | 0 of 40 | Fixture probe |
+| Resident memory after 42 samples and a full collection | 97.8 to 100.7 MiB | 107.7 to 108.8 MiB | Fixture probe |
+| Input event delay, median | 0.29 to 0.32 ms | 0.010 to 0.012 ms | Input probe |
+| Input event delay, 95th percentile | 4.2 to 4.5 ms | 3.3 to 3.8 ms | Input probe |
+| Input event delay, slowest | 5.6 to 11.8 ms | 5.0 to 7.0 ms | Input probe |
+| Live `/proc` process collection, median processor time | 26.6 and 29.5 ms | 19.7 and 22.1 ms | Live probe |
+| Live `/proc` process collection, 95th percentile processor time | 33.5 and 39.0 ms | 27.1 and 28.0 ms | Live probe |
+| Live `/proc` process collection, median elapsed time | 13.3 and 15.4 ms | 17.2 and 20.0 ms | Live probe |
+| `--once --summary`, median wall time | 172.8 ms | 185.8 ms | One-shot probe |
+| `--once --summary`, median processor time | 154.1 ms | 129.8 ms | One-shot probe |
+| Fixture, 20 samples: elapsed median and 95th percentile, processor time median and 95th percentile | not measured | 23.7 and 27.3 ms, 28.1 and 38.7 ms | `bun run bench` |
+
+- Every phase except reading processes still runs on the dashboard's thread: mounts, system totals, the cgroup tree, storage, device writes, the build cache and tmux reads, the model and parsing the thread's reply. That is the input delay left after the change.
+- The resident memory rows were taken in separate runs from the processor-time rows, under heavier load, so their processor times are not in the table.
+- The fixture's elapsed time no longer meets the 20 ms target. The thread reads files one after another, while the asynchronous reader overlapped them; the target is reported apart from the processor time it saves.
 
 `bun run bench:scratch` builds a scratch tree and measures three scans of it. Two run on a scan thread, a warm-up discarded before each, and report elapsed time and whole-process processor time for a scan that holds the whole thread and one held to the default share, with the rests the thread reports the second took. The third runs on the caller's thread through the shipped pace, wrapped so every rest the pace asks for is recorded before the timer takes it, and reports the slice it used, the rests it took and their total.
 

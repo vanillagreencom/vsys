@@ -9,6 +9,7 @@
 | 2026-09-28 | D005 | VSY-51 | Use shared agent tool data | Prevents copied classification lists | Packaging generates richer data | Active | [Full](D005-shared-agent-tool-data.md) |
 | 2026-09-29 | D006 | VSY-57 | Save only changed Settings keys | Prevents derived defaults from becoming pins | Shared schema can record removals | Active | [Full](D006-settings-save-writes-only-changed-keys.md) |
 | 2026-09-15 | D007 | VSY-45 | Bound scratch traversal with a duty cycle on its own thread | Resting a worker thread bounds the cost a large root can demand | A root outgrows what a bounded traversal can finish in time | Active | [Full](D007-scratch-scan-duty.md) |
+| 2026-10-01 | D008 | VSY-46 | Read processes on a persistent thread, one file at a time | Less processor time, and no keystroke waits on /proc reads | The 20 ms elapsed fixture target becomes a requirement again | Active | [Full](D008-process-reads-on-their-own-thread.md) |
 
 ---
 

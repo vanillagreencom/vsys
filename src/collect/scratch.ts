@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type {
   PacedScan,
   ScanBudget,
@@ -8,6 +6,7 @@ import type {
   ScratchScan,
 } from "./scratch-scan";
 import type { CollectionConfig } from "./settings";
+import { workerFile } from "./worker-file";
 
 /** A scan its caller stopped. It is no reading, and it is no failure. */
 export class ScanCancelled extends Error {
@@ -15,30 +14,6 @@ export class ScanCancelled extends Error {
     super("Scratch scan cancelled");
     this.name = "ScanCancelled";
   }
-}
-
-/**
- * The scan thread's own file: the source module beside this one, the built
- * one beside the `build` bundle, or the one `compile` embeds in the
- * standalone binary. Bun's bundler does not follow a worker URL, so both
- * emit the worker as a second entry point and this picks whichever spelling
- * is on disk. The binary keeps the worker at its path under `src/` and places
- * this module at the binary's own name in that root, so there the worker sits
- * under `./collect/`. None present is a broken install, and it says so rather
- * than leaving scratch quietly unmeasured.
- */
-function workerFile(): URL {
-  const candidates = [
-    "./scratch-worker.ts",
-    "./scratch-worker.js",
-    "./collect/scratch-worker.js",
-  ].map((name) => new URL(name, import.meta.url));
-  const found = candidates.find((url) => existsSync(fileURLToPath(url)));
-  if (found === undefined)
-    throw new Error(
-      `No scratch scan worker beside ${fileURLToPath(import.meta.url)}`,
-    );
-  return found;
 }
 
 /**
@@ -78,7 +53,7 @@ export class WorkerScan implements ScanRunner {
   /** The program starts a real thread; a test stands up its own. */
   constructor(
     private start: () => ScanThread = () =>
-      new Worker(workerFile(), { type: "module" }),
+      new Worker(workerFile("scratch-worker"), { type: "module" }),
   ) {}
   private worker?: ScanThread;
   private id = 0;

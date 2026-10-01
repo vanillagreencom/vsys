@@ -1,6 +1,6 @@
 # History store
 
-Covers: src/store/archive.ts src/store/history.ts src/store/migrate.ts src/store/point.ts src/store/lane-series.ts src/store/archive.test.ts scripts/bench-history.ts
+Covers: src/store/archive.ts src/store/history.ts src/store/migrate.ts src/store/point.ts src/store/lane-series.ts src/store/archive.test.ts scripts/bench-history.ts scripts/percentile.ts
 
 The store keeps complete snapshots for replay and one point per sample for the charts. It owns application persistence; the collector does not depend on SQLite.
 
@@ -35,4 +35,4 @@ The store keeps complete snapshots for replay and one point per sample for the c
 
 ## Limits of the checks
 
-`bun run bench:history` fills the configured history window with counters that move by a different amount per row at every sample, compares selected replayed snapshots against their originals, and reports the median, 95th percentile and slowest append for both `History.add` and `Archive.add`. Its generated workload does not establish a memory bound for every possible command line or process mix, and its timings come from one machine under whatever else it was running.
+`bun run bench:history` fills the configured history window with counters that move by a different amount per row at every sample, compares selected replayed snapshots against their originals, and reports the median, 95th percentile and slowest append for both `History.add` and `Archive.add`, as nearest-rank percentiles from `scripts/percentile.ts`, the rule `bun run bench` also uses. Its generated workload does not establish a memory bound for every possible command line or process mix, and its timings come from one machine under whatever else it was running.

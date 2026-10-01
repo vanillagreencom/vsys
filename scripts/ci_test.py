@@ -15,7 +15,7 @@ sys.path.insert(0, str(CI.parent))
 # would pass while the two drifted apart.
 from ci import ARTIFACTS, CHECKS  # noqa: E402
 
-emits = " ".join(name.split("/")[-1] for name in ARTIFACTS)
+emits = " ".join(ARTIFACTS)
 
 
 class ApplicationChecks(unittest.TestCase):
@@ -33,8 +33,8 @@ class ApplicationChecks(unittest.TestCase):
             'if [ "$*" = "${CI_FAIL_COMMAND:-}" ]; then exit 23; fi\n'
             'if [ "$*" = "run build" ]; then\n'
             '  mkdir -p dist\n'
-            '  for name in ${CI_BUILD_EMITS}; do printf x > "dist/$name"; done\n'
-            '  for name in ${CI_BUILD_EMPTY:-}; do : > "dist/$name"; done\n'
+            '  for name in ${CI_BUILD_EMITS}; do mkdir -p "${name%/*}"; printf x > "$name"; done\n'
+            '  for name in ${CI_BUILD_EMPTY:-}; do mkdir -p "${name%/*}"; : > "$name"; done\n'
             "fi\n"
         )
         binary.chmod(0o755)
@@ -104,9 +104,16 @@ class ApplicationChecks(unittest.TestCase):
         # gates unmeasured with the rest of the suite green.
         self.assertEqual(
             CHECKS,
-            ("lint", "typecheck", "test", "build", "check:compiled", "bench:scratch"),
+            ("lint", "typecheck", "test", "build", "smoke", "bench:scratch"),
         )
-        self.assertEqual(ARTIFACTS, ("dist/main.js", "dist/scratch-worker.js"))
+        self.assertEqual(
+            ARTIFACTS,
+            (
+                "dist/main.js",
+                "dist/collect/process-worker.js",
+                "dist/collect/scratch-worker.js",
+            ),
+        )
 
     def test_missing_or_empty_script_fails(self):
         for check in CHECKS:
@@ -200,16 +207,16 @@ class ApplicationChecks(unittest.TestCase):
         self.assertFalse(self.commands.exists())
 
     def test_build_missing_an_entry_point_fails(self):
-        # The scratch scan thread is a build output of its own. A build that
-        # emits only the bundle passes every command it runs.
-        for emitted in (name.split("/")[-1] for name in ARTIFACTS):
+        # Each worker thread is a build output of its own. A build that emits
+        # only the bundle passes every command it runs.
+        for emitted in ARTIFACTS:
             with self.subTest(emitted=emitted):
                 self.package()
                 self.env["CI_BUILD_EMITS"] = emitted
                 result = self.run_ci()
                 self.assertNotEqual(result.returncode, 0)
                 missing = next(
-                    name for name in ARTIFACTS if not name.endswith("/" + emitted)
+                    name for name in ARTIFACTS if name != emitted
                 )
                 self.assertIn(f"The build emitted no {missing}", result.stderr)
                 self.commands.unlink()
@@ -221,7 +228,7 @@ class ApplicationChecks(unittest.TestCase):
         for name in ARTIFACTS:
             with self.subTest(name=name):
                 self.package()
-                self.env["CI_BUILD_EMPTY"] = name.split("/")[-1]
+                self.env["CI_BUILD_EMPTY"] = name
                 result = self.run_ci()
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f"The build emitted no {name}", result.stderr)
