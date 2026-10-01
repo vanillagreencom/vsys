@@ -328,7 +328,11 @@ export function Agent({
         }
       })
       .catch((error) => {
+        // A read that could not be taken leaves no series: the one loaded for
+        // an earlier sample is not this window, and drawn against this one
+        // its newest columns would read as sampled and empty.
         if (current) {
+          setLoaded(null);
           setSeriesError(String(error));
           setLoading(false);
         }
@@ -468,37 +472,43 @@ export function Agent({
         {loading && !samples.length && (
           <Line attributes={ui.dim}>Loading history</Line>
         )}
-        <Chart
-          title={`CPU · ${spanLabel(cpuPeaks, windowMs)}`}
-          values={cpuPeaks}
-          height={3}
-          max={cpuTop}
-          top={percent(cpuTop)}
-          color={metric.cpu}
-        />
-        <Chart
-          title="Memory"
-          values={rssPeaks}
-          height={3}
-          max={rssTop}
-          top={bytes(rssTop, c)}
-          color={metric.memory}
-        />
-        {(
-          [
-            ["CPU wait", "pressure", metric.cpu],
-            ["Memory wait", "memoryPressure", metric.memory],
-            ["Disk wait", "ioPressure", metric.disk],
-          ] as const
-        ).map(([label, key, color]) => (
-          <Line key={key} height={1} flexShrink={0} truncate>
-            <span attributes={ui.dim}>{fit(label, gutter)}</span>
-            <Sparkline
-              marks={sparkline(peaks(key), chartWidth, c.sparkline)}
-              color={color}
+        {/* With the read failed there is no series, and a chart of none
+            would draw the window as sampled and empty. */}
+        {!seriesError && (
+          <>
+            <Chart
+              title={`CPU · ${spanLabel(cpuPeaks, windowMs)}`}
+              values={cpuPeaks}
+              height={3}
+              max={cpuTop}
+              top={percent(cpuTop)}
+              color={metric.cpu}
             />
-          </Line>
-        ))}
+            <Chart
+              title="Memory"
+              values={rssPeaks}
+              height={3}
+              max={rssTop}
+              top={bytes(rssTop, c)}
+              color={metric.memory}
+            />
+            {(
+              [
+                ["CPU wait", "pressure", metric.cpu],
+                ["Memory wait", "memoryPressure", metric.memory],
+                ["Disk wait", "ioPressure", metric.disk],
+              ] as const
+            ).map(([label, key, color]) => (
+              <Line key={key} height={1} flexShrink={0} truncate>
+                <span attributes={ui.dim}>{fit(label, gutter)}</span>
+                <Sparkline
+                  marks={sparkline(peaks(key), chartWidth, c.sparkline)}
+                  color={color}
+                />
+              </Line>
+            ))}
+          </>
+        )}
         <Section title="Details" width={width - 4} />
         {rows.map((row, i) =>
           row.kind === "terminal" ? (

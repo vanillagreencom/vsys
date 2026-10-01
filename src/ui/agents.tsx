@@ -228,7 +228,7 @@ export function useLaneTrends(
       // A rolled-over bucket and a resized window each make a new answer for
       // every row, so what was asked for under the old question is not what
       // is wanted now. A row keeps drawing its last answer until the new one
-      // lands, and a row no longer on screen is let go.
+      // lands or its read fails, and a row no longer on screen is let go.
       trends.question = { windowMs, at };
       trends.requested.clear();
       trends.failed.clear();
@@ -258,9 +258,11 @@ export function useLaneTrends(
       try {
         series = await history.laneWindows(missing, asked.at, asked.windowMs);
       } catch {
-        // A read that could not be taken is not an empty window. Its rows
-        // stay unread, which draws them blank, and are asked for again on the
-        // next sample. No screen shows the error, so it is not kept.
+        // A read that could not be taken is not an empty window, and the
+        // answer a row carried from the previous bucket is not this window.
+        // Each row it asked for loses that answer and draws blank, as a row
+        // not read yet does, and is asked for again on the next sample. No
+        // screen shows the error, so it is not kept.
         series = null;
       }
       // A read started under the previous question can still be in flight
@@ -275,7 +277,10 @@ export function useLaneTrends(
         const key = `${id}\u0000${asked.windowMs}`;
         const samples = series?.get(id);
         if (samples) loaded.set(key, samples);
-        else kept.failed.set(key, askedOn);
+        else {
+          loaded.delete(key);
+          kept.failed.set(key, askedOn);
+        }
       }
       kept.loaded = loaded;
       if (mounted.current) redraw((n) => n + 1);

@@ -418,7 +418,7 @@ test("the trends already read survive leaving the list and coming back", async (
   }
 });
 
-test("a read that fails leaves its rows unread, and the next sample reads again", async () => {
+test("a read that fails leaves its rows unread, first or after a bucket roll, and the next sample reads again", async () => {
   const c = defaults();
   const s = emptySnapshot();
   s.lanes = [laneSnapshot({ id: "lane-0", name: "lane-0", cpu: 100 })];
@@ -433,7 +433,8 @@ test("a read that fails leaves its rows unread, and the next sample reads again"
     durationMs: number,
   ) => {
     reads++;
-    if (reads === 1) throw new Error("planted read failure");
+    // The first read fails, and so does the read after the bucket rolls.
+    if (reads === 1 || reads === 3) throw new Error("planted read failure");
     return real(ids, end, durationMs);
   };
   const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
@@ -448,6 +449,18 @@ test("a read that fails leaves its rows unread, and the next sample reads again"
     await t.update({ ...s, time: s.time + 1000 });
     await t.update({ ...s, time: s.time + 2000 });
     expect(reads).toBe(2);
+    expect(selectedRow(t.frame())).toContain("···");
+    // The bucket rolls and its read fails. The row read before the roll has
+    // an answer for the previous window, and drawn against this one its
+    // newest columns would say sampled and empty, so it goes blank instead.
+    const rolled = s.time + windows[0] / trendWidth;
+    await t.update({ ...s, time: rolled });
+    await t.ui.renderOnce();
+    expect(reads).toBe(3);
+    expect(selectedRow(t.frame())).not.toContain("···");
+    await t.update({ ...s, time: rolled + 1000 });
+    await t.update({ ...s, time: rolled + 2000 });
+    expect(reads).toBe(4);
     expect(selectedRow(t.frame())).toContain("···");
   } finally {
     await t.close();

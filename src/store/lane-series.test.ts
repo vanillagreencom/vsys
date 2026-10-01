@@ -162,7 +162,7 @@ test("the list and the detail reading one window length share the stored rows", 
   const windowMs = 60000;
   try {
     const first = new History(c);
-    for (let i = 0; i < 130; i++) {
+    for (let i = 0; i < 140; i++) {
       const s = emptySnapshot(now + i * 1000);
       s.lanes = [laneSnapshot({ cpu: i })];
       first.add(s);
@@ -173,24 +173,36 @@ test("the list and the detail reading one window length share the stored rows", 
     try {
       const spy = spyOn(Bun, "gunzipSync");
       const decompressed: number[] = [];
-      let back: LaneSample[] | undefined;
+      const reads: ((number | null)[] | undefined)[] = [];
       try {
-        // The list reads on its quantised end, the detail on the sample time
-        // past the next bucket boundary, and the list again on that boundary.
-        // The last starts two rows before what the detail left held.
-        for (const at of [100000, 107000, 105000]) {
-          back = (await reopened.laneWindows([id], now + at, windowMs)).get(id);
+        // The list reads on its quantised end and the detail on the sample
+        // time, up to one trend bucket later. A visit to the detail, a return
+        // to the list, then a longer visit that lets the oldest rows go, a
+        // return to the list a bucket behind it, and that list read repeated.
+        for (const at of [100000, 107000, 105000, 134000, 130000, 130000]) {
+          const series = await reopened.laneWindows([id], now + at, windowMs);
+          reads.push(series.get(id)?.map((x) => x.cpu));
           decompressed.push(spy.mock.calls.length);
         }
       } finally {
         spy.mockRestore();
       }
-      // Sixty-one rows for the first window, then only the rows each later
-      // read reaches outside what is held: seven after it, two before it.
-      expect(decompressed).toEqual([61, 68, 70]);
-      expect(back?.map((x) => x.cpu)).toEqual(
-        Array.from({ length: 61 }, (_, i) => 45 + i),
-      );
+      // Sixty-one rows for the first window, then only the rows each read
+      // reaches outside what is held: seven after it; none for the list a
+      // bucket behind; twenty-seven after it, where the rows before the window
+      // now outnumber those inside it and are let go; four before it for the
+      // list behind that; and none for the same read again.
+      expect(decompressed).toEqual([61, 68, 68, 95, 99, 99]);
+      const run = (from: number) =>
+        Array.from({ length: 61 }, (_, i) => from + i);
+      expect(reads).toEqual([
+        run(40),
+        run(47),
+        run(45),
+        run(74),
+        run(70),
+        run(70),
+      ]);
     } finally {
       reopened.close();
     }
