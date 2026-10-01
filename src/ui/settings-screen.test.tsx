@@ -173,7 +173,9 @@ test("Settings reports the running program while a past sample is pinned", async
           source: "/proc/pressure/cpu",
           detail: "ENOENT: no such file or directory",
         }
-      : cap,
+      : cap.id === "agent-slice"
+        ? { ...cap, available: false, failure: "absent" as const }
+        : cap,
   );
   const h = new History(c);
   h.add(stored);
@@ -184,6 +186,8 @@ test("Settings reports the running program while a past sample is pinned", async
     await t.press("7");
     // The probe describes the running program, so the row is the live one.
     expect(t.frame()).toContain("every wait reading is blank rather than zero");
+    // The agent slice is read each sample, and its row is the live sample's.
+    expect(t.frame()).toContain("not compared against a shared limit");
   } finally {
     await t.close();
   }

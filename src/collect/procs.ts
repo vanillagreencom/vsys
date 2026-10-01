@@ -5,7 +5,7 @@ import {
   type Stats,
   statSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { scopeMain } from "../model/scopes";
 import type { Group, Proc, SourceError } from "../model/types";
 import { buildKind, excludedArgv, toolName } from "./builds";
@@ -18,6 +18,18 @@ import type { CollectionConfig } from "./settings";
  * collector already takes.
  */
 export const scratchEnv = ["TMPDIR", "CLAUDE_CODE_TMPDIR"] as const;
+/**
+ * Whether a source error left a process out of the reading. `read` records a
+ * process's own directory when it could not read that process, and the process
+ * root when it could not list them; every other process error leaves the
+ * process in the reading with a field unknown.
+ */
+export function omittedProcess(source: string, procRoot: string): boolean {
+  return (
+    source === procRoot ||
+    (dirname(source) === procRoot && /^\d+$/.test(basename(source)))
+  );
+}
 /** stat's command can contain spaces and closing parentheses. */
 export function parseStat(
   raw: string,

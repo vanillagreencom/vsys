@@ -218,8 +218,8 @@ test("a missing agent slice offers one line that limits it, and nothing else doe
     source: "/fixture/agents.slice",
     detail: "",
   });
-  // The limits are the warden template's own, read from it here rather than
-  // restated, so the two routes to a slice give the same slice.
+  // MemoryHigh and MemoryMax are the warden template's own values, read from
+  // it here rather than restated; the line carries no other limit.
   const template = readFileSync(
     new URL("../../warden/systemd/agents.slice", import.meta.url),
     "utf8",

@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Capability, CapabilityId } from "../model/types";
 import { fixture, groupSnapshot } from "../test/fixture";
-import { capabilityReason } from "../ui/settings";
+import { capabilityOffer, capabilityReason } from "../ui/settings";
 import { probeAgentSlice, probeCapabilities, probeTmux } from "./capabilities";
 import { Collector } from "./collector";
 
@@ -206,8 +206,16 @@ test("a tmux with no server running is not a missing tmux", () => {
   expect(probeTmux(["sh", "-c", "exit 0"])).toBeNull();
 });
 
-test("the agent slice is present, absent at the path systemd gives it, or unknown", () => {
-  const nested = "user.slice/agents.slice";
+test("the agent slice is present, defined, absent, or unknown", () => {
+  const nested = "cgroup/user.slice/agents.slice";
+  const gone = (root: string) =>
+    rmSync(join(root, "cgroup/agents.slice"), { recursive: true });
+  // A link to itself fails with an errno whatever user runs the test, so a
+  // path that exists and cannot be told is planted the same way everywhere.
+  const loop = (path: string) => {
+    mkdirSync(join(path, ".."), { recursive: true });
+    symlinkSync(path, path);
+  };
   const rows: {
     name: string;
     slice: string;
@@ -222,16 +230,15 @@ test("the agent slice is present, absent at the path systemd gives it, or unknow
       prepare: () => {},
       groups: [],
       failure: null,
-      source: "agents.slice",
+      source: "cgroup/agents.slice",
     },
     {
-      name: "no slice at all",
+      name: "no group and no unit",
       slice: "agents.slice",
-      prepare: (root) =>
-        rmSync(join(root, "agents.slice"), { recursive: true }),
+      prepare: gone,
       groups: [],
       failure: "absent",
-      source: "agents.slice",
+      source: "cgroup/agents.slice",
     },
     {
       // systemd nests a dashed slice inside the slice its name prefixes.
@@ -240,51 +247,109 @@ test("the agent slice is present, absent at the path systemd gives it, or unknow
       prepare: () => {},
       groups: [],
       failure: "absent",
-      source: "agents.slice/agents-work.slice",
+      source: "cgroup/agents.slice/agents-work.slice",
     },
     {
       // The totals find a slice by name anywhere in the tree, so does this.
       name: "a slice the walk read below another group",
       slice: "agents.slice",
-      prepare: (root) =>
-        rmSync(join(root, "agents.slice"), { recursive: true }),
-      groups: [groupSnapshot({ path: nested, name: "agents.slice" })],
+      prepare: gone,
+      groups: [
+        groupSnapshot({
+          path: "user.slice/agents.slice",
+          name: "agents.slice",
+        }),
+      ],
       failure: null,
       source: nested,
     },
     {
-      // A path that exists and fails is never an absence. A link to itself
-      // fails with an errno whatever user runs the test.
-      name: "a slice path that cannot be read",
+      name: "a group path that cannot be read",
       slice: "agents.slice",
       prepare: (root) => {
-        rmSync(join(root, "agents.slice"), { recursive: true });
-        symlinkSync(join(root, "agents.slice"), join(root, "agents.slice"));
+        gone(root);
+        loop(join(root, "cgroup/agents.slice"));
       },
       groups: [],
       failure: "unreadable",
-      source: "agents.slice",
+      source: "cgroup/agents.slice",
+    },
+    {
+      // systemd starts a slice with no install section only when a unit is
+      // placed in it, so a defined slice has no group until then (D009).
+      name: "a unit file and no group yet",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        mkdirSync(join(root, "user"), { recursive: true });
+        writeFileSync(join(root, "user/agents.slice"), "[Slice]\n");
+      },
+      groups: [],
+      failure: null,
+      source: "user/agents.slice",
+    },
+    {
+      name: "a drop-in directory and no group yet",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        mkdirSync(join(root, "control/agents.slice.d"), { recursive: true });
+      },
+      groups: [],
+      failure: null,
+      source: "control/agents.slice.d",
+    },
+    {
+      name: "a unit path that cannot be read",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        loop(join(root, "control/agents.slice"));
+      },
+      groups: [],
+      failure: "unreadable",
+      source: "control/agents.slice",
+    },
+    {
+      // One directory that cannot be read does not outweigh one that answers.
+      name: "a unit file beside a unit path that cannot be read",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        loop(join(root, "user/agents.slice"));
+        mkdirSync(join(root, "control/agents.slice.d"), { recursive: true });
+      },
+      groups: [],
+      failure: null,
+      source: "control/agents.slice.d",
     },
   ];
   for (const row of rows) {
     const f = setup();
-    row.prepare(f.config.cgroupRoot);
-    const cap = probeAgentSlice(
-      { ...f.config, agentSlice: row.slice },
-      row.groups,
-    );
+    row.prepare(f.root);
+    // The second directory is never created: a missing one is no answer.
+    const units = [
+      join(f.root, "user"),
+      join(f.root, "missing"),
+      join(f.root, "control"),
+    ];
+    const c = { ...f.config, agentSlice: row.slice };
+    const cap = probeAgentSlice(c, row.groups, units);
     expect({
       row: row.name,
       id: cap.id,
       available: cap.available,
       failure: cap.failure,
       source: cap.source,
+      // Only a slice with neither a group nor a unit is offered one.
+      offered: capabilityOffer(cap, c) !== null,
     }).toEqual({
       row: row.name,
       id: "agent-slice",
       available: row.failure === null,
       failure: row.failure,
-      source: join(f.config.cgroupRoot, row.source),
+      source: join(f.root, row.source),
+      offered: row.failure === "absent",
     });
   }
 });

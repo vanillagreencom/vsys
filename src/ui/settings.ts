@@ -305,7 +305,7 @@ const absentReasons: Record<CapabilityId, string> = {
   scrub: "no readable scrub report directory",
   smart: "no readable drive report directory",
   tmux: "no tmux on the path",
-  "agent-slice": "this machine has no agent slice",
+  "agent-slice": "no agent slice is defined or running on this machine",
 };
 /** What a present interface that answered with too little means, per capability. */
 const incompleteReasons: Partial<Record<CapabilityId, string>> = {
@@ -350,8 +350,9 @@ export function capabilityLoss(cap: Capability): string {
 }
 /**
  * A line a reader can copy to supply a missing capability, and what it does.
- * vsys never runs it. The limits are the ones the warden's slice template in
- * `warden/systemd/agents.slice` sets, so either route gives one slice.
+ * vsys never runs it. It carries the MemoryHigh and MemoryMax values of the
+ * warden's slice template in `warden/systemd/agents.slice`, and none of that
+ * template's other limits.
  */
 export function capabilityOffer(
   cap: Capability,

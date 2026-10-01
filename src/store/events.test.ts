@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
-import { type Cause, causes } from "../model/verdict";
+import { type Cause, type CauseId, causes } from "../model/verdict";
 import {
   emptySnapshot,
   everyCauseSnapshot,
@@ -92,23 +92,59 @@ test("a process changing cgroup is one move, and a reused PID is not", () => {
   ).toEqual([]);
 });
 test("an agent leaving the agent slice carries the cause of the move", () => {
-  // Where the probe finds no agent slice, a move is a move and nothing more.
-  for (const [failure, cause] of [
-    [null, "unconfined"],
-    ["absent", ""],
-  ] as const) {
-    const first = emptySnapshot(1000);
-    first.procs = [processSnapshot({ group: "agents.slice/a.scope" })];
-    const log = started(first);
-    const escaped = emptySnapshot(2000);
-    escaped.capabilities = escaped.capabilities.map((cap) =>
+  const probe = (s: Snapshot, failure: "absent" | null) => {
+    s.capabilities = s.capabilities.map((cap) =>
       cap.id === "agent-slice"
         ? { ...cap, available: failure === null, failure }
         : cap,
     );
-    escaped.procs = [processSnapshot({ group: "app.slice/a.scope" })];
-    const move = log.advance(escaped, c).find((e) => e.kind === "cgroup-move");
-    expect({ failure, cause: move?.cause }).toEqual({ failure, cause });
+  };
+  const rows: [
+    string,
+    "absent" | null,
+    "absent" | null,
+    string,
+    string,
+    CauseId | "",
+  ][] = [
+    [
+      "left the slice",
+      null,
+      null,
+      "agents.slice/a.scope",
+      "app.slice/a.scope",
+      "unconfined",
+    ],
+    // Where the probe finds no agent slice, a move is a move and nothing more.
+    [
+      "no slice",
+      null,
+      "absent",
+      "agents.slice/a.scope",
+      "app.slice/a.scope",
+      "",
+    ],
+    // Both ends are judged against the later sample's probe: a slice that
+    // appears between the two samples is not a move out of it.
+    [
+      "slice appeared",
+      "absent",
+      null,
+      "app.slice/a.scope",
+      "background.slice/a.scope",
+      "",
+    ],
+  ];
+  for (const [name, before, after, from, to, cause] of rows) {
+    const first = emptySnapshot(1000);
+    probe(first, before);
+    first.procs = [processSnapshot({ group: from })];
+    const log = started(first);
+    const moved = emptySnapshot(2000);
+    probe(moved, after);
+    moved.procs = [processSnapshot({ group: to })];
+    const move = log.advance(moved, c).find((e) => e.kind === "cgroup-move");
+    expect({ name, cause: move?.cause }).toEqual({ name, cause });
   }
 });
 test("an alert closes with the time it stayed open", () => {

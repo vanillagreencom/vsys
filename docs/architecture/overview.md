@@ -36,7 +36,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 
 ## Boundaries
 
-- `src/collect/`: reads source files and takes `CollectionConfig`. It never imports the UI and never writes kernel state. Enforced by the type in `src/collect/settings.ts`, which is the only declaration of what collection may read. The program reads processes on a thread of its own, which the collector owns and the runtime never schedules.
+- `src/collect/`: reads source files and takes `CollectionConfig`. It never imports the UI and never writes kernel state. Enforced by the type in `src/collect/settings.ts`, which is the only declaration of what collection may read. The one read outside it is whether the agent slice's systemd unit file or drop-in directory exists in the standard unit directories, which the program hands the collector ([D009](../decisions/D009-agent-slice-unit-file.md)). `src/collect/capabilities.test.ts` checks it, and a collector given no directories reads none, so no test reads the host's configuration. The program reads processes on a thread of its own, which the collector owns and the runtime never schedules.
 - `src/model/`: derives lanes, the cause ladder, the meters and the alert transitions as numbers. Every word and every formatted number belongs to the UI.
 - `src/store/`: owns application persistence and derives the timeline events. The collector does not depend on SQLite.
 - `src/runtime.ts`: owns scheduling and settings changes. Samples never overlap, and a replaced source is handed its predecessor so readings measured since vsys started survive the replacement.
@@ -62,6 +62,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [D006](../decisions/D006-settings-save-writes-only-changed-keys.md): Settings saves only changed keys, and agent-tool edits go to the shared overlay.
 - [D007](../decisions/D007-scratch-scan-duty.md): scratch traversal runs on its own thread under a duty cycle, rather than keeping a filesystem index.
 - [D008](../decisions/D008-process-reads-on-their-own-thread.md): processes are read on a thread the collector keeps, one file at a time, trading the 20 ms elapsed fixture target for lower processor time.
+- [D009](../decisions/D009-agent-slice-unit-file.md): a slice whose unit file exists is present before its group does, so a defined, inactive agent slice still holds agents to it.
 
 ## Topics
 

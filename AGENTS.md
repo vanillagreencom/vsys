@@ -1,6 +1,6 @@
 # vsys
 
-vsys is a Linux terminal dashboard for agent processes and system health, written in TypeScript on Bun with React and OpenTUI. The dashboard reads cgroup v2 and procfs without changing them, and touches the system only through a lane action the reader confirms with write mode on. The optional warden in `warden/` is the exception: it corrects agent process placement automatically.
+vsys is a Linux terminal dashboard for agent processes and system health, written in TypeScript on Bun with React and OpenTUI. The dashboard reads cgroup v2 and procfs without changing them, and checks whether the agent slice's systemd unit file exists (D009). It touches the system only through a lane action the reader confirms with write mode on. The optional warden in `warden/` is the exception: it corrects agent process placement automatically.
 
 ## Commands
 

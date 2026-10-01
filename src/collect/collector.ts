@@ -9,6 +9,7 @@ import {
   probeAgentSlice,
   probeCapabilities,
   probeTmux,
+  unitDirs,
 } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
@@ -73,6 +74,11 @@ export class Collector {
      * none reads them in its caller's thread, with the same code.
      */
     processes?: ProcessSource,
+    /**
+     * Where the agent slice's unit file is looked for. Empty unless a caller
+     * supplies them, so no test reads the host's systemd configuration.
+     */
+    private units: string[] = [],
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -206,7 +212,10 @@ export class Collector {
         });
       }
     mark("tmux");
-    const capabilities = [...this.capabilities, probeAgentSlice(c, groups)];
+    const capabilities = [
+      ...this.capabilities,
+      probeAgentSlice(c, groups, this.units),
+    ];
     const s: Snapshot = {
       capabilities,
       time,
@@ -265,5 +274,6 @@ export async function createCollector(
     sccache,
     { probe: probeTmux, panes: readPanes },
     new ProcessThread(c, ticks, pages),
+    unitDirs(),
   );
 }

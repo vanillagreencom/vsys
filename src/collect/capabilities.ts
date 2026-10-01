@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type {
@@ -128,26 +129,56 @@ export function probeCapabilities(
     ],
     ["tmux", listPanesArgv.join(" "), tmux],
   ];
-  return probes.map(([id, source, run]) => decide(id, source, run));
+  return probes.map(([id, source, run]) => {
+    let outcome: Outcome;
+    try {
+      outcome = run();
+    } catch (error) {
+      outcome = classify(error);
+    }
+    return record(id, source, outcome);
+  });
 }
-function decide(
+function record(
   id: CapabilityId,
   source: string,
-  run: () => Outcome,
+  outcome: Outcome,
+  detail = "",
 ): Capability {
-  let outcome: Outcome;
-  try {
-    outcome = run();
-  } catch (error) {
-    outcome = classify(error);
-  }
   return {
     id,
     available: outcome === null,
     failure: outcome?.failure ?? null,
     source,
-    detail: outcome?.detail ?? "",
+    detail: outcome?.detail ?? detail,
   };
+}
+/** Null when the path exists, otherwise what stat met, diagnosed as above. */
+function exists(path: string): Outcome {
+  try {
+    statSync(path);
+    return null;
+  } catch (error) {
+    return classify(error);
+  }
+}
+/**
+ * The directories systemd reads unit files and drop-ins from, the user
+ * manager's first. `user.control` is where `systemctl --user set-property`
+ * writes, which is the line Settings offers for a missing slice.
+ */
+export function unitDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const config = env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  const data = env.XDG_DATA_HOME || join(homedir(), ".local/share");
+  return [
+    join(config, "systemd/user"),
+    join(config, "systemd/user.control"),
+    join(data, "systemd/user"),
+    "/etc/systemd/user",
+    "/usr/lib/systemd/user",
+    "/etc/systemd/system",
+    "/usr/lib/systemd/system",
+  ];
 }
 /**
  * Where systemd puts a slice below the manager's own group: each dash in the
@@ -160,23 +191,51 @@ export function slicePath(name: string): string {
     .join("/");
 }
 /**
- * Whether the agent slice exists, read every sample rather than once: systemd
- * starts a slice when the first unit is placed in it, so on a machine whose
- * agents start after vsys the slice appears after vsys does. A group of that
- * name anywhere in the tree this sample read is the slice, as it is to the
- * slice totals; otherwise the path systemd would give it decides, and only a
- * path that does not exist is an absence.
+ * Whether the machine has the agent slice, read every sample rather than once:
+ * systemd creates a slice's group only while the slice runs, and a slice with
+ * no install section runs from the first unit placed in it, which on a machine
+ * whose agents start after vsys is after vsys does.
+ *
+ * A group of that name anywhere in the tree this sample read is the slice, as
+ * it is to the slice totals. Otherwise the path systemd gives the name decides,
+ * and where that path does not exist a unit file or drop-in directory defining
+ * the slice still makes it present (D009). Only a slice with neither is absent,
+ * and a path that exists but cannot be told is never read as an absence.
  */
 export function probeAgentSlice(
   c: CollectionConfig,
   groups: Group[],
+  /** Where unit files are looked for. None given, no unit file is read. */
+  units: string[] = [],
 ): Capability {
   const found = groups.find((g) => g.name === c.agentSlice);
-  if (found)
-    return decide("agent-slice", join(c.cgroupRoot, found.path), () => null);
-  const source = join(c.cgroupRoot, slicePath(c.agentSlice));
-  return decide("agent-slice", source, () => {
-    statSync(source);
-    return null;
+  if (found) return record("agent-slice", join(c.cgroupRoot, found.path), null);
+  const cgroup = join(c.cgroupRoot, slicePath(c.agentSlice));
+  const atCgroup = exists(cgroup);
+  if (atCgroup?.failure !== "absent")
+    return record("agent-slice", cgroup, atCgroup);
+  // REVISIT(D009): a unit generated at runtime, or one systemd loads from a
+  // directory outside this list, is not seen here.
+  const looked = units
+    .flatMap((dir) => [join(dir, c.agentSlice), join(dir, `${c.agentSlice}.d`)])
+    .map((path) => ({ path, outcome: exists(path) }));
+  const defined = looked.find((at) => at.outcome === null);
+  if (defined)
+    return record(
+      "agent-slice",
+      defined.path,
+      null,
+      "defined; its group appears when the first unit starts in it",
+    );
+  // A unit found anywhere answers, whatever another directory failed to say.
+  const unknown = looked.find(
+    (at) => at.outcome !== null && at.outcome.failure !== "absent",
+  );
+  if (unknown) return record("agent-slice", unknown.path, unknown.outcome);
+  return record("agent-slice", cgroup, {
+    failure: "absent",
+    detail: units.length
+      ? `${atCgroup.detail}; no unit file or drop-in in ${units.join(", ")}`
+      : atCgroup.detail,
   });
 }

@@ -1,4 +1,5 @@
 import { compileOrLink } from "../collect/builds";
+import { omittedProcess } from "../collect/procs";
 import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
 import { damageCounts, integrities } from "./integrity";
@@ -162,20 +163,22 @@ export function sliceSum(
  * What agents use of one reading. Where the agent slice is compared it holds
  * every agent, so its own counter is the total. Where the probe found no slice
  * the agent lanes' own figures are summed instead, and the total is unknown
- * unless every one of them reported. No process at all is a process listing
- * that failed, since vsys is always one, so it is not read as no agents.
+ * unless every one of them reported. A process the sample could not read may
+ * have been an agent, so any such process leaves the total unknown rather than
+ * short by an agent nobody can see.
  */
 export function agentTotal(
   s: Snapshot,
-  c: Pick<CollectionConfig, "agentSlice">,
+  c: Pick<CollectionConfig, "agentSlice" | "procRoot">,
   reading: "cpu" | "cache",
 ): number | null {
   if (sliceCompared(s.capabilities))
     return sliceSum(s.groups, c.agentSlice, (g) =>
       reading === "cpu" ? g.cpuPercent : g.cache,
     );
+  if (s.errors.some((e) => omittedProcess(e.source, c.procRoot))) return null;
   const agents = s.lanes.filter((l) => l.tool !== "");
-  return s.procs.length && agents.every((l) => l[reading] !== null)
+  return agents.every((l) => l[reading] !== null)
     ? agents.reduce((sum, l) => sum + (l[reading] ?? 0), 0)
     : null;
 }

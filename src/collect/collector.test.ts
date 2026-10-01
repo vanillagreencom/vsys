@@ -7,6 +7,7 @@ import { launcherCopy, launcherTrail } from "../model/launcher";
 import { laneText } from "../model/naming";
 import type { Proc } from "../model/types";
 import { causes, meters } from "../model/verdict";
+import { point } from "../store/point";
 import { fixture } from "../test/fixture";
 import { capabilityLine } from "../ui/settings";
 import { buildKind, toolName } from "./builds";
@@ -209,15 +210,21 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
       slice: "present",
       unconfined: [true, true],
       cause: true,
+      escaped: 2,
       agents: 0,
+      // The slice's own page cache, which the fixture writes for every group.
+      cache: 4000,
       line: "Agent slice: available",
     },
     {
       slice: "absent",
       unconfined: [false, false],
       cause: false,
+      escaped: 0,
       agents: 30,
-      line: "Agent slice: not available: this machine has no agent slice",
+      // Each agent scope's own page cache.
+      cache: 8000,
+      line: "Agent slice: not available: no agent slice is defined or running",
     },
   ];
   for (const row of rows) {
@@ -251,6 +258,9 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
       cause: causes(s, f.config).some((x) => x.id === "unconfined"),
       alert: first.alerts.some((a) => a.rule === "unconfined"),
       agents: meters(s, f.config).find((m) => m.id === "cpu")?.values.agents,
+      cache: meters(s, f.config).find((m) => m.id === "memory")?.values.cache,
+      // What the history keeps for the sample says the same.
+      stored: [point(s, f.config).unconfined, point(s, f.config).agents],
       line: capabilityLine(slice).startsWith(row.line),
       source: slice.source,
     }).toEqual({
@@ -263,6 +273,8 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
       cause: row.cause,
       alert: row.cause,
       agents: row.agents,
+      cache: row.cache,
+      stored: [row.escaped, row.agents],
       line: true,
       source: join(f.config.cgroupRoot, "agents.slice"),
     });

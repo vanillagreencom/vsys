@@ -15,16 +15,16 @@ export function scopeUnit(group: string): string | null {
 /**
  * Whether there is a launcher to speak of: one places agents in a slice that
  * exists and sets the configured markers. Without a slice, or with no markers
- * to read, a missing marker says nothing about how an agent was started.
+ * to read, a missing marker says nothing about how an agent was started. A
+ * sample recorded before the slice probe counts the slice present, as
+ * `sliceCompared` does, so its card reads as it did when it was recorded.
  */
 export function launcherKnown(
   capabilities: Capability[],
   c: Pick<CollectionConfig, "capMarkers">,
 ): boolean {
-  return (
-    capabilities.find((cap) => cap.id === "agent-slice")?.available === true &&
-    c.capMarkers.length > 0
-  );
+  const slice = capabilities.find((cap) => cap.id === "agent-slice");
+  return (slice === undefined || slice.available) && c.capMarkers.length > 0;
 }
 export type LauncherConclusion = "shadowed" | "bare" | "unknown";
 /** What one process says about its launcher. The prose is written from these. */

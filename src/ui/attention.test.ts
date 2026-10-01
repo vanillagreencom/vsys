@@ -218,6 +218,13 @@ test("the unconfined card names a launcher only where a slice and markers exist"
     // A slice vsys could not read still raises the card, but nothing says a
     // launcher exists to have placed the agent there.
     ["unreadable slice", slice("unreadable"), c.capMarkers, false],
+    // A sample stored before the probe still names its slice's launcher.
+    [
+      "unrecorded slice",
+      s.capabilities.filter((cap) => cap.id !== "agent-slice"),
+      c.capMarkers,
+      true,
+    ],
   ];
   for (const [name, capabilities, capMarkers, launcher] of rows) {
     const card = attention(

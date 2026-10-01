@@ -9,7 +9,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { type IntegrityState, integrities } from "./integrity";
-import type { Group, Scrub, Snapshot, Volume } from "./types";
+import type { Group, Lane, Scrub, Snapshot, Volume } from "./types";
 import {
   agentTotal,
   buildLoad,
@@ -450,27 +450,67 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
       ? { ...cap, available: false, failure: "absent" as const }
       : cap,
   );
+  // The desktop is swapped out, so the swap card states the agents' cache.
+  s.groups = [g("app.slice", c.desktopSlice, { swap: c.swapFloor + 1 })];
   // A lane with no agent in it is not the agents' use, whatever it costs.
   const desktop = laneSnapshot({ id: "d", tool: "", cpu: 400, cache: 9 });
-  s.procs = [processSnapshot()];
-  s.lanes = [
+  const agents = [
     laneSnapshot({ id: "a", tool: "claude", cpu: 20, cache: 100 }),
     laneSnapshot({ id: "b", tool: "codex", cpu: 10, cache: 50 }),
-    desktop,
   ];
-  expect([agentTotal(s, c, "cpu"), agentTotal(s, c, "cache")]).toEqual([
-    30, 150,
-  ]);
-  s.lanes[1] = { ...s.lanes[1], cpu: null };
-  expect([agentTotal(s, c, "cpu"), agentTotal(s, c, "cache")]).toEqual([
-    null,
-    150,
-  ]);
-  // No agent running is a measured nothing, but no process at all is a
-  // process listing that failed.
-  s.lanes = [desktop];
-  s.procs = [];
-  expect(agentTotal(s, c, "cpu")).toBeNull();
-  s.procs = [processSnapshot({ tool: null })];
-  expect(agentTotal(s, c, "cpu")).toBe(0);
+  const figures = (snapshot: Snapshot) => {
+    const meter = (id: string) => meters(snapshot, c).find((m) => m.id === id);
+    return {
+      cpu: agentTotal(snapshot, c, "cpu"),
+      meterCpu: meter("cpu")?.values.agents,
+      meterCache: meter("memory")?.values.cache,
+      swapCache: causes(snapshot, c).find((x) => x.id === "desktop-swap")
+        ?.values.cache,
+    };
+  };
+  const rows: [string, Lane[], string[], (number | null)[]][] = [
+    ["two agents", [...agents, desktop], [], [30, 30, 150, 150]],
+    [
+      "an agent lane with no CPU reading",
+      [agents[0], { ...agents[1], cpu: null }, desktop],
+      [],
+      [null, null, 150, 150],
+    ],
+    // No agent running is a measured nothing.
+    ["no agent running", [desktop], [], [0, 0, 0, 0]],
+    // A process the sample left out may have been an agent.
+    [
+      "a process that could not be read",
+      [...agents, desktop],
+      [`${c.procRoot}/77`],
+      [null, null, null, null],
+    ],
+    [
+      "a process list that could not be read",
+      [desktop],
+      [c.procRoot],
+      [null, null, null, null],
+    ],
+    // A process kept in the reading with one field unknown is still counted.
+    [
+      "an environment that could not be read",
+      [...agents, desktop],
+      [`${c.procRoot}/77/environ`],
+      [30, 30, 150, 150],
+    ],
+  ];
+  for (const [
+    name,
+    lanes,
+    failed,
+    [cpu, meterCpu, meterCache, swapCache],
+  ] of rows)
+    expect({
+      name,
+      ...figures({
+        ...s,
+        lanes,
+        errors: failed.map((source) => ({ source, message: "EACCES" })),
+      }),
+    }).toEqual({ name, cpu, meterCpu, meterCache, swapCache });
 });
