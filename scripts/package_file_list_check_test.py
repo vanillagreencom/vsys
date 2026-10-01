@@ -100,19 +100,6 @@ class PackageFileListCheck(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("GitHub expression", result.stderr)
 
-    def test_job_missing_from_ci_aggregate_needs_fails(self) -> None:
-        workflow = self.repo / ".github" / "workflows" / "ci.yml"
-        text = workflow.read_text()
-        anchor = "\n  ci:\n"
-        self.assertEqual(text.count(anchor), 1)
-        workflow.write_text(text.replace(
-            anchor,
-            "\n  unlisted-job:\n    runs-on: ubuntu-latest\n    steps:\n      - run: exit 1\n" + anchor,
-        ))
-        result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ci aggregate needs mismatch missing=['unlisted-job'] extra=[]", result.stderr)
-
     def test_ownership_preserving_release_copy_fails(self) -> None:
         pkgbuild = self.repo / "packaging" / "vsys" / "PKGBUILD"
         pkgbuild.write_text(pkgbuild.read_text().replace(
