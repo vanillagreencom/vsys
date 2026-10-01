@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { act } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
@@ -1399,15 +1398,6 @@ test("Home keeps the name readable rather than the state column", async () => {
   }
 });
 
-/** Lets the settled layout reading land, which is when a scroll follows it. */
-async function settled(t: Awaited<ReturnType<typeof mount>>) {
-  await t.ui.renderOnce();
-  await act(async () => {
-    await Bun.sleep(20);
-  });
-  await t.ui.renderOnce();
-}
-
 test("moving back to the tiles brings the tiles back on screen", async () => {
   const c = defaults();
   const { s, h } = everyRegion(c);
@@ -1418,16 +1408,16 @@ test("moving back to the tiles brings the tiles back on screen", async () => {
     // A tile draws this under its number and nothing else on Home does.
     const tilesShown = () => t.frame().includes("in use: agents");
     await t.press("1");
-    await settled(t);
+    await t.settle();
     // Walk to the bottom of the last list, which scrolls the tiles away.
     for (let i = 0; i < 3; i++) await t.press(c.keys.next);
     for (let i = 0; i < 30; i++) await t.press("j");
-    await settled(t);
+    await t.settle();
     expect(tilesShown()).toBe(false);
     // Back to the tiles. The tile row holds the focus now, so it is what has
     // to be in view.
     for (let i = 0; i < 3; i++) await t.press(c.keys.previous);
-    await settled(t);
+    await t.settle();
     expect(tilesShown()).toBe(true);
   } finally {
     await t.close();
@@ -1442,11 +1432,11 @@ test("a sample leaves a Home reader where they scrolled to", async () => {
     const band = () => t.frame().split("\n").slice(2, 6).join("\n");
     await t.press("1");
     // A reader arrives at a screen that has finished drawing itself.
-    await settled(t);
+    await t.settle();
     // Down to the bottom, so there is somewhere above to scroll back to.
     for (let i = 0; i < 3; i++) await t.press(c.keys.next);
     for (let i = 0; i < 30; i++) await t.press("j");
-    await settled(t);
+    await t.settle();
     const standing = band();
     // The wheel moves this box, so an effect that scrolled on every render
     // would take the reader back to the selection on the next tick.
@@ -1454,7 +1444,7 @@ test("a sample leaves a Home reader where they scrolled to", async () => {
     const wheeled = band();
     expect(wheeled).not.toBe(standing);
     await t.update({ ...s, time: s.time + 1000 });
-    await settled(t);
+    await t.settle();
     expect(band()).toBe(wheeled);
   } finally {
     await t.close();

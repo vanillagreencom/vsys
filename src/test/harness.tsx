@@ -65,7 +65,14 @@ export async function mount(
       />
     );
   }
-  const ui = await testRender(<Mounted />, size);
+  // No frame cap, so a commit is laid out on the tick after it, before any
+  // timer the commit's effects set. At the default cap a commit inside the
+  // frame interval waits for a render timer, and a screen's deferred pass can
+  // run first and measure the layout from before the commit.
+  const ui = await testRender(<Mounted />, {
+    ...size,
+    maxFps: Number.POSITIVE_INFINITY,
+  });
   const update = async (next: Snapshot) => {
     await act(async () => {
       publish?.(next);
@@ -88,6 +95,19 @@ export async function mount(
     await ui.renderOnce();
   };
   const frame = () => ui.captureCharFrame();
+  /**
+   * Lets the deferred passes the last render set land, then draws where they
+   * left the screen. A row that has just grown does not know its size until
+   * the layout after the render that grew it, so a screen measures it again on
+   * a timer. Timers of equal delay run in the order they were set, so the one
+   * set here runs after every pass already waiting.
+   */
+  const settle = async () => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await ui.renderOnce();
+  };
   const wheel = async (x: number, y: number, way: "up" | "down") => {
     await act(async () => {
       await ui.mockMouse.scroll(x, y, way);
@@ -106,7 +126,18 @@ export async function mount(
     });
     h.close();
   };
-  return { ui, h, press, frame, wheel, click, close, written, update };
+  return {
+    ui,
+    h,
+    press,
+    frame,
+    settle,
+    wheel,
+    click,
+    close,
+    written,
+    update,
+  };
 }
 
 /**

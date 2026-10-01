@@ -258,7 +258,7 @@ async function paned(
   await t.press("enter");
   // A reader arrives at a screen that has finished drawing itself. Pressing
   // keys inside the same tick is a test's privilege, not a reader's.
-  await settle(t);
+  await t.settle();
   // Processes and Launch sit above Terminal.
   for (let i = 0; i < 2; i++) await t.press("j");
   return { ...t, snapshot: s, config: c };
@@ -639,17 +639,6 @@ test("a switch that is refused tells the reader why", async () => {
   }
 });
 
-/** Lets the second layout pass land, which is when a grown row knows its size. */
-async function settle(t: Awaited<ReturnType<typeof mount>>) {
-  // A render, so the effect runs against the new tree and schedules its second
-  // pass; then time for that pass; then a render to draw where it scrolled to.
-  await t.ui.renderOnce();
-  await act(async () => {
-    await Bun.sleep(20);
-  });
-  await t.ui.renderOnce();
-}
-
 test("a capture arriving under the reader does not take the row they are on", async () => {
   let release: ((lines: string[]) => void) | null = null;
   const t = await paned(
@@ -668,7 +657,7 @@ test("a capture arriving under the reader does not take the row they are on", as
     await t.press("enter");
     // Down to the last row, below the terminal the capture is about to fill.
     for (let i = 0; i < 8; i++) await t.press("j");
-    await settle(t);
+    await t.settle();
     expect(selectedRow(t.frame())).toContain("Actions");
     // Twelve lines land above the row the keys still act on. Told to re-run
     // only when `selected` changed, this effect did not run at all, and the
@@ -677,7 +666,7 @@ test("a capture arriving under the reader does not take the row they are on", as
       release?.(Array.from({ length: 12 }, (_, i) => `capline ${i}`));
       await Promise.resolve();
     });
-    await settle(t);
+    await t.settle();
     const frame = t.frame();
     expect(frame).toContain("capline 11");
     expect(selectedRow(frame)).toContain("Actions");
@@ -700,7 +689,7 @@ test("a sample leaves the reader where they scrolled to", async () => {
   try {
     await t.press("enter");
     for (let i = 0; i < 8; i++) await t.press("j");
-    await settle(t);
+    await t.settle();
     // The wheel moves this box, so an effect that ran on every render and
     // scrolled every time would take the reader back here on the next tick.
     const band = (f: string) => f.split("\n").slice(3, 6).join("\n");
@@ -709,7 +698,7 @@ test("a sample leaves the reader where they scrolled to", async () => {
     const wheeled = band(t.frame());
     expect(wheeled).not.toBe(standing);
     await t.update({ ...t.snapshot, time: t.snapshot.time + 1000 });
-    await settle(t);
+    await t.settle();
     expect(band(t.frame())).toBe(wheeled);
   } finally {
     await t.close();
@@ -730,10 +719,7 @@ test("the detail opens at the top, not part-way down at its first section", asyn
     // Nothing has moved yet, so there is nothing to keep in view. Scrolling to
     // the selected row on arrival would open the screen below the identity
     // line and the charts, which is what the reader came here to read.
-    await act(async () => {
-      await Bun.sleep(20);
-    });
-    await t.ui.renderOnce();
+    await t.settle();
     const frame = t.frame();
     expect(frame).toContain("account default");
     expect(frame).toContain("PID 40");
