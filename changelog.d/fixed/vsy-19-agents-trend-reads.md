@@ -1,0 +1,1 @@
+- The Agents trend column fills in one read for all rows on screen, stops rereading whole windows as time passes, and shows its trends at once when you return to the screen.

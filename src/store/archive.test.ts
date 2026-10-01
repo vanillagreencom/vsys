@@ -6,6 +6,7 @@ import {
   processSnapshot,
 } from "../test/fixture";
 import { Archive } from "./archive";
+import type { LaneSample } from "./lane-series";
 
 type Sample = ReturnType<typeof emptySnapshot>;
 
@@ -200,15 +201,108 @@ test("replay and lane charts read a sealed line at the line it is", () => {
   extend(warm, 0, 300);
   // A first read caches the chart up to the newest sample; later samples seal
   // the run that read left open, so the second read starts inside a segment.
-  warm.laneWindow(id, 0, 150000);
+  warm.laneWindows([id], 0, 150000);
   extend(warm, 300, 380);
   const cold = new Archive();
   extend(cold, 0, 300);
   extend(cold, 300, 380);
-  const series = warm.laneWindow(id, 0, 380000);
+  const series = warm.laneWindows([id], 0, 380000).get(id);
   expect(series).toHaveLength(380);
-  expect(series).toEqual(cold.laneWindow(id, 0, 380000));
-  expect(series[299].cpu).toBe(299);
+  expect(series).toEqual(cold.laneWindows([id], 0, 380000).get(id));
+  expect(series?.[299].cpu).toBe(299);
+});
+/** Forty lanes, which is the Agents list on a machine running that many agents. */
+const many = Array.from({ length: 40 }, (_, n) => `agents.slice/${n}.scope`);
+
+/** `sample(i)` carrying every lane in `ids`, each at its own reading. */
+function lanesAt(i: number, ids: string[]): Sample {
+  const s = sample(i);
+  s.lanes = ids.map((id, n) => laneSnapshot({ id, cpu: i + n }));
+  return s;
+}
+
+/** The lanes any checkpoint's projection holds. */
+function projected(archive: Archive): string[] {
+  // biome-ignore lint/complexity/useLiteralKeys: reads a private field
+  const projections = archive["projections"];
+  return [
+    ...new Set([...projections.values()].flatMap((p) => [...p.lanes.keys()])),
+  ].sort();
+}
+
+test("one read of many lanes inflates each sealed segment once, whatever their number", () => {
+  const archive = new Archive();
+  for (let i = 0; i < 400; i++) {
+    const s = lanesAt(i, many);
+    archive.add(s.time, JSON.stringify(s));
+  }
+  // Without a sealed segment there is nothing to inflate, and the count below
+  // would hold for any number of walks.
+  const sealed = segments(archive);
+  expect(sealed).toBeGreaterThan(1);
+  const spy = spyOn(Bun, "gunzipSync");
+  const inflations: number[] = [];
+  let series = new Map<string, LaneSample[]>();
+  try {
+    series = archive.laneWindows(many, 0, 400000);
+    inflations.push(spy.mock.calls.length);
+    // The same question again, as a list asks when its newest bucket rolls
+    // over: every lane is held, so nothing is inflated a second time.
+    archive.laneWindows(many, 0, 400000);
+    inflations.push(spy.mock.calls.length);
+  } finally {
+    spy.mockRestore();
+  }
+  // A walk per lane pays forty times this.
+  expect(inflations).toEqual([sealed, sealed]);
+  expect(series.size).toBe(many.length);
+  for (const [n, id] of many.entries()) {
+    const lane = series.get(id);
+    expect(lane).toHaveLength(400);
+    expect([lane?.[0].cpu, lane?.[299].cpu, lane?.[399].cpu]).toEqual([
+      n,
+      299 + n,
+      399 + n,
+    ]);
+  }
+  // A window that has moved past the first checkpoint lets its projection go,
+  // so what is held is the checkpoints the window overlaps and no more.
+  expect(checkpoints(archive).length).toBeGreaterThan(1);
+  const window = archive.laneWindows(many, 301000, 400000);
+  expect(window.get(many[0])).toHaveLength(100);
+  // biome-ignore lint/complexity/useLiteralKeys: reads a private field
+  expect([...archive["projections"].keys()]).toEqual(
+    checkpoints(archive).slice(1),
+  );
+});
+test("a lane that ends leaves the lane projections", () => {
+  const archive = new Archive();
+  const [kept, ended] = many;
+  for (let i = 0; i < 10; i++) {
+    const s = lanesAt(i, [kept, ended]);
+    archive.add(s.time, JSON.stringify(s));
+  }
+  archive.laneWindows([kept, ended], 0, 10000);
+  expect(projected(archive)).toEqual([kept, ended].sort());
+  const s = lanesAt(10, [kept]);
+  archive.add(s.time, JSON.stringify(s));
+  expect(projected(archive)).toEqual([kept]);
+  // Letting it go loses nothing: asked for again, it is read again.
+  const series = archive.laneWindows([ended], 0, 11000).get(ended);
+  // The lane's own readings for the ten samples it lived through, then the
+  // sample it ended at, which holds no reading for it.
+  expect(series?.map((x) => x.cpu)).toEqual([
+    ...Array.from({ length: 10 }, (_, i) => i + 1),
+    null,
+  ]);
+  // The walk that brought it back started at the base line for it alone; the
+  // lane still held took only the line it had not reached, once.
+  expect(
+    archive
+      .laneWindows([kept], 0, 11000)
+      .get(kept)
+      ?.map((x) => x.cpu),
+  ).toEqual(Array.from({ length: 11 }, (_, i) => i));
 });
 test("a run sealing under a parked cursor does not corrupt what it reads", () => {
   // A reader pins a sample and leaves it pinned while samples keep arriving.

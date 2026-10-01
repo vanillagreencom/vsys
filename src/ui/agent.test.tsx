@@ -235,6 +235,56 @@ test("the agent detail names only its own keys, and the list gets its back", asy
   }
 });
 
+test("a series read that fails draws no series, not the one an earlier sample read", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 50 })];
+  s.groups = [groupSnapshot()];
+  const h = new History(c);
+  h.add(s);
+  const real = h.laneWindows.bind(h);
+  let reads = 0;
+  h.laneWindows = async (
+    ids: readonly string[],
+    end: number,
+    durationMs: number,
+  ) => {
+    reads++;
+    // The detail's first read succeeds, the one for the next sample fails,
+    // and the one after that is still out.
+    if (reads === 2) throw new Error("planted read failure");
+    if (reads > 2) return await new Promise<never>(() => {});
+    return real(ids, end, durationMs);
+  };
+  const t = await mount(s, c, { width: 160, height: 45 }, { history: h });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    // A sample at the same time draws what the read returned.
+    await t.update({ ...s, time: s.time });
+    // One read, the detail's own: at this width the list draws no trend.
+    expect(reads).toBe(1);
+    expect(t.frame()).toContain("CPU ·");
+    expect(t.frame()).not.toContain("planted read failure");
+    await t.update({ ...s, time: s.time + 1000 });
+    await t.ui.renderOnce();
+    // The error is named and nothing is charted: a chart of the series read
+    // for the previous sample would draw this window's newest column as
+    // sampled and empty.
+    expect(reads).toBe(2);
+    expect(t.frame()).toContain("planted read failure");
+    expect(t.frame()).not.toContain("CPU ·");
+    expect(t.frame()).not.toContain("CPU wait");
+    // The next sample asks again, and while that read is out the series read
+    // two samples ago does not come back: the detail is loading, with nothing.
+    await t.update({ ...s, time: s.time + 2000 });
+    expect(reads).toBe(3);
+    expect(t.frame()).toContain("Loading history");
+  } finally {
+    await t.close();
+  }
+});
+
 /** An agent in a tmux pane, with the detail open on it. */
 async function paned(
   hooks: Parameters<typeof mount>[3] = {},

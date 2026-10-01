@@ -202,10 +202,15 @@ interface Cursor {
   index: number;
   value: Json;
 }
-interface LaneCursor {
+/**
+ * Lane columns projected out of one checkpoint. Every lane it holds has a
+ * sample for each line up to `index`, and `table` is the lane table at that
+ * line, which is the same table whichever lane it is read for.
+ */
+interface LaneProjection {
   index: number;
   table: Json;
-  samples: LaneSample[];
+  lanes: Map<string, LaneSample[]>;
 }
 
 /** Samples per checkpoint, after which a fresh base replaces the delta chain. */
@@ -289,13 +294,37 @@ class Reader {
   }
 }
 
+/** One lane's readings at one line, unknown where that line holds no such lane. */
+function laneSample(
+  columns: ObjectValue,
+  index: number | undefined,
+  time: number,
+): LaneSample {
+  const metric = (key: string): number | null => {
+    const column = columns[key];
+    const value =
+      index !== undefined && Array.isArray(column) ? column[index] : null;
+    return typeof value === "number" ? value : null;
+  };
+  return {
+    time,
+    cpu: metric("cpu"),
+    rss: metric("rss"),
+    pressure: metric("pressure"),
+    memoryPressure: metric("memoryPressure"),
+    ioPressure: metric("ioPressure"),
+  };
+}
+
 /** Bounded checkpoints retain exact snapshots without repeating static fields. */
 export class Archive {
   private chunks: Chunk[] = [];
   private active?: Active;
   private cursor?: Cursor;
   private bytes = 0;
-  private laneCache = new Map<string, Map<Chunk, LaneCursor>>();
+  private projections = new Map<Chunk, LaneProjection>();
+  /** Every lane any projection holds, so a sample checks them and not each checkpoint. */
+  private projected = new Set<string>();
   shortened = false;
   constructor(private maxBytes = 128 * 1024 * 1024) {}
   add(time: number, json: string): void {
@@ -345,10 +374,25 @@ export class Archive {
       this.bytes -= chunkBytes(old);
       this.shortened = true;
       if (this.cursor?.reader.chunk === old) this.cursor = undefined;
-      for (const cache of this.laneCache.values()) cache.delete(old);
+      this.projections.delete(old);
     }
     if (this.bytes > this.maxBytes)
       throw new Error("A history checkpoint exceeds the memory budget");
+    // A projection keeps a lane only while the lane lives. A lane that ended
+    // leaves the list that asked for it, and holding its samples until its
+    // checkpoints expire would keep every lane that ran inside the window.
+    if (this.projected.size) {
+      const columns = object(value.lanes) ? value.lanes.columns : null;
+      const live = new Set(
+        object(columns) && Array.isArray(columns.id) ? columns.id : [],
+      );
+      for (const id of this.projected) {
+        if (live.has(id)) continue;
+        this.projected.delete(id);
+        for (const projection of this.projections.values())
+          projection.lanes.delete(id);
+      }
+    }
   }
   prune(cutoff: number): void {
     while (
@@ -360,7 +404,7 @@ export class Archive {
       this.bytes -= chunkBytes(old);
       if (this.active?.chunk === old) this.active = undefined;
       if (this.cursor?.reader.chunk === old) this.cursor = undefined;
-      for (const cache of this.laneCache.values()) cache.delete(old);
+      this.projections.delete(old);
     }
   }
   at(time: number): Snapshot | null {
@@ -408,70 +452,102 @@ export class Archive {
   get firstTime(): number | undefined {
     return this.chunks[0]?.times[0];
   }
-  /** Project lane columns without reconstructing every process at every time. */
-  laneWindow(id: string, start: number, end: number): LaneSample[] {
-    let cache = this.laneCache.get(id);
-    if (!cache) {
-      if (this.laneCache.size >= 2) {
-        const oldest = this.laneCache.keys().next().value;
-        if (oldest !== undefined) this.laneCache.delete(oldest);
-      }
-      cache = new Map();
-      this.laneCache.set(id, cache);
-    }
-    const result: LaneSample[] = [];
+  /**
+   * Lane series without reconstructing every process at every time. Every lane
+   * one call asks for is read in the same walk of each checkpoint, so a list
+   * of many lanes inflates a segment once rather than once per lane.
+   */
+  laneWindows(
+    ids: readonly string[],
+    start: number,
+    end: number,
+  ): Map<string, LaneSample[]> {
+    const wanted = [...new Set(ids)];
+    const result = new Map(
+      wanted.map((id): [string, LaneSample[]] => [id, []]),
+    );
+    if (!wanted.length) return result;
     for (const chunk of this.chunks) {
       if (chunk.times[0] > end || (chunk.times.at(-1) ?? start) < start)
         continue;
-      let saved = cache.get(chunk);
-      if (!saved || saved.index < chunk.times.length - 1) {
-        const first = (saved?.index ?? -1) + 1;
-        const reader = new Reader(chunk);
-        let table: Json =
-          saved?.table ?? (JSON.parse(reader.line(0)) as ObjectValue).lanes;
-        const samples = saved?.samples ?? [];
-        for (let i = first; i < chunk.times.length; i++) {
-          if (i > 0) {
-            const change = JSON.parse(reader.line(i)) as Change | null;
-            if (change?.kind === "replace") {
-              if (!object(change.value))
-                throw new Error("Archived snapshot is not an object");
-              table = change.value.lanes;
-            } else if (change?.kind === "object") {
-              const laneChange = change.entries.find(
-                ([key]) => key === "lanes",
-              )?.[1];
-              if (laneChange) table = apply(table, laneChange);
-            } else if (change)
-              throw new Error("Invalid archived snapshot change");
-          }
-          if (!object(table) || !object(table.columns))
-            throw new Error("Invalid archived lane columns");
-          const columns = table.columns;
-          const index = Array.isArray(columns.id) ? columns.id.indexOf(id) : -1;
-          const metric = (key: string): number | null => {
-            const column = columns[key];
-            const value =
-              index >= 0 && Array.isArray(column) ? column[index] : null;
-            return typeof value === "number" ? value : null;
-          };
-          samples.push({
-            time: chunk.times[i],
-            cpu: metric("cpu"),
-            rss: metric("rss"),
-            pressure: metric("pressure"),
-            memoryPressure: metric("memoryPressure"),
-            ioPressure: metric("ioPressure"),
-          });
-        }
-        saved = { index: chunk.times.length - 1, table, samples };
-        cache.set(chunk, saved);
+      const { lanes } = this.project(chunk, wanted);
+      for (const [id, out] of result) {
+        const samples = lanes.get(id);
+        if (!samples)
+          throw new Error(
+            "A lane projection is missing a lane it was asked for",
+          );
+        for (const sample of samples)
+          if (sample.time >= start && sample.time <= end)
+            out.push({ ...sample });
       }
-      for (const sample of saved.samples)
-        if (sample.time >= start && sample.time <= end)
-          result.push({ ...sample });
     }
+    // A checkpoint the window has moved past is let go, the rule the stored
+    // series in `History` follow. A reader whose window starts a little
+    // earlier walks that one checkpoint again rather than every reader
+    // holding every checkpoint it ever read until the lane ends.
+    for (const chunk of this.projections.keys())
+      if ((chunk.times.at(-1) ?? start) < start) this.projections.delete(chunk);
     return result;
+  }
+  /**
+   * Bring one checkpoint's projection to its newest line for every lane it
+   * holds and every lane in `ids`, in one walk. A lane new to the checkpoint
+   * needs every line from the base, so that walk starts there and the lanes
+   * already held take only the lines past the index they reached.
+   */
+  private project(chunk: Chunk, ids: string[]): LaneProjection {
+    const last = chunk.times.length - 1;
+    const saved = this.projections.get(chunk);
+    const fresh = ids.filter((id) => !saved?.lanes.has(id));
+    if (saved && !fresh.length && saved.index === last) return saved;
+    const added = fresh.map((id): [string, LaneSample[]] => [id, []]);
+    const held = saved ? [...saved.lanes] : [];
+    const every = [...added, ...held];
+    const reached = saved?.index ?? -1;
+    const first = !saved || fresh.length ? 0 : saved.index + 1;
+    const reader = new Reader(chunk);
+    try {
+      let table: Json =
+        first === 0 || !saved
+          ? (JSON.parse(reader.line(0)) as ObjectValue).lanes
+          : saved.table;
+      for (let i = first; i <= last; i++) {
+        if (i > 0) {
+          const change = JSON.parse(reader.line(i)) as Change | null;
+          if (change?.kind === "replace") {
+            if (!object(change.value))
+              throw new Error("Archived snapshot is not an object");
+            table = change.value.lanes;
+          } else if (change?.kind === "object") {
+            const laneChange = change.entries.find(
+              ([key]) => key === "lanes",
+            )?.[1];
+            if (laneChange) table = apply(table, laneChange);
+          } else if (change)
+            throw new Error("Invalid archived snapshot change");
+        }
+        if (!object(table) || !object(table.columns))
+          throw new Error("Invalid archived lane columns");
+        const columns = table.columns;
+        const position = new Map<Json, number>();
+        if (Array.isArray(columns.id))
+          columns.id.forEach((id, n) => {
+            if (!position.has(id)) position.set(id, n);
+          });
+        for (const [id, samples] of i <= reached ? added : every)
+          samples.push(laneSample(columns, position.get(id), chunk.times[i]));
+      }
+      const projection = { index: last, table, lanes: new Map(every) };
+      for (const id of fresh) this.projected.add(id);
+      this.projections.set(chunk, projection);
+      return projection;
+    } catch (error) {
+      // The held lanes were extended in place, so a walk that stopped part way
+      // leaves them past the index they record. None of it is kept.
+      this.projections.delete(chunk);
+      throw error;
+    }
   }
   *rows(cutoff: number): Generator<{ time: number; json: string }> {
     for (const chunk of this.chunks)

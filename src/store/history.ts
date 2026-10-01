@@ -17,11 +17,15 @@ function restrict(sqlitePath: string): void {
   }
 }
 
-interface CachedLane {
+/**
+ * Lane series read back from SQLite. Every lane it holds has a sample for each
+ * stored row from `start` through `through`, so one pass over the rows past
+ * `through` brings all of them up to date at once.
+ */
+interface StoredLanes {
   start: number;
   through: number;
-  samples: LaneSample[];
-  cancelled: boolean;
+  lanes: Map<string, LaneSample[]>;
 }
 
 /** Fixed-capacity ring replaces its oldest element without shifting the array. */
@@ -148,8 +152,11 @@ export class History {
   private eventLog = new EventLog();
   private points: Points;
   private db?: Database;
-  private laneCache = new Map<string, CachedLane>();
-  private laneLoads = new Map<string, Promise<void>>();
+  private stored?: StoredLanes;
+  /** The one pass over stored rows in flight; a second waits rather than repeating it. */
+  private storedLoad?: Promise<void>;
+  /** Set by `close`, so a stored pass still out stops before the next row. */
+  private closed = false;
   get retentionWarning(): string | null {
     return this.archive.shortened && !this.db
       ? "Process replay reached the memory limit. Enable SQLite to retain the full history window."
@@ -209,6 +216,13 @@ export class History {
     const cutoff = s.time - this.c.historyHours * 3600000;
     this.archive.prune(cutoff);
     this.archive.add(s.time, json);
+    // A stored series is kept only while its lane lives, for the reason the
+    // archive keeps its projections that long.
+    if (this.stored?.lanes.size) {
+      const live = new Set(s.lanes.map((lane) => lane.id));
+      for (const id of this.stored.lanes.keys())
+        if (!live.has(id)) this.stored.lanes.delete(id);
+    }
     if (this.db) {
       const data = Bun.gzipSync(json);
       this.db.transaction(() => {
@@ -380,84 +394,212 @@ export class History {
       (p) => p.alerts,
     );
   }
-  /** Older persisted rows load cooperatively; the live archive supplies new rows. */
-  async laneWindow(
-    id: string,
+  /**
+   * Lane series for every id in one read. Older persisted rows load
+   * cooperatively and the live archive supplies new rows; either way a row is
+   * decompressed once for all the lanes asked for, not once per lane.
+   */
+  async laneWindows(
+    ids: readonly string[],
     end: number,
     durationMs: number,
-  ): Promise<LaneSample[]> {
-    const pending = this.laneLoads.get(id);
-    if (pending) {
-      await pending;
-      return this.laneWindow(id, end, durationMs);
-    }
-    const start = Math.max(
-      end - durationMs,
-      (this.points.get(this.points.size - 1)?.time ?? end) -
-        this.c.historyHours * 3600000,
-    );
-    const fromMemory = this.archive.laneWindow(id, start, end);
-    const diskEnd = Math.min(end, (this.archive.firstTime ?? end + 1) - 1);
-    const db = this.db;
-    if (!db || diskEnd < start) return fromMemory;
-    let cached = this.laneCache.get(id);
-    if (!cached || cached.start > start) {
-      if (this.laneCache.size >= 2) {
-        const oldest = this.laneCache.keys().next().value;
-        if (oldest !== undefined) {
-          const old = this.laneCache.get(oldest);
-          if (old) old.cancelled = true;
-          this.laneCache.delete(oldest);
-        }
+  ): Promise<Map<string, LaneSample[]>> {
+    for (;;) {
+      const start = Math.max(
+        end - durationMs,
+        (this.points.get(this.points.size - 1)?.time ?? end) -
+          this.c.historyHours * 3600000,
+      );
+      const diskEnd = Math.min(end, (this.archive.firstTime ?? end + 1) - 1);
+      const db = this.db;
+      if (!db || diskEnd < start) {
+        // The window no longer reaches a stored row, so the stored series
+        // answer nothing; a longer window that does reach them reads them again.
+        if (!this.storedLoad) this.stored = undefined;
+        return this.archive.laneWindows(ids, start, end);
       }
-      cached = { start, through: start - 1, samples: [], cancelled: false };
-      this.laneCache.set(id, cached);
+      // One pass at a time: a second read waiting on the first finds the lanes
+      // it shares already read, where two passes would decompress every row
+      // twice. The window is worked out again after the wait, because samples
+      // may have moved the archive's first row meanwhile.
+      if (this.storedLoad) {
+        await this.storedLoad;
+        continue;
+      }
+      return await this.readStored(db, [...new Set(ids)], start, end, diskEnd);
     }
-    if (cached.through < diskEnd) {
-      const target = cached;
+  }
+  private async readStored(
+    db: Database,
+    ids: string[],
+    start: number,
+    end: number,
+    diskEnd: number,
+  ): Promise<Map<string, LaneSample[]>> {
+    // Read before the pass: samples landing while it is out can move the
+    // archive's first row past `diskEnd`, and the rows between would be lost.
+    const fromMemory = this.archive.laneWindows(ids, start, end);
+    // The held span grows to meet a read that touches or adjoins it. A read
+    // clear of it on either side would need every row in the gap, so it starts
+    // over instead.
+    const kept = this.stored;
+    const reuse =
+      kept !== undefined &&
+      start <= kept.through + 1 &&
+      diskEnd >= kept.start - 1;
+    const held = reuse ? kept.lanes : new Map<string, LaneSample[]>();
+    const heldStart = reuse ? kept.start : start;
+    const heldThrough = reuse ? kept.through : start - 1;
+    const added = ids.filter((id) => !held.has(id));
+    // Rows before the window are let go once they outnumber the rows inside
+    // it, or when a lane is added and the span is walked anyway. Trimming on
+    // every read would move every held series each time one lane is read.
+    const trim =
+      heldStart < start &&
+      (added.length > 0 || start - heldStart > heldThrough - start);
+    const spanStart = trim ? start : heldStart;
+    const spanThrough = Math.max(heldThrough, spanStart - 1);
+    const every = [...added, ...held.keys()];
+    // A lane new to the cache needs every row of the span. The lanes already
+    // held need only the rows the span grows by, before it and after it, so
+    // each row is decompressed once for all of them.
+    const before = new Map<string, LaneSample[]>();
+    const after = new Map<string, LaneSample[]>();
+    const passes: {
+      from: number;
+      to: number;
+      lanes: string[];
+      into: Map<string, LaneSample[]>;
+    }[] = [];
+    if (start < spanStart)
+      passes.push({
+        from: start,
+        to: spanStart - 1,
+        lanes: every,
+        into: before,
+      });
+    if (added.length && spanStart <= spanThrough)
+      passes.push({
+        from: spanStart,
+        to: spanThrough,
+        lanes: added,
+        into: after,
+      });
+    if (diskEnd > spanThrough)
+      passes.push({
+        from: spanThrough + 1,
+        to: diskEnd,
+        lanes: every,
+        into: after,
+      });
+    // The held series this read answers from, taken before the pass: a lane
+    // that ends while the pass is out leaves the cache, and its series is still
+    // the answer to this read.
+    const prior = new Map(
+      ids.map((id): [string, LaneSample[]] => [id, held.get(id) ?? []]),
+    );
+    if (passes.length) {
       const load = async () => {
-        const rows = db
-          .query<{ time: number; data: Uint8Array }, [number, number]>(
-            "SELECT time, data FROM samples WHERE time >= ? AND time <= ? ORDER BY time",
-          )
-          .iterate(Math.max(start, target.through + 1), diskEnd);
         let count = 0;
-        for (const row of rows) {
-          if (target.cancelled) return;
-          const s = JSON.parse(
-            new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(row.data))),
-          ) as Snapshot;
-          const lane = s.lanes.find((l) => l.id === id);
-          const group = s.groups.find((g) => g.path === id);
-          target.samples.push({
-            time: row.time,
-            cpu: lane?.cpu ?? null,
-            rss: lane?.rss ?? null,
-            pressure: group?.pressure.cpu?.some ?? lane?.pressure ?? null,
-            memoryPressure:
-              group?.pressure.memory?.some ?? lane?.memoryPressure ?? null,
-            ioPressure: group?.pressure.io?.some ?? lane?.ioPressure ?? null,
+        for (const pass of passes) {
+          const lists = pass.lanes.map((id): [string, LaneSample[]] => {
+            const list = pass.into.get(id) ?? [];
+            pass.into.set(id, list);
+            return [id, list];
           });
-          target.through = row.time;
-          if (++count % 64 === 0) await Bun.sleep(0);
+          for (const row of db
+            .query<{ time: number; data: Uint8Array }, [number, number]>(
+              "SELECT time, data FROM samples WHERE time >= ? AND time <= ? ORDER BY time",
+            )
+            .iterate(pass.from, pass.to)) {
+            if (this.closed)
+              throw new Error("History closed while a lane read was out");
+            const s = JSON.parse(
+              new TextDecoder().decode(
+                Bun.gunzipSync(new Uint8Array(row.data)),
+              ),
+            ) as Snapshot;
+            const lanes = new Map(s.lanes.map((l) => [l.id, l]));
+            const groups = new Map(s.groups.map((g) => [g.path, g]));
+            for (const [id, samples] of lists) {
+              const lane = lanes.get(id);
+              const group = groups.get(id);
+              samples.push({
+                time: row.time,
+                cpu: lane?.cpu ?? null,
+                rss: lane?.rss ?? null,
+                pressure: group?.pressure.cpu?.some ?? lane?.pressure ?? null,
+                memoryPressure:
+                  group?.pressure.memory?.some ?? lane?.memoryPressure ?? null,
+                ioPressure:
+                  group?.pressure.io?.some ?? lane?.ioPressure ?? null,
+              });
+            }
+            if (++count % 64 === 0) await Bun.sleep(0);
+          }
         }
-        target.through = diskEnd;
       };
       const job = load();
-      this.laneLoads.set(id, job);
+      this.storedLoad = job;
       try {
         await job;
       } finally {
-        this.laneLoads.delete(id);
+        this.storedLoad = undefined;
       }
     }
-    return [
-      ...cached.samples.filter((s) => s.time >= start && s.time <= diskEnd),
-      ...fromMemory,
-    ];
+    const inside = (samples: LaneSample[]) =>
+      samples.filter((s) => s.time >= start && s.time <= diskEnd);
+    const answer = new Map(
+      ids.map((id): [string, LaneSample[]] => {
+        const recent = fromMemory.get(id);
+        if (!recent)
+          throw new Error(
+            "The archive answered without a lane it was asked for",
+          );
+        return [
+          id,
+          [
+            ...inside(before.get(id) ?? []),
+            ...inside(prior.get(id) ?? []),
+            ...inside(after.get(id) ?? []),
+            ...recent,
+          ],
+        ];
+      }),
+    );
+    // Nothing above wrote to the cache, so a pass that failed or was stopped
+    // left it as it was. From here every pass has finished, and a held lane
+    // that gained no rows is not touched.
+    if (!passes.length && !trim) return answer;
+    const stored: StoredLanes = reuse
+      ? kept
+      : { start, through: start - 1, lanes: held };
+    this.stored = stored;
+    if (trim)
+      for (const samples of stored.lanes.values()) {
+        const first = samples.findIndex((s) => s.time >= start);
+        samples.splice(0, first < 0 ? samples.length : first);
+      }
+    for (const id of held.keys()) {
+      const samples = stored.lanes.get(id);
+      // A held lane that ended while the pass was out stays out.
+      if (!samples) continue;
+      const earlier = before.get(id) ?? [];
+      const later = after.get(id) ?? [];
+      if (earlier.length) stored.lanes.set(id, earlier.concat(samples, later));
+      else for (const sample of later) samples.push(sample);
+    }
+    for (const id of added)
+      stored.lanes.set(id, [
+        ...(before.get(id) ?? []),
+        ...(after.get(id) ?? []),
+      ]);
+    stored.start = Math.min(spanStart, start);
+    stored.through = Math.max(spanThrough, diskEnd);
+    return answer;
   }
   close(): void {
-    for (const cached of this.laneCache.values()) cached.cancelled = true;
+    this.closed = true;
     this.db?.close();
   }
 }

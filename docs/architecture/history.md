@@ -1,6 +1,6 @@
 # History store
 
-Covers: src/store/archive.ts src/store/history.ts src/store/migrate.ts src/store/point.ts src/store/lane-series.ts src/store/archive.test.ts scripts/bench-history.ts scripts/percentile.ts
+Covers: src/store/archive.ts src/store/history.ts src/store/migrate.ts src/store/point.ts src/store/lane-series.ts src/store/archive.test.ts src/store/lane-series.test.ts scripts/bench-history.ts scripts/percentile.ts
 
 The store keeps complete snapshots for replay and one point per sample for the charts. It owns application persistence; the collector does not depend on SQLite.
 
@@ -12,6 +12,7 @@ The store keeps complete snapshots for replay and one point per sample for the c
 - One sealed segment at a time is inflated while a checkpoint is read, so reading one never holds more than one segment's text. A reader made before a seal cannot place a line after it and is built again.
 - The memory budget charges an open line as text, at two bytes per code unit, and a sealed segment at its compressed size. Independent segments compress a little worse than one pass over the whole checkpoint, so a given budget retains slightly fewer samples than it did when every append rewrote the whole checkpoint.
 - Replay reads only the lines it does not already hold. The cursor keeps the snapshot it last rebuilt and the reader that inflated the lines it walked, and a seal retires that reader. Invariant 6 owns what a walk costs in decompression.
+- A lane-series read takes every lane a screen asks for at once. The archive keeps, per checkpoint, the lane columns it projected and the line it reached; the store keeps the series it read back from SQLite over one span of rows. Lanes already held take only the lines and rows the read reaches past what is held, before it or after it. A read that adds a lane walks the checkpoints and stored rows in its span once for all the lanes it adds. Both caches keep a lane only while the newest sample still holds it, and let go of what lies before the window: the archive drops a checkpoint's projection once the window starts after it, and the store trims its series to the window's start once the rows before it outnumber those inside it or a lane is added, and drops them once the window starts after the last stored row. A stored pass writes nothing to the cache until every pass has finished, and a held lane that gains no rows is not copied.
 - `normalizeSnapshot()` and `normalizePoint()` in `src/store/migrate.ts` are the whole of the load path's migration. They fill the fields a stored record predates and are idempotent.
 - The load path never rewrites a stored record on what it looks like. An event subject becomes the unit it was only where the record proves it held one: the event kind carries a unit field, that field is absent, and the subject equals the last segment of its own cgroup-path identity.
 - Retention is bounded by time, and the points ring grows rather than dropping a point still inside the window.
@@ -32,6 +33,7 @@ The store keeps complete snapshots for replay and one point per sample for the c
 12. Reading recent changes costs the same whether or not there is much to read, and a change aged out by a push leaves the index with its point. `src/store/history.test.ts` checks both.
 13. Lane charts keep brief spikes across checkpoints, and reopened history loads complete lane series without duplicating concurrent requests. `src/store/lane-series.test.ts` checks both.
 14. Unknown memory readings stay unknown in a point instead of becoming zero. `src/store/point.test.ts` checks them.
+15. One read of many lanes inflates each sealed segment and decompresses each stored row once, whatever the number of lanes, and the same read again decompresses nothing and duplicates no sample. A lane that ends, and a checkpoint or stored row the window has passed, leaves its cache, and two readers of one window length whose starts differ by a trend bucket reread at most the rows between. `src/store/archive.test.ts` and `src/store/lane-series.test.ts` count the decompressions for forty lanes and read the caches back.
 
 ## Limits of the checks
 

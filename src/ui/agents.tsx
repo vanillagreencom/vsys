@@ -152,38 +152,54 @@ export function trendEnd(end: number, windowMs: number): number {
   const bucketMs = windowMs / trendWidth;
   return Math.floor(end / bucketMs) * bucketMs;
 }
-/** What a trend read is an answer to: the store, the window and that moment. */
+/** What a trend read is an answer to: the window and the moment it ends. */
 interface Question {
-  history: History;
   windowMs: number;
   at: number;
 }
+/**
+ * What the trend reads have answered for one store. It lives with the store
+ * rather than with the screen, so leaving the list and coming back draws the
+ * series already read and asks the store for none of them again.
+ */
+interface Trends {
+  /** The question every key in `requested` was asked under. */
+  question: Question;
+  /**
+   * One judge for "has this series been asked for": the keys already asked
+   * for under `question`, whether answered or still in flight, so a render
+   * between the ask and the answer does not ask again.
+   */
+  requested: Set<string>;
+  /**
+   * Keys whose read failed under `question`, with the sample time it was asked
+   * on. Each stays requested until a later sample, which asks for it again,
+   * so a read that keeps failing is retried once a sample and not in a loop.
+   */
+  failed: Map<string, number>;
+  /** The series drawn, keyed by lane and window. */
+  loaded: Map<string, LaneSample[]>;
+}
+/** Keyed by the store, so a replaced store starts with nothing read. */
+const answered = new WeakMap<History, Trends>();
+const unread = new Map<string, LaneSample[]>();
 export function useLaneTrends(
   history: History,
   lanes: Lane[],
   end: number,
   windowMs: number,
 ): Map<string, LaneSample[]> {
-  const [loaded, setLoaded] = useState(new Map<string, LaneSample[]>());
+  // An answer lands in `answered`, which React does not watch, so landing one
+  // asks for a render.
+  const [, redraw] = useState(0);
   // The one moment this reads against, and the one the caller draws against.
   // Keying on the sample time would cost a read per visible row every second;
   // keying on nothing but the lane and the window is what this did, and the
   // window then never moved at all.
   const at = trendEnd(end, windowMs);
-  // What a read is an answer to. A read carries it and hands it back, so a
-  // series that arrives after the question moved on is recognised rather than
-  // stored: the only way into `loaded` takes one of these, so an unlabelled
-  // series cannot be stored at all.
-  const wanted = useRef<Question>({ history, windowMs, at });
-  // One judge for "has this series been asked for": the set of keys already
-  // requested. It is a ref rather than state because a render between the ask
-  // and the answer would otherwise see an empty cache and ask again, and it
-  // covers in-flight reads as well as settled ones.
-  const requested = useRef(new Set<string>());
-  // A read is discarded only when the screen is gone. Tying it to the effect's
-  // own life instead would throw away every read that took longer than the
-  // gap between two samples, which on a store with real history is all of
-  // them: the ask is not repeated, so the column would stay blank for good.
+  // A redraw is asked for only while the screen is up. An answer that lands
+  // after it is gone is still kept, because it answers the question the
+  // screen will ask again when it comes back.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -193,73 +209,87 @@ export function useLaneTrends(
   }, []);
   const ids = lanes.map((lane) => lane.id).join("\u0000");
   useEffect(() => {
-    const was = wanted.current;
-    if (was.at !== at || was.windowMs !== windowMs || was.history !== history) {
-      wanted.current = { history, windowMs, at };
-      // A rolled-over bucket, a resized window and a replaced store each make
-      // a new answer for every row, so what was asked for under the old
-      // question is not what is wanted now.
-      requested.current.clear();
+    const keys = (ids ? ids.split("\u0000") : []).map(
+      (id): [string, string] => [id, `${id}\u0000${windowMs}`],
+    );
+    let trends = answered.get(history);
+    if (!trends) {
+      trends = {
+        question: { windowMs, at },
+        requested: new Set(),
+        failed: new Map(),
+        loaded: new Map(),
+      };
+      answered.set(history, trends);
+    } else if (
+      trends.question.at !== at ||
+      trends.question.windowMs !== windowMs
+    ) {
+      // A rolled-over bucket and a resized window each make a new answer for
+      // every row, so what was asked for under the old question is not what
+      // is wanted now. A row keeps drawing its last answer until the new one
+      // lands or its read fails, and a row no longer on screen is let go.
+      trends.question = { windowMs, at };
+      trends.requested.clear();
+      trends.failed.clear();
+      const shown = new Set(keys.map(([, key]) => key));
+      trends.loaded = new Map(
+        [...trends.loaded].filter(([key]) => shown.has(key)),
+      );
     }
-    const missing = (ids ? ids.split("\u0000") : []).filter((id) => {
-      const key = `${id}\u0000${windowMs}`;
-      if (requested.current.has(key)) return false;
-      requested.current.add(key);
-      return true;
+    const kept = trends;
+    for (const [key, time] of kept.failed)
+      if (end > time) {
+        kept.failed.delete(key);
+        kept.requested.delete(key);
+      }
+    const missing = keys.flatMap(([id, key]) => {
+      if (kept.requested.has(key)) return [];
+      kept.requested.add(key);
+      return [id];
     });
     if (!missing.length) return;
-    /**
-     * The one way a series reaches the drawn map. A read started under the
-     * previous question can still be in flight when this one begins, and it
-     * resolves whenever the disk gets to it, which can be after the newer
-     * read: stored unconditionally it would put an older window back on the
-     * screen. Cancelling in advance is the other mistake, and phase 3 already
-     * made it: every answer was discarded and the column stayed blank. So the
-     * answer is kept or dropped when it arrives, on what it is an answer to.
-     */
-    const store = (answer: {
-      asked: Question;
-      id: string;
-      samples: LaneSample[];
-    }) => {
-      if (!mounted.current) return;
-      const now = wanted.current;
-      if (
-        answer.asked.at !== now.at ||
-        answer.asked.windowMs !== now.windowMs ||
-        answer.asked.history !== now.history
-      )
-        return;
-      setLoaded((before) =>
-        new Map(before).set(
-          `${answer.id}\u0000${answer.asked.windowMs}`,
-          answer.samples,
-        ),
-      );
-    };
-    // Each series lands on its own row as it arrives. Waiting for the whole
-    // screen would hold every row blank for as long as the slowest read takes,
-    // and one series that never answered would hold them blank for good.
-    for (const id of missing) {
-      void (async () => {
-        const asked = wanted.current;
-        let samples: LaneSample[] = [];
-        try {
-          samples = await asked.history.laneWindow(
-            id,
-            asked.at,
-            asked.windowMs,
-          );
-        } catch {
-          // A series that cannot be read is a row with no trend, never a row
-          // showing another lane's.
-          samples = [];
+    // One read for every row this question reveals, so the store walks its
+    // history once for all of them rather than once per row.
+    const asked = kept.question;
+    const askedOn = end;
+    void (async () => {
+      let series: Map<string, LaneSample[]> | null = null;
+      try {
+        series = await history.laneWindows(missing, asked.at, asked.windowMs);
+      } catch {
+        // A read that could not be taken is not an empty window, and the
+        // answer a row carried from the previous bucket is not this window.
+        // Each row it asked for loses that answer and draws blank, as a row
+        // not read yet does, and is asked for again on the next sample. No
+        // screen shows the error, so it is not kept.
+        series = null;
+      }
+      // A read started under the previous question can still be in flight
+      // when this one begins, and it resolves whenever the disk gets to it,
+      // which can be after the newer read: stored unconditionally it would put
+      // an older window back on the screen. Cancelling in advance is the
+      // other mistake: every answer is discarded and the column stays blank.
+      // So the answer is kept or dropped when it arrives, on what it answers.
+      if (kept.question !== asked) return;
+      const loaded = new Map(kept.loaded);
+      for (const id of missing) {
+        const key = `${id}\u0000${asked.windowMs}`;
+        const samples = series?.get(id);
+        if (samples) loaded.set(key, samples);
+        else {
+          loaded.delete(key);
+          kept.failed.set(key, askedOn);
         }
-        store({ asked, id, samples });
-      })();
-    }
-  }, [history, ids, windowMs, at]);
-  return loaded;
+      }
+      kept.loaded = loaded;
+      if (mounted.current) redraw((n) => n + 1);
+    })();
+    // The sample time is a dependency so a failed read is asked for again on
+    // the next sample. A sample asks for nothing else: every other key on
+    // screen is already in `requested`.
+  }, [history, ids, windowMs, at, end]);
+  return answered.get(history)?.loaded ?? unread;
 }
 /**
  * A row's CPU trend, or blank columns while its series is still loading. A
