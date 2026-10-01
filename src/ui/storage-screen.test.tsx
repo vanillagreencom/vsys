@@ -777,7 +777,7 @@ test("scratch roots with no reading yet are measuring, not unconfigured", async 
   }
 });
 
-test("each scratch root row says where it came from", async () => {
+test("each scratch root says where it came from under its row", async () => {
   const s = emptySnapshot();
   const root = (path: string, origin: ScratchOrigin | null) => ({
     path,
@@ -794,26 +794,56 @@ test("each scratch root row says where it came from", async () => {
     root("/stored", null),
   ];
   s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 0, error: null }];
-  const t = await mount(s, defaults(), { width: 140, height: 40 });
+  // The narrowest terminal the screen is drawn for: an origin after the
+  // row's fixed columns would start past its last column.
+  const t = await mount(s, defaults(), { width: 80, height: 40 });
   try {
     await t.press("5");
-    const lines = t.frame().split("\n");
-    const said = (path: string) =>
-      lines.find((line) => line.includes(`${path} `))?.trim() ?? "";
-    expect({
-      typed: said("/typed").endsWith("configured"),
-      shipped: said("/shipped").endsWith("default setting"),
-      agent: said("/agent").endsWith("found on an agent"),
-      stored: said("/stored").endsWith("ago"),
+    const origins: Record<string, string | null> = {};
+    for (const path of [
+      "/typed",
+      "/shipped",
+      "/agent",
+      "/stored",
+      "/agent/s",
+    ]) {
+      const lines = t.frame().split("\n");
+      const row = lines.findIndex((line) => line.includes(`${path} `));
+      expect(selectedRow(t.frame())).toContain(`${path} `);
+      const under = lines[row + 1] ?? "";
+      origins[path] = under.includes("Origin")
+        ? under.slice(under.indexOf("Origin") + "Origin".length).trim()
+        : null;
+      await t.press("down");
+    }
+    expect(origins).toEqual({
+      "/typed": "configured",
+      "/shipped": "default setting",
+      "/agent": "found on an agent",
+      "/stored": null,
       // A session sits under its root and repeats nothing about it.
-      session: said("/agent/s").endsWith("ago"),
-    }).toEqual({
-      typed: true,
-      shipped: true,
-      agent: true,
-      stored: true,
-      session: true,
+      "/agent/s": null,
     });
+  } finally {
+    await t.close();
+  }
+});
+
+test("a missing scratch root's error follows its age on the row", async () => {
+  const s = emptySnapshot();
+  const error = "No such file or directory";
+  s.storage.scratch = [
+    { path: "/typed", bytes: null, age: 0, error, origin: "configured" },
+  ];
+  const t = await mount(s, defaults(), { width: 120, height: 30 });
+  try {
+    await t.press("5");
+    const line =
+      t
+        .frame()
+        .split("\n")
+        .find((row) => row.includes("/typed ")) ?? "";
+    expect(line.trimEnd().endsWith(`ago  ${error}`)).toBe(true);
   } finally {
     await t.close();
   }

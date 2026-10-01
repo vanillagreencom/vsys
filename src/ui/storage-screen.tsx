@@ -87,7 +87,7 @@ export function storageItems(s: Snapshot): StorageItem[] {
     ),
   ];
 }
-/** Where a scratch root row came from, in the words its row carries. */
+/** Where a scratch root came from, in the words its detail carries. */
 export function scratchOriginText(origin: ScratchOrigin): string {
   switch (origin) {
     case "configured":
@@ -483,13 +483,18 @@ export function Storage({
             text={fit(amount(x.bytes, c), 10, "right")}
           />
           <span attributes={ui.dim}>{`  ${modified} ago`}</span>
-          {!item.session && item.scratch.origin !== null && (
-            <span attributes={ui.dim}>
-              {`  ${scratchOriginText(item.scratch.origin)}`}
-            </span>
-          )}
           {x.error && <Ink color={ui.warn}>{`  ${safe(x.error)}`}</Ink>}
         </Row>
+        {/* The origin sits under the row rather than after its columns,
+            where a narrow terminal cuts it and pushes the error out. */}
+        {i === selected && !item.session && item.scratch.origin !== null && (
+          <Detail>
+            <Field
+              label="Origin"
+              value={scratchOriginText(item.scratch.origin)}
+            />
+          </Detail>
+        )}
       </box>
     );
   };

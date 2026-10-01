@@ -1,1 +1,1 @@
-- Storage measures the temporary directories running agents name, except one another user owns such as `/tmp`, and each scratch row says where it came from.
+- Storage measures the temporary directories running agents name, except one another user owns such as `/tmp`, and a selected scratch row says where it came from.
