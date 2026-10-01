@@ -1,4 +1,4 @@
-# D004: Bound scratch traversal with a duty cycle on its own thread
+# D007: Bound scratch traversal with a duty cycle on its own thread
 
 [← Decision Index](INDEX.md)
 

@@ -8,7 +8,7 @@
 | 2026-09-28 | D004 | VGS agent-warden research | Ship the warden as a separate vsys component | Keeps automatic correction outside the dashboard promise | Bun ffi port matches Python safety | Active | [Full](D004-warden-separate-component.md) |
 | 2026-09-28 | D005 | VSY-51 | Use shared agent tool data | Prevents copied classification lists | Packaging generates richer data | Active | [Full](D005-shared-agent-tool-data.md) |
 | 2026-09-29 | D006 | VSY-57 | Save only changed Settings keys | Prevents derived defaults from becoming pins | Shared schema can record removals | Active | [Full](D006-settings-save-writes-only-changed-keys.md) |
-| 2026-09-15 | D004 | VSY-45 | Bound scratch traversal with a duty cycle on its own thread | Resting a worker thread bounds the cost a large root can demand | A root outgrows what a bounded traversal can finish in time | Active | [Full](D004-scratch-scan-duty.md) |
+| 2026-09-15 | D007 | VSY-45 | Bound scratch traversal with a duty cycle on its own thread | Resting a worker thread bounds the cost a large root can demand | A root outgrows what a bounded traversal can finish in time | Active | [Full](D007-scratch-scan-duty.md) |
 
 ---
 
