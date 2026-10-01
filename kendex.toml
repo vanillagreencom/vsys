@@ -10,7 +10,7 @@ harnesses = [
     "pi",
 ]
 
-[agents.generalist]
+[agents.maintainer]
 source = "kendex"
 
 [agents.planner]
@@ -44,6 +44,9 @@ source = "kendex"
 source = "kendex"
 
 [agents.reviewer-test]
+source = "kendex"
+
+[agents.runtime]
 source = "kendex"
 
 [agents.rust]
@@ -174,7 +177,6 @@ harnesses = [
 
 [hooks.skill-load-check]
 source = "kendex"
-harnesses = ["claude"]
 
 [commands.code-scrub]
 source = "kendex"
