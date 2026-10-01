@@ -171,6 +171,46 @@ test("a list windows around the selection and says what it left out", async () =
   }
 });
 
+test("each wheel notch moves one row, even before the parent renders the last", async () => {
+  const items = Array.from({ length: 20 }, (_, i) => `row-${i}`);
+  const chosen: number[] = [];
+  // The parent never renders a new selection, as when React batches a fast
+  // flick into one pass: every notch arrives against selected={2}.
+  const ui = await testRender(
+    <List
+      items={items}
+      selected={2}
+      height={10}
+      empty="nothing"
+      onSelect={(index) => chosen.push(index)}
+      render={(item, _i, isSelected) => (
+        <Row key={item} selected={isSelected}>
+          {item}
+        </Row>
+      )}
+    />,
+    { width: 40, height: 12 },
+  );
+  try {
+    await ui.renderOnce();
+    await act(async () => {
+      for (let i = 0; i < 3; i++) await ui.mockMouse.scroll(2, 2, "down");
+    });
+    // The count of rows moved, not that the selection moved: a handler
+    // reading the stale prop answers 3, 3, 3.
+    expect(chosen).toEqual([3, 4, 5]);
+    chosen.length = 0;
+    await act(async () => {
+      for (let i = 0; i < 9; i++) await ui.mockMouse.scroll(2, 2, "up");
+    });
+    expect(chosen).toEqual([4, 3, 2, 1, 0, 0, 0, 0, 0]);
+  } finally {
+    await act(async () => {
+      ui.renderer.destroy();
+    });
+  }
+});
+
 test("a down move stops at the last row and holds an empty list at the first", () => {
   // count, index before the move, index after it.
   const rows: [number, number, number][] = [

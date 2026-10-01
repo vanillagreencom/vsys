@@ -663,6 +663,10 @@ export function List<T>({
   /** Given, the wheel moves the selection one row per notch. */
   onSelect?: (index: number) => void;
 }) {
+  // The row the wheel last chose. Several notches can arrive before the parent
+  // renders the first one, so each counts from here rather than from the prop.
+  const wheeled = useRef(selected);
+  wheeled.current = selected;
   if (!items.length) return <Empty text={empty} />;
   const { start, end } = listWindow(items.length, selected, height, rowHeight);
   return (
@@ -674,9 +678,11 @@ export function List<T>({
         ((event) => {
           const up = event.scroll?.direction === "up";
           if (!up && event.scroll?.direction !== "down") return;
-          onSelect(
-            Math.max(0, Math.min(items.length - 1, selected + (up ? -1 : 1))),
+          wheeled.current = Math.max(
+            0,
+            Math.min(items.length - 1, wheeled.current + (up ? -1 : 1)),
           );
+          onSelect(wheeled.current);
         })
       }
     >

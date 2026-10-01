@@ -1,0 +1,1 @@
+- A fast flick of the mouse wheel over a list moves the selection one row per notch, not one row in all.
