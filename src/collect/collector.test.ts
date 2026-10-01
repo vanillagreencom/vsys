@@ -91,6 +91,37 @@ test("summary sampling does not call the scratch collector", async () => {
     ScratchCollector.prototype.collect = original;
   }
 });
+test("a running agent's temporary directory is measured as scratch it was found on", async () => {
+  const f = setup();
+  const tmp = join(f.root, "agent-tmp");
+  f.write(join(tmp, "session/file"), "1234");
+  f.group("agents.slice/a.scope", [40, 41]);
+  f.proc(40, "agents.slice/a.scope", { env: `TMPDIR=${tmp}\0` });
+  // A process that is not an agent names a directory nobody measures.
+  f.proc(41, "agents.slice/a.scope", {
+    command: ["/bin/cat"],
+    comm: "cat",
+    env: `TMPDIR=${join(f.root, "other")}\0`,
+    parent: 40,
+  });
+  const collector = new Collector(f.config, 100, 4096);
+  try {
+    const s = await collector.sample(1000);
+    expect(s.errors).toEqual([]);
+    expect(
+      s.storage.scratch.map(({ path, origin, error }) => ({
+        path,
+        origin,
+        error,
+      })),
+    ).toEqual([{ path: tmp, origin: "agent", error: null }]);
+    expect(s.storage.sessions.map((x) => x.path)).toEqual([
+      join(tmp, "session"),
+    ]);
+  } finally {
+    collector.close();
+  }
+});
 test("environment is collected for scope mains and agents, not other children", async () => {
   const f = setup();
   f.group("agents.slice/a.scope", [40, 41, 42]);

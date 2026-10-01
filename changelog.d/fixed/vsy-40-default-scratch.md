@@ -1,0 +1,1 @@
+- On a machine without the default scratch directories, Storage and Settings no longer report them as three sources vsys cannot read. Scratch directories you list yourself still report when missing.

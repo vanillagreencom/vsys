@@ -83,6 +83,7 @@ test("each alert condition emits its own rule and clears before rearming", () =>
             bytes: defaults().scratchQuota + 1,
             age: 0,
             error: null,
+            origin: "configured",
           },
         ];
       },

@@ -1,11 +1,20 @@
 import { expect, test } from "bun:test";
-import { defaults } from "../config/config";
-import { type ScanRunner, ScratchCollector } from "./scratch";
-import type { ScanBudget, ScratchScan } from "./scratch-scan";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { defaultScratchDirs, defaults } from "../config/config";
+import { processSnapshot } from "../test/fixture";
+import {
+  agentScratchDirs,
+  type ScanRunner,
+  ScratchCollector,
+  scratchRoots,
+} from "./scratch";
+import type { ScanBudget, ScanRoot, ScratchScan } from "./scratch-scan";
 
 const empty = (time: number): ScratchScan => ({
   scratch: [],
   sessions: [],
+  absent: [],
   time,
   errors: [],
 });
@@ -13,11 +22,13 @@ const empty = (time: number): ScratchScan => ({
 /** A scan the test finishes by hand, so nothing reads a real directory. */
 function held() {
   const budgets: ScanBudget[] = [];
+  const roots: ScanRoot[][] = [];
   const signals: AbortSignal[] = [];
   const waiting: PromiseWithResolvers<ScratchScan>[] = [];
   let closed = 0;
   const runner: ScanRunner = {
-    run(_c, _time, budget, signal) {
+    run(asked, _time, budget, signal) {
+      roots.push(asked);
       budgets.push(budget);
       signals.push(signal);
       const next = Promise.withResolvers<ScratchScan>();
@@ -31,6 +42,7 @@ function held() {
   return {
     runner,
     budgets,
+    roots,
     signals,
     waiting,
     get closed() {
@@ -44,19 +56,19 @@ test("live reads reuse a single pending scan and keep its measurement time", asy
   const scans = held();
   const collector = new ScratchCollector(scans.runner);
   try {
-    expect((await collector.collect(c, 1000, false)).time).toBeNull();
-    expect((await collector.collect(c, 2000, false)).time).toBeNull();
+    expect((await collector.collect(c, [], 1000, false)).time).toBeNull();
+    expect((await collector.collect(c, [], 2000, false)).time).toBeNull();
     expect(scans.waiting.length).toBe(1);
     expect(collector.pending).toBe(true);
     scans.waiting[0].resolve(empty(1000));
-    expect((await collector.collect(c, 2000, true)).time).toBe(1000);
+    expect((await collector.collect(c, [], 2000, true)).time).toBe(1000);
     expect(collector.pending).toBe(false);
-    expect((await collector.collect(c, 2001, false)).time).toBe(1000);
+    expect((await collector.collect(c, [], 2001, false)).time).toBe(1000);
     expect(scans.waiting.length).toBe(1);
     collector.close();
     expect(scans.signals[0].aborted).toBe(true);
     expect(scans.closed).toBe(1);
-    await expect(collector.collect(c, 3000, false)).rejects.toThrow();
+    await expect(collector.collect(c, [], 3000, false)).rejects.toThrow();
   } finally {
     collector.close();
   }
@@ -71,7 +83,7 @@ test("a background scan holds the configured share; a waiting caller waits on no
   const scans = held();
   const collector = new ScratchCollector(scans.runner);
   try {
-    await collector.collect(c, 1000, false);
+    await collector.collect(c, [], 1000, false);
     scans.waiting[0].resolve(empty(1000));
     await scans.waiting[0].promise;
     expect(scans.budgets[0].dutyPercent).toBe(20);
@@ -89,7 +101,7 @@ test("a background scan holds the configured share; a waiting caller waits on no
     close: () => {},
   });
   try {
-    await once.collect(c, 1000, true);
+    await once.collect(c, [], 1000, true);
     expect(scripted[0].dutyPercent).toBe(100);
   } finally {
     once.close();
@@ -106,20 +118,20 @@ test("a scan that outlasts the interval waits the interval out from its completi
   let now = 0;
   const collector = new ScratchCollector(scans.runner, () => now);
   try {
-    await collector.collect(c, 1000, false);
+    await collector.collect(c, [], 1000, false);
     expect(scans.waiting.length).toBe(1);
     // The traversal runs far longer than the rescan interval.
     now = 100000;
     scans.waiting[0].resolve(empty(1000));
-    expect((await collector.collect(c, 2000, true)).time).toBe(1000);
+    expect((await collector.collect(c, [], 2000, true)).time).toBe(1000);
     expect(scans.waiting.length).toBe(1);
     // Measured from the attempt, the completed scan would be eligible again
     // at once and the traversal would never pause.
     now = 129999;
-    await collector.collect(c, 3000, false);
+    await collector.collect(c, [], 3000, false);
     expect(scans.waiting.length).toBe(1);
     now = 130000;
-    await collector.collect(c, 4000, false);
+    await collector.collect(c, [], 4000, false);
     expect(scans.waiting.length).toBe(2);
   } finally {
     collector.close();
@@ -132,20 +144,28 @@ test("a failed scan keeps the last complete reading and names what failed", asyn
   let now = 0;
   const collector = new ScratchCollector(scans.runner, () => now);
   try {
-    await collector.collect(c, 1000, false);
+    await collector.collect(c, [], 1000, false);
     scans.waiting[0].resolve({
       scratch: [
-        { path: "/scratch", bytes: 4096, age: 0, modifiedAt: 1, error: null },
+        {
+          path: "/scratch",
+          bytes: 4096,
+          age: 0,
+          modifiedAt: 1,
+          error: null,
+          origin: "configured",
+        },
       ],
       sessions: [],
+      absent: [],
       time: 1000,
       errors: [],
     });
-    await collector.collect(c, 1000, true);
+    await collector.collect(c, [], 1000, true);
     now = 60000;
-    await collector.collect(c, 2000, false);
+    await collector.collect(c, [], 2000, false);
     scans.waiting[1].reject(new Error("Scratch scan thread exited"));
-    const after = await collector.collect(c, 2000, true);
+    const after = await collector.collect(c, [], 2000, true);
     expect(after.time).toBe(1000);
     expect(after.scratch[0].bytes).toBe(4096);
     expect(after.errors).toEqual([
@@ -162,6 +182,7 @@ test("empty scratch settings need no background work", async () => {
   try {
     const value = await collector.collect(
       { ...defaults(), scratchDirs: [] },
+      [],
       1000,
       false,
     );
@@ -171,4 +192,111 @@ test("empty scratch settings need no background work", async () => {
   } finally {
     collector.close();
   }
+});
+
+test("an agent's temporary directory is scratch work even with no root set", async () => {
+  const scans = held();
+  const collector = new ScratchCollector(scans.runner);
+  try {
+    await collector.collect(
+      { ...defaults(), scratchDirs: [] },
+      ["/agent/tmp"],
+      1000,
+      false,
+    );
+    expect(scans.roots).toEqual([[{ path: "/agent/tmp", origin: "agent" }]]);
+  } finally {
+    collector.close();
+  }
+});
+
+test("the shipped list is default and any list the reader set is theirs", async () => {
+  const shipped = defaultScratchDirs();
+  // The author's workstation runs with no settings file, so these three are
+  // what it measures. They stay the default, and stay scanned there.
+  expect(shipped).toEqual([
+    join(homedir(), "dev/.scratch/agents"),
+    join(homedir(), "dev/.scratch/claude"),
+    "/var/tmp/claude",
+  ]);
+  const scans = held();
+  const collector = new ScratchCollector(scans.runner);
+  try {
+    await collector.collect(defaults(), [], 1000, false);
+    expect(scans.roots[0]).toEqual(
+      shipped.map((path) => ({ path, origin: "default" })),
+    );
+  } finally {
+    collector.close();
+  }
+  // Each row: the list in settings, the agent directories, the roots asked for.
+  const rows: [string, string[], string[], ScanRoot[]][] = [
+    [
+      "the shipped list",
+      ["/a", "/b"],
+      [],
+      [
+        { path: "/a", origin: "default" },
+        { path: "/b", origin: "default" },
+      ],
+    ],
+    // The settings file carries a list that differs from the shipped one, so
+    // every root in it was set by the reader.
+    ["one root removed", ["/a"], [], [{ path: "/a", origin: "configured" }]],
+    [
+      "reordered",
+      ["/b", "/a"],
+      [],
+      [
+        { path: "/b", origin: "configured" },
+        { path: "/a", origin: "configured" },
+      ],
+    ],
+    // A directory a listed root already holds is measured there.
+    [
+      "inside a root",
+      ["/a/"],
+      ["/a", "/a/lane", "/ab"],
+      [
+        { path: "/a/", origin: "configured" },
+        { path: "/ab", origin: "agent" },
+      ],
+    ],
+    [
+      "inside another agent directory",
+      [],
+      ["/t", "/t/x", "/u"],
+      [
+        { path: "/t", origin: "agent" },
+        { path: "/u", origin: "agent" },
+      ],
+    ],
+  ];
+  for (const [name, dirs, agentDirs, roots] of rows)
+    expect({
+      name,
+      roots: scratchRoots(dirs, agentDirs, ["/a", "/b"]),
+    }).toEqual({ name, roots });
+});
+
+test("only running agents name scratch, by absolute path, once each", () => {
+  const procs = [
+    processSnapshot({
+      pid: 1,
+      env: {
+        TMPDIR: "/scratch/agents/",
+        CLAUDE_CODE_TMPDIR: "/scratch/claude",
+      },
+    }),
+    processSnapshot({ pid: 2, env: { TMPDIR: "/scratch/agents" } }),
+    // A relative path names no directory vsys can find.
+    processSnapshot({ pid: 3, env: { TMPDIR: "tmp" } }),
+    // Not an agent: a shell or a build names its own temporary directory.
+    processSnapshot({ pid: 4, tool: null, env: { TMPDIR: "/scratch/shell" } }),
+    processSnapshot({ pid: 5, env: { HOME: "/home/x" } }),
+  ];
+  expect(agentScratchDirs(procs)).toEqual([
+    "/scratch/agents",
+    "/scratch/claude",
+  ]);
 });

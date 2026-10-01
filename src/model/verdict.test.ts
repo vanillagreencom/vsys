@@ -62,7 +62,13 @@ test("severity ranks the ladder and housekeeping never leads it", () => {
   s.system.pressure.io = { some: 15, full: 2, total: 0 };
   s.storage.scrubs = [{ path: "/scrub", text: "errors", problem: true }];
   s.storage.scratch = [
-    { path: "/scratch", bytes: c.scratchQuota + 1, age: 0, error: null },
+    {
+      path: "/scratch",
+      bytes: c.scratchQuota + 1,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
   ];
   const sorted = causes(s, c);
   expect(sorted.map((cause) => cause.id)).toEqual(["scrub", "disk", "scratch"]);

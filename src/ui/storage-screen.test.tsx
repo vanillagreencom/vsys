@@ -3,7 +3,7 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { defaults } from "../config/config";
 import { volumesByDevice } from "../model/integrity";
-import type { Snapshot } from "../model/types";
+import type { ScratchOrigin, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
@@ -22,7 +22,9 @@ test("Storage lists filesystems, then scrubs, then scratch directories, then ses
   const s = emptySnapshot();
   s.storage.volumes = [volumeSnapshot("/a")];
   s.storage.scrubs = [{ path: "/a", text: "ok", problem: false }];
-  s.storage.scratch = [{ path: "/tmp/x", bytes: 1, age: 0, error: null }];
+  s.storage.scratch = [
+    { path: "/tmp/x", bytes: 1, age: 0, error: null, origin: "configured" },
+  ];
   s.storage.sessions = [{ path: "/tmp/s", bytes: 1, age: 0, error: null }];
   expect(storageItems(s).map((item) => item.kind)).toEqual([
     "filesystem",
@@ -225,8 +227,20 @@ function everyList() {
     { path: "/run/btrfs-scrub/one", text: "clean", problem: false },
   ];
   s.storage.scratch = [
-    { path: "/scratch/a", bytes: 10, age: 0, error: null },
-    { path: "/scratch/b", bytes: 20, age: 0, error: null },
+    {
+      path: "/scratch/a",
+      bytes: 10,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
+    {
+      path: "/scratch/b",
+      bytes: 20,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
   ];
   return s;
 }
@@ -657,6 +671,7 @@ test("the scratch heading and its empty line are decided together", () => {
     age: 0,
     modifiedAt: null,
     error: null,
+    origin: "configured" as const,
   });
   const rows: [
     string,
@@ -671,7 +686,16 @@ test("the scratch heading and its empty line are decided together", () => {
       [],
       { scratchTime: 1000 },
       "measured ",
-      "No scratch directory is configured.",
+      "No scratch directory is configured, and no running agent names one.",
+    ],
+    // The shipped roots were measured and none is on this machine. That is a
+    // reading, so it is neither a scan still to come nor a failure.
+    [
+      "default roots absent",
+      ["/default"],
+      { scratchTime: 1000, scratchAbsent: ["/default"] },
+      "measured ",
+      "None of the default scratch directories exists here, and no running agent names one.",
     ],
     // Roots set and the first traversal running. A reader who set them is
     // never told that none are set.
@@ -724,7 +748,7 @@ test("the scratch heading and its empty line are decided together", () => {
 
 test("scratch roots with no reading yet are measuring, not unconfigured", async () => {
   const rows: [string[], boolean, string][] = [
-    [[], false, "No scratch directory is configured."],
+    [[], false, "No scratch directory is configured"],
     [["/scratch"], true, "have not been measured yet"],
     [["/scratch"], false, "have not been measured yet"],
   ];
@@ -745,10 +769,43 @@ test("scratch roots with no reading yet are measuring, not unconfigured", async 
         scratchDirs,
         denied:
           scratchDirs.length > 0 &&
-          frame.includes("No scratch directory is configured."),
+          frame.includes("No scratch directory is configured"),
       }).toEqual({ scratchDirs, denied: false });
     } finally {
       await t.close();
     }
+  }
+});
+
+test("each scratch root row says where it came from", async () => {
+  const s = emptySnapshot();
+  const root = (path: string, origin: ScratchOrigin) => ({
+    path,
+    bytes: 1,
+    age: 0,
+    error: null,
+    origin,
+  });
+  s.storage.scratch = [
+    root("/typed", "configured"),
+    root("/shipped", "default"),
+    root("/agent", "agent"),
+  ];
+  s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 0, error: null }];
+  const t = await mount(s, defaults(), { width: 140, height: 40 });
+  try {
+    await t.press("5");
+    const lines = t.frame().split("\n");
+    const said = (path: string) =>
+      lines.find((line) => line.includes(`${path} `))?.trim() ?? "";
+    expect({
+      typed: said("/typed").endsWith("configured"),
+      shipped: said("/shipped").endsWith("default setting"),
+      agent: said("/agent").endsWith("found on an agent"),
+      // A session sits under its root and repeats nothing about it.
+      session: said("/agent/s").endsWith("ago"),
+    }).toEqual({ typed: true, shipped: true, agent: true, session: true });
+  } finally {
+    await t.close();
   }
 });

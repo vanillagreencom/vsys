@@ -127,6 +127,18 @@ export interface Config {
   keys: Record<string, string>;
 }
 export const configPath = join(homedir(), ".config/vsys/config.toml");
+/**
+ * The scratch roots measured when the settings file names none. They are one
+ * workstation's layout, so a default root that does not exist is not
+ * configured at all; a list the reader set reports its missing roots.
+ */
+export function defaultScratchDirs(): string[] {
+  return [
+    join(homedir(), "dev/.scratch/agents"),
+    join(homedir(), "dev/.scratch/claude"),
+    "/var/tmp/claude",
+  ];
+}
 export function defaults(
   agentTools = shippedAgentTools.tools.map((tool) => tool.name),
 ): Config {
@@ -178,11 +190,7 @@ export function defaults(
     paneEnv: ["VSYS_PANE", "TMUX_PANE"],
     titleEnv: ["VSYS_PANE_TITLE"],
     sccacheNames: ["sccache"],
-    scratchDirs: [
-      join(homedir(), "dev/.scratch/agents"),
-      join(homedir(), "dev/.scratch/claude"),
-      "/var/tmp/claude",
-    ],
+    scratchDirs: defaultScratchDirs(),
     scratchQuota: 10737418240,
     scratchRefreshMs: 30000,
     scratchDutyPercent: 25,
@@ -260,7 +268,11 @@ export interface LoadedConfig {
   layeredAgentTools: string[];
 }
 
-function sameValue(key: string, left: unknown, right: unknown): boolean {
+/**
+ * Whether a setting holds its default. `serialize` writes only the settings
+ * that do not, so this is also whether the settings file carries the value.
+ */
+export function sameValue(key: string, left: unknown, right: unknown): boolean {
   if (key === "agentTools" && Array.isArray(left) && Array.isArray(right))
     return sameStringSet(left, right);
   return JSON.stringify(left) === JSON.stringify(right);

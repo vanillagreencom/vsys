@@ -242,7 +242,9 @@ function everyScreen(c: Config) {
   // Storage moves between its lists, so it needs more than one of them to
   // have somewhere to move to.
   s.storage.scrubs = [{ path: "/data", text: "ok", problem: false }];
-  s.storage.scratch = [{ path: "/tmp/x", bytes: 1, age: 0, error: null }];
+  s.storage.scratch = [
+    { path: "/tmp/x", bytes: 1, age: 0, error: null, origin: "configured" },
+  ];
   // A sample before this one without the lanes, so their start is a change.
   const h = new History(c);
   h.add(emptySnapshot(1000));

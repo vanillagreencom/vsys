@@ -95,6 +95,16 @@ export interface Scratch {
   error: string | null;
 }
 /**
+ * Where a scratch root came from: the reader's own list, the shipped list the
+ * settings file does not override, or the temporary directory a running agent
+ * names in its environment.
+ */
+export type ScratchOrigin = "configured" | "default" | "agent";
+/** A measured scratch root and the reason vsys measured it. */
+export interface ScratchRoot extends Scratch {
+  origin: ScratchOrigin;
+}
+/**
  * One damaged block address from a scrub report, with every path it is
  * reachable under. The address is the unit of damage, not the file: one extent
  * can carry several names, and removing the first leaves the damage on disk.
@@ -141,8 +151,13 @@ export interface Storage {
   deviceWrites?: Record<string, number> | null;
   devices?: Device[];
   volumes: Volume[];
-  scratch: Scratch[];
+  scratch: ScratchRoot[];
   sessions: Scratch[];
+  /**
+   * Default roots the last scan found absent. They are not configured on this
+   * machine, so they carry no row and no source error.
+   */
+  scratchAbsent?: string[];
   scrubs: Scrub[];
   scratchTime?: number | null;
   scratchPending?: boolean;

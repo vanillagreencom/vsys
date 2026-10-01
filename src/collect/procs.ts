@@ -10,6 +10,7 @@ import { scopeMain } from "../model/scopes";
 import type { Group, Proc, SourceError } from "../model/types";
 import { buildKind, excludedArgv, toolName } from "./builds";
 import { Reader } from "./io";
+import { scratchEnv } from "./scratch";
 import type { CollectionConfig } from "./settings";
 
 /** stat's command can contain spaces and closing parentheses. */
@@ -233,8 +234,7 @@ export class ProcessCollector implements ProcessSource {
     const allowed = new Set([
       "CLAUDE_CONFIG_DIR",
       "PATH",
-      "TMPDIR",
-      "CLAUDE_CODE_TMPDIR",
+      ...scratchEnv,
       "CARGO_BUILD_JOBS",
       "RUST_TEST_THREADS",
       "SHELL",

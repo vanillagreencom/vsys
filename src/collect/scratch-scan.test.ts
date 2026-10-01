@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { linkSync, lstatSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
-import { type PaceClock, restMs, scanScratch } from "./scratch-scan";
+import {
+  type PaceClock,
+  restMs,
+  type ScanRoot,
+  scanScratch,
+} from "./scratch-scan";
 
 const full = { sliceMs: 10, dutyPercent: 100 };
 
@@ -15,8 +20,14 @@ test("one traversal counts hard links once per root and once per session", async
     linkSync(join(path, "a/file"), join(path, "b/shared"));
     symlinkSync(f.root, join(path, "loop"));
     const missing = join(f.root, "missing");
-    const c = { ...f.config, scratchDirs: [path, missing] };
-    const { scan: result } = await scanScratch(c, Date.now(), full);
+    const { scan: result } = await scanScratch(
+      [
+        { path, origin: "configured" },
+        { path: missing, origin: "configured" },
+      ],
+      Date.now(),
+      full,
+    );
     expect(result.scratch[0].bytes).toBe(
       lstatSync(path).size +
         lstatSync(join(path, "a")).size +
@@ -39,12 +50,77 @@ test("one traversal counts hard links once per root and once per session", async
   }
 });
 
+test("only a root the reader listed fails for not existing", async () => {
+  const f = fixture();
+  try {
+    const present = join(f.root, "present");
+    const file = join(f.root, "file");
+    f.write(join(present, "session/file"), "1234");
+    f.write(file, "");
+    const at = (name: string) => join(f.root, name);
+    // Each row is one root scanned alone: whether it has a row, the error on
+    // that row, whether it counts as a missing default, and the source error.
+    const rows: [
+      ScanRoot,
+      { row: boolean; error: boolean; absent: boolean },
+    ][] = [
+      // The shipped list on a machine that has none of it: no row, no
+      // error, and the screen can say the defaults are not here.
+      [
+        { path: at("default-a"), origin: "default" },
+        { row: false, error: false, absent: true },
+      ],
+      // An agent's temporary directory it never created was asked for by
+      // nobody, so it leaves no trace at all.
+      [
+        { path: at("agent-gone"), origin: "agent" },
+        { row: false, error: false, absent: false },
+      ],
+      // A root the reader typed that is missing is a real problem.
+      [
+        { path: at("typed-gone"), origin: "configured" },
+        { row: true, error: true, absent: false },
+      ],
+      // A default that exists is measured as it always was.
+      [
+        { path: present, origin: "default" },
+        { row: true, error: false, absent: false },
+      ],
+      [
+        { path: present, origin: "agent" },
+        { row: true, error: false, absent: false },
+      ],
+      // A default that exists and cannot be measured still fails: only
+      // nonexistence means the default is not configured here.
+      [
+        { path: file, origin: "default" },
+        { row: true, error: true, absent: false },
+      ],
+    ];
+    for (const [root, expected] of rows) {
+      const { scan } = await scanScratch([root], 1000, full);
+      expect({ root, ...expected }).toEqual({
+        root,
+        row: scan.scratch.length === 1,
+        error: scan.errors.length === 1 && scan.scratch[0]?.error !== null,
+        absent: scan.absent.includes(root.path),
+      });
+      // A row says where it came from.
+      expect(scan.scratch.map((x) => x.origin)).toEqual(
+        expected.row ? [root.origin] : [],
+      );
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("a traversal rests for what each spent slice earned", async () => {
   const f = fixture();
   const path = join(f.root, "scratch");
   try {
     for (let i = 0; i < 4; i++) f.write(join(path, `dir-${i}/file`), "1234");
-    const c = { ...f.config, scratchDirs: [path] };
+    const roots: ScanRoot[] = [{ path, origin: "configured" }];
     // The clock advances a fixed step per reading, so every entry measures
     // the same busy time however loaded the machine running this is. A slice
     // of zero makes every entry end one.
@@ -71,7 +147,7 @@ test("a traversal rests for what each spent slice earned", async () => {
         },
       };
       const { scan, rests } = await scanScratch(
-        c,
+        roots,
         Date.now(),
         { sliceMs: 0, dutyPercent },
         clock,

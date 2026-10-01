@@ -142,6 +142,8 @@ export class StorageCollector {
     mountInfo: MountInfo[] | null = readMounts(r, c.procRoot),
     waitForScratch = true,
     skipScratch = false,
+    /** The temporary directories running agents name, measured as scratch. */
+    agentScratch: string[] = [],
   ): Promise<Storage> {
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
@@ -358,9 +360,15 @@ export class StorageCollector {
         r.error(c.scrubDir, e);
     }
     if (!skipScratch) {
-      const scratch = await this.scratch.collect(c, time, waitForScratch);
+      const scratch = await this.scratch.collect(
+        c,
+        agentScratch,
+        time,
+        waitForScratch,
+      );
       storage.scratch = scratch.scratch;
       storage.sessions = scratch.sessions;
+      storage.scratchAbsent = scratch.absent;
       storage.scratchTime = scratch.time;
       storage.scratchPending = this.scratch.pending;
       r.errors.push(...scratch.errors);

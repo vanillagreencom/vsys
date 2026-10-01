@@ -156,7 +156,13 @@ test("a housekeeping cause is an event but never a verdict change", () => {
   const log = started();
   const large = emptySnapshot(2000);
   large.storage.scratch = [
-    { path: "/scratch", bytes: c.scratchQuota + 1, age: 0, error: null },
+    {
+      path: "/scratch",
+      bytes: c.scratchQuota + 1,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
   ];
   const out = log.advance(large, c);
   expect(out.find((e) => e.cause === "scratch")?.kind).toBe("alert-open");
@@ -362,8 +368,20 @@ test("each over-quota path reports its own size, not the largest", () => {
   const log = started();
   const large = emptySnapshot(2000);
   large.storage.scratch = [
-    { path: "/small", bytes: c.scratchQuota + 1, age: 0, error: null },
-    { path: "/big", bytes: c.scratchQuota + 9999, age: 0, error: null },
+    {
+      path: "/small",
+      bytes: c.scratchQuota + 1,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
+    {
+      path: "/big",
+      bytes: c.scratchQuota + 9999,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
   ];
   const opened = log
     .advance(large, c)

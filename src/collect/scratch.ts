@@ -1,13 +1,63 @@
+import { isAbsolute, resolve } from "node:path";
+import { defaultScratchDirs, sameValue } from "../config/config";
+import type { Proc } from "../model/types";
 import type {
   PacedScan,
   ScanBudget,
   ScanReply,
   ScanRequest,
+  ScanRoot,
   ScratchScan,
 } from "./scratch-scan";
 import type { CollectionConfig } from "./settings";
 import { workerFile } from "./worker-file";
 import { WorkerHost, type WorkerPort } from "./worker-host";
+
+/** The environment names an agent's temporary directory is read from. */
+export const scratchEnv = ["TMPDIR", "CLAUDE_CODE_TMPDIR"] as const;
+
+/**
+ * The temporary directories running agents name, once each and in path order
+ * so the rows keep their place from one scan to the next. A relative value
+ * names no directory vsys can find, so it is left out.
+ */
+export function agentScratchDirs(procs: Proc[]): string[] {
+  const dirs = new Set<string>();
+  for (const p of procs) {
+    if (p.tool === null) continue;
+    for (const name of scratchEnv) {
+      const value = p.env[name];
+      if (value !== undefined && isAbsolute(value)) dirs.add(resolve(value));
+    }
+  }
+  return [...dirs].sort();
+}
+
+/**
+ * The roots one scan measures. The settings list is the reader's own unless
+ * it is the shipped default, whose roots need not exist. An agent's directory
+ * already inside a listed root is measured there, so it adds no row of its
+ * own; path order puts a parent before its children, so the same holds
+ * between agent directories.
+ */
+export function scratchRoots(
+  dirs: string[],
+  agentDirs: string[],
+  shipped = defaultScratchDirs(),
+): ScanRoot[] {
+  const origin = sameValue("scratchDirs", dirs, shipped)
+    ? "default"
+    : "configured";
+  const roots: ScanRoot[] = dirs.map((path) => ({ path, origin }));
+  const covered = (path: string) =>
+    roots.some(({ path: root }) => {
+      const dir = resolve(root);
+      return path === dir || path.startsWith(`${dir}/`);
+    });
+  for (const path of agentDirs)
+    if (!covered(path)) roots.push({ path, origin: "agent" });
+  return roots;
+}
 
 /** What this host calls on a scan thread. */
 export type ScanThread = WorkerPort<ScanRequest, ScanReply>;
@@ -18,7 +68,7 @@ export type ScanThread = WorkerPort<ScanRequest, ScanReply>;
  */
 export interface ScanRunner {
   run(
-    c: CollectionConfig,
+    roots: ScanRoot[],
     time: number,
     budget: ScanBudget,
     signal: AbortSignal,
@@ -49,13 +99,13 @@ export class WorkerScan implements ScanRunner {
     });
   }
   run(
-    c: CollectionConfig,
+    roots: ScanRoot[],
     time: number,
     budget: ScanBudget,
     signal: AbortSignal,
   ): Promise<PacedScan> {
     return this.host.request(
-      (id) => ({ id, config: c, time, budget }) satisfies ScanRequest,
+      (id) => ({ id, roots, time, budget }) satisfies ScanRequest,
       signal,
     );
   }
@@ -72,6 +122,7 @@ export class ScratchCollector {
   private data: ScratchScan = {
     scratch: [],
     sessions: [],
+    absent: [],
     time: null,
     errors: [],
   };
@@ -91,14 +142,17 @@ export class ScratchCollector {
   get pending(): boolean {
     return this.job !== undefined;
   }
+  /** `agentDirs` are the temporary directories running agents name now. */
   async collect(
     c: CollectionConfig,
+    agentDirs: string[],
     time: number,
     wait: boolean,
   ): Promise<ScratchScan> {
     if (this.closed) throw new Error("Scratch collector has closed");
-    if (c.scratchDirs.length === 0)
-      return { scratch: [], sessions: [], time, errors: [] };
+    const roots = scratchRoots(c.scratchDirs, agentDirs);
+    if (roots.length === 0)
+      return { scratch: [], sessions: [], absent: [], time, errors: [] };
     if (
       !this.job &&
       (wait ||
@@ -114,7 +168,7 @@ export class ScratchCollector {
         dutyPercent: wait ? 100 : c.scratchDutyPercent,
       };
       this.job = Promise.resolve()
-        .then(() => this.runner.run(c, time, budget, controller.signal))
+        .then(() => this.runner.run(roots, time, budget, controller.signal))
         .then(({ scan }) => {
           if (!controller.signal.aborted) this.data = scan;
         })
