@@ -33,5 +33,4 @@ Process collection reads every process in the configured `/proc` once per sample
 
 ## Decisions
 
-- Synchronous reads cost less processor time than one asynchronous request per file. On the dashboard's own thread they would raise the time a keystroke waits, so they run on a thread vsys keeps for the life of its collection settings. A thread per sample would pay its startup every second and lose the environment cache each time.
-- Starting the process read before the cgroup tree would shorten a sample, but it needs two messages per sample and a reading that waits halfway for membership. `DEVELOPMENT.md` records the elapsed time this leaves against the 20 ms fixture target.
+- [D008](../decisions/D008-process-reads-on-their-own-thread.md): processes are read on a thread the collector keeps, one file at a time, with the reply as JSON text. It records the alternatives and the missed 20 ms elapsed fixture target.

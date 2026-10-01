@@ -132,6 +132,7 @@ export class ProcessCollector implements ProcessSource {
     return this.read(request);
   }
   close(): void {}
+  // REVISIT(D008): asynchronous reads would return if they cost less processor time.
   /**
    * One pass over the process table. Each file is read synchronously, one
    * after another: one asynchronous request per file costs more processor

@@ -57,6 +57,7 @@ export interface ProcessPort {
   terminate(): void;
 }
 
+// REVISIT(D008): a sample's elapsed time misses the 20 ms fixture target here.
 /**
  * Process collection on a thread of its own, kept for the life of one
  * collector. The thread holds the environment cache and the last reading's
