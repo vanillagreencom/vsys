@@ -799,6 +799,11 @@ test("each scratch root says where it came from under its row", async () => {
   const t = await mount(s, defaults(), { width: 80, height: 40 });
   try {
     await t.press("5");
+    // Only the selected root opens its detail: with /typed selected, the
+    // root under it says nothing about where it came from.
+    const opened = t.frame().split("\n");
+    const shipped = opened.findIndex((line) => line.includes("/shipped "));
+    expect(opened[shipped + 1]).not.toContain("Origin");
     const origins: Record<string, string | null> = {};
     for (const path of [
       "/typed",
