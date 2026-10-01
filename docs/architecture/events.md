@@ -1,6 +1,6 @@
 # Timeline events
 
-Covers: src/store/events.ts src/ui/timeline.ts src/ui/timeline-screen.tsx
+Covers: src/store/events.ts src/ui/timeline.ts src/ui/timeline-screen.tsx src/store/events.test.ts
 
 An event is one change between two consecutive samples, held as data: a lane starting or stopping, a process moving between cgroups, an alert opening or closing, or a new verdict. `EventLog` derives every event from successive snapshots and the one cause ladder, so an alert is a cause opening and closing rather than a second detection of the same problem.
 
