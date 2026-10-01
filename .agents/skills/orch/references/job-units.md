@@ -2,7 +2,9 @@
 
 Load when starting, naming, finding or stopping an orch job through `scripts/lib/job-unit.sh`: run it with `--help` for its subcommands, or source it for the same functions. Its callers are `dev-validate-run`'s run, every job [waiter-launch.md](waiter-launch.md) launches (`approval-wait`, `ci-wait`, `queue-wait`, `lane-mail wait` and the repeat watch), and the watch handover helper `scripts/lib/watch-handover.sh` starts for `oversee-succeed` and `oversee launch --predecessor`, and the watch that helper restarts. These launches use their own mechanism, not this one: `lane_run_detached` in `scripts/lib/lane-launch.sh`, which `open-terminal` uses for a terminal emulator and a woken lane turn, and the preparing-job stop in `lane-close` and `open-terminal`.
 
-The runner bounds a job's lifetime and, when asked, its memory, and nothing else; it sets no CPU or task limit and no slice. A launch with `--memory-max MIB` sets `MemoryMax=MIBM` on the unit; no process group holds a memory bound, so a launch that would run under `setsid` refuses it as `memory-max-unheld`, exit 5, with its runner line, and starts nothing. A launch without it sets no memory limit. Under a unit, the job and everything it forks end when the job ends or reaches its bound. Under `setsid` see [Runner line](#runner-line) for what escapes.
+`job-unit.sh attach RECORD -- ARGV` is the one start that is not detached: it runs the job as the caller's own child, leading a process group of its own in the caller's session, and waits for it. The child forks through the github skill's group-leader prefix, `scripts/lib/group-leader.sh`, so an install without the github skill beside orch refuses the start as `group-leader-missing`, exit 2, and starts nothing. That prefix runs perl, so a host without perl refuses the start as `missing-command commands=perl`, exit 2, and starts nothing. `dev-validate-run --attached` starts its run this way. A host whose agent warden kills detached jobs needs it: the job stays inside the calling agent's process tree, where a unit or a `setsid` job does not.
+
+The runner bounds a job's lifetime, its memory when asked, and under a unit the tasks and memory the launching process's own cgroup caps; it sets no CPU limit. The unit starts in the launching process's user-manager slice where one exists, as the `Slice` row in [Unit properties](#unit-properties) says and [Agent warden](#agent-warden) explains, and there takes that process's task cap and memory soft cap. A launch with `--memory-max MIB` sets `MemoryMax=MIBM` on the unit in place of that memory soft cap; no process group holds a memory bound, so a launch that would run under `setsid` refuses it as `memory-max-unheld`, exit 5, with its runner line, and starts nothing. A launch without it sets no `MemoryMax`. Under a unit, the job and everything it forks end when the job ends or reaches its bound. Under `setsid` see [Runner line](#runner-line) for what escapes.
 
 ## Unit name
 
@@ -27,6 +29,9 @@ Every character outside `A-Za-z0-9_.-` in the name becomes `_`. Example: `orch-v
 | `LimitNOFILE` | The launching process's own soft and hard open-file limits (`unlimited` as `infinity`) |
 | Environment | Every variable the launching process exports, `TMUX`, `TMUX_PANE` and a lane's account variable among them |
 | `WorkingDirectory` | The launching process's own directory |
+| `Slice` | The innermost slice in the launching process's cgroup v2 path under this user's manager (`job-unit.sh`'s `job_unit_slice`): `agents.slice` for a lane the warden's launcher placed, or one the warden moved. None, so the manager's default slice, where the launching process runs outside the user manager (a login session scope) or has no cgroup v2 path (macOS). |
+| `TasksMax` | The launching process's own cgroup `pids.max`, where the unit takes a `Slice` and that file holds a number. None, so the manager's `DefaultTasksMax`, otherwise. |
+| `MemoryHigh` | The launching process's own cgroup `memory.high`, under the same conditions, and only for a launch with no `--memory-max` |
 
 ## Runner line
 
@@ -40,9 +45,22 @@ The launch prints the runner line and records it. `dev-validate-run` and a waite
 | `runner=setsid reason=linger-unread detail=TEXT` | A launch with no `--cap`, and `loginctl` could not report whether it lingers; `TEXT` is its first line of output. Unread is no linger. |
 | `runner=setsid reason=probe-failed detail=TEXT` | `systemd-run` could not start the probe unit; `TEXT` is its first line of stderr |
 | `runner=setsid reason=unit-launch-failed detail=TEXT` | The probe unit started, the job's `systemd-run` failed, and the manager has no unit of that name. A failed call for a unit the manager does have leaves the job as that unit; a manager that does not answer fails the launch. |
+| `runner=attached` | The job ran through `attach`, as the caller's own child |
 
-A unit holds every process the job starts, and systemd kills what remains when the job's main process exits or reaches `RuntimeMaxSec`. Under `setsid` nothing bounds the job: it leads its own process group and calls `job-unit.sh end` when it finishes, which tears that group down as § Stopping says. A job killed before `end`, and a process that starts its own session, escape it.
+A unit holds every process the job starts, and systemd kills what remains when the job's main process exits or reaches `RuntimeMaxSec`. Under `setsid` or `attach` nothing bounds the job: it leads its own process group and calls `job-unit.sh end` when it finishes, which tears that group down as § Stopping says. A job killed before `end`, and a process that starts its own session, escape it.
 
 ## Stopping
 
-A job unit is stopped by the exact name its launch recorded, never by a pattern: two repositories' lanes for one item share every prefix, so a glob stops the other repository's units. A unit the manager reports `not-found` has already ended. A manager that cannot be reached is a failure, never a unit found stopped. A `setsid` job is stopped by its process group, only while its pid still runs the argv its caller expects. Every `setsid` teardown, `end` and `stop-job` alike, sends the group SIGTERM, waits up to the kill grace (`JOB_UNIT_KILL_GRACE`) for its members to exit, and sends SIGKILL only if one still runs, as a unit's stop does over `TimeoutStopSec`.
+A job unit is stopped by the exact name its launch recorded, never by a pattern: two repositories' lanes for one item share every prefix, so a glob stops the other repository's units. A unit the manager reports `not-found` has already ended. A manager that cannot be reached is a failure, never a unit found stopped. A `setsid` or attached job is stopped by its process group, only while its pid still runs the argv its caller expects. Every such teardown, `end` and `stop-job` alike, sends the group SIGTERM, waits up to the kill grace (`JOB_UNIT_KILL_GRACE`) for its members to exit, and sends SIGKILL only if one still runs, as a unit's stop does over `TimeoutStopSec`.
+
+## Agent warden
+
+The agent warden is a systemd user timer that [vsys](https://github.com/vanillagreencom/vsys) ships (`warden/agent-warden`). It keeps agent work inside `agents.slice`:
+
+- It moves a process that runs outside `agents.slice` and carries `AGENT_CONFINE=1` in its environment, with its build and shell descendants, into a scope of its own, `agent-warden-PID-START.scope`. On a host with the warden, every lane pane starts through its launcher, which sets that variable, and a job unit receives it with the rest of the launching process's environment.
+- It stops an `agents.slice` scope as an orphan when every process in it has lost its launcher and the scope stays heavy past a grace period. The thresholds are in the warden source.
+- It leaves in place a unit that matches `AGENT_WARDEN_JOB_UNITS` (default `orch-*.service`), and treats a process already inside `agents.slice` as confined, never as escaped.
+
+A job unit started in the manager's default slice is outside `agents.slice`. A warden with no job-unit exemption moves the whole job into a scope and can later stop that scope as an orphan, and the run then reads as lost. A unit started in the launching lane's slice is inside `agents.slice` whatever `AGENT_WARDEN_JOB_UNITS` says, and the reaper stops only scopes, never a service. The unit also shares that slice's task and memory pool with every lane, so it takes the launching scope's own `TasksMax` and `MemoryHigh` (§ Unit properties): a job whose process count or memory runs away is held to what its lane may use, not the whole slice.
+
+A run lost with no host or low-memory kill on record: read `journalctl --user -u agent-warden` at the time the run ended. A reaped job's scope shows as a line that opens `reaped orphan scope agent-warden-PID-START.scope: stopped N process(es)`.

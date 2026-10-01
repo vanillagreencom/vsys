@@ -16,10 +16,11 @@
 # tests really ran" must reverse-engineer that from run numbers, job
 # conclusions and timestamps — the machinery this version deletes, and the
 # source of every correctness defect found reviewing v2. ADOPTION
-# PRECONDITION, one of two (references/adoption.md):
+# PRECONDITION, one of two; the contexts each requires are in
+# ../references/adoption.md § The precondition — check before anything else:
 #
-#   (1) RECOMMENDED — a merge queue whose required contexts include the
-#       repo's test aggregate. The queue runs the suite on the MERGED result
+#   (1) RECOMMENDED — a merge queue that requires the repo's CI jobs.
+#       The queue runs the suite on the MERGED result
 #       and refuses the merge if it fails, so the suite runs once, against
 #       the code that actually ships. Proven in the sandbox: a PR whose head
 #       attempt skipped its heavy jobs, with a green gate and no proof of
@@ -80,7 +81,12 @@
 # Diagnostic records precede their explanation and use lib/diagnostics.sh.
 #
 # Read errors fail LOUDLY (exit 1) without acting: treating a transient API
-# failure as absent evidence could flip a healthy PR's state.
+# failure as absent evidence could flip a healthy PR's state. The
+# predicate's class-unresolved verdict is the one failure recorded on the
+# pull request as well as in the run: this writer records it on that head as
+# ../SKILL.md § Decision table states, the pass goes on converging every
+# other pull request, and it exits 1 at its end. The cause
+# may be the pull request's own or the runner's; the log names which.
 set -u
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -191,6 +197,8 @@ if [ -z "${PR_NUMBER:-}" ]; then
     rg_message warning writer-unbounded "$PER_PR_DEADLINE_SECONDS" \
       "no timeout utility here, so each PR's evaluation runs unbounded"
   fi
+  # The single-head run exits 3 where it recorded class-unresolved on its head:
+  # the head carries its status, and the pass still fails at its end.
   converge_pr() { # NUMBER HEAD BASE AUTHOR -> the single-head run's status
     EVENT_NAME="$EVENT_NAME" PR_NUMBER="$1" \
       HEAD_SHA="$2" PR_BASE_SHA="$3" PR_AUTHOR="$4" \
@@ -228,7 +236,9 @@ if [ -z "${PR_NUMBER:-}" ]; then
       fi
     fi
     if [ "$pr_status" -ne 0 ]; then
-      if [ "$pr_status" -eq 124 ]; then
+      if [ "$pr_status" -eq 3 ]; then
+        rg_message error writer-class-unresolved "$number" "::error::PR #$number: change class unresolved; pending is recorded on its head, and this pass fails at its end (see log above)"
+      elif [ "$pr_status" -eq 124 ]; then
         rg_message error writer-convergence-deadline "$number" "::error::PR #$number passed its ${PER_PR_DEADLINE_SECONDS}s share of the converge step; left for the next pass"
       else
         rg_message error writer-convergence-failed "$number" "::error::convergence failed for PR #$number (see log above)"
@@ -266,9 +276,11 @@ case "$verdict" in
   approved)              desired="success" ;;
   changes-requested)     desired="failure" ;;
   awaiting|threads-open) desired="pending" ;;
+  unmeasured)            desired="pending" ;;
   untracked-claim)       desired="failure" ;;
   unreasoned-decline)    desired="failure" ;;
   suppressed-findings)   desired="failure" ;;
+  class-unresolved)      desired="pending" ;;
   *)
     rg_message error writer-verdict-unknown "$verdict" "::error::unknown verdict '$verdict'"
     exit 1
@@ -307,16 +319,27 @@ post_status() {
   rg_message notice writer-status-posted "$HEAD_SHA" "posted $GATE_CONTEXT=$1 on $HEAD_SHA ($2)"
 }
 
+# class-unresolved reads no evidence and ends every path below with exit 3,
+# the status the converge loop fails the pass on once it has recorded it.
+# A success already on this head stands, as it did under any failed
+# evaluation; everywhere else the failure is recorded as pending.
+recorded_status=0
+[ "$verdict" != class-unresolved ] || recorded_status=3
+if [ "$verdict" = class-unresolved ] && [ "$current_state" = success ]; then
+  rg_message notice writer-class-unresolved-kept "$HEAD_SHA" "PR #$PR_NUMBER: change class unresolved this pass; the success already on $HEAD_SHA stands"
+  exit "$recorded_status"
+fi
+
 # Idempotent no-op: idle passes append nothing.
 if [ "$current_state" = "$desired" ] && [ "$current_desc" = "${detail:0:140}" ]; then
   rg_message notice writer-unchanged "$PR_NUMBER" "PR #$PR_NUMBER: $GATE_CONTEXT already $desired; nothing to do"
-  exit 0
+  exit "$recorded_status"
 fi
 
 if [ "$desired" != "success" ]; then
   # Downward posts never defer — toward closed is the safe direction.
   post_status "$desired" "$detail"
-  exit 0
+  exit "$recorded_status"
 fi
 
 # POST-ORDERING GUARD. Before posting SUCCESS, re-read the current

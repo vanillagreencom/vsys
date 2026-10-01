@@ -58,10 +58,10 @@
 # timeout-minutes would still be a CANCELLED check on the PR head — which
 # is why every wait in the step below is bounded. The relay's own dispatch
 # failure exits GREEN and WARNS instead of reddening; it raises no alarm of
-# its own, and a sustained outage is detected as GATE STALENESS (the cron
-# floor plus pr-watch --heal), never by this job. A PR-attached cancellation
-# is classified by whether the run executed steps: only a never-started run
-# proves the split regressed.
+# its own. During a sustained outage the 15-minute cron floor converges
+# every stale gate, and no reducer reports gate staleness. A PR-attached
+# cancellation is classified by whether the run executed steps: only a
+# never-started run proves the split regressed.
 #
 # NO dispatch loop: the relay's if: excludes the two legs it dispatches
 # into, so a converge run can never re-enter the relay. (workflow_dispatch
@@ -124,8 +124,8 @@ name: Review gate writer
   schedule:
     - cron: "*/15 * * * *"
   # The CONVERGE leg the relay dispatches into — and the same entry point
-  # `pr-watch.sh --heal` and a manual kick already use. Removing this
-  # trigger silently strips every event-fast path down to the cron floor.
+  # a manual kick uses. Removing this trigger silently strips every
+  # event-fast path down to the cron floor.
   workflow_dispatch: {}
   # check_run is a per-repo OPT-IN, shipped commented out: every ordinary
   # CI job completion fires check_run events, and each one that reaches a
@@ -519,18 +519,14 @@ jobs:
           # an oversight. See THE INVARIANT above for why a red here would
           # cost more than the fault it reports.
           #
-          # A sustained outage appears as GATE STALENESS because this job is
+          # A sustained outage raises no red check because this job is
           # deliberately not a red check. The write job owns escalation because
-          # it holds issues:write. Every event
-          # then falls to the cron floor, so gates sit unconverged longer
-          # than the floor's period — which is precisely what
-          # `pr-watch.sh --heal` reduces on (gate-stale -> one writer
-          # dispatch per invocation, plus a heal-dispatched line). Each relay
-          # run's log carries the warning below as its only per-run trace;
-          # the detector of record is the staleness reducer that already runs
-          # against every open PR.
+          # it holds issues:write. Every event then falls to the 15-minute
+          # cron floor, whose next run converges each stale gate; no reducer
+          # reports gate staleness. Each relay run's log carries the warning
+          # below as its only per-run trace.
           printf 'review-gate-notice=relay-dispatch-exhausted value=%q\n' "$rc"
-          echo "::warning::could not request a converge pass after two attempts ($workflow_file on $dispatch_ref): $(why "$rc"); this event converges on the cron floor instead (sustained failure surfaces as gate staleness — pr-watch --heal)"
+          echo "::warning::could not request a converge pass after two attempts ($workflow_file on $dispatch_ref): $(why "$rc"); this event converges on the 15-minute cron floor instead"
   write:
     # ONE job-level writer group, cancel-in-progress: false. This is a
     # WASTE reducer, not the correctness mechanism: single-writer runs can
@@ -625,14 +621,54 @@ jobs:
           # release tag names; the tag only names the version installed. A
           # tag can be moved, and a moved one would run another installer
           # here. Both values are written together from one tag.
-          KENDEX_VERSION: v1.2.0
-          KENDEX_INSTALLER_SHA: c773eb8f4422bdff22679adcec379eb1b99099dc
+          KENDEX_VERSION: v1.3.0
+          KENDEX_INSTALLER_SHA: f6ad9491a810a9256f04f66f8d083eb9db709602
           KENDEX_INSTALLER_REPO: vanillagreencom/kendex
+        # REVIEW_GATE_LOCK_KENDEX=main adds a second kendex for the one diff
+        # whose only changed path is the install record: kendex's rolling main
+        # build, installed by the same pinned installer with --git into a
+        # directory of its own and handed to change-class as
+        # HARNESS_CI_LOCK_KENDEX. A repository that records .kendex-lock.json
+        # with a kendex built from its own tree writes a registration shape
+        # the pinned release may not know yet, and that release refuses the
+        # record. In kendex's own repository that build is the default
+        # branch's code, lagging it until the next main build publishes; a
+        # failed main build leaves the rolling-main pointer, and the lag,
+        # where they were. It is not a build of the pull request's tree, which
+        # would cost a cold cargo build on every pass and run pull request
+        # code in the job that later holds the writer token. It is not a build
+        # the record names either: the record names none, and the commit it
+        # names often has no published build. The main build is a release
+        # asset kendex's own release workflow published, fetched by the same
+        # pinned installer with no credential in reach, so it takes no trust
+        # the pinned release does not. Every other diff keeps the pinned
+        # release, and so does every diff where the setting is empty. A main
+        # build that fails to install is a warning, never a step failure: the
+        # lock-only diff falls back to the pinned release, which refuses a
+        # record it cannot read, and every other pull request converges.
         run: |
           set -euo pipefail
           policy="$(.agents/skills/review-gate/scripts/review-policy --check-config)"
           if [ "$policy" = "review-policy=active" ]; then
             curl -fsSL "https://raw.githubusercontent.com/$KENDEX_INSTALLER_REPO/$KENDEX_INSTALLER_SHA/install.sh" | sh -s -- --version "$KENDEX_VERSION"
+            lock="$(.agents/skills/review-gate/scripts/review-policy --lock-kendex)"
+            case "$lock" in
+              review-policy-lock-kendex=off) ;;
+              review-policy-lock-kendex=main)
+                lock_home="$RUNNER_TEMP/kendex-lock"
+                lock_rc=0
+                curl -fsSL "https://raw.githubusercontent.com/$KENDEX_INSTALLER_REPO/$KENDEX_INSTALLER_SHA/install.sh" | HOME="$lock_home" XDG_DATA_HOME="$lock_home/.local/share" PATH="$lock_home/.local/bin:$PATH" sh -s -- --git --cli-only || lock_rc=$?
+                if [ "$lock_rc" -eq 0 ]; then
+                  printf 'HARNESS_CI_LOCK_KENDEX=%s\n' "$lock_home/.local/bin/kendex" >>"$GITHUB_ENV"
+                else
+                  echo "::warning::lock-kendex-install exit=$lock_rc: kendex's main build did not install, so a pull request whose only change is .kendex-lock.json is judged by the pinned release"
+                fi
+                ;;
+              *)
+                echo "::error::review-policy --lock-kendex printed '$lock', neither off nor main"
+                exit 1
+                ;;
+            esac
           fi
 
       - name: Evaluate and converge the gate

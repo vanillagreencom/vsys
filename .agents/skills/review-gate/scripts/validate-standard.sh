@@ -4,10 +4,13 @@
 #
 # READ-ONLY: every GitHub call below is a GET. It answers whether the
 # repository's GitHub-side settings match the organization standard. The
-# standard's values (the CI and gate contexts, app, environment, secret names)
-# live in ../standard.json; the rows that hold no value (organization
-# source, merge queue, thread resolution, Copilot review, no classic
-# protection, zero bypass actors) are fixed here. Its subject is GitHub
+# standard's values come from lib/standard.sh: the CI and gate contexts from
+# ../standard.json, the app, environment and secret names, the required
+# contexts and the bypass actors a ruleset holding one rule type alone may
+# carry from the review-gate settings this repository declares. The rows
+# that hold no value (rule sources, merge queue, approvals, stale-approval
+# dismissal, thread resolution, Copilot review, no classic protection) are
+# fixed here. Its subject is GitHub
 # state, not the checkout, so validate.sh does not run it: CI's token
 # cannot read bypass actors, installations or secret names, and every such
 # row would be unreadable there. The permission each row's reads need is in
@@ -37,24 +40,67 @@ print_usage() {
 Usage: validate-standard.sh [--environment-only | --help]   (no positional arguments)
 
 Reports, read-only, whether THIS repository's GitHub settings match the
-organization standard. standard.json in the skill holds its values. The
-repository is the one `gh` resolves: GH_REPO when set, else the checkout's
-remote.
+organization standard. standard.json in the skill holds the CI and gate
+contexts. The organization's values are review-gate settings, resolved from
+the current directory like every other: REVIEW_GATE_STANDARD_APP,
+REVIEW_GATE_STANDARD_ENVIRONMENT and REVIEW_GATE_STANDARD_SECRETS. The
+repository's own required contexts are REVIEW_GATE_STANDARD_CONTEXTS, and
+the bypass actors its merge-queue and required-checks rulesets admit the
+optional REVIEW_GATE_STANDARD_QUEUE_BYPASS and
+REVIEW_GATE_STANDARD_CHECKS_BYPASS, each empty by default, read the same
+way. The repository is the one `gh` resolves: GH_REPO when set, else the
+checkout's remote.
 
---environment-only reports the environment policy and its secret names.
-Adoption uses this mode without requiring organization ruleset access.
+--environment-only reports the environment policy and its secret names, and
+reads neither REVIEW_GATE_STANDARD_APP, REVIEW_GATE_STANDARD_CONTEXTS, the
+two bypass keys nor any ruleset. Refresh
+adoption uses this mode, with the refresh template's environment and secret
+names set as process values, which outrank the settings files.
 
 One verdict line per row, VALUE being what was observed:
-  standard-ruleset-source           every effective default-branch rule comes
-                                    from an organization ruleset
+  standard-ruleset-source           pull_request, copilot_code_review,
+                                    deletion and non_fast_forward each come
+                                    from an organization ruleset, and every
+                                    effective default-branch rule comes from
+                                    one, except required_status_checks and
+                                    merge_queue, which come from a repository
+                                    ruleset only. VALUE is the source types the
+                                    rules come from; a FAIL value lists each
+                                    departure, SOURCE:ID:TYPE for a rule from
+                                    a source its type may not use and
+                                    missing:TYPE for a type no organization
+                                    ruleset holds, or none for no rule
   standard-merge-queue              the default branch requires the merge queue
   standard-required-contexts        the required contexts are exactly the
-                                    standard's ci_context and gate_context
+                                    REVIEW_GATE_STANDARD_CONTEXTS list, and
+                                    the standard's gate_context is not among
+                                    them. VALUE is the required contexts; a
+                                    FAIL value may be undeclared:CONTEXTS
+                                    (the repository declares no list) or
+                                    gate-required:CONTEXTS
+  standard-required-approvals       an organization ruleset's pull-request
+                                    rule requires at least 1 approval. VALUE
+                                    is the highest count such a rule
+                                    requires, or absent
+  standard-stale-dismissal          an organization ruleset's pull-request
+                                    rule dismisses stale approvals on push.
+                                    VALUE is true, false or absent
   standard-conversation-resolution  a pull-request rule requires every review
                                     thread resolved
   standard-copilot-review           a rule requests a Copilot review
-  standard-bypass-actors            no ruleset behind those rules has a bypass
-                                    actor
+  standard-bypass-actors            every bypass actor of a ruleset behind
+                                    those rules is one the standard admits
+                                    there: on a ruleset whose rules are
+                                    merge_queue alone, an entry of
+                                    REVIEW_GATE_STANDARD_QUEUE_BYPASS; on one
+                                    whose rules are required_status_checks
+                                    alone, an entry of
+                                    REVIEW_GATE_STANDARD_CHECKS_BYPASS; on any
+                                    other, none. An entry is TYPE:ID:MODE,
+                                    GitHub's actor_type, actor_id and
+                                    bypass_mode. VALUE is the count of actors,
+                                    or on a FAIL each departure as
+                                    RULESET=TYPE:ID:MODE
   standard-classic-protection       the default branch has no classic branch
                                     protection beside the rulesets
   standard-ci-context               an Actions job named the standard's
@@ -69,12 +115,13 @@ One verdict line per row, VALUE being what was observed:
                                     pull_request leg ran CI and the head did
                                     not come through the merge queue),
                                     no-associated-pull-request or unreadable
-  standard-app                      the standard's app is installed on every
+  standard-app                      REVIEW_GATE_STANDARD_APP is installed on every
                                     repository of the organization
-  standard-environment              the standard's environment exists and
-                                    deploys from the default branch only
-  standard-environment-secrets      that environment holds every secret the
-                                    standard names (names only)
+  standard-environment              REVIEW_GATE_STANDARD_ENVIRONMENT exists
+                                    and deploys from the default branch only
+  standard-environment-secrets      that environment holds every secret
+                                    REVIEW_GATE_STANDARD_SECRETS names
+                                    (names only)
   standard-secrets-outside          no other secret carries one of those names:
                                     repository Actions secrets, every
                                     organization Actions secret (shared with
@@ -85,8 +132,10 @@ One verdict line per row, VALUE being what was observed:
 A failed read reports its row as FAIL with `unreadable` in the value, never
 as a match. The permission each row's reads need, as GitHub App permissions:
   ruleset-source, merge-queue,      the branch's rules: Metadata read
-  required-contexts, conversation-
-  resolution, copilot-review
+  required-contexts, required-
+  approvals, stale-dismissal,
+  conversation-resolution,
+  copilot-review
   bypass-actors                     each ruleset, read where it lives
                                     (orgs/OWNER/rulesets/ID for an
                                     organization ruleset,
@@ -126,7 +175,8 @@ Exit codes:
   0  every row matched
   1  at least one FAIL line
   2  the check could not run at all (bad arguments, jq missing, a missing
-     or malformed standard.json, the repository itself could not be read)
+     or malformed standard.json, a standard setting unset or empty, the
+     repository itself could not be read)
 USAGE
 }
 
@@ -149,10 +199,16 @@ die() { # CODE VALUE MESSAGE
   exit 2
 }
 
+[ -r "$SCRIPT_DIR/lib/settings.sh" ] || die settings-load "$SCRIPT_DIR/lib/settings.sh" "could not load the settings library"
+. "$SCRIPT_DIR/lib/settings.sh" || exit 2
 if [ ! -r "$SCRIPT_DIR/lib/standard.sh" ] || ! . "$SCRIPT_DIR/lib/standard.sh" 2>/dev/null; then
   die standard-lib-load "$SCRIPT_DIR/lib/standard.sh" "could not load the standard library"
 fi
-rg_standard_load "$SCRIPT_DIR/../standard.json" || exit 2
+if [ "$ENVIRONMENT_ONLY" -eq 1 ]; then
+  rg_standard_load "$SCRIPT_DIR/../standard.json" environment || exit 2
+else
+  rg_standard_load "$SCRIPT_DIR/../standard.json" full || exit 2
+fi
 
 SCRATCH="$(mktemp -d)" || die scratch "${TMPDIR:-/tmp}" "could not create a scratch directory"
 trap 'rm -rf -- "$SCRATCH"' EXIT
@@ -196,7 +252,7 @@ bad() { FAILED=$((FAILED + 1)); rg_report FAIL "$@"; }
 if [ "$ENVIRONMENT_ONLY" -eq 0 ]; then
 # ------------------------------------------------------ default branch ---
 
-RULE_ROWS="standard-ruleset-source standard-merge-queue standard-required-contexts standard-conversation-resolution standard-copilot-review standard-bypass-actors"
+RULE_ROWS="standard-ruleset-source standard-merge-queue standard-required-contexts standard-required-approvals standard-stale-dismissal standard-conversation-resolution standard-copilot-review standard-bypass-actors"
 RULES=""
 if read_api "repos/$FULL/rules/branches/$BRANCH_URI" '.[] | @json' --paginate &&
   RULES="$(printf '%s' "$READ_OUT" | jq -s '.' 2>/dev/null)" &&
@@ -205,11 +261,19 @@ if read_api "repos/$FULL/rules/branches/$BRANCH_URI" '.[] | @json' --paginate &&
   # here is this script's own fault.
   rules() { jq -r "$1" <<<"$RULES" || die rules-query "$1" "jq could not evaluate a query over the parsed rules"; }
 
-  sources="$(rules 'if length == 0 then "none" else ([.[] | select(.ruleset_source_type != "Organization") | "\(.ruleset_source_type):\(.ruleset_id)"] | unique | join(",")) end')"
-  case "$sources" in
-    "") ok standard-ruleset-source Organization "every rule on $BRANCH comes from an organization ruleset" ;;
+  # The organization ruleset holds the review, deletion and force-push rules
+  # every repository shares. A repository keeps its own required checks and
+  # merge queue in its own rulesets and nowhere else, an organization ruleset
+  # included. Any other source for a rule is a departure, and so is a shared
+  # rule no organization ruleset holds.
+  departures="$(rules 'if length == 0 then "none" else (
+    [.[] | select(if .type == "required_status_checks" or .type == "merge_queue" then .ruleset_source_type != "Repository" else .ruleset_source_type != "Organization" end) | "\(.ruleset_source_type):\(.ruleset_id):\(.type)"]
+    + (["pull_request", "copilot_code_review", "deletion", "non_fast_forward"] - [.[] | select(.ruleset_source_type == "Organization") | .type] | map("missing:\(.)"))
+    | unique | join(",")) end')"
+  case "$departures" in
+    "") ok standard-ruleset-source "$(rules '[.[].ruleset_source_type] | unique | join(",")')" "$BRANCH takes its shared rules from an organization ruleset, and only its required checks and merge queue from a repository ruleset" ;;
     none) bad standard-ruleset-source none "no ruleset applies to $BRANCH" ;;
-    *) bad standard-ruleset-source "$sources" "rules on $BRANCH come from rulesets that are not the organization's; the standard deletes each per-repository ruleset" ;;
+    *) bad standard-ruleset-source "$departures" "these rules on $BRANCH depart from the standard's sources: pull_request, copilot_code_review, deletion and non_fast_forward come from an organization ruleset, and required_status_checks and merge_queue from a repository ruleset only, which holds nothing else" ;;
   esac
 
   if [ "$(rules 'any(.[]; .type == "merge_queue")')" = true ]; then
@@ -218,11 +282,33 @@ if read_api "repos/$FULL/rules/branches/$BRANCH_URI" '.[] | @json' --paginate &&
     bad standard-merge-queue absent "$BRANCH has no merge-queue rule"
   fi
 
-  if contexts="$(rules '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] | unique | join(";")')" &&
-    [ "$contexts" = "$WANT_CONTEXTS" ]; then
-    ok standard-required-contexts "$contexts" "$BRANCH requires exactly the standard's contexts"
+  contexts="$(rules '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] | unique | join(";")')"
+  gated="$(jq -r --arg gate "$WANT_GATE" 'any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]?; .context == $gate))' <<<"$RULES")" ||
+    die rules-query gate-context "jq could not evaluate a query over the parsed rules"
+  if [ -z "$WANT_CONTEXTS" ]; then
+    bad standard-required-contexts "undeclared:$contexts" "this repository declares no REVIEW_GATE_STANDARD_CONTEXTS, so $BRANCH's required contexts have nothing to match; set it in the [env] table of kendex.settings.toml to the contexts $BRANCH should require"
+  elif [ "$gated" = true ]; then
+    bad standard-required-contexts "gate-required:$contexts" "$BRANCH requires $WANT_GATE, which the standard's approval rule replaces. While the writer runs, $WANT_GATE stays required: remove it from the required contexts in the ruleset edit that precedes disabling the writer, never before, and never list it in REVIEW_GATE_STANDARD_CONTEXTS: .agents/skills/review-gate/references/adoption.md § Repo-side wiring"
+  elif [ "$contexts" = "$WANT_CONTEXTS" ]; then
+    ok standard-required-contexts "$contexts" "$BRANCH requires exactly the contexts this repository declares"
   else
-    bad standard-required-contexts "$contexts" "$BRANCH requires these contexts; the standard requires exactly: $WANT_CONTEXTS"
+    bad standard-required-contexts "$contexts" "$BRANCH requires these contexts; REVIEW_GATE_STANDARD_CONTEXTS declares exactly: $WANT_CONTEXTS"
+  fi
+
+  # GitHub enforces the strictest of several pull-request rules, so the
+  # highest count and any dismissal decide. A repository ruleset's rule is
+  # the ruleset-source row's departure and counts for nothing here.
+  approvals="$(rules '[.[] | select(.type == "pull_request" and .ruleset_source_type == "Organization") | .parameters.required_approving_review_count] | if length == 0 then "absent" else (max | tostring) end')"
+  case "$approvals" in
+    "" | *[!0-9]* | 0) bad standard-required-approvals "$approvals" "no organization pull-request rule on $BRANCH requires an approval; the standard requires at least 1" ;;
+    *) ok standard-required-approvals "$approvals" "$BRANCH requires $approvals approval(s) from an organization ruleset" ;;
+  esac
+
+  if stale="$(rules '[.[] | select(.type == "pull_request" and .ruleset_source_type == "Organization") | .parameters.dismiss_stale_reviews_on_push] | if length == 0 then "absent" elif any(.[]; . == true) then "true" else "false" end')" &&
+    [ "$stale" = true ]; then
+    ok standard-stale-dismissal true "$BRANCH dismisses a stale approval on push"
+  else
+    bad standard-stale-dismissal "$stale" "no organization pull-request rule on $BRANCH dismisses a stale approval on push, so an approval outlives the head it approved"
   fi
 
   if [ "$(rules 'any(.[]; .type == "pull_request" and .parameters.required_review_thread_resolution == true)')" = true ]; then
@@ -241,13 +327,28 @@ if read_api "repos/$FULL/rules/branches/$BRANCH_URI" '.[] | @json' --paginate &&
   # ruleset and omits the field otherwise, so a missing field is
   # unreadable and never zero. Each ruleset is read at the level that owns
   # it: an organization owner sees an organization ruleset's actors through
-  # the organization endpoint, not through the repository one.
+  # the organization endpoint, not through the repository one. A ruleset
+  # whose rules on the branch are merge_queue alone may carry the actors
+  # REVIEW_GATE_STANDARD_QUEUE_BYPASS admits, and one whose rules are
+  # required_status_checks alone those REVIEW_GATE_STANDARD_CHECKS_BYPASS
+  # admits: bypassing either skips only the queue or only the checks, while
+  # every other rule stays on a ruleset nobody bypasses. Any other actor on
+  # any ruleset is a departure.
   actors=0
+  unadmitted=""
   unreadable=""
   causes=""
   owned="$(rules '[.[] | select(.ruleset_id != null) | "\(.ruleset_source_type) \(.ruleset_id)"] | unique | .[]')"
   while read -r source id; do
     [ -n "$id" ] || continue
+    case "$id" in
+      *[!0-9]*)
+        unreadable="${unreadable:+$unreadable,}$id"
+        causes="${causes:+$causes
+}$id: not a ruleset id"
+        continue
+        ;;
+    esac
     case "$source" in
       Organization) endpoint="orgs/$OWNER/rulesets/$id" ;;
       Repository) endpoint="repos/$FULL/rulesets/$id" ;;
@@ -258,27 +359,39 @@ if read_api "repos/$FULL/rules/branches/$BRANCH_URI" '.[] | @json' --paginate &&
         continue
         ;;
     esac
-    if ! read_api "$endpoint" 'if has("bypass_actors") then (.bypass_actors | length | tostring) else "withheld" end'; then
+    if ! read_api "$endpoint" 'if has("bypass_actors") then "actors:" + (.bypass_actors | map("\(.actor_type):\(.actor_id // ""):\(.bypass_mode // "always")") | join(";")) else "withheld" end'; then
       unreadable="${unreadable:+$unreadable,}$id"
       causes="${causes:+$causes
 }$id: $READ_ERR"
+      continue
     elif [ "$READ_OUT" = withheld ]; then
       unreadable="${unreadable:+$unreadable,}$id"
       causes="${causes:+$causes
 }$id: bypass_actors withheld, which GitHub does without write access to the ruleset"
-    else
-      actors=$((actors + READ_OUT))
+      continue
     fi
+    case "$(rules "[.[] | select(.ruleset_id == $id) | .type] | unique | join(\",\")")" in
+      merge_queue) admitted="$WANT_QUEUE_BYPASS" ;;
+      required_status_checks) admitted="$WANT_CHECKS_BYPASS" ;;
+      *) admitted="" ;;
+    esac
+    listed="$(rg_pack "${READ_OUT#actors:}" ';')" ||
+      die rules-query "$id" "could not split the bypass actors of this ruleset"
+    while IFS= read -r actor; do
+      [ -n "$actor" ] || continue
+      actors=$((actors + 1))
+      grep -qxF -- "$actor" <<<"$admitted" || unadmitted="${unadmitted:+$unadmitted,}$id=$actor"
+    done <<<"$listed"
   done <<EOF_OWNED
 $owned
 EOF_OWNED
   if [ -n "$unreadable" ]; then
     bad standard-bypass-actors "unreadable:$unreadable" "the bypass actors of these rulesets could not be read:
 $causes"
-  elif [ "$actors" -eq 0 ]; then
-    ok standard-bypass-actors 0 "no ruleset on $BRANCH has a bypass actor"
+  elif [ -n "$unadmitted" ]; then
+    bad standard-bypass-actors "$unadmitted" "these bypass actors, as RULESET=TYPE:ID:MODE, are ones the standard does not admit on that ruleset; a ruleset holding merge_queue alone admits REVIEW_GATE_STANDARD_QUEUE_BYPASS, one holding required_status_checks alone REVIEW_GATE_STANDARD_CHECKS_BYPASS, and any other none"
   else
-    bad standard-bypass-actors "$actors" "rulesets on $BRANCH carry $actors bypass actor(s); the standard has none"
+    ok standard-bypass-actors "$actors" "every bypass actor on $BRANCH's rulesets is one the standard admits there"
   fi
 else
   why="${READ_ERR:-the response is not an array of rule objects}"
@@ -293,7 +406,7 @@ fi
 if read_api "repos/$FULL/branches/$BRANCH_URI" '.protection.enabled | if type == "boolean" then (if . then "on" else "off" end) else error("protection.enabled is not a boolean") end'; then
   case "$READ_OUT" in
     off) ok standard-classic-protection off "$BRANCH has no classic branch protection" ;;
-    on) bad standard-classic-protection on "$BRANCH has classic branch protection beside the rulesets; the standard holds every rule in the organization rulesets, so remove it" ;;
+    on) bad standard-classic-protection on "$BRANCH has classic branch protection beside the rulesets; the standard holds every rule in rulesets, the shared rules in the organization's and the required checks and merge queue in the repository's, so remove it" ;;
     *) bad standard-classic-protection unreadable "the branch read answered neither on nor off" ;;
   esac
 else
@@ -302,9 +415,10 @@ fi
 
 # ---------------------------------------------------------- CI context ---
 
-# The ruleset requires the CI context by name on the pull request and again
-# on the merge group, so a repository whose jobs carry other names, or whose
-# CI never runs for a merge group, never merges. An Actions job reports its
+# Every repository under the standard reports the aggregate CI context on
+# the pull_request and merge_group legs. What its ruleset requires is
+# .agents/skills/review-gate/references/adoption.md
+# § Repo-side wiring. An Actions job reports its
 # name as a check context on the commit it ran for. The pull request the
 # default branch's head merged holds the head where the pull_request leg ran.
 # The merge_group leg ran on the head itself, which the merge queue merged;
@@ -383,7 +497,7 @@ ci_context_row() {
   pr_jobs="$LEG_JOBS"
   pr_list="$(leg_list "$pr_jobs")"
   if ! grep -qxF -- "$WANT_CI" <<<"$pr_jobs"; then
-    bad standard-ci-context "ci-context-missing:pull_request:$pr_list" "$FULL reported no $WANT_CI job for pull request #$number on its head $pr_sha, so the ruleset's required $WANT_CI context never reports and no pull request merges. Give the job that aggregates every lane the name $WANT_CI: .agents/skills/harness-ci/references/wiring.md § The CI context"
+    bad standard-ci-context "ci-context-missing:pull_request:$pr_list" "$FULL reported no $WANT_CI job for pull request #$number on its head $pr_sha, and the standard has every repository report $WANT_CI on the pull_request and merge_group legs. Give the job that aggregates every lane the name $WANT_CI: .agents/skills/harness-ci/references/wiring.md § The CI context"
     return 0
   fi
 
@@ -394,7 +508,7 @@ ci_context_row() {
   if [ "$LEG_RUNS" -eq 0 ]; then
     bad standard-ci-context "merge-group-unobserved:$pr_list" "$FULL reported $WANT_CI for pull request #$number on $pr_sha. No merge_group run ran on $head, the head of $BRANCH, so the head did not come through the merge queue, and the merge_group leg is unconfirmed until the next merge through the queue."
   elif ! grep -qxF -- "$WANT_CI" <<<"$LEG_JOBS"; then
-    bad standard-ci-context "ci-context-missing:merge_group:$(leg_list "$LEG_JOBS")" "$FULL reported no $WANT_CI job for the merge group on $head, the head of $BRANCH, so the merge queue waits on a $WANT_CI context nothing reports: .agents/skills/harness-ci/references/wiring.md § The CI context"
+    bad standard-ci-context "ci-context-missing:merge_group:$(leg_list "$LEG_JOBS")" "$FULL reported no $WANT_CI job for the merge group on $head, the head of $BRANCH, and the standard has every repository report $WANT_CI on the pull_request and merge_group legs: .agents/skills/harness-ci/references/wiring.md § The CI context"
   else
     ok standard-ci-context "$pr_list" "$FULL reported $WANT_CI for pull request #$number on $pr_sha and for its merge group on $head"
   fi

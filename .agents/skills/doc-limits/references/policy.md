@@ -12,7 +12,7 @@
 ## Exclusion list
 
 - Generated files are excluded by exact path from the render writer's `.kendex-generated.json`. Adopted in-place source remains governed because the writer leaves it out of that inventory. Adoption needs no ownership row in the exclusions file.
-- An absent inventory is an empty one: nothing is excluded and every tracked document is measured. A project whose items are all in-place, or one installed below the Git root, writes no repository inventory and needs none. An unreadable or malformed inventory fails with exit `2`; install or refresh kendex at the Git repository root in the main checkout and stage the inventory with the renders.
+- An absent inventory is an empty one: nothing is excluded and every tracked document is measured. A project whose items are all in-place, or one installed below the Git root, writes no repository inventory and needs none. An unreadable or malformed inventory fails with exit `2`; install or refresh kendex at the Git repository root in the main checkout and stage the inventory with the renders. A malformed inventory's refusal then carries the shared reader's status, jq version, cause and fix.
 - The default mode reads the worktree inventory, falling back to its index copy when absent. Staged mode reads the tracked index copy; an inventory staged for deletion is absent. An untracked inventory reads from the worktree.
 - `DOC_LIMITS_EXCLUDES` selects the repository-relative file. Its default is `tools/doc-limits-excludes`. `--excludes FILE` overrides it.
 - Each row is `pattern<TAB>reason`. A missing pattern or reason is a configuration error. Blank lines and lines starting with `#` are ignored.
@@ -26,7 +26,8 @@
 - `DOC_LIMITS_MARGIN_PCT` sets the margin as a percent of each limit: a decimal integer from 0 to 99 without leading zeros. Its default is `2`. The margin in bytes rounds down. `0` leaves the limit alone. Any other value refuses with exit `2`, and only a run with `--against` reads it.
 - A document REF does not hold at its path counts as grown from 0 bytes, a renamed document included.
 - A document the change leaves unchanged or shrinks is judged on its limit alone.
-- REF is the tree the change is measured from, because every difference from REF counts as the change's growth. A pull request run in CI passes the merge commit's first parent, `HEAD^1`. A local run or a head-only checkout passes `$(git merge-base HEAD <base>)`, never a base branch tip that moved after the branch point. Two pull requests that each pass against the same base then put one document over its limit in a merge group only when each grows it by more than the margin. A merge group run passes no `--against`, so a group that fits its limits merges.
+- REF is the tree the change is measured from, because every difference from REF counts as the change's growth. A pull request run in CI passes the merge commit's first parent, `HEAD^1`. A local run or a head-only checkout passes `$(git merge-base HEAD <base>)`, never a base branch tip that moved after the branch point.
+- Recommended CI wiring: run the `--against` check on pull requests and keep it out of a merge group job. A byte ceiling is a context budget the pull request answers for, and a budget should not eject a group. Growth measured from REF cannot see a concurrent change to the classes or the exclusions, or another change's growth landing beside it, so under this wiring a document can land on the base branch over its limit; the next pull request's run names it.
 
 ## Check result
 

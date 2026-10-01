@@ -51,9 +51,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/adapters/claude.sh"
 # `pi-claude/` model is one of them: pi-claude-bridge runs Claude Code on the
 # credential CLAUDE_CONFIG_DIR names, so that variable IS the Claude seat it
 # spends, and a Pi lane named on a Claude config dir is never handed that dir as
-# its Pi root. `lanes` measures no Copilot CLI account, so a copilot value
-# reaches here from a lane the caller named and never from a pick. A harness
-# added to this repository adds its arm HERE.
+# its Pi root. A harness added to this repository adds its arm HERE.
 #
 # COPILOT_HOME is Copilot's one account variable: it moves the whole config
 # root, settings, state and login list alike, so the directory IS the account
@@ -69,8 +67,9 @@ lane_env_prefix() { # HARNESS DIR [MODEL]
 }
 
 # The harness whose accounts `lanes pick` judges a launch of HARNESS on MODEL
-# under, which is the account that launch spends. Claude and codex spend their
-# own accounts' windows, whatever the model. A Pi launch spends the account its
+# under, which is the account that launch spends. Claude, codex and copilot
+# spend their own accounts' windows, whatever the model: a Copilot account's
+# monthly pool is one for every model. A Pi launch spends the account its
 # model's provider bills: `pi-claude/` is pi-claude-bridge on a Claude seat,
 # judged as claude on MODEL; `github-copilot/` is the Copilot pool, which
 # `lanes pick --harness pi` reads. Every other Pi provider, and a Pi model naming
@@ -85,7 +84,7 @@ lane_env_prefix() { # HARNESS DIR [MODEL]
 # and the Pi adapter records, provider included.
 lane_pick_harness() { # HARNESS MODEL
   case "$1" in
-    claude | codex) printf '%s\n' "$1" ;;
+    claude | codex | copilot) printf '%s\n' "$1" ;;
     pi)
       case "$2" in
         pi-claude/*) printf '%s\n' claude ;;
@@ -93,6 +92,29 @@ lane_pick_harness() { # HARNESS MODEL
         *) printf '%s\n' unmeasured ;;
       esac
       ;;
+  esac
+}
+
+# The `fix=` line for a Pi launch on the Copilot pool that nothing measured,
+# for the Pi root DIR, or for every Pi root where DIR is empty. Two reads can
+# measure that pool: the lane host's `accounts` row for the root, harness=pi
+# with monthly-pct (schemas/lane-host.md), and the ORCH_LANE_COPILOT_POOL
+# override, which states none here. READ is how the first ended under the
+# ORCH_LANE_HOST value HOST: `local` asked no lane host, `absent` the provider
+# implements no accounts verb, `answered` it answered with no harness=pi row
+# for the root, and `row` its row for the root reads no pool, STATUS and
+# DETAIL that row's own words. A failed read is no refusal of this kind: a
+# retry can answer it. Printed by `lanes`, the one caller that knows READ,
+# under copilot-pool-unstated and under pick-lane-unmeasured for a Pi root.
+lane_copilot_pool_fix() { # HOST READ [DIR [STATUS [DETAIL]]]
+  local root="${3:-any Pi root}" override
+  override="state the override ORCH_LANE_COPILOT_POOL=${3:-<Pi root>}=<credits used>/<credits granted>"
+  case "$2" in
+    local) printf 'fix=no Copilot pool reading for %s: ORCH_LANE_HOST=local asks no lane host, and ORCH_LANE_COPILOT_POOL states none; %s, or launch through a lane host whose accounts verb carries a harness=pi row for that root\n' "$root" "$override" ;;
+    absent) printf 'fix=no Copilot pool reading for %s: lane host %s implements no accounts verb, so only ORCH_LANE_COPILOT_POOL can measure the pool, and it states none; %s\n' "$root" "$1" "$override" ;;
+    answered) printf 'fix=no Copilot pool reading for %s: the accounts verb of lane host %s carried no harness=pi row with monthly-pct for it that ORCH_LANE_EXCLUDE and ORCH_LANE_RETIRE leave in, and ORCH_LANE_COPILOT_POOL states none; store the Copilot seat on that provider so its accounts row reads the pool (lanes host-accounts --harness pi --no-cache prints what it answers), take the root out of those two settings, or %s\n' "$root" "$1" "$override" ;;
+    row) printf 'fix=no Copilot pool reading for %s: the accounts row of lane host %s for it read no pool, status=%s detail=%s, and ORCH_LANE_COPILOT_POOL states none; repair the provider'"'"'s read of that Copilot seat as its detail says, or %s\n' "$root" "$1" "${4:-none}" "${5:-none}" "$override" ;;
+    *) printf 'lane_copilot_pool_fix: unknown read %s\n' "$2" >&2; return 1 ;;
   esac
 }
 
@@ -177,13 +199,22 @@ lane_pick_harness() { # HARNESS MODEL
 #             and URLs asking. `--autopilot` starts the session in autopilot
 #             mode, which sends the session continuation messages of its own,
 #             as many as `--max-autopilot-continues <count>` allows, 5 by
-#             default. Both are launch settings, carried by every command built
-#             here, a resume included: nobody sits at a lane's pane to answer a
-#             turn that stopped short, and 3 bounds what such a stop, or a turn
-#             ended to wait on the lane's mailbox monitor, spends of the
-#             account's pool. `-i <prompt>` starts the interactive session and
-#             submits the prompt, and `--resume=<id>` resumes a session by its
-#             id; open-terminal's start_cmd renders both.
+#             default. `--context long_context` selects the 1M window where
+#             the default is about 200K, so the handoff's 400000-token cap
+#             comes before the automatic compaction Copilot starts at about 80
+#             percent of the window, and `--no-auto-update` keeps a newer CLI
+#             from installing itself under a running lane. All are launch
+#             settings, carried by every command built here, a resume
+#             included, named on the command rather than left to the
+#             account's settings file, whose defaultMode and
+#             defaultPermissionMode a resumed session ignores (`copilot help
+#             config`): nobody sits at a lane's pane to answer a turn that
+#             stopped short, and 3 bounds what such a stop, or a turn ended to
+#             wait on the lane's mailbox monitor, spends of the account's
+#             pool. `-i <prompt>` starts the interactive session and submits
+#             the prompt, and `--resume=<id>` resumes a session by its id;
+#             open-terminal's start_cmd renders both. The rest of what every
+#             copilot command carries is environment, lane_copilot_env below.
 # The question-tool words, measured on the same installs:
 #   claude    `claude --help`: `--disallowedTools <tools...>`, comma or space
 #             separated. Variadic, so the words are one `=` token: a bare
@@ -211,7 +242,7 @@ LAUNCH_CHOICE_FLAGS=(
   'codex|-m --model|model_reasoning_effort=|-|-c|--dangerously-bypass-approvals-and-sandbox --approve-for-me --ask-for-approval=never -a=never|--dangerously-bypass-approvals-and-sandbox|-c check_for_update_on_startup=false|-c features.default_mode_request_user_input=false|-c model_auto_compact_token_limit=9223372036854775807 -c model_auto_compact_token_limit_scope=body_after_prefix -c model_post_turn_compact_threshold_percent=0'
   'opencode|-m --model|-|-|-|-|-|-|-|-'
   'pi|--model|--thinking|:|-|-|-|-|--exclude-tools question|-'
-  'copilot|--model|--reasoning-effort|-|-|--allow-all --yolo --allow-all-tools|--allow-all --yolo|--autopilot --max-autopilot-continues 3|--no-ask-user|-'
+  'copilot|--model|--reasoning-effort|-|-|--allow-all --yolo --allow-all-tools|--allow-all --yolo|--autopilot --max-autopilot-continues 3;--context long_context;--no-auto-update|--no-ask-user|-'
 )
 # The row for harness $1, empty where the table names no such harness.
 launch_choice_row() { # HARNESS
@@ -426,13 +457,23 @@ launch_choice_value() { # SPELLINGS TEXT...
 # judge reading `github-copilot/` sees a Copilot launch whichever way it was
 # typed. A model already naming a provider keeps its own.
 launch_choice_launch_model() { # HARNESS TEXT
-  local model provider
+  local model provider spelling
   model="$(launch_choice_value "$(launch_choice_model_spellings "$1")" "$2")"
-  if [[ "$1" == pi && -n "$model" && "$model" != */* ]]; then
-    provider="$(launch_choice_value --provider "$2")"
+  spelling="$(launch_choice_provider_spelling "$1")"
+  if [[ -n "$spelling" && -n "$model" && "$model" != */* ]]; then
+    provider="$(launch_choice_value "$spelling" "$2")"
     [[ -z "$provider" ]] || model="$provider/$model"
   fi
   printf '%s\n' "$model"
+}
+
+# The flag word a launch of HARNESS names its model's provider on apart from
+# the model, empty where the harness has none: pi's `--provider`, the split
+# form launch_choice_launch_model reads into the model and launch_choice_strip
+# takes out with it, so a launch written with its own `provider/id` model is
+# never handed a caller's provider word beside it.
+launch_choice_provider_spelling() { # HARNESS
+  [[ "$1" != pi ]] || printf '%s\n' --provider
 }
 
 # The EFFORT one launch names, empty where it names none or where the harness has
@@ -465,10 +506,10 @@ launch_choice_effort() { # HARNESS TEXT [TEXT]
 # what that reads, so a successor overseer cannot be given a spelling the
 # launcher would refuse.
 #
-# Empty, status 0, where MODEL is empty: a caller with no model to pass names
-# neither word. Status 1 where a MODEL is named and the table holds no row for
-# that harness, which is not an answer but the absence of one. A harness whose
-# row has no effort spelling takes the model alone; so does an empty EFFORT.
+# Empty, status 0, where MODEL and EFFORT are empty. A numeric overseer
+# preference on a first launch names effort alone and leaves the model to
+# the harness default. Status 1 where either value is named and the table
+# holds no row for that harness. A row with no effort spelling omits effort.
 # The model a launch of HARNESS writes for MODEL: a claude alias the adapter
 # maps is written as its id, so no ANTHROPIC_DEFAULT_*_MODEL pin moves the
 # model its window was judged on; every other model as named.
@@ -478,24 +519,23 @@ launch_choice_model_id() { # HARNESS MODEL
 
 launch_choice_write() { # HARNESS MODEL EFFORT
   local row model_spellings effort_spellings attach word out
-  # No model to pass is an answer: the caller names neither word, and an effort
-  # beside a default model is half a choice. A model the table has no row for is
-  # NOT an answer — nothing here knows how that harness spells it, and writing
-  # nothing would launch it on whatever default it ships. The caller refuses.
-  [[ -n "$2" ]] || return 0
+  [[ -n "$2" || -n "$3" ]] || return 0
   row="$(launch_choice_row "$1")"
   [[ -n "$row" ]] || return 1
   IFS='|' read -r _ model_spellings effort_spellings _ attach _ _ _ <<<"$row"
-  read -r word _ <<<"$model_spellings"
-  out="$word $(printf %q "$(launch_choice_model_id "$1" "$2")")"
+  out=""
+  if [[ -n "$2" ]]; then
+    read -r word _ <<<"$model_spellings"
+    out="$word $(printf %q "$(launch_choice_model_id "$1" "$2")")"
+  fi
   if [[ "$effort_spellings" != - && -n "$3" ]]; then
     read -r word _ <<<"$effort_spellings"
     if [[ "$word" == *= ]]; then
       # An attached-value spelling is one token, and the row names the flag word
       # it rides on.
-      out="$out $attach $(printf %q "$word$3")"
+      out="${out:+$out }$attach $(printf %q "$word$3")"
     else
-      out="$out $word $(printf %q "$3")"
+      out="${out:+$out }$word $(printf %q "$3")"
     fi
   fi
   printf '%s\n' "$out"
@@ -523,8 +563,9 @@ launch_choice_permission_write() { # HARNESS
 # harness's launch settings first, then the compaction words
 # launch_choice_compaction gives the model the command launches on, with
 # `--question-off` its question-tool words after them, then WORD... in order
-# with every row's settings, compaction and question-tool runs taken out
-# wherever each stands whole. The model is `--model MODEL` where the caller
+# with every row's launch settings, each `;`-separated setting a run of its
+# own, and its compaction and question-tool runs taken out wherever each run
+# stands whole. The model is `--model MODEL` where the caller
 # writes it outside WORD..., and otherwise the one WORD... names; a WORD...
 # naming it, in either form launch_choice_value reads, is written as
 # launch_choice_model_id gives it and judged so, and one still naming the
@@ -574,13 +615,15 @@ launch_choice_lead_settings() { # [--question-off] [--model MODEL] HARNESS WORD.
   esac
   for row in "${LAUNCH_CHOICE_FLAGS[@]}"; do
     IFS='|' read -r name _ _ _ _ _ _ settings question compaction <<<"$row"
-    for run in "$settings" "$compaction" "$question"; do
-      [[ "$run" != - ]] || continue
+    # Each launch setting is its own run, so a caller's copy of any one of
+    # them is taken out whether or not it typed the rest.
+    while IFS= read -r run; do
+      [[ -n "$run" && "$run" != - ]] || continue
       run="${run// /$nl}"
       while [[ "$words" == *"$nl$run$nl"* ]]; do words="${words/"$nl$run$nl"/$nl}"; done
-    done
+    done <<<"${settings//;/$nl}$nl$compaction$nl$question"
     [[ "$name" == "$harness" ]] || continue
-    [[ "$settings" == - ]] || lead="${settings// /$nl}"
+    if [[ "$settings" != - ]]; then lead="${settings//;/ }"; lead="${lead// /$nl}"; fi
     [[ -z "$own_compaction" ]] || lead="$lead$nl${own_compaction// /$nl}"
     [[ "$question_off" != true || "$question" == - ]] || lead="$lead$nl${question// /$nl}"
   done
@@ -599,6 +642,19 @@ launch_choice_question_off() { # HARNESS
   IFS='|' read -r _ _ _ _ _ _ _ _ words _ <<<"$row"
   [[ "$words" == - ]] || printf '%s\n' "$words"
 }
+
+# The unattended words every lane launch is briefed with, whatever the
+# harness: nobody reads a lane's pane on any of them, and a lane with its
+# question tool taken away can still ask the person in chat and end its turn
+# waiting on them, idle with nobody at its pane, so every brief states the
+# rule. It rides the brief, never Pi's `--append-system-prompt`: Pi reads its
+# discovered APPEND_SYSTEM.md only when no such value is given, and that file
+# carries the instructions its installed extensions append. The turn-end half
+# of the rule is the lane-mail-check hook's idle judge, on every harness that
+# runs it, which holds a turn ending with no lane-mail ask or notice sent since
+# the last one. The text crosses the quoting layers a codex kickoff does, so it
+# holds only letters, spaces, commas, periods and hyphens.
+LAUNCH_UNATTENDED_TEXT='This is an unattended orch lane, and nobody reads this pane. Send every question for the overseer with lane-mail ask and block on lane-mail wait for its answer, never as a question in chat. Never end a turn waiting on the person, and end none before a lane-mail ask or notice says where the work stands. Where you would stop to ask, read lane-mail inbox and continue the workflow.'
 
 # ORCH_QUESTION_TOOL, decided once here for every launcher: `off`, the
 # default, gives a launched overseer its harness row's question-off words in
@@ -714,9 +770,23 @@ launch_choice_words_present() { # WORDS TEXT
   return 1
 }
 
+# Whether TEXT, a caller's command, hands PHRASE whole inside one argument once
+# the shell has removed the command's own quoting: a phrase the shell splits
+# reaches the harness as several words.
+launch_choice_phrase_present() { # PHRASE TEXT
+  local word
+  launch_choice_shell_words "$2"
+  for word in ${LAUNCH_CHOICE_ARGV[@]+"${LAUNCH_CHOICE_ARGV[@]}"}; do
+    [[ "$word" != *"$1"* ]] || return 0
+  done
+  return 1
+}
+
 # The flags of a launch on HARNESS with that harness's own MODEL and EFFORT
-# words taken out, left in LAUNCH_CHOICE_KEPT. With `--permissions`, permission
-# words are taken out too. What is left stays in its original order.
+# words taken out, left in LAUNCH_CHOICE_KEPT, a provider word the model is
+# split across (launch_choice_provider_spelling) going with the model. With
+# `--permissions`, permission words are taken out too. What is left stays in
+# its original order.
 #
 # The inverse of launch_choice_write over the same row, and the reason it
 # exists: a caller hands its flags on to a launch it did not write, and those
@@ -741,14 +811,14 @@ launch_choice_words_present() { # WORDS TEXT
 # refuses rather than guessing.
 LAUNCH_CHOICE_KEPT=()
 launch_choice_strip() { # HARNESS [--permissions] FLAG...
-  local row attach permission_specs word tok drop i n strip_permissions=0
+  local row attach permission_specs word words tok drop i n strip_permissions=0
   local -a spellings=() rest=()
   LAUNCH_CHOICE_KEPT=()
   row="$(launch_choice_row "$1")"
   [[ -n "$row" ]] || return 1
   IFS='|' read -r _ _ _ _ attach permission_specs _ _ <<<"$row"
-  read -r -a spellings \
-    <<<"$(launch_choice_model_spellings "$1") $(launch_choice_effort_spellings "$1")"
+  words="$(launch_choice_model_spellings "$1") $(launch_choice_provider_spelling "$1")"
+  read -r -a spellings <<<"$words $(launch_choice_effort_spellings "$1")"
   [[ "$permission_specs" != - ]] || permission_specs=""
   shift
   if [[ "${1:-}" == --permissions ]]; then
@@ -886,6 +956,10 @@ lane_codex_recorded() { # DIR CONFIG...
 # the three variables above, so a caller names the route in its own launch line.
 #
 #   LANE_TRUST_ROUTE   `none` for a harness that asks no such question,
+#                      `allow-all-env` for copilot, whose folder trust the
+#                      launch line grants through COPILOT_ALLOW_ALL=true where
+#                      the command carries a full allow-all spelling
+#                      (lane_copilot_env), so nothing is written for it,
 #                      `preapproved` where the account's own config already
 #                      trusts the directory, `launch-home` where the codex arm
 #                      built a private home carrying the entry, and
@@ -914,6 +988,7 @@ lane_trust_prepare() { # HARNESS LANE_DIR LAUNCH_DIR
   case "$1" in
     codex) lane_codex_trust_prepare "$2" "$3" ;;
     claude) lane_claude_trust_prepare "$2" "$3" ;;
+    copilot) LANE_TRUST_ROUTE=allow-all-env; return 0 ;;
     *) LANE_TRUST_ROUTE=none; return 0 ;;
   esac
 }
@@ -1235,16 +1310,91 @@ lane_launch_compaction_env() { # CMD HARNESS VERIFIED
 # Not the window title: both launchers open their window with an explicit -n,
 # which turns tmux's automatic rename off, so the title keeps the name it was
 # given and never carries the launch line.
+#
+# A copilot command carries its whole account environment under both forms,
+# because a launcher that exports COPILOT_HOME for its own name exports
+# nothing else: the account variable here, and the words lane_copilot_env
+# below prints.
 lane_launch_line() { # CMD HARNESS LANE_VAR LANE_DIR FORM
-  local cmd="$1" harness="$2" var="$3" dir="$4" form="$5" compaction="" verified=true
+  local cmd="$1" harness="$2" var="$3" dir="$4" form="$5" compaction="" verified=true env_words
   if [[ "$harness" == codex ]]; then
     [[ "$form" != unchecked ]] || verified=false
     compaction=$(lane_launch_compaction_env "$cmd" "$harness" "$verified") || return 1
   fi
+  if [[ "$harness" != copilot ]]; then
+    case "$form" in
+      launcher:*) printf '%s%s %s\n' "${compaction:+env $compaction }" "$(lane_single_quote "${form#launcher:}")" "${cmd#"$harness" }" ;;
+      *) printf 'env %s=%s %s%s\n' "$var" "$(lane_single_quote "$dir")" "${compaction:+$compaction }" "$cmd" ;;
+    esac
+    return
+  fi
+  env_words="$(lane_copilot_env "$cmd" "$(lane_single_quote "${LANES_HOME:-$HOME}/.agents/skills")")"
   case "$form" in
-    launcher:*) printf '%s%s %s\n' "${compaction:+env $compaction }" "$(lane_single_quote "${form#launcher:}")" "${cmd#"$harness" }" ;;
-    *) printf 'env %s=%s %s%s\n' "$var" "$(lane_single_quote "$dir")" "${compaction:+$compaction }" "$cmd" ;;
+    launcher:*) printf '%s %s %s\n' "$env_words" "$(lane_single_quote "${form#launcher:}")" "${cmd#"$harness" }" ;;
+    *) printf '%s %s=%s %s\n' "$env_words" "$var" "$(lane_single_quote "$dir")" "$cmd" ;;
   esac
+}
+
+# The Copilot launch policy for a command CMD, fresh or resumed, a lane's or
+# an overseer's, one owner for the local launch line above and the hosted
+# command open-terminal hands a provider: the `env` words that go in front of
+# `copilot`, SKILLS the shell word naming the shared skills tree, a quoted path
+# locally and "$HOME/.agents/skills" unexpanded for a host, whose own login
+# shell expands it. Run after that login shell's profile, so a
+# COPILOT_GITHUB_TOKEN the profile exports is cleared too.
+#   -u COPILOT_GITHUB_TOKEN       Copilot reads COPILOT_GITHUB_TOKEN, then
+#                                 GH_TOKEN, then GITHUB_TOKEN, then the login
+#                                 stored in the account's config.json, and
+#                                 1.0.88 refuses a placeholder handed in
+#                                 COPILOT_GITHUB_TOKEN, so that one is cleared.
+#                                 GH_TOKEN and GITHUB_TOKEN stay: a fleet host
+#                                 holds the GitHub App token (ghs_) there,
+#                                 which 1.0.88 skips with "Unsupported token
+#                                 type, ignoring", so the stored login stays
+#                                 the identity and a lane's own gh calls keep
+#                                 signing in with GH_TOKEN. A user token, gho_
+#                                 or a PAT, in either one signs Copilot in as
+#                                 that user instead.
+#   COPILOT_SKILLS_DIRS           any COPILOT_HOME value turns the shared
+#                                 `~/.agents/skills` tree off; naming it puts
+#                                 the shared skills back (measured by
+#                                 tools/harness-smoke, skill-dirs:COPILOT_HOME).
+#   COPILOT_ALLOW_ALL=true        only where CMD itself carries a full
+#                                 allow-all spelling, `--allow-all` or `--yolo`
+#                                 (lane_copilot_allows_all below). Any truthy
+#                                 value approves every tool, and exactly `true`
+#                                 also trusts the working directory without
+#                                 prompting, loading its hooks and skills
+#                                 (`copilot help environment`, 1.0.88). So it
+#                                 adds folder trust to a posture the caller
+#                                 already chose, never tool approval the
+#                                 caller left out.
+#   COPILOT_ALLOW_ALL=            (empty) on every other CMD, so a
+#                                 COPILOT_ALLOW_ALL the launching shell exports
+#                                 never reaches it: a command without either
+#                                 spelling keeps its permission prompts and its
+#                                 folder-trust dialog, as open-terminal's
+#                                 permission-prompt warning says. An assignment
+#                                 a --cmd template writes itself follows this
+#                                 one, and wins.
+lane_copilot_env() { # CMD SKILLS
+  local allow="COPILOT_ALLOW_ALL="
+  ! lane_copilot_allows_all "$1" || allow="COPILOT_ALLOW_ALL=true"
+  printf 'env -u COPILOT_GITHUB_TOKEN COPILOT_SKILLS_DIRS=%s %s\n' "$2" "$allow"
+}
+
+# Whether CMD carries one of the copilot row's transferable permission
+# spellings, the full allow-all ones, as a word the shell hands copilot. The
+# tools-only `--allow-all-tools` is not one: it leaves paths and URLs asking.
+lane_copilot_allows_all() { # CMD
+  local spellings i
+  spellings="$(launch_choice_transfer_permission_spellings copilot)"
+  launch_choice_shell_words "$1"
+  for ((i = 0; i < ${#LAUNCH_CHOICE_ARGV[@]}; i++)); do
+    launch_choice_permission_match "$spellings" "${LAUNCH_CHOICE_ARGV[i]}" "${LAUNCH_CHOICE_ARGV[i+1]:-}"
+    (( LAUNCH_CHOICE_PERMISSION_SPAN == 0 )) || return 0
+  done
+  return 1
 }
 
 # The lane variable's value in the DEEPEST process under pane pid $1 that

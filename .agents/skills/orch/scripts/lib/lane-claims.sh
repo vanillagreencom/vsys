@@ -22,17 +22,19 @@
 # The fleet is the oversee state file of the fleet the launch was judged in
 # (`open-terminal --state-dir`), empty for a launch naming no fleet, and it is
 # what lets one store serve several fleets: open-terminal's fleet cap counts
-# only its own fleet's claims, while an account's claims count whatever fleet
-# wrote them. A claim with an empty fleet, written by a launch naming no fleet
-# or before claims carried one, counts toward its account and toward no fleet's
-# cap, and it is the lane of a fleet's running or preparing record whose window
-# and account it names, as that fleet's own claims are.
+# only its own fleet's claims, while `lanes pick` charges an account with
+# whatever fleet's claims name it. A claim with an empty fleet, written by a
+# launch naming no fleet or before claims carried one, counts toward its
+# account and toward no fleet's cap; a fleet's report (lane_claims_for_fleet)
+# takes it as the lane of that fleet's running or preparing record whose window
+# and account it names.
 #
 # A reservation is the same record under `.reserve`, with the launcher's pid as
 # its server and `-` as its pane: the place in the count a judged launch holds
 # from its count until its claim or record stands, or the item ends, live while
-# that launcher runs. Its config dir is empty for a launch naming no lane. Only
-# the count form of lane_claims_read carries reservations; every other reader
+# that launcher runs. Its config dir is empty: only the count form of
+# lane_claims_read carries reservations, and the fleet cap that reads it judges
+# a reservation by its window and fleet, never its account. Every other reader
 # reads claims alone.
 set -euo pipefail
 
@@ -79,8 +81,8 @@ lane_claims_canon() {
 }
 
 # Prune dead claims, print the live ones as `<config dir>\t<window>\t<server
-# pid>\t<pane id>` lines. Where $2 is `count`, the form open-terminal's caps
-# count, each line ends in `\t<fleet>` and the live reservations are among
+# pid>\t<pane id>` lines. Where $2 is `count`, the form open-terminal's fleet
+# cap counts, each line ends in `\t<fleet>` and the live reservations are among
 # them, read in full before the claims are listed: a launch writes its claim or
 # its record before it drops its reservation, so a reservation gone by the
 # time it is read is a claim the later listing finds, or a record for a caller
@@ -192,13 +194,6 @@ lane_claims_read() {
   return "$rc"
 }
 
-# The ownership condition shared by fleet reports and cap_count. `owned` maps
-# each held record's bare window plus canonical account. A claim of this fleet
-# or of no named fleet is that record's own only when both fields match.
-LANE_CLAIM_OWNERSHIP_AWK='function lane_claim_owned(fleet, expected, window, account, owned) {
-  return (fleet == expected || fleet == "") && ((window "\t" account) in owned)
-}'
-
 # Select context claims from the fleet-field form, emitting the normal four
 # fields. Explicit fleet identity owns even an in-flight claim with no record;
 # an empty identity needs a held record's window and canonical account.
@@ -214,13 +209,13 @@ lane_claims_for_fleet() { # CLAIMS FLEET LANES_JSON
     account=$(lane_claims_canon "$account") || return 1
     owned+="$window"$'\t'"$account"$'\n'
   done <<<"$rows"
-  CLAIM_OWNED="$owned" CLAIM_FLEET="$2" awk -F'\t' "$LANE_CLAIM_OWNERSHIP_AWK"'
+  CLAIM_OWNED="$owned" CLAIM_FLEET="$2" awk -F'\t' '
     BEGIN {
       OFS = "\t"
       n = split(ENVIRON["CLAIM_OWNED"], rows, "\n")
       for (i = 1; i <= n; i++) if (rows[i] != "") owned[rows[i]] = 1
     }
-    NF && ($5 == ENVIRON["CLAIM_FLEET"] || lane_claim_owned($5, ENVIRON["CLAIM_FLEET"], $2, $1, owned)) {
+    NF && ($5 == ENVIRON["CLAIM_FLEET"] || ($5 == "" && (($2 "\t" $1) in owned))) {
       print $1, $2, $3, $4
     }' <<<"$1"
 }
@@ -269,18 +264,34 @@ lane_claim_write() {
   lane_claim_put "$1" claim "$2" "$3" "$4" "$5" "${6:-}"
 }
 
-# Record one reservation, its path left in LANE_CLAIM_PATH. $1: claims dir,
-# $2: the launcher's pid, $3: config dir, empty for none, $4: window, $5: fleet.
+# Record one reservation, its path left in LANE_CLAIM_PATH, with an empty
+# config dir. $1: claims dir, $2: the launcher's pid, $3: window, $4: fleet.
 lane_claim_reserve() {
-  lane_claim_put "$1" reserve "$2" - "$3" "$4" "$5"
+  lane_claim_put "$1" reserve "$2" - "" "$3" "$4"
 }
 
 # The one answer to which oversee lane records are lanes in flight, as jq
 # definitions a caller prefixes to its own program: oversee-watch carries the
-# running records, and open-terminal counts the held ones against both caps,
-# those plus the preparing records of hosted lanes handed to a background job,
-# whose window and host are taken before the lane runs. The watch and the cap
-# cannot describe two different fleets. Hand-appended entries that are not
-# objects are no lane.
+# running records; held adds the preparing records of hosted lanes handed to a
+# background job, whose window and host are taken before the lane runs; and
+# in_flight adds the parked records, whose lane waits on a stopped sandbox to
+# resume into the fleet slot it kept. open-terminal counts the in_flight
+# records against its fleet cap, so a resume never adds a lane. The watch and
+# the cap cannot describe two different fleets. Hand-appended entries that are
+# not objects are no lane.
 LANE_RUNNING_JQ='def running: type == "object" and .status == "running";
-def held: running or (type == "object" and .status == "preparing");'
+def held: running or (type == "object" and .status == "preparing");
+def in_flight: held or (type == "object" and .status == "parked");'
+
+# lane_running_record LANES WINDOW HARNESS — the first running record of a
+# HARNESS lane whose window part is WINDOW's, compact on stdout, nothing where
+# none is: the one lookup of a lane's record by the window a reader holds, for
+# `lanes state` and oversee-watch. LANES is the fleet state's `lanes` array, or
+# the state object holding it, and empty is no fleet. Non-zero where LANES is
+# not JSON.
+lane_running_record() { # LANES WINDOW HARNESS
+  jq -c --arg w "${2#*:}" --arg h "$3" "$LANE_RUNNING_JQ"'
+    (if type == "object" then .lanes // [] else . end)
+    | map(select(running and .harness == $h and ((.window // "") | sub("^.*:"; "")) == $w)) | first // empty' \
+    <<<"$1" 2>/dev/null
+}

@@ -17,7 +17,7 @@
 # An owner ask in the overseer mailbox is closed by `resolve` alone, exactly
 # once, under the same lock the append takes, and a send carrying a delivery
 # id lands once under that lock too; usage() § Owner channel owns both rules.
-# Text crosses a file, never argv (orch SKILL.md § Harness-Safe Shell).
+# Text crosses a file, never argv (orch ../SKILL.md § Harness-Safe Shell).
 # Bash 3.2-safe: tools/bash32-lint scans this directory.
 
 set -euo pipefail
@@ -52,9 +52,17 @@ Lane side, rooted at the lane's own git worktree:
               the exception, and hands answers over too, because an overseer
               runs its watch rather than blocking in `wait`. With --peek, print
               the header below, then every such envelope after to-lane.cursor,
-              moving no cursor. With --ack N, print nothing and advance
-              to-lane.cursor to N, the count a --peek printed, never back and
-              never past an unread halt
+              moving no cursor but one already past the complete lines
+              present, which comes down to them. With --ack N, print nothing
+              and advance to-lane.cursor to N, the count a --peek printed,
+              never back, never past an unread halt and never past the
+              complete lines present: an N past them acknowledges that line
+              count, or the line before an unread halt, and prints
+              `lane-mail: ack-clamped=<count acknowledged> asked=<N>` on
+              stderr, so a line written later stays unread; a cursor already
+              past the lines present comes down to the count acknowledged.
+              A lowering by --peek or --ack prints
+              `lane-mail: cursor-lowered=<count> was=<cursor>` on stderr
   watch --item ITEM [--root ROOT] [--interval S] [--once]
               the lane's standing mailbox monitor, run under its harness's
               background wake. Every --interval, when envelopes `inbox` would
@@ -117,6 +125,8 @@ Overseer side:
   events --item ITEM
               print every envelope of both files, to-overseer.jsonl then
               to-lane.jsonl, each with `box` naming the file it came from,
+              `line` its physical line number and `count` that file's complete
+              line count, including lines filtered as invalid JSON,
               answered asks and their answers included. Moves no cursor and
               marks nothing: a relay keeps its own record of what it carried,
               keyed by envelope id, so --after is refused `events-no-cursor`
@@ -137,7 +147,10 @@ Owner channel, the overseer's own mailbox from any of its checkouts:
               an owner note in to-lane.jsonl, one the owner wrote and not a
               peer's line or a resolution, or an owner ask in
               to-overseer.jsonl whose ruling it reports, so a relay puts the
-              reply where the note or the question was written. --attach
+              reply where the note or the question was written. Under that
+              file's mailbox lock, the notice copies the reference's
+              delivery_id, when present, as re_delivery_id. This field is
+              copied, never authored by a caller. --attach
               names a file the relay carries beside the text: a regular
               file, not itself a symlink, whose directory resolves
               physically to the progress-report directory workflow-state
@@ -171,12 +184,29 @@ Peer side, one other repository's overseer mailbox per call:
               append one ask, one id, to this repository's own overseer
               to-overseer.jsonl and to REPO's overseer to-lane.jsonl; print
               `id=<id>`. `pending --item overseer` lists it until REPO answers
-              and `wait --item overseer --id <id>` blocks for that answer
+              and `wait --item overseer --id <id>` blocks for that answer.
+              REPO's reader is judged as `peer send` judges it, the notice
+              following the `id=` line
   peer send --repo REPO --file PATH [--re MSGID]
               append to REPO's overseer to-lane.jsonl the answer to MSGID, or
               a directive that answers no ask; prints the same receipt `send`
               prints, whose item is the `overseer` mailbox it wrote and never
-              the repository that holds it
+              the repository that holds it. That mailbox has one reader, the
+              session REPO's fleet record names by the `server` and `pane` of
+              its `overseer` member (orch schemas/workflow-state.md). Where
+              the record names none or a `server_start` that is not epoch
+              seconds, or a pane that no longer runs on the server its
+              `server_start` names, or on that server pid where it carries
+              no `server_start`, stderr
+              opens `lane-mail: no-reader=<REPO root> cause=unnamed|pane-gone`
+              with a `fix=` line naming `oversee register`; where that cannot
+              be judged from here, `lane-mail: reader-unjudged=<REPO root>
+              cause=hosted|state|server`. Either is a notice after the
+              receipt, at exit 0: the note landed. Only ORCH_STATE_DIR is
+              read from REPO's settings files, as data, to place its record,
+              and no file of REPO's is sourced. An answer (--re) is not
+              judged: the asker's `wait --item overseer --id` reads it with
+              no named session
 
 Options:
   --item ITEM   one path segment of ASCII letters, digits, `.`, `_` and `-`,
@@ -203,7 +233,8 @@ Options:
                 whose path it is
   --host        read and write through `lane-host`, not this disk
   --after N     drain only: the read cursor, the count a previous drain printed
-  --peek        inbox only: read to-lane.cursor and leave it where it is
+  --peek        inbox only: read to-lane.cursor and leave it where it is,
+                unless it stands past the complete lines present
   --ack N       inbox only: the count a --peek printed, acknowledged once its
                 envelopes were handed over
   --halt        send only: a directive that halts the lane, as above
@@ -231,7 +262,8 @@ file opening with another id is a replacement mailbox, not the one counted.
 Envelope, one JSON object per line: id, kind, at, from, re (answers only),
 halt (true on a directive sent with --halt), text and options (asks with
 choices), and the owner-channel fields each verb above writes: to, ref,
-attach, recommend, wait, deadline (UTC, at plus wait minutes), delivery_id
+attach, recommend, wait, deadline (UTC, at plus wait minutes), delivery_id,
+re_delivery_id (notice's copy of its --ref envelope's delivery_id)
 and by (`text` or `default`, on an answer `resolve` wrote). kind is ask,
 notice, answer or directive; at is UTC; id is <epoch>-<pid>-<random>. from
 is the sender, read from its own checkout and never from an option: a lane
@@ -248,8 +280,9 @@ one trailing newline it drops. monitor is `live` when the mailbox's
 to-lane.watch, `at=<epoch> interval=<s>` rewritten by `watch` at every poll,
 is no older than twice its interval plus five seconds by the sender's clock,
 so a monitor is polling that mailbox and wakes its lane; it is `none`
-otherwise, and a Claude Code, Codex or Pi lane needs a wake while a lane on
-another harness takes none. A Copilot lane's `none` is a `watch --once` that
+otherwise, and a Claude Code or Codex lane needs a wake while a lane on
+another harness takes none. A Pi lane whose pi-hooks has the mail wake runs no
+watch and always reads none: that package wakes it when mail lands. A Copilot lane's `none` is a `watch --once` that
 announced and is not yet re-armed, and the re-armed watch announces what
 still stands unread; the orch watch-delivery reference says what the
 overseer does where that watch's exit does not wake the lane. A `peer send` writes a peer's overseer mailbox, so
@@ -361,6 +394,9 @@ lm_message() { # KEY VALUE
     repo-unresolved) text='The peer repository is not a checkout on this disk. Pass the path of one, or a bare name of a checkout beside this one.' ;;
     repo-self) text='A peer is another repository, and that value resolves to this one. Both sides of an exchange would land in one mailbox, where this repository is reported as its own peer. To write a note to this overseer, use `send --item overseer`.' ;;
     lane-foreign) text='That mailbox belongs to another repository. A send reaches only this repository: its lanes, and its own overseer mailbox. Reach a peer overseer with `lane-mail peer`.' ;;
+    no-reader) text='The note or ask landed, and no session reads that checkout'\''s overseer mailbox: its fleet record names no tmux pane, or binds it to a tmux server start time that is not epoch seconds (cause=unnamed), or names one that no longer runs on the tmux server the record binds it to by its start time, or on that server process where the record carries no start time (cause=pane-gone). The lane-mail hooks hand that mailbox only to the session the record names, so it waits unread until one is named, and an ask'\''s answer with it.
+fix=run `oversee register` from the orch skill in the session that should read that checkout'\''s mail, which makes that session the checkout'\''s overseer, its turn end held at the context marks for a succession as a fleet overseer'\''s is; or start its fleet with `oversee launch`' ;;
+    reader-unjudged) text='The note or ask landed, and whether a session reads that checkout'\''s overseer mailbox is unknown: a hosted peer keeps its fleet record and tmux server on its own host (cause=hosted), the record could not be read (cause=state, the reader'\''s keyed refusal below where it made one), or the pane it names is on a tmux server this shell does not reach (cause=server).' ;;
     mailbox-unsafe) text='A mailbox directory, file, cursor or lock is a symlink or not the kind of file it names, so nothing is read or written through it. Remove it; the next write recreates it.' ;;
     item-case-variant) text='A mailbox for this item already exists under another spelling of the same name, so a lane and an overseer would read separate folders on a case-sensitive disk. Use that spelling, or drain it and remove it.' ;;
     cursor-invalid) text='The cursor file does not hold a line count. Remove it to restart the lane read.' ;;
@@ -387,6 +423,8 @@ lm_message() { # KEY VALUE
     resolved-already) text='This ask is already resolved by the answer named above, and an ask resolves exactly once. Deliver later text for it as a directive with `send --item overseer --directive`.' ;;
     delivery-repeated) text='An envelope carrying this delivery id already stands in the mailbox, named by id= above: this send is a retry of a delivery that landed, so nothing is appended. Record that id against the delivery and go on.' ;;
     overseer-only) text='resolve closes an owner ask in the overseer mailbox alone. A lane ask is answered with `send --item ITEM --re MSGID`.' ;;
+    cursor-lowered) text='to-lane.cursor stood past the complete lines the mailbox holds, a count an --ack wrote before it was clamped, so it moved down to the count above. Every line up to that count stays read, and every line after it, the next line written included, is handed over.' ;;
+    ack-clamped) text='The --ack count is past the complete lines the mailbox holds, so the count acknowledged is the one above: those lines, or fewer where an unread halt stands among them. A line written later stays unread for the next read.' ;;
     duplicate) sep=' id='; text='This envelope was sent to this item less than a minute ago: every field of it but its own id and its stamp matches the envelope the id above names, so the send is a retry of a delivery that already landed rather than a second message. Change any field of the message, or wait out the minute, to send it again.' ;;
     *) printf 'lane-mail: message-invalid key=%s\n' "$1" >&2; return 2 ;;
   esac
@@ -561,6 +599,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$SCRIPT_DIR/lib/mailbox-append.sh"
 # shellcheck source=lib/lane-host-slots.sh
 . "$SCRIPT_DIR/lib/lane-host-slots.sh"
+# shellcheck source=lib/tmux-server.sh
+. "$SCRIPT_DIR/lib/tmux-server.sh"
 
 # The template names TMPDIR outright, as lib/review-artifact-gates.sh does: a
 # bare `mktemp` reads it only on GNU, and BSD mktemp, the one macOS ships,
@@ -850,10 +890,16 @@ lm_header() { # FILE
 }
 
 # The parsing JSON objects among FILE's lines. A terminated line that does not
-# parse is dropped here and counted above, so a cursor stays aligned with the
-# file whatever a line holds.
-lm_objects() { # FILE
-  jq -c -R '(fromjson? // empty) | select(type == "object")' <"$1"
+# parse is dropped here and counted above. Events name BOX to carry physical
+# line numbers before that filtering, aligned with the master's seen count.
+lm_objects() { # FILE [BOX]
+  local count=0
+  if [ -n "${2:-}" ]; then
+    count="$(lm_count "$1")" || return 1
+  fi
+  jq -c -R --arg box "${2:-}" --argjson count "$count" 'input_line_number as $line
+    | (fromjson? // empty) | select(type == "object")
+    | if $box == "" then . else . + {box: $box, line: $line, count: $count} end' <"$1"
 }
 
 # The id of an envelope to-lane.jsonl already holds that is this one again,
@@ -944,6 +990,95 @@ lm_sent() {
   printf 'lane-mail: sent item=%s id=%s bytes=%s monitor=%s\n' "$ITEM" "$SENT_ID" "$SENT_BYTES" "$SENT_MONITOR"
 }
 
+# Whether the peer checkout's overseer mailbox has a reader, said on stderr
+# once a `peer send` directive or a `peer ask` has landed, so it never
+# refuses. The reader is the one session the checkout's fleet record names
+# under `.overseer` by tmux server and pane: the lane-mail-check hooks hand the
+# mailbox to that session alone, and a live watch there reads it itself. No
+# record, or one naming no server pid and `%N` pane, or a `server_start` that
+# is not epoch seconds, names nobody, and a pane that no longer runs reads
+# nothing. The pane is judged on the server the record's `server_start` binds
+# it to, since a later server may be handed the same pid and pane id; a
+# record carrying no start names the session in that pane on that server pid
+# whatever its start, as the hooks read it, which hand it the mailbox and
+# write the start into the record. Which record carries no start is
+# lib/overseer-launch.sh § OL_JQ_DEFS's ol_unstarted, sourced here alone so
+# no other verb pays for it. A
+# hosted peer's record and tmux server sit on its own host, out of this
+# shell's reach.
+lm_peer_reader() {
+  local path record server start pane cause rc=0
+  # shellcheck source=lib/overseer-launch.sh
+  . "$SCRIPT_DIR/lib/overseer-launch.sh"
+  if [ "$HOST" -eq 1 ]; then
+    lm_notice reader-unjudged "$ROOT" cause=hosted
+    return 0
+  fi
+  # No state file is no record, and so is an empty one: the pair test below
+  # names nobody for either.
+  path="$(lm_peer_state path oversee)" || rc=$?
+  [ -n "$path" ] || [ "$rc" -ne 0 ] || rc=1
+  record=""
+  [ "$rc" -ne 0 ] || [ ! -e "$path" ] || record="$(lm_peer_state get oversee "$OL_JQ_DEFS"'
+    .overseer as $o | ($o.server // "") as $s
+    | [($s | tostring), (if $o | ol_unstarted($s; ($o.pane // $o.session // "")) then "unstarted"
+            else ($o.server_start // "" | tostring) end), ($o.pane // "" | tostring)] | join(" ")')" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # The keyed first line of a refusal workflow-state or its settings loader
+    # made, never the rest: those words come from a file of the peer's.
+    cause="$(awk 'NR == 1 && /^(workflow-state|kendex-env): / { print }' "$WORK_DIR/reader.err")" || cause=""
+    lm_notice reader-unjudged "$ROOT" cause=state "$cause"
+    return 0
+  fi
+  server="${record%% *}"
+  record="${record#* }"
+  start="${record%% *}"
+  pane="${record#* }"
+  case "$server" in
+    '' | *[!0-9]*) server="" ;;
+  esac
+  # A record carrying no start is judged on its server alone; any other start
+  # that is not epoch seconds binds the record to no server.
+  case "$start" in
+    unstarted) start="" ;;
+    '' | *[!0-9]*) start=invalid ;;
+  esac
+  case "$pane" in
+    % | %*[!0-9]*) pane="" ;;
+    %*) ;;
+    *) pane="" ;;
+  esac
+  if [ -z "$server" ] || [ "$start" = invalid ] || [ -z "$pane" ]; then
+    lm_notice no-reader "$ROOT" cause=unnamed
+    return 0
+  fi
+  tmux_pane_live "$server" "$start" "$pane" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) lm_notice no-reader "$ROOT" cause=pane-gone ;;
+    *) lm_notice reader-unjudged "$ROOT" cause=server ;;
+  esac
+  return 0
+}
+
+# workflow-state ARGS at the peer's root, where the peer's settings place its
+# fleet state, with its stderr in reader.err. --no-private-env reads only
+# ORCH_STATE_DIR from the peer's settings files and sources none of its
+# files, so no path or loader variable of the peer's runs its code here, and
+# the sender's own ORCH_STATE_DIR names no directory of the peer's.
+lm_peer_state() { # ARGS...
+  (cd -- "$ROOT" && env -u ORCH_STATE_DIR "$SCRIPT_DIR/workflow-state" --no-private-env "$@") 2>"$WORK_DIR/reader.err"
+}
+
+# A notice on stderr that ends nothing: the keyed line closed by FIELD, the
+# English, then the words of the command that could not answer, where any.
+lm_notice() { # KEY VALUE FIELD [CAUSE]
+  REFUSE_EXTRA="$3"
+  lm_message "$1" "$2" >&2
+  REFUSE_EXTRA=""
+  [ -z "${4:-}" ] || printf '%s\n' "$4" >&2
+}
+
 # The `at` stamp as epoch seconds, null where it does not parse: the one
 # parse every reader of a stamp shares, prefixed to its jq program.
 LM_JQ_DEFS='def at_epoch: try (strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch null;'
@@ -985,7 +1120,7 @@ lm_envelope() { # KIND [RE] — prints the line; the id lands in WORK_DIR/id
   line="$(jq -cn --arg id "$id" --arg kind "$1" --argjson now "$now" --arg re "${2:-}" \
     --arg from "$FROM" --arg halt "$HALT" --arg options "$OPTIONS" \
     --arg to "$TO" --arg ref "$REF" --arg attach "$ATTACH" --arg recommend "$RECOMMEND" \
-    --arg wait "$WAIT" --arg delivery "$DELIVERY_ID" --arg by "$BY" \
+    --arg wait "$WAIT" --arg delivery "$DELIVERY_ID" --arg re_delivery "$RE_DELIVERY_ID" --arg by "$BY" \
     --rawfile text "$FILE" '
       {id: $id, kind: $kind, at: ($now | todate), from: $from}
       + (if $re == "" then {} else {re: $re} end)
@@ -996,6 +1131,7 @@ lm_envelope() { # KIND [RE] — prints the line; the id lands in WORK_DIR/id
       + (if $recommend == "" then {} else {recommend: $recommend} end)
       + (if $wait == "" then {} else {wait: ($wait | tonumber), deadline: (($now + ($wait | tonumber) * 60) | todate)} end)
       + (if $delivery == "" then {} else {delivery_id: $delivery} end)
+      + (if $re_delivery == "" then {} else {re_delivery_id: $re_delivery} end)
       + (if $by == "" then {} else {by: $by} end)
       + {text: ($text | sub("\n$"; ""))}
       + (if $options == "" then {} else {options: ($options | split(","))} end)' \
@@ -1003,6 +1139,7 @@ lm_envelope() { # KIND [RE] — prints the line; the id lands in WORK_DIR/id
   printf '%s\n' "$line"
 }
 BY=""
+RE_DELIVERY_ID=""
 
 # Serialized on the file itself; to-overseer.jsonl has many writers, to-lane
 # one. The lock, the created file and the closing of an unterminated last line
@@ -1063,6 +1200,37 @@ lm_owner_ask_find() { # ID
   [ -n "$ASK_JSON" ]
 }
 
+# The host worker delivers owner requests with send --delivery-id. Read each
+# possible reference under the lock its writers take, then copy the delivery
+# id before releasing it. Take only one file lock at a time; the notice's
+# append takes its own lock after this read.
+lm_ref_find() {
+  local path ref_json
+  for path in "$TO_LANE" "$TO_OVERSEER"; do
+    [ -f "$path" ] || continue
+    exec 9<"$path" || refuse file-unreadable "$path"
+    orch_take_lock 9 "$path" 30 || { trap lm_cleanup EXIT; refuse lock-failed "$path"; }
+    trap lm_cleanup EXIT
+    if [ "$path" = "$TO_LANE" ]; then
+      lm_fetch "$TO_LANE" "$WORK_DIR/lane.raw"
+      lm_terminated "$WORK_DIR/lane.raw" "$WORK_DIR/lane.jsonl"
+      ref_json="$(lm_objects "$WORK_DIR/lane.jsonl" |
+        jq -c --arg id "$REF" "$MAILBOX_CLASS_JQ"' select(.id == $id and overseer_mail_class == "owner-note")' |
+        awk 'NR == 1')" || refuse file-unreadable "$path"
+    else
+      lm_owner_ask_find "$REF" || ASK_JSON=""
+      ref_json="$ASK_JSON"
+    fi
+    if [ -n "$ref_json" ]; then
+      RE_DELIVERY_ID="$(jq -r '.delivery_id // empty' <<<"$ref_json")" || refuse file-unreadable "$path"
+    fi
+    exec 9<&-
+    orch_release_lock
+    [ -z "$ref_json" ] || return 0
+  done
+  refuse ref-unknown "$REF"
+}
+
 # The ask ID closes, refused where none stands.
 lm_owner_ask() { # ID
   lm_owner_ask_find "$1" || refuse ask-unknown "$1"
@@ -1077,7 +1245,9 @@ lm_resolved() { # ASK_ID BY ANSWER_ID
 # the kendex settings ladder, else 120. Read only for an owner ask, whose
 # deadline stands for the recommendation it hands over, and the ladder is
 # loaded here alone: every other verb runs on the hooks' path and reads no
-# project file.
+# project file, and `peer` reads only ORCH_STATE_DIR from the peer's
+# settings, as data, through lm_peer_state, never sourcing a file of the
+# peer's.
 lm_wait_minutes() {
   if [ "$WAIT_GIVEN" -eq 1 ]; then
     case "$WAIT" in
@@ -1155,8 +1325,8 @@ lm_inbox_objects() { # FILE
 }
 
 # Replaced by rename, so a reader never meets a half-written count.
-# lm_cursor_put answers with its status alone, for the one caller that must
-# not refuse; lm_cursor_write refuses where it fails.
+# lm_cursor_put answers with its status alone, for the --peek reads, which
+# must not refuse; lm_cursor_write refuses where it fails.
 lm_cursor_put() { # COUNT
   printf '%s\n' "$1" >"$WORK_DIR/cursor" && mv -- "$WORK_DIR/cursor" "$CURSOR"
 }
@@ -1227,12 +1397,7 @@ case "$VERB" in
       # answer nothing the owner wrote. The note is judged by the class the
       # watch reports it under, so a line the watch calls a peer's is never
       # the owner's here.
-      lm_fetch "$TO_LANE" "$WORK_DIR/lane.raw"
-      lm_terminated "$WORK_DIR/lane.raw" "$WORK_DIR/lane.jsonl"
-      lm_objects "$WORK_DIR/lane.jsonl" |
-        jq -e --arg id "$REF" "$MAILBOX_CLASS_JQ"' select(.id == $id and overseer_mail_class == "owner-note")' >/dev/null ||
-        lm_owner_ask_find "$REF" ||
-        refuse ref-unknown "$REF"
+      lm_ref_find
     fi
     [ -z "$ATTACH" ] || lm_attach_confined
     LINE="$(lm_envelope "$VERB")"
@@ -1328,8 +1493,8 @@ case "$VERB" in
     lm_terminated "$WORK_DIR/over.raw" "$WORK_DIR/over.jsonl"
     lm_fetch "$TO_LANE" "$WORK_DIR/lane.raw"
     lm_terminated "$WORK_DIR/lane.raw" "$WORK_DIR/lane.jsonl"
-    lm_objects "$WORK_DIR/over.jsonl" | jq -c '. + {box: "to-overseer"}' || refuse file-unreadable "$TO_OVERSEER"
-    lm_objects "$WORK_DIR/lane.jsonl" | jq -c '. + {box: "to-lane"}' || refuse file-unreadable "$TO_LANE"
+    lm_objects "$WORK_DIR/over.jsonl" to-overseer || refuse file-unreadable "$TO_OVERSEER"
+    lm_objects "$WORK_DIR/lane.jsonl" to-lane || refuse file-unreadable "$TO_LANE"
     ;;
 
   peer)
@@ -1350,8 +1515,11 @@ case "$VERB" in
     else
       lm_append_local "$TO_LANE" "$LINE"
     fi
+    # An answer is read by the asker's `wait --item overseer --id`, which
+    # reads to-lane.jsonl itself, so no named session is owed for it.
     if [ "$PEER_VERB" = send ]; then
       lm_sent
+      [ -n "$MSGID" ] || lm_peer_reader
     fi
     # The caller's own record follows the delivery. Both files are append-only
     # and nothing removes a line, so a record written before a delivery that
@@ -1363,6 +1531,7 @@ case "$VERB" in
     # the peer now holds, rather than a delivered ask it cannot wait on.
     if [ "$PEER_VERB" = ask ]; then
       printf 'id=%s\n' "$(cat -- "$WORK_DIR/id")"
+      lm_peer_reader
       lm_box "$OWN_ROOT"
       lm_plain
       lm_one_spelling
@@ -1433,24 +1602,47 @@ case "$VERB" in
         lm_cursor_put 0 2>/dev/null || { : >>"$CURSOR"; } 2>/dev/null || :
       fi
     fi
+    # One snapshot of the mailbox and its complete-line count, which the
+    # --ack branch and the read below both take the cursor from.
+    lm_fetch "$TO_LANE" "$WORK_DIR/lane.raw"
+    lm_terminated "$WORK_DIR/lane.raw" "$WORK_DIR/lane.jsonl"
+    COUNT="$(lm_count "$WORK_DIR/lane.jsonl")"
     if [ -n "$ACK" ]; then
+      # The count stops at the complete lines present: a cursor past them
+      # marks read a line not yet written, which no watch then announces and
+      # no inbox then prints.
+      ASKED="$ACK"
+      [ "$ACK" -le "$COUNT" ] || ACK="$COUNT"
       # A halt stands until a plain read: the count stops at the line before
       # the first unread halt, whatever a hook that showed it acknowledges.
-      lm_fetch "$TO_LANE" "$WORK_DIR/lane.raw"
-      lm_terminated "$WORK_DIR/lane.raw" "$WORK_DIR/lane.jsonl"
       jq -r -R '(fromjson? // null) | if type == "object" and .halt == true then "halt" else "-" end' \
         <"$WORK_DIR/lane.jsonl" >"$WORK_DIR/kinds" || refuse file-unreadable "$TO_LANE"
       HALT_AT="$(awk -v seen="$SEEN" 'NR > seen && $0 == "halt" { print NR - 1; exit }' <"$WORK_DIR/kinds")" ||
         refuse file-unreadable "$TO_LANE"
       [ -z "$HALT_AT" ] || [ "$ACK" -le "$HALT_AT" ] || ACK="$HALT_AT"
-      # Forward only: a Stop hook that peeked before a workflow wait point
-      # handed more over acknowledges a count the cursor has already passed.
-      [ "$ACK" -le "$SEEN" ] || lm_cursor_write "$ACK"
+      [ "$ASKED" -le "$COUNT" ] || lm_notice ack-clamped "$ACK" "asked=$ASKED"
+      if [ "$SEEN" -gt "$COUNT" ]; then
+        # A cursor still past the lines present, one an --ack wrote before the
+        # clamp above that no peek could lower, comes down to the count acknowledged, never to the
+        # line count: a line that landed after the peek this count came from
+        # is not one the lane was shown.
+        lm_notice cursor-lowered "$ACK" "was=$SEEN"
+      elif [ "$ACK" -le "$SEEN" ]; then
+        # Forward only: a Stop hook that peeked before a workflow wait point
+        # handed more over acknowledges a count the cursor has already passed.
+        exit 0
+      fi
+      lm_cursor_write "$ACK"
       exit 0
     fi
-    lm_fetch "$TO_LANE" "$WORK_DIR/lane.raw"
-    lm_terminated "$WORK_DIR/lane.raw" "$WORK_DIR/lane.jsonl"
-    COUNT="$(lm_count "$WORK_DIR/lane.jsonl")"
+    # A peek brings a cursor already past the lines present down to them, as a
+    # plain read does: the hooks --ack only after a peek that printed a line,
+    # and a peek over such a cursor prints none, so no --ack would ever lower
+    # it and the next line written would be marked read. Like the first-read
+    # 0 above, a write that cannot land never refuses the peek.
+    if [ "$PEEK" -eq 1 ] && [ "$SEEN" -gt "$COUNT" ] && lm_cursor_put "$COUNT" 2>/dev/null; then
+      lm_notice cursor-lowered "$COUNT" "was=$SEEN"
+    fi
     [ "$PEEK" -eq 0 ] || lm_header "$WORK_DIR/lane.jsonl"
     awk -v seen="$SEEN" 'NR > seen' <"$WORK_DIR/lane.jsonl" >"$WORK_DIR/unread"
     lm_inbox_objects "$WORK_DIR/unread"

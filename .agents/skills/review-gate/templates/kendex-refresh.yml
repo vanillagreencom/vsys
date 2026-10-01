@@ -1,6 +1,8 @@
 # Copy verbatim into .github/workflows/ with scripts/adopt-refresh.sh.
 # Schedule and manual runs work in any consumer with the app-secret kendex
 # environment. Opening a pull request needs that repository's app token.
+# Only render arms auto-merge. A standard-class refresh opens an unarmed pull
+# request for a repository maintainer to review and merge through normal gates.
 # The instant repository_dispatch signal needs the organization's lanes app
 # and the catalog's dispatch workflow; it is organization wiring.
 name: Refresh kendex
@@ -38,8 +40,8 @@ jobs:
           # release tag names; the tag only names the version installed. A
           # tag can be moved, and a moved one would run another installer
           # here. Both values are written together from one tag.
-          KENDEX_VERSION: v1.2.0
-          KENDEX_INSTALLER_SHA: c773eb8f4422bdff22679adcec379eb1b99099dc
+          KENDEX_VERSION: v1.3.0
+          KENDEX_INSTALLER_SHA: f6ad9491a810a9256f04f66f8d083eb9db709602
           KENDEX_INSTALLER_REPO: vanillagreencom/kendex
         run: |
           set -euo pipefail
@@ -83,11 +85,14 @@ jobs:
           owner: vanillagreencom
           repositories: kendex
           permission-issues: write
-      - name: Report rendered-file findings upstream
+      # A finding is resolved only once it is filed upstream. One kendex
+      # report does not route to kendex, or one without this token, stays
+      # unfiled: this step fails until its thread is resolved by hand.
+      - name: File rendered-file findings upstream and resolve them
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           KENDEX_ISSUES_TOKEN: ${{ steps.issues-token.outputs.token }}
         run: |
           set -euo pipefail
-          exec "$RUNNER_TEMP/refresh-skills/.agents/skills/review-gate/scripts/refresh-reviews.sh" --report-only
+          exec "$RUNNER_TEMP/refresh-skills/.agents/skills/review-gate/scripts/refresh-reviews.sh"

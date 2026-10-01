@@ -18,9 +18,13 @@ On re-delegation to a pane agent, use `steer_subagent` only for true mid-run cor
 
 Use `get_subagent_result` only as a recovery/status reader for missed or truncated pane completions; it does not affect ownership or delivery. If it returns `needs_completion`, the child finished a turn without the durable `complete_subagent` record — do not count it as a return; use the verbose diagnostics/outbox path to send one recovery instruction asking the same pane to call `complete_subagent` for the stored `taskId`. Treat Pi custom completion notifications as agent returns only when the task ID matches stored workflow state; repeated display is not a second return.
 
+## Lane mailbox wake (Pi)
+
+A Pi lane whose installed `pi-hooks` lists the lane mail wake among its extensions arms no mailbox monitor ([watch-delivery.md § Lane mailbox monitor](watch-delivery.md#lane-mailbox-monitor)): its launch brief and relaunch line carry no arm line, and the package starts a turn in the idle lane when mail other than an answer lands, or when the session settles with such mail unread, by running the `lane-mail-deliver` hook's judge, and the turn opens with what that judge hands over after a tool call: `lane-mail-check: unread=[N]` and the envelopes, already marked read. Act on every directive it carries; a halt among them names the `lane-mail inbox` command that reads it. A turn opening on any other `lane-mail-check:` line is the judge's refusal, which the lane clears as it would after a tool call. What the package does is its [README](https://github.com/vanillagreencom/kendex/blob/main/pi-extensions/pi-hooks/README.md) § Lane mail wake.
+
 ## Lane mailbox monitor (Pi)
 
-A Pi lane arms its mailbox monitor ([watch-delivery.md § Lane mailbox monitor](watch-delivery.md#lane-mailbox-monitor)) through the `pi-background-tasks` output wake that [§ Standing watch (Pi)](#standing-watch-pi) also uses.
+A Pi lane whose installed `pi-hooks` lists no lane mail wake arms its mailbox monitor ([watch-delivery.md § Lane mailbox monitor](watch-delivery.md#lane-mailbox-monitor)) through the `pi-background-tasks` output wake that [§ Standing watch (Pi)](#standing-watch-pi) also uses. `open-terminal` reads that list at a fleet launch, prints `pi-mail-wake-missing` naming the carrier's version, and puts the arm line in the lane's brief and relaunch line; a lane whose brief or relaunch line carries no arm line arms nothing.
 
 | Step | Call |
 |------|------|

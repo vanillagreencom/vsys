@@ -60,14 +60,16 @@
 # failures, an empty DEV_VALIDATE_CMD among them, before any run directory
 # exists; validate_mode is then null. validate_time is the run's wall time as
 # --record reports it, a no-verdict run's included, and null where no run is
-# named or the run is unfinished.
+# named or the run is unfinished. validate_lanes and validate_selection carry
+# the command's report as --record reads it; schemas/dev-return.md names them.
 #
 # A fix round's run is bound to its round. The round record dev-round-write
 # stamped at delegation, PATH/tmp/dev-round-ID-RID.json, names the round's
 # base_sha and delegated_at, and a fix receipt names a run only when the HEAD
 # --record reports for it contains that base, or the run records that base as
-# the one a rebase left off the branch, and the run started no earlier than
-# delegated_at. A rebase mid-round moves HEAD off the base, and the round's
+# the one a rebase left off the branch, or the worktree-private restack map
+# rewrites that base to the run's exact HEAD, and the run started no earlier
+# than delegated_at. A rebase mid-round moves HEAD off the base, and the round's
 # own run then records the base as orphaned. An earlier round's run, still on
 # disk and in the dev agent's context, fails one or the other: the implement
 # round's started before the base existed, and a fix round that committed
@@ -130,6 +132,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=lib/branch-growth.sh
 source "$SCRIPT_DIR/lib/branch-growth.sh"
+# shellcheck source=lib/rebase-map.sh
+source "$SCRIPT_DIR/lib/rebase-map.sh"
 
 # Path-safe token grammar for --issue / --round-id: no '/', no '..', no
 # whitespace, so a value can never escape the tmp/ directory.
@@ -162,7 +166,8 @@ die() {
       validate-disagrees) printf 'A pass needs a run that passed, and no-verdict a run the timeout ended; this run is neither.\n' ;;
       round-record-unreadable) printf 'A fix receipt names a run only against its round record, and this one carries no base_sha of 40 hex or no delegated_at epoch.\n' ;;
       run-headless) printf 'The run records no starting HEAD, so it cannot be bound to a round; start a new run.\n' ;;
-      run-off-round) printf 'The run started at a HEAD that does not contain the round base, and records no rebase that left that base off the branch, so it validated another round.\n' ;;
+      run-off-round) printf 'The run HEAD neither contains the round base nor equals its guarded restack mapping, and the run does not record that base as orphaned.\n' ;;
+      rebase-map-unreadable) printf 'The worktree-private restack map could not be read, so the run cannot be bound through it.\n' ;;
       run-before-round) printf 'The run started before the round was delegated, so it validated an earlier round.\n' ;;
       ancestry-unreadable) printf 'Git could not compare the run HEAD with the round base.\n' ;;
       empty-text) printf 'The text must contain a non-whitespace character.\n' ;;
@@ -204,8 +209,9 @@ records validate_mode null. Submit reuses only a full pass. validate_time is
 the run's wall time --record reports, a no-verdict run's included, and null
 with no run or an unfinished one. With --kind fix the run must start at a HEAD
 that contains the base_sha of PATH/tmp/dev-round-ID-RID.json, or record that
-base as the one a rebase left off the branch, no earlier than its
-delegated_at, so a run from an earlier round is refused.
+base as the one a rebase left off the branch, or equal that base's rewritten
+SHA from the worktree-private kendex-rebase-map. The run must start no earlier
+than delegated_at, so a run from an earlier round is refused.
 --summary TEXT embeds the summary inline; --summary-file PATH embeds a file's
 content. --recovered-text PATH embeds the report round-recover read from a
 stalled agent's transcript and records recovered_from: transcript. The three
@@ -277,6 +283,8 @@ commit=""
 validate=""
 validate_note=""
 validate_mode=""
+validate_lanes=""
+validate_selection=""
 validate_run_dir=""
 validate_seconds=""
 validate_started_at=""
@@ -384,7 +392,7 @@ if [[ "$validate_run_dir_given" == "true" ]]; then
     IFS= read -r run_cause <<<"$run_record" || true
     die run-record-unreadable "path=$validate_run_dir" "cause=$run_cause"
   fi
-  # The one line --record prints: validate-mode=M verdict=V head=H start=S,
+  # The one line --record prints: validate-mode=M [lanes=L] selection=S verdict=V head=H start=S,
   # then validate-base-orphaned=O where a rebase left the run's base off the
   # branch, then seconds=N started-at=T ended-at=T where the run finished, the
   # bound's end included.
@@ -393,6 +401,8 @@ if [[ "$validate_run_dir_given" == "true" ]]; then
   for field in ${run_fields[@]+"${run_fields[@]}"}; do
     case "$field" in
       validate-mode=*) validate_mode="${field#*=}" ;;
+      lanes=*) validate_lanes="${field#*=}" ;;
+      selection=*) validate_selection="${field#*=}" ;;
       verdict=*) run_verdict="${field#*=}" ;;
       head=*) run_head="${field#*=}" ;;
       start=*) run_start="${field#*=}" ;;
@@ -476,8 +486,29 @@ if [[ "$kind" == "fix" && "$validate_run_dir_given" == "true" ]]; then
   fi
   case "$ancestry" in
     0) ;;
-    1) [[ "$run_orphaned" == "$round_base" ]] \
-         || die run-off-round "run-dir=$validate_run_dir" "head=$run_head" "base-sha=$round_base" ;;
+    1)
+      if [[ "$run_orphaned" != "$round_base" ]]; then
+        rebase_map="$(git -C "$worktree" rev-parse --git-path kendex-rebase-map 2>/dev/null)" \
+          || die rebase-map-unreadable "worktree=$worktree"
+        [[ "$rebase_map" == /* ]] || rebase_map="$worktree/$rebase_map"
+        mapped_base=""
+        if [[ -e "$rebase_map" || -L "$rebase_map" ]]; then
+          # The shared owner projects the round base without consuming the
+          # file. Only a complete map can bind the run's exact HEAD below.
+          if rebase_map_load "$rebase_map" && rebase_map_project "$round_base"; then
+            mapped_base="$REBASE_MAP_PROJECTED"
+          else
+            case "${REBASE_MAP_FAIL_ARGS[0]}" in
+              rebase-unmapped|restack-map-grammar|map-sha) mapped_base="" ;;
+              map-read|map-build) die rebase-map-unreadable "path=$rebase_map" ;;
+              *) die rebase-map-unreadable "path=$rebase_map" "cause=${REBASE_MAP_FAIL_ARGS[0]}" ;;
+            esac
+          fi
+        fi
+        [[ "$mapped_base" == "$run_head" ]] \
+          || die run-off-round "run-dir=$validate_run_dir" "head=$run_head" "base-sha=$round_base"
+      fi
+      ;;
     *) die ancestry-unreadable "run-dir=$validate_run_dir" "head=$run_head" "base-sha=$round_base" ;;
   esac
   [[ "$run_start" =~ ^[0-9]+$ ]] \
@@ -595,6 +626,8 @@ jq -n \
   --argjson baseline_lines "$baseline_lines" \
   --arg validate "$validate" \
   --arg validate_mode "$validate_mode" \
+  --arg validate_lanes "$validate_lanes" \
+  --arg validate_selection "$validate_selection" \
   --arg validate_seconds "$validate_seconds" \
   --arg validate_started_at "$validate_started_at" \
   --arg validate_ended_at "$validate_ended_at" \
@@ -627,7 +660,9 @@ jq -n \
      recovered_from: $recovered_from,
      bundled: $bundled,
      items: $items
-   } + if $kind == "implement" then {baseline_lines: $baseline_lines} else {} end)' > "$tmp"
+   } + (if $validate_selection == "" then {} else {validate_selection: $validate_selection} end)
+     + (if $validate_lanes == "" then {} else {validate_lanes: $validate_lanes} end)
+     + if $kind == "implement" then {baseline_lines: $baseline_lines} else {} end)' > "$tmp"
 
 mv "$tmp" "$out"
 trap - EXIT

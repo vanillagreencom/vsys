@@ -25,37 +25,40 @@ set -euo pipefail
 # Both answers come from git with its redirects unset, because --check may
 # be running inside a hook, where GIT_DIR is exported and git honours it
 # over the directory it was asked about — every directory would then answer
-# with this repository's.
+# with this repository's. The installer asks it too, for the place the
+# helper records. Its locals carry a __ prefix: a caller's variable of the
+# same name would otherwise take the answer inside this function and keep
+# its empty value outside it.
 gg_checkout_place() { # COMMONVAR RELVAR DIR -> 0 when both answers are had
-  local __c="$1" __r="$2" dir="$3" real="" common="" top=""
-  gg_path real gg_physical "$dir" || return 1
-  common="$(
+  local __c="$1" __r="$2" __dir="$3" __real="" __common="" __top=""
+  gg_path __real gg_physical "$__dir" || return 1
+  __common="$(
     unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE
-    cd -- "$real" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null && printf x
+    cd -- "$__real" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null && printf x
   )" || return 1
-  common="${common%x}"
-  common="${common%"$GG_NL"}"
-  [ -n "$common" ] || return 1
+  __common="${__common%x}"
+  __common="${__common%"$GG_NL"}"
+  [ -n "$__common" ] || return 1
   # git answers relative to the directory it was asked in, which lib/hooks-path.sh
   # absolutizes the same way before resolving.
-  case "$common" in
+  case "$__common" in
     /*) ;;
-    *) common="$real/$common" ;;
+    *) __common="$__real/$__common" ;;
   esac
-  gg_path common gg_physical "$common" || return 1
-  top="$(
+  gg_path __common gg_physical "$__common" || return 1
+  __top="$(
     unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE
-    cd -- "$real" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null && printf x
+    cd -- "$__real" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null && printf x
   )" || return 1
-  top="${top%x}"
-  top="${top%"$GG_NL"}"
-  gg_path top gg_physical "$top" || return 1
-  case "$real" in
-    "$top") eval "$__r=''" ;;
-    "$top"/*) eval "$__r=\${real#\"\$top/\"}" ;;
+  __top="${__top%x}"
+  __top="${__top%"$GG_NL"}"
+  gg_path __top gg_physical "$__top" || return 1
+  case "$__real" in
+    "$__top") eval "$__r=''" ;;
+    "$__top"/*) eval "$__r=\${__real#\"\$__top/\"}" ;;
     *) return 1 ;;
   esac
-  eval "$__c=\$common"
+  eval "$__c=\$__common"
 }
 
 # Whether a baked scripts directory is THIS project's, in another checkout of
@@ -87,39 +90,63 @@ gg_same_project_elsewhere() { # DIR -> 0 when it is this project's, elsewhere
 
 # Whether the head a helper carries is one this installer would bake.
 #
-# The head with the per-checkout value blanked is a prefix and a suffix of
-# fixed bytes, so a head that is ours is exactly those two around some
-# value. Taking the value as what lies between them asks nothing of its
-# contents, and the bytes on either side of it are still held exactly.
+# The head with its two lifted values blanked is three runs of fixed bytes,
+# so a head that is ours is exactly those three around two values. Taking
+# each value as what lies between them asks nothing of its contents, and the
+# bytes around them are still held exactly. The first value ends where the
+# middle run first appears; whichever split that picks, both values are then
+# held to the quoter, so the head is byte for byte the one this installer
+# writes for them.
 #
-# The value is then held to two things. It has to be one this installer's
-# own quoter would have written, proved by unescaping and re-escaping it —
-# so a value that closes its quote and appends a command rebuilds
-# differently and is refused, rather than being blessed by a comparison
-# assembled out of the bytes it is judging. And it has to name this same
-# project's scripts directory in another checkout of this repository.
-check_helper_head() { # HEAD -> 0 ours, 1 not
-  local head="$1" shape="" prefix="" suffix="" inner="" value="" sq="'" esc
-  esc="'\\''"
+# Each value has to be one this installer's own quoter would have written,
+# proved by unescaping and re-escaping it — so a value that closes its quote
+# and appends a command rebuilds differently and is refused, rather than
+# being blessed by a comparison assembled out of the bytes it is judging.
+#
+# Then what they name. A scripts directory that is there has to be this same
+# project's in another checkout of this repository, or the helper is not
+# ours to vouch for. The pair is drift rather than foreign where it no longer
+# agrees with the arming tree: the directory is this project's and the
+# recorded place is not where this project keeps it, or the directory is gone
+# while the recorded place is still this project's. Either way the re-arm
+# rewrites the pair.
+gg_lifted_value() { # VAR QUOTED -> VAR gets the value; 1 when the quoter would not write QUOTED
+  local __name="$1" __inner="$2" __value="" __sq="'" __esc="'\\''"
+  # The replacement is unquoted: Bash 3.2 keeps the quotes of a quoted one
+  # as literal bytes, and a value rebuilt around them is never ours.
+  __value="${__inner//"$__esc"/$__sq}"
+  [ "$(gg_shell_quote "$__value")" = "$__inner" ] || return 1
+  eval "$__name=\$__value"
+}
+
+check_helper_head() { # HEAD -> 0 ours, 1 not ours, 2 ours with a pair the arming tree no longer matches
+  local head="$1" shape="" prefix="" middle="" suffix="" rest="" value="" rel=""
   shape="$(helper_head_shape)" || return 1
   case "$shape" in
     *"$GG_PER_CHECKOUT_MARK"*"$GG_PER_CHECKOUT_MARK"*) return 1 ;;
-    *"$GG_PER_CHECKOUT_MARK"*) ;;
+    *"$GG_SCRIPTS_REL_MARK"*"$GG_SCRIPTS_REL_MARK"*) return 1 ;;
+    *"$GG_PER_CHECKOUT_MARK"*"$GG_SCRIPTS_REL_MARK"*) ;;
     *) return 1 ;;
   esac
   prefix="${shape%%"$GG_PER_CHECKOUT_MARK"*}"
-  suffix="${shape#*"$GG_PER_CHECKOUT_MARK"}"
+  rest="${shape#*"$GG_PER_CHECKOUT_MARK"}"
+  middle="${rest%%"$GG_SCRIPTS_REL_MARK"*}"
+  suffix="${rest#*"$GG_SCRIPTS_REL_MARK"}"
   case "$head" in
-    "$prefix"*"$suffix") ;;
+    "$prefix"*"$middle"*"$suffix") ;;
     *) return 1 ;;
   esac
-  inner="${head#"$prefix"}"
-  inner="${inner%"$suffix"}"
-  # The replacement is unquoted: Bash 3.2 keeps the quotes of a quoted one
-  # as literal bytes, and a value rebuilt around them is never ours.
-  value="${inner//"$esc"/$sq}"
-  [ "$(gg_shell_quote "$value")" = "$inner" ] || return 1
-  gg_same_project_elsewhere "$value"
+  rest="${head#"$prefix"}"
+  rest="${rest%"$suffix"}"
+  gg_lifted_value value "${rest%%"$middle"*}" || return 1
+  gg_lifted_value rel "${rest#*"$middle"}" || return 1
+  if [ -e "$value" ] || [ -L "$value" ]; then
+    gg_same_project_elsewhere "$value" || return 1
+    [ "$rel" = "$INSTALLED_SCRIPTS_REL" ] || return 2
+    return 0
+  fi
+  [ -n "$rel" ] && [ "$rel" = "$INSTALLED_SCRIPTS_REL" ] && return 2
+  return 1
 }
 
 CHECK_REASONS=""
@@ -162,17 +189,27 @@ check_helper() { # -> 0 armed, 1 not armed, 3 unverifiable
   #
   # The program is those bytes exactly. The head is where one checkout of a
   # project differs from another, so it is held to this checkout's own head
-  # around the one value that may differ — which is what lets a worktree
+  # around the two values lifted out of it — which is what lets a worktree
   # recognize the helper the main checkout armed, and what refuses a second
   # project in the same repository relaying under the first one's consent.
-  local head_lines="" head=""
+  local head_lines="" head="" head_status=0
   head_lines="$(helper_head 2>/dev/null | wc -l | tr -d ' ')" || head_lines=""
-  if [ -z "$head_lines" ] \
-    || ! head="$(sed -e "$((head_lines + 1)),\$d" "$helper")" \
-    || ! check_helper_head "$head" 2>/dev/null \
+  if [ -n "$head_lines" ] && head="$(sed -e "$((head_lines + 1)),\$d" "$helper")"; then
+    check_helper_head "$head" 2>/dev/null || head_status=$?
+  else
+    head_status=1
+  fi
+  if { [ "$head_status" -ne 0 ] && [ "$head_status" -ne 2 ]; } \
     || ! helper_program 2>/dev/null | cmp -s - <(sed -e "1,${head_lines}d" "$helper"); then
     add_reason helper-unverified "$HELPER_NAME" "helper $HELPER_NAME is not the one this installer generates, so what it runs cannot be verified"
     return 3
+  fi
+  # Ours by every byte, with a pair of paths the arming tree no longer
+  # matches: a re-arm rewrites it, and until then a linked work tree may be
+  # judged by scripts other than the ones it carries.
+  if [ "$head_status" -eq 2 ]; then
+    add_reason helper-moved "$HELPER_NAME" "helper $HELPER_NAME names a scripts directory the tree that armed it no longer holds at the recorded place, so a work tree may be judged by scripts other than its own"
+    return 1
   fi
   check_delegated_lanes || return $?
   return 0

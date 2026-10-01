@@ -4,8 +4,9 @@
 # consumers at .agents/skills/review-gate/scripts/. The authoritative caller
 # contract — evidence forms, trust model, settings keys, the carry-forward
 # engine, env seams, output, exit codes — is print_usage below: run --help.
-# review-writer.sh and pr-watch.sh consume the complete stdout verdict/detail
-# line. Keep that whole-text protocol unchanged; diagnostics go to stderr.
+# review-writer.sh and refresh-reviews.sh consume the complete stdout
+# verdict/detail line. Keep that whole-text protocol unchanged; diagnostics
+# go to stderr.
 set -u
 # A merge gate must never let an inherited BASHOPTS decide which paths match.
 shopt -u nocasematch nocaseglob extglob 2>/dev/null || true
@@ -27,8 +28,14 @@ Env (optional): PR_AUTHOR and PR_BASE_SHA — resolved from the PR when empty.
 
 Output: one machine-readable line on stdout:
   verdict=approved|awaiting|threads-open|changes-requested|untracked-claim|
-          unreasoned-decline|suppressed-findings detail=<human text>
-(diagnostic detail also echoed for logs).
+          unreasoned-decline|suppressed-findings|unmeasured|class-unresolved
+          detail=<human text>
+(diagnostic detail also echoed for logs). `unmeasured` is an active class
+policy whose classifier fell back to standard; the detail names its cause.
+class-unresolved is a class-policy failure on this head answered as a
+verdict rather than exit 2; the stderr diagnostics above it name the cause,
+and no evidence was read. Which failures, and what the writer does with it:
+SKILL.md § Decision table.
 
 Exit codes:
   0  evaluated (the verdict line is authoritative)
@@ -139,7 +146,8 @@ control's own label — at a count not spelled N/N, and at a label spelled out
 as a sentence. No SET of names is read: a repo names its files after the
 words it writes reasons in, so a set of them bans ordinary prose.
 
-THE CORPUS IS THE CONTRACT, NOT THIS LIST. tests/corpus/ holds what the gate
+THE CORPUS IS THE CONTRACT, NOT THIS LIST. The catalog's tests/corpus/
+(https://github.com/vanillagreencom/kendex/tree/main/skills/review-gate/tests/corpus) holds what the gate
 must catch, what it must pass, and that KNOWN LIMIT. Add a label by writing
 the reply THERE first, as a person types it, then widen `reason_left` until
 the suite is green. Write the punctuated spelling: normalization turns it to
@@ -848,8 +856,9 @@ materialize_docs_commits() { # REPO BASE HEAD
 #             sixteen pull requests with every one of them overrunning.
 #
 # An overrun returns non-zero like any other preparation failure, so the caller
-# exits 2 through predicate-policy-resolve, writes no status, and the next pass
-# tries again. `timeout` is coreutils and the writer runs where it exists; a
+# answers class-unresolved through predicate-policy-resolve, and the next pass
+# tries again; ../SKILL.md § Decision table says what the writer posts for it.
+# `timeout` is coreutils and the writer runs where it exists; a
 # host with neither spelling keeps the unbounded behaviour and says so, since
 # refusing there would disable the gate on a machine whose only fault is a
 # missing utility.
@@ -939,9 +948,35 @@ if [ "$POLICY_STATE" = "active" ]; then
     rg_message error predicate-policy-commits "$pr_base...$HEAD_SHA" "::error::review-predicate: the commits needed for class policy could not be materialized" >&2
     exit 2
   }
-  CLASS_POLICY="$(resolve_class_policy "$POLICY_REPO" "$pr_base" "$HEAD_SHA")" || {
+  # review-policy's exit 3 is its one answer that is not a class: the
+  # classifier fell back to standard, and the record carries the cause it
+  # named. That is a verdict for this head, not exit 2: a verdict posts a
+  # status naming the head, where exit 2 posts nothing on the pull request.
+  # Unlike class-unresolved below it does not fail the writer's pass, which
+  # would keep failing while the pull request stays open. Exit 3 without the
+  # record is a broken answer.
+  policy_status=0
+  CLASS_POLICY="$(resolve_class_policy "$POLICY_REPO" "$pr_base" "$HEAD_SHA")" || policy_status=$?
+  if [ "$policy_status" -eq 3 ]; then
+    case "$CLASS_POLICY" in
+      "policy=unmeasured cause="*)
+        echo "verdict=unmeasured detail=change class not measured: ${CLASS_POLICY#policy=unmeasured }"
+        exit 0
+        ;;
+      *)
+        rg_message error predicate-policy-live-protocol "$CLASS_POLICY" "::error::review-predicate: the review class policy owner exited 3 without its unmeasured record" >&2
+        exit 2
+        ;;
+    esac
+  fi
+  # Every other non-zero exit of resolve_class_policy, the pull request's
+  # fault or the runner's, is a verdict on this head rather than exit 2, so
+  # the writer can post pending on it and keep the gate closed with a reason.
+  # The writer still fails its pass on it.
+  [ "$policy_status" -eq 0 ] || {
     rg_message error predicate-policy-resolve "$pr_base...$HEAD_SHA" "::error::review-predicate: the change class or review policy could not be resolved" >&2
-    exit 2
+    echo "verdict=class-unresolved detail=change class unresolved at $HEAD_SHA; the writer log names the cause, and the next pass retries"
+    exit 0
   }
   case "$CLASS_POLICY" in
     "change_class=render review_evidence="*" policy=active"|"change_class=trivial review_evidence="*" policy=active"|"change_class=micro review_evidence="*" policy=active"|"change_class=small review_evidence="*" policy=active"|"change_class=standard review_evidence="*" policy=active") ;;
@@ -1461,7 +1496,8 @@ fi
 # substitutes for MISSING review evidence only — changes-requested and
 # unresolved threads still fail closed. SECURITY: deliberate, bounded
 # relaxation; trusted-publisher model identical to the trusted status
-# contexts above. See orch DEVELOPMENT.md "Reviewer-outage recognition".
+# contexts above. The context's name and reason rule: references/settings.md,
+# REVIEW_GATE_OVERRIDE_CONTEXT.
 outageok=0
 outage_reason=""
 if [ -n "$OUTAGE_CONTEXT" ]; then
@@ -1924,7 +1960,8 @@ fi
 # second reduction subtracts. `reason_left` strips the reply form, the
 # non-reason tokens and the words carrying no content alone; a reply whose
 # reason strips to nothing is counted, which is what leaves a token INSIDE a
-# real reason harmless. Widen this list from tests/corpus/, never alone.
+# real reason harmless. Widen this list from the catalog's tests/corpus/
+# (https://github.com/vanillagreencom/kendex/tree/main/skills/review-gate/tests/corpus), never alone.
 # Punctuation normalization keeps every letter and number, not only ASCII:
 # the word lists are ASCII, so a reason written in another script survives
 # whole, and surviving text is residue, which is a stated reason.
@@ -1948,7 +1985,8 @@ fi
 # leaves "lifecycle", and a decline this term exists to red walks through the
 # gate by appending a count. The rule is one rule — a word the term deletes
 # never shields the name behind it — and each list has its own section of
-# tests/corpus/declines-unreasoned.txt and its own must-fail probe.
+# https://github.com/vanillagreencom/kendex/blob/main/skills/review-gate/tests/corpus/declines-unreasoned.txt
+# and its own must-fail probe.
 #
 # The punctuation pass therefore runs ahead of both lists, so the lists read
 # normalized text; but it HOLDS a dot, underscore or hyphen sitting between
@@ -1979,13 +2017,17 @@ fi
 # The space padded onto the END is how a word in the last position meets that
 # one-character boundary; nothing is asked of the left, and the closing trim
 # takes both pads back. Anything included here has to compile under both
-# engines, and tests/predicate-re2-engine.test.sh is what says so.
+# engines, and
+# https://github.com/vanillagreencom/kendex/blob/main/skills/review-gate/tests/predicate-re2-engine.test.sh
+# is what says so.
 #
 # Position is the only thing that separates a suite name from prose — both
 # are ordinary English, so any SET of names is a word ban on whatever the
 # repo happens to name its files after, and "the guard refuses this path" is
 # a real reason written in three of them. What position does not reach is
-# pinned in tests/corpus/declines-known-limit.txt: a name standing after the
+# pinned in
+# https://github.com/vanillagreencom/kendex/blob/main/skills/review-gate/tests/corpus/declines-known-limit.txt:
+# a name standing after the
 # count, a count not spelled N/N, a path whose own segments are listed words,
 # and a slash written inside a multi-word entry.
 REPLY_FORMS_DEF='def disposition: test("^\\s*(fixed in [0-9a-f]{7,40}\\b|declined:)"; "i");

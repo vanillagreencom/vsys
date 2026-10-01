@@ -42,27 +42,9 @@ ORCH_LANE_OUTPUT = "quiet"
 # set it where the free space left below it still holds one full validation.
 ORCH_ROUND_PRUNE_DISK_PCT = "75"
 
-# What counts as a review before a merge. "approval" needs a GitHub
-# approval. "review" needs any non-author review of the current commit and
-# no open comment threads, for bots that comment but never approve. "off"
-# is only for a project with no reviewer at all.
-# values: approval | review | off
-PR_REVIEW_GATE = "approval"
-
-# The review-gate engine's own off switch, read here even where that
-# package is not installed. Only the exact word "off" narrows the gate;
-# anything else leaves the setting above in charge.
-# values: enforce | off
-REVIEW_GATE_MODE = "enforce"
-
 # Seconds to wait for a review before the timeout policy below applies. A
 # wait named on the command line always wins.
 PR_REVIEW_WAIT_SECS = "900"
-
-# The check name a trusted review bot publishes, whose success counts as a
-# review received. Anyone can publish under any name, so name only the bot
-# you trust. Empty counts reviews alone.
-PR_REVIEW_CHECK = ""
 
 # What happens when that wait runs out. "proceed" goes ahead only where no
 # reviewer engaged and no thread is open. "block" stops and waits for a
@@ -80,8 +62,9 @@ CI_WAIT_NO_CHECKS_GRACE = "180"
 CI_FIX_MAX_CYCLES = "6"
 
 # How many times one piece of work may go back for internal re-review
-# before the final verdict is taken. A change sized small is held to one.
-REVIEW_MAX_CYCLES = "4"
+# before the final verdict is taken. One means one fix round and one
+# re-review of that fix, then the pull request opens.
+REVIEW_MAX_CYCLES = "1"
 
 # How many rounds of outside review an open pull request takes. Past the
 # limit a finding gets a written answer instead of a fix, unless the change
@@ -194,10 +177,11 @@ ORCH_LANE_HOST_BUSY_WAIT_SECS = "30"
 # ORCH_LANE_EXCLUDE = "sclaude"
 # ORCH_LANE_RETIRE = "nclaude=YYYY-MM-DD"
 
-# The owner's reading of each Copilot pool a Pi lane on a github-copilot/
-# model spends, as account-dir=credits-used/credits-granted pairs, the
-# account dir an absolute path. With none set, such a launch is refused
-# rather than judged on a Claude window.
+# The override for each Copilot pool a Pi lane on a github-copilot/ model
+# spends, as account-dir=credits-used/credits-granted pairs, the account dir
+# an absolute path. The pool is read live from the lane host's accounts row
+# for the Pi root, which replaces this reading where it has one. With neither,
+# such a launch is refused rather than judged on a Claude window.
 # ORCH_LANE_COPILOT_POOL = "/home/me/.1pi=250000/1000000"
 
 # Seconds a lane's usage figure is reused before it is fetched again. 0
@@ -238,7 +222,7 @@ ORCH_LANE_HOST_BUSY_WAIT_SECS = "30"
 # owner progress reports go to (schemas/workflow-state.md, Recording policy).
 # ORCH_FLEET_LOG_ROW_BYTES = "600"
 # ORCH_TAKEOVER_ROWS = "10"
-# ORCH_RECORD_RETENTION_DAYS = "14"
+# ORCH_RECORD_RETENTION_DAYS = "5"
 # ORCH_PROGRESS_REPORT_DIR = "tmp/progress-reports"
 
 # The files whose change asks for a performance test, as path patterns
@@ -249,17 +233,43 @@ ORCH_LANE_HOST_BUSY_WAIT_SECS = "30"
 # go past it is refused.
 ORCH_OVERSEER_LANES = "3"
 
-# Most lanes one account runs at once. A launch that would go past it is
-# refused, and 0 turns the cap off. Each lane spends about 1.5 points of an
-# account's five-hour window per 10 minutes, so the default of 3 lanes uses
-# up an account's window in about 3.7 hours.
-ORCH_LANE_ACCOUNT_CLAIMS = "3"
+# External triage. The overseer processes issues and pull requests from
+# outside contributors: it investigates each one, may review and comment,
+# asks the owner one question with its recommendation, and drives it to a
+# close or a merge. "off" leaves them unlisted.
+# values: on | off
+ORCH_EXTERNAL_TRIAGE = "on"
+
+# Security alerts. The overseer reads each open Dependabot, code scanning
+# and secret scanning alert of the watched repositories once, dismisses it
+# in GitHub with its reason or files a fix item, and records the verdict.
+# "off" leaves them unlisted.
+# values: on | off
+# ORCH_SECURITY_ALERTS = "on"
 
 # Whether a finished overseer starts its own replacement. "on" starts one.
 # "off" leaves a live overseer to write its handover note and ask you to
 # start the next session, and a dead one to be reported for replacement by
 # hand.
 # ORCH_OVERSEER_SUCCESSION = "on"
+
+# The models a new or replacement overseer tries, in order. Each entry is
+# harness:model:effort, separated by commas. The harness is claude, codex,
+# copilot or pi. The model is the name that harness's --model takes, in
+# lowercase letters, digits, dots and hyphens, starting with a letter. On pi
+# it is provider/model, for example pi:github-copilot/claude-opus-5.5:high:
+# the provider in those same characters, the model in lowercase letters,
+# digits, dots, underscores, hyphens and slashes, starting with a letter or
+# digit. The effort is lowercase letters, the level as that harness spells
+# it; on pi it is the thinking level. An entry that names no model stops the
+# launch. The deprecated positive account number uses the caller's model
+# and warns once per run until the next minor release after this change.
+# Replace it with a model name, such as claude:fable:high. The name is not checked
+# before launch, so a misspelled codex, copilot or pi model opens the new
+# overseer on that name. Which entries a first launch and a succession skip is in
+# oversee --help and oversee-succeed --help. Change the order here when
+# models change; no code holds another order. Empty names no entries.
+# ORCH_OVERSEER_PREFERENCE = "claude:fable:high,claude:claude-opus-5-5:high,codex:gpt-6-astra:high,codex:gpt-5.6-sol:high"
 
 # Minutes before the projected account wall that starts overseer succession.
 # Zero disables the rate trigger.

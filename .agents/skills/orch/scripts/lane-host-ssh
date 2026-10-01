@@ -192,7 +192,13 @@ if test "$owner" != "$2"; then exit 75; fi''', row["clone"], item, accept=(75,))
     if owned.returncode == 75:
         notice(verb + "-unowned", item=item)
         raise SystemExit(75)
-    path = worktree(row, "path", item).stdout.decode().strip()
+    # The launch marker survives merge-pr's worktree removal. The worktree
+    # command then returns its configured fallback, not the launched root.
+    if verb == "status":
+        path = remote(row, '''marker=$("$1/.agents/skills/orch/scripts/lane-marker" --marker-path "$1/.git" "$2") || exit 1
+cat -- "$marker"''', row["clone"], item).stdout.decode().strip()
+    else:
+        path = worktree(row, "path", item).stdout.decode().strip()
     if not path or "\n" in path or "\t" in path:
         notice("worktree-path-invalid", item=item)
         raise SystemExit(1)
@@ -285,13 +291,21 @@ exec "$1/.agents/skills/orch/scripts/sync-base" "$1" >&2''', row["clone"])
             'CLAUDE_CODE_OAUTH_TOKEN=$(< "$1") && export CLAUDE_CODE_OAUTH_TOKEN && exec bash -lc "$2"',
             "lane-host", remote_account + "/setup-token"])
     else:
-        put(row, remote_account + "/auth.json", (account / "auth.json").read_bytes())
-        name = "CODEX_HOME" if args.harness == "codex" else "PI_CODING_AGENT_DIR"
+        # A copilot lane's identity is the login its host account already
+        # holds, so nothing is copied; the rest of its launch policy rides in
+        # the command open-terminal hands (lib/lane-launch.sh § lane_copilot_env).
+        if args.harness != "copilot":
+            put(row, remote_account + "/auth.json", (account / "auth.json").read_bytes())
+        name = {"codex": "CODEX_HOME", "copilot": "COPILOT_HOME"}.get(args.harness, "PI_CODING_AGENT_DIR")
         prefix = "exec env " + shlex.quote(name + "=" + remote_account) + " bash -lc"
     # The caller's folder trust and hook approval land where each harness reads
     # them; Claude's relative path resolves in the SSH session's remote home.
-    approval = account / "lane-host" / {"claude": ".claude.json", "codex": "config.toml", "pi": "trust.json"}[args.harness]
-    if approval.exists():
+    # A copilot lane places no file: its prefix sets COPILOT_HOME alone, and its
+    # folder trust is the COPILOT_ALLOW_ALL=true its start command carries where
+    # it names --allow-all or --yolo (lib/lane-launch.sh lane_copilot_env).
+    approval = {"claude": ".claude.json", "codex": "config.toml", "pi": "trust.json"}.get(args.harness)
+    approval = account / "lane-host" / approval if approval else None
+    if approval is not None and approval.exists():
         data = approval.read_bytes()
         if args.harness == "claude":
             # Every Claude lane and the host user share the one ~/.claude.json.
@@ -354,11 +368,29 @@ exec tar -chzf - -C / -- "${paths[@]}"''', row["clone"], worktree_path).stdout
     print(f"kept={kept}", flush=True)
 
 
+def status(row, item, harness):
+    """Read the owned remote harness without signalling any process."""
+    path = owned_worktree(row, item, "status")
+    result = remote(row, '''lib="$3/.agents/skills/orch/scripts/lib/lane-state.sh"
+if ! test -r "$lib"; then
+  printf 'lane-host-ssh: status-library-missing path=%s\\n' "$lib" >&2
+  exit 1
+fi
+. "$lib"
+lane_owned_processes "$1" "$2" launch-record || {
+  printf 'lane-host-ssh: status-read-failed item=%s\\n' "$4" >&2
+  exit 1
+}
+if test -n "$LANE_OWNED_PROCESS_PIDS"; then printf 'running\\n'
+else printf 'exited\\n'; fi''', path, harness, row["clone"], item)
+    sys.stdout.buffer.write(result.stdout)
+
+
 def stop(row, item, harness):
     """Stop the named harness only when its process belongs to the item worktree.
 
-    An item whose worktree its own close-out already removed exits 4: no
-    process can be matched to a directory that is gone, and lane-close reads
+    An item whose worktree its own close-out already removed exits 4:
+    stop requires an existing directory, and lane-close reads
     that status as a stop its host close makes unnecessary."""
     path = owned_worktree(row, item, "stop")
     result = remote(row, '''if ! test -d "$1"; then
@@ -400,7 +432,9 @@ create renders nothing and installs no Pi package: the worktree carries the
 render its base branch commits. A clone whose checkout lacks that render exits
 1 with render-missing, and one whose render is not committed at HEAD exits 1
 with render-untracked.
-Claude reads ACCOUNT/setup-token; Codex and Pi read ACCOUNT/auth.json. When present,
+Claude reads ACCOUNT/setup-token; Codex and Pi read ACCOUNT/auth.json. Copilot
+copies nothing: it runs under COPILOT_HOME at the row's account, which holds its
+own stored login. When present,
 ACCOUNT/lane-host/.claude.json merges into the remote home's .claude.json (its
 top-level keys set, its project entries merged key by key), and
 ACCOUNT/lane-host/config.toml (Codex) or ACCOUNT/lane-host/trust.json (Pi) in the
@@ -428,10 +462,13 @@ ownership exits 75; --reuse and --relaunch pass --reuse to the worktree
 command when the target exists; a missing target uses plain create.
 Every create passes --hosted, so the item's worktree sits at the clone's one
 hosted lane path (worktree path --hosted), and path= names it.
-stop --item ID --harness claude|codex|pi resolves the owned worktree through
+stop --item ID --harness claude|codex|pi|copilot resolves the owned worktree through
 the installed worktree command, signals only matching harness processes whose
 current directory is that worktree, waits for them to exit, and prints
-stopped item=ID processes=COUNT. A worktree that is no longer a directory exits
+stopped item=ID processes=COUNT. status takes the same arguments and reads the
+owned harness without signalling it: running or exited on stdout. A failed
+ownership or process read exits nonzero and reports no status.
+A worktree that is no longer a directory exits
 4 with stop-worktree-removed and signals nothing. close preserves render-only drift as a binary patch under clone/tmp, restores
 the generated paths, refreshes the clone, and then closes. An untracked render,
 a skill symlink a post-launch kendex apply added among them, enters the patch
@@ -448,6 +485,8 @@ and worktree/tmp directories under FLEET_DIR/archive/REPO/ITEM/tmp-STAMP.tgz
 close. An already removed worktree's tmp cannot be recovered. No remaining tmp
 means no archive and no kept line. Archives contain paths relative to / and
 follow symlinks, so linked records remain in the archive after their target is gone.
+close --merged, the caller's word that the item's pull request merged, is
+accepted and changes nothing: a static host keeps the whole archive.
 list prints repo/item, state, age, name as tab-separated fields. Age is '-' for
 static hosts. touch probes SSH; static hosts have no idle expiry.
 """, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -455,7 +494,7 @@ static hosts. touch probes SSH; static hosts have no idle expiry.
     make = sub.add_parser("create")
     for field in ("item", "repo", "account"):
         make.add_argument("--" + field, required=True)
-    make.add_argument("--harness", required=True, choices=("claude", "codex", "pi"))
+    make.add_argument("--harness", required=True, choices=("claude", "codex", "pi", "copilot"))
     make.add_argument("--relaunch", action="store_true")
     make.add_argument("--reuse", action="store_true")
     for verb in ("cat", "put", "append", "touch", "close"):
@@ -463,9 +502,12 @@ static hosts. touch probes SSH; static hosts have no idle expiry.
         action.add_argument("--item", required=True)
         if verb in ("cat", "put", "append"):
             action.add_argument("path")
-    stopping = sub.add_parser("stop")
-    stopping.add_argument("--item", required=True)
-    stopping.add_argument("--harness", required=True, choices=("claude", "codex", "pi"))
+        if verb == "close":
+            action.add_argument("--merged", action="store_true")
+    for verb in ("stop", "status"):
+        stopping = sub.add_parser(verb)
+        stopping.add_argument("--item", required=True)
+        stopping.add_argument("--harness", required=True, choices=("claude", "codex", "pi", "copilot"))
     sub.add_parser("list")
     args = parser.parse_args()
     inventory = os.environ.get("LANE_HOST_SSH_INVENTORY", "")
@@ -518,6 +560,8 @@ static hosts. touch probes SSH; static hosts have no idle expiry.
         remote(row, "true")
     elif args.verb == "stop":
         stop(row, args.item, args.harness)
+    elif args.verb == "status":
+        status(row, args.item, args.harness)
     elif args.verb == "close":
         path = owned_worktree(row, args.item, "close")
         result = remote(row, '''drop_render_scratch() { rm -f -- "$owned" "$status" "$index" "$carried"; }

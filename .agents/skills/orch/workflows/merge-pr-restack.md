@@ -16,13 +16,41 @@ Use this cycle for a `conflicting` queue-wait verdict, and for a `worktree-push-
 
    It pushes nothing. Exit 0 is the only answer that permits the restack; any other exit hands back, and the command says which it was (`worktree-push --help`). `worktree create [ISSUE] --reuse` rebases outside this check too, and carries no live-round refusal of its own.
 
-   Then start the guarded restack:
+   The restack takes [SKILL.md § The Cycle](../SKILL.md#the-cycle), Rules reload after a rebase. Then start the guarded restack:
 
    ```bash
    [MAIN_REPO_ROOT]/.agents/skills/worktree/scripts/worktree create [ISSUE] --restack
    ```
 
    No issue worktree means hand back. On conflicts, resolve every listed file, stage it, and run `worktree restack continue [ISSUE]` until complete. Never force-push over an unresolved base.
+
+   Then validate the restacked head before step 3 pushes it. Where a run is made, the head that leaves step 3 is always a head a passing run recorded, and step 3 holds that across its push. Bind the base branch the restack rebased onto as `[BASE_BRANCH]`, and read the mode a range run in the worktree records:
+
+   ```bash
+   [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/resolve-base-branch [WT_PATH]
+   ```
+
+   ```bash
+   [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/dev-validate-run --resolve-mode --worktree [WT_PATH]
+   ```
+
+   A non-zero exit from `resolve-base-branch`, `--resolve-mode`, or the `--record` read below hands back with that command's stderr and pushes nothing.
+
+   `validate-mode=full` means the project sets no `DEV_VALIDATE_RANGE_CMD`: go to step 3 with no run. `validate-mode=range` runs the range command over the branch as it now sits on the base, started and polled as [dev SKILL.md § Long-Running Validation](../../dev/SKILL.md#long-running-validation) sets out for the harness, the way a fix round's run is:
+
+   ```bash
+   [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/dev-validate-run --worktree [WT_PATH] --validate-mode range --base origin/[BASE_BRANCH]
+   ```
+
+   Once the run ends, record its minutes before routing its verdict. Read the run's record, with `[RUN_DIR]` the `run-dir=` value the run printed:
+
+   ```bash
+   [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/dev-validate-run --record --run-dir [RUN_DIR]
+   ```
+
+   A record with a `seconds=` field takes [dev-start.md § Store Validation Time](dev-start.md#store-validation-time)'s write, with `[ISSUE_ID]` being `[ISSUE]`, `[DEV_ROUND_ID]` being `restack-` and the run directory's name after `dev-validate-`, `[KIND]` being `restack`, `[VALIDATE_MODE]` the record's `validate-mode` and `[SECONDS]` its `seconds`. `[VALIDATE_LANES]` is the record's `lanes` as a JSON string, or `null` when absent; `[VALIDATE_SELECTION]` is its `selection` as a JSON string. An exit-0 record with no `seconds=` field has no wall time, and records nothing.
+
+   Only `validate=pass` goes on to step 3. Any other result, `FAILING`, `no-verdict`, `state=timeout` or `state=lost`, pushes nothing and hands back with the verdict and the run's log path, as a fix round's red verdict ends its workflow with no second validation run. The PR stays unarmed from step 1, and this cycle never reaches step 4.
 
 3. Push through the guarded owner:
 
@@ -32,7 +60,15 @@ Use this cycle for a `conflicting` queue-wait verdict, and for a `worktree-push-
 
    This step is not skippable and no other push replaces it: the restack in step 2 rewrote every branch commit, and this command is the only thing that reconciles the SHAs workflow state recorded before it. A non-zero exit hands back, because republishing `Fixed in <sha>` replies or a closing comment over unreconciled SHAs publishes commits the branch no longer has. What it reconciles from and what its summary lines mean are in `worktree-push --help`.
 
-4. The head changed. Re-confirm the gate mode, then return to `merge-pr.md` § 5 step 1 to read the new exact head before re-arming it and starting a new wait.
+   After a range run, compare the pushed head with the `head=` value of that run's record:
+
+   ```bash
+   git -C [WT_PATH] rev-parse HEAD
+   ```
+
+   A different head means the push rebased the branch again, onto a base that moved during the run, and pushed a head no run validated. The PR is still unarmed from step 1, so that head cannot enter the queue. Run step 2's range run again on it, then record and route its verdict as step 2 does. A pass goes to step 4 with no second push, and a base that moves again returns through the next queue-wait verdict. `--no-rebase` cannot hold the head still here: that push carries none of the restack's force-with-lease authorization, and git refuses the rewritten branch as a non-fast-forward push.
+
+4. The head changed. Re-confirm the gate mode, then return to `merge-pr.md` § 5 step 1 to read the new exact head, wait for its CI and take the merge route again.
 
 ## Unarm at a stop
 

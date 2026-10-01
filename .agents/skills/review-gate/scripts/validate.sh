@@ -59,12 +59,15 @@ Four groups run, in this order:
               the ONE way it reads them (a bare key, then its own `=`), and
               legal. Unknown keys, per-invocation seams and repository
               variables are each named as what they are. The value rules
-              come from two engine judges, never a copy of them:
+              come from the engine judges, never a copy of them:
               `review-predicate.sh --check-config` for every key the
-              predicate reads (`settings-values`), and lib/settings.sh
+              predicate reads (`settings-values`), lib/settings.sh
               rg_writer_state for REVIEW_GATE_WRITER, judged whether or not
-              a writer exists (`settings-writer`). Neither it nor
-              REVIEW_GATE_MODE may sit in .kendex/settings.toml.
+              a writer exists (`settings-writer`), and `review-policy
+              --lock-kendex` for REVIEW_GATE_LOCK_KENDEX, judged whether or
+              not the class policy is active (`settings-lock-kendex`).
+              Neither REVIEW_GATE_WRITER nor REVIEW_GATE_MODE may sit in
+              .kendex/settings.toml.
               The class policy is the default, or
               REVIEW_GATE_CLASS_POLICY_DECISION names the tracked decision
               record behind other rows or an empty value
@@ -452,13 +455,26 @@ else
   sed 's/^/        /' "$SCRATCH/err"
 fi
 
+# REVIEW_GATE_LOCK_KENDEX is read by the writer's install step alone, and
+# only while the class policy is active; review-policy owns its grammar, and
+# a value it refuses fails that step for every pull request.
+lock_rc=0
+lock_kendex="$("${scrub[@]}" "$SKILL_DIR/scripts/review-policy" --lock-kendex 2>"$SCRATCH/err")" || lock_rc=$?
+if [ "$lock_rc" -eq 0 ]; then
+  ok settings-lock-kendex "${lock_kendex#review-policy-lock-kendex=}" "REVIEW_GATE_LOCK_KENDEX resolves to a legal value (scripts/review-policy --lock-kendex)"
+else
+  bad settings-lock-kendex "$lock_rc" "REVIEW_GATE_LOCK_KENDEX is not legal (scripts/review-policy --lock-kendex):"
+  sed 's/^/        /' "$SCRATCH/err"
+fi
+
 # Every repository runs one class policy. review-policy owns how the
 # repository chose it: the default, the default assigned, custom rows, or off.
 # A departure from the default is legal only when the repository names the
 # tracked decision record behind it.
 #
-# Every branch of this block carries one row in tests/validate.test.sh that
-# goes red when the branch is removed.
+# Every branch of this block carries one row in
+# https://github.com/vanillagreencom/kendex/blob/main/skills/review-gate/tests/validate.test.sh
+# that goes red when the branch is removed.
 choice_rc=0
 policy_choice="$("${scrub[@]}" "$SKILL_DIR/scripts/review-policy" --check-choice 2>"$SCRATCH/err")" || choice_rc=$?
 if [ "$choice_rc" -ne 0 ]; then

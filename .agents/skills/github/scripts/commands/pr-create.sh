@@ -25,16 +25,20 @@ Options:
   --title TITLE    PR title (default: last commit message)
   --body BODY      PR body (inline; unsafe for Markdown with backticks)
   --body-file PATH PR body read from a file (preferred for any non-trivial body)
-  --base BASE      Base branch (default: main)
+  --base BASE      Base branch (default: WORKTREE_DEFAULT_BRANCH when set,
+                   else the repository's default branch on GitHub; a
+                   checkout with no GitHub repository refuses:
+                   pr-create: base=unresolved root=<dir>)
   --head HEAD      Head branch (default: current branch)
   --label LABEL    Add label (repeatable: --label foo --label bar)
   --draft          Create as draft PR
   --force          Create even when the pre-create checks below fail — you
-                   can end up with a PR from main or an empty/unpushed branch
+                   can end up with a PR from the base branch or an
+                   empty/unpushed branch
   --dry-run        Show what would be created without creating
 
 Safety Checks (run by default):
-  1. Not creating PR from main/master branch
+  1. The head branch is not the base branch
   2. Head branch has commits ahead of base
   3. Branch has been pushed to remote
 
@@ -66,13 +70,13 @@ run_safety_checks() {
 
     echo "Running safety checks..." >&2
 
-    # 1. Check not creating from main/master
-    if [ "$head" = "main" ] || [ "$head" = "master" ]; then
-        echo "  ✗ ERROR: Cannot create PR from $head branch" >&2
+    # 1. Check the head is not the base itself
+    if [ "$head" = "$base" ]; then
+        echo "  ✗ ERROR: Cannot create PR from the base branch $base into itself" >&2
         echo "    Create a feature branch first: git checkout -b feature/my-feature" >&2
         all_passed=false
     else
-        echo "  ✓ Head branch is not main/master" >&2
+        echo "  ✓ Head branch is not the base branch $base" >&2
     fi
 
     # 2. Check branch has commits ahead of the base the PR will actually
@@ -121,7 +125,7 @@ run_safety_checks() {
 }
 
 main() {
-    local title="" body="" body_file="" base="main" head="" draft=false dry_run=false force=false
+    local title="" body="" body_file="" base="" head="" draft=false dry_run=false force=false
     local body_set=false body_file_set=false
     local -a labels=()
 
@@ -171,6 +175,22 @@ main() {
             echo "Error: HEAD is detached; pass --head <branch> or check out a branch." >&2
             exit 1
         fi
+    fi
+
+    # The repository's default branch where --base names none; the reader
+    # prints its own first line when GitHub does not answer.
+    if [ -z "$base" ]; then
+        local base_rc=0
+        base=$(kendex_github_default_branch "${PROJECT_ROOT:-$PWD}") || base_rc=$?
+        case "$base_rc" in
+            0) ;;
+            3)
+                echo "pr-create: base=unresolved root=${PROJECT_ROOT:-$PWD}" >&2
+                echo "  The checkout names no GitHub repository to read a default branch from; pass --base or set WORKTREE_DEFAULT_BRANCH." >&2
+                exit 1
+                ;;
+            *) exit 1 ;;
+        esac
     fi
 
     # Run safety checks unless --force

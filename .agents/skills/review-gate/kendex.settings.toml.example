@@ -108,6 +108,13 @@ REVIEW_GATE_CLASS_POLICY = "render:none;trivial:none;micro:none;small:bot;standa
 # policy without it, and refuses a path the repository does not track.
 REVIEW_GATE_CLASS_POLICY_DECISION = ""
 
+# Which kendex judges a pull request whose only change is the install record,
+# .kendex-lock.json. Empty leaves it to the pinned release the writer installs
+# for every pull request. "main" has the writer also install the default
+# branch's rolling main build for that one change, for a repository whose
+# record is written by a kendex built from its own tree.
+REVIEW_GATE_LOCK_KENDEX = ""
+
 # Whether a documentation-only change still needs a review, read only while
 # the class policy is off. "bot" asks for one as usual. "none" lets a shared
 # classifier stand in for a missing review. Requested changes and open
@@ -135,6 +142,42 @@ REVIEW_GATE_MODE = "enforce"
 # is present is still checked either way.
 # values: required | optional
 REVIEW_GATE_WRITER = "required"
+
+# The GitHub App the organization standard installs on every repository,
+# by its slug. The organization owner's check of a repository reads it; the
+# package ships no value, so the check refuses until it is set.
+REVIEW_GATE_STANDARD_APP = ""
+
+# The deployment environment that holds the standard's app secrets in every
+# repository, deploying from the default branch only. The package ships no
+# value; the checks and the owner's provisioning refuse until it is set.
+REVIEW_GATE_STANDARD_ENVIRONMENT = ""
+
+# The names of the secrets that environment holds, separated by semicolons.
+# Names only: a value never goes in this file. A name is uppercase letters,
+# digits and underscores, and does not start with a digit: GitHub stores
+# every secret name uppercase. The package ships no value; the checks and
+# the owner's provisioning refuse until it is set.
+REVIEW_GATE_STANDARD_SECRETS = ""
+
+# The status checks this repository's own required-checks ruleset requires,
+# separated by semicolons: each job name exactly as the ruleset lists it.
+# The organization owner's check of the repository compares the branch's
+# required checks to this list. Never list "Review gate": the approval rule
+# replaces it. The package ships no value; the check fails its row until it
+# is set.
+REVIEW_GATE_STANDARD_CONTEXTS = ""
+
+# The bypass actors the organization standard admits on a ruleset that holds
+# the merge queue rule alone, separated by semicolons. Each is written
+# TYPE:ID:MODE, as GitHub names the actor: its type (Integration for an
+# app), its id, and its bypass mode (always, pull_request or exempt). Empty
+# admits none, so the check reports any bypass actor on that ruleset.
+REVIEW_GATE_STANDARD_QUEUE_BYPASS = ""
+
+# The same, for a ruleset that holds the required status checks rule alone.
+# Every other ruleset admits no bypass actor.
+REVIEW_GATE_STANDARD_CHECKS_BYPASS = ""
 
 # Seconds to wait for a review before the waiting step gives up. Whole
 # seconds only, at most nine digits; anything else fails loudly. The

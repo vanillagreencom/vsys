@@ -9,7 +9,7 @@ metadata:
   source: kendex
   repository: "https://github.com/vanillagreencom/kendex"
   bugs: "https://github.com/vanillagreencom/kendex/issues"
-  version: "2.3.0"
+  version: "2.4.0"
 tags: [review]
 repo-effects:
   summary: "Renders the enabled review-bot instruction files, the pointed code-review file and the owned Code Review Rules region in this repository."
@@ -55,7 +55,7 @@ Exit codes: 0 clean, 1 findings, 2 could not complete. A pre-commit lane blocks 
 | Qodo | `.pr_agent.toml`, `best_practices.md`, `REVIEW.md` | the default branch root |
 | Macroscope | `.macroscope/ignore.md`, `.macroscope/correctness/*.md`, plus `.macroscope/check-run-agents/**` and `.macroscope/approvability.md`, which this package never writes | the pull request's most recent commit, or the default branch for a fork |
 
-Codex and Copilot reach the doctrine by following a pointer rather than by reading it in place. The `AGENTS.md` region is one directive line naming the pointed file, and `.github/copilot-instructions.md` carries the same pointer; CodeRabbit follows a real file reference. No block is restated to those three anywhere else, except `render-out-of-scope` in `.coderabbit.yaml`'s catch-all entry, where it is doing scoping work — [schemas/renders.md](schemas/renders.md) § Doctrine routing note (a).
+Codex and Copilot reach the doctrine by following a pointer rather than by reading it in place. The `AGENTS.md` region is one directive line naming the pointed file, and `.github/copilot-instructions.md` carries the same pointer; CodeRabbit follows a real file reference. No block is restated to those three anywhere else, with two exceptions. `render-out-of-scope` rides `.coderabbit.yaml`'s catch-all entry, where it is doing scoping work: [schemas/renders.md](schemas/renders.md) § Doctrine routing note (a). `severity` rides `.github/copilot-instructions.md`: it holds the approve rule, which decides whether a head merges on a repo that requires an approval, so the rule goes in a file Copilot loads itself, note (b).
 
 Routing per block and surface: [schemas/renders.md](schemas/renders.md) § Doctrine routing. Vendor caps: [references/limits.md](references/limits.md).
 
@@ -76,7 +76,7 @@ The generator owns only the `AGENTS.md` § Code Review Rules region and never cr
 
 `[bot-instructions.bots] codex` writes the complete doctrine to `[bot-instructions.repo] code_review_path`, which defaults to `.github/instructions/code-review.md`, and writes the `AGENTS.md` owned region as one directive line naming it. A longer region is a finding: `adopt` reports it under `agents-region` and still writes the marker, `check` reports it under `drift`, and `render` replaces it. A repo migrates by rendering. Body and bounds: [schemas/renders.md](schemas/renders.md) § `code-review.md`.
 
-**No vendor page documents a bot following an in-file reference.** CodeRabbit's `code_guidelines.filePatterns` is a real load, so its doctrine is not at issue; Codex and Copilot reach the pointed file only by opening what the directive names, and a bot that does not reviews with no repo rules at all. A repo enabling `codex` renders a canary to find out — one harmless rule that is exclusive among the files the bot under test reads, so its appearance in a comment proves the comment was written against the pointed file. A `[bot-instructions.doctrine.append]` gives that exclusivity for Codex and Copilot, which read no other file carrying doctrine; it is not exclusive in general, since an append reaches every destination its block routes to, Qodo's and Macroscope's included. [references/limits.md](references/limits.md) § GitHub Copilot code review carries the evidence and the failure mode.
+**No vendor page documents a bot following an in-file reference.** CodeRabbit's `code_guidelines.filePatterns` is a real load, so its doctrine is not at issue; Codex and Copilot reach the pointed file only by opening what the directive names, and a bot that does not reviews with no repo rules at all. A repo enabling `codex` renders a canary to find out — one harmless rule that is exclusive among the files the bot under test reads, so its appearance in a comment proves the comment was written against the pointed file. A `[bot-instructions.doctrine.append]` on a block the `copilot-instructions.md` routing column does not carry gives that exclusivity for Codex and Copilot, which read no other file carrying that block; [schemas/renders.md](schemas/renders.md) § Doctrine routing note (b) defines that column. An append to a block the column does carry, today `severity`, is not a Copilot canary: Copilot loads `copilot-instructions.md` itself, so the append can appear in its comments without Copilot following the pointer. No append is exclusive in general, since an append reaches every destination its block routes to, Qodo's and Macroscope's included. [references/limits.md](references/limits.md) § GitHub Copilot code review carries the evidence and the failure mode.
 
 ## Every rendered config excludes the render trees
 
@@ -113,7 +113,7 @@ Keep one `## Doctrine` section in the spec copy. `--spec` selects that copy; the
 
 ### scope
 
-Raise a defect only in changed lines or code those lines directly break. Report correctness defects, security defects, data loss, and fail-open paths in gates, guards, or CI. Do not report unrelated defects. Do not question the inclusion of a file that the PR body explicitly includes in its scope. Report an input only after establishing that a shipped producer emits it in normal use; a full disk or a value past 2^53 is not one.
+Raise a defect only in changed lines or code those lines directly break. Report correctness defects, security defects, data loss, fail-open paths in gates, guards, or CI, and an unnamed indirect read of another system. Do not report unrelated defects. Do not question the inclusion of a file that the PR body explicitly includes in its scope. Report an input only after establishing that a shipped producer emits it in normal use; a full disk or a value past 2^53 is not one. A change that derives another system's state indirectly (scrapes its screen or pane, reads a status line, parses output text the system does not document as an interface, or reads its internal files) must name the documented interface it stands in for and why that interface cannot serve. Report a change that omits either as a blocking finding. Reading a documented interface, text or JSON output included, is not this finding.
 
 ### rounds
 
@@ -122,6 +122,8 @@ Report all findings about the current diff in one round. Write one comment per r
 ### severity
 
 Mark a finding as blocking only if it must stop the merge. Mark other findings as suggestions. Group suggestions together. Omit suggestions when a repeat review covers a one-line fix. Match severity and confidence to the evidence. Name the user-visible consequence in every finding.
+
+Approve the pull request when the review reports no finding, and when every finding it reports is a suggestion or a nit. Withhold approval only for a blocking finding, and name that finding in the review. Do not withhold approval for a concern you cannot state as a finding. On a later review, a finding the author answered under the reply contract does not block approval unless the code it names changed after the answer.
 
 ### no-preferences
 
