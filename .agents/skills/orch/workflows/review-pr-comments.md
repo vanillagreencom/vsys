@@ -32,10 +32,10 @@ On any `gh` or `github.sh` failure, report the error. `auto-recommended` retries
 Triage what exists on the PR **right now** — never block on a bot reaching a terminal state. Bot prose is never a gate: emoji reactions, sticky comments, and checklist text carry no gating weight.
 
 ```bash
-.agents/skills/github/scripts/github.sh pr-data "[PR_NUMBER]" --actionable
+.agents/skills/github/scripts/github.sh pr-data "[PR_NUMBER]"
 ```
 
-The JSON carries `threads` (inline) and `comments` (PR-level).
+The JSON carries `threads` (inline) and `comments` (PR-level). It is read without `--actionable`, which drops outdated threads: [submit-pr.md](submit-pr.md) § 3 and [thread-read.md](../references/thread-read.md) count them with `pr-threads --unresolved`, so each one needs a reply and a resolve here.
 
 **Baseline for re-runs.** Find this session's own prior summary comment and use its `updated_at` as `SUMMARY_TS`:
 
@@ -44,7 +44,7 @@ gh api user -q .login
 .agents/skills/github/scripts/github.sh find-comment [PR_NUMBER] --pattern "Recommendations.*Processed" --author "[GH_USER_FROM_PREVIOUS_COMMAND]"
 ```
 
-**Filter.** Exclude noise bots (`dependabot[bot]`, `github-actions[bot]`, `renovate[bot]`, tracker sync bots) from both sources, plus anything created before `SUMMARY_TS` on a re-run. Exclude resolved and outdated review threads, and PR-level status updates with no actionable content. Keep every reviewer comment — human or bot — with actionable content on an unresolved, current thread.
+**Filter.** From PR-level `comments`, exclude noise bots (`dependabot`, `github-actions`, `renovate`, `codecov`, tracker sync bots; a match ignores a trailing `[bot]`, which pr-data's logins lack), anything created before `SUMMARY_TS` on a re-run, and status updates with no actionable content. From `threads`, exclude resolved threads only: every unresolved inline thread, whatever its author and outdated ones included, gets a § 6.3 reply and resolve, and a noise-bot thread gets `Declined: [REASON]`. Keep every reviewer comment — human or bot — on such a thread.
 
 **Bot review summaries.** Derive bot logins from the authors present in the data (anything ending in `[bot]`) and fetch each one's summary comment, one command per bot with the literal login:
 
@@ -385,7 +385,57 @@ Use inline `--body` only for plain strings; Markdown with backticks or fences go
 
 Auto-resolve every thread where a reply was posted; keep open only threads awaiting a human response.
 
-### 7.2 Present And Await
+### 7.2 Copilot Head Route
+
+**Skip if** no thread this triage answered is Copilot's. Copilot's review overview opens with one of three labels. It submits `Approved` as an `APPROVED` review. It submits `Changes recommended` and `Needs a closer look` as `COMMENTED`. It re-reads a head only on a review request, so a head its review left `COMMENTED` stays unapproved after the answers until one of the two routes below runs. Resolve the gate mode the base sets:
+
+```bash
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --resolve-mode
+```
+
+`off`, or a non-zero exit, which is reported, ends this step: no rule holds the pull request for an approval, or no mode was read. On `approval`, bind the head:
+
+```bash
+env -u GH_REPO -u GITHUB_REPOSITORY gh pr view [PR_NUMBER] --json headRefOid --jq .headRefOid
+```
+
+A non-zero exit, which is reported, ends this step. Otherwise read every review of the pull request, oldest first, one login, `commit_id` and `state` per line:
+
+```bash
+env -u GH_REPO -u GITHUB_REPOSITORY gh api --paginate 'repos/{owner}/{repo}/pulls/[PR_NUMBER]/reviews' --jq '.[] | [.user.login, .commit_id, .state] | @tsv'
+```
+
+A line whose `commit_id` is `[HEAD_SHA]` and whose `state` is `APPROVED` ends this step: the head is already approved. Every Copilot thread is answered and resolved by now. The route is whether the head moved since the `commit_id` of the last `copilot-pull-request-reviewer[bot]` line, the last head Copilot read:
+
+- **Head unmoved.** Copilot read this head, so each answer stands on code it saw. Send the notice below, first line `copilot-declined-unchanged PR #[PR_NUMBER] head [HEAD_SHA]`. Under it, one line per thread `github.sh pr-threads [PR_NUMBER]` lists with `author` `copilot-pull-request-reviewer` gives its `id`, its location and the reply that answered it, a decline's reason included. Request no Copilot re-review. The overseer approves the head under [copilot-head-notices.md](../references/copilot-head-notices.md).
+- **Head moved**, by a push for any reviewer's thread. Unless the head already equals `pr_approval.copilot_rerequest_head`, request one Copilot re-review, record that head, then wait on it through [Waiter launch](../references/waiter-launch.md). A head already recorded gets no second request, no wait and no notice: the overseer's `awaiting-stale` rule decides it.
+
+  ```bash
+  env -u GH_REPO -u GITHUB_REPOSITORY gh pr edit [PR_NUMBER] --add-reviewer @copilot
+  ```
+
+  ```bash
+  .agents/skills/orch/scripts/workflow-state update [ISSUE_ID] '.pr_approval.copilot_rerequest_head = "[HEAD_SHA]"'
+  ```
+
+  ```bash
+  env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] 30 --json --mode approval --on-timeout block --item [ISSUE_ID]
+  ```
+
+  Exit `5` with the log line `<waiter>: mail=<count>` or `<waiter>: mail-unreadable=<path>` is no verdict: run `.agents/skills/orch/scripts/lane-mail inbox --item [ISSUE_ID]`, act on what it prints, then launch the wait again. On any other answer, read the reviews again. A `copilot-pull-request-reviewer[bot]` line whose `commit_id` is `[HEAD_SHA]` is the re-review, since none existed when the request went out:
+
+  | Answer | Copilot's review at `[HEAD_SHA]` | Then |
+  |--------|----------------------------------|------|
+  | `comments` | any | Update the baseline and loop to § 1 for the new thread as § 6.3 does; this section then routes the head again |
+  | `approved` | `APPROVED` | Notice `copilot-approved-on-rerequest PR #[PR_NUMBER] head [HEAD_SHA]` |
+  | `approved` | none or not `APPROVED` | No notice: another reviewer approved the head |
+  | `timeout` | present, not `APPROVED` | Copilot read the head again and left no open thread. Notice `copilot-fallback PR #[PR_NUMBER] head [HEAD_SHA]`, which asks for the overseer's fallback approval |
+  | `timeout` | none | No notice: the overseer's `awaiting-stale` rule decides the head |
+  | any other | any | No notice: the caller's own approval wait routes it |
+
+**Notice.** In a lane, write it with the harness file-write tool to `[WORKTREE_PATH]/tmp/copilot-head-[ISSUE_ID].md` and send it with `.agents/skills/orch/scripts/lane-mail notice --item [ISSUE_ID] --file [WORKTREE_PATH]/tmp/copilot-head-[ISSUE_ID].md`. Outside a lane no overseer reads a notice, and the caller's own approval wait decides the head.
+
+### 7.3 Present And Await
 
 Output: [Lane Output](../references/skill-rules.md#lane-output).
 

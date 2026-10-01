@@ -13,14 +13,14 @@
 # them.
 #
 # Usage:
-#   lanes list [--harness claude|codex|all] [--local] [--no-cache] [--json]
-#   lanes pick [--harness claude|codex|pi] [--max-pct N | --min-headroom-pct N]
+#   lanes list [--harness claude|codex|copilot|all] [--local] [--no-cache] [--json]
+#   lanes pick [--harness claude|codex|copilot|pi] [--max-pct N | --min-headroom-pct N]
 #              [--model NAME] [--binding-floor] [--exclude-lane DIR]
 #              [--for-overseer] [--no-cache] [--json]
-#   lanes pick --lane <config-dir> [--harness claude|codex|pi]
+#   lanes pick --lane <config-dir> [--harness claude|codex|copilot|pi]
 #              [--max-pct N | --min-headroom-pct N] [--model NAME]
 #              [--binding-floor] [--projected] [--no-cache] [--json]
-#   lanes host-accounts [--harness claude|codex|all] [--no-cache] [--json]
+#   lanes host-accounts [--harness claude|codex|copilot|pi|all] [--no-cache] [--json]
 #   lanes context [--json]
 #   lanes check <config-dir|name>
 #   lanes state <item> [--json]
@@ -40,13 +40,16 @@
 #         that lifts at binding_resets_at; `burn_pct_per_lane_hour` and
 #         `projected_headroom_pct` beside it are the projection `pick` also
 #         drops a lane on.
-#         The STATUS words are `ok`; `rate_limited`, an endpoint that answered
-#         HTTP 429; `unreachable`, one that answered 5xx or that nothing could
-#         be read from at all, or a renewal another tool's credentials lock kept
-#         from being tried; `refused`, a usage endpoint that answered any
-#         other code outside 2xx, 401 and 403 included, which is a reading of
-#         the credential it was asked through and not a read that was never
-#         made; `expired`, a login proven dead; `no_credentials`;
+#         Which STATUS word a failed Codex renewal reads, and its remedy, is
+#         stated once, under "Why a Codex token is renewed by the Codex CLI"
+#         below. The STATUS words are `ok`; `rate_limited`, an endpoint that
+#         answered HTTP 429; `unreachable`, one that answered 5xx or that
+#         nothing could be read from at all, or a renewal another tool's
+#         credentials lock kept from being tried; `refused`, a usage endpoint
+#         that answered any other code outside 2xx, 401 and 403 included, which
+#         is a reading of the credential it was asked through and not a read
+#         that was never made; `expired`, a login proven dead, or a failed
+#         Codex renewal that section lists as `expired`; `no_credentials`;
 #         `no_usage_data`, authenticated with no window to measure; `retired`;
 #         and `error`, a step this machine failed on its own, a renewal's
 #         included. A lane whose usage REFRESH met a 429 while the host still
@@ -54,11 +57,11 @@
 #         `rate_limited` ON that figure, with its age in the AGE column, and is
 #         judged on it; with no such figure it carries no window. Only `ok`
 #         and a `rate_limited` lane carrying a figure are pickable. The split
-#         matters because
-#         `expired` is the one word an operator answers by logging in again —
-#         `open-terminal` turns it into exactly that remedy line — so a refusal
-#         the account will survive never takes it, and every refusal an endpoint
-#         answered names its HTTP code in the record's `detail`.
+#         matters because `expired` is the one word an operator answers by
+#         logging in again, or for a Codex lane by the codex command its
+#         `detail` names — `open-terminal` turns it into that remedy line — so
+#         it goes only to a login proven dead and to those Codex outcomes, and
+#         every refusal an endpoint answered names its HTTP code in `detail`.
 #         Where ORCH_LANE_HOST names a provider that implements the OPTIONAL
 #         `accounts` verb, its answer is merged in: one further row per account
 #         the PROVIDER holds a credential for, carrying the windows read
@@ -78,7 +81,9 @@
 #         same dropped row for a field nothing can parse. This is the only
 #         reader of the `accounts` protocol, so a caller asking whether the host
 #         holds an account inherits that validation instead of matching the
-#         provider's bytes for itself. Tab-separated `config-dir` and `harness`
+#         provider's bytes for itself. `all` is the claude, codex and copilot
+#         rows; a Pi root's Copilot pool row comes back under --harness pi
+#         alone. Tab-separated `config-dir` and `harness`
 #         by default, `@tsv`-escaped, so a value carrying a tab, newline or
 #         backslash is printed escaped; --json prints the whole records, each
 #         marked `measured_through: "host"`, and is the exact form a caller
@@ -110,14 +115,14 @@
 #         fleet state that cannot be read refuses the pick with exit 1.
 #         --for-overseer keeps the seats, for a pick that seats an overseer.
 #         --json prints that lane's whole record, which carries headroom_pct,
-#         binding_bucket (session, weekly or model), the matching
+#         binding_bucket (session, weekly, model or monthly), the matching
 #         binding_resets_at, claims, burn_pct_per_lane_hour,
 #         projected_headroom_pct, and qualifying_count from that same
 #         judgement. With
 #         --model those fields name the most-consumed
 #         bucket among the shared 5-hour window, the all-model weekly window,
-#         the named model's scoped weekly window, and for a Pi launch on the
-#         Copilot pool the monthly pool (see --harness). Exit 3 when no lane
+#         the named model's scoped weekly window, and for a Copilot account
+#         or a Pi launch on the Copilot pool the monthly pool (see --harness). Exit 3 when no lane
 #         qualifies, so a caller can fail closed rather than launch into a
 #         wall; its keyed line on stderr says how many candidates were WALLED
 #         at or above --max-pct and how many measured nothing for the launch,
@@ -199,11 +204,20 @@
 #         refused on.
 #   context  Print context use for each live work lane in this fleet, as its
 #         own turn-end hook recorded it: the tokens the last response left in the
-#         context, read from the transcript by the harness adapter
-#         (lib/lane-context.sh), and its effective compaction point. No pane is
+#         context, read by the harness adapter (lib/lane-context.sh) from the
+#         transcript, and its effective compaction point; a Copilot CLI lane's
+#         is the reading its kendex extension took of Copilot's
+#         `session.usage_info`, the capacity the limit Copilot compacts at,
+#         whose source the --json row names in `context_capacity_source`, or,
+#         where no such reading stands, the one its turn end took from the
+#         session record its status line writes (references/copilot-runtime.md);
+#         one with neither is `unrecorded`, never room. No pane is
 #         read. A lane's reading is in its own mailbox, which the running
 #         lane record of the fleet state (`workflow-state get oversee`)
-#         places, read through the provider that record names. The
+#         places, read through the provider that record names. A running
+#         lane record no claim names, a lane launched with no --lane, is a
+#         row of its own, its `pane` the record's
+#         SESSION:WINDOW and its server null. The
 #         caller's own row with no lane record is the overseer, which is
 #         judged at its own turn end and reads `unrecorded` here.
 #         CONTEXT_USED_PCT is the share of that effective capacity CONSUMED. A row
@@ -239,6 +253,8 @@
 #          a fleet state whose records cannot be read refuses as
 #          `lanes: state-fleet`. The pane judge is the last-resort fallback
 #          for a window no such record names, whatever harness runs there.
+#          A Copilot allow-all lane's record note is on stderr beside it
+#          (references/copilot-runtime.md).
 #          A name no pane on this server carries is
 #          `unjudged`: a window that closed and a name two windows share are
 #          the same silence from here. `gone` is the judge's answer for a
@@ -257,7 +273,8 @@
 #         read. `open-terminal` asks it for every named --lane.
 #
 # Options:
-#   --harness NAME   claude, codex, or all (default: all for list, claude for pick).
+#   --harness NAME   claude, codex, copilot, or all (default: all for list,
+#                    claude for pick).
 #                    pick also takes pi, judged on the account its --model's
 #                    provider bills (lib/lane-launch.sh lane_pick_harness). A
 #                    `pi-claude/` model runs Claude Code on a Claude seat
@@ -265,14 +282,26 @@
 #                    that model in every respect, its prefix CLAUDE_CONFIG_DIR.
 #                    A `github-copilot/` model spends the Copilot pool rather
 #                    than any Claude or Codex window, and is judged on that
-#                    pool alone, as ORCH_LANE_COPILOT_POOL states it. Its
-#                    candidates are the accounts that setting names; with no
-#                    entry at all the pick exits 5 as `copilot-pool-unstated`,
-#                    a setting to state rather than a window to wait out, and
-#                    under --lane a directory it names no reading for is
-#                    unmeasured (exit 5), never unlisted. A walled pool stays
-#                    walled until the owner states a new reading. Its records
-#                    say `measured_through: "stated"`, its printed prefix is
+#                    pool alone. The pool is read live where ORCH_LANE_HOST
+#                    names a provider: its `accounts` verb's harness=pi row for
+#                    a Pi root carries the pool as `monthly-pct` and its reset
+#                    as `monthly-resets`, which reach the record as
+#                    `binding_resets_at` (schemas/lane-host.md). The
+#                    ORCH_LANE_COPILOT_POOL setting is the override, judged
+#                    only for a Pi root no provider row reads. Its candidates
+#                    are the Pi roots either names. Where none carries a
+#                    reading and none is walled the pick exits 5 as
+#                    `copilot-pool-unstated`, and under --lane a directory
+#                    neither reads is unmeasured (exit 5), never unlisted;
+#                    each prints a `fix=` line naming the read that failed,
+#                    a provider row's own status and detail among them, and
+#                    its repair. An accounts read that failed or was busy,
+#                    with no override entry for a Pi root (one for a Copilot
+#                    CLI home names none), exits 1 as `copilot-pool-unread`,
+#                    which asking again can answer. A provider row says
+#                    `measured_through: "host"` and a stated reading "stated";
+#                    a stated pool that is walled stays walled until the owner
+#                    states a new reading. The printed prefix is
 #                    PI_CODING_AGENT_DIR, and `list` does not show them. Any
 #                    other provider, and a Pi pick naming no model, exits 5 as
 #                    `pick-provider-unmeasured` in both forms, before any lane
@@ -293,9 +322,9 @@
 #   --model NAME     pick: judge the bound against the bucket that walls a
 #                    launch on NAME — the 5-hour session window, the plan-wide
 #                    weekly window, the model-scoped weekly window whose
-#                    label names NAME, and the monthly Copilot pool a Pi
-#                    launch on a `github-copilot/` model spends — instead of
-#                    the binding bucket. A lane
+#                    label names NAME, and the monthly Copilot pool a Copilot
+#                    account or a Pi launch on a `github-copilot/` model
+#                    spends — instead of the binding bucket. A lane
 #                    whose windows answer nothing for NAME is never picked.
 #                    The scoped model window alone is not enough because either
 #                    shared window can wall every model on the account.
@@ -344,22 +373,37 @@
 #
 # The lane INVENTORY is always discovered, never hand-maintained: config is an
 # overlay on top of it, so adding an account needs no edit anywhere. Discovery
-# is `~/.claude` plus every `~/.*claude*` directory, and `~/.codex` plus every
-# `~/.*codex*` directory plus $CODEX_HOME when it is set; a discovered directory
-# with no config marker (claude `.claude.json` or `.credentials.json`, codex
-# `auth.json` or `config.toml`) is skipped. A setting names a lane
-# by its directory name, with or without the leading dot, or by its alias; a
-# name carrying `/` or `~` is a path, names no lane, and is refused.
+# is `~/.claude` plus every `~/.*claude*` directory, `~/.codex` plus every
+# `~/.*codex*` directory plus $CODEX_HOME when it is set, and `~/.copilot` plus
+# every `~/.*copilot*` directory plus $COPILOT_HOME when it is set; a
+# discovered directory with no config marker (claude `.claude.json` or
+# `.credentials.json`, codex `auth.json` or `config.toml`, copilot
+# `config.json` or `session-state`, which only Copilot CLI writes: a Pi root,
+# whose name can hold `copilot`, writes `settings.json` as a Copilot home
+# does) is skipped. A setting names a lane by its
+# directory name, with or without the leading dot, or by its alias; a name
+# carrying `/` or `~` is a path, names no lane, and is refused.
+#
+# COPILOT: the account's monthly AI credit pool, read from GitHub's usage
+# endpoint with the login stored in `<dir>/config.json` through
+# lib/copilot-credits.sh, which owns the endpoint, the login layout it assumes
+# and the rules for zero, overage and unlimited; the record is
+# schemas/copilot-credits.md. The pool is a MONTHLY bucket, `monthly_pct`,
+# with the counts beside it as `credits`. An account whose login does not read
+# takes its ORCH_LANE_COPILOT_POOL reading where the setting states one, and
+# reads `no_credentials` under the login's keyed reason where it does not.
 #   ORCH_LANE_ALIASES  Comma-separated `<config-dir-name>=<alias>` pairs giving
 #                      lanes meaningful names (`eclaude=work,mclaude=overflow`).
 #                      A directory with no mapping keeps its discovered name.
 #   ORCH_LANE_DIRS     Colon-separated config dirs, for a layout discovery does
-#                      not reach. An entry holding auth.json and no
-#                      .credentials.json is a Codex lane; any other entry is a
-#                      Claude lane. A harness's entries replace its discovery;
+#                      not reach. An entry holding config.json and no
+#                      .credentials.json is a Copilot lane, one holding
+#                      auth.json and no .credentials.json is a Codex lane, and
+#                      any other entry is a Claude lane. A harness's entries replace its discovery;
 #                      a harness with no entry is still discovered. An excluded
 #                      or retired entry is never probed: a name holding `codex`
-#                      is a Codex entry, any other a Claude one, and it still
+#                      is a Codex entry, one holding `copilot` a Copilot entry,
+#                      any other a Claude one, and it still
 #                      turns that harness's discovery off.
 #   ORCH_LANE_EXCLUDE  Comma-separated lane names (`sclaude,claude`) that are
 #                      never listed, measured or picked: nothing inside an
@@ -382,8 +426,8 @@
 #                      one live lane is expected to spend in an hour, charged
 #                      per claim where the account's rate is not measured or
 #                      nothing is claimed on it; a weekly window, plan-wide or
-#                      model-scoped, is charged 5/168 of it (default 5; 0
-#                      charges nothing). Refused, before any lane is measured,
+#                      model-scoped, is charged 5/168 of it and a monthly
+#                      Copilot pool 5/720 (default 5; 0 charges nothing). Refused, before any lane is measured,
 #                      when it is not an integer 0-100.
 #   ORCH_LANES_USAGE_TTL  Seconds a cached usage figure is reused (default 300;
 #                      0 fetches every run). Keep it at least the longest watch
@@ -413,18 +457,23 @@
 #                      waiting: the cache covers a listing or a pick, not a
 #                      read that asked to ask the provider now.
 #   ORCH_LANE_COPILOT_POOL  Comma-separated `<account dir>=<used>/<granted>`
-#                      entries: the owner's reading of the Copilot credits
-#                      each Pi account's pool has used of its monthly grant,
+#                      entries: the override for a Pi account's Copilot pool,
+#                      judged where no provider `accounts` row reads that Pi
+#                      root, the row replacing it where one does (--harness).
+#                      Each entry is the owner's reading of the Copilot credits
+#                      that pool has used of its monthly grant,
 #                      the account dir an absolute path to the Pi root a lane
 #                      on that pool is launched on, as its PI_CODING_AGENT_DIR. `pick --harness pi`
 #                      on a `github-copilot/` model judges it as a `monthly`
 #                      bucket at the used share,
 #                      rounded up, against --max-pct; a pool at or past its
 #                      grant is walled, whatever overage the account permits.
-#                      No provider or endpoint is asked: the reading is what
-#                      the setting says, and an account it names none for is
-#                      unmeasured. A malformed entry, or a second one for an
-#                      account already stated, refuses that pick.
+#                      No endpoint is asked for an entry: the reading is what
+#                      the setting says. A malformed entry, or a second one for an
+#                      account already stated, refuses that pick. A Copilot
+#                      account dir may be stated too: its reading stands only
+#                      where the account's stored login does not read, the
+#                      measured pool answering otherwise.
 #   ORCH_LANES_CLAUDE_CLIENT_ID  The OAuth client id the renewal posts with.
 #                      Required for it: with this unset every Claude account
 #                      whose access token has expired reads `error` with the
@@ -559,6 +608,36 @@
 #   renewal opt-in instead left every idle account reading `expired` and `pick`
 #   choosing nothing, which is the failure it exists to prevent.
 #
+# Why a Codex token is renewed by the Codex CLI:
+#   The Codex CLI renews its own token only while it runs, so an idle Codex
+#   account's token expires, and its usage query then answers 401. Its expiry
+#   is the access token's own `exp` claim, read before any usage query. The
+#   renewal runs the CLI rather than posting a refresh-token grant of this
+#   script's own: the CLI is the one refresher of its auth.json, and a second
+#   one rotating the same refresh token can leave the account on a revoked
+#   login. `codex app-server` in that config dir is asked `account/read` with
+#   `refreshToken`, the request its protocol documents for a proactive
+#   refresh, under the same credentials lock the Claude renewal takes. Its
+#   answer does not say whether the refresh worked, so auth.json read back is
+#   the verdict. This is the one statement of what a failed Codex renewal
+#   reads; `detail` carries the cause and the remedy, CODEX_HOME naming that
+#   config dir:
+#   - no refresh token in auth.json: `expired`, remedy `codex login`;
+#   - no codex command on PATH: `expired`, remedy install the CLI and run
+#     codex once;
+#   - a token still expired after the run, judged by codex_renew_refusal on
+#     the CLI's last `Failed to refresh token:` line and its answer: the token
+#     endpoint refused the refresh token, `expired`, remedy `codex login`; the
+#     request never reached that endpoint, `unreachable`; any other line, put
+#     first in `detail`, or none, `unreachable` where the CLI answered with an
+#     error, `detail` naming it, and otherwise `expired`, remedy run codex
+#     once;
+#   - a live expiry but no access token after the run: `expired`, remedy run
+#     codex once;
+#   - a run directory this machine could not create: `error`.
+#   A held credentials lock reads `unreachable`, as for Claude; a lock file
+#   it cannot open, `error`.
+#
 # Credentials never reach argv: `ps` and journald can read /proc/<pid>/cmdline,
 # which on Linux is world-readable while /proc/<pid>/environ is not. Bearer
 # tokens go to curl over stdin via `-K -`, and the refresh and access tokens
@@ -570,8 +649,9 @@
 # environment. Both print what their network call prints: the HTTP status and
 # any Retry-After on the FIRST line, separated by a space, and the response body
 # under it. A command that exits non-zero is the call failing outright, which
-# names no status at all. The network layer is the only impure part; everything
-# else is pure parsing.
+# names no status at all. The Codex renewal runs the `codex` PATH resolves, so
+# a stub first on PATH stands in for the CLI. The network layer is the only
+# impure part; everything else is pure parsing.
 
 set -uo pipefail
 
@@ -652,19 +732,23 @@ message() {
       ;;
     invalid-harness)
       printf 'lanes: invalid-harness option=%s\n' "--harness"
-      printf '%s\n' "--harness must be claude, codex, or all"
+      printf '%s\n' "--harness must be claude, codex, copilot, or all; host-accounts also takes pi"
       ;;
     invalid-pick-harness)
       printf 'lanes: invalid-pick-harness option=%s\n' "--harness"
-      printf '%s\n' "pick --harness must be claude, codex or pi"
+      printf '%s\n' "pick --harness must be claude, codex, copilot or pi"
       ;;
     pick-provider-unmeasured)
       printf 'lanes: pick-provider-unmeasured harness=%s model=%s\n' "$1" "$2"
       printf '%s\n' "a Pi launch spends the account its model's provider bills, a Claude seat for pi-claude/ and the Copilot pool for github-copilot/; nothing here measures what this model spends, so the launch is unmeasured, and an unmeasured account is not one with room"
       ;;
     copilot-pool-unstated)
-      printf 'lanes: copilot-pool-unstated model=%s setting=%s\n' "$1" "ORCH_LANE_COPILOT_POOL"
-      printf '%s\n' "no Pi account has a stated Copilot pool reading, so nothing measures what this launch spends, and an unmeasured pool is not an empty one"
+      printf 'lanes: copilot-pool-unstated model=%s setting=%s read=%s\n' "$1" "ORCH_LANE_COPILOT_POOL" "$2"
+      printf '%s\n' "no lane host row and no ORCH_LANE_COPILOT_POOL entry reads a Copilot pool for any Pi account, so nothing measures what this launch spends, and an unmeasured pool is not an empty one; the fix= line below names the read that failed"
+      ;;
+    copilot-pool-unread)
+      printf 'lanes: copilot-pool-unread host=%s model=%s setting=%s\n' "$1" "$2" "ORCH_LANE_COPILOT_POOL"
+      printf '%s\n' "the lane host's accounts read failed, as the line above says, and ORCH_LANE_COPILOT_POOL states no pool reading here, so nothing measured this Pi launch; a failed read is never cached, so asking again can answer it"
       ;;
     invalid-copilot-pool)
       printf 'lanes: invalid-copilot-pool entry=%s\n' "$1"
@@ -714,6 +798,10 @@ message() {
       printf 'lanes: host-unreachable item=%s state=%s\n' "$1" "$2"
       printf '%s\n' "the host provider did not answer the touch probe; the state names what this machine could read of the lane and says nothing about the host, and the provider's own message follows"
       [ -z "$3" ] || printf '%s\n' "$3"
+      ;;
+    copilot-note)
+      printf 'lanes: %s item=%s\n' "$2" "$1"
+      printf '%s\n' "the Copilot allow-all lane's session record note; the state is the pane's (references/copilot-runtime.md § Allow-all blocked by policy)"
       ;;
     invalid-usage-ttl)
       printf 'lanes: invalid-usage-ttl value=%s\n' "$1"
@@ -910,7 +998,8 @@ lane_admissible() {
 # harness is configured is decided before exclusion drops an entry, or excluding
 # every entry would turn its discovery back on. An excluded or retired entry is
 # never probed; its name decides, as discovery's glob does. Any other entry is
-# codex when it holds auth.json and no .credentials.json.
+# copilot when it holds config.json and no .credentials.json, and codex when it
+# holds auth.json and no .credentials.json.
 configured_lane_dirs() {
 	local rest="$ORCH_LANE_DIRS:" entry kind
 	while [[ -n "$rest" ]]; do
@@ -919,7 +1008,12 @@ configured_lane_dirs() {
 		[[ -n "$entry" ]] || continue
 		kind=claude
 		if ! lane_admissible "$entry"; then
-			[[ "$(basename -- "$entry")" != *codex* ]] || kind=codex
+			case "$(basename -- "$entry")" in
+				*codex*) kind=codex ;;
+				*copilot*) kind=copilot ;;
+			esac
+		elif [[ -f "$entry/config.json" && ! -f "$entry/.credentials.json" ]]; then
+			kind=copilot
 		elif [[ -f "$entry/auth.json" && ! -f "$entry/.credentials.json" ]]; then
 			kind=codex
 		fi
@@ -927,21 +1021,34 @@ configured_lane_dirs() {
 	done
 }
 
-# Dirs of harness $1 (`claude` or `codex`), excluded ones dropped. The
-# ORCH_LANE_DIRS entries of that harness replace its discovery; with none, it
-# is discovered. A set CODEX_HOME joins the codex inventory either way, since
-# the codex CLI reads it wherever it points — as the ACCOUNT it names, because
-# a codex launch that had to make its own folder-trust record sets it to a
-# private home built under one (lib/lane-home.sh). Listed raw, that home is a
-# second lane for an account already in this list, and the headroom of one
-# account is counted and claimed twice.
+# Dirs of harness $1 (`claude`, `codex` or `copilot`), excluded ones dropped.
+# The ORCH_LANE_DIRS entries of that harness replace its discovery; with none,
+# it is discovered. A set CODEX_HOME joins the codex inventory either way,
+# since the codex CLI reads it wherever it points — as the ACCOUNT it names,
+# because a codex launch that had to make its own folder-trust record sets it
+# to a private home built under one (lib/lane-home.sh). Listed raw, that home
+# is a second lane for an account already in this list, and the headroom of
+# one account is counted and claimed twice. A set COPILOT_HOME joins the
+# copilot inventory the same way; a Copilot launch builds no private home, so
+# the value is the account as it stands.
 lane_dirs() {
 	local configured="" home="${LANES_HOME:-$HOME}" d
-	# A Pi account on the Copilot pool is one the owner states a reading for:
-	# nothing on this machine is discovered as one.
+	# A Pi account on the Copilot pool this machine knows is one the owner
+	# states a reading for: nothing here is discovered as one, and a provider's
+	# harness=pi rows join the pick as host rows. The same setting also
+	# states a Copilot CLI account's fallback reading, and such an account is
+	# no Pi root: an entry the copilot inventory lists is left out, so a Pi
+	# launch never opens on a Copilot home holding no Pi login. `all` keeps
+	# the roots ORCH_LANE_EXCLUDE names, for a pick asking what the owner stated.
 	if [[ "$1" == pi ]]; then
+		local copilot_ids=$'\n' id
+		while IFS= read -r d; do
+			[[ -z "$d" ]] || copilot_ids+="$(lane_claims_canon "$d")"$'\n'
+		done < <(lane_dirs copilot)
 		copilot_pool_entries 2>/dev/null | cut -f1 | while IFS= read -r d; do
-			lane_excluded "$d" || printf '%s\n' "$d"
+			id="$(lane_claims_canon "$d")"
+			case "$copilot_ids" in *$'\n'"$id"$'\n'*) continue ;; esac
+			[[ "${2:-}" != all ]] && lane_excluded "$d" || printf '%s\n' "$d"
 		done
 		return
 	fi
@@ -951,15 +1058,19 @@ lane_dirs() {
 			printf '%s\n' "$configured"
 		else
 			local markers=(.claude.json .credentials.json)
-			[[ "$1" != codex ]] || markers=(auth.json config.toml)
+			case "$1" in
+				codex) markers=(auth.json config.toml) ;;
+				copilot) markers=(config.json session-state) ;;
+			esac
 			for d in "$home/.$1" "$home"/.*"$1"*; do
 				[[ -d "$d" ]] || continue
 				! lane_admissible "$d" ||
-					[[ -f "$d/${markers[0]}" || -f "$d/${markers[1]}" ]] || continue
+					[[ -e "$d/${markers[0]}" || -e "$d/${markers[1]}" ]] || continue
 				printf '%s\n' "$d"
 			done
 		fi
 		[[ "$1" != codex || -z "${CODEX_HOME:-}" ]] || lane_launch_home_account "$CODEX_HOME"
+		[[ "$1" != copilot || -z "${COPILOT_HOME:-}" ]] || printf '%s\n' "$COPILOT_HOME"
 	} 2>/dev/null | awk '!seen[$0]++' | while IFS= read -r d; do
 		lane_excluded "$d" || printf '%s\n' "$d"
 	done
@@ -1041,10 +1152,9 @@ split_http_answer() { # ANSWER
 }
 
 # What an HTTP refusal of a lane's own request means for the lane, with the
-# caller's own reading of every other code as $2. `expired` is read downstream
-# as a proven-dead login — `open-terminal` turns it into a remedy line telling
-# the operator to log in again on this machine — so a refusal the account will
-# survive must never take it.
+# caller's own reading of every other code as $2. `expired` asks the operator to
+# log in again — `open-terminal` turns it into that remedy line — so an HTTP
+# refusal the account will survive must never take it.
 http_refusal_status() { # CODE DEFAULT
 	case "$1" in
 		429) printf 'rate_limited' ;;
@@ -1067,6 +1177,8 @@ fetch_usage() {
 			header = "Authorization: Bearer ${token}"
 		CURLCFG
 		) || return 1
+	elif [[ "$harness" == "copilot" ]]; then
+		resp=$(copilot_credits_request "$token") || return 1
 	else
 		local args=(-s --max-time 10 -D - -w $'\n%{http_code}' "$CODEX_USAGE_URL")
 		[[ -n "$account_id" ]] && args+=(-H "chatgpt-account-id: $account_id")
@@ -1181,6 +1293,17 @@ parse_codex_usage() {
 	'
 }
 
+# The buckets one usage body answers, by the harness that measured it: the one
+# dispatch, so the current sample and the prior it is compared with parse
+# through the same reader.
+parse_usage_body() { # HARNESS
+	case "$1" in
+		claude) parse_claude_usage ;;
+		copilot) copilot_credits_parse ;;
+		*) parse_codex_usage "$SESSION_WINDOW_S" ;;
+	esac
+}
+
 # ── Per-lane measurement ─────────────────────────────────────────────────────
 
 # Report a lane from a refusal the cache holds, which is how a lane inside a
@@ -1236,22 +1359,33 @@ copilot_pool_entries() {
 	done < <(setting_items "${ORCH_LANE_COPILOT_POOL:-}")
 }
 
-# The Copilot pool record for the Pi account at DIR: the stated reading as a
-# `monthly` bucket, judged by lib/lane-model.sh like every other window, or
-# `no_usage_data` where the setting states none for DIR, which that judge reads
-# as unmeasured and never as room. `measured_through` is `stated`: neither this
-# machine nor a provider read it.
-measure_copilot_pool() { # ALIAS DIR
+# The Copilot pool record where no measured reading can be made: the stated
+# ORCH_LANE_COPILOT_POOL reading for DIR as a `monthly` bucket, judged by
+# lib/lane-model.sh like every other window, its counts as `credits`, and
+# `measured_through` `stated`: neither this machine nor a provider read it. A
+# Pi root, whose Copilot login nothing on this machine reads, lands here
+# unless a provider's row reads its pool (host_row_or_local), and so does a
+# Copilot account whose stored login does not read, WHY naming that cause.
+# Where the setting states nothing for DIR the account is unmeasured, never
+# room: a Pi root `no_usage_data`, a Copilot account `no_credentials` under
+# WHY.
+measure_copilot_pool() { # ALIAS HARNESS DIR WHY
 	local entries target d pct used limit
 	entries="$(copilot_pool_entries)" || return 1
-	target="$(lane_claims_canon "$2")"
+	target="$(lane_claims_canon "$3")"
 	while IFS=$'\t' read -r d pct used limit; do
 		[[ -n "$d" && "$(lane_claims_canon "$d")" == "$target" ]] || continue
-		emit_lane "$1" pi "$2" ok "Copilot pool: $used of $limit credits used, as ORCH_LANE_COPILOT_POOL states" "" \
-			"{\"monthly_pct\":$pct}" null false stated
+		emit_lane "$1" "$2" "$3" ok "Copilot pool: $used of $limit credits used, as ORCH_LANE_COPILOT_POOL states; $4" "" \
+			"$(jq -nc --argjson p "$pct" --argjson u "$used" --argjson g "$limit" \
+				'{monthly_pct: $p, credits: {unit: "AIC", unlimited: false, used: $u, granted: $g,
+				  remaining: ([$g - $u, 0] | max)}}')" null false stated
 		return
 	done <<<"$entries"
-	emit_lane "$1" pi "$2" no_usage_data "ORCH_LANE_COPILOT_POOL states no Copilot pool reading for this account" "" '{}' null false stated
+	if [[ "$2" == pi ]]; then
+		emit_lane "$1" pi "$3" no_usage_data "no lane host row and no ORCH_LANE_COPILOT_POOL entry reads a Copilot pool for this account" "" '{}' null false stated
+	else
+		emit_lane "$1" "$2" "$3" no_credentials "$4, and ORCH_LANE_COPILOT_POOL states no reading for this account" "" '{}'
+	fi
 }
 
 measure_lane() {
@@ -1269,29 +1403,33 @@ measure_lane() {
 		return
 	fi
 	if [[ "$harness" == pi ]]; then
-		measure_copilot_pool "$alias" "$dir"
+		measure_copilot_pool "$alias" pi "$dir" "no Copilot login is read for a Pi root"
 		return
 	fi
+	if [[ "$harness" == copilot ]]; then
+		if ! copilot_credits_token "$dir"; then
+			measure_copilot_pool "$alias" copilot "$dir" "copilot login unread: $COPILOT_CREDITS_REASON in $dir/config.json"
+			return
+		fi
+		token="$COPILOT_CREDITS_TOKEN"
+	else
+		if [[ "$harness" == "claude" ]]; then creds="$dir/.credentials.json"; else creds="$dir/auth.json"; fi
 
-	if [[ "$harness" == "claude" ]]; then creds="$dir/.credentials.json"; else creds="$dir/auth.json"; fi
-
-	if [[ ! -f "$creds" ]]; then
-		emit_lane "$alias" "$harness" "$dir" "no_credentials" "no credential file at $creds" "" '{}'
-		return
-	fi
-	if ! jq -e . "$creds" >/dev/null 2>&1; then
-		emit_lane "$alias" "$harness" "$dir" "error" "credential file is not valid JSON" "" '{}'
-		return
+		if [[ ! -f "$creds" ]]; then
+			emit_lane "$alias" "$harness" "$dir" "no_credentials" "no credential file at $creds" "" '{}'
+			return
+		fi
+		if ! jq -e . "$creds" >/dev/null 2>&1; then
+			emit_lane "$alias" "$harness" "$dir" "error" "credential file is not valid JSON" "" '{}'
+			return
+		fi
+		token="$(access_token "$harness" "$creds")"
+		expires_ms="$(token_expiry_ms "$harness" "$creds")"
 	fi
 
 	if [[ "$harness" == "claude" ]]; then
-		token=$(jq -r 'try (.claudeAiOauth.accessToken // empty) catch empty' "$creds")
 		plan=$(jq -r 'try (.claudeAiOauth.subscriptionType // empty) catch empty' "$creds")
-		expires_ms=$(jq -r 'try (.claudeAiOauth.expiresAt // 0) catch 0' "$creds")
-		expires_ms="${expires_ms%%.*}"
-		[[ "$expires_ms" =~ ^[0-9]+$ ]] || expires_ms=0
-	else
-		token=$(jq -r 'try (.tokens.access_token // .OPENAI_API_KEY // empty) catch empty' "$creds")
+	elif [[ "$harness" == codex ]]; then
 		account_id=$(jq -r 'try (.tokens.account_id // empty) catch empty' "$creds")
 	fi
 
@@ -1302,18 +1440,19 @@ measure_lane() {
 
 	# An expired access token is renewed here, so the lane `pick` prints is one
 	# whose token is live — see the header. A renewal that cannot happen fails
-	# closed with the status `refresh_claude_token` judged, naming its cause, and
-	# is never measured as `ok`.
+	# closed with the status its renewal function judged, naming its cause, and
+	# is never measured as `ok`. A Copilot lane states no expiry and never gets
+	# here.
 	local refusal
-	if claude_token_expired "$expires_ms" "$now_s"; then
+	if token_expired "$expires_ms" "$now_s"; then
 		if refusal="$(read_usage_refusal "$harness" "$dir" "$now_s" token)"; then
 			emit_refusal "$alias" "$harness" "$dir" "$plan" "$refusal"
 			return
 		fi
 		# At most one `claude --version` per measuring shell, and none at all on a
 		# run whose lanes all carry live tokens.
-		[[ -n "$CLAUDE_TOKEN_UA" ]] || CLAUDE_TOKEN_UA="$(claude_token_ua)"
-		if ! refresh_out="$(refresh_claude_token "$dir" "$creds")"; then
+		[[ "$harness" != claude || -n "$CLAUDE_TOKEN_UA" ]] || CLAUDE_TOKEN_UA="$(claude_token_ua)"
+		if ! refresh_out="$(renew_token "$harness" "$dir" "$creds")"; then
 			local head code retry
 			head="${refresh_out%%$'\n'*}"
 			read -r status code retry <<<"$head"
@@ -1354,21 +1493,15 @@ measure_lane() {
 		emit_lane "$alias" "$harness" "$dir" "$status" "$detail" "$plan" '{}' "$age" "$refreshed"
 		return
 	fi
-	if [[ "$harness" == "claude" ]]; then
-		buckets="$(parse_claude_usage <<<"$raw")"
-	else
-		buckets="$(parse_codex_usage "$SESSION_WINDOW_S" <<<"$raw")"
-	fi
+	buckets="$(parse_usage_body "$harness" <<<"$raw")"
 	if [[ "$prior_at" =~ ^[0-9]+$ && -n "$prior_raw" ]]; then
 		elapsed=$((10#$current_at - 10#$prior_at))
-		if [[ "$harness" == "claude" ]]; then
-			prior_buckets="$(parse_claude_usage <<<"$prior_raw")"
-		else
-			prior_buckets="$(parse_codex_usage "$SESSION_WINDOW_S" <<<"$prior_raw")"
-		fi
+		prior_buckets="$(parse_usage_body "$harness" <<<"$prior_raw")"
 	fi
 	[[ -n "$buckets" ]] || buckets='{}'
 	[[ -n "$prior_buckets" ]] || prior_buckets='{}'
+	# A Copilot plan is named by the usage body, not by a credential file.
+	[[ "$harness" != copilot ]] || plan="$(jq -r '.plan // empty' <<<"$buckets")"
 	emit_lane "$alias" "$harness" "$dir" "$status" "$detail" "$plan" "$buckets" "$age" "$refreshed" local "$prior_buckets" "$elapsed"
 }
 
@@ -1805,13 +1938,42 @@ usage_lock_release() {
 	orch_release_lock
 }
 
-# Whether an OAuth expiresAt in milliseconds has passed at epoch seconds $2.
+# Whether an OAuth expiry in milliseconds since the epoch has passed at epoch
+# seconds $2, the expiry being what token_expiry_ms reads.
 # A zero or unparseable stamp is NOT expired: the file states no expiry, and
 # refusing on it would disable a lane that works.
-claude_token_expired() {
+token_expired() {
 	local exp="${1%%.*}"
 	[[ "$exp" =~ ^[0-9]+$ ]] || return 1
 	[[ "$exp" -gt 0 ]] && (( exp / 1000 <= $2 ))
+}
+
+# The expiry of the access token in credentials file $2 of harness $1, in
+# milliseconds since the epoch, as token_expired reads it. A Claude file states
+# it as expiresAt. A Codex auth.json states none, so it is the `exp` claim of
+# the access token itself, a JWT whose segments are unpadded base64url, hence
+# the translation and the padding before decoding; 0 where the file holds no
+# such token (an API key, or a token no claim reads out of).
+token_expiry_ms() { # HARNESS CREDS
+	case "$1" in
+		claude) jq -r 'try (.claudeAiOauth.expiresAt // 0) catch 0' "$2" ;;
+		codex)
+			jq -r '(try (.tokens.access_token | split(".")[1]
+			        | gsub("-"; "+") | gsub("_"; "/")
+			        | . + ("=" * ((4 - length % 4) % 4))
+			        | @base64d | fromjson | .exp | numbers | floor * 1000)
+			       catch null) // 0' "$2"
+			;;
+	esac
+}
+
+# The access token in credentials file $2 of harness $1, empty where it holds
+# none. A Codex auth.json holding an API key and no login answers the key.
+access_token() { # HARNESS CREDS
+	case "$1" in
+		claude) jq -r 'try (.claudeAiOauth.accessToken // empty) catch empty' "$2" ;;
+		codex) jq -r 'try (.tokens.access_token // .OPENAI_API_KEY // empty) catch empty' "$2" ;;
+	esac
 }
 
 # The User-Agent the renewal posts with. platform.claude.com answers HTTP 429
@@ -1848,68 +2010,82 @@ token_error_suffix() { # BODY
 	else printf ' (%s%s)' "$type" "$message"; fi
 }
 
-# Refresh under a lock on the credentials file, re-reading inside the lock:
-# a peer tool may have rotated the refresh token between our first read and
-# this attempt, and refreshing with the stale one fails while the credentials
-# are actually fine. lib/file-lock.sh carries the lock on a host with no
-# flock, where the bare `flock -w 30 9` this used to run resolved to nothing
-# and every refresh on that host returned failure instead of a token.
-# Prints the new access token on stdout and returns 0; on failure prints a
-# `token_refusal` there instead and returns 1, so this stays the only judge of
-# why a renewal did not happen and of what the lane's status becomes. Only a
-# login this renewal proved dead takes `expired`: a step this machine failed on
-# its own is `error`, and a POST that never reached the endpoint, or one a held
-# lock kept from being tried, is `unreachable`. None of those carries a code, so
-# none is recorded as a refusal window.
-refresh_claude_token() {
-	local dir="$1" creds="$2" rt client_id body resp new_at lock suffix
-	# Composed after the declaration, never inside it: bash expands every word
-	# on a `local` line in the ENCLOSING scope before the builtin creates any
-	# local, so a `lock` built there reads whatever `dir` the CALLER has rather
-	# than this one's `$1`, and in a scope with no `dir` of its own it yields
-	# the filesystem root. The leak is what hides it: `measure_lane` happens to
-	# hold a `dir` of the same value, so the one-line form answered correctly
-	# there and would answer the root at the next caller to be added.
+# Renews the expired access token in credentials file $3 of harness $1, config
+# dir $2, through that harness's step. Prints the new token on stdout and
+# returns 0, or prints a `token_refusal` there and returns 1, so the renewal is
+# the only judge of the lane's status.
+# The credentials lock on descriptor 9 is the one lock every renewal of that
+# account takes, so two callers renew it once; lib/file-lock.sh carries it
+# where flock is absent. Every caller runs this in a command substitution, so
+# the EXIT trap orch_take_lock arms releases a mkdir mutex on every path out.
+# A held lock is `unreachable`: it leaves the login untested. Inside the lock
+# the expiry is read again, and a live token a peer wrote meanwhile is taken:
+# renewing anyway would rotate the peer's fresh refresh token away.
+# A step that reached its endpoint may already have rotated the refresh token,
+# and an interrupt before the file is rewritten leaves the account on a
+# retired one only a fresh login recovers. A caller's ceiling is such an
+# interrupt, since `timeout` signals the whole process group, and an ignore
+# alone does not stop it: the Codex CLI installs its own INT and TERM
+# handlers. So the step runs as a background job under `set -m`, which bash
+# puts in a process group of its own and never hands the terminal, and no
+# group signal to the caller reaches it; macOS ships no setsid. The job is a
+# subshell that execs nothing, so bash's setpgid never races an exec. This shell
+# ignores INT and TERM while it waits, so it keeps the lock until the step
+# exits. Job control is on only for the fork, so no foreground command here
+# takes the terminal. The cost: the step holds this script's stderr, so a
+# caller reading stderr through a pipe waits past its ceiling for the step's
+# own request bound, curl's --max-time for Claude and the CLI's request
+# timeouts for Codex. No caller sends KILL. The
+# lock's own handlers go back afterwards, never `trap - INT TERM`, whose
+# default disposition kills the shell with no EXIT trap and leaves the mutex
+# held.
+renew_token() { # HARNESS DIR CREDS
+	local harness="$1" dir="$2" creds="$3" lock at rc=0
 	lock="$dir/.lanes-refresh.lock"
+	exec 9>"$lock" || { token_refusal error '' '' "the lock file $lock could not be opened"; return 1; }
+	orch_take_lock 9 "$lock" 30 || { token_refusal unreachable '' '' "another tool holds the credentials lock $lock"; exec 9>&-; return 1; }
+	if ! token_expired "$(token_expiry_ms "$harness" "$creds")" "$(date +%s)" \
+		&& at="$(access_token "$harness" "$creds")" && [[ -n "$at" ]]; then
+		printf '%s' "$at"
+	else
+		trap '' INT TERM
+		# Under job control bash leaves a job's stdin alone, and a job that
+		# read a terminal would stop for good while this shell holds the lock.
+		set -m
+		case "$harness" in
+			claude) refresh_claude_token "$dir" "$creds" ;;
+			codex) refresh_codex_token "$dir" "$creds" ;;
+			*) token_refusal error '' '' "no renewal exists for a $harness token"; false ;;
+		esac </dev/null &
+		set +m
+		wait "$!" || rc=1
+		orch_arm_lock_signals
+	fi
+	exec 9>&-
+	return "$rc"
+}
+
+# The Claude renewal step: a refresh-token grant against the Claude token
+# endpoint, the new token written back into credentials file $2 of config dir
+# $1. Only a login this renewal proved dead takes `expired`: a step this
+# machine failed on its own is `error`, and a POST that never reached the
+# endpoint is `unreachable`.
+refresh_claude_token() { # DIR CREDS
+	local dir="$1" creds="$2" rt client_id body resp new_at suffix
 	client_id="${ORCH_LANES_CLAUDE_CLIENT_ID:-}"
 	[[ -n "$client_id" ]] || { token_refusal error '' '' 'no OAuth client id is configured (ORCH_LANES_CLAUDE_CLIENT_ID)'; return 1; }
-	exec 9>"$lock" || { token_refusal error '' '' "the lock file $lock could not be opened"; return 1; }
-	# Every caller runs this function in a command substitution, so the whole
-	# body is a subshell and the EXIT trap orch_take_lock arms releases a mkdir
-	# mutex on every path out — including this one.
-	orch_take_lock 9 "$lock" 30 || { token_refusal unreachable '' '' "another tool holds the credentials lock $lock"; exec 9>&-; return 1; }
-	# The expiry was decided before this lock was taken. A peer that renewed
-	# while this call waited has already written a live token, and posting
-	# anyway would rotate the peer's fresh refresh token away and leave that
-	# account needing a manual re-login. Take what the peer wrote instead.
-	local fresh_at
-	if ! claude_token_expired "$(jq -r 'try (.claudeAiOauth.expiresAt // 0) catch 0' "$creds")" "$(date +%s)"; then
-		fresh_at=$(jq -r 'try (.claudeAiOauth.accessToken // empty) catch empty' "$creds")
-		if [[ -n "$fresh_at" ]]; then exec 9>&-; printf '%s' "$fresh_at"; return 0; fi
-	fi
 	rt=$(jq -r 'try (.claudeAiOauth.refreshToken // empty) catch empty' "$creds")
-	[[ -n "$rt" ]] || { token_refusal expired '' '' "there is no refresh token in $creds to renew with"; exec 9>&-; return 1; }
+	[[ -n "$rt" ]] || { token_refusal expired '' '' "there is no refresh token in $creds to renew with"; return 1; }
 	# Secrets travel in the environment, never in an argument vector: on Linux
 	# /proc/<pid>/cmdline is world-readable and /proc/<pid>/environ is not, so a
 	# `jq --arg rt "$rt"` hands every local user a refresh token that renews
 	# indefinitely. The client id is not a secret and stays on argv.
 	body=$(LANES_RT="$rt" jq -nc --arg ci "$client_id" \
 		'{grant_type:"refresh_token", client_id:$ci, refresh_token:env.LANES_RT}') \
-		|| { token_refusal error '' '' 'the token request body could not be built'; exec 9>&-; return 1; }
-	# From the POST to the rename, the endpoint may already have rotated the
-	# refresh token the credentials file holds, and an interrupt anywhere in
-	# that window leaves the account on a retired one that only a fresh login
-	# recovers. A caller's ceiling is such an interrupt: `timeout` signals the
-	# whole process group, this subshell and the request included. So INT and
-	# TERM are ignored across the window, and the request inherits the ignore
-	# and completes; curl's --max-time bounds it. KILL is not held off, and no
-	# caller of this script sends it. Every return below ends this subshell,
-	# whose EXIT trap releases the mutex, so only the success path puts the
-	# lock's own handlers back.
-	trap '' INT TERM
+		|| { token_refusal error '' '' 'the token request body could not be built'; return 1; }
 	# The User-Agent reaches the injected command through its ENVIRONMENT, never
 	# argv, which is where the real POST carries it too: a stub asserting the
-	# header asserts what curl would send.
+	# header asserts what curl would send. curl's --max-time bounds the POST.
 	if [[ -n "${ORCH_LANES_TOKEN_CMD:-}" ]]; then
 		resp=$(LANES_USER_AGENT="$CLAUDE_TOKEN_UA" "$ORCH_LANES_TOKEN_CMD" <<<"$body")
 	else
@@ -1918,7 +2094,7 @@ refresh_claude_token() {
 			-H "Content-Type: application/json" -H "anthropic-beta: $CLAUDE_OAUTH_BETA" \
 			-D - -w '\n%{http_code}' --data-binary @- <<<"$body") \
 			&& resp="$(http_answer "$resp")"
-	fi || { token_refusal unreachable '' '' 'the token endpoint could not be reached'; exec 9>&-; return 1; }
+	fi || { token_refusal unreachable '' '' 'the token endpoint could not be reached'; return 1; }
 	split_http_answer "$resp"
 	suffix="$(token_error_suffix "$HTTP_BODY")"
 	# A status the endpoint refused with IS the failure, so it is what the cause
@@ -1927,10 +2103,10 @@ refresh_claude_token() {
 	if [[ -n "$HTTP_CODE" && "$HTTP_CODE" != 2?? ]]; then
 		token_refusal "$(http_refusal_status "$HTTP_CODE" expired)" "$HTTP_CODE" "$HTTP_RETRY" \
 			"the token endpoint refused the renewal with HTTP $HTTP_CODE$suffix"
-		exec 9>&-; return 1
+		return 1
 	fi
 	new_at=$(jq -r 'try (.access_token // empty) catch empty' <<<"$HTTP_BODY")
-	[[ -n "$new_at" ]] || { token_refusal expired "$HTTP_CODE" "$HTTP_RETRY" "the token endpoint returned no access token$suffix"; exec 9>&-; return 1; }
+	[[ -n "$new_at" ]] || { token_refusal expired "$HTTP_CODE" "$HTTP_RETRY" "the token endpoint returned no access token$suffix"; return 1; }
 	local tmp new_rt expires_in new_exp
 	# The new expiry is written with the new token or nothing is: a credentials
 	# file carrying a live token under a past expiresAt reads as expired on
@@ -1941,27 +2117,94 @@ refresh_claude_token() {
 	# again. That is the rotation storm this renewal exists to close, reached
 	# through the check that closes it.
 	expires_in=$(jq -r 'try (.expires_in // empty) catch empty' <<<"$HTTP_BODY")
-	[[ "$expires_in" =~ ^[0-9]+$ && "$expires_in" -gt 0 ]] || { token_refusal expired "$HTTP_CODE" "$HTTP_RETRY" 'the token endpoint returned no usable expires_in'; exec 9>&-; return 1; }
+	[[ "$expires_in" =~ ^[0-9]+$ && "$expires_in" -gt 0 ]] || { token_refusal expired "$HTTP_CODE" "$HTTP_RETRY" 'the token endpoint returned no usable expires_in'; return 1; }
 	new_exp=$(( ($(date +%s) + expires_in) * 1000 ))
 	new_rt=$(jq -r 'try (.refresh_token // empty) catch empty' <<<"$HTTP_BODY")
-	tmp="$(mktemp "$dir/.credentials.XXXXXX")" || { token_refusal error '' '' "no temporary file could be created in $dir"; exec 9>&-; return 1; }
+	tmp="$(mktemp "$dir/.credentials.XXXXXX")" || { token_refusal error '' '' "no temporary file could be created in $dir"; return 1; }
 	# Between here and the rename this file holds a live rotated refresh token.
-	# The ignore set before the POST keeps an interrupt from leaving it in the
-	# config directory, where a backup or a dotfile sync would carry it off the
-	# machine.
+	# renew_token's process group keeps a caller's interrupt from leaving it in
+	# the config directory, where a backup or a dotfile sync would carry it off the machine.
 	LANES_AT="$new_at" LANES_RT="${new_rt:-$rt}" jq --argjson exp "$new_exp" \
 		'.claudeAiOauth.accessToken = env.LANES_AT
 		 | .claudeAiOauth.refreshToken = env.LANES_RT
 		 | .claudeAiOauth.expiresAt = $exp' \
 		"$creds" >"$tmp" && mv "$tmp" "$creds" \
-		|| { rm -f -- "${tmp:?}"; token_refusal error '' '' "the renewed credentials could not be written to $creds"; exec 9>&-; return 1; }
-	# Back to the lock's own handlers, never to the default disposition: the
-	# mutex is still held over the two builtins below, and `trap - INT TERM`
-	# would leave a signal there killing this shell with no trap at all, the
-	# EXIT trap included, so the mutex would outlive it.
-	orch_arm_lock_signals
-	exec 9>&-
+		|| { rm -f -- "${tmp:?}"; token_refusal error '' '' "the renewed credentials could not be written to $creds"; return 1; }
 	printf '%s' "$new_at"
+}
+
+# What `codex app-server` reads on stdin for a renewal: the handshake, then
+# `account/read` with `refreshToken`, which the app-server protocol documents
+# as asking the CLI to refresh its token before answering.
+CODEX_RENEW_REQUESTS='{"method":"initialize","id":0,"params":{"clientInfo":{"name":"lanes","version":"1"}}}
+{"method":"initialized"}
+{"method":"account/read","id":1,"params":{"refreshToken":true}}'
+# Tenths of a second the CLI's stdin is held open for the answer to request 1.
+# It does not bound the run: the CLI keeps running after its stdin closes while
+# a refresh is in flight, and its own request timeouts end it.
+CODEX_RENEW_WAIT_TENTHS=250
+
+# Why a `codex app-server` run left the token expired, as a `token_refusal`:
+# one table over the last `Failed to refresh token:` line the CLI logged into
+# run dir $2 and its answer to request 1, each pattern a codex-cli 0.159.0
+# message. The status and remedy each row takes are the header's, under "Why a
+# Codex token is renewed by the Codex CLI".
+codex_renew_refusal() { # DIR RUN_DIR
+	local said answer
+	said="$(sed -n 's/.*Failed to refresh token: //p' "$2/stderr" | tail -n 1)"
+	answer="$(jq -rR 'fromjson? | objects | select(.id == 1 and .error != null)
+		| .error.message // (.error | tostring)' "$2/answer")"
+	case "$said" in
+		*'Your access token could not be refreshed'*)
+			token_refusal expired '' '' "codex could not renew it: $said; log in again with CODEX_HOME=$1 codex login" ;;
+		*'error sending request for url (https://auth.openai.com/'*)
+			token_refusal unreachable '' '' "codex could not reach the token endpoint: $said" ;;
+		*)
+			said="${said:+codex could not renew it: $said; }"
+			if [[ -n "$answer" ]]; then
+				token_refusal unreachable '' '' "${said}codex answered the renewal with an error: $answer"
+			else
+				token_refusal expired '' '' "${said:-codex did not renew it; }run codex once with CODEX_HOME=$1"
+			fi
+			;;
+	esac
+}
+
+# The Codex step, through the Codex CLI and never a refresh-token grant of this
+# script's own: a second refresher of one auth.json races every Codex session
+# on the account, and the loser holds a revoked login. `codex app-server` in
+# that config dir is asked `account/read` with `refreshToken` and writes
+# auth.json as any Codex run does, and auth.json read back is the verdict.
+# The outcomes are the header's, under "Why a Codex token is renewed by the
+# Codex CLI".
+refresh_codex_token() { # DIR AUTH_JSON
+	local dir="$1" creds="$2" run waited refusal="" at
+	if [[ -z "$(jq -r 'try (.tokens.refresh_token // empty) catch empty' "$creds")" ]]; then
+		token_refusal expired '' '' "there is no refresh token in $creds to renew with; log in again with CODEX_HOME=$dir codex login"
+		return 1
+	fi
+	command -v codex >/dev/null 2>&1 \
+		|| { token_refusal expired '' '' "no codex command is on PATH to renew it; install the Codex CLI and run codex once with CODEX_HOME=$dir"; return 1; }
+	run="$(mktemp -d "$dir/.lanes-renew.XXXXXX")" || { token_refusal error '' '' "no temporary directory could be created in $dir"; return 1; }
+	# The writer holds the CLI's stdin open until the answer to request 1 is in
+	# its output, the CLI has exited, or the bound passes. The CLI runs in the
+	# config dir, so no project configuration of the caller's directory reaches
+	# it, and without descriptor 9, so a process it leaves behind cannot hold
+	# the credentials lock.
+	{
+		printf '%s\n' "$CODEX_RENEW_REQUESTS"
+		waited=0
+		until grep -q -e '"id":1[,}]' "$run/answer" 2>/dev/null || [[ -e "$run/exited" || "$waited" -ge "$CODEX_RENEW_WAIT_TENTHS" ]]; do
+			sleep 0.1
+			waited=$((waited + 1))
+		done
+	} | (cd -- "$dir" && CODEX_HOME="$dir" codex app-server; : >"$run/exited") >"$run/answer" 2>"$run/stderr" 9>&-
+	token_expired "$(token_expiry_ms codex "$creds")" "$(date +%s)" && refusal="$(codex_renew_refusal "$dir" "$run")"
+	rm -rf -- "$run"
+	[[ -z "$refusal" ]] || { printf '%s' "$refusal"; return 1; }
+	at="$(access_token codex "$creds")"
+	[[ -n "$at" ]] || { token_refusal expired '' '' "codex left no access token in $creds; run codex once with CODEX_HOME=$dir"; return 1; }
+	printf '%s' "$at"
 }
 
 # headroom = 100 - the BINDING bucket. A lane with an unknown bucket set gets
@@ -1975,7 +2218,11 @@ refresh_claude_token() {
 # which is the one thing it must not read as.
 #
 # The binding bucket names the `resets` key of the largest bucket. On a tie the
-# longer window binds (weekly, then model, then session): its wall lasts longest.
+# longer window binds (monthly, then weekly, then model, then session): its
+# wall lasts longest.
+#
+# A Copilot record also carries `credits` and `unlimited`, information beside
+# its `monthly` bucket (schemas/copilot-credits.md).
 emit_lane() {
 	# refreshable is true only for a lane this run found expired and made live,
 	# by its own renewal or by taking one a peer wrote under the lock: a lane
@@ -2001,7 +2248,7 @@ emit_lane() {
 		| [$b.session_5h_pct, $b.weekly_pct, $b.model_pct, $b.monthly_pct] | map(select(. != null)) as $known
 		| (if ($status == "ok" and ($known | length) == 0) then "no_usage_data" else $status end) as $st
 		| ({status: $st} | lane_measured) as $measured
-		| ([{k: "weekly", p: $b.weekly_pct}, {k: "model", p: $b.model_pct}, {k: "session", p: $b.session_5h_pct}]
+		| ([{k: "monthly", p: $b.monthly_pct}, {k: "weekly", p: $b.weekly_pct}, {k: "model", p: $b.model_pct}, {k: "session", p: $b.session_5h_pct}]
 		   | map(select(.p != null)) | sort_by(-.p) | first // null) as $bind
 		| {
 		    alias: $alias,
@@ -2017,6 +2264,9 @@ emit_lane() {
 		    model_label: ($b.model_label // null),
 		    model_buckets: ($b.model_buckets // []),
 		    monthly_pct: ($b.monthly_pct // null),
+		    credits: (if $b.credits == null then null
+		              else $b.credits + {measured_at: ((now - ($age // 0)) | floor | todate)} end),
+		    unlimited: ($b.unlimited == true),
 		    claims: $claims,
 		    headroom_pct: (if ($measured and ($known | length) > 0) then (100 - ($known | max)) else null end),
 		    binding_bucket: (if ($measured and $bind != null) then $bind.k else null end),
@@ -2024,9 +2274,10 @@ emit_lane() {
 		    usage_age_s: $age,
 		    _rate_prior: ($pb | utc_resets),
 		    _rate_elapsed_s: $elapsed,
-		    resets: ($b.resets // {session: null, weekly: null, model: null}),
+		    resets: (($b.resets // {}) | {session: (.session // null), weekly: (.weekly // null),
+		                                 model: (.model // null), monthly: (.monthly // null)}),
 		    detail: (if $st == "no_usage_data" and $detail == ""
-		             then "authenticated, but the usage response carried no session/weekly window"
+		             then "authenticated, but the usage response carried no session/weekly/monthly window"
 		             elif $detail == "" then null else $detail end)
 		  }
 		| with_lane_binding(""; false)'
@@ -2059,10 +2310,10 @@ collect_lanes() {
 	done <<<"$exclude"
 	[[ "$hosted" == "[]" ]] || held="$(jq -r '.[]._id' <<<"$hosted")" || return 1
 	{
-		# `all` is the two harnesses whose accounts this machine measures; the
+		# `all` is the three harnesses whose accounts this machine measures; the
 		# Copilot pool a Pi launch on a `github-copilot/` model spends is
 		# asked for by name alone.
-		for h in claude codex pi; do
+		for h in claude codex copilot pi; do
 			[[ "$harness_filter" == "$h" || ( "$harness_filter" == "all" && "$h" != pi ) ]] || continue
 			while IFS= read -r d; do
 				[[ -n "$d" ]] || continue
@@ -2112,10 +2363,17 @@ collect_lanes() {
 # now. A figure 0 seconds old is the one this run's own fetch returned, which
 # no window is shorter than: a TTL of 0 serves nothing and fetches every run,
 # and that fetch's figure stands.
+#
+# A Pi root is judged on another rule, because its Copilot pool is one reading
+# whichever copy of the seat makes it, and the local record is the
+# ORCH_LANE_COPILOT_POOL override, which carries no age. A HOSTROW that reads
+# the pool replaces the override; one that reads nothing, whatever its status,
+# leaves the override standing where it states a reading, and stands itself,
+# with the provider's status and detail, where it states none.
 host_row_or_local() { # HARNESS DIR HOSTROW
-	local status local_record="" age tmp
-	status="$(jq -r '.status' <<<"$3")" || return 1
-	if [[ "$status" != unreachable ]]; then
+	local trigger local_record="" age tmp
+	trigger="$(jq -r --arg h "$1" 'if $h == "pi" then .headroom_pct == null else .status == "unreachable" end' <<<"$3")" || return 1
+	if [[ "$trigger" != true ]]; then
 		printf '%s\n' "$3"
 		return 0
 	fi
@@ -2134,11 +2392,14 @@ host_row_or_local() { # HARNESS DIR HOSTROW
 	exec 7>&-
 	IFS= read -r local_record <&6 || { exec 6<&-; return 1; }
 	exec 6<&-
-	age="$(jq -r --argjson bound "$(usage_serve_max_age)" '
-		if .headroom_pct != null and (.usage_age_s | type) == "number"
-		   and (.usage_age_s == 0 or .usage_age_s < $bound)
+	age="$(jq -r --arg h "$1" --argjson bound "$(usage_serve_max_age)" '
+		if .headroom_pct == null then empty
+		elif $h == "pi" then "stated"
+		elif (.usage_age_s | type) == "number" and (.usage_age_s == 0 or .usage_age_s < $bound)
 		then .usage_age_s else empty end' <<<"$local_record")" || return 1
-	if [[ -n "$age" ]]; then
+	if [[ "$age" == stated ]]; then
+		printf '%s\n' "$local_record"
+	elif [[ -n "$age" ]]; then
 		message pick-local-reading "$2" "$ORCH_LANE_HOST" "$age" >&2
 		printf '%s\n' "$local_record"
 	else
@@ -2146,12 +2407,16 @@ host_row_or_local() { # HARNESS DIR HOSTROW
 	fi
 }
 
-# The provider's rows for HARNESS as one JSON array, `[]` where ORCH_LANE_HOST
-# names none or there are none to merge. READINGS is host_account_records' own.
-# The reader's own status adds nothing here: it has already said on stderr what
-# it did with an absent or failed verb, and either way there are no host rows,
-# so the caller keeps this machine's reading. Only the merge is this function's
-# to report, so a merge failure is never printed as the provider's answer.
+# The provider's rows for HARNESS as one JSON array in HOSTED_ROWS, `[]` where
+# ORCH_LANE_HOST names none or there are none to merge. READINGS is
+# host_account_records' own. The reader has already said on stderr what it did
+# with an absent or failed verb, and either way there are no host rows, so the
+# caller keeps this machine's reading. HOSTED_READ names how the read ended,
+# `local`, `answered`, `absent` or `failed`, a merge failure among the last:
+# a Pi pick with no override tells a pool no provider reads from one a retry
+# can read. Globals, so the caller runs this in its own shell. Only the merge is
+# this function's to report, so a merge failure is never printed as the
+# provider's answer.
 #
 # Each row carries `_id`, its config dir through the one normaliser, so a dir
 # the provider names with a trailing slash or through a symlink still stands for
@@ -2159,11 +2424,17 @@ host_row_or_local() { # HARNESS DIR HOSTROW
 # through the usage cache under ORCH_LANES_USAGE_TTL, like every usage figure
 # here: they are windows, and whether the host holds an account for a launch
 # gate is `host-accounts --no-cache`'s answer, never this one.
+HOSTED_ROWS="[]" HOSTED_READ=local
 host_lane_rows() { # HARNESS [READINGS]
 	local rows row stamped="" hosted="" d accounts_rc=0 hosted_rc=0
-	[[ "${ORCH_LANE_HOST:-local}" != local ]] || { printf '[]\n'; return 0; }
+	HOSTED_ROWS="[]" HOSTED_READ=local
+	[[ "${ORCH_LANE_HOST:-local}" != local ]] || return 0
 	rows="$(host_account_records "$ORCH_LANE_HOST" "$1" "${2:-}")" || accounts_rc=$?
-	[[ "$accounts_rc" -eq 0 ]] || { printf '[]\n'; return 0; }
+	case "$accounts_rc" in
+		0) HOSTED_READ=answered ;;
+		2) HOSTED_READ=absent; return 0 ;;
+		*) HOSTED_READ=failed; return 0 ;;
+	esac
 	# emit_lane writes each row as one compact line.
 	while IFS= read -r row; do
 		[[ -n "$row" ]] || continue
@@ -2174,10 +2445,10 @@ host_lane_rows() { # HARNESS [READINGS]
 	[[ "$hosted_rc" -ne 0 ]] || hosted="$(jq -cs . <<<"$stamped")" || hosted_rc=$?
 	if [[ "$hosted_rc" -ne 0 ]]; then
 		message host-accounts-merge-failed "$ORCH_LANE_HOST" "$hosted_rc" >&2
-		printf '[]\n'
+		HOSTED_READ=failed
 		return 0
 	fi
-	printf '%s\n' "$hosted"
+	HOSTED_ROWS="$hosted"
 }
 
 # ── Host accounts ────────────────────────────────────────────────────────────
@@ -2204,8 +2475,11 @@ host_lane_rows() { # HARNESS [READINGS]
 # field, the harness match and the dropped invalid row are decided once.
 #
 # Fields: `account` and `harness`, plus the optional `status`, `detail`,
-# `session-5h-pct`, `weekly-pct`, `model-pct`, `model-label`,
-# `session-resets`, `weekly-resets` and `model-resets`. A percentage the row
+# `session-5h-pct`, `weekly-pct`, `model-pct`, `monthly-pct`, `model-label`,
+# `session-resets`, `weekly-resets`, `model-resets` and `monthly-resets`. A
+# `harness=pi` row names a Pi root and carries that root's Copilot pool as
+# `monthly-pct`; `all` leaves it out, as it leaves Pi out of collect_lanes,
+# and only a caller naming `pi` gets it. A percentage the row
 # omits is a window the provider did not measure, which emit_lane reports as
 # no_usage_data rather than as an idle account. `detail` is the provider's own
 # words for the row's status, carried into the record's `detail` as written,
@@ -2244,13 +2518,13 @@ host_account_records() { # HOST HARNESS [READINGS] — one lane record per accou
 # map included, and the day, and is a miss under any other.
 host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 	local rows="$1" want="$2" mode="${3:-}" line field key value bad retire said
-	local account harness status detail s_pct w_pct m_pct m_label s_reset w_reset m_reset
+	local account harness status detail s_pct w_pct m_pct mo_pct m_label s_reset w_reset m_reset mo_reset
 	local buckets
 	while IFS= read -r line; do
 		[[ -n "$line" ]] || continue
 		account=""; harness=""; status="ok"; detail=""; bad=""; said=""
-		s_pct=null; w_pct=null; m_pct=null
-		m_label=""; s_reset=""; w_reset=""; m_reset=""
+		s_pct=null; w_pct=null; m_pct=null; mo_pct=null
+		m_label=""; s_reset=""; w_reset=""; m_reset=""; mo_reset=""
 		# The row's fields, one per line. `printf '%s\n'`, never `%s`: a last
 		# field with no newline after it is a line `read` returns non-zero on,
 		# and the loop body would never see it — which is where a row puts its
@@ -2268,13 +2542,15 @@ host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 				session-resets) s_reset="$value" ;;
 				weekly-resets) w_reset="$value" ;;
 				model-resets) m_reset="$value" ;;
-				session-5h-pct|weekly-pct|model-pct)
+				monthly-resets) mo_reset="$value" ;;
+				session-5h-pct|weekly-pct|model-pct|monthly-pct)
 					if [[ -z "$value" ]]; then continue; fi
 					if [[ "$value" =~ ^[0-9]{1,3}$ ]] && (( 10#$value <= 100 )); then
 						case "$key" in
 							session-5h-pct) s_pct=$((10#$value)) ;;
 							weekly-pct) w_pct=$((10#$value)) ;;
 							model-pct) m_pct=$((10#$value)) ;;
+							monthly-pct) mo_pct=$((10#$value)) ;;
 						esac
 						said="$key"
 					else
@@ -2285,7 +2561,7 @@ host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 			esac
 		done < <(printf '%s\n' "$line" | tr '\t' '\n')
 		[[ -n "$account" ]] || bad="${bad:-account}"
-		[[ "$harness" =~ ^(claude|codex)$ ]] || bad="${bad:-harness}"
+		[[ "$harness" =~ ^(claude|codex|copilot|pi)$ ]] || bad="${bad:-harness}"
 		if [[ -n "$bad" ]]; then
 			message host-account-invalid "${account:-<unnamed>}" "$bad" >&2
 			continue
@@ -2294,6 +2570,9 @@ host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 		# whichever harness a caller asked for: a provider emitting a malformed
 		# row says so once, not only to the caller that wanted that harness.
 		[[ "$want" == all || "$harness" == "$want" ]] || continue
+		# The cache holds the whole answer, Pi rows included, for every harness
+		# a later read asks for.
+		[[ "$want:$harness" != all:pi || "$mode" == cache ]] || continue
 		[[ "$mode" != readings || -n "$said" ]] || continue
 		# The same two settings that remove a local lane remove a hosted row, and
 		# for the same reason: they are the operator saying the account is not
@@ -2318,14 +2597,14 @@ host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 			printf '%s\n' "$line"
 			continue
 		fi
-		buckets="$(jq -nc --argjson s "$s_pct" --argjson w "$w_pct" --argjson m "$m_pct" \
-			--arg ml "$m_label" --arg sr "$s_reset" --arg wr "$w_reset" --arg mr "$m_reset" '
+		buckets="$(jq -nc --argjson s "$s_pct" --argjson w "$w_pct" --argjson m "$m_pct" --argjson mo "$mo_pct" \
+			--arg ml "$m_label" --arg sr "$s_reset" --arg wr "$w_reset" --arg mr "$m_reset" --arg mor "$mo_reset" '
 			def nz($v): if $v == "" then null else $v end;
-			{ session_5h_pct: $s, weekly_pct: $w, model_pct: $m,
+			{ session_5h_pct: $s, weekly_pct: $w, model_pct: $m, monthly_pct: $mo,
 			  model_label: nz($ml),
 			  model_buckets: (if $m == null then [] else [{label: nz($ml), pct: $m,
 			                                                    resets_at: nz($mr)}] end),
-			  resets: {session: nz($sr), weekly: nz($wr), model: nz($mr)} }')" || {
+			  resets: {session: nz($sr), weekly: nz($wr), model: nz($mr), monthly: nz($mor)} }')" || {
 			message host-account-invalid "$account" buckets >&2
 			continue
 		}
@@ -2463,6 +2742,28 @@ context_record_fetch() { # LANE CALLER
 	mailbox_file_fetch "$rec" "$LANE_CONTEXT_RECORD"
 }
 
+# CLAIMS with a row appended for every running Copilot fleet lane record
+# LANES_JSON holds whose window no claim names. A Copilot launch takes no
+# --lane, so no claim, yet its turn end judges a reading recorded in its
+# mailbox like any lane's, so the sweep reads it from its record. Another
+# harness's lane is read through its claim alone: its claim goes when its pane
+# dies, its record can still read running, and a row from that record would
+# bring back the dead lane's stale reading. The row names the
+# record's account, or none, its window's name as the lane, no server, and
+# the window's whole `SESSION:WINDOW` as the pane, a target tmux takes where
+# it takes a pane id. Exit 1 where the records could not be read.
+context_record_claims() { # CLAIMS LANES_JSON
+	local rows
+	rows="$(jq -r --arg claims "$1" '
+		($claims | split("\n") | map(split("\t") | .[1] // empty)) as $named
+		| .[] | select((.window // "") != "" and (.harness // "") == "copilot")
+		| (.window | sub("^[^:]*:"; "")) as $w
+		| select(any($named[]; . == $w) | not)
+		| [(.account // ""), $w, "", .window] | join("\t")' <<<"$2")" || return 1
+	[[ -z "$1" ]] || printf '%s\n' "$1"
+	[[ -z "$rows" ]] || printf '%s\n' "$rows"
+}
+
 # The file NAME in the lane mailbox the fleet lane record REC names, under the
 # same contract: its bytes on stdout and exit 0, exit 1 where it is not there
 # or is empty, exit 2 with the cause on stdout where it could not be read.
@@ -2503,17 +2804,16 @@ mailbox_file_fetch() { # REC NAME
 # `unreadable` where they could not be read; it is empty for a window no
 # running fleet lane record names as a Pi lane's, whose pane is judged. Exit 2
 # where the fleet state is there and its records could not be read, since a Pi
-# lane read as any other would be judged by its pane.
-STATE_ROWS=""
+# lane read as any other would be judged by its pane. It keeps the records in
+# STATE_RECORDS.
+STATE_ROWS="" STATE_RECORDS=""
 state_rows_read() { # WINDOW
-	local exists records rec rows rc=0
-	STATE_ROWS=""
+	local exists rec rows rc=0
+	STATE_ROWS="" STATE_RECORDS=""
 	exists="$("$SCRIPT_DIR/workflow-state" exists --json oversee 2>/dev/null | jq -r '.exists')" || return 2
 	[[ "$exists" == true ]] || return 0
-	records="$("$SCRIPT_DIR/workflow-state" get oversee '.lanes // []' 2>/dev/null)" || return 2
-	rec="$(jq -c --arg w "${1#*:}" "$LANE_RUNNING_JQ"'
-		map(select(running and .harness == "pi" and ((.window // "") | sub("^.*:"; "")) == $w)) | first // empty' \
-		<<<"$records")" || return 2
+	STATE_RECORDS="$("$SCRIPT_DIR/workflow-state" get oversee '.lanes // []' 2>/dev/null)" || return 2
+	rec="$(lane_running_record "$STATE_RECORDS" "$1" pi)" || return 2
 	[[ -n "$rec" ]] || return 0
 	STATE_ROWS=unreadable
 	rows="$(mailbox_file_fetch "$rec" "$SESSION_ROWS_LANE")" || rc=$?
@@ -2531,9 +2831,9 @@ render_table() {
 		def col($s; $n): ($s | tostring) as $t
 		  | if ($t | length) >= $n then $t else $t + (" " * ($n - ($t | length))) end;
 		def num($v): if $v == null then "-" else ($v | tostring) + "%" end;
-		(["LANE","HARNESS","THROUGH","STATUS","PLAN","5H","WEEK","MODEL","HEADROOM","CLAIMS","AGE","DETAIL"] | @tsv),
+		(["LANE","HARNESS","THROUGH","STATUS","PLAN","5H","WEEK","MODEL","MONTH","HEADROOM","CLAIMS","AGE","DETAIL"] | @tsv),
 		(.[] | [ .alias, .harness, (.measured_through // "local"), .status, (.plan // "-"),
-		         num(.session_5h_pct), num(.weekly_pct), num(.model_pct),
+		         num(.session_5h_pct), num(.weekly_pct), num(.model_pct), num(.monthly_pct),
 		         (if .headroom_pct == null then "-" else (.headroom_pct | tostring) + "%" end),
 		         (if .claims == null then "?" else .claims end),
 		         (if .usage_age_s == null then "-" else (.usage_age_s | tostring) + "s" end),
@@ -2624,17 +2924,34 @@ render_table() {
 # tell a window naming no model from a credential this machine cannot renew:
 # only the second has a remedy, and only that one leaves an account whose
 # copy on another host may still be live.
-# The provider rows both pick forms judge HARNESS on, host_lane_rows' readings.
-# A Pi pick is judged on the Copilot pool the owner states, which no provider
-# copy measures, so it asks no provider and gets none.
+# The provider rows both pick forms judge HARNESS on, host_lane_rows' readings,
+# in HOSTED_ROWS and HOSTED_READ. For a Pi pick these are the provider's
+# harness=pi rows, each a Pi root's Copilot pool, which host_row_or_local sets
+# against the stated override.
 pick_host_rows() { # HARNESS
-	if [[ "$1" == pi ]]; then printf '[]\n'; return 0; fi
 	host_lane_rows "$1" readings
+}
+
+# The fix= line for each unmeasured Pi record in RECORDS, a JSON array: a
+# provider row that stands names its own status and detail, and any other the
+# accounts read HOSTED_READ names.
+copilot_pool_records_fix() { # RECORDS
+	local through dir status detail
+	while IFS=$'\x1f' read -r through dir status detail; do
+		if [[ "$through" == host ]]; then
+			lane_copilot_pool_fix "$ORCH_LANE_HOST" row "$dir" "$status" "$detail"
+		else
+			lane_copilot_pool_fix "${ORCH_LANE_HOST:-local}" "$HOSTED_READ" "$dir"
+		fi || return 1
+	done < <(jq -r '.[] | [.measured_through, .config_dir, .status, .detail // ""] | join("\u001f")' <<<"$1")
 }
 
 cmd_pick_lane() {
 	local dir="$1" harness="$2" max_pct="$3" model="$4" as_json="$5" binding_floor="$6" burn="$7" projected_verdict="$8"
 	local target found="" d record="" wall bucket verdict hosted projected
+	# A malformed override refuses this form as it refuses the chooser, before a
+	# provider row could stand in for an entry nobody can parse.
+	if [[ "$harness" == pi ]]; then copilot_pool_entries >/dev/null || return 1; fi
 	# The same claim load `list` does, for the same reason: the record this form
 	# hands back carries `claims` and the projection beside it, which the
 	# verdict judges under --projected. Without the
@@ -2669,7 +2986,8 @@ cmd_pick_lane() {
 	# `lanes: pick-local-reading` line. A dir the provider holds and discovery
 	# does not reach is judged on the provider's row alone, which is then no
 	# longer a lane with no record.
-	hosted="$(pick_host_rows "$harness")"
+	pick_host_rows "$harness"
+	hosted="$HOSTED_ROWS"
 	record="$(jq -c --arg t "$target" 'map(select(._id == $t)) | first // empty' <<<"$hosted")" || { message pick-lane-failed "$dir" host >&2; return 1; }
 	if [[ -n "$record" && -z "$found" ]]; then
 		found="$(jq -r '.config_dir' <<<"$record")" || { message pick-lane-failed "$dir" host >&2; return 1; }
@@ -2729,7 +3047,14 @@ cmd_pick_lane() {
 			return 3
 			;;
 		unmeasured)
+			# A Pi root nothing measured: a failed accounts read is one a retry
+			# can answer, and any other read is named on a fix= line.
+			if [[ "$harness" == pi && "$HOSTED_READ" == failed ]]; then
+				message copilot-pool-unread "$ORCH_LANE_HOST" "${model:-none}" >&2
+				return 1
+			fi
 			message pick-lane-unmeasured "$dir" "${model:-none}" >&2
+			[[ "$harness" != pi ]] || copilot_pool_records_fix "[$record]" >&2 || return 1
 			# Under --json only, as on 0 and 3. The record's `status` is the
 			# whole of what a launcher needs here: `expired` names a credential
 			# this machine could not renew, which is an owner's login to fix
@@ -2799,17 +3124,14 @@ omitted_seats() { # HARNESS HOSTED
 cmd_pick() {
 	local harness="$1" max_pct="$2" as_json="$3" model="$4" binding_floor="$5" exclude="$6" for_overseer="$7" burn="$8"
 	local lanes hosted judged chosen walled unmeasured omitted="" seats=0 seat
-	# A Pi account on the Copilot pool is one the setting names, so with no
-	# entry at all nothing measures this launch: exit 5, which is a setting
-	# to state and never a window to wait out. Entries that exclusion removed
-	# are a pick with no candidate, answered as one below.
-	local pool_entries
+	# A Pi account on the Copilot pool is a Pi root the provider reports a
+	# harness=pi row for or the override names. The override is refused here
+	# when nobody can parse it, before anything is read; its Copilot CLI
+	# entries are no Pi root, so pool_roots holds only its Pi roots.
+	local pool_roots=""
 	if [[ "$harness" == pi ]]; then
-		pool_entries="$(copilot_pool_entries)" || return 1
-		if [[ -z "$pool_entries" ]]; then
-			message copilot-pool-unstated "${model:-none}" >&2
-			return 5
-		fi
+		copilot_pool_entries >/dev/null || return 1
+		pool_roots="$(lane_dirs pi all)"
 	fi
 	load_lane_claims fleet
 	# An unreadable claim store reads as "no launches in flight", which is the
@@ -2821,7 +3143,20 @@ cmd_pick() {
 		overseer_seats || die pick-overseer-seats "$SEATS_STEP" "$SEATS_STATE"
 	fi
 	# After the claim load: emit_lane counts claims on every host row it writes.
-	hosted="$(pick_host_rows "$harness")"
+	pick_host_rows "$harness"
+	hosted="$HOSTED_ROWS"
+	# With neither a provider row nor an override entry nothing measures this
+	# Pi launch: exit 1 where the accounts read failed, which a retry can
+	# answer, and otherwise exit 5, a read to repair and never a window to wait
+	# out. Entries that exclusion removed are a pick with no candidate, answered
+	# as one below.
+	if [[ "$harness" == pi && -z "$pool_roots" && "$HOSTED_READ" == failed ]]; then
+		message copilot-pool-unread "$ORCH_LANE_HOST" "${model:-none}" >&2
+		return 1
+	elif [[ "$harness" == pi && -z "$pool_roots" && "$hosted" == "[]" ]]; then
+		{ message copilot-pool-unstated "${model:-none}" "$HOSTED_READ"; lane_copilot_pool_fix "${ORCH_LANE_HOST:-local}" "$HOSTED_READ"; } >&2
+		return 5
+	fi
 	lanes="$(collect_lanes "$harness" "$exclude"$'\n'"$SEATS" "$hosted")"
 	# PARTITIONED on lib/lane-model.sh's verdict, never filtered on a predicate
 	# written out again here: the named form reads the same definition, so the
@@ -2840,7 +3175,8 @@ cmd_pick() {
 		                | del(.wall, .verdict) | lane_public end),
 		    qualifying: ([ .[] | select(.verdict == "room") ] | length),
 		    walled: ([ .[] | select(.verdict == "walled") ] | length),
-		    unmeasured: ([ .[] | select(.verdict == "unmeasured") ] | length) }
+		    unmeasured: ([ .[] | select(.verdict == "unmeasured") ] | length),
+		    unread: [ .[] | select(.verdict == "unmeasured") ] }
 	' <<<"$lanes")"
 	chosen="$(jq -c '.chosen' <<<"$judged" 2>/dev/null || true)"
 	if [[ -z "$chosen" || "$chosen" == "null" ]]; then
@@ -2848,6 +3184,16 @@ cmd_pick() {
 		unmeasured="$(jq -r '.unmeasured // 0' <<<"$judged" 2>/dev/null || true)"
 		[[ -z "$SEATS" ]] || omitted="$(omitted_seats "$harness" "$hosted")" || die pick-overseer-seats omitted oversee
 		[[ -z "$omitted" ]] || seats="$(grep -c . <<<"$omitted")"
+		# A Pi pick where no candidate carries a pool reading and none is walled
+		# is the unstated refusal, each unread provider row named on its fix=
+		# line: a pool nobody read is never one to wait out.
+		if [[ "$harness" == pi && "${walled:-0}" -eq 0 && "${unmeasured:-0}" -gt 0 ]]; then
+			{
+				message copilot-pool-unstated "${model:-none}" row
+				copilot_pool_records_fix "$(jq -c '.unread' <<<"$judged")"
+			} >&2
+			return 5
+		fi
 		{
 			# Walled and unmeasured are different news for an operator: one
 			# allowance is spent and will reset, the other was never read, and
@@ -3028,6 +3374,8 @@ need_jq
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 export PROJECT_ROOT
+# shellcheck source=lib/copilot-credits.sh
+source "$SCRIPT_DIR/lib/copilot-credits.sh"
 # shellcheck source=lib/file-lock.sh
 source "$SCRIPT_DIR/lib/file-lock.sh"
 # shellcheck source=lib/kendex-env.sh
@@ -3189,7 +3537,7 @@ parse_argv "$@"
 case "$SUB" in
 	list)
 		HARNESS="${HARNESS:-all}"
-		[[ "$HARNESS" =~ ^(claude|codex|all)$ ]] || die invalid-harness "$@"
+		[[ "$HARNESS" =~ ^(claude|codex|copilot|all)$ ]] || die invalid-harness "$@"
 		validate_lane_settings
 		load_lane_claims
 		# Every row says which credential measured it, local rows included: a
@@ -3201,8 +3549,8 @@ case "$SUB" in
 		# Asked only where a provider is configured. A fleet with no provider
 		# reads the local config dirs and nothing else, exactly as before.
 		if [[ "$LOCAL_ONLY" != true && "${ORCH_LANE_HOST:-local}" != local ]]; then
-			hosted="$(host_lane_rows "$HARNESS")"
-			out="$(jq -c --argjson hosted "$hosted" '. + $hosted' <<<"$out")"
+			host_lane_rows "$HARNESS"
+			out="$(jq -c --argjson hosted "$HOSTED_ROWS" '. + $hosted' <<<"$out")"
 		fi
 		# The verdict is the reading's: `walled` tells oversee-watch the wall is
 		# reached and lifts at binding_resets_at, which a projection does not
@@ -3213,7 +3561,7 @@ case "$SUB" in
 		;;
 	host-accounts)
 		HARNESS="${HARNESS:-all}"
-		[[ "$HARNESS" =~ ^(claude|codex|all)$ ]] || die invalid-harness "$@"
+		[[ "$HARNESS" =~ ^(claude|codex|copilot|pi|all)$ ]] || die invalid-harness "$@"
 		validate_lane_settings
 		# `local` names no provider, so there is no host copy to report. Refused
 		# rather than answered as 2: the dispatcher's own refusal of a provider
@@ -3291,6 +3639,9 @@ case "$SUB" in
 		# No pane on this server carries the name: nothing here sees the lane's
 		# harness, so its rows answer nothing either and the judge says unjudged.
 		[[ -n "$LANE_PANE_ID" ]] || STATE_ROWS=""
+		[[ -z "$LANE_PANE_ID" ]] || { rec="$(lane_running_record "$STATE_RECORDS" "$LANE_ARG" copilot)" &&
+			lane_context_copilot_note "$rec" "$(date +%s)"; } || die state-fleet "$LANE_ARG"
+		[[ -z "$COPILOT_SESSION_NOTE" ]] || message copilot-note "$LANE_ARG" "$COPILOT_SESSION_NOTE" >&2
 		lane_state_rc=0
 		lane_state LANE_STATE_ANSWER listed "$LANE_PANE_CMD" "$LANE_PANE_PID" "$LANE_PANE_SCREEN" "" "" "$STATE_ROWS" \
 			|| lane_state_rc=$?
@@ -3381,6 +3732,7 @@ case "$SUB" in
 		fi
 		context_claims="$(lane_claims_for_fleet "$LANE_CLAIMS_LIVE" "$context_fleet" "$context_records")" \
 			|| die context-claims "$@"
+		context_claims="$(context_record_claims "$context_claims" "$CONTEXT_LANES")" || die context-fleet oversee
 		# A separate list, never LANE_CLAIMS_LIVE itself: the caller's pane is
 		# a pane to measure and not a launch in flight, and the usage pass
 		# below counts that global's rows against each account.

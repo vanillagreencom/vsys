@@ -11,11 +11,11 @@
 # and ol_session_inspect. What is shared is here:
 #
 #   ol_preference          the ORCH_OVERSEER_PREFERENCE value, its default
-#                          ladder where the setting is unset
+#                          where the setting is unset
 #   ol_preference_entries  the ORCH_OVERSEER_PREFERENCE parse
 #   ol_account             the account a session spends, as `lanes` judges it
 #   ol_pi_model            a pi session's model, out of the sources naming it
-#   ol_entry_model         one entry's harness, model and effort
+#   ol_entry_model         one entry's harness, model and effort, as written
 #   ol_lanes               `lanes` on this machine's copy of each account
 #   ol_pick_record         one `lanes pick --json` record, for a caller's
 #                          own counts
@@ -39,8 +39,9 @@
 #   ol_record_*            the session record in the oversee state's
 #                          `overseer` object: read, written before the first
 #                          turn, restored when the launch is abandoned, the
-#                          pending successor written apart from it, and the
-#                          current session's launch identity read back
+#                          pending successor written apart from it, the
+#                          current session's launch identity read back, and
+#                          a record lacking a fact its session knows healed
 #   ol_session_verify      the account read, the first working turn and the
 #                          confirming read, inside one deadline
 #   ol_session_inspect     the runtime's `inspect` of a recorded session: its
@@ -54,7 +55,8 @@
 # Every function returns 0 for the answer its name promises and 1 for a
 # refusal the caller prints, with the reason in OL_REASON and its fields in
 # the OL_* variables each function documents; none of them prints a keyed
-# line, because the caller owns its own prefix and its own words. Every
+# line except ol_preference_entries' deprecation warning, because the caller
+# owns its own refusal prefix and words. Every
 # dependency writes its stderr to DEP_ERR, which the caller relays under its
 # keyed line.
 #
@@ -68,6 +70,9 @@
 # names its siblings.
 # shellcheck source=session-rows.sh
 source "${BASH_SOURCE[0]%/*}/session-rows.sh"
+# The start time the record binds its tmux server by is lib/tmux-server.sh's.
+# shellcheck source=tmux-server.sh
+source "${BASH_SOURCE[0]%/*}/tmux-server.sh"
 
 # The runtime the caller launches into, resolved once per process.
 OL_RUNTIME=""
@@ -89,53 +94,77 @@ ol_runtime_supported() {
   [[ "$OL_RUNTIME" == tmux ]] || { OL_REASON=runtime-unsupported; return 1; }
 }
 
-# The ladder a fleet walks where no settings file names
-# ORCH_OVERSEER_PREFERENCE: Fable, then Opus 5.5, then GPT-5.6 Sol on codex,
-# each at high effort, so a Fable wall moves the overseer onto another model
-# rather than leaving it with no successor, at a mark and at the wall alike.
-# Set to empty, the setting names no entries, which is a caller's own rule to
-# read.
-OL_DEFAULT_PREFERENCE="claude:fable:high,claude:claude-opus-5-5:high,codex:gpt-5.6-sol:high"
+# ORCH_OVERSEER_PREFERENCE where no settings file names it: the owner's order,
+# Fable, then Opus 5.5 on claude, then GPT-6 Astra, then GPT-5.6 Sol on
+# codex, each at high effort, so a Fable wall moves the overseer onto the next
+# model with room, at a mark and at the wall alike. This value is the
+# setting's default and the only model order any script holds: the walk reads
+# the setting and nothing else, so a new or retired model is an edit to the
+# setting and never to a script. Set to empty, the setting names no entries,
+# which is a caller's own rule to read.
+OL_DEFAULT_PREFERENCE="claude:fable:high,claude:claude-opus-5-5:high,codex:gpt-6-astra:high,codex:gpt-5.6-sol:high"
 ol_preference() {
   printf '%s\n' "${ORCH_OVERSEER_PREFERENCE-$OL_DEFAULT_PREFERENCE}"
 }
 
 # ol_preference_entries VALUE — VALUE, ORCH_OVERSEER_PREFERENCE's
 # comma-separated `harness:model:effort` entries, into OL_ENTRIES, with
-# OL_NAMED the count. `model` is a model name or a kendex tier ladder rank,
-# which is digits alone and which no model name is. A pi entry's model is pi's
-# own `provider/id`, and never a rank: the tier ladder names no pi model. An
-# entry outside the shape returns 1 with it in OL_BAD_ENTRY. An empty VALUE is
-# no entries and no refusal.
+# OL_NAMED the count. `harness` is claude, codex, copilot or pi; `model` is
+# the model the harness's `--model` word takes, on pi its own `provider/id`;
+# `effort` is the level as that harness spells it, on pi its thinking level.
+# Consumer settings can still name a positive account number. Those entries
+# become harness::effort, which ol_entry_model resolves on the caller's model.
+# OL_DEPRECATED_ENTRIES keeps their original spelling for the refresh report.
+# One stderr warning per process names the first deprecated entry.
+# OL_REFUSED_ENTRIES holds every refused entry; a refusal returns 1 and keeps
+# the first in OL_BAD_ENTRY for launchers. Empty VALUE is no entries.
 OL_ENTRIES=()
 OL_NAMED=0
 OL_BAD_ENTRY=""
+OL_REFUSED_ENTRIES=()
+OL_DEPRECATED_ENTRIES=()
+OL_DEPRECATION_WARNED=0
 ol_preference_entries() { # VALUE
-  local rest="$1" entry LC_ALL=C
+  local rest="$1" entry LC_ALL=C status=0
   OL_ENTRIES=()
   OL_NAMED=0
   OL_BAD_ENTRY=""
+  OL_REFUSED_ENTRIES=()
+  OL_DEPRECATED_ENTRIES=()
   [[ -z "$rest" ]] || rest+=","
   while [[ -n "$rest" ]]; do
     entry="${rest%%,*}"
     rest="${rest#*,}"
-    [[ "$entry" =~ ^(claude|codex):([1-9][0-9]*|[a-z][a-z0-9.-]*):[a-z]+$ \
-       || "$entry" =~ ^pi:[a-z][a-z0-9.-]*/[a-z0-9][a-z0-9._/-]*:[a-z]+$ ]] || { OL_BAD_ENTRY="$entry"; return 1; }
+    if [[ "$entry" =~ ^(claude|codex|copilot|pi):[1-9][0-9]*:[a-z]+$ ]]; then
+      OL_DEPRECATED_ENTRIES+=("$entry")
+      if (( ! OL_DEPRECATION_WARNED )); then
+        printf 'preference-deprecated entry=%s form=harness:model:effort\n' "$entry" >&2
+        OL_DEPRECATION_WARNED=1
+      fi
+      entry="${entry%%:*}::${entry##*:}"
+    elif ! [[ "$entry" =~ ^(claude|codex|copilot):[a-z][a-z0-9.-]*:[a-z]+$ \
+       || "$entry" =~ ^pi:[a-z][a-z0-9.-]*/[a-z0-9][a-z0-9._/-]*:[a-z]+$ ]]; then
+      (( status != 0 )) || OL_BAD_ENTRY="$entry"
+      OL_REFUSED_ENTRIES+=("$entry")
+      status=1
+      continue
+    fi
     OL_ENTRIES+=("$entry")
     OL_NAMED=$((OL_NAMED + 1))
   done
+  return "$status"
 }
 
 # ol_account HARNESS MODEL — the account a session of HARNESS on MODEL spends,
 # as `lanes` measures it: OL_ACCOUNT_HARNESS the harness `lanes pick` judges it
 # under, OL_ACCOUNT_MODEL the model it judges it on. lib/lane-launch.sh §
-# lane_pick_harness alone maps a provider to its account: claude and codex
-# spend their own accounts, a pi session on a `github-copilot/` model spends
-# the Copilot pool `lanes pick --harness pi` reads, and one on a `pi-claude/`
-# model spends a claude account. This function only normalizes that answer
-# for a pi session: a claude account is judged on the claude model after
-# `pi-claude/` (pi-extensions/pi-claude-bridge), and `unmeasured` splits into
-# `none`, a model naming a provider `lanes` measures no account of, and
+# lane_pick_harness alone maps a provider to its account: claude, codex and
+# copilot spend their own accounts, a pi session on a `github-copilot/` model
+# spends the Copilot pool `lanes pick --harness pi` reads, and one on a
+# `pi-claude/` model spends a claude account. This function only normalizes
+# that answer for a pi session: a claude account is judged on the claude model
+# after `pi-claude/` (pi-extensions/pi-claude-bridge), and `unmeasured` splits
+# into `none`, a model naming a provider `lanes` measures no account of, and
 # `unknown`, one naming no provider or no model at all, pi resolving a bare
 # model to a provider itself. A pi model's `:<thinking>` suffix is pi's level,
 # never the model. The model is empty for `none` and `unknown`.
@@ -169,39 +198,19 @@ ol_pi_model() { # MODEL...
 }
 
 # ol_entry_model ENTRY — one entry ol_preference_entries admitted, split into
-# OL_ENTRY_HARNESS, OL_ENTRY_MODEL and OL_ENTRY_EFFORT: a rank as `kendex
-# tier-model` names it, a name as written once the tier ladder is shown to
-# know it. A codex name is known where it IS a model the ladder names for
-# codex; a claude name where it carries one, since the claude ladder names
-# model families (`opus`) that a full id (`claude-opus-5-5`) spells inside it.
-# A pi name on the pi-claude provider runs a claude model and is held to the
-# claude ladder the same way (ol_account); a pi name on any other provider is
-# taken as written, the ladder naming none.
-# Returns 1 for a rank the ladder cannot answer and for a name it does not
-# know, which the walk refuses rather than skips: either is a setting to fix,
-# and a misspelled name would otherwise reach the pick, which then drops
-# every model-scoped window, and the launch line as written.
+# OL_ENTRY_HARNESS, OL_ENTRY_MODEL and OL_ENTRY_EFFORT. A normalized numeric
+# entry has no model word and uses the caller's launch or observed model. The
+# setting is the one source of which models the walk tries and in what order,
+# so nothing here holds a model list to check a name against: the launch line
+# carries the model the entry names, and a name its harness does not know is
+# the setting's to fix.
 OL_ENTRY_HARNESS="" OL_ENTRY_MODEL="" OL_ENTRY_EFFORT=""
+# oversee-succeed supplies the observed model before account measurement,
+# which deliberately drops codex's model to judge its binding bucket.
+OL_PREFERENCE_CALLER_MODEL=""
 ol_entry_model() { # ENTRY
-  local rank=1 known harness name
   IFS=: read -r OL_ENTRY_HARNESS OL_ENTRY_MODEL OL_ENTRY_EFFORT <<<"$1"
-  harness="$OL_ENTRY_HARNESS" name="$OL_ENTRY_MODEL"
-  if [[ "$harness" == pi ]]; then
-    ol_account pi "$name"
-    [[ "$OL_ACCOUNT_HARNESS" == claude ]] || return 0
-    harness=claude name="$OL_ACCOUNT_MODEL"
-  elif [[ "$name" =~ ^[0-9]+$ ]]; then
-    OL_ENTRY_MODEL="$(kendex tier-model "$OL_ENTRY_HARNESS" "$OL_ENTRY_MODEL" 2>"$DEP_ERR")" && [[ -n "$OL_ENTRY_MODEL" ]]
-    return
-  fi
-  # Every rank until `kendex tier-model` refuses one past the ladder's end.
-  while known="$(kendex tier-model "$harness" "$rank" 2>"$DEP_ERR")" && [[ -n "$known" ]]; do
-    case "$harness:$name" in
-      "codex:$known"|"claude:"*"$known"*) return 0 ;;
-    esac
-    rank=$((rank + 1))
-  done
-  return 1
+  [[ -n "$OL_ENTRY_MODEL" ]] || OL_ENTRY_MODEL="${OL_WALK_CALLER_MODEL:-$OL_PREFERENCE_CALLER_MODEL}"
 }
 
 # ol_lanes ARGS... — `lanes` as every overseer read of an account asks it,
@@ -231,7 +240,7 @@ ol_pick_record() { # HARNESS MODEL TRIGGER [EXCLUDE_DIR]
   OL_PICK_RECORD=""
   ol_account "$1" "$2"
   harness="$OL_ACCOUNT_HARNESS" model="$OL_ACCOUNT_MODEL"
-  case "$harness" in claude | codex | pi) ;; *) return 4 ;; esac
+  ol_account_measured "$harness" || return 4
   [[ -n "$(lane_context_mark_model "$harness" "$model")" ]] || floor=(--binding-floor)
   [[ -z "${4:-}" ]] || exclude=(--exclude-lane "$4")
   OL_PICK_RECORD="$(ol_lanes pick --harness "$harness" --min-headroom-pct "$3" --for-overseer \
@@ -296,11 +305,11 @@ ol_account_id() { # DIR
 # launch takes, a first launch and a succession alike: ENTRY... in order, the
 # first that names a lane into OL_CHOSEN, with OL_HARNESS, OL_MODEL,
 # OL_EFFORT and OL_LANE_DIR beside it and OL_PICK_MODEL the model its pick was
-# judged on. A named entry's model is resolved before its lane
-# (ol_entry_model), so the pick is judged on the bucket that walls the model
-# the entry passes; ol_pick_lane picks at TRIGGER, leaving EXCLUDE_DIR out,
-# and its exit 3 skips the entry. An entry spending no account `lanes`
-# measures takes no pick and no lane (ol_pick_lane).
+# judged on. A named entry's pick is judged on the bucket that walls the model
+# the entry names (ol_entry_model), the model its launch passes; ol_pick_lane
+# picks at TRIGGER, leaving EXCLUDE_DIR out, and its exit 3 skips the entry.
+# An entry spending no account `lanes` measures takes no pick and no lane
+# (ol_pick_lane).
 #
 # The entry `caller` is a predecessor's own, as OL_WALK_CALLER_* describe it:
 # its harness, its lane, the model and effort its record pairs, empty where
@@ -313,10 +322,15 @@ ol_account_id() { # DIR
 # walk never reached it.
 #
 # A named entry is launched under a permission posture its source allows
-# (ol_entry_permitted), and skipped before its pick where it cannot be. The
-# rules a succession adds, each off while its setting is empty or 0: each
-# skip is a notice for the caller to print, one line of tab-separated key and
-# fields in OL_WALK_SKIPS.
+# (ol_entry_permitted), and skipped before its pick where it cannot be. A
+# Copilot entry's pick is skipped as successor-status-line where the account's
+# settings run no copilot-statusline (lib/adapters/copilot.sh §
+# lane_adapter_copilot_status_line): a succession installs no
+# kendex-lane-context extension, so the record that status line writes is the
+# one reading it can count on, the turn end's fallback where no extension
+# reading of the session stands. The rules a succession adds, each off while its setting is
+# empty or 0: each skip is a notice for the caller to print, one line of
+# tab-separated key and fields in OL_WALK_SKIPS.
 #   OL_WALK_REFUSE_ID       a pick naming this account (ol_account_id) is
 #                           skipped as successor-lane-spent: the backstop for
 #                           an inventory that still names EXCLUDE_DIR
@@ -328,8 +342,8 @@ ol_account_id() { # DIR
 #
 # Returns 0 with an entry chosen, 3 where none qualifies, the counts in
 # OL_WALKED_WALLED and OL_WALKED_UNMEASURED, and 1 with OL_REASON
-# model-failed, lanes-failed or pi-account-unknown and its fields in
-# OL_FIELDS, the dependency's words in DEP_ERR.
+# lanes-failed or pi-account-unknown and its fields in OL_FIELDS, the
+# dependency's words in DEP_ERR.
 OL_WALK_CALLER_HARNESS="" OL_WALK_CALLER_LANE="" OL_WALK_CALLER_MODEL="" OL_WALK_CALLER_EFFORT=""
 OL_WALK_CALLER_PICK_MODEL="" OL_WALK_CALLER_KEEP=0
 OL_WALK_SOURCE_HARNESS="" OL_WALK_SOURCE_FLAGS="" OL_WALK_SOURCE_ROWS=0 OL_WALK_REFUSE_ID="" OL_WALK_SUCCESSOR_BOUND=0
@@ -353,7 +367,7 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
         return 0
       fi
     else
-      ol_entry_model "$entry" || { OL_REASON=model-failed OL_FIELDS=("entry=$entry"); return 1; }
+      ol_entry_model "$entry"
       OL_HARNESS="$OL_ENTRY_HARNESS" OL_MODEL="$OL_ENTRY_MODEL" OL_EFFORT="$OL_ENTRY_EFFORT"
       OL_PICK_MODEL="$OL_ENTRY_MODEL"
       ol_entry_permitted "$entry" || continue
@@ -367,6 +381,10 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
     esac
     if [[ -n "$OL_WALK_REFUSE_ID" && "$(ol_account_id "$OL_PICKED_DIR")" == "$OL_WALK_REFUSE_ID" ]]; then
       OL_WALK_SKIPS+=("successor-lane-spent${tab}lane=$exclude${tab}entry=$entry")
+      continue
+    fi
+    if [[ "$OL_HARNESS" == copilot ]] && ! lane_adapter_copilot_status_line "$OL_PICKED_DIR"; then
+      OL_WALK_SKIPS+=("successor-status-line${tab}lane=$OL_PICKED_DIR${tab}entry=$entry${tab}cause=$LANE_ADAPTER_COPILOT_STATUS_REASON")
       continue
     fi
     if (( OL_WALK_SUCCESSOR_BOUND > 0 )); then
@@ -426,8 +444,9 @@ ol_entry_permitted() { # ENTRY
 # for ol_command_line to write, whether it is a first launch or a successor:
 # MODEL and EFFORT written from HARNESS's row of lib/lane-launch.sh's table,
 # then SOURCE's words FLAG... as HARNESS may take them, the predecessor's
-# harness and flags, both empty on a first launch. An entry with no MODEL is
-# a predecessor's own, and keeps every word. One of the same harness strips
+# harness and flags, both empty on a first launch. An entry with neither
+# MODEL nor EFFORT keeps every predecessor word. A numeric first-launch
+# entry names EFFORT alone. One of the same harness strips
 # the predecessor's model and effort and keeps its permission words exactly.
 # One of another harness, a first launch among them, writes HARNESS's
 # full-bypass permission words and keeps none of the predecessor's, whose
@@ -448,7 +467,7 @@ ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [F
   OL_REASON=launch-choice-failed
   words="$(launch_choice_write "$harness" "$model" "$effort")" || { OL_FIELDS=("harness=$harness"); return 1; }
   [[ -z "$words" ]] || eval "OL_FLAGS=($words)"
-  if [[ -z "$model" ]]; then
+  if [[ -z "$model" && -z "$effort" ]]; then
     LAUNCH_CHOICE_KEPT=("$@")
   elif [[ "$harness" == "$source" ]]; then
     launch_choice_strip "$source" "$@" || { OL_FIELDS=("harness=$source"); return 1; }
@@ -493,8 +512,9 @@ ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [F
 # open-terminal's pi lane brief does. The account variable is
 # lib/lane-launch.sh § lane_env_prefix's for the harness and the model FLAG...
 # names: pi's is claude's, which the pi-claude bridge reads, and
-# PI_CODING_AGENT_DIR on the Copilot pool. An empty LANE_DIR, a pi model on a
-# provider no lane measures (ol_pick_lane), launches the command bare.
+# PI_CODING_AGENT_DIR on the Copilot pool. An empty LANE_DIR, which ol_walk
+# hands on for a pi model on a provider no lane measures (ol_pick_lane),
+# launches the command bare.
 #
 # A codex session reads folder trust for LAUNCH_DIR before it reads its own
 # arguments, and the pane it opens in has nobody at it, so the entry is made
@@ -546,14 +566,49 @@ ol_command_line() { # HARNESS HANDOFF LANE_DIR LAUNCH_DIR FLAG...
 }
 
 # The jq definitions every reader and writer of the record shares, so none
-# spells either question a second time: `ol_identity` is the launch identity
-# an object carries, its six fields in their one order, and `ol_names($server;
-# $session)` is whether a record names that session on that server, the pane
-# on tmux and the session elsewhere. lib/watch-overseer-record.sh takes the
-# second for the watch start.
+# spells a question a second time: `ol_identity` is the launch identity an
+# object carries, its six fields in their one order.
+# `ol_names($server; $start; $session)` is whether a record names that
+# session on that server, the pane on tmux and the session elsewhere. $start
+# is the start ol_session_start printed for that session's server, empty
+# where it could not be read: ol_names names the session only on the server
+# started at the record's `server_start`, since after a tmux restart a new
+# server may be handed the recorded pid and numbers its panes from %0 again,
+# and never from a record carrying no start. ol_record_current, the
+# generation bump, the exit writes and oversee-watch's identification take
+# that strict answer; `oversee launch` takes it beside ol_owns for its
+# liveness refusal.
+# `ol_unstarted($server; $session)` is a record naming that session on that
+# server with no start at all, which no current writer leaves but a record
+# written before starts were recorded, or put back whole by
+# ol_record_restore, still is. The session in that pane is the one the
+# record was written for. The lane-mail-check hook's identification and
+# lane-mail's peer reader ask it rather than read an empty start.
+# `ol_owns($server; $start; $session)` is either answer: the record is that
+# session's, bound or unstarted. Its readers are the two writers that bind an
+# unstarted record to its session instead of reading it as another
+# session's: the watch start (lib/watch-overseer-record.sh §
+# overseer_command_record), which keeps its launch identity, and
+# ol_record_heal, which the lane-mail-check hook runs from the overseer's
+# turn ends and tool calls; `oversee launch` reads it for its liveness
+# refusal, so a live pane a startless record names blocks a second overseer.
 OL_JQ_DEFS='def ol_identity: {harness, account, home, model, effort, cwd};
-  def ol_names($server; $session): type == "object" and (.server // "") == $server
-    and ((.pane // .session // "") == $session);'
+  def ol_names($server; $start; $session): type == "object" and (.server // "") == $server
+    and ((.pane // .session // "") == $session)
+    and (.server_start | tostring) == $start;
+  def ol_unstarted($server; $session): type == "object" and (.server // "") == $server
+    and ((.pane // .session // "") == $session)
+    and .server_start == null;
+  def ol_owns($server; $start; $session): ol_names($server; $start; $session) or ol_unstarted($server; $session);'
+
+# ol_session_start SERVER SESSION — the start ol_names judges SESSION on
+# SERVER by: tmux_server_start's for a pane. Returns 1, printing nothing, where
+# it cannot be read, and each caller states what an unread start does: one
+# judged as no start would read a record bound to this very session as
+# another session's.
+ol_session_start() { # SERVER SESSION
+  tmux_server_start "$2" "$1"
+}
 
 # ol_identity HARNESS ACCOUNT HOME MODEL EFFORT CWD — the launch identity into
 # OL_IDENTITY as the JSON object the record carries, null for each field the
@@ -765,8 +820,8 @@ ol_record_get() {
 # for a session this launch opened, merged over OL_PRIOR: `runtime`,
 # `session`, `window`, `server`, IDENTITY, the launch identity object
 # ol_identity or ol_record_line_identity built (every field present, null
-# where the launch does not know it, so no field of another session's
-# survives into this one's), `launch_line` where LINE is given, and `generation`: one more than
+# where the launch does not know it), `launch_line` where LINE is given, and
+# `generation`: one more than
 # the prior record's, or 1 where none was recorded, and the prior's own where
 # the prior names this very session on this server, which is a registration
 # repeated and never a second session. On tmux the session is the pane, and
@@ -774,37 +829,57 @@ ol_record_get() {
 # already read it under, and `session_rows` names the file that pane's own
 # event rows land in (lib/session-rows.sh), under the overseer mailbox of the
 # checkout the session starts in, IDENTITY's `cwd`, or this launcher's own
-# where that is unknown. `pending` is
+# where that is unknown, and `server_start` is the server's start time read
+# off that pane (lib/tmux-server.sh § tmux_server_start), so no start of
+# another server's survives. A start that cannot be read writes nothing: a
+# record with no start is bound to no server, and a later server handed the
+# same pid and pane id would read it as its own (ol_unstarted). `pending` is
 # dropped: the successor it named is the session written here, or a launch
 # that never opened. `exit` is dropped: it is a session's that ended. The
-# prior's `launch_line` goes with it where LINE is empty: `oversee register`
-# writes a session a person opened by hand, whose line nothing here knows, and
-# a line kept from the prior would be replayed for this session's death as if
-# it were its own, the prior's account and permission words included. Every
-# other field the prior carried stays. The generation written is in
-# OL_GENERATION, empty where the write failed. Returns 1 with the writer's
+# prior's fields survive only where ol_names proves this same server, server
+# start and pane. There, only non-empty IDENTITY fields replace prior values,
+# and an empty LINE keeps the prior launch line. A different session takes
+# IDENTITY's nulls for unknown fields and inherits no launch line or other
+# prior fields. OL_GENERATION names the generation written. OL_RECORD_RETAINED
+# and OL_RECORD_FRESH name the retained non-empty fields and the fields read
+# afresh, as sorted comma-separated lists, or `none`, for register's report.
+# All three are empty where the write failed. Returns 1 with the writer's
 # words in DEP_ERR.
-OL_GENERATION=""
+OL_GENERATION="" OL_RECORD_RETAINED="" OL_RECORD_FRESH=""
 ol_record_write() { # RUNTIME SESSION WINDOW SERVER IDENTITY [LINE]
-  local prior="${OL_PRIOR:-null}" record cwd rows="" generation
-  OL_GENERATION=""
+  local prior="${OL_PRIOR:-null}" result record cwd rows="" start="" fields
+  OL_GENERATION="" OL_RECORD_RETAINED="" OL_RECORD_FRESH=""
   if [[ "$1" == tmux ]]; then
     cwd="$(jq -r '.cwd // empty' <<<"$5" 2>"$DEP_ERR")" || return 1
     rows="$(session_rows_overseer_file "${cwd:-$PWD}" "$4" "$2")"
+    if ! start="$(ol_session_start "$4" "$2")"; then
+      printf 'the start of tmux server %s holding pane %s could not be read\n' "$4" "$2" > "$DEP_ERR"
+      return 1
+    fi
   fi
-  record="$(jq -cn --argjson prior "$prior" --argjson identity "$5" --arg runtime "$1" \
-    --arg session "$2" --arg window "$3" --arg server "$4" --arg line "${6:-}" --arg rows "$rows" "$OL_JQ_DEFS"'
+  result="$(jq -cn --argjson prior "$prior" --argjson identity "$5" --arg runtime "$1" \
+    --arg session "$2" --arg window "$3" --arg server "$4" --arg line "${6:-}" --arg rows "$rows" \
+    --arg start "$start" "$OL_JQ_DEFS"'
+      def nonempty: with_entries(select(.value != null and .value != ""));
+      def field_names: keys | if length == 0 then "none" else join(",") end;
       ($prior // {}) as $p
+      | ($p | ol_names($server; $start; $session)) as $same
       | (($p.generation // 0) | if type == "number" then . else 0 end) as $g
-      | (if ($p | ol_names($server; $session)) and $g > 0 then $g else $g + 1 end) as $next
-      | ($p | del(.pending, .exit, .launch_line)) + {runtime: $runtime, server: $server, window: $window, generation: $next}
-      + $identity
-      + (if $runtime == "tmux" then {pane: $session, session_rows: $rows} else {session: $session} end)
-      + (if $line == "" then {} else {launch_line: $line} end)' 2>"$DEP_ERR")" \
-    || return 1
-  generation="$(jq -r '.generation' <<<"$record" 2>"$DEP_ERR")" || return 1
+      | (if $same and $g > 0 then $g else $g + 1 end) as $next
+      | ($identity | nonempty) as $known
+      | ($known + {runtime: $runtime, server: $server, window: $window, generation: $next}
+         + (if $runtime == "tmux"
+            then {pane: $session, session_rows: $rows, server_start: ($start | tonumber)}
+            else {session: $session} end)
+         + (if $line == "" then {} else {launch_line: $line} end)) as $fresh
+      | (if $same then $p | del(.pending, .exit) else $identity | map_values(null) end) as $base
+      | {record: ($base + $fresh),
+         retained: ($base | nonempty | with_entries(select(.key as $key | $fresh | has($key) | not)) | field_names),
+         fresh: ($fresh | field_names)}' 2>"$DEP_ERR")" || return 1
+  record="$(jq -c '.record' <<<"$result" 2>"$DEP_ERR")" || return 1
+  fields="$(jq -r '[.record.generation, .retained, .fresh] | @tsv' <<<"$result" 2>"$DEP_ERR")" || return 1
   "$SCRIPT_DIR/workflow-state" set oversee overseer "$record" >/dev/null 2>"$DEP_ERR" || return 1
-  OL_GENERATION="$generation"
+  IFS=$'\t' read -r OL_GENERATION OL_RECORD_RETAINED OL_RECORD_FRESH <<<"$fields"
 }
 
 # ol_record_pending LINE IDENTITY — the successor a succession is about to
@@ -836,15 +911,39 @@ ol_record_pending() { # LINE IDENTITY
 # puts back, and a query is not a snapshot.
 OL_CUR_HARNESS="" OL_CUR_ACCOUNT="" OL_CUR_HOME="" OL_CUR_MODEL="" OL_CUR_EFFORT="" OL_CUR_CWD=""
 ol_record_current() { # SERVER PANE
-  local record fields sep=$'\x1f'
+  local record fields start sep=$'\x1f'
   OL_CUR_HARNESS="" OL_CUR_ACCOUNT="" OL_CUR_HOME="" OL_CUR_MODEL="" OL_CUR_EFFORT="" OL_CUR_CWD=""
   "$SCRIPT_DIR/workflow-state" exists oversee >/dev/null 2>&1 || return 1
   record="$(ol_record_get)" || return 2
-  fields="$(jq -r --arg server "$1" --arg pane "$2" --arg sep "$sep" "$OL_JQ_DEFS"'
-      if ol_names($server; $pane) then ol_identity | map(. // "" | tostring) | join($sep)
+  # Unread, the start names no record bound to one: the caller keeps its own
+  # readings, and nothing here acts on the record.
+  start="$(ol_session_start "$1" "$2")" || start=""
+  fields="$(jq -r --arg server "$1" --arg start "$start" --arg pane "$2" --arg sep "$sep" "$OL_JQ_DEFS"'
+      if ol_names($server; $start; $pane) then ol_identity | map(. // "" | tostring) | join($sep)
       else empty end' <<<"$record" 2>"$DEP_ERR")" || return 2
   [[ -n "$fields" ]] || return 1
   IFS="$sep" read -r OL_CUR_HARNESS OL_CUR_ACCOUNT OL_CUR_HOME OL_CUR_MODEL OL_CUR_EFFORT OL_CUR_CWD <<<"$fields"
+}
+
+# ol_record_heal SERVER PANE START HARNESS HOME — the record naming the session
+# SERVER PANE on the server started at START, bound or unstarted (ol_owns),
+# given each fact it lacks and the session itself knows: START
+# as `server_start`, HARNESS as `harness`, and HOME, the directory the harness
+# variable of that session carries, as `home`. A fact the record already
+# names stays, and a record naming another session is left as it stands. The
+# lane-mail-check hook runs it from the overseer's own turn end and tool calls,
+# so a record that lost the facts the transcript binding reads is filled from
+# the session they describe instead of leaving its context unread. An empty
+# HARNESS or HOME writes nothing for that field. Returns 1 with the writer's
+# words in DEP_ERR.
+ol_record_heal() { # SERVER PANE START HARNESS HOME
+  "$SCRIPT_DIR/workflow-state" update oversee --arg server "$1" --arg pane "$2" --arg start "$3" \
+    --arg harness "$4" --arg home "$5" "$OL_JQ_DEFS"'
+      if (.overseer | ol_owns($server; $start; $pane))
+      then .overseer |= (.server_start = ($start | tonumber)
+        | if (.harness // "") == "" and $harness != "" then .harness = $harness else . end
+        | if (.home // "") == "" and $home != "" then .home = $home else . end)
+      else . end' >/dev/null 2>"$DEP_ERR"
 }
 
 # ol_record_exit_clear SERVER PANE — the record's `exit` member dropped where
@@ -852,8 +951,12 @@ ol_record_current() { # SERVER PANE
 # its line runs, so a launch line run again in the same pane leaves no status
 # its predecessor earned. Returns 1 with the writer's words in DEP_ERR.
 ol_record_exit_clear() { # SERVER PANE
-  "$SCRIPT_DIR/workflow-state" update oversee --arg server "$1" --arg pane "$2" "$OL_JQ_DEFS"'
-      if (.overseer | ol_names($server; $pane)) then .overseer |= del(.exit) else . end' \
+  local start
+  # Unread, the start names no record bound to one, and the update leaves it
+  # as it stands.
+  start="$(ol_session_start "$1" "$2")" || start=""
+  "$SCRIPT_DIR/workflow-state" update oversee --arg server "$1" --arg start "$start" --arg pane "$2" "$OL_JQ_DEFS"'
+      if (.overseer | ol_names($server; $start; $pane)) then .overseer |= del(.exit) else . end' \
     >/dev/null 2>"$DEP_ERR"
 }
 
@@ -866,11 +969,13 @@ ol_record_exit_clear() { # SERVER PANE
 # bare shell with nothing under it, the state this return leaves.
 # Returns 1 with the writer's words in DEP_ERR.
 ol_record_exit() { # SERVER PANE STATUS
-  local at
+  local at start
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
-  "$SCRIPT_DIR/workflow-state" update oversee --arg server "$1" --arg pane "$2" \
+  # Unread, as ol_record_exit_clear reads it: no exit is written.
+  start="$(ol_session_start "$1" "$2")" || start=""
+  "$SCRIPT_DIR/workflow-state" update oversee --arg server "$1" --arg start "$start" --arg pane "$2" \
     --argjson status "$3" --arg at "$at" "$OL_JQ_DEFS"'
-      if (.overseer | ol_names($server; $pane)) then .overseer.exit = {status: $status, at: $at} else . end' \
+      if (.overseer | ol_names($server; $start; $pane)) then .overseer.exit = {status: $status, at: $at} else . end' \
     >/dev/null 2>"$DEP_ERR"
 }
 
@@ -969,6 +1074,13 @@ ol_budget_bound() { # [DIVISOR]
 # operator reads cannot drift from the deadline that produced it.
 ol_waited() { printf '%s\n' "$(( $(date +%s) - OL_STARTED ))"; }
 
+# ol_account_measured ACCOUNT_HARNESS — whether an OL_ACCOUNT_HARNESS answer
+# names an account `lanes` measures: a harness lane_pick_harness answered,
+# never `none`, `unknown` or the empty answer for a launch nothing judges. The
+# one reading of that answer, so no caller keeps a harness list of its own.
+ol_account_measured() { # ACCOUNT_HARNESS
+  case "${1:-}" in '' | none | unknown) return 1 ;; esac
+}
 # ol_account_verdict SESSION LANE_VAR LANE_DIR FORM BOUND final|early — one
 # account read and its verdict: 0 where the session may keep running, 1 with
 # OL_REASON=wrong-lane and the account seen in OL_OBSERVED, or

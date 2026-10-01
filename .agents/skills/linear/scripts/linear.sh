@@ -29,7 +29,7 @@ Resources:
   statuses        Workflow state operations (list, get)
   documents       Document operations (list, get)
   session-status  Aggregated session status for /start workflow
-  auth-check      API key + team target preflight (--strict fails with no team)
+  auth-check      Credential, actor and team preflight (--strict fails with no team)
   sync            Sync Linear data to local cache
   cache           Query local cache (issues, projects, cycles, initiatives, comments, labels)
 
@@ -59,10 +59,14 @@ Examples:
 
 Environment:
   Runtime         Bash 4.0 or newer. macOS system Bash 3.2 is unsupported.
-  LINEAR_API_KEY  Required. Set in .env.local; a key from project files wins
+  LINEAR_CLIENT_ID / LINEAR_CLIENT_SECRET
+                  App credentials in .env.local. Together they win over the key.
+                  Tokens use fixed scope read,write and live only in the cache.
+  LINEAR_API_KEY  Fallback. Set in .env.local; a key from project files wins
                   over a plain environment export (auth-check warns when they
-                  differ). LINEAR_API_KEY_OVERRIDE beats everything for one
-                  invocation (inline/test channel).
+                  differ). LINEAR_API_KEY_OVERRIDE overrides personal-key
+                  sources for one invocation (inline/test channel). It does not
+                  bypass app selection or refusal of an incomplete app pair.
   LINEAR_TEAM     Required for writes; no default. Set it in kendex.settings.toml
                   [env] (committed, non-secret). With no team, writes refuse and
                   reads run without a team filter. Only issues/projects/cycles/

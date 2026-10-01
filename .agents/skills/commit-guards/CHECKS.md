@@ -52,7 +52,7 @@ Seven `<`, seven `|`, or seven `>` at column 0, followed by a space or end of li
 
 ## changelog-entries
 
-Ordinary runs check fragments. `--collate` also validates the destination record before writing. A path in both roles is a config error. Text that is not valid UTF-8 is a collection error naming the line.
+Ordinary runs check fragments and configured major bumps. `--collate` also validates the destination record before writing. A path in both roles is a config error. Text that is not valid UTF-8 is a collection error naming the line.
 
 ### Fragments
 
@@ -69,11 +69,21 @@ A pattern's root is its leading run of glob-free directories (`changelog.d/*/*.m
 
 ### The record
 
-`COMMIT_GUARDS_CHANGELOG_RECORD` names the collation destination. Ordinary checks permit edits to its wording and headings. They do not compare it against HEAD.
+`COMMIT_GUARDS_CHANGELOG_RECORD` names the collation destination. Ordinary checks permit edits to its wording and headings. A configured major bump reads the record only for its Breaking evidence.
 
 - `--collate` with accepted fragments requires a tracked, regular text destination with one `## [Unreleased]` section. Section headings use the Keep a Changelog names so each fragment has a destination.
 - Missing or duplicate pending sections, unclosed fences, and unknown section names refuse collation before any write.
 - `COMMIT_GUARDS_CHANGELOG_COLLATE=1` authorizes `--collate` and lets `commit-msg` count a record change as the release changelog entry. It does not change fragment validation.
+
+### Major bumps
+
+- `COMMIT_GUARDS_CHANGELOG_VERSION_PATHS` selects tracked JSON files by space-separated path globs. Empty, the default, disables version checks. A selected changed file must be regular JSON with a string `version` in `major.minor.patch` form, with optional prerelease and build suffixes. jq reads both versions. Missing jq or unreadable versions are collection errors.
+- The default and `--staged` compare HEAD to the index. `--base REF` compares HEAD's merge base with REF to the index. `--against REF` compares REF itself to the index. The batch passes its range to this lane. Fragment validation always reads the whole index. A newly added version file has no prior major to increase.
+- An increased major fails with `major-breaking=PATH:OLD:NEW` unless its release has a list item starting `- **Breaking:**` followed by non-blank text. The check cannot judge whether the text describes the actual break or gives a sufficient migration note.
+- A `package.json` uses only its adjacent `CHANGELOG.md`: `### Unreleased` before release, or `### <new version>` as the first release section after the release renames that heading. Another package's call-out does not count.
+- Other version files use an accepted fragment or the configured record's `## [Unreleased]` or the first release section, `## [<new version>] - <date>`. This permits the release commit after collation deletes fragments and the caller sets the version. Past versions and fenced examples do not count. An unreadable record fails closed.
+- The owner-approval and compatibility policies belong to the consuming repository's release standard, not this configurable catalog check.
+- [`tests/changelog-entries.test.sh`](https://github.com/vanillagreencom/kendex/blob/main/skills/commit-guards/tests/changelog-entries.test.sh) pins a planted major with and without a named Breaking entry.
 
 ### Measuring one entry
 
@@ -129,13 +139,13 @@ An unterminated fence, front matter, HTML comment or prompt-section block is exi
 
 ## md-refs
 
-A dead reference in a scanned markdown file fails. Fenced code, indented code and front matter are never read. Forms:
+A dead reference in a scanned markdown file fails. A citing file at or below a path in the indexed `.kendex-lock.json` `emitted.paths` warns instead, with the citing file, target and `kendex report` command. A consumer-authored citing file still fails, including one citing a rendered target. `--strict` makes rendered-file references fail too; the catalog install-layout test uses it. An absent lock lists no paths; a scan that reads an unreadable or malformed lock exits 2. Fenced code, indented code and front matter are never read. Forms:
 
 - A link or reference definition whose destination is relative (no scheme, no leading `/`, not `mailto:`) must name a tracked file or directory, resolved against the citing file's directory; `..` above the repository root is dead. With `#anchor`, the target must be markdown and the anchor one of its heading slugs or an explicit `<a id="...">` or `<a name="...">`; a bare `#anchor` resolves in the citing file. A definition is read only where the line begins with its `[label]:`.
 - A code span holding `<path>.md § Heading` must name a tracked file with a heading equal to `Heading` case-insensitively after trimming; one holding `<path>.md#anchor` a tracked file with that slug or explicit anchor. The path resolves against the citing file's directory, then the repository root. A path alone in a code span is not judged.
 - A code span holding `<path>::<phrase>` is a content citation, read where the text before the first `::` holds a `/` and is spelled from `A-Za-z0-9`, `.`, `_`, `-` and `/` alone, and the phrase after it is not empty. The path resolves as the citation above does and must name a tracked file; that file's bytes must hold the phrase, byte for byte, as a literal substring. This proves the cited file still carries the text the sentence quotes and nothing about what the text means: no test name is parsed and no framework is known. A path in a code span with no `::` phrase stays a name, because a bare path in prose is as often a default value, a file a skill writes at run time, or a path in another repository. A citation into binary content is exit 2. A `§` in the span wins, so `<path> § Heading` is never read as a content citation; the form is read in Markdown only, never in comment text or a TOML string.
 - A relative markdown link followed by `§` must start with an existing heading name from that target. Matching ignores case, backticks, and emphasis markers. The heading name ends at a word boundary; prose can follow it. A section number also resolves to a heading with that number. Text routes check a heading prefix. Use an anchor link or an exact code-span citation where heading names share a prefix.
-- A decision ID, `DECISION_ID_PREFIX` plus at least `DECISION_ID_WIDTH` digits bounded by non-alphanumerics, must have a tracked file `DECISIONS_DIR/<ID>-*.md`; where that directory is not tracked, IDs are not judged and the verdict says so. An ID followed by `§` also names a heading of that file, judged by the same prefix rule as a section route.
+- A decision ID, `DECISION_ID_PREFIX` plus at least `DECISION_ID_WIDTH` digits bounded by non-alphanumerics, must have a tracked file `DECISIONS_DIR/<ID>-*.md`; where that directory is not tracked, IDs are not judged and the verdict says so. IDs inside a complete inline link with a non-local destination (a scheme or leading `/`) are excluded, in both its label and destination. Bare IDs, IDs in relative links and decision text in code spans remain subject to the rule. An ID followed by `§` also names a heading of that file, judged by the same prefix rule as a section route.
 
 The slug is GitHub's: link syntax, code-span backticks and HTML tags reduce to their text; ASCII letters lower-case (a non-ASCII letter keeps its case); every character not a letter, digit, space, `-` or `_` is dropped; each space becomes a hyphen; a repeat takes the first free `-1`, `-2` suffix.
 
@@ -158,7 +168,7 @@ An undefined name in a Python file fails as `py-names: undefined-name=<path>:<li
 - The lane looks for a tool only once a file is selected. With a file selected and neither tool installed, it refuses with `py-names: tool-missing=ruff,pyflakes`, exit 2, and names the remedy on the following lines. A consumer's CI installs ruff, or pyflakes for python3, in a step ahead of the commit-guards step, under no condition the commit-guards step does not also carry. A tool exit past 1, or output the lane cannot read, is exit 2.
 - Each blob is judged from a scratch copy under its own file name, so `__path__` stays defined in an `__init__.py`.
 
-The lane selects `*.py`, minus the render paths `.kendex-generated.json` lists. `--staged`, the default, judges every Python file the staged diff adds, modifies or type-changes, in full, from the index. `--base REF` and `--against REF` judge the same over a commit range, on byte-ceiling's dots. `--all` judges every tracked Python file. A symlink, a gitlink or a binary blob at a selected path is counted as unmeasured. The batch hands the lane the scope it hands byte-ceiling: `--all`, `--staged`, or the range under every setting.
+The lane selects `*.py`, minus the render paths `.kendex-generated.json` lists. It reads the inventory at the first `*.py` path the scope selects; a scope that selects none prints `py-names: no-match=<scope>:*.py` and exits 0 without reading the inventory or looking for a tool. `--staged`, the default, judges every Python file the staged diff adds, modifies or type-changes, in full, from the index. `--base REF` and `--against REF` judge the same over a commit range, on byte-ceiling's dots. `--all` judges every tracked Python file. A symlink, a gitlink or a binary blob at a selected path is counted as unmeasured. The batch hands the lane the scope it hands byte-ceiling: `--all`, `--staged`, or the range under every setting.
 
 ## comments
 
@@ -178,7 +188,7 @@ Comment text is extracted per family, by extension or, for a path with none, by 
 | Dash | `sql` `lua` | `--` to end of line; SQL `/* */` and Lua `--[[ ]]` across lines | `"…"` `'…'` with escapes |
 | Markup | `html` `htm` `xml` `svg` `vue` `svelte` | `<!-- -->` across lines | none |
 
-The scanner is a character walk, not a parser. Its limits, each pinned by a control in `tests/comments.test.sh`:
+The scanner is a character walk, not a parser. Its limits, each pinned by a control in [`tests/comments.test.sh`](https://github.com/vanillagreencom/kendex/blob/main/skills/commit-guards/tests/comments.test.sh):
 
 - A `//` inside a JavaScript regex literal, a `#` glued to a Python or TOML value (`x = 1#c`), and a `--` inside a Lua long string `[[…]]` are read by the rules above, not the language's.
 - A JavaScript template literal is one string to its closing backtick; a nested template inside `${…}` is not tracked.

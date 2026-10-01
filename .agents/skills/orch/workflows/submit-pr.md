@@ -84,7 +84,7 @@ When a cut follows the last review pass, set the existing `pre_delegate_sha` wor
 
    The push rebases onto the updated base where that base needs it and reconciles every SHA workflow state records. A merge-queue base whose rules demand no up-to-date branch takes a branch that merges cleanly as it stands; `worktree push --help` § Merge-queue base owns that rule. Route its exit code and its `sha-reconcile:` line by `worktree-push --help`, which owns the reconciliation and repair contract.
 
-   A `worktree-push-base-conflict` refusal pushed and rebased nothing: the branch conflicts with that base, and the guarded restack is its one rebase. Run [merge-pr-restack.md](merge-pr-restack.md) steps 1-3, which unarm the PR where one exists, restack and push through `worktree-push`, then continue here.
+   A `worktree-push-base-conflict` refusal pushed and rebased nothing: the branch conflicts with that base, and the guarded restack is its one rebase. Run [merge-pr-restack.md](merge-pr-restack.md) steps 1-3, which unarm the PR where one exists, restack, validate the restacked head where the project sets `DEV_VALIDATE_RANGE_CMD`, and push through `worktree-push`, then continue here; a red run there hands back instead.
 
    Measure the pushed branch before constructing publication text. The issue's optional `**Expected delta**` line supplies the comparison.
 
@@ -150,7 +150,7 @@ When a cut follows the last review pass, set the existing `pre_delegate_sha` wor
 
    `[ISSUE_TITLE]` comes from `linear.sh cache issues get [ISSUE_ID]` or `gh issue view [N] --json title --jq '.title'`.
 
-5. **Arm auto-merge** as soon as the PR exists, on every pass through this section. **Skip if** `orch-env ORCH_MERGE_AUTONOMY auto` prints anything but `auto`: the arm is the merge consent that setting holds back.
+5. **Arm auto-merge** as soon as the PR exists, on every pass through this section, for a PR that will take the queue: the arm reads [merge-pr.md](merge-pr.md) § 5 step 1's merge route and arms nothing where that route takes the PR past the queue. **Skip if** `orch-env ORCH_MERGE_AUTONOMY auto` prints anything but `auto`: the arm is the merge consent that setting holds back.
 
    Read the bot token as [merge-pr.md § 4](merge-pr.md#4-prepare) does. `.configured: false` arms nothing here: whose name a merge lands under is the decision [merge-pr.md](merge-pr.md) § 4 owns, and § 4-§ 5 there make the arm.
 
@@ -164,21 +164,17 @@ When a cut follows the last review pass, set the existing `pre_delegate_sha` wor
    .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] children_detached true
    ```
 
-   Read the review gate's context and the pushed head:
-
-   ```bash
-   .agents/skills/orch/scripts/orch-env REVIEW_GATE_CONTEXT "Review gate"
-   ```
+   Read the pushed head:
 
    ```bash
    git -C "[WORKTREE_PATH]" rev-parse HEAD
    ```
 
    ```bash
-   env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/github/scripts/github.sh -C "[WORKTREE_PATH]" pr-merge [PR_NUMBER] --auto --require-context "[GATE_CONTEXT]" --expected-head [HEAD_SHA]
+   env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/github/scripts/github.sh -C "[WORKTREE_PATH]" pr-merge [PR_NUMBER] --auto --unless-admin --expected-head [HEAD_SHA]
    ```
 
-   Exit `75` armed it. GitHub then holds the merge until the review gate, every required check and thread resolution pass, so the CI wait, the gate wait and § 6.1 are the lane's triage and fix work, not preconditions of the arm, and a turn that ends mid-chain leaves the PR armed. The late-findings guard starts where [merge-pr.md](merge-pr.md) § 5 step 1 arms the prepared head again and waits in `queue-wait`; the window before it is the accepted gap [merge-pr.md](merge-pr.md) § 5 step 5 answers. Exit `0` merged it: § 6 enters [merge-pr.md](merge-pr.md), whose § 3.2 takes a merged PR straight to its post-merge steps. Every exit `1` armed nothing new, but an arm an earlier pass of this step made may still be live (`pr-merge --help`: a pre-existing queue entry or auto-merge request may remain active), and it would merge without what this refusal names. So on any exit `1` take [merge-pr-restack.md § Unarm at a stop](merge-pr-restack.md#unarm-at-a-stop) before going on, with `[STATE_KEY]` being `[ISSUE_ID]` and `[STOP_DIR]` being `[WORKTREE_PATH]/tmp`; it unarms only what it finds live. Exit `1` with first line `arm: no-merge-gate=unverified repo=<owner/repo>` armed nothing because the base branch's rules could not be read: a read failure, not a ruleset gap. Report it and continue; [merge-pr.md](merge-pr.md) § 5 arms the prepared head after § 6.1. Exit `1` with any other `arm: no-merge-gate=<gap>` armed nothing because that base branch does not require `[GATE_CONTEXT]`, or has no merge gate at all, and an arm there would merge before review: report the line once and continue. That repository's merge keeps the route [merge-pr.md](merge-pr.md) § 5 sets out, after § 6.1, and the fix that lets it arm here is its ruleset requiring the review gate. Any other exit `1` armed nothing, an open review thread among its causes: continue, and [merge-pr.md](merge-pr.md) § 5 arms the prepared head after § 6.1.
+   Exit `75` armed it. `pr-merge` arms only where the base requires an approval and thread resolution and dismisses stale approvals on push, so GitHub then holds the merge until an approval of the current head, thread resolution and every required check pass (`pr-merge --help` § Approvals and review threads), and the CI wait, the gate wait and § 6.1 are the lane's triage and fix work, not preconditions of the arm, and a turn that ends mid-chain leaves the PR armed. The late-findings guard starts where [merge-pr.md](merge-pr.md) § 5 step 1 arms the prepared head again and waits in `queue-wait`; the window before it is the accepted gap [merge-pr.md](merge-pr.md) § 5 step 5 answers. Exit `0` merged it: § 6 enters [merge-pr.md](merge-pr.md), whose § 3.2 takes a merged PR straight to its post-merge steps. Every exit `1` armed nothing new, but an arm an earlier pass of this step made may still be live (`pr-merge --help`: a pre-existing queue entry or auto-merge request may remain active), and it would merge without what this refusal names. So on any exit `1` take [merge-pr-restack.md § Unarm at a stop](merge-pr-restack.md#unarm-at-a-stop) before going on, with `[STATE_KEY]` being `[ISSUE_ID]` and `[STOP_DIR]` being `[WORKTREE_PATH]/tmp`; it unarms only what it finds live. Exit `1` with first line `merge-route: admin ruleset=<ids> bypass=<values>` armed nothing because [merge-pr.md](merge-pr.md) § 5 step 1's direct attempt takes this PR past the queue once its gates pass, and an arm would have GitHub queue it first: continue with the PR unarmed. Exit `1` with first line `arm: no-merge-gate=unverified repo=<owner/repo>` armed nothing because the base branch's rules could not be read: a read failure, not a ruleset gap. Report it and continue; [merge-pr.md](merge-pr.md) § 5 arms the prepared head after § 6.1. Exit `1` with any other `arm: no-merge-gate=<gap>` armed nothing because that repository has auto-merge off, or that base branch requires no approval, no thread resolution or no stale-approval dismissal, and an arm there would merge before review, past an open thread, or on an approval of an earlier head: report the line once and continue. That repository's merge keeps the route [merge-pr.md](merge-pr.md) § 5 sets out, after § 6.1, and the fix that lets it arm here is the setting the line names. Any other exit `1` armed nothing: continue, and [merge-pr.md](merge-pr.md) § 5 arms the prepared head after § 6.1.
 
 Once the PR exists, this run is a continuing action. Clear any stop a capped run left before entering another post-PR gate:
 
@@ -226,47 +222,37 @@ git -C [WT_PATH] commit -m "chore: update golden baselines [skip ci]"
 
 The review gate runs **before** CI verification, universally, with no repo detection. Named stops below use [SKILL.md § The Cycle](../SKILL.md#the-cycle).
 
-Bind the pull request's exact endpoints first; the mode belongs to one pull request wherever the review gate's class policy is active:
+Resolve the gate mode the pull request's base sets:
 
 ```bash
-env -u GH_REPO -u GITHUB_REPOSITORY gh pr view [PR_NUMBER] --json baseRefOid,headRefOid --jq '[.baseRefOid,.headRefOid]|@tsv'
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --resolve-mode
 ```
 
-Those are `[BASE_SHA]` and `[HEAD_SHA]`:
+The printed value is `GATE_MODE`, `approval` or `off`: GitHub's approval requirement on the base decides it, read from the base's rulesets through `rules/branches` and from the pull request's `reviewDecision`, which also reflects classic branch protection (full semantics: [references/gates.md](../references/gates.md)); never re-derive it here. A non-zero exit is no mode: report it and do not guess one. This gate reads only GitHub-native review state, from any reviewer, human or bot; bot-specific signals are never parsed.
 
-```bash
-.agents/skills/orch/scripts/approval-wait --resolve-mode --base [BASE_SHA] --head [HEAD_SHA]
-```
-
-The printed value is `GATE_MODE` — `approval`, `review`, `exempt`, or `off` (full semantics: [references/gates.md](../references/gates.md)); never re-derive it here. A non-zero exit is no mode: report it and do not guess one. This gate reads only GitHub-native review state, from any reviewer, human or bot; bot-specific signals are never parsed.
-
-Record the resolved mode as a bare word (never pre-quoted), and the head it was resolved for beside it. A mode recorded without its head matches no live head, so § 6.1 re-resolves rather than apply it:
+Record the resolved mode as a bare word (never pre-quoted):
 
 ```bash
 .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] pr_review.mode [GATE_MODE]
 ```
 
-```bash
-.agents/skills/orch/scripts/workflow-state set [ISSUE_ID] pr_review.head_sha [HEAD_SHA]
-```
+For `off`, skip the wait and go to § 5. The internal review, CI, and comment-hygiene gates still apply in full, and gate 3 below applies too.
 
-For `off` and for `exempt`, skip the wait and go to § 5 — the internal review, CI, and comment-hygiene gates still apply in full. `exempt` is the review gate's own class policy waiving this change, so gate 3 below does not apply to it either; `off` keeps gate 3.
+A retarget changes the base without touching the head, so every path below that re-resolves the mode runs this section's command again and records what it prints, and § 6.1 re-runs it before gate 4.
 
-`exempt` is bound to the endpoints it was resolved over, not to the pull request: a later push changes the head, and a retarget changes the base without touching the head. Every path below that pushes commits re-runs this section's two commands and records what they print, and § 6.1 re-runs them again before it waives anything, because a mover outside this lane passes through none of these paths.
+**Who acts.** The lane waits and triages under its own credential, and never approves its own PR. The overseer approves a head only as [copilot-head-notices.md](../references/copilot-head-notices.md) sets, reached by pr-watch's `awaiting-stale` line ([oversee-events.md](../references/oversee-events.md), `pr-watch`) or a Copilot notice from [review-pr-comments.md](review-pr-comments.md#72-copilot-head-route) § 7.2. The lane's own `timeout` row below keeps it waiting or asks the user. An approval that arrives ends the wait as `approved`.
 
 1. **Wait.** Poll for the verdict and new comments together:
 
    ```bash
-   .agents/skills/orch/scripts/approval-wait [PR_NUMBER] 30 --json --mode [GATE_MODE] --item [ISSUE_ID]
+   env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] 30 --json --mode [GATE_MODE] --item [ISSUE_ID]
    ```
 
    No `max_wait` positional: the budget resolves through `PR_REVIEW_WAIT_SECS`. approval-wait emits a JSON result on every exit but `5`.
 
    | `status` | Action |
    |----------|--------|
-   | `approved`, `unresolved_count == 0` | Clear the review-wait budget, then → step 2 |
-   | `approved`, `unresolved_count > 0` | Run the triage pass below. Pushed no commits → the approval stands, → step 2. Pushed commits → the Restart check |
-   | `reviewed` | Clear the review-wait budget, then → step 2 |
+   | `approved` | Clear the review-wait budget, then → step 2. An approval returns only with zero unresolved threads: one standing open returns `comments` |
    | `proceeded` | Reviewer-down degrade under `PR_REVIEW_ON_TIMEOUT=proceed`. Clear the review-wait budget, record `pr_approval.reviewer_down` (below), then → step 2. CI and gate 3 still apply in full. Orch posts no status and manufactures no review evidence |
    | `changes_requested` or `comments` | Run the triage pass, then the Restart check |
    | `unreviewable` | No automatic reviewer targets this PR's base ([references/gates.md](../references/gates.md) § Stacked pull requests). Run `gh pr edit [PR_NUMBER] --add-reviewer @copilot` once, then the Restart check. If the wait returns `unreviewable` again, `auto-recommended` records `review-gate-unreviewable`; `ask` presents `Force merge` \| `Keep waiting` \| `Stop here`, with `Stop here` recommended, and routes the answer by the override paragraph below |
@@ -295,7 +281,7 @@ For `off` and for `exempt`, skip the wait and go to § 5 — the internal review
    .agents/skills/orch/scripts/workflow-state head-budget take [ISSUE_ID] review-wait [REVIEW_HEAD]
    ```
 
-   `continue` restarts step 1, after re-resolving `GATE_MODE` at `[REVIEW_HEAD]` by this section's two commands and recording it beside that head; `at-cap` records `review-round-cap` through `post-pr-stop`, posts the rendered comment, returns `MERGE_READY = false`, and skips § 5:
+   `continue` restarts step 1, after re-resolving `GATE_MODE` by this section's command and recording it; `at-cap` records `review-round-cap` through `post-pr-stop`, posts the rendered comment, returns `MERGE_READY = false`, and skips § 5:
 
    ```bash
    .agents/skills/orch/scripts/workflow-state post-pr-stop record [ISSUE_ID] review-round-cap review "[REMAINING_FEEDBACK]" [WORKTREE_PATH]/tmp/post-pr-stop-[ISSUE_ID].md
@@ -342,7 +328,7 @@ A PR already green when the wait started reaches the first row, never this one: 
 
 The printed value is `MAX_CYCLES`. Reruns-in-place are for flakes and re-gating on unchanged workflows only; a PR that changes gate or CI workflow behavior exhibits it only on a fresh head.
 
-**Run Workflow**: `⤵ workflows/ci-fix.md [PR_NUMBER] § 1-6 → § 5.1 tail` with context `worktree`, `lifecycle: "managed"`, `issue_id`. ci-fix pushes, re-confirms the § 4 gate at the new head, and only then re-verifies CI. ci-fix resolves the mode itself at the new head: record the mode it reports as `GATE_MODE`, beside the head it resolved at, and its gate re-confirmation as the § 4 result (there is no re-confirmation to record when that mode is `exempt` or `off`), treat its final CI result as the § 5 result, and re-route through the table above. A returned `comments` or `changes_requested` routes through the § 4 step-1 table first, then re-enters § 5.
+**Run Workflow**: `⤵ workflows/ci-fix.md [PR_NUMBER] § 1-6 → § 5.1 tail` with context `worktree`, `lifecycle: "managed"`, `issue_id`. ci-fix pushes, re-confirms the § 4 gate at the new head, and only then re-verifies CI. ci-fix resolves the mode itself at the new head: record the mode it reports as `GATE_MODE`, and its gate re-confirmation as the § 4 result (there is no re-confirmation to record when that mode is `off`), treat its final CI result as the § 5 result, and re-route through the table above. A returned `comments` or `changes_requested` routes through the § 4 step-1 table first, then re-enters § 5.
 
 Keep routing failures back into ci-fix until CI passes or `MAX_CYCLES` is spent. At the cap, go to § 6 with a failure report that names the checks still failing, quotes ci-fix's last error summary, and lists what each cycle attempted — never a bare "CI is failing".
 
@@ -358,12 +344,10 @@ A PR merges on exactly four deterministic gates. Gates 2 and 4 **verify results 
 |---|------|-------|
 | 1 | Internal review verdict recorded | Managed: `review-pr.md` completed with verdict `pass`. Standalone: `json_paths` is non-empty |
 | 2 | CI green | The § 5 result is `status=complete` with `verdict=pass`, or `verdict=none` (satisfied with a `CI: none configured` note in the summary) |
-| 3 | Zero unresolved review comments | `pr-threads` reports `unresolved_count == 0` AND every actionable PR-level bot comment has a reply (tracked in `pr_comment_review.replied`). `exempt` at the live endpoints: neither term applies |
-| 4 | Reviewer-gate verdict | `approval`: § 4 ended `approved`. `review`: § 4 ended `reviewed`. Either mode is also met by a recorded `pr_approval.forced` or `pr_approval.reviewer_down`. `exempt` at the live endpoints, and `off`: not applicable |
+| 3 | Zero unresolved review comments | `pr-threads` reports `unresolved_count == 0` AND every actionable PR-level bot comment has a reply (tracked in `pr_comment_review.replied`) |
+| 4 | Reviewer-gate verdict | `approval`: § 4 ended `approved`, or a recorded `pr_approval.forced` or `pr_approval.reviewer_down` meets it. `off`: not applicable |
 
-**The waiver is the live answer, never a record.** A class is measured over a base AND a head, and GitHub retargets a pull request to another base without moving its head, so no comparison against a recorded head can prove the class still holds. Re-run § 4's two commands at the live endpoints, before gates 3 and 4, and record what they print.
-
-Gates 3 and 4 waive on that fresh answer alone: `exempt` only where this resolution printed `exempt`. Any other answer is the mode from here, and the gates read it as they read any other. The recorded pair says what the last resolution saw and gates nothing; read it for the § 7 report, never to decide a gate:
+**Gate 4 reads the live mode, never a record.** GitHub retargets a pull request to another base without moving its head, so the mode recorded in § 4 can name a base the pull request left. Re-run § 4's command before gate 4 and record what it prints. The recorded mode gates nothing; read it for the § 7 report:
 
 ```bash
 .agents/skills/orch/scripts/workflow-state get [ISSUE_ID] '.pr_review.mode // ""'
@@ -377,18 +361,18 @@ Gates 3 and 4 waive on that fresh answer alone: `exempt` only where this resolut
 
 Empty `json_paths` means no internal review is recorded: report the unmet gate and recommend `orch review-pr [PR_NUMBER]`.
 
-**Gate 2** = the recorded § 5 result — do not re-run ci-wait, and raw `gh pr checks` output is never the gate. On a `pr-merge --check` refusal run `.agents/skills/github/scripts/github.sh ci-classify-refusal [PR_NUMBER]` and route on its `cause:` line: `threads` → gate 3; anything else → report the cause with its printed detail (for `ci_failed` that includes the `fail:` and `superseded:` run ids) rather than forcing or abandoning the merge.
+**Gate 2** = the recorded § 5 result — do not re-run ci-wait, and raw `gh pr checks` output is never the gate. On a `pr-merge --check` refusal run `.agents/skills/github/scripts/github.sh ci-classify-refusal [PR_NUMBER]` and report its `cause:` line with its printed detail (for `ci_failed` that includes the `fail:` and `superseded:` run ids) rather than forcing or abandoning the merge.
 
-**Gate 3** — final live check. `exempt` from the resolution above waives both of its terms, the unresolved count and the `pr_comment_review.replied` obligation, and goes to gate 4. Replying to every bot comment stays § 3.1's hygiene rule, which is not a gate in any mode.
+**Gate 3** — final live check. Replying to every bot comment stays § 3.1's hygiene rule, which is not a gate in any mode.
 
 ```bash
 .agents/skills/github/scripts/github.sh pr-threads [PR_NUMBER] --unresolved
 ```
 
-`unresolved_count > 0` runs ONE triage pass (`⤵ workflows/review-pr-comments.md [PR_NUMBER] § 1-8 → § 6.1 gate 3`, managed, bounded by the same `REVIEW_MAX_EXTERNAL_ROUNDS` cap on `pr_comment_review.iterations`). If that pass pushed commits, re-resolve `GATE_MODE` at the new head by § 4's two commands and record it beside that head, then re-confirm the § 4 gate through its Restart check with a short wait (no wait when that mode is `exempt` or `off`), then re-run § 5:
+`unresolved_count > 0` runs ONE triage pass (`⤵ workflows/review-pr-comments.md [PR_NUMBER] § 1-8 → § 6.1 gate 3`, managed, bounded by the same `REVIEW_MAX_EXTERNAL_ROUNDS` cap on `pr_comment_review.iterations`). If that pass pushed commits, re-resolve `GATE_MODE` by § 4's command and record it, then re-confirm the § 4 gate through its Restart check with a short wait (no wait when that mode is `off`), then re-run § 5:
 
 ```bash
-.agents/skills/orch/scripts/approval-wait [PR_NUMBER] 15 300 --json --mode [GATE_MODE] --item [ISSUE_ID]
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] 15 300 --json --mode [GATE_MODE] --item [ISSUE_ID]
 ```
 
 Re-run the gate-3 command once. If threads remain and the external-round cap is below, `auto-recommended` logs `Triage again` and runs one more pass; at the cap it records `review-threads-open`. Under `ask`, present `Triage again` | `Stop here`, with `Triage again` recommended.
@@ -445,7 +429,7 @@ Output: [Lane Output](../references/skill-rules.md#lane-output).
 |--------|-------|
 | PR | #[PR_NUMBER] |
 | CI | ✅ passing / ❌ failing |
-| Review gate | ✅ approved / ✅ reviewed / ⏳ pending / forced / exempt (class policy waives review) / off (no reviewer policy) |
+| Review gate | ✅ approved / ⏳ pending / forced / off (the base's rulesets require no approval and the pull request's `reviewDecision` is empty) |
 | Unresolved threads | [N] |
 | Comment iterations | [N] |
 | Fixes applied | [N] |

@@ -21,7 +21,23 @@
 # `standard` because something could not be read. Only `standard` is ever
 # measured=false, and only this script can tell the two apart: the cause alone
 # does not, so a consumer that must not treat a fallback as a class reads the
-# marker rather than a list of causes of its own. The render proof runs `kendex verify --scope
+# marker rather than a list of causes of its own. Every verdict also prints
+# one `queue-only: queue_only=true|false cause=<name> [path=<p> glob=<g>]`
+# line on stderr, ahead of the `class:` line: true where a changed path
+# matches a `queue` line of orch's narrow-change.conf, which is the list of
+# paths a change must run in a merge group for, or a glob of the repository's
+# own HARNESS_CI_QUEUE_PATHS (cause=repository-queue-path); where that setting
+# is unset (cause=queue-list-undeclared) or the settings holding it could not
+# be read (cause=queue-settings-unreadable); where a changed path is one
+# git quoted (cause=path-quoted), where the diff is empty
+# (cause=no-changed-paths), and where the paths were not read
+# (cause=paths-unread) or the list was not (cause=queue-list-unreadable,
+# cause=queue-list-missing). It is judged on every changed path harness-only
+# read, before any refusal or rule below, and no class changes it. A wiring
+# error prints no such line, and a reader takes its absence as
+# queue_only=true. This paragraph is the one statement of when the line
+# reads true; other docs point here.
+# The render proof runs `kendex verify --scope
 # project --json` in that private checkout, with `--base` set to the base-rev:
 # line harness-only printed and `--at-record` beside it, and reads its
 # document. The classes, first match winning:
@@ -76,7 +92,13 @@
 #            an endpoint, the inventory's shape, a changed path, a path
 #            lookup, the diff, the endpoints, the event, and any refusal it
 #            adds later — answers standard carrying that cause, named here or
-#            not. Fail-closed: standard buys a diff nothing.
+#            not. Fail-closed: standard buys a diff nothing. A base that
+#            holds no inventory at all (cause=base-inventory-absent) takes
+#            standard as a fixed rule ahead of the size rules, with
+#            measured=true: a reading, not a refusal, though no size was
+#            measured. The same diff on a base with an inventory can earn a
+#            narrower class. An inventory the base holds and harness-only
+#            cannot read or parse stays a refusal.
 #
 # A changed kendex configuration file refuses every narrow class, not only
 # render: those files decide what is rendered and what each judgement below
@@ -102,10 +124,26 @@
 # ORCH_SIZE_RENDER_ROOTS, ORCH_SIZE_TEST_PATHS and both HARNESS_CI_TRIVIAL_*
 # settings come from this process's environment, else from the [env] tables of
 # kendex.settings.toml and .kendex/settings.toml, the second winning, as the
-# base endpoint's commit holds them. The private env file is never read.
+# base endpoint's commit holds them. HARNESS_CI_QUEUE_PATHS (the repository's
+# own queue globs, blank-separated, set empty where the shipped list is the
+# whole list) comes from those tables alone, never from the environment. The
+# private env file is never read.
 # A caller that acts on the verdict without review runs the DEFAULT BRANCH's
 # copy of this script against the pull request's tree; the branch can change
 # this file too.
+#
+# The render proof runs the `kendex` on PATH, save for one diff: where the only
+# changed path is `.kendex-lock.json`, the install record, and this process's
+# environment sets HARNESS_CI_LOCK_KENDEX, it runs the executable that names.
+# The record is written by a kendex built from the recording tree, so a
+# registration shape newer than the release on PATH reads to that release as
+# drift. review-gate's writer installs kendex's rolling main build there
+# where REVIEW_GATE_LOCK_KENDEX asks for it. The variable is read from the
+# environment alone, never from a settings file: it names a binary on the
+# machine running this script. A path that is not executable answers standard
+# with cause=no-verifier. The `render-verifier:` line names the verifier that
+# ran, `path` or `lock`, and the version its `--version` printed, and a
+# verify-refused cause carries both, so a refusal reads as the verifier's age.
 #
 # Only the render class reads kendex state, and it is reached only where
 # harness-only answers harness_only=true for the range. review-gate's
@@ -125,14 +163,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HARNESS_ONLY="$SCRIPT_DIR/harness-only"
 ORCH_DIR="$SCRIPT_DIR/../../orch"
 NARROW_CONF="$ORCH_DIR/references/narrow-change.conf"
+# shellcheck source=lib/change-class.sh
+. "$SCRIPT_DIR/lib/change-class.sh"
 # The micro-tier measurement's boundary as this script reaches it: every file
 # it reads or runs whose edit changes the range measured, the settings the
 # measurement reads, or the ceilings it compares against. orch's
 # narrow-change.conf refuses the narrow classes on each, and
-# tests/narrow-boundary.test.sh holds that file's boundary group to this list,
+# https://github.com/vanillagreencom/kendex/blob/main/skills/harness-ci/tests/narrow-boundary.test.sh
+# holds that file's boundary group to this list,
 # to branch-size-check's, and to the `source` lines of every file they name.
 # measures-with: skills/harness-ci/scripts/change-class
 # measures-with: skills/harness-ci/scripts/harness-only
+# measures-with: skills/harness-ci/scripts/lib/change-class.sh
 # measures-with: skills/orch/references/narrow-change.conf
 # measures-with: skills/orch/scripts/lib/branch-growth.sh
 # measures-with: skills/orch/scripts/lib/kendex-env.sh
@@ -158,6 +200,10 @@ head="HEAD"
 repo="."
 output="${GITHUB_OUTPUT:-}"
 changed=""
+# The queue-only class. Until the changed paths are read, the diff is
+# unreadable, and an unreadable diff reads queue-only.
+QUEUE_ONLY=true
+QUEUE_CAUSE="cause=paths-unread"
 
 usage() { sed -n '2,/^set -/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 
@@ -220,6 +266,7 @@ answer() { # CLASS FIELDS [measured]
         "could not append the verdict to '$output'"
     fi
   fi
+  printf 'queue-only: queue_only=%s %s\n' "$QUEUE_ONLY" "$QUEUE_CAUSE" >&2
   printf 'class: class=%s measured=%s %s\n' "$1" "$measured" "$2" >&2
   printf 'change_class=%s\n' "$1"
   exit 0
@@ -266,6 +313,183 @@ if ! inventory_change="$(sed -n 's/^inventory-change: //p' "$harness_err" | tail
   inventory_change=""
 fi
 
+# Splitting a blank-separated list leaves each word open to pathname
+# expansion, and a glob naming a real directory would be replaced by the files
+# under the caller's working directory. Expansion is off for the split alone.
+GLOB_LIST=()
+set_globs() { # GLOBS
+  set -f
+  # shellcheck disable=SC2206
+  GLOB_LIST=($1)
+  set +f
+}
+
+# One matcher and one glob grammar for the allowlist and the refusal lists.
+PATH_MATCH_HIT=""
+path_matches() { # MODE(every|any) — against GLOB_LIST
+  local path hit globs
+  PATH_MATCH_HIT=""
+  globs=""
+  if [ "${#GLOB_LIST[@]}" -gt 0 ]; then
+    printf -v globs '%s\n' "${GLOB_LIST[@]}"
+  fi
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    hit=false
+    if change_class_path_match "$path" "$globs"; then hit=true; fi
+    if [ "$1" = any ]; then
+      [ "$hit" = false ] || return 0
+    else
+      [ "$hit" = true ] || return 1
+    fi
+  done <<<"$changed"
+  [ "$1" = every ]
+}
+
+# The shared path rule, applied to the branch's paths at the phase where
+# that rule belongs. The registry and pointer phases follow the render proof;
+# the names-only inventory leaves the path set before the narrow phase.
+path_class_matches() { # PHASE CLASS
+  local path
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    change_class_path "$path" "$1"
+    [ "$CHANGE_CLASS_PATH" != "$2" ] || return 0
+  done <<<"$changed"
+  return 1
+}
+
+# The measurement settings and the repository's queue list, read from the
+# [env] tables of the settings files the base endpoint's commit holds, never
+# from the judged tree: a branch cannot choose the ceilings or the roots its
+# own size is scored against, nor the paths that keep it in the queue, and a
+# settings file the branch changes answers standard as a configuration source
+# and is queue-only. That commit is the one --base names, the pull request's base tip or
+# a merge group's base, never the merge base, which the author picks by
+# choosing where to fork. The tables are parsed by orch's kendex-env.sh, the
+# same reader branch-size-check's settings ladder uses, in that ladder's order,
+# so .kendex/settings.toml outranks kendex.settings.toml; nothing is sourced,
+# so the private env file its KENDEX_ENV_FILE names never reaches this script.
+# A key this process's environment carries keeps that value, as it does on the
+# ladder, save the queue list: a caller's environment is its own checkout's
+# settings, which github.sh's router exports from the working tree, so the
+# list is dropped from it and the base's alone decides. The load runs in a
+# subshell and hands back these keys alone.
+unset HARNESS_CI_QUEUE_PATHS
+BASE_SETTINGS_KEYS='ORCH_SIZE_RENDER_ROOTS ORCH_SIZE_TEST_PATHS HARNESS_CI_TRIVIAL_MAX_LINES HARNESS_CI_TRIVIAL_PATHS HARNESS_CI_QUEUE_PATHS'
+BASE_SETTINGS_FILES='kendex.settings.toml .kendex/settings.toml'
+base_settings() {
+  local settings_rev listed kind blob file files=() n=0 loaded key value
+  if ! settings_rev="$(git -C "$repo" rev-parse --verify --quiet "$base^{commit}" 2>/dev/null)" ||
+    [ -z "$settings_rev" ]; then
+    MEASURE_CAUSE="cause=base-settings-unreadable base=$base"
+    return 1
+  fi
+  for file in $BASE_SETTINGS_FILES; do
+    if ! listed="$(git -C "$repo" ls-tree "$settings_rev" -- "$file" 2>/dev/null)"; then
+      MEASURE_CAUSE="cause=base-settings-unreadable base=$settings_rev path=$file"
+      return 1
+    fi
+    [ -n "$listed" ] || continue
+    kind="${listed#* }"
+    kind="${kind%% *}"
+    blob="${listed%%"$TAB"*}"
+    blob="${blob##* }"
+    n=$((n + 1))
+    if [ "$kind" != blob ] ||
+      ! git -C "$repo" cat-file blob "$blob" >"$work/base-settings-$n" 2>/dev/null; then
+      MEASURE_CAUSE="cause=base-settings-unreadable base=$settings_rev path=$file"
+      return 1
+    fi
+    files=("${files[@]+"${files[@]}"}" "$work/base-settings-$n")
+  done
+  [ "$n" -gt 0 ] || return 0
+  if ! loaded="$(
+    exec 3>&1 1>&2
+    # shellcheck disable=SC2086
+    unset $BASE_SETTINGS_KEYS
+    # shellcheck source=../../orch/scripts/lib/kendex-env.sh
+    . "$ORCH_DIR/scripts/lib/kendex-env.sh" || exit 1
+    for file in "${files[@]}"; do
+      kendex_load_settings_file "$file" || exit 1
+    done
+    for key in $BASE_SETTINGS_KEYS; do
+      [ -z "${!key+x}" ] || printf '%s=%s\n' "$key" "${!key}" >&3
+    done
+  )"; then
+    MEASURE_CAUSE="cause=base-settings-unreadable base=$settings_rev"
+    return 1
+  fi
+  while IFS= read -r value; do
+    [ -n "$value" ] || continue
+    key="${value%%=*}"
+    [ -z "${!key+x}" ] || continue
+    printf -v "$key" '%s' "${value#*=}"
+  done <<<"$loaded"
+}
+
+# The queue-only class, from the whole changed-path set before any rule below
+# trims it, so every verdict from here on carries it. A list this script
+# cannot read, or one from before the `queue` group, keeps the unreadable
+# default: queue_only=true. git C-quotes a path holding a double quote or a
+# newline, whatever core.quotePath says, and no anchored glob matches that
+# spelling, so a quoted path is queue-only before any glob is read.
+queue_only_of_paths() {
+  local globs path
+  while IFS= read -r path; do
+    case "$path" in
+      \"*) QUEUE_CAUSE="cause=path-quoted path=$path"; return ;;
+    esac
+  done <<<"$changed"
+  if [ ! -r "$NARROW_CONF" ] || ! globs="$(change_class_list_globs "$NARROW_CONF" queue)"; then
+    QUEUE_CAUSE="cause=queue-list-unreadable"
+    return
+  fi
+  if [ -z "$globs" ]; then
+    QUEUE_CAUSE="cause=queue-list-missing"
+    return
+  fi
+  set_globs "$globs"
+  if path_matches any; then
+    QUEUE_CAUSE="cause=queue-path $PATH_MATCH_HIT"
+    return
+  fi
+  # The shipped list names this catalog's own CI inputs. A repository's own,
+  # its test harness or its aggregator outside .github/, are its
+  # HARNESS_CI_QUEUE_PATHS, and a repository that declares none, the key
+  # unset, has named no list the shipped one can be judged complete against:
+  # queue-only. Set, even empty, the declaration is the rest of the list.
+  if ! base_settings; then
+    QUEUE_CAUSE="cause=queue-settings-unreadable"
+    return
+  fi
+  if [ -z "${HARNESS_CI_QUEUE_PATHS+x}" ]; then
+    QUEUE_CAUSE="cause=queue-list-undeclared"
+    return
+  fi
+  set_globs "$HARNESS_CI_QUEUE_PATHS"
+  if ! path_matches any; then
+    QUEUE_ONLY=false
+    QUEUE_CAUSE="cause=no-queue-path"
+    return
+  fi
+  QUEUE_CAUSE="cause=repository-queue-path $PATH_MATCH_HIT"
+}
+
+# The changed paths harness-only read, and the queue-only class judged on
+# them, ahead of every refusal below: a refusal raised after the paths were
+# read carries the class those paths earn. An empty diff is its own cause and
+# stays queue-only; any other empty set is a refusal that read no path, and
+# keeps cause=paths-unread.
+if [ -s "$paths_file" ]; then
+  changed="$(cat -- "$paths_file")"
+  queue_only_of_paths
+else
+  case "$harness_note" in
+    '' | cause=empty-diff | cause=empty-diff\ *) QUEUE_CAUSE="cause=no-changed-paths" ;;
+  esac
+fi
+
 # The committed inventory is the file every rule below is judged by: generated
 # ownership is read from it, so the render branch and the size rules both
 # stand on that read. A `false` verdict from harness-only means "run every
@@ -282,83 +506,31 @@ fi
 # later is refused by that default rather than measured until someone names
 # it, which is the way round that cannot hand a narrow class to a diff whose
 # ownership was never read.
+#
+# One cause is a reading, not a refusal: a base that holds no inventory at
+# all, older than the render that first wrote one, which is a long-lived
+# branch's normal state. Ownership at that end is not recorded, so the diff
+# takes standard as a fixed rule ahead of every path and size rule below,
+# marked measured=true because the absence is what was read; no size is
+# measured. The same diff on a base with an inventory can earn a narrower
+# class. An inventory the base holds and harness-only cannot read or parse
+# keeps its own cause and stays refused.
 case "$harness_note" in
   '') ;;
   cause=product-source-or-unreadable-ownership | \
     cause=product-source-or-unreadable-ownership\ * | \
     cause=generated-ownership-gain | cause=generated-ownership-gain\ *) ;;
+  cause=base-inventory-absent | cause=base-inventory-absent\ *)
+    answer standard "$harness_note" measured ;;
   *) answer standard "$harness_note" ;;
 esac
 
 if [ ! -s "$paths_file" ]; then
   answer standard "${harness_note:-cause=no-changed-paths}"
 fi
-changed="$(cat -- "$paths_file")"
 
-# Splitting a blank-separated list leaves each word open to pathname
-# expansion, and a glob naming a real directory would be replaced by the files
-# under the caller's working directory. Expansion is off for the split alone.
-GLOB_LIST=()
-set_globs() { # GLOBS
-  set -f
-  # shellcheck disable=SC2206
-  GLOB_LIST=($1)
-  set +f
-}
-
-# One matcher and one glob grammar for the allowlist and the refusal lists.
-PATH_MATCH_HIT=""
-path_matches() { # MODE(every|any) — against GLOB_LIST
-  local path glob hit
-  PATH_MATCH_HIT=""
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    hit=false
-    for glob in ${GLOB_LIST[@]+"${GLOB_LIST[@]}"}; do
-      # shellcheck disable=SC2254
-      case "$path" in
-        $glob) hit=true; PATH_MATCH_HIT="path=$path glob=$glob"; break ;;
-      esac
-    done
-    if [ "$1" = any ]; then
-      [ "$hit" = false ] || return 0
-    else
-      [ "$hit" = true ] || return 1
-    fi
-  done <<<"$changed"
-  [ "$1" = every ]
-}
-
-# Two groups, refused at two places. First, ahead of everything, kendex's own
-# configuration, with .gemini/settings.json beside it: the shim row kendex
-# prints for it weighs one key of a document whose other keys decide what that harness loads, and
-# the row vouches for nothing else in it, so a refresh that rewrites it
-# answers cause=configuration-source rather than reaching the render proof.
-# Second, below the render branch, the registry files a harness reads its
-# hooks, its permissions and its MCP servers out of: one project-scope entry
-# per structured surface the adapters under crates/core/src/harness name,
-# which is also the set kendex writes. A harness executes those keys whether
-# or not kendex wrote the file, so a hand-authored one the inventory does not
-# carry must not fall through to size measurement and take the class its
-# size earns; a re-rendered one the inventory does carry reaches the render
-# proof first, where the row that owns it says whether the rest of the file
-# moved. Every harness those adapters name is covered, Cursor and Copilot
-# included. .github/hooks/*.json is a glob because Copilot's registry is one
-# file per hook, named for the hook: engine/targets.rs copilot_hook writes
-# .github/hooks/<name>.json. A harness kendex adds later has to join this
-# list, which no rule does for it.
-set_globs 'kendex.toml kendex.settings.toml kendex-local.toml
-  .kendex/settings.toml .gemini/settings.json'
-! path_matches any ||
-  answer standard "cause=configuration-source $PATH_MATCH_HIT" measured
-REGISTRY_GLOBS='.claude/settings.json .claude/settings.local.json .mcp.json
-  .codex/config.toml .codex/hooks.json
-  .cursor/hooks.json .cursor/mcp.json
-  .agents/hooks.json .agents/mcp_config.json
-  .github/copilot/settings.json .github/copilot/settings.local.json
-  .github/mcp.json .github/hooks/*.json
-  .pi/settings.json .pi/kendex/hooks.json
-  opencode.json opencode.jsonc'
+! path_class_matches before-render standard ||
+  answer standard "cause=$CHANGE_CLASS_PATH_CAUSE" measured
 
 # The render proof weighs the tree at the range's head and no other: the
 # commit harness-only resolved --head to, checked out into a directory of this
@@ -366,7 +538,7 @@ REGISTRY_GLOBS='.claude/settings.json .claude/settings.local.json .mcp.json
 # uncommitted there, such as a file an earlier step wrote back or an untracked
 # render standing in for one the branch deleted, would be weighed in place of
 # what the pull request would merge. And the commit it sits at is not always
-# --head: references/wiring.md § Shape 4 checks the subject out at the pull
+# --head: Shape 4 in ../references/wiring.md checks the subject out at the pull
 # request's merge ref, and a local caller's checkout can sit anywhere.
 #
 # The private checkout has a git directory of its own, which `git init`
@@ -410,11 +582,27 @@ checkout_head() {
 RENDER_REFUSAL=""
 VERIFY_JSON=""
 renders_match() {
-  local verify_args counts checked failed version
-  if ! command -v kendex >/dev/null 2>&1; then
-    RENDER_REFUSAL="cause=no-verifier"
+  local verify_args counts checked failed version verifier=kendex kind=path verifier_version
+  if [ "$changed" = .kendex-lock.json ] && [ -n "${HARNESS_CI_LOCK_KENDEX:-}" ]; then
+    verifier="$HARNESS_CI_LOCK_KENDEX"
+    kind=lock
+  fi
+  if ! command -v "$verifier" >/dev/null 2>&1; then
+    RENDER_REFUSAL="cause=no-verifier verifier=$kind"
     return 1
   fi
+  # The version names the verifier on the log and in a refusal, and decides
+  # nothing: one that cannot be read is named as such.
+  if ! verifier_version="$("$verifier" --version 2>/dev/null </dev/null)"; then
+    verifier_version=""
+  fi
+  verifier_version="${verifier_version%%$'\n'*}"
+  verifier_version="${verifier_version##* }"
+  case "$verifier_version" in
+    '' | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.+_-]*)
+      verifier_version=unreadable ;;
+  esac
+  printf 'render-verifier: verifier=%s version=%s\n' "$kind" "$verifier_version" >&2
   # harness-only prints head-rev: on every verdict it reaches after resolving
   # both ends, harness_only=true included, so an absent line is a
   # harness-only that broke that promise.
@@ -435,9 +623,9 @@ renders_match() {
     # commit.
     verify_args=("${verify_args[@]}" --base "$base_rev" --at-record)
   fi
-  if ! VERIFY_JSON="$( (cd -- "$proof_tree" && kendex "${verify_args[@]}") 2>"$work/verify-stderr" )"; then
+  if ! VERIFY_JSON="$( (cd -- "$proof_tree" && "$verifier" "${verify_args[@]}") 2>"$work/verify-stderr" )"; then
     cat "$work/verify-stderr" >&2
-    RENDER_REFUSAL="cause=verify-refused"
+    RENDER_REFUSAL="cause=verify-refused verifier=$kind version=$verifier_version"
     return 1
   fi
   # The document is the contract, its version first: a kendex printing
@@ -560,85 +748,10 @@ if [ "$harness_verdict" = "harness_only=true" ]; then
   answer standard "$RENDER_REFUSAL"
 fi
 
-# The registry files a harness executes as configuration, below the render
-# branch: a hand-authored one the inventory does not carry, or one changed
-# beside a product file, refuses every measured class here.
-set_globs "$REGISTRY_GLOBS"
-! path_matches any ||
-  answer standard "cause=configuration-source $PATH_MATCH_HIT" measured
-
-# A harness instruction pointer is a render when the whole diff is generated
-# and the proof above passed. Anywhere else nothing re-rendered it, and the
-# shipped documentation set would take a root one for ordinary markdown, so
-# the narrow classes refuse it by name, while the AGENTS.md it points at is
-# held to small below.
-set_globs 'CLAUDE.md */CLAUDE.md'
-! path_matches any ||
-  answer standard "cause=instruction-pointer $PATH_MATCH_HIT" measured
-
-# The measurement settings, read from the [env] tables of the settings files
-# the base endpoint's commit holds, never from the judged tree: a branch cannot
-# choose the ceilings or the roots its own size is scored against, and a
-# settings file the branch changes answers standard above as a configuration
-# source. That commit is the one --base names, the pull request's base tip or
-# a merge group's base, never the merge base, which the author picks by
-# choosing where to fork. The tables are parsed by orch's kendex-env.sh, the
-# same reader branch-size-check's settings ladder uses, in that ladder's order,
-# so .kendex/settings.toml outranks kendex.settings.toml; nothing is sourced,
-# so the private env file its KENDEX_ENV_FILE names never reaches this script.
-# A key this process's environment carries keeps that value, as it does on the
-# ladder. The load runs in a subshell and hands back these keys alone.
-BASE_SETTINGS_KEYS='ORCH_SIZE_RENDER_ROOTS ORCH_SIZE_TEST_PATHS HARNESS_CI_TRIVIAL_MAX_LINES HARNESS_CI_TRIVIAL_PATHS'
-BASE_SETTINGS_FILES='kendex.settings.toml .kendex/settings.toml'
-base_settings() {
-  local settings_rev listed kind blob file files=() n=0 loaded key value
-  if ! settings_rev="$(git -C "$repo" rev-parse --verify --quiet "$base^{commit}" 2>/dev/null)" ||
-    [ -z "$settings_rev" ]; then
-    MEASURE_CAUSE="cause=base-settings-unreadable base=$base"
-    return 1
-  fi
-  for file in $BASE_SETTINGS_FILES; do
-    if ! listed="$(git -C "$repo" ls-tree "$settings_rev" -- "$file" 2>/dev/null)"; then
-      MEASURE_CAUSE="cause=base-settings-unreadable base=$settings_rev path=$file"
-      return 1
-    fi
-    [ -n "$listed" ] || continue
-    kind="${listed#* }"
-    kind="${kind%% *}"
-    blob="${listed%%"$TAB"*}"
-    blob="${blob##* }"
-    n=$((n + 1))
-    if [ "$kind" != blob ] ||
-      ! git -C "$repo" cat-file blob "$blob" >"$work/base-settings-$n" 2>/dev/null; then
-      MEASURE_CAUSE="cause=base-settings-unreadable base=$settings_rev path=$file"
-      return 1
-    fi
-    files=("${files[@]+"${files[@]}"}" "$work/base-settings-$n")
-  done
-  [ "$n" -gt 0 ] || return 0
-  if ! loaded="$(
-    exec 3>&1 1>&2
-    # shellcheck disable=SC2086
-    unset $BASE_SETTINGS_KEYS
-    # shellcheck source=../../orch/scripts/lib/kendex-env.sh
-    . "$ORCH_DIR/scripts/lib/kendex-env.sh" || exit 1
-    for file in "${files[@]}"; do
-      kendex_load_settings_file "$file" || exit 1
-    done
-    for key in $BASE_SETTINGS_KEYS; do
-      [ -z "${!key+x}" ] || printf '%s=%s\n' "$key" "${!key}" >&3
-    done
-  )"; then
-    MEASURE_CAUSE="cause=base-settings-unreadable base=$settings_rev"
-    return 1
-  fi
-  while IFS= read -r value; do
-    [ -n "$value" ] || continue
-    key="${value%%=*}"
-    [ -z "${!key+x}" ] || continue
-    printf -v "$key" '%s' "${value#*=}"
-  done <<<"$loaded"
-}
+! path_class_matches registry standard ||
+  answer standard "cause=$CHANGE_CLASS_PATH_CAUSE" measured
+! path_class_matches pointer standard ||
+  answer standard "cause=$CHANGE_CLASS_PATH_CAUSE" measured
 
 # The measurement's library, sourced from orch beside this package, and the
 # render roots it pairs a mirror against. MEASURE_CAUSE names a failure.
@@ -698,28 +811,8 @@ case "$inventory_change" in
     fi ;;
 esac
 
-# orch's list, as `KEYWORD GLOB` lines. A `superseded` line names a `path`
-# line kept for a reader from before the list's extglob grammar, which reads
-# an extglob as literal text; this reader drops that line and reads the
-# narrower lines beside it.
-list_globs() { # KEYWORD
-  awk -v kind="$1" '
-    $1 == "superseded" { drop[$2] = 1 }
-    $1 == kind { glob[++n] = $2 }
-    END { for (i = 1; i <= n; i++) if (!(glob[i] in drop)) print glob[i] }
-  ' "$NARROW_CONF"
-}
-[ -r "$NARROW_CONF" ] || answer standard "cause=narrow-change-list-unreadable"
-if ! excluded="$(list_globs path)" ||
-  ! instruction_globs="$(list_globs instruction)"; then
-  answer standard "cause=narrow-change-list-unreadable"
-fi
-# A list with no `instruction` line is one from before the floor: AGENTS.md
-# left this script's configuration-source refusal on the promise of that
-# floor, so it is refused rather than read without it.
-[ -n "$instruction_globs" ] || answer standard "cause=narrow-change-floor-missing"
-set_globs "$excluded"
-! path_matches any || answer standard "cause=excluded-path $PATH_MATCH_HIT" measured
+change_class_path_load "$NARROW_CONF" || answer standard "cause=$CHANGE_CLASS_PATH_CAUSE"
+! path_class_matches narrow standard || answer standard "cause=$CHANGE_CLASS_PATH_CAUSE" measured
 
 # Every measured class shares orch's branch growth reader, which owns the
 # production/test split and the render-mirror pairing branch-size-check judges
@@ -759,9 +852,8 @@ measure || answer standard "$MEASURE_CAUSE"
 # how every agent behaves, so it never answers below small, the lowest class
 # the default review policy gives a bot round; CLAUDE.md is refused above by
 # name. Every trivial and micro answer goes through here.
-set_globs "$instruction_globs"
 instruction_file=""
-! path_matches any || instruction_file="$PATH_MATCH_HIT"
+! path_class_matches narrow small || instruction_file="$PATH_MATCH_HIT"
 answer_narrow() { # CLASS FIELDS
   [ -n "$instruction_file" ] || answer "$1" "$2"
   answer small "cause=instruction-file $instruction_file measured-class=$1"

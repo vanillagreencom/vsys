@@ -3,26 +3,27 @@
 # standard. Shipped by the kendex review-gate skill, vendored at
 # .agents/skills/review-gate/scripts/.
 #
-# It converges the standard's environment (standard.json: its name and
-# secret names) in every repository of one organization: the environment
-# exists, deploys from the repository's default branch only, and holds each
-# secret the standard names. Creating an environment needs Administration
-# write and setting an environment secret needs Environments write, which no
-# lane credential may hold, so this runs from the organization owner's own
-# machine under the owner's `gh` credential and never in CI or on a lane
-# host. validate-standard.sh is the read-only half that reports the result.
+# It converges the standard's environment in every repository of one
+# organization: the environment exists, deploys from the repository's
+# default branch only, and holds each secret the standard names. Its name
+# and secret names are the REVIEW_GATE_STANDARD_ENVIRONMENT and
+# REVIEW_GATE_STANDARD_SECRETS settings, read through lib/standard.sh.
+# Creating an environment needs Administration write and setting an
+# environment secret needs Environments write, which no lane credential may
+# hold, so this runs from the organization owner's own machine under the
+# owner's `gh` credential and never in CI or on a lane host. validate-standard.sh is the read-only half that reports the result.
 #
-# A secret is set only where the environment lacks its name: GitHub never
-# returns a secret's value, so a present name is current. A re-run changes
-# nothing in a repository already provisioned and provisions a new one.
+# Every run re-writes each standard secret's value. GitHub never returns
+# secret values, so a present name is never proof that its value is current.
 #
 # Report protocol, one record per repository on stdout:
 #   provision repo=OWNER/NAME result=RESULT
 # then one `  step=STEP value=VALUE` line per step taken (or planned, under
 # --dry-run), in order, and on a failure one indented line of explanation.
-# RESULT and STEP are the words print_usage lists; VALUE is %q-escaped. A
-# last `provision-total repositories=N changed=N current=N failed=N` line
-# counts the records. Human explanation is not parsed.
+# RESULT and STEP are the words print_usage lists; VALUE is %q-escaped.
+# A secret step also carries result=updated (would-update under --dry-run).
+# The last `provision-total repositories=N changed=N current=0 failed=N`
+# line counts the records. Human explanation is not parsed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || {
@@ -43,12 +44,20 @@ print_usage() {
 Usage: provision-environment.sh --org ORG [--dry-run]
        provision-environment.sh --help
 
-Creates or corrects the organization standard's environment (standard.json
-in the skill names it and its secrets) in every repository of ORG that is
-not archived. ORG must have the standard's app installed on all of its
-repositories, the installation validate-standard.sh's standard-app row
-requires; any other installation is refused, since this command cannot
-list a selection. The repository list must hold as many repositories,
+Creates or corrects the organization standard's environment in every
+repository of ORG that is not archived. Three review-gate settings, resolved
+from the current directory like every other, name the standard; each must
+be set and non-empty:
+  REVIEW_GATE_STANDARD_APP          the app installed on every repository
+  REVIEW_GATE_STANDARD_ENVIRONMENT  the environment's name
+  REVIEW_GATE_STANDARD_SECRETS      its secret names, `;`-separated
+It also reads REVIEW_GATE_STANDARD_QUEUE_BYPASS and
+REVIEW_GATE_STANDARD_CHECKS_BYPASS, the bypass actors validate-standard.sh
+admits, and refuses an entry that is not TYPE:ID:MODE with
+standard-bypass-invalid (exit 2).
+ORG must have that app installed on all of its repositories, the
+installation validate-standard.sh's standard-app row requires; any other
+installation is refused, since this command cannot list a selection. The repository list must hold as many repositories,
 archived ones included, as the organization reports owning; a credential
 that sees fewer is refused before any write.
 
@@ -62,20 +71,23 @@ Per repository it:
     the owner switches it by hand;
   - leaves exactly one branch policy, the repository's default branch,
     deleting any other;
-  - sets each standard secret the environment lacks by name. A present
-    secret is never rewritten; to replace a value, delete that secret in
-    GitHub and run this again.
+  - re-writes each standard secret's value on every run. GitHub never
+    returns secret values, so a present name is never proof that its value
+    is current. To rotate values, supply them and run this again.
 
 Secret values come from the environment of this command: each secret the
-standard names is read from the variable of the same name, for example
-  FLEET_GH_APP_ID=123456 \
-  FLEET_GH_APP_PRIVATE_KEY="$(cat app.private-key.pem)" \
+standard names is read from the environment variable of the same name,
+never from a shell variable, for example,
+with REVIEW_GATE_STANDARD_SECRETS = "APP_ID;APP_PRIVATE_KEY",
+  APP_ID=123456 \
+  APP_PRIVATE_KEY="$(cat app.private-key.pem)" \
   provision-environment.sh --org my-org
 A run that is not --dry-run refuses before any write when one is unset or
 empty.
 
 --dry-run  reads everything and writes nothing: each repository's record
-           names the steps a run would take. No secret value is needed.
+           names the steps a run would take, including would-update for
+           every secret. No secret value is needed.
 
 Credential: the `gh` login of the organization owner, on the owner's own
 machine; never a lane's or CI's token. The organization's private
@@ -86,8 +98,8 @@ installation), repository Metadata read (the repositories), Actions read
 environment and its branch policies) and Environments write (its secrets).
 
 Output: one `provision repo=OWNER/NAME result=RESULT` record per
-repository. RESULT is created, updated, current or failed, and under
---dry-run would-create, would-update, current or failed. Under it, one
+repository. RESULT is created, updated or failed, and under
+--dry-run would-create, would-update or failed. Under it, one
 `  step=STEP value=VALUE` line per step, in order:
   create-environment  VALUE the environment, created on custom policies
   switch-policy       VALUE every-branch or protected-branches, the policy
@@ -96,18 +108,21 @@ repository. RESULT is created, updated, current or failed, and under
                       whose policies cannot be read before the switch)
   delete-policy       VALUE TYPE:NAME, a branch policy deleted
   add-policy          VALUE branch:BRANCH, the default branch added
-  set-secret          VALUE the secret name set
+  secret              VALUE the secret name re-written; result=updated,
+                      or result=would-update under --dry-run
 A failed record ends with one indented line naming the cause. The last line
-is `provision-total repositories=N changed=N current=N failed=N`.
+is `provision-total repositories=N changed=N current=0 failed=N`.
+Every successful repository counts as changed, including under --dry-run.
 
 Exit codes:
   0  every repository is provisioned (or, under --dry-run, was read)
   1  at least one repository failed; the others were still provisioned
   2  nothing was attempted (bad arguments, a missing secret value, jq
-     missing, a missing or malformed standard.json, the installation, the
-     organization or the repositories could not be read, the app not
-     installed on all repositories, a repository list shorter than the
-     organization's count, or no repository that is not archived)
+     missing, a missing or malformed standard.json, a standard setting
+     unset or empty, a malformed bypass entry, the installation, the organization or the
+     repositories could not be read, the app not installed on all
+     repositories, a repository list shorter than the organization's
+     count, or no repository that is not archived)
 USAGE
 }
 
@@ -136,14 +151,16 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$ORG" ] || die org-missing "" "--org names the organization to provision (run --help)"
 
+[ -r "$SCRIPT_DIR/lib/settings.sh" ] || die settings-load "$SCRIPT_DIR/lib/settings.sh" "could not load the settings library"
+. "$SCRIPT_DIR/lib/settings.sh" || exit 2
 if [ ! -r "$SCRIPT_DIR/lib/standard.sh" ] || ! . "$SCRIPT_DIR/lib/standard.sh" 2>/dev/null; then
   die standard-lib-load "$SCRIPT_DIR/lib/standard.sh" "could not load the standard library"
 fi
-rg_standard_load "$SCRIPT_DIR/../standard.json" || exit 2
+rg_standard_load "$SCRIPT_DIR/../standard.json" provision || exit 2
 
 if [ "$DRY_RUN" -eq 0 ]; then
   for name in $WANT_SECRETS; do
-    [ -n "${!name:-}" ] || die secret-value-missing "$name" "set $name to the value the $WANT_ENV environment's secret of that name must hold, or pass --dry-run"
+    rg_secret_value "$name" >/dev/null || die secret-value-missing "$name" "set $name to the value the $WANT_ENV environment's secret of that name must hold, or pass --dry-run"
   done
 fi
 
@@ -212,13 +229,17 @@ EOF_LISTED
 STEPS=""
 CAUSE=""
 step() { # STEP VALUE WRITER ARGS...
-  local key="$1" value="$2" line
+  local key="$1" value="$2" line result=updated
   shift 2
   if [ "$DRY_RUN" -eq 0 ] && ! "$@"; then
     CAUSE="$key $value: $GH_ERR"
     return 1
   fi
   line="$(printf '  step=%s value=%q' "$key" "$value")"
+  if [ "$key" = secret ]; then
+    [ "$DRY_RUN" -eq 0 ] || result=would-update
+    line="$line result=$result"
+  fi
   STEPS="${STEPS:+$STEPS
 }$line"
 }
@@ -237,7 +258,7 @@ delete_branch_policy() { # FULL ID
 set_secret() { # FULL NAME
   local rc=0 name="$2"
   GH_ERR=""
-  printf '%s' "${!name}" | gh secret set "$name" --env "$WANT_ENV" --repo "$1" >/dev/null 2>"$SCRATCH/err" || rc=$?
+  rg_secret_value "$name" | gh secret set "$name" --env "$WANT_ENV" --repo "$1" >/dev/null 2>"$SCRATCH/err" || rc=$?
   [ "$rc" -eq 0 ] && return 0
   if ! GH_ERR="$(sed -n '1p' "$SCRATCH/err")" || [ -z "$GH_ERR" ]; then
     GH_ERR="gh exited $rc"
@@ -269,10 +290,9 @@ EOF_POLICIES
 
 # Sets STEPS and CAUSE for one repository and prints its record.
 CHANGED=0
-CURRENT=0
 FAILED=0
 provision() { # FULL BRANCH
-  local full="$1" branch="$2" environment kind rules created=0 listed="" name result
+  local full="$1" branch="$2" environment kind rules created=0 name result
   STEPS=""
   CAUSE=""
   if ! gh_run api "repos/$full/environments" --paginate --jq ".environments[] | select(.name == $(jq -n --arg v "$WANT_ENV" '$v')) | @json"; then
@@ -307,31 +327,18 @@ provision() { # FULL BRANCH
             ;;
           *) CAUSE="the environment $WANT_ENV did not parse: $environment" ;;
         esac
-        if [ -z "$CAUSE" ]; then
-          if gh_run api "repos/$full/environments/$ENV_URI/secrets" --paginate --jq '.secrets[].name'; then
-            listed="$GH_OUT"
-          else
-            CAUSE="the secrets of $WANT_ENV could not be read: $GH_ERR"
-          fi
-        fi
         ;;
     esac
     if [ -z "$CAUSE" ]; then
-      while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        step set-secret "$name" set_secret "$full" "$name" || break
-      done <<EOF_MISSING
-$(rg_standard_missing "$listed")
-EOF_MISSING
+      for name in $WANT_SECRETS; do
+        step secret "$name" set_secret "$full" "$name" || break
+      done
     fi
   fi
 
   if [ -n "$CAUSE" ]; then
     result=failed
     FAILED=$((FAILED + 1))
-  elif [ -z "$STEPS" ]; then
-    result=current
-    CURRENT=$((CURRENT + 1))
   else
     if [ "$DRY_RUN" -eq 1 ]; then
       [ "$created" -eq 1 ] && result=would-create || result=would-update
@@ -358,6 +365,6 @@ done <<EOF_REPOS
 $REPOS
 EOF_REPOS
 
-printf 'provision-total repositories=%s changed=%s current=%s failed=%s\n' "$TOTAL" "$CHANGED" "$CURRENT" "$FAILED"
+printf 'provision-total repositories=%s changed=%s current=0 failed=%s\n' "$TOTAL" "$CHANGED" "$FAILED"
 [ "$FAILED" -eq 0 ] || exit 1
 exit 0

@@ -27,6 +27,20 @@ orch is the caller and runtime: it owns delegation format, round acceptance, and
 
 Review and QA-review belong to the reviewer skill: [`../reviewer/workflows/review.md`](../reviewer/workflows/review.md), [`../reviewer/workflows/qa-review.md`](../reviewer/workflows/qa-review.md). Command shapes are orch's [`../orch/SKILL.md`](../orch/SKILL.md) § Harness-Safe Shell; literal format tags and round mechanics are its [`../orch/references/skill-rules.md`](../orch/references/skill-rules.md) § Format Tags Are Literal and § Round Closure.
 
+## Implementer selection
+
+An `agent:X` label selects X. With no agent label, use the item's Location paths and required work:
+
+| Required work | Agent |
+|---|---|
+| Rust implementation under `crates/` | `rust` |
+| Iced UI implementation | `iced` |
+| Web UI implementation | `frontend` |
+| Non-UI shell, Python or TypeScript runtime implementation, with no `crates/` or UI path | `engineer` |
+| Documentation, references, file or configuration organization | `generalist` |
+
+For an item spanning domains, split the delegation by domain. If the selected agent is not installed, report the missing agent to the caller. Never substitute `generalist` for runtime implementation.
+
 ## Engineering Rules
 
 - Scope is the issue's Done-when. A behavioral surface that does not trace to it stays out of this change, and a committed render of a source file you changed traces to whatever its source traces to. Two exceptions:
@@ -40,7 +54,7 @@ Review and QA-review belong to the reviewer skill: [`../reviewer/workflows/revie
 - A refusal, a validator, a lock, a retry, or a test exists only for an input a real producer emits, this project's code or anything it calls or serves; name that producer beside it, or do not write it.
 - When a change deletes a call, apply [code-quality § Cleanup](../code-quality/SKILL.md#cleanup) to its callee. Its deletion maps to the call removal's Done-when item; no internal caller is not proof that a supported external API is unused.
 - A field, setting, or view member added by the change has a real producer and consumer. A named and documented external producer or consumer is valid when the change adds its in-repository counterpart; otherwise, add both sides in the change.
-- No migration or compat code for this project's own formats, its manifest, settings, lock and cache shapes, never another tool's on-disk state, which an adapter may have to keep recognising: write no reader for an artifact an older version of this project wrote, and decline a finding that asks you to carry one forward. A layout, schema or cache change is one changelog line and a fresh install.
+- Follow the project's declared release compatibility standard for changes to project-owned formats.
 - Before adding a function, parser, stub or loop, grep the repo for the verb it performs; before stating a rule, grep for the rule.
   - A second copy of that verb, in any language, is a twin and never delegation, and so is a second statement of a rule another file owns, in prose, config or a table.
   - Call or cite the one that exists, or escalate in your return. An issue that orders a twin is escalated, not implemented.
@@ -53,6 +67,8 @@ Code standards are [`../code-quality/SKILL.md`](../code-quality/SKILL.md): corre
 ## Round Contract
 
 Execute workflow sections in order; a "**Skip if**" condition is the workflow's decision, never your own scope assessment. Never push and never open a PR. The orchestrator does that after review passes. A finding on a mechanism this diff introduces or arms is a fix whatever the round, unless Step 0 of the disposition flow excludes it; a `Declined:` there takes one of the reason forms [`../orch/references/finding-disposition.md`](../orch/references/finding-disposition.md) § Decision flow sets out, never a label or a test count.
+
+A session keeps the rule text it loaded, and a push, `worktree create --reuse` or a restack can rebase the branch onto a base that changed that text. A session that already ran a round on this branch runs this diff before the round's first step, `[PREVIOUS_ROUND_COMMIT]` being the commit its last round reported: `git diff --no-renames --name-only [PREVIOUS_ROUND_COMMIT] HEAD -- <each loaded file's repo path>`. Before that first step, it reads again each listed file. A listed path it loaded that no longer exists voids the text loaded from it; it reads again the skill's current `SKILL.md`, or the file that replaced it, in its place.
 
 **The completion artifact is the round.** `dev-return-write` writes it after the commit; never hand-author the JSON (schema: orch [`schemas/dev-return.md`](../orch/schemas/dev-return.md)).
 
@@ -73,11 +89,14 @@ The validation gate and role ownership are complete in [dev-implement.md § 5. V
 
 **Invariant, every harness:** the completion tail (commit → QA labels → summary → artifact → return) is never dropped, and an interrupted run is never success. Re-check its real outcome and resume the tail.
 
-`.agents/skills/orch/scripts/dev-validate-run` runs the validation command for every harness. It bounds the command with `DEV_VALIDATE_TIMEOUT_SECS`, detaches it so the run outlives the shell that launched it, and records the verdict as one `guard-exit=N at=TIME` line beside the log, with `verdict=no-verdict` after it when the bound cut the run off. The wait's cap is that setting plus the kill grace and one poll interval; never choose any of those numbers yourself. Full contract: `dev-validate-run --help`.
+A command that can outlast the harness's tool-call limit never runs as one blocking foreground tool call. Run only `DEV_VALIDATE_CMD` and `DEV_VALIDATE_RANGE_CMD` through `dev-validate-run`; never override these settings per run. Run every other long command, including standalone preflight, doc-limits, mutation-control sweeps and scoped suites, through the orch job runner per [waiter-launch.md](../orch/references/waiter-launch.md). Read each completion file, preserve nonzero exit codes, and report an interruption without a verdict as failure.
+
+`.agents/skills/orch/scripts/dev-validate-run` runs the configured project validation command for every harness. It bounds the command with `DEV_VALIDATE_TIMEOUT_SECS`, detaches it so the run outlives the shell that launched it, and records the verdict as one `guard-exit=N at=TIME` line beside the log, with `verdict=no-verdict` after it when the bound cut the run off. The wait's cap is that setting plus the kill grace and one poll interval; never choose any of those numbers yourself. Full contract: `dev-validate-run --help`.
 
 - **Claude Code.** Background the BARE command `.agents/skills/orch/scripts/dev-validate-run --worktree [WORKTREE_PATH]` via `run_in_background`, never piped or chained, and read the `run-dir=` value off its `state=started` line. Then poll in the foreground with `.agents/skills/orch/scripts/dev-validate-run --wait --run-dir [RUN_DIR]`, under the harness's maximum command timeout because one call runs for up to nine minutes, repeating for as long as it exits 3 and prints `state=running`. Never idle for the completion notice and never depend on a background poller for it: the harness can kill your background shell on a low-memory heuristic that fires with free memory to spare, and the notice then never comes. Neither loses the verdict, because the sentinel is on disk. The verdict is the `validate=` value on the `state=done` line: `pass`, `FAILING`, or `no-verdict` for a run the bound cut off, which [dev-implement.md § 5. Validate](workflows/dev-implement.md#5-validate) routes; the log holds command output and never an exit status. `state=timeout` and `state=lost` are both failed validations. Then resume the tail.
 - **Codex.** Run `.agents/skills/orch/scripts/dev-validate-run --worktree [WORKTREE_PATH]` in the foreground and block. Where the harness's own foreground ceiling cuts that call off, the run and its verdict are still on disk: resume with `--wait --run-dir` on the `run-dir=` value from the `state=started` line, as Claude Code does.
-- **Pi.** Run that same command in the foreground, and resume a call the harness cut off the same way.
+- **Pi.** Pi sets no default foreground timeout. A foreground ceiling comes from the host or an explicit tool timeout. Start `.agents/skills/orch/scripts/dev-validate-run --worktree [WORKTREE_PATH]` through `bg_task action: "spawn"` with `notifyOnExit: true`. Keep the task id and the `run-dir=` value from the task log's `state=started` line. Read the task log on its exit wake and interpret the verdict as Claude Code does. If the task ends without a verdict, resume `.agents/skills/orch/scripts/dev-validate-run --wait --run-dir [RUN_DIR]` through the same background mechanism, repeating while it prints `state=running` and exits 3. Resume the completion tail after reading the verdict. For other long commands, follow this section's command-routing rule.
+- **A host whose agent warden kills detached jobs**, on any harness: add `--attached` to the start command and run it in the foreground, under a harness timeout above the `cap-secs=` value on its `state=started` line. The route fits only a harness whose call can outlast that cap. The run then stays inside the agent's own process tree and writes the same run directory, sentinel and record, which `dev-return-write` takes as it takes a detached run. A harness that cuts the call off kills only the parent, and the warden then reaps the child before its verdict: the run ends as `state=lost`, a failed validation. The `--wait --run-dir` resume above holds only on a host without such a warden.
 
 ## Reflect
 
@@ -85,4 +104,4 @@ The validation gate and role ownership are complete in [dev-implement.md § 5. V
 
 ## Configuration
 
-Agent-type placeholders are project-configurable: `[AGENT_TYPE]` (dev agents receiving implementation delegations), `[REVIEW_AGENT]`, `[QA_AGENT]`. Commit format: `[PREFIX]([ISSUE_ID]): [DESCRIPTION]`. `DEV_VALIDATE_CMD` (`kendex.settings.toml` `[env]`) names the project's validation command for the Validate step; [dev-implement.md § 5. Validate](workflows/dev-implement.md#5-validate) states what it must read and that an empty value is a validation failure, never a fallback. `DEV_VALIDATE_RANGE_CMD` (same table, optional) names the command a fix round runs instead, which validates the changes since the commit it reads as `DEV_VALIDATE_BASE`; unset, a fix round runs `DEV_VALIDATE_CMD`. `DEV_VALIDATE_TIMEOUT_SECS` (same table, default 3600) is how long either command may run, and the only number § Long-Running Validation derives its cap from.
+Agent-type placeholders are project-configurable: `[AGENT_TYPE]` (dev agents receiving implementation delegations), `[REVIEW_AGENT]`, `[QA_AGENT]`. Commit format: `[PREFIX]([ISSUE_ID]): [DESCRIPTION]`. `DEV_VALIDATE_CMD` (`kendex.settings.toml` `[env]`) names the project's validation command for the Validate step; [dev-implement.md § 5. Validate](workflows/dev-implement.md#5-validate) states what it must read and that an empty value is a validation failure, never a fallback. `DEV_VALIDATE_RANGE_CMD` (same table, optional) names the command a fix round runs instead, which validates the changes since the commit it reads as `DEV_VALIDATE_BASE`; unset, a fix round runs `DEV_VALIDATE_CMD`. An orch restack also runs it, as [`../orch/workflows/merge-pr-restack.md`](../orch/workflows/merge-pr-restack.md) sets out. `DEV_VALIDATE_TIMEOUT_SECS` (same table, default 3600) is how long either command may run, and the only number § Long-Running Validation derives its cap from.

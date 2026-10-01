@@ -1,5 +1,9 @@
-# md-refs parses the verdict protocol: V<TAB>source<TAB>line<TAB>rule<TAB>value,
-# T<TAB>path<TAB>code<TAB>explanation, plus N<TAB>judged-count. Rule names are enums; values name the input and target.
+# md-refs parses the verdict protocol:
+# V<TAB>source<TAB>line<TAB>rule<TAB>value     a blocking dead reference
+# W<TAB>source<TAB>line<TAB>rule<TAB>value     a non-blocking dead reference
+# T<TAB>path<TAB>code<TAB>explanation         a skipped target notice
+# N<TAB>judged-count                        the reference count
+# Rule names are enums; values name the input and target.
 # md-refs.awk — what a markdown file cites, what it defines, and whether the
 # citations land. Runs over the line stream md-blocks.awk emits in `lines`
 # mode, so fenced code, indented code and front matter never reach it. POSIX
@@ -25,12 +29,16 @@
 #       heading with prose after it is the § rule's.
 #   -v mode=resolve -v phase=targets|contents|verdict -v tracked=FILE
 #         [-v headings=FILE -v contents=FILE -v skips=FILE -v dec_dir=DIR
-#          -v dec_judge=0|1 -v id_prefix=D]
-#       reads the refs records; `targets` prints each tracked markdown path a
+#          -v dec_judge=0|1 -v id_prefix=D -v lock_paths=FILE]
+#       `lock_paths` holds newline-separated repo-relative emitted paths from
+#       .kendex-lock.json, supplied by gg_md_lock_paths and read in `verdict`.
+#       A citing source at a listed path or below it emits W instead of V.
+#       An omitted or empty `lock_paths` value keeps all dead references V.
+#       Reads the refs records; `targets` prints each tracked markdown path a
 #       heading citation needs indexed, `contents` prints
 #       target<TAB>phrase for each content citation whose path resolves, and
-#       `verdict` prints V<TAB>src<TAB>line<TAB>rule<TAB>value per dead
-#       reference, T<TAB>path<TAB>code<TAB>explanation per `skips` path a
+#       `verdict` prints one V or W record per dead reference as defined above,
+#       T<TAB>path<TAB>code<TAB>explanation per `skips` path a
 #       judged reference lands on, and a final N<TAB>count of references
 #       judged. The caller answers the `contents` pairs with
 #       P<TAB>target<TAB>phrase records for the phrases it found, which
@@ -123,6 +131,29 @@ function is_local(dest) {
   return 1
 }
 
+# Mask complete inline links, or only those whose destinations are not local.
+# Keep positions for section tails. Code spans still carry decision citations,
+# so link-shaped text inside them is not masked.
+function mask_links(s, external_only,   search, p, start, dest, stop, escapes) {
+  split_spans(s)
+  search = outside
+  p = 1
+  while (match(substr(search, p), /\[[^][]*\]\(/)) {
+    start = p + RSTART - 1
+    # An odd backslash run makes the opening bracket literal text.
+    escapes = 0
+    while (start > escapes + 1 && substr(search, start - escapes - 1, 1) == "\\") escapes++
+    if (escapes % 2) { p = start + RLENGTH; continue }
+    dest = parse_dest(search, start + RLENGTH)
+    stop = LINK_CLOSE
+    if (dest == "" || stop == 0) { p = start + RLENGTH; continue }
+    p = stop + 1
+    if (!external_only || !is_local(dest))
+      s = substr(s, 1, start - 1) sprintf("%*s", stop - start + 1, "") substr(s, stop + 1)
+  }
+  return s
+}
+
 function emit_links(s, original,   i, j, k, dest, raw, tail, path) {
   i = 1
   while (1) {
@@ -184,8 +215,10 @@ function emit_citation(span,   path, rest, i) {
 # runs to the end of the line, and the prefix rule allows prose after it.
 # In plain text only the `§` form is a citation: a bare ID there is prose,
 # and the caller's pre-filter is free to open only the files that hold a §.
-function emit_ids(s,   i, p, q, n, before, after, tail, section) {
+function emit_ids(s, block_kind,   i, p, q, n, before, after, tail, section) {
   if (id_prefix == "") return
+  # HTML block records do not parse Markdown inline links.
+  if (grammar != "text" && block_kind != "X") s = mask_links(s, 1)
   p = 1
   while (1) {
     i = index(substr(s, p), id_prefix)
@@ -357,7 +390,14 @@ function has_section_prefix(target, value,   key, prefix, name, tail, number) {
   return 0
 }
 
-function fail(rule, value) { if (phase == "verdict") printf "V\t%s\t%d\t%s\t%s\n", src_path, line_no, rule, value }
+function fail(rule, value,   path, kind) {
+  if (phase != "verdict") return
+  kind = "V"
+  for (path in rendered) {
+    if (src_path == path || index(src_path, path "/") == 1) { kind = "W"; break }
+  }
+  printf "%s\t%s\t%d\t%s\t%s\n", kind, src_path, line_no, rule, value
+}
 
 function want_target(t) { if (phase == "targets" && !(t in wanted)) { wanted[t] = 1; print t } }
 
@@ -385,7 +425,17 @@ BEGIN {
       exit 2
     }
     load_tracked()
-    if (phase == "verdict") { load_headings(); load_contents(); load_skips() }
+    if (phase == "verdict") {
+      load_headings(); load_contents(); load_skips()
+      if (lock_paths != "") {
+        while ((lock_status = getline path < lock_paths) > 0) rendered[path] = 1
+        if (lock_status < 0) {
+          printf "md-refs: lock-read=%s\n", lock_paths > "/dev/stderr"
+          exit 2
+        }
+        close(lock_paths)
+      }
+    }
     judged = 0
   } else if (mode == "index") {
     printf "F\t%s\n", src
@@ -420,7 +470,7 @@ mode == "refs" {
   line_no = f[2]
   if (f[1] == "H") next
   if (f[1] == "X") {
-    emit_ids(f[3])
+    emit_ids(f[3], f[1])
     next
   }
   split_spans(f[3])

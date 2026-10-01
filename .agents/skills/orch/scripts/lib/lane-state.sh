@@ -146,7 +146,8 @@ CLAUDE_FOOTER_RE='\? for shortcuts'
 # Both harnesses, deliberately: keyed on the Claude markers alone this answered
 # no for every idle Codex pane, and a caller that treats no as "wait longer"
 # then spent its whole bound on a pane that was up all along. Measured on the
-# fixtures under orch/tests/fixtures/oversee-watch, where all 7 Codex captures
+# fixtures under https://github.com/vanillagreencom/kendex/tree/main/skills/orch/tests/fixtures/oversee-watch,
+# where all 7 Codex captures
 # answer yes and only codex-working.txt is a turn in flight.
 #
 # A Claude Code screen held by a dialog answers NO: its permission rows are
@@ -161,10 +162,20 @@ CLAUDE_FOOTER_RE='\? for shortcuts'
 # this one-line pattern. Its folder-trust dialog draws neither and answers no.
 HARNESS_UP_RE="$CLAUDE_COMPOSER_RE|$CODEX_MARKER_RE|$CLAUDE_FOOTER_RE"
 
+# Pi 0.99.1's compact screen pairs its startup key hints with a Working editor
+# border (fixtures/oversee-watch/pi-working.txt). Neither alone proves readiness.
+# This pane read is the hosted interactive launch fallback: Pi's SDK and RPC
+# expose state in an embedding or non-interactive process, not this ssh TUI;
+# the hook rows used by lane_state carry turn state, not editor readiness.
+# Keep this proof out of pane_working: the startup interrupt hint stays at idle.
+PI_COMPACT_HEADER_RE='^ █▀ █ escape interrupt · ctrl\+c/ctrl\+d clear/exit · / commands · ! bash · ctrl\+o more[[:space:]]*$'
+PI_COMPACT_EDITOR_RE='^── [^[:space:]]+ Working ─+[[:space:]]*$'
+
 # pane_harness_up SCREEN — the predicate over one captured pane.
 pane_harness_up() {
   pane_working "$1" || grep -Eq -- "$HARNESS_UP_RE" <<<"$1" \
-    || [[ "$(pane_turn_slice "$1" framed)" == framed ]]
+    || [[ "$(pane_turn_slice "$1" framed)" == framed ]] \
+    || { grep -Eq -- "$PI_COMPACT_HEADER_RE" <<<"$1" && grep -Eq -- "$PI_COMPACT_EDITOR_RE" <<<"$1"; }
 }
 
 # The pane lines strictly below the last user turn — the whole pane when the
@@ -255,6 +266,29 @@ pane_has_child() {
   pgrep -P "$1" >/dev/null 2>&1 || LANE_PROBE_RC=$?
   [[ "$LANE_PROBE_RC" -le 1 ]] || return 2
   return "$LANE_PROBE_RC"
+}
+
+# Read the provider's documented status verb, not the local ssh process.
+# Returns 0 for running, 1 for exited, 2 for a failed read, 3 for an absent verb.
+# An absent status verb leaves pane judgment in place. A failed or malformed read
+# cannot prove an exit, even when the captured screen shows a shell prompt.
+pane_has_remote_harness() { # LANE_HOST ITEM HARNESS
+  local answer
+  LANE_PROBE_RC=0
+  answer="$("$1" status --item "$2" --harness "$3")" || LANE_PROBE_RC=$?
+  if [[ "$LANE_PROBE_RC" -eq 2 ]]; then
+    printf 'lane-state: harness-probe-unsupported item=%s status=2 judgment=pane\n' "$2" >&2
+    return 3
+  fi
+  if [[ "$LANE_PROBE_RC" -eq 0 ]]; then
+    case "$answer" in
+      running) return 0 ;;
+      exited) return 1 ;;
+      *) LANE_PROBE_RC=2 ;;
+    esac
+  fi
+  printf 'lane-state: harness-probe-failed item=%s status=%s\n' "$2" "$LANE_PROBE_RC" >&2
+  return 2
 }
 
 # The harness processes whose current directory is one worktree. This is the
@@ -375,12 +409,18 @@ lane_harness_process_re() { # HARNESS
   esac
 }
 
-lane_owned_processes() { # WORKTREE HARNESS
+lane_owned_processes() { # WORKTREE HARNESS [ROOT_SOURCE: directory|launch-record]
   local root table candidates pid cwd state rc name_re
   LANE_OWNED_PROCESS_TABLE=""
   LANE_OWNED_PROCESS_CANDIDATES=""
   LANE_OWNED_PROCESS_PIDS=""
-  root="$(cd -- "$1" && pwd -P)" || return 2
+  # lane-marker records a canonical root before the harness starts. That
+  # record still names its ownership after merge-pr removes the directory.
+  case "${3:-directory}" in
+    directory) root="$(cd -- "$1" && pwd -P)" || return 2 ;;
+    launch-record) root="$1"; [[ "$root" == /* ]] || return 2 ;;
+    *) return 2 ;;
+  esac
   table="$(lane_process_table)" || return 2
   name_re="$(lane_harness_process_re "$2")" || return 2
   # The whole name after the two id columns, as lane_process_below reads it,
@@ -397,7 +437,8 @@ lane_owned_processes() { # WORKTREE HARNESS
         return 2 ;;
       *) return 3 ;;
     esac
-    [[ "$cwd" == "$root" ]] || continue
+    # Linux retains the deleted cwd's name with this suffix while it is live.
+    [[ "$cwd" == "$root" || ( "${3:-directory}" == launch-record && "$cwd" == "$root (deleted)" ) ]] || continue
     LANE_OWNED_PROCESS_PIDS+="${LANE_OWNED_PROCESS_PIDS:+ }$pid"
   done
   LANE_OWNED_PROCESS_CANDIDATES="$candidates"
@@ -579,13 +620,12 @@ lane_pane_observe() { # WINDOW
 # The judge.
 # ---------------------------------------------------------------------------
 
-# lane_state OUT_VAR WINDOW CMD PID SCREEN [SESSION] [ACCOUNT] [ROWS] —
+# lane_state OUT_VAR WINDOW CMD PID SCREEN [SESSION] [ACCOUNT] [ROWS] [HOSTED_ITEM] [HARNESS] —
 # assigns OUT_VAR exactly one of:
 #
 #   gone      no window: there is no lane here to ask about
-#   exited    the window outlived its harness — a bare shell with nothing
-#             under it, the shape a session that quit, crashed or hit its
-#             limit leaves behind
+#   exited    the window outlived its harness: the provider confirms the
+#             remote harness has ended, or a local shell has no child
 #   walled    the account is spent and said so below the lane's last turn,
 #             and no ACCOUNT reading says the wall has lifted
 #   asking    a dialog is up and waiting on an answer
@@ -607,6 +647,11 @@ lane_pane_observe() { # WINDOW
 #            wall standing, and "" where it measured nothing
 #   ROWS     for a Pi lane, lib/session-rows.sh § session_rows_lane_verdict's
 #            word, `unreadable` where that read failed; "" for any other lane
+#   HOSTED_ITEM and HARNESS name the remote process read through lane-host.
+#            One call per invocation; a failure returns unjudged without
+#            falling back to the local ssh child or the screen.
+#   LANE_EXIT_SOURCE is `provider` for a confirmed remote exit, `pane` for
+#            a childless local shell, and empty for every other verdict.
 #
 # A PI LANE IS JUDGED FROM WHAT PI EMITS, NEVER FROM ITS PANE, by every caller
 # that passes ROWS: the Stop and PreToolUse rows the lane-mail-check hook
@@ -620,11 +665,7 @@ lane_pane_observe() { # WINDOW
 #
 # THE PANE IS ASKED FIRST FOR EVERY RUNG THAT IS NOT `idle`, which the
 # supplied process read decides; the session rule below carries that half.
-# A lane whose harness runs on another machine — every hosted lane — has
-# nothing in the reader's /proc by construction, and judging from /proc first
-# made every such lane `unjudged`. Its ssh pane is on the reader's own tmux server and carries the
-# same screen the harness draws, so the pane rungs answer for it exactly as
-# they do for a local lane.
+# HOSTED_ITEM reads the remote harness first; SSH liveness cannot settle it.
 #
 # Rung order is load-bearing and is the order the watch has always used:
 # `walled` outranks `asking` because a limit banner can sit above a stale
@@ -661,15 +702,24 @@ lane_pane_observe() { # WINDOW
 # answered. The caller decides whether that ends its run.
 lane_state() {
   local _ls_out="$1" _ls_window="$2" _ls_cmd="$3" _ls_pid="$4" _ls_screen="$5" _ls_session="${6:-}" _ls_account="${7:-}"
-  local _ls_rows="${8:-}" _ls_slice _ls_banner _ls_rc=0
+  local _ls_rows="${8:-}" _ls_item="${9:-}" _ls_harness="${10:-}" _ls_slice _ls_banner _ls_rc=0
   LANE_PROBE_RC=0
+  LANE_EXIT_SOURCE=""
   if [[ "$_ls_window" != listed ]]; then printf -v "$_ls_out" gone; return 0; fi
-  if is_bare_shell "$_ls_cmd" && [[ -n "$_ls_pid" ]]; then
+  if [[ -n "$_ls_item" ]]; then
+    pane_has_remote_harness "$SCRIPT_DIR/lane-host" "$_ls_item" "$_ls_harness" || _ls_rc=$?
+    case "$_ls_rc" in
+      0) ;;
+      1) LANE_EXIT_SOURCE=provider; printf -v "$_ls_out" exited; return 0 ;;
+      2) printf -v "$_ls_out" unjudged; return 0 ;;
+      3) ;; # The provider has no status verb; judge the pane below.
+    esac
+  elif is_bare_shell "$_ls_cmd" && [[ -n "$_ls_pid" ]]; then
     pane_has_child "$_ls_pid" || _ls_rc=$?
     # 1 is "no child" and the whole of `exited`. 2 is a probe that could not
     # run, never an answer: the pane rungs below still get their say, and
     # LANE_PROBE_RC carries the status for the caller's note.
-    if [[ "$_ls_rc" -eq 1 ]]; then printf -v "$_ls_out" exited; return 0; fi
+    if [[ "$_ls_rc" -eq 1 ]]; then LANE_EXIT_SOURCE=pane; printf -v "$_ls_out" exited; return 0; fi
   fi
   if [[ "$_ls_rows" == walled ]]; then
     case "$_ls_account" in
@@ -722,6 +772,48 @@ lane_state() {
     idle) printf -v "$_ls_out" idle ;;
     *) printf -v "$_ls_out" unjudged ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# Whether a lane's handoff record stands, as `workflow-state handoff-standing`
+# answers it. That verb owns the test and publishes its verdict as the word on
+# its first stdout line, exiting 0 for every verdict, so the word is read here
+# and its status only says whether the run reached the verb: every orch script
+# sources the project's `.env.local` before its dispatch, and a settings file
+# that stops it exits with a status of its own and no verdict.
+#
+# lane_handoff_standing DIR ERR_FILE COMMAND... runs COMMAND, the verb's whole
+# argv, from DIR with its stderr in ERR_FILE, and sets LANE_HANDOFF_STATE:
+#   stands      a record no relaunch has resumed, its JSON in
+#               LANE_HANDOFF_RECORD
+#   none        no record stands, a state file that is not there included
+#   unreadable  anything else: the verb's own `unreadable`, a run that never
+#               reached the verb, a word it does not print, and a `stands`
+#               with no record under it, which the verb never prints whole
+# ERR_FILE holds the run's own words for the last; an empty ERR_FILE leaves
+# them on the caller's own stderr, never reopened by path, since a redirect to
+# /dev/stderr truncates a stderr that is a regular file. The watch that reports a
+# record and the relaunch that retires a session both ask here; the lane-mail
+# hook keeps a reader of its own, since it installs apart from these scripts.
+# ---------------------------------------------------------------------------
+LANE_HANDOFF_VERDICT='workflow-state: handoff-standing'
+LANE_HANDOFF_STATE=""
+LANE_HANDOFF_RECORD=""
+lane_handoff_standing() { # DIR ERR_FILE COMMAND...
+  local dir="$1" err="$2" answer rc=0
+  shift 2
+  LANE_HANDOFF_STATE=unreadable
+  LANE_HANDOFF_RECORD=""
+  if [[ -n "$err" ]]; then answer="$(cd -- "$dir" && "$@" 2>"$err")" || rc=$?
+  else answer="$(cd -- "$dir" && "$@")" || rc=$?; fi
+  [[ "$rc" -eq 0 ]] || return 0
+  case "$answer" in
+    "$LANE_HANDOFF_VERDICT=none") LANE_HANDOFF_STATE=none ;;
+    "$LANE_HANDOFF_VERDICT=stands"$'\n'?*)
+      LANE_HANDOFF_STATE=stands
+      LANE_HANDOFF_RECORD="${answer#*$'\n'}" ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------

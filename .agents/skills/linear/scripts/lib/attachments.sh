@@ -5,7 +5,7 @@
 # Upload side: fileUpload mutation + storage PUT for --attach flags
 # (see "Upload path" section below).
 #
-# Auth: Linear upload URLs require `Authorization: $LINEAR_API_KEY` (raw key, no Bearer prefix).
+# Auth: Linear upload URLs use the selected credential's Authorization value.
 #
 # Cache layout:
 #   .cache/linear/attachments/
@@ -214,24 +214,32 @@ attach_download_url() {
         return 2
     fi
 
-    if ! resolve_linear_api_key; then
-        echo "Warning: failed to resolve LINEAR_API_KEY, skipping attachment download" >&2
-        return 1
-    fi
+    local authorization authorization_quote url_quote
+    authorization=$(linear_authorization) || return 1
+    authorization_quote=$(curl_config_quote "Authorization: $authorization") || return 1
+    url_quote=$(curl_config_quote "$url") || return 1
 
-    if [[ -z "${LINEAR_API_KEY:-}" ]]; then
-        echo "Warning: LINEAR_API_KEY not set, skipping attachment download" >&2
-        return 1
-    fi
-
-    # Download to temp file, capture headers alongside (single request)
+    # Linear's upload server can reject an app token after inventory succeeds.
     local tmp_file tmp_headers
     tmp_file=$(mktemp)
     tmp_headers=$(mktemp)
-    local http_code
-    http_code=$(curl -s -w "%{http_code}" -o "$tmp_file" -D "$tmp_headers" \
-        -H "Authorization: $LINEAR_API_KEY" \
-        "$url") || { rm -f "$tmp_file" "$tmp_headers"; return 1; }
+    local http_code auth_renewed=0
+    while true; do
+        http_code=$(
+            printf '%s\n' "url = $url_quote" "header = $authorization_quote" \
+            | curl -s -w "%{http_code}" -o "$tmp_file" -D "$tmp_headers" -K -
+        ) || { rm -f "$tmp_file" "$tmp_headers"; return 1; }
+        if [[ "$http_code" == "401" && "$LINEAR_AUTH_KIND" == "app" && "$auth_renewed" == 0 ]]; then
+            auth_renewed=1
+            if ! authorization=$(linear_authorization renew) ||
+                ! authorization_quote=$(curl_config_quote "Authorization: $authorization"); then
+                rm -f "$tmp_file" "$tmp_headers"
+                return 1
+            fi
+            continue
+        fi
+        break
+    done
 
     if [[ "$http_code" != "200" ]]; then
         rm -f "$tmp_file" "$tmp_headers"

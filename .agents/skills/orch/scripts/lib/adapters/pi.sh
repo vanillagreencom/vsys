@@ -2,8 +2,8 @@
 #
 # The Pi adapter: the context a session has used, read from the session file Pi
 # writes, and the window, which Pi keeps in its model registry and never in
-# that file: the pi-hooks carrier puts it on the turn-end payload as
-# `context_window`, from the session's own `getContextUsage()`.
+# that file: the pi-hooks carrier puts it on the turn-end and tool-call
+# payloads as `context_window`, from the session's own `getContextUsage()`.
 #
 # Pi has no launch word for compaction. Its switch is `compaction.enabled` in
 # its settings file, so open-terminal reads that value before a Pi launch
@@ -98,10 +98,12 @@ lane_adapter_pi_enabled() { # FILE
 }
 
 # Whether the pi-hooks carrier Pi loads for a session started in DIR puts the
-# model's `context_window` on its Stop payload, the one place a Pi window
-# reaches the turn-end hook: 0 where the installed carrier, the project's or
+# model's `context_window` on its payloads, the one place a Pi window reaches
+# the lane-mail-check hook: 0 where the installed carrier, the project's or
 # else the user's, names that field, 1 where none installed does. A carrier
-# that predates the field leaves every Pi reading without a window.
+# that predates the field leaves every Pi reading without a window; one that
+# puts it on the Stop payload alone leaves the overseer's tool calls
+# unjudged, and its turn ends judged.
 lane_adapter_pi_window_read() { # DIR
   lane_adapter_pi_carrier_sends "$1/.pi/packages" "$(lane_adapter_pi_agent_dir)/packages"
 }
@@ -114,6 +116,36 @@ lane_adapter_pi_carrier_sends() { # ROOT...
   for root in "$@"; do
     [ -d "$root/@vanillagreen/pi-hooks/extensions" ] || continue
     grep -rqF -- context_window "$root/@vanillagreen/pi-hooks/extensions" && return 0
+    return 1
+  done
+  return 1
+}
+
+# Whether the pi-hooks carrier Pi loads for a session started in DIR starts a
+# turn in an idle lane when its overseer's mail lands: 0 where the installed
+# carrier, the project's or else the user's, lists the lane mail wake among
+# the extensions its package.json gives Pi to load, 1 where none installed
+# does or its package.json does not read. A lane on a carrier with the wake
+# arms no mailbox monitor; one without it arms the lane-mail watch.
+lane_adapter_pi_mail_wake() { # DIR
+  lane_adapter_pi_carrier_wakes "$1/.pi/packages" "$(lane_adapter_pi_agent_dir)/packages"
+}
+
+# The same answer over the package roots ROOT..., the first holding a carrier
+# deciding, as lane_adapter_pi_carrier_sends reads them. The deciding
+# carrier's package.json version lands in LANE_ADAPTER_PI_CARRIER_VERSION,
+# `none` where no carrier is installed and `unread` where its package.json
+# names none or does not read.
+LANE_ADAPTER_PI_CARRIER_VERSION=none
+lane_adapter_pi_carrier_wakes() { # ROOT...
+  local root manifest
+  LANE_ADAPTER_PI_CARRIER_VERSION=none
+  for root in "$@"; do
+    [ -d "$root/@vanillagreen/pi-hooks/extensions" ] || continue
+    manifest="$root/@vanillagreen/pi-hooks/package.json"
+    LANE_ADAPTER_PI_CARRIER_VERSION=$(jq -r '.version | strings' "$manifest" 2>/dev/null) || LANE_ADAPTER_PI_CARRIER_VERSION=""
+    LANE_ADAPTER_PI_CARRIER_VERSION=${LANE_ADAPTER_PI_CARRIER_VERSION:-unread}
+    jq -e '(.pi.extensions // []) | index("./extensions/lane-mail-wake.ts") != null' "$manifest" >/dev/null 2>&1 && return 0
     return 1
   done
   return 1

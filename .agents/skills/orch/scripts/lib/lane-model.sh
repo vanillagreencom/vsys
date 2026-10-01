@@ -21,8 +21,9 @@
 # and reset beside the percentage so a refusal can name what made the decision.
 #
 # The 5-hour session and the plan-wide weekly window wall every model, so both
-# always count, and so does a monthly pool: the Copilot credits a Pi launch on
-# a `github-copilot/` model spends are one pool for every model it names. A
+# always count, and so does a monthly pool: the Copilot credits a Copilot
+# account, or a Pi launch on a `github-copilot/` model, spends are one pool for
+# every model it names. A
 # model-scoped weekly window walls only the model its own label names, so a
 # launch on another model does not draw on it and it is left out — the
 # difference between refusing an account that is free for this launch and
@@ -79,7 +80,8 @@ def lane_norm: ascii_downcase | gsub("[^a-z0-9]"; "");
 def lane_measured: (.status == "ok" or .status == "rate_limited");
 
 def wall_rank:
-  if .bucket == "weekly" then 2
+  if .bucket == "monthly" then 3
+  elif .bucket == "weekly" then 2
   elif .bucket == "model" then 1
   else 0
   end;
@@ -188,7 +190,8 @@ def with_lane_binding($model; $binding_floor):
   | (if $binding == null then [] elif $binding.bucket == "model" then (._rate_prior.model_buckets // [])
      else [{label: null,
             pct: (if $binding.bucket == "session" then ._rate_prior.session_5h_pct
-                  elif $binding.bucket == "weekly" then ._rate_prior.weekly_pct else null end),
+                  elif $binding.bucket == "weekly" then ._rate_prior.weekly_pct
+                  elif $binding.bucket == "monthly" then ._rate_prior.monthly_pct else null end),
             resets_at: ._rate_prior.resets[$binding.bucket]}] end
      | map(select(same_window($binding)))
      | first.pct // null) as $prior
@@ -225,7 +228,8 @@ def with_lane_binding($model; $binding_floor):
 # plan-wide one or a model-scoped one, holds the same hour of work as the
 # share 5 of its 168 hours is, so it is charged the default times 5/168:
 # charged whole, an account weekly-bound at 86 percent with two lanes would
-# project past 95 and be dropped with days of room left.
+# project past 95 and be dropped with days of room left. A monthly Copilot pool
+# holds it as 5 of the 720 hours of a month, charged the default times 5/720.
 # projected_headroom_pct is the judged headroom less the claims times that
 # burn, null where the wall is null, since nothing measured the account, or the
 # claims are null, since the claim store could not be read: an unknown count is
@@ -234,6 +238,7 @@ def with_lane_projection($burn_default):
   (if .usage_rate_state == "measured" and (.claims // 0) > 0
    then .usage_rate_pct_per_min * 60 / .claims
    elif .binding_bucket == "session" then $burn_default
+   elif .binding_bucket == "monthly" then $burn_default * 5 / 720
    else $burn_default * 5 / 168 end) as $burn
   | . + {burn_pct_per_lane_hour: (if .wall == null then null else $burn end),
          projected_headroom_pct:

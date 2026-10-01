@@ -40,10 +40,10 @@ overseer_launch_args() {
 # death reported with no successor, since the line there is another
 # session's. Each notice from here carries that held line as `held=`, so the
 # operator sees which command a death would replay without opening the
-# state; `unread` where the record, or the pane key that names it, was not
-# read. Always returns 0.
+# state; `unread` where the record, or the pane key or server start that
+# names it, was not read. Always returns 0.
 overseer_command_record() {
-  local pane="${TMUX_PANE:-}" key server window line detail errf rows rc=0 held=unread
+  local pane="${TMUX_PANE:-}" key server window line detail errf rows start rc=0 held=unread
   [[ -n "${TMUX:-}" && -n "$pane" && -x "$WORKFLOW_STATE" && -x "$SUCCEED" ]] || return 0
   # The key is the orch library's, the same function the lane turn-end hook
   # and `oversee register` read a session's own key with: the hook compares its own
@@ -66,10 +66,18 @@ overseer_command_record() {
   fi
   # Taken here, before the next match replaces BASH_REMATCH.
   server="${BASH_REMATCH[1]}"
+  # The start of the server holding the pane: what the record is bound to
+  # below, and what ol_names judges it by. Unread, it writes nothing: judged as
+  # no start, this pane's own bound record reads as another session's and
+  # loses its launch identity.
+  if ! start="$(ol_session_start "$server" "$pane")"; then
+    overseer_record_notice "" "$held" overseer-unrecorded "pane=$pane" "step=server-start"
+    return 0
+  fi
   # The line a death would replay as the record stands, for every notice
   # below: the read's own words, where it fails, go to stderr ahead of the
   # notice, which then says `unread`.
-  if overseer_record_read "$server" "$pane"; then
+  if overseer_record_read "$server" "$start" "$pane"; then
     held="${OVERSEER_RECORD_LINE:-none}"
   fi
   if ! window="$(tmux display-message -p -t "$pane" '#{window_id}' 2>&1)"; then
@@ -103,12 +111,18 @@ overseer_command_record() {
   # reader of this record reads (lib/session-rows.sh).
   rows="$(session_rows_overseer_file "$PWD" "$server" "$pane")"
   # A start is a live session, so no exit a record carries stands.
-  # The five fields this watch observes replace the prior's; the launcher's
+  # The six fields this watch observes replace the prior's; the launcher's
   # own, runtime, generation and the launch identity (harness, account, home,
   # model, effort and cwd), stay only where the prior names THIS pane on THIS
-  # server: another pane's record is another session's, and a start there has
-  # no launch identity to record, which leaves its readers on the pane and the
-  # environment until a launcher or `oversee register` writes one. A `pending`
+  # server, started when this one was, or names this pane on this server with
+  # no start at all (ol_owns), the record a writer from
+  # before starts were recorded left for the very session in the pane, whose
+  # identity the start is written beside: another pane's record is another
+  # session's, and so is one an earlier server handed the same pid wrote,
+  # whose start is not this server's. A start there has no launch identity to
+  # record, which leaves its readers on the pane and the environment until a
+  # launcher or `oversee register` writes one. A
+  # `pending`
   # successor goes either way: the line this start records is the current
   # session's, as a start always replaced the pending line it met, so a
   # succession that died before its launch leaves nothing a later death would
@@ -121,10 +135,11 @@ overseer_command_record() {
   # off the account.
   detail="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} \
     update oversee --arg server "$server" --arg pane "$pane" --arg window "$window" --arg line "$line" \
-      --arg rows "$rows" "$OL_JQ_DEFS"'
+      --arg rows "$rows" --arg start "$start" "$OL_JQ_DEFS"'
       .overseer = ((((.overseer // {})
-        | if ol_names($server; $pane) then . else {} end)
-        + {server: $server, pane: $pane, window: $window, launch_line: $line, session_rows: $rows})
+        | if ol_owns($server; $start; $pane) then . else {} end)
+        + {server: $server, pane: $pane, window: $window, launch_line: $line, session_rows: $rows,
+           server_start: ($start | tonumber)})
         | del(.pending, .exit)
         | if (.harness // "claude") == "claude" and (.account // "") != "" and (.home // "") == ""
           then .home = .account else . end)' 2>&1)" \
@@ -132,32 +147,39 @@ overseer_command_record() {
   return 0
 }
 
-# overseer_record_read SERVER PANE — the fleet state's overseer record as the
-# three questions this watch asks of it, into OVERSEER_RECORD_KEY,
-# OVERSEER_RECORD_LINE and OVERSEER_RECORD_HARNESS: the record's own
-# `<server> <pane>` key, empty where the state holds no record; the line a
-# death of SERVER PANE would replay, a standing `pending.launch_line` ahead of
-# `launch_line`; and the harness the record names for that session. The last
-# two only where the record names that pane on that server by `ol_names`, and
-# empty otherwise. One reader for the start's `held=` field and check_overseer's
-# relaunch, so the two cannot disagree about which line a death replays.
-# SERVER and PANE are spelled into the filter: every caller matched them
-# against `^[0-9]+$` and `^%[0-9]+$` first, and the `get` verb takes no
+# overseer_record_read SERVER START PANE — the fleet state's overseer record as
+# the four questions this watch asks of it, into OVERSEER_RECORD_KEY,
+# OVERSEER_RECORD_MINE, OVERSEER_RECORD_LINE and OVERSEER_RECORD_HARNESS: the
+# record's own `<server> <pane>` key, empty where the state holds no record;
+# 1 where the record names that pane on that server, started at START
+# (ol_session_start's), by `ol_names`, and 0 otherwise,
+# since the key alone is also what an earlier server handed the same pid and
+# pane id left; the line a death of SERVER PANE would replay, a standing
+# `pending.launch_line` ahead of `launch_line`; and the harness the record
+# names for that session. The last two only where the record is this
+# session's, and empty otherwise. One reader for the start's `held=` field
+# and check_overseer's relaunch, so the two cannot disagree about which line
+# a death replays. SERVER, START and PANE are spelled into the filter: every
+# caller matched SERVER and PANE against `^[0-9]+$` and `^%[0-9]+$` first,
+# START is tmux_server_start's digits, and the `get` verb takes no
 # binding. Returns 1 where the state could not be read, with the reader's
 # words on stderr.
-OVERSEER_RECORD_KEY="" OVERSEER_RECORD_LINE="" OVERSEER_RECORD_HARNESS=""
-overseer_record_read() { # SERVER PANE
+OVERSEER_RECORD_KEY="" OVERSEER_RECORD_MINE=0 OVERSEER_RECORD_LINE="" OVERSEER_RECORD_HARNESS=""
+overseer_record_read() { # SERVER START PANE
   local out sep=$'\x1f'
-  OVERSEER_RECORD_KEY="" OVERSEER_RECORD_LINE="" OVERSEER_RECORD_HARNESS=""
+  OVERSEER_RECORD_KEY="" OVERSEER_RECORD_MINE=0 OVERSEER_RECORD_LINE="" OVERSEER_RECORD_HARNESS=""
   out="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} \
     get oversee "$OL_JQ_DEFS"'
       .overseer as $o
-      | ($o | ol_names("'"$1"'"; "'"$2"'")) as $mine
+      | ($o | ol_names("'"$1"'"; "'"$2"'"; "'"$3"'")) as $mine
       | [ (if ($o | type) == "object" then (($o.server // "") + " " + ($o.pane // $o.session // "")) else "" end),
+          (if $mine then "1" else "0" end),
           (if $mine then ($o.harness // "") else "" end),
           (if $mine then ($o.pending.launch_line // $o.launch_line // "") else "" end) ]
       | join("\u001f")')" || return 1
   OVERSEER_RECORD_KEY="${out%%"$sep"*}"
+  out="${out#*"$sep"}"
+  OVERSEER_RECORD_MINE="${out%%"$sep"*}"
   out="${out#*"$sep"}"
   OVERSEER_RECORD_HARNESS="${out%%"$sep"*}"
   OVERSEER_RECORD_LINE="${out#*"$sep"}"
