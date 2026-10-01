@@ -7,9 +7,9 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { scopeMain } from "../model/scopes";
-import type { Group, Proc } from "../model/types";
+import type { Group, Proc, SourceError } from "../model/types";
 import { buildKind, excludedArgv, toolName } from "./builds";
-import type { Reader } from "./io";
+import { Reader } from "./io";
 import type { CollectionConfig } from "./settings";
 
 /** stat's command can contain spaces and closing parentheses. */
@@ -77,26 +77,73 @@ function branchAt(cwd: string): string | null {
   }
 }
 
-/** Identity-keyed environment caching prevents reuse of a former process's metadata. */
-export class ProcessCollector {
+/** What process collection takes from the rest of one sample. */
+export interface ProcessRequest {
+  /** The sample's time in milliseconds, which tick deltas are divided over. */
+  time: number;
+  /** System uptime in seconds, which process ages are measured against. */
+  uptime: number;
+  /** Watched membership decides cgroup paths, swap reads and scope mains. */
+  groups: Pick<Group, "pids" | "kernelPath">[];
+}
+/** The processes one sample read, and the sources it could not read. */
+export interface ProcessReading {
+  procs: Proc[];
+  errors: SourceError[];
+}
+/**
+ * Where process collection runs. The program runs it on a thread of its own;
+ * a collector given none reads in its caller's thread. Either way one request
+ * is in flight at a time, because the collector awaits each sample.
+ */
+export interface ProcessSource {
+  collect(
+    request: ProcessRequest,
+    signal: AbortSignal,
+  ): Promise<ProcessReading>;
+  close(): void;
+}
+
+/**
+ * Identity-keyed environment caching prevents reuse of a former process's
+ * metadata. Counters are compared against the last reading this collector
+ * took, so its owner keeps one collector for the life of its settings.
+ */
+export class ProcessCollector implements ProcessSource {
   private env = new Map<
     number,
     { start: number; values: Record<string, string> }
   >();
+  private previous?: {
+    time: number;
+    counters: Map<number, { start: number; ticks: number }>;
+  };
   constructor(
+    private c: CollectionConfig,
     private ticksPerSecond: number,
     private pageSize: number,
   ) {}
   async collect(
-    r: Reader,
-    c: CollectionConfig,
-    groups: Group[],
-    previous: Proc[],
-    elapsedMs: number,
-    uptime: number,
-    signal?: AbortSignal,
-  ): Promise<Proc[]> {
-    const before = new Map(previous.map((p) => [p.pid, p]));
+    request: ProcessRequest,
+    signal: AbortSignal,
+  ): Promise<ProcessReading> {
+    signal.throwIfAborted();
+    return this.read(request);
+  }
+  close(): void {}
+  /**
+   * One pass over the process table. Each file is read synchronously, one
+   * after another: one asynchronous request per file costs more processor
+   * time than the read itself. The program runs this on a thread of its own
+   * (`ProcessThread`), so blocking that thread holds up no keystroke.
+   */
+  read({ time, uptime, groups }: ProcessRequest): ProcessReading {
+    const r = new Reader();
+    const c = this.c;
+    const before =
+      this.previous?.counters ??
+      new Map<number, { start: number; ticks: number }>();
+    const elapsedMs = this.previous ? time - this.previous.time : 0;
     const groupMembers = new Set(groups.flatMap((g) => g.pids));
     const membership = new Map<number, string | null>();
     for (const g of groups) {
@@ -111,93 +158,67 @@ export class ProcessCollector {
     const branches = new Map<string, string | null>();
     const identities = new Set<number>();
     const result: Proc[] = [];
-    const ids = r.dirs(c.procRoot).filter((n) => /^\d+$/.test(n));
-    // Bound open files while Bun reads independent process files in parallel.
-    for (let offset = 0; offset < ids.length; offset += 64) {
-      signal?.throwIfAborted();
-      const batch = await Promise.all(
-        ids.slice(offset, offset + 64).map(async (id) => {
-          const root = join(c.procRoot, id);
-          try {
-            const [stat, command] = await Promise.all([
-              Bun.file(`${root}/stat`).text(),
-              Bun.file(`${root}/cmdline`).text(),
-            ]);
-            return { id, stat, command };
-          } catch (error) {
-            return { id, error };
-          }
-        }),
-      );
-      signal?.throwIfAborted();
-      for (const row of batch) {
-        const id = row.id;
-        const root = join(c.procRoot, id);
-        try {
-          if ("error" in row) throw row.error;
-          const stat = parseStat(row.stat);
-          identities.add(stat.pid);
-          const rawCommand = row.command;
-          const command = rawCommand.length
-            ? rawCommand.replace(/\0$/, "").split("\0")
-            : [];
-          const group =
-            membership.get(stat.pid) ??
-            readFileSync(`${root}/cgroup`, "utf8")
-              .split("\n")
-              .find((s) => s.startsWith("0::"))
-              ?.slice(3);
-          if (group === undefined)
-            throw new Error("cgroup v2 membership missing");
-          const helper = excludedArgv(command, c.excludeArgv);
-          const tool = helper
+    for (const id of r.dirs(c.procRoot).filter((n) => /^\d+$/.test(n))) {
+      const root = join(c.procRoot, id);
+      try {
+        const stat = parseStat(readFileSync(`${root}/stat`, "utf8"));
+        identities.add(stat.pid);
+        const rawCommand = readFileSync(`${root}/cmdline`, "utf8");
+        const command = rawCommand.length
+          ? rawCommand.replace(/\0$/, "").split("\0")
+          : [];
+        const group =
+          membership.get(stat.pid) ??
+          readFileSync(`${root}/cgroup`, "utf8")
+            .split("\n")
+            .find((s) => s.startsWith("0::"))
+            ?.slice(3);
+        if (group === undefined)
+          throw new Error("cgroup v2 membership missing");
+        const helper = excludedArgv(command, c.excludeArgv);
+        const tool = helper ? null : toolName(stat.comm, command, c.agentTools);
+        // Kernel threads and zombies have no userspace executable or cwd.
+        const cwd = command.length ? r.link(`${root}/cwd`) : null;
+        const candidate = before.get(stat.pid);
+        const old = candidate?.start === stat.start ? candidate : undefined;
+        // Watched lanes use the cgroup's aggregate swap counter.
+        const status = groupMembers.has(stat.pid)
+          ? null
+          : r.text(`${root}/status`, true);
+        const swap = status?.match(/^VmSwap:\s+(\d+) kB$/m);
+        result.push({
+          pid: stat.pid,
+          ppid: stat.ppid,
+          start: stat.start,
+          comm: stat.comm,
+          state: stat.state,
+          threads: stat.threads,
+          ticks: stat.ticks,
+          rss: Math.max(0, stat.rssPages * this.pageSize),
+          command,
+          group,
+          tool,
+          build: helper
             ? null
-            : toolName(stat.comm, command, c.agentTools);
-          // Kernel threads and zombies have no userspace executable or cwd.
-          const cwd = command.length ? r.link(`${root}/cwd`) : null;
-          const candidate = before.get(stat.pid);
-          const old = candidate?.start === stat.start ? candidate : undefined;
-          // Watched lanes use the cgroup's aggregate swap counter.
-          const status = groupMembers.has(stat.pid)
-            ? null
-            : r.text(`${root}/status`, true);
-          const swap = status?.match(/^VmSwap:\s+(\d+) kB$/m);
-          result.push({
-            pid: stat.pid,
-            ppid: stat.ppid,
-            start: stat.start,
-            comm: stat.comm,
-            state: stat.state,
-            threads: stat.threads,
-            ticks: stat.ticks,
-            rss: Math.max(0, stat.rssPages * this.pageSize),
-            command,
-            group,
-            tool,
-            build: helper
-              ? null
-              : buildKind(stat.comm, command, c.compilerNames, c.linkerNames),
-            cwd,
-            executable: null,
-            branch: null,
-            env: {},
-            envAvailable: false,
-            swap: swap ? Number(swap[1]) * 1024 : null,
-            cpuPercent:
-              old && elapsedMs > 0 && stat.ticks >= old.ticks
-                ? ((stat.ticks - old.ticks) * 100000) /
-                  (this.ticksPerSecond * elapsedMs)
-                : null,
-            age: Math.max(0, uptime - stat.start / this.ticksPerSecond),
-          });
-        } catch (e) {
-          if (
-            !["ENOENT", "ESRCH"].includes(
-              (e as NodeJS.ErrnoException).code ?? "",
-            )
-          )
-            r.error(root, e);
-        }
+            : buildKind(stat.comm, command, c.compilerNames, c.linkerNames),
+          cwd,
+          executable: null,
+          branch: null,
+          env: {},
+          envAvailable: false,
+          swap: swap ? Number(swap[1]) * 1024 : null,
+          cpuPercent:
+            old && elapsedMs > 0 && stat.ticks >= old.ticks
+              ? ((stat.ticks - old.ticks) * 100000) /
+                (this.ticksPerSecond * elapsedMs)
+              : null,
+          age: Math.max(0, uptime - stat.start / this.ticksPerSecond),
+        });
+      } catch (e) {
+        if (
+          !["ENOENT", "ESRCH"].includes((e as NodeJS.ErrnoException).code ?? "")
+        )
+          r.error(root, e);
       }
     }
     const byPid = new Map(result.map((p) => [p.pid, p]));
@@ -289,7 +310,13 @@ export class ProcessCollector {
     }
     for (const key of this.env.keys())
       if (!identities.has(key)) this.env.delete(key);
-    return result;
+    this.previous = {
+      time,
+      counters: new Map(
+        result.map((p) => [p.pid, { start: p.start, ticks: p.ticks }]),
+      ),
+    };
+    return { procs: result, errors: r.errors };
   }
 }
 

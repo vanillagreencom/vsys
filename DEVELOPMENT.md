@@ -37,8 +37,8 @@ bun src/main.ts --markdown --once
 bun src/main.ts --config PATH # another TOML settings file
 python3 scripts/ci.py         # install, lint, types, tests, build, compiled binary, scratch bound
 bun test src/                 # the application suites alone
-bun run build                 # dist/main.js, run it with Bun from the project directory
-bun run compile               # the standalone ./vsys binary
+bun run build                 # dist/main.js, dist/collect/process-worker.js and dist/scratch-worker.js; run main.js with Bun from the project directory
+bun run compile               # the standalone ./vsys binary the release and the vsys-git package ship
 bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh one without PATH
 ```
 
@@ -46,7 +46,7 @@ bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh 
 
 ## Tests
 
-- `src/collect/*.test.ts`: collection against temporary procfs, cgroup and storage fixtures. No test spawns tmux or a build cache server, because a collector is only given those readers when the program builds it. `src/collect/scratch-worker.test.ts` starts the real scan thread against a temporary directory, which is what proves the worker file resolves in the source tree, and reads back from its replies that it rested under a duty of 50 and not at 100.
+- `src/collect/*.test.ts`: collection against temporary procfs, cgroup and storage fixtures. No test spawns tmux or a build cache server, because a collector is only given those readers when the program builds it. `src/collect/scratch-worker.test.ts` starts the real scan thread against a temporary directory, which is what proves the worker file resolves in the source tree, and reads back from its replies that it rested under a duty of 50 and not at 100. A collector built in a test reads processes in the test's own thread; `src/collect/process-thread.test.ts` compares the real process thread against that reader and drives each thread failure through a stand-in thread.
 - `src/model/*.test.ts`: lane derivation and naming, the cause ladder and the meters, build classification, the exact command of each lane action, and shell quoting read back through `/bin/sh`.
 - `src/store/*.test.ts`: checkpoint replay, retention, the SQLite schema guard, the load-path migration and the timeline event derivation.
 - `src/ui/*.test.tsx`: the mounted shell through OpenTUI's terminal test renderer. These drive the real screens from the keyboard and the mouse and read the rendered frame back.
@@ -56,7 +56,29 @@ bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh 
 
 ## Benchmarks and what they do not prove
 
-`bun run bench` collects a fixture of 50 scopes and 2000 processes six times, discards the first, and reports the per-sample and per-phase timings against a 20 ms target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
+`bun run bench` collects a fixture of 50 scopes and 2000 processes 21 times with processes read on their own thread, as the program reads them. It reports the first sample alone, because that sample starts the thread, then the median and 95th percentile of elapsed time and of whole-process processor time for the other 20, the per-phase medians, and whether every sample met the 20 ms elapsed target. It reads regular files in a temporary directory, so the result does not establish latency on a live procfs mount.
+
+Process collection before and after moving it onto its own thread ([process collection](docs/architecture/processes.md)), measured on 2026-10-01 on cachy, Linux 7.2.8-1-cachyos, 32 logical cores, with other work running. Before is the asynchronous reader on the dashboard's thread; after is the shipped thread. Each fixture figure is the range over three alternating runs of 40 measured samples. Processor time counts every thread of the process, so the thread and the transfer are included.
+
+| Measurement | Before | After |
+| --- | --- | --- |
+| Fixture complete sample, median processor time | 40.7 to 41.5 ms | 27.0 to 28.4 ms |
+| Fixture complete sample, 95th percentile processor time | 60.0 to 62.8 ms | 48.8 to 51.3 ms |
+| Fixture complete sample, median elapsed time | 17.6 to 18.3 ms | 23.0 to 23.8 ms |
+| Fixture complete sample, 95th percentile elapsed time | 21.8 to 23.7 ms | 26.5 to 31.2 ms |
+| Fixture samples under the 20 ms target | 32 to 35 of 40 | 0 of 40 |
+| Input event delay while sampling, median | 0.29 to 0.32 ms | 0.010 to 0.012 ms |
+| Input event delay while sampling, 95th percentile | 4.2 to 4.5 ms | 3.3 to 3.8 ms |
+| Input event delay while sampling, slowest | 5.6 to 11.8 ms | 5.0 to 7.0 ms |
+| Live `/proc` process collection, median processor time | 26.6 and 29.5 ms | 19.7 and 22.1 ms |
+| Live `/proc` process collection, 95th percentile processor time | 33.5 and 39.0 ms | 27.1 and 28.0 ms |
+| Live `/proc` process collection, median elapsed time | 13.3 and 15.4 ms | 17.2 and 20.0 ms |
+| `--once --summary` on the fixture, median wall time | 172.8 ms | 185.8 ms |
+| `--once --summary` on the fixture, median processor time | 154.1 ms | 129.8 ms |
+
+- Input event delay stands in for keyboard response: a second thread posts a timestamp every 2 ms while samples run back to back, and the delay is the time until the dashboard's thread handles it. What remains after the change is the cgroup tree, the model and the reply parse, which still run on the dashboard's thread.
+- The live rows are two alternating runs of 30 readings over 1010 to 1042 processes. They read process collection alone with no watched groups and with agent and build classification emptied, so every read stays inside `/proc`.
+- The fixture's elapsed time no longer meets the 20 ms target. The thread reads files one after another, while the asynchronous reader overlapped them; the target is reported apart from the processor time it saves.
 
 `bun run bench:scratch` builds a scratch tree and measures three scans of it. Two run on a scan thread, a warm-up discarded before each, and report elapsed time and whole-process processor time for a scan that holds the whole thread and one held to the default share, with the rests the thread reports the second took. The third runs on the caller's thread through the shipped pace, wrapped so every rest the pace asks for is recorded before the timer takes it, and reports the slice it used, the rests it took and their total.
 

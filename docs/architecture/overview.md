@@ -36,7 +36,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 
 ## Boundaries
 
-- `src/collect/`: reads source files and takes `CollectionConfig`. It never imports the UI and never writes kernel state. Enforced by the type in `src/collect/settings.ts`, which is the only declaration of what collection may read.
+- `src/collect/`: reads source files and takes `CollectionConfig`. It never imports the UI and never writes kernel state. Enforced by the type in `src/collect/settings.ts`, which is the only declaration of what collection may read. The program reads processes on a thread of its own, which the collector owns and the runtime never schedules.
 - `src/model/`: derives lanes, the cause ladder, the meters and the alert transitions as numbers. Every word and every formatted number belongs to the UI.
 - `src/store/`: owns application persistence and derives the timeline events. The collector does not depend on SQLite.
 - `src/runtime.ts`: owns scheduling and settings changes. Samples never overlap, and a replaced source is handed its predecessor so readings measured since vsys started survive the replacement.
@@ -65,6 +65,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 ## Topics
 
 - [lanes.md](lanes.md): read when changing how a lane is found, named, or traced back to its launcher.
+- [processes.md](processes.md): read when changing how processes are read, or the thread that reads them.
 - [verdict.md](verdict.md): read when changing what counts as a problem, how problems rank, or the summary JSON.
 - [builds.md](builds.md): read when changing how compile and link work, the build cache or the token pools are counted.
 - [storage.md](storage.md): read when changing filesystem, device, drive or scratch collection.
