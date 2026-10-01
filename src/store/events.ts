@@ -4,7 +4,9 @@ import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
 import {
   type Cause,
+  type CauseAt,
   type CauseId,
+  causeEvidence,
   causeRank,
   causes,
   consumerName,
@@ -131,22 +133,51 @@ export function subjects(cause: Cause, s: Snapshot): Subject[] {
   // This changes what the one subject is, never how many there are. `at` is
   // not a subject and is not added to `named`: a cause with no lanes and no
   // groups already produced exactly one row here, and it still does.
-  const at = cause.at;
-  const scope =
-    at?.kind === "group" ? s.groups.find((g) => g.path === at.path) : undefined;
-  if (scope)
-    return [{ id: scope.path, name: consumerName(scope, s), unit: scope.name }];
-  return [{ id: cause.consumer, name: cause.consumer }];
+  const at = pointedAt(cause.at, s);
+  if (at) return [at];
+  // Nothing to point at either. The consumer is a display name, which two
+  // lanes can share, so it names the subject and never identifies it.
+  return [{ id: "", name: cause.consumer }];
+}
+/** The row a cause points at, as a subject, when the sample still holds it. */
+function pointedAt(at: CauseAt | undefined, s: Snapshot): Subject | undefined {
+  if (!at) return undefined;
+  switch (at.kind) {
+    case "lane": {
+      const lane = s.lanes.find((l) => l.id === at.id);
+      return lane && { id: lane.id, name: laneText(lane) };
+    }
+    case "group": {
+      const scope = s.groups.find((g) => g.path === at.path);
+      return (
+        scope && {
+          id: scope.path,
+          name: consumerName(scope, s),
+          unit: scope.name,
+        }
+      );
+    }
+    case "path":
+      return { id: at.path, name: at.path };
+    default: {
+      const unhandled: never = at;
+      throw new Error(
+        `A cause points at an unknown kind of row: ${JSON.stringify(unhandled)}`,
+      );
+    }
+  }
 }
 /**
  * Events come from successive snapshots and from the one cause ladder. An
  * alert is a cause on that ladder, so desktop swap crossing its floor is the
  * desktop-swap cause opening and closing, never a second detection path.
  *
- * A cause must hold for pressureHoldSeconds before it opens, and must stay
- * away that long before it closes, so a value flapping across a threshold
- * records one alert rather than one per sample. The recorded duration is the
- * time the cause was observed, which excludes the wait before the close.
+ * A level cause must hold for pressureHoldSeconds before it opens, and every
+ * cause must stay away that long before it closes, so a value flapping across
+ * a threshold records one alert rather than one per sample. An event cause
+ * opens on the sample that shows it, since its evidence is gone by the next
+ * one. The recorded duration is the time the cause was observed, which
+ * excludes the wait before the close.
  */
 export class EventLog {
   private previous: Snapshot | null = null;
@@ -251,7 +282,14 @@ export class EventLog {
         watch.values = subjectValues(cause, subject.id, s, c);
         this.watching.set(key, watch);
         // An alert that was never recorded as open cannot be recorded as closed.
-        if (watch.opened || s.time - watch.firstSeen < hold) continue;
+        if (watch.opened) continue;
+        // Evidence that is itself a change is gone by the next sample, so only
+        // a level waits out the hold before it opens.
+        if (
+          causeEvidence[cause.id] === "level" &&
+          s.time - watch.firstSeen < hold
+        )
+          continue;
         watch.opened = add("alert-open", subject.name, {
           subjectId: subject.id,
           cause: cause.id,
