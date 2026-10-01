@@ -14,6 +14,7 @@ import { useScreenKeys } from "./keys";
 import {
   capabilityLabels,
   capabilityLoss,
+  capabilityOffer,
   capabilityReason,
   editorKind,
   settingDisplay,
@@ -87,12 +88,14 @@ export function Settings({
   width,
   onSave,
   onNotice,
+  onCopy,
 }: {
   snapshot: Snapshot;
   config: Config;
   width: number;
   onSave: (c: Config) => Promise<void>;
   onNotice: (text: string, level: Level) => void;
+  onCopy: (command: string | undefined) => void;
 }) {
   const [selected, setSelected] = useState(0);
   const [editing, setEditing] = useState(false);
@@ -275,6 +278,16 @@ export function Settings({
         key.preventDefault();
         setEditing(false);
       }
+      return true;
+    }
+    // Only a capability row offering a line to supply what is missing has
+    // anything to copy; every other row says so rather than copy nothing.
+    if (name === c.keys.copy) {
+      const cap =
+        current?.kind === "capability"
+          ? s.capabilities.find((x) => x.id === current.id)
+          : undefined;
+      onCopy(cap ? capabilityOffer(cap, c)?.command : undefined);
       return true;
     }
     if (name === c.keys.down || name === "down") {
@@ -480,6 +493,7 @@ export function Settings({
           // detail.
           const opened =
             i === selected && (!cap.available || openCap === cap.id);
+          const offer = capabilityOffer(cap, c);
           return (
             <box
               id={`block-${i}`}
@@ -523,6 +537,23 @@ export function Settings({
                     >
                       {safe(capabilityLoss(cap))}
                     </Line>
+                  )}
+                  {offer && (
+                    <>
+                      <Line
+                        flexShrink={0}
+                        wrapMode="word"
+                        marginTop={1}
+                        attributes={ui.dim}
+                      >
+                        {safe(offer.text)}
+                      </Line>
+                      <Line flexShrink={0} wrapMode="word">
+                        {safe(
+                          `${keyLabel(c.keys.copy)} copies: ${offer.command}`,
+                        )}
+                      </Line>
+                    </>
                   )}
                 </Detail>
               )}

@@ -11,6 +11,7 @@ import {
 import { type IntegrityState, integrities } from "./integrity";
 import type { Group, Scrub, Snapshot, Volume } from "./types";
 import {
+  agentTotal,
   buildLoad,
   causeRank,
   causes,
@@ -439,4 +440,37 @@ test("a cause naming several filesystems carries no one filesystem's numbers", (
     since: null,
     checked: null,
   });
+});
+
+test("with no agent slice, agent totals sum the agent lanes and stay unknown on a gap", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "agent-slice"
+      ? { ...cap, available: false, failure: "absent" as const }
+      : cap,
+  );
+  // A lane with no agent in it is not the agents' use, whatever it costs.
+  const desktop = laneSnapshot({ id: "d", tool: "", cpu: 400, cache: 9 });
+  s.procs = [processSnapshot()];
+  s.lanes = [
+    laneSnapshot({ id: "a", tool: "claude", cpu: 20, cache: 100 }),
+    laneSnapshot({ id: "b", tool: "codex", cpu: 10, cache: 50 }),
+    desktop,
+  ];
+  expect([agentTotal(s, c, "cpu"), agentTotal(s, c, "cache")]).toEqual([
+    30, 150,
+  ]);
+  s.lanes[1] = { ...s.lanes[1], cpu: null };
+  expect([agentTotal(s, c, "cpu"), agentTotal(s, c, "cache")]).toEqual([
+    null,
+    150,
+  ]);
+  // No agent running is a measured nothing, but no process at all is a
+  // process listing that failed.
+  s.lanes = [desktop];
+  s.procs = [];
+  expect(agentTotal(s, c, "cpu")).toBeNull();
+  s.procs = [processSnapshot({ tool: null })];
+  expect(agentTotal(s, c, "cpu")).toBe(0);
 });

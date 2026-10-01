@@ -170,6 +170,7 @@ export const hints: Record<
     ["↑↓", "select"],
     [c.keys.open, "edit"],
     [c.keys.search, "find"],
+    [c.keys.copy, "copy"],
   ],
 };
 
@@ -504,6 +505,7 @@ export function App({
         width={screenWidth(width)}
         onSave={onSave}
         onNotice={notice}
+        onCopy={copy}
       />
     );
   /**

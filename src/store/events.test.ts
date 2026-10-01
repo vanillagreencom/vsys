@@ -92,13 +92,24 @@ test("a process changing cgroup is one move, and a reused PID is not", () => {
   ).toEqual([]);
 });
 test("an agent leaving the agent slice carries the cause of the move", () => {
-  const first = emptySnapshot(1000);
-  first.procs = [processSnapshot({ group: "agents.slice/a.scope" })];
-  const log = started(first);
-  const escaped = emptySnapshot(2000);
-  escaped.procs = [processSnapshot({ group: "app.slice/a.scope" })];
-  const move = log.advance(escaped, c).find((e) => e.kind === "cgroup-move");
-  expect(move?.cause).toBe("unconfined");
+  // Where the probe finds no agent slice, a move is a move and nothing more.
+  for (const [failure, cause] of [
+    [null, "unconfined"],
+    ["absent", ""],
+  ] as const) {
+    const first = emptySnapshot(1000);
+    first.procs = [processSnapshot({ group: "agents.slice/a.scope" })];
+    const log = started(first);
+    const escaped = emptySnapshot(2000);
+    escaped.capabilities = escaped.capabilities.map((cap) =>
+      cap.id === "agent-slice"
+        ? { ...cap, available: failure === null, failure }
+        : cap,
+    );
+    escaped.procs = [processSnapshot({ group: "app.slice/a.scope" })];
+    const move = log.advance(escaped, c).find((e) => e.kind === "cgroup-move");
+    expect({ failure, cause: move?.cause }).toEqual({ failure, cause });
+  }
 });
 test("an alert closes with the time it stayed open", () => {
   const log = started();

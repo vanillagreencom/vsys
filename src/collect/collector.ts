@@ -4,7 +4,12 @@ import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Capability, Snapshot } from "../model/types";
 import { StorageCollector } from "./btrfs";
-import { type Outcome, probeCapabilities, probeTmux } from "./capabilities";
+import {
+  type Outcome,
+  probeAgentSlice,
+  probeCapabilities,
+  probeTmux,
+} from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
 import { kernelCgroupRoot, readMounts } from "./mounts";
@@ -44,6 +49,7 @@ export class Collector {
   private controller = new AbortController();
   /**
    * Probed once: a kernel interface does not appear or vanish between ticks.
+   * The agent slice is not one of these and is read with each sample's groups.
    * tmux is the exception, and only half of it. Whether tmux is on the path is
    * as static as the rest; whether a server answers is not, and this program
    * is a dashboard for agents that start after it.
@@ -200,15 +206,16 @@ export class Collector {
         });
       }
     mark("tmux");
+    const capabilities = [...this.capabilities, probeAgentSlice(c, groups)];
     const s: Snapshot = {
-      capabilities: this.capabilities,
+      capabilities,
       time,
       durationMs: performance.now() - start,
       system,
       groups,
       procs,
       storage,
-      lanes: lanes(groups, procs, c, system.cores, panes),
+      lanes: lanes(groups, procs, c, system.cores, panes, capabilities),
       alerts: [],
       errors: r.errors,
       ...(sccache ? { sccache } : {}),

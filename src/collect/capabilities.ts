@@ -1,10 +1,11 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type {
   Capability,
   CapabilityFailure,
   CapabilityId,
+  Group,
 } from "../model/types";
 import { pressure } from "./io";
 import type { CollectionConfig } from "./settings";
@@ -127,19 +128,55 @@ export function probeCapabilities(
     ],
     ["tmux", listPanesArgv.join(" "), tmux],
   ];
-  return probes.map(([id, source, run]) => {
-    let outcome: Outcome;
-    try {
-      outcome = run();
-    } catch (error) {
-      outcome = classify(error);
-    }
-    return {
-      id,
-      available: outcome === null,
-      failure: outcome?.failure ?? null,
-      source,
-      detail: outcome?.detail ?? "",
-    };
+  return probes.map(([id, source, run]) => decide(id, source, run));
+}
+function decide(
+  id: CapabilityId,
+  source: string,
+  run: () => Outcome,
+): Capability {
+  let outcome: Outcome;
+  try {
+    outcome = run();
+  } catch (error) {
+    outcome = classify(error);
+  }
+  return {
+    id,
+    available: outcome === null,
+    failure: outcome?.failure ?? null,
+    source,
+    detail: outcome?.detail ?? "",
+  };
+}
+/**
+ * Where systemd puts a slice below the manager's own group: each dash in the
+ * name nests it one level, so `agents-work.slice` lives in `agents.slice`.
+ */
+export function slicePath(name: string): string {
+  const parts = name.replace(/\.slice$/, "").split("-");
+  return parts
+    .map((_, i) => `${parts.slice(0, i + 1).join("-")}.slice`)
+    .join("/");
+}
+/**
+ * Whether the agent slice exists, read every sample rather than once: systemd
+ * starts a slice when the first unit is placed in it, so on a machine whose
+ * agents start after vsys the slice appears after vsys does. A group of that
+ * name anywhere in the tree this sample read is the slice, as it is to the
+ * slice totals; otherwise the path systemd would give it decides, and only a
+ * path that does not exist is an absence.
+ */
+export function probeAgentSlice(
+  c: CollectionConfig,
+  groups: Group[],
+): Capability {
+  const found = groups.find((g) => g.name === c.agentSlice);
+  if (found)
+    return decide("agent-slice", join(c.cgroupRoot, found.path), () => null);
+  const source = join(c.cgroupRoot, slicePath(c.agentSlice));
+  return decide("agent-slice", source, () => {
+    statSync(source);
+    return null;
   });
 }

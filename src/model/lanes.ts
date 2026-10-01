@@ -17,14 +17,36 @@ import {
   windowTitle,
 } from "./naming";
 import { scopeMain } from "./scopes";
-import type { Group, Lane, Proc } from "./types";
+import type { Capability, Group, Lane, Proc } from "./types";
 
 export function inSlice(path: string, slice: string): boolean {
   return path.split("/").includes(slice);
 }
-/** One rule for an escaped agent: a configured tool outside the agent slice. */
-export function escaped(p: Proc, c: CollectionConfig): boolean {
-  return p.tool !== null && !inSlice(p.group, c.agentSlice);
+/**
+ * Whether agents are compared against the agent slice. Only a probe that found
+ * the slice absent stops the comparison: a slice vsys could not read, and a
+ * sample recorded before the probe existed, keep it, so a failed read never
+ * silences an escaped agent.
+ */
+export function sliceCompared(capabilities: Capability[]): boolean {
+  return (
+    capabilities.find((cap) => cap.id === "agent-slice")?.failure !== "absent"
+  );
+}
+/**
+ * One rule for an escaped agent: a configured tool outside the agent slice, on
+ * a machine that has one. Where there is no slice, no agent is outside it.
+ */
+export function escaped(
+  p: Proc,
+  c: CollectionConfig,
+  capabilities: Capability[],
+): boolean {
+  return (
+    p.tool !== null &&
+    sliceCompared(capabilities) &&
+    !inSlice(p.group, c.agentSlice)
+  );
 }
 /** An ancestor cgroup cap also limits a lane. */
 export function dangerousCap(
@@ -114,6 +136,8 @@ export function lanes(
    * server's. Absent when no server answered.
    */
   tmux?: PaneSet,
+  /** What the sample's probes found, which decides whether agents escape. */
+  capabilities: Capability[] = [],
 ): Lane[] {
   /** Every pane the read gave. Empty when no read answered. */
   const panes = tmux?.byId ?? new Map<string, PaneAddress>();
@@ -125,6 +149,11 @@ export function lanes(
   const own = tmux?.own ?? "";
   const covered = new Set<number>();
   const result: Lane[] = [];
+  const compared = sliceCompared(capabilities);
+  // An escaped agent is worth a lane, and so is every agent where there is no
+  // slice to watch them in: each one is shown with its own group.
+  const agentLane = (p: Proc) =>
+    escaped(p, c, capabilities) || (!compared && p.tool !== null);
   const byPid = new Map(procs.map((p) => [p.pid, p]));
   function lane(id: string, members: Proc[], group?: Group) {
     if (!members.length && !group) return;
@@ -266,7 +295,7 @@ export function lanes(
             : "empty",
       blocked: members.filter((p) => p.state === "D").length,
       blockedOn: blockedOn(ioPressure, memoryPressure),
-      unconfined: members.some((p) => escaped(p, c)),
+      unconfined: members.some((p) => escaped(p, c, capabilities)),
       dangerous: group ? dangerousCap(group, groups, c.memoryFloor) : false,
     });
     for (const p of members) covered.add(p.pid);
@@ -293,13 +322,11 @@ export function lanes(
     if (
       c.watchedSlices.some((s) => inSlice(group.path, s)) ||
       dangerousCap(group, groups, c.memoryFloor) ||
-      members.some((p) => escaped(p, c))
+      members.some(agentLane)
     )
       lane(group.path, members, group);
   }
-  for (const proc of procs.filter(
-    (p) => escaped(p, c) && !covered.has(p.pid),
-  )) {
+  for (const proc of procs.filter((p) => agentLane(p) && !covered.has(p.pid))) {
     if (covered.has(proc.pid)) continue;
     lane(
       proc.group,

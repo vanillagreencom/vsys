@@ -1,7 +1,8 @@
 import { compileOrLink } from "../collect/builds";
+import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
 import { damageCounts, integrities } from "./integrity";
-import { inSlice, lanePressure } from "./lanes";
+import { inSlice, lanePressure, sliceCompared } from "./lanes";
 import { laneText, unitLabel } from "./naming";
 import type { Group, Lane, Snapshot, Volume } from "./types";
 
@@ -155,6 +156,27 @@ export function sliceSum(
   const roots = sliceRoots(groups, name);
   return roots.length && roots.every((g) => pick(g) !== null)
     ? roots.reduce((sum, g) => sum + (pick(g) ?? 0), 0)
+    : null;
+}
+/**
+ * What agents use of one reading. Where the agent slice is compared it holds
+ * every agent, so its own counter is the total. Where the probe found no slice
+ * the agent lanes' own figures are summed instead, and the total is unknown
+ * unless every one of them reported. No process at all is a process listing
+ * that failed, since vsys is always one, so it is not read as no agents.
+ */
+export function agentTotal(
+  s: Snapshot,
+  c: Pick<CollectionConfig, "agentSlice">,
+  reading: "cpu" | "cache",
+): number | null {
+  if (sliceCompared(s.capabilities))
+    return sliceSum(s.groups, c.agentSlice, (g) =>
+      reading === "cpu" ? g.cpuPercent : g.cache,
+    );
+  const agents = s.lanes.filter((l) => l.tool !== "");
+  return s.procs.length && agents.every((l) => l[reading] !== null)
+    ? agents.reduce((sum, l) => sum + (l[reading] ?? 0), 0)
     : null;
 }
 /** The scope that wrote most since the previous sample, never its parent slice. */
@@ -369,7 +391,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       values: {
         swap,
         holder: swapHolder?.swap ?? null,
-        cache: sliceSum(s.groups, c.agentSlice, (g) => g.cache),
+        cache: agentTotal(s, c, "cache"),
       },
     });
   const free = leastFree(s.storage.volumes);
@@ -505,7 +527,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
       values: {
         // The stall percentage the level grades on, so the meter shows its cause.
         system: cpu,
-        agents: sliceSum(s.groups, c.agentSlice, (g) => g.cpuPercent),
+        agents: agentTotal(s, c, "cpu"),
         desktop: sliceSum(s.groups, c.desktopSlice, (g) => g.cpuPercent),
         top: top?.cpu ?? null,
       },
@@ -518,7 +540,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
       values: {
         used: total === null || available === null ? null : total - available,
         total,
-        cache: sliceSum(s.groups, c.agentSlice, (g) => g.cache),
+        cache: agentTotal(s, c, "cache"),
         swap,
         largest: largest?.memory ?? null,
         holderSwap: swapped ? (holder?.swap ?? null) : null,

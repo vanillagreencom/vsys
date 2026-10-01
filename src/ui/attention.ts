@@ -1,5 +1,5 @@
 import type { Config } from "../config/config";
-import { launcherCopy, launcherTally } from "../model/launcher";
+import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
 import { laneText, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
@@ -231,7 +231,12 @@ function copy(
       const escaped = s.procs.filter(
         (x) => x.tool && cause.lanes.some((l) => l.pids.includes(x.pid)),
       );
-      const groups = launcherCopy(escaped, s.procs, c, basePath);
+      // A card names a launcher only where one exists to have placed the
+      // agent; anywhere else it states the limit that does not apply.
+      const launcher = launcherKnown(s.capabilities, c);
+      const groups = launcher
+        ? launcherCopy(escaped, s.procs, c, basePath)
+        : [];
       const said = groups.map((g) => g.conclusion);
       const processHead = `${escaped.length} processes in ${n} ${p(n, "lane", "lanes")}: `;
       // What a narrow panel gives up, in order: the ancestor chains, then a
@@ -264,7 +269,9 @@ function copy(
           escaped.length > n
             ? laneSentence(laneNames, width, processHead)
             : every,
-        next: `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`,
+        next: launcher
+          ? `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`
+          : `Stop each process and start it again inside ${c.agentSlice}.`,
         command: shellLine([
           "systemd-run",
           "--user",

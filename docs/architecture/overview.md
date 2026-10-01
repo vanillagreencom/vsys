@@ -12,7 +12,7 @@ Scope: a systemd cgroup whose name ends in `.scope`. Only a scope can be named t
 
 Lane: a watched scope, or a group an agent or a resource alarm made worth watching.
 
-Escaped agent: a configured agent tool running outside the configured agent slice. `escaped()` in `src/model/lanes.ts` is its only definition.
+Escaped agent: a configured agent tool running outside the configured agent slice, on a machine that has that slice. `escaped()` in `src/model/lanes.ts` is its only definition.
 
 Account: the basename of the agent configuration directory the lane's main process names, unknown when it names none.
 
@@ -22,7 +22,7 @@ Ladder: the causes ranked worst first. Its first verdict-worthy element is the v
 
 Verdict-worthy: a cause that may speak for the machine. A housekeeping cause is a card but never the verdict.
 
-Capability: a system interface a reading needs, probed once at start. Whether a tmux server answers is the exception and is re-read each sample.
+Capability: a system interface a reading needs, probed once at start. Whether a tmux server answers and whether the agent slice exists are the exceptions and are re-read each sample.
 
 Point: the per-sample record the charts and the timeline strip read, kept for every retained sample.
 
@@ -47,7 +47,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 ## Invariants
 
 1. A source error never becomes a measured zero. `src/collect/collector.test.ts` plants an invalid counter.
-2. An agent outside its slice is decided in one place, and lanes, alerts, points and timeline events all read that decision. `src/collect/collector.test.ts` checks an escaped agent against an inherited cap.
+2. An agent outside its slice is decided in one place, and lanes, alerts, points and timeline events all read that decision. Where the probe finds no agent slice, no agent is escaped. `src/collect/collector.test.ts` checks an escaped agent against an inherited cap, and two agents with and without the slice.
 3. Repeated refresh leaves one mounted screen, a stable listener count and the selected view. `src/ui/screen.test.tsx` drives the production mount function.
 4. No lane action reaches an effect while write mode is off, while a past sample is pinned, or when the current sample no longer names the confirmed line. `src/ui/agent.test.tsx` checks all four answers and `src/model/actions.test.ts` pins each command.
 5. Every host-specific name ships a systemd user-session default, and write mode ships off. `src/config/config.test.ts` checks both.

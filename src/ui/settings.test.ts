@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { defaults } from "../config/config";
 import type { Capability, CapabilityId } from "../model/types";
 import { capabilitySnapshot } from "../test/fixture";
 import {
   capabilityLine,
   capabilityLoss,
+  capabilityOffer,
   capabilityReason,
   settingDisplay,
   settingHelp,
@@ -122,6 +124,7 @@ test("Settings states each capability and why a missing one is missing", () => {
     "Per-group disk counters: available",
     "Disk scrub reports: available",
     "Drive lifetime reports: available",
+    "Agent slice: available",
   ]);
   expect(
     capabilityLine({
@@ -178,6 +181,7 @@ test("every missing capability says what it costs the reader, in its own words",
     scrub: "Storage lists no scrub report",
     smart: "Storage shows no drive lifetime writes",
     tmux: "a tmux pane id resolves to no address",
+    "agent-slice": "agents are shown, but not compared against a shared limit",
   };
   const cap = (id: CapabilityId, available: boolean): Capability => ({
     id,
@@ -203,4 +207,37 @@ test("every missing capability says what it costs the reader, in its own words",
       whole: "",
     });
   }
+});
+
+test("a missing agent slice offers one line that limits it, and nothing else does", () => {
+  const c = defaults();
+  const slice = (failure: Capability["failure"]): Capability => ({
+    id: "agent-slice",
+    available: failure === null,
+    failure,
+    source: "/fixture/agents.slice",
+    detail: "",
+  });
+  // The limits are the warden template's own, read from it here rather than
+  // restated, so the two routes to a slice give the same slice.
+  const template = readFileSync(
+    new URL("../../warden/systemd/agents.slice", import.meta.url),
+    "utf8",
+  );
+  const limits = ["MemoryHigh", "MemoryMax"].map(
+    (key) => template.match(new RegExp(`^${key}=\\S+$`, "m"))?.[0],
+  );
+  expect(limits.every((line) => line !== undefined)).toBe(true);
+  expect(capabilityOffer(slice("absent"), c)?.command).toBe(
+    ["systemctl --user set-property agents.slice", ...limits].join(" "),
+  );
+  // A slice that exists, or one vsys could not read, needs no creating.
+  expect(capabilityOffer(slice(null), c)).toBeNull();
+  expect(capabilityOffer(slice("unreadable"), c)).toBeNull();
+  expect(capabilityOffer({ ...slice("absent"), id: "psi" }, c)).toBeNull();
+  // A slice that cannot be read is still compared against, so its loss says
+  // so rather than claiming agents go unchecked.
+  expect(capabilityLoss(slice("unreadable"))).not.toBe(
+    capabilityLoss(slice("absent")),
+  );
 });

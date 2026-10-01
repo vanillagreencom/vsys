@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Capability, CapabilityId } from "../model/types";
-import { fixture } from "../test/fixture";
+import { fixture, groupSnapshot } from "../test/fixture";
 import { capabilityReason } from "../ui/settings";
-import { probeCapabilities, probeTmux } from "./capabilities";
+import { probeAgentSlice, probeCapabilities, probeTmux } from "./capabilities";
 import { Collector } from "./collector";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
@@ -204,4 +204,99 @@ test("a tmux with no server running is not a missing tmux", () => {
   expect(missing?.failure).toBe("absent");
   // And a server that answers is no failure of either kind.
   expect(probeTmux(["sh", "-c", "exit 0"])).toBeNull();
+});
+
+test("the agent slice is present, absent at the path systemd gives it, or unknown", () => {
+  const nested = "user.slice/agents.slice";
+  const rows: {
+    name: string;
+    slice: string;
+    prepare: (root: string) => void;
+    groups: ReturnType<typeof groupSnapshot>[];
+    failure: Capability["failure"];
+    source: string;
+  }[] = [
+    {
+      name: "the fixture's own slice",
+      slice: "agents.slice",
+      prepare: () => {},
+      groups: [],
+      failure: null,
+      source: "agents.slice",
+    },
+    {
+      name: "no slice at all",
+      slice: "agents.slice",
+      prepare: (root) =>
+        rmSync(join(root, "agents.slice"), { recursive: true }),
+      groups: [],
+      failure: "absent",
+      source: "agents.slice",
+    },
+    {
+      // systemd nests a dashed slice inside the slice its name prefixes.
+      name: "a dashed name",
+      slice: "agents-work.slice",
+      prepare: () => {},
+      groups: [],
+      failure: "absent",
+      source: "agents.slice/agents-work.slice",
+    },
+    {
+      // The totals find a slice by name anywhere in the tree, so does this.
+      name: "a slice the walk read below another group",
+      slice: "agents.slice",
+      prepare: (root) =>
+        rmSync(join(root, "agents.slice"), { recursive: true }),
+      groups: [groupSnapshot({ path: nested, name: "agents.slice" })],
+      failure: null,
+      source: nested,
+    },
+    {
+      // A path that exists and fails is never an absence. A link to itself
+      // fails with an errno whatever user runs the test.
+      name: "a slice path that cannot be read",
+      slice: "agents.slice",
+      prepare: (root) => {
+        rmSync(join(root, "agents.slice"), { recursive: true });
+        symlinkSync(join(root, "agents.slice"), join(root, "agents.slice"));
+      },
+      groups: [],
+      failure: "unreadable",
+      source: "agents.slice",
+    },
+  ];
+  for (const row of rows) {
+    const f = setup();
+    row.prepare(f.config.cgroupRoot);
+    const cap = probeAgentSlice(
+      { ...f.config, agentSlice: row.slice },
+      row.groups,
+    );
+    expect({
+      row: row.name,
+      id: cap.id,
+      available: cap.available,
+      failure: cap.failure,
+      source: cap.source,
+    }).toEqual({
+      row: row.name,
+      id: "agent-slice",
+      available: row.failure === null,
+      failure: row.failure,
+      source: join(f.config.cgroupRoot, row.source),
+    });
+  }
+});
+
+test("a slice that appears after vsys starts is present from the next sample", async () => {
+  const f = setup();
+  rmSync(join(f.config.cgroupRoot, "agents.slice"), { recursive: true });
+  const collector = new Collector(f.config, 100, 4096);
+  const before = byId((await collector.sample(1000)).capabilities);
+  expect(before.get("agent-slice")?.failure).toBe("absent");
+  // systemd starts the slice when the first unit is placed in it.
+  f.group("agents.slice");
+  const after = byId((await collector.sample(2000)).capabilities);
+  expect(after.get("agent-slice")?.available).toBe(true);
 });

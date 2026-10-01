@@ -6,7 +6,13 @@ import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
 import { isChildLine, mount, selectedRow } from "../test/harness";
-import { settingGroups, settingHelp } from "./settings";
+import { osc52 } from "./clipboard";
+import {
+  capabilityLabels,
+  capabilityOffer,
+  settingGroups,
+  settingHelp,
+} from "./settings";
 import { settingItems, sourceCounts } from "./settings-screen";
 
 test("every stored setting sits in exactly one group, and no group names a stranger", () => {
@@ -357,6 +363,38 @@ test("a missing capability wraps its reason and its source under the row", async
       .replace(/[^\x20-\x7e]/g, " ")
       .replace(/\s+/g, " ");
     expect(joined).toContain("ENOENT: no such file or directory");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the copy key on a missing agent slice copies the line that limits one", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "agent-slice"
+      ? { ...cap, available: false, failure: "absent" as const }
+      : cap,
+  );
+  const slice = s.capabilities.find((cap) => cap.id === "agent-slice");
+  const command = slice && capabilityOffer(slice, c)?.command;
+  if (!command) throw new Error("agent-slice: no line offered");
+  const t = await mount(s, c, { width: 160, height: 40 });
+  try {
+    await t.press("7");
+    // A row with nothing to supply copies nothing.
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([]);
+    const at = settingItems(c, s.capabilities).findIndex(
+      (item) => item.kind === "capability" && item.id === "agent-slice",
+    );
+    for (let i = 0; i < at; i++) await t.press("down");
+    expect(selectedRow(t.frame())).toContain("Agent slice");
+    // The line is on the screen before it is copied, so a terminal that
+    // ignores the clipboard request still leaves it to be read.
+    expect(t.frame()).toContain(command);
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([osc52(command)]);
   } finally {
     await t.close();
   }
@@ -749,7 +787,7 @@ test("a source that could not be read shows why, at the end of a short list", as
     // read is on the screen with it. Scrolled to the row alone, the row landed
     // flush against the bottom edge and this line was the one below the fold —
     // which is the whole of what the reader selected it for.
-    expect(selectedRow(frame)).toContain("Drive lifetime reports");
+    expect(selectedRow(frame)).toContain(capabilityLabels[last.id]);
     expect(frame).toContain("(/proc/pressure/cpu: ENOENT");
   } finally {
     await t.close();
@@ -773,10 +811,10 @@ test("Enter on a readable source brings its own source line with it", async () =
     // Nothing is open yet, so the source is not on the screen to begin with,
     // and the marker says closed until Enter opens it.
     expect(t.frame()).not.toContain(last.source);
-    expect(selectedRow(t.frame())).toContain("▸ Drive lifetime reports");
+    expect(selectedRow(t.frame())).toContain(`▸ ${capabilityLabels[last.id]}`);
     await t.press("enter");
     const frame = t.frame();
-    expect(selectedRow(frame)).toContain("▾ Drive lifetime reports");
+    expect(selectedRow(frame)).toContain(`▾ ${capabilityLabels[last.id]}`);
     // Enter is what opened this, so Enter has to be what moves the view: with
     // `openCap` outside the effect's dependencies the block grew a line and
     // nothing re-ran, leaving that line below the fold.
