@@ -19,6 +19,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 
 - The project pins its Bun version in `.bun-version` and carries that runtime as a development dependency, so the repository's own Bun is the one to run. Where the system Bun differs, use `PATH="$PWD/node_modules/.bin:$PATH" python3 scripts/ci.py`.
 - `scripts/ci.py` refuses to run unless `package.json` defines a nonempty `lint`, `typecheck`, `test` and `build` script and `bun.lock` is committed. It installs with `--frozen-lockfile`, so a lockfile behind `package.json` fails rather than resolving.
+- `.github/workflows/ci.yml` ends in a job named `CI`, the one check that blocks a merge. It fails when any job it lists in `needs` does not succeed. A new job in that workflow goes into that list, or its failure does not block a merge.
 - A new setting that collection reads must be added to `collectionKeys` in `src/collect/settings.ts`. Leaving it out compiles only because collection never reads it, and the runtime would then not rebuild the collector when it changes.
 - A display setting or a notification rule must stay out of that list, because rebuilding the collector discards the counters and alert state a sample compares against.
 - Docs change in the same commit as the code they describe. The `doc-drift-check` hook reads the `Covers:` line of each file in `docs/architecture/` and shows a notice when covered code changed without them.
