@@ -1,11 +1,12 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 
 /**
  * The suite `warnings.test.ts` runs in a child `bun test`: two tests that
- * warn and one that does not. The name stays outside the runner's test
- * pattern, so `bun test src/` never runs the tests that must fail.
+ * warn, one that does not, and an `afterAll` that warns after the last test.
+ * The name stays outside the runner's test pattern, so `bun test src/` never
+ * runs the tests that must fail.
  */
 async function rows(keys: string[]) {
   const ui = await testRender(
@@ -37,4 +38,9 @@ test("rows with their own keys", async () => {
 // React reports some misuse through `console.warn` instead.
 test("a warning written through console.warn", () => {
   console.warn("a stand-in for a React warning");
+});
+
+// No test follows this, so only the gate's end of run can report it.
+afterAll(() => {
+  console.error("a warning from the file's afterAll");
 });

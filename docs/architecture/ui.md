@@ -1,6 +1,6 @@
 # UI
 
-Covers: src/ui/ src/main.ts src/effect.ts src/test/harness.tsx
+Covers: src/ui/ src/main.ts src/effect.ts src/test/
 
 The screen owns one mounted React tree, and collection publishes a stable snapshot into it. Navigation, selection, search and editing belong to that tree and survive a sample. The model hands the UI numbers; every word and every formatted number is written here.
 

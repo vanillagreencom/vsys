@@ -108,34 +108,23 @@ test("Storage draws two filesystems that report one device", async () => {
   expect(
     volumesByDevice(s.storage.volumes).map((g) => `${g.id} ${g.device}`),
   ).toEqual(["abc /dev/mapper/pool", "def /dev/mapper/pool"]);
-  const logged: string[] = [];
-  const wasError = console.error;
-  console.error = (...args: unknown[]) => {
-    logged.push(args.map(String).join(" "));
-  };
+  // Keyed by the device these two groups share one key, which React reports as
+  // unsupported: it may duplicate or omit a child, and which it does is not
+  // ours to choose. This render still draws both, so the frame cannot show the
+  // collision; React's same-key warning is the only place it is stated, and
+  // the warning gate preloaded from `src/test/warnings.ts` fails this test on it.
   let frame = "";
+  const t = await mount(s, c, { width: 140, height: 30 });
   try {
-    const t = await mount(s, c, { width: 140, height: 30 });
-    try {
-      await t.press("5");
-      frame = t.frame();
-    } finally {
-      await t.close();
-    }
+    await t.press("5");
+    frame = t.frame();
   } finally {
-    console.error = wasError;
+    await t.close();
   }
-  // Both filesystems reached the screen, so the diagnostic below is about two
-  // drawn groups rather than a fixture that quietly drew one.
   expect([frame.includes("/one"), frame.includes("/two")]).toEqual([
     true,
     true,
   ]);
-  // Keyed by the device these two groups share one key, which React reports as
-  // unsupported: it may duplicate or omit a child, and which it does is not
-  // ours to choose. This render still draws both, so the diagnostic is the only
-  // place the collision is stated, and the test reads it rather than the frame.
-  expect(logged.filter((line) => /same key/i.test(line))).toEqual([]);
 });
 
 test("a device reports the free space a member could read", async () => {
