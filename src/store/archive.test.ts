@@ -265,6 +265,15 @@ test("one read of many lanes inflates each sealed segment once, whatever their n
       399 + n,
     ]);
   }
+  // A window that has moved past the first checkpoint lets its projection go,
+  // so what is held is the checkpoints the window overlaps and no more.
+  expect(checkpoints(archive).length).toBeGreaterThan(1);
+  const window = archive.laneWindows(many, 301000, 400000);
+  expect(window.get(many[0])).toHaveLength(100);
+  // biome-ignore lint/complexity/useLiteralKeys: reads a private field
+  expect([...archive["projections"].keys()]).toEqual(
+    checkpoints(archive).slice(1),
+  );
 });
 test("a lane that ends leaves the lane projections", () => {
   const archive = new Archive();
@@ -286,6 +295,14 @@ test("a lane that ends leaves the lane projections", () => {
     ...Array.from({ length: 10 }, (_, i) => i + 1),
     null,
   ]);
+  // The walk that brought it back started at the base line for it alone; the
+  // lane still held took only the line it had not reached, once.
+  expect(
+    archive
+      .laneWindows([kept], 0, 11000)
+      .get(kept)
+      ?.map((x) => x.cpu),
+  ).toEqual(Array.from({ length: 11 }, (_, i) => i));
 });
 test("a run sealing under a parked cursor does not corrupt what it reads", () => {
   // A reader pins a sample and leaves it pinned while samples keep arriving.

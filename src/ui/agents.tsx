@@ -171,6 +171,12 @@ interface Trends {
    * between the ask and the answer does not ask again.
    */
   requested: Set<string>;
+  /**
+   * Keys whose read failed under `question`, with the sample time it was asked
+   * on. Each stays requested until a later sample, which asks for it again,
+   * so a read that keeps failing is retried once a sample and not in a loop.
+   */
+  failed: Map<string, number>;
   /** The series drawn, keyed by lane and window. */
   loaded: Map<string, LaneSample[]>;
 }
@@ -211,6 +217,7 @@ export function useLaneTrends(
       trends = {
         question: { windowMs, at },
         requested: new Set(),
+        failed: new Map(),
         loaded: new Map(),
       };
       answered.set(history, trends);
@@ -224,12 +231,18 @@ export function useLaneTrends(
       // lands, and a row no longer on screen is let go.
       trends.question = { windowMs, at };
       trends.requested.clear();
+      trends.failed.clear();
       const shown = new Set(keys.map(([, key]) => key));
       trends.loaded = new Map(
         [...trends.loaded].filter(([key]) => shown.has(key)),
       );
     }
     const kept = trends;
+    for (const [key, time] of kept.failed)
+      if (end > time) {
+        kept.failed.delete(key);
+        kept.requested.delete(key);
+      }
     const missing = keys.flatMap(([id, key]) => {
       if (kept.requested.has(key)) return [];
       kept.requested.add(key);
@@ -239,13 +252,16 @@ export function useLaneTrends(
     // One read for every row this question reveals, so the store walks its
     // history once for all of them rather than once per row.
     const asked = kept.question;
+    const askedOn = end;
     void (async () => {
-      let series = new Map<string, LaneSample[]>();
+      let series: Map<string, LaneSample[]> | null = null;
       try {
         series = await history.laneWindows(missing, asked.at, asked.windowMs);
       } catch {
-        // A read that fails leaves its rows with no trend, never rows showing
-        // another lane's.
+        // A read that could not be taken is not an empty window. Its rows
+        // stay unread, which draws them blank, and are asked for again on the
+        // next sample. No screen shows the error, so it is not kept.
+        series = null;
       }
       // A read started under the previous question can still be in flight
       // when this one begins, and it resolves whenever the disk gets to it,
@@ -255,12 +271,19 @@ export function useLaneTrends(
       // So the answer is kept or dropped when it arrives, on what it answers.
       if (kept.question !== asked) return;
       const loaded = new Map(kept.loaded);
-      for (const id of missing)
-        loaded.set(`${id}\u0000${asked.windowMs}`, series.get(id) ?? []);
+      for (const id of missing) {
+        const key = `${id}\u0000${asked.windowMs}`;
+        const samples = series?.get(id);
+        if (samples) loaded.set(key, samples);
+        else kept.failed.set(key, askedOn);
+      }
       kept.loaded = loaded;
       if (mounted.current) redraw((n) => n + 1);
     })();
-  }, [history, ids, windowMs, at]);
+    // The sample time is a dependency so a failed read is asked for again on
+    // the next sample. A sample asks for nothing else: every other key on
+    // screen is already in `requested`.
+  }, [history, ids, windowMs, at, end]);
   return answered.get(history)?.loaded ?? unread;
 }
 /**

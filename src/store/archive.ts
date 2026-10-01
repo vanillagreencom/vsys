@@ -482,6 +482,12 @@ export class Archive {
             out.push({ ...sample });
       }
     }
+    // A checkpoint the window has moved past is let go, the rule the stored
+    // series in `History` follow. A reader whose window starts a little
+    // earlier walks that one checkpoint again rather than every reader
+    // holding every checkpoint it ever read until the lane ends.
+    for (const chunk of this.projections.keys())
+      if ((chunk.times.at(-1) ?? start) < start) this.projections.delete(chunk);
     return result;
   }
   /**

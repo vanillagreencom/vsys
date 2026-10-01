@@ -418,6 +418,42 @@ test("the trends already read survive leaving the list and coming back", async (
   }
 });
 
+test("a read that fails leaves its rows unread, and the next sample reads again", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: "lane-0", name: "lane-0", cpu: 100 })];
+  s.groups = [groupSnapshot()];
+  const h = new History(c);
+  h.add(s);
+  const real = h.laneWindows.bind(h);
+  let reads = 0;
+  h.laneWindows = async (
+    ids: readonly string[],
+    end: number,
+    durationMs: number,
+  ) => {
+    reads++;
+    if (reads === 1) throw new Error("planted read failure");
+    return real(ids, end, durationMs);
+  };
+  const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
+  try {
+    await t.press("2");
+    await t.ui.renderOnce();
+    // The gap glyph belongs to the trend alone and says the window was read
+    // and holds no sample. A read that could not be taken said neither.
+    expect(reads).toBe(1);
+    expect(selectedRow(t.frame())).not.toContain("···");
+    // The same bucket, one sample on: the failed row is asked for again.
+    await t.update({ ...s, time: s.time + 1000 });
+    await t.update({ ...s, time: s.time + 2000 });
+    expect(reads).toBe(2);
+    expect(selectedRow(t.frame())).toContain("···");
+  } finally {
+    await t.close();
+  }
+});
+
 test("a series that arrives after the next sample still draws", async () => {
   const c = defaults();
   const s = emptySnapshot();

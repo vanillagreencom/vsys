@@ -105,6 +105,11 @@ test("one read of many stored lanes decompresses each stored row once, and keeps
       const decompressed: number[] = [];
       let series = new Map<string, LaneSample[]>();
       try {
+        // Half the lanes first, then all of them, as scrolling the list does:
+        // the second read walks the rows once for the twenty it adds, and the
+        // twenty it holds take nothing more.
+        await reopened.laneWindows(ids.slice(0, 20), end, 86400000);
+        decompressed.push(spy.mock.calls.length);
         series = await reopened.laneWindows(ids, end, 86400000);
         decompressed.push(spy.mock.calls.length);
         // Asked again, as a list asks when its newest bucket rolls over.
@@ -113,7 +118,7 @@ test("one read of many stored lanes decompresses each stored row once, and keeps
       } finally {
         spy.mockRestore();
       }
-      expect(decompressed).toEqual([rows, rows]);
+      expect(decompressed).toEqual([rows, 2 * rows, 2 * rows]);
       for (const [n, id] of ids.entries())
         expect(series.get(id)?.map((x) => x.cpu)).toEqual(
           Array.from({ length: rows }, (_, i) => i + n),
@@ -132,6 +137,15 @@ test("one read of many stored lanes decompresses each stored row once, and keeps
       next.lanes = [laneSnapshot({ id: ids[0], cpu: 0 })];
       reopened.add(next);
       expect([...(stored()?.lanes.keys() ?? [])]).toEqual([ids[0]]);
+      // Once the window starts after the last stored row it reads only the
+      // archive, and the stored series go.
+      for (let i = 2; i <= 12; i++) {
+        const s = emptySnapshot(end + i * 1000);
+        s.lanes = [laneSnapshot({ id: ids[0], cpu: 0 })];
+        reopened.add(s);
+      }
+      await reopened.laneWindows([ids[0]], end + 12000, 10000);
+      expect(stored()).toBeUndefined();
     } finally {
       reopened.close();
     }
@@ -139,4 +153,49 @@ test("one read of many stored lanes decompresses each stored row once, and keeps
     f.cleanup();
   }
   // A margin, for the reason the case above gives.
+}, 30000);
+test("the list and the detail reading one window length share the stored rows", async () => {
+  const f = fixture();
+  const c = { ...f.config, persistence: true };
+  const now = Date.now();
+  const id = laneSnapshot().id;
+  const windowMs = 60000;
+  try {
+    const first = new History(c);
+    for (let i = 0; i < 130; i++) {
+      const s = emptySnapshot(now + i * 1000);
+      s.lanes = [laneSnapshot({ cpu: i })];
+      first.add(s);
+    }
+    first.close();
+    // Reopened, the archive is empty, so every row is read back from SQLite.
+    const reopened = new History(c);
+    try {
+      const spy = spyOn(Bun, "gunzipSync");
+      const decompressed: number[] = [];
+      let back: LaneSample[] | undefined;
+      try {
+        // The list reads on its quantised end, the detail on the sample time
+        // past the next bucket boundary, and the list again on that boundary.
+        // The last starts two rows before what the detail left held.
+        for (const at of [100000, 107000, 105000]) {
+          back = (await reopened.laneWindows([id], now + at, windowMs)).get(id);
+          decompressed.push(spy.mock.calls.length);
+        }
+      } finally {
+        spy.mockRestore();
+      }
+      // Sixty-one rows for the first window, then only the rows each later
+      // read reaches outside what is held: seven after it, two before it.
+      expect(decompressed).toEqual([61, 68, 70]);
+      expect(back?.map((x) => x.cpu)).toEqual(
+        Array.from({ length: 61 }, (_, i) => 45 + i),
+      );
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    f.cleanup();
+  }
+  // A margin, for the reason the first case gives.
 }, 30000);

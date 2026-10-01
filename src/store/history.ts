@@ -411,8 +411,12 @@ export class History {
       );
       const diskEnd = Math.min(end, (this.archive.firstTime ?? end + 1) - 1);
       const db = this.db;
-      if (!db || diskEnd < start)
+      if (!db || diskEnd < start) {
+        // The window no longer reaches a stored row, so the stored series
+        // answer nothing; a longer window that does reach them reads them again.
+        if (!this.storedLoad) this.stored = undefined;
         return this.archive.laneWindows(ids, start, end);
+      }
       // One pass at a time: a second read waiting on the first finds the lanes
       // it shares already read, where two passes would decompress every row
       // twice. The window is worked out again after the wait, because samples
@@ -435,13 +439,18 @@ export class History {
     // archive's first row past `diskEnd`, and the rows between would be lost.
     const fromMemory = this.archive.laneWindows(ids, start, end);
     const kept = this.stored;
+    // The held span grows to meet a read that touches or adjoins it. A read
+    // clear of it on either side would need every row in the gap, so it starts
+    // over instead.
     const stored: StoredLanes =
-      kept && kept.start <= start
+      kept && start <= kept.through + 1 && diskEnd >= kept.start - 1
         ? kept
         : { start, through: start - 1, lanes: new Map(), cancelled: false };
     this.stored = stored;
-    // The window only moves forward between reads of one length, so what fell
-    // out of it is never asked for again; a longer window starts over above.
+    // Rows before this read's start are let go. Two readers of one window
+    // length ask for starts up to a trend bucket apart, the list on a
+    // quantised end and the detail on the sample time, so one that starts
+    // earlier than what is held reads only the rows in between, below.
     if (stored.start < start) {
       for (const samples of stored.lanes.values()) {
         const inside = samples.findIndex((s) => s.time >= start);
@@ -450,75 +459,99 @@ export class History {
       stored.start = start;
       stored.through = Math.max(stored.through, start - 1);
     }
-    // The series this read answers with, taken now rather than looked up after
-    // the pass: a lane that ends while the pass is out leaves the shared map,
-    // and its series is still the answer to this read.
-    const answer = ids.map((id): [string, LaneSample[]] => [
-      id,
-      stored.lanes.get(id) ?? [],
-    ]);
-    const added = answer.filter(([id]) => !stored.lanes.has(id));
-    if (added.length || stored.through < diskEnd) {
-      const reached = stored.through;
-      const every = [...added, ...stored.lanes];
-      for (const [id, samples] of added) stored.lanes.set(id, samples);
-      // A lane new to the cache needs every row the cache covers, which can
-      // reach past this read's end when an earlier read asked for a later one,
-      // and the lanes already held need only the rows past `through`.
+    const held = new Map(stored.lanes);
+    const added = ids.filter((id) => !held.has(id));
+    const every = [...added, ...held.keys()];
+    // A lane new to the cache needs every row of the span the cache will hold.
+    // The lanes already held need only the rows the span grows by, before it
+    // and after it, so each row is decompressed once for all of them.
+    // Read into lists of this read's own, so the held series are untouched
+    // until every pass has finished and a pass that stops part way leaves the
+    // cache as it found it.
+    const before = new Map(every.map((id): [string, LaneSample[]] => [id, []]));
+    const after = new Map(every.map((id): [string, LaneSample[]] => [id, []]));
+    const only = (lanes: Map<string, LaneSample[]>, ids: string[]) =>
+      [...lanes].filter(([id]) => ids.includes(id));
+    const passes: {
+      from: number;
+      to: number;
+      lanes: [string, LaneSample[]][];
+    }[] = [];
+    if (start < stored.start)
+      passes.push({ from: start, to: stored.start - 1, lanes: [...before] });
+    if (added.length && stored.start <= stored.through)
+      passes.push({
+        from: stored.start,
+        to: stored.through,
+        lanes: only(after, added),
+      });
+    if (diskEnd > stored.through)
+      passes.push({ from: stored.through + 1, to: diskEnd, lanes: [...after] });
+    if (passes.length) {
       const load = async () => {
-        const rows = db
-          .query<{ time: number; data: Uint8Array }, [number, number]>(
-            "SELECT time, data FROM samples WHERE time >= ? AND time <= ? ORDER BY time",
-          )
-          .iterate(
-            added.length ? stored.start : reached + 1,
-            Math.max(reached, diskEnd),
-          );
         let count = 0;
-        for (const row of rows) {
-          if (stored.cancelled) return;
-          const s = JSON.parse(
-            new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(row.data))),
-          ) as Snapshot;
-          const lanes = new Map(s.lanes.map((l) => [l.id, l]));
-          const groups = new Map(s.groups.map((g) => [g.path, g]));
-          for (const [id, samples] of row.time <= reached ? added : every) {
-            const lane = lanes.get(id);
-            const group = groups.get(id);
-            samples.push({
-              time: row.time,
-              cpu: lane?.cpu ?? null,
-              rss: lane?.rss ?? null,
-              pressure: group?.pressure.cpu?.some ?? lane?.pressure ?? null,
-              memoryPressure:
-                group?.pressure.memory?.some ?? lane?.memoryPressure ?? null,
-              ioPressure: group?.pressure.io?.some ?? lane?.ioPressure ?? null,
-            });
+        for (const pass of passes) {
+          for (const row of db
+            .query<{ time: number; data: Uint8Array }, [number, number]>(
+              "SELECT time, data FROM samples WHERE time >= ? AND time <= ? ORDER BY time",
+            )
+            .iterate(pass.from, pass.to)) {
+            if (stored.cancelled)
+              throw new Error("History closed while a lane read was out");
+            const s = JSON.parse(
+              new TextDecoder().decode(
+                Bun.gunzipSync(new Uint8Array(row.data)),
+              ),
+            ) as Snapshot;
+            const lanes = new Map(s.lanes.map((l) => [l.id, l]));
+            const groups = new Map(s.groups.map((g) => [g.path, g]));
+            for (const [id, samples] of pass.lanes) {
+              const lane = lanes.get(id);
+              const group = groups.get(id);
+              samples.push({
+                time: row.time,
+                cpu: lane?.cpu ?? null,
+                rss: lane?.rss ?? null,
+                pressure: group?.pressure.cpu?.some ?? lane?.pressure ?? null,
+                memoryPressure:
+                  group?.pressure.memory?.some ?? lane?.memoryPressure ?? null,
+                ioPressure:
+                  group?.pressure.io?.some ?? lane?.ioPressure ?? null,
+              });
+            }
+            if (++count % 64 === 0) await Bun.sleep(0);
           }
-          if (row.time > reached) stored.through = row.time;
-          if (++count % 64 === 0) await Bun.sleep(0);
         }
-        stored.through = Math.max(stored.through, diskEnd);
       };
       const job = load();
       this.storedLoad = job;
       try {
         await job;
-      } catch (error) {
-        // A pass that stopped part way leaves its lanes short of `through`,
-        // so none of what it read is kept.
-        if (this.stored === stored) this.stored = undefined;
-        throw error;
       } finally {
         this.storedLoad = undefined;
       }
     }
+    // A held lane that ended while the pass was out has left the cache and
+    // stays out of it; its series is still the answer to this read.
+    const fresh = new Set(added);
+    for (const id of every) {
+      const series = [
+        ...(before.get(id) ?? []),
+        ...(held.get(id) ?? []),
+        ...(after.get(id) ?? []),
+      ];
+      held.set(id, series);
+      if (fresh.has(id) || stored.lanes.has(id)) stored.lanes.set(id, series);
+    }
+    stored.start = Math.min(stored.start, start);
+    stored.through = Math.max(stored.through, diskEnd);
     return new Map(
-      answer.map(([id, samples]): [string, LaneSample[]] => {
+      ids.map((id): [string, LaneSample[]] => {
+        const samples = held.get(id);
         const recent = fromMemory.get(id);
-        if (!recent)
+        if (!samples || !recent)
           throw new Error(
-            "The archive answered without a lane it was asked for",
+            "A lane read answered without a lane it was asked for",
           );
         return [
           id,
