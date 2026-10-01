@@ -138,20 +138,19 @@ async function scanRoot(
   // Only a root on a list other than the shipped one is a problem for not
   // existing. A default, omitted or pinned unchanged, or an agent's temporary
   // directory that is not there has no row rather than one that fails for
-  // ever. Absence is read off
-  // the root's own status alone: a directory that leaves deeper in the walk
-  // fails the root as any other unreadable entry does, and never hides it.
-  let found: Stats | undefined;
+  // ever. Absence is the root's own status read failing with ENOENT, or with
+  // ENOTDIR where a parent on its path is a file, so the root cannot exist:
+  // a directory that leaves deeper in the walk fails the root as any other
+  // unreadable entry does, and never hides it.
+  let top: Stats;
   try {
-    found =
-      origin === "configured"
-        ? lstatSync(path)
-        : lstatSync(path, { throwIfNoEntry: false });
+    top = lstatSync(path);
   } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (origin !== "configured" && (code === "ENOENT" || code === "ENOTDIR"))
+      return "absent";
     return failed(error);
   }
-  if (found === undefined) return "absent";
-  const top = found;
   if (root.origin === "agent" && top.uid !== root.owner) return "shared";
   try {
     if (!top.isDirectory())

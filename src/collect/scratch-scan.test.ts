@@ -85,6 +85,20 @@ test("only a root on a list other than the shipped one fails for not existing", 
         { path: at("typed-gone"), origin: "configured" },
         { row: true, error: true, absent: false },
       ],
+      // A root under a parent that is a file cannot exist either: the lookup
+      // fails with ENOTDIR rather than ENOENT, and is absent all the same.
+      [
+        { path: join(file, "default-under-file"), origin: "default" },
+        { row: false, error: false, absent: true },
+      ],
+      [
+        { path: join(file, "agent-under-file"), origin: "agent", owner: me },
+        { row: false, error: false, absent: false },
+      ],
+      [
+        { path: join(file, "typed-under-file"), origin: "configured" },
+        { row: true, error: true, absent: false },
+      ],
       // A default that exists is measured as it always was.
       [
         { path: present, origin: "default" },
