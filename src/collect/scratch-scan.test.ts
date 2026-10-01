@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { linkSync, lstatSync, symlinkSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
 import {
@@ -58,6 +58,10 @@ test("only a root the reader listed fails for not existing", async () => {
     f.write(join(present, "session/file"), "1234");
     f.write(file, "");
     const at = (name: string) => join(f.root, name);
+    const me = lstatSync(present).uid;
+    const nested = join(f.root, "nested");
+    f.write(join(nested, "locked/file"), "1234");
+    chmodSync(join(nested, "locked"), 0o000);
     // Each row is one root scanned alone: whether it has a row, the error on
     // that row, whether it counts as a missing default, and the source error.
     const rows: [
@@ -73,7 +77,7 @@ test("only a root the reader listed fails for not existing", async () => {
       // An agent's temporary directory it never created was asked for by
       // nobody, so it leaves no trace at all.
       [
-        { path: at("agent-gone"), origin: "agent" },
+        { path: at("agent-gone"), origin: "agent", owner: me },
         { row: false, error: false, absent: false },
       ],
       // A root the reader typed that is missing is a real problem.
@@ -87,8 +91,26 @@ test("only a root the reader listed fails for not existing", async () => {
         { row: true, error: false, absent: false },
       ],
       [
-        { path: present, origin: "agent" },
+        { path: present, origin: "agent", owner: me },
         { row: true, error: false, absent: false },
+      ],
+      // A directory another user owns is shared, as the system's /tmp is,
+      // and not the agent's own: no row, no error, and not a missing default.
+      [
+        { path: present, origin: "agent", owner: me + 1 },
+        { row: false, error: false, absent: false },
+      ],
+      // A directory deeper in the walk that cannot be read fails the root
+      // whatever its origin; only the root's own lookup can find it absent.
+      // No fixture removes a directory between its status read and its
+      // listing, so the vanished case is held by that lookup alone.
+      [
+        { path: nested, origin: "default" },
+        { row: true, error: true, absent: false },
+      ],
+      [
+        { path: nested, origin: "agent", owner: me },
+        { row: true, error: true, absent: false },
       ],
       // A default that exists and cannot be measured still fails: only
       // nonexistence means the default is not configured here.
@@ -111,6 +133,7 @@ test("only a root the reader listed fails for not existing", async () => {
       );
     }
   } finally {
+    chmodSync(join(f.root, "nested/locked"), 0o700);
     f.cleanup();
   }
 });

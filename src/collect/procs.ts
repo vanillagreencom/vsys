@@ -10,9 +10,14 @@ import { scopeMain } from "../model/scopes";
 import type { Group, Proc, SourceError } from "../model/types";
 import { buildKind, excludedArgv, toolName } from "./builds";
 import { Reader } from "./io";
-import { scratchEnv } from "./scratch";
 import type { CollectionConfig } from "./settings";
 
+/**
+ * The environment names an agent's temporary directory is read from. Storage
+ * measures those directories as scratch, and reads them from the reading this
+ * collector already takes.
+ */
+export const scratchEnv = ["TMPDIR", "CLAUDE_CODE_TMPDIR"] as const;
 /** stat's command can contain spaces and closing parentheses. */
 export function parseStat(
   raw: string,

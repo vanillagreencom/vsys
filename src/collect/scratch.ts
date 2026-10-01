@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { defaultScratchDirs, sameValue } from "../config/config";
 import type { Proc } from "../model/types";
+import { scratchEnv } from "./procs";
 import type {
   PacedScan,
   ScanBudget,
@@ -12,9 +13,6 @@ import type {
 import type { CollectionConfig } from "./settings";
 import { workerFile } from "./worker-file";
 import { WorkerHost, type WorkerPort } from "./worker-host";
-
-/** The environment names an agent's temporary directory is read from. */
-export const scratchEnv = ["TMPDIR", "CLAUDE_CODE_TMPDIR"] as const;
 
 /**
  * The temporary directories running agents name, once each and in path order
@@ -33,6 +31,16 @@ export function agentScratchDirs(procs: Proc[]): string[] {
   return [...dirs].sort();
 }
 
+/** The user vsys runs as, whose agents are the ones it watches. */
+function processOwner(): number {
+  const uid = process.getuid?.();
+  if (uid === undefined)
+    throw new Error(
+      "Scratch discovery needs the user id, which this platform does not report",
+    );
+  return uid;
+}
+
 /**
  * The roots one scan measures. The settings list is the reader's own unless
  * it is the shipped default, whose roots need not exist. An agent's directory
@@ -44,6 +52,7 @@ export function scratchRoots(
   dirs: string[],
   agentDirs: string[],
   shipped = defaultScratchDirs(),
+  owner = processOwner(),
 ): ScanRoot[] {
   const origin = sameValue("scratchDirs", dirs, shipped)
     ? "default"
@@ -55,7 +64,7 @@ export function scratchRoots(
       return path === dir || path.startsWith(`${dir}/`);
     });
   for (const path of agentDirs)
-    if (!covered(path)) roots.push({ path, origin: "agent" });
+    if (!covered(path)) roots.push({ path, origin: "agent", owner });
   return roots;
 }
 

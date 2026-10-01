@@ -100,9 +100,13 @@ export interface Scratch {
  * names in its environment.
  */
 export type ScratchOrigin = "configured" | "default" | "agent";
-/** A measured scratch root and the reason vsys measured it. */
+/**
+ * A measured scratch root and the reason vsys measured it. A row a build
+ * stored before roots carried an origin reads null: that build measured only
+ * the settings list, and whether the list was the default is not recorded.
+ */
 export interface ScratchRoot extends Scratch {
-  origin: ScratchOrigin;
+  origin: ScratchOrigin | null;
 }
 /**
  * One damaged block address from a scrub report, with every path it is

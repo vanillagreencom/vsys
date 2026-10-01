@@ -686,7 +686,7 @@ test("the scratch heading and its empty line are decided together", () => {
       [],
       { scratchTime: 1000 },
       "measured ",
-      "No scratch directory is configured, and no running agent names one.",
+      "No scratch directory is configured.",
     ],
     // The shipped roots were measured and none is on this machine. That is a
     // reading, so it is neither a scan still to come nor a failure.
@@ -695,7 +695,7 @@ test("the scratch heading and its empty line are decided together", () => {
       ["/default"],
       { scratchTime: 1000, scratchAbsent: ["/default"] },
       "measured ",
-      "None of the default scratch directories exists here, and no running agent names one.",
+      "None of the default scratch directories exists here.",
     ],
     // Roots set and the first traversal running. A reader who set them is
     // never told that none are set.
@@ -748,7 +748,7 @@ test("the scratch heading and its empty line are decided together", () => {
 
 test("scratch roots with no reading yet are measuring, not unconfigured", async () => {
   const rows: [string[], boolean, string][] = [
-    [[], false, "No scratch directory is configured"],
+    [[], false, "No scratch directory is configured."],
     [["/scratch"], true, "have not been measured yet"],
     [["/scratch"], false, "have not been measured yet"],
   ];
@@ -769,7 +769,7 @@ test("scratch roots with no reading yet are measuring, not unconfigured", async 
         scratchDirs,
         denied:
           scratchDirs.length > 0 &&
-          frame.includes("No scratch directory is configured"),
+          frame.includes("No scratch directory is configured."),
       }).toEqual({ scratchDirs, denied: false });
     } finally {
       await t.close();
@@ -779,7 +779,7 @@ test("scratch roots with no reading yet are measuring, not unconfigured", async 
 
 test("each scratch root row says where it came from", async () => {
   const s = emptySnapshot();
-  const root = (path: string, origin: ScratchOrigin) => ({
+  const root = (path: string, origin: ScratchOrigin | null) => ({
     path,
     bytes: 1,
     age: 0,
@@ -790,6 +790,8 @@ test("each scratch root row says where it came from", async () => {
     root("/typed", "configured"),
     root("/shipped", "default"),
     root("/agent", "agent"),
+    // A row an older build stored, whose origin is not known.
+    root("/stored", null),
   ];
   s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 0, error: null }];
   const t = await mount(s, defaults(), { width: 140, height: 40 });
@@ -802,9 +804,16 @@ test("each scratch root row says where it came from", async () => {
       typed: said("/typed").endsWith("configured"),
       shipped: said("/shipped").endsWith("default setting"),
       agent: said("/agent").endsWith("found on an agent"),
+      stored: said("/stored").endsWith("ago"),
       // A session sits under its root and repeats nothing about it.
       session: said("/agent/s").endsWith("ago"),
-    }).toEqual({ typed: true, shipped: true, agent: true, session: true });
+    }).toEqual({
+      typed: true,
+      shipped: true,
+      agent: true,
+      stored: true,
+      session: true,
+    });
   } finally {
     await t.close();
   }

@@ -1,18 +1,16 @@
 import { lstatSync, readdirSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import type {
-  Scratch,
-  ScratchOrigin,
-  ScratchRoot,
-  SourceError,
-} from "../model/types";
+import type { Scratch, ScratchRoot, SourceError } from "../model/types";
 import type { WorkerReply } from "./worker-host";
 
-/** A directory a scan is asked to measure, and why it is asked. */
-export interface ScanRoot {
-  path: string;
-  origin: ScratchOrigin;
-}
+/**
+ * A directory a scan is asked to measure, and why it is asked. An agent's
+ * directory carries the user whose agents vsys watches: a directory another
+ * user owns, such as the system's shared `/tmp`, is not that agent's own.
+ */
+export type ScanRoot =
+  | { path: string; origin: "configured" | "default" }
+  | { path: string; origin: "agent"; owner: number };
 
 export interface ScratchScan {
   scratch: ScratchRoot[];
@@ -110,10 +108,11 @@ class Pace {
  * blocking delays no sample.
  */
 async function scanRoot(
-  { path, origin }: ScanRoot,
+  root: ScanRoot,
   now: number,
   pace: Pace,
-): Promise<{ root: ScratchRoot; sessions: Scratch[] } | "absent"> {
+): Promise<{ root: ScratchRoot; sessions: Scratch[] } | "absent" | "shared"> {
+  const { path, origin } = root;
   const sessions: Scratch[] = [];
   const record = (
     path: string,
@@ -132,8 +131,28 @@ async function scanRoot(
           ? error.message
           : String(error),
   });
+  const failed = (error: unknown) => ({
+    root: { ...record(path, null, undefined, error), origin },
+    sessions: [],
+  });
+  // Only a root the reader listed is a problem for not existing. A default
+  // or an agent's temporary directory that is not there was never asked for,
+  // so it has no row rather than one that fails for ever. Absence is read off
+  // the root's own status alone: a directory that leaves deeper in the walk
+  // fails the root as any other unreadable entry does, and never hides it.
+  let found: Stats | undefined;
   try {
-    const top = lstatSync(path);
+    found =
+      origin === "configured"
+        ? lstatSync(path)
+        : lstatSync(path, { throwIfNoEntry: false });
+  } catch (error) {
+    return failed(error);
+  }
+  if (found === undefined) return "absent";
+  const top = found;
+  if (root.origin === "agent" && top.uid !== root.owner) return "shared";
+  try {
     if (!top.isDirectory())
       throw new Error(`Scratch path is not a directory: ${path}`);
     const global = new Set<string>();
@@ -177,18 +196,7 @@ async function scanRoot(
     const [bytes] = await walk(path, top, global, 0);
     return { root: { ...record(path, bytes, top), origin }, sessions };
   } catch (error) {
-    // Only a root the reader listed is a problem for not existing. A default
-    // or an agent's temporary directory that is not there was never asked
-    // for, so it has no row rather than one that fails for ever.
-    if (
-      origin !== "configured" &&
-      (error as NodeJS.ErrnoException).code === "ENOENT"
-    )
-      return "absent";
-    return {
-      root: { ...record(path, null, undefined, error), origin },
-      sessions: [],
-    };
+    return failed(error);
   }
 }
 
@@ -214,8 +222,9 @@ export async function scanScratch(
   };
   for (const root of roots) {
     const scanned = await scanRoot(root, time, pace);
-    if (scanned === "absent") {
-      if (root.origin === "default") result.absent.push(root.path);
+    if (scanned === "absent" || scanned === "shared") {
+      if (scanned === "absent" && root.origin === "default")
+        result.absent.push(root.path);
       continue;
     }
     result.scratch.push(scanned.root);

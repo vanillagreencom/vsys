@@ -150,7 +150,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   },
   scratchDirs: {
     label: "Scratch directories",
-    help: "Directories measured against the scratch quota.",
+    help: "Directories measured against the scratch quota. The temporary directories running agents name are measured whatever this list holds.",
   },
   scratchQuota: {
     label: "Scratch quota",

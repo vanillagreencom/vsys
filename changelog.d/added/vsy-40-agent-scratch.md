@@ -1,1 +1,1 @@
-- Storage measures the temporary directories running agents name in `TMPDIR` and `CLAUDE_CODE_TMPDIR`, and each scratch row says whether it is configured, a default setting, or found on an agent.
+- Storage measures the temporary directories running agents name, except one another user owns such as `/tmp`, and each scratch row says where it came from.

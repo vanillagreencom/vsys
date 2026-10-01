@@ -73,6 +73,15 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
     // empty list is the unknown value: no reading claims a missing interface.
     capabilities: s.capabilities ?? [],
     lanes: (s.lanes ?? []).map(normalizeLane),
+    storage: {
+      ...s.storage,
+      // A build older than root origins stored rows with none. Null is the
+      // unknown value: the row is drawn with no origin word.
+      scratch: s.storage.scratch.map((root) => ({
+        ...root,
+        origin: root.origin ?? null,
+      })),
+    },
   };
 }
 /** The event kinds whose subject can be a cgroup, and so can be a raw unit. */

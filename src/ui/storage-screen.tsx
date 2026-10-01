@@ -129,14 +129,13 @@ export function scratchSummary(
   if (st.scratchAbsent?.length)
     return {
       state,
-      empty:
-        "None of the default scratch directories exists here, and no running agent names one.",
+      empty: "None of the default scratch directories exists here.",
     };
   return {
     state,
     empty: c.scratchDirs.length
       ? "The configured scratch directories have not been measured yet."
-      : "No scratch directory is configured, and no running agent names one.",
+      : "No scratch directory is configured.",
   };
 }
 
@@ -484,7 +483,7 @@ export function Storage({
             text={fit(amount(x.bytes, c), 10, "right")}
           />
           <span attributes={ui.dim}>{`  ${modified} ago`}</span>
-          {!item.session && (
+          {!item.session && item.scratch.origin !== null && (
             <span attributes={ui.dim}>
               {`  ${scratchOriginText(item.scratch.origin)}`}
             </span>

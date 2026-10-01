@@ -209,7 +209,11 @@ test("an agent's temporary directory is scratch work even with no root set", asy
       1000,
       false,
     );
-    expect(scans.roots).toEqual([[{ path: "/agent/tmp", origin: "agent" }]]);
+    // The agent's directory is measured only if vsys's own user owns it.
+    const owner = process.getuid?.() ?? Number.NaN;
+    expect(scans.roots).toEqual([
+      [{ path: "/agent/tmp", origin: "agent", owner }],
+    ]);
   } finally {
     collector.close();
   }
@@ -264,7 +268,7 @@ test("the shipped list is default and any list the reader set is theirs", async 
       ["/a", "/a/lane", "/ab"],
       [
         { path: "/a/", origin: "configured" },
-        { path: "/ab", origin: "agent" },
+        { path: "/ab", origin: "agent", owner: 1000 },
       ],
     ],
     [
@@ -272,15 +276,15 @@ test("the shipped list is default and any list the reader set is theirs", async 
       [],
       ["/t", "/t/x", "/u"],
       [
-        { path: "/t", origin: "agent" },
-        { path: "/u", origin: "agent" },
+        { path: "/t", origin: "agent", owner: 1000 },
+        { path: "/u", origin: "agent", owner: 1000 },
       ],
     ],
   ];
   for (const [name, dirs, agentDirs, roots] of rows)
     expect({
       name,
-      roots: scratchRoots(dirs, agentDirs, ["/a", "/b"]),
+      roots: scratchRoots(dirs, agentDirs, ["/a", "/b"], 1000),
     }).toEqual({ name, roots });
 });
 
