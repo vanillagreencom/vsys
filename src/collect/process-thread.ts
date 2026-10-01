@@ -1,7 +1,6 @@
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { ProcessReading, ProcessRequest, ProcessSource } from "./procs";
 import type { CollectionConfig } from "./settings";
+import { workerFile } from "./worker-file";
 
 /** What the host sends a process thread. Setup always precedes a request. */
 export type ProcessMessage =
@@ -22,25 +21,6 @@ export type ProcessMessage =
 export type ProcessReply =
   | { kind: "collected"; id: number; reading: ProcessReading }
   | { kind: "failed"; id: number; message: string };
-
-/**
- * The process thread's own module: the source file beside this one, or the
- * built one. Bun's bundler does not follow a worker URL, so every build names
- * the worker as a second entry point, and the bundle places it at
- * `collect/process-worker.js` beside its main file, which is what
- * `import.meta.url` names once bundled. Neither present is a broken build.
- */
-function workerFile(): URL {
-  const candidates = ["./process-worker.ts", "./collect/process-worker.js"].map(
-    (name) => new URL(name, import.meta.url),
-  );
-  const found = candidates.find((url) => existsSync(fileURLToPath(url)));
-  if (found === undefined)
-    throw new Error(
-      `No process worker beside ${fileURLToPath(import.meta.url)}`,
-    );
-  return found;
-}
 
 /**
  * What this host calls on a thread, and all of it. A real `Worker` satisfies
@@ -90,7 +70,7 @@ export class ProcessThread implements ProcessSource {
      * Bun's `ref` and `unref`.
      */
     private start: () => ProcessPort = () =>
-      new Worker(workerFile(), { ref: false }) as Bun.Worker,
+      new Worker(workerFile("process-worker"), { ref: false }) as Bun.Worker,
   ) {}
   private thread(): ProcessPort {
     if (this.worker) return this.worker;

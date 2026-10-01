@@ -7,7 +7,11 @@
  * Usage: bun scripts/build.ts dist
  *        bun scripts/build.ts compile OUTFILE
  */
-const entrypoints = ["src/main.ts", "src/collect/process-worker.ts"];
+const entrypoints = [
+  "src/main.ts",
+  "src/collect/process-worker.ts",
+  "src/collect/scratch-worker.ts",
+];
 
 /** The bundle `bun dist/main.js` runs, with its packages left to install. */
 export async function buildDist(): Promise<void> {

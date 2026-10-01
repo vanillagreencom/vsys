@@ -22,7 +22,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `.github/workflows/ci.yml` ends in a job named `CI`. It fails when any job it lists in `needs` does not succeed, and it is the aggregate the main ruleset is to require in place of the per-job checks. Its "Require every needed job to succeed" step parses the workflow with `yq` and fails when that `needs` list differs from the other jobs in the workflow, so a new job must go into the list.
 - A new setting that collection reads must be added to `collectionKeys` in `src/collect/settings.ts`. Leaving it out compiles only because collection never reads it, and the runtime would then not rebuild the collector when it changes.
 - A display setting or a notification rule must stay out of that list, because rebuilding the collector discards the counters and alert state a sample compares against.
-- Scratch traversal runs in a worker. Bun's bundler does not follow the worker's URL, so every build names `src/collect/scratch-worker.ts` as a second entry point. `bun run build` emits it beside `dist/main.js`. `bun run compile` builds the standalone `vsys` binary and embeds it under `collect/` in the binary's own root; the release workflow and the `vsys-git` package both call that script rather than a command of their own. `src/collect/scratch.ts` resolves whichever of the three spellings is on disk. A build that leaves the worker out still prints snapshots and cannot measure scratch. `scripts/ci.py` fails on a `build` that emits only the entry point, and `bun run check:compiled` compiles a binary through `compile` and fails unless its `--once` measures a scratch root of its own exactly, with no scratch source error. The release runs the same check on the binary it ships.
+- Scratch traversal and process reads each run in a worker. Bun's bundler does not follow a worker's URL, so `scripts/build.ts` holds the one list of entry points, the program and both workers, and builds both shipped forms from it. `bun run build` emits `dist/main.js` with the workers under `dist/collect/`. `bun run compile` builds the standalone `vsys` binary and embeds the workers under `collect/` in the binary's own root; the release workflow and the `vsys-git` package both call that script rather than a command of their own. `workerFile()` in `src/collect/worker-file.ts` resolves a worker in the source tree or under `collect/` beside the bundled program. `scripts/ci.py` fails on a `build` that leaves out any file in its `ARTIFACTS`, and `bun run smoke` takes one `--once` fixture sample with the bundle and one with a freshly compiled binary through `scripts/sample-check.ts`. Each sample starts both workers and fails unless it reads the fixture's process and measures its scratch root exactly, with no source error. The release runs the same check on the binary it ships.
 - The traversal's processor bound lives in a timer on a worker thread, where a unit test stages the clock and no test can see the wait. `bun run bench:scratch` measures it, and the Benchmarks section below says what it proves and what it refuses.
 - Docs change in the same commit as the code they describe. The `doc-drift-check` hook reads the `Covers:` line of each file in `docs/architecture/` and shows a notice when covered code changed without them.
 
@@ -35,12 +35,12 @@ bun src/main.ts --once        # one JSON snapshot, exit 2 on source errors
 bun src/main.ts --once --summary # cheap verdict JSON, exit 2 on source errors
 bun src/main.ts --markdown --once
 bun src/main.ts --config PATH # another TOML settings file
-python3 scripts/ci.py         # install, lint, types, tests, build, compiled binary, one sample with the build, scratch bound
+python3 scripts/ci.py         # install, lint, types, tests, build, a sample with the bundle and a compiled binary, scratch bound
 bun test src/                 # the application suites alone
-bun run build                 # dist/main.js, dist/collect/process-worker.js and dist/scratch-worker.js; run main.js with Bun from the project directory
+bun run build                 # dist/main.js and both workers under dist/collect/; run main.js with Bun from the project directory
 bun run compile               # the standalone ./vsys binary the release and the vsys-git package ship
-bun run check:compiled [PATH] # measure scratch with a compiled binary, a fresh one without PATH
 bun run smoke                 # one --once fixture sample with dist/main.js, and one with a binary compiled into the fixture
+bun scripts/sample-check.ts PATH # the same sample with a binary already built
 ```
 
 `--once` needs no terminal, which is the way to read a snapshot from a script or a test. Interactive mode refuses to start without a TTY and says so.
