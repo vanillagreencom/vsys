@@ -126,3 +126,36 @@ jobs:
             *) echo "::error::Could not compare review packages"; exit "$result" ;;
           esac
           "$checker" check --repo candidate --spec candidate/.agents/skills/bot-instructions
+
+  ci:
+    name: CI
+    # Fails when any job in its needs list does not succeed. It is the
+    # aggregate the main ruleset is to require in place of the per-job checks.
+    # Its "Require every needed job to succeed" step parses this file with yq
+    # and fails when needs differs from the
+    # other job ids, so every job above stays in the list.
+    # No job here is skipped by a change-classifier rule, so no skip is
+    # expected and a skipped, failed or cancelled job fails this one.
+    needs: [application, arch-package, review-gate-validate, bot-instructions]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/workflows/ci.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Require every needed job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jobs=$(yq -o=json '.jobs | keys | map(select(. != "ci")) | sort' .github/workflows/ci.yml | jq -c .)
+          needed=$(jq -c 'keys | sort' <<<"$NEEDS")
+          if [ "$jobs" != "$needed" ]; then
+            echo "::error::CI needs $needed but the workflow's other jobs are $jobs"
+            exit 1
+          fi
+          failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "::error::\(.key) finished \(.value.result)"' <<<"$NEEDS")
+          if [ -n "$failed" ]; then printf '%s\n' "$failed"; exit 1; fi
