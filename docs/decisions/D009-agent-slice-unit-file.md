@@ -29,6 +29,6 @@
 
 **Revisit When**: A slice is defined some other way vsys should honour, such as a unit generator or a directory outside this list, or reading the user manager's own state becomes available without a subprocess or a new dependency.
 
-**Verification**: `src/collect/capabilities.test.ts` tables the probe, including a slice defined by a unit file and by a drop-in directory with no group, a missing unit directory, and a unit path that cannot be read.
+**Verification**: `src/collect/capabilities.test.ts` tables the probe in "the agent slice is present, defined, absent, or unknown", including a slice defined by a unit file and by a drop-in directory with no group, a missing unit directory, and a unit path that cannot be read; its "unit files are looked for in the user directories, then the system ones" pins the directory list. `src/collect/collector.test.ts` "the program's collector finds a slice defined only by a drop-in" builds the collector the program builds and finds a `user.control` drop-in.
 
 **References**: `src/collect/capabilities.ts`, [lanes.md](../architecture/lanes.md)

@@ -458,17 +458,18 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
     laneSnapshot({ id: "a", tool: "claude", cpu: 20, cache: 100 }),
     laneSnapshot({ id: "b", tool: "codex", cpu: 10, cache: 50 }),
   ];
-  const figures = (snapshot: Snapshot) => {
-    const meter = (id: string) => meters(snapshot, c).find((m) => m.id === id);
+  const figures = (snapshot: Snapshot, config: typeof c) => {
+    const meter = (id: string) =>
+      meters(snapshot, config).find((m) => m.id === id);
     return {
-      cpu: agentTotal(snapshot, c, "cpu"),
+      cpu: agentTotal(snapshot, config, "cpu"),
       meterCpu: meter("cpu")?.values.agents,
       meterCache: meter("memory")?.values.cache,
-      swapCache: causes(snapshot, c).find((x) => x.id === "desktop-swap")
+      swapCache: causes(snapshot, config).find((x) => x.id === "desktop-swap")
         ?.values.cache,
     };
   };
-  const rows: [string, Lane[], string[], (number | null)[]][] = [
+  const rows: [string, Lane[], string[], (number | null)[], string?][] = [
     ["two agents", [...agents, desktop], [], [30, 30, 150, 150]],
     [
       "an agent lane with no CPU reading",
@@ -498,19 +499,31 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
       [`${c.procRoot}/77/environ`],
       [30, 30, 150, 150],
     ],
+    // Configuration accepts a trailing slash; the reader's sources carry none.
+    [
+      "a process that could not be read, under a root written with a slash",
+      [...agents, desktop],
+      ["/proc/77"],
+      [null, null, null, null],
+      "/proc/",
+    ],
   ];
   for (const [
     name,
     lanes,
     failed,
     [cpu, meterCpu, meterCache, swapCache],
+    procRoot = c.procRoot,
   ] of rows)
     expect({
       name,
-      ...figures({
-        ...s,
-        lanes,
-        errors: failed.map((source) => ({ source, message: "EACCES" })),
-      }),
+      ...figures(
+        {
+          ...s,
+          lanes,
+          errors: failed.map((source) => ({ source, message: "EACCES" })),
+        },
+        { ...c, procRoot },
+      ),
     }).toEqual({ name, cpu, meterCpu, meterCache, swapCache });
 });

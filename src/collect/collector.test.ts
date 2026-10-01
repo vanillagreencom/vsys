@@ -616,6 +616,38 @@ test("a settings change keeps the cache counts measured since vsys started", asy
   });
 });
 
+test("the program's collector finds a slice defined only by a drop-in", async () => {
+  const f = setup();
+  rmSync(join(f.config.cgroupRoot, "agents.slice"), { recursive: true });
+  // What the line Settings offers writes, with no group started yet. Both XDG
+  // roots point into the fixture, so the host's own units are not read.
+  mkdirSync(join(f.root, "config/systemd/user.control/agents.slice.d"), {
+    recursive: true,
+  });
+  const prior = {
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+  };
+  process.env.XDG_CONFIG_HOME = join(f.root, "config");
+  process.env.XDG_DATA_HOME = join(f.root, "data");
+  const collector = await createCollector(f.config, false).finally(() => {
+    for (const [name, value] of Object.entries(prior))
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+  });
+  try {
+    const s = await collector.sample(1000);
+    expect(
+      s.capabilities.find((cap) => cap.id === "agent-slice"),
+    ).toMatchObject({
+      available: true,
+      source: join(f.root, "config/systemd/user.control/agents.slice.d"),
+    });
+  } finally {
+    collector.close();
+  }
+});
+
 /** Puts back what a test borrowed from vsys's own environment. */
 function restoreEnv(tmux: string | undefined, pane: string | undefined) {
   if (tmux === undefined) delete process.env.TMUX;

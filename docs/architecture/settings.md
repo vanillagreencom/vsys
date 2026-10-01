@@ -1,6 +1,6 @@
 # Settings and the runtime
 
-Covers: src/config/ src/collect/settings.ts src/collect/capabilities.ts src/runtime.ts src/ui/settings-screen.tsx src/ui/settings.ts
+Covers: src/config/ src/collect/settings.ts src/collect/capabilities.ts src/collect/capabilities.test.ts src/runtime.ts src/ui/settings-screen.tsx src/ui/settings.ts
 
 Settings are validated before they reach a running dashboard. The runtime replaces the collector, the history store or neither, depending on which settings changed. A capability is a system interface a reading needs, probed once at start, except the two re-read each sample.
 

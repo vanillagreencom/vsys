@@ -1,10 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Capability, CapabilityId } from "../model/types";
 import { fixture, groupSnapshot } from "../test/fixture";
 import { capabilityOffer, capabilityReason } from "../ui/settings";
-import { probeAgentSlice, probeCapabilities, probeTmux } from "./capabilities";
+import {
+  probeAgentSlice,
+  probeCapabilities,
+  probeTmux,
+  unitDirs,
+} from "./capabilities";
 import { Collector } from "./collector";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
@@ -364,4 +370,36 @@ test("a slice that appears after vsys starts is present from the next sample", a
   f.group("agents.slice");
   const after = byId((await collector.sample(2000)).capabilities);
   expect(after.get("agent-slice")?.available).toBe(true);
+});
+
+test("unit files are looked for in the user directories, then the system ones", () => {
+  const user = (config: string, data: string) => [
+    join(config, "systemd/user"),
+    // Where the line Settings offers for a missing slice writes.
+    join(config, "systemd/user.control"),
+    join(data, "systemd/user"),
+  ];
+  const system = [
+    "/etc/systemd/user",
+    "/usr/lib/systemd/user",
+    "/etc/systemd/system",
+    "/usr/lib/systemd/system",
+  ];
+  const rows: [string, NodeJS.ProcessEnv, string[]][] = [
+    [
+      "XDG directories set",
+      { XDG_CONFIG_HOME: "/x/config", XDG_DATA_HOME: "/x/data" },
+      [...user("/x/config", "/x/data"), ...system],
+    ],
+    [
+      "XDG directories unset",
+      {},
+      [
+        ...user(join(homedir(), ".config"), join(homedir(), ".local/share")),
+        ...system,
+      ],
+    ],
+  ];
+  for (const [name, env, dirs] of rows)
+    expect({ name, dirs: unitDirs(env) }).toEqual({ name, dirs });
 });
