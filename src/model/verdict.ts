@@ -54,6 +54,37 @@ export function causeRank(id: CauseId): number {
   return causeOrder[id];
 }
 /**
+ * How a cause's evidence behaves between samples. A `level` cause is a reading
+ * that stays while the condition does, so it must hold before it alerts and a
+ * value crossing a threshold for one sample records nothing. An `event` cause
+ * is evidence that is itself a change: a counter delta is non-zero for exactly
+ * the one sample after the increment, so a hold would drop every one of them.
+ * The record covers the union, so a new cause cannot be added without saying
+ * which it is.
+ */
+export const causeEvidence: Record<CauseId, "level" | "event"> = {
+  unconfined: "level",
+  "read-only": "level",
+  "damaged-files": "level",
+  "new-errors": "level",
+  "device-errors": "event",
+  disk: "level",
+  "desktop-swap": "level",
+  "free-space": "level",
+  "memory-cap": "level",
+  stalls: "level",
+  "system-memory": "level",
+  "system-cpu": "level",
+  "memory-high": "level",
+  // A report stays on disk until the next check replaces it, so the hold
+  // delays its alert and never drops it, and a report that failed to read
+  // once does not open an alert on its own.
+  scrub: "level",
+  unchecked: "level",
+  "integrity-unknown": "level",
+  scratch: "level",
+};
+/**
  * Where a cause points the reader. This is not a subject: a cause about a
  * machine-wide stall names the scope worth opening without claiming that scope
  * is one of the things that went wrong. Nothing here ever becomes an alert.

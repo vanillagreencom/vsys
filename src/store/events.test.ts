@@ -231,6 +231,28 @@ test("a cause must hold without a gap to open", () => {
   // The same value held through the wait opens once and stays open.
   expect(run(held, 100, () => over)).toEqual({ opens: 1, closes: 0 });
 });
+test("a device error increment seen for one sample opens an alert", () => {
+  const held = defaults();
+  // The increment must be gone well inside the hold, or this proves nothing.
+  expect(held.pressureHoldSeconds * 1000).toBeGreaterThan(held.refreshMs);
+  const sample = (time: number, delta: Record<string, number>) => {
+    const s = emptySnapshot(time);
+    s.storage.volumes = [volumeSnapshot("/data", { delta })];
+    return s;
+  };
+  const log = new EventLog();
+  log.advance(sample(1000, {}), held);
+  // A counter delta is non-zero for exactly the sample after the increment.
+  const opened = log
+    .advance(sample(2000, { "x/write_io_errs": 1 }), held)
+    .filter((e) => e.kind === "alert-open");
+  expect(opened.map((e) => [e.cause, e.subjectId])).toEqual([
+    ["device-errors", "/data"],
+  ]);
+  // The delta is back to zero, and the alert still waits out its close.
+  const next = log.advance(sample(3000, { "x/write_io_errs": 0 }), held);
+  expect(next.filter((e) => e.kind === "alert-close")).toEqual([]);
+});
 test("two lanes escaping at once are two alerts, not one", () => {
   const log = started();
   const both = emptySnapshot(2000);
@@ -380,6 +402,40 @@ test("two lanes sharing a display name keep separate identities", () => {
     .advance(emptySnapshot(3000), c)
     .filter((e) => e.kind === "lane-stop");
   expect(stopped.map((e) => e.subject)).toEqual(named);
+});
+
+test("host CPU pressure is one host alert while the busiest lane changes", () => {
+  const held = defaults();
+  // The busiest lane must change inside the hold, or this proves nothing.
+  expect(held.pressureHoldSeconds * 1000).toBeGreaterThan(held.refreshMs);
+  // Namesakes whose main PID could not be read, and two lanes told apart by
+  // their PID. Neither the shared name nor the lane id decides the alert.
+  for (const pids of [
+    [0, 0],
+    [4071, 9152],
+  ]) {
+    const log = new EventLog();
+    const alerts: [string, string][] = [];
+    for (let i = 0; i < 60; i++) {
+      const s = emptySnapshot(1000 + i * held.refreshMs);
+      s.system.pressure = {
+        cpu: { some: held.pressureRed + 1, full: 0, total: 0 },
+      };
+      // No lane stalls on CPU, and the two trade the busiest spot each sample.
+      s.lanes = ["a.scope", "b.scope"].map((id, n) =>
+        laneSnapshot({
+          id,
+          name: "kendex",
+          mainPid: pids[n],
+          cpu: n === i % 2 ? 90 : 89,
+        }),
+      );
+      for (const e of log.advance(s, held))
+        if (e.cause === "system-cpu" && e.kind.startsWith("alert-"))
+          alerts.push([e.kind, e.subjectId]);
+    }
+    expect(alerts).toEqual([["alert-open", ""]]);
+  }
 });
 
 test("memory reclaim alerts one per stalled lane, not one for the scope it points at", () => {
