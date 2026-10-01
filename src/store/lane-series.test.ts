@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
 import { History } from "./history";
+import type { LaneSample } from "./lane-series";
 
 test("lane charts keep brief spikes across checkpoints and update their cache", async () => {
   const h = new History(defaults());
@@ -21,7 +22,12 @@ test("lane charts keep brief spikes across checkpoints and update their cache", 
             ];
       h.add(s);
     }
-    const series = await h.laneWindow(id, 601000, 86400000);
+    const read = async (end: number, durationMs: number) => {
+      const series = (await h.laneWindows([id], end, durationMs)).get(id);
+      if (!series) throw new Error("the store answered without the lane");
+      return series;
+    };
+    const series = await read(601000, 86400000);
     expect(series).toHaveLength(601);
     expect(series[301].cpu).toBe(99);
     expect(series[302].memoryPressure).toBe(50);
@@ -31,8 +37,8 @@ test("lane charts keep brief spikes across checkpoints and update their cache", 
     const next = emptySnapshot(602000);
     next.lanes = [laneSnapshot({ cpu: 20 })];
     h.add(next);
-    expect((await h.laneWindow(id, 602000, 86400000))[0].cpu).toBe(0);
-    expect((await h.laneWindow(id, 602000, 1000)).at(-1)?.cpu).toBe(20);
+    expect((await read(602000, 86400000))[0].cpu).toBe(0);
+    expect((await read(602000, 1000)).at(-1)?.cpu).toBe(20);
   } finally {
     h.close();
   }
@@ -53,12 +59,12 @@ test("reopened history loads complete lane series without duplicating concurrent
     const reopened = new History(c);
     try {
       const [a, b] = await Promise.all([
-        reopened.laneWindow(id, now + 129000, 86400000),
-        reopened.laneWindow(id, now + 129000, 86400000),
-      ]);
+        reopened.laneWindows([id], now + 129000, 86400000),
+        reopened.laneWindows([id], now + 129000, 86400000),
+      ]).then((both) => both.map((series) => series.get(id)));
       expect(a).toHaveLength(130);
       expect(b).toHaveLength(130);
-      expect(a[65].cpu).toBe(99);
+      expect(a?.[65].cpu).toBe(99);
       expect(b).toEqual(a);
     } finally {
       reopened.close();
@@ -72,4 +78,65 @@ test("reopened history loads complete lane series without duplicating concurrent
   // the default five seconds that is no margin at all, and the case has failed
   // on timing rather than on what it asserts. Nothing here is slow on purpose;
   // what is asserted is the data, never the time.
+}, 30000);
+test("one read of many stored lanes decompresses each stored row once, and keeps only live lanes", async () => {
+  const f = fixture();
+  const c = { ...f.config, persistence: true };
+  const now = Date.now();
+  // Forty lanes, which is the Agents list on a machine running that many
+  // agents. A pass per lane decompresses every row forty times.
+  const ids = Array.from({ length: 40 }, (_, n) => `agents.slice/${n}.scope`);
+  const rows = 30;
+  const end = now + (rows - 1) * 1000;
+  try {
+    const first = new History(c);
+    for (let i = 0; i < rows; i++) {
+      const s = emptySnapshot(now + i * 1000);
+      s.lanes = ids.map((id, n) => laneSnapshot({ id, cpu: i + n }));
+      first.add(s);
+    }
+    first.close();
+    // Reopened, the archive is empty, so every row is read back from SQLite.
+    const reopened = new History(c);
+    try {
+      // biome-ignore lint/complexity/useLiteralKeys: reads a private field
+      const stored = () => reopened["stored"];
+      const spy = spyOn(Bun, "gunzipSync");
+      const decompressed: number[] = [];
+      let series = new Map<string, LaneSample[]>();
+      try {
+        series = await reopened.laneWindows(ids, end, 86400000);
+        decompressed.push(spy.mock.calls.length);
+        // Asked again, as a list asks when its newest bucket rolls over.
+        await reopened.laneWindows(ids, end, 86400000);
+        decompressed.push(spy.mock.calls.length);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(decompressed).toEqual([rows, rows]);
+      for (const [n, id] of ids.entries())
+        expect(series.get(id)?.map((x) => x.cpu)).toEqual(
+          Array.from({ length: rows }, (_, i) => i + n),
+        );
+      // A shorter window lets go of the stored rows it no longer covers.
+      await reopened.laneWindows(ids, end, 10000);
+      expect(
+        Math.min(
+          ...[...(stored()?.lanes.values() ?? [])].flatMap((lane) =>
+            lane.map((x) => x.time),
+          ),
+        ),
+      ).toBe(end - 10000);
+      // A lane that ends leaves the stored lanes.
+      const next = emptySnapshot(end + 1000);
+      next.lanes = [laneSnapshot({ id: ids[0], cpu: 0 })];
+      reopened.add(next);
+      expect([...(stored()?.lanes.keys() ?? [])]).toEqual([ids[0]]);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    f.cleanup();
+  }
+  // A margin, for the reason the case above gives.
 }, 30000);

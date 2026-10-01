@@ -318,8 +318,10 @@ export function Agent({
     setSeriesError(null);
     setLoading(true);
     void history
-      .laneWindow(lane.id, snapshot.time, windowMs)
-      .then((values) => {
+      .laneWindows([lane.id], snapshot.time, windowMs)
+      .then((series) => {
+        const values = series.get(lane.id);
+        if (!values) throw new Error("The store answered without this lane");
         if (current) {
           setLoaded({ id: lane.id, samples: values });
           setLoading(false);
