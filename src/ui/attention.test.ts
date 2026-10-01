@@ -536,9 +536,10 @@ test("a card's description holds the rows the screen gives it", () => {
   const scattered = escapedSnapshot({ lanes: 12, scopes: 12 });
   let cut = 0;
   const measured = new Set<string>();
-  // The floor detailWidth allows, an ordinary panel, and a wide one.
+  // The one column detailWidth floors at, the card of a 20-column terminal,
+  // an ordinary panel, and a wide one.
   for (const s of [everyCauseSnapshot(c), crowded, scattered])
-    for (const width of [20, 38, 120]) {
+    for (const width of [1, 12, 38, 120]) {
       const items = attention(s, c, { basePath: base, width });
       for (const item of items) {
         measured.add(item.id);

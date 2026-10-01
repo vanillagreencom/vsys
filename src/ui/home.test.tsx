@@ -20,8 +20,8 @@ import {
   selectedRow,
   sortMarks,
 } from "../test/harness";
-import { attention } from "./attention";
-import { panelWidth, screenPad, screenWidth } from "./chrome";
+import { attention, cardDetail } from "./attention";
+import { keyLabel, panelWidth, screenPad, screenWidth } from "./chrome";
 import { osc52 } from "./clipboard";
 import type { HomeItem } from "./home";
 import { homeItems, homeTarget, recentChanges } from "./home";
@@ -1668,6 +1668,69 @@ test("a card draws the rows it was measured for, at every width", async () => {
       expect(`${at}: ${blanks} blanks, ${paragraphs} paragraphs`).toBe(
         `${at}: ${paragraphs} blanks, ${paragraphs} paragraphs`,
       );
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("an open card on a narrow terminal draws every row whole or cut with its mark", async () => {
+  const c = defaults();
+  const s = escapedSnapshot({ lanes: 2, perLane: 1 });
+  // Terminals narrower than the 28 columns a card of 20 needs. The columns
+  // the card has are written out: the two of the screen's padding on each
+  // side, then the rule of the block and the indent after it, four in all.
+  for (const { width, room } of [
+    { width: 24, room: 16 },
+    { width: 20, room: 12 },
+  ]) {
+    // Tall enough that the card writes its whole description, so the copy it
+    // draws is the copy it holds.
+    const t = await mount(s, c, { width, height: 120 });
+    try {
+      await t.ui.renderOnce();
+      const rows = t.frame().split("\n");
+      const panel = screenPad + panelWidth(screenWidth(width));
+      const words = (row: string) =>
+        row.slice(0, panel).replace("│", "").trim();
+      const title = rows.findIndex((row) => row.includes("▾"));
+      const keys = rows.findIndex((row) =>
+        row.includes(`${keyLabel(c.keys.open)} opens`),
+      );
+      const copied = rows.findIndex((row) => row.includes("Copy "));
+      expect(title).toBeGreaterThan(0);
+      expect(copied).toBeGreaterThan(title);
+      expect(keys).toBeGreaterThan(copied);
+      const [item] = attention(s, c, { width: room });
+      if (item.command === undefined) throw new Error("no command to copy");
+      // A row the edge shortens loses characters with nothing to say so; a
+      // wrapped row loses none. Every character the card holds, in order, is
+      // every character it draws.
+      const bare = (text: string) => text.replace(/\s+/g, "");
+      const held = [
+        ...cardDetail(item, room, 1000),
+        `Next ${item.next}`,
+        `Copy ${item.command}`,
+      ];
+      const drawn = rows.slice(title + 1, keys).map(words);
+      expect(bare(drawn.join(""))).toBe(bare(held.join("")));
+      // The command, above all, comes back whole.
+      expect(bare(drawn.slice(copied - title - 1).join(""))).toBe(
+        bare(`Copy ${item.command}`),
+      );
+      // The two rows that are cut rather than wrapped end in the mark, and
+      // what they keep is how the line they cut begins.
+      const keyLine = `${keyLabel(c.keys.open)} opens Agents · ${keyLabel(c.keys.copy)} copies the command`;
+      for (const [row, whole] of [
+        [
+          rows[title].slice(rows[title].indexOf("▾") + 2, panel).trim(),
+          item.title,
+        ],
+        [words(rows[keys]), keyLine],
+      ] as const) {
+        expect(row.endsWith("…")).toBe(true);
+        expect(whole.startsWith(row.slice(0, -1))).toBe(true);
+      }
     } finally {
       await t.close();
     }

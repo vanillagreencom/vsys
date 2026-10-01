@@ -49,10 +49,14 @@ export const panelWidth = (width: number): number =>
  * The columns a card's detail draws into, from the terminal width: the screen
  * padding, then the panel it sits in, then the rule and indent of the block
  * that draws it. Card copy is measured here, so the words a card writes and
- * the room it has to write them cannot disagree.
+ * the room it has to write them cannot disagree. A narrow terminal is a
+ * narrow card, never a wider measurement: copy measured past the edge is
+ * copy the edge drops. The one floor is the column wrapping needs, which only
+ * a terminal with no column left for the card goes under, and there nothing
+ * of the card is drawn to lose.
  */
 export const detailWidth = (width: number): number =>
-  Math.max(20, panelWidth(screenWidth(width)) - detailIndent);
+  Math.max(1, panelWidth(screenWidth(width)) - detailIndent);
 /** The line under the verdict counting the agents, the cores and the concerns. */
 const countRow = 1;
 /** The blank row between that line and the tile row. */

@@ -649,13 +649,19 @@ export function Home({
                       {action(nextLabel, row.item.next, undefined, 1)}
                       {row.item.command !== undefined &&
                         action(copyLabel, row.item.command, ui.accent)}
+                      {/* One row, cut with its mark where the card is
+                          narrower than the line: a row the edge shortens
+                          says nothing of what it dropped. */}
                       <Line
                         height={1}
                         flexShrink={0}
                         truncate
                         attributes={ui.dim}
                       >
-                        {`${keyLabel(c.keys.open)} opens ${row.item.target?.kind === "lane" ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`}
+                        {fit(
+                          `${keyLabel(c.keys.open)} opens ${row.item.target?.kind === "lane" ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`,
+                          cardWidth,
+                        )}
                       </Line>
                     </Detail>
                   )}

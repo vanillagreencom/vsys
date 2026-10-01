@@ -94,8 +94,14 @@ test("a card's detail is measured through every column it is drawn behind", () =
   // Two panels share a wide row, so a wider terminal is not a wider card.
   expect(detailWidth(160)).toBe(72);
   expect(detailWidth(200)).toBe(92);
-  // A terminal too narrow to measure still leaves a column to write into.
-  expect(detailWidth(10)).toBe(20);
+  // A narrow terminal is a narrow card: what is measured is what is drawn,
+  // the terminal less the four columns of padding and the four of the block.
+  expect(detailWidth(24)).toBe(16);
+  expect(detailWidth(20)).toBe(12);
+  // A terminal with no column left for the card still measures one, the
+  // least wrapping takes, and never more.
+  expect(detailWidth(9)).toBe(1);
+  expect(detailWidth(8)).toBe(1);
 });
 
 test("a card's rows are what the screen leaves above it and below it", () => {
