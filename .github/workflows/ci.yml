@@ -129,7 +129,10 @@ jobs:
 
   ci:
     name: CI
-    # The one required check: it passes only when every job above succeeds.
+    # Fails when any job in its needs list does not succeed. It is the
+    # aggregate the main ruleset is to require in place of the per-job checks.
+    # scripts/package_file_list_check.py fails when needs differs from the
+    # other job ids in this file, so every job above stays in the list.
     # No job here is skipped by a change-classifier rule, so no skip is
     # expected and a skipped, failed or cancelled job fails this one.
     needs: [application, arch-package, review-gate-validate, bot-instructions]

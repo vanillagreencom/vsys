@@ -157,6 +157,47 @@ def check_ci_workflow(repo: Path) -> None:
     build_step = text[start:end]
     if "${{" in build_step:
         fail("arch-package workflow build step contains a GitHub expression")
+    check_ci_aggregate_needs(text)
+
+
+def check_ci_aggregate_needs(text: str) -> None:
+    """Fail unless the `ci` job's one-line `needs` list names every other job.
+
+    The CI job judges only the jobs it needs, so a job left out of that list
+    could fail while CI stays green. Job ids are the two-space keys under the
+    top-level `jobs:` mapping; a block scalar's lines sit deeper and never match.
+    """
+    lines = text.splitlines()
+    try:
+        start = lines.index("jobs:") + 1
+    except ValueError:
+        fail("ci workflow has no top-level jobs mapping")
+    jobs: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in lines[start:]:
+        if line and not line[0].isspace() and not line.startswith("#"):
+            break
+        match = re.fullmatch(r"  ([A-Za-z0-9_-]+):\s*(?:#.*)?", line)
+        if match:
+            current = jobs.setdefault(match.group(1), [])
+        elif current is not None:
+            current.append(line)
+    if "ci" not in jobs:
+        fail(f"ci aggregate job not found jobs={sorted(jobs)}")
+    needs_lines = [line for line in jobs["ci"] if re.match(r"    needs:", line)]
+    if len(needs_lines) != 1:
+        fail(f"ci aggregate needs not found count={len(needs_lines)}")
+    match = re.fullmatch(r"    needs:\s*\[([^\]]*)\]\s*(?:#.*)?", needs_lines[0])
+    if not match:
+        fail("ci aggregate needs is not a one-line list")
+    needs = {name.strip() for name in match.group(1).split(",") if name.strip()}
+    others = set(jobs) - {"ci"}
+    if needs != others:
+        fail(
+            "ci aggregate needs mismatch "
+            f"missing={sorted(others - needs)} "
+            f"extra={sorted(needs - others)}"
+        )
 
 
 def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:
