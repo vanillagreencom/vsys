@@ -1,65 +1,11 @@
 import { expect, test } from "bun:test";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
-import { defaults } from "../config/config";
 import { fixture } from "../test/fixture";
-import { ScanCancelled, type ScanThread, WorkerScan } from "./scratch";
-import type { ScanReply, ScanRequest, ScratchScan } from "./scratch-scan";
+import { WorkerScan } from "./scratch";
 
 const full = { sliceMs: 10, dutyPercent: 100 };
-const c = { ...defaults(), scratchDirs: ["/scratch"] };
 const loose = () => new AbortController().signal;
-const empty = (time: number): ScratchScan => ({
-  scratch: [],
-  sessions: [],
-  time,
-  errors: [],
-});
-
-/** A scan thread the test drives, so no case depends on a real traversal. */
-class Staged implements ScanThread {
-  sent: ScanRequest[] = [];
-  stopped = 0;
-  onmessage: ((event: MessageEvent<ScanReply>) => void) | null = null;
-  onerror: ((event: ErrorEvent) => void) | null = null;
-  private ended?: () => void;
-  postMessage(request: ScanRequest): void {
-    this.sent.push(request);
-  }
-  terminate(): void {
-    this.stopped++;
-  }
-  addEventListener(_kind: "close", handler: () => void): void {
-    this.ended = handler;
-  }
-  /** Answer the scan at `index` of the ones this thread was sent. */
-  answer(index: number, scan: ScratchScan): void {
-    this.reply({
-      kind: "scan",
-      id: this.sent[index].id,
-      paced: { scan, rests: 0 },
-    });
-  }
-  reply(reply: ScanReply): void {
-    this.onmessage?.({ data: reply } as MessageEvent<ScanReply>);
-  }
-  crash(message: string): void {
-    this.onerror?.({ message } as ErrorEvent);
-  }
-  end(): void {
-    this.ended?.();
-  }
-}
-
-function staged() {
-  const threads: Staged[] = [];
-  const runner = new WorkerScan(() => {
-    const thread = new Staged();
-    threads.push(thread);
-    return thread;
-  });
-  return { runner, threads };
-}
 
 test("the scan thread answers with a complete reading and closes", async () => {
   const f = fixture();
@@ -120,85 +66,69 @@ test("the scan thread rests under the duty it is sent and not at 100", async () 
   }
 });
 
-test("one thread serves every scan until it fails", async () => {
-  const { runner, threads } = staged();
+test("quitting while the scan thread is blocked in the kernel exits rather than waiting on the read", async () => {
+  const f = fixture();
   try {
-    const first = runner.run(c, 1000, full, loose());
-    threads[0].answer(0, empty(1000));
-    expect((await first).scan.time).toBe(1000);
-    const second = runner.run(c, 2000, full, loose());
-    // A thread started per scan pays its startup on every interval, which is
-    // what a bounded traversal cannot afford.
-    expect(threads.length).toBe(1);
-    threads[0].answer(1, empty(2000));
-    expect((await second).scan.time).toBe(2000);
-    // A thread that dies owes its caller an answer, and the next scan needs a
-    // thread of its own rather than the dead one.
-    const third = runner.run(c, 3000, full, loose());
-    threads[0].crash("thread gone");
-    await expect(third).rejects.toThrow(
-      "Scratch scan thread failed: thread gone",
-    );
-    expect(threads[0].stopped).toBe(1);
-    const fourth = runner.run(c, 4000, full, loose());
-    expect(threads.length).toBe(2);
-    threads[1].answer(0, empty(4000));
-    expect((await fourth).scan.time).toBe(4000);
-  } finally {
-    runner.close();
-  }
-});
-
-test("a reply the host no longer waits for is never published", async () => {
-  const { runner, threads } = staged();
-  try {
-    const controller = new AbortController();
-    const abandoned = runner.run(c, 1000, full, controller.signal);
-    controller.abort();
-    await expect(abandoned).rejects.toBeInstanceOf(ScanCancelled);
-    // The abandoned thread still answers for the first scan, and that reading
-    // was taken before the caller gave up on it.
-    const current = runner.run(c, 2000, full, loose());
-    threads[0].answer(0, empty(1000));
-    threads[0].answer(1, empty(2000));
-    expect((await current).scan.time).toBe(2000);
-  } finally {
-    runner.close();
-  }
-});
-
-test("a late event from a replaced thread leaves the running scan alone", async () => {
-  const { runner, threads } = staged();
-  try {
-    const dying = runner.run(c, 1000, full, loose());
-    threads[0].crash("first thread gone");
-    await expect(dying).rejects.toThrow("first thread gone");
-    const running = runner.run(c, 2000, full, loose());
-    expect(threads.length).toBe(2);
-    threads[0].end();
-    threads[0].crash("still gone");
-    expect(threads[1].stopped).toBe(0);
-    threads[1].answer(0, empty(2000));
-    expect((await running).scan.time).toBe(2000);
-  } finally {
-    runner.close();
-  }
-});
-
-test("a second scan cannot start while one is running", async () => {
-  const { runner, threads } = staged();
-  try {
-    const first = runner.run(c, 1000, full, loose());
-    expect(() => runner.run(c, 1000, full, loose())).toThrow(
-      "Scratch scan thread is already scanning",
-    );
-    threads[0].reply({
-      kind: "failed",
-      id: threads[0].sent[0].id,
-      message: "read failed",
+    // A pipe nobody writes is a read the kernel holds, as a stalled mount
+    // holds a traversal, and ending the thread cannot interrupt it.
+    const pipe = join(f.root, "stalled");
+    const made = Bun.spawnSync(["mkfifo", pipe], {
+      env: { PATH: process.env.PATH ?? "" },
+      stderr: "pipe",
     });
-    await expect(first).rejects.toThrow("read failed");
-  } finally {
-    runner.close();
+    expect(made.exitCode, made.stderr.toString()).toBe(0);
+    const blocked = join(f.root, "blocked.ts");
+    f.write(
+      blocked,
+      `import { readFileSync } from "node:fs";\nreadFileSync(${JSON.stringify(pipe)});\n`,
+    );
+    // The program's quit path: a scan in flight on a thread started as the
+    // program starts its own, then the runner closed.
+    const quit = join(f.root, "quit.ts");
+    f.write(
+      quit,
+      `import { constants, openSync } from "node:fs";
+import { defaults } from ${JSON.stringify(join(import.meta.dir, "../config/config"))};
+import { WorkerScan } from ${JSON.stringify(join(import.meta.dir, "scratch"))};
+const runner = new WorkerScan(() => new Worker(${JSON.stringify(blocked)}) as Bun.Worker);
+void runner
+  .run({ ...defaults(), scratchDirs: ["/scratch"] }, 0, { sliceMs: 10, dutyPercent: 100 }, new AbortController().signal)
+  .catch(() => {});
+// A writer opens a pipe without waiting only once a reader holds it, so this
+// returns once the thread is inside the read. Each pause waits on its start.
+for (;;) {
+  try {
+    openSync(${JSON.stringify(pipe)}, constants.O_WRONLY | constants.O_NONBLOCK);
+    break;
+  } catch {
+    await Bun.sleep(5);
   }
-});
+}
+runner.close();
+`,
+    );
+    // Teardown that races the thread's start passes by luck once, so the
+    // quit is repeated. A program that waits on the read is killed at the
+    // bound and reports the signal instead of an exit code.
+    for (let run = 0; run < 3; run++) {
+      const child = Bun.spawn([process.execPath, quit], {
+        env: { HOME: f.root },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 4000,
+      });
+      const [stderr, code] = await Promise.all([
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ run, code, signal: child.signalCode, stderr }).toEqual({
+        run,
+        code: 0,
+        signal: null,
+        stderr: "",
+      });
+    }
+  } finally {
+    f.cleanup();
+  }
+}, 20000);

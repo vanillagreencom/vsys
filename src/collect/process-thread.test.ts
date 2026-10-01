@@ -35,17 +35,15 @@ const request = (time: number, pids: number[] = []): ProcessRequest => ({
 
 /**
  * A thread the test drives by hand: it records what the host sent and the
- * calls the host made, and answers only when told to.
+ * calls the host made, and answers only when told to. Each way a thread
+ * fails is driven in the host's own suite.
  */
 class FakePort implements ProcessPort {
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   sent: ProcessMessage[] = [];
   calls: string[] = [];
-  private closeHandlers: (() => void)[] = [];
-  addEventListener(_kind: "close", handler: () => void): void {
-    this.closeHandlers.push(handler);
-  }
+  addEventListener(_kind: "close", _handler: () => void): void {}
   postMessage(message: ProcessMessage): void {
     this.sent.push(message);
   }
@@ -62,12 +60,6 @@ class FakePort implements ProcessPort {
     this.onmessage?.(
       new MessageEvent("message", { data: JSON.stringify(data) }),
     );
-  }
-  fail(message: string): void {
-    this.onerror?.(new ErrorEvent("error", { message }));
-  }
-  exit(): void {
-    for (const handler of this.closeHandlers) handler();
   }
   /** The id of the last request this thread was sent. */
   lastId(): number {
@@ -87,7 +79,7 @@ function fakes() {
       return port;
     }),
   );
-  return { ports, thread };
+  return { ports, thread, config: f.config };
 }
 
 /**
@@ -300,165 +292,21 @@ test("closing a collector ends its process thread", async () => {
   );
   const done = idle.sample(1000);
   const [second] = later.ports;
-  second.reply({ kind: "collected", id: second.lastId(), reading });
+  second.reply({ kind: "answer", id: second.lastId(), value: reading });
   await done;
   expect(second.calls).not.toContain("terminate");
   idle.close();
   expect(second.calls).toContain("terminate");
 });
 
-test("the host sends setup before the first request and holds the program only while one waits", async () => {
-  const { ports, thread } = fakes();
+test("each thread is set up with its collector's settings and answers in JSON text", async () => {
+  const { ports, thread, config } = fakes();
   const answer = thread.collect(request(1000), live());
   const [port] = ports;
-  expect(port.sent.map((m) => m.kind)).toEqual(["setup", "collect"]);
-  expect(port.calls).toEqual(["ref"]);
-  port.reply({ kind: "collected", id: port.lastId(), reading });
+  expect(port.sent).toEqual([
+    { kind: "setup", config, ticksPerSecond: 100, pageSize: 4096 },
+    { kind: "collect", id: 1, request: request(1000) },
+  ]);
+  port.reply({ kind: "answer", id: port.lastId(), value: reading });
   expect(await answer).toEqual(reading);
-  expect(port.calls).toEqual(["ref", "unref"]);
-  // The next request reuses the thread that holds the counters.
-  const again = thread.collect(request(2000), live());
-  port.reply({ kind: "collected", id: port.lastId(), reading });
-  await again;
-  expect(ports.length).toBe(1);
-});
-
-test("a reply to another request is not taken as this one's", async () => {
-  const { ports, thread } = fakes();
-  const answer = thread.collect(request(1000), live());
-  const [port] = ports;
-  let settled = false;
-  void answer.then(() => {
-    settled = true;
-  });
-  port.reply({ kind: "collected", id: port.lastId() + 1, reading });
-  await Bun.sleep(0);
-  expect(settled).toBe(false);
-  port.reply({ kind: "collected", id: port.lastId(), reading });
-  expect(await answer).toEqual(reading);
-});
-
-test("a failed reading, a thread error and an early exit each reject, and the next request has a thread", async () => {
-  const { ports, thread } = fakes();
-  // What the thread does, what the caller is told, and whether the thread
-  // is ended: a reading that failed leaves a working thread, which keeps the
-  // counters the next reading compares against.
-  const cases: [string, (port: FakePort) => void, string, boolean][] = [
-    [
-      "failed",
-      (port) =>
-        port.reply({ kind: "failed", id: port.lastId(), message: "no /proc" }),
-      "no /proc",
-      false,
-    ],
-    [
-      "error",
-      (port) => port.fail("module not found"),
-      "Process thread failed: module not found",
-      true,
-    ],
-    [
-      "exit",
-      (port) => port.exit(),
-      "Process thread exited before it answered",
-      true,
-    ],
-  ];
-  for (const [name, act, message, ends] of cases) {
-    const answer = thread.collect(request(1000), live());
-    const port = ports.at(-1) as FakePort;
-    act(port);
-    await expect(answer, name).rejects.toThrow(message);
-    expect(port.calls.includes("terminate"), name).toBe(ends);
-  }
-  expect(ports.length).toBe(2);
-  const next = thread.collect(request(2000), live());
-  const fresh = ports.at(-1) as FakePort;
-  expect(ports.length).toBe(3);
-  expect(fresh.sent.map((m) => m.kind)).toEqual(["setup", "collect"]);
-  fresh.reply({ kind: "collected", id: fresh.lastId(), reading });
-  expect(await next).toEqual(reading);
-});
-
-test("cancelling and closing end the thread, and a late reply publishes nothing", async () => {
-  const { ports, thread } = fakes();
-  const controller = new AbortController();
-  const cancelled = thread.collect(request(1000), controller.signal);
-  const [first] = ports;
-  const id = first.lastId();
-  controller.abort(new Error("collector closed"));
-  await expect(cancelled).rejects.toThrow("collector closed");
-  expect(first.calls).toContain("terminate");
-  // The ended thread's last word arrives after the host moved on.
-  first.reply({ kind: "collected", id, reading });
-
-  const waiting = thread.collect(request(2000), live());
-  const second = ports[1];
-  thread.close();
-  await expect(waiting).rejects.toThrow("Process thread has closed");
-  expect(second.calls).toContain("terminate");
-  expect(() => thread.collect(request(3000), live())).toThrow(
-    "Process thread has closed",
-  );
-  expect(ports.length).toBe(2);
-});
-
-test("a late error or exit from a thread already replaced leaves the thread now running alone", async () => {
-  const rows: [string, (port: FakePort) => void][] = [
-    ["exit", (port) => port.exit()],
-    ["error", (port) => port.fail("late")],
-  ];
-  for (const [name, late] of rows) {
-    const { ports, thread } = fakes();
-    const first = thread.collect(request(1000), live());
-    const [ended] = ports;
-    ended.fail("ended");
-    await expect(first, name).rejects.toThrow("Process thread failed: ended");
-    const second = thread.collect(request(2000), live());
-    const running = ports[1];
-    late(ended);
-    expect(running.calls, name).not.toContain("terminate");
-    running.reply({ kind: "collected", id: running.lastId(), reading });
-    expect(await second, name).toEqual(reading);
-  }
-});
-
-test("every ending releases the thread before ending it, so a blocked read never holds the program", async () => {
-  // How each path ends the thread waiting on a request.
-  const rows: [
-    string,
-    (port: FakePort, cancel: AbortController, thread: ProcessThread) => void,
-  ][] = [
-    ["abort", (_port, cancel) => cancel.abort(new Error("cancelled"))],
-    ["error", (port) => port.fail("boom")],
-    ["exit", (port) => port.exit()],
-    ["close", (_port, _cancel, thread) => thread.close()],
-  ];
-  for (const [name, end] of rows) {
-    const { ports, thread } = fakes();
-    const cancel = new AbortController();
-    const answer = thread.collect(request(1000), cancel.signal);
-    const [port] = ports;
-    end(port, cancel, thread);
-    await expect(answer, name).rejects.toThrow();
-    expect(port.calls, name).toEqual(["ref", "unref", "terminate"]);
-  }
-});
-
-test("a second request while one is in flight is refused rather than orphaning the first", async () => {
-  const { ports, thread } = fakes();
-  const first = thread.collect(request(1000), live());
-  // An accepted second request would leave the first waiting forever, so the
-  // answer is read here rather than left for the runner's timeout to find.
-  let second: string;
-  try {
-    thread.collect(request(2000), live()).catch(() => {});
-    second = "accepted";
-  } catch (error) {
-    second = (error as Error).message;
-  }
-  expect(second).toContain("Process collection was asked to overlap");
-  const [port] = ports;
-  port.reply({ kind: "collected", id: port.lastId(), reading });
-  expect(await first).toEqual(reading);
 });

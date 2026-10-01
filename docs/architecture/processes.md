@@ -1,6 +1,6 @@
 # Process collection
 
-Covers: src/collect/procs.ts src/collect/process-thread.ts src/collect/process-worker.ts src/collect/collector.ts src/collect/process-thread.test.ts scripts/bench.ts scripts/sample-check.ts scripts/build.ts src/collect/worker-file.ts scripts/ci.py scripts/ci_test.py src/main.test.ts src/test/fixture.ts
+Covers: src/collect/procs.ts src/collect/process-thread.ts src/collect/process-worker.ts src/collect/collector.ts src/collect/process-thread.test.ts src/collect/worker-host.ts src/collect/worker-host.test.ts scripts/bench.ts scripts/sample-check.ts scripts/build.ts src/collect/worker-file.ts scripts/ci.py scripts/ci_test.py src/main.test.ts src/test/fixture.ts
 
 Process collection reads every process in the configured `/proc` once per sample. The program runs it on a thread of its own, so a keystroke no longer waits while `/proc` is read, and that thread keeps the state the next reading compares against. Parsing the thread's reply still runs on the dashboard's thread.
 
@@ -15,21 +15,23 @@ Process collection reads every process in the configured `/proc` once per sample
 
 ## Thread lifecycle
 
-- Start: the first request starts the thread and sends its setup message, the collection settings and the clock and page units, before the request.
+`WorkerHost` in `src/collect/worker-host.ts` is the one lifecycle for every collection thread: the process thread here and the scratch scan thread in [storage](storage.md). `ProcessThread` and `WorkerScan` each supply only how their thread starts, its setup message and how its reply is read. `src/collect/worker-host.test.ts` drives each rule below through a stand-in thread.
+
+- Start: the first request starts the thread and sends its setup message, when the host has one, before the request. The process thread's setup carries the collection settings and the clock and page units.
 - Request: a waiting request keeps the program alive; an idle thread does not.
-- Failure: a reading that threw rejects the sample with its message and keeps the thread. A thread error or an exit before the answer rejects the sample and ends the thread.
-- Replacement: the next request after an ended thread starts a new one. Its first reading has no rate, which is unknown rather than a rate measured against a reading it never took.
-- Cancellation: an aborted request ends the thread, so no unwanted reading holds up the next request.
-- Ending: every path that ends a thread releases it from the program's lifetime first. Ending a thread cannot interrupt a read blocked in the kernel, such as one on a stalled mount, but such a read no longer keeps the program from exiting. `src/collect/process-thread.test.ts` checks the order on the abort, error, exit and close paths.
-- Stale events: a reply naming another request is dropped, and so is a reply, an error or an exit from a thread the host already replaced. `src/collect/process-thread.test.ts` fires a late error and a late exit from an ended thread while its replacement waits.
-- Overlap: a second request while one is in flight is refused.
+- Failure: an answer that reports a failure rejects the request with its message and keeps the thread. A thread error or an exit before the answer rejects the request and ends the thread.
+- Replacement: the next request after an ended thread starts a new one. A replacement process thread's first reading has no rate, which is unknown rather than a rate measured against a reading it never took.
+- Cancellation: an aborted request ends the thread, so no unwanted work holds up the next request. A request whose signal has already aborted is refused before it reaches a thread.
+- Ending: every path that ends a thread releases it from the program's lifetime first. Ending a thread cannot interrupt a read blocked in the kernel, such as one on a stalled mount, but such a read no longer keeps the program from exiting. `src/collect/worker-host.test.ts` checks the order on the abort, error, exit and close paths. `src/collect/scratch-worker.test.ts` quits a program whose scan thread is blocked reading a pipe nobody writes, three times, and fails unless each run exits with code 0 before a 4 second bound.
+- Stale events: a reply naming another request is dropped, and so is a reply, an error or an exit from a thread the host already replaced. `src/collect/worker-host.test.ts` fires a late reply, a late error and a late exit from an ended thread while its replacement waits.
+- Overlap: a second request while one is in flight is refused, and so is any request after the host has closed.
 
 ## Invariants
 
 1. A reading taken on the thread equals the reading the same reader takes in its caller's thread, and a collector on a thread publishes the same snapshot as one without. `src/collect/process-thread.test.ts` compares both over a fixture with watched and unwatched processes, an agent, a build tool, a Git branch, an invalid stat line and an unreadable environment.
 2. Counters and launch environments are keyed by process id and start time, never by process id alone, and a command line is read fresh at every sample. `src/collect/process-thread.test.ts` covers an exit, a reused id and a changed command line through the thread.
 3. A source the thread could not read reaches the snapshot's errors and never becomes a value. `src/collect/process-thread.test.ts` checks the invalid stat line in the published snapshot.
-4. Every failure path answers the waiting sample and ends a thread that can no longer be trusted. `src/collect/process-thread.test.ts` drives each one through a stand-in thread.
+4. Every failure path answers the waiting sample and ends a thread that can no longer be trusted. `src/collect/worker-host.test.ts` drives each one through a stand-in thread, and `src/collect/process-thread.test.ts` checks the setup each process thread is sent and that its JSON reply reaches the caller.
 
 ## Decisions
 
