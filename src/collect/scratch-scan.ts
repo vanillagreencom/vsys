@@ -135,9 +135,10 @@ async function scanRoot(
     root: { ...record(path, null, undefined, error), origin },
     sessions: [],
   });
-  // Only a root the reader listed is a problem for not existing. A default
-  // or an agent's temporary directory that is not there was never asked for,
-  // so it has no row rather than one that fails for ever. Absence is read off
+  // Only a root on a list other than the shipped one is a problem for not
+  // existing. A default, omitted or pinned unchanged, or an agent's temporary
+  // directory that is not there has no row rather than one that fails for
+  // ever. Absence is read off
   // the root's own status alone: a directory that leaves deeper in the walk
   // fails the root as any other unreadable entry does, and never hides it.
   let found: Stats | undefined;

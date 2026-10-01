@@ -50,7 +50,7 @@ test("one traversal counts hard links once per root and once per session", async
   }
 });
 
-test("only a root the reader listed fails for not existing", async () => {
+test("only a root on a list other than the shipped one fails for not existing", async () => {
   const f = fixture();
   try {
     const present = join(f.root, "present");

@@ -95,9 +95,9 @@ export interface Scratch {
   error: string | null;
 }
 /**
- * Where a scratch root came from: the reader's own list, the shipped list the
- * settings file does not override, or the temporary directory a running agent
- * names in its environment.
+ * Where a scratch root came from: a list other than the shipped one, the
+ * shipped list (omitted from `config.toml` or pinned there unchanged), or the
+ * temporary directory a running agent names in its environment.
  */
 export type ScratchOrigin = "configured" | "default" | "agent";
 /**

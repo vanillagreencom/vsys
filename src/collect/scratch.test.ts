@@ -219,7 +219,7 @@ test("an agent's temporary directory is scratch work even with no root set", asy
   }
 });
 
-test("the shipped list is default and any list the reader set is theirs", async () => {
+test("a list equal to the shipped one is default and any other list is the reader's", async () => {
   const shipped = defaultScratchDirs();
   // The author's workstation runs with no settings file, so these three are
   // what it measures. They stay the default, and stay scanned there.

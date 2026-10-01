@@ -42,8 +42,9 @@ function processOwner(): number {
 }
 
 /**
- * The roots one scan measures. The settings list is the reader's own unless
- * it is the shipped default, whose roots need not exist. An agent's directory
+ * The roots one scan measures. A settings list equal to the shipped list is
+ * the default, whether `config.toml` omits it or pins it unchanged, and its
+ * roots need not exist. Any other list is the reader's. An agent's directory
  * already inside a listed root is measured there, so it adds no row of its
  * own; path order puts a parent before its children, so the same holds
  * between agent directories.

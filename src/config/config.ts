@@ -128,9 +128,10 @@ export interface Config {
 }
 export const configPath = join(homedir(), ".config/vsys/config.toml");
 /**
- * The scratch roots measured when the settings file names none. They are one
- * workstation's layout, so a default root that does not exist is not
- * configured at all; a list the reader set reports its missing roots.
+ * The shipped scratch roots. They are one workstation's layout. A list equal
+ * to this one is the default, whether `config.toml` omits it or pins it
+ * unchanged, and a root on it that does not exist is not configured at all.
+ * Any other list is the reader's and reports its missing roots.
  */
 export function defaultScratchDirs(): string[] {
   return [
@@ -270,7 +271,7 @@ export interface LoadedConfig {
 
 /**
  * Whether a setting holds its default. `serialize` writes only the settings
- * that do not, so this is also whether the settings file carries the value.
+ * that differ.
  */
 export function sameValue(key: string, left: unknown, right: unknown): boolean {
   if (key === "agentTools" && Array.isArray(left) && Array.isArray(right))
