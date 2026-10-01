@@ -23,7 +23,7 @@ Process collection reads every process in the configured `/proc` once per sample
 - Replacement: the next request after an ended thread starts a new one. A replacement process thread's first reading has no rate, which is unknown rather than a rate measured against a reading it never took.
 - Cancellation: an aborted request ends the thread, so no unwanted work holds up the next request. A request whose signal has already aborted is refused before it reaches a thread.
 - Ending: every path that ends a thread releases it from the program's lifetime first. Ending a thread cannot interrupt a read blocked in the kernel, such as one on a stalled mount, but such a read no longer keeps the program from exiting. `src/collect/worker-host.test.ts` checks the order on the abort, error, exit and close paths. `src/collect/scratch-worker.test.ts` quits a program whose scan thread is blocked reading a pipe nobody writes, three times, and fails unless each run exits with code 0 before a 4 second bound.
-- Stale events: a reply naming another request is dropped, and so is a reply, an error or an exit from a thread the host already replaced. `src/collect/worker-host.test.ts` fires a late error and a late exit from an ended thread while its replacement waits.
+- Stale events: a reply naming another request is dropped, and so is a reply, an error or an exit from a thread the host already replaced. `src/collect/worker-host.test.ts` fires a late reply, a late error and a late exit from an ended thread while its replacement waits.
 - Overlap: a second request while one is in flight is refused, and so is any request after the host has closed.
 
 ## Invariants

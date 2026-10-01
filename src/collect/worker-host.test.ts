@@ -152,15 +152,24 @@ test("cancelling and closing end the thread, and a late reply publishes nothing"
   const controller = new AbortController();
   const cancelled = host.request(ask, controller.signal);
   const [first] = ports;
-  const id = first.lastId();
   controller.abort(new Error("collector closed"));
   await expect(cancelled).rejects.toThrow("collector closed");
   expect(first.calls).toContain("terminate");
-  // The ended thread's last word arrives after the host moved on.
-  first.reply({ kind: "answer", id, value: "stale" });
 
   const waiting = host.request(ask, live());
   const second = ports[1];
+  let settled = false;
+  void waiting.then(
+    () => {
+      settled = true;
+    },
+    () => {},
+  );
+  // The ended thread's last word arrives while a request waits on its
+  // replacement, and names that request, so only the thread decides it.
+  first.reply({ kind: "answer", id: second.lastId(), value: "stale" });
+  await Bun.sleep(0);
+  expect(settled).toBe(false);
   host.close();
   await expect(waiting).rejects.toThrow("Test thread has closed");
   expect(second.calls).toContain("terminate");
