@@ -12,8 +12,8 @@ self.onmessage = (event: MessageEvent<ScanRequest>) => {
     self.postMessage(message);
   };
   void scanScratch(request.config, request.time, request.budget).then(
-    (scan) => {
-      reply({ kind: "scan", id: request.id, scan });
+    (paced) => {
+      reply({ kind: "scan", id: request.id, paced });
     },
     (error: unknown) => {
       reply({

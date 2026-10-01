@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type {
+  PacedScan,
   ScanBudget,
   ScanReply,
   ScanRequest,
@@ -17,16 +18,21 @@ export class ScanCancelled extends Error {
 }
 
 /**
- * The scan thread's own file: the source module beside this one, or the built
- * one beside the bundle. Bun's bundler does not follow a worker URL, so the
- * build emits the worker as a second entry point and this picks whichever
- * spelling is on disk. Neither present is a broken install, and it says so
- * rather than leaving scratch quietly unmeasured.
+ * The scan thread's own file: the source module beside this one, the built
+ * one beside the `build` bundle, or the one `compile` embeds in the
+ * standalone binary. Bun's bundler does not follow a worker URL, so both
+ * emit the worker as a second entry point and this picks whichever spelling
+ * is on disk. The binary keeps the worker at its path under `src/` and places
+ * this module at the binary's own name in that root, so there the worker sits
+ * under `./collect/`. None present is a broken install, and it says so rather
+ * than leaving scratch quietly unmeasured.
  */
 function workerFile(): URL {
-  const candidates = ["./scratch-worker.ts", "./scratch-worker.js"].map(
-    (name) => new URL(name, import.meta.url),
-  );
+  const candidates = [
+    "./scratch-worker.ts",
+    "./scratch-worker.js",
+    "./collect/scratch-worker.js",
+  ].map((name) => new URL(name, import.meta.url));
   const found = candidates.find((url) => existsSync(fileURLToPath(url)));
   if (found === undefined)
     throw new Error(
@@ -58,7 +64,7 @@ export interface ScanRunner {
     time: number,
     budget: ScanBudget,
     signal: AbortSignal,
-  ): Promise<ScratchScan>;
+  ): Promise<PacedScan>;
   close(): void;
 }
 
@@ -78,7 +84,7 @@ export class WorkerScan implements ScanRunner {
   private id = 0;
   private pending?: {
     id: number;
-    resolve: (scan: ScratchScan) => void;
+    resolve: (paced: PacedScan) => void;
     reject: (error: unknown) => void;
   };
   private closed = false;
@@ -122,7 +128,7 @@ export class WorkerScan implements ScanRunner {
     this.pending = undefined;
     switch (reply.kind) {
       case "scan":
-        pending.resolve(reply.scan);
+        pending.resolve(reply.paced);
         return;
       case "failed":
         pending.reject(new Error(reply.message));
@@ -140,13 +146,13 @@ export class WorkerScan implements ScanRunner {
     time: number,
     budget: ScanBudget,
     signal: AbortSignal,
-  ): Promise<ScratchScan> {
+  ): Promise<PacedScan> {
     if (this.closed) throw new Error("Scratch scan thread has closed");
     if (this.pending)
       throw new Error("Scratch scan thread is already scanning");
     const id = ++this.id;
     const worker = this.thread();
-    return new Promise<ScratchScan>((resolve, reject) => {
+    return new Promise<PacedScan>((resolve, reject) => {
       this.pending = { id, resolve, reject };
       // An abandoned scan owes its caller an answer now. Its thread keeps
       // reading until the caller ends it, and its reply names a scan this
@@ -221,8 +227,8 @@ export class ScratchCollector {
       };
       this.job = Promise.resolve()
         .then(() => this.runner.run(c, time, budget, controller.signal))
-        .then((data) => {
-          if (!controller.signal.aborted) this.data = data;
+        .then(({ scan }) => {
+          if (!controller.signal.aborted) this.data = scan;
         })
         .catch((error) => {
           // A failed scan keeps the last complete reading and its measurement

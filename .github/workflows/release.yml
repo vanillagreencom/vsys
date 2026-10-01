@@ -78,8 +78,9 @@ jobs:
       - name: Build the standalone binary
         run: |
           bun install --frozen-lockfile
-          bun build src/main.ts --compile --outfile vsys
+          bun run compile
           ./vsys --help >/dev/null
+          bun run check:compiled ./vsys
       - name: Pack the archive
         run: |
           asset="vsys-${TAG}-linux-${{ matrix.arch }}.tar.gz"

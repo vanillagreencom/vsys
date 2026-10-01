@@ -22,7 +22,7 @@ function held() {
       signals.push(signal);
       const next = Promise.withResolvers<ScratchScan>();
       waiting.push(next);
-      return next.promise;
+      return next.promise.then((scan) => ({ scan, rests: 0 }));
     },
     close() {
       closed++;
@@ -84,7 +84,7 @@ test("a background scan holds the configured share; a waiting caller waits on no
   const once = new ScratchCollector({
     run: (_c, time, budget) => {
       scripted.push(budget);
-      return Promise.resolve(empty(time));
+      return Promise.resolve({ scan: empty(time), rests: 0 });
     },
     close: () => {},
   });

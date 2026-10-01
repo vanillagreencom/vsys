@@ -34,7 +34,11 @@ class Staged implements ScanThread {
   }
   /** Answer the scan at `index` of the ones this thread was sent. */
   answer(index: number, scan: ScratchScan): void {
-    this.reply({ kind: "scan", id: this.sent[index].id, scan });
+    this.reply({
+      kind: "scan",
+      id: this.sent[index].id,
+      paced: { scan, rests: 0 },
+    });
   }
   reply(reply: ScanReply): void {
     this.onmessage?.({ data: reply } as MessageEvent<ScanReply>);
@@ -65,7 +69,7 @@ test("the scan thread answers with a complete reading and closes", async () => {
     const roots = { ...f.config, scratchDirs: [path] };
     const runner = new WorkerScan();
     try {
-      const scan = await runner.run(roots, 5000, full, loose());
+      const { scan } = await runner.run(roots, 5000, full, loose());
       expect(scan.time).toBe(5000);
       expect(scan.errors).toEqual([]);
       expect(scan.scratch[0].bytes).toBe(
@@ -83,18 +87,51 @@ test("the scan thread answers with a complete reading and closes", async () => {
   }
 });
 
+test("the scan thread rests under the duty it is sent and not at 100", async () => {
+  const f = fixture();
+  const path = join(f.root, "scratch");
+  try {
+    for (let i = 0; i < 4; i++) f.write(join(path, `dir-${i}/file`), "1234");
+    const roots = { ...f.config, scratchDirs: [path] };
+    const runner = new WorkerScan();
+    try {
+      // A slice of zero ends at every entry, so every entry under 100 rests
+      // for what it earned. No wait is timed, only whether one was taken.
+      const rows: [number, boolean][] = [
+        [50, true],
+        [100, false],
+      ];
+      for (const [dutyPercent, rested] of rows) {
+        const { scan, rests } = await runner.run(
+          roots,
+          5000,
+          { sliceMs: 0, dutyPercent },
+          loose(),
+        );
+        expect({ dutyPercent, errors: scan.errors, rested: rests > 0 }).toEqual(
+          { dutyPercent, errors: [], rested },
+        );
+      }
+    } finally {
+      runner.close();
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("one thread serves every scan until it fails", async () => {
   const { runner, threads } = staged();
   try {
     const first = runner.run(c, 1000, full, loose());
     threads[0].answer(0, empty(1000));
-    expect((await first).time).toBe(1000);
+    expect((await first).scan.time).toBe(1000);
     const second = runner.run(c, 2000, full, loose());
     // A thread started per scan pays its startup on every interval, which is
     // what a bounded traversal cannot afford.
     expect(threads.length).toBe(1);
     threads[0].answer(1, empty(2000));
-    expect((await second).time).toBe(2000);
+    expect((await second).scan.time).toBe(2000);
     // A thread that dies owes its caller an answer, and the next scan needs a
     // thread of its own rather than the dead one.
     const third = runner.run(c, 3000, full, loose());
@@ -106,7 +143,7 @@ test("one thread serves every scan until it fails", async () => {
     const fourth = runner.run(c, 4000, full, loose());
     expect(threads.length).toBe(2);
     threads[1].answer(0, empty(4000));
-    expect((await fourth).time).toBe(4000);
+    expect((await fourth).scan.time).toBe(4000);
   } finally {
     runner.close();
   }
@@ -124,7 +161,7 @@ test("a reply the host no longer waits for is never published", async () => {
     const current = runner.run(c, 2000, full, loose());
     threads[0].answer(0, empty(1000));
     threads[0].answer(1, empty(2000));
-    expect((await current).time).toBe(2000);
+    expect((await current).scan.time).toBe(2000);
   } finally {
     runner.close();
   }
@@ -142,7 +179,7 @@ test("a late event from a replaced thread leaves the running scan alone", async 
     threads[0].crash("still gone");
     expect(threads[1].stopped).toBe(0);
     threads[1].answer(0, empty(2000));
-    expect((await running).time).toBe(2000);
+    expect((await running).scan.time).toBe(2000);
   } finally {
     runner.close();
   }

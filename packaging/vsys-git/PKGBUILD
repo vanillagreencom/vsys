@@ -24,7 +24,7 @@ pkgver() {
 build() {
 	cd "${srcdir}/${pkgname}"
 	bun install --frozen-lockfile
-	bun build src/main.ts --compile --outfile vsys
+	bun run compile
 }
 
 package() {

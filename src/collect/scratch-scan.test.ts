@@ -16,7 +16,7 @@ test("one traversal counts hard links once per root and once per session", async
     symlinkSync(f.root, join(path, "loop"));
     const missing = join(f.root, "missing");
     const c = { ...f.config, scratchDirs: [path, missing] };
-    const result = await scanScratch(c, Date.now(), full);
+    const { scan: result } = await scanScratch(c, Date.now(), full);
     expect(result.scratch[0].bytes).toBe(
       lstatSync(path).size +
         lstatSync(join(path, "a")).size +
@@ -50,11 +50,13 @@ test("a traversal rests for what each spent slice earned", async () => {
     // of zero makes every entry end one.
     const step = 5;
     const busy = step * 2;
-    const rows: [number, number][] = [
-      [100, 0],
-      [50, busy],
-      [25, busy * 3],
-      [20, busy * 4],
+    // At a duty of 100 a slice earns nothing, and the traversal takes no
+    // timer turn for it.
+    const rows: [number, number[]][] = [
+      [100, []],
+      [50, [busy]],
+      [25, [busy * 3]],
+      [20, [busy * 4]],
     ];
     for (const [dutyPercent, expected] of rows) {
       let reading = 0;
@@ -68,25 +70,22 @@ test("a traversal rests for what each spent slice earned", async () => {
           sleeps.push(ms);
         },
       };
-      const result = await scanScratch(
+      const { scan, rests } = await scanScratch(
         c,
         Date.now(),
         { sliceMs: 0, dutyPercent },
         clock,
       );
-      expect({ dutyPercent, error: result.scratch[0].error }).toEqual({
+      expect({ dutyPercent, error: scan.scratch[0].error }).toEqual({
         dutyPercent,
         error: null,
       });
-      // Every entry rests, including at a duty of 100 where what it earned is
-      // nothing. A traversal that skips the rest records none at all.
-      expect({ dutyPercent, rested: sleeps.length > 0 }).toEqual({
+      // Every entry under 100 rests, so a traversal that skips the rest there
+      // records none at all, and the count it reports is the rests it took.
+      expect({ dutyPercent, waited: [...new Set(sleeps)], rests }).toEqual({
         dutyPercent,
-        rested: true,
-      });
-      expect({ dutyPercent, waited: [...new Set(sleeps)] }).toEqual({
-        dutyPercent,
-        waited: [expected],
+        waited: expected,
+        rests: sleeps.length,
       });
     }
   } finally {

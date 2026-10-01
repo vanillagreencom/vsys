@@ -11,6 +11,16 @@ export interface ScratchScan {
 }
 
 /**
+ * A scan and the number of times its traversal gave the thread back. The
+ * count is what shows, from outside the scan thread, that the budget it was
+ * sent took effect: `bench:scratch` reports it beside the bounded scan's cost.
+ */
+export interface PacedScan {
+  scan: ScratchScan;
+  rests: number;
+}
+
+/**
  * `sliceMs` is the granularity the share is enforced at; `restMs` owns what a
  * spent slice earns at `dutyPercent`.
  */
@@ -54,6 +64,8 @@ export function restMs(busyMs: number, dutyPercent: number): number {
  */
 class Pace {
   private since: number;
+  /** The rests taken; a slice that earned none takes no timer turn. */
+  rests = 0;
   constructor(
     private budget: ScanBudget,
     private clock: PaceClock,
@@ -65,9 +77,13 @@ class Pace {
     return this.clock.now() - this.since >= this.budget.sliceMs;
   }
   async rest(): Promise<void> {
-    await this.clock.sleep(
-      restMs(this.clock.now() - this.since, this.budget.dutyPercent),
-    );
+    const ms = restMs(this.clock.now() - this.since, this.budget.dutyPercent);
+    // Even a zero-length timer gives up a turn, which would throttle a scan
+    // that was granted the whole thread.
+    if (ms > 0) {
+      await this.clock.sleep(ms);
+      this.rests++;
+    }
     this.since = this.clock.now();
   }
 }
@@ -163,7 +179,7 @@ export async function scanScratch(
   time: number,
   budget: ScanBudget,
   clock: PaceClock = timerPace,
-): Promise<ScratchScan> {
+): Promise<PacedScan> {
   const pace = new Pace(budget, clock);
   const result: ScratchScan = { scratch: [], sessions: [], time, errors: [] };
   for (const path of c.scratchDirs) {
@@ -173,7 +189,7 @@ export async function scanScratch(
     if (scanned.root.error)
       result.errors.push({ source: path, message: scanned.root.error });
   }
-  return result;
+  return { scan: result, rests: pace.rests };
 }
 
 /** What the main thread asks the scan worker for. */
@@ -186,5 +202,5 @@ export interface ScanRequest {
 
 /** What the scan worker answers, always naming the scan it answers for. */
 export type ScanReply =
-  | { kind: "scan"; id: number; scan: ScratchScan }
+  | { kind: "scan"; id: number; paced: PacedScan }
   | { kind: "failed"; id: number; message: string };

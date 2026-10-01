@@ -24,6 +24,7 @@ async function measure(dutyPercent: number): Promise<{
   dutyPercent: number;
   elapsedMs: number;
   processCpuMs: number;
+  rests: number;
   scan: ScratchScan;
 }> {
   const c = { ...defaults(), scratchDirs: [root] };
@@ -36,9 +37,15 @@ async function measure(dutyPercent: number): Promise<{
     await runner.run(c, Date.now(), budget, signal);
     const cpu = cpuMs();
     const started = performance.now();
-    const scan = await runner.run(c, Date.now(), budget, signal);
+    const { scan, rests } = await runner.run(c, Date.now(), budget, signal);
     const elapsedMs = performance.now() - started;
-    return { dutyPercent, elapsedMs, processCpuMs: cpuMs() - cpu, scan };
+    return {
+      dutyPercent,
+      elapsedMs,
+      processCpuMs: cpuMs() - cpu,
+      rests,
+      scan,
+    };
   } finally {
     runner.close();
   }
@@ -73,7 +80,7 @@ async function bound(
     },
   };
   const started = performance.now();
-  const scan = await scanScratch(
+  const { scan } = await scanScratch(
     c,
     Date.now(),
     { sliceMs, dutyPercent },
@@ -144,6 +151,7 @@ try {
         dutyPercent: bounded.dutyPercent,
         elapsedMs: bounded.elapsedMs,
         processCpuMs: bounded.processCpuMs,
+        rests: bounded.rests,
       },
       // A scan that rests takes longer for the same reading. The stretch a
       // duty of d percent aims for is 100/d. The measured one runs past it,

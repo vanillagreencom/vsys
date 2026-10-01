@@ -34,6 +34,7 @@ class ApplicationChecks(unittest.TestCase):
             'if [ "$*" = "run build" ]; then\n'
             '  mkdir -p dist\n'
             '  for name in ${CI_BUILD_EMITS}; do printf x > "dist/$name"; done\n'
+            '  for name in ${CI_BUILD_EMPTY:-}; do : > "dist/$name"; done\n'
             "fi\n"
         )
         binary.chmod(0o755)
@@ -101,7 +102,10 @@ class ApplicationChecks(unittest.TestCase):
         # Every other expectation here is derived from these two, so their
         # contents are asserted once. Dropping a check leaves the thing it
         # gates unmeasured with the rest of the suite green.
-        self.assertEqual(CHECKS, ("lint", "typecheck", "test", "build", "bench:scratch"))
+        self.assertEqual(
+            CHECKS,
+            ("lint", "typecheck", "test", "build", "check:compiled", "bench:scratch"),
+        )
         self.assertEqual(ARTIFACTS, ("dist/main.js", "dist/scratch-worker.js"))
 
     def test_missing_or_empty_script_fails(self):
@@ -166,7 +170,7 @@ class ApplicationChecks(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = self.commands.read_text().splitlines()
         self.assertEqual(lines[:2], ["warden --selftest", "warden unittest"])
-        self.assertEqual(lines[2:], ["install --frozen-lockfile", "run lint", "run typecheck", "run test", "run build"])
+        self.assertEqual(lines[2:], ["install --frozen-lockfile", *(f"run {check}" for check in CHECKS)])
 
     def test_failing_warden_selftest_fails_ci(self):
         self.package()
@@ -210,6 +214,19 @@ class ApplicationChecks(unittest.TestCase):
                 self.assertIn(f"The build emitted no {missing}", result.stderr)
                 self.commands.unlink()
         self.env["CI_BUILD_EMITS"] = emits
+
+    def test_build_emitting_an_empty_entry_point_fails(self):
+        # A build that writes an entry point and leaves it empty has shipped
+        # nothing to run, though the file is there.
+        for name in ARTIFACTS:
+            with self.subTest(name=name):
+                self.package()
+                self.env["CI_BUILD_EMPTY"] = name.split("/")[-1]
+                result = self.run_ci()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"The build emitted no {name}", result.stderr)
+                self.commands.unlink()
+        del self.env["CI_BUILD_EMPTY"]
 
     def test_check_order_and_each_command_failure(self):
         commands = ["install --frozen-lockfile", *(f"run {check}" for check in CHECKS)]

@@ -9,11 +9,14 @@ import sys
 
 
 ARTIFACTS = ("dist/main.js", "dist/scratch-worker.js")
+# The standalone binary embeds the scratch scan thread at a path of its own,
+# which neither the source tree nor the build output shows; check:compiled
+# compiles one and measures a scratch root with it.
 # The scratch scan's processor bound lives in a timer and a worker thread, so
 # no unit test can see it: a staged clock records what the pace asks for and
 # returns at once. bench:scratch is the one instrument that measures the rest
 # taken, and it is in this list so the contract fails when the bound is gone.
-CHECKS = ("lint", "typecheck", "test", "build", "bench:scratch")
+CHECKS = ("lint", "typecheck", "test", "build", "check:compiled", "bench:scratch")
 
 
 def run_warden_checks() -> None:
