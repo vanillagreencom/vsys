@@ -163,9 +163,11 @@ function exists(path: string): Outcome {
   }
 }
 /**
- * The directories systemd reads unit files and drop-ins from, the user
- * manager's first. `user.control` is where `systemctl --user set-property`
- * writes, which is the line Settings offers for a missing slice.
+ * The directories the systemd user manager reads unit files and drop-ins
+ * from, the reader's own first. The agent slice is the user manager's, which
+ * loads nothing from the system manager's directories. `user.control` is where
+ * `systemctl --user set-property` writes, which is the line Settings offers for
+ * a missing slice.
  */
 export function unitDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   const config = env.XDG_CONFIG_HOME || join(homedir(), ".config");
@@ -176,8 +178,6 @@ export function unitDirs(env: NodeJS.ProcessEnv = process.env): string[] {
     join(data, "systemd/user"),
     "/etc/systemd/user",
     "/usr/lib/systemd/user",
-    "/etc/systemd/system",
-    "/usr/lib/systemd/system",
   ];
 }
 /**

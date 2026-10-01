@@ -372,31 +372,28 @@ test("a slice that appears after vsys starts is present from the next sample", a
   expect(after.get("agent-slice")?.available).toBe(true);
 });
 
-test("unit files are looked for in the user directories, then the system ones", () => {
+test("unit files are looked for where the user manager loads them, the reader's own first", () => {
   const user = (config: string, data: string) => [
     join(config, "systemd/user"),
     // Where the line Settings offers for a missing slice writes.
     join(config, "systemd/user.control"),
     join(data, "systemd/user"),
   ];
-  const system = [
-    "/etc/systemd/user",
-    "/usr/lib/systemd/user",
-    "/etc/systemd/system",
-    "/usr/lib/systemd/system",
-  ];
+  // The machine-wide user unit directories. The system manager's own are not
+  // read: the agent slice belongs to the user manager, which never loads them.
+  const shared = ["/etc/systemd/user", "/usr/lib/systemd/user"];
   const rows: [string, NodeJS.ProcessEnv, string[]][] = [
     [
       "XDG directories set",
       { XDG_CONFIG_HOME: "/x/config", XDG_DATA_HOME: "/x/data" },
-      [...user("/x/config", "/x/data"), ...system],
+      [...user("/x/config", "/x/data"), ...shared],
     ],
     [
       "XDG directories unset",
       {},
       [
         ...user(join(homedir(), ".config"), join(homedir(), ".local/share")),
-        ...system,
+        ...shared,
       ],
     ],
   ];
