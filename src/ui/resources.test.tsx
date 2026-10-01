@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { testRender } from "@opentui/react/test-utils";
+import { act } from "react";
 import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
@@ -217,7 +218,9 @@ test("a target whose group has gone is said out loud, not dropped", async () => 
       await ui.renderOnce();
       return { used, notices, frame: ui.captureCharFrame() };
     } finally {
-      ui.renderer.destroy();
+      await act(async () => {
+        ui.renderer.destroy();
+      });
     }
   }
   // A collector refresh between the keypress and this effect can take the row

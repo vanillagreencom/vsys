@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
+import { act } from "react";
 import { defaults } from "../config/config";
 import { volumesByDevice } from "../model/integrity";
 import type { Snapshot } from "../model/types";
@@ -496,7 +497,9 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
       await ui.renderOnce();
       return { used, notices, frame: ui.captureCharFrame() };
     } finally {
-      ui.renderer.destroy();
+      await act(async () => {
+        ui.renderer.destroy();
+      });
     }
   }
   // A collector refresh between the keypress and this effect can take the row
