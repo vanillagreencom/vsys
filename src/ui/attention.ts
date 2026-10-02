@@ -555,7 +555,7 @@ function copy(
       const names = list(
         unconfirmed.map(
           (proc) =>
-            `${proc.comm} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""}`,
+            `${proc.comm} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""} at ${proc.unconfirmedPath ?? "a path vsys did not record"}`,
         ),
       );
       const toolNames = list([
@@ -563,11 +563,11 @@ function copy(
       ]);
       return {
         word: "Unconfirmed",
-        title: `${count(unconfirmed.length, "process")} ${p(unconfirmed.length, "carries", "carry")} an unconfirmed agent name: ${toolNames}`,
+        title: `${count(unconfirmed.length, "process", "processes")} ${p(unconfirmed.length, "carries", "carry")} an unconfirmed agent name: ${toolNames}`,
         ways: [
-          `${names}. Its executable or script lies outside every install location vsys knows for that name, so vsys does not count it as an agent.`,
+          `${names}. Each process's path lies outside every install location vsys knows for its name, so vsys does not count it as an agent.`,
         ],
-        next: `Open Settings, then add the executable's directory as a paths fragment to ${toolNames} in the agent-tools overlay at ${agentToolsPath}.`,
+        next: `Open Settings, then add a paths fragment covering the path above to ${toolNames} in the agent-tools overlay at ${agentToolsPath}.`,
         command: shellLine(["cat", agentToolsPath]),
         view: "Settings",
       };

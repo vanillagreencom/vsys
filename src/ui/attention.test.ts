@@ -123,7 +123,13 @@ test("a process whose agent name was not confirmed by install location gets a vi
   const c = defaults();
   const s = emptySnapshot();
   s.procs = [
-    processSnapshot({ pid: 99, comm: "pi", tool: null, unconfirmedTool: "pi" }),
+    processSnapshot({
+      pid: 99,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
+    }),
   ];
   const items = attention(s, c, { basePath: base });
   expect(items.map((item) => item.id)).toEqual(["unconfirmed-tool"]);
@@ -131,15 +137,62 @@ test("a process whose agent name was not confirmed by install location gets a vi
   // Visible, but housekeeping never speaks for the machine.
   expect(card.verdictWorthy).toBe(false);
   expect(verdictLine(items, s)).toBe("Healthy");
-  // The process and the tool it almost matched are both named, not only
-  // carried as a field a reader never sees.
+  // The process, the tool it almost matched and the path tested are all
+  // named, not only carried as fields a reader never sees.
   expect(card.title).toContain("pi");
-  expect(said(card)).toContain("pi (pid 99): pi");
+  expect(said(card)).toContain("pi (pid 99): pi at /usr/bin/pi");
   // The reader is pointed at the Settings overlay's paths fragment.
   expect(card.view).toBe("Settings");
   expect(card.next).toContain("Settings");
   expect(card.next).toContain("paths fragment");
   expect(card.next).toContain("agent-tools.json");
+});
+
+test("several unconfirmed processes share one card, and a repeated tool name is counted once", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 10,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
+    }),
+    // A second process naming the same tool: the title counts the tool once,
+    // not once per process.
+    processSnapshot({
+      pid: 11,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/opt/pi/pi",
+    }),
+    processSnapshot({
+      pid: 12,
+      comm: "node",
+      tool: null,
+      unconfirmedTool: "codex",
+      unconfirmedPath: "/home/reader/scripts/codex.js",
+    }),
+  ];
+  const items = attention(s, c, { basePath: base });
+  expect(items.map((item) => item.id)).toEqual(["unconfirmed-tool"]);
+  const card = items[0];
+  // Three processes, two distinct tool names: the title's count and its name
+  // list disagree in length, and neither double-counts "pi". The plural verb
+  // follows the process count, not the deduped name count.
+  expect(card.title).toBe(
+    "3 processes carry an unconfirmed agent name: pi, codex",
+  );
+  expect(card.title).not.toContain("pi, pi");
+  // Every process is still named in the detail, each with its own path, so
+  // the two "pi" processes are not collapsed into the dedup either.
+  expect(said(card)).toContain("pi (pid 10): pi at /usr/bin/pi");
+  expect(said(card)).toContain("pi (pid 11): pi at /opt/pi/pi");
+  expect(said(card)).toContain(
+    "node (pid 12): codex at /home/reader/scripts/codex.js",
+  );
 });
 
 test("nine stalling lanes produce one card that names them", () => {

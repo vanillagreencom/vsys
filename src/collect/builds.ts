@@ -62,7 +62,13 @@ export interface ToolPaths {
  */
 export type ToolMatch =
   | { kind: "agent"; name: string }
-  | { kind: "unconfirmed"; name: string }
+  /**
+   * `path` is the one path tested against the name's install locations: the
+   * executable for a name match, the script for a scripted match. A card
+   * naming where to add a paths fragment names this path, never the other
+   * kind's, because only this one was checked.
+   */
+  | { kind: "unconfirmed"; name: string; path: string }
   | { kind: "none" };
 // REVISIT(D010): a layout no fragment or executable path describes needs another signal.
 /**
@@ -137,7 +143,18 @@ export function toolName(
     return { kind: "agent", name: named };
   if (scripted !== null && scriptAt !== null && script === null)
     return { kind: "agent", name: scripted };
-  return { kind: "unconfirmed", name: candidate };
+  // A named match that reaches here always read a non-null executable. A
+  // scripted match against a tool with an install location that reaches here
+  // always resolved a non-null script too, caught above otherwise; only a
+  // tool with none at all leaves `script` null without ever reading it, so
+  // that read happens here instead, lazily, for the rare process it affects.
+  const path =
+    candidate === named
+      ? executable
+      : (script ?? (argument === undefined ? null : paths.script(argument)));
+  if (path === null)
+    throw new Error("toolName: unconfirmed match carries no checked path");
+  return { kind: "unconfirmed", name: candidate, path };
 }
 /** The kernel marks a binary replaced while it ran with ` (deleted)`. */
 const liveExecutable = (path: string) => path.replace(/ \(deleted\)$/, "");

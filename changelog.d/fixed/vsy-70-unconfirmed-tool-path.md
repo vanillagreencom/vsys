@@ -1,0 +1,1 @@
+- The unconfirmed-tool card now names the exact path it checked, so its advice no longer points a scripted agent at the wrong directory.

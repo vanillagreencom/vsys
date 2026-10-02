@@ -154,6 +154,7 @@ test("a process whose name was not confirmed by install location is its own caus
     ...processSnapshot({ pid: 7, comm: "pi" }),
     tool: null,
     unconfirmedTool: "pi",
+    unconfirmedPath: "/usr/bin/pi",
   };
   s.procs = [processSnapshot({ pid: 1 }), unconfirmed];
   const cause = causes(s, c).find((item) => item.id === "unconfirmed-tool");

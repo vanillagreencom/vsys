@@ -382,6 +382,7 @@ export function everyCauseSnapshot(c: Config): Snapshot {
       executable: "/usr/bin/pi",
       tool: null,
       unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
     }),
   ];
   s.groups = [
