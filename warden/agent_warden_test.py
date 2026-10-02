@@ -430,24 +430,32 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
 
     def _escaped_unconfirmed_rows(self, module):
         native_install = f"{module.HOME}/.local/share/claude/versions/2.1.0/claude"
+        job = "/user.slice/user-1000.slice/user@1000.service/app.slice/orch-x.service"
         recs = {
             1: module.Proc(1, ppid=0, comm="tmux: server", argv=["tmux"], exe="/usr/bin/tmux", cgroup=self.A, start=1),
             70: module.Proc(70, ppid=1, comm="claude", argv=["claude"], exe=native_install, cgroup=self.A, start=2, marked=True),
             71: module.Proc(71, ppid=1, comm="claude", argv=["claude"], exe=native_install, cgroup=self.A, start=3),
+            80: module.Proc(80, ppid=1, comm="ChatGPT", argv=["ChatGPT"], exe="/opt/codex-desktop/ChatGPT", cgroup=self.A, start=4, marked=True),
+            81: module.Proc(81, ppid=80, comm="claude", argv=["claude"], exe=native_install, cgroup=self.A, start=5, marked=True),
+            90: module.Proc(90, ppid=1, comm="claude", argv=["claude"], exe=native_install, cgroup=job, start=6, marked=True),
         }
-        moves, _, _, _ = module.plan(recs, capped=lambda cg: False, contained=lambda cg: False)
+        moves, _, _, units = module.plan(recs, capped=lambda cg: False, contained=lambda cg: cg == job)
         escaped = [sorted(p.pid for p in tree) for reason, tree in moves if reason == "escaped launch"]
         moved = {p.pid for _, tree in moves for p in tree}
         return [
             ("a native install the warden cannot confirm is not an agent", recs[70].is_agent, False),
             ("a marked launch of it outside the slice is moved as an escaped launch", [70] in escaped, True),
             ("an unmarked twin is not moved", 71 in moved, False),
+            ("a marked launch of it under a desktop app stays", 81 in moved, False),
+            ("a marked launch of it in a contained unit is listed as that unit's", [p.pid for p in units], [90]),
         ]
 
     def test_escaped_launch_moves_an_unconfirmed_name(self):
         # D005 and D010: location confirmation gates only the automatic move
         # of an unmarked agent. An AGENT_CONFINE=1 launch outside the slice
-        # is an escape whatever its name.
+        # is an escape whatever its name, unless the nearest marker above it
+        # is a desktop app or an excluded helper, where only a confirmed
+        # agent moves.
         for name, actual, expected in self._escaped_unconfirmed_rows(self.w):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)

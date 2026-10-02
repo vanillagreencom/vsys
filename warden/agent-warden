@@ -20,7 +20,9 @@ Modes
 Rules, per process, never per pane
   * Launched work carries AGENT_CONFINE=1 in its environment (agent-confine
     stamps it; children inherit). A marked process outside the slice is an
-    escape whatever its name, and its marked descendants go with it.
+    escape whatever its name, and its marked descendants go with it, unless
+    the nearest marker above it is a desktop app or an excluded helper:
+    there only a confirmed agent escapes.
   * Agent CLI names and mise install directories come from agent-tools.json.
     They classify what no launcher touched: a CLI a desktop app started.
   * A comm equal to a configured name is a candidate, never the decision
@@ -602,7 +604,7 @@ class Proc:
         chooses. A reader's own name with no location is trusted as-is, and
         an unreadable executable never hides an escaped agent. A tool whose
         only location is `paths` is no such name: it confirms only as a
-        bundled CLI engine."""
+        bundled CLI engine, or by name when its executable cannot be read."""
         location = TOOL_LOCATIONS.get(name)
         if not location or not (location["mise"] or location["executables"] or location["has_paths"]):
             return True
