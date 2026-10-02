@@ -22,9 +22,7 @@
 import type { Outcome } from "./capabilities";
 import { killGraceMs, spawnText } from "./io";
 
-/** The D-Bus service that answers in the SMART capability's place when it supplies a drive's lifetime writes. */
-export const udisksService = "org.freedesktop.UDisks2";
-const service = udisksService;
+const service = "org.freedesktop.UDisks2";
 const nvmeInterface = "org.freedesktop.UDisks2.NVMe.Controller";
 const ataInterface = "org.freedesktop.UDisks2.Drive.Ata";
 const busctl = ["busctl", "--system", "--json=short", "call", service];

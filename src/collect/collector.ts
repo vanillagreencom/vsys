@@ -11,6 +11,7 @@ import {
   probeCapabilities,
   probeIoStat,
   probeTmux,
+  udisksCapabilitySource,
   unitDirs,
 } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
@@ -24,7 +25,7 @@ import { agentScratchDirs } from "./scratch";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
-import { Udisks, udisksService } from "./udisks";
+import { Udisks } from "./udisks";
 
 export interface SampleOptions {
   /** Skip scratch collection for cheap consumers that must treat it as unknown. */
@@ -273,7 +274,7 @@ export class Collector {
       this.record(
         "smart",
         udisksSupplies ? null : this.storage.smartDir,
-        udisksSupplies ? udisksService : c.smartDir,
+        udisksSupplies ? udisksCapabilitySource : c.smartDir,
       );
     }
     // Device totals cover the whole machine, so they are read above the watched tree.

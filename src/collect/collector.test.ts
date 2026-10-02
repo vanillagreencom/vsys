@@ -17,12 +17,13 @@ import { fakeBus, noBus } from "../test/udisks";
 import { capabilityLine } from "../ui/settings";
 import { FinishedScrubMemory } from "./btrfs";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
+import { udisksCapabilitySource } from "./capabilities";
 import { Collector, createCollector } from "./collector";
 import { KernelLog } from "./kernel-log";
 import { ProcessCollector, parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
 import { ScratchCollector } from "./scratch";
-import { Udisks, udisksService } from "./udisks";
+import { Udisks } from "./udisks";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -1304,7 +1305,7 @@ test("with no report directory, udisks answers in its place or says why it canno
   );
   // The capability must name udisks2 as what actually answered, not the
   // report directory this machine never populated.
-  expect(smart?.source).toBe(udisksService);
+  expect(smart?.source).toBe(udisksCapabilitySource);
   const neither = await withUdisks(f, noBus).sample();
   expect(neither.storage.devices).toEqual([
     {
@@ -1330,7 +1331,7 @@ test("the smart capability's source drops udisks2 once a report directory starts
   const collector = withUdisks(f, fakeBus([udisksDrive]));
   const fromUdisks = await collector.sample();
   expect(fromUdisks.capabilities.find((c) => c.id === "smart")?.source).toBe(
-    udisksService,
+    udisksCapabilitySource,
   );
   f.write(
     join(f.config.smartDir, "nvme0n1"),
