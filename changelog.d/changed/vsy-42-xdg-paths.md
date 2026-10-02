@@ -1,0 +1,1 @@
+- Settings follow `XDG_CONFIG_HOME` and history `XDG_STATE_HOME`. Existing files in `~/.config/vsys/` and `~/.local/state/vsys/` stay in use until you move them. `agent-tools.json` stays put.

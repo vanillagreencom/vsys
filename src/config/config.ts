@@ -9,7 +9,7 @@ import {
 } from "./agent-tools";
 import { writeFileAtomic } from "./atomic";
 import { normalizeKey } from "./keys";
-import { xdgHome } from "./xdg";
+import { xdgPath } from "./xdg";
 
 export const columns = [
   "name",
@@ -127,9 +127,12 @@ export interface Config {
   writeMode: boolean;
   keys: Record<string, string>;
 }
-/** The settings file, under `$XDG_CONFIG_HOME` or else `~/.config`. */
+/**
+ * The settings file, under `$XDG_CONFIG_HOME` or else `~/.config`, as
+ * `xdgPath()` resolves it.
+ */
 export function configPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(xdgHome("XDG_CONFIG_HOME", env), "vsys/config.toml");
+  return xdgPath("XDG_CONFIG_HOME", "vsys/config.toml", env);
 }
 /**
  * The shipped scratch roots. They are one workstation's layout. A list equal
@@ -146,13 +149,14 @@ export function defaultScratchDirs(): string[] {
 }
 /**
  * The shipped settings. History and error memory live under
- * `$XDG_STATE_HOME/vsys`, or else `~/.local/state/vsys`.
+ * `$XDG_STATE_HOME/vsys`, or else `~/.local/state/vsys`, as `xdgPath()`
+ * resolves the directory, so the two never split across locations.
  */
 export function defaults(
   agentTools = shippedAgentTools.tools.map((tool) => tool.name),
   env: NodeJS.ProcessEnv = process.env,
 ): Config {
-  const state = join(xdgHome("XDG_STATE_HOME", env), "vsys");
+  const state = xdgPath("XDG_STATE_HOME", "vsys", env);
   return {
     refreshMs: 1000,
     historyHours: 24,

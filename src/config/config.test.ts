@@ -7,12 +7,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { fixture } from "../test/fixture";
+import { fixture, underHome } from "../test/fixture";
 import { shippedAgentTools } from "./agent-tools";
 import {
-  configPath,
   defaults,
   loadConfig,
   saveConfig,
@@ -137,12 +135,30 @@ test("every host-specific name ships a systemd user-session default", () => {
     expect(list.length).toBeGreaterThan(0);
 });
 
-test("the settings file follows XDG_CONFIG_HOME and history follows XDG_STATE_HOME", () => {
+/** Prints each row's settings file, loaded refresh and state paths. */
+const resolvedPaths = `
+const out = [];
+for (const env of JSON.parse(process.env.VSYS_TEST_INPUT)) {
+  const file = subject.configPath(env);
+  const c = subject.defaults(undefined, env);
+  out.push({
+    file,
+    refreshMs: (await subject.loadConfig(file)).refreshMs,
+    sqlite: c.sqlitePath,
+    memory: c.errorMemoryPath,
+  });
+}
+console.log(JSON.stringify(out));
+`;
+
+test("the settings file follows XDG_CONFIG_HOME and history follows XDG_STATE_HOME", async () => {
+  const home = join(scratchRoot("xdg-home"), "home");
+  mkdirSync(home);
   // Today's paths. A machine with no config file and both variables set to
   // these, or neither set, must keep reading and writing exactly here.
-  const config = join(homedir(), ".config/vsys/config.toml");
-  const history = join(homedir(), ".local/state/vsys/history.db");
-  const errors = join(homedir(), ".local/state/vsys/filesystem-errors.json");
+  const config = join(home, ".config/vsys/config.toml");
+  const history = join(home, ".local/state/vsys/history.db");
+  const errors = join(home, ".local/state/vsys/filesystem-errors.json");
   const rows: [string, NodeJS.ProcessEnv, string, string, string][] = [
     ["both unset", {}, config, history, errors],
     [
@@ -153,10 +169,17 @@ test("the settings file follows XDG_CONFIG_HOME and history follows XDG_STATE_HO
       errors,
     ],
     [
+      "both relative",
+      { XDG_CONFIG_HOME: "x/config", XDG_STATE_HOME: "x/state" },
+      config,
+      history,
+      errors,
+    ],
+    [
       "both set to today's paths",
       {
-        XDG_CONFIG_HOME: join(homedir(), ".config"),
-        XDG_STATE_HOME: join(homedir(), ".local/state"),
+        XDG_CONFIG_HOME: join(home, ".config"),
+        XDG_STATE_HOME: join(home, ".local/state"),
       },
       config,
       history,
@@ -177,15 +200,58 @@ test("the settings file follows XDG_CONFIG_HOME and history follows XDG_STATE_HO
       "/x/state/vsys/filesystem-errors.json",
     ],
   ];
-  for (const [name, env, file, sqlite, memory] of rows) {
-    const c = defaults(undefined, env);
-    expect({
-      name,
-      file: configPath(env),
-      sqlite: c.sqlitePath,
-      memory: c.errorMemoryPath,
-    }).toEqual({ name, file, sqlite, memory });
-  }
+  const resolved = await underHome(
+    home,
+    join(import.meta.dir, "config.ts"),
+    resolvedPaths,
+    rows.map(([, env]) => env),
+  );
+  expect(resolved).toEqual(
+    rows.map(([, , file, sqlite, memory]) => ({
+      file,
+      refreshMs: 1000,
+      sqlite,
+      memory,
+    })),
+  );
+});
+
+test("an install under the home defaults keeps its settings and history when the variables move", async () => {
+  const root = scratchRoot("xdg-legacy");
+  const home = join(root, "home");
+  const config = join(home, ".config/vsys/config.toml");
+  const state = join(home, ".local/state/vsys");
+  mkdirSync(dirname(config), { recursive: true });
+  writeFileSync(config, "refreshMs = 2500\n");
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, "filesystem-errors.json"), "{}\n");
+  const moved = join(root, "xdg-config");
+  mkdirSync(join(moved, "vsys"), { recursive: true });
+  writeFileSync(join(moved, "vsys/config.toml"), "refreshMs = 4000\n");
+  const env = (config: string) => ({
+    XDG_CONFIG_HOME: config,
+    XDG_STATE_HOME: join(root, "xdg-state"),
+  });
+  const resolved = await underHome(
+    home,
+    join(import.meta.dir, "config.ts"),
+    resolvedPaths,
+    [env(join(root, "empty-config")), env(moved)],
+  );
+  expect(resolved).toEqual([
+    {
+      file: config,
+      refreshMs: 2500,
+      sqlite: join(state, "history.db"),
+      memory: join(state, "filesystem-errors.json"),
+    },
+    {
+      file: join(moved, "vsys/config.toml"),
+      refreshMs: 4000,
+      sqlite: join(state, "history.db"),
+      memory: join(state, "filesystem-errors.json"),
+    },
+  ]);
 });
 
 test("vsys observes only: the reserved write mode defaults off", async () => {

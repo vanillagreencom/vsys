@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -21,4 +22,26 @@ export function xdgHome(
 ): string {
   const value = env[name];
   return value && isAbsolute(value) ? value : join(homedir(), fallbacks[name]);
+}
+
+/**
+ * Where a vsys file or directory lives under an XDG base directory. A path
+ * that exists only under the home default, while the variable points
+ * elsewhere, belongs to an install that kept its settings and history there,
+ * so it stays in use until the reader moves it: answering with the empty new
+ * location would reset every setting and orphan the history without a word.
+ * A path that cannot be checked for any reason but absence stops the caller.
+ */
+export function xdgPath(
+  name: keyof typeof fallbacks,
+  relative: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const chosen = join(xdgHome(name, env), relative);
+  const home = join(homedir(), fallbacks[name], relative);
+  return chosen === home || present(chosen) || !present(home) ? chosen : home;
+}
+
+function present(path: string): boolean {
+  return statSync(path, { throwIfNoEntry: false }) !== undefined;
 }

@@ -1,1 +1,0 @@
-- Settings now follow `XDG_CONFIG_HOME`, and saved history and filesystem error memory follow `XDG_STATE_HOME`. Unset or empty, they stay in `~/.config/vsys/` and `~/.local/state/vsys/`.
