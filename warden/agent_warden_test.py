@@ -763,28 +763,34 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") doubles while
         # os.path.join (this candidate path's source) never does. The
         # unreadable rows prove a desktop's non-dumpable processes never
-        # pin a gone scope's directory, while an agent shell that handed it
-        # down still does.
+        # pin a gone scope's directory, an agent shell that handed it down
+        # holds it ("in-use" beats "unknown"), and an unreadable process
+        # left alone in a scope move() created keeps it this tick.
         user = "/user.slice/user-1000.slice/user@1000.service"
         app = f"{user}/app.slice/x.scope"
         nested = f"{user}/agents.slice/agent-warden-555-1.scope"
+        build = f"{user}/agents.slice/agent-warden-build-555-1.scope"
         other = f"{user}/agents.slice/agent-confine-300-400.scope"
         manager = (700, 1, "systemd", f"{user}/init.scope", None)
         rows = [
             ("a live process's TMPDIR resolves here",
-             [(555, 1, "bash", nested, "TMPDIR={moved}")], [], False),
+             [(555, 1, "bash", nested, "TMPDIR={moved}")], [], "in-use"),
             ("a live process's TMPDIR names an unrelated sibling",
-             [(555, 1, "bash", nested, "TMPDIR={moved}0")], [], True),
+             [(555, 1, "bash", nested, "TMPDIR={moved}0")], [], "free"),
             ("a live process's TMPDIR has a doubled separator",
-             [(555, 1, "bash", nested, "TMPDIR={scratch}//agent-confine-100-200")], [], False),
+             [(555, 1, "bash", nested, "TMPDIR={scratch}//agent-confine-100-200")], [], "in-use"),
             ("an unreadable desktop daemon outside agents.slice",
-             [manager, (701, 700, "ssh-agent", app, None)], [], True),
+             [manager, (701, 700, "ssh-agent", app, None)], [], "free"),
             ("an unreadable child of an agent shell whose TMPDIR names it",
-             [(555, 1, "bash", nested, "TMPDIR={moved}"), (556, 555, "op", nested, None)], [], False),
+             [(556, 555, "op", nested, None), (555, 1, "bash", nested, "TMPDIR={moved}")], [], "in-use"),
             ("an orphaned unreadable daemon in another live agents.slice scope",
-             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"], True),
+             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"], "free"),
+            ("an unreadable child alone in a moved scope whose agent parents are gone",
+             [manager, (556, 700, "op", nested, None)], [], "unknown"),
+            ("an unreadable child alone in a moved build scope whose agent parents are gone",
+             [manager, (556, 700, "op", build, None)], [], "unknown"),
         ]
-        for name, members, live_scopes, should_remove in rows:
+        for name, members, live_scopes, status in rows:
             with self.subTest(name=name):
                 with scratch() as tmp:
                     base = Path(tmp)
@@ -823,10 +829,11 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
 
                         self.w.read = flaky_read
                         try:
+                            self.assertEqual(self.w._scratch_in_use(str(moved), procs), status)
                             removed = self.w.reap_scratch_dirs(True, procs)
                         finally:
                             self.w.read = old_read
-                        if should_remove:
+                        if status == "free":
                             self.assertFalse(moved.is_dir())
                             self.assertEqual(removed, ["agent-confine-100-200"])
                         else:
@@ -838,7 +845,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def test_reap_scratch_dirs_tmpdir_liveness_mutant_fails(self):
         text = WARDEN.read_text()
         old = (
-            '        if _scratch_in_use(path, procs):\n'
+            '        if status == "in-use":\n'
             '            log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")\n'
             '            continue\n'
         )

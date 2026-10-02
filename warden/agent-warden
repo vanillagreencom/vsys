@@ -862,6 +862,9 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
 SCRATCH_GRACE = float(os.environ.get("AGENT_WARDEN_SCRATCH_GRACE", "60"))
+# The scopes move() creates (warden_scope_name). A process in one has left the
+# agent-confine scope its TMPDIR names.
+WARDEN_MOVE_SCOPE_RE = re.compile(r"agent-warden(?:-build)?-\d+-\d+\.scope")
 
 
 def _proc_tmpdir(pid):
@@ -882,38 +885,48 @@ def _proc_tmpdir(pid):
 
 
 def _scratch_in_use(path, procs):
-    """Whether any pid in procs still has TMPDIR resolving inside path.
-    A pid whose environ cannot be read does not count as holding path.
-    Non-dumpable programs (ssh-agent, op, systemd --user) refuse
-    /proc/PID/environ even to their own user, and a desktop always runs
-    some, so counting them would keep every directory forever. Skipping one
-    loses no holder. A child inherits its environment, so its TMPDIR is the
-    one its nearest readable ancestor in procs carries, and that ancestor is
-    itself checked here. A pid with no readable ancestor in procs cannot
-    hold path either: the caller asks only about a scope that is already
-    gone, a scope stays alive while any process in it runs, and the only
-    processes that leave their scope are the nested agent sessions move()
-    relocates, whose environ is readable. Both sides are resolved with
-    os.path.realpath before comparing, not just lexically normalized: a
-    trailing slash on AGENT_TMPDIR makes agent-confine's bash concatenation
-    ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a separator in the live
-    process's real TMPDIR string, while os.path.join (path's caller) never
-    does, and AGENT_TMPDIR can also reach its target through a symlink (a
-    symlinked HOME or XDG_CACHE_HOME); an unresolved compare would miss
-    either kind of live match and wrongly read the directory as free.
-    realpath never raises on a component that does not exist or that this
-    user cannot stat -- it resolves as far as it can and leaves the rest
-    lexical -- so it needs no exception handling here."""
+    """Whether any pid in procs still has TMPDIR resolving inside path:
+    "in-use" when one does, "unknown" when none does but a pid that could
+    hold path has an environ that cannot be read, "free" otherwise.
+    "in-use" beats "unknown": one confirmed user is enough to keep path.
+    Most unreadable pids are skipped. Non-dumpable programs (ssh-agent, op,
+    systemd --user) refuse /proc/PID/environ even to their own user, and a
+    desktop always runs some, so counting them would keep every directory
+    forever. Skipping one loses no holder while its nearest readable
+    ancestor is in procs: a child inherits its environment, so that
+    ancestor carries the same TMPDIR and is itself checked here. With no
+    readable ancestor, a pid still in its original scope cannot hold path:
+    the caller asks only about a scope that is already gone, and a scope
+    stays alive while any process in it runs. The exception is a pid in a
+    scope move() created (WARDEN_MOVE_SCOPE_RE). Such a pid has left the
+    scope its TMPDIR names, and once its agent parents exit no readable
+    ancestor is left to check, so it makes path "unknown". Both sides are
+    resolved with os.path.realpath before comparing, not just lexically
+    normalized: a trailing slash on AGENT_TMPDIR makes agent-confine's bash
+    concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a separator in
+    the live process's real TMPDIR string, while os.path.join (path's
+    caller) never does, and AGENT_TMPDIR can also reach its target through
+    a symlink (a symlinked HOME or XDG_CACHE_HOME); an unresolved compare
+    would miss either kind of live match and wrongly read the directory as
+    free. realpath never raises on a component that does not exist or that
+    this user cannot stat -- it resolves as far as it can and leaves the
+    rest lexical -- so it needs no exception handling here."""
     candidate = os.path.realpath(path)
     prefix = candidate + os.sep
-    for pid in procs:
+    unknown = False
+    for pid, p in procs.items():
         tmpdir = _proc_tmpdir(pid)
-        if not tmpdir:  # unreadable (None) or no TMPDIR ("")
+        if tmpdir is None:
+            m = SCOPE_RE.search(p.cgroup or "")
+            if m and WARDEN_MOVE_SCOPE_RE.fullmatch(m.group(1)):
+                unknown = True
+            continue
+        if not tmpdir:
             continue
         resolved = os.path.realpath(tmpdir)
         if resolved == candidate or resolved.startswith(prefix):
-            return True
-    return False
+            return "in-use"
+    return "unknown" if unknown else "free"
 
 
 def reap_scratch_dirs(correct, procs):
@@ -962,8 +975,12 @@ def reap_scratch_dirs(correct, procs):
             continue
         if not os.path.isdir(path):
             continue
-        if _scratch_in_use(path, procs):
+        status = _scratch_in_use(path, procs)
+        if status == "in-use":
             log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")
+            continue
+        if status == "unknown":
+            log(f"scratch {name}: scope gone but a moved process's TMPDIR could not be read; not reaping this tick")
             continue
         if not correct:
             log(f"scratch {name}: scope gone; would remove (report mode)")
