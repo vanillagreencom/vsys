@@ -1,0 +1,1 @@
+- The new-errors card's next step now says "each of these filesystems" when it names more than one, instead of pointing at only the first one as "that filesystem".
