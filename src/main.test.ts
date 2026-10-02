@@ -205,15 +205,16 @@ test("summary sampling gives rate-backed activity a baseline", async () => {
     f.cleanup();
   }
 });
-test("quit, hangup and failed shutdown all take the quit key's shutdown", async () => {
+test("quit, hangup and terminate all take the quit key's shutdown", async () => {
   const f = fixture();
   try {
     const path = join(f.root, "config.toml");
     await saveConfig({ ...f.config, refreshMs: 100 }, path, f.agentToolsPath);
     // The child owns the terminal as its controlling terminal, so closing the
     // master side is the hangup a closed window or a killed tmux pane sends.
-    // A hangup leaves no terminal whose settings could be restored.
-    const script = `import fcntl, os, pty, select, subprocess, sys, termios, time
+    // A hangup leaves no terminal whose settings could be restored. The
+    // shutdown report goes to a file, which outlives the terminal.
+    const script = `import fcntl, os, pty, select, signal, subprocess, sys, termios, time
 binary, config, trigger, home, fault = sys.argv[1:6]
 master, slave = pty.openpty()
 before = termios.tcgetattr(slave)
@@ -224,7 +225,9 @@ if fault == "fault":
 def attach():
     os.setsid()
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-child = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, preexec_fn=attach, env={**os.environ, "TERM": "xterm-256color", "HOME": home})
+report_path = os.path.join(home, f"stderr-{trigger}-{fault}")
+with open(report_path, "wb") as report_file:
+    child = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=report_file, preexec_fn=attach, env={**os.environ, "TERM": "xterm-256color", "HOME": home})
 output = b""
 sent = False
 ready_at = None
@@ -246,12 +249,18 @@ try:
             if trigger == "hangup":
                 os.close(master)
                 master = None
+            elif trigger == "term":
+                child.send_signal(signal.SIGTERM)
             else:
                 os.write(master, bytes([3]) if trigger == "ctrl+c" else b"q")
             sent = True
     assert b"Agents" in output, "Application did not render its tabs"
     expected = 1 if fault == "fault" else 0
     assert child.poll() == expected, f"Unexpected exit: {child.poll()}, {output!r}"
+    with open(report_path, "rb") as report_file:
+        report = report_file.read()
+    failure = b"vsys shutdown: Error: injected shutdown failure"
+    assert (failure in report) == (fault == "fault"), f"Unexpected shutdown report: {report!r}"
     if trigger != "hangup":
         assert termios.tcgetattr(slave) == before, "Application changed terminal settings after quit"
     assert b"MaxListenersExceededWarning" not in output, "Refresh leaked event listeners"
@@ -267,9 +276,9 @@ finally:
         os.close(master)
     os.close(slave)
 `;
-    // A failure injected into the history close shows as exit 1 only through
-    // the quit key's shutdown, so the hangup row with it proves the hangup
-    // reaches that shutdown rather than one of its own.
+    // Only the quit key's shutdown reports a failure injected into the
+    // history close, so the signal rows with it prove each signal reaches that
+    // shutdown rather than one of its own.
     for (const [trigger, fault] of [
       ["q", "clean"],
       ["ctrl+c", "clean"],
@@ -277,6 +286,7 @@ finally:
       ["hangup", "clean"],
       ["q", "fault"],
       ["hangup", "fault"],
+      ["term", "fault"],
     ]) {
       const child = Bun.spawn(
         [

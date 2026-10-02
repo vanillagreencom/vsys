@@ -164,8 +164,9 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   // The renderer listens for the exit signals, a hangup among them, and
   // destroys itself on one. Its listener also keeps the process from dying, so
   // every way the renderer ends must lead here, or sampling outlives the
-  // terminal.
-  renderer.once(CliRenderEvents.DESTROY, stop);
+  // terminal. The event fires before the renderer gives the console and the
+  // terminal back, so shutdown waits for that or its failure report is lost.
+  renderer.once(CliRenderEvents.DESTROY, () => queueMicrotask(stop));
   session.start();
 }
 
