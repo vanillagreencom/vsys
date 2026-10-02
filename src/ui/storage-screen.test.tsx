@@ -9,9 +9,11 @@ import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
 import { osc52 } from "./clipboard";
 import { type KeyHandler, KeyProvider } from "./keys";
+import { regionOf, regionRanges, storageRegions } from "./regions";
 import {
   itemPath,
   Storage,
+  type StorageItem,
   scratchSummary,
   storageItems,
   volumeLevel,
@@ -851,5 +853,123 @@ test("a missing scratch root's error follows its age on the row", async () => {
     expect(line.trimEnd().endsWith(`ago  ${error}`)).toBe(true);
   } finally {
     await t.close();
+  }
+});
+
+test("every kind of Storage row is placed, marked, opened and followed by one rule", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [volumeSnapshot("/data", { device: "/dev/data" })];
+  s.storage.scrubs = [
+    { path: "/run/btrfs-scrub/data", text: "clean", problem: false },
+  ];
+  s.storage.scratch = [
+    {
+      path: "/scratch/root",
+      bytes: 1,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
+  ];
+  s.storage.sessions = [
+    { path: "/scratch/session", bytes: 1, age: 0, error: null },
+  ];
+  const items = storageItems(s);
+  // Every kind the screen draws is in the fixture. The set is the type's own:
+  // a kind added to `StorageItem` and missing here fails to compile, so this
+  // test cannot quietly narrow when the fixture changes.
+  const kinds: Record<StorageItem["kind"], true> = {
+    filesystem: true,
+    volume: true,
+    scrub: true,
+    scratch: true,
+  };
+  for (const kind of Object.keys(kinds))
+    expect({ kind, drawn: items.some((item) => item.kind === kind) }).toEqual({
+      kind,
+      drawn: true,
+    });
+  // A scratch row is a root or a session, and both are drawn.
+  expect(
+    items.flatMap((item) => (item.kind === "scratch" ? [item.session] : [])),
+  ).toEqual([false, true]);
+  /** Whether `line` names `path` as a word, not as the tail of a longer one. */
+  const names = (line: string, path: string) =>
+    line.split(/[\s▍▸]+/).includes(path);
+  /**
+   * Whether the marked row is `item`. A filesystem's row is its integrity
+   * line, which two filesystems in one state share, so it is told by the
+   * device heading drawn above it; every other row carries its own path.
+   */
+  const marks = (frame: string, item: StorageItem) => {
+    const lines = frame.split("\n");
+    const y = lines.findIndex((line) => line.includes("▍"));
+    if (y < 0) return false;
+    return item.kind === "filesystem"
+      ? lines[y - 1].includes("/dev/data")
+      : names(lines[y], itemPath(item));
+  };
+  // A filesystem that sorts above every row, arriving with a sample, so each
+  // row's number names another row afterwards.
+  const later: Snapshot = {
+    ...s,
+    time: s.time + 1000,
+    storage: {
+      ...s.storage,
+      volumes: [
+        volumeSnapshot("/aaa", { device: "/dev/aaa" }),
+        ...s.storage.volumes,
+      ],
+    },
+  };
+  const counts = [
+    items.filter((item) => item.kind === "filesystem" || item.kind === "volume")
+      .length,
+    items.filter((item) => item.kind === "scrub").length,
+    items.filter((item) => item.kind === "scratch").length,
+  ];
+  for (const [at, item] of items.entries()) {
+    const key = `${item.kind} ${itemPath(item)}`;
+    // Reached from the keyboard on a terminal too short to hold the screen,
+    // so the row is only on it if the scroll found it.
+    const region = regionOf(counts, at);
+    const offset = at - regionRanges(counts)[region][0];
+    const t = await mount(s, c, { width: 140, height: 16 });
+    try {
+      await t.press("5");
+      await t.press(c.keys[storageRegions[region].action]);
+      for (let i = 0; i < offset; i++) await t.press("down");
+      expect({ key, marked: marks(t.frame(), item) }).toEqual({
+        key,
+        marked: true,
+      });
+      await t.update(later);
+      await t.settle();
+      expect({ key, followed: marks(t.frame(), item) }).toEqual({
+        key,
+        followed: true,
+      });
+    } finally {
+      await t.close();
+    }
+    // Reached with the mouse, on a terminal that holds every row.
+    const m = await mount(s, c, { width: 140, height: 60 });
+    try {
+      await m.press("5");
+      const lines = m.frame().split("\n");
+      const heading = lines.findIndex((line) => line.includes("/dev/data"));
+      const y =
+        item.kind === "filesystem"
+          ? heading + 1
+          : lines.findIndex((line) => names(line, itemPath(item)));
+      await m.click(4, y);
+      expect({ key, clicked: marks(m.frame(), item) }).toEqual({
+        key,
+        clicked: true,
+      });
+    } finally {
+      await m.close();
+    }
   }
 });

@@ -17,6 +17,7 @@ import {
   timeBuckets,
 } from "./format";
 import { useScreenKeys } from "./keys";
+import { firstRow, useSelection } from "./selection";
 import { levelColor, metric, readingWeight, ui } from "./theme";
 import { eventKey, eventParts } from "./timeline";
 import {
@@ -110,20 +111,15 @@ export function Timeline({
 }) {
   const windowMs = windows[windowIndex];
   const changes = history.events(s.time, windowMs);
-  /**
-   * What the reader chose: the row they moved to, and the change that row
-   * named. The window key can swap a long list for a shorter one and a new
-   * sample prepends to it, so a row number alone outlives what it pointed at.
-   *
-   * The first row is a choice like any other, so it is seeded with the change
-   * it sits on rather than left as a null to be resolved by index. Left null,
-   * a change arriving at the top took the highlight while the cursor stayed
-   * on the row the reader had opened.
-   */
-  const [selection, setSelection] = useState<{
-    index: number;
-    id: string | null;
-  }>(() => ({ index: 0, id: changes[0] ? eventKey(changes[0]) : null }));
+  // What the reader chose, followed by identity: the window key can swap a
+  // long list for a shorter one and a new sample prepends to it, so a row
+  // number alone outlives what it pointed at.
+  const [selection, setSelection] = useState(firstRow);
+  const { selected: row, choose } = useSelection(
+    changes.map(eventKey),
+    selection,
+    setSelection,
+  );
   const start = s.time - windowMs;
   const chartWidth = Math.max(10, width - 4 - gutter);
   const buckets = timeBuckets(points, start, s.time, chartWidth);
@@ -138,13 +134,11 @@ export function Timeline({
         );
   useScreenKeys((name, key) => {
     if (name === c.keys.down || name === "down") {
-      const next = nextDown(changes.length, row);
-      select(next, changes[next]);
+      choose(nextDown(changes.length, row));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      const up = Math.max(0, row - 1);
-      select(up, changes[up]);
+      choose(Math.max(0, row - 1));
       return true;
     }
     // The change list is a list: Enter moves the time cursor to the row, and
@@ -203,28 +197,6 @@ export function Timeline({
     );
   };
   /**
-   * The row to draw, resolved against the list this render has. Following the
-   * chosen change keeps the reader on it when the list shifts under them, and
-   * where that change has gone the nearest row that exists takes over, so the
-   * highlight is never on a row the list does not have and Enter is never a
-   * no-op. Same rule as a lane leaving the Agents list.
-   */
-  const found = changes.findIndex((event) => eventKey(event) === selection.id);
-  const row =
-    found >= 0
-      ? found
-      : Math.min(selection.index, Math.max(0, changes.length - 1));
-  /**
-   * Move the highlight. The row and the change it names are recorded together
-   * and the change is passed in, so no caller can record a row number without
-   * saying which change it points at.
-   */
-  const select = useCallback(
-    (index: number, event: TimelineEvent | undefined) =>
-      setSelection({ index, id: event ? eventKey(event) : null }),
-    [],
-  );
-  /**
    * Open a row: the highlight, the recorded identity and the time cursor move
    * as one. Every entry calls this — the keys, the mouse, and a row Home asked
    * for — because a rule written at each entry reaches the entries someone
@@ -232,10 +204,10 @@ export function Timeline({
    */
   const open = useCallback(
     (index: number, event: TimelineEvent) => {
-      select(index, event);
+      choose(index);
       onCursor(event.time);
     },
-    [select, onCursor],
+    [choose, onCursor],
   );
   /**
    * A row Home asked for is selected and made the cursor, once. Home lists

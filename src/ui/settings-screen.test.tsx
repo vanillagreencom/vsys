@@ -7,13 +7,19 @@ import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
 import { isChildLine, mount, selectedRow } from "../test/harness";
 import { osc52 } from "./clipboard";
+import { fit } from "./columns";
 import {
   capabilityLabels,
   capabilityOffer,
   settingGroups,
   settingHelp,
+  settingLabel,
 } from "./settings";
-import { settingItems, sourceCounts } from "./settings-screen";
+import {
+  type SettingItem,
+  settingItems,
+  sourceCounts,
+} from "./settings-screen";
 
 test("every stored setting sits in exactly one group, and no group names a stranger", () => {
   const known = Object.keys(defaults()).filter((key) => key !== "keys");
@@ -892,5 +898,96 @@ test("the sources list opens with its last entry readable", async () => {
     expect(frame).toContain("/proc/source-3");
   } finally {
     await t.close();
+  }
+});
+
+test("every kind of Settings row is placed, kept in view, and opened alike by the key and the mouse", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const items = settingItems(c, s.capabilities);
+  // Every kind the screen draws is in the fixture. The set is the type's own:
+  // a kind added to `SettingItem` and missing here fails to compile, so this
+  // test cannot quietly narrow when the fixture changes.
+  const kinds: Record<SettingItem["kind"], true> = {
+    capability: true,
+    sources: true,
+    setting: true,
+  };
+  for (const kind of Object.keys(kinds))
+    expect({ kind, drawn: items.some((item) => item.kind === kind) }).toEqual({
+      kind,
+      drawn: true,
+    });
+  /** The words a row draws first, which tell it from every other row. */
+  const words = (item: SettingItem) => {
+    switch (item.kind) {
+      case "capability":
+        return capabilityLabels[item.id];
+      case "sources":
+        return "Every source was read";
+      case "setting":
+        return fit(settingLabel(item.key), 24).trimEnd();
+      default: {
+        const unknown: never = item;
+        throw new Error(`Unknown setting row: ${String(unknown)}`);
+      }
+    }
+  };
+  // Every row, walked down a viewport too short for the list: each is marked
+  // and on the screen when the reader reaches it.
+  const t = await mount(s, c, { width: 140, height: 10 });
+  try {
+    await t.press("7");
+    for (const [at, item] of items.entries()) {
+      if (at > 0) await t.press("down");
+      // A row whose help opens under it is placed after the layout that
+      // draws the help, which is a pass later.
+      await t.settle();
+      expect({ at, on: selectedRow(t.frame()) }).toEqual({
+        at,
+        on: expect.stringContaining(words(item)) as unknown as string,
+      });
+    }
+  } finally {
+    await t.close();
+  }
+  /**
+   * The marked row and what is drawn under it. How far the screen scrolled
+   * on the way there is the walk's, not the row's, so the scrollbar column
+   * and everything above the row are left out.
+   */
+  const opened = (frame: string) => {
+    const lines = frame.split("\n");
+    const y = lines.findIndex((line) => line.includes("▍"));
+    return lines.slice(y, y + 8).map((line) => line.slice(0, -2));
+  };
+  // The first row of each kind, opened once by Enter and once by a click on a
+  // terminal that holds every row: the two open the same thing.
+  for (const kind of Object.keys(kinds)) {
+    const at = items.findIndex((item) => item.kind === kind);
+    const size = { width: 140, height: 90 };
+    const keyed = await mount(s, c, size);
+    let byKey: string[] = [];
+    try {
+      await keyed.press("7");
+      for (let i = 0; i < at; i++) await keyed.press("down");
+      await keyed.press("enter");
+      byKey = opened(keyed.frame());
+    } finally {
+      await keyed.close();
+    }
+    const clicked = await mount(s, c, size);
+    try {
+      await clicked.press("7");
+      const lines = clicked.frame().split("\n");
+      const y = lines.findIndex((line) => line.includes(words(items[at])));
+      await clicked.click(lines[y].indexOf(words(items[at])), y);
+      expect({ kind, opened: opened(clicked.frame()) }).toEqual({
+        kind,
+        opened: byKey,
+      });
+    } finally {
+      await clicked.close();
+    }
   }
 });

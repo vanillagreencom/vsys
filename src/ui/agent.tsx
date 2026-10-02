@@ -1,5 +1,5 @@
-import type { ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef, useState } from "react";
+import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Reader } from "../collect/io";
 import { scratchFiles } from "../collect/procs";
 import { switchCommand } from "../collect/tmux";
@@ -33,6 +33,7 @@ import {
   sparkline,
 } from "./format";
 import { useScreenKeys } from "./keys";
+import { firstRow, useSelection } from "./selection";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Chart,
@@ -67,10 +68,25 @@ type SectionName = (typeof sections)[number];
  * its rows below every section header and leaves the other rows where they
  * were.
  */
-type DetailRow =
+export type DetailRow =
   | { kind: "section"; name: SectionName }
   | { kind: "terminal" }
   | { kind: "action"; intent: LaneIntent };
+/** What tells one detail row from another, whichever kind it is. */
+function detailKey(row: DetailRow): string {
+  switch (row.kind) {
+    case "section":
+      return `section:${row.name}`;
+    case "terminal":
+      return "terminal";
+    case "action":
+      return `action:${row.intent.action}`;
+    default: {
+      const unknown: never = row;
+      throw new Error(`Unknown detail row: ${String(unknown)}`);
+    }
+  }
+}
 
 /** Who an agent is: its name, its badge, its account and where it runs. */
 export function AgentIdentity({
@@ -253,15 +269,12 @@ export function Agent({
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [seriesError, setSeriesError] = useState<string | null>(null);
-  const [selected, setSelected] = useState(0);
+  const [selection, setSelection] = useState(firstRow);
   const [open, setOpen] = useState<Set<SectionName>>(new Set());
   const [captured, setCaptured] = useState<
     { lines: string[] } | { error: string } | null
   >(null);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
-  // The sections open and close and the pane fills asynchronously, so what sits
-  // above the selected row moves without the selection moving.
-  useKeepInView(scroller, `detail-${selected}`);
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
   useEffect(() => {
@@ -359,20 +372,27 @@ export function Agent({
         )
       : []),
   ];
+  // The terminal row comes and goes with the sample, above every row after
+  // it, so the selection follows its row rather than its number.
+  const { selected, choose } = useSelection(
+    rows.map(detailKey),
+    selection,
+    setSelection,
+  );
+  // The sections open and close and the pane fills asynchronously, so what sits
+  // above the selected row moves without the selection moving.
+  useKeepInView(scroller, `detail-${selected}`);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setSelected((i) => nextDown(rows.length, i));
+      choose(nextDown(rows.length, selected));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      setSelected((i) => Math.max(0, i - 1));
+      choose(Math.max(0, selected - 1));
       return true;
     }
     if (name === c.keys.open) {
-      const row = rows[selected];
-      if (row?.kind === "section") toggle(row.name);
-      else if (row?.kind === "terminal") goToTerminal();
-      else if (row) onAct(row.intent);
+      openRow(selected);
       return true;
     }
     if (name === c.keys.copy) {
@@ -417,6 +437,58 @@ export function Agent({
       else next.add(name);
       return next;
     });
+  /**
+   * Open the row at `index`, which chooses it: the one answer to what opening
+   * a row does, for Enter and for the mouse alike.
+   */
+  const openRow = (index: number) => {
+    const row: DetailRow | undefined = rows[index];
+    if (row === undefined) return;
+    choose(index);
+    switch (row.kind) {
+      case "section":
+        toggle(row.name);
+        return;
+      case "terminal":
+        goToTerminal();
+        return;
+      case "action":
+        onAct(row.intent);
+        return;
+      default: {
+        const unknown: never = row;
+        throw new Error(`Unknown detail row: ${String(unknown)}`);
+      }
+    }
+  };
+  /**
+   * One detail row, whichever kind it is. Its identity, its scroll target,
+   * its marker and what opening it does are decided here once, so a kind
+   * added later carries them without anyone remembering them.
+   */
+  const detailRow = (
+    row: DetailRow,
+    i: number,
+    line: ReactNode,
+    {
+      color,
+      indent,
+      under,
+    }: { color?: RGBA; indent?: number; under?: ReactNode } = {},
+  ) => (
+    <box
+      id={`detail-${i}`}
+      key={detailKey(row)}
+      flexDirection="column"
+      flexShrink={0}
+      paddingLeft={indent}
+    >
+      <Row selected={selected === i} color={color} onOpen={() => openRow(i)}>
+        {line}
+      </Row>
+      {under}
+    </box>
+  );
   const chartWidth = Math.max(10, width - 4 - gutter);
   const samples = loaded?.id === lane.id ? loaded.samples : [];
   const peaks = (key: Exclude<keyof LaneSample, "time">) =>
@@ -511,211 +583,204 @@ export function Agent({
         )}
         <Section title="Details" width={width - 4} />
         {rows.map((row, i) =>
-          row.kind === "terminal" ? (
-            <box
-              id={`detail-${i}`}
-              key="go-to-terminal"
-              flexShrink={0}
-              paddingLeft={3}
-            >
-              <Row selected={selected === i} onOpen={goToTerminal}>
-                {fit("Go to terminal", 16)}
-                <span attributes={ui.dim}>
-                  {safe(
-                    lane.self === "yes"
-                      ? "this is the terminal you are reading in"
-                      : lane.self === "unknown"
-                        ? "vsys cannot tell whether this is the terminal you are reading in"
-                        : onSwitch
-                          ? `moves this terminal to ${lane.address || lane.pane}`
-                          : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
-                  )}
-                </span>
-              </Row>
-            </box>
-          ) : row.kind === "action" ? (
-            <box
-              id={`detail-${i}`}
-              key={row.intent.action}
-              flexShrink={0}
-              paddingLeft={3}
-            >
-              <Row
-                selected={selected === i}
-                onOpen={() => onAct(row.intent)}
-                color={row.intent.action === "Stop" ? ui.danger : undefined}
-              >
-                {fit(row.intent.action, 8)}
-                <span attributes={ui.dim}>{safe(row.intent.text)}</span>
-              </Row>
-            </box>
-          ) : (
-            <box
-              id={`detail-${i}`}
-              key={row.name}
-              flexDirection="column"
-              flexShrink={0}
-            >
-              <Row selected={selected === i} onOpen={() => toggle(row.name)}>
-                <Disclosure
-                  open={open.has(row.name)}
-                  name={row.name}
-                  count={count(row.name)}
-                />
-              </Row>
-              {open.has(row.name) && (
-                <Detail>
-                  {row.name === "Processes" && (
-                    <>
-                      <Line height={1} truncate attributes={ui.dim}>
-                        {"PID      CPU    threads  memory     directory"}
-                      </Line>
-                      {tree.map(({ proc: p, depth }) => (
-                        <Line key={p.pid} height={1} truncate>
-                          {safe(
-                            `${"  ".repeat(depth)}${fit(String(p.pid), 8 - depth * 2)} ${fit(p.comm, 14)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(7)}  ${bytes(p.rss, c).padStart(9)}  ${p.cwd ?? gap}`,
-                          )}
-                        </Line>
-                      ))}
-                      {!tree.length && (
-                        <Empty text="No process in this sample." />
-                      )}
-                    </>
-                  )}
-                  {row.name === "Terminal" && (
-                    <>
-                      {!lane.pane && (
-                        <Empty text="This agent exported no pane address, so vsys cannot find its terminal." />
-                      )}
-                      {/* `%9` is unique per tmux server, so the server this
+          row.kind === "terminal"
+            ? detailRow(
+                row,
+                i,
+                <>
+                  {fit("Go to terminal", 16)}
+                  <span attributes={ui.dim}>
+                    {safe(
+                      lane.self === "yes"
+                        ? "this is the terminal you are reading in"
+                        : lane.self === "unknown"
+                          ? "vsys cannot tell whether this is the terminal you are reading in"
+                          : onSwitch
+                            ? `moves this terminal to ${lane.address || lane.pane}`
+                            : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
+                    )}
+                  </span>
+                </>,
+                { indent: 3 },
+              )
+            : row.kind === "action"
+              ? detailRow(
+                  row,
+                  i,
+                  <>
+                    {fit(row.intent.action, 8)}
+                    <span attributes={ui.dim}>{safe(row.intent.text)}</span>
+                  </>,
+                  {
+                    indent: 3,
+                    color: row.intent.action === "Stop" ? ui.danger : undefined,
+                  },
+                )
+              : detailRow(
+                  row,
+                  i,
+                  <Disclosure
+                    open={open.has(row.name)}
+                    name={row.name}
+                    count={count(row.name)}
+                  />,
+                  {
+                    under: open.has(row.name) && (
+                      <Detail>
+                        {row.name === "Processes" && (
+                          <>
+                            <Line height={1} truncate attributes={ui.dim}>
+                              {"PID      CPU    threads  memory     directory"}
+                            </Line>
+                            {tree.map(({ proc: p, depth }) => (
+                              <Line key={p.pid} height={1} truncate>
+                                {safe(
+                                  `${"  ".repeat(depth)}${fit(String(p.pid), 8 - depth * 2)} ${fit(p.comm, 14)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(7)}  ${bytes(p.rss, c).padStart(9)}  ${p.cwd ?? gap}`,
+                                )}
+                              </Line>
+                            ))}
+                            {!tree.length && (
+                              <Empty text="No process in this sample." />
+                            )}
+                          </>
+                        )}
+                        {row.name === "Terminal" && (
+                          <>
+                            {!lane.pane && (
+                              <Empty text="This agent exported no pane address, so vsys cannot find its terminal." />
+                            )}
+                            {/* `%9` is unique per tmux server, so the server this
                           vsys reads holds a `%9` of its own: reading or
                           switching would reach a stranger's pane. */}
-                      {lane.pane && lane.elsewhere && (
-                        <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
-                      )}
-                      {/* Reading it would draw this screen inside itself, and
+                            {lane.pane && lane.elsewhere && (
+                              <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
+                            )}
+                            {/* Reading it would draw this screen inside itself, and
                           one copy deeper on every sample after that. Live
                           only: `self` was read when the sample was taken, and
                           the vsys that took an older one may have been drawing
                           somewhere else entirely. */}
-                      {lane.self === "yes" && live && (
-                        <Empty text="vsys is drawing in this pane, so what it holds is this screen." />
-                      )}
-                      {/* vsys could not settle this lane's target against
+                            {lane.self === "yes" && live && (
+                              <Empty text="vsys is drawing in this pane, so what it holds is this screen." />
+                            )}
+                            {/* vsys could not settle this lane's target against
                           its own pane. Claiming it draws in this one would be
                           evidence vsys does not have, and reading it is the
                           mistake the whole section exists to avoid. */}
-                      {lane.self === "unknown" && live && (
-                        <Empty text="vsys cannot tell whether this pane is its own, so it is not reading it." />
-                      )}
-                      {/* A pane holds what it holds now, so reading one inside
+                            {lane.self === "unknown" && live && (
+                              <Empty text="vsys cannot tell whether this pane is its own, so it is not reading it." />
+                            )}
+                            {/* A pane holds what it holds now, so reading one inside
                           a view of an older sample would put the present
                           inside the past. Said here rather than blamed on the
                           server, which is reachable. */}
-                      {lane.pane && !lane.elsewhere && !live && (
-                        <Empty text="A pane is read live; this is a past sample." />
-                      )}
-                      {readable && live && !onCapture && (
-                        <Empty text="Reading a pane needs a tmux server this vsys can reach." />
-                      )}
-                      {readable && live && onCapture && pane === null && (
-                        <Empty text="Reading the pane…" />
-                      )}
-                      {pane !== null && "error" in pane && (
-                        <Empty
-                          text={`This pane could not be read: ${safe(pane.error)}`}
-                        />
-                      )}
-                      {pane !== null &&
-                        "lines" in pane &&
-                        (pane.lines.length ? (
-                          pane.lines.slice(-terminalLines).map((line, at) => (
+                            {lane.pane && !lane.elsewhere && !live && (
+                              <Empty text="A pane is read live; this is a past sample." />
+                            )}
+                            {readable && live && !onCapture && (
+                              <Empty text="Reading a pane needs a tmux server this vsys can reach." />
+                            )}
+                            {readable && live && onCapture && pane === null && (
+                              <Empty text="Reading the pane…" />
+                            )}
+                            {pane !== null && "error" in pane && (
+                              <Empty
+                                text={`This pane could not be read: ${safe(pane.error)}`}
+                              />
+                            )}
+                            {pane !== null &&
+                              "lines" in pane &&
+                              (pane.lines.length ? (
+                                pane.lines
+                                  .slice(-terminalLines)
+                                  .map((line, at) => (
+                                    <Line
+                                      // biome-ignore lint/suspicious/noArrayIndexKey: a captured line is its position
+                                      key={`pane-${at}`}
+                                      height={1}
+                                      flexShrink={0}
+                                      truncate
+                                      attributes={ui.dim}
+                                    >
+                                      {safe(line)}
+                                    </Line>
+                                  ))
+                              ) : (
+                                <Empty text="This pane has drawn nothing." />
+                              ))}
+                          </>
+                        )}
+                        {row.name === "Launch" && (
+                          <>
+                            <Field
+                              label="Cgroup"
+                              value={proc?.group ?? lane.cgroup}
+                            />
+                            <Field
+                              label="Command"
+                              value={proc?.command.join(" ") ?? gap}
+                            />
+                            <Field
+                              label="Executable"
+                              value={proc?.executable ?? gap}
+                            />
+                            <Field
+                              label="Environment"
+                              value={
+                                proc?.envAvailable === false
+                                  ? gap
+                                  : Object.entries(proc?.env ?? {})
+                                      .map(([k, v]) => `${k}=${v}`)
+                                      .join(" ") ||
+                                    "none of the watched variables"
+                              }
+                            />
                             <Line
-                              // biome-ignore lint/suspicious/noArrayIndexKey: a captured line is its position
-                              key={`pane-${at}`}
                               height={1}
-                              flexShrink={0}
                               truncate
                               attributes={ui.dim}
+                              marginTop={1}
                             >
-                              {safe(line)}
+                              Started by
                             </Line>
-                          ))
-                        ) : (
-                          <Empty text="This pane has drawn nothing." />
-                        ))}
-                    </>
-                  )}
-                  {row.name === "Launch" && (
-                    <>
-                      <Field
-                        label="Cgroup"
-                        value={proc?.group ?? lane.cgroup}
-                      />
-                      <Field
-                        label="Command"
-                        value={proc?.command.join(" ") ?? gap}
-                      />
-                      <Field
-                        label="Executable"
-                        value={proc?.executable ?? gap}
-                      />
-                      <Field
-                        label="Environment"
-                        value={
-                          proc?.envAvailable === false
-                            ? gap
-                            : Object.entries(proc?.env ?? {})
-                                .map(([k, v]) => `${k}=${v}`)
-                                .join(" ") || "none of the watched variables"
-                        }
-                      />
-                      <Line
-                        height={1}
-                        truncate
-                        attributes={ui.dim}
-                        marginTop={1}
-                      >
-                        Started by
-                      </Line>
-                      {proc &&
-                        parentChain(proc, snapshot.procs).map((p) => (
-                          <Line key={p.pid} height={1} truncate>
-                            {safe(
-                              `${fit(String(p.pid), 8)} ${p.executable ?? gap}  ${p.command.join(" ")}`,
-                            )}
-                          </Line>
-                        ))}
-                    </>
-                  )}
-                  {row.name === "Open files" &&
-                    (live ? (
-                      unique.length ? (
-                        unique.map((file) => (
-                          <Line key={file} height={1} truncate>
-                            {safe(file)}
-                          </Line>
-                        ))
-                      ) : (
-                        <Empty text="No scratch file is open." />
-                      )
-                    ) : (
-                      <Empty text="Open files are read live; this is a past sample." />
-                    ))}
-                  {row.name === "Actions" &&
-                    (target === null ? (
-                      <Empty text="This agent runs in no systemd scope vsys can address, so it has no actions." />
-                    ) : (
-                      <Line height={1} truncate attributes={ui.dim}>
-                        {c.writeMode
-                          ? `${keyLabel(c.keys.open)} runs the selected action after a confirmation`
-                          : `Write mode is off · ${keyLabel(c.keys.copy)} copies the selected command`}
-                      </Line>
-                    ))}
-                </Detail>
-              )}
-            </box>
-          ),
+                            {proc &&
+                              parentChain(proc, snapshot.procs).map((p) => (
+                                <Line key={p.pid} height={1} truncate>
+                                  {safe(
+                                    `${fit(String(p.pid), 8)} ${p.executable ?? gap}  ${p.command.join(" ")}`,
+                                  )}
+                                </Line>
+                              ))}
+                          </>
+                        )}
+                        {row.name === "Open files" &&
+                          (live ? (
+                            unique.length ? (
+                              unique.map((file) => (
+                                <Line key={file} height={1} truncate>
+                                  {safe(file)}
+                                </Line>
+                              ))
+                            ) : (
+                              <Empty text="No scratch file is open." />
+                            )
+                          ) : (
+                            <Empty text="Open files are read live; this is a past sample." />
+                          ))}
+                        {row.name === "Actions" &&
+                          (target === null ? (
+                            <Empty text="This agent runs in no systemd scope vsys can address, so it has no actions." />
+                          ) : (
+                            <Line height={1} truncate attributes={ui.dim}>
+                              {c.writeMode
+                                ? `${keyLabel(c.keys.open)} runs the selected action after a confirmation`
+                                : `Write mode is off · ${keyLabel(c.keys.copy)} copies the selected command`}
+                            </Line>
+                          ))}
+                      </Detail>
+                    ),
+                  },
+                ),
         )}
         <Line
           height={1}

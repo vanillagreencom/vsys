@@ -1,5 +1,5 @@
-import type { ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef, useState } from "react";
+import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import {
@@ -38,6 +38,7 @@ import {
   stepWithin,
   storageRegions,
 } from "./regions";
+import { firstRow, useSelection } from "./selection";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
@@ -50,6 +51,7 @@ import {
   Reading,
   Row,
   Section,
+  useKeepInView,
 } from "./widgets";
 
 /** Everything the reader can select on Storage, top to bottom. */
@@ -66,6 +68,15 @@ export function itemPath(item: StorageItem): string {
   if (item.kind === "filesystem") return item.id;
   if (item.kind === "volume") return item.volume.mount;
   return item.kind === "scrub" ? item.path : item.scratch.path;
+}
+/**
+ * What tells one Storage row from another, whichever kind it is. A scratch
+ * root and a session are both scratch rows, and a path names no kind, so the
+ * kind leads the path.
+ */
+function storageKey(item: StorageItem): string {
+  const kind = item.kind === "scratch" && item.session ? "session" : item.kind;
+  return `${kind}:${itemPath(item)}`;
 }
 export function storageItems(s: Snapshot): StorageItem[] {
   return [
@@ -184,17 +195,18 @@ export function Storage({
   /** False while a pinned sample is shown, which is not the disk as it is. */
   live: boolean;
 }) {
-  const [chosen, setSelected] = useState(0);
   const items = storageItems(s);
-  // The selection held inside the rows there are: a list that shrinks under
-  // it leaves the reader on its last row, and with no rows at all nothing is
-  // selected and no region is focused.
-  const within = (index: number) => Math.min(index, items.length - 1);
-  const selected = within(chosen);
+  const ids = items.map(storageKey);
+  // The selection follows its row, because a mount or a directory that sorts
+  // above it moves every row below. Where the row has gone the nearest row
+  // takes over, and with no rows nothing is selected and no region focused.
+  const [selection, setSelection] = useState(firstRow);
+  const { selected, choose } = useSelection(ids, selection, setSelection);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
-  useEffect(() => {
-    scroller.current?.scrollChildIntoView(`storage-${selected}`);
-  }, [selected]);
+  // The selection moves with a sample as well as with a key, and a sample
+  // moves the rows in the same render, so the row is found after the layout
+  // that places it rather than in the render that asked for it.
+  useKeepInView(scroller, `storage-${selected}`);
   // A card names a row and this lands on it. The row is found before the
   // request is acknowledged, because a collector refresh between the keypress
   // and this effect can remove the mount or directory it named. Acknowledging
@@ -204,10 +216,10 @@ export function Storage({
   useEffect(() => {
     if (target === null) return;
     const at = storageItems(s).findIndex((item) => itemPath(item) === target);
-    if (at >= 0) setSelected(at);
+    if (at >= 0) choose(at);
     else onNotice(`${target} is no longer in the sample`, "warn");
     onTargetUsed();
-  }, [target, onTargetUsed, onNotice, s]);
+  }, [target, onTargetUsed, onNotice, s, choose]);
   // Storage's three lists are three regions of one flat selection, in the
   // order they are drawn: filesystems, scrub reports, scratch directories.
   const counts = [
@@ -222,7 +234,7 @@ export function Storage({
   // With no rows there is nothing to move to, and the choice is kept for the
   // rows that arrive.
   const move = (to: (index: number) => number) => {
-    if (items.length) setSelected((i) => to(within(i)));
+    if (items.length) choose(to(selected));
     return true;
   };
   useScreenKeys((name) => {
@@ -270,7 +282,7 @@ export function Storage({
       ({ action }) => name === c.keys[action],
     );
     if (jump < 0) return false;
-    if (counts[jump]) setSelected(regionRanges(counts)[jump][0]);
+    if (counts[jump]) choose(regionRanges(counts)[jump][0]);
     return true;
   });
   /** A list's heading: its title, the key that jumps to it, and its focus. */
@@ -318,8 +330,35 @@ export function Storage({
     ));
   };
   const mapped = totals.devices.some((d) => /^dm-/.test(d.name));
-  let index = -1;
-  const next = () => ++index;
+  const placed = new Map(ids.map((id, at) => [id, at]));
+  /**
+   * One selectable Storage row, whichever kind it is. Its place in the
+   * selection is looked up by its identity rather than counted as the rows
+   * are drawn, and its scroll target, its marker, what opening it does and the
+   * detail drawn under it while selected are decided here once: written at
+   * each kind's render site, a rule reaches the kinds someone remembered.
+   */
+  const storageRow = (
+    item: StorageItem,
+    line: (open: boolean) => ReactNode,
+    { color, under }: { color?: RGBA; under?: () => ReactNode } = {},
+  ) => {
+    const key = storageKey(item);
+    const i = placed.get(key);
+    if (i === undefined)
+      throw new Error(
+        `Storage draws a row its selection does not list: ${key}`,
+      );
+    const open = i === selected;
+    return (
+      <box id={`storage-${i}`} key={key} flexDirection="column" flexShrink={0}>
+        <Row selected={open} color={color} onOpen={() => choose(i)}>
+          {line(open)}
+        </Row>
+        {open && under?.()}
+      </box>
+    );
+  };
   const st = s.storage;
   const scratch = scratchSummary(c, st);
   const scratchTop = Math.max(
@@ -333,29 +372,21 @@ export function Storage({
    * gets the answer without opening anything.
    */
   const integrityRow = (item: Integrity, first: Volume) => {
-    const i = next();
     const level = integrityLevel(item.state);
     const counts = damageCounts(item);
     const rebuild = rebuildCommand(item);
-    return (
-      <box
-        id={`storage-${i}`}
-        key={`integrity-${item.id}`}
-        flexDirection="column"
-        flexShrink={0}
-      >
-        <Row
-          selected={i === selected}
-          color={level === "ok" ? undefined : levelColor(level)}
-          onOpen={() => setSelected(i)}
-        >
-          <Disclosure
-            open={i === selected}
-            name={integrityLine(item)}
-            count={counts.files || undefined}
-          />
-        </Row>
-        {i === selected && (
+    return storageRow(
+      { kind: "filesystem", id: item.id },
+      (open) => (
+        <Disclosure
+          open={open}
+          name={integrityLine(item)}
+          count={counts.files || undefined}
+        />
+      ),
+      {
+        color: level === "ok" ? undefined : levelColor(level),
+        under: () => (
           <Detail>
             {/* The headline reading is what the last check found. The
                 lifetime counter is a different quantity and sits below it. */}
@@ -415,41 +446,32 @@ export function Storage({
               </Line>
             )}
           </Detail>
-        )}
-      </box>
+        ),
+      },
     );
   };
-  const volumeRow = (v: Volume) => {
-    const i = next();
-    const level = volumeLevel(v, c.freeFloor);
-    return (
-      <box
-        id={`storage-${i}`}
-        key={v.mount}
-        flexDirection="column"
-        flexShrink={0}
-      >
-        <Row
-          selected={i === selected}
-          color={levelColor(level)}
-          onOpen={() => setSelected(i)}
-        >
-          <Disclosure open={i === selected} name={fit(v.mount, 40)} />
+  const volumeRow = (v: Volume) =>
+    storageRow(
+      { kind: "volume", volume: v },
+      (open) => (
+        <>
+          <Disclosure open={open} name={fit(v.mount, 40)} />
           {v.readOnly && <Ink color={ui.danger}>read-only</Ink>}
-        </Row>
-        {i === selected && (
+        </>
+      ),
+      {
+        color: levelColor(volumeLevel(v, c.freeFloor)),
+        under: () => (
           <Detail>
             {/* The device row above names the device and its error counters
                 once for every mount grouped under it, and subvolumes of one
                 filesystem share both. The options are the mount's own. */}
             <Field label="Options" value={v.options.join(", ")} />
           </Detail>
-        )}
-      </box>
+        ),
+      },
     );
-  };
   const scratchRow = (item: Extract<StorageItem, { kind: "scratch" }>) => {
-    const i = next();
     const x = item.scratch;
     const over = x.bytes !== null && !item.session && x.bytes > c.scratchQuota;
     const modified = age(
@@ -457,18 +479,10 @@ export function Storage({
         ? x.age
         : Math.max(0, (s.time - x.modifiedAt) / 1000),
     );
-    return (
-      <box
-        id={`storage-${i}`}
-        key={x.path}
-        flexDirection="column"
-        flexShrink={0}
-      >
-        <Row
-          selected={i === selected}
-          color={over ? ui.warn : undefined}
-          onOpen={() => setSelected(i)}
-        >
+    return storageRow(
+      item,
+      () => (
+        <>
           {safe(fit(x.path, 40))}
           {columnGap}
           <Bar
@@ -484,18 +498,23 @@ export function Storage({
           />
           <span attributes={ui.dim}>{`  ${modified} ago`}</span>
           {x.error && <Ink color={ui.warn}>{`  ${safe(x.error)}`}</Ink>}
-        </Row>
-        {/* The origin sits under the row rather than after its columns,
-            where a narrow terminal cuts it and pushes the error out. */}
-        {i === selected && !item.session && item.scratch.origin !== null && (
-          <Detail>
-            <Field
-              label="Origin"
-              value={scratchOriginText(item.scratch.origin)}
-            />
-          </Detail>
-        )}
-      </box>
+        </>
+      ),
+      {
+        color: over ? ui.warn : undefined,
+        // The origin sits under the row rather than after its columns, where
+        // a narrow terminal cuts it and pushes the error out.
+        under: () =>
+          !item.session &&
+          item.scratch.origin !== null && (
+            <Detail>
+              <Field
+                label="Origin"
+                value={scratchOriginText(item.scratch.origin)}
+              />
+            </Detail>
+          ),
+      },
     );
   };
   return (
@@ -589,20 +608,11 @@ export function Storage({
         {!st.scrubs.length && (
           <Empty text="No scrub report in the report directory." />
         )}
-        {st.scrubs.map((scrub) => {
-          const i = next();
-          return (
-            <box
-              id={`storage-${i}`}
-              key={scrub.path}
-              flexDirection="column"
-              flexShrink={0}
-            >
-              <Row
-                selected={i === selected}
-                color={scrub.problem ? ui.danger : undefined}
-                onOpen={() => setSelected(i)}
-              >
+        {st.scrubs.map((scrub) =>
+          storageRow(
+            { kind: "scrub", path: scrub.path },
+            () => (
+              <>
                 {safe(scrub.path)}
                 {/* A file vsys could not read reported nothing at all, and
                     saying it reported a problem puts words in it. */}
@@ -613,17 +623,20 @@ export function Storage({
                       ? "  problem reported"
                       : "  clean"}
                 </span>
-              </Row>
-              {i === selected && (
+              </>
+            ),
+            {
+              color: scrub.problem ? ui.danger : undefined,
+              under: () => (
                 <Detail>
                   <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                     {safe(scrub.text)}
                   </Line>
                 </Detail>
-              )}
-            </box>
-          );
-        })}
+              ),
+            },
+          ),
+        )}
         <Section
           {...heading(2)}
           width={width}

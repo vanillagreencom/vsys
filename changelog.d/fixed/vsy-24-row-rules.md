@@ -1,0 +1,1 @@
+- A Storage or agent detail selection stays on its row when a sample adds or removes a row above it, and clicking a Home, Settings or agent detail row opens it the way Enter does.
