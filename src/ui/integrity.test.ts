@@ -353,6 +353,62 @@ test("a finished report superseded by a newer remembered check is not told it ne
   );
 });
 
+test("a remembered finished check speaks when its own report is gone from disk", () => {
+  // The scrub report itself has vanished, but the collector remembers a
+  // finished check for this filesystem, found via its own damaged flag. The
+  // integrity card's age line already names that remembered check, so the
+  // block count and file-list sentences must say what it found rather than
+  // claiming nothing has reported.
+  const clean = integrity(
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      "root device",
+    ),
+    {
+      scrubs: [],
+      lastFinishedScrub: { fs: { at: now - 2 * day, damaged: false } },
+    },
+    now,
+    c,
+  );
+  expect(blocksText(clean)).toBe(
+    "not available: a remembered finished check found no damage, but its own report is gone, so no count was kept",
+  );
+  expect(noDamageText(clean)).toBe(
+    "A remembered finished check found no damage, and its own report is gone, so no file is named.",
+  );
+  const damaged = integrity(
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      "root device",
+    ),
+    {
+      scrubs: [],
+      lastFinishedScrub: { fs: { at: now - 2 * day, damaged: true } },
+    },
+    now,
+    c,
+  );
+  expect(blocksText(damaged)).toBe(
+    "not available: a remembered finished check found damage, but its own report is gone, so no count was kept",
+  );
+  expect(noDamageText(damaged)).toBe(
+    "A remembered finished check found damage, but its own report is gone, so no file is named for it.",
+  );
+});
+
 test("a check that has not finished counted nothing, and its report is not blamed", () => {
   // A running check is a different fact from a report that omitted its count.
   const running = state([report({ status: "running", uncorrectable: 26 })]);

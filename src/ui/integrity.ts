@@ -65,7 +65,16 @@ export function integrityLine(item: Integrity, scrub?: Capability): string {
  * facts: nothing has checked, or the check's report omitted the count.
  */
 export function blocksText(item: Integrity): string {
-  if (!item.scrub) return `${gap}: no check has reported on this filesystem`;
+  if (!item.scrub) {
+    if (item.checkAge === null)
+      return `${gap}: no check has reported on this filesystem`;
+    // The report itself is gone, but a finished check is remembered for this
+    // filesystem (`integrityLine` already names its age), so the last word
+    // on it is what that check found, never that nothing has reported.
+    return item.state === "damaged"
+      ? `${gap}: a remembered finished check found damage, but its own report is gone, so no count was kept`
+      : `${gap}: a remembered finished check found no damage, but its own report is gone, so no count was kept`;
+  }
   if (!item.readable) return `${gap}: the report could not be read`;
   // A check still running, or one that stopped early, has counted nothing
   // yet. Saying its report carried no count would blame the report for that.
@@ -85,8 +94,16 @@ export function blocksText(item: Integrity): string {
  * an absent list read as a check that found nothing.
  */
 export function noDamageText(item: Integrity): string {
-  if (!item.scrub)
-    return "No check has reported on this filesystem, so no file is named.";
+  if (!item.scrub) {
+    if (item.checkAge === null)
+      return "No check has reported on this filesystem, so no file is named.";
+    // Same remembered-check case as `blocksText`: the report naming its
+    // files is gone, so the sentence says what that check found rather than
+    // claiming the filesystem was never looked at.
+    return item.state === "damaged"
+      ? "A remembered finished check found damage, but its own report is gone, so no file is named for it."
+      : "A remembered finished check found no damage, and its own report is gone, so no file is named.";
+  }
   if (!item.readable)
     return "The report could not be read, so nothing in it names a file.";
   if (item.scrub.status !== "finished")
