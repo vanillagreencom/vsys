@@ -118,6 +118,13 @@ export class Collector {
     kernelLog?: KernelLogReader,
     /** Absent unless a caller supplies one, so no test asks the system bus. */
     udisks?: Udisks,
+    /**
+     * A predecessor's remembered finished-scrub times, so a settings change
+     * that replaces this collector does not read a stopped-early report as
+     * if nothing had ever finished. Absent unless a caller supplies one, so
+     * a collector built fresh starts with no memory.
+     */
+    initialFinishedScrubAt?: Record<string, number>,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -132,10 +139,21 @@ export class Collector {
       this.capabilities.find((cap) => cap.id === "kernel-log")?.available ===
       true;
     this.kernelLog = kernelLog && searchable ? kernelLog.log : null;
-    this.storage = new StorageCollector(this.kernelLog, udisks ?? null);
+    this.storage = new StorageCollector(
+      this.kernelLog,
+      udisks ?? null,
+      initialFinishedScrubAt,
+    );
     const probed = this.capabilities.find((cap) => cap.id === "tmux");
     this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
     this.tmuxServed = probed?.available === true;
+  }
+  /**
+   * This process's memory of each filesystem's last finished scrub, read for
+   * a replacement collector built on a settings change to carry forward.
+   */
+  get lastFinishedScrubAt(): Record<string, number> {
+    return this.storage.finishedScrubAtSnapshot();
   }
   /**
    * What the last read of a capability asked again each sample says, carried
@@ -303,14 +321,20 @@ export class Collector {
  * The predecessor's build cache reader is carried over, so its counts stay
  * measured since vsys started rather than since the last settings change, and
  * so is the kernel log it was searching, so the replacement resumes from that
- * cursor rather than searching every boot again.
+ * cursor rather than searching every boot again. So is its memory of each
+ * filesystem's last finished scrub, so a settings change does not read a
+ * stopped-early report as if nothing had ever finished.
  * The agent-tool install locations and desktop paths come from the shared
  * agent-tool data and its overlay, read again for every collector built.
  */
 export async function createCollector(
   c: CollectionConfig,
   live = true,
-  previous?: { sccache?: SccacheCollector; kernelLog?: KernelLog | null },
+  previous?: {
+    sccache?: SccacheCollector;
+    kernelLog?: KernelLog | null;
+    lastFinishedScrubAt?: Record<string, number>;
+  },
   toolsPath = agentToolsPath,
   /** Injected so no test reads this machine's journal. */
   kernelLogProbe: () => Outcome = probeKernelLog,
@@ -352,5 +376,6 @@ export async function createCollector(
       log: previous?.kernelLog ?? new KernelLog(),
     },
     new Udisks(),
+    previous?.lastFinishedScrubAt,
   );
 }

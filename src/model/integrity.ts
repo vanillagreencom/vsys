@@ -231,19 +231,27 @@ export function integrity(
   const errorKnown = group.volumes.every((v) => v.lastErrorKnown !== false);
   const running = scrub?.status === "running";
   // Only a check that says it finished read the filesystem end to end. Every
-  // other word, including one the helper did not write and one vsys has never
-  // seen, leaves the state unknown: a list of the ways a check can stop early
-  // would call each new word a completed check, which is the wrong way to be
-  // wrong about whether the disk was read.
+  // other word the current report carries, including one the helper did not
+  // write and one vsys has never seen, is not itself a finished check: a list
+  // of the ways a check can stop early would call each new word a completed
+  // check, which is the wrong way to be wrong about whether the disk was
+  // read. Soundness can still rest on an earlier report that did finish,
+  // through `hasFinishedRecord` below.
   const finished = complete;
   // A report that is not itself finished names no check of its own, but it
   // does not erase an earlier one: the collector remembers the last finished
   // report's start time across the one that replaced it, so a check that
   // stopped early still leaves the reader the age of the last that did not.
-  const checkedAt = finished
-    ? (scrub?.startedAt ?? null)
-    : (storage.lastFinishedScrubAt?.[group.id.toLowerCase()] ?? null);
+  const remembered =
+    storage.lastFinishedScrubAt?.[group.id.toLowerCase()] ?? null;
+  const checkedAt = finished ? (scrub?.startedAt ?? null) : remembered;
   const checkAge = checkedAt === null ? null : Math.max(0, time - checkedAt);
+  // Whether a finished check is on record at all, current or remembered. A
+  // report that stopped early, or one gone from disk entirely, still leaves
+  // this true when a finished one is remembered, so the ladder below judges
+  // soundness from that memory instead of reading the current report's own
+  // unfinished or absent state as if nothing had ever finished.
+  const hasFinishedRecord = finished || remembered !== null;
   const since = (at: number | null) =>
     at === null ? null : Math.max(0, time - at) / 1000;
   const state: IntegrityState =
@@ -263,19 +271,23 @@ export function integrity(
             ? "new-errors"
             : running
               ? "checking"
-              : scrub === null
-                ? "never-checked"
-                : !finished
+              : !hasFinishedRecord
+                ? // Nothing has ever finished reading this filesystem, current
+                  // or remembered. A report that exists but has not finished
+                  // (or never will, like one that stopped early) is a
+                  // different fact from no report ever having been written.
+                  scrub === null
+                  ? "never-checked"
+                  : "unknown"
+                : // A report carrying no start time dates no check, so it
+                  // cannot say the filesystem was read end to end recently.
+                  // Neither can a filesystem whose counter, or whose record
+                  // of past growth, is unreadable say nothing failed since.
+                  checkAge === null || counter === null || !errorKnown
                   ? "unknown"
-                  : // A report carrying no start time dates no check, so it
-                    // cannot say the filesystem was read end to end recently.
-                    // Neither can a filesystem whose counter, or whose record
-                    // of past growth, is unreadable say nothing failed since.
-                    checkAge === null || counter === null || !errorKnown
-                    ? "unknown"
-                    : checkAge > c.scrubMaxAgeDays * 86400000
-                      ? "stale"
-                      : "healthy";
+                  : checkAge > c.scrubMaxAgeDays * 86400000
+                    ? "stale"
+                    : "healthy";
   return {
     id: group.id,
     device: group.device,

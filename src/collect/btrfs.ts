@@ -106,7 +106,16 @@ export class StorageCollector {
      * be listed. A collector built without one never asks the system bus.
      */
     private udisks: Udisks | null = null,
-  ) {}
+    /**
+     * Seeds `finishedScrubAt` from a predecessor's own memory, so a settings
+     * change that replaces this collector does not read a stopped-early
+     * report as if nothing had ever finished.
+     */
+    initialFinishedScrubAt?: Record<string, number>,
+  ) {
+    if (initialFinishedScrubAt)
+      this.finishedScrubAt = new Map(Object.entries(initialFinishedScrubAt));
+  }
   private initial = new Map<string, number>();
   private last = new Map<string, number>();
   private scratch = new ScratchCollector();
@@ -119,6 +128,10 @@ export class StorageCollector {
    * process's own memory of the last one that finished is otherwise lost.
    */
   private finishedScrubAt = new Map<string, number>();
+  /** A snapshot of the remembered finished times, to seed a successor built from this one. */
+  finishedScrubAtSnapshot(): Record<string, number> {
+    return Object.fromEntries(this.finishedScrubAt);
+  }
   /**
    * The scrub report directory as the last collection's read of it found it:
    * null where the listing answered, the failure where it did not, and

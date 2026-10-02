@@ -1924,3 +1924,23 @@ test("the program's collector resumes the kernel log the one it replaces held", 
     for (const collector of [after, fresh, unread]) collector.close();
   }
 });
+
+test("a settings change hands the predecessor's remembered finished scrubs to its replacement", async () => {
+  const f = setup();
+  // Saving any collection setting rebuilds the collector through the
+  // program's own path. If a scrub on this filesystem has since stopped
+  // early, overwriting the report that proved an earlier one sound, the
+  // replacement must not start believing nothing has ever finished.
+  const after = await createCollector(
+    f.config,
+    false,
+    { lastFinishedScrubAt: { fs: 1700000000000 } },
+    f.agentToolsPath,
+  );
+  try {
+    const s = await after.sample(1000);
+    expect(s.storage.lastFinishedScrubAt).toEqual({ fs: 1700000000000 });
+  } finally {
+    after.close();
+  }
+});

@@ -29,6 +29,8 @@ interface Source {
   sccache?: SccacheCollector;
   /** The kernel log and its cursor, handed on the same way. */
   kernelLog?: KernelLog | null;
+  /** Each filesystem's last finished scrub time, handed on the same way. */
+  lastFinishedScrubAt?: Record<string, number>;
 }
 type SourceFactory = (config: Config, previous: Source) => Promise<Source>;
 interface SessionOptions {

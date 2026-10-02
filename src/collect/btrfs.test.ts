@@ -154,11 +154,14 @@ test("a later scrub that stops early keeps the memory of the one it overwrote", 
     join(f.config.procRoot, "self/mountinfo"),
     `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
   );
+  // Mixed case, as btrfs itself prints it, so the memory only matches this
+  // test if the collector lowercases the UUID before keying its memory.
+  const reportedUuid = "2FF9DD6D-1b2c-4D5E-8f90-A1B2C3D4E5F6";
   const reportPath = join(f.config.scrubDir, "root.result");
   f.write(
     reportPath,
     `btrfs scrub finished, no errors found: /
-UUID:             ${uuid}
+UUID:             ${reportedUuid}
 Scrub started:    Fri Sep 11 13:25:54 2026
 Status:           finished
 Error summary:    no errors found
@@ -176,7 +179,7 @@ Error summary:    no errors found
   f.write(
     reportPath,
     `btrfs scrub aborted after 00:00:01, interrupted: /
-UUID:             ${uuid}
+UUID:             ${reportedUuid}
 Scrub started:    Sat Sep 12 09:00:00 2026
 Status:           aborted
 Error summary:    no errors found
@@ -186,6 +189,54 @@ Error summary:    no errors found
   expect(second.scrubs[0]?.status).toBe("aborted");
   // The collector's own memory still holds the finished report's start time.
   expect(second.lastFinishedScrubAt?.[key]).toBe(finishedAt as number);
+});
+
+test("a stale finished report never moves the remembered time backward", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+  const root = join(f.config.btrfsRoot, uuid);
+  mkdirSync(join(root, "devices"), { recursive: true });
+  symlinkSync("/sys/devices/test", join(root, "devices/test"));
+  f.write(
+    join(root, "devinfo/1/error_stats"),
+    "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0",
+  );
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  const reportPath = join(f.config.scrubDir, "root.result");
+  f.write(
+    reportPath,
+    `btrfs scrub finished, no errors found: /
+UUID:             ${uuid}
+Scrub started:    Sat Sep 12 09:00:00 2026
+Status:           finished
+Error summary:    no errors found
+`,
+  );
+  const r = new Reader();
+  const collector = new StorageCollector();
+  const first = await collector.collect(r, f.config, 1000);
+  const key = uuid.toLowerCase();
+  const latest = first.lastFinishedScrubAt?.[key];
+  expect(latest).toBeTypeOf("number");
+  // A stale or replayed report for the same filesystem, finished earlier than
+  // the one already remembered. The memory holds the latest finish, not the
+  // latest read.
+  f.write(
+    reportPath,
+    `btrfs scrub finished, no errors found: /
+UUID:             ${uuid}
+Scrub started:    Fri Sep 11 13:25:54 2026
+Status:           finished
+Error summary:    no errors found
+`,
+  );
+  const second = await collector.collect(r, f.config, 2000);
+  expect(second.scrubs[0]?.startedAt).toBeLessThan(latest as number);
+  expect(second.lastFinishedScrubAt?.[key]).toBe(latest as number);
 });
 
 test("the last new error outlives the process that observed it", async () => {
