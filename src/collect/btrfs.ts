@@ -3,7 +3,7 @@ import { readdir, realpath, stat, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Scrub, Storage, Volume } from "../model/types";
 import { classify, type Outcome } from "./capabilities";
-import { collectDevices } from "./devices";
+import { collectDevices, smartReports } from "./devices";
 import { ErrorMemory } from "./errors";
 import { pairs, type Reader } from "./io";
 import type { KernelLog } from "./kernel-log";
@@ -11,6 +11,7 @@ import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
 import { counted, isReportName, parseScrub, stated } from "./scrub";
 import type { CollectionConfig } from "./settings";
+import type { Udisks } from "./udisks";
 
 /** Either a mount restriction or a superblock restriction makes a mount read-only. */
 export function btrfsMounts(
@@ -98,7 +99,14 @@ export class StorageCollector {
    * one reads no journal, which is what keeps the machine's own log out of
    * the test suite.
    */
-  constructor(private kernelLog: KernelLog | null = null) {}
+  constructor(
+    private kernelLog: KernelLog | null = null,
+    /**
+     * udisks, asked for lifetime writes where no drive report directory can
+     * be listed. A collector built without one never asks the system bus.
+     */
+    private udisks: Udisks | null = null,
+  ) {}
   private initial = new Map<string, number>();
   private last = new Map<string, number>();
   private scratch = new ScratchCollector();
@@ -113,6 +121,12 @@ export class StorageCollector {
    * directory a second time, synchronously, on the sample path.
    */
   scrubDir: Outcome | undefined = undefined;
+  /**
+   * The drive report directory as the last collection's listing found it,
+   * for the same reason: installing the drive reporter vsys offers creates it
+   * while vsys runs.
+   */
+  smartDir: Outcome | undefined = undefined;
   close(): void {
     this.scratch.close();
   }
@@ -144,9 +158,16 @@ export class StorageCollector {
     agentScratch: string[] = [],
     skipKernelLog = false,
   ): Promise<Storage> {
+    const smart = smartReports(r, c);
+    this.smartDir = smart.outcome;
+    // The author's timer leaves its reports where `smartDir` points, so a
+    // listing that answers keeps udisks out of the reading entirely.
+    const udisks =
+      smart.outcome !== null && this.udisks ? await this.udisks.read() : null;
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
-      devices: collectDevices(r, c),
+      devices: collectDevices(r, c, smart.reports, udisks?.drives ?? null),
+      ...(udisks ? { udisks: udisks.outcome } : {}),
       volumes: [],
       scratch: [],
       sessions: [],

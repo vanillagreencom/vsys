@@ -1,0 +1,1 @@
+- Ship a drive reporter, a root timer that leaves one smartctl report per drive where vsys reads lifetime writes, with a one-command installer.

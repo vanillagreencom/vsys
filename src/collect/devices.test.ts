@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
-import { collectDevices, smartWrites } from "./devices";
+import { collectDevices, smartReports, smartWrites } from "./devices";
 import { Reader } from "./io";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
@@ -52,22 +52,94 @@ test("device numbers name io.stat devices and a missing report is not zero", () 
   f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
   f.write(join(f.config.sysBlockRoot, "sda/dev"), "8:0\n");
   f.write(join(f.config.sysBlockRoot, "loop0/dev"), "7:0\n");
-  // With no report directory both drives are still named, neither is dropped.
-  expect(collectDevices(new Reader(), f.config)).toEqual([
-    { name: "nvme0n1", number: "259:0", model: null, lifetimeWritten: null },
-    { name: "sda", number: "8:0", model: null, lifetimeWritten: null },
+  // With no report directory both drives are still named, neither is dropped,
+  // and the missing directory is a capability rather than a source error.
+  const r = new Reader();
+  const none = smartReports(r, f.config);
+  expect(none.outcome?.failure).toBe("absent");
+  expect(collectDevices(r, f.config, none.reports)).toEqual([
+    {
+      name: "nvme0n1",
+      number: "259:0",
+      model: null,
+      lifetimeWritten: null,
+      source: null,
+    },
+    {
+      name: "sda",
+      number: "8:0",
+      model: null,
+      lifetimeWritten: null,
+      source: null,
+    },
   ]);
   f.write(join(f.config.smartDir, "nvme0n1.txt"), nvme);
-  const r = new Reader();
+  const listed = smartReports(r, f.config);
+  expect(listed.outcome).toBeNull();
   // One report among two drives leaves both rows, one of them still unknown.
-  expect(collectDevices(r, f.config)).toEqual([
+  expect(collectDevices(r, f.config, listed.reports)).toEqual([
     {
       name: "nvme0n1",
       number: "259:0",
       model: "Samsung SSD 990 PRO 2TB",
       lifetimeWritten: 4_096_000_000_000,
+      source: "smartctl",
     },
-    { name: "sda", number: "8:0", model: null, lifetimeWritten: null },
+    {
+      name: "sda",
+      number: "8:0",
+      model: null,
+      lifetimeWritten: null,
+      source: null,
+    },
   ]);
   expect(r.errors).toEqual([]);
+});
+test("udisks fills a drive only where it has no report, and names itself", () => {
+  const f = fixture();
+  fixtures.push(f);
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  f.write(join(f.config.sysBlockRoot, "sda/dev"), "8:0\n");
+  f.write(join(f.config.sysBlockRoot, "sdb/dev"), "8:16\n");
+  f.write(join(f.config.smartDir, "nvme0n1.txt"), nvme);
+  const r = new Reader();
+  const { reports } = smartReports(r, f.config);
+  const udisks = [
+    { name: "nvme0n1", model: "Other", written: 1 },
+    { name: "sda", model: "Crucial CT1000MX500SSD1", written: 1024 },
+    { name: "sdb", model: "Old Disk", written: null },
+  ];
+  expect(collectDevices(r, f.config, reports, udisks)).toEqual([
+    {
+      name: "nvme0n1",
+      number: "259:0",
+      model: "Samsung SSD 990 PRO 2TB",
+      lifetimeWritten: 4_096_000_000_000,
+      source: "smartctl",
+    },
+    {
+      name: "sda",
+      number: "8:0",
+      model: "Crucial CT1000MX500SSD1",
+      lifetimeWritten: 1024,
+      source: "udisks",
+    },
+    // A total udisks did not give stays unknown, with no source to name.
+    {
+      name: "sdb",
+      number: "8:16",
+      model: "Old Disk",
+      lifetimeWritten: null,
+      source: null,
+    },
+  ]);
+});
+test("a report directory that cannot be listed for any reason but absence is a source error", () => {
+  const f = fixture();
+  fixtures.push(f);
+  // A file where the directory should be cannot be listed, whoever runs this.
+  f.write(f.config.smartDir, "not a directory\n");
+  const r = new Reader();
+  expect(smartReports(r, f.config).reports.size).toBe(0);
+  expect(r.errors.map((e) => e.source)).toEqual([f.config.smartDir]);
 });

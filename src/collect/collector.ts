@@ -23,6 +23,7 @@ import { agentScratchDirs } from "./scratch";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
+import { Udisks } from "./udisks";
 
 export interface SampleOptions {
   /** Skip scratch collection for cheap consumers that must treat it as unknown. */
@@ -82,7 +83,8 @@ export class Collector {
    * as static as the rest; whether a server answers is not, and this program
    * is a dashboard for agents that start after it. The scrub report directory
    * is the other: the reader creates it by installing the reporter vsys
-   * offers, so each sample takes it from the storage read of the reports.
+   * offers, so each sample takes it from the storage read of the reports. The
+   * drive report directory is taken the same way, for the same reason.
    */
   private capabilities: Capability[];
   /** tmux is installed, so a read is worth attempting however it went last. */
@@ -110,6 +112,8 @@ export class Collector {
     private units: string[] = [],
     /** Absent unless a caller supplies one, so no test reads the journal. */
     kernelLog?: KernelLogReader,
+    /** Absent unless a caller supplies one, so no test asks the system bus. */
+    udisks?: Udisks,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -124,7 +128,7 @@ export class Collector {
       this.capabilities.find((cap) => cap.id === "kernel-log")?.available ===
       true;
     this.kernelLog = kernelLog && searchable ? kernelLog.log : null;
-    this.storage = new StorageCollector(this.kernelLog);
+    this.storage = new StorageCollector(this.kernelLog, udisks ?? null);
     const probed = this.capabilities.find((cap) => cap.id === "tmux");
     this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
     this.tmuxServed = probed?.available === true;
@@ -132,9 +136,9 @@ export class Collector {
   /**
    * What the last read of a capability asked again each sample says, carried
    * into the next sample: whether a tmux server answers, and whether the
-   * scrub report directory exists yet.
+   * scrub and drive report directories exist yet.
    */
-  private record(id: "tmux" | "scrub", outcome: Outcome): void {
+  private record(id: "tmux" | "scrub" | "smart", outcome: Outcome): void {
     this.capabilities = this.capabilities.map((cap) =>
       cap.id === id
         ? {
@@ -218,6 +222,8 @@ export class Collector {
     // collection that never listed the directory leaves the last answer.
     if (this.storage.scrubDir !== undefined)
       this.record("scrub", this.storage.scrubDir);
+    if (this.storage.smartDir !== undefined)
+      this.record("smart", this.storage.smartDir);
     // Device totals cover the whole machine, so they are read above the watched tree.
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);
     this.controller.signal.throwIfAborted();
@@ -339,5 +345,6 @@ export async function createCollector(
       probe: kernelLogProbe,
       log: previous?.kernelLog ?? new KernelLog(),
     },
+    new Udisks(),
   );
 }

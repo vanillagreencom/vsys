@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Install the drive reporter vsys reads lifetime writes from. Run it as root:
+#
+#   curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/smart-reporter/install | sudo bash
+#
+# It installs vsys-smart-report, the service and hourly timer that run it, and
+# the tmpfiles line that creates its report directory at boot, then starts the
+# timer. Every name is vsys's own, so a timer already set up under another
+# name keeps working beside it.
+set -euo pipefail
+
+SOURCE="https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/smart-reporter"
+WORK=""
+
+die() {
+	printf 'smart-reporter: %s\n' "$1" >&2
+	exit 1
+}
+
+cleanup() {
+	if [[ -n $WORK ]]; then rm -rf -- "${WORK:?}"; fi
+}
+
+# Nothing runs until the last line calls main, so a download the pipe cut
+# short anywhere above it runs nothing.
+main() {
+	command -v smartctl >/dev/null 2>&1 ||
+		die "command=smartctl missing
+This system has no smartctl for the reporter to run.
+Install the package that ships it, smartmontools on most distributions, then run this again."
+	WORK="$(mktemp -d)" || die "scratch=mktemp-failed"
+	trap cleanup EXIT
+	local name
+	for name in vsys-smart-report vsys-smart-report.service vsys-smart-report.timer vsys-smart.conf; do
+		curl -fsSL "$SOURCE/$name" -o "$WORK/$name" ||
+			die "download=$name failed
+Could not fetch $SOURCE/$name. Nothing was installed."
+	done
+	install -Dm755 "$WORK/vsys-smart-report" /usr/local/bin/vsys-smart-report
+	install -Dm644 "$WORK/vsys-smart-report.service" /etc/systemd/system/vsys-smart-report.service
+	install -Dm644 "$WORK/vsys-smart-report.timer" /etc/systemd/system/vsys-smart-report.timer
+	install -Dm644 "$WORK/vsys-smart.conf" /etc/tmpfiles.d/vsys-smart.conf
+	systemd-tmpfiles --create /etc/tmpfiles.d/vsys-smart.conf
+	systemctl daemon-reload
+	systemctl enable --now vsys-smart-report.timer
+	printf '%s\n' \
+		"smart-reporter: installed" \
+		"Drive reports now land in /run/smartctl each hour, the first a minute" \
+		"after boot. To write one now: systemctl start vsys-smart-report.service"
+}
+
+main "$@"

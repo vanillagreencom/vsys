@@ -163,13 +163,20 @@ export interface CsumFailure {
   /** When the kernel last logged a failed read in this inode, in milliseconds. */
   at: number;
 }
-/** A block device with its lifetime writes, when SMART output is readable. */
+/**
+ * Where a drive's lifetime writes came from: a smartctl report a root timer
+ * left, or udisks2 over the system bus.
+ */
+export type LifetimeSource = "smartctl" | "udisks";
+/** A block device with its lifetime writes, when a source reported them. */
 export interface Device {
   name: string;
   /** Kernel device number "MAJ:MIN", the key io.stat writes are counted under. */
   number: string | null;
   model: string | null;
   lifetimeWritten: number | null;
+  /** The source of `lifetimeWritten`, null wherever it is unknown. */
+  source: LifetimeSource | null;
 }
 export interface Storage {
   mountsAvailable?: boolean;
@@ -191,6 +198,12 @@ export interface Storage {
    * filesystem the log names no failure for has no entry.
    */
   csumFailures?: Record<string, CsumFailure[]> | null;
+  /**
+   * Whether udisks2 answered for lifetime writes: null where it did, the
+   * failure where it did not, and absent where it was not asked, because a
+   * drive report directory exists or the collector was given no udisks.
+   */
+  udisks?: { failure: CapabilityFailure; detail: string } | null;
   scratchTime?: number | null;
   scratchPending?: boolean;
 }
@@ -351,8 +364,8 @@ export type CapabilityFailure =
   | "incomplete";
 /**
  * Probed once when vsys starts; absence is a known limit, not a read failure.
- * Whether a tmux server answers and whether the agent slice exists are re-read
- * each sample.
+ * Whether a tmux server answers, whether the agent slice exists and whether the
+ * scrub and drive report directories exist are re-read each sample.
  */
 export interface Capability {
   id: CapabilityId;

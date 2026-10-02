@@ -12,6 +12,7 @@ import { fit } from "./columns";
 import {
   capabilityLabels,
   capabilityOffer,
+  driveReporterInstall,
   reporterInstall,
   settingGroups,
   settingHelp,
@@ -144,36 +145,57 @@ test("Settings lists a capability it could not read, with the reason", async () 
   }
 });
 
-test("Settings offers the scrub reporter's install where no report directory exists", async () => {
+test("Settings offers each shipped reporter's install where its report directory does not exist", async () => {
   const c = defaults();
-  const s = everyCauseSnapshot(c);
-  s.capabilities = s.capabilities.map((cap) =>
-    cap.id === "scrub"
-      ? {
-          ...cap,
-          available: false,
-          failure: "absent" as const,
-          source: c.scrubDir,
-          detail: "ENOENT: no such file or directory",
-        }
-      : cap,
-  );
-  const t = await mount(s, c, { width: 200, height: 60 });
-  try {
-    await t.press("7");
-    // The copy key on a row with no command copies nothing.
-    await t.press(c.keys.copy);
-    expect(t.written).toEqual([]);
-    const scrub = s.capabilities.findIndex((cap) => cap.id === "scrub");
-    for (let i = 0; i < scrub; i++) await t.press("down");
-    const frame = t.frame();
-    expect(frame).toContain("no readable scrub report directory");
-    expect(frame).toContain("No scrub reporter is installed");
-    expect(frame).toContain(reporterInstall);
-    await t.press(c.keys.copy);
-    expect(t.written).toEqual([osc52(reporterInstall)]);
-  } finally {
-    await t.close();
+  const rows = [
+    {
+      id: "scrub",
+      source: c.scrubDir,
+      reason: "no readable scrub report directory",
+      sentence: "No scrub reporter is installed",
+      command: reporterInstall,
+    },
+    {
+      id: "smart",
+      source: c.smartDir,
+      reason: "no readable drive report directory",
+      sentence: "No drive reporter is installed",
+      command: driveReporterInstall,
+    },
+  ] as const;
+  for (const row of rows) {
+    const s = everyCauseSnapshot(c);
+    s.capabilities = s.capabilities.map((cap) =>
+      cap.id === row.id
+        ? {
+            ...cap,
+            available: false,
+            failure: "absent" as const,
+            source: row.source,
+            detail: "ENOENT: no such file or directory",
+          }
+        : cap,
+    );
+    const t = await mount(s, c, { width: 200, height: 60 });
+    try {
+      await t.press("7");
+      // The copy key on a row with no command copies nothing.
+      await t.press(c.keys.copy);
+      expect({ id: row.id, written: t.written }).toEqual({
+        id: row.id,
+        written: [],
+      });
+      const at = s.capabilities.findIndex((cap) => cap.id === row.id);
+      for (let i = 0; i < at; i++) await t.press("down");
+      const frame = t.frame();
+      expect(frame).toContain(row.reason);
+      expect(frame).toContain(row.sentence);
+      expect(frame).toContain(row.command);
+      await t.press(c.keys.copy);
+      expect(t.written).toEqual([osc52(row.command)]);
+    } finally {
+      await t.close();
+    }
   }
 });
 
