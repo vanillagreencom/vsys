@@ -1,0 +1,1 @@
+- The drive reporter now bounds each drive's smartctl query with a timeout, so a stalled drive or a wedged USB bridge costs only that drive's report instead of blocking every report after it.

@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -141,6 +142,58 @@ esac
                 parse(reports / "nvme0n1.txt", base),
                 {"model": "Samsung SSD 990 PRO 2TB", "lifetimeWritten": 8_000_000 * 512 * 1000},
             )
+            self.assertEqual(
+                parse(reports / "sda.txt", base),
+                {"model": "Crucial CT1000MX500SSD1", "lifetimeWritten": 2_000_000 * 512},
+            )
+
+    def test_a_stalled_drive_does_not_block_the_report_for_the_drive_after_it(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            calls = base / "calls"
+            sys_block = base / "block"
+            for name in ("nvme0n1", "sda"):
+                (sys_block / name).mkdir(parents=True)
+                (sys_block / name / "device").mkdir()
+            (base / "ata.txt").write_text(ATA)
+            # nvme0n1 never answers, as a wedged USB bridge would leave it;
+            # sda comes after it in SYS_BLOCK order and must still get its
+            # own report.
+            stub(
+                bin_dir,
+                "smartctl",
+                f"""printf '%s\\n' "$*" >> "{calls}"
+case $3 in
+/dev/nvme0n1) exec sleep 100 ;;
+/dev/sda) cat "{base}/ata.txt" ;;
+*) exit 2 ;;
+esac
+""",
+            )
+            reports = base / "reports"
+            started = time.monotonic()
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "SYS_BLOCK": str(sys_block),
+                    "SMARTCTL_TIMEOUT": "1",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertLess(elapsed, 10, "a stalled drive must not hold the run past its own timeout")
+            self.assertEqual(sorted(os.listdir(reports)), ["nvme0n1.txt", "sda.txt"])
+            # Cut off mid-query, nvme0n1 leaves whatever it wrote before the
+            # signal, here nothing: vsys reads that as lifetime writes unknown.
+            self.assertEqual((reports / "nvme0n1.txt").read_text(), "")
             self.assertEqual(
                 parse(reports / "sda.txt", base),
                 {"model": "Crucial CT1000MX500SSD1", "lifetimeWritten": 2_000_000 * 512},

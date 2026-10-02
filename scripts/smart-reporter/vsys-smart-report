@@ -10,13 +10,18 @@
 # smartWrites() in src/collect/devices.ts is the reader of this text.
 #
 # Environment:
-#   SYS_BLOCK  The block device directory to list (default /sys/block).
+#   SYS_BLOCK        The block device directory to list (default /sys/block).
+#   SMARTCTL_TIMEOUT Seconds to let one drive's smartctl run before it is cut
+#                     off (default 20). A stalled query or a wedged USB bridge
+#                     then costs this one drive's report, not every report
+#                     after it.
 set -euo pipefail
 # vsys matches smartctl's field names, so they must be in English.
 export LC_ALL=C
 
 dir=${1:?report directory}
 sys=${SYS_BLOCK:-/sys/block}
+smartctl_timeout=${SMARTCTL_TIMEOUT:-20}
 tmp=""
 cleanup() {
 	if [[ -n $tmp ]]; then rm -f -- "${tmp:?}"; fi
@@ -38,8 +43,10 @@ for path in "$sys"/*; do
 	# smartctl's exit status is a bit mask that is nonzero for a drive that is
 	# failing or has logged errors, which is still a report. A drive it cannot
 	# open leaves smartctl's own words and no counter, which vsys reads as
-	# lifetime writes unknown.
-	smartctl -i -A "/dev/$name" >"$tmp" 2>&1 || true
+	# lifetime writes unknown. A drive past smartctl_timeout is sent TERM, then
+	# KILL 5s later if it is still running; what it wrote before that is the
+	# report, and a cut-off report also reads as lifetime writes unknown.
+	timeout -k 5 "$smartctl_timeout" smartctl -i -A "/dev/$name" >"$tmp" 2>&1 || true
 	mv -f -- "$tmp" "$dir/$name.txt"
 	tmp=""
 done
