@@ -46,7 +46,7 @@ A scope is an orphan only when every member has lost its launcher, no member has
 
 The warden never kills an individual process. It never kills a live session. A scope with a tty, a live agent, a live launch root or a live external parent is not an orphan. The final pre-stop recheck refuses to reap when it cannot enumerate every `cgroup.procs` file that still exists under the scope. The orphan rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` enforce this claim.
 
-The warden also removes a lane's scratch directory once its scope is gone. `agent-confine` execs `systemd-run` and cannot clean up after its own scope ends, so this pass reuses the scope listing `enforce_task_caps` reads and removes any `agent-confine-<pid>-<n>` directory under `AGENT_TMPDIR` whose matching scope is gone. A directory younger than `AGENT_WARDEN_SCRATCH_GRACE` (60 s) survives with no matching scope yet, closing the startup gap before the scope registers. An unreadable scope list is never read as every scope being gone. Without the warden installed, these directories stay until removed by hand. `test_reap_scratch_dirs_rows` in `warden/agent_warden_test.py` covers this.
+The warden also removes a lane's scratch directory once its scope is gone. `agent-confine` execs `systemd-run` and cannot clean up after its own scope ends, so this pass reuses the scope listing `enforce_task_caps` reads and removes any `agent-confine-<pid>-<n>` directory under `AGENT_TMPDIR` whose matching scope is gone. A directory younger than `AGENT_WARDEN_SCRATCH_GRACE` (60 s) survives with no matching scope yet, closing the startup gap before the scope registers. An unreadable scope list is never read as every scope being gone. Without the warden installed, these directories stay until removed by hand. `test_reap_scratch_dirs_rows`, `test_reap_scratch_dirs_grace_protects_startup_race` and `test_reap_scratch_dirs_refuses_on_unreadable_scope_list` in `warden/agent_warden_test.py` cover this.
 
 ## Classification data
 
@@ -60,13 +60,11 @@ D005 records why the dashboard and the warden share this data file. D006 records
 
 ## Scratch and mise paths
 
-`agent-confine` exports `TMPDIR` into the agent environment. vsys uses the running agent's `TMPDIR` to discover scratch, one root per agent. `AGENT_TMPDIR` overrides the parent path and never changes; the default parent is `${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp`. Each lane gets its own subdirectory under that parent, named after the `--unit` value the launcher passes to the `systemd-run --scope` call that confines it, so a lane that deletes its own `TMPDIR` cannot reach another lane's scratch. The launcher creates that subdirectory with a non-recursive `mkdir` of mode 700, only in the exec that creates the new scope; a name already in use fails the `mkdir` instead of reusing the existing directory. A nested launch inside an already-capped lineage, and a launch with no user manager, create no new scope and keep the inherited `TMPDIR`; the launcher keeps it too when the subdirectory cannot be created.
+`agent-confine` exports `TMPDIR`; vsys reads it to discover scratch, one root per agent. `AGENT_TMPDIR` overrides the parent path and never changes; default `${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp`. Each lane gets its own subdirectory under that parent, named after its `--unit` value for `systemd-run --scope`, so deleting one lane's `TMPDIR` cannot reach another's. A non-recursive `mkdir` of mode 700 creates it, only when creating a new scope; an in-use name fails the `mkdir` rather than reusing it. A capped-lineage nested launch, a launch with no user manager, and a failed `mkdir` all keep the inherited `TMPDIR`.
 
-The owner must set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` in the environment that starts the per-account wrappers, tmux pane shell or user manager before switching to the vsys copy. That keeps scratch on the existing scratch subvolume.
+Owners set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` before starting the wrappers, tmux shell or user manager, to keep scratch on the existing subvolume. The warden reads the mise path from `MISE_DATA_DIR`, defaulting to `${XDG_DATA_HOME:-$HOME/.local/share}/mise`; a systemd unit needs it set in `environment.d` when it differs, since it inherits no shell-only value.
 
-The warden derives the mise install path from `MISE_DATA_DIR`. If `MISE_DATA_DIR` is unset, it uses `${XDG_DATA_HOME:-$HOME/.local/share}/mise`, which is mise's default. A systemd user unit does not inherit a shell-only value. Put `MISE_DATA_DIR` in the user manager environment, such as `environment.d`, when it differs from the default.
-
-The portability rows in `warden/agent_warden_test.py` cover the mise and scratch portability rules.
+`warden/agent_warden_test.py`'s portability rows cover mise and scratch, including `test_agent_confine_and_warden_scratch_parent_agree`, proving the two formulas agree under one environment.
 
 ## Tunables
 
