@@ -1517,6 +1517,94 @@ test("a damaged-files card keeps a readable filesystem's own count beside one th
   expect(card?.target).toEqual({ kind: "path", path: "a" });
 });
 
+test("a damaged-files card's mixed next step pluralizes each clause by its own count, not the card's total", () => {
+  const c = defaults();
+  const unreadFs = (s: Snapshot, fsid: string, mount: string) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    });
+    s.storage.lastFinishedScrub = {
+      ...s.storage.lastFinishedScrub,
+      [fsid]: { at: s.time - 3 * 86400000, damaged: true },
+    };
+  };
+  const knownFs = (s: Snapshot, fsid: string, mount: string) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [{ logical: 1, paths: [`/r/target/${fsid}`] }],
+    });
+  };
+  // Two unread filesystems beside one known one: the check-first clause must
+  // pluralize on its own two, the remedy clause stay singular on its own
+  // one, neither reading off the card's total of three.
+  const moreUnread = emptySnapshot();
+  knownFs(moreUnread, "a", "/a");
+  unreadFs(moreUnread, "b", "/b");
+  unreadFs(moreUnread, "c", "/c");
+  const moreUnreadCard = attention(moreUnread, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(moreUnreadCard?.next).toContain(
+    "run a check on each of these filesystems to find out which files hold the damage",
+  );
+  expect(moreUnreadCard?.next).toContain("open the filesystem, then restore");
+  expect(moreUnreadCard?.next).not.toContain(
+    "run a check on that filesystem to find out",
+  );
+  expect(moreUnreadCard?.next).not.toContain(
+    "open each of these filesystems, then restore",
+  );
+  // The reverse asymmetry: one unread filesystem beside two known ones.
+  const moreKnown = emptySnapshot();
+  knownFs(moreKnown, "a", "/a");
+  knownFs(moreKnown, "b", "/b");
+  unreadFs(moreKnown, "c", "/c");
+  const moreKnownCard = attention(moreKnown, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(moreKnownCard?.next).toContain(
+    "run a check on that filesystem to find out which files hold the damage",
+  );
+  expect(moreKnownCard?.next).toContain(
+    "open each of these filesystems, then restore",
+  );
+  expect(moreKnownCard?.next).not.toContain(
+    "run a check on each of these filesystems to find out",
+  );
+  expect(moreKnownCard?.next).not.toContain(
+    "open the filesystem, then restore",
+  );
+});
+
 test("a damaged-files card's block total discloses a filesystem whose own block count is unread, independent of its files", () => {
   const c = defaults();
   // A finished, readable report whose own files are always named, so `files`
