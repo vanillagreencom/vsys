@@ -78,6 +78,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import stat
 import sys
@@ -100,6 +101,11 @@ BUS_TIMEOUT_USEC = 10_000_000
 HOME = os.path.expanduser("~")
 MISE_DATA = os.environ.get("MISE_DATA_DIR") or os.path.join(
     os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local/share"), "mise")
+# The parent scratch directory agent-confine creates a per-scope subdirectory
+# under. Same default as the launcher's AGENT_DEFAULT_TMPDIR; kept in sync by
+# the scratch-portability rows in warden/agent_warden_test.py.
+AGENT_TMPDIR_PARENT = os.environ.get("AGENT_TMPDIR") or os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "agents", "tmp")
 
 class AgentToolsError(Exception):
     def __init__(self, kind, path, reason="", paths=()):
@@ -747,6 +753,46 @@ def scope_units():
     except OSError:
         pass
     return out
+
+
+# agent-confine names a per-scope scratch directory after the bare --unit
+# value it passes to systemd-run (no ".scope" suffix): see the launcher's
+# scope-creating exec.
+SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
+
+
+def reap_scratch_dirs(correct):
+    """Remove a per-scope scratch directory agent-confine created under
+    AGENT_TMPDIR once its scope unit is gone from agents.slice. The launcher
+    execs systemd-run and cannot run code after its own scope ends, so this
+    pass -- which already enumerates agents.slice scopes via scope_units()
+    for enforce_task_caps -- is the only thing that can clean these up.
+    Without the warden installed the directories stay until removed by hand
+    (docs/architecture/warden.md). Returns the directory names removed."""
+    try:
+        entries = os.listdir(AGENT_TMPDIR_PARENT)
+    except OSError:
+        return []
+    live_units = set(scope_units())
+    removed = []
+    for name in sorted(entries):
+        if not SCRATCH_UNIT_RE.match(name):
+            continue
+        if f"{name}.scope" in live_units:
+            continue
+        path = os.path.join(AGENT_TMPDIR_PARENT, name)
+        if not os.path.isdir(path):
+            continue
+        if not correct:
+            log(f"scratch {name}: scope gone; would remove (report mode)")
+            continue
+        try:
+            shutil.rmtree(path)
+            removed.append(name)
+            log(f"  removed scratch {name}: scope gone")
+        except OSError as e:
+            log(f"  remove of scratch {name} failed: {e}")
+    return removed
 
 
 def slice_tasks_max():
@@ -2164,6 +2210,7 @@ def run(correct):
         if only is None:
             try:
                 enforce_task_caps(correct)
+                reap_scratch_dirs(correct)
                 near, unknown_near, near_complete = warn_near_cap()
                 record_near_events(st, near, unknown_near, near_complete, now=tick_now)
                 for unit, kind, human in near:

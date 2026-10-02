@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -429,6 +430,77 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             finally:
                 self.w.CG_ROOT = old_root
 
+    def test_reap_scratch_dirs_rows(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_cg, old_parent = self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT
+            self.w.CG_ROOT = base / "cg"
+            self.w.AGENT_TMPDIR_PARENT = str(base / "scratch")
+            try:
+                agent_slice = self.w.CG_ROOT / self.w.SLICE
+                agent_slice.mkdir(parents=True)
+                (agent_slice / "agent-confine-100-200.scope").mkdir()
+                scratch_dir = Path(self.w.AGENT_TMPDIR_PARENT)
+                scratch_dir.mkdir(parents=True)
+                live = scratch_dir / "agent-confine-100-200"
+                live.mkdir()
+                (live / "f").write_text("x")
+                gone = scratch_dir / "agent-confine-300-400"
+                gone.mkdir()
+                (gone / "f").write_text("x")
+                unrelated = scratch_dir / "not-a-scope-dir"
+                unrelated.mkdir()
+                logs = []
+                old_log = self.w.log
+                self.w.log = logs.append
+                try:
+                    self.assertEqual(self.w.reap_scratch_dirs(False), [])
+                finally:
+                    self.w.log = old_log
+                report_rows = [
+                    ("report mode removes nothing", [live.is_dir(), gone.is_dir(), unrelated.is_dir()], [True, True, True]),
+                    ("report mode logs the gone scope", any("agent-confine-300-400" in line and "would remove" in line for line in logs), True),
+                    ("report mode never logs the live scope", any("agent-confine-100-200" in line for line in logs), False),
+                ]
+                for name, actual, expected in report_rows:
+                    with self.subTest(name=name):
+                        self.assertEqual(actual, expected)
+                removed = self.w.reap_scratch_dirs(True)
+                correct_rows = [
+                    ("a live scope's directory survives", live.is_dir(), True),
+                    ("a gone scope's directory is removed", gone.exists(), False),
+                    ("an unrelated directory is left alone", unrelated.is_dir(), True),
+                    ("removed reports the gone scope only", removed, ["agent-confine-300-400"]),
+                ]
+                for name, actual, expected in correct_rows:
+                    with self.subTest(name=name):
+                        self.assertEqual(actual, expected)
+            finally:
+                self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def test_reap_scratch_dirs_liveness_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = '        if f"{name}.scope" in live_units:\n            continue\n'
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, ""), "agent_warden_mutant_scratch_liveness")
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_cg, old_parent = mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT
+            mutant.CG_ROOT = base / "cg"
+            mutant.AGENT_TMPDIR_PARENT = str(base / "scratch")
+            try:
+                agent_slice = mutant.CG_ROOT / mutant.SLICE
+                agent_slice.mkdir(parents=True)
+                (agent_slice / "agent-confine-100-200.scope").mkdir()
+                scratch_dir = Path(mutant.AGENT_TMPDIR_PARENT)
+                scratch_dir.mkdir(parents=True)
+                live = scratch_dir / "agent-confine-100-200"
+                live.mkdir()
+                mutant.reap_scratch_dirs(True)
+                self.assertFalse(live.is_dir())
+            finally:
+                mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
     def test_lineage_memory_high_mutant_fails(self):
         text = WARDEN.read_text()
         old = '    baseline["memory.high"] = min(baseline["memory.high"], SCOPE_MEM_HIGH)\n'
@@ -729,12 +801,21 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             for key in ("HOME", "XDG_RUNTIME_DIR", "XDG_DATA_HOME"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
             default_w = load_warden(env, "agent_warden_default_mise")
+            override_env = clean_env({
+                "HOME": base / "home2", "XDG_RUNTIME_DIR": base / "run2",
+                "AGENT_TMPDIR": base / "scratch-override",
+            })
+            for key in ("HOME", "XDG_RUNTIME_DIR"):
+                Path(override_env[key]).mkdir(parents=True, exist_ok=True)
+            override_w = load_warden(override_env, "agent_warden_scratch_override")
         rows = [
             ("mise dir follows MISE_DATA_DIR", self.w.MISE_DATA, self.env["MISE_DATA_DIR"]),
             ("agent regex follows MISE_DATA_DIR", bool(self.w.AGENT_PATH_RE.search(f"{self.env['MISE_DATA_DIR']}/installs/claude/latest/claude")), True),
             ("default mise under XDG data", default_w.MISE_DATA, str(Path(env["XDG_DATA_HOME"]) / "mise")),
             ("toolchain prefix follows MISE_DATA_DIR", self.env["MISE_DATA_DIR"] + "/" in self.w.TOOLCHAIN_PREFIXES, True),
             ("unit_of skips slices", self.w.unit_of("/user.slice/user-1000.slice/user@1000.service/app.slice/orch-x.service/child"), "orch-x.service"),
+            ("default scratch parent under XDG cache", default_w.AGENT_TMPDIR_PARENT, str(Path(env["HOME"]) / ".cache" / "agents" / "tmp")),
+            ("AGENT_TMPDIR overrides the scratch parent", override_w.AGENT_TMPDIR_PARENT, override_env["AGENT_TMPDIR"]),
         ]
         for name, actual, expected in rows:
             with self.subTest(name=name):
@@ -866,12 +947,15 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 path.chmod(0o755)
             env = self._confine_env(base, bin_dir)
             result = subprocess.run([str(ROOT / "warden" / "agent-confine"), "env"], env=env, capture_output=True, text=True)
-            expected = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
-            created = Path(expected).is_dir()
+            default_tmpdir = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
+            created = Path(default_tmpdir).is_dir()
         rows = [
             ("outside-slice branch succeeds with systemd-run unavailable", result.returncode, 0),
-            ("outside-slice branch exports default TMPDIR", f"TMPDIR={expected}" in result.stdout.splitlines(), True),
-            ("outside-slice branch creates default TMPDIR", created, True),
+            # No scope is created here (no user manager), so TMPDIR stays whatever
+            # was inherited rather than resetting to the shared parent (VSY-79).
+            ("outside-slice branch does not export TMPDIR",
+             any(line.startswith("TMPDIR=") for line in result.stdout.splitlines()), False),
+            ("outside-slice branch creates no scratch directory", created, False),
         ]
         for name, actual, expected_value in rows:
             with self.subTest(name=name):
@@ -893,12 +977,15 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 path.chmod(0o755)
             env = self._confine_env(base, bin_dir)
             result = subprocess.run([str(launcher), "env"], env=env, capture_output=True, text=True)
-            expected = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
-            created = Path(expected).is_dir()
+            default_tmpdir = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
+            created = Path(default_tmpdir).is_dir()
         rows = [
             ("nested plain-lineage branch succeeds with systemd-run unavailable", result.returncode, 0),
-            ("nested plain-lineage branch exports default TMPDIR", f"TMPDIR={expected}" in result.stdout.splitlines(), True),
-            ("nested plain-lineage branch creates default TMPDIR", created, True),
+            # The lineage is plain (falls through) but systemd-run itself is
+            # unavailable here, so this also lands in the no-new-scope fallback.
+            ("nested plain-lineage branch does not export TMPDIR",
+             any(line.startswith("TMPDIR=") for line in result.stdout.splitlines()), False),
+            ("nested plain-lineage branch creates no scratch directory", created, False),
         ]
         for name, actual, expected_value in rows:
             with self.subTest(name=name):
@@ -939,7 +1026,10 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             result = subprocess.run([str(launcher), "env"], env=env, capture_output=True, text=True)
             expected = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
             lines = log.read_text().splitlines() if log.exists() else []
-        return result, expected, lines
+            # Read before the scratch dir this `with` block owns is cleaned up.
+            unit_match = re.search(r"--unit=(agent-confine-\d+-\d+)", lines[-1]) if lines else None
+            scratch_created = unit_match is not None and Path(expected, unit_match.group(1)).is_dir()
+        return result, expected, lines, scratch_created
 
     def test_agent_confine_nested_helper_statuses_launch(self):
         rows = [
@@ -948,26 +1038,115 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         ]
         for status, systemd_runs in rows:
             with self.subTest(status=status):
-                result, expected, lines = self.run_nested_launcher(status)
+                result, expected, lines, scratch_created = self.run_nested_launcher(status)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"TMPDIR={expected}", result.stdout.splitlines())
                 self.assertEqual(len(lines), systemd_runs)
+                out_lines = result.stdout.splitlines()
                 if status == 3:
+                    # A new sibling scope is created here, so this is the one
+                    # path that sets TMPDIR, keyed to that scope's own --unit.
                     self.assertIn("--scope", lines[-1])
                     self.assertIn("-p CPUWeight=99", lines[-1])
                     self.assertIn("-p TasksMax=8192", lines[-1])
                     self.assertIn("-p MemoryHigh=64G", lines[-1])
-                    self.assertRegex(lines[-1], r"--unit=agent-confine-[0-9]+-")
+                    unit_match = re.search(r"--unit=(agent-confine-\d+-\d+)", lines[-1])
+                    self.assertIsNotNone(unit_match)
+                    self.assertIn(f"TMPDIR={expected}/{unit_match.group(1)}", out_lines)
+                    self.assertTrue(scratch_created)
+                else:
+                    # A capped (or unknown) lineage starts no new scope, so
+                    # TMPDIR stays whatever the parent process already set it
+                    # to for its own scope rather than resetting it (VSY-79).
+                    self.assertFalse(any(line.startswith("TMPDIR=") for line in out_lines))
 
     def test_agent_confine_nested_status_three_mutant_fails(self):
         text = (ROOT / "warden" / "agent-confine").read_text()
         old = '3) : ;;'
         new = '3) exec env "${CAPS[@]}" "$@" ;;'
         self.assertEqual(text.count(old), 1)
-        result, expected, lines = self.run_nested_launcher(3, text.replace(old, new))
+        result, _expected, lines, scratch_created = self.run_nested_launcher(3, text.replace(old, new))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"TMPDIR={expected}", result.stdout.splitlines())
         self.assertNotEqual(len(lines), 2)
+        # The mutant treats a plain (status 3) lineage as if it were capped, so
+        # it never reaches the scope-creating exec and never sets TMPDIR.
+        self.assertFalse(any(line.startswith("TMPDIR=") for line in result.stdout.splitlines()))
+        self.assertFalse(scratch_created)
+
+    def test_agent_confine_two_lanes_get_independent_scratch(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "grep").write_text("#!/bin/sh\nexit 1\n")
+            (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+            systemd_run = "\n".join([
+                "#!/bin/sh",
+                'case " $* " in',
+                '*" --unit=agent-confine-"*)',
+                '  while [ $# -gt 0 ]; do',
+                '    if [ "$1" = env ]; then shift; exec env "$@"; fi',
+                '    shift',
+                '  done',
+                '  exit 99;;',
+                '*) exit 0;;',
+                'esac',
+            ]) + "\n"
+            (bin_dir / "systemd-run").write_text(systemd_run)
+            for path in bin_dir.iterdir():
+                path.chmod(0o755)
+            env = self._confine_env(base, bin_dir)
+            launcher = str(ROOT / "warden" / "agent-confine")
+
+            def tmpdir_of(result):
+                for line in result.stdout.splitlines():
+                    if line.startswith("TMPDIR="):
+                        return line[len("TMPDIR="):]
+                return None
+
+            first = subprocess.run([launcher, "env"], env=env, capture_output=True, text=True)
+            second = subprocess.run([launcher, "env"], env=env, capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            first_tmpdir, second_tmpdir = tmpdir_of(first), tmpdir_of(second)
+            default_tmpdir = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
+            rows = [
+                ("first lane's TMPDIR is a subdirectory under AGENT_TMPDIR",
+                 first_tmpdir is not None and first_tmpdir.startswith(default_tmpdir + "/"), True),
+                ("second lane's TMPDIR is a subdirectory under AGENT_TMPDIR",
+                 second_tmpdir is not None and second_tmpdir.startswith(default_tmpdir + "/"), True),
+                ("the two lanes read different TMPDIRs under AGENT_TMPDIR", first_tmpdir != second_tmpdir, True),
+            ]
+            for name, actual, expected in rows:
+                with self.subTest(name=name):
+                    self.assertEqual(actual, expected)
+            (Path(first_tmpdir) / "first-file").write_text("first")
+            (Path(second_tmpdir) / "second-file").write_text("second")
+            # rm -rf "$TMPDIR" in one agent leaves the other agent's files (VSY-79).
+            shutil.rmtree(first_tmpdir)
+            self.assertFalse(Path(first_tmpdir).exists())
+            self.assertTrue((Path(second_tmpdir) / "second-file").is_file())
+
+    def test_agent_confine_nested_capped_keeps_parents_tmpdir(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir(parents=True)
+            launcher = base / "agent-confine"
+            shutil.copy2(ROOT / "warden" / "agent-confine", launcher)
+            helper = base / "agent-confine-lineage-capped"
+            helper.write_text("#!/bin/sh\nexit 0\n")  # capped lineage
+            (bin_dir / "grep").write_text("#!/bin/sh\nexit 0\n")  # already inside agents.slice
+            (bin_dir / "systemd-run").write_text("#!/bin/sh\nexit 1\n")  # must never run
+            (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+            for path in [launcher, helper, *bin_dir.iterdir()]:
+                path.chmod(0o755)
+            env = self._confine_env(base, bin_dir)
+            parents_scratch = base / "scratch" / "agent-confine-900-111"
+            parents_scratch.mkdir(parents=True)
+            env["TMPDIR"] = str(parents_scratch)
+            result = subprocess.run([str(launcher), "env"], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"TMPDIR={parents_scratch}", result.stdout.splitlines())
 
     def test_agent_confine_systemd_run_uses_cpu_weight_99(self):
         with scratch() as tmp:

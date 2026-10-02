@@ -52,13 +52,12 @@ CAPS=(
 	"MOLD_JOBS=${AGENT_MOLD_JOBS-1}"
 )
 
+# AGENT_TMPDIR (or the XDG default below) names the parent scratch directory
+# and never changes. Each lane gets its own subdirectory under it, keyed to
+# its own systemd scope, so a cleanup inside one lane's TMPDIR cannot reach
+# another's: see the scope-creating exec below, the only place that changes.
 AGENT_DEFAULT_TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp"
 AGENT_EFFECTIVE_TMPDIR="${AGENT_TMPDIR:-$AGENT_DEFAULT_TMPDIR}"
-if mkdir -p -m 700 -- "$AGENT_EFFECTIVE_TMPDIR" 2>/dev/null && [ -d "$AGENT_EFFECTIVE_TMPDIR" ] && [ -w "$AGENT_EFFECTIVE_TMPDIR" ]; then
-	CAPS+=("TMPDIR=$AGENT_EFFECTIVE_TMPDIR")
-else
-	echo "agent-confine: TMPDIR unavailable at $AGENT_EFFECTIVE_TMPDIR; keeping inherited TMPDIR" >&2
-fi
 
 [ $# -gt 0 ] || {
 	echo "usage: agent-confine COMMAND [ARGS...]" >&2
@@ -138,11 +137,25 @@ if command -v systemd-run >/dev/null 2>&1 &&
 	# a leak, never kills legit work. Override: AGENT_SCOPE_MEM_HIGH.
 	# (Real-time scheduling is blocked by the RLIMIT_RTPRIO=0 set near the top,
 	# not here: LimitRTPRIO is not a valid property on a scope.)
+	#
+	# This exec is the only place a brand-new scope is created, so it is the
+	# only place TMPDIR changes. A directory shared by every lane let one
+	# lane's `rm -rf "$TMPDIR"` delete every other lane's scratch (VSY-79).
+	# Keying the subdirectory to this scope's own --unit name lets the
+	# warden's scope-enumerating pass remove it once the scope is gone,
+	# since this launcher execs below and cannot run code after that.
+	agent_confine_unit="agent-confine-$$-${RANDOM}"
+	agent_confine_scratch="$AGENT_EFFECTIVE_TMPDIR/$agent_confine_unit"
+	if mkdir -p -m 700 -- "$agent_confine_scratch" 2>/dev/null && [ -d "$agent_confine_scratch" ] && [ -w "$agent_confine_scratch" ]; then
+		CAPS+=("TMPDIR=$agent_confine_scratch")
+	else
+		echo "agent-confine: TMPDIR unavailable at $agent_confine_scratch; keeping inherited TMPDIR" >&2
+	fi
 	exec systemd-run --user --quiet --collect --scope --slice=agents.slice \
 		-p "CPUWeight=99" \
 		-p "TasksMax=${AGENT_SCOPE_TASKS_MAX:-8192}" \
 		-p "MemoryHigh=${AGENT_SCOPE_MEM_HIGH:-64G}" \
-		--unit="agent-confine-$$-${RANDOM}" env "${CAPS[@]}" "$@"
+		--unit="$agent_confine_unit" env "${CAPS[@]}" "$@"
 fi
 
 # No user manager at all (cron, no session D-Bus, a stripped container). The env

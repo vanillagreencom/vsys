@@ -46,6 +46,8 @@ A scope is an orphan only when every member has lost its launcher, no member has
 
 The warden never kills an individual process. It never kills a live session. A scope with a tty, a live agent, a live launch root or a live external parent is not an orphan. The final pre-stop recheck refuses to reap when it cannot enumerate every `cgroup.procs` file that still exists under the scope. The orphan rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` enforce this claim.
 
+The warden also removes a lane's scratch directory once its scope is gone. `agent-confine` execs `systemd-run` and cannot run code after its own scope ends, so it cannot clean up the scratch directory it created for that scope. This pass reuses the same scope listing `enforce_task_caps` already reads and removes any `agent-confine-<pid>-<n>` directory under `AGENT_TMPDIR` whose matching scope is gone; it never touches a directory whose scope is still there or a directory that does not match that name shape. Without the warden installed, these directories stay under `AGENT_TMPDIR` until removed by hand. `test_reap_scratch_dirs_rows` and `test_reap_scratch_dirs_liveness_mutant_fails` in `warden/agent_warden_test.py` cover this.
+
 ## Classification data
 
 The shipped classification data is `data/agent-tools.json`. It contains published agent CLI names, mise install directory names, each CLI's install path fragments and executable paths, desktop executable prefixes and bundled CLI suffixes. The warden validates the path fragments and executable paths and does not classify by them; the dashboard confirms an agent's name with them.
@@ -58,7 +60,7 @@ D005 records why the dashboard and the warden share this data file. D006 records
 
 ## Scratch and mise paths
 
-`agent-confine` exports `TMPDIR` into the agent environment. vsys uses the running agent's `TMPDIR` to discover scratch. `AGENT_TMPDIR` overrides the path. The default is `${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp`. The launcher creates that directory with mode 700 before exec. If creation fails, it warns and keeps the inherited `TMPDIR`.
+`agent-confine` exports `TMPDIR` into the agent environment. vsys uses the running agent's `TMPDIR` to discover scratch, one root per agent. `AGENT_TMPDIR` overrides the parent path and never changes; the default parent is `${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp`. Each lane gets its own subdirectory under that parent, named after the `--unit` value the launcher passes to the `systemd-run --scope` call that confines it, so a lane that deletes its own `TMPDIR` cannot reach another lane's scratch. The launcher creates that subdirectory with mode 700 only in the exec that creates the new scope, right before it. A nested launch inside an already-capped lineage, and a launch with no user systemd manager, create no new scope and so keep whatever `TMPDIR` they inherited instead. If the subdirectory cannot be created, the launcher warns and keeps the inherited `TMPDIR`.
 
 The owner must set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` in the environment that starts the per-account wrappers, tmux pane shell or user manager before switching to the vsys copy. That keeps scratch on the existing scratch subvolume.
 
@@ -83,7 +85,7 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 | `AGENT_SCOPE_MEM_HIGH` | launcher | `64G` | Per-session soft memory ceiling passed to systemd. |
 | `AGENT_SCOPE_MEM_HIGH_BYTES` | warden | `68719476736` | Per-session soft memory ceiling used for warden-created scopes and lineage baseline. |
 | `AGENT_SCOPE_MEM_WARN_BYTES` | warden | 75% of `AGENT_SCOPE_MEM_HIGH_BYTES` | Per-session memory warning threshold. |
-| `AGENT_TMPDIR` | launcher | unset | Overrides the launcher scratch directory. |
+| `AGENT_TMPDIR` | both | unset | Overrides the scratch parent directory. The launcher creates each lane's subdirectory under it; the warden reads the same value to find which subdirectories to reap. |
 | `AGENT_TEST_THREADS` | launcher | `8` | Test-thread cap exported by the launcher. |
 | `AGENT_BUILD_JOBS` | launcher | `16` | Build-job cap exported by the launcher. |
 | `AGENT_MOLD_JOBS` | launcher | `1` | Mold linker concurrency cap. Empty disables it. |
