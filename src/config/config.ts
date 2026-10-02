@@ -9,7 +9,7 @@ import {
 } from "./agent-tools";
 import { writeFileAtomic } from "./atomic";
 import { normalizeKey } from "./keys";
-import { xdgPath } from "./xdg";
+import { xdgHome, xdgPath } from "./xdg";
 
 export const columns = [
   "name",
@@ -129,7 +129,8 @@ export interface Config {
 }
 /**
  * The settings file, under `$XDG_CONFIG_HOME` or else `~/.config`, as
- * `xdgPath()` resolves it.
+ * `xdgPath()` resolves it. A save resolves it again, so it writes where the
+ * next start will read even after the reader moves the file.
  */
 export function configPath(env: NodeJS.ProcessEnv = process.env): string {
   return xdgPath("XDG_CONFIG_HOME", "vsys/config.toml", env);
@@ -148,6 +149,23 @@ export function defaultScratchDirs(): string[] {
   ];
 }
 /**
+ * The state directory each `XDG_STATE_HOME` base first resolved to in this
+ * process. History holds its database open there for the life of the process,
+ * so every later default names that same directory: re-resolved after the
+ * reader moves it, the default would differ from the loaded path, and a save
+ * would pin the old directory into `config.toml`.
+ */
+const stateDirs = new Map<string, string>();
+function stateDir(env: NodeJS.ProcessEnv): string {
+  const base = xdgHome("XDG_STATE_HOME", env);
+  let dir = stateDirs.get(base);
+  if (dir === undefined) {
+    dir = xdgPath("XDG_STATE_HOME", "vsys", env);
+    stateDirs.set(base, dir);
+  }
+  return dir;
+}
+/**
  * The shipped settings. History and error memory live under
  * `$XDG_STATE_HOME/vsys`, or else `~/.local/state/vsys`, as `xdgPath()`
  * resolves the directory, so the two never split across locations.
@@ -156,7 +174,7 @@ export function defaults(
   agentTools = shippedAgentTools.tools.map((tool) => tool.name),
   env: NodeJS.ProcessEnv = process.env,
 ): Config {
-  const state = xdgPath("XDG_STATE_HOME", "vsys", env);
+  const state = stateDir(env);
   return {
     refreshMs: 1000,
     historyHours: 24,

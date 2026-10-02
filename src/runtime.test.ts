@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { SccacheCollector } from "./collect/sccache";
 import { loadConfig } from "./config/config";
 import { Session } from "./runtime";
@@ -16,7 +16,7 @@ test("refresh changes apply immediately and preserve collected history", async (
   let settingsFrames = 0;
   const session = new Session(
     f.config,
-    join(f.root, "config.toml"),
+    () => join(f.root, "config.toml"),
     { sample: async () => emptySnapshot(++calls * 1000) },
     h,
     {
@@ -59,7 +59,7 @@ test("a config change waits for the in-flight source before sampling again", asy
   let calls = 0;
   const session = new Session(
     f.config,
-    join(f.root, "config.toml"),
+    () => join(f.root, "config.toml"),
     {
       sample: async () => {
         calls++;
@@ -95,7 +95,7 @@ test("failed settings writes leave the active history and source usable", async 
   h.add(emptySnapshot(1000));
   const session = new Session(
     f.config,
-    path,
+    () => path,
     { sample: async () => emptySnapshot(2000) },
     h,
     { frame: () => {}, error: () => {} },
@@ -111,6 +111,35 @@ test("failed settings writes leave the active history and source usable", async 
     f.cleanup();
   }
 });
+test("a settings save writes where the path resolves at save time", async () => {
+  const f = fixture();
+  let path = join(f.root, "home-config/config.toml");
+  const h = new History(f.config);
+  const session = new Session(
+    f.config,
+    () => path,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    {
+      makeSource: async () => ({ sample: async () => emptySnapshot(2000) }),
+      agentToolsPath: f.agentToolsPath,
+    },
+  );
+  try {
+    await session.configure({ ...f.config, refreshMs: 2500 });
+    const home = path;
+    path = join(f.root, "moved-config/config.toml");
+    mkdirSync(dirname(path));
+    renameSync(home, path);
+    await session.configure({ ...f.config, refreshMs: 3000 });
+    expect(readFileSync(path, "utf8")).toContain("refreshMs = 3000\n");
+    expect(existsSync(home)).toBe(false);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
 test("source jobs close even when history shutdown fails", () => {
   const f = fixture();
   const h = new History(f.config);
@@ -120,7 +149,7 @@ test("source jobs close even when history shutdown fails", () => {
   };
   const session = new Session(
     f.config,
-    join(f.root, "config.toml"),
+    () => join(f.root, "config.toml"),
     {
       sample: async () => emptySnapshot(),
       close: () => {
@@ -149,7 +178,7 @@ test("a source failure still reaches terminal cleanup when history close fails",
   };
   const session = new Session(
     f.config,
-    join(f.root, "config.toml"),
+    () => join(f.root, "config.toml"),
     {
       sample: async () => {
         throw readError;
@@ -179,7 +208,7 @@ test("a settings change hands the running source to its replacement", async () =
   let handed: unknown;
   const session = new Session(
     f.config,
-    join(f.root, "config.toml"),
+    () => join(f.root, "config.toml"),
     first,
     h,
     { frame: () => {}, error: () => {} },
@@ -208,7 +237,7 @@ test("a saved collection setting rebuilds the source before the next sample", as
   const collected = Promise.withResolvers<void>();
   const session = new Session(
     f.config,
-    join(f.root, "config.toml"),
+    () => join(f.root, "config.toml"),
     { sample: async () => emptySnapshot(1000) },
     h,
     {
@@ -265,7 +294,7 @@ test("editing agent tools saves the shared overlay and leaves config unpinned", 
   const built: string[][] = [];
   const session = new Session(
     config,
-    configPath,
+    () => configPath,
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },
@@ -348,7 +377,7 @@ test("pinned agent tool edits that omit shipped tools are refused before writes"
   const h = new History(config);
   const session = new Session(
     config,
-    configPath,
+    () => configPath,
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },
@@ -400,7 +429,7 @@ test("pinned agent tool edits preserve current overlay-only tools", async () => 
   const built: string[][] = [];
   const session = new Session(
     config,
-    configPath,
+    () => configPath,
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },
@@ -465,7 +494,7 @@ test("pinned unrelated settings saves keep diverging agent tools", async () => {
   const frames: string[][] = [];
   const session = new Session(
     config,
-    configPath,
+    () => configPath,
     { sample: async () => emptySnapshot(++calls * 1000) },
     h,
     {
@@ -527,7 +556,7 @@ test("unpinned settings saves reload current agent tools before writing config",
   const built: string[][] = [];
   const session = new Session(
     config,
-    configPath,
+    () => configPath,
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },
@@ -594,7 +623,7 @@ test("agent tool overlay rolls back when config writing fails", async () => {
     const configError = new Error("config write failed");
     const session = new Session(
       config,
-      configPath,
+      () => configPath,
       { sample: async () => emptySnapshot(1000) },
       h,
       { frame: () => {}, error: () => {} },
@@ -665,7 +694,7 @@ test("agent tool overlay rollback leaves a newer overlay after config writing fa
     const configError = new Error("config write failed");
     const session = new Session(
       config,
-      configPath,
+      () => configPath,
       { sample: async () => emptySnapshot(1000) },
       h,
       { frame: () => {}, error: () => {} },
@@ -706,7 +735,7 @@ test("removing a shipped agent tool is refused before settings writes", async ()
   const h = new History(f.config);
   const session = new Session(
     f.config,
-    configPath,
+    () => configPath,
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },
@@ -738,7 +767,7 @@ test("settings agent tools edits match the warden overlay loader", async () => {
   const h = new History(f.config);
   const session = new Session(
     f.config,
-    configPath,
+    () => configPath,
     { sample: async () => emptySnapshot(1000) },
     h,
     { frame: () => {}, error: () => {} },

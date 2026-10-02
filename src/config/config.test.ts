@@ -254,6 +254,36 @@ test("an install under the home defaults keeps its settings and history when the
   ]);
 });
 
+test("a save after the reader moves the state directory pins no state path", async () => {
+  const root = scratchRoot("xdg-moved-state");
+  const home = join(root, "home");
+  const legacy = join(home, ".local/state/vsys");
+  const moved = join(root, "xdg-state");
+  mkdirSync(legacy, { recursive: true });
+  mkdirSync(moved);
+  const saved = await underHome(
+    home,
+    join(import.meta.dir, "config.ts"),
+    `
+const { renameSync } = await import("node:fs");
+const { legacy, moved } = JSON.parse(process.env.VSYS_TEST_INPUT);
+// A save resolves its defaults from the process environment.
+process.env.XDG_STATE_HOME = moved;
+const c = subject.defaults();
+renameSync(legacy, moved + "/vsys");
+console.log(JSON.stringify({
+  sqlite: c.sqlitePath,
+  body: subject.configBody({ ...c, refreshMs: 2000 }, c.agentTools),
+}));
+`,
+    { legacy, moved },
+  );
+  expect(saved).toEqual({
+    sqlite: join(legacy, "history.db"),
+    body: "refreshMs = 2000\n",
+  });
+});
+
 test("vsys observes only: the reserved write mode defaults off", async () => {
   expect(defaults().writeMode).toBe(false);
   expect(validate({}).writeMode).toBe(false);

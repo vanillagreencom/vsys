@@ -56,9 +56,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   if (values.summary && values.markdown)
     throw new Error("--summary and --markdown cannot be combined");
   if (values.config === "") throw new Error("Config path cannot be empty");
-  const path =
-    values.config !== undefined ? resolve(values.config) : configPath();
-  const config = await loadConfig(path);
+  const explicit =
+    values.config !== undefined ? resolve(values.config) : undefined;
+  const settingsPath = () => explicit ?? configPath();
+  const config = await loadConfig(settingsPath());
   const collector = await createCollector(config, !values.once);
   if (values.once) {
     try {
@@ -150,7 +151,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   });
   const session = new Session(
     config,
-    path,
+    settingsPath,
     collector,
     history,
     {

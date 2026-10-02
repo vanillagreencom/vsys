@@ -50,7 +50,7 @@ Install the warden only when you want automatic correction. Run `vsys warden ins
 
 ## Settings
 
-Settings are in `$XDG_CONFIG_HOME/vsys/config.toml`, or `~/.config/vsys/config.toml` when `XDG_CONFIG_HOME` is unset. Saved history and the filesystem error memory are in `$XDG_STATE_HOME/vsys/`, or `~/.local/state/vsys/`. While only the `~/.config/vsys/config.toml` or `~/.local/state/vsys/` copy exists, vsys keeps using it; move it to the `XDG_` location to switch. `~/.config/vsys/agent-tools.json` stays where it is, because the warden reads it there. You can edit settings from the Settings screen or in the file.
+Settings are in `$XDG_CONFIG_HOME/vsys/config.toml`, or `~/.config/vsys/config.toml` when `XDG_CONFIG_HOME` is unset. Saved history and the filesystem error memory are in `$XDG_STATE_HOME/vsys/`, or `~/.local/state/vsys/`. While only the `~/.config/vsys/config.toml` or `~/.local/state/vsys/` copy exists, vsys keeps using it; quit vsys and move it to the `XDG_` location to switch. `~/.config/vsys/agent-tools.json` stays where it is, because the warden reads it there. You can edit settings from the Settings screen or in the file.
 
 | Setting | What it changes |
 | --- | --- |
