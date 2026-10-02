@@ -20,8 +20,15 @@ import {
   sortMarks,
 } from "../test/harness";
 import { attention, cardDetail } from "./attention";
-import { keyLabel, panelWidth, screenPad, screenWidth } from "./chrome";
+import {
+  detailWidth,
+  keyLabel,
+  panelWidth,
+  screenPad,
+  screenWidth,
+} from "./chrome";
 import { osc52 } from "./clipboard";
+import { wrapLines } from "./columns";
 import type { HomeItem } from "./home";
 import { homeItems, homeTarget, recentChanges } from "./home";
 import { ui } from "./theme";
@@ -1725,4 +1732,68 @@ test("an open card on a narrow terminal draws every row whole or cut with its ma
       await t.close();
     }
   }
+});
+
+test("an open card draws the rows it measured, whatever its lane names hold", async () => {
+  const c = defaults();
+  // Lane names reach a card from a worktree basename and a window title: a
+  // CJK basename draws two cells a character, and a title can carry a control
+  // byte that draws as a blank. The plain names keep `agents.slice` in the
+  // verdict, which a renderer wrapping on its own breaks after the stop.
+  const named = (names: string[]) => {
+    const s = escapedSnapshot({ lanes: 2, perLane: 1 });
+    names.forEach((name, i) => {
+      s.lanes[i].name = name;
+    });
+    return s;
+  };
+  const machines = {
+    plain: named(["kendex agent-0", "kendex agent-1"]),
+    cjk: named(["智能体工作区智能体", "开发环境"]),
+    control: named(["agent\u0007work", "agent\u001bwork"]),
+  };
+  for (const [kind, s] of Object.entries(machines))
+    for (const width of [20, 24, 40, 100]) {
+      // Tall enough that the card writes its whole description, so the rows
+      // it holds are the rows it measured.
+      const t = await mount(s, c, { width, height: 160 });
+      try {
+        await t.ui.renderOnce();
+        // The last cell of a row is the scroll bar's; a wide character is one
+        // character of the frame's text across its two cells.
+        const rows = t
+          .frame()
+          .split("\n")
+          .map((row) => row.slice(0, -1).replace("│", "").trim());
+        const at = `${kind} at ${width}`;
+        const title = rows.findIndex((row) => row.includes("▾"));
+        const next = rows.findIndex((row) => row.startsWith("Next "));
+        expect(`${at}: ${title > 0 && next > title}`).toBe(`${at}: true`);
+        const room = detailWidth(width);
+        const [item] = attention(s, c, { width: room });
+        const measured = cardDetail(item, room, 1000).flatMap((part, i) => [
+          ...(i > 0 ? [""] : []),
+          ...wrapLines(part, room),
+        ]);
+        expect({ at, rows: rows.slice(title + 1, next) }).toEqual({
+          at,
+          rows: [...measured, ""],
+        });
+        for (const row of rows.slice(title + 1, next))
+          expect({ at, row, fits: Bun.stringWidth(row) <= room }).toEqual({
+            at,
+            row,
+            fits: true,
+          });
+        // No row of the screen ends a unit name the next row finishes.
+        rows.forEach((row, i) => {
+          expect({
+            at,
+            split: row.endsWith("agents.") && rows[i + 1]?.startsWith("slice"),
+          }).toEqual({ at, split: false });
+        });
+      } finally {
+        await t.close();
+      }
+    }
 });

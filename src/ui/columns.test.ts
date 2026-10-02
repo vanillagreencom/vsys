@@ -9,6 +9,7 @@ import {
   fitAddress,
   headerText,
   sortedLabel,
+  textWidth,
   wrapLines,
 } from "./columns";
 
@@ -44,45 +45,53 @@ test("an address is cut in its session, and keeps the window and pane whole", ()
     // cut, as any other text gets.
     ["development:1.1", 4, "dev…"],
     ["work-session", 6, "work-…"],
-    // A session name holding a character outside the basic plane is cut
-    // between characters, never through one.
-    ["🙂🙂🙂🙂:1.1", 7, "🙂🙂…:1.1"],
+    // A session name of wide characters is cut between characters, never
+    // through one, and a cell a wide character cannot fill is a blank.
+    ["🙂🙂🙂🙂:1.1", 7, "🙂…:1.1"],
+    ["开发环境:1.1", 8, "开…:1.1 "],
   ];
   for (const [address, width, expected] of rows) {
     const got = fitAddress(address, width);
     expect({ address, width, got }).toEqual({ address, width, got: expected });
-    expect([...got].length).toBe(width);
+    expect(textWidth(got)).toBe(width);
   }
 });
 
-test("a cut falls between characters, never through one", () => {
-  // A window title reaches a lane name, and an emoji in one is two UTF-16
-  // units: cutting by unit would leave half a character on screen.
-  const cut = fit("🙂🙂🙂🙂", 3);
-  expect(cut).toBe("🙂🙂…");
-  expect([...cut].length).toBe(3);
-});
-
-test("padding counts code points, so a cell is never one column short", () => {
-  // `padEnd` and `padStart` count UTF-16 units, and an emoji is two of them:
-  // padding by unit leaves the cell a column narrow and moves the cell beside
-  // it, which is the drift one shared column spec exists to prevent.
-  expect(fit("\u{1F642}", 6)).toBe("\u{1F642}     ");
-  expect(fit("\u{1F642}", 6, "right")).toBe("     \u{1F642}");
-  for (const align of [undefined, "right"] as const)
-    expect({ align, points: [...fit("\u{1F642}", 6, align)].length }).toEqual({
+test("a cell is measured in the terminal cells its text draws", () => {
+  // A wide character draws two cells, a joined emoji is one character, and a
+  // control byte draws as the blank that replaces it.
+  const rows: [string, number, "right" | undefined, string][] = [
+    ["\u{1F642}", 6, undefined, "\u{1F642}    "],
+    ["\u{1F642}", 6, "right", "    \u{1F642}"],
+    ["🙂🙂🙂🙂", 3, undefined, "🙂…"],
+    // The mark leaves one cell before it, which a wide character cannot fill.
+    ["🙂🙂🙂🙂", 4, undefined, "🙂… "],
+    ["智能体工作区", 7, undefined, "智能体…"],
+    ["智能体工作区", 7, "right", "智能体…"],
+    ["👨‍👩‍👧👨‍👩‍👧", 3, undefined, "👨‍👩‍👧…"],
+    ["a\u0007b", 4, undefined, "a b "],
+  ];
+  for (const [text, width, align, expected] of rows) {
+    const got = fit(text, width, align);
+    expect({ text, width, align, got }).toEqual({
+      text,
+      width,
       align,
-      points: 6,
+      got: expected,
     });
+    expect(textWidth(got)).toBe(width);
+  }
   const columns: Column[] = [
     { label: "Agent", width: 6 },
     { label: "CPU", width: 6, align: "right" },
   ];
-  const row = [cell(columns[0], "\u{1F642}"), cell(columns[1], "5.0%")].join(
-    columnGap,
-  );
-  expect([...row].length).toBe(columnsWidth(columns));
-  expect([...row].length).toBe([...headerText(columns)].length);
+  for (const name of ["\u{1F642}", "智能体工作区智能体"]) {
+    const row = [cell(columns[0], name), cell(columns[1], "5.0%")].join(
+      columnGap,
+    );
+    expect(textWidth(row)).toBe(columnsWidth(columns));
+    expect(textWidth(row)).toBe(textWidth(headerText(columns)));
+  }
 });
 
 test("the heading is built from the same spec its rows read", () => {
@@ -143,8 +152,14 @@ test("text wraps between words, and a word wider than the column is broken", () 
   expect(wrapLines("", 10)).toEqual([]);
   // A word with nowhere to break is broken at the column, not left to overrun.
   expect(wrapLines("abcdefghij k", 4)).toEqual(["abcd", "efgh", "ij k"]);
-  // Code points, not UTF-16 units: an emoji is one column here, never two.
-  expect(wrapLines("😀😀😀 x", 3)).toEqual(["😀😀😀", "x"]);
+  // Cells, not code points: an emoji or a CJK character draws two.
+  expect(wrapLines("😀😀😀 x", 3)).toEqual(["😀", "😀", "😀", "x"]);
+  expect(wrapLines("😀😀😀 x", 6)).toEqual(["😀😀😀", "x"]);
+  expect(wrapLines("工作区 名字", 4)).toEqual(["工作", "区", "名字"]);
+  // A character wider than the column still takes a row, rather than none.
+  expect(wrapLines("工作", 1)).toEqual(["工", "作"]);
+  // A control byte is measured as the blank it draws as, which is a break.
+  expect(wrapLines("ab\u0007cd", 2)).toEqual(["ab", "cd"]);
   // A column narrower than one character is a caller's mistake, not a wrap.
   expect(() => wrapLines("x", 0)).toThrow("needs at least 1");
 });
@@ -173,6 +188,11 @@ test("a capped text ends in the mark and fits the rows it was given", () => {
     "x app-org.gnome.Terminal-9f2c4a1b.service…",
   );
   expect(wrapLines(capLines(`x ${unit}`, 20, 3), 20)).toHaveLength(3);
+  // A cut ends between wide characters, with the mark inside the width.
+  expect(capLines("工作区工作区", 5, 1)).toBe("工作…");
+  expect(capLines("工作区工作区", 4, 1)).toBe("工…");
+  // What comes back is what was measured: sanitized, whole or cut.
+  expect(capLines("ab\u0007cd", 5, 1)).toBe("ab cd");
   // No rows is no text. A screen with nothing left to draw into is answered,
   // not raised at.
   expect(capLines(text, 9, 0)).toBe("");

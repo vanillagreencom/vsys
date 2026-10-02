@@ -1,3 +1,5 @@
+import { safe } from "../model/export";
+
 /**
  * One column of a table: what its heading says, how wide it is, and which side
  * its value sits on. A column with no heading carries a bar or a marker.
@@ -13,14 +15,55 @@ export const columnGap = "  ";
 /** A cut is marked, so a shortened name is never mistaken for a whole one. */
 const ellipsis = "…";
 /**
- * Pad or cut `text` to exactly `width` code points. Both branches count code
- * points, never UTF-16 units, so a name outside the basic plane is neither cut
- * through the middle of a character nor padded one column short: `padEnd` and
- * `padStart` count units, and an emoji is two of them.
- *
- * A code point is not a terminal cell. A CJK character draws two cells, so a
- * name holding one still misaligns its column. Nothing vsys renders reaches
- * that today, and cell-width measurement is not built here.
+ * The terminal cells `text` draws into once sanitized, which is how every
+ * screen draws it: a CJK character or an emoji takes two, a combining mark
+ * none, and a control byte one, as the blank that replaces it. OpenTUI
+ * measures text with the same Bun call.
+ */
+export const textWidth = (text: string): number => Bun.stringWidth(safe(text));
+/** One character as the terminal draws it, and the cells it takes. */
+interface Glyph {
+  text: string;
+  cells: number;
+}
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/**
+ * `text` sanitized and split into the characters a cut or a wrap may fall
+ * between. A character is a grapheme, so a flag or a joined emoji is never
+ * split into halves that draw as something else.
+ */
+function glyphs(text: string): Glyph[] {
+  const drawn = safe(text);
+  // Printable ASCII is one cell a character, and nearly every cell a table
+  // draws is ASCII: it skips the segmenter, which costs more than the cut.
+  if (/^[\x20-\x7e]*$/.test(drawn))
+    return Array.from(drawn, (char) => ({ text: char, cells: 1 }));
+  return Array.from(graphemes.segment(drawn), ({ segment }) => ({
+    text: segment,
+    cells: textWidth(segment),
+  }));
+}
+const cellsOf = (drawn: Glyph[]): number =>
+  drawn.reduce((total, glyph) => total + glyph.cells, 0);
+const textOf = (drawn: Glyph[]): string =>
+  drawn.map((glyph) => glyph.text).join("");
+/** Where the longest run of `drawn` from `from` that fits `cells` ends. */
+function reach(drawn: Glyph[], from: number, cells: number): number {
+  let used = 0;
+  let to = from;
+  while (to < drawn.length && used + drawn[to].cells <= cells)
+    used += drawn[to++].cells;
+  return to;
+}
+/** `text` beside the blanks that bring it to `width` cells, on its side. */
+const pad = (text: string, width: number, align?: Column["align"]) => {
+  const padding = " ".repeat(Math.max(0, width - textWidth(text)));
+  return align === "right" ? `${padding}${text}` : `${text}${padding}`;
+};
+/**
+ * Pad or cut `text` to exactly `width` terminal cells. A cut falls between
+ * characters, and a wide character with only one cell left before the mark
+ * gives that cell up as a blank rather than draw past the column.
  */
 export function fit(
   text: string,
@@ -28,17 +71,13 @@ export function fit(
   align?: Column["align"],
 ): string {
   if (width <= 0) return "";
-  const points = [...text];
-  if (points.length <= width) {
-    const padding = " ".repeat(width - points.length);
-    return align === "right" ? `${padding}${text}` : `${text}${padding}`;
-  }
-  return width === 1
-    ? ellipsis
-    : `${points.slice(0, width - 1).join("")}${ellipsis}`;
+  const drawn = glyphs(text);
+  if (cellsOf(drawn) <= width) return pad(textOf(drawn), width, align);
+  const kept = textOf(drawn.slice(0, reach(drawn, 0, width - 1)));
+  return pad(`${kept}${ellipsis}`, width, align);
 }
 /**
- * A tmux address, `session:window.pane`, padded or cut to `width` code points.
+ * A tmux address, `session:window.pane`, padded or cut to `width` cells.
  * Two agents in one session differ only after the colon, so a cut from the
  * right draws both as the same session name. The session is cut instead and
  * the `:window.pane` suffix kept whole. An address with no colon, or a width
@@ -46,11 +85,13 @@ export function fit(
  */
 export function fitAddress(address: string, width: number): string {
   const colon = address.lastIndexOf(":");
-  if (colon < 0 || [...address].length <= width) return fit(address, width);
-  const suffix = address.slice(colon);
-  const room = width - [...suffix].length - 1;
+  if (colon < 0 || textWidth(address) <= width) return fit(address, width);
+  const suffix = safe(address.slice(colon));
+  const room = width - textWidth(suffix) - 1;
   if (room < 0) return fit(address, width);
-  return `${[...address.slice(0, colon)].slice(0, room).join("")}${ellipsis}${suffix}`;
+  const session = glyphs(address.slice(0, colon));
+  const kept = textOf(session.slice(0, reach(session, 0, room)));
+  return pad(`${kept}${ellipsis}${suffix}`, width);
 }
 /** One cell of a row, at its column's width and side. */
 export const cell = (column: Column, value: string): string =>
@@ -116,70 +157,77 @@ export const columnsWidth = (columns: Column[]): number =>
   columns.reduce((total, column) => total + column.width, 0) +
   columnGap.length * Math.max(0, columns.length - 1);
 /**
- * One row of wrapped text and the offset it ends at, so a caller cutting the
- * text cuts the text rather than rebuilding it from rows: a word too wide for
- * the column is broken across rows, and rejoining those rows with a blank
- * puts a blank inside a word that never held one.
+ * The rows `drawn` wraps into at `width`, each as the characters it runs
+ * from and to, so a caller cutting the text cuts the text rather than
+ * rebuilding it from rows: a word too wide for the column is broken across
+ * rows, and rejoining those rows with a blank puts a blank inside a word that
+ * never held one.
  */
 function wrapRows(
-  text: string,
+  drawn: Glyph[],
   width: number,
-): { text: string; end: number }[] {
+): { from: number; to: number }[] {
   if (width < 1)
     throw new Error(`Cannot wrap text into ${width} columns: needs at least 1`);
-  const points = [...text];
-  const rows: { text: string; end: number }[] = [];
-  const row = (from: number, to: number) => {
-    rows.push({ text: points.slice(from, to).join(""), end: to });
-  };
+  const rows: { from: number; to: number }[] = [];
   let at = 0;
-  while (at < points.length) {
-    while (points[at] === " ") at++;
-    if (at >= points.length) break;
-    const edge = at + width;
-    if (edge >= points.length) {
-      row(at, points.length);
+  while (at < drawn.length) {
+    while (drawn[at]?.text === " ") at++;
+    if (at >= drawn.length) break;
+    // A row holds at least one character, so one wider than the column draws
+    // past it on a row of its own rather than wrapping forever.
+    const edge = Math.max(at + 1, reach(drawn, at, width));
+    if (edge >= drawn.length) {
+      rows.push({ from: at, to: drawn.length });
       break;
     }
-    if (points[edge] === " ") {
-      row(at, edge);
+    if (drawn[edge].text === " ") {
+      rows.push({ from: at, to: edge });
       at = edge;
       continue;
     }
     let space = edge;
-    while (space > at && points[space - 1] !== " ") space--;
+    while (space > at && drawn[space - 1].text !== " ") space--;
     // A word wider than the column has nowhere to break, so it is broken at
     // the column: the row before it would otherwise be empty.
     if (space > at) {
-      row(at, space - 1);
+      rows.push({ from: at, to: space - 1 });
       at = space;
     } else {
-      row(at, edge);
+      rows.push({ from: at, to: edge });
       at = edge;
     }
   }
   return rows;
 }
-/** The rows `text` draws into at `width`, wrapped the way the renderer wraps it. */
-export const wrapLines = (text: string, width: number): string[] =>
-  wrapRows(text, width).map((r) => r.text);
 /**
- * `text` cut to the rows it is allowed at `width`, ending in the mark, which
- * it carries for the same reason a cut cell does: text that stops without one
- * reads as text that ended. No rows is no text: a caller that has run out of
- * room is answered rather than raised at, because every caller of this is on
- * a path that draws a screen.
+ * The rows `text` draws into at `width` cells, sanitized as they are drawn,
+ * so a control byte is measured as the blank it draws as.
+ */
+export function wrapLines(text: string, width: number): string[] {
+  const drawn = glyphs(text);
+  return wrapRows(drawn, width).map(({ from, to }) =>
+    textOf(drawn.slice(from, to)),
+  );
+}
+/**
+ * `text`, sanitized, cut to the rows it is allowed at `width`, ending in the
+ * mark, which it carries for the same reason a cut cell does: text that stops
+ * without one reads as text that ended. No rows is no text: a caller that has
+ * run out of room is answered rather than raised at, because every caller of
+ * this is on a path that draws a screen.
  */
 export function capLines(text: string, width: number, lines: number): string {
   if (lines < 1) return "";
-  const rows = wrapRows(text, width);
-  if (rows.length <= lines) return text;
-  const last = rows[lines - 1];
-  const tail = [...last.text];
+  const drawn = glyphs(text);
+  const rows = wrapRows(drawn, width);
+  if (rows.length <= lines) return textOf(drawn);
+  const { from, to } = rows[lines - 1];
+  let end = to;
   // The row a cut ends on is never the last, so it never ends on a blank.
-  while (tail.length && /[,.]/.test(tail[tail.length - 1])) tail.pop();
-  // The mark draws a column of its own, so the row gives one up to carry it.
-  while (tail.length + 1 > width) tail.pop();
-  const head = [...text].slice(0, last.end - [...last.text].length).join("");
-  return `${head}${tail.join("")}${ellipsis}`;
+  while (end > from && /[,.]/.test(drawn[end - 1].text)) end--;
+  // The mark draws a cell of its own, so the row gives up what it needs to
+  // carry it.
+  while (end > from && cellsOf(drawn.slice(from, end)) + 1 > width) end--;
+  return `${textOf(drawn.slice(0, end))}${ellipsis}`;
 }

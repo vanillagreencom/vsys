@@ -4,7 +4,7 @@ import { laneText, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import { type Cause, causes, type Level, type Meter } from "../model/verdict";
-import { capLines, fit, wrapLines } from "./columns";
+import { capLines, fit, textWidth, wrapLines } from "./columns";
 import {
   age,
   amount,
@@ -192,7 +192,7 @@ function laneSentence(names: string[], width: number, head: string): string {
   // of how many there are is only here.
   const rest = ` and ${names.length - 1} more.`;
   const named = (room: number) => `${fit(`${head}${names[0]}`, room)}${rest}`;
-  let room = laneLines * width - [...rest].length;
+  let room = laneLines * width - textWidth(rest);
   while (room > 1 && wrapLines(named(room), width).length > laneLines) room--;
   return named(room);
 }
