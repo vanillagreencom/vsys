@@ -31,7 +31,7 @@ What it gives without root:
 | NVMe | `NVMe.Controller.SmartGetAttributes`, udisks 2.10 and later | `total_data_written` | bytes, derived from data units written |
 | ATA | `Drive.Ata.SmartGetAttributes` | attribute 241, `total-lbas-written` | its interpreted value, taken only where the unit is sectors |
 
-Neither method documents asking polkit for authorization. The ATA method gives each attribute's interpreted value and unit and never the raw counter, so a drive whose attribute 241 arrives in any other unit keeps its total unknown rather than scaled by a guess. Both methods also carry temperature, power-on time and health; vsys takes only the write total, which is all Storage shows.
+Neither method documents asking polkit for authorization. The ATA method gives each attribute's interpreted value and unit and never the raw counter, so a drive whose attribute 241 arrives in any other unit keeps its total unknown rather than scaled by a guess. Both methods also carry temperature, power-on time and health; vsys takes only the write total, which is all Storage shows. The replies and the claim that no authorization is asked were taken from the interface reference, not from a running udisks: the machine this was written on has no system bus.
 
 busctl's refusal is classified from its own words in `classifyBusctl()`: no bus, or no udisks on it, is absent; anything else is a refusal. A drive whose own call fails keeps its row, unknown, and when every drive failed the reading is incomplete. Storage shows what udisks answered beside the missing capability.
 
