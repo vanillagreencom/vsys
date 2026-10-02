@@ -864,7 +864,7 @@ test("drive lifetime writes name their source, and a machine with neither source
       }),
       shows: [
         "Drive lifetime reports: not available: no readable drive report directory",
-        "udisks2 is not on the system bus either",
+        "udisks2 is unavailable",
         "No drive reporter is installed",
         driveReporterInstall,
       ],
@@ -914,9 +914,9 @@ test("udisksText gives every CapabilityFailure, and the null outcome, its own se
   // The fragment each failure's sentence is known by. unreadable and masked
   // share one switch branch and so share one fragment by design.
   const fragmentByFailure: Record<CapabilityFailure, string> = {
-    absent: "not on the system bus either",
-    unreadable: "refused to answer",
-    masked: "refused to answer",
+    absent: "is unavailable",
+    unreadable: "did not answer",
+    masked: "did not answer",
     incomplete: "answered for no drive",
     malformed: "not in the expected format",
   };
