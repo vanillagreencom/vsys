@@ -325,24 +325,32 @@ function copy(
       const blocks = blocksKnown.length
         ? blocksKnown.reduce((sum, d) => sum + (d.blocks ?? 0), 0)
         : null;
+      // `allUnread`'s own sentence already says the report is gone, which
+      // covers blocks too; everywhere else, no filesystem's own block count
+      // being known is itself a reading this card must not pass over, same
+      // as a partial one.
       const repaired =
-        blocks === null
-          ? ""
-          : `The last check could not repair ${count(blocks, "block")}${blocksUnread ? `, not counting ${count(blocksUnread, "filesystem")} whose block count is unread` : ""}. `;
+        blocks !== null
+          ? `The last check could not repair ${count(blocks, "block")}${blocksUnread ? `, not counting ${count(blocksUnread, "filesystem")} whose block count is unread` : ""}. `
+          : allUnread
+            ? ""
+            : "No filesystem here has a readable block count. ";
       // Names how many of the aggregated filesystems have no report of their
       // own, so a mixed card never reads a readable filesystem's own total as
       // if it already covered one that stayed unread.
       const unreadNote = unread
         ? ` ${count(unread, "filesystem")} here ${p(unread, "has", "have")} no report naming its damage, so the damage there is not in this count.`
         : "";
-      // [singular, plural] for next's one branch; `p()` below picks between
-      // them once rather than at each branch.
-      const nextStep: [string, string] = allUnread
-        ? [
-            "Open Storage and run a check on that filesystem to find out which files hold the damage.",
-            "Open Storage and run a check on each of these filesystems to find out which files hold the damage.",
-          ]
-        : !files && !unnamed
+      // [singular, plural] pairs; `p()` below picks between them once rather
+      // than at each branch. `checkUnread` is read with `unread`'s own count,
+      // scoped to the filesystems that stayed unread; `knownRemedy` with
+      // `known.length`'s, scoped to the ones a report speaks for.
+      const checkUnread: [string, string] = [
+        "Open Storage and run a check on that filesystem to find out which files hold the damage.",
+        "Open Storage and run a check on each of these filesystems to find out which files hold the damage.",
+      ];
+      const knownRemedy: [string, string] =
+        !files && !unnamed
           ? [
               "Open Storage and check the filesystem again; an address with no file clears on the next check.",
               "Open Storage and check each of these filesystems again; an address with no file clears on the next check.",
@@ -356,6 +364,14 @@ function copy(
                 "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
                 "Open Storage and open each of these filesystems, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
               ];
+      // A mixed card never tells the reader to restore from a report as if
+      // every damaged filesystem had one: the unread filesystems take their
+      // own check-first instruction before the readable ones' remedy.
+      const next = allUnread
+        ? p(paths, ...checkUnread)
+        : unread
+          ? `${p(unread, ...checkUnread)} ${p(known.length, ...knownRemedy)}`
+          : p(paths, ...knownRemedy);
       return {
         word: "Danger",
         title: files
@@ -372,10 +388,8 @@ function copy(
         ],
         // The step never says to remove a listed file: the report cannot say
         // which file under a block is damaged, so a step that names one may
-        // name a sound file. The wording picks its branch once and lets `p`
-        // own the one singular/plural decision, rather than repeating the
-        // `paths === 1` check at each branch.
-        next: p(paths, ...nextStep),
+        // name a sound file.
+        next,
         view: "Storage",
         target: cause.at ?? first,
       };

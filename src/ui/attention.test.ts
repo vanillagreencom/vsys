@@ -1505,7 +1505,14 @@ test("a damaged-files card keeps a readable filesystem's own count beside one th
   );
   // /a's card never reads as if /b had no damage at all.
   expect(said(card)).not.toContain("no longer available");
-  expect(card?.next).toContain("open each of these filesystems, then restore");
+  // /b has no report of its own, so the next step sends the reader to check
+  // it first, before telling them to restore /a's own named damage as if
+  // every filesystem in the card already had a report in hand.
+  expect(card?.next).toContain(
+    "run a check on that filesystem to find out which files hold the damage",
+  );
+  expect(card?.next).toContain("open the filesystem, then restore");
+  expect(card?.next).not.toContain("each of these filesystems");
   // The first affected filesystem still lands the card, VSY-98's precedent.
   expect(card?.target).toEqual({ kind: "path", path: "a" });
 });
@@ -1549,10 +1556,14 @@ test("a damaged-files card's block total discloses a filesystem whose own block 
   expect(said(mixed)).toContain(
     "The last check could not repair 9 blocks, not counting 1 filesystem whose block count is unread.",
   );
-  // Every filesystem's own block count is unread: the sentence is omitted
-  // rather than stating a total of zero blocks repaired.
+  // Every filesystem's own block count is unread: the card still discloses
+  // that, rather than stating a total of zero blocks repaired or, worse,
+  // staying silent about blocks entirely.
   const allUnknown = build([row("a", "/a", null), row("b", "/b", null)]);
   expect(said(allUnknown)).not.toContain("The last check could not repair");
+  expect(said(allUnknown)).toContain(
+    "No filesystem here has a readable block count.",
+  );
 });
 
 test("a damaged-files card's unread note reaches the unnamed-only and free-space branches too", () => {
