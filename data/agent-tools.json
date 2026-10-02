@@ -1,7 +1,7 @@
 {
   "version": 1,
   "tools": [
-    {"name": "claude", "mise": ["claude"], "paths": ["/node_modules/@anthropic-ai/claude-code", "/.local/share/claude/versions/", "/Claude/claude-code/"]},
+    {"name": "claude", "mise": ["claude"], "paths": ["/node_modules/@anthropic-ai/claude-code", "/.local/share/claude/versions/", "/claude-code/"]},
     {"name": "codex", "mise": ["codex"], "paths": ["/node_modules/@openai/codex", "/.codex/packages/", "/usr/lib/openai-codex/"]},
     {"name": "gemini", "mise": ["gemini"], "paths": ["/node_modules/@google/gemini-cli/"]},
     {"name": "copilot", "mise": ["copilot"], "paths": ["/node_modules/@github/copilot"]},

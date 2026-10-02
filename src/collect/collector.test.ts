@@ -753,12 +753,20 @@ test("a shipped agent CLI is recognised through its install shapes, and a name a
       exe: "/usr/bin/node",
       tool: null,
     },
-    // A package under a desktop prefix with no location naming it.
+    // A package under a desktop prefix: the claude-code directory every
+    // Claude Code install shares names it; nothing names the codex one.
     {
       pid: 53,
       comm: "claude",
       command: () => ["/usr/bin/claude"],
       exe: "/opt/claude-code/bin/claude",
+      tool: "claude",
+    },
+    {
+      pid: 54,
+      comm: "codex",
+      command: () => ["/usr/bin/codex"],
+      exe: "/opt/codex-cli/bin/codex",
       tool: null,
     },
   ]);
@@ -768,18 +776,21 @@ test("an overlay entry naming a shipped tool adds where this machine installed i
     {
       version: 1,
       tools: [
-        { name: "codex", executables: ["/usr/local/bin/codex"] },
-        { name: "claude", paths: ["/opt/claude-code/"] },
+        {
+          name: "codex",
+          paths: ["/opt/codex-cli/"],
+          executables: ["/usr/local/bin/codex"],
+        },
       ],
     },
     [
       // A location the reader adds outranks the desktop prefix around it.
       {
         pid: 13,
-        comm: "claude",
-        command: () => ["/usr/bin/claude"],
-        exe: "/opt/claude-code/bin/claude",
-        tool: "claude",
+        comm: "codex",
+        command: () => ["/usr/bin/codex"],
+        exe: "/opt/codex-cli/bin/codex",
+        tool: "codex",
       },
       {
         pid: 10,
@@ -979,6 +990,20 @@ test("the owner's machine keeps every agent it ran, and its local names gain no 
       comm: "claude",
       command: () => [`${home}/.config/Claude/claude-code/2.1.260/claude`],
       tool: "claude",
+    },
+    // The work profile's Code tab engine, and the Electron binary of the
+    // Claude Desktop AppImage, which lies in no claude location.
+    {
+      pid: 27,
+      comm: "claude",
+      command: () => [`${home}/.config/Claude-work/claude-code/2.1.260/claude`],
+      tool: "claude",
+    },
+    {
+      pid: 28,
+      comm: "claude",
+      command: () => ["/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude"],
+      tool: null,
     },
     // A distributed shell sharing the local name, and a script sharing a
     // shipped one.
