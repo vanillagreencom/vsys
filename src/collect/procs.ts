@@ -257,6 +257,8 @@ export class ProcessCollector implements ProcessSource {
           tool: match?.kind === "agent" ? match.name : null,
           unconfirmedTool: match?.kind === "unconfirmed" ? match.name : null,
           unconfirmedPath: match?.kind === "unconfirmed" ? match.path : null,
+          unconfirmedMatch:
+            match?.kind === "unconfirmed" ? match.matchedBy : null,
           build: helper
             ? null
             : buildKind(stat.comm, command, c.compilerNames, c.linkerNames),

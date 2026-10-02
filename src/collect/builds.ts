@@ -65,12 +65,21 @@ export type ToolMatch =
   /**
    * `path` is the one path tested against the name's install locations: the
    * executable for a name match, the script for a scripted match. A card
-   * naming where to add a paths fragment names this path, never the other
-   * kind's, because only this one was checked. Null only for a scripted
-   * match against a tool with no install location, where a failed read of
-   * the script path never hides an unconfirmed name either.
+   * naming where to add a paths fragment or an executables entry names this
+   * path, never the other kind's, because only this one was checked.
+   * `matchedBy` says which of the two it was: a name match means `path` is
+   * one whole executable path, where an `executables` entry is the right,
+   * narrower mechanism; a paths fragment stays right for a scripted match,
+   * where the script can move inside a tool's own directory tree. Null only
+   * for a scripted match against a tool with no install location, where a
+   * failed read of the script path never hides an unconfirmed name either.
    */
-  | { kind: "unconfirmed"; name: string; path: string | null }
+  | {
+      kind: "unconfirmed";
+      name: string;
+      path: string | null;
+      matchedBy: "name" | "script";
+    }
   | { kind: "none" };
 // REVISIT(D010): a layout no fragment or executable path describes needs another signal.
 /**
@@ -157,7 +166,12 @@ export function toolName(
     candidate === named
       ? executable
       : (script ?? (argument === undefined ? null : paths.script(argument)));
-  return { kind: "unconfirmed", name: candidate, path };
+  return {
+    kind: "unconfirmed",
+    name: candidate,
+    path,
+    matchedBy: candidate === named ? "name" : "script",
+  };
 }
 /** The kernel marks a binary replaced while it ran with ` (deleted)`. */
 const liveExecutable = (path: string) => path.replace(/ \(deleted\)$/, "");

@@ -1085,6 +1085,28 @@ test("unconfirmedPath carries the real path a match was tested against, through 
   expect(proc?.tool).toBeNull();
   expect(proc?.unconfirmedTool).toBe("claude");
   expect(proc?.unconfirmedPath).toBe("/usr/local/bin/claude");
+  // A name match, not a scripted one: `claude` ran directly, with no
+  // interpreter argument to carry a script path instead.
+  expect(proc?.unconfirmedMatch).toBe("name");
+});
+test("unconfirmedMatch records a scripted match through the real collector", async () => {
+  // `pi` is a shipped tool with install locations; bash's own script
+  // argument lies in none of them, through the one real toolName() call the
+  // collector makes, not a hand-built ToolMatch or Proc.
+  const f = setup();
+  f.proc(51, "app.slice/tmux-spawn-51.scope", {
+    comm: "bash",
+    command: ["bash", "pi.sh"],
+    exe: "/usr/bin/bash",
+  });
+  const collector = new Collector(f.config, 100, 4096);
+  const s = await collector.sample(1000);
+  const proc = s.procs.find((p) => p.pid === 51);
+  expect(proc?.tool).toBeNull();
+  expect(proc?.unconfirmedTool).toBe("pi");
+  // A scripted match, not a name match: `bash` is never a candidate name, so
+  // `pi` was tested against the script argument, never bash's own executable.
+  expect(proc?.unconfirmedMatch).toBe("script");
 });
 test("stat parser handles a closing parenthesis in comm", () => {
   const fields = Array.from({ length: 22 }, () => "0");
