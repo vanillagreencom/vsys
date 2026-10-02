@@ -319,9 +319,16 @@ esac
 REPORTER_FILES = ("vsys-scrub-report", "vsys-report.conf", "vsys-scrub.conf")
 
 
-def reporter_sums() -> str:
-    """The checksums a release publishing the checkout's own files would carry."""
-    return "".join(f"{hashlib.sha256((REPORTER / name).read_bytes()).hexdigest()}  {name}\n" for name in REPORTER_FILES)
+def reporter_sums(**overrides: str) -> str:
+    """The checksums a release publishing the checkout's own files would
+    carry, except a name given in overrides checksums that text instead: a
+    test corrupting one downloaded file still needs the others, and that
+    one, to pass checksum verification before it reaches its own guard.
+    """
+    return "".join(
+        f"{hashlib.sha256(overrides[name].encode() if name in overrides else (REPORTER / name).read_bytes()).hexdigest()}  {name}\n"
+        for name in REPORTER_FILES
+    )
 
 
 class InstallTest(unittest.TestCase):
@@ -336,9 +343,20 @@ class InstallTest(unittest.TestCase):
         version: str | None = "vfixture",
         api_tag: str | None = "vlatest-fixture",
         fail_api: bool = False,
+        legacy_dir: Path | None = None,
+        scrub_dir: Path | None = None,
+        scrub_dir_unset: bool = False,
+        report_conf: str | None = None,
+        cp_stub: str = "",
+        mv_stub: str = "",
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """version=None leaves VSYS_VERSION unset, so install resolves the tag
         itself from the stubbed GitHub API, the same lookup install.sh uses.
+
+        scrub_dir_unset=True drops VSYS_SCRUB_DIR from the child's environment
+        entirely, so migration falls back to the installer's own report_dir
+        resolution; the caller must then keep report_dir (via report_conf)
+        off the real /var/lib and /run so the test stays scratch-only.
         """
         bin_dir = base / "bin"
         bin_dir.mkdir()
@@ -356,9 +374,19 @@ class InstallTest(unittest.TestCase):
         else:
             body = f'{{"tag_name": "{api_tag}"}}' if api_tag is not None else '{"message": "Not Found"}'
             api_fetch = f"printf '%s\\n' '{body}'"
-        # The download serves the checkout's own files, by the name the URL ends in,
-        # so the call carries the resolved version in its path either way. The
-        # version lookup has no -o: curl writes the release JSON to stdout.
+        if cp_stub:
+            stub(bin_dir, "cp", cp_stub)
+        if mv_stub:
+            stub(bin_dir, "mv", mv_stub)
+        # report_conf hands the installer a corrupted vsys-report.conf for
+        # just that one download (a case the installer must itself refuse,
+        # so it never touches a real system that way).
+        if report_conf is not None:
+            (base / "vsys-report.conf").write_text(report_conf)
+        # The download serves the checkout's own files, by the name the URL ends
+        # in, so the call carries the resolved version in its path either way,
+        # except vsys-report.conf when a test hands its own text. The version
+        # lookup has no -o: curl writes the release JSON to stdout.
         stub(
             bin_dir,
             "curl",
@@ -371,6 +399,13 @@ case "$url" in
 	case "$name" in
 	SHA256SUMS) {sums_fetch} ;;
 	"{fail_download}") exit 22 ;;
+	vsys-report.conf)
+		if [[ -f "{base}/vsys-report.conf" ]]; then
+			cp "{base}/vsys-report.conf" "$4"
+		else
+			cp "{REPORTER}/$name" "$4"
+		fi
+		;;
 	*) cp "{REPORTER}/$name" "$4" ;;
 	esac
 	;;
@@ -378,10 +413,19 @@ esac
 """,
         )
         env_extra = {} if version is None else {"VSYS_VERSION": version}
+        if not scrub_dir_unset:
+            env_extra["VSYS_SCRUB_DIR"] = str(scrub_dir if scrub_dir is not None else base / "unused-persistent")
+        # VSYS_SCRUB_DIR/VSYS_SCRUB_LEGACY_DIR keep the install script's own
+        # migration logic off the real /var/lib and /run: a path under `base`
+        # that nothing creates reproduces "legacy directory absent".
         done = subprocess.run(
             ["bash", "-s"],
             input=(REPORTER / "install").read_text(),
-            env=child_env(bin_dir, **env_extra),
+            env=child_env(
+                bin_dir,
+                VSYS_SCRUB_LEGACY_DIR=str(legacy_dir if legacy_dir is not None else base / "unused-legacy"),
+                **env_extra,
+            ),
             capture_output=True,
             text=True,
             check=False,
@@ -445,12 +489,78 @@ esac
             self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: GitHub reported no latest release for vanillagreencom/vsys.")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
+    def test_the_success_message_names_the_directory_the_installed_reporter_actually_uses(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            # VSYS_SCRUB_DIR only steers the legacy migration in tests; it
+            # must not change what install reports as the real, persisted
+            # directory, which is fixed by the conf files it downloads.
+            done, calls = self.run_install(base, scrub_dir=base / "unused-persistent")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(
+                "Each scrub now leaves a report in /var/lib/btrfs-scrub, which survives a reboot.",
+                done.stdout.splitlines(),
+            )
+
+    def test_the_success_message_never_claims_a_tmpfs_report_directory_survives_a_reboot(self) -> None:
+        # An old tag's vsys-report.conf (VSYS_VERSION pinned to it, or the
+        # unversioned install run before a new release is cut) can still name
+        # the pre-VSY-75 tmpfs default. No legacy directory is set up here,
+        # so migrate_legacy_reports returns before touching any real path;
+        # this case is only about what the message claims.
+        with scratch() as tmp:
+            base = Path(tmp)
+            conf = (REPORTER / "vsys-report.conf").read_text().replace("/var/lib/btrfs-scrub", "/run/btrfs-scrub")
+            self.assertIn("ExecStopPost=/usr/local/bin/vsys-scrub-report %f /run/btrfs-scrub", conf)
+            done, calls = self.run_install(
+                base,
+                report_conf=conf,
+                sums_text=reporter_sums(**{"vsys-report.conf": conf}),
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            lines = done.stdout.splitlines()
+            self.assertFalse(any("survives a reboot" in line for line in lines), lines)
+            self.assertIn(
+                "Each scrub leaves a report in /run/btrfs-scrub, which lasts only until the next reboot, not across one.",
+                lines,
+            )
+
     def test_no_scrub_unit_installs_nothing(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), unit=False)
             self.assertEqual(done.returncode, 1)
             self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: unit=btrfs-scrub@.service missing")
             self.assertEqual(calls, ["systemctl cat btrfs-scrub@.service"])
+
+    def test_a_report_conf_with_no_execstoppost_line_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            broken = "\n".join(
+                line
+                for line in (REPORTER / "vsys-report.conf").read_text().splitlines()
+                if not line.startswith("ExecStopPost=")
+            ) + "\n"
+            done, calls = self.run_install(base, report_conf=broken, sums_text=reporter_sums(**{"vsys-report.conf": broken}))
+            self.assertEqual(done.returncode, 1)
+            self.assertTrue(
+                done.stderr.splitlines()[0].startswith("scrub-reporter: parse=vsys-report.conf-missing-execstoppost"),
+                done.stderr,
+            )
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
+
+    def test_a_report_conf_with_a_relative_execstoppost_path_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            original = (REPORTER / "vsys-report.conf").read_text()
+            broken = original.replace("/var/lib/btrfs-scrub", "var/lib/btrfs-scrub")
+            self.assertIn("ExecStopPost=", broken)
+            done, calls = self.run_install(base, report_conf=broken, sums_text=reporter_sums(**{"vsys-report.conf": broken}))
+            self.assertEqual(done.returncode, 1)
+            self.assertTrue(
+                done.stderr.splitlines()[0].startswith("scrub-reporter: parse=vsys-report.conf-bad-execstoppost value="),
+                done.stderr,
+            )
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
     def test_a_failed_download_installs_nothing(self) -> None:
         with scratch() as tmp:
@@ -486,6 +596,206 @@ esac
             )
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
+    def test_a_report_in_the_old_tmpfs_directory_is_migrated(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("btrfs scrub finished, no errors: /\n")
+            persistent = base / "persistent"
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(
+                (persistent / "root.result").read_text(),
+                "btrfs scrub finished, no errors: /\n",
+            )
+
+    def test_migration_targets_the_downloaded_confs_own_report_directory_not_the_hardcoded_default(self) -> None:
+        # An old tag's vsys-report.conf (VSYS_VERSION pinned to it, or the
+        # unversioned install run in the window before a new release is cut)
+        # still points ExecStopPost at a pre-VSY-75 report directory, never
+        # at the new hardcoded default. Migration must follow that directory,
+        # not the hardcoded one, so a carried-over report is never written
+        # somewhere nothing else reads.
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_tag_dir = base / "old-tag-report-dir"
+            conf = (REPORTER / "vsys-report.conf").read_text().replace("/var/lib/btrfs-scrub", str(old_tag_dir))
+            self.assertIn(f"ExecStopPost=/usr/local/bin/vsys-scrub-report %f {old_tag_dir}", conf)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("the carried-over report\n")
+            done, calls = self.run_install(
+                base,
+                legacy_dir=legacy,
+                scrub_dir_unset=True,
+                report_conf=conf,
+                sums_text=reporter_sums(**{"vsys-report.conf": conf}),
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(
+                f"Each scrub now leaves a report in {old_tag_dir}, which survives a reboot.",
+                done.stdout.splitlines(),
+            )
+            self.assertEqual((old_tag_dir / "root.result").read_text(), "the carried-over report\n")
+            self.assertFalse((Path("/var/lib/btrfs-scrub") / "root.result").exists())
+
+    def test_migration_never_overwrites_a_report_already_in_the_persistent_directory(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("stale, from before this install\n")
+            persistent = base / "persistent"
+            persistent.mkdir()
+            (persistent / "root.result").write_text("the report already there\n")
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(
+                (persistent / "root.result").read_text(),
+                "the report already there\n",
+            )
+
+    def test_no_legacy_directory_migrates_nothing(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            persistent = base / "persistent"
+            done, calls = self.run_install(base, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse(persistent.exists())
+
+    def test_a_stray_temp_file_left_by_an_interrupted_migration_is_cleaned_up(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("the real report\n")
+            persistent = base / "persistent"
+            persistent.mkdir()
+            # No "orphan.result" exists in the legacy directory, so nothing
+            # in the ordinary migration loop ever names or recreates this
+            # stray; only the explicit cleanup sweep can remove it, which
+            # makes this a real control for that sweep rather than for the
+            # copy loop that migrates root.result regardless.
+            (persistent / ".migrate.orphan.result.tmp").write_text("half-written garbage from a killed run\n")
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((persistent / "root.result").read_text(), "the real report\n")
+            self.assertEqual(sorted(os.listdir(persistent)), ["root.result"])
+
+    def test_migration_never_touches_a_report_the_reporter_is_still_writing(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("the legacy report\n")
+            persistent = base / "persistent"
+            persistent.mkdir()
+            # The reporter's own temp name (vsys-scrub-report writes
+            # .<name>.tmp, never migration's .migrate.<name>.tmp), standing
+            # in for a scrub of another mount still being written while this
+            # install runs. The stray-cleanup sweep must never touch it.
+            writing = persistent / ".home.result.tmp"
+            writing.write_text("a report vsys-scrub-report is still writing\n")
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(writing.read_text(), "a report vsys-scrub-report is still writing\n")
+            self.assertEqual((persistent / "root.result").read_text(), "the legacy report\n")
+
+    def test_a_report_the_reporter_finishes_mid_migration_is_never_overwritten(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("stale, from before this install\n")
+            persistent = base / "persistent"
+            # While migration's cp is copying the legacy report into its own
+            # temp name, the reporter finishes writing a fresh report for the
+            # same mount directly into the destination: a real race, forced
+            # open deterministically at the one point migration touches
+            # disk for this report, rather than by timing.
+            cp_stub = f"""if [[ $3 == *.migrate.root.result.tmp ]]; then
+	mkdir -p -- "{persistent}"
+	printf '%s\\n' "the fresh report, just finished" >"{persistent}/root.result"
+fi
+exec /usr/bin/cp "$@"
+"""
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent, cp_stub=cp_stub)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((persistent / "root.result").read_text(), "the fresh report, just finished\n")
+            self.assertEqual(os.listdir(persistent), ["root.result"])
+
+    def test_an_mv_that_reports_failure_on_a_skipped_destination_still_installs(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("stale, from before this install\n")
+            persistent = base / "persistent"
+            # Same race as the test above (a fresh report lands while cp is
+            # still copying the legacy one into its temp name), but mv -n
+            # itself now also mimics unpatched coreutils 9.2-9.4, which can
+            # report failure for a skip it still performs correctly. Without
+            # a `|| true` on that bare statement, set -e would abort the
+            # script on this exit code before the [[ -e $tmp ]] fallback runs.
+            cp_stub = f"""if [[ $3 == *.migrate.root.result.tmp ]]; then
+	mkdir -p -- "{persistent}"
+	printf '%s\\n' "the fresh report, just finished" >"{persistent}/root.result"
+fi
+exec /usr/bin/cp "$@"
+"""
+            mv_stub = """dest=$4
+if [[ -e $dest ]]; then
+	exit 1
+fi
+exec /usr/bin/mv "$@"
+"""
+            done, calls = self.run_install(
+                base, legacy_dir=legacy, scrub_dir=persistent, cp_stub=cp_stub, mv_stub=mv_stub
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((persistent / "root.result").read_text(), "the fresh report, just finished\n")
+            self.assertEqual(os.listdir(persistent), ["root.result"])
+
+    def test_a_migration_copy_failure_is_reported_as_a_carry_over_problem_not_an_install_failure(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            # A legacy entry that is a directory, not a report: cp refuses it.
+            (legacy / "root.result").mkdir()
+            persistent = base / "persistent"
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(
+                done.stderr.splitlines()[0],
+                f"scrub-reporter: legacy-migrate=copy-failed report={legacy / 'root.result'}",
+            )
+            self.assertIn("The reporter is installed and will run after the next scrub.", done.stderr)
+            # The core install already completed before the carry-over failed.
+            self.assertEqual(calls[-1], "systemctl daemon-reload")
+            self.assertEqual(os.listdir(persistent), [])
+
+    def test_a_migration_mkdir_failure_is_reported_as_a_carry_over_problem_not_an_install_failure(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("x\n")
+            readonly_parent = base / "readonly"
+            readonly_parent.mkdir(mode=0o555)
+            persistent = readonly_parent / "persistent"
+            try:
+                done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+                self.assertEqual(done.returncode, 1)
+                self.assertEqual(
+                    done.stderr.splitlines()[0],
+                    f"scrub-reporter: legacy-migrate=mkdir-failed dir={persistent}",
+                )
+                self.assertEqual(calls[-1], "systemctl daemon-reload")
+            finally:
+                readonly_parent.chmod(0o755)
+
 
 class ShippedFilesTest(unittest.TestCase):
     def test_the_drop_in_and_the_tmpfiles_line_name_one_directory(self) -> None:
@@ -494,11 +804,11 @@ class ShippedFilesTest(unittest.TestCase):
         drop_in = (REPORTER / "vsys-report.conf").read_text()
         tmpfiles = (REPORTER / "vsys-scrub.conf").read_text()
         exec_line = next(line for line in drop_in.splitlines() if line.startswith("ExecStopPost="))
-        self.assertEqual(exec_line, "ExecStopPost=/usr/local/bin/vsys-scrub-report %f /run/btrfs-scrub")
+        self.assertEqual(exec_line, "ExecStopPost=/usr/local/bin/vsys-scrub-report %f /var/lib/btrfs-scrub")
         rule = next(line for line in tmpfiles.splitlines() if line and not line.startswith("#"))
-        self.assertEqual(rule.split()[:2], ["d", "/run/btrfs-scrub"])
+        self.assertEqual(rule.split()[:2], ["d", "/var/lib/btrfs-scrub"])
         config = (ROOT / "src" / "config" / "config.ts").read_text()
-        self.assertIn('scrubDir: "/run/btrfs-scrub",', config)
+        self.assertIn('scrubDir: "/var/lib/btrfs-scrub",', config)
 
 
 if __name__ == "__main__":

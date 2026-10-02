@@ -261,7 +261,7 @@ export function defaults(
     scratchRefreshMs: 30000,
     scratchDutyPercent: 25,
     btrfsMounts: [],
-    scrubDir: "/run/btrfs-scrub",
+    scrubDir: "/var/lib/btrfs-scrub",
     smartDir: "/run/smartctl",
     errorMemoryPath: join(state, "filesystem-errors.json"),
     // A weekly timer that misses one run is eight days late on the day after

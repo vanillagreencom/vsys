@@ -1,0 +1,1 @@
+- A filesystem's last scrub check survives a reboot instead of reading as never checked again; the installer carries an existing check over on upgrade.

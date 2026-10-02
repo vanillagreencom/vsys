@@ -1,0 +1,1 @@
+- The scrub reporter installer now carries legacy reports into the directory the installed release's own config names, not a separate hardcoded one that could differ for an older release.

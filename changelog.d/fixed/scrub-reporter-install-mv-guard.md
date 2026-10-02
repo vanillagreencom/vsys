@@ -1,0 +1,1 @@
+- The scrub reporter installer no longer aborts silently, with no error shown, on a coreutils build where a skipped-destination rename reports failure.
