@@ -4,6 +4,8 @@ schema = 6
 repo = "vanillagreencom/kendex"
 
 [install]
+# No "copilot" entry: no vsys lane runs the Copilot CLI. The `copilot = true` entry
+# under [bot-instructions.bots] is the GitHub pull-request reviewer, not a CLI harness.
 harnesses = [
     "claude",
     "codex",
