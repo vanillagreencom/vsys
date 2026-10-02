@@ -22,7 +22,7 @@ import { KernelLog } from "./kernel-log";
 import { ProcessCollector, parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
 import { ScratchCollector } from "./scratch";
-import { Udisks } from "./udisks";
+import { Udisks, udisksService } from "./udisks";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -1275,7 +1275,9 @@ test("a machine whose timer leaves reports reads them, and never asks udisks", a
   ]);
   expect(s.storage.udisks).toBeUndefined();
   expect(calls).toEqual([]);
-  expect(s.capabilities.find((c) => c.id === "smart")?.available).toBe(true);
+  const smart = s.capabilities.find((c) => c.id === "smart");
+  expect(smart?.available).toBe(true);
+  expect(smart?.source).toBe(f.config.smartDir);
 });
 test("with no report directory, udisks answers in its place or says why it cannot", async () => {
   const f = setup();
@@ -1300,6 +1302,9 @@ test("with no report directory, udisks answers in its place or says why it canno
   expect(capabilityLine(smart as NonNullable<typeof smart>)).toBe(
     "Drive lifetime reports: available",
   );
+  // The capability must name udisks2 as what actually answered, not the
+  // report directory this machine never populated.
+  expect(smart?.source).toBe(udisksService);
   const neither = await withUdisks(f, noBus).sample();
   expect(neither.storage.devices).toEqual([
     {
@@ -1313,10 +1318,28 @@ test("with no report directory, udisks answers in its place or says why it canno
   expect(neither.storage.udisks?.failure).toBe("absent");
   expect(neither.errors).toEqual([]);
   // With udisks absent too, no source supplies a number, and the capability
-  // still says so: this is not the scenario the fix above changes.
-  expect(neither.capabilities.find((c) => c.id === "smart")?.failure).toBe(
-    "absent",
+  // still says so: this is not the scenario the fix above changes, and its
+  // source names the report directory that failed, never udisks2.
+  const neitherSmart = neither.capabilities.find((c) => c.id === "smart");
+  expect(neitherSmart?.failure).toBe("absent");
+  expect(neitherSmart?.source).toBe(f.config.smartDir);
+});
+test("the smart capability's source drops udisks2 once a report directory starts answering", async () => {
+  const f = setup();
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  const collector = withUdisks(f, fakeBus([udisksDrive]));
+  const fromUdisks = await collector.sample();
+  expect(fromUdisks.capabilities.find((c) => c.id === "smart")?.source).toBe(
+    udisksService,
   );
+  f.write(
+    join(f.config.smartDir, "nvme0n1"),
+    "Model Number: Test Drive\nData Units Written: 1,000,000 [512 GB]\n",
+  );
+  const fromDirectory = await collector.sample();
+  const smart = fromDirectory.capabilities.find((c) => c.id === "smart");
+  expect(smart?.available).toBe(true);
+  expect(smart?.source).toBe(f.config.smartDir);
 });
 /** Attribute 241 at the given pretty value and unit; 3 is sectors. */
 const ataRows = (pretty: number, unit: number) => [
