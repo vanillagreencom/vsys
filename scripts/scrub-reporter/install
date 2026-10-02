@@ -21,7 +21,12 @@
 #
 # Environment:
 #   VSYS_VERSION           Tag to install from. Defaults to the latest release.
-#   VSYS_SCRUB_DIR         Persistent report directory (default /var/lib/btrfs-scrub).
+#
+# VSYS_SCRUB_DIR and VSYS_SCRUB_LEGACY_DIR below are internal test seams; an
+# operator running the curl|bash line above sets neither, and the reporter
+# always persists reports to the directory named in the installed
+# vsys-report.conf, matching vsys's own scrubDir.
+#   VSYS_SCRUB_DIR         Where migrate_legacy_reports copies old reports, so a test can point it at a scratch directory instead of the real /var/lib. It does not change where the installed reporter writes.
 #   VSYS_SCRUB_LEGACY_DIR  Previous tmpfs report directory to migrate from (default /run/btrfs-scrub).
 set -euo pipefail
 
@@ -85,7 +90,14 @@ Could not fetch $source/$name. Nothing was installed."
 		fi
 		[[ "$sum" == "$expected" ]] || die "checksum mismatch for $name; nothing was installed."
 	done
-
+	local exec_line report_dir
+	exec_line="$(grep -m1 '^ExecStopPost=' "$WORK/vsys-report.conf")" ||
+		die "parse=vsys-report.conf-missing-execstoppost
+The downloaded vsys-report.conf has no ExecStopPost= line, so the directory it makes the reporter write to could not be read. Nothing was installed."
+	report_dir="${exec_line##* }"
+	[[ $report_dir == /* ]] ||
+		die "parse=vsys-report.conf-bad-execstoppost value=$exec_line
+Could not read the report directory from vsys-report.conf's ExecStopPost= line. Nothing was installed."
 	install -Dm755 "$WORK/vsys-scrub-report" /usr/local/bin/vsys-scrub-report
 	install -Dm644 "$WORK/vsys-report.conf" /etc/systemd/system/btrfs-scrub@.service.d/vsys-report.conf
 	install -Dm644 "$WORK/vsys-scrub.conf" /etc/tmpfiles.d/vsys-scrub.conf
@@ -94,21 +106,39 @@ Could not fetch $source/$name. Nothing was installed."
 	migrate_legacy_reports
 	printf '%s\n' \
 		"scrub-reporter: installed ${version}" \
-		"Each scrub now leaves a report in $SCRUB_DIR, which survives a reboot." \
+		"Each scrub now leaves a report in $report_dir, which survives a reboot." \
 		"To check a filesystem on a schedule, enable its timer, for example:" \
 		"  systemctl enable --now btrfs-scrub@-.timer"
 }
 
 # A machine already running the tmpfs default has whatever it reported since
 # boot sitting in LEGACY_SCRUB_DIR; copy it into SCRUB_DIR now, before a
-# reboot clears it, without overwriting a report already there.
+# reboot clears it, without overwriting a report already there. Each copy
+# lands under a hidden temp name and is renamed into place, the same
+# atomicity vsys-scrub-report itself uses, so an interruption (signal,
+# dropped connection, full disk) never leaves a truncated *.result visible
+# to vsys. This runs after the core install already succeeded, so its own
+# failures are reported as a carry-over problem, not an install failure.
 migrate_legacy_reports() {
 	[[ -d $LEGACY_SCRUB_DIR && $LEGACY_SCRUB_DIR != "$SCRUB_DIR" ]] || return 0
-	mkdir -p -- "$SCRUB_DIR"
-	local report
+	mkdir -p -- "$SCRUB_DIR" 2>/dev/null ||
+		die "legacy-migrate=mkdir-failed dir=$SCRUB_DIR
+The reporter is installed and will run after the next scrub. Could not create $SCRUB_DIR to carry its old reports over from $LEGACY_SCRUB_DIR, so they stay there until a reboot clears them."
+	local stray
+	for stray in "$SCRUB_DIR"/.*.result.tmp; do
+		[[ -e $stray ]] || continue
+		rm -f -- "$stray"
+	done
+	local report name dest tmp
 	for report in "$LEGACY_SCRUB_DIR"/*.result; do
 		[[ -e $report ]] || continue
-		cp -n -- "$report" "$SCRUB_DIR/"
+		name="${report##*/}"
+		dest="$SCRUB_DIR/$name"
+		[[ -e $dest ]] && continue
+		tmp="$SCRUB_DIR/.$name.tmp"
+		{ cp -- "$report" "$tmp" && mv -- "$tmp" "$dest"; } 2>/dev/null ||
+			die "legacy-migrate=copy-failed report=$report
+The reporter is installed and will run after the next scrub. Could not carry $report over into $SCRUB_DIR, so it stays in $LEGACY_SCRUB_DIR until a reboot clears it."
 	done
 }
 

@@ -455,6 +455,19 @@ esac
             self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: GitHub reported no latest release for vanillagreencom/vsys.")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
+    def test_the_success_message_names_the_directory_the_installed_reporter_actually_uses(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            # VSYS_SCRUB_DIR only steers the legacy migration in tests; it
+            # must not change what install reports as the real, persisted
+            # directory, which is fixed by the conf files it downloads.
+            done, calls = self.run_install(base, scrub_dir=base / "unused-persistent")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(
+                "Each scrub now leaves a report in /var/lib/btrfs-scrub, which survives a reboot.",
+                done.stdout.splitlines(),
+            )
+
     def test_no_scrub_unit_installs_nothing(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), unit=False)
@@ -533,6 +546,59 @@ esac
             done, calls = self.run_install(base, scrub_dir=persistent)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertFalse(persistent.exists())
+
+    def test_a_stray_temp_file_left_by_an_interrupted_migration_is_cleaned_up(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("the real report\n")
+            persistent = base / "persistent"
+            persistent.mkdir()
+            (persistent / ".root.result.tmp").write_text("half-written garbage from a killed run\n")
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((persistent / "root.result").read_text(), "the real report\n")
+            self.assertEqual(sorted(os.listdir(persistent)), ["root.result"])
+
+    def test_a_migration_copy_failure_is_reported_as_a_carry_over_problem_not_an_install_failure(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            # A legacy entry that is a directory, not a report: cp refuses it.
+            (legacy / "root.result").mkdir()
+            persistent = base / "persistent"
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(
+                done.stderr.splitlines()[0],
+                f"scrub-reporter: legacy-migrate=copy-failed report={legacy / 'root.result'}",
+            )
+            self.assertIn("The reporter is installed and will run after the next scrub.", done.stderr)
+            # The core install already completed before the carry-over failed.
+            self.assertEqual(calls[-1], "systemctl daemon-reload")
+            self.assertEqual(os.listdir(persistent), [])
+
+    def test_a_migration_mkdir_failure_is_reported_as_a_carry_over_problem_not_an_install_failure(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("x\n")
+            readonly_parent = base / "readonly"
+            readonly_parent.mkdir(mode=0o555)
+            persistent = readonly_parent / "persistent"
+            try:
+                done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+                self.assertEqual(done.returncode, 1)
+                self.assertEqual(
+                    done.stderr.splitlines()[0],
+                    f"scrub-reporter: legacy-migrate=mkdir-failed dir={persistent}",
+                )
+                self.assertEqual(calls[-1], "systemctl daemon-reload")
+            finally:
+                readonly_parent.chmod(0o755)
 
 
 class ShippedFilesTest(unittest.TestCase):
