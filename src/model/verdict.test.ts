@@ -429,6 +429,7 @@ test("a cause naming several filesystems carries no one filesystem's numbers", (
     filesystems: 1,
     size: 26,
     since: 1,
+    logged: null,
     checked: 3600,
   });
   // A second filesystem, and the first one's growth no longer stands for the
@@ -438,6 +439,7 @@ test("a cause naming several filesystems carries no one filesystem's numbers", (
     filesystems: 2,
     size: null,
     since: null,
+    logged: null,
     checked: null,
   });
 });

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { integrity, volumesByDevice } from "../model/integrity";
-import type { Scrub } from "../model/types";
+import type { Capability, CsumFailure, Scrub } from "../model/types";
 import { volumeSnapshot } from "../test/fixture";
 import {
   blocksText,
@@ -9,6 +9,7 @@ import {
   deleteCommand,
   integrityLine,
   integrityWords,
+  loggedText,
   noDamageText,
   rebuildCommand,
 } from "./integrity";
@@ -27,7 +28,7 @@ function state(scrubs: Scrub[], lastErrorAt: number | null = null) {
         lastErrorSize: lastErrorAt === null ? null : 26,
       }),
     ])[0],
-    scrubs,
+    { scrubs },
     now,
     c,
   );
@@ -54,12 +55,65 @@ test("the line answers both questions without opening anything", () => {
     state([report({ startedAt: now - 4 * day })], now - 31 * 3600000),
   );
   expect(line).toBe(
-    "New errors since last check · last full check 4.0d ago · last new error 31.0h ago",
+    "New errors since last check · last full check 4.0d ago (scrub report) · last new error 31.0h ago (error counter)",
   );
   // Nothing checked, nothing recorded: both times say so rather than reading
   // as zero or as healthy.
   expect(integrityLine(state([]))).toBe(
-    "Never checked · last full check never · last new error none recorded",
+    "Never checked · last full check never · last new error none (error counter only)",
+  );
+});
+
+test("the line names the source of each time it gives", () => {
+  const failure: CsumFailure = { root: 257, inode: 4242, at: now - 7200000 };
+  const absent: Capability = {
+    id: "scrub",
+    available: false,
+    failure: "absent",
+    source: "/run/btrfs-scrub",
+    detail: "ENOENT: no such file or directory",
+  };
+  const item = (
+    scrubs: Scrub[],
+    csumFailures: Record<string, CsumFailure[]> | null,
+  ) =>
+    integrity(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      { scrubs, csumFailures },
+      now,
+      c,
+    );
+  const rows: [string, string][] = [
+    [
+      integrityLine(item([report()], { fs: [failure] })),
+      "New errors since last check · last full check 24.0h ago (scrub report) · last new error 2.0h ago (kernel log)",
+    ],
+    [
+      integrityLine(item([report()], {})),
+      "Healthy · last full check 24.0h ago (scrub report) · last new error none (error counter, kernel log)",
+    ],
+    [
+      integrityLine(item([report()], null)),
+      "Healthy · last full check 24.0h ago (scrub report) · last new error none (error counter only)",
+    ],
+    [
+      integrityLine(item([], { fs: [failure] }), absent),
+      "New errors since last check · last full check never · last new error 2.0h ago (kernel log)",
+    ],
+    [
+      integrityLine(item([], null), absent),
+      "Never checked: no readable scrub report directory · last full check never · last new error none (error counter only)",
+    ],
+  ];
+  for (const [line, expected] of rows) expect(line).toBe(expected);
+  expect(loggedText(failure, now)).toBe(
+    "inode 4242 in subvolume 257, logged 2.0h ago",
   );
 });
 
@@ -198,13 +252,13 @@ test("an unreadable record of past growth is not a record of no errors", () => {
         lastErrorKnown: false,
       }),
     ])[0],
-    [report()],
+    { scrubs: [report()] },
     now,
     c,
   );
   expect(integrityLine(unreadable)).toContain("last new error not available");
   expect(integrityLine(state([report()]))).toContain(
-    "last new error none recorded",
+    "last new error none (error counter only)",
   );
 });
 

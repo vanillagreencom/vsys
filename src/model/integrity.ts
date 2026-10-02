@@ -1,6 +1,6 @@
 import { corruptionTotal } from "../collect/btrfs";
 import type { Config } from "../config/config";
-import type { Scrub, Snapshot, Volume } from "./types";
+import type { CsumFailure, Scrub, Snapshot, Storage, Volume } from "./types";
 import type { Level } from "./verdict";
 
 /**
@@ -100,6 +100,12 @@ export type IntegrityState =
   | "unknown"
   | "checking"
   | "healthy";
+/**
+ * Which source dated the last new error. They are different facts: the
+ * counter grew while a vsys process watched it, or the kernel logged a failed
+ * checksum read, whether or not anything was watching.
+ */
+export type ErrorSource = "counter" | "kernel-log";
 /** One filesystem's answer to: is my data damaged, and was the disk checked. */
 export interface Integrity {
   id: string;
@@ -108,8 +114,26 @@ export interface Integrity {
   state: IntegrityState;
   /** Seconds since the last full check ended, null where there was none. */
   checkAge: number | null;
-  /** Seconds since the counter last grew, null while no growth was observed. */
+  /**
+   * Seconds since the newest error either source recorded, null while neither
+   * recorded one.
+   */
   errorAge: number | null;
+  /** The source that recorded that error, null where neither did. */
+  errorSource: ErrorSource | null;
+  /** Seconds since the counter last grew, null while no growth was observed. */
+  growthAge: number | null;
+  /** Seconds since the kernel last logged a failed checksum read here. */
+  loggedAge: number | null;
+  /** False where the kernel log was not read, which is not a log of none. */
+  kernelLog: boolean;
+  /**
+   * The inodes the kernel logged a failed read in since the last finished
+   * check, newest first. A check that finished later read the filesystem end
+   * to end and named what is still damaged, so an older failure is its to
+   * report.
+   */
+  logged: CsumFailure[];
   /** False where the record of past growth could not be read at all. */
   errorKnown: boolean;
   /** How far the counter grew that time. */
@@ -175,11 +199,11 @@ function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
  */
 export function integrity(
   group: DeviceVolumes,
-  scrubs: Scrub[],
+  storage: Pick<Storage, "scrubs" | "csumFailures">,
   time: number,
   c: Config,
 ): Integrity {
-  const scrub = reportFor(group.id, scrubs);
+  const scrub = reportFor(group.id, storage.scrubs);
   // Output vsys could not read names no file it can stand behind. An address
   // parsed out of otherwise unreadable text would put a delete command under a
   // headline saying the state is unknown, which is two claims at once.
@@ -203,8 +227,23 @@ export function integrity(
   // Every mount of one filesystem carries the same remembered growth, so the
   // time and its size are read from one of them rather than from two.
   const grew = group.volumes.find((v) => v.lastErrorAt != null);
-  const errorAt = grew?.lastErrorAt;
-  const errorSize = grew?.lastErrorSize;
+  const grownAt = grew?.lastErrorAt ?? null;
+  // A snapshot recorded before the kernel log was read carries nothing for
+  // it, which is the same reading as a log vsys could not search.
+  const kernelLog = storage.csumFailures != null;
+  const failures = storage.csumFailures?.[group.id.toLowerCase()] ?? [];
+  const loggedAt = failures.length
+    ? Math.max(...failures.map((f) => f.at))
+    : null;
+  // The newer of the two is the last new error. On a tie the log speaks,
+  // because it names the inode the counter cannot.
+  const errorSource: ErrorSource | null =
+    loggedAt !== null && (grownAt === null || loggedAt >= grownAt)
+      ? "kernel-log"
+      : grownAt !== null
+        ? "counter"
+        : null;
+  const errorAt = errorSource === "kernel-log" ? loggedAt : grownAt;
   // The record of past growth failed to load, so "no error recorded" is a
   // reading vsys does not have rather than a reading of none.
   const errorKnown = group.volumes.every((v) => v.lastErrorKnown !== false);
@@ -217,7 +256,8 @@ export function integrity(
   const finished = complete;
   const checkedAt = finished ? (scrub?.startedAt ?? null) : null;
   const checkAge = checkedAt === null ? null : Math.max(0, time - checkedAt);
-  const errorAge = errorAt == null ? null : Math.max(0, time - errorAt);
+  const since = (at: number | null) =>
+    at === null ? null : Math.max(0, time - at) / 1000;
   const state: IntegrityState =
     scrub && scrub.readable === false
       ? "unknown"
@@ -254,9 +294,16 @@ export function integrity(
     mounts: group.volumes.map((v) => v.mount),
     state,
     checkAge: checkAge === null ? null : checkAge / 1000,
-    errorAge: errorAge === null ? null : errorAge / 1000,
+    errorAge: since(errorAt),
+    errorSource,
+    growthAge: since(grownAt),
+    loggedAge: since(loggedAt),
+    kernelLog,
+    logged: failures
+      .filter((f) => checkedAt === null || f.at > checkedAt)
+      .sort((a, b) => b.at - a.at),
     errorKnown,
-    errorSize: errorSize ?? null,
+    errorSize: grew?.lastErrorSize ?? null,
     blocks: complete ? (scrub?.uncorrectable ?? null) : null,
     counter,
     groups,
@@ -268,7 +315,7 @@ export function integrity(
 /** One integrity reading per filesystem, in the order Storage draws them. */
 export function integrities(s: Snapshot, c: Config): Integrity[] {
   return volumesByDevice(s.storage.volumes).map((group) =>
-    integrity(group, s.storage.scrubs, s.time, c),
+    integrity(group, s.storage, s.time, c),
   );
 }
 /** The damaged addresses a reader can delete and rebuild, and the rest. */

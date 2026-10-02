@@ -327,8 +327,9 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       },
     });
   }
-  // The counter grew and nothing has read the filesystem since, so no check
-  // has confirmed what that growth cost. This is the reading that was missing.
+  // The counter grew, or the kernel logged a failed read, and nothing has read
+  // the filesystem since, so no check has confirmed what that cost. This is
+  // the reading that was missing.
   const grown = filesystems.filter((item) => item.state === "new-errors");
   if (grown.length)
     add("new-errors", "danger", {
@@ -343,13 +344,15 @@ export function causes(s: Snapshot, c: Config): Cause[] {
           ? {
               filesystems: 1,
               size: grown[0].errorSize,
-              since: grown[0].errorAge,
+              since: grown[0].growthAge,
+              logged: grown[0].loggedAge,
               checked: grown[0].checkAge,
             }
           : {
               filesystems: grown.length,
               size: null,
               since: null,
+              logged: null,
               checked: null,
             },
     });

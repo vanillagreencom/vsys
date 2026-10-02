@@ -22,7 +22,7 @@ Ladder: the causes ranked worst first. Its first verdict-worthy element is the v
 
 Verdict-worthy: a cause that may speak for the machine. A housekeeping cause is a card but never the verdict.
 
-Capability: a system interface a reading needs, probed once at start. Whether a tmux server answers and whether the agent slice exists are the exceptions and are re-read each sample.
+Capability: a system interface a reading needs, probed once at start. Whether a tmux server answers and whether the agent slice exists are the exceptions and are re-read each sample. The kernel log is a capability too, because whether this user can read the system journal depends on group membership.
 
 Point: the per-sample record the charts and the timeline strip read, kept for every retained sample.
 
@@ -72,6 +72,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [verdict.md](verdict.md): read when changing what counts as a problem, how problems rank, or the summary JSON.
 - [builds.md](builds.md): read when changing how compile and link work, the build cache or the token pools are counted.
 - [storage.md](storage.md): read when changing filesystem, device, drive or scratch collection.
+- [storage-integrity.md](storage-integrity.md): read when changing whether a filesystem reads as damaged or checked, the check report format, the kernel log reading or the scrub reporter under `scripts/scrub-reporter/`.
 - [events.md](events.md): read when changing what the timeline records or when a change counts.
 - [history.md](history.md): read when changing replay, retention or persistence.
 - [settings.md](settings.md): read when adding a setting or changing what a settings change replaces.

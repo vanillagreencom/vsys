@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Install the Btrfs scrub reporter vsys reads. Run it as root:
+#
+#   curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash
+#
+# It installs btrfs-scrub-report, the btrfs-scrub@.service drop-in that runs it
+# after every scrub, and the tmpfiles line that creates its report directory at
+# boot. It schedules no scrub: enabling btrfs-scrub@<mount>.timer for each
+# filesystem stays the reader's choice.
+set -euo pipefail
+
+SOURCE="https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter"
+WORK=""
+
+die() {
+	printf 'scrub-reporter: %s\n' "$1" >&2
+	exit 1
+}
+
+cleanup() {
+	if [[ -n $WORK ]]; then rm -rf -- "${WORK:?}"; fi
+}
+
+# Nothing runs until the last line calls main, so a download the pipe cut
+# short anywhere above it runs nothing.
+main() {
+	systemctl cat btrfs-scrub@.service >/dev/null 2>&1 ||
+		die "unit=btrfs-scrub@.service missing
+This system has no btrfs-scrub@.service for the reporter to run after.
+Install the package that ships it, btrfs-progs on Arch Linux, then run this again."
+	WORK="$(mktemp -d)" || die "scratch=mktemp-failed"
+	trap cleanup EXIT
+	local name
+	for name in btrfs-scrub-report vsys-report.conf vsys-scrub.conf; do
+		curl -fsSL "$SOURCE/$name" -o "$WORK/$name" ||
+			die "download=$name failed
+Could not fetch $SOURCE/$name. Nothing was installed."
+	done
+	install -Dm755 "$WORK/btrfs-scrub-report" /usr/local/bin/btrfs-scrub-report
+	install -Dm644 "$WORK/vsys-report.conf" /etc/systemd/system/btrfs-scrub@.service.d/vsys-report.conf
+	install -Dm644 "$WORK/vsys-scrub.conf" /etc/tmpfiles.d/vsys-scrub.conf
+	systemd-tmpfiles --create /etc/tmpfiles.d/vsys-scrub.conf
+	systemctl daemon-reload
+	printf '%s\n' \
+		"scrub-reporter: installed" \
+		"Each scrub now leaves a report in /run/btrfs-scrub. To check a filesystem" \
+		"on a schedule, enable its timer, for example:" \
+		"  systemctl enable --now btrfs-scrub@-.timer"
+}
+
+main "$@"

@@ -1,0 +1,1 @@
+- Ship a Btrfs scrub reporter with a one-command installer, offered on Settings and Storage when no scrub report directory exists.

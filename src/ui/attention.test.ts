@@ -987,3 +987,25 @@ test("a card naming several filesystems shows no one filesystem's numbers", () =
   expect(said(two)).not.toContain("26");
   expect(said(two)).toContain("Open each one for its own times");
 });
+
+test("a new error only the kernel log recorded is not told as counter growth", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes.push(
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  );
+  s.storage.csumFailures = {
+    fs: [{ root: 257, inode: 4242, at: s.time - 7200000 }],
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
+  expect(said(card)).toContain(
+    "The kernel logged a failed checksum read 2.0h ago.",
+  );
+  expect(said(card)).not.toContain("The counter grew");
+});

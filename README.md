@@ -72,7 +72,15 @@ Open a filesystem to see the damaged files. Each damaged block is listed with ev
 
 vsys deletes nothing. It copies the command to your clipboard for you to run.
 
-The check reports come from a privileged timer, one file for each filesystem. See [the storage architecture](docs/architecture/storage.md) for the format a report must have.
+Checking a filesystem and naming its damaged files needs root, so vsys reads a report that a root timer writes after each Btrfs scrub, one file for each filesystem. vsys ships that reporter. Install it with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash
+```
+
+The installer needs the `btrfs-scrub@.service` unit that btrfs-progs ships on Arch Linux. It schedules no scrub. Enable a timer for each filesystem you want checked, for example `sudo systemctl enable --now btrfs-scrub@-.timer` for the root filesystem. Settings and Storage show the same install command while no report directory exists.
+
+vsys also reads the kernel log, when your user can read the system journal. It shows when the kernel last logged a failed read and which inode it was in, with no reporter installed. Storage names the source of each time it shows: the scrub report, the error counter or the kernel log. See [storage integrity](docs/architecture/storage-integrity.md) for the report format.
 
 ## Development
 

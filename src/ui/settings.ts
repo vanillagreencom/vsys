@@ -1,4 +1,4 @@
-import { type Config, choices } from "../config/config";
+import { type Config, choices, defaults } from "../config/config";
 import { shellLine } from "../model/shell";
 import type { Capability, CapabilityId } from "../model/types";
 import { age, bytes } from "./format";
@@ -292,6 +292,7 @@ export const capabilityLabels: Record<CapabilityId, string> = {
   psi: "Pressure stall information",
   "io-stat": "Per-group disk counters",
   scrub: "Disk scrub reports",
+  "kernel-log": "Kernel log (journal)",
   smart: "Drive lifetime reports",
   tmux: "Terminal panes (tmux)",
   "agent-slice": "Agent slice",
@@ -303,6 +304,7 @@ const absentReasons: Record<CapabilityId, string> = {
   psi: "no PSI on this kernel",
   "io-stat": "no io.stat for these resource groups",
   scrub: "no readable scrub report directory",
+  "kernel-log": "no journalctl on the path",
   smart: "no readable drive report directory",
   tmux: "no tmux on the path",
   "agent-slice": "no agent slice is defined or running on this machine",
@@ -312,6 +314,8 @@ const incompleteReasons: Partial<Record<CapabilityId, string>> = {
   "io-stat":
     "the io controller is not delegated to the groups below this session",
   tmux: "tmux is installed but no server is answering",
+  "kernel-log":
+    "journalctl answered with no kernel message this user can read, which usually takes membership of the systemd-journal group",
 };
 /**
  * What is missing from the screens while a capability is not available. A
@@ -329,6 +333,8 @@ const capabilityCost: Record<CapabilityId, string> = {
   "io-stat":
     "per-group disk writes are blank rather than zero, on Home and Storage",
   scrub: "Storage lists no scrub report, which is not the same as a clean one",
+  "kernel-log":
+    "Storage dates a new error only by the counter vsys watched, and names no inode a failed read was in",
   smart:
     "Storage shows no drive lifetime writes, which is not the same as none written",
   tmux: "a tmux pane id resolves to no address, and no agent's terminal can be read or switched to",
@@ -397,6 +403,32 @@ export function capabilityReason(cap: Capability): string {
     default:
       return "";
   }
+}
+/**
+ * The command that installs the scrub reporter vsys ships: the root helper
+ * that writes one report per filesystem after each check, the drop-in that
+ * runs it, and the line that creates its directory at boot. vsys runs no
+ * privileged code, so the reader copies the line and runs it, or does not.
+ */
+export const reporterInstall =
+  "curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash";
+/** Why the install is offered, in one sentence. */
+export const reporterSentence =
+  "No scrub reporter is installed, so nothing checks these filesystems: the check and the file names it finds need root, which vsys never has.";
+/**
+ * The install line, where it would fill the gap: the report directory does
+ * not exist, and it is the one the shipped reporter writes to. A reader who
+ * pointed `scrubDir` elsewhere runs a reporter of their own, and a directory
+ * that exists but cannot be read is not fixed by installing anything.
+ */
+export function reporterOffer(
+  capabilities: Capability[],
+  c: Pick<Config, "scrubDir">,
+): string | undefined {
+  const scrub = capabilities.find((cap) => cap.id === "scrub");
+  return scrub?.failure === "absent" && c.scrubDir === defaults().scrubDir
+    ? reporterInstall
+    : undefined;
 }
 /** One Settings line per capability, naming the reason and the source that decided it. */
 export function capabilityLine(cap: Capability): string {

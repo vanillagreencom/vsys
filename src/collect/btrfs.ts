@@ -4,6 +4,7 @@ import type { Scrub, Storage, Volume } from "../model/types";
 import { collectDevices } from "./devices";
 import { ErrorMemory } from "./errors";
 import { pairs, type Reader } from "./io";
+import type { KernelLog } from "./kernel-log";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
 import { counted, parseScrub, stated } from "./scrub";
@@ -110,6 +111,12 @@ export function corruptionTotal(
 
 /** Counter baselines belong to a filesystem/device, not a mount alias. */
 export class StorageCollector {
+  /**
+   * The kernel log, where this user can search it. A collector built without
+   * one reads no journal, which is what keeps the machine's own log out of
+   * the test suite.
+   */
+  constructor(private kernelLog: KernelLog | null = null) {}
   private initial = new Map<string, number>();
   private last = new Map<string, number>();
   private scratch = new ScratchCollector();
@@ -154,6 +161,8 @@ export class StorageCollector {
       scrubs: [],
     };
     const devices = new Map<string, string>();
+    /** This boot's block device names, as the kernel log writes them. */
+    const names = new Map<string, string>();
     const memory = this.errorMemory(r, c.errorMemoryPath);
     const growth = new Map<
       string,
@@ -176,6 +185,7 @@ export class StorageCollector {
         for (const entry of await readdir(join(root, "devices"))) {
           const link = r.link(join(root, "devices", entry));
           if (link) {
+            names.set(entry, fsid);
             devices.set(`/dev/${entry}`, fsid);
             devices.set(
               resolve(root, "devices", link).split("/").at(-1) ?? entry,
@@ -240,6 +250,16 @@ export class StorageCollector {
       if (corruption !== null)
         growth.set(fsid, memory.observe(fsid, corruption, time));
     }
+    storage.csumFailures = null;
+    if (this.kernelLog)
+      try {
+        storage.csumFailures = await this.kernelLog.read(
+          names,
+          r.text(join(c.procRoot, "sys/kernel/random/boot_id")),
+        );
+      } catch (e) {
+        r.error("journalctl", e);
+      }
     try {
       memory.save();
     } catch (e) {

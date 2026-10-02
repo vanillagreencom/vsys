@@ -5,7 +5,8 @@
  * here anchors on a labelled field or on the `logical <address>:` heading, and
  * a report that carries no damaged-file section at all still parses.
  *
- * `docs/architecture/storage.md` holds the format the helper must write.
+ * `docs/architecture/storage-integrity.md` holds the format the reporter must write,
+ * and `scripts/scrub-reporter/` ships the reporter that writes it.
  */
 
 import type { DamagedAddress } from "../model/types";

@@ -79,6 +79,26 @@ export class Reader {
   }
 }
 
+/**
+ * Run a program and keep everything it said. The exit status is returned
+ * rather than judged, because what counts as a refusal is the caller's:
+ * journalctl exits 1 when a search matched nothing, which is an answer.
+ */
+export async function spawnText(
+  argv: string[],
+): Promise<{ out: string; error: string; status: number }> {
+  const child = Bun.spawn(argv, {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [out, error, status] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { out, error, status };
+}
 /** Kernel key/value files carry bytes, microseconds, or counters by source. */
 export function pairs(text: string): Record<string, number> {
   const result: Record<string, number> = {};

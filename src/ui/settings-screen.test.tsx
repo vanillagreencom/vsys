@@ -11,6 +11,7 @@ import { fit } from "./columns";
 import {
   capabilityLabels,
   capabilityOffer,
+  reporterInstall,
   settingGroups,
   settingHelp,
   settingLabel,
@@ -137,6 +138,39 @@ test("Settings lists a capability it could not read, with the reason", async () 
     );
     // A source that answered still opens, so it carries the marker too.
     expect(settings).toMatch(/● ▸ Resource groups \(cgroup v2\)\s+available/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("Settings offers the scrub reporter's install where no report directory exists", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "scrub"
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: c.scrubDir,
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  const t = await mount(s, c, { width: 200, height: 60 });
+  try {
+    await t.press("7");
+    // The copy key on a row with no command copies nothing.
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([]);
+    const scrub = s.capabilities.findIndex((cap) => cap.id === "scrub");
+    for (let i = 0; i < scrub; i++) await t.press("down");
+    const frame = t.frame();
+    expect(frame).toContain("no readable scrub report directory");
+    expect(frame).toContain("No scrub reporter is installed");
+    expect(frame).toContain(reporterInstall);
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([osc52(reporterInstall)]);
   } finally {
     await t.close();
   }

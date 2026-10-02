@@ -339,8 +339,21 @@ function copy(
         // sentence without them rather than one filesystem's as the whole.
         ways: [
           paths === 1
-            ? `The counter grew${v.since == null ? "" : ` ${age(v.since)} ago`}${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}, and the last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
-            : "Each of these counters grew after the last check that read its filesystem end to end, so no check has said what the damage cost. Open each one for its own times.",
+            ? `${[
+                ...(v.since == null
+                  ? []
+                  : [
+                      `The counter grew ${age(v.since)} ago${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}`,
+                    ]),
+                ...(v.logged == null
+                  ? []
+                  : [
+                      `The kernel logged a failed checksum read ${age(v.logged)} ago`,
+                    ]),
+              ].join(
+                ", and ",
+              )}. The last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
+            : "Each of these filesystems recorded an error after the last check that read it end to end, so no check has said what the damage cost. Open each one for its own times.",
         ],
         next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
         view: "Storage",

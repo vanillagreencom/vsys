@@ -14,6 +14,7 @@ import {
 } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
+import { KernelLog, probeKernelLog, readKernelLog } from "./kernel-log";
 import { kernelCgroupRoot, readMounts } from "./mounts";
 import { ProcessThread } from "./process-thread";
 import { ProcessCollector, type ProcessSource } from "./procs";
@@ -41,11 +42,25 @@ const noTmux: Outcome = {
   failure: "absent",
   detail: "this collector was given no tmux reader",
 };
+/**
+ * Searching the kernel log: the probe that decides the capability, and the
+ * search each sample runs from the cursor the last one ended on. A collector
+ * given none reads no journal, which keeps the machine's own log out of the
+ * test suite; the program always supplies one.
+ */
+export interface KernelLogReader {
+  probe: () => Outcome;
+  search: (cursor: string | null) => Promise<string>;
+}
+const noKernelLog: Outcome = {
+  failure: "absent",
+  detail: "this collector was given no kernel log reader",
+};
 
 /** The scheduler awaits each sample, so ticks cannot overlap. */
 export class Collector {
   private previous?: Snapshot;
-  private storage = new StorageCollector();
+  private storage: StorageCollector;
   private engine = new AlertEngine();
   private processes: ProcessSource;
   private controller = new AbortController();
@@ -80,12 +95,23 @@ export class Collector {
      * supplies them, so no test reads the host's systemd configuration.
      */
     private units: string[] = [],
+    /** Absent unless a caller supplies one, so no test reads the journal. */
+    kernelLog?: KernelLogReader,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
     this.capabilities = probeCapabilities(
       config,
       tmux?.probe ?? (() => noTmux),
+      kernelLog?.probe ?? (() => noKernelLog),
+    );
+    // A log this user cannot search is a capability with its reason, probed
+    // once. Searching it anyway would add the same source error every sample.
+    const searchable =
+      this.capabilities.find((cap) => cap.id === "kernel-log")?.available ===
+      true;
+    this.storage = new StorageCollector(
+      kernelLog && searchable ? new KernelLog(kernelLog.search) : null,
     );
     const probed = this.capabilities.find((cap) => cap.id === "tmux");
     this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
@@ -283,5 +309,6 @@ export async function createCollector(
     { probe: probeTmux, panes: readPanes },
     new ProcessThread(c, ticks, pages, tools),
     unitDirs(),
+    { probe: probeKernelLog, search: readKernelLog },
   );
 }

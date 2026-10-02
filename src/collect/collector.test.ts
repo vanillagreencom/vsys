@@ -1662,3 +1662,42 @@ test("a tmux server that stops answering mid-run costs the addresses, not the sa
   expect(s.errors.map((e) => e.source)).toContain("tmux list-panes");
   expect(s.system.cores).toBeGreaterThan(0);
 });
+
+test("a kernel log this user cannot search is probed once and never searched", async () => {
+  const f = setup();
+  const searched: (string | null)[] = [];
+  const reader = (outcome: null | { failure: "incomplete"; detail: string }) =>
+    new Collector(
+      f.config,
+      100,
+      4096,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      {
+        probe: () => outcome,
+        search: async (cursor) => {
+          searched.push(cursor);
+          return "-- cursor: end\n";
+        },
+      },
+    );
+  const refused = await reader({
+    failure: "incomplete",
+    detail: "no kernel message",
+  }).sample(1000);
+  expect(
+    refused.capabilities.find((cap) => cap.id === "kernel-log"),
+  ).toMatchObject({ available: false, failure: "incomplete" });
+  // The capability states the gap once; searching anyway would add a source
+  // error to every sample.
+  expect(searched).toEqual([]);
+  expect(refused.storage.csumFailures).toBeNull();
+  const collector = reader(null);
+  const first = await collector.sample(1000);
+  await collector.sample(2000);
+  expect(first.storage.csumFailures).toEqual({});
+  expect(searched).toEqual([null, "end"]);
+});

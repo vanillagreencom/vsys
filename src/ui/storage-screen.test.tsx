@@ -10,6 +10,7 @@ import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
 import { osc52 } from "./clipboard";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { regionOf, regionRanges, storageRegions } from "./regions";
+import { reporterInstall } from "./settings";
 import {
   itemPath,
   Storage,
@@ -661,6 +662,97 @@ test("the copy key on a filesystem copies one line that removes its build output
     await t.press("down");
     await t.press(c.keys.copy);
     expect(t.written.length).toBe(1);
+  } finally {
+    await t.close();
+  }
+});
+
+/**
+ * A machine with no scrub reporter: one filesystem, no report directory, and
+ * the kernel log as the caller says.
+ */
+function unreportedSnapshot(
+  time: number,
+  csumFailures: Snapshot["storage"]["csumFailures"],
+) {
+  const s = emptySnapshot(time);
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "scrub"
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: "/run/btrfs-scrub",
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      device: "/dev/nvme0n1p2",
+      fsid: "fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.csumFailures = csumFailures;
+  return s;
+}
+
+test("a machine with no scrub reporter says so and copies the command that installs one", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const t = await mount(unreportedSnapshot(time, null), c, {
+    width: 160,
+    height: 60,
+  });
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    expect(frame).toContain(
+      "Never checked: no readable scrub report directory",
+    );
+    expect(frame).toContain("No scrub reporter is installed");
+    expect(frame).toContain(reporterInstall);
+    expect(frame).not.toContain("Healthy");
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([osc52(reporterInstall)]);
+  } finally {
+    await t.close();
+  }
+  // A reader who pointed the reports elsewhere runs a reporter of their own,
+  // so the shipped one is not offered.
+  const elsewhere = { ...c, scrubDir: "/srv/checks" };
+  const other = await mount(unreportedSnapshot(time, null), elsewhere, {
+    width: 160,
+    height: 60,
+  });
+  try {
+    await other.press("5");
+    expect(other.frame()).not.toContain(reporterInstall);
+    await other.press(c.keys.copy);
+    expect(other.written).toEqual([]);
+  } finally {
+    await other.close();
+  }
+});
+
+test("with only the kernel log, a filesystem still dates its last new error", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const t = await mount(
+    unreportedSnapshot(time, {
+      fs: [{ root: 257, inode: 4242, at: time - 7200000 }],
+    }),
+    c,
+    { width: 160, height: 60 },
+  );
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    expect(frame).toContain("New errors since last check");
+    expect(frame).toContain("last new error 2.0h ago (kernel log)");
+    expect(frame).toContain("inode 4242 in subvolume 257, logged 2.0h ago");
   } finally {
     await t.close();
   }

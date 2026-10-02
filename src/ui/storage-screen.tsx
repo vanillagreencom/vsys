@@ -29,6 +29,8 @@ import {
   damageAdvice,
   deleteCommand,
   integrityLine,
+  loggedSentence,
+  loggedText,
   noDamageText,
   rebuildCommand,
 } from "./integrity";
@@ -41,9 +43,11 @@ import {
   storageRegions,
 } from "./regions";
 import { firstRow, useSelection } from "./selection";
+import { reporterOffer, reporterSentence } from "./settings";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
+  CommandOffer,
   Detail,
   Disclosure,
   Empty,
@@ -254,10 +258,11 @@ export function Storage({
       return move((i) => stepToRegion(counts, i, -1));
     if (name === c.keys.next || name === c.keys.right || name === "right")
       return move((i) => stepToRegion(counts, i, 1));
-    // Only the filesystem row carries a command, and only where the last
-    // check found build output to remove. Every other row copies nothing,
-    // which the shell says rather than copying something the reader did not
-    // select.
+    // Only the filesystem row carries a command: the one that removes the
+    // build output the last check found, or, where no reporter is installed
+    // to run a check, the one that installs it. Every other row copies
+    // nothing, which the shell says rather than copying something the reader
+    // did not select.
     if (name === c.keys.copy) {
       // A delete command is built from paths checked against the sample it
       // came from. On a pinned sample those checks are as old as the sample:
@@ -273,7 +278,8 @@ export function Storage({
       const item = items[selected];
       onCopy(
         item?.kind === "filesystem"
-          ? rebuildCommand(integrity(item.group, s.storage.scrubs, s.time, c))
+          ? (rebuildCommand(integrity(item.group, s.storage, s.time, c)) ??
+              reporterOffer(s.capabilities, c))
           : undefined,
       );
       return true;
@@ -403,6 +409,8 @@ export function Storage({
    * report text one level below that: a reader asking "is my data damaged"
    * gets the answer without opening anything.
    */
+  const scrubSource = s.capabilities.find((cap) => cap.id === "scrub");
+  const install = reporterOffer(s.capabilities, c);
   const integrityRow = (i: number, item: Integrity, first: Volume) => {
     const level = integrityLevel(item.state);
     const counts = damageCounts(item);
@@ -412,7 +420,7 @@ export function Storage({
       (open) => (
         <Disclosure
           open={open}
-          name={integrityLine(item)}
+          name={integrityLine(item, scrubSource)}
           count={counts.files || undefined}
         />
       ),
@@ -459,6 +467,30 @@ export function Storage({
               <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
                 {`${keyLabel(c.keys.copy)} copies one line that removes every build-output path above.`}
               </Line>
+            )}
+            {!rebuild && install && (
+              <CommandOffer
+                sentence={reporterSentence}
+                command={install}
+                hint={`${keyLabel(c.keys.copy)} copies the install command.`}
+              />
+            )}
+            {item.logged.length > 0 && (
+              <box flexDirection="column" flexShrink={0} marginTop={1}>
+                <Line flexShrink={0} wrapMode="word">
+                  {loggedSentence}
+                </Line>
+                {item.logged.map((failure) => (
+                  <Line
+                    key={`${failure.root}/${failure.inode}`}
+                    height={1}
+                    flexShrink={0}
+                    truncate
+                  >
+                    {`      ${loggedText(failure, s.time)}`}
+                  </Line>
+                ))}
+              </box>
             )}
             <box height={1} flexShrink={0} />
             <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
@@ -555,7 +587,7 @@ export function Storage({
   /** A filesystem's heading, then its integrity row: one row of the selection. */
   const filesystemRows = (i: number, group: DeviceVolumes) => {
     const { id, device, volumes } = group;
-    const state = integrity(group, st.scrubs, s.time, c);
+    const state = integrity(group, st, s.time, c);
     // Subvolumes of one filesystem each report the whole device's free
     // space, so the device states it once and its mounts carry only what
     // differs between them. `statfs` is attempted per mount, so one

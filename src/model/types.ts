@@ -147,6 +147,18 @@ export interface Scrub {
    */
   addresses?: DamagedAddress[] | null;
 }
+/**
+ * One inode the kernel failed a checksum read in, as its log names it. The
+ * kernel names the subvolume tree and the inode, not a path: resolving an
+ * inode to a path needs root, which vsys does not have.
+ */
+export interface CsumFailure {
+  /** The subvolume's tree id, the kernel's `root`. */
+  root: number;
+  inode: number;
+  /** When the kernel last logged a failed read in this inode, in milliseconds. */
+  at: number;
+}
 /** A block device with its lifetime writes, when SMART output is readable. */
 export interface Device {
   name: string;
@@ -169,6 +181,12 @@ export interface Storage {
    */
   scratchAbsent?: string[];
   scrubs: Scrub[];
+  /**
+   * Failed checksum reads the kernel logged, by filesystem id, newest first.
+   * Null where the kernel log was not read, which is not a log of none; a
+   * filesystem the log names no failure for has no entry.
+   */
+  csumFailures?: Record<string, CsumFailure[]> | null;
   scratchTime?: number | null;
   scratchPending?: boolean;
 }
@@ -311,6 +329,7 @@ export type CapabilityId =
   | "psi"
   | "io-stat"
   | "scrub"
+  | "kernel-log"
   | "smart"
   | "tmux"
   | "agent-slice";

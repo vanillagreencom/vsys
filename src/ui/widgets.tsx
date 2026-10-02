@@ -567,6 +567,35 @@ export function Detail({ children }: { children: ReactNode }) {
 }
 
 /**
+ * A command the reader may copy and run themselves, after the sentence saying
+ * why it is offered and before the key that copies it. vsys runs none of it,
+ * so the command is the whole of what the key copies.
+ */
+export function CommandOffer({
+  sentence,
+  command,
+  hint,
+}: {
+  sentence: string;
+  command: string;
+  hint: string;
+}) {
+  return (
+    <box flexDirection="column" flexShrink={0} marginTop={1}>
+      <Line flexShrink={0} wrapMode="word">
+        {sentence}
+      </Line>
+      <Line flexShrink={0} wrapMode="word" fg={ui.accent}>
+        {safe(command)}
+      </Line>
+      <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+        {hint}
+      </Line>
+    </box>
+  );
+}
+
+/**
  * One selectable line. The selected line is drawn in reverse video and keeps
  * its marker: in a list thirty rows deep a marker alone is easy to lose.
  *

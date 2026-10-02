@@ -1,5 +1,6 @@
 import { safe } from "../model/export";
 import { shellLine } from "../model/shell";
+import { spawnText } from "./io";
 
 /**
  * Where one pane sits in the tmux server. A pane id like `%9` is server-global
@@ -239,16 +240,7 @@ export const ownPane = (env: Record<string, string | undefined>): string =>
 
 /** A tmux read: the arguments, and what the server said if it refused. */
 async function run(argv: string[]): Promise<string> {
-  const child = Bun.spawn(argv, {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [out, error, status] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
+  const { out, error, status } = await spawnText(argv);
   if (status !== 0)
     throw new Error(error.trim() || `${argv[0]} exited ${status}`);
   return out;

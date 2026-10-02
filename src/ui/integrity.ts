@@ -1,17 +1,22 @@
 import {
   type DamagedGroup,
   damageCounts,
+  type ErrorSource,
   type Integrity,
 } from "../model/integrity";
 import { shellLine } from "../model/shell";
+import type { Capability, CsumFailure } from "../model/types";
 import { age, count, gap } from "./format";
+import { capabilityReason } from "./settings";
 
 /**
  * What one filesystem's integrity state says in words. Every state but
  * `healthy` says something is wrong or unknown, so a filesystem nothing has
- * checked never reads as one that has been checked and found sound.
+ * checked never reads as one that has been checked and found sound. A
+ * filesystem nothing checks because the reports cannot be read at all says
+ * why, so the reader is not left waiting for a check that cannot come.
  */
-export function integrityWords(item: Integrity): string {
+export function integrityWords(item: Integrity, scrub?: Capability): string {
   switch (item.state) {
     case "damaged": {
       const n = damageCounts(item);
@@ -22,7 +27,9 @@ export function integrityWords(item: Integrity): string {
     case "new-errors":
       return "New errors since last check";
     case "never-checked":
-      return "Never checked";
+      return scrub && !scrub.available
+        ? `Never checked: ${capabilityReason(scrub)}`
+        : "Never checked";
     case "stale":
       return `Not checked in ${age(item.checkAge ?? 0)}`;
     case "checking":
@@ -36,12 +43,15 @@ export function integrityWords(item: Integrity): string {
 /**
  * The line a reader gets without opening anything. It always carries both
  * times, because "when was the last corruption" and "has anything checked the
- * disk since" is one question and needs one answer.
+ * disk since" is one question and needs one answer. Each time names the
+ * source that gave it: a check report read the whole filesystem, while the
+ * counter and the kernel log saw only the reads that happened, and a reader
+ * deciding whether to trust a green line needs to know which spoke.
  */
-export function integrityLine(item: Integrity): string {
+export function integrityLine(item: Integrity, scrub?: Capability): string {
   return [
-    integrityWords(item),
-    `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago`}`,
+    integrityWords(item, scrub),
+    `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago (scrub report)`}`,
     `last new error ${errorTime(item)}`,
   ].join(" · ");
 }
@@ -109,14 +119,34 @@ export function rebuildCommand(item: Integrity): string | undefined {
     .flatMap((group) => group.paths);
   return paths.length ? shellLine(["rm", "-f", ...paths]) : undefined;
 }
+const sourceWords: Record<ErrorSource, string> = {
+  counter: "error counter",
+  "kernel-log": "kernel log",
+};
 /**
- * What the line says about a time vsys could not read. An unreadable record is
- * not an absence of errors, so the two never share a word.
+ * The last new error and the source that recorded it. An unreadable record of
+ * past growth is not an absence of errors, so the two never share a word, and
+ * "none" names the sources that recorded none: a kernel log vsys could not
+ * search recorded nothing either way.
  */
 const errorTime = (item: Integrity): string => {
   if (!item.errorKnown) return gap;
-  return item.errorAge === null ? "none recorded" : `${age(item.errorAge)} ago`;
+  if (item.errorSource === null)
+    return item.kernelLog
+      ? "none (error counter, kernel log)"
+      : "none (error counter only)";
+  return `${age(item.errorAge ?? 0)} ago (${sourceWords[item.errorSource]})`;
 };
+/**
+ * One inode the kernel logged a failed read in. Naming its file needs root,
+ * so it stays an inode until a check names the file.
+ */
+export function loggedText(failure: CsumFailure, time: number): string {
+  return `inode ${failure.inode} in subvolume ${failure.root}, logged ${age(Math.max(0, time - failure.at) / 1000)} ago`;
+}
+/** What the inodes under a filesystem are, in one sentence. */
+export const loggedSentence =
+  "The kernel logged failed checksum reads in these files since the last full check. Naming a file takes root, so the next check names them.";
 /** Why a flat counter is not a healthy disk, in one sentence. */
 export const counterSentence =
   "The counter counts reads that failed their checksum, not files. Every read of the same damaged block counts again, and a block nothing reads never counts at all.";

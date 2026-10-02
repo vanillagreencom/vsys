@@ -9,6 +9,7 @@ import type {
   Group,
 } from "../model/types";
 import { pressure } from "./io";
+import { kernelLogProbeArgv, probeKernelLog } from "./kernel-log";
 import type { CollectionConfig } from "./settings";
 import { listPanesArgv } from "./tmux";
 
@@ -95,6 +96,8 @@ export function probeCapabilities(
   c: CollectionConfig,
   /** Injected so no test spawns tmux, and so a stub can fail it on purpose. */
   tmux: () => Outcome = probeTmux,
+  /** Injected for the same reason: no test reads this machine's journal. */
+  kernelLog: () => Outcome = probeKernelLog,
 ): Capability[] {
   const probes: [CapabilityId, string, () => Outcome][] = [
     [
@@ -135,6 +138,7 @@ export function probeCapabilities(
         return null;
       },
     ],
+    ["kernel-log", kernelLogProbeArgv.join(" "), kernelLog],
     [
       "smart",
       c.smartDir,
