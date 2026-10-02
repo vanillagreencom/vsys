@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Write one `smartctl -i -A` report per drive, the reports vsys reads drive
+# lifetime writes from.
+#
+#   vsys-smart-report DIR
+#
+# vsys-smart-report.service runs this as root from vsys-smart-report.timer, and
+# it writes DIR/<name>.txt for each /sys/block device with a drive behind it.
+# smartctl needs root to open a drive, which is why vsys cannot run it itself.
+# smartWrites() in src/collect/devices.ts is the reader of this text.
+#
+# Environment:
+#   SYS_BLOCK  The block device directory to list (default /sys/block).
+set -euo pipefail
+# vsys matches smartctl's field names, so they must be in English.
+export LC_ALL=C
+
+dir=${1:?report directory}
+sys=${SYS_BLOCK:-/sys/block}
+tmp=""
+cleanup() {
+	if [[ -n $tmp ]]; then rm -f -- "${tmp:?}"; fi
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+mkdir -p -- "$dir"
+
+for path in "$sys"/*; do
+	name=${path##*/}
+	# Device mapper, md, loop and zram devices have no drive of their own to
+	# ask, and vsys draws no row for a loop, memory, optical or floppy device.
+	[[ -e $path/device ]] || continue
+	[[ $name =~ ^(loop|ram|zram|sr|fd)[0-9]+$ ]] && continue
+	# Each report is written under a hidden name and renamed whole: vsys reads
+	# no hidden file, so it never reads a report half written.
+	tmp=$dir/.$name.tmp
+	# smartctl's exit status is a bit mask that is nonzero for a drive that is
+	# failing or has logged errors, which is still a report. A drive it cannot
+	# open leaves smartctl's own words and no counter, which vsys reads as
+	# lifetime writes unknown.
+	smartctl -i -A "/dev/$name" >"$tmp" 2>&1 || true
+	mv -f -- "$tmp" "$dir/$name.txt"
+	tmp=""
+done

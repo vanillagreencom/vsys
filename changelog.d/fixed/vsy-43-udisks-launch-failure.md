@@ -1,0 +1,1 @@
+- vsys no longer stops sampling when a udisks drive query fails to start; that drive's lifetime writes stay unknown instead.

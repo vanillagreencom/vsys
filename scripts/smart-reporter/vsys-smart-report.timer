@@ -1,0 +1,11 @@
+# vsys drive reporter: lifetime writes move slowly, so one report an hour is
+# enough, and the first lands a minute after boot.
+[Unit]
+Description=Hourly drive reports for vsys
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target

@@ -82,6 +82,18 @@ The installer needs the `btrfs-scrub@.service` unit that btrfs-progs ships on Ar
 
 vsys also reads the kernel log, when your user can read the system journal. It shows when the kernel last logged a failed read and which inode it was in, with no reporter installed. Storage names the source of each time it shows: the scrub report, the error counter or the kernel log. See [storage integrity](docs/architecture/storage-integrity.md) for the report format.
 
+## Drive lifetime writes
+
+Reading a drive's lifetime writes with smartctl needs root, so vsys reads the reports a root timer leaves in `/run/smartctl`, one file for each drive. vsys ships that timer. Install it with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/smart-reporter/install | sudo bash
+```
+
+The installer needs smartctl, from smartmontools. It starts an hourly timer, and the first report lands a minute after boot. Settings and Storage show the same install command while no report directory exists and the `smartDir` setting is unchanged.
+
+Without the timer, vsys asks udisks2, which most desktops run, over the system bus without root. It gives the total for NVMe drives, and for SATA drives where udisks reports it in sectors. Storage names the source of each total: smartctl or udisks2. See [storage](docs/architecture/storage.md) for what each source gives.
+
 ## Development
 
 See [Development](DEVELOPMENT.md) for local development and tests. See [Architecture](docs/architecture/overview.md) for the code structure. See [Releasing](docs/RELEASING.md) for the release process.

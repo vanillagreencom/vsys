@@ -16,6 +16,7 @@ import type {
   ScratchRoot,
   Scrub,
   Snapshot,
+  Storage as StorageReading,
   Volume,
 } from "../model/types";
 import type { Level } from "../model/verdict";
@@ -43,7 +44,12 @@ import {
   storageRegions,
 } from "./regions";
 import { firstRow, useSelection } from "./selection";
-import { reporterOffer, reporterSentence } from "./settings";
+import {
+  capabilityLabels,
+  capabilityReason,
+  lifetimeSourceText,
+  reporterOffer,
+} from "./settings";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
@@ -178,6 +184,28 @@ function errorText(v: Volume): string {
 }
 
 /** Written bytes lead, because drives wear by what is written to them. */
+/** What udisks2 said when asked for lifetime writes in place of smartctl. */
+export function udisksText(
+  outcome: NonNullable<StorageReading["udisks"]> | null,
+): string {
+  if (outcome === null)
+    return "udisks2 answered in its place, without root; a drive it gives no total for stays unknown.";
+  switch (outcome.failure) {
+    case "absent":
+      return `udisks2 is not on the system bus either, so no source gives lifetime writes (${outcome.detail}).`;
+    case "unreadable":
+    case "masked":
+      return `udisks2 refused to answer (${outcome.detail}).`;
+    case "incomplete":
+      return `udisks2 answered for no drive (${outcome.detail}).`;
+    case "malformed":
+      return `udisks2's answer is not in the expected format (${outcome.detail}).`;
+    default: {
+      const unknown: never = outcome.failure;
+      throw new Error(`Unknown udisks2 outcome: ${String(unknown)}`);
+    }
+  }
+}
 export function Storage({
   snapshot: s,
   config: c,
@@ -263,7 +291,7 @@ export function Storage({
     if (name === c.keys.copy) {
       onCopy(
         items[selected]?.kind === "filesystem"
-          ? reporterOffer(s.capabilities, c)
+          ? reporterOffer(s.capabilities, c, "scrub")?.command
           : undefined,
       );
       return true;
@@ -357,10 +385,17 @@ export function Storage({
               : amount(row.written, c)
           }
         />
+        {row.source && (
+          <span attributes={ui.dim}>
+            {`${columnGap}${lifetimeSourceText[row.source]}`}
+          </span>
+        )}
       </Line>
     ));
   };
   const mapped = totals.devices.some((d) => /^dm-/.test(d.name));
+  const smart = s.capabilities.find((cap) => cap.id === "smart");
+  const driveInstall = reporterOffer(s.capabilities, c, "smart");
   /**
    * One selectable Storage row, whichever kind it is, drawn at its place in
    * `items`. Opening a row is selecting it, so the detail under a row shows
@@ -398,7 +433,7 @@ export function Storage({
    * gets the answer without opening anything.
    */
   const scrubSource = s.capabilities.find((cap) => cap.id === "scrub");
-  const install = reporterOffer(s.capabilities, c);
+  const install = reporterOffer(s.capabilities, c, "scrub");
   const integrityRow = (i: number, item: Integrity, first: Volume) => {
     const level = integrityLevel(item.state);
     const counts = damageCounts(item);
@@ -453,8 +488,8 @@ export function Storage({
             ))}
             {install && (
               <CommandOffer
-                sentence={reporterSentence}
-                command={install}
+                sentence={install.sentence}
+                command={install.command}
                 hint={`${keyLabel(c.keys.copy)} copies the install command.`}
               />
             )}
@@ -688,7 +723,28 @@ export function Storage({
           totals.lifetime,
           true,
           "lifetime",
-          `vsys runs no privileged helper, so it reads what a timer leaves in ${c.smartDir}.`,
+          smart?.available === false
+            ? ""
+            : `vsys runs no privileged helper, so it reads what a timer leaves in ${c.smartDir}.`,
+        )}
+        {smart?.available === false && (
+          <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+            {safe(
+              `${capabilityLabels.smart}: not available: ${capabilityReason(smart)} (${smart.source}).`,
+            )}
+          </Line>
+        )}
+        {st.udisks !== undefined && (
+          <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+            {safe(udisksText(st.udisks))}
+          </Line>
+        )}
+        {driveInstall && (
+          <CommandOffer
+            sentence={driveInstall.sentence}
+            command={driveInstall.command}
+            hint="The Drive lifetime reports row on Settings copies the install command."
+          />
         )}
         <Section
           {...heading(0)}

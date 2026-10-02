@@ -3,7 +3,11 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { defaults } from "../config/config";
 import { volumesByDevice } from "../model/integrity";
-import type { ScratchOrigin, Snapshot } from "../model/types";
+import type {
+  CapabilityFailure,
+  ScratchOrigin,
+  Snapshot,
+} from "../model/types";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
@@ -12,13 +16,14 @@ import { osc52 } from "./clipboard";
 import { possibleSentence } from "./integrity";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { regionOf, regionRanges, storageRegions } from "./regions";
-import { reporterInstall } from "./settings";
+import { driveReporterInstall, reporterInstall } from "./settings";
 import {
   itemPath,
   Storage,
   type StorageItem,
   scratchSummary,
   storageItems,
+  udisksText,
   volumeLevel,
 } from "./storage-screen";
 import { ui } from "./theme";
@@ -75,7 +80,13 @@ test("Storage opens with write totals and keeps filesystem state below them", as
     }),
   ];
   s.storage.devices = [
-    { name: "nvme0n1", number: "259:0", model: null, lifetimeWritten: 1e13 },
+    {
+      name: "nvme0n1",
+      number: "259:0",
+      model: null,
+      lifetimeWritten: 1e13,
+      source: "smartctl",
+    },
   ];
   s.storage.deviceWrites = { "259:0": 2199023255552 };
   s.storage.volumes = [volumeSnapshot("/mnt/data", { readOnly: true })];
@@ -748,6 +759,195 @@ test("the install line is offered only where installing fills the gap, and copie
     expect(t.written).toEqual([]);
   } finally {
     await t.close();
+  }
+});
+
+/**
+ * Two drives and the drive report directory as the caller says: present, or
+ * absent with udisks answering or not.
+ */
+function lifetimeSnapshot(
+  smart: "reports" | "absent",
+  devices: Snapshot["storage"]["devices"],
+  udisks: Snapshot["storage"]["udisks"],
+) {
+  const s = emptySnapshot();
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "smart" && smart === "absent"
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: "/run/smartctl",
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  s.storage.devices = devices;
+  if (udisks !== undefined) s.storage.udisks = udisks;
+  return s;
+}
+const unknownDrive = {
+  name: "sda",
+  number: "8:0",
+  model: null,
+  lifetimeWritten: null,
+  source: null,
+};
+
+test("drive lifetime writes name their source, and a machine with neither source is offered the reporter", async () => {
+  const c = defaults();
+  const rows = [
+    {
+      name: "a timer's reports",
+      snapshot: lifetimeSnapshot(
+        "reports",
+        [
+          {
+            name: "nvme0n1",
+            number: "259:0",
+            model: null,
+            lifetimeWritten: 1e13,
+            source: "smartctl" as const,
+          },
+          unknownDrive,
+        ],
+        undefined,
+      ),
+      shows: [/nvme0n1\s+█+\s+9\.1 TiB\s+smartctl/],
+      hides: [
+        "udisks2",
+        driveReporterInstall,
+        "Drive lifetime reports: not available",
+      ],
+    },
+    {
+      name: "udisks alone",
+      snapshot: lifetimeSnapshot(
+        "absent",
+        [
+          {
+            name: "nvme0n1",
+            number: "259:0",
+            model: null,
+            lifetimeWritten: 1e13,
+            source: "udisks" as const,
+          },
+          unknownDrive,
+        ],
+        null,
+      ),
+      shows: [
+        /nvme0n1\s+█+\s+9\.1 TiB\s+udisks2/,
+        "Drive lifetime reports: not available: no readable drive report directory",
+        "udisks2 answered in its place",
+        driveReporterInstall,
+      ],
+      hides: [/9\.1 TiB\s+smartctl/],
+    },
+    {
+      name: "neither source",
+      snapshot: lifetimeSnapshot("absent", [unknownDrive], {
+        failure: "absent",
+        detail: "Failed to connect to bus: No such file or directory",
+      }),
+      shows: [
+        "Drive lifetime reports: not available: no readable drive report directory",
+        "udisks2 is not on the system bus either",
+        "No drive reporter is installed",
+        driveReporterInstall,
+      ],
+      hides: ["9.1 TiB"],
+    },
+  ];
+  for (const row of rows) {
+    const t = await mount(row.snapshot, c, { width: 200, height: 60 });
+    try {
+      await t.press("5");
+      const frame = t.frame();
+      const has = (text: string | RegExp) =>
+        typeof text === "string" ? frame.includes(text) : text.test(frame);
+      for (const shown of row.shows)
+        expect({ row: row.name, shown, found: has(shown) }).toEqual({
+          row: row.name,
+          shown,
+          found: true,
+        });
+      for (const hidden of row.hides)
+        expect({ row: row.name, hidden, found: has(hidden) }).toEqual({
+          row: row.name,
+          hidden,
+          found: false,
+        });
+    } finally {
+      await t.close();
+    }
+  }
+  // A reader who pointed the reports elsewhere runs a timer of their own, so
+  // the shipped one is not offered.
+  const elsewhere = await mount(
+    lifetimeSnapshot("absent", [unknownDrive], null),
+    { ...c, smartDir: "/srv/smart" },
+    { width: 200, height: 60 },
+  );
+  try {
+    await elsewhere.press("5");
+    expect(elsewhere.frame()).not.toContain(driveReporterInstall);
+  } finally {
+    await elsewhere.close();
+  }
+});
+
+test("udisksText gives every CapabilityFailure, and the null outcome, its own sentence", () => {
+  const detail = "unit-test detail";
+  // The fragment each failure's sentence is known by. unreadable and masked
+  // share one switch branch and so share one fragment by design.
+  const fragmentByFailure: Record<CapabilityFailure, string> = {
+    absent: "not on the system bus either",
+    unreadable: "refused to answer",
+    masked: "refused to answer",
+    incomplete: "answered for no drive",
+    malformed: "not in the expected format",
+  };
+  const nullFragment = "answered in its place";
+  const allFragments = [
+    nullFragment,
+    ...new Set(Object.values(fragmentByFailure)),
+  ];
+  const rows: Array<{
+    name: string;
+    outcome: { failure: CapabilityFailure; detail: string } | null;
+    fragment: string;
+  }> = [
+    { name: "null", outcome: null, fragment: nullFragment },
+    ...(Object.keys(fragmentByFailure) as CapabilityFailure[]).map(
+      (failure) => ({
+        name: failure,
+        outcome: { failure, detail },
+        fragment: fragmentByFailure[failure],
+      }),
+    ),
+  ];
+  for (const { name, outcome, fragment } of rows) {
+    const text = udisksText(outcome);
+    expect({ name, text, hasOwn: text.includes(fragment) }).toEqual({
+      name,
+      text,
+      hasOwn: true,
+    });
+    if (outcome !== null)
+      expect({ name, hasDetail: text.includes(detail) }).toEqual({
+        name,
+        hasDetail: true,
+      });
+    for (const other of allFragments) {
+      if (other === fragment) continue;
+      expect({ name, other, hasOther: text.includes(other) }).toEqual({
+        name,
+        other,
+        hasOther: false,
+      });
+    }
   }
 });
 

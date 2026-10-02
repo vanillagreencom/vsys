@@ -13,6 +13,7 @@ import { causes, meters } from "../model/verdict";
 import { point } from "../store/point";
 import { claudeLink, fixture } from "../test/fixture";
 import { present } from "../test/present";
+import { fakeBus, noBus } from "../test/udisks";
 import { capabilityLine } from "../ui/settings";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
 import { Collector, createCollector } from "./collector";
@@ -20,6 +21,7 @@ import { KernelLog } from "./kernel-log";
 import { ProcessCollector, parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
 import { ScratchCollector } from "./scratch";
+import { Udisks } from "./udisks";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -1205,7 +1207,95 @@ test("a sample carries drive lifetime writes when a SMART report is readable", a
     number: "259:0",
     model: "Test Drive",
     lifetimeWritten: 512_000_000_000,
+    source: "smartctl",
   });
+});
+/** A collector given a udisks that answers through `bus`, and nothing else. */
+const withUdisks = (f: ReturnType<typeof setup>, bus: typeof noBus) =>
+  new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    [],
+    undefined,
+    new Udisks(bus),
+  );
+const udisksDrive = {
+  name: "nvme0n1",
+  model: "Bus Drive",
+  kind: "nvme" as const,
+  attributes: { total_data_written: { type: "t", data: 7 } },
+};
+test("a machine whose timer leaves reports reads them, and never asks udisks", async () => {
+  // The author's workstation: no settings file, a timer writing into the
+  // default directory, and a udisks that would answer with other numbers.
+  const f = setup();
+  const calls: string[][] = [];
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  f.write(
+    join(f.config.smartDir, "nvme0n1"),
+    "Model Number: Test Drive\nData Units Written: 1,000,000 [512 GB]\n",
+  );
+  const s = await withUdisks(f, fakeBus([udisksDrive], calls)).sample();
+  expect(s.storage.devices).toEqual([
+    {
+      name: "nvme0n1",
+      number: "259:0",
+      model: "Test Drive",
+      lifetimeWritten: 512_000_000_000,
+      source: "smartctl",
+    },
+  ]);
+  expect(s.storage.udisks).toBeUndefined();
+  expect(calls).toEqual([]);
+  expect(s.capabilities.find((c) => c.id === "smart")?.available).toBe(true);
+});
+test("with no report directory, udisks answers in its place or says why it cannot", async () => {
+  const f = setup();
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  const alone = await withUdisks(f, fakeBus([udisksDrive])).sample();
+  expect(alone.storage.devices).toEqual([
+    {
+      name: "nvme0n1",
+      number: "259:0",
+      model: "Bus Drive",
+      lifetimeWritten: 7,
+      source: "udisks",
+    },
+  ]);
+  expect(alone.storage.udisks).toBeNull();
+  expect(alone.capabilities.find((c) => c.id === "smart")?.failure).toBe(
+    "absent",
+  );
+  const neither = await withUdisks(f, noBus).sample();
+  expect(neither.storage.devices).toEqual([
+    {
+      name: "nvme0n1",
+      number: "259:0",
+      model: null,
+      lifetimeWritten: null,
+      source: null,
+    },
+  ]);
+  expect(neither.storage.udisks?.failure).toBe("absent");
+  expect(neither.errors).toEqual([]);
+});
+test("installing the drive reporter while vsys runs makes the capability available", async () => {
+  const f = setup();
+  const collector = new Collector(f.config, 100, 4096);
+  const before = await collector.sample(1000);
+  expect(before.capabilities.find((c) => c.id === "smart")?.failure).toBe(
+    "absent",
+  );
+  mkdirSync(f.config.smartDir, { recursive: true });
+  const after = await collector.sample(2000);
+  expect(after.capabilities.find((c) => c.id === "smart")?.available).toBe(
+    true,
+  );
 });
 test("argv exclusion hides a helper process but never an agent lane", async () => {
   const f = setup();

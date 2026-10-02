@@ -1,0 +1,14 @@
+# vsys drive reporter: write one smartctl report per drive into /run/smartctl,
+# the directory vsys-smart.conf creates and vsys's smartDir names.
+[Unit]
+Description=Drive reports for vsys
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vsys-smart-report /run/smartctl
+# smartctl needs /dev, but writes nowhere else: /usr, /etc, /home and /tmp
+# stay closed to a reporter that only needs raw device access and /run.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
