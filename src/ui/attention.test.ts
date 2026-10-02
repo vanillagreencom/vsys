@@ -1294,4 +1294,11 @@ test("a new-errors card tells only the errors newer than the last check", () => 
     "The kernel logged a failed checksum read 1.0h ago. The last full check ran 2.0h ago.",
   );
   expect(between).not.toContain("counter grew");
+  // The log's failure came before the check and the counter grew after it:
+  // only the counter's error is new, so the logged one is not told.
+  const counted = card(hour, 3 * hour, 2 * hour);
+  expect(counted).toContain(
+    "The counter grew 1.0h ago by 26 failed reads. The last full check ran 2.0h ago.",
+  );
+  expect(counted).not.toContain("kernel logged");
 });
