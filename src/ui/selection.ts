@@ -71,8 +71,11 @@ export function rowsById(ids: readonly string[]): (id: string) => number {
  * item has gone, the fallback is a row number, and an arrival can land on
  * exactly that number: the list has a row there, so nothing looks wrong, and
  * the highlight moves to the newcomer. Writing the resolved row back makes the
- * fallback a choice, the way a key press is one. Recording costs a list that
- * only prepends nothing, so no screen has to decide which kind its list is.
+ * fallback a choice, the way a key press is one. Every screen records, so
+ * none has to decide which kind its list is. The cost: the gone item is
+ * forgotten once the fallback is written. A list the reader's own key shrinks
+ * and restores, or a top list an item leaves for one sample, comes back on the
+ * fallback row rather than on the item.
  *
  * The record is an effect, and a screen that also moves the selection from an
  * effect must declare that one after this hook: this effect runs first in the
