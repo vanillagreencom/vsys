@@ -10,13 +10,19 @@ const documentKeys = new Set([
   "desktopExePrefixes",
   "bundledCliSuffixes",
 ]);
-const toolKeys = new Set(["name", "mise"]);
+const toolKeys = new Set(["name", "mise", "paths"]);
 const toolNamePattern = /^\S+$/;
 const miseDirPattern = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
 export interface AgentToolEntry {
   name: string;
   mise: string[];
+  /**
+   * Path fragments the tool's own installs put its executable or script
+   * under, such as its npm package directory. A fragment matches anywhere in
+   * a path.
+   */
+  paths: string[];
 }
 
 export interface AgentToolsDocument {
@@ -115,7 +121,20 @@ export function parseAgentToolsDocument(
             "must be a mise install directory name",
           );
     for (const dir of mise) rejectDuplicate(miseDirs, dir, path, "mise dir");
-    return { name: tool.name, mise };
+    const paths =
+      tool.paths === undefined
+        ? []
+        : stringArray(
+            tool.paths,
+            path,
+            `tools[${index}].paths`,
+            (item) => item.length > 1 && item.startsWith("/"),
+            "must be a path fragment starting with /",
+          );
+    const toolPaths = new Set<string>();
+    for (const fragment of paths)
+      rejectDuplicate(toolPaths, fragment, path, `tools[${index}].paths`);
+    return { name: tool.name, mise, paths };
   });
   const desktopExePrefixes =
     input.desktopExePrefixes === undefined
@@ -181,7 +200,11 @@ function mergeAgentTools(
       rejectDuplicate(names, tool.name, path, "tool name");
       for (const dir of tool.mise)
         rejectDuplicate(miseDirs, dir, path, "mise dir");
-      merged.tools.push({ name: tool.name, mise: [...tool.mise] });
+      merged.tools.push({
+        name: tool.name,
+        mise: [...tool.mise],
+        paths: [...tool.paths],
+      });
     }
     for (const prefix of document.desktopExePrefixes) {
       rejectDuplicate(prefixes, prefix, path, "desktop exe prefix");
@@ -217,6 +240,24 @@ export async function loadAgentTools(
   const overlay = await loadOverlayDocument(overlayPath);
   if (!overlay) return shippedAgentTools;
   return mergeAgentTools(shippedAgentTools, overlay, overlayPath);
+}
+
+/**
+ * Where each tool's installs put it: its own path fragments, and the
+ * directory a version manager installs each of its mise names under. mise
+ * and asdf both keep a tool in `installs/<name>/` below their data directory,
+ * wherever a reader moved that directory. A tool with no entry here, or an
+ * empty one, names no install location.
+ */
+export function installLocations(
+  document: AgentToolsDocument,
+): Map<string, string[]> {
+  return new Map(
+    document.tools.map((tool) => [
+      tool.name,
+      [...tool.paths, ...tool.mise.map((dir) => `/installs/${dir}/`)],
+    ]),
+  );
 }
 
 export async function loadAgentToolNames(
@@ -260,6 +301,7 @@ export async function prepareAgentToolNamesSave(
         .map((name) => ({
           name,
           mise: [...(existingTools.get(name)?.mise ?? [])],
+          paths: [...(existingTools.get(name)?.paths ?? [])],
         })),
       desktopExePrefixes: [...overlay.desktopExePrefixes],
       bundledCliSuffixes: [...overlay.bundledCliSuffixes],
@@ -276,7 +318,18 @@ export async function prepareAgentToolNamesSave(
     return { agentTools: merged.tools.map((tool) => tool.name), body: null };
   return {
     agentTools: merged.tools.map((tool) => tool.name),
-    body: `${JSON.stringify(nextOverlay, null, 2)}\n`,
+    // An entry carries the key only when it names a path fragment, so a save
+    // leaves entries the reader wrote without one as they were.
+    body: `${JSON.stringify(
+      {
+        ...nextOverlay,
+        tools: nextOverlay.tools.map(({ paths, ...tool }) =>
+          paths.length ? { ...tool, paths } : tool,
+        ),
+      },
+      null,
+      2,
+    )}\n`,
   };
 }
 

@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  installLocations,
   loadAgentToolNames,
   parseAgentToolsDocument,
   saveAgentToolNames,
@@ -46,7 +47,7 @@ test("agent tools parser accepts valid documents and rejects malformed rows", ()
   const valid = parseAgentToolsDocument(
     {
       version: 1,
-      tools: [{ name: "zz-agent", mise: ["zz-install"] }],
+      tools: [{ name: "zz-agent", mise: ["zz-install"], paths: ["/zz/pkg/"] }],
       desktopExePrefixes: ["/zz/"],
       bundledCliSuffixes: ["/zz/cli"],
     },
@@ -66,6 +67,12 @@ test("agent tools parser accepts valid documents and rejects malformed rows", ()
     ["missing tools", { version: 1 }],
     ["bad name", { ...valid, tools: [{ name: "bad/name" }] }],
     ["bad mise", { ...valid, tools: [{ name: "ok", mise: ["bad/dir"] }] }],
+    ["relative path", { ...valid, tools: [{ name: "ok", paths: ["pkg/"] }] }],
+    ["root path", { ...valid, tools: [{ name: "ok", paths: ["/"] }] }],
+    [
+      "duplicate path",
+      { ...valid, tools: [{ name: "ok", paths: ["/pkg/", "/pkg/"] }] },
+    ],
     ["bad prefix", { ...valid, desktopExePrefixes: ["relative"] }],
     ["duplicate name", { ...valid, tools: [{ name: "a" }, { name: "a" }] }],
   ];
@@ -108,7 +115,11 @@ test("agent tools writer saves only overlay tools and preserves overlay signals"
       {
         version: 1,
         tools: [
-          { name: "local-agent", mise: ["local-agent"] },
+          {
+            name: "local-agent",
+            mise: ["local-agent"],
+            paths: ["/opt/local/"],
+          },
           { name: "removed-agent", mise: ["removed-agent"] },
         ],
         desktopExePrefixes: ["/apps/"],
@@ -123,7 +134,7 @@ test("agent tools writer saves only overlay tools and preserves overlay signals"
   expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
     version: 1,
     tools: [
-      { name: "local-agent", mise: ["local-agent"] },
+      { name: "local-agent", mise: ["local-agent"], paths: ["/opt/local/"] },
       { name: "new-agent", mise: [] },
     ],
     desktopExePrefixes: ["/apps/"],
@@ -168,6 +179,41 @@ test("agent tool defaults match the shipped JSON file", () => {
   ).tools.map((tool: { name: string }) => tool.name);
   expect(fromFile.length).toBeGreaterThan(0);
   expect(shippedAgentTools.tools.map((tool) => tool.name)).toEqual(fromFile);
+});
+
+test("every shipped agent tool names where it is installed", () => {
+  // Control: removing one shipped tool's paths and mise names turns this red.
+  const tools = JSON.parse(
+    readFileSync(join(process.cwd(), "data/agent-tools.json"), "utf8"),
+  ).tools as { name: string; mise?: string[]; paths?: string[] }[];
+  expect(
+    tools.length,
+    "extractor broke: data/agent-tools.json yielded no tools",
+  ).toBeGreaterThan(0);
+  expect(
+    tools
+      .filter((tool) => !tool.mise?.length && !tool.paths?.length)
+      .map((tool) => tool.name),
+  ).toEqual([]);
+});
+
+test("install locations are each tool's paths and its version manager directories", () => {
+  expect(
+    installLocations(
+      parseAgentToolsDocument({
+        version: 1,
+        tools: [
+          { name: "a", mise: ["a-dir"], paths: ["/node_modules/a/"] },
+          { name: "b" },
+        ],
+      }),
+    ),
+  ).toEqual(
+    new Map([
+      ["a", ["/node_modules/a/", "/installs/a-dir/"]],
+      ["b", []],
+    ]),
+  );
 });
 
 test("config sources do not keep an inline shipped tool list", () => {

@@ -2,11 +2,16 @@ import {
   lstatSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   type Stats,
   statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { type DesktopPaths, shippedAgentTools } from "../config/agent-tools";
+import {
+  type AgentToolsDocument,
+  installLocations,
+  shippedAgentTools,
+} from "../config/agent-tools";
 import { scopeMain } from "../model/scopes";
 import type { Group, Proc, SourceError } from "../model/types";
 import { buildKind, desktopApp, excludedArgv, toolName } from "./builds";
@@ -141,17 +146,20 @@ export class ProcessCollector implements ProcessSource {
     time: number;
     counters: Map<number, { start: number; ticks: number }>;
   };
+  private installs: Map<string, string[]>;
   constructor(
     private c: CollectionConfig,
     private ticksPerSecond: number,
     private pageSize: number,
     /**
-     * The program hands over the shipped paths with the machine overlay's
-     * merged in; a collector built any other way reads the shipped paths, so
-     * no test reads the host's overlay.
+     * The program hands over the shipped agent-tool data with the machine
+     * overlay merged in; a collector built any other way reads the shipped
+     * data, so no test reads the host's overlay.
      */
-    private desktop: DesktopPaths = shippedAgentTools,
-  ) {}
+    private tools: AgentToolsDocument = shippedAgentTools,
+  ) {
+    this.installs = installLocations(tools);
+  }
   async collect(
     request: ProcessRequest,
     signal: AbortSignal,
@@ -208,20 +216,33 @@ export class ProcessCollector implements ProcessSource {
         if (group === undefined)
           throw new Error("cgroup v2 membership missing");
         const helper = excludedArgv(command, c.excludeArgv);
-        const named = helper
-          ? null
-          : toolName(stat.comm, command, c.agentTools);
+        // Kernel threads and zombies have no userspace executable or cwd.
+        const cwd = command.length ? r.link(`${root}/cwd`) : null;
+        const executable = () => {
+          if (!executables.has(stat.pid))
+            executables.set(stat.pid, r.link(`${root}/exe`));
+          return executables.get(stat.pid) ?? null;
+        };
+        const named =
+          helper || !command.length
+            ? null
+            : toolName(
+                stat.comm,
+                command,
+                c.agentTools,
+                this.installs,
+                this.tools.bundledCliSuffixes,
+                {
+                  executable,
+                  script: (argument) => scriptPath(r, argument, cwd),
+                },
+              );
         // A desktop app may name its binary after the agent it ships with, so
         // a named process is an agent unless its executable is the app's own.
         // An executable that could not be read keeps it an agent: a failed
         // read never hides an escaped one.
-        if (named !== null && command.length)
-          executables.set(stat.pid, r.link(`${root}/exe`));
-        const executable = executables.get(stat.pid);
-        const tool =
-          executable && desktopApp(executable, this.desktop) ? null : named;
-        // Kernel threads and zombies have no userspace executable or cwd.
-        const cwd = command.length ? r.link(`${root}/cwd`) : null;
+        const exe = named === null ? null : executable();
+        const tool = exe && desktopApp(exe, this.tools) ? null : named;
         const candidate = before.get(stat.pid);
         const old = candidate?.start === stat.start ? candidate : undefined;
         // Watched lanes use the cgroup's aggregate swap counter.
@@ -361,6 +382,34 @@ export class ProcessCollector implements ProcessSource {
       ),
     };
     return { procs: result, errors: r.errors };
+  }
+}
+
+/**
+ * A script argument with its symbolic links resolved: a launcher on PATH is
+ * often a link into the package that holds the script. A relative argument
+ * is resolved against the process's working directory. A path that does not
+ * exist resolves to itself, and one that could not be read, or whose working
+ * directory is unknown, to `null`.
+ */
+function scriptPath(
+  r: Reader,
+  argument: string,
+  cwd: string | null,
+): string | null {
+  const path = isAbsolute(argument)
+    ? argument
+    : cwd === null
+      ? null
+      : join(cwd, argument);
+  if (path === null) return null;
+  try {
+    return realpathSync(path);
+  } catch (e) {
+    if (["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException).code ?? ""))
+      return path;
+    r.error(path, e);
+    return null;
   }
 }
 

@@ -135,7 +135,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             module_no_overlay = load_warden(env_no_overlay, "agent_warden_no_owner_overlay")
         old_names = {"claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "dsh", "grok", "antigravity", "agy", "omp", "ori", "fx", "cursor-agent", "muse"}
         shipped_names = {"claude", "codex", "gemini", "copilot", "opencode", "crush", "cursor-agent", "pi", "grok", "antigravity"}
-        old_mise = ["claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "cursor-agent", "npm-deepseek-ai-dsh", "npm-xai-official-grok", "aqua-google-antigravity", "github-can1357-oh-my-pi", "github-open-router-labs-ori-releases", "github-vercel-labs-fx", "http-muse"]
+        old_mise = ["claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "cursor-agent", "npm-deepseek-ai-dsh", "npm-xai-official-grok", "aqua-google-antigravity-antigravity-cli", "github-can1357-oh-my-pi", "github-open-router-labs-ori-releases", "github-vercel-labs-fx", "http-muse"]
         self.assertEqual(module.AGENT_COMMS, old_names)
         self.assertEqual(module_no_overlay.AGENT_COMMS, shipped_names)
         for directory in old_mise:
@@ -150,6 +150,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("unknown overlay key", {"version": 1, "tools": []}, {"version": 1, "tools": [], "extra": True}, ".config/vsys/agent-tools.json"),
             ("duplicate overlay name", {"version": 1, "tools": [{"name": "claude"}]}, {"version": 1, "tools": [{"name": "claude"}]}, ".config/vsys/agent-tools.json"),
             ("mise slash", {"version": 1, "tools": [{"name": "ok", "mise": ["bad/dir"]}]}, None, "agent-tools.json"),
+            ("path relative", {"version": 1, "tools": [{"name": "ok", "paths": ["pkg/"]}]}, None, "agent-tools.json"),
             ("prefix relative", {"version": 1, "tools": [], "desktopExePrefixes": ["relative"]}, None, "agent-tools.json"),
             ("non json", "{", None, "agent-tools.json"),
             ("invalid utf8", b"\xff", None, "agent-tools.json"),

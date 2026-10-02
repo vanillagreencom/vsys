@@ -19,7 +19,7 @@ Process collection reads every process in the configured `/proc` once per sample
 
 `WorkerHost` in `src/collect/worker-host.ts` is the one lifecycle for every collection thread: the process thread here and the scratch scan thread in [storage](storage.md). `ProcessThread` and `WorkerScan` each supply only how their thread starts, its setup message and how its reply is read. `src/collect/worker-host.test.ts` drives each rule below through a stand-in thread.
 
-- Start: the first request starts the thread and sends its setup message, when the host has one, before the request. The process thread's setup carries the collection settings, the clock and page units, and the desktop paths `createCollector()` reads from the shared agent-tool data and its overlay each time it builds a collector.
+- Start: the first request starts the thread and sends its setup message, when the host has one, before the request. The process thread's setup carries the collection settings, the clock and page units, and the shared agent-tool data with its overlay merged in, which `createCollector()` reads each time it builds a collector.
 - Request: a waiting request keeps the program alive; an idle thread does not.
 - Failure: an answer that reports a failure rejects the request with its message and keeps the thread. A thread error or an exit before the answer rejects the request and ends the thread.
 - Replacement: the next request after an ended thread starts a new one. A replacement process thread's first reading has no rate, which is unknown rather than a rate measured against a reading it never took.

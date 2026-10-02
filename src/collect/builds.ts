@@ -1,21 +1,63 @@
 import { basename } from "node:path";
 import type { DesktopPaths } from "../config/agent-tools";
 
-/** Match executable or script names, never arbitrary prompt arguments. */
+/** Runtimes an agent CLI's script runs under, where the script names it. */
+const scriptRunners = ["bun", "node", "python", "python3", "bash", "sh"];
+/**
+ * What `toolName` reads to confirm a name, read only once a name matched.
+ * `null` is a path that could not be read.
+ */
+export interface ToolPaths {
+  /** The process's executable. */
+  executable(): string | null;
+  /** A script argument with symbolic links resolved, as given if absent. */
+  script(argument: string): string | null;
+}
+/**
+ * A name alone never makes an agent: `pi` or `dsh` can be anyone's program
+ * or script. A name a tool's executable or script carries is that tool only
+ * where the path lies in one of its install locations, or in an engine a
+ * desktop app bundles. A tool with no install location is one a reader named
+ * without saying where it lives, so its executable name alone is their
+ * claim; a script never matches one. A path that could not be read keeps the
+ * name, because a failed read never hides an escaped agent. Never matched on
+ * prompt arguments: `bash -c claude` is not claude.
+ */
 export function toolName(
   comm: string,
   command: string[],
   tools: string[],
+  installs: ReadonlyMap<string, string[]>,
+  bundled: string[],
+  paths: ToolPaths,
 ): string | null {
-  const candidates = [comm, basename(command[0] ?? "")];
+  const installed = (name: string, path: string) =>
+    (installs.get(name) ?? [])
+      .concat(bundled)
+      .some((location) => path.includes(location));
+  const runner = basename(command[0] ?? "");
+  const named = tools.find((tool) => tool === comm || tool === runner);
+  if (named !== undefined) {
+    if (!installs.get(named)?.length) return named;
+    const executable = paths.executable();
+    if (executable === null || installed(named, liveExecutable(executable)))
+      return named;
+  }
+  const script = command[1];
   if (
-    ["bun", "node", "python", "python3", "bash", "sh"].includes(candidates[1])
+    !scriptRunners.includes(runner) ||
+    script === undefined ||
+    script.startsWith("-")
   )
-    candidates.push(
-      basename(command[1] ?? "").replace(/\.(js|mjs|cjs|py|sh)$/, ""),
-    );
-  return tools.find((t) => candidates.includes(t)) ?? null;
+    return null;
+  const name = basename(script).replace(/\.(js|mjs|cjs|py|sh)$/, "");
+  if (!tools.includes(name) || !installs.get(name)?.length) return null;
+  if (installed(name, script)) return name;
+  const resolved = paths.script(script);
+  return resolved === null || installed(name, resolved) ? name : null;
 }
+/** The kernel marks a binary replaced while it ran with ` (deleted)`. */
+const liveExecutable = (path: string) => path.replace(/ \(deleted\)$/, "");
 /**
  * Tool processes that are not lanes are recognised by their executable name or
  * by a whole flag. Never by prompt text: `claude -p "fix the language server"`
@@ -41,7 +83,7 @@ export function excludedArgv(command: string[], patterns: string[]): boolean {
  * trailing ` (deleted)`, which is not part of its path.
  */
 export function desktopApp(executable: string, paths: DesktopPaths): boolean {
-  const path = executable.replace(/ \(deleted\)$/, "");
+  const path = liveExecutable(executable);
   return (
     paths.desktopExePrefixes.some((prefix) => path.startsWith(prefix)) &&
     !paths.bundledCliSuffixes.some((suffix) => path.endsWith(suffix))

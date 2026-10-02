@@ -1,4 +1,4 @@
-import type { DesktopPaths } from "../config/agent-tools";
+import type { AgentToolsDocument } from "../config/agent-tools";
 import type { ProcessReading, ProcessRequest, ProcessSource } from "./procs";
 import type { CollectionConfig } from "./settings";
 import { workerFile } from "./worker-file";
@@ -11,7 +11,7 @@ export type ProcessMessage =
       config: CollectionConfig;
       ticksPerSecond: number;
       pageSize: number;
-      desktop: DesktopPaths;
+      tools: AgentToolsDocument;
     }
   | { kind: "collect"; id: number; request: ProcessRequest };
 /**
@@ -43,7 +43,7 @@ export class ProcessThread implements ProcessSource {
     config: CollectionConfig,
     ticksPerSecond: number,
     pageSize: number,
-    desktop: DesktopPaths,
+    tools: AgentToolsDocument,
     /** The program starts a real thread; a test stands up its own. */
     start: () => ProcessPort = () =>
       new Worker(workerFile("process-worker"), { ref: false }) as Bun.Worker,
@@ -55,7 +55,7 @@ export class ProcessThread implements ProcessSource {
       name: "Process thread",
       start,
       decode: (data) => JSON.parse(data) as ProcessReply,
-      setup: { kind: "setup", config, ticksPerSecond, pageSize, desktop },
+      setup: { kind: "setup", config, ticksPerSecond, pageSize, tools },
     });
   }
   collect(

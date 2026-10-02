@@ -18,6 +18,14 @@ import type {
   Volume,
 } from "../model/types";
 
+/**
+ * Claude Code as its native installer lays it out: a launcher link on PATH,
+ * resolving to the version it runs. A process the fixture starts through the
+ * link runs that version, so it is an agent by where it is installed.
+ */
+export const claudeLink = "/home/reader/.local/bin/claude";
+const claudeBinary = "/home/reader/.local/share/claude/versions/2.1.0";
+
 /** Fake kernel files never require systemd, mounted test disks, or live agents. */
 export function fixture() {
   const root = join(process.cwd(), "tmp", `vsys-test-${crypto.randomUUID()}`);
@@ -81,9 +89,13 @@ export function fixture() {
       cwd?: string;
       threads?: number;
       comm?: string;
+      /** The executable link, `command[0]` unless given. */
+      exe?: string;
     } = {},
   ) {
-    const command = options.command ?? ["/usr/bin/claude"];
+    const command = options.command ?? [claudeLink];
+    const exe =
+      options.exe ?? (command[0] === claudeLink ? claudeBinary : command[0]);
     const fields = Array.from({ length: 50 }, () => "0");
     fields[0] = "S";
     fields[1] = String(options.parent ?? 1);
@@ -105,7 +117,7 @@ export function fixture() {
     write(join(path, "environ"), options.env ?? "");
     for (const [name, value] of [
       ["cwd", options.cwd ?? root],
-      ["exe", command[0]],
+      ["exe", exe],
     ]) {
       const pathLink = join(path, name);
       rmSync(pathLink, { force: true });

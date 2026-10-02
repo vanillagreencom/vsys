@@ -17,7 +17,7 @@ self.onmessage = (event: MessageEvent<ProcessMessage>) => {
         message.config,
         message.ticksPerSecond,
         message.pageSize,
-        message.desktop,
+        message.tools,
       );
       return;
     case "collect": {
