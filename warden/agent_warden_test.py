@@ -713,6 +713,46 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
 
+    def test_orphan_protection_uses_comm_only_name_match(self):
+        # D010's location check gates only the automatic move into
+        # agents.slice (is_agent). claude's and codex's native, non-mise
+        # installs are described only through `paths` in data/agent-tools.json
+        # (no `executables` entry for either), so a process on such an
+        # install never satisfies D010 and is_agent reads it as unconfirmed.
+        # Orphan reap must still treat it as a live agent: _is_orphan and
+        # scope_still_orphan read is_named_agent, the wider comm-only match,
+        # not is_agent.
+        mgr = 4000
+        native_install = f"{self.w.HOME}/.local/share/claude/versions/2.1.0/claude"
+        headless = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-headless.scope"
+        recs = {
+            mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
+            # a headless worker: its launch shell has already exited, so it is
+            # reparented to the user manager, with no controlling terminal.
+            700: self.P(700, mgr, "claude", ["claude", "-p", "work"], headless, exe=native_install),
+        }
+        self.assertFalse(recs[700].is_agent, "a paths-only native install must stay unconfirmed by is_agent")
+        self.assertTrue(recs[700].is_named_agent, "the comm-only match must still see a live agent")
+        units = {unit for unit, _ in self.w.orphans(recs, self.w.manager_pids(recs))}
+        self.assertNotIn("agent-confine-headless.scope", units)
+
+    def test_orphan_protection_name_match_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "    if any(p.is_named_agent for p in members):"
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, "    if any(p.is_agent for p in members):")
+        module = self.load_mutant(mutant, "agent_warden_orphan_name_match_mutant")
+        mgr = 4000
+        native_install = f"{module.HOME}/.local/share/claude/versions/2.1.0/claude"
+        headless = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-headless.scope"
+        recs = {
+            mgr: module.Proc(mgr, ppid=1, comm="systemd", argv=["/usr/lib/systemd/systemd", "--user"],
+                              exe="/usr/lib/systemd/systemd", cgroup="/user.slice", start=1),
+            700: module.Proc(700, ppid=mgr, comm="claude", argv=["claude", "-p", "work"],
+                              exe=native_install, cgroup=headless, start=1),
+        }
+        units = {unit for unit, _ in module.orphans(recs, module.manager_pids(recs))}
+        self.assertIn("agent-confine-headless.scope", units)
 
     def test_reap_orphans_returns_status_rows_and_reaped_event(self):
         with scratch() as tmp:

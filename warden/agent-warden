@@ -599,6 +599,24 @@ class Proc:
         return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])
 
     @property
+    def is_named_agent(self):
+        """Pre-D010 comm-only match, with no install-location confirmation:
+        true whenever the process's own name identifies it as a configured
+        agent tool or an interpreter-hosted CLI started from a mise install.
+        _is_orphan and scope_still_orphan use this, never is_agent, to decide
+        whether a scope holds a live agent session: an install an agent-tools
+        entry describes only through `paths` (no `executables`, no mise
+        directory) can never satisfy D010's location check, so a genuine,
+        running agent on such an install must still read as alive here even
+        though is_agent reads it as unconfirmed. is_agent stays narrow and
+        keeps gating only the automatic move into agents.slice."""
+        if self.excluded or self.is_desktop:
+            return False
+        if self.comm in AGENT_COMMS:
+            return True
+        return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])
+
+    @property
     def is_build(self):
         if self.excluded or self.is_desktop:
             return False
@@ -722,16 +740,19 @@ def launch_root_alive(unit, members):
 
 def _is_orphan(unit, members, managers):
     """True when a scope's whole membership is abandoned leftover work: no member
-    holds a controlling terminal, no member is itself a live agent session, and
-    every member is either parented inside the scope or was reparented to
-    init/the manager. A live agent (even headless, even with its launch shell
-    gone) is never junk to reap; nor is a scope still held by a live external
-    process (a pane shell, another subreaper). A still-running launch root in an
-    agent-confine and non-build agent-warden scopes also protect unlisted agent CLIs. Only leftover
-    non-agent processes (dev servers, npm/bun, a stuck build) qualify."""
+    holds a controlling terminal, no member's name identifies it as a live agent
+    session, and every member is either parented inside the scope or was
+    reparented to init/the manager. This liveness check is is_named_agent, the
+    wider comm-only name match, not is_agent: a live agent (even headless, even
+    with its launch shell gone, even on an install D010's location check cannot
+    yet confirm) is never junk to reap; nor is a scope still held by a live
+    external process (a pane shell, another subreaper). A still-running launch
+    root in an agent-confine and non-build agent-warden scopes also protect
+    unlisted agent CLIs. Only leftover non-agent processes (dev servers,
+    npm/bun, a stuck build) qualify."""
     if not members or any(p.tty for p in members):
         return False
-    if any(p.is_agent for p in members):
+    if any(p.is_named_agent for p in members):
         return False                 # a live agent session, headless or not
     if launch_root_alive(unit, members):
         return False
@@ -2579,6 +2600,7 @@ def selftest():
     WARDEN_ROOTED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-304-123.scope"
     WARDEN_GONE = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-305-123.scope"
     WARDEN_REUSED = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-306-123.scope"
+    HEADLESS = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-headless.scope"
     orec = {
         MGR: P(MGR, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
         # leaked bun servers reparented to the manager, no terminal -> orphan
@@ -2603,8 +2625,15 @@ def selftest():
         4050: P(4050, MGR, "rustc", ["rustc"], WARDEN_GONE, exe=f"{HOME}/.rustup/x/rustc", marked=True),
         306: P(306, MGR, "goose", ["goose"], WARDEN_REUSED, exe=f"{HOME}/bin/goose", marked=True, start=999),
         4060: P(4060, 306, "rustc", ["rustc"], WARDEN_REUSED, exe=f"{HOME}/.rustup/x/rustc", marked=True),
+        # a headless worker on claude's native, non-mise install: data/agent-tools.json
+        # names it only through `paths` (no `executables` entry), so D010's location
+        # check cannot confirm is_agent, but orphan reap must still see a live agent
+        700: P(700, MGR, "claude", ["claude", "-p", "work"], HEADLESS, exe=f"{HOME}/.local/share/claude/versions/2.1.0/claude"),
     }
     units = {u for u, _ in orphans(orec, manager_pids(orec))}
+    check("a paths-only native claude install stays unconfirmed by is_agent", not orec[700].is_agent)
+    check("the comm-only match still sees a paths-only native install as a live agent", orec[700].is_named_agent)
+    check("headless worker on a paths-only native install is not an orphan", "agent-confine-headless.scope" not in units)
     check("orphaned bun scope (reparented, no tty) is an orphan", "agent-confine-leak.scope" in units)
     check("orphaned npm scope is an orphan despite agent names in argv", "agent-confine-npm.scope" in units)
     check("attached session with a terminal is never an orphan", "agent-confine-live.scope" not in units)
