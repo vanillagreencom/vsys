@@ -386,10 +386,13 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
  *
  * A held reading with no drives at all — kept from a failed first read, or
  * from two listing failures in a row, each dropping the held reading in turn
- * until the second one's own empty result is what gets held — is read as
- * stale by any fresh listing naming at least one target, without asking
+ * until the second one's own empty result is what gets held, or simply from
+ * a real system that then had zero SMART-capable drives — is read as stale
+ * by any fresh listing naming at least one target, without asking
  * identitySwapped() to compare: an empty held reading has no prior drive to
  * compare against, so that check would vacuously report no swap forever.
+ * This also covers a drive hot-plugged in after a genuinely driveless hold
+ * started, not only a failure's recovery.
  */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
