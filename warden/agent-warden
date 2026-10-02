@@ -900,7 +900,11 @@ def _scratch_in_use(path, procs):
     stays alive while any process in it runs. The exception is a pid in a
     scope move() created (WARDEN_MOVE_SCOPE_RE). Such a pid has left the
     scope its TMPDIR names, and once its agent parents exit no readable
-    ancestor is left to check, so it makes path "unknown". Both sides are
+    ancestor is left to check. Nothing ties that pid to any one
+    directory, so it makes every gone-scope path "unknown", not just its
+    own: each such directory no readable pid holds is kept for as long as
+    that pid lives. This fail-closed cost is accepted, and only a pid in a
+    warden move scope incurs it. Both sides are
     resolved with os.path.realpath before comparing, not just lexically
     normalized: a trailing slash on AGENT_TMPDIR makes agent-confine's bash
     concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a separator in
