@@ -78,7 +78,7 @@ test("a name the report cannot carry exactly marks its address unresolved", () =
     );
     expect({ name, addresses: report.addresses }).toEqual({
       name,
-      addresses: [{ logical: 1, paths: ["/fine"], resolved: false }],
+      addresses: [{ logical: 1, paths: [], resolved: false }],
     });
   }
 });
@@ -90,6 +90,19 @@ Damaged files: 1
 logical 1:
   (not resolved: inode 257 subvol snap could not be accessed: not mounted)
   /seen/after/the/mark
+`);
+  expect(report.addresses).toEqual([
+    { logical: 1, paths: [], resolved: false },
+  ]);
+});
+
+test("a name already listed is dropped once a later line marks its address unresolved", () => {
+  const report = parseScrub(`Status: finished
+
+Damaged files: 1
+logical 1:
+  /seen/before/the/mark
+  (not resolved: inode 257 subvol snap could not be accessed: not mounted)
 `);
   expect(report.addresses).toEqual([
     { logical: 1, paths: [], resolved: false },

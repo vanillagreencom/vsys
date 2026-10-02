@@ -1,1 +1,1 @@
-- Storage's damaged-file list keeps a name holding a line-separator character, and stops listing a partial set once a name could not be resolved.
+- Storage marks a damaged address unresolved, not dropped, when a name holds a line-separator character, and never lists a partial name set for an unresolved address.

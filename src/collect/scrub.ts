@@ -126,12 +126,19 @@ export function parseScrub(raw: string): ScrubReport {
     }
     const name = path[1];
     // The reporter could not name every file under this address. It is
-    // damage all the same, and no path under it is listed.
-    if (name.startsWith("(not resolved")) current.resolved = false;
-    else if (name.startsWith("(")) continue;
+    // damage all the same, and no path under it is listed. Any name already
+    // collected for this address is dropped too, whichever line marks it: an
+    // address is all-or-none regardless of where in its group the mark falls.
+    if (name.startsWith("(not resolved")) {
+      current.resolved = false;
+      current.paths = [];
+    } else if (name.startsWith("(")) continue;
     // A name this text cannot carry exactly may be a different file's name
     // once read, so the address is not resolved either.
-    else if (!carried(name)) current.resolved = false;
+    else if (!carried(name)) {
+      current.resolved = false;
+      current.paths = [];
+    }
     // Once the address is marked unresolved, a later name under it stays
     // unlisted too, so the set a reader sees is never a partial one.
     else if (current.resolved !== false) current.paths.push(name);
