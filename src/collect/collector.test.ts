@@ -15,6 +15,7 @@ import { claudeLink, fixture } from "../test/fixture";
 import { present } from "../test/present";
 import { fakeBus, noBus } from "../test/udisks";
 import { capabilityLine } from "../ui/settings";
+import { FinishedScrubMemory } from "./btrfs";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
 import { Collector, createCollector } from "./collector";
 import { KernelLog } from "./kernel-log";
@@ -1984,5 +1985,33 @@ Error summary:    no errors found
   } finally {
     after.close();
     before.close();
+  }
+});
+
+test("createCollector shares the predecessor's scrub memory rather than copying it, so a finish landing after the rebuild is not lost", async () => {
+  const f = setup();
+  const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+  const scrubMemory = new FinishedScrubMemory();
+  // The replacement is built while the predecessor's memory still holds
+  // nothing for this filesystem, as it would mid-sample before that sample
+  // reaches a finished report.
+  const after = await createCollector(
+    f.config,
+    false,
+    { lastFinishedScrub: scrubMemory },
+    f.agentToolsPath,
+  );
+  try {
+    // The predecessor's sample reaches the finished, damaged report only
+    // now, after the rebuild above already read its memory. A copy taken at
+    // rebuild time would never see this.
+    scrubMemory.advance(uuid, { at: 500, damaged: true });
+    const snapshot = await after.sample(1000);
+    expect(snapshot.storage.lastFinishedScrub?.[uuid]).toEqual({
+      at: 500,
+      damaged: true,
+    });
+  } finally {
+    after.close();
   }
 });

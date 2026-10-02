@@ -1,0 +1,1 @@
+- A scrub that finished right as a settings save rebuilt the collector is no longer lost; damage it found can no longer read as healthy.

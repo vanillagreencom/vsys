@@ -112,6 +112,33 @@ export function corruptionTotal(
     : null;
 }
 
+/**
+ * Each filesystem's last finished scrub, by lowercased filesystem id, held so
+ * a predecessor and the successor a settings change builds from it can share
+ * one memory instead of each holding a copy. A sample still finishing on the
+ * predecessor when the successor is built keeps writing to this same object,
+ * so a report that lands after the handoff is never stranded on a copy the
+ * successor cannot see. `advance` is the only writer, and it never moves a
+ * filesystem's entry backward: a stopped-early report leaves it standing.
+ */
+export class FinishedScrubMemory {
+  private byFsid: Map<string, FinishedScrub>;
+  constructor(seed?: Record<string, FinishedScrub>) {
+    this.byFsid = new Map(Object.entries(seed ?? {}));
+  }
+  get(key: string): FinishedScrub | undefined {
+    return this.byFsid.get(key);
+  }
+  advance(key: string, scrub: FinishedScrub): void {
+    const remembered = this.byFsid.get(key);
+    if (remembered === undefined || scrub.at > remembered.at)
+      this.byFsid.set(key, scrub);
+  }
+  snapshot(): Record<string, FinishedScrub> {
+    return Object.fromEntries(this.byFsid);
+  }
+}
+
 /** Counter baselines belong to a filesystem/device, not a mount alias. */
 export class StorageCollector {
   /**
@@ -127,14 +154,15 @@ export class StorageCollector {
      */
     private udisks: Udisks | null = null,
     /**
-     * Seeds `finishedScrub` from a predecessor's own memory, so a settings
-     * change that replaces this collector does not read a stopped-early
-     * report as if nothing had ever finished, or ever found damage.
+     * The predecessor's own `FinishedScrubMemory`, shared rather than copied,
+     * so a settings change that replaces this collector while the
+     * predecessor's sample is still finishing never reads a stopped-early
+     * report as if nothing had ever finished, or ever found damage: whichever
+     * of the two collectors next reaches a finished report, both see it.
      */
-    initialFinishedScrub?: Record<string, FinishedScrub>,
+    sharedFinishedScrub?: FinishedScrubMemory,
   ) {
-    if (initialFinishedScrub)
-      this.finishedScrub = new Map(Object.entries(initialFinishedScrub));
+    this.finishedScrub = sharedFinishedScrub ?? new FinishedScrubMemory();
   }
   private initial = new Map<string, number>();
   private last = new Map<string, number>();
@@ -142,16 +170,15 @@ export class StorageCollector {
   private memory: ErrorMemory | null = null;
   private memoryPath = "";
   /**
-   * Each filesystem's last finished scrub, by lowercased filesystem id.
    * Carried across samples because the reporter keeps one report per
    * filesystem and a check that stops early overwrites it; this process's
    * own memory of the last one that finished, outcome included, is otherwise
    * lost.
    */
-  private finishedScrub = new Map<string, FinishedScrub>();
-  /** A snapshot of the remembered finished scrubs, to seed a successor built from this one. */
-  finishedScrubSnapshot(): Record<string, FinishedScrub> {
-    return Object.fromEntries(this.finishedScrub);
+  private finishedScrub: FinishedScrubMemory;
+  /** The live memory handle, to share with a successor built from this one. */
+  finishedScrubMemory(): FinishedScrubMemory {
+    return this.finishedScrub;
   }
   /**
    * The scrub report directory as the last collection's read of it found it:
@@ -436,24 +463,21 @@ export class StorageCollector {
           // The reporter keeps one report per filesystem, so a later scrub
           // that stops early overwrites the very report that proved this one
           // sound, outcome included. Only a finished reading ever moves this
-          // memory, and it never moves backward: a stopped-early report
-          // leaves it standing.
+          // memory, and `advance` never moves it backward: a stopped-early
+          // report leaves it standing.
           if (
             report.uuid &&
             report.status === "finished" &&
             typeof report.startedAt === "number"
           ) {
-            const key = report.uuid.toLowerCase();
-            const remembered = this.finishedScrub.get(key);
-            if (remembered === undefined || report.startedAt > remembered.at)
-              this.finishedScrub.set(key, {
-                at: report.startedAt,
-                damaged: scrubFoundDamage({
-                  addressCount: addresses?.length ?? 0,
-                  uncorrectable: report.uncorrectable,
-                  problem,
-                }),
-              });
+            this.finishedScrub.advance(report.uuid.toLowerCase(), {
+              at: report.startedAt,
+              damaged: scrubFoundDamage({
+                addressCount: addresses?.length ?? 0,
+                uncorrectable: report.uncorrectable,
+                problem,
+              }),
+            });
           }
         } catch (e) {
           r.error(path, e);
@@ -464,7 +488,7 @@ export class StorageCollector {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT")
         r.error(c.scrubDir, e);
     }
-    storage.lastFinishedScrub = Object.fromEntries(this.finishedScrub);
+    storage.lastFinishedScrub = this.finishedScrub.snapshot();
     if (!skipScratch) {
       const scratch = await this.scratch.collect(
         c,

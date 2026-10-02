@@ -1,4 +1,5 @@
 import { readFile, rm } from "node:fs/promises";
+import type { FinishedScrubMemory } from "./collect/btrfs";
 import { createCollector } from "./collect/collector";
 import type { KernelLog } from "./collect/kernel-log";
 import type { SccacheCollector } from "./collect/sccache";
@@ -19,7 +20,7 @@ import {
   validate,
 } from "./config/config";
 import { notify } from "./model/alerts";
-import type { FinishedScrub, Snapshot } from "./model/types";
+import type { Snapshot } from "./model/types";
 import type { History } from "./store/history";
 
 interface Source {
@@ -29,8 +30,13 @@ interface Source {
   sccache?: SccacheCollector;
   /** The kernel log and its cursor, handed on the same way. */
   kernelLog?: KernelLog | null;
-  /** Each filesystem's last finished scrub, handed on the same way. */
-  lastFinishedScrub?: Record<string, FinishedScrub>;
+  /**
+   * Each filesystem's last finished scrub, handed on the same way, but
+   * shared rather than copied: a replacement reads the same live memory,
+   * never a snapshot taken before a sample still in flight on this source
+   * finishes updating it.
+   */
+  lastFinishedScrub?: FinishedScrubMemory;
 }
 type SourceFactory = (config: Config, previous: Source) => Promise<Source>;
 interface SessionOptions {
