@@ -366,7 +366,10 @@ function copy(
             ? `${recorded.charAt(0).toUpperCase()}${recorded.slice(1)}. ${v.checked == null ? "No full check has ever run." : `The last full check ran ${age(v.checked)} ago.`} Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
             : "Each of these filesystems recorded an error after the last check that read it end to end, so no check has said what the damage cost. Open each one for its own times.",
         ],
-        next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
+        next:
+          paths === 1
+            ? "Open Storage and run a check on that filesystem, then read the damaged files it names."
+            : "Open Storage and run a check on each of these filesystems, then read the damaged files it names.",
         view: "Storage",
         target: cause.at ?? first,
         headline: `Danger: new errors on ${mounts}, unchecked since`,

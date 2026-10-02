@@ -1222,6 +1222,58 @@ test("a card naming several filesystems shows no one filesystem's numbers", () =
   expect(said(two)).toContain("Open each one for its own times");
 });
 
+test("a new-errors card's next step matches the ways text's singular/plural framing", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const grown = (fsid: string, size: number) => {
+    s.storage.volumes.push(
+      volumeSnapshot(`/${fsid}`, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+        lastErrorAt: s.time - 1000,
+        lastErrorSize: size,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: no errors found",
+      problem: false,
+      readable: true,
+      fsid,
+      startedAt: s.time - 3600000,
+      status: "finished",
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    });
+  };
+  grown("a", 26);
+  const one = present(
+    attention(s, c, { basePath: base }).find(
+      (item) => item.id === "new-errors",
+    ),
+    "the one-filesystem new-errors card",
+  );
+  expect(said(one)).not.toContain("Open each one for its own times");
+  expect(one.next).toContain("that filesystem");
+  expect(one.next).not.toContain("each of these filesystems");
+  expect(one.target).toEqual({ kind: "path", path: "a" });
+  // A second filesystem turns `ways` plural; `next` and `target` must still
+  // agree with it, rather than the first filesystem's singular wording.
+  grown("b", 9);
+  const two = present(
+    attention(s, c, { basePath: base }).find(
+      (item) => item.id === "new-errors",
+    ),
+    "the multi-filesystem new-errors card",
+  );
+  expect(said(two)).toContain("Open each one for its own times");
+  expect(two.next).toContain("each of these filesystems");
+  expect(two.next).not.toContain("that filesystem");
+  expect(two.target).toEqual({ kind: "path", path: "a" });
+});
+
 test("a new error only the kernel log recorded is not told as counter growth", () => {
   const c = defaults();
   const s = emptySnapshot();
