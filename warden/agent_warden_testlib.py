@@ -41,6 +41,18 @@ def load_warden(env, name="agent_warden_under_test", path=WARDEN):
         os.environ.update(old)
 
 
+def default_tool_exe(module, comm):
+    """A located executable for a fixture naming a real agent tool, so a
+    plan/lineage row that stands a comm in for "some agent" need not know
+    that tool's install layout; a row that tests install-location
+    confirmation itself passes its own `exe`."""
+    location = module.TOOL_LOCATIONS.get(comm)
+    if location and location["mise"]:
+        directory = location["mise"][0]
+        return f"{module.MISE_DATA}/installs/{directory}/0.0.0/{comm}"
+    return "/usr/bin/x"
+
+
 def materialize_warden_script(base, text=None):
     base = Path(base)
     path = base / "warden" / "agent-warden"

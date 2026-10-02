@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 
-from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, load_warden, scratch
+from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, scratch
 
 sys.dont_write_bytecode = True
 
@@ -31,7 +31,9 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def P(self, pid, ppid, comm, argv, cg=None, exe="/usr/bin/x", start=1, marked=False, tty=0):
+    def P(self, pid, ppid, comm, argv, cg=None, exe=None, start=1, marked=False, tty=0):
+        if exe is None:
+            exe = default_tool_exe(self.w, comm)
         return self.w.Proc(pid, ppid=ppid, comm=comm, argv=argv, exe=exe, cgroup=cg or self.A, start=start, marked=marked, tty=tty)
 
 
@@ -47,7 +49,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             (data_dir / "agent-tools.json").write_text(json.dumps({
                 "version": 1.0,
                 "tools": [{"name": "zz-agent", "mise": ["zz-install"]}],
-                "desktopExePrefixes": ["/zz/"],
+                "desktopExePrefixes": ["/zz/", "/tmp/.mount_"],
                 "bundledCliSuffixes": ["/zz/cli"],
             }))
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
@@ -58,8 +60,10 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("agent names from data", module.AGENT_COMMS, {"zz-agent"}),
             ("mise path from data", bool(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/zz-install/bin/zz")), True),
             ("old mise absent", bool(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/claude/bin/claude")), False),
-            ("desktop prefixes from data", module.DESKTOP_EXE_PREFIXES, ("/zz/",)),
+            ("desktop prefixes from data", module.DESKTOP_EXE_PREFIXES, ("/zz/", "/tmp/.mount_")),
             ("bundled suffixes from data", module.BUNDLED_CLI_SUFFIXES, ("/zz/cli",)),
+            ("bundled CLI prefixes drop a /tmp desktop prefix, world-writable on every target",
+             module.BUNDLED_CLI_PREFIXES, ("/zz/",)),
         ]
         for name, actual, expected in rows:
             with self.subTest(name=name):
@@ -215,7 +219,9 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def test_classification_rows(self):
         mise = f"{self.w.MISE_DATA}/installs"
         rows = [
-            ("agent by comm", self.P(1, 0, "claude", ["claude"]).is_agent, True),
+            ("agent by comm, confirmed by its install location", self.P(1, 0, "claude", ["claude"], exe=f"{mise}/claude/2.1.0/claude").is_agent, True),
+            ("a non-agent program sharing an agent's name is not an agent", self.P(12, 0, "pi", ["/usr/local/bin/pi"], exe="/usr/local/bin/pi").is_agent, False),
+            ("a machine-local script sharing an agent's name is not an agent", self.P(13, 0, "codex", ["/usr/local/bin/codex"], exe="/usr/local/bin/codex").is_agent, False),
             ("hosted mise cli", self.P(2, 0, "node", [f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"], exe="/usr/bin/node").is_agent, True),
             ("hosted mise label", self.w._tool_label(self.P(8, 0, "node", [f"{mise}/npm-xai-official-grok/latest/bin/grok"], exe="/usr/bin/node")), "grok"),
             ("build by comm", self.P(3, 0, "cargo", ["cargo", "test"]).is_build, True),
@@ -226,10 +232,94 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("bundled CLI replaced while running", self.P(9, 0, "codex", ["/opt/codex-desktop/resources/codex", "exec"], exe="/opt/codex-desktop/resources/codex (deleted)").is_agent, True),
             ("bundled helper rides along", self.P(10, 0, "node_repl", ["/opt/codex-desktop/resources/node_repl"], exe="/opt/codex-desktop/resources/node_repl").rides_along, True),
             ("bundled helper replaced while running", self.P(11, 0, "node_repl", ["/opt/codex-desktop/resources/node_repl"], exe="/opt/codex-desktop/resources/node_repl (deleted)").rides_along, True),
+            ("agent confirmed by an exact configured executable path", self.P(14, 0, "opencode", ["opencode"], exe="/usr/bin/opencode").is_agent, True),
+            ("an executable path containing but not equal to the configured one is not confirmed", self.P(15, 0, "opencode", ["opencode-fake"], exe="/usr/bin/opencode-fake").is_agent, False),
+            ("a bundled CLI planted under the shipped /tmp/.mount_ prefix is not an agent: /tmp is world-writable on every target",
+             self.P(16, 0, "codex", ["/tmp/.mount_zzzzzz/codex-desktop/resources/codex", "exec"],
+                    exe="/tmp/.mount_zzzzzz/codex-desktop/resources/codex").is_agent, False),
         ]
         for name, actual, expected in rows:
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
+
+    def test_agent_name_confirmed_by_install_location(self):
+        # D010, ported to the warden: a configured name is a candidate, and
+        # install-location data it already parses and validates is what
+        # confirms it, each as a path-prefix or exact match against the
+        # process's own resolved executable. The tool's path fragments
+        # (paths) are the dashboard's own, weaker, display-only signal; the
+        # warden, which moves a confirmed match automatically, never reads
+        # them, so a self-chosen writable path that merely contains one is
+        # not proof of install location. A desktop prefix under /tmp is the
+        # same kind of non-proof: /tmp is world-writable on every target, so
+        # it never confirms a bundled CLI even where it is configured as a
+        # desktop prefix. A generic name with no configured location stays
+        # trusted, and an unreadable executable never hides an escaped
+        # agent.
+        with scratch() as tmp:
+            base = Path(tmp)
+            script = base / "warden" / "agent-warden"
+            script.parent.mkdir(parents=True)
+            shutil.copy2(WARDEN, script)
+            script.chmod(0o755)
+            (base / "data").mkdir()
+            (base / "data" / "agent-tools.json").write_text(json.dumps({
+                "version": 1,
+                "tools": [
+                    {"name": "pi", "mise": ["pi-install"], "paths": ["/node_modules/pi-coding-agent/"]},
+                    {"name": "dsh", "mise": ["dsh-install"]},
+                    {"name": "ownersonly"},
+                ],
+                "desktopExePrefixes": ["/opt/", "/tmp/.mount_", "/tmp"],
+                "bundledCliSuffixes": ["/vendor/pi"],
+            }))
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            module = load_warden(env, "agent_warden_install_location", script)
+
+        def rec(comm, argv, exe):
+            return module.Proc(1, ppid=0, comm=comm, argv=argv, exe=exe, cgroup=self.A, start=1)
+
+        scratch_home = f"{env['HOME']}/scratch"
+        rows = [
+            ("planted pi outside every install location is not an agent",
+             rec("pi", ["/usr/local/bin/pi"], "/usr/local/bin/pi").is_agent, False),
+            ("planted dsh outside its mise install dir is not an agent",
+             rec("dsh", ["/usr/bin/dsh"], "/usr/bin/dsh").is_agent, False),
+            ("a same-uid process whose exe lives under a writable path that merely contains pi's package fragment is not an agent",
+             rec("pi", [f"{scratch_home}/node_modules/pi-coding-agent/evil"], f"{scratch_home}/node_modules/pi-coding-agent/evil").is_agent, False),
+            ("a same-uid process whose exe merely contains pi's mise install fragment outside the real mise root is not an agent",
+             rec("pi", [f"{scratch_home}/fake-mise/installs/pi-install/1.0/pi"], f"{scratch_home}/fake-mise/installs/pi-install/1.0/pi").is_agent, False),
+            ("pi under its mise install directory is an agent",
+             rec("pi", ["x"], f"{module.MISE_DATA}/installs/pi-install/1.0/pi").is_agent, True),
+            ("dsh under its mise install directory is an agent",
+             rec("dsh", ["x"], f"{module.MISE_DATA}/installs/dsh-install/1.0/dsh").is_agent, True),
+            ("pi as a bundled CLI engine under its desktop prefix is an agent",
+             rec("pi", ["/opt/app/vendor/pi"], "/opt/app/vendor/pi").is_agent, True),
+            ("pi's bundled CLI suffix outside any desktop prefix is not an agent",
+             rec("pi", [f"{scratch_home}/vendor/pi"], f"{scratch_home}/vendor/pi").is_agent, False),
+            ("pi as a bundled CLI engine under a /tmp desktop prefix is not an agent: /tmp is world-writable on every target",
+             rec("pi", ["/tmp/.mount_zzzzzz/app/vendor/pi"], "/tmp/.mount_zzzzzz/app/vendor/pi").is_agent, False),
+            ("pi as a bundled CLI engine under a bare /tmp desktop prefix (no trailing slash) is not an agent: the same forgeable root under another spelling",
+             rec("pi", ["/tmp/app/vendor/pi"], "/tmp/app/vendor/pi").is_agent, False),
+            ("an unreadable executable keeps the name",
+             rec("pi", ["pi"], "").is_agent, True),
+            ("a name with no configured install location is trusted",
+             rec("ownersonly", ["ownersonly"], "/usr/bin/ownersonly").is_agent, True),
+        ]
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_agent_name_confirmation_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "        if self.comm in AGENT_COMMS:\n            return self._confirmed_by_location(self.comm)"
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, "        if self.comm in AGENT_COMMS:\n            return True")
+        module = self.load_mutant(mutant, "agent_warden_confirmation_mutant")
+        p = module.Proc(1, ppid=0, comm="pi", argv=["/usr/local/bin/pi"], exe="/usr/local/bin/pi", cgroup=self.A, start=1)
+        self.assertTrue(p.is_agent)
 
     def test_plan_rows(self):
         T = "/user.slice/user-1000.slice/user@1000.service/agents.slice/tight.scope"
@@ -347,8 +437,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def _mutant_splits_contained_scope(self, m):
         contained_scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/contained.scope"
         recs = {
-            20: m.Proc(20, ppid=1, comm="codex", argv=["codex"], exe=f"{m.HOME}/.local/bin/codex", cgroup=contained_scope, start=1),
-            21: m.Proc(21, ppid=20, comm="claude", argv=["claude"], exe=f"{m.HOME}/.local/bin/claude", cgroup=contained_scope, start=2),
+            20: m.Proc(20, ppid=1, comm="codex", argv=["codex"], exe=default_tool_exe(m, "codex"), cgroup=contained_scope, start=1),
+            21: m.Proc(21, ppid=20, comm="claude", argv=["claude"], exe=default_tool_exe(m, "claude"), cgroup=contained_scope, start=2),
         }
         moves, _, _, _ = m.plan(recs, capped=lambda cg: False, contained=lambda cg: m.unit_of(cg) == "contained.scope", split=True)
         return any([21] == [p.pid for p in tree] for reason, tree in moves if reason == "nested session")
@@ -625,6 +715,111 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
 
+    def test_orphan_protection_uses_comm_only_name_match(self):
+        # D010's location check gates only the automatic move into
+        # agents.slice (is_agent). claude's and codex's native, non-mise
+        # installs are described only through `paths` in data/agent-tools.json
+        # (no `executables` entry for either), so a process on such an
+        # install never satisfies D010 and is_agent reads it as unconfirmed.
+        # Orphan reap must still treat it as a live agent: _is_orphan and
+        # scope_still_orphan read is_named_agent, the wider comm-only match,
+        # not is_agent.
+        mgr = 4000
+        native_install = f"{self.w.HOME}/.local/share/claude/versions/2.1.0/claude"
+        headless = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-headless.scope"
+        recs = {
+            mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
+            # a headless worker: its launch shell has already exited, so it is
+            # reparented to the user manager, with no controlling terminal.
+            700: self.P(700, mgr, "claude", ["claude", "-p", "work"], headless, exe=native_install),
+        }
+        self.assertFalse(recs[700].is_agent, "a paths-only native install must stay unconfirmed by is_agent")
+        self.assertTrue(recs[700].is_named_agent, "the comm-only match must still see a live agent")
+        units = {unit for unit, _ in self.w.orphans(recs, self.w.manager_pids(recs))}
+        self.assertNotIn("agent-confine-headless.scope", units)
+
+    def test_orphan_protection_name_match_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "    if any(p.is_named_agent for p in members):"
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, "    if any(p.is_agent for p in members):")
+        module = self.load_mutant(mutant, "agent_warden_orphan_name_match_mutant")
+        mgr = 4000
+        native_install = f"{module.HOME}/.local/share/claude/versions/2.1.0/claude"
+        headless = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-headless.scope"
+        recs = {
+            mgr: module.Proc(mgr, ppid=1, comm="systemd", argv=["/usr/lib/systemd/systemd", "--user"],
+                              exe="/usr/lib/systemd/systemd", cgroup="/user.slice", start=1),
+            700: module.Proc(700, ppid=mgr, comm="claude", argv=["claude", "-p", "work"],
+                              exe=native_install, cgroup=headless, start=1),
+        }
+        units = {unit for unit, _ in module.orphans(recs, module.manager_pids(recs))}
+        self.assertIn("agent-confine-headless.scope", units)
+
+    def test_named_agent_classification_rows(self):
+        # is_named_agent has the same three branches as is_agent but only
+        # branch 2 (comm in AGENT_COMMS) had any coverage of its own: these
+        # rows exercise branch 1 (the excluded/is_desktop guard) and branch 3
+        # (the HOST_COMMS + AGENT_PATH_RE match) directly against
+        # is_named_agent, not against is_agent's own, differently-gated copy.
+        mise = f"{self.w.MISE_DATA}/installs"
+        rows = [
+            ("an excluded process that would otherwise match AGENT_COMMS is not a named agent",
+             self.P(60, 0, "claude", ["claude", "--chrome-native-host"]).is_named_agent, False),
+            ("a desktop process that would otherwise match AGENT_COMMS is not a named agent",
+             self.P(61, 0, "codex", ["/opt/other-desktop/resources/weird-binary"],
+                    exe="/opt/other-desktop/resources/weird-binary").is_named_agent, False),
+            ("a HOST_COMMS process with an agent path in argv[:2] is a named agent",
+             self.P(62, 0, "node", [f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"],
+                    exe="/usr/bin/node").is_named_agent, True),
+            ("a HOST_COMMS process with no agent path in argv is not a named agent",
+             self.P(63, 0, "node", ["/usr/bin/node", "/opt/not-an-agent/app.js"],
+                    exe="/usr/bin/node").is_named_agent, False),
+        ]
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_named_agent_guard_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = ('keeps gating only the automatic move into agents.slice."""\n'
+               '        if self.excluded or self.is_desktop:\n'
+               '            return False\n'
+               '        if self.comm in AGENT_COMMS:\n'
+               '            return True\n'
+               '        return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])')
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, old.replace(
+            '        if self.excluded or self.is_desktop:\n'
+            '            return False\n'
+            '        if self.comm in AGENT_COMMS:',
+            '        if self.comm in AGENT_COMMS:',
+        ))
+        module = self.load_mutant(mutant, "agent_warden_mutant_named_agent_guard")
+        p = module.Proc(60, ppid=0, comm="claude", argv=["claude", "--chrome-native-host"],
+                         exe=default_tool_exe(module, "claude"), cgroup=self.A, start=1)
+        self.assertTrue(p.excluded)
+        self.assertTrue(p.is_named_agent)
+
+    def test_named_agent_path_match_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = ('keeps gating only the automatic move into agents.slice."""\n'
+               '        if self.excluded or self.is_desktop:\n'
+               '            return False\n'
+               '        if self.comm in AGENT_COMMS:\n'
+               '            return True\n'
+               '        return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])')
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, old.replace(
+            '        return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])',
+            '        return False',
+        ))
+        module = self.load_mutant(mutant, "agent_warden_mutant_named_agent_path")
+        mise = f"{module.MISE_DATA}/installs"
+        p = module.Proc(62, ppid=0, comm="node",
+                         argv=[f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"],
+                         exe="/usr/bin/node", cgroup=self.A, start=1)
+        self.assertFalse(p.is_named_agent)
 
     def test_reap_orphans_returns_status_rows_and_reaped_event(self):
         with scratch() as tmp:

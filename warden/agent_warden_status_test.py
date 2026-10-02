@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import unittest
 
-from agent_warden_testlib import ROOT, WARDEN, WardenMutantMixin, clean_env, load_warden, scratch
+from agent_warden_testlib import ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, scratch
 
 
 class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
@@ -26,7 +26,9 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def P(self, pid, ppid, comm, argv, cg=None, exe="/usr/bin/x", start=1, marked=False, tty=0):
+    def P(self, pid, ppid, comm, argv, cg=None, exe=None, start=1, marked=False, tty=0):
+        if exe is None:
+            exe = default_tool_exe(self.w, comm)
         return self.w.Proc(pid, ppid=ppid, comm=comm, argv=argv, exe=exe, cgroup=cg or self.A, start=start, marked=marked, tty=tty)
 
     def _cg(self, unit):
