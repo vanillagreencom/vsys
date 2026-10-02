@@ -35,8 +35,10 @@
 # cause=queue-list-missing). It is judged on every changed path harness-only
 # read, before any refusal or rule below, and no class changes it. A wiring
 # error prints no such line, and a reader takes its absence as
-# queue_only=true. This paragraph is the one statement of when the line
-# reads true; other docs point here.
+# queue_only=true. The unset setting also prints one
+# `setting-unset: setting=HARNESS_CI_QUEUE_PATHS` warning per run. This
+# paragraph is the one statement of when the line reads true; other docs
+# point here.
 # The render proof runs `kendex verify --scope
 # project --json` in that private checkout, with `--base` set to the base-rev:
 # line harness-only printed and `--at-record` beside it, and reads its
@@ -472,6 +474,8 @@ queue_only_of_paths() {
     return
   fi
   if [ -z "${HARNESS_CI_QUEUE_PATHS+x}" ]; then
+    printf 'setting-unset: setting=HARNESS_CI_QUEUE_PATHS\n' >&2
+    echo "change-class: HARNESS_CI_QUEUE_PATHS is unset in the base commit's settings, so every change reads queue-only and never takes the admin merge; set it in the [env] table of kendex.settings.toml to the repository's own CI inputs, or empty for none" >&2
     QUEUE_CAUSE="cause=queue-list-undeclared"
     return
   fi
