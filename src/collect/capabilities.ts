@@ -8,7 +8,6 @@ import type {
   CapabilityId,
   Group,
 } from "../model/types";
-import { sliceRoots } from "../model/verdict";
 import { pressure } from "./io";
 import { kernelLogProbeArgv, probeKernelLog } from "./kernel-log";
 import type { CollectionConfig } from "./settings";
@@ -305,11 +304,11 @@ export function probeAgentSlice(
  * through the sample's `groups`: a group `collectGroups` could not read
  * (a failed `cpu.stat` or `cgroup.procs`) is still a real, readable directory
  * on disk, and a `parent` walk through `groups` would lose it and stop short
- * of the slice, wrongly reading the gap as a clean ancestry. `sliceRoots`
- * finds every group named for the agent slice that is not nested inside
- * another match, because a cgroup root covering more than one systemd user
- * manager gives each its own agent slice, and a reading that checked only
- * the first would miss a second one withholding io.
+ * of the slice, wrongly reading the gap as a clean ancestry. `sliceInstancePaths`
+ * below names every real instance of the agent slice this sample's groups
+ * reveal, including one nested inside another and one `collectGroups` itself
+ * could not read, so a reading that checked only one instance never misses a
+ * second one withholding io.
  */
 export function probeIoStat(
   c: CollectionConfig,
@@ -317,9 +316,9 @@ export function probeIoStat(
   root: Capability,
 ): Capability {
   if (!root.available) return root;
-  const slices = sliceRoots(groups, c.agentSlice);
-  for (const slice of slices) {
-    const parts = slice.path.split("/");
+  const slices = sliceInstancePaths(groups, c.agentSlice);
+  for (const slicePath of slices) {
+    const parts = slicePath.split("/");
     for (let depth = 1; depth <= parts.length; depth++) {
       const ancestorPath = parts.slice(0, depth).join("/");
       const source = join(c.cgroupRoot, ancestorPath, "cgroup.subtree_control");
@@ -337,4 +336,36 @@ export function probeIoStat(
     }
   }
   return root;
+}
+/**
+ * The path of every group, among this sample's groups, whose final or
+ * interior component names the configured agent slice, each path ending at
+ * that component and deduplicated. Scanning every group's own path rather
+ * than matching `g.name === name` on a group record for the slice itself
+ * finds two cases a name-only match on the slice's own group would miss: a
+ * second instance nested inside another match, which `sliceRoots` in
+ * `../model/verdict.ts` deliberately drops for its own callers (summing
+ * resource totals, where a nested instance's counters are already carried by
+ * the outer one and would double-count), but which is here a second real
+ * directory with its own `cgroup.subtree_control` to check; and a slice
+ * `collectGroups` could not itself read (a failed `cpu.stat` or
+ * `cgroup.procs`) but a collected descendant's path still reveals, because
+ * `collectGroups` walks every child directory on disk whether or not its
+ * parent was readable.
+ */
+export function sliceInstancePaths(groups: Group[], name: string): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const g of groups) {
+    const parts = g.path.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] !== name) continue;
+      const path = parts.slice(0, i + 1).join("/");
+      if (!seen.has(path)) {
+        seen.add(path);
+        found.push(path);
+      }
+    }
+  }
+  return found;
 }

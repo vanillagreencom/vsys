@@ -352,6 +352,89 @@ test("a cgroup root covering two user managers checks every agent slice it finds
   });
 });
 
+test("an agent slice nested below another instance of itself is checked even when the outer one delegates", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const outer = join(f.config.cgroupRoot, "agents.slice");
+  // A second systemd user manager rooted below the first gives its own
+  // "agents.slice" a path nested inside the outer one's own tree.
+  const between = join(outer, "nested");
+  const inner = join(between, "agents.slice");
+  mkdirSync(inner, { recursive: true });
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu io memory pids\n");
+  writeFileSync(
+    join(between, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  // The inner instance withholds io from its own children even though every
+  // ancestor above it, including the outer "agents.slice", delegates in full.
+  writeFileSync(join(inner, "cgroup.subtree_control"), "cpu memory pids\n");
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+    groupSnapshot({
+      path: "agents.slice/nested",
+      parent: "agents.slice",
+      name: "nested",
+    }),
+    groupSnapshot({
+      path: "agents.slice/nested/agents.slice",
+      parent: "agents.slice/nested",
+      name: "agents.slice",
+    }),
+  ];
+  // `sliceRoots` would drop the inner match as nested inside the outer one,
+  // which is correct for summing but wrong for this ancestry walk: the outer
+  // match's own path never reaches the inner slice's `cgroup.subtree_control`.
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(inner, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
+});
+
+test("an agent slice collectGroups could not read is still checked when a child scope reveals it", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const agentsSlice = join(f.config.cgroupRoot, "agents.slice");
+  mkdirSync(agentsSlice, { recursive: true });
+  // The agent slice withholds io from its own children, but say its own
+  // cpu.stat failed to read: collectGroups drops the slice's own group record
+  // without dropping the child scope it still finds below.
+  writeFileSync(
+    join(agentsSlice, "cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  const groups = [
+    groupSnapshot({
+      path: "agents.slice/a.scope",
+      parent: "agents.slice",
+      name: "a.scope",
+    }),
+  ];
+  // No group is named "agents.slice" itself, so a candidate selection keyed
+  // on `g.name === c.agentSlice` finds nothing and wrongly returns the root's
+  // available answer.
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(agentsSlice, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
+});
+
 test("a kernel without PSI and without io.stat reports both absences", () => {
   const f = setup();
   rmSync(join(f.config.procRoot, "pressure"), { recursive: true });
