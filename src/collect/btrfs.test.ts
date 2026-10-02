@@ -242,6 +242,27 @@ test("a hidden file in the report directory is not a report", async () => {
   ]);
 });
 
+test("a name that differs from a healthy one by an end space never reaches a delete", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  // A healthy file, and a report whose last line names it with a trailing
+  // space: read trimmed, that line would put the healthy file under rm.
+  const healthy = join(f.root, "target", "victim");
+  f.write(healthy, "healthy");
+  f.write(
+    join(f.config.scrubDir, "root.result"),
+    `UUID: 2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6\nStatus: finished\n\nDamaged files: 1\nlogical 7:\n  ${healthy} `,
+  );
+  const storage = await new StorageCollector().collect(
+    new Reader(),
+    f.config,
+    1000,
+  );
+  expect(storage.scrubs[0].addresses).toEqual([
+    { logical: 7, paths: [], changed: [], resolved: false },
+  ]);
+});
+
 test("an unreadable report stays a report rather than vanishing", async () => {
   const f = fixture();
   fixtures.push(f);

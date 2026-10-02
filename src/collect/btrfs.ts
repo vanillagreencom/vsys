@@ -325,7 +325,7 @@ export class StorageCollector {
       for (const entry of await readdir(c.scrubDir, { withFileTypes: true })) {
         if (!entry.isFile() || !isReportName(entry.name)) continue;
         const path = join(c.scrubDir, entry.name);
-        const text = r.text(path);
+        const text = r.exact(path);
         // A report vsys cannot read is not a report that is not there. Losing
         // the row would take its problem card with it and leave the reader
         // with no sign that a check had run at all. `r.text` has already

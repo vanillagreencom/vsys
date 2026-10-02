@@ -11,8 +11,15 @@ export class Reader {
     });
   }
   text(path: string, optional = false): string | null {
+    return this.exact(path, optional)?.trim() ?? null;
+  }
+  /**
+   * A file's text as written. A report names files a line each, and trimming
+   * its last line would turn one name into another.
+   */
+  exact(path: string, optional = false): string | null {
     try {
-      return readFileSync(path, "utf8").trim();
+      return readFileSync(path, "utf8");
     } catch (e) {
       if (!(optional && (e as NodeJS.ErrnoException).code === "ENOENT"))
         this.error(path, e);

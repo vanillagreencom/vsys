@@ -2,7 +2,7 @@
 
 Covers: src/config/ src/collect/settings.ts src/collect/capabilities.ts src/collect/capabilities.test.ts src/runtime.ts src/runtime.test.ts src/ui/settings-screen.tsx src/ui/settings.ts
 
-Settings are validated before they reach a running dashboard. The runtime replaces the collector, the history store or neither, depending on which settings changed. A capability is a system interface a reading needs, probed once at start, except the two re-read each sample.
+Settings are validated before they reach a running dashboard. The runtime replaces the collector, the history store or neither, depending on which settings changed. A capability is a system interface a reading needs, probed once at start, except the three re-read each sample.
 
 ## Boundaries
 
@@ -30,7 +30,7 @@ Settings are validated before they reach a running dashboard. The runtime replac
 5. A settings change waits for the in-flight source before sampling again, and hands the running source to its replacement. `src/runtime.test.ts` checks both.
 6. A failed settings write leaves the active history and source usable. `src/runtime.test.ts` checks replacement failure.
 7. A missing capability carries its source and a cause following what the probe met, so an unreadable or unparsable source is never called a missing interface, a tmux without a server is never called a missing tmux, and an `io.stat` at the session root is never taken for one in the groups below it while the root's `cgroup.subtree_control` leaves out `io`. `src/collect/capabilities.test.ts` checks the diagnoses; `src/ui/settings.test.ts` checks the words.
-8. Every sample carries the capabilities probed when vsys started, and the agent slice as this sample found it. `src/collect/capabilities.test.ts` checks both, including a slice that appears after vsys starts.
+8. Every sample carries the capabilities probed when vsys started, except the three re-read each sample: whether a tmux server answers, the agent slice as this sample found it, and whether the scrub report directory exists. `src/collect/capabilities.test.ts` checks the probe, including a slice that appears after vsys starts; `src/collect/collector.test.ts` creates the scrub report directory between two samples.
 9. Every stored setting has a label, a sentence and, where it stores a number, a unit, and no label is wider than its column. `src/ui/settings.test.ts` derives the expected set from the defaults.
 10. A stored value reads in the reader's unit rather than the stored one, and an interval under a second reads as itself rather than as zero. `src/ui/settings.test.ts` checks both.
 11. Every setting sits in exactly one group, and no group names a stranger. `src/ui/settings-screen.test.tsx` derives the expected set from the defaults.

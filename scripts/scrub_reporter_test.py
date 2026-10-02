@@ -51,11 +51,20 @@ NAMED = 953118621696
 FREE = 1597612883968
 UNMOUNTED = 1597612883969
 SPLIT = 1597612883970
+SPACED = 1597612883971
+UNNAMED = 1597612883972
+STDERR = 1597612883973
 OTHER_FS = 5555
 
 
 def fixup(device: str, address: int) -> str:
+    """The wording kernels wrote before the scrub rewrite."""
     return f"Sep 28 04:57:01 host kernel: BTRFS error (device {device} state M): unable to fixup (regular) error at logical {address} on dev /dev/{device} physical 1"
+
+
+def scrub_fixup(device: str, address: int) -> str:
+    """The wording this host's 7.2 kernel writes, copied from its journal."""
+    return f"Sep 11 17:04:40 cachy kernel: BTRFS error (device {device}): scrub: unable to fixup (regular) error at logical {address} on dev /dev/mapper/luks-4cb565bf-a669-49e2-91e9-5ec3fe422175 physical 831861293056"
 
 
 def scratch() -> tempfile.TemporaryDirectory[str]:
@@ -115,6 +124,12 @@ class ReporterTest(unittest.TestCase):
         split.write_text("damaged")
         (fs / "target" / "evil").write_text("healthy")
         (fs / "target" / "victim").write_text("healthy")
+        # A damaged name that differs from a healthy one by a trailing space.
+        spaced = fs / "target" / "victim "
+        spaced.write_text("damaged")
+        # A second damaged inode with no name btrfs printed.
+        unnamed = fs / "target" / "unlinked"
+        unnamed.write_text("damaged")
         refs = base / "refs"
         names = base / "names"
         refs.mkdir()
@@ -130,6 +145,14 @@ class ReporterTest(unittest.TestCase):
         (names / str(UNMOUNTED)).write_text("inode 300 subvol snapshots/1 could not be accessed: not mounted\n")
         held(SPLIT, split)
         (names / str(SPLIT)).write_text(f"{split}\n")
+        held(SPACED, spaced)
+        (names / str(SPACED)).write_text(f"{spaced}\n")
+        held(UNNAMED, first, unnamed)
+        (names / str(UNNAMED)).write_text(f"{first}\n")
+        # btrfs names one inode, fails another on stderr, and exits 0.
+        held(STDERR, first)
+        (names / str(STDERR)).write_text(f"{first}\n")
+        (names / f"{STDERR}.warn").write_text("ERROR: ino paths ioctl: Permission denied\n")
         stub(bin_dir, "systemd-escape", 'echo "-"\n')
         if kernel is None:
             stub(bin_dir, "journalctl", "echo 'No journal files were found.' >&2\nexit 1\n")
@@ -142,12 +165,16 @@ class ReporterTest(unittest.TestCase):
             f"""case "$1 $2" in
 "scrub status") cat "{base}/status" ;;
 "device stats") printf '%s\\n' '[/dev/vsys-test-a].write_io_errs    0' '[/dev/vsys-test-a].corruption_errs  4' ;;
-"inspect-internal rootid") echo 5 ;;
+"inspect-internal rootid")
+	# rootid opens a regular file for writing, which a read-only snapshot
+	# refuses; a directory it opens read-only.
+	if [[ -d $3 ]]; then echo 5; else echo "ERROR: cannot open $3: Read-only file system" >&2; exit 1; fi ;;
 "inspect-internal logical-resolve")
 	ls -A "{base}/reports" >> "{base}/listing"
 	if [[ $3 == -P ]]; then table={refs}; address=$5; else table={names}; address=$4; fi
 	if [[ -f $table/$address.stop ]]; then kill -TERM 0; sleep 5; fi
 	if [[ -f $table/$address.err ]]; then cat "$table/$address.err" >&2; exit 1; fi
+	if [[ -f $table/$address.warn ]]; then cat "$table/$address.warn" >&2; fi
 	if [[ -f $table/$address ]]; then cat "$table/$address"; fi ;;
 *) exit 2 ;;
 esac
@@ -170,6 +197,8 @@ esac
 
     def test_each_address_lists_only_names_proved_to_be_of_its_damage(self) -> None:
         kernel = "\n".join(fixup("vsys-test-a", a) for a in (FREE, NAMED, UNMOUNTED, SPLIT, NAMED))
+        # The same report from a kernel that prefixes the words with `scrub: `.
+        kernel += "\n" + "\n".join(scrub_fixup("vsys-test-a", a) for a in (SPACED, UNNAMED, STDERR))
         # Another filesystem's address, logged inside this scrub's window.
         kernel += "\n" + fixup("vsys-test-b", OTHER_FS) + "\n"
         with scratch() as tmp:
@@ -192,8 +221,16 @@ esac
                     # a name btrfs split in two whose halves are healthy files.
                     {"logical": UNMOUNTED, "paths": [], "resolved": False},
                     {"logical": SPLIT, "paths": [], "resolved": False},
+                    # A name with a trailing space reads as a healthy file's
+                    # name once trimmed, so it is never written.
+                    {"logical": SPACED, "paths": [], "resolved": False},
+                    # One inode got no name, so the list would be partial.
+                    {"logical": UNNAMED, "paths": [], "resolved": False},
+                    # btrfs failed to name an inode on stderr and exited 0.
+                    {"logical": STDERR, "paths": [], "resolved": False},
                 ],
             )
+            self.assertNotIn(f"{fs}/target/victim \n", report.read_text())
             self.assertNotIn(str(OTHER_FS), report.read_text())
             # btrfs's own reason stays in the report for the reader.
             self.assertIn("  (not resolved: inode 300 subvol snapshots/1 could not be accessed: not mounted)", report.read_text().splitlines())

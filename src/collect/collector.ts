@@ -58,6 +58,19 @@ export interface KernelLogReader {
   probe: () => Outcome;
   log: KernelLog;
 }
+/**
+ * The kernel log reader the program gives a collector: the real probe, and
+ * the log the collector it replaces was searching, so a settings change
+ * resumes from that cursor rather than searching every boot again.
+ */
+export function kernelLogReader(previous?: {
+  kernelLog?: KernelLog | null;
+}): KernelLogReader {
+  return {
+    probe: probeKernelLog,
+    log: previous?.kernelLog ?? new KernelLog(),
+  };
+}
 const noKernelLog: Outcome = {
   failure: "absent",
   detail: "this collector was given no kernel log reader",
@@ -328,6 +341,6 @@ export async function createCollector(
     { probe: probeTmux, panes: readPanes },
     new ProcessThread(c, ticks, pages, tools),
     unitDirs(),
-    { probe: probeKernelLog, log: previous?.kernelLog ?? new KernelLog() },
+    kernelLogReader(previous),
   );
 }

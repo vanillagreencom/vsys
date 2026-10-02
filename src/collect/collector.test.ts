@@ -13,7 +13,7 @@ import { point } from "../store/point";
 import { claudeLink, fixture } from "../test/fixture";
 import { capabilityLine } from "../ui/settings";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
-import { Collector, createCollector } from "./collector";
+import { Collector, createCollector, kernelLogReader } from "./collector";
 import { KernelLog } from "./kernel-log";
 import { ProcessCollector, parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
@@ -1737,4 +1737,12 @@ test("a scrub report directory created while vsys runs is read the next sample",
   // The reader ran the install line vsys offered, which creates the directory.
   mkdirSync(f.config.scrubDir, { recursive: true });
   expect(await scrub(2000)).toMatchObject({ available: true, failure: null });
+});
+
+test("the program's collector resumes the kernel log the one it replaces held", () => {
+  const held = new KernelLog(async () => "");
+  expect(kernelLogReader({ kernelLog: held }).log).toBe(held);
+  // With no predecessor, or one that searched no log, a new log starts.
+  expect(kernelLogReader().log).not.toBe(held);
+  expect(kernelLogReader({ kernelLog: null }).log).toBeInstanceOf(KernelLog);
 });

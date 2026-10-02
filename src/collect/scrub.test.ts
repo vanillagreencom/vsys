@@ -63,6 +63,19 @@ logical 2:
   ]);
 });
 
+test("a name the report cannot carry exactly marks its address unresolved", () => {
+  const names = [" /lead", "/trail ", "/tab\tname", "/replaced\ufffd"];
+  for (const name of names) {
+    const report = parseScrub(
+      `Status: finished\n\nDamaged files: 1\nlogical 1:\n  /fine\n  ${name}\n`,
+    );
+    expect({ name, addresses: report.addresses }).toEqual({
+      name,
+      addresses: [{ logical: 1, paths: ["/fine"], resolved: false }],
+    });
+  }
+});
+
 test("the parser anchors on the address heading, not on the prose above it", () => {
   // Every line the helper writes as prose, reworded. The addresses still read.
   const reworded = damaged

@@ -107,11 +107,12 @@ fi
 # lists fewer addresses than the blocks it counts, which vsys shows as unnamed
 # damage. The kernel also rate-limits the line, with the same result.
 declare -A seen=()
-fixup='\(device ([^ ):]+)[^)]*\): unable to fixup \(regular\) error at logical ([0-9]+)'
+# Kernels since the scrub rewrite put `scrub: ` before the words.
+fixup='\(device ([^ ):]+)[^)]*\): (scrub: )?unable to fixup \(regular\) error at logical ([0-9]+)'
 while IFS= read -r line; do
 	if [[ $line =~ $fixup ]]; then
 		device=${BASH_REMATCH[1]}
-		address=${BASH_REMATCH[2]}
+		address=${BASH_REMATCH[3]}
 		if [[ -n ${devices[$device]:-} ]]; then seen[$address]=1; fi
 	fi
 done <<<"$kernel"
@@ -120,11 +121,19 @@ if ((${#seen[@]})); then
 	mapfile -t addresses < <(printf '%s\n' "${!seen[@]}" | sort -n)
 fi
 
-# The lines one address gets under its heading. Every name it lists is
-# checked against the inodes the address belongs to: btrfs prints a name with
-# a newline in it as two lines, and a line that is not a name of a damaged
-# inode would put an unrelated file under a delete command. An address with
-# any such line lists no name at all.
+# The lines one address gets under its heading. vsys offers to delete every
+# name an address lists, so the list is all of the address or none of it, and
+# each name reaches the delete command byte for byte:
+# - every name is checked against the inodes the address belongs to, because
+#   btrfs prints a name with a newline in it as two lines, and a line that is
+#   not a name of a damaged inode would put an unrelated file under a delete;
+# - every inode the address belongs to must get a name, because an inode
+#   btrfs could not name, or one with no link left, is damage the list would
+#   leave out;
+# - a name the line format cannot carry exactly, with leading or trailing
+#   whitespace or a control character, is not written, because a reader that
+#   trims it would name a different file.
+# An address that fails any of these lists no name at all.
 resolve() {
 	local address=$1 refs names line inode root
 	local -A held=()
@@ -145,7 +154,10 @@ resolve() {
 		echo "  (no file: free space, or already deleted)"
 		return
 	fi
-	if ! names=$(btrfs inspect-internal logical-resolve -o "$address" "$mnt" 2>"$work/error" | sort -u); then
+	if ! names=$(btrfs inspect-internal logical-resolve -o "$address" "$mnt" 2>"$work/error" | sort -u) ||
+		[[ -s $work/error ]]; then
+		# btrfs reports a failure to name one inode on stderr and still exits
+		# 0 when a later inode resolved.
 		echo "  (not resolved: $(tr '\n' ' ' <"$work/error"))"
 		return
 	fi
@@ -154,19 +166,34 @@ resolve() {
 		return
 	fi
 	local listed=()
+	local -A named=()
 	while IFS= read -r line; do
 		if [[ $line == *"could not be accessed"* ]]; then
 			echo "  (not resolved: $line)"
 			return
 		fi
+		if [[ $line =~ ^[[:space:]] || $line =~ [[:space:]]$ || $line =~ [[:cntrl:]] ]]; then
+			echo "  (not resolved: a name holds whitespace at an end or a control character, which this report cannot carry exactly)"
+			return
+		fi
+		# The containing directory answers for the subvolume: rootid opens a
+		# regular file for writing, which a read-only snapshot refuses.
 		if [[ $line != /* ]] || ! inode=$(stat -c %i -- "$line" 2>/dev/null) ||
-			! root=$(btrfs inspect-internal rootid "$line" 2>/dev/null) ||
+			! root=$(btrfs inspect-internal rootid "${line%/*}/" 2>/dev/null) ||
 			[[ -z ${held[$inode/$root]:-} ]]; then
 			echo "  (not resolved: a name btrfs printed is not a name of a damaged inode)"
 			return
 		fi
+		named[$inode/$root]=1
 		listed+=("$line")
 	done <<<"$names"
+	local key
+	for key in "${!held[@]}"; do
+		if [[ -z ${named[$key]:-} ]]; then
+			echo "  (not resolved: inode ${key%/*} in subvolume ${key#*/} has no name)"
+			return
+		fi
+	done
 	printf '  %s\n' "${listed[@]}"
 }
 
@@ -174,7 +201,7 @@ max_addresses=${BTRFS_SCRUB_MAX_ADDRESSES:-64}
 {
 	echo
 	if ((${#addresses[@]} == 0)); then
-		echo "Damaged files: no unfixable address in the kernel log for this run."
+		echo "Damaged files: no line in the kernel log for this run named an address."
 	else
 		echo "Damaged files: ${#addresses[@]} damaged block addresses from the kernel log."
 		echo "Delete every path listed under an address, not the first: one block can have several names."
