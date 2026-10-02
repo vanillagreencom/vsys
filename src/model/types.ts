@@ -128,8 +128,9 @@ export interface ScratchRoot extends Scratch {
  * One damaged block address from a scrub report, with every path it is
  * reachable under. The address is the unit of damage, not the file: on some
  * kernels it is only the start of the 64 KiB block the check could not
- * repair, so a path under it is possibly damaged, the damaged file may not be
- * under it, and one extent can carry several names.
+ * repair, so the reporter resolves every 4 KiB sector of that block, a path
+ * under it is possibly damaged, more than one file can share the block, and
+ * one extent can carry several names.
  * No path and no not-resolved mark is an older report's free space or file
  * already deleted; the shipped reporter marks every no-extent answer.
  */

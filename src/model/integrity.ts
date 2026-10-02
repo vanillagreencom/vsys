@@ -57,9 +57,10 @@ export type DamageKind = "files" | "none" | "unresolved";
 /**
  * One damaged block address as the screen groups it. On some kernels the
  * address is the start of the 64 KiB block the check could not repair, not
- * the damaged sector, so every path under it is possibly damaged rather than
- * proven so, the damaged file may not be under it, and one extent under two
- * names lists both.
+ * the damaged sector, so the reporter resolves every 4 KiB sector of that
+ * block and lists every name any of them gives: every path under it is
+ * possibly damaged rather than proven so, more than one file can share the
+ * block, and one extent under two names lists both.
  */
 export interface DamagedGroup {
   logical: number;

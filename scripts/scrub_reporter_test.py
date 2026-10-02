@@ -60,6 +60,12 @@ SPACED = 1597612883971
 UNNAMED = 1597612883972
 STDERR = 1597612883973
 OTHER_FS = 5555
+# The kernel logs this block's start, which has no extent; the file the scrub
+# actually damaged sits five 4 KiB sectors later in the same 64 KiB block.
+LATE_SECTOR = NO_EXTENT + 65536 * 2
+# This block's start fails resolution for a real reason (btrfs warns on
+# stderr); a different sector of the same block resolves cleanly.
+MIXED_SECTOR = NO_EXTENT + 65536 * 3
 
 
 def fixup(device: str, address: int) -> str:
@@ -135,6 +141,12 @@ class ReporterTest(unittest.TestCase):
         # A second damaged inode with no name btrfs printed.
         unnamed = fs / "target" / "unlinked"
         unnamed.write_text("damaged")
+        # A file reachable only from a sector later in its 64 KiB block, and
+        # one reachable from a sector in a block whose first sector fails.
+        late = fs / "target" / "late"
+        late.write_text("damaged")
+        safe = fs / "target" / "safe"
+        safe.write_text("damaged")
         refs = base / "refs"
         names = base / "names"
         refs.mkdir()
@@ -159,6 +171,17 @@ class ReporterTest(unittest.TestCase):
         held(STDERR, first)
         (names / str(STDERR)).write_text(f"{first}\n")
         (names / f"{STDERR}.warn").write_text("ERROR: ino paths ioctl: Permission denied\n")
+        # LATE_SECTOR's own first sector has no fixture, so it reads as no
+        # extent; its sixth sector (offset 5 * 4096) holds the file.
+        held(LATE_SECTOR + 5 * 4096, late)
+        (names / str(LATE_SECTOR + 5 * 4096)).write_text(f"{late}\n")
+        # MIXED_SECTOR's first sector fails like STDERR above; its fourth
+        # sector (offset 3 * 4096) resolves cleanly.
+        held(MIXED_SECTOR, first)
+        (names / str(MIXED_SECTOR)).write_text(f"{first}\n")
+        (names / f"{MIXED_SECTOR}.warn").write_text("ERROR: ino paths ioctl: Permission denied\n")
+        held(MIXED_SECTOR + 3 * 4096, safe)
+        (names / str(MIXED_SECTOR + 3 * 4096)).write_text(f"{safe}\n")
         stub(bin_dir, "systemd-escape", 'echo "-"\n')
         if kernel is None:
             stub(bin_dir, "journalctl", "echo 'No journal files were found.' >&2\nexit 1\n")
@@ -256,6 +279,33 @@ esac
             # While it resolved, only a hidden file stood in the report directory.
             self.assertEqual(set((base / "listing").read_text().split()), {".-.result.tmp"})
             self.assertEqual(sorted(os.listdir(base / "reports")), ["-.result"])
+
+    def test_a_file_later_in_the_block_is_found_when_the_blocks_start_has_no_extent(self) -> None:
+        kernel = fixup("vsys-test-a", LATE_SECTOR)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fs = base / "fs"
+            read = parse(report, base)
+            # The kernel-logged address itself has no extent; the file the
+            # scrub damaged sits five sectors later in the same block, and is
+            # listed because every sector was tried, not only the start.
+            self.assertEqual(read["addresses"], [{"logical": LATE_SECTOR, "paths": [f"{fs}/target/late"]}])
+
+    def test_a_resolution_failure_in_one_sector_does_not_hide_a_name_a_different_sector_proves(self) -> None:
+        kernel = fixup("vsys-test-a", MIXED_SECTOR)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fs = base / "fs"
+            read = parse(report, base)
+            # The block's first sector fails to name an inode on stderr, but
+            # a later sector of the same block resolves cleanly, and that
+            # name is listed rather than dropped for the other sector's
+            # failure.
+            self.assertEqual(read["addresses"], [{"logical": MIXED_SECTOR, "paths": [f"{fs}/target/safe"]}])
 
     def test_a_start_time_that_does_not_parse_searches_the_last_hour(self) -> None:
         with scratch() as tmp:
