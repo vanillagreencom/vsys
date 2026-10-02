@@ -520,7 +520,6 @@
   ".codex/hooks/session-drift-check.sh",
   ".codex/hooks/skill-load-check.sh",
   {"path":".github/workflows/kendex-refresh.yml","template":".agents/skills/review-gate/templates/kendex-refresh.yml","templateHash":"sha256:25a9404ba67ffc99037f4ab1ee53fb9d598fd942ca87d2dfac436cc3e4e1131e"},
-  {"path":".github/workflows/review-gate-writer.yml","template":".agents/skills/review-gate/templates/review-gate-writer.yml","templateHash":"sha256:3083b0ab2f7d3e83c40dc44474b99e255c1ae4d04d2db4127d74ed23eb7820c8"},
   ".kendex-generated.json",
   ".kendex-lock.json",
   ".pi/agents/maintainer.md",

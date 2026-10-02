@@ -34,8 +34,8 @@ Those paths here: .agents/skills/**, .claude/agents/**, .claude/commands/**, .cl
 
 ## trust-model
 
-Accept review evidence only from a formal review object by a trusted login or an evidence form the repo's gate configuration names. Never treat comment text, emoji reactions, or prose approvals as approval. Do not recommend parsing them for approval.
+Read approval from GitHub's formal review state under the repository's rulesets. Never treat comment text, emoji reactions, or prose approvals as approval. Do not recommend parsing them for approval.
 
 ## reply-contract
 
-Author replies are `Fixed in <sha>`, `Declined: <reason>`, or `Tracked: <VSY-n>`. A decline names the passing state or the false premise it disproves. A label alone is not a reason. A merge gate that reads these replies rejects a tracking claim without an issue. It rejects a decline whose reason contains only a label it knows.
+Author replies are `Fixed in <sha>`, `Declined: <reason>`, or `Tracked: <VSY-n>`. A decline names the passing state or the false premise it disproves. A label alone is not a reason.

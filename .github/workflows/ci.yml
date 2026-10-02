@@ -87,18 +87,6 @@ jobs:
           esac
           python3 scripts/package_file_list_check.py --installed-root /
 
-  review-gate-validate:
-    name: Review gate configuration
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: .agents/skills/review-gate/scripts/validate.sh
-
   bot-instructions:
     name: Bot instructions
     runs-on: ubuntu-latest
@@ -136,7 +124,7 @@ jobs:
     # other job ids, so every job above stays in the list.
     # No job here is skipped by a change-classifier rule, so no skip is
     # expected and a skipped, failed or cancelled job fails this one.
-    needs: [application, arch-package, review-gate-validate, bot-instructions]
+    needs: [application, arch-package, bot-instructions]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
