@@ -656,7 +656,7 @@ ol_record_line_identity() { # LINE
 # named NAME with its shell in CWD running LINE under `overseer-run`, which
 # writes the harness's exit status into the session record once LINE returns
 # (ol_record_exit), placed by PLACEMENT, which is
-# `--after SESSION` for a successor beside its predecessor or `--session
+# `--after SESSION` for a successor in its predecessor's session or `--session
 # NAME` for a first launch into a tmux session. Into OL_SESSION, OL_WINDOW
 # and OL_SERVER. Returns 1 with OL_REASON=create-failed; the provider's own
 # line is in DEP_ERR.
@@ -736,18 +736,25 @@ ol_session_stop() { # SESSION [SUCCESSOR]
 # empty OL_PRIOR, a state that could not be read, is never written to. Two
 # overseers never run, so this is one function and not a copy per caller.
 # DEP_ERR is left as the caller had it, holding the detail its refusal
-# relays; the stop's and the restore's own words go nowhere. Returns 0, or 1
-# where the restore failed, with OL_REASON=restore-failed and the writer's
+# relays. The provider restores the window placement when it stops the
+# abandoned insertion. Returns 0, or 1
+# where the stop or record restore failed, with OL_REASON=restore-failed and its
 # words in OL_DETAIL, for the caller to report under its own key before its
 # refusal.
 ol_session_abandon() {
-  local detail rc=0
+  local detail rc=0 stop_detail=""
   detail="$(cat -- "$DEP_ERR" 2>/dev/null)" || detail=""
   [[ -n "$OL_SESSION" ]] || ol_session_from_out
-  [[ -z "$OL_SESSION" ]] || ol_session_stop "$OL_SESSION" || true
+  if [[ -n "$OL_SESSION" ]] && ! ol_session_stop "$OL_SESSION"; then
+    OL_REASON=restore-failed
+    stop_detail="$(cat -- "$DEP_ERR" 2>/dev/null)" || stop_detail=""
+    OL_DETAIL="$stop_detail"
+    rc=1
+  fi
   if [[ -n "$OL_PRIOR" ]] && ! ol_record_restore; then
     OL_REASON=restore-failed
     OL_DETAIL="$(cat -- "$DEP_ERR" 2>/dev/null)" || OL_DETAIL=""
+    OL_DETAIL="${stop_detail:+$stop_detail$'\n'}$OL_DETAIL"
     rc=1
   fi
   if [[ -n "$detail" ]]; then printf '%s\n' "$detail" > "$DEP_ERR"; else : > "$DEP_ERR"; fi
@@ -762,11 +769,11 @@ ol_session_abandon() {
 #   1. With PENDING `pending`, LINE and IDENTITY become the record's pending
 #      successor (ol_record_pending); `replay`, a relaunch of the line the
 #      record already holds, writes none.
-#   2. The runtime's `create` opens LINE in CWD right after PREDECESSOR.
+#   2. The runtime's `create` opens LINE in CWD at the session's base index.
 #   3. The record names the successor (ol_record_write over OL_PRIOR), where
 #      the caller's ol_record_read could read one.
 #   4. The session is verified (ol_session_verify, LANE_VAR to WAIT_SECS).
-#   5. The predecessor is stopped with the successor taking its slot: the
+#   5. The predecessor is stopped with the successor keeping the base index: the
 #      commit point, so HUP, INT and TERM are ignored from here on, and a
 #      caller running in the predecessor's own window ends with it.
 # The step order is this function's; what a failed record write at step 1 or
