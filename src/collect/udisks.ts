@@ -422,12 +422,12 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
  * the provable targets, held or freshly queried), and an unprovable one is
  * rendered fresh by `unprovableRow`. A provable target `provable` has no row
  * for — one with no held entry yet, which `identitySwapped` does not itself
- * force a query for — reads as unknown for this one sample rather than
- * invent or withhold a row. It is picked up for real only once something
- * forces a query over the whole provable set: an unrelated drive's
- * confirmed change, this drive's own identity changing again, or the hold
- * expiring and the next cold-start read running over every provable target,
- * this one included.
+ * force a query for, whatever its own identity does next — reads as unknown
+ * for this one sample rather than invent or withhold a row. It is picked up
+ * for real only once something else forces a query over the whole provable
+ * set: an unrelated drive's confirmed change, or the hold expiring and the
+ * next cold-start read running over every provable target, this one
+ * included.
  */
 function mergeReading(
   provable: UdisksReading,
