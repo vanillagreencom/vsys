@@ -9,6 +9,7 @@ import {
 } from "./agent-tools";
 import { writeFileAtomic } from "./atomic";
 import { normalizeKey } from "./keys";
+import { xdgHome } from "./xdg";
 
 export const columns = [
   "name",
@@ -126,7 +127,10 @@ export interface Config {
   writeMode: boolean;
   keys: Record<string, string>;
 }
-export const configPath = join(homedir(), ".config/vsys/config.toml");
+/** The settings file, under `$XDG_CONFIG_HOME` or else `~/.config`. */
+export function configPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(xdgHome("XDG_CONFIG_HOME", env), "vsys/config.toml");
+}
 /**
  * The shipped scratch roots. They are one workstation's layout. A list equal
  * to this one is the default, whether `config.toml` omits it or pins it
@@ -140,14 +144,20 @@ export function defaultScratchDirs(): string[] {
     "/var/tmp/claude",
   ];
 }
+/**
+ * The shipped settings. History and error memory live under
+ * `$XDG_STATE_HOME/vsys`, or else `~/.local/state/vsys`.
+ */
 export function defaults(
   agentTools = shippedAgentTools.tools.map((tool) => tool.name),
+  env: NodeJS.ProcessEnv = process.env,
 ): Config {
+  const state = join(xdgHome("XDG_STATE_HOME", env), "vsys");
   return {
     refreshMs: 1000,
     historyHours: 24,
     persistence: false,
-    sqlitePath: join(homedir(), ".local/state/vsys/history.db"),
+    sqlitePath: join(state, "history.db"),
     cgroupRoot: `/sys/fs/cgroup/user.slice/user-${process.getuid?.() ?? 1000}.slice/user@${process.getuid?.() ?? 1000}.service`,
     cgroupTop: "/sys/fs/cgroup",
     procRoot: "/proc",
@@ -198,10 +208,7 @@ export function defaults(
     btrfsMounts: [],
     scrubDir: "/run/btrfs-scrub",
     smartDir: "/run/smartctl",
-    errorMemoryPath: join(
-      homedir(),
-      ".local/state/vsys/filesystem-errors.json",
-    ),
+    errorMemoryPath: join(state, "filesystem-errors.json"),
     // A weekly timer that misses one run is eight days late on the day after
     // the run it missed, so eight days is where a weekly schedule trips.
     scrubMaxAgeDays: 8,
@@ -442,7 +449,7 @@ function prepareConfigInput(
 
 /** Parse with Bun's TOML parser; a missing file uses defaults. */
 export async function loadConfigState(
-  path = configPath,
+  path = configPath(),
   toolsPath = agentToolsPath,
 ): Promise<LoadedConfig> {
   const layeredAgentTools = await loadAgentToolNames(toolsPath);
@@ -466,7 +473,7 @@ export async function loadConfigState(
 }
 
 export async function loadConfig(
-  path = configPath,
+  path = configPath(),
   toolsPath = agentToolsPath,
 ): Promise<Config> {
   return (await loadConfigState(path, toolsPath)).config;
@@ -489,7 +496,7 @@ export function serialize(c: Config, base = defaults()): string {
 }
 export async function saveConfig(
   c: Config,
-  path = configPath,
+  path = configPath(),
   toolsPath = agentToolsPath,
 ): Promise<void> {
   const body = configBody(c, await loadAgentToolNames(toolsPath));

@@ -7,10 +7,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fixture } from "../test/fixture";
 import { shippedAgentTools } from "./agent-tools";
 import {
+  configPath,
   defaults,
   loadConfig,
   saveConfig,
@@ -133,6 +135,57 @@ test("every host-specific name ships a systemd user-session default", () => {
     c.scratchDirs,
   ])
     expect(list.length).toBeGreaterThan(0);
+});
+
+test("the settings file follows XDG_CONFIG_HOME and history follows XDG_STATE_HOME", () => {
+  // Today's paths. A machine with no config file and both variables set to
+  // these, or neither set, must keep reading and writing exactly here.
+  const config = join(homedir(), ".config/vsys/config.toml");
+  const history = join(homedir(), ".local/state/vsys/history.db");
+  const errors = join(homedir(), ".local/state/vsys/filesystem-errors.json");
+  const rows: [string, NodeJS.ProcessEnv, string, string, string][] = [
+    ["both unset", {}, config, history, errors],
+    [
+      "both empty",
+      { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" },
+      config,
+      history,
+      errors,
+    ],
+    [
+      "both set to today's paths",
+      {
+        XDG_CONFIG_HOME: join(homedir(), ".config"),
+        XDG_STATE_HOME: join(homedir(), ".local/state"),
+      },
+      config,
+      history,
+      errors,
+    ],
+    [
+      "config set",
+      { XDG_CONFIG_HOME: "/x/config" },
+      "/x/config/vsys/config.toml",
+      history,
+      errors,
+    ],
+    [
+      "state set",
+      { XDG_STATE_HOME: "/x/state" },
+      config,
+      "/x/state/vsys/history.db",
+      "/x/state/vsys/filesystem-errors.json",
+    ],
+  ];
+  for (const [name, env, file, sqlite, memory] of rows) {
+    const c = defaults(undefined, env);
+    expect({
+      name,
+      file: configPath(env),
+      sqlite: c.sqlitePath,
+      memory: c.errorMemoryPath,
+    }).toEqual({ name, file, sqlite, memory });
+  }
 });
 
 test("vsys observes only: the reserved write mode defaults off", async () => {

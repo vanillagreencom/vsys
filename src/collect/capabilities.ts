@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { xdgHome } from "../config/xdg";
 import type {
   Capability,
   CapabilityFailure,
@@ -171,8 +171,8 @@ function exists(path: string): Outcome {
  * a missing slice.
  */
 export function unitDirs(env: NodeJS.ProcessEnv = process.env): string[] {
-  const config = env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  const data = env.XDG_DATA_HOME || join(homedir(), ".local/share");
+  const config = xdgHome("XDG_CONFIG_HOME", env);
+  const data = xdgHome("XDG_DATA_HOME", env);
   return [
     join(config, "systemd/user.control"),
     join(config, "systemd/user"),

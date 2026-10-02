@@ -57,7 +57,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     throw new Error("--summary and --markdown cannot be combined");
   if (values.config === "") throw new Error("Config path cannot be empty");
   const path =
-    values.config !== undefined ? resolve(values.config) : configPath;
+    values.config !== undefined ? resolve(values.config) : configPath();
   const config = await loadConfig(path);
   const collector = await createCollector(config, !values.once);
   if (values.once) {
