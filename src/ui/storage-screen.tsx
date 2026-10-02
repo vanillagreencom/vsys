@@ -455,7 +455,7 @@ export function Storage({
             <Field label="Blocks found" width={16} value={blocksText(item)} />
             {item.groups.length === 0 && <Empty text={noDamageText(item)} />}
             {unnamedText(item) && <Empty text={unnamedText(item) ?? ""} />}
-            {counts.files > 0 && (
+            {(counts.files ?? 0) > 0 && (
               <Line
                 flexShrink={0}
                 wrapMode="word"

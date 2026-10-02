@@ -15,6 +15,7 @@ import { claudeLink, fixture } from "../test/fixture";
 import { present } from "../test/present";
 import { fakeBus, noBus } from "../test/udisks";
 import { capabilityLine } from "../ui/settings";
+import { FinishedScrubMemory } from "./btrfs";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
 import { Collector, createCollector } from "./collector";
 import { KernelLog } from "./kernel-log";
@@ -2027,5 +2028,95 @@ test("the program's collector resumes the kernel log the one it replaces held", 
     expect(unread.kernelLog).toBeInstanceOf(KernelLog);
   } finally {
     for (const collector of [after, fresh, unread]) collector.close();
+  }
+});
+
+test("a settings change hands the predecessor's remembered finished scrubs to its replacement", async () => {
+  const f = setup();
+  const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+  const root = join(f.config.btrfsRoot, uuid);
+  mkdirSync(join(root, "devices"), { recursive: true });
+  symlinkSync("/sys/devices/test", join(root, "devices/test"));
+  f.write(
+    join(root, "devinfo/1/error_stats"),
+    "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0",
+  );
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  const reportPath = join(f.config.scrubDir, "root.result");
+  f.write(
+    reportPath,
+    `btrfs scrub finished, no errors found: /
+UUID:             ${uuid}
+Scrub started:    Fri Sep 11 13:25:54 2026
+Status:           finished
+Error summary:    no errors found
+`,
+  );
+  const before = new Collector(f.config, 100, 4096);
+  const first = await before.sample(1000);
+  const key = uuid.toLowerCase();
+  const finishedAt = first.storage.scrubs[0]?.startedAt;
+  expect(finishedAt).toBeTypeOf("number");
+  // A scrub that stops early overwrites the one report this filesystem has.
+  f.write(
+    reportPath,
+    `btrfs scrub aborted after 00:00:01, interrupted: /
+UUID:             ${uuid}
+Scrub started:    Sat Sep 12 09:00:00 2026
+Status:           aborted
+Error summary:    no errors found
+`,
+  );
+  await before.sample(2000);
+  // Saving any collection setting rebuilds the collector through the
+  // program's own path. The replacement must not start believing nothing has
+  // ever finished.
+  const after = await createCollector(
+    f.config,
+    false,
+    before,
+    f.agentToolsPath,
+  );
+  try {
+    const third = await after.sample(3000);
+    expect(third.storage.scrubs[0]?.status).toBe("aborted");
+    expect(third.storage.lastFinishedScrub?.[key]).toEqual({
+      at: finishedAt as number,
+      damaged: false,
+    });
+  } finally {
+    after.close();
+    before.close();
+  }
+});
+
+test("createCollector shares the predecessor's scrub memory rather than copying it, so a finish landing after the rebuild is not lost", async () => {
+  const f = setup();
+  const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+  const scrubMemory = new FinishedScrubMemory();
+  // The replacement is built while the predecessor's memory still holds
+  // nothing for this filesystem, as it would mid-sample before that sample
+  // reaches a finished report.
+  const after = await createCollector(
+    f.config,
+    false,
+    { lastFinishedScrub: scrubMemory },
+    f.agentToolsPath,
+  );
+  try {
+    // The predecessor's sample reaches the finished, damaged report only
+    // now, after the rebuild above already read its memory. A copy taken at
+    // rebuild time would never see this.
+    scrubMemory.advance(uuid, { at: 500, damaged: true });
+    const snapshot = await after.sample(1000);
+    expect(snapshot.storage.lastFinishedScrub?.[uuid]).toEqual({
+      at: 500,
+      damaged: true,
+    });
+  } finally {
+    after.close();
   }
 });

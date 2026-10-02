@@ -175,6 +175,16 @@ export interface Scrub {
    */
   addresses?: DamagedAddress[] | null;
 }
+/** What a finished scrub is remembered by, once its own report is gone or replaced. */
+export interface FinishedScrub {
+  /** When it started. */
+  at: number;
+  /**
+   * Whether it found damage: an address still listed, an uncorrectable
+   * block, or a problem report whose count could not be read.
+   */
+  damaged: boolean;
+}
 /**
  * One inode the kernel failed a checksum read in, as its log names it. The
  * kernel names the subvolume tree and the inode, not a path: resolving an
@@ -216,6 +226,17 @@ export interface Storage {
    */
   scratchAbsent?: string[];
   scrubs: Scrub[];
+  /**
+   * Each filesystem's last FINISHED scrub, by lowercased filesystem id. The
+   * reporter writes one report per filesystem and a later scrub overwrites
+   * it, so a report that stopped early would otherwise erase the memory of
+   * an earlier one that completed, outcome included: a finished check that
+   * found damage must not be forgotten the moment the report naming it is
+   * gone. This map is the collector's own memory, carried across samples, and
+   * only a finished report ever moves it forward. Absent entries mean no
+   * scrub has ever finished for that filesystem since the collector started.
+   */
+  lastFinishedScrub?: Record<string, FinishedScrub>;
   /**
    * Failed checksum reads the kernel logged, by filesystem id, newest first.
    * Null where the kernel log was not read, which is not a log of none; a

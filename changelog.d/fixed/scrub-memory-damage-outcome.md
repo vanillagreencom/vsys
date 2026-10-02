@@ -1,0 +1,1 @@
+- A filesystem whose last finished scrub found damage no longer reads healthy once a later scrub stops early or its report goes missing.

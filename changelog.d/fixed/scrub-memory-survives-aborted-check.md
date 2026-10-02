@@ -1,0 +1,1 @@
+- The new-errors card names the age of the last full check that finished, even after a later scrub on that filesystem stops early, instead of saying no full check has ever run.

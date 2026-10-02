@@ -4,7 +4,7 @@ import { agentToolsPath, loadAgentTools } from "../config/agent-tools";
 import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Capability, Snapshot } from "../model/types";
-import { StorageCollector } from "./btrfs";
+import { type FinishedScrubMemory, StorageCollector } from "./btrfs";
 import {
   type Outcome,
   probeAgentSlice,
@@ -118,6 +118,15 @@ export class Collector {
     kernelLog?: KernelLogReader,
     /** Absent unless a caller supplies one, so no test asks the system bus. */
     udisks?: Udisks,
+    /**
+     * A predecessor's own `FinishedScrubMemory`, shared rather than copied,
+     * so a settings change that replaces this collector while the
+     * predecessor's sample is still finishing never reads a stopped-early
+     * report as if nothing had ever finished, or ever found damage. Absent
+     * unless a caller supplies one, so a collector built fresh starts with no
+     * memory.
+     */
+    sharedFinishedScrub?: FinishedScrubMemory,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -132,10 +141,24 @@ export class Collector {
       this.capabilities.find((cap) => cap.id === "kernel-log")?.available ===
       true;
     this.kernelLog = kernelLog && searchable ? kernelLog.log : null;
-    this.storage = new StorageCollector(this.kernelLog, udisks ?? null);
+    this.storage = new StorageCollector(
+      this.kernelLog,
+      udisks ?? null,
+      sharedFinishedScrub,
+    );
     const probed = this.capabilities.find((cap) => cap.id === "tmux");
     this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
     this.tmuxServed = probed?.available === true;
+  }
+  /**
+   * This process's live memory of each filesystem's last finished scrub, to
+   * share with a replacement collector built on a settings change: both
+   * collectors write through the same object, so a report that finishes on
+   * this one after the replacement is built is never lost to a copy taken
+   * too early.
+   */
+  get lastFinishedScrub(): FinishedScrubMemory {
+    return this.storage.finishedScrubMemory();
   }
   /**
    * What the last read of a capability asked again each sample says, carried
@@ -311,14 +334,23 @@ export class Collector {
  * The predecessor's build cache reader is carried over, so its counts stay
  * measured since vsys started rather than since the last settings change, and
  * so is the kernel log it was searching, so the replacement resumes from that
- * cursor rather than searching every boot again.
- * The agent-tool install locations and desktop paths come from the shared
- * agent-tool data and its overlay, read again for every collector built.
+ * cursor rather than searching every boot again. Its memory of each
+ * filesystem's last finished scrub is shared, not copied, so a sample still
+ * finishing on the predecessor when this runs still lands in the same
+ * memory the replacement reads, and a settings change never reads a
+ * stopped-early report as if nothing had ever finished, or ever found
+ * damage. The agent-tool install locations and desktop paths come from the
+ * shared agent-tool data and its overlay, read again for every collector
+ * built.
  */
 export async function createCollector(
   c: CollectionConfig,
   live = true,
-  previous?: { sccache?: SccacheCollector; kernelLog?: KernelLog | null },
+  previous?: {
+    sccache?: SccacheCollector;
+    kernelLog?: KernelLog | null;
+    lastFinishedScrub?: FinishedScrubMemory;
+  },
   toolsPath = agentToolsPath,
   /** Injected so no test reads this machine's journal. */
   kernelLogProbe: () => Outcome = probeKernelLog,
@@ -360,5 +392,6 @@ export async function createCollector(
       log: previous?.kernelLog ?? new KernelLog(),
     },
     new Udisks(),
+    previous?.lastFinishedScrub,
   );
 }

@@ -1,0 +1,1 @@
+- A filesystem whose scrub report is missing or stopped early no longer reads as never checked when a finished check is remembered; it reads sound or stale from that check's own age instead.

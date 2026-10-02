@@ -1,4 +1,4 @@
-import { corruptionTotal } from "../collect/btrfs";
+import { corruptionTotal, scrubFoundDamage } from "../collect/btrfs";
 import type { Config } from "../config/config";
 import type { CsumFailure, Scrub, Snapshot, Storage, Volume } from "./types";
 import type { Level } from "./verdict";
@@ -94,7 +94,13 @@ export interface Integrity {
   device: string;
   mounts: string[];
   state: IntegrityState;
-  /** Seconds since the last full check ended, null where there was none. */
+  /**
+   * Seconds since the last FINISHED full check started, null where none has
+   * ever finished. A later report that stopped early never moves this
+   * backward to null: the collector remembers the last finished report's
+   * start time across the one it overwrote, so a reader still learns how old
+   * the last proof of a sound filesystem is.
+   */
   checkAge: number | null;
   /**
    * Seconds since the newest error either source recorded, null while neither
@@ -171,7 +177,7 @@ function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
  */
 export function integrity(
   group: DeviceVolumes,
-  storage: Pick<Storage, "scrubs" | "csumFailures">,
+  storage: Pick<Storage, "scrubs" | "csumFailures" | "lastFinishedScrub">,
   time: number,
   c: Config,
 ): Integrity {
@@ -225,45 +231,69 @@ export function integrity(
   const errorKnown = group.volumes.every((v) => v.lastErrorKnown !== false);
   const running = scrub?.status === "running";
   // Only a check that says it finished read the filesystem end to end. Every
-  // other word, including one the helper did not write and one vsys has never
-  // seen, leaves the state unknown: a list of the ways a check can stop early
-  // would call each new word a completed check, which is the wrong way to be
-  // wrong about whether the disk was read.
+  // other word the current report carries, including one the helper did not
+  // write and one vsys has never seen, is not itself a finished check: a list
+  // of the ways a check can stop early would call each new word a completed
+  // check, which is the wrong way to be wrong about whether the disk was
+  // read. Soundness can still rest on an earlier report that did finish,
+  // through `hasFinishedRecord` below.
   const finished = complete;
-  const checkedAt = finished ? (scrub?.startedAt ?? null) : null;
+  // A report that is not itself finished names no check of its own, but it
+  // does not erase an earlier one: the collector remembers the last finished
+  // report across the one that replaced it, outcome included, so a check
+  // that stopped early still leaves the reader the age and the damage state
+  // of the last that did not.
+  const remembered =
+    storage.lastFinishedScrub?.[group.id.toLowerCase()] ?? null;
+  const checkedAt = finished
+    ? (scrub?.startedAt ?? null)
+    : (remembered?.at ?? null);
   const checkAge = checkedAt === null ? null : Math.max(0, time - checkedAt);
+  // Whether a finished check is on record at all, current or remembered. A
+  // report that stopped early, or one gone from disk entirely, still leaves
+  // this true when a finished one is remembered, so the ladder below judges
+  // soundness from that memory instead of reading the current report's own
+  // unfinished or absent state as if nothing had ever finished.
+  const hasFinishedRecord = finished || remembered !== null;
   const since = (at: number | null) =>
     at === null ? null : Math.max(0, time - at) / 1000;
   const state: IntegrityState =
     scrub && scrub.readable === false
       ? "unknown"
-      : groups.length || (finished && (scrub?.uncorrectable ?? 0) > 0)
+      : finished &&
+          scrubFoundDamage({
+            addressCount: groups.length,
+            uncorrectable: scrub?.uncorrectable,
+            problem: scrub?.problem ?? false,
+          })
         ? "damaged"
-        : // A check that repaired every error it found left no damage behind,
-          // so a report counting no uncorrectable block is not damage however
-          // many errors it corrected. A problem report whose count vsys could
-          // not read says nothing either way, and reads as damage.
-          scrub?.problem &&
-            finished &&
-            (scrub.uncorrectable === null || scrub.uncorrectable === undefined)
+        : // The current report does not speak for itself, but a remembered
+          // finished one found damage: that memory must stand until a later
+          // finished report says otherwise, never silently read as sound
+          // because the report naming it is gone.
+          !finished && remembered?.damaged
           ? "damaged"
           : errorAt != null && (checkedAt === null || errorAt > checkedAt)
             ? "new-errors"
             : running
               ? "checking"
-              : scrub === null
-                ? "never-checked"
-                : !finished
+              : !hasFinishedRecord
+                ? // Nothing has ever finished reading this filesystem, current
+                  // or remembered. A report that exists but has not finished
+                  // (or never will, like one that stopped early) is a
+                  // different fact from no report ever having been written.
+                  scrub === null
+                  ? "never-checked"
+                  : "unknown"
+                : // A report carrying no start time dates no check, so it
+                  // cannot say the filesystem was read end to end recently.
+                  // Neither can a filesystem whose counter, or whose record
+                  // of past growth, is unreadable say nothing failed since.
+                  checkAge === null || counter === null || !errorKnown
                   ? "unknown"
-                  : // A report carrying no start time dates no check, so it
-                    // cannot say the filesystem was read end to end recently.
-                    // Neither can a filesystem whose counter, or whose record
-                    // of past growth, is unreadable say nothing failed since.
-                    checkAge === null || counter === null || !errorKnown
-                    ? "unknown"
-                    : checkAge > c.scrubMaxAgeDays * 86400000
-                      ? "stale"
-                      : "healthy";
+                  : checkAge > c.scrubMaxAgeDays * 86400000
+                    ? "stale"
+                    : "healthy";
   return {
     id: group.id,
     device: group.device,
@@ -302,11 +332,18 @@ export function integrities(s: Snapshot, c: Config): Integrity[] {
  * Any unnamed or unresolved block means the listed files are not all of it.
  */
 export function damageCounts(item: Integrity): {
-  files: number;
-  free: number;
-  unresolved: number;
-  unnamed: number;
+  files: number | null;
+  free: number | null;
+  unresolved: number | null;
+  unnamed: number | null;
 } {
+  // A `damaged` state reached only through a remembered finished check (the
+  // current report does not itself speak: it stopped early, or is gone) has
+  // no address data to count at all. That is unread, not a report that named
+  // zero, so every count here is unknown rather than a zero that would read
+  // as a check that found nothing to name.
+  if (!item.complete)
+    return { files: null, free: null, unresolved: null, unnamed: null };
   const of = (kind: DamageKind) =>
     item.groups.filter((group) => group.kind === kind);
   return {

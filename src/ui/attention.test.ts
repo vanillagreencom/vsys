@@ -1266,6 +1266,47 @@ test("a new-errors card says no full check has ever run, not an unstated age", (
   expect(said(card)).not.toContain("longer ago than that");
 });
 
+test("a new-errors card names the age of a finished check an aborted one replaced", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes.push(
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  );
+  s.storage.csumFailures = {
+    fs: [{ root: 257, inode: 4242, at: s.time - 7200000 }],
+  };
+  // The reporter's one report for this filesystem now holds an aborted scrub,
+  // started after the error above, which overwrote the finished report that
+  // ran 3 days ago. The collector still remembers that finished report.
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/root.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "fs",
+      startedAt: s.time - 3600000,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    fs: { at: s.time - 3 * 86400000, damaged: false },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
+  expect(said(card)).toContain(
+    "The kernel logged a failed checksum read 2.0h ago. The last full check ran 3.0d ago.",
+  );
+  expect(said(card)).not.toContain("No full check has ever run.");
+});
+
 test("a damage card never calls a partial list the whole of the damage", () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -1302,6 +1343,52 @@ test("a damage card never calls a partial list the whole of the damage", () => {
   // One address named of three blocks: its files are not all of the damage.
   const some = card([{ logical: 1, paths: ["/r/target/a"] }]);
   expect(said(some)).toContain("2 damaged blocks could not be tied to a file");
+});
+
+test("a damage card known only from a remembered check never says the damage is in free space", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  // The current report stopped early, so it names no address of its own. The
+  // only reason this filesystem is damaged at all is the remembered check,
+  // and that check's file-level detail is gone with its report.
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/root.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "fs",
+      startedAt: s.time - 1000,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    fs: { at: s.time - 3 * 86400000, damaged: true },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(said(card)).not.toContain("free space");
+  expect(said(card)).toContain(
+    "The report naming this damage is no longer available, so vsys cannot say which files hold it.",
+  );
+  expect(card?.next).toContain("run a check on that filesystem");
+  // The report vanishing entirely, rather than stopping early, reads the same.
+  s.storage.scrubs = [];
+  const gone = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(said(gone)).not.toContain("free space");
+  expect(said(gone)).toContain("no longer available");
 });
 
 test("a new-errors card tells only the errors newer than the last check", () => {

@@ -362,6 +362,60 @@ test("the damage card counts blocks across every filesystem it names", () => {
   ).toBeNull();
 });
 
+test("the damage card's file and unnamed counts are unknown when any filesystem's damage is only remembered", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/a", {
+      fsid: "a",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/a.result",
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid: "a",
+      startedAt: 500,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+    },
+  ];
+  const named = () =>
+    causes(s, c).find((cause) => cause.id === "damaged-files");
+  expect(named()?.values.files).toBe(1);
+  expect(named()?.values.unnamed).toBe(0);
+  // A second filesystem whose current report stopped early. Its damage is
+  // known only from a remembered finished check, with no address data at
+  // all, so the card's totals must not silently read that filesystem's share
+  // as zero files and zero unnamed blocks.
+  s.storage.volumes.push(
+    volumeSnapshot("/b", {
+      fsid: "b",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  );
+  s.storage.scrubs.push({
+    path: "/run/btrfs-scrub/b.result",
+    text: "scrub status:\naborted",
+    problem: true,
+    readable: true,
+    fsid: "b",
+    startedAt: 600,
+    status: "aborted",
+    uncorrectable: null,
+    addresses: null,
+  });
+  s.storage.lastFinishedScrub = { b: { at: 100, damaged: true } };
+  expect(named()?.values.files).toBeNull();
+  expect(named()?.values.unnamed).toBeNull();
+});
+
 test("every integrity state but healthy and checking reaches the verdict", () => {
   const c = defaults();
   const report = (fsid: string, over: Partial<Scrub> = {}): Scrub => ({
