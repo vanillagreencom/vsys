@@ -1,0 +1,1 @@
+- The damaged-files card no longer reads a readable filesystem's own damage count as unknown just because another aggregated filesystem's report is unavailable.

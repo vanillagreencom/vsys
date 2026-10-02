@@ -98,6 +98,18 @@ export type CauseAt =
   | { kind: "lane"; id: string }
   | { kind: "group"; path: string }
   | { kind: "path"; path: string };
+/**
+ * One damaged filesystem's own files/unnamed/blocks counts, kept apart from
+ * every other aggregated filesystem's. A filesystem damaged only by a
+ * remembered finished check has no address data of its own and reads null
+ * here; that must never erase another, readable filesystem's own counts the
+ * way summing them together once did.
+ */
+export interface DamageFigures {
+  files: number | null;
+  unnamed: number | null;
+  blocks: number | null;
+}
 export interface Cause {
   id: CauseId;
   level: Level;
@@ -122,6 +134,11 @@ export interface Cause {
   consumer: string;
   /** The numbers behind the cause. Formatting belongs to the UI. */
   values: Record<string, number | null>;
+  /**
+   * The damaged-files cause's own per-filesystem figures, one per entry of
+   * `paths` in the same order. Every other cause leaves this empty.
+   */
+  damage: DamageFigures[];
   /** Housekeeping causes are cards but never the verdict for the machine. */
   verdictWorthy: boolean;
 }
@@ -267,6 +284,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       procs: [],
       consumer: "",
       values: {},
+      damage: [],
       verdictWorthy: true,
       ...rest,
     });
@@ -312,41 +330,30 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   const damaged = filesystems.filter((item) => item.state === "damaged");
   const [firstDamaged] = damaged;
   if (firstDamaged) {
-    const counts = damaged.map(damageCounts);
-    // The card counts damage across every filesystem it names, so its block
-    // count must too. One filesystem whose report carried no count leaves the
-    // total unknown rather than a sum that silently omits it. A filesystem
-    // whose damage is known only from a remembered check carries no address
-    // data at all, so its files and unnamed-block counts are unknown the same
-    // way rather than a sum that silently reads them as zero.
-    const blocks = damaged.every((item) => item.blocks !== null)
-      ? damaged.reduce((sum, item) => sum + (item.blocks ?? 0), 0)
-      : null;
-    const files = counts.every((n) => n.files !== null)
-      ? counts.reduce((sum, n) => sum + (n.files ?? 0), 0)
-      : null;
-    const unnamed = counts.every(
-      (n) => n.unnamed !== null && n.unresolved !== null,
-    )
-      ? counts.reduce(
-          (sum, n) => sum + (n.unnamed ?? 0) + (n.unresolved ?? 0),
-          0,
-        )
-      : null;
+    // Each filesystem keeps its own files/unnamed/blocks figures, in `paths`
+    // order, rather than being summed into one total: a filesystem whose
+    // damage is known only from a remembered check (no address data of its
+    // own) must read as unknown on its own account, never erase a readable
+    // filesystem's own counts by sharing one all-or-nothing total with it.
+    const damage: DamageFigures[] = damaged.map((item) => {
+      const n = damageCounts(item);
+      return {
+        files: n.files,
+        unnamed:
+          n.unnamed === null || n.unresolved === null
+            ? null
+            : n.unnamed + n.unresolved,
+        blocks: item.blocks,
+      };
+    });
     add("damaged-files", "danger", {
       paths: damaged.map((item) => item.mounts[0] ?? item.device),
       // The card opens the filesystem's integrity row, which is not one of
       // the mounts it names: the damage belongs to the filesystem.
       at: { kind: "path", path: firstDamaged.id },
       consumer: firstDamaged.mounts[0] ?? firstDamaged.device,
-      values: {
-        filesystems: damaged.length,
-        files,
-        // Damage no listed file covers: blocks the report names no address
-        // for, and addresses whose files could not be named.
-        unnamed,
-        blocks,
-      },
+      damage,
+      values: { filesystems: damaged.length },
     });
   }
   // The counter grew, or the kernel logged a failed read, and nothing has read

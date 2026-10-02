@@ -1443,6 +1443,68 @@ test("a damage card known only from a remembered check never says the damage is 
   expect(said(gone)).toContain("no longer available");
 });
 
+test("a damaged-files card keeps a readable filesystem's own count beside one that is unread", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // /a has a live, complete report naming one damaged file.
+  s.storage.volumes = [
+    volumeSnapshot("/a", {
+      fsid: "a",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    // /b is damaged only through a remembered finished check: its current
+    // report stopped early and names no address data of its own.
+    volumeSnapshot("/b", {
+      fsid: "b",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/a.result",
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid: "a",
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+    },
+    {
+      path: "/run/btrfs-scrub/b.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "b",
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    b: { at: s.time - 3 * 86400000, damaged: true },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  // /a's own file is still named and counted, not collapsed to unknown
+  // because /b's report cannot say anything about its own damage.
+  expect(card?.title).toBe("Damage on /a, /b: 1 possibly damaged file");
+  expect(said(card)).toContain("a listed file may be sound");
+  expect(said(card)).toContain(
+    "1 filesystem here has no report naming its damage, so the damage there is not in this count.",
+  );
+  // /a's card never reads as if /b had no damage at all.
+  expect(said(card)).not.toContain("no longer available");
+  expect(card?.next).toContain("open each of these filesystems, then restore");
+  // The first affected filesystem still lands the card, VSY-98's precedent.
+  expect(card?.target).toEqual({ kind: "path", path: "a" });
+});
+
 test("a damaged-files card's next step matches the ways text's singular/plural framing across every branch", () => {
   // One row per `next` branch in copy()'s damaged-files case: the report is
   // gone, the report named neither block nor file, the report named blocks

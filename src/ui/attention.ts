@@ -306,18 +306,33 @@ function copy(
     case "damaged-files": {
       // A remembered damaged check carries no address data at all: the
       // current report that would have named files is gone or aborted, so
-      // this is unread, not a report that named none.
-      const filesKnown = v.files !== null && v.files !== undefined;
-      const files = v.files ?? 0;
-      const unnamed = v.unnamed ?? 0;
+      // that filesystem's own figure here is unread, not a report that named
+      // none. Summing only the filesystems that do have a figure means one
+      // unread filesystem never erases another, readable filesystem's own
+      // known count the way one shared all-or-nothing total once did.
+      const known = cause.damage.filter((d) => d.files !== null);
+      const unread = cause.damage.length - known.length;
+      const allUnread = known.length === 0;
+      const files = known.reduce((sum, d) => sum + (d.files ?? 0), 0);
+      const unnamed = known.reduce((sum, d) => sum + (d.unnamed ?? 0), 0);
+      const blocksKnown = cause.damage.filter((d) => d.blocks !== null);
       // A block count vsys did not read is left out rather than shown as zero.
+      const blocks = blocksKnown.length
+        ? blocksKnown.reduce((sum, d) => sum + (d.blocks ?? 0), 0)
+        : null;
       const repaired =
-        v.blocks === null || v.blocks === undefined
+        blocks === null
           ? ""
-          : `The last check could not repair ${count(v.blocks, "block")}. `;
+          : `The last check could not repair ${count(blocks, "block")}. `;
+      // Names how many of the aggregated filesystems have no report of their
+      // own, so a mixed card never reads a readable filesystem's own total as
+      // if it already covered one that stayed unread.
+      const unreadNote = unread
+        ? ` ${count(unread, "filesystem")} here ${p(unread, "has", "have")} no report naming its damage, so the damage there is not in this count.`
+        : "";
       // [singular, plural] for next's one branch; `p()` below picks between
       // them once rather than at each branch.
-      const nextStep: [string, string] = !filesKnown
+      const nextStep: [string, string] = allUnread
         ? [
             "Open Storage and run a check on that filesystem to find out which files hold the damage.",
             "Open Storage and run a check on each of these filesystems to find out which files hold the damage.",
@@ -342,13 +357,13 @@ function copy(
           ? `Damage on ${mounts}: ${count(files, "possibly damaged file")}`
           : `Damaged data on ${mounts}`,
         ways: [
-          !filesKnown
+          allUnread
             ? `${repaired}The report naming this damage is no longer available, so vsys cannot say which files hold it.`
             : files
-              ? `${repaired}${possibleSentence}${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}`
+              ? `${repaired}${possibleSentence}${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}${unreadNote}`
               : unnamed
-                ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.`
-                : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+                ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.${unreadNote}`
+                : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.${unreadNote}`,
         ],
         // The step never says to remove a listed file: the report cannot say
         // which file under a block is damaged, so a step that names one may
