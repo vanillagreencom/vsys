@@ -399,7 +399,6 @@ case "$url" in
 	case "$name" in
 	SHA256SUMS) {sums_fetch} ;;
 	"{fail_download}") exit 22 ;;
-	reporter-install-lib.sh) cp "{ROOT}/scripts/reporter-install-lib.sh" "$4" ;;
 	vsys-report.conf)
 		if [[ -f "{base}/vsys-report.conf" ]]; then
 			cp "{base}/vsys-report.conf" "$4"

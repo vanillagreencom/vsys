@@ -177,9 +177,7 @@ class InstallTest(unittest.TestCase):
         else:
             body = f'{{"tag_name": "{api_tag}"}}' if api_tag is not None else '{"message": "Not Found"}'
             api_fetch = f"printf '%s\\n' '{body}'"
-        # The download serves the checkout's own files, by the name the URL
-        # ends in, except the shared installer helper, which comes from the
-        # repo root rather than this reporter's own subdirectory.
+        # The download serves the checkout's own files, by the name the URL ends in.
         stub(
             bin_dir,
             "curl",
@@ -192,7 +190,6 @@ case "$url" in
 	case "$name" in
 	SHA256SUMS) {sums_fetch} ;;
 	"{fail_download}") exit 22 ;;
-	reporter-install-lib.sh) cp "{ROOT}/scripts/reporter-install-lib.sh" "$4" ;;
 	*) cp "{REPORTER}/$name" "$4" ;;
 	esac
 	;;
@@ -317,6 +314,18 @@ esac
                 "smart-reporter: SHA256SUMS names no checksum for vsys-smart-report.service; refusing to install unverified.",
             )
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
+
+    def test_the_release_checksums_every_file_the_installer_fetches(self) -> None:
+        # The installer refuses a file SHA256SUMS does not name, so the
+        # release must checksum each one and expect it in the combined list.
+        install = [line.strip() for line in (REPORTER / "install").read_text().splitlines()]
+        loop = next(line for line in install if line.startswith("for name in "))
+        self.assertEqual(tuple(loop.removeprefix("for name in ").removesuffix("; do").split()), REPORTER_FILES)
+        release = [line.strip() for line in (ROOT / ".github" / "workflows" / "release.yml").read_text().splitlines()]
+        self.assertIn(f"sha256sum {' '.join(REPORTER_FILES)} > smart-reporter.sha256", release)
+        expected = [line.removesuffix(" | sort)").removesuffix(" \\") for line in release]
+        for name in REPORTER_FILES:
+            self.assertIn(name, expected)
 
 
 class ShippedFilesTest(unittest.TestCase):

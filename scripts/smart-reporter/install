@@ -36,22 +36,44 @@ main() {
 This system has no smartctl for the reporter to run.
 Install the package that ships it, smartmontools on most distributions, then run this again."
 
+	if command -v sha256sum >/dev/null 2>&1; then
+		checksum() { sha256sum "$1" | cut -d' ' -f1; }
+	elif command -v shasum >/dev/null 2>&1; then
+		checksum() { shasum -a 256 "$1" | cut -d' ' -f1; }
+	else
+		die "this installer needs sha256sum or shasum to verify the download."
+	fi
+
+	local version="${VSYS_VERSION:-}"
+	if [[ -z $version ]]; then
+		version=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
+			sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) ||
+			die "could not reach GitHub to read the latest release tag."
+		[[ -n $version ]] || die "GitHub reported no latest release for ${REPO}."
+	fi
+	local source="https://raw.githubusercontent.com/${REPO}/${version}/scripts/smart-reporter"
+	local sums_url="https://github.com/${REPO}/releases/download/${version}/SHA256SUMS"
+
 	WORK="$(mktemp -d)" || die "scratch=mktemp-failed"
 	trap cleanup EXIT
 
-	curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/scripts/reporter-install-lib.sh" \
-		-o "$WORK/reporter-install-lib.sh" ||
-		die "could not fetch the installer's shared helper."
-	# shellcheck source=/dev/null
-	source "$WORK/reporter-install-lib.sh" || die "could not load the installer's shared helper."
+	curl -fsSL "$sums_url" -o "$WORK/SHA256SUMS" ||
+		die "release ${version} publishes no SHA256SUMS; refusing to install an unverified reporter."
 
-	reporter_checksum_tool
-
-	local version
-	version="$(reporter_resolve_version)"
-
-	reporter_fetch_verified "$version" smart-reporter vsys-smart-report vsys-smart-report.service vsys-smart-report.timer vsys-smart.conf
-
+	local name sum expected
+	for name in vsys-smart-report vsys-smart-report.service vsys-smart-report.timer vsys-smart.conf; do
+		curl -fsSL "$source/$name" -o "$WORK/$name" ||
+			die "download=$name failed
+Could not fetch $source/$name. Nothing was installed."
+		if ! expected=$(sed -n "s/^\([0-9a-f]\{64\}\)[[:space:]]\+\*\?${name}\$/\1/p" "$WORK/SHA256SUMS"); then
+			die "could not read SHA256SUMS."
+		fi
+		[[ -n $expected ]] || die "SHA256SUMS names no checksum for $name; refusing to install unverified."
+		if ! sum=$(checksum "$WORK/$name"); then
+			die "could not checksum $name."
+		fi
+		[[ "$sum" == "$expected" ]] || die "checksum mismatch for $name; nothing was installed."
+	done
 	install -Dm755 "$WORK/vsys-smart-report" /usr/local/bin/vsys-smart-report
 	install -Dm644 "$WORK/vsys-smart-report.service" /etc/systemd/system/vsys-smart-report.service
 	install -Dm644 "$WORK/vsys-smart-report.timer" /etc/systemd/system/vsys-smart-report.timer
