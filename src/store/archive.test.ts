@@ -145,6 +145,61 @@ test("duplicate times and a checkpoint past the budget fail visibly", () => {
     }
   }).toThrow("A history checkpoint exceeds the memory budget");
 });
+/**
+ * A checkpoint built straight from its stored shape, skipping `encode()` so a
+ * case can hand `decode()` an archived table it would never produce itself:
+ * what a truncated write or a schema mismatch between archive versions would
+ * leave on disk instead.
+ */
+function plant(times: number[], open: string[]): Archive {
+  const archive = new Archive();
+  // biome-ignore lint/complexity/useLiteralKeys: writes a private field to plant a malformed checkpoint
+  archive["chunks"] = [
+    { times, segments: [], sealedBytes: 0, open, openLength: 0, length: 0 },
+  ];
+  return archive;
+}
+
+test("decode rejects a truncated or malformed archived table", () => {
+  const emptyTable = { length: 0, columns: {}, missing: {} };
+
+  // A column array shorter than the table's length, with no `missing` entry
+  // recorded for the row it does not cover.
+  const shortColumn = plant(
+    [1000],
+    [
+      JSON.stringify({
+        procs: { length: 2, columns: { pid: [1] }, missing: {} },
+        groups: emptyTable,
+        lanes: emptyTable,
+      }),
+    ],
+  );
+  expect(() => shortColumn.at(1000)).toThrow(
+    "Archived column procs.pid has no row 1",
+  );
+
+  // A `columns` entry holding anything but an array.
+  const nonArrayColumn = plant(
+    [1000],
+    [
+      JSON.stringify({
+        procs: { length: 1, columns: { pid: "oops" }, missing: {} },
+        groups: emptyTable,
+        lanes: emptyTable,
+      }),
+    ],
+  );
+  expect(() => nonArrayColumn.at(1000)).toThrow(
+    "Invalid archived column: procs.pid",
+  );
+
+  // A line index past every sealed and open line the checkpoint holds.
+  const missingLine = plant([1000, 2000], ["0"]);
+  expect(() => missingLine.at(2000)).toThrow(
+    "Archive checkpoint has no line 1",
+  );
+});
 test("an append compresses only the lines that append added", () => {
   const archive = new Archive();
   const inputs: number[] = [];
