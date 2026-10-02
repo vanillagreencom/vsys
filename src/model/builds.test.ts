@@ -115,7 +115,7 @@ test("an empty compiler wrapper names the lane that bypasses the cache", () => {
   Object.assign(find(30), { env: { RUSTC_WRAPPER: "" }, envAvailable: false });
   expect(bypassedLanes(s)).toEqual(["lane-a PID 40"]);
   const reading: Sccache = {
-    available: true,
+    state: "read",
     hits: 90,
     misses: 10,
     sinceStart: { hits: 9, misses: 1, windowMs: 60000 },
@@ -123,17 +123,17 @@ test("an empty compiler wrapper names the lane that bypasses the cache", () => {
   };
   s.sccache = reading;
   const cache = buildsSummary(s, c).cache;
-  expect(cache.available).toBe(true);
+  expect(cache.state).toBe("read");
   expect(cache.sinceStart?.rate).toBeCloseTo(90);
   expect(cache.recent?.rate).toBeCloseTo(75);
   expect(cache.bypassed).toEqual(["lane-a PID 40"]);
 });
 
-test("a cache that served nothing has no hit rate and no reading is unavailable", () => {
+test("a cache that served nothing has no hit rate and no reading has no state", () => {
   expect(hitRate(0, 0)).toBeNull();
   expect(hitRate(1, 3)).toBe(25);
   const cache = buildsSummary(building(), c).cache;
-  expect(cache.available).toBe(false);
+  expect(cache.state).toBeNull();
   expect(cache.sinceStart).toBeNull();
 });
 

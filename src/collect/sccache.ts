@@ -19,13 +19,16 @@ export function parseSccacheStats(text: string): Counters | null {
     ? null
     : { hits: Number(hits), misses: Number(misses) };
 }
-const unavailable: Sccache = {
-  available: false,
+const unread = (state: "absent" | "failed"): Sccache => ({
+  state,
   hits: null,
   misses: null,
   sinceStart: null,
   recent: null,
-};
+});
+const source = "sccache --show-stats";
+/** A failed query keeps what it failed with, so every sample can report it. */
+type Outcome = { reading: Sccache } | { failure: unknown };
 /**
  * Read-only stats query. A missing binary is an absent feature, not an error.
  * The deadline kills the child, because a wedged cache server must not hold
@@ -54,7 +57,11 @@ async function showStats(timeoutMs: number): Promise<string> {
 export class SccacheCollector {
   private samples: { time: number; hits: number; misses: number }[] = [];
   private baseline?: { time: number; hits: number; misses: number };
-  private reading: Sccache = unavailable;
+  /**
+   * The last query's outcome. The reader is new on every sample, so a sample
+   * the throttle skips reports a failure again rather than reading as healthy.
+   */
+  private last: Outcome = { reading: unread("absent") };
   private queriedAt: number | null = null;
   constructor(
     private run: (timeoutMs: number) => Promise<string> = showStats,
@@ -65,7 +72,7 @@ export class SccacheCollector {
   /**
    * The sample awaits this query, so it carries its own deadline whatever the
    * query does with the one it is given. A timeout is a source error and the
-   * reading falls back to unavailable, rather than a dashboard that stops.
+   * reading is a failed one, rather than a dashboard that stops.
    */
   private async query(): Promise<string> {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -83,24 +90,29 @@ export class SccacheCollector {
   }
   async collect(r: Reader, time: number): Promise<Sccache> {
     if (
-      this.queriedAt !== null &&
-      time - this.queriedAt < this.minIntervalMs &&
-      time >= this.queriedAt
-    )
-      return this.reading;
-    let counters: Counters | null = null;
+      this.queriedAt === null ||
+      time - this.queriedAt >= this.minIntervalMs ||
+      time < this.queriedAt
+    ) {
+      this.last = await this.ask(time);
+      this.queriedAt = time;
+    }
+    if ("reading" in this.last) return this.last.reading;
+    r.error(source, this.last.failure);
+    return unread("failed");
+  }
+  private async ask(time: number): Promise<Outcome> {
+    let counters: Counters | null;
     try {
       counters = parseSccacheStats(await this.query());
-      if (counters === null)
-        r.error("sccache --show-stats", "Missing cache hit and miss counters");
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT")
-        r.error("sccache --show-stats", e);
+      return (e as NodeJS.ErrnoException).code === "ENOENT"
+        ? { reading: unread("absent") }
+        : { failure: e };
     }
-    this.queriedAt = time;
-    this.reading =
-      counters === null ? unavailable : this.record(time, counters);
-    return this.reading;
+    return counters === null
+      ? { failure: "Missing cache hit and miss counters" }
+      : { reading: this.record(time, counters) };
   }
   private record(time: number, now: Counters): Sccache {
     // Any backwards movement is a restarted server. The latest reading is the
@@ -127,7 +139,7 @@ export class SccacheCollector {
       windowMs: time - from.time,
     });
     return {
-      available: true,
+      state: "read",
       hits: now.hits,
       misses: now.misses,
       sinceStart: since(this.baseline),

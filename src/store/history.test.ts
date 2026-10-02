@@ -133,6 +133,63 @@ test("a stored scratch row written before root origins loads with an unknown ori
     { path: "/scratch", bytes: 1, age: 0, error: null, origin: null },
   ]);
 });
+test("a stored cache reading written before the query outcome loads with no invented cause", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  first.add(emptySnapshot(now));
+  first.add(emptySnapshot(now + 1000));
+  first.close();
+  const delta = { hits: 3, misses: 1, windowMs: 1000 };
+  // What an older build wrote: a flag for counters read, and no state.
+  const rows = [
+    {
+      time: now,
+      stored: {
+        available: true,
+        hits: 9,
+        misses: 3,
+        sinceStart: delta,
+        recent: delta,
+      },
+      loaded: {
+        state: "read" as const,
+        hits: 9,
+        misses: 3,
+        sinceStart: delta,
+        recent: delta,
+      },
+    },
+    {
+      // A missing program and a failed query both stored false, so neither
+      // cause is claimed.
+      time: now + 1000,
+      stored: {
+        available: false,
+        hits: null,
+        misses: null,
+        sinceStart: null,
+        recent: null,
+      },
+      loaded: undefined,
+    },
+  ];
+  const db = new Database(f.config.sqlitePath);
+  for (const row of rows)
+    db.query("UPDATE samples SET data = ? WHERE time = ?").run(
+      Bun.gzipSync(
+        JSON.stringify({ ...emptySnapshot(row.time), sccache: row.stored }),
+      ),
+      row.time,
+    );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  for (const row of rows)
+    expect(reopened.at(row.time)?.sccache).toEqual(row.loaded);
+});
 test("history refuses an existing database owned by another application", () => {
   const f = fixture();
   cleanup.push(f.cleanup);

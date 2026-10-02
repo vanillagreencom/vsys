@@ -172,9 +172,14 @@ export interface SccacheDelta {
   misses: number;
   windowMs: number;
 }
+/**
+ * How the last stats query ended: counters read, no sccache on the PATH, or a
+ * query that failed, timed out or answered without counters.
+ */
+export type SccacheState = "read" | "absent" | "failed";
 /** sccache counters. An unreadable server stays distinguishable from zero work. */
 export interface Sccache {
-  available: boolean;
+  state: SccacheState;
   hits: number | null;
   misses: number | null;
   sinceStart: SccacheDelta | null;
