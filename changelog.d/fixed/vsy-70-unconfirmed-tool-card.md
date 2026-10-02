@@ -1,0 +1,1 @@
+- A process whose configured agent name sits outside every install location vsys knows now raises a Home card naming it, instead of staying visible only in the `--once` snapshot.

@@ -1,0 +1,1 @@
+- The unconfirmed-tool card now names every process it carries and every distinct path, instead of collapsing a fifth process or a shared tool name into one path.

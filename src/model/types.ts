@@ -64,6 +64,16 @@ export interface Proc {
    * recorded before vsys checked where a tool was installed.
    */
   unconfirmedTool?: string | null;
+  /**
+   * The one path `unconfirmedTool` was tested against: the executable for a
+   * name match, the script for a scripted match. Null alongside a null
+   * `unconfirmedTool`, and also where `unconfirmedTool` is set but vsys could
+   * not read the script of a name with no configured install location, a
+   * read failure that never drops the process or the name it carries.
+   * Absent in snapshots recorded before vsys carried it, even where
+   * `unconfirmedTool` is set.
+   */
+  unconfirmedPath?: string | null;
   build: string | null;
 }
 /** Filesystem counters stay keyed by filesystem and device. */
@@ -376,6 +386,17 @@ export interface Capability {
   source: string;
   /** The system's own words when a read failed, or the values that decided it. */
   detail: string;
+  /**
+   * io-stat's "incomplete" failure alone: whether the failing ancestor sits at
+   * or below the configured agent slice's own occurrence in the instance path
+   * `probeIoStat` was walking, rather than strictly above it. A slice's own
+   * `cgroup.subtree_control` gates only what it hands to its children, never
+   * its own `io.stat`, so this is true from the depth the walk first reaches
+   * the slice onward, whichever instance owns that depth: `writeTotals`'s
+   * slice total survives exactly when this holds. Undefined for every other
+   * failure, where the distinction does not apply.
+   */
+  belowSlice?: boolean;
 }
 /** A complete sample carries failures rather than converting them to zero. */
 export interface Snapshot {

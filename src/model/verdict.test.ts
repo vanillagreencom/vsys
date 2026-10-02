@@ -156,6 +156,33 @@ test("a filesystem below the free-space floor is its own cause", () => {
   expect(causes(s, c).find((item) => item.id === "free-space")).toBeUndefined();
 });
 
+test("a process whose name was not confirmed by install location is its own cause", () => {
+  const c = defaults();
+  const s = healthy();
+  const unconfirmed = {
+    ...processSnapshot({ pid: 7, comm: "pi" }),
+    tool: null,
+    unconfirmedTool: "pi",
+    unconfirmedPath: "/usr/bin/pi",
+  };
+  s.procs = [processSnapshot({ pid: 1 }), unconfirmed];
+  const cause = causes(s, c).find((item) => item.id === "unconfirmed-tool");
+  expect(cause).toMatchObject({
+    level: "warn",
+    verdictWorthy: false,
+    consumer: "pi",
+    values: { processes: 1 },
+  });
+  // The cause carries the raw process, not merely a count: a process a
+  // confirmed agent's name also matched is left out.
+  expect(cause?.procs).toEqual([unconfirmed]);
+  // A snapshot with no unconfirmed name at all raises no cause.
+  s.procs = [processSnapshot({ pid: 1 })];
+  expect(
+    causes(s, c).find((item) => item.id === "unconfirmed-tool"),
+  ).toBeUndefined();
+});
+
 test("slice totals sum root groups and never a nested copy", () => {
   const c = defaults();
   const groups = [
@@ -283,6 +310,7 @@ test("the cause order table is the ladder's own tie order", () => {
     "memory-high",
     "unchecked",
     "integrity-unknown",
+    "unconfirmed-tool",
     "scratch",
   ]);
   // A cause that names a lane names it in text, its process id included.

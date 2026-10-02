@@ -9,6 +9,7 @@ import {
   type Outcome,
   probeAgentSlice,
   probeCapabilities,
+  probeIoStat,
   probeTmux,
   unitDirs,
 } from "./capabilities";
@@ -85,6 +86,9 @@ export class Collector {
    * is the other: the reader creates it by installing the reporter vsys
    * offers, so each sample takes it from the storage read of the reports. The
    * drive report directory is taken the same way, for the same reason.
+   * io-stat is probed once for the root's own delegation, but `probeIoStat`
+   * refines it with each sample's groups, because a slice between the root
+   * and the agent scopes can form, or withhold io, after vsys starts.
    */
   private capabilities: Capability[];
   /** tmux is installed, so a read is worth attempting however it went last. */
@@ -268,7 +272,9 @@ export class Collector {
       }
     mark("tmux");
     const capabilities = [
-      ...this.capabilities,
+      ...this.capabilities.map((cap) =>
+        cap.id === "io-stat" ? probeIoStat(c, groups, cap) : cap,
+      ),
       probeAgentSlice(c, groups, this.units),
     ];
     const s: Snapshot = {

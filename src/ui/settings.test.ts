@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { defaults } from "../config/config";
 import type { Capability, CapabilityId } from "../model/types";
-import { capabilitySnapshot } from "../test/fixture";
+import { writeTotals } from "../model/writes";
+import {
+  capabilitySnapshot,
+  emptySnapshot,
+  groupSnapshot,
+} from "../test/fixture";
 import {
   capabilityLine,
   capabilityLoss,
@@ -179,6 +184,124 @@ test("the reason follows what the probe found, not the interface name", () => {
       detail: "io",
     }),
   ).toBe("the io controller is not delegated to the groups below this session");
+  // The root can delegate io fine while a slice below it withholds it from
+  // the agent scopes; the reason and the cost both name that slice, not the
+  // whole session.
+  const c = defaults();
+  const withheldBySlice: Capability = {
+    id: "io-stat",
+    available: false,
+    failure: "incomplete",
+    source: "/sys/fs/cgroup/agents.slice/cgroup.subtree_control",
+    detail: "agents.slice",
+    belowSlice: true,
+  };
+  expect(capabilityReason(withheldBySlice)).toBe(
+    "agents.slice does not hand the io controller down to the groups below it",
+  );
+  expect(capabilityLoss(withheldBySlice, c)).toBe(
+    "disk writes are blank rather than zero, on Home, for the groups under agents.slice; it does not hand the io controller to them",
+  );
+  // The loss line names Home alone here because the withholding slice IS the
+  // configured agent slice itself: Storage shows slice totals, and the
+  // agent slice's own total comes from its own io.stat, handed to it by its
+  // parent one step earlier, so withholding io from what is below it never
+  // touches that total.
+  const s = emptySnapshot();
+  s.groups = [
+    groupSnapshot({
+      path: "agents.slice",
+      parent: ".",
+      name: "agents.slice",
+      ioWrite: 2_000_000,
+    }),
+    groupSnapshot({
+      path: "agents.slice/a.scope",
+      parent: "agents.slice",
+      name: "a.scope",
+      ioWrite: null,
+      writeRate: null,
+    }),
+  ];
+  expect(
+    writeTotals(s, c).slices.find((slice) => slice.name === c.agentSlice),
+  ).toEqual({ name: c.agentSlice, written: 2_000_000 });
+  // Mirrors capabilities.test.ts's dashed-slice ancestry: the configured
+  // slice is agents-work.slice, nested inside agents.slice, and the
+  // OUTER slice (strictly above the configured one, so it is not the
+  // occurrence `probeIoStat` set `belowSlice` for) withholds io. The
+  // configured slice's parent never delegates io to it, so its own io.stat
+  // never arrives either, and Storage's row for it goes blank along with
+  // Home's, which the loss line must say instead of claiming Storage stays
+  // whole.
+  const nested = { ...c, agentSlice: "agents-work.slice" };
+  const withheldByOuterAncestor: Capability = {
+    ...withheldBySlice,
+    belowSlice: false,
+  };
+  expect(capabilityLoss(withheldByOuterAncestor, nested)).toBe(
+    "disk writes are blank rather than zero, on Home, for the groups under agents.slice, and on Storage, for agents-work.slice's own total: agents.slice does not hand the io controller down to it either",
+  );
+  const nestedSnapshot = emptySnapshot();
+  nestedSnapshot.groups = [
+    groupSnapshot({
+      path: "agents.slice/agents-work.slice",
+      parent: "agents.slice",
+      name: "agents-work.slice",
+    }),
+  ];
+  expect(
+    writeTotals(nestedSnapshot, nested).slices.find(
+      (slice) => slice.name === nested.agentSlice,
+    ),
+  ).toEqual({ name: nested.agentSlice, written: null });
+  // A same-named slice can recur nested inside itself: a withholding
+  // directory between the outer occurrence and the inner one ("somegroup",
+  // which names neither the slice nor "io") still sits below the outer
+  // occurrence Storage reads, so Storage stays whole. Comparing cap.detail
+  // against c.agentSlice could not tell this apart from a true ancestor
+  // above the slice; `belowSlice` can, because `probeIoStat` set it from the
+  // walk's own structure rather than from the failing component's name.
+  const withheldByIntermediate: Capability = {
+    id: "io-stat",
+    available: false,
+    failure: "incomplete",
+    source: "/sys/fs/cgroup/agents.slice/somegroup/cgroup.subtree_control",
+    detail: "somegroup",
+    belowSlice: true,
+  };
+  expect(capabilityLoss(withheldByIntermediate, c)).toBe(
+    "disk writes are blank rather than zero, on Home, for the groups under somegroup; it does not hand the io controller to them",
+  );
+  const nestedSameName = emptySnapshot();
+  nestedSameName.groups = [
+    groupSnapshot({
+      path: "agents.slice",
+      parent: ".",
+      name: "agents.slice",
+      ioWrite: 2_000_000,
+    }),
+    groupSnapshot({
+      path: "agents.slice/somegroup",
+      parent: "agents.slice",
+      name: "somegroup",
+    }),
+    groupSnapshot({
+      path: "agents.slice/somegroup/agents.slice",
+      parent: "agents.slice/somegroup",
+      name: "agents.slice",
+      ioWrite: null,
+      writeRate: null,
+    }),
+  ];
+  // The message says Home alone, and Storage's own total for the configured
+  // slice agrees: it is the outer occurrence's real total, untouched by the
+  // intermediate directory withholding io from what sits below it.
+  expect(
+    writeTotals(nestedSameName, c).slices.find(
+      (slice) => slice.name === c.agentSlice,
+    ),
+  ).toEqual({ name: c.agentSlice, written: 2_000_000 });
 });
 
 test("every missing capability says what it costs the reader, in its own words", () => {
@@ -194,6 +317,7 @@ test("every missing capability says what it costs the reader, in its own words",
     tmux: "a tmux pane id resolves to no address",
     "agent-slice": "agents are shown, but not compared against a shared limit",
   };
+  const c = defaults();
   const cap = (id: CapabilityId, available: boolean): Capability => ({
     id,
     available,
@@ -206,14 +330,14 @@ test("every missing capability says what it costs the reader, in its own words",
     CapabilityId,
     string,
   ][]) {
-    const loss = capabilityLoss(cap(id, false));
+    const loss = capabilityLoss(cap(id, false), c);
     expect({ id, says: loss.includes(phrase) }).toEqual({ id, says: true });
     // And each says something of its own: one string reused across sources
     // would tell a reader the same thing whatever they were missing.
     expect({ id, seen: said.has(loss) }).toEqual({ id, seen: false });
     said.add(loss);
     // A source that answered costs nothing, so the row carries no sentence.
-    expect({ id, whole: capabilityLoss(cap(id, true)) }).toEqual({
+    expect({ id, whole: capabilityLoss(cap(id, true), c) }).toEqual({
       id,
       whole: "",
     });
@@ -248,18 +372,18 @@ test("a missing agent slice offers one line that limits it, and nothing else doe
   expect(capabilityOffer({ ...slice("absent"), id: "psi" }, c)).toBeNull();
   // A slice that cannot be read is still compared against, so its loss says
   // so rather than claiming agents go unchecked.
-  expect(capabilityLoss(slice("unreadable"))).not.toBe(
-    capabilityLoss(slice("absent")),
+  expect(capabilityLoss(slice("unreadable"), c)).not.toBe(
+    capabilityLoss(slice("absent"), c),
   );
   // systemctl refuses set-property on a masked unit, so a masked slice is
   // offered nothing, says it is masked, and costs what an absent one does.
   expect({
     offer: capabilityOffer(slice("masked"), c),
     reason: capabilityReason(slice("masked")),
-    loss: capabilityLoss(slice("masked")),
+    loss: capabilityLoss(slice("masked"), c),
   }).toEqual({
     offer: null,
     reason: "/fixture/agents.slice is masked, so systemd never starts it",
-    loss: capabilityLoss(slice("absent")),
+    loss: capabilityLoss(slice("absent"), c),
   });
 });

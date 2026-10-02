@@ -8,6 +8,7 @@ import { capabilityOffer, capabilityReason } from "../ui/settings";
 import {
   probeAgentSlice,
   probeCapabilities,
+  probeIoStat,
   probeTmux,
   unitDirs,
 } from "./capabilities";
@@ -129,6 +130,365 @@ test("io.stat at the root is not available until the root hands io down", () => 
       ...expected,
     });
   }
+});
+
+test("a slice between a delegating root and the agent scopes can still withhold io", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  expect(root.available).toBe(true);
+  // No group named for the configured slice yet: nothing below the root to
+  // check, so the root's own answer stands.
+  expect(probeIoStat(f.config, [], root)).toBe(root);
+  const agentsSlice = join(f.config.cgroupRoot, "agents.slice");
+  const desktopSlice = join(f.config.cgroupRoot, "app.slice");
+  mkdirSync(agentsSlice, { recursive: true });
+  mkdirSync(desktopSlice, { recursive: true });
+  // The agent slice does not hand io to its own children, so their io.stat is
+  // withheld even though the root delegated it.
+  writeFileSync(
+    join(agentsSlice, "cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+    groupSnapshot({
+      path: "agents.slice/a.scope",
+      parent: "agents.slice",
+      name: "a.scope",
+    }),
+  ];
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(agentsSlice, "cgroup.subtree_control"),
+    detail: "agents.slice",
+    // The withholding directory IS the configured slice's own occurrence, so
+    // its own io.stat (and Storage's total for it) is unaffected.
+    belowSlice: true,
+  });
+  // A desktop slice that holds no agents is not on the agent slice's own
+  // ancestry, so its own withholding of io costs it nothing here, as today.
+  writeFileSync(
+    join(desktopSlice, "cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  writeFileSync(
+    join(agentsSlice, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const withDesktop = [
+    ...groups,
+    groupSnapshot({ path: "app.slice", parent: ".", name: "app.slice" }),
+  ];
+  expect(probeIoStat(f.config, withDesktop, root)).toMatchObject({
+    available: true,
+    failure: null,
+  });
+});
+
+test("an unavailable root answer stands whatever the agent slice's own ancestry shows", () => {
+  const f = setup();
+  const root: Capability = {
+    id: "io-stat",
+    available: false,
+    failure: "absent",
+    source: join(f.config.cgroupRoot, "io.stat"),
+    detail: "ENOENT",
+  };
+  const agentsSlice = join(f.config.cgroupRoot, "agents.slice");
+  // The agent slice's own ancestry ALSO withholds io here, on purpose: were
+  // the short-circuit on an unavailable root removed, the walk below would
+  // read that withholding and return a freshly built `incomplete` capability
+  // instead of `root`. A fixture where the ancestry delegates cleanly cannot
+  // tell the two apart: both the guarded and the unguarded code fall through
+  // to the same `return root` at the very end, so `toBe(root)` would hold
+  // either way (the recurrence this test replaces).
+  writeFileSync(
+    join(agentsSlice, "cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+  ];
+  const result = probeIoStat(f.config, groups, root);
+  // Identity: the root's own answer comes back unchanged, never rebuilt.
+  expect(result).toBe(root);
+  // And its failure and detail survive untouched, so a future fallthrough
+  // that reconstructs a similar-looking object is caught even where it
+  // happens to preserve reference equality by accident.
+  expect(result.failure).toBe("absent");
+  expect(result.detail).toBe("ENOENT");
+});
+
+test("a two-level ancestry under a dashed agent-slice name names whichever level withholds io", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  // systemd nests a dashed slice inside the slice its name prefixes.
+  const c = { ...f.config, agentSlice: "agents-work.slice" };
+  const outer = join(f.config.cgroupRoot, "agents.slice");
+  const leaf = join(outer, "agents-work.slice");
+  mkdirSync(leaf, { recursive: true });
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+    groupSnapshot({
+      path: "agents.slice/agents-work.slice",
+      parent: "agents.slice",
+      name: "agents-work.slice",
+    }),
+  ];
+  // The outer slice withholds io; the leaf still delegates to its own
+  // children, but the walk never reaches the leaf because the outer already
+  // decided it.
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu memory pids\n");
+  writeFileSync(join(leaf, "cgroup.subtree_control"), "cpu io memory pids\n");
+  expect(probeIoStat(c, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(outer, "cgroup.subtree_control"),
+    detail: "agents.slice",
+    // "agents.slice" sits strictly above "agents-work.slice" here, never
+    // naming it, so the configured slice's own io.stat is cut off too.
+    belowSlice: false,
+  });
+  // The outer slice delegates; the leaf itself withholds io from its own
+  // scopes, so the leaf is named instead of the outer slice.
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu io memory pids\n");
+  writeFileSync(join(leaf, "cgroup.subtree_control"), "cpu memory pids\n");
+  expect(probeIoStat(c, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(leaf, "cgroup.subtree_control"),
+    detail: "agents-work.slice",
+    belowSlice: true,
+  });
+});
+
+test("an ancestor collectGroups could not read still answers for delegation", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const c = { ...f.config, agentSlice: "agents-work.slice" };
+  const outer = join(f.config.cgroupRoot, "agents.slice");
+  const leaf = join(outer, "agents-work.slice");
+  mkdirSync(leaf, { recursive: true });
+  // The outer ancestor withholds io from what is below it, but it never made
+  // it into this sample's groups: say its own cpu.stat failed to read, which
+  // collectGroups drops without dropping the children it still finds below.
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu memory pids\n");
+  writeFileSync(join(leaf, "cgroup.subtree_control"), "cpu io memory pids\n");
+  const groups = [
+    groupSnapshot({
+      path: "agents.slice/agents-work.slice",
+      parent: "agents.slice",
+      name: "agents-work.slice",
+    }),
+  ];
+  const result = probeIoStat(c, groups, root);
+  expect(result).not.toBe(root);
+  expect(result).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(outer, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
+});
+
+test("a cgroup root covering two user managers checks every agent slice it finds", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const managerA = join(f.config.cgroupRoot, "user-1000.slice");
+  const managerB = join(f.config.cgroupRoot, "user-1001.slice");
+  const sliceA = join(managerA, "agents.slice");
+  const sliceB = join(managerB, "agents.slice");
+  mkdirSync(sliceA, { recursive: true });
+  mkdirSync(sliceB, { recursive: true });
+  // The first manager's agent slice delegates io all the way down.
+  writeFileSync(
+    join(managerA, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  writeFileSync(join(sliceA, "cgroup.subtree_control"), "cpu io memory pids\n");
+  // The second manager's agent slice withholds io from its own scopes.
+  writeFileSync(
+    join(managerB, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  writeFileSync(join(sliceB, "cgroup.subtree_control"), "cpu memory pids\n");
+  const groups = [
+    groupSnapshot({
+      path: "user-1000.slice/agents.slice",
+      parent: "user-1000.slice",
+      name: "agents.slice",
+    }),
+    groupSnapshot({
+      path: "user-1001.slice/agents.slice",
+      parent: "user-1001.slice",
+      name: "agents.slice",
+    }),
+  ];
+  // A probe that checked only the first match would miss the second, which
+  // withholds io even though the first delegates it in full.
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(sliceB, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
+});
+
+test("an agent slice nested below another instance of itself is checked even when the outer one delegates", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const outer = join(f.config.cgroupRoot, "agents.slice");
+  // A second systemd user manager rooted below the first gives its own
+  // "agents.slice" a path nested inside the outer one's own tree.
+  const between = join(outer, "nested");
+  const inner = join(between, "agents.slice");
+  mkdirSync(inner, { recursive: true });
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu io memory pids\n");
+  writeFileSync(
+    join(between, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  // The inner instance withholds io from its own children even though every
+  // ancestor above it, including the outer "agents.slice", delegates in full.
+  writeFileSync(join(inner, "cgroup.subtree_control"), "cpu memory pids\n");
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+    groupSnapshot({
+      path: "agents.slice/nested",
+      parent: "agents.slice",
+      name: "nested",
+    }),
+    groupSnapshot({
+      path: "agents.slice/nested/agents.slice",
+      parent: "agents.slice/nested",
+      name: "agents.slice",
+    }),
+  ];
+  // `sliceRoots` would drop the inner match as nested inside the outer one,
+  // which is correct for summing but wrong for this ancestry walk: the outer
+  // match's own path never reaches the inner slice's `cgroup.subtree_control`.
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(inner, "cgroup.subtree_control"),
+    detail: "agents.slice",
+    belowSlice: true,
+  });
+});
+
+test("a plain directory between two nested instances of the same slice name withholds io without reaching the outer occurrence's own total", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const outer = join(f.config.cgroupRoot, "agents.slice");
+  // A plain directory, not itself a slice, sits between the outer occurrence
+  // and an inner one that happens to share its name.
+  const between = join(outer, "somegroup");
+  const inner = join(between, "agents.slice");
+  mkdirSync(inner, { recursive: true });
+  // The outer occurrence delegates to its own children...
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu io memory pids\n");
+  // ...but the plain directory below it does not hand io on, even though the
+  // inner instance's own last step would otherwise delegate fine.
+  writeFileSync(join(between, "cgroup.subtree_control"), "cpu memory pids\n");
+  writeFileSync(join(inner, "cgroup.subtree_control"), "cpu io memory pids\n");
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+    groupSnapshot({
+      path: "agents.slice/somegroup",
+      parent: "agents.slice",
+      name: "somegroup",
+    }),
+    groupSnapshot({
+      path: "agents.slice/somegroup/agents.slice",
+      parent: "agents.slice/somegroup",
+      name: "agents.slice",
+    }),
+  ];
+  // The failing component is named neither "io" nor the configured slice,
+  // and it is reached while walking the inner occurrence's longer path at a
+  // depth short of that occurrence's own last step; a check keyed on either
+  // fact alone would misname this as an ancestor strictly above the slice.
+  // It sits below the outer occurrence instead, so `belowSlice` is true.
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(between, "cgroup.subtree_control"),
+    detail: "somegroup",
+    belowSlice: true,
+  });
+});
+
+test("an agent slice collectGroups could not read is still checked when a child scope reveals it", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const agentsSlice = join(f.config.cgroupRoot, "agents.slice");
+  mkdirSync(agentsSlice, { recursive: true });
+  // The agent slice withholds io from its own children, but say its own
+  // cpu.stat failed to read: collectGroups drops the slice's own group record
+  // without dropping the child scope it still finds below.
+  writeFileSync(
+    join(agentsSlice, "cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  const groups = [
+    groupSnapshot({
+      path: "agents.slice/a.scope",
+      parent: "agents.slice",
+      name: "a.scope",
+    }),
+  ];
+  // No group is named "agents.slice" itself, so a candidate selection keyed
+  // on `g.name === c.agentSlice` finds nothing and wrongly returns the root's
+  // available answer.
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(agentsSlice, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
 });
 
 test("a kernel without PSI and without io.stat reports both absences", () => {
@@ -430,6 +790,38 @@ test("a slice that appears after vsys starts is present from the next sample", a
   f.group("agents.slice");
   const after = byId((await collector.sample(2000)).capabilities);
   expect(after.get("agent-slice")?.available).toBe(true);
+});
+
+test("a sample re-reads io-stat against the agent slice it actually found", async () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const collector = new Collector(f.config, 100, 4096);
+  const before = byId((await collector.sample(1000)).capabilities);
+  // The fixture's own agents.slice has no cgroup.subtree_control at all yet,
+  // which is a read failure rather than the withholding this probe diagnoses.
+  expect(before.get("io-stat")?.available).toBe(false);
+  // The slice starts delegating io to its own children: the capability a
+  // fresh sample reports follows, though it was probed available at startup.
+  writeFileSync(
+    join(f.config.cgroupRoot, "agents.slice/cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const after = byId((await collector.sample(2000)).capabilities);
+  expect(after.get("io-stat")?.available).toBe(true);
+  // It can withdraw it again, and the next sample says so.
+  writeFileSync(
+    join(f.config.cgroupRoot, "agents.slice/cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  const withdrawn = byId((await collector.sample(3000)).capabilities);
+  expect(withdrawn.get("io-stat")).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    detail: "agents.slice",
+  });
 });
 
 test("unit files are looked for where the user manager loads them, in its order", () => {
