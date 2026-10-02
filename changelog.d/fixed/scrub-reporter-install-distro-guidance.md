@@ -1,1 +1,1 @@
-- The scrub reporter installer's missing-unit refusal, and the README, now name Fedora and Ubuntu as distributions without `btrfs-scrub@.service`.
+- The scrub reporter installer's missing-unit refusal, and the README, now name Fedora's and Ubuntu's btrfs-progs packages as not shipping `btrfs-scrub@.service`.
