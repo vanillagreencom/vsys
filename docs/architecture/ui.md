@@ -59,4 +59,4 @@ Region: a range over the one flat selection a screen draws. `src/ui/regions.ts` 
 16. A narrow terminal gives the tabs their own row and drops the wait column. `src/ui/App.test.tsx` drives it.
 17. The copy key sends the selected command as an OSC 52 sequence and copies nothing when the row carries none. `src/ui/clipboard.test.ts` checks the encoding against planted terminators; `src/ui/home.test.tsx` reads the sequence off a test output stream.
 18. Process text cannot emit terminal controls. `src/ui/format.test.ts` checks the display sanitizer.
-19. Terminal settings are restored on quit and on a failed shutdown alike. `src/main.test.ts` drives isolated terminals.
+19. Terminal settings are restored on quit and on a failed shutdown alike. Every way the renderer ends, a hangup among them, runs the quit key's shutdown, because the renderer's signal listener keeps the process alive. That shutdown runs once the renderer has given the console back, so a failed one reports its failure. `src/main.test.ts` drives isolated terminals, hangs one up and sends a terminate signal to one.
