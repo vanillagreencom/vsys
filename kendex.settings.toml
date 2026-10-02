@@ -25,15 +25,12 @@ LINEAR_AGENT_LABELS = "agent:maintainer, agent:runtime, agent:rust, agent:iced, 
 # `Tracked: <ID>` needs only an issue to exist. Empty = guard off.
 LINEAR_REQUIRE_REACH = "1"
 
-# Reviewer merge gate: "approval" needs a GitHub approval; "review" needs a
-# non-author review of the current head plus zero unresolved threads; "off"
-# only where no reviewer exists. This repo's reviewers (Codex, Copilot)
-# comment but never approve, so "review" is the mode that can actually pass.
-PR_REVIEW_GATE = "review"
-
-# The review-gate ENGINE's one-switch disable, consumed by orch even where
-# the review-gate skill is not installed. Only the exact value "off"
-# narrows; anything else leaves PR_REVIEW_GATE authoritative.
+# Reviewer merge gate policy, read by orch's approval-wait --resolve-mode
+# through the review-gate skill's settings reader. "off" skips review
+# requests and waits. "enforce" lets GitHub decide: the PR's base-branch
+# rules and reviewDecision resolve the gate to approval or off (main's
+# ruleset requires one approval). Any other value, or a missing review-gate
+# settings reader, makes mode resolution exit 2.
 REVIEW_GATE_MODE = "enforce"
 
 # Total review-wait budget in seconds before the on-timeout policy applies;
