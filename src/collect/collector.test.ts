@@ -1295,6 +1295,78 @@ test("with no report directory, udisks answers in its place or says why it canno
     "absent",
   );
 });
+/** Attribute 241 at the given pretty value and unit; 3 is sectors. */
+const ataRows = (pretty: number, unit: number) => [
+  [0, "unrelated", 0, 0, 0, 0, 0, 0, {}],
+  [241, "total-lbas-written", 50, 99, 99, 0, pretty, unit, {}],
+];
+test("the drive capability needs only one supplying device, never every one or only the first", async () => {
+  const f = setup();
+  // "sda" sorts before "sdb", and its own attribute 241 arrives in a unit
+  // that is not sectors, so it never resolves to a number. A capability that
+  // checked only the first device, or required every device to supply one,
+  // would miss "sdb"'s real number and call the machine's lifetime writes
+  // unavailable when Storage already shows one.
+  f.write(join(f.config.sysBlockRoot, "sda/dev"), "8:0\n");
+  f.write(join(f.config.sysBlockRoot, "sdb/dev"), "8:16\n");
+  const some = await withUdisks(
+    f,
+    fakeBus([
+      {
+        name: "sda",
+        model: "No Number",
+        kind: "ata",
+        attributes: ataRows(10, 1),
+      },
+      {
+        name: "sdb",
+        model: "Has Number",
+        kind: "ata",
+        attributes: ataRows(2_000_000, 3),
+      },
+    ]),
+  ).sample();
+  expect(some.storage.devices).toEqual([
+    {
+      name: "sda",
+      number: "8:0",
+      model: "No Number",
+      lifetimeWritten: null,
+      source: null,
+    },
+    {
+      name: "sdb",
+      number: "8:16",
+      model: "Has Number",
+      lifetimeWritten: 2_000_000 * 512,
+      source: "udisks",
+    },
+  ]);
+  expect(some.capabilities.find((c) => c.id === "smart")?.available).toBe(true);
+  const none = await withUdisks(
+    f,
+    fakeBus([
+      {
+        name: "sda",
+        model: "No Number",
+        kind: "ata",
+        attributes: ataRows(10, 1),
+      },
+      {
+        name: "sdb",
+        model: "Still No Number",
+        kind: "ata",
+        attributes: ataRows(20, 1),
+      },
+    ]),
+  ).sample();
+  expect((none.storage.devices ?? []).every((d) => d.source === null)).toBe(
+    true,
+  );
+  expect(none.capabilities.find((c) => c.id === "smart")?.failure).toBe(
+    "absent",
+  );
+});
 test("installing the drive reporter while vsys runs makes the capability available", async () => {
   const f = setup();
   const collector = new Collector(f.config, 100, 4096);
