@@ -754,6 +754,71 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         units = {unit for unit, _ in module.orphans(recs, module.manager_pids(recs))}
         self.assertIn("agent-confine-headless.scope", units)
 
+    def test_named_agent_classification_rows(self):
+        # is_named_agent has the same three branches as is_agent but only
+        # branch 2 (comm in AGENT_COMMS) had any coverage of its own: these
+        # rows exercise branch 1 (the excluded/is_desktop guard) and branch 3
+        # (the HOST_COMMS + AGENT_PATH_RE match) directly against
+        # is_named_agent, not against is_agent's own, differently-gated copy.
+        mise = f"{self.w.MISE_DATA}/installs"
+        rows = [
+            ("an excluded process that would otherwise match AGENT_COMMS is not a named agent",
+             self.P(60, 0, "claude", ["claude", "--chrome-native-host"]).is_named_agent, False),
+            ("a desktop process that would otherwise match AGENT_COMMS is not a named agent",
+             self.P(61, 0, "codex", ["/opt/other-desktop/resources/weird-binary"],
+                    exe="/opt/other-desktop/resources/weird-binary").is_named_agent, False),
+            ("a HOST_COMMS process with an agent path in argv[:2] is a named agent",
+             self.P(62, 0, "node", [f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"],
+                    exe="/usr/bin/node").is_named_agent, True),
+            ("a HOST_COMMS process with no agent path in argv is not a named agent",
+             self.P(63, 0, "node", ["/usr/bin/node", "/opt/not-an-agent/app.js"],
+                    exe="/usr/bin/node").is_named_agent, False),
+        ]
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_named_agent_guard_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = ('keeps gating only the automatic move into agents.slice."""\n'
+               '        if self.excluded or self.is_desktop:\n'
+               '            return False\n'
+               '        if self.comm in AGENT_COMMS:\n'
+               '            return True\n'
+               '        return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])')
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, old.replace(
+            '        if self.excluded or self.is_desktop:\n'
+            '            return False\n'
+            '        if self.comm in AGENT_COMMS:',
+            '        if self.comm in AGENT_COMMS:',
+        ))
+        module = self.load_mutant(mutant, "agent_warden_mutant_named_agent_guard")
+        p = module.Proc(60, ppid=0, comm="claude", argv=["claude", "--chrome-native-host"],
+                         exe=default_tool_exe(module, "claude"), cgroup=self.A, start=1)
+        self.assertTrue(p.excluded)
+        self.assertTrue(p.is_named_agent)
+
+    def test_named_agent_path_match_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = ('keeps gating only the automatic move into agents.slice."""\n'
+               '        if self.excluded or self.is_desktop:\n'
+               '            return False\n'
+               '        if self.comm in AGENT_COMMS:\n'
+               '            return True\n'
+               '        return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])')
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, old.replace(
+            '        return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])',
+            '        return False',
+        ))
+        module = self.load_mutant(mutant, "agent_warden_mutant_named_agent_path")
+        mise = f"{module.MISE_DATA}/installs"
+        p = module.Proc(62, ppid=0, comm="node",
+                         argv=[f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"],
+                         exe="/usr/bin/node", cgroup=self.A, start=1)
+        self.assertFalse(p.is_named_agent)
+
     def test_reap_orphans_returns_status_rows_and_reaped_event(self):
         with scratch() as tmp:
             base = Path(tmp)
