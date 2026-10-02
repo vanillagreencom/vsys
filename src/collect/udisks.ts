@@ -19,8 +19,10 @@
  * drive's SMART query is held for `udisksHoldMs` rather than asked for again
  * every sample. The listing of which drive answers to which kernel name is
  * asked again every sample regardless, because it costs udisksd only a
- * lookup in its own object cache, and a kernel name it now gives a different
- * serial or WWN for drops the held reading rather than keep serving it.
+ * lookup in its own object cache; a kernel name that now answers with a
+ * different identity, that stopped or started reporting one at all, or that
+ * the listing no longer names, drops the held reading rather than keep
+ * serving it, and so does a listing that could not itself be read.
  */
 
 import type { Outcome } from "./capabilities";
@@ -340,22 +342,25 @@ export async function readUdisks(
 }
 
 /**
- * Whether any target the fresh listing names is a kernel name the held
- * reading also names, but now behind a different drive. Udisks reuses a
- * kernel name for whatever is plugged in next, so without this check a
- * drive swapped mid-hold would keep answering with the drive that left.
+ * Whether the fresh listing proves the held reading stale: a name both name
+ * now answers a different identity for (`null` on either side counts, since
+ * a drive that stopped or started reporting one is not provably the drive
+ * that was held), or a name the held reading answered for that the fresh
+ * listing no longer names at all — gone, or replaced by a drive with neither
+ * the NVMe nor the ATA SMART interface, which `udisksTargets` already drops.
+ * Udisks reuses a kernel name for whatever is plugged in next, so without
+ * this check a drive swapped mid-hold would keep answering with the drive
+ * that left.
  */
 function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
   const priorByName = new Map(held.drives.map((d) => [d.name, d]));
-  return targets.some((target) => {
-    const prior = priorByName.get(target.name);
-    return (
-      prior !== undefined &&
-      target.identity !== null &&
-      prior.identity !== null &&
-      target.identity !== prior.identity
-    );
-  });
+  const freshNames = new Set(targets.map((t) => t.name));
+  return (
+    targets.some((target) => {
+      const prior = priorByName.get(target.name);
+      return prior !== undefined && target.identity !== prior.identity;
+    }) || held.drives.some((d) => !freshNames.has(d.name))
+  );
 }
 
 /**
@@ -367,9 +372,14 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
  * attributes — but never the listing: `listUdisks` is udisksd answering from
  * its own object cache, not a drive query, so re-reading it every sample
  * costs nothing the hold exists to save, and it is what notices a kernel
- * name now sitting behind a different serial or WWN. On that mismatch the
- * held reading is dropped and the full read runs again, rather than serving
- * the departed drive's numbers for the rest of the hold.
+ * name now sitting behind a different serial or WWN, or a held name the
+ * listing no longer answers for at all. On either sign the held reading is
+ * dropped and the full read runs again, rather than serving the departed
+ * drive's numbers for the rest of the hold. A listing that could not itself
+ * be read proves nothing either way, so it is read as a sign to drop the
+ * held reading too: the full read below re-asks the same listing and, where
+ * the failure persists, surfaces it as this sample's own outcome rather than
+ * letting the held reading's old, unrelated outcome stand in for it.
  */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
@@ -383,7 +393,7 @@ export class Udisks {
     if (this.held && at - this.held.at < udisksHoldMs) {
       const listing = await listUdisks(this.run, this.timeoutMs);
       if (
-        listing.targets === null ||
+        listing.targets !== null &&
         !identitySwapped(this.held.reading, listing.targets)
       )
         return this.held.reading;
