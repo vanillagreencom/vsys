@@ -1,0 +1,1 @@
+- A drive udisks newly sees, or one that newly reports a serial, WWN or TimeDetected, shows its lifetime writes in the sample it appears, not up to ten minutes later.

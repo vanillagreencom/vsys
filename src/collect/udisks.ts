@@ -20,9 +20,10 @@
  * every sample. The listing of which drive answers to which kernel name is
  * asked again every sample regardless, because it costs udisksd only a
  * lookup in its own object cache; a kernel name that now answers with a
- * different identity, that stopped or started reporting one at all, or that
- * the listing no longer names, drops the held reading rather than keep
- * serving it, and so does a listing that could not itself be read.
+ * different identity, that stopped or started reporting one at all, that the
+ * listing no longer names, or that the held reading has no drive for, drops
+ * the held reading rather than keep serving it, and so does a listing that
+ * could not itself be read.
  */
 
 import type { Outcome } from "./capabilities";
@@ -393,15 +394,20 @@ function unprovableRow(target: Target): UdisksDrive {
 
 /**
  * Whether the fresh, provable-only targets prove the held (also
- * provable-only) reading stale: a name both name now answers a different
- * identity for (`null` on either side counts, since a drive that stopped or
- * started reporting one is not provably the drive that was held), or, where
- * both report none, a different `detected`; or a name the held reading
- * answered for that the fresh provable targets no longer name at all —
- * gone, or turned unprovable itself. Every target reaching this check is
+ * provable-only) reading stale: a fresh target the held reading has no row
+ * for, since that drive was never queried; a name both name now answers a
+ * different identity for (`null` on either side counts, since a drive that
+ * stopped or started reporting one is not provably the drive that was held),
+ * or, where both report none, a different `detected`; or a name the held
+ * reading answered for that the fresh provable targets no longer name at all
+ * — gone, or turned unprovable itself. Every target reaching this check is
  * already provable by construction, so the case neither side has any
  * signal at all never arises here; that case is `isProvable`'s to filter out
  * before this runs.
+ *
+ * A target with no held row forces one fresh query only: `queryDrives`
+ * returns a row for every target it is given, its own failed call included,
+ * so the next sample finds that row and compares against it.
  */
 function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
   const priorByName = new Map(held.drives.map((d) => [d.name, d]));
@@ -409,7 +415,7 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
   return (
     targets.some((target) => {
       const prior = priorByName.get(target.name);
-      if (prior === undefined) return false;
+      if (prior === undefined) return true;
       if (target.identity !== prior.identity) return true;
       return target.identity === null && target.detected !== prior.detected;
     }) || held.drives.some((d) => !freshNames.has(d.name))
@@ -420,14 +426,11 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
  * The listing's targets merged into one reading, in listing order: a
  * provable target takes its row from `provable` (which answers for exactly
  * the provable targets, held or freshly queried), and an unprovable one is
- * rendered fresh by `unprovableRow`. A provable target `provable` has no row
- * for — one with no held entry yet, which `identitySwapped` does not itself
- * force a query for, whatever its own identity does next — reads as unknown
- * for this one sample rather than invent or withhold a row. It is picked up
- * for real only once something else forces a query over the whole provable
- * set: an unrelated drive's confirmed change, or the hold expiring and the
- * next cold-start read running over every provable target, this one
- * included.
+ * rendered fresh by `unprovableRow`. Every provable target has a row there:
+ * a held reading is served only when `identitySwapped` found a held row for
+ * each, and a fresh one comes from `queryDrives` over these same targets. A
+ * provable target with no row would read as unknown rather than invent or
+ * withhold one.
  */
 function mergeReading(
   provable: UdisksReading,
@@ -479,9 +482,9 @@ function mergeReading(
  * rather than serving the departed drive's numbers; a same-identity re-read
  * keeps serving the held one. A listing that could not itself be read is
  * read as a sign to drop the held reading too, never as proof nothing
- * changed. A held reading with no drives at all is read as stale by any
- * fresh provable target, never run through `identitySwapped` to compare,
- * since an empty held reading has no prior name to compare against.
+ * changed. A provable target the held reading has no row for, a drive newly
+ * attached or newly reporting a Serial, a WWN or a `TimeDetected`, drops it
+ * the same way, so that drive is read in the sample it first appears.
  */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
@@ -499,12 +502,7 @@ export class Udisks {
         return { drives: [], outcome: listing.outcome };
       }
       const provableTargets = listing.targets.filter(isProvable);
-      const emptyHeldProvenStale =
-        this.held.reading.drives.length === 0 && provableTargets.length > 0;
-      if (
-        !emptyHeldProvenStale &&
-        !identitySwapped(this.held.reading, provableTargets)
-      )
+      if (!identitySwapped(this.held.reading, provableTargets))
         return mergeReading(this.held.reading, listing.targets);
     }
     const listing = await listUdisks(this.run, this.timeoutMs);
