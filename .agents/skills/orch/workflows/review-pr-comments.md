@@ -80,7 +80,7 @@ Map each comment to a domain from its source type and file path. Domain-to-agent
 
 ## 3. Analyze
 
-Delegate to the mapped domain agents in parallel.
+Apply [Delegation](../references/skill-rules.md#delegation) before selecting domain, architecture, or fix agents on every pass. Delegate to the mapped domain agents in parallel.
 
 <delegation_format>
 Analyze these PR review comments for your domain.
@@ -337,7 +337,7 @@ git -C "[WORKTREE_PATH]" push origin HEAD
 
 A `Tracked:` reply names the issue it filed, and a decline is a decline — say so. Resolving a thread is not a reply.
 
-`[REASON]` takes one of the forms [../references/finding-disposition.md](../references/finding-disposition.md) § Decision flow sets out, which also states how far the gate's `unreasoned-decline` verdict reaches and where the rule binds past it.
+`[REASON]` takes one of the forms [../references/finding-disposition.md](../references/finding-disposition.md) § Decision flow sets out.
 
 ```bash
 .agents/skills/github/scripts/github.sh post-reply "[THREAD_ID]" "[REPLY_BODY]" --pr "[PR_NUMBER]"
@@ -387,13 +387,13 @@ Auto-resolve every thread where a reply was posted; keep open only threads await
 
 ### 7.2 Copilot Head Route
 
-**Skip if** no thread this triage answered is Copilot's. Copilot's review overview opens with one of three labels. It submits `Approved` as an `APPROVED` review. It submits `Changes recommended` and `Needs a closer look` as `COMMENTED`. It re-reads a head only on a review request, so a head its review left `COMMENTED` stays unapproved after the answers until one of the two routes below runs. Resolve the gate mode the base sets:
+**Skip if** no thread this triage answered is Copilot's. Copilot's review overview opens with one of three labels. It submits `Approved` as an `APPROVED` review. It submits `Changes recommended` and `Needs a closer look` as `COMMENTED`. It re-reads a head only on a review request, so a head its review left `COMMENTED` stays unapproved after the answers until one of the two routes below runs. Bind `[REVIEW_BASE_CHECKOUT]` per [Gate-mode routing](../references/gates.md#gate-mode-routing). Resolve through that consumer base:
 
 ```bash
-env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --resolve-mode
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --resolve-mode --base-checkout [REVIEW_BASE_CHECKOUT]
 ```
 
-`off`, or a non-zero exit, which is reported, ends this step: no rule holds the pull request for an approval, or no mode was read. On `approval`, bind the head:
+`off` ends this step per [Gate-mode routing](../references/gates.md#gate-mode-routing). A non-zero exit is no mode: report it and end this step. On `approval`, bind the head:
 
 ```bash
 env -u GH_REPO -u GITHUB_REPOSITORY gh pr view [PR_NUMBER] --json headRefOid --jq .headRefOid
@@ -411,8 +411,10 @@ A line whose `commit_id` is `[HEAD_SHA]` and whose `state` is `APPROVED` ends th
 - **Head moved**, by a push for any reviewer's thread. Unless the head already equals `pr_approval.copilot_rerequest_head`, request one Copilot re-review, record that head, then wait on it through [Waiter launch](../references/waiter-launch.md). A head already recorded gets no second request, no wait and no notice: the overseer's `awaiting-stale` rule decides it.
 
   ```bash
-  env -u GH_REPO -u GITHUB_REPOSITORY gh pr edit [PR_NUMBER] --add-reviewer @copilot
+  env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --request-review --base-checkout [REVIEW_BASE_CHECKOUT]
   ```
+
+  Route the answer per [Copilot requests](../references/gates.md#copilot-requests) before recording the head or starting the wait.
 
   ```bash
   .agents/skills/orch/scripts/workflow-state update [ISSUE_ID] '.pr_approval.copilot_rerequest_head = "[HEAD_SHA]"'

@@ -719,20 +719,6 @@ fleet_merge() { # [quiet]
   fi
 }
 
-# One `close` row about the overseer in the fleet log: the text in
-# NOTICE_FILE, the record built in RECORD_FILE, jq's and the writer's words in
-# ERR_FILE. The record carries no `at`: `workflow-state append-file` stamps
-# the fleet log's time from its own clock, so the record written here and the
-# one an overseer writes by hand are dated by one reader. Every overseer
-# notice the fleet log carries goes through here, at the watch's start and
-# from its passes alike.
-overseer_fleet_log() { # NOTICE_FILE RECORD_FILE ERR_FILE
-  jq -n --rawfile text "$1" \
-    '{kind: "close", item: "overseer", text: ($text | rtrimstr("\n"))}' > "$2" 2>"$3" || return 1
-  "$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} \
-    append-file oversee fleet_log "$2" >/dev/null 2>"$3"
-}
-
 # A session record the start could not write, said on stderr and in the fleet
 # log and then left behind: the watch goes on to judge the session, from the
 # exit status and rows file the record already holds for this pane where it
@@ -763,7 +749,7 @@ overseer_record_notice() { # DETAIL HELD REASON PANE_FIELD FIELD=VALUE...
   esac
   if printf '%s: the start could not record this session; the pane is still watched. %s %s\n' "$1 $2" "$OW_REPLAY_RULE" "$held_text" > "$notice"
   then
-    if ! overseer_fleet_log "$notice" "$record" "$errf"; then
+    if ! ol_fleet_log "$notice" "$record" "$errf" "$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"}; then
       ow_message overseer-notice-failed "channel=fleet-log" >&2
       [[ ! -s "$errf" ]] || cat -- "$errf" >&2
     fi
@@ -1656,13 +1642,10 @@ check_start_stall() {
   lane_row_commit "$rows"
 }
 
-# The owner asks past their deadline, resolved to their recommendation here,
-# on this clock and by nothing else: the overseer is told by the answer the
-# peek that follows reports as owner-ask-resolved, so a ruling made here and
-# one the owner made read through one event. A `resolved-already` is not a
-# failure: the owner's answer landed between the listing and the resolve.
-# Any other refusal fails the pass and names the ask, so an ask that cannot
-# close is never left standing in silence.
+# Close due owner asks through lane-mail's shared closure rule. Its default
+# supplies a recommendation only without an owner answer. The following peek
+# reports answers and closes separately. A resolved-already refusal means
+# another close won the mailbox lock; every other refusal fails this pass.
 resolve_due_owner_asks() {
   local due id rc=0
   due="$("$LANE_MAIL" pending --item overseer --to owner --due 2>"$WORK_DIR/due.err")" || rc=$?
@@ -1855,7 +1838,7 @@ check_mail() {
       case "$item:$kind" in
         # The overseer's own mailbox, each line reported under the class
         # lib/mailbox-append.sh defines, which lane-mail judges a reply's --ref
-        # by too. A resolution names the ask it closes, the one the overseer
+        # by too. An answer or close names its ask, the one the overseer
         # is waiting on. A peer line carries its kind, because only an ask is
         # owed a reply and an answer to a directive would name an id in no
         # outbox; `re=` rides an answer, without which two replies from one
@@ -1863,7 +1846,8 @@ check_mail() {
         # nobody's, so it is skipped rather than read back as a note.
         overseer:*)
           case "$class" in
-            resolution) echo "EVENT owner-ask-resolved $re by=$by" ;;
+            resolution) echo "EVENT owner-ask-resolved $re by=$by id=$id" ;;
+            close) echo "EVENT owner-ask-closed $re by=$by" ;;
             owner-note) echo "EVENT owner-note $id" ;;
             peer) echo "EVENT peer-note ${from#overseer:} $id kind=$kind${re:+ re=$re}" ;;
             stray) continue ;;
@@ -2267,10 +2251,10 @@ overseer_note() { # REASON FIELD=VALUE...
 }
 
 # The two channels a pass's overseer notice reaches: the fleet log through
-# overseer_fleet_log, and the overseer mailbox as a directive.
+# lib/overseer-launch.sh § ol_fleet_log, and the overseer mailbox as a directive.
 overseer_publish() { # NOTICE RECORD ERR_FILE
   local notice="$1" record="$2" errf="$3"
-  overseer_fleet_log "$notice" "$record" "$errf" \
+  ol_fleet_log "$notice" "$record" "$errf" "$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} \
     || overseer_note overseer-notice-failed "channel=fleet-log"
   "$LANE_MAIL" send --item overseer --directive --file "$notice" >/dev/null 2>"$errf" \
     || overseer_note overseer-notice-failed "channel=lane-mail"
@@ -2706,7 +2690,7 @@ overseer_gap_alert() { # PANE GAP
     "$1" "$2" > "$notice" || { overseer_note overseer-notice-failed "channel=file"; return 1; }
   "$LANE_MAIL" notice --item overseer --to owner --file "$notice" >/dev/null 2>"$errf" \
     || { overseer_note overseer-notice-failed "channel=owner"; return 1; }
-  overseer_fleet_log "$notice" "$record" "$errf" \
+  ol_fleet_log "$notice" "$record" "$errf" "$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} \
     || overseer_note overseer-notice-failed "channel=fleet-log"
   ow_message overseer-context-alerted "pane=$1" "gap=$2" >&2
 }
@@ -3074,7 +3058,7 @@ check_overseer() {
   else
     printf '%s\n' "$OVERSEER_LINE" > "$WORK_DIR/overseer-line" \
       || { overseer_relaunch_failed "$row" "$rows" "$identity" "$pane" "$window" "$attempt" line-file; return 1; }
-    "$SUCCEED" --dead-pane "$pane" --line-file "$WORK_DIR/overseer-line" >&2 || succeed_rc=$?
+    "$SUCCEED" --dead-pane "$pane" --handoff "$HANDOFF" --line-file "$WORK_DIR/overseer-line" >&2 || succeed_rc=$?
   fi
   # Exit 3 is that script's own "no account qualifies", which a retry cannot
   # improve on; every other non-zero status is this launch failing and takes
@@ -3560,7 +3544,7 @@ owed_read() {
   OWED_LINES=""
   [[ -n "$STATE_FILE" ]] || return 0
   local errf="$WORK_DIR/owed.err" out items rows rc=0 n
-  local id state priority lane host harness model pr key verdict line asked answer
+  local id state priority lane host harness model delivery key verdict line asked answer
   OWED_ACCOUNTS=""
   OWED_ANSWERS=""
   if [[ -n "${LINEAR_TEAM:-}" ]]; then
@@ -3589,7 +3573,7 @@ owed_read() {
   fi
   # One row per owed item on the unit separator, since a model id is the
   # launcher's to spell: id, state, priority, lane, then the host, harness and
-  # model a wall is judged for and the merged pull request, `-` where none.
+  # model a wall is judged for and the delivery identifier, `-` where none.
   rows="$(jq -r --argjson items "$items" "$LANE_RUNNING_JQ"'
     def token($field): if type == "string" and test("^[A-Za-z0-9._-]+$") then .
       else error("lane-field field=\($field) value=\(tojson)") end;
@@ -3609,14 +3593,16 @@ owed_read() {
        ($rec.harness // null | if . == null then "-" else token("harness") end),
        ($rec.model // null | if . == null or . == "" then "-" elif type == "string" then . else error("lane-field field=model value=\(tojson)") end),
        (if $rec.cycle == null then "-"
-        else ($rec.cycle.pr | if type == "number" then tostring else error("lane-field field=cycle value=\($rec.cycle | tojson)") end) end)]
+        else ($rec.cycle | if has("pr") and (has("commit") | not) and (.pr | type) == "number" then "pr=\(.pr)"
+          elif has("commit") and (has("pr") | not) and (.commit | type) == "string" and (.commit | test("^[0-9a-f]+$")) then "commit=\(.commit)"
+          else error("lane-field field=cycle value=\($rec.cycle | tojson)") end) end)]
     | join("\u001f")' <<<"$FLEET_STATE" 2>"$errf")" \
     || die state-invalid "$(cat "$errf")" "option=--state" "path=$STATE_FILE"
-  while IFS=$'\037' read -r id state priority lane host harness model pr; do
+  while IFS=$'\037' read -r id state priority lane host harness model delivery; do
     [[ -n "$id" ]] || continue
     line="owed $id state=$state priority=$priority lane=$lane"
-    if [[ "$pr" != - ]]; then
-      verdict="verdict=merged pr=$pr"
+    if [[ "$delivery" != - ]]; then
+      verdict="verdict=merged $delivery"
     elif [[ "$harness" == - ]]; then
       verdict="verdict=queue"
     else

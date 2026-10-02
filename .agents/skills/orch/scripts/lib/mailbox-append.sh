@@ -40,6 +40,35 @@ mailbox_terminate() { # FILE
   printf '\n' >>"$1" || return 1
 }
 
+# The `at` stamp as epoch seconds, null where it does not parse: the one
+# parse every reader of a stamp shares, prefixed to its jq program.
+MAILBOX_TIME_JQ='def at_epoch: try (strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch null;'
+
+# The destination's most recent whole-envelope repeat within a minute. Both
+# lane-mail and lane-host append call this under the destination's own lock.
+# Deadline offsets stay equal on a retry even when its timestamp advances.
+# The envelope crosses a file, not argv: a message can exceed one argument's
+# kernel limit. Raw provider appends that are not envelopes remain raw bytes.
+mailbox_duplicate_id() { # FILE ENVELOPE_FILE
+  jq -r -R --rawfile sent "$2" "$MAILBOX_TIME_JQ"'
+    def content:
+      if has("deadline") then
+        (.deadline | at_epoch) as $deadline | (.at | at_epoch) as $stamp
+        | if $deadline != null and $stamp != null then
+            .deadline = ($deadline - $stamp)
+          else . end
+      else . end | del(.id, .at);
+    ($sent | fromjson? // empty | objects) as $candidate
+    | ($candidate.at | at_epoch) as $now
+    | ($candidate | content) as $want
+    | (fromjson? // empty) | objects
+    | select(content == $want)
+    | (.at | at_epoch) as $at
+    | select($now != null and $at != null and ($now - $at) >= 0 and ($now - $at) <= 60)
+    | .id | strings' <"$1" |
+    awk '{ last = $0 } END { if (NR > 0) print last }'
+}
+
 # Add stdin's bytes to FILE under a lock on FILE itself, which every writer of
 # it on that disk opens. A lock anywhere else is one writer's own: two writers
 # holding separate locks both read the file and the second write loses the
@@ -51,16 +80,21 @@ mailbox_terminate() { # FILE
 # operation, so a line whose right to land depends on what the file already
 # holds, a delivery id or an ask's one resolution, is judged against the file
 # it joins and never against a copy another writer has moved on from. The
-# guard returning nonzero refuses the append as exit 4 and lands nothing; what
-# it found is the guard's own to report.
+# guard returns 1 for an expected refusal, 2 for a read failure, and 3 for a
+# write failure. Its diagnostics stay on stderr.
+#
+# ENVELOPE_FILE, where given, names the candidate bytes on stdin. The minute
+# repeat check runs under this same lock and prints `duplicate id=FIRST` on
+# stderr when it refuses. Delivery-id and resolution callers use GUARD alone.
 #
 # Exit 3 when the lock could not be taken within WAIT_SECONDS, 2 when a write
-# failed, 4 when the guard refused. The three are different repairs, a writer
+# failed, 4 when the guard refused, 5 when its read failed. These need different repairs, a writer
 # holding the mailbox, a disk or permission failure, a line already there, so
 # every caller turns the number into its own word before anyone reads it:
 # lane-mail into lock-failed, write-failed and the guard's key, the provider
 # and the fixture into lock-timeout and write-failed.
-mailbox_append_locked() { # FILE WAIT_SECONDS [GUARD] — bytes on stdin
+mailbox_append_locked() { # FILE WAIT_SECONDS [GUARD [ENVELOPE_FILE]]: bytes on stdin
+  local duplicate="" guard_rc=0
   exec 9>>"$1" || return 2
   if ! orch_take_lock 9 "$1" "$2"; then
     exec 9>&-
@@ -71,10 +105,30 @@ mailbox_append_locked() { # FILE WAIT_SECONDS [GUARD] — bytes on stdin
     orch_release_lock
     return 2
   fi
-  if [ -n "${3:-}" ] && ! "$3" "$1"; then
+  if [ -n "${4:-}" ]; then
+    if ! duplicate="$(mailbox_duplicate_id "$1" "$4")"; then
+      exec 9>&-
+      orch_release_lock
+      return 2
+    fi
+    if [ -n "$duplicate" ]; then
+      printf 'duplicate id=%s\n' "$duplicate" >&2
+      exec 9>&-
+      orch_release_lock
+      return 4
+    fi
+  fi
+  if [ -n "${3:-}" ]; then
+    "$3" "$1" || guard_rc=$?
+  fi
+  if [ "$guard_rc" -ne 0 ]; then
     exec 9>&-
     orch_release_lock
-    return 4
+    case "$guard_rc" in
+      1) return 4 ;;
+      3) return 2 ;;
+      *) return 5 ;;
+    esac
   fi
   if ! cat >&9; then
     exec 9>&-
@@ -88,14 +142,29 @@ mailbox_append_locked() { # FILE WAIT_SECONDS [GUARD] — bytes on stdin
 # The class of an envelope in the overseer's own to-lane.jsonl, as a jq
 # definition a caller puts ahead of its filter, so the writer that checks a
 # reply's --ref and the watch that reports the line judge one rule: a
-# `resolution` is the answer `lane-mail resolve` wrote, carrying `by`; a `peer`
-# line is another repository's overseer's, `from` naming it; an `owner-note` is
-# what the owner wrote, `from` owner or absent; and a `stray` is an answer from
-# the owner with no `by`, which nothing here writes, since the owner answers
-# nothing and a send with --re into this mailbox is refused.
+# `close` is a resolution or a legacy closing answer; `resolution` is an owner answer
+# carrying `by`; a `peer` line names another repository's overseer in `from`;
+# an `owner-note` names owner or no sender; and a `stray` is an owner answer
+# missing the `by` field every owner-answer writer supplies.
 # shellcheck disable=SC2034  # read by the scripts that source this.
-MAILBOX_CLASS_JQ='def overseer_mail_class:
-  if .kind == "answer" and (.by | type) == "string" then "resolution"
+# Compatibility floor: kendex 1.3 mailboxes; remove legacy reads no earlier
+# than 1.5, after the release-standard minor-release warning period.
+MAILBOX_CLASS_JQ='def mailbox_legacy_close:
+  .kind == "answer" and (.by == "text" or .by == "default") and (has("closes") | not);
+def overseer_mail_class:
+  if .kind == "resolution" or mailbox_legacy_close then "close"
+  elif .kind == "answer" and (.by | type) == "string" then "resolution"
   elif ((.from // "") | . != "" and . != "owner") then "peer"
   elif .kind == "answer" then "stray"
   else "owner-note" end;'
+
+# The pre-1.3 resolve producer wrote an answer without a closes field.
+mailbox_warn_legacy() { # FILE
+  local ids id
+  ids="$(jq -r -R "$MAILBOX_CLASS_JQ"' (fromjson? // empty) | objects
+    | select(mailbox_legacy_close) | .id' <"$1")" || return 2
+  [ -n "$ids" ] || return 0
+  while IFS= read -r id; do
+    printf 'lane-mail: legacy-close=%s\nLegacy closing answer retained; supported through kendex 1.4.\n' "$id" >&2
+  done <<<"$ids"
+}

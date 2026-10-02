@@ -112,6 +112,5 @@ Both measured commands exited with status 2 on this machine because source error
 
 ## Repository tooling
 
-- Run `.agents/skills/review-gate/scripts/validate.sh` after changing review settings or the writer workflow, and commit `kendex.settings.toml` with those changes so GitHub uses the tested settings.
 - Review instructions are generated from `kendex.toml`. Run `.agents/skills/bot-instructions/scripts/bot-instructions render` after changing them, and check the installed render paths after adding a harness.
 - Run `.agents/skills/commit-guards/scripts/md-reflow PATH` on a markdown file you changed, and `.agents/skills/doc-limits/scripts/doc-limits` to check every document against its byte ceiling.

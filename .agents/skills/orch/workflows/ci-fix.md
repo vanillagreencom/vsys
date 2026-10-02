@@ -68,7 +68,7 @@ git -C "[WORKTREE_PATH]" push
 
 ### 3.2 Delegated Fixes
 
-Infer the agent from the component paths or issue labels. A test failure in concurrent code that passes locally is a flaky-test candidate — check the project's testing conventions (missing barriers, iteration-based waits, static mutable state) before treating it as a real regression.
+Infer the agent from the component paths or issue labels. Apply [Delegation](../references/skill-rules.md#delegation) before each dev or integration-analysis delegation. A test failure in concurrent code that passes locally is a flaky-test candidate — check the project's testing conventions (missing barriers, iteration-based waits, static mutable state) before treating it as a real regression.
 
 Stamp the round as separate tool calls immediately before delegating, the round-start prune between the two stamps, and arm the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure). All three take the one state key as `[ISSUE_ID]`: the caller's `issue_id` when managed, § 1's `[STATE_KEY]` standalone.
 
@@ -147,8 +147,10 @@ Report findings for a user decision.
 
 Re-confirm the review gate at the new head **before** waiting on CI, on every repo with no repo detection. Either wait exiting `5` with `<waiter>: mail=<count>` or `<waiter>: mail-unreadable=<path>` is no verdict: run `.agents/skills/orch/scripts/lane-mail inbox --item [STATE_KEY]`, act on what it prints, then re-run the same wait.
 
+Bind `[REVIEW_BASE_CHECKOUT]` per [Gate-mode routing](../references/gates.md#gate-mode-routing).
+
 ```bash
-env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --resolve-mode
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --resolve-mode --base-checkout [REVIEW_BASE_CHECKOUT]
 ```
 
 `off` skips to the CI wait; a non-zero exit is no mode, so report it and stop. Otherwise run the short exact-head re-confirmation:
@@ -159,7 +161,7 @@ env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [P
 
 - `approved` / `proceeded` → wait for CI. `proceeded` is returned to the caller, not persisted here; it is a LOCAL verdict — orch posts no status.
 - `comments` / `changes_requested` → new feedback on the fix push. Managed: return it to the caller's review-gate handling. Standalone: run that triage pass, then re-run this step.
-- `unreviewable` → this PR's base draws no automatic review ([references/gates.md](../references/gates.md) § Stacked pull requests). Request one with `gh pr edit [PR_NUMBER] --add-reviewer @copilot` and re-run this step once. If it repeats, `auto-recommended` records `ci-gate-unreviewable`; under `ask`, hand back the unconfirmed gate. Never treat it as a met gate.
+- `unreviewable` → this PR's base draws no automatic review ([references/gates.md](../references/gates.md) § Stacked pull requests). Run the [Copilot request owner](../references/gates.md#copilot-requests). On `approval`, re-run this step once. On `off`, go to the CI wait. If it repeats, `auto-recommended` records `ci-gate-unreviewable`; under `ask`, hand back the unconfirmed gate. Never treat it as a met gate.
 - `timeout` → no exact-head evidence yet; a missing or red CI run here is not a fix failure. Re-run this step once. If it repeats, `auto-recommended` records `ci-gate-unconfirmed`; under `ask`, hand back the unconfirmed gate.
 
 ```bash

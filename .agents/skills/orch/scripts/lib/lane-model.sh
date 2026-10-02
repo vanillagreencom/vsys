@@ -98,17 +98,18 @@ def shared_bindings:
    {bucket: "monthly", pct: (.monthly_pct // null),
     resets_at: (.resets.monthly // null)}];
 
-def model_binding($model):
+def model_bindings($model):
   ($model | lane_norm) as $m
-  | (shared_bindings
-     + [ (.model_buckets // [])[]
+  | [ (.model_buckets // [])[]
          | ((.label // "") | lane_norm) as $l
          | select(.label == null
                   or ($l != "" and $m != ""
                       and (($l | contains($m)) or ($m | contains($l)))))
          | {bucket: "model", label: (.label // null), pct: .pct,
-            resets_at: (.resets_at // null)} ])
-  | max_binding;
+            resets_at: (.resets_at // null)} | select(.pct != null) ];
+
+def model_binding($model):
+  (shared_bindings + model_bindings($model)) | max_binding;
 
 # binding_bucket over one lane record: the account-wide binding bucket, or null.
 # Null is "nothing measured this", which every caller refuses on and none may
@@ -219,10 +220,11 @@ def with_lane_binding($model; $binding_floor):
 # most room fills until it walls; the projection charges each live claim its
 # expected burn before any verdict is taken.
 #
-# burn_pct_per_lane_hour is the judged window measured rate shared out across
-# the live claims where both exist, and $burn_default, ORCH_LANE_BURN_PCT_PER_HOUR,
-# where they do not: a rate taken with nothing claimed says nothing about what
-# one lane costs, and an unmeasured rate says nothing at all.
+# Each claim inherits the observed account burn where a rate and claims exist.
+# The samples carry no claim count, so dividing by the current count would
+# cancel added claims while the reading stays cached. Charging the aggregate
+# rate per claim can overestimate concurrent burn, but never makes a new claim
+# free. With no claims or no rate, use ORCH_LANE_BURN_PCT_PER_HOUR.
 #
 # The default is points of the 5-hour session window. A weekly window, the
 # plan-wide one or a model-scoped one, holds the same hour of work as the
@@ -236,7 +238,7 @@ def with_lane_binding($model; $binding_floor):
 # never charged as zero lanes.
 def with_lane_projection($burn_default):
   (if .usage_rate_state == "measured" and (.claims // 0) > 0
-   then .usage_rate_pct_per_min * 60 / .claims
+   then .usage_rate_pct_per_min * 60
    elif .binding_bucket == "session" then $burn_default
    elif .binding_bucket == "monthly" then $burn_default * 5 / 720
    else $burn_default * 5 / 168 end) as $burn
@@ -256,6 +258,16 @@ def judged_wall:
   if .projected_headroom_pct == null then null
   else 100 - .projected_headroom_pct
   end;
+
+# The reset bonus is bounded to [1, 2]: a short reset cannot let small room
+# outrank an account with more than twice that room. An unknown reset earns
+# no bonus. The caller supplies the clock so one pick judges every row at once.
+def with_lane_selection_score($now):
+  (.binding_resets_at | reset_epoch) as $reset
+  | (if $reset == null then null else ([0, ($reset - $now) / 3600] | max) end) as $hours
+  | . + {selection_score:
+      (if .projected_headroom_pct == null then null
+       else .projected_headroom_pct * (if $hours == null then 1 else 1 + 1 / (1 + $hours) end) end)};
 
 def lane_public: del(._rate_prior, ._rate_elapsed_s, ._id);
 
@@ -291,4 +303,106 @@ def wall_verdict($max):
   elif . < $max then "room"
   else "walled"
   end;
+
+# Partition on the same verdict the named pick reads. Score only orders room
+# lanes; it cannot buy a launch past the projected wall. The counts preserve
+# the distinction between an allowance spent and one never measured.
+def lane_selection($model; $floor; $burn; $now; $max):
+  [ .[] | with_lane_binding($model; $floor) | with_lane_projection($burn)
+    | with_lane_selection_score($now)
+    | . + {verdict: (judged_wall | wall_verdict($max))} ]
+  | { chosen: ([ .[] | select(.verdict == "room") ]
+                | sort_by([(0 - .selection_score), .claims, (0 - .projected_headroom_pct), .wall]) | first
+                | if . == null then null
+                  else . + {effective_headroom_pct: (if .wall == null then null else 100 - .wall end)}
+                  | del(.wall, .verdict) | lane_public end),
+      qualifying: ([ .[] | select(.verdict == "room") ] | length),
+      walled: ([ .[] | select(.verdict == "walled") ] | length),
+      unmeasured: ([ .[] | select(.verdict == "unmeasured") ] | length),
+      unread: [ .[] | select(.verdict == "unmeasured") ] };
 '
+
+# Read lane records on stdin and judge all their reset bonuses at one instant.
+lane_select() { # MODEL BINDING_FLOOR BURN MAX_PCT
+  local now
+  now="$(date +%s)" || return 1
+  jq -c --arg model "$1" --argjson floor "$2" --argjson burn "$3" \
+    --argjson max "$4" --argjson now "$now" "$LANE_MODEL_JQ"'
+    lane_selection($model; $floor; $burn; $now; $max)'
+}
+
+# Consult DIR for an unreachable host or a measured Claude row missing MODEL.
+# Host credential refusals stay authoritative. Every local Claude result for
+# a named MODEL must measure its window, regardless of the consultation cause.
+#
+# `headroom_pct` is emit_lane's one word for a lane that measured a figure: it
+# is null for every status that carries no reading and for a measured status
+# with no window, so this asks no second question about the status. The age
+# bound is usage_serve_max_age, the window measure_lane served the figure
+# within, under the strict comparison read_usage_cache makes: a figure at or
+# past it is one a refused refresh served, which says nothing about the window
+# now. A figure 0 seconds old is the one this run's own fetch returned, which
+# no window is shorter than: a TTL of 0 serves nothing and fetches every run,
+# and that fetch's figure stands.
+#
+# A Pi root is judged on another rule, because its Copilot pool is one reading
+# whichever copy of the seat makes it, and the local record is the
+# ORCH_LANE_COPILOT_POOL override, which carries no age. A HOSTROW that reads
+# the pool replaces the override; one that reads nothing, whatever its status,
+# leaves the override standing where it states a reading, and stands itself,
+# with the provider's status and detail, where it states none.
+host_row_or_local() { # HARNESS DIR HOSTROW MODEL
+	local trigger local_record="" age tmp bound detail
+	trigger="$(jq -r --arg h "$1" --arg model "$4" "$LANE_MODEL_JQ"'
+		if $h == "pi" then (if .headroom_pct == null then "local" else "host" end)
+		elif .status == "unreachable" then "local"
+		elif $h == "claude" and $model != "" and (lane_measured or .status == "no_usage_data")
+		     and (model_bindings($model) | length) == 0 then "model"
+		else "host" end' <<<"$3")" || return 1
+	if [[ "$trigger" == host ]]; then
+		printf '%s\n' "$3"
+		return 0
+	fi
+	# measure_lane runs in THIS shell, never in a command substitution: the
+	# one cold-lane retry per run is USAGE_RETRY_SPENT, which a substitution's
+	# subshell would set and discard, so every held lane after a refused one
+	# would retry and sleep again. Its one record line goes through a file
+	# opened for writing on 7 and reading on 6 and unlinked before the
+	# measurement, so a signal in the window leaves nothing behind without a
+	# trap of this function's own, which would replace the lock handlers
+	# measure_lane arms. 8 and 9 are the usage and credentials locks.
+	tmp="$(mktemp)" || return 1
+	exec 7>"$tmp" 6<"$tmp" || { rm -f -- "${tmp:?}"; return 1; }
+	rm -f -- "${tmp:?}"
+	measure_lane "$1" "$2" >&7 || { exec 7>&- 6<&-; return 1; }
+	exec 7>&-
+	IFS= read -r local_record <&6 || { exec 6<&-; return 1; }
+	exec 6<&-
+	bound="$(usage_serve_max_age)" || return 1
+	age="$(jq -r --arg h "$1" --arg model "$4" --argjson bound "$bound" "$LANE_MODEL_JQ"'
+		if .headroom_pct == null then empty
+		elif $h == "claude" and $model != "" and (model_bindings($model) | length) == 0 then empty
+		elif $h == "pi" then "stated"
+		elif (.usage_age_s | type) == "number" and (.usage_age_s == 0 or .usage_age_s < $bound)
+		then .usage_age_s else empty end' <<<"$local_record")" || return 1
+	if [[ "$age" == stated ]]; then
+		printf '%s\n' "$local_record"
+	elif [[ -n "$age" ]]; then
+		if [[ "$trigger" == model ]]; then
+			message pick-local-model-reading "$2" "$ORCH_LANE_HOST" "$4" "$age" >&2
+		else
+			message pick-local-reading "$2" "$ORCH_LANE_HOST" "$age" >&2
+		fi
+		printf '%s\n' "$local_record"
+	elif [[ "$trigger" == model ]]; then
+		local_record="$(jq -c --arg model "$4" "$LANE_MODEL_JQ"'
+			. + {status: (if lane_measured then "no_usage_data" else .status end),
+			     headroom_pct: null, detail: (.detail // ("no fresh local model window for " + $model))}
+		' <<<"$local_record")" || return 1
+		detail="$(jq -r '.detail' <<<"$local_record")" || return 1
+		message pick-local-model-unmeasured "$2" "$4" "$detail" >&2
+		printf '%s\n' "$local_record"
+	else
+		printf '%s\n' "$3"
+	fi
+}

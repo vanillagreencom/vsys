@@ -7,12 +7,12 @@
 # What differs between them is policy and stays with the caller: which marks
 # fire and which entries the account walk tries; the walk and the flag
 # assembly apply that policy the same way for both. `oversee-watch` sources
-# it too, through lib/watch-overseer-record.sh, for OL_JQ_DEFS, ol_preference
-# and ol_session_inspect. What is shared is here:
+# it too, through lib/watch-overseer-record.sh, for OL_JQ_DEFS, ol_preference,
+# ol_session_inspect and ol_fleet_log. What is shared is here:
 #
 #   ol_preference          the ORCH_OVERSEER_PREFERENCE value, its default
 #                          where the setting is unset
-#   ol_preference_entries  the ORCH_OVERSEER_PREFERENCE parse
+#   ol_preference_entries  the shared overseer and lane preference parse
 #   ol_account             the account a session spends, as `lanes` judges it
 #   ol_pi_model            a pi session's model, out of the sources naming it
 #   ol_entry_model         one entry's harness, model and effort, as written
@@ -51,6 +51,7 @@
 #   ol_session_stop        the runtime's `stop`
 #   ol_session_abandon     the close-out every refusal after `create` takes:
 #                          the session stopped, the prior record put back
+#   ol_fleet_log           one `close` row about the overseer in the fleet log
 #
 # Every function returns 0 for the answer its name promises and 1 for a
 # refusal the caller prints, with the reason in OL_REASON and its fields in
@@ -95,19 +96,19 @@ ol_runtime_supported() {
 }
 
 # ORCH_OVERSEER_PREFERENCE where no settings file names it: the owner's order,
-# Fable, then Opus 5.5 on claude, then GPT-6 Astra, then GPT-5.6 Sol on
-# codex, each at high effort, so a Fable wall moves the overseer onto the next
+# Opus 5.5 on claude, then GPT-6.1 Sol on codex, each at high effort,
+# so an Opus wall moves the overseer onto the next
 # model with room, at a mark and at the wall alike. This value is the
 # setting's default and the only model order any script holds: the walk reads
 # the setting and nothing else, so a new or retired model is an edit to the
 # setting and never to a script. Set to empty, the setting names no entries,
 # which is a caller's own rule to read.
-OL_DEFAULT_PREFERENCE="claude:fable:high,claude:claude-opus-5-5:high,codex:gpt-6-astra:high,codex:gpt-5.6-sol:high"
+OL_DEFAULT_PREFERENCE="claude:claude-opus-5-5:high,codex:gpt-6.1-sol:high"
 ol_preference() {
   printf '%s\n' "${ORCH_OVERSEER_PREFERENCE-$OL_DEFAULT_PREFERENCE}"
 }
 
-# ol_preference_entries VALUE — VALUE, ORCH_OVERSEER_PREFERENCE's
+# ol_preference_entries VALUE — VALUE, ORCH_OVERSEER_PREFERENCE's or ORCH_LANE_PREFERENCE's
 # comma-separated `harness:model:effort` entries, into OL_ENTRIES, with
 # OL_NAMED the count. `harness` is claude, codex, copilot or pi; `model` is
 # the model the harness's `--model` word takes, on pi its own `provider/id`;
@@ -199,7 +200,9 @@ ol_pi_model() { # MODEL...
 
 # ol_entry_model ENTRY — one entry ol_preference_entries admitted, split into
 # OL_ENTRY_HARNESS, OL_ENTRY_MODEL and OL_ENTRY_EFFORT. A normalized numeric
-# entry has no model word and uses the caller's launch or observed model. The
+# entry has no model word and uses the caller's launch or observed model, which
+# is spelled for the caller's harness: ol_entry_permitted skips such an entry
+# naming another harness rather than hand that spelling to its CLI. The
 # setting is the one source of which models the walk tries and in what order,
 # so nothing here holds a model list to check a name against: the launch line
 # carries the model the entry names, and a name its harness does not know is
@@ -323,12 +326,10 @@ ol_account_id() { # DIR
 #
 # A named entry is launched under a permission posture its source allows
 # (ol_entry_permitted), and skipped before its pick where it cannot be. A
-# Copilot entry's pick is skipped as successor-status-line where the account's
-# settings run no copilot-statusline (lib/adapters/copilot.sh §
-# lane_adapter_copilot_status_line): a succession installs no
-# kendex-lane-context extension, so the record that status line writes is the
-# one reading it can count on, the turn end's fallback where no extension
-# reading of the session stands. The rules a succession adds, each off while its setting is
+# Copilot entry installs the shared context reader before it can be chosen,
+# including a retained caller account. A failed setup skips the entry as
+# successor-status-line, with the installer detail and fallback cause.
+# The rules a succession adds, each off while its setting is
 # empty or 0: each skip is a notice for the caller to print, one line of
 # tab-separated key and fields in OL_WALK_SKIPS.
 #   OL_WALK_REFUSE_ID       a pick naming this account (ol_account_id) is
@@ -364,6 +365,11 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
       fi
       if (( OL_WALK_CALLER_KEEP )); then
         OL_LANE_DIR="$OL_WALK_CALLER_LANE" OL_CHOSEN=caller
+        if [[ "$OL_HARNESS" == copilot ]] && ! copilot_context_install "$OL_LANE_DIR"; then
+          OL_WALK_SKIPS+=("successor-status-line${tab}lane=$OL_LANE_DIR${tab}entry=$entry${tab}detail=$COPILOT_CONTEXT_DETAIL${tab}cause=${COPILOT_CONTEXT_CAUSE:-none}")
+          OL_CHOSEN=""
+          continue
+        fi
         return 0
       fi
     else
@@ -383,8 +389,8 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
       OL_WALK_SKIPS+=("successor-lane-spent${tab}lane=$exclude${tab}entry=$entry")
       continue
     fi
-    if [[ "$OL_HARNESS" == copilot ]] && ! lane_adapter_copilot_status_line "$OL_PICKED_DIR"; then
-      OL_WALK_SKIPS+=("successor-status-line${tab}lane=$OL_PICKED_DIR${tab}entry=$entry${tab}cause=$LANE_ADAPTER_COPILOT_STATUS_REASON")
+    if [[ "$OL_HARNESS" == copilot ]] && ! copilot_context_install "$OL_PICKED_DIR"; then
+      OL_WALK_SKIPS+=("successor-status-line${tab}lane=$OL_PICKED_DIR${tab}entry=$entry${tab}detail=$COPILOT_CONTEXT_DETAIL${tab}cause=${COPILOT_CONTEXT_CAUSE:-none}")
       continue
     fi
     if (( OL_WALK_SUCCESSOR_BOUND > 0 )); then
@@ -418,7 +424,11 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
 # launch_choice_permission_transferable), entry-permission-untransferable
 # where not; with OL_WALK_SOURCE_ROWS 1, a judgement handed no permission
 # words, the source row naming a transferable posture, and a skip says
-# nothing. So no posture crosses to or from pi, whose row names none.
+# nothing. So no posture crosses to or from pi, whose row names none. A
+# numeric entry of another harness than its source is skipped the same way,
+# with `model=` naming the caller's model: that model is spelled for the
+# source harness (copilot's `claude-opus-5.5` is claude's `claude-opus-5-5`),
+# and no table here translates one harness's spelling into another's.
 ol_entry_permitted() { # ENTRY
   local tab=$'\t'
   if [[ -z "$OL_WALK_SOURCE_HARNESS" ]]; then
@@ -427,6 +437,11 @@ ol_entry_permitted() { # ENTRY
     return 1
   fi
   [[ "$OL_HARNESS" != "$OL_WALK_SOURCE_HARNESS" ]] || return 0
+  if [[ "$1" == *::* ]]; then
+    (( OL_WALK_SOURCE_ROWS )) \
+      || OL_WALK_SKIPS+=("entry-permission-untransferable${tab}entry=$1${tab}source=$OL_WALK_SOURCE_HARNESS${tab}target=$OL_HARNESS${tab}model=${OL_MODEL:-none}")
+    return 1
+  fi
   if launch_choice_permission_write "$OL_HARNESS" >/dev/null; then
     if (( OL_WALK_SOURCE_ROWS )); then
       [[ -z "$(launch_choice_transfer_permission_spellings "$OL_WALK_SOURCE_HARNESS")" ]] || return 0
@@ -449,8 +464,10 @@ ol_entry_permitted() { # ENTRY
 # entry names EFFORT alone. One of the same harness strips
 # the predecessor's model and effort and keeps its permission words exactly.
 # One of another harness, a first launch among them, writes HARNESS's
-# full-bypass permission words and keeps none of the predecessor's, whose
-# posture must transfer (launch_choice_permission_transferable). The words
+# full-bypass permission words and keeps no predecessor word at all: its
+# posture must transfer (launch_choice_permission_transferable), and every
+# other word is spelled for the predecessor's CLI, a run-mode word such as
+# copilot's `--autopilot` or a count beside it among them. The words
 # kept are led by the harness's launch settings, the compaction words for the
 # model the launch runs (MODEL, else the one the kept words name, else
 # PICK_MODEL) and, with --question-off, its question-tool words
@@ -477,7 +494,6 @@ ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [F
     words="$(launch_choice_permission_write "$harness")" || return 1
     eval "OL_FLAGS+=($words)"
     LAUNCH_CHOICE_KEPT=()
-    [[ -z "$source" ]] || launch_choice_strip "$source" --permissions "$@" || { OL_FIELDS=("harness=$source"); return 1; }
     OL_FIELDS=()
   fi
   lead_model="$model"
@@ -800,10 +816,28 @@ ol_succession() { # PREDECESSOR CWD LINE IDENTITY PENDING LANE_VAR LANE_DIR FORM
 # them would hand the running overseer another session's marks.
 # ---------------------------------------------------------------------------
 
+# ol_fleet_log NOTICE_FILE RECORD_FILE ERR_FILE [STATE_CMD...] — one `close`
+# row about the overseer in the fleet log: the text in NOTICE_FILE, the record
+# built in RECORD_FILE, jq's and the writer's words in ERR_FILE. STATE_CMD is
+# the workflow-state command and its arguments, this package's own where none
+# is given. The record carries no `at`: `workflow-state append-file` stamps
+# the fleet log's time from its own clock, so the record written here and the
+# one an overseer writes by hand are dated by one reader. Every overseer notice
+# the fleet log carries goes through here: the watch's, at its start and from
+# its passes, and oversee-succeed's refusal of a self-succession once its
+# successor launch began.
+ol_fleet_log() { # NOTICE_FILE RECORD_FILE ERR_FILE [STATE_CMD...]
+  local notice="$1" record="$2" errf="$3"
+  shift 3
+  [[ $# -gt 0 ]] || set -- "$SCRIPT_DIR/workflow-state"
+  jq -n --rawfile text "$notice" \
+    '{kind: "close", item: "overseer", text: ($text | rtrimstr("\n"))}' > "$record" 2>"$errf" || return 1
+  "$@" append-file oversee fleet_log "$record" >/dev/null 2>"$errf"
+}
+
 # ol_record_read — the current object into OL_PRIOR as JSON, `null` where the
-# state carries none. A state that cannot be read at all returns 1: the
-# fleet's state is where the record lives, and a run outside a fleet has none,
-# which a caller reports as a notice and never as a reason to stop a launch.
+# state carries none. A state that cannot be read at all returns 1 and leaves
+# OL_PRIOR empty. The caller decides whether that absence permits a launch.
 OL_PRIOR=""
 ol_record_read() {
   OL_PRIOR="$(ol_record_get)" || { OL_PRIOR=""; return 1; }

@@ -21,7 +21,7 @@ Those two give **capability-dependent content lands with its capability**, and n
 
 **Pass one, the repo-wide TOML.** `[bot-instructions.repo]`, `[bot-instructions.exclusions]`, `[bot-instructions.cadence]`, `[bot-instructions.tone]`, `[bot-instructions.budgets]` and any `[bot-instructions.doctrine.*]` overrides, with every `[bot-instructions.bots]` flag false and no `[[bot-instructions.surface]]` entries.
 
-1. Read the repo's existing hand-written bot files now and plan where their claims go: which become `[[bot-instructions.surface]]` entries, which become `[bot-instructions.doctrine.append]`, which will not fold and stay hand-written as policy paths. Write the repo-wide tables; leave the surfaces for the pass that turns on a bot able to read them.
+1. Read the repo's existing hand-written bot files now and plan where their claims go: which become `[[bot-instructions.surface]]` entries, which become `[bot-instructions.doctrine.append]`, which will not fold and stay hand-written. Write the repo-wide tables; leave the surfaces for the pass that turns on a bot able to read them.
 2. Clear any nested `AGENTS.md` carrying a `## Code Review Rules` section. Fold what it holds into `[bot-instructions.doctrine.append]` or a `[[bot-instructions.surface]]` and delete the section, or move the section out of an `AGENTS.md`. The generator writes only the root one, and `agents-section` rejects a nested one unconditionally, so this is what a pass-one render stops on if it is skipped. Its content is not lost: it lands in the TOML written in step 1.
 3. Do not run `adopt` here. Nothing can be adopted for a capability that is off, so it would report nothing on exactly the repo this planning is for.
 4. Run `render`. With step 2 done it writes nothing and says so, because every flag is off; that no-op is the staging point, not a finished install, and the existing bot files are still the repo's own and still what the bots read. With step 2 skipped it does not write nothing — it stops on the nested section before the write and names the file, which is the clause doing its job rather than a failure of the sequence.
@@ -120,13 +120,6 @@ Copy the second and third as entries rather than expecting the generator to know
 ## Excluding the render trees
 
 - [ ] The exclusion set actually covers this repo's render trees. `render` fails when a destination the routing table marks as carrying the paths does not carry them, on every repo; what `[bot-instructions.exclusions] derive_render` decides is whether the set is derived from the install manifest or written by hand, so a repo deriving nothing still has to name its render trees in `[[bot-instructions.exclusions.path]]` for that check to have anything to enforce.
-- [ ] Enforcement for Codex, Copilot and Qodo comes from the merge gate, not from here. Those three receive the paths as an instruction and may comment on them anyway; a gate that passes a render-only diff needs no bot to cooperate, which is the only thing that makes "a render-only diff opens no bot rounds" true rather than requested. CodeRabbit and Macroscope subtract for real and need nothing from the gate.
-
-## If the repo's gate reads bot output
-
-- [ ] Every path in SKILL.md § The render inputs (the "Policy set:" list) is a policy path in the repo's gate: a push touching one invalidates review evidence gathered before it. Work from that list rather than from a copy of it — it is longer than the obvious four, and a copy here would drift from it. In this repo it is what feeds `REVIEW_GATE_CARRY_FORWARD_EXCLUDE`, which the gate reads from the default branch and so cannot be widened by the pull request under judgment.
-- [ ] A pull request touching a policy path needs a trusted human approval. Bot evidence gathered under head-branch policy that same pull request wrote is not evidence.
-- [ ] The CI lane running `check` uses this package's copy from the default branch when it is byte-identical to the pull request's, and the pull request's copy with a warning when the pull request upgrades the package; the policy path in the gate, not the checker's provenance, is what judges the upgrade.
 
 ## After the checklist
 
