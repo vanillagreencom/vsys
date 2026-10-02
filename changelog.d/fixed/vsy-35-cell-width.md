@@ -1,1 +1,0 @@
-- Cards naming lanes with CJK characters or control bytes stay inside their rows, wide characters keep table columns aligned, and the verdict keeps `agents.slice` whole.

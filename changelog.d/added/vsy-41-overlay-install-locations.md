@@ -1,1 +1,0 @@
-- An agent-tools overlay entry with a shipped CLI's name adds where this machine installed it, and `vsys --once` names a process whose agent name was not confirmed.

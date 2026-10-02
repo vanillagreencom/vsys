@@ -1,1 +1,0 @@
-- The optional warden now removes a finished agent's scratch folder on a desktop that runs programs hiding their environment, such as ssh-agent or op, instead of keeping every folder forever.

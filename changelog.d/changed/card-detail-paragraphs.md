@@ -1,1 +1,0 @@
-- An open concern card writes its detail as paragraphs, one per idea, with a blank row before `Next` and `Copy`.

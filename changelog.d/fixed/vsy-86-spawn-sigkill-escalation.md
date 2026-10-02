@@ -1,1 +1,0 @@
-- vsys now force-kills a kernel log or tmux read that ignores its shutdown signal, instead of leaving every future sample waiting on it forever.

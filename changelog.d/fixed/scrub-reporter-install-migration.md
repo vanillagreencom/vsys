@@ -1,1 +1,0 @@
-- The scrub reporter installer no longer leaves a half-copied legacy report behind if interrupted, and its success message always names the real persisted directory.

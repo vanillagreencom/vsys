@@ -1,1 +1,0 @@
-- An open card on a terminal narrower than 28 columns wraps its text and command instead of dropping what passes the edge.

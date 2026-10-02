@@ -1,1 +1,0 @@
-- A list entry vsys looks up and does not find is now handled as missing at the lookup, rather than left to fail at a later read; the type check refuses code that reads one without a guard.

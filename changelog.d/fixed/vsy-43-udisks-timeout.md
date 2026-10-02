@@ -1,1 +1,0 @@
-- A stalled udisks SMART query over D-Bus no longer freezes vsys; the read is abandoned after a bounded wait and storage reports it as unreadable.

@@ -1,1 +1,0 @@
-- Dashboard defaults add cursor-agent and antigravity and drop dsh/agy. Warden defaults drop dsh/agy/omp/ori/fx/muse. Keep any in ~/.config/vsys/agent-tools.json, or config.toml agentTools.

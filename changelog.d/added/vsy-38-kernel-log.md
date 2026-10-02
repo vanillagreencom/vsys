@@ -1,1 +1,0 @@
-- Read checksum failures from the kernel log, so Storage dates the last new error and names the inode with no reporter, and say which source gave each time and which were read.

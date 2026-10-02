@@ -1,1 +1,0 @@
-- Missing default scratch directories no longer show as sources vsys cannot read, even under a path that is a file. A list that differs from the default still reports its missing directories.

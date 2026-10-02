@@ -1,1 +1,0 @@
-- The warden now moves a mise or listed-executable agent under a desktop folder, and no longer moves an overlay tool listed by `paths` alone; add `executables` to such an entry.

@@ -1,1 +1,0 @@
-- Quitting while a scratch scan is stuck on a stalled mount now exits at once instead of waiting for a second Ctrl-C.

@@ -1,1 +1,0 @@
-- The scrub reporter installer no longer claims a report survives a reboot when the release it installed still writes reports to a tmpfs directory.

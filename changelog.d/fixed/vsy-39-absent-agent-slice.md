@@ -1,1 +1,0 @@
-- Agents on a machine with no agent slice defined or running no longer raise a danger card that never clears; Settings says they are not compared against a shared limit.

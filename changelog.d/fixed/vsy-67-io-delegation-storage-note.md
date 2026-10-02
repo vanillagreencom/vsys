@@ -1,1 +1,0 @@
-- Settings' per-group io-delegation note now names Storage too when the slice withholding io sits above the configured agent slice, since that also blanks the slice's own Storage total.
