@@ -1,4 +1,4 @@
-import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import type { MouseEvent, RGBA, ScrollBoxRenderable } from "@opentui/core";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
@@ -54,6 +54,7 @@ import {
   Reading,
   Section,
   useKeepInView,
+  wheelStep,
 } from "./widgets";
 
 /** Everything the reader can select on Storage, top to bottom. */
@@ -286,6 +287,24 @@ export function Storage({
     if (counts[jump]) choose(regionRanges(counts)[jump][0]);
     return true;
   });
+  /**
+   * A wheel notch moves the selection one row, through the three lists as
+   * one, the way it moves a list on every other screen; stepping from the
+   * row last chosen lets a fast flick count every notch. Where the selection
+   * can go no further the notch goes on to the scroll box, so the write
+   * totals above the first row stay in reach of the wheel. The scroll box
+   * scrolls on any notch that reaches it, whatever a handler did with it, so
+   * a notch that moved the selection stops there.
+   */
+  const onWheel = (event: MouseEvent) => {
+    if (!items.length) return;
+    step((from) => {
+      const to = wheelStep(event, items.length, from);
+      if (to === undefined || to === from) return from;
+      event.stopPropagation();
+      return to;
+    });
+  };
   /** A list's heading: its title, the key that jumps to it, and its focus. */
   const heading = (at: number) => ({
     title: storageRegions[at].title,
@@ -615,7 +634,12 @@ export function Storage({
       scrollbarOptions={scrollbar}
       contentOptions={{ flexShrink: 0 }}
     >
-      <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
+      <box
+        flexDirection="column"
+        flexShrink={0}
+        paddingX={screenPad}
+        onMouseScroll={onWheel}
+      >
         <Section title="Written since boot" width={width} marginTop={0} />
         {writeRows(totals.slices, true, "by slice")}
         <box height={1} flexShrink={0} />

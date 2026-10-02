@@ -370,6 +370,7 @@ export function Timeline({
         items={changes}
         selected={row}
         height={listHeight}
+        onSelect={choose}
         empty="Nothing changed in this window: no lane, cgroup or cause moved."
         render={(event, at, isSelected) => {
           const e = eventParts(event, c);

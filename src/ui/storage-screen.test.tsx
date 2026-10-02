@@ -995,6 +995,93 @@ test("two arrows that arrive before a render move Storage two rows", async () =>
   }
 });
 
+/** One filesystem with two mounts, a scrub report and two scratch roots. */
+function wheelList() {
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/data", { device: "/dev/sda1", fsid: "sda1" }),
+    volumeSnapshot("/home", { device: "/dev/sda1", fsid: "sda1" }),
+  ];
+  s.storage.scrubs = [
+    { path: "/run/btrfs-scrub/one", text: "clean", problem: false },
+  ];
+  s.storage.scratch = ["/scratch/a", "/scratch/b"].map((path) => ({
+    path,
+    bytes: 1,
+    age: 0,
+    error: null,
+    origin: "configured" as const,
+  }));
+  return s;
+}
+
+test("the wheel moves the Storage selection one row per notch, through every list", async () => {
+  const c = defaults();
+  const t = await mount(wheelList(), c, { width: 160, height: 44 });
+  try {
+    await t.press("5");
+    expect(selectedRow(t.frame())).toContain("Never checked");
+    const y = t
+      .frame()
+      .split("\n")
+      .findIndex((line) => line.includes("/data"));
+    // The notch, then the selected row. The wheel walks out of one list into
+    // the next, which the arrows do not, and stops at the last row.
+    const steps: ["up" | "down", string][] = [
+      ["down", "/data"],
+      ["down", "/home"],
+      ["down", "/run/btrfs-scrub/one"],
+      ["down", "/scratch/a"],
+      ["up", "/run/btrfs-scrub/one"],
+      ["down", "/scratch/a"],
+      ["down", "/scratch/b"],
+      ["down", "/scratch/b"],
+    ];
+    for (const [way, row] of steps) {
+      await t.wheel(10, y, way);
+      expect({ way, on: selectedRow(t.frame()) }).toEqual({
+        way,
+        on: expect.stringContaining(row),
+      });
+    }
+    // Three notches that arrive before a render move three rows, not one.
+    await act(async () => {
+      for (let i = 0; i < 3; i++) await t.ui.mockMouse.scroll(10, y, "up");
+    });
+    await t.ui.renderOnce();
+    expect(selectedRow(t.frame())).toContain("/home");
+  } finally {
+    await t.close();
+  }
+});
+
+test("a wheel notch the selection cannot take scrolls Storage to the write totals", async () => {
+  const c = defaults();
+  const t = await mount(wheelList(), c, { width: 120, height: 16 });
+  try {
+    await t.press("5");
+    await t.settle();
+    // Down to the scratch list and back up to the first row: the screen
+    // scrolled to follow, and the write totals are above the fold.
+    for (let i = 0; i < 3; i++) await t.press("right");
+    for (let i = 0; i < 3; i++) await t.press("left");
+    await t.settle();
+    expect(selectedRow(t.frame())).toContain("Never checked");
+    expect(t.frame()).not.toContain("Written since boot");
+    const y = t
+      .frame()
+      .split("\n")
+      .findIndex((line) => line.includes("▍"));
+    // Nothing is above the first row to select, so each notch scrolls.
+    for (let i = 0; i < 15; i++) await t.wheel(10, y, "up");
+    await t.settle();
+    expect(t.frame()).toContain("Written since boot");
+    expect(selectedRow(t.frame())).toContain("Never checked");
+  } finally {
+    await t.close();
+  }
+});
+
 test("two mounts stacked at one path are two rows a reader can stand on", async () => {
   const c = defaults();
   const s = emptySnapshot();
