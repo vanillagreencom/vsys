@@ -81,9 +81,8 @@ test("a missing interface names the source that decided it and the reason", () =
   expect(
     byId(probeCapabilities(f.config, answering)).get("smart")?.available,
   ).toBe(true);
-  // The fixture writes PSI and io.stat, so those two remain available.
+  // The fixture writes PSI, so that remains available.
   expect(bare.get("psi")?.available).toBe(true);
-  expect(bare.get("io-stat")?.available).toBe(true);
   // A hierarchy that enables neither controller names both, not the file error.
   writeFileSync(join(f.config.cgroupRoot, "cgroup.subtree_control"), "pids\n");
   // A hierarchy that answered is incomplete, never absent or malformed.
@@ -103,6 +102,32 @@ test("a missing interface names the source that decided it and the reason", () =
   ).toBe(true);
 });
 
+test("io.stat at the root is not available until the root hands io down", () => {
+  const f = setup();
+  const control = join(f.config.cgroupRoot, "cgroup.subtree_control");
+  // The fixture writes io.stat at the root, which the probe reads first.
+  const rows: [string, string | null, Partial<Capability>][] = [
+    // With no subtree_control the groups below carry no io.stat either.
+    ["no subtree_control", null, { failure: "absent", source: control }],
+    [
+      "io not delegated",
+      "cpu memory pids\n",
+      { failure: "incomplete", source: control, detail: "io" },
+    ],
+    ["io delegated", "cpu io memory pids\n", { failure: null }],
+  ];
+  for (const [name, text, expected] of rows) {
+    if (text === null) rmSync(control, { force: true });
+    else writeFileSync(control, text);
+    const cap = byId(probeCapabilities(f.config, answering)).get("io-stat");
+    expect({ name, ...cap }).toMatchObject({
+      name,
+      available: expected.failure === null,
+      ...expected,
+    });
+  }
+});
+
 test("a kernel without PSI and without io.stat reports both absences", () => {
   const f = setup();
   rmSync(join(f.config.procRoot, "pressure"), { recursive: true });
@@ -116,6 +141,7 @@ test("a kernel without PSI and without io.stat reports both absences", () => {
   expect(caps.get("io-stat")).toMatchObject({
     available: false,
     failure: "absent",
+    source: join(f.config.cgroupRoot, "io.stat"),
   });
 });
 
