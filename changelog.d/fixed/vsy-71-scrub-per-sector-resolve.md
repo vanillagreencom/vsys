@@ -1,1 +1,1 @@
-- Storage no longer misses a damaged file that sits later in a scrub's logged 64 KiB block, its last sector included, and still flags a block as unresolved when part of it could not be checked.
+- Storage no longer misses a damaged file in a scrub's logged 64 KiB block, its last sector included, and still flags an unresolved block even with no diagnostic text.

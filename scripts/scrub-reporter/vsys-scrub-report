@@ -233,7 +233,7 @@ resolve_sector() {
 # different sector proved, because this report cannot say every file in the
 # block was found once one sector could not be read.
 resolve() {
-	local address=$1 sector reason rc failure=""
+	local address=$1 sector reason rc failure="" failed=0
 	local -A names=()
 	for ((sector = 0; sector < sectors_per_block; sector++)); do
 		if reason=$(resolve_sector "$((address + sector * sector_bytes))"); then
@@ -245,14 +245,18 @@ resolve() {
 			while IFS= read -r line; do
 				[[ -n $line ]] && names[$line]=1
 			done <<<"$reason"
-		elif ((rc == 2)) && [[ -z $failure ]]; then
-			failure=$reason
+		elif ((rc == 2)) && ((!failed)); then
+			# A failure is tracked by this flag, never by whether $reason
+			# itself is non-empty: a real failure with no diagnostic text
+			# must still mark the block not resolved.
+			failed=1
+			failure=${reason:-no diagnostic text}
 		fi
 	done
 	if ((${#names[@]})); then
 		printf '%s\n' "${!names[@]}" | sort | sed 's/^/  /'
 	fi
-	if [[ -n $failure ]]; then
+	if ((failed)); then
 		echo "  (not resolved: $failure)"
 	elif ((${#names[@]} == 0)); then
 		no_extent "$address"

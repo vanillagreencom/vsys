@@ -84,6 +84,12 @@ LAST_SECTOR = NO_EXTENT + 65536 * 4
 # wrong window and misses this file.
 BLOCK_GROUP_START = 69632
 BLOCK_GROUP_LAST_SECTOR = BLOCK_GROUP_START + 15 * 4096
+# This block's first sector fails resolution for a real reason, but btrfs
+# gives no diagnostic text at all (an empty stderr, e.g. a nested-subvolume
+# path-buffer error): the failure must still mark the block not resolved,
+# never read as harmless because its reason string happened to be empty. A
+# different sector of the same block resolves cleanly.
+EMPTY_DIAGNOSTIC = NO_EXTENT + 65536 * 11
 
 
 def fixup(device: str, address: int) -> str:
@@ -172,6 +178,10 @@ class ReporterTest(unittest.TestCase):
         last.write_text("damaged")
         unaligned_group = fs / "target" / "unaligned-group"
         unaligned_group.write_text("damaged")
+        # A file reachable from a sector beside one that fails with no
+        # diagnostic text at all.
+        clean = fs / "target" / "clean"
+        clean.write_text("damaged")
         refs = base / "refs"
         names = base / "names"
         refs.mkdir()
@@ -216,6 +226,12 @@ class ReporterTest(unittest.TestCase):
         # reporter's own.
         held(BLOCK_GROUP_LAST_SECTOR, unaligned_group)
         (names / str(BLOCK_GROUP_LAST_SECTOR)).write_text(f"{unaligned_group}\n")
+        # EMPTY_DIAGNOSTIC's own first sector fails the -P ioctl with no
+        # output at all on stdout or stderr; its second sector (offset
+        # 4096) resolves cleanly.
+        (refs / f"{EMPTY_DIAGNOSTIC}.err").write_text("")
+        held(EMPTY_DIAGNOSTIC + 4096, clean)
+        (names / str(EMPTY_DIAGNOSTIC + 4096)).write_text(f"{clean}\n")
         stub(bin_dir, "systemd-escape", 'echo "-"\n')
         if kernel is None:
             stub(bin_dir, "journalctl", "echo 'No journal files were found.' >&2\nexit 1\n")
@@ -371,6 +387,19 @@ esac
             # flooring it to the nearest multiple of 65536, is what finds a
             # file at this block's real last sector.
             self.assertEqual(read["addresses"], [{"logical": BLOCK_GROUP_START, "paths": [f"{fs}/target/unaligned-group"]}])
+
+    def test_a_failure_with_no_diagnostic_text_still_marks_the_block_not_resolved(self) -> None:
+        kernel = fixup("vsys-test-a", EMPTY_DIAGNOSTIC)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            # The failing sector gives btrfs no diagnostic text at all, but
+            # the not-resolved marker still follows the failure itself, not
+            # whether a reason string happened to be non-empty.
+            self.assertIn("  (not resolved: no diagnostic text)", report.read_text().splitlines())
+            read = parse(report, base)
+            self.assertEqual(read["addresses"], [{"logical": EMPTY_DIAGNOSTIC, "paths": [], "resolved": False}])
 
     def test_a_start_time_that_does_not_parse_searches_the_last_hour(self) -> None:
         with scratch() as tmp:
