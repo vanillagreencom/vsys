@@ -66,9 +66,13 @@ message() { # REASON FIELD=VALUE...
         '                    status=4 without that line is the provider'"'"'s own 4, such as a sandbox it stopped, which its line above names: start the sandbox, then close again.' \
         '  stderr-unsaved    mktemp could not make the file the lane host stop verb'"'"'s stderr is read from; its own words are above this one.' \
         '  answer-unparsed   the lane host stop verb succeeded without its stopped item=ID processes=COUNT line.' \
-        '  any other value   the local stop step lib/lane-state.sh lane_stop_owned names, pid= the process it failed on.' ;;
+        '  identity-unread   the record names no launch identity and no process named for the harness runs under the pane.' \
+        '  identity-stale    the record names a harness that has exited, or whose pid= a later process now holds, and no process named for the harness runs under the pane.' \
+        '  process-read-failed  the process read under the pane failed, or the table read at the identity the stop signals by.' \
+        '  any other value   the local stop step lib/lane-state.sh lane_stop_local names, pid= the process it failed on.' \
+        'target=wake is the turn a wake started, stopped by the identity the record'"'"'s wake names before the record reads done or stopped.' ;;
     stop-skipped) printf '%s\n' "The lane host answered that the item's worktree is gone, so no harness process can be found by its directory. The host close below ends the harness where the provider's close ends the sandbox; otherwise the window close hangs up the lane's ssh session, which ends it. A static host's close ends no process." ;;
-    exit-timeout) printf '%s\n' 'The pane did not read exited before the close timeout. processes= is how many harness processes the stop signalled in the lane worktree and saw exit; 0 means none was left there to signal. Close-out stopped.' ;;
+    exit-timeout) printf '%s\n' 'The pane did not read exited before the close timeout. processes= is how many harness processes the stop signalled and saw exit. A local lane'"'"'s identity= is the launch identity it signalled them by: recorded, the record'"'"'s launch, or pane, one read off the pane because the record named none or named a harness that had exited or whose pid a later process held. processes=0 is a process that identity named which exited before its signal, or, under recorded, no process named for the harness at or below it. Close-out stopped.' ;;
     state-write-failed) printf '%s\n' 'The lane closed, but its fleet record could not be updated.' ;;
     prepare-stop-failed) printf '%s\n' 'The background launch job the record names could not be stopped. Close-out changed nothing else.' ;;
     validate-stop-failed) printf '%s\n' "A validation run in the lane's worktree could not be ended. The window and record are unchanged; dev-validate-run's own words are on the lines above this one." ;;
@@ -120,10 +124,19 @@ resolve; the lane is then judged by the rest of its screen. Every other
 reading keeps the lane walled.
 An idle lane's harness is ended by SIGTERM, never by typing into its pane:
 through lane-host stop for a record carrying host, and for a local lane by the
-same stop against the worktree the record's mail_root names. The close then
-waits up to ORCH_LANE_CLOSE_SECS (default 15) for the pane to read exited.
+same stop against the launch identity the record's launch names, the harness
+pid and its start time open-terminal read once the launch was confirmed. A
+record naming none, or naming a harness that has exited or whose pid a later
+process holds, as for a harness restarted by hand in its pane, takes that
+identity off the pane now, the harness process under the pane's own; with no
+harness there either it refuses as stop-failed cause=identity-unread or
+cause=identity-stale. No directory is read, so a lane whose worktree its own
+close-out removed, or one recreated at the same path, stops all the same. The
+close then waits up to ORCH_LANE_CLOSE_SECS (default 15) for the pane to read
+exited.
 A hosted stop answering status 4 beside a stop-worktree-removed item=ITEM line
-on its stderr, the item's worktree already removed by its own close-out, prints
+on its stderr, from a provider that finds the harness by the item's worktree,
+which its own close-out already removed, prints
 stop-skipped cause=worktree-removed and goes straight to the host close and
 window kill. The host close ends the harness where the provider's close ends
 the sandbox; otherwise the window kill hangs up the lane's ssh session, which
@@ -131,11 +144,17 @@ ends it, as a static host's close ends no process.
 Under --keep-sandbox, where no host close follows, that answer refuses as
 stop-failed. A status 4 without that line, a provider's own answer such as a
 sandbox it stopped, refuses as stop-failed cause=provider status=4.
-The local stop reads each harness process's directory through /proc, or
-through lsof on a host without /proc such as macOS; a host with neither
-refuses as stop-failed cause=cwd-reader-missing. The processes it signals are
-the ones named for the harness, and for copilot also MainThread, the name the
-Copilot CLI binary carries on Linux.
+The local stop signals nothing at a recorded pid that has exited or now
+started at another time, a later process handed the same pid. The processes
+it signals are the ones at or below the pid it stops by named for the
+harness, and for copilot also MainThread, the name the Copilot CLI binary
+carries on Linux.
+A turn open-terminal --wake started runs outside the pane's process tree, so
+the pane's stop never reaches it: a local close stops it by the identity the
+record's wake names before the record reads done or stopped, every close of a
+local lane, an exited one included, an idle one's in the same stop as its
+harness, and refuses as stop-failed target=wake where it does not end. A wake identity whose process has exited or whose pid a later
+process holds is a turn already over.
 A record already marked stopped can close its kept sandbox without a pane. A
 preparing record, a hosted launch whose background job has written no
 outcome, closes without a harness exit: the job the record names is stopped
@@ -671,14 +690,45 @@ pane_still_exists() {
   awk -v pane="$pane_id" '$0 == pane { found=1 } END { exit !found }' <<<"$listed"
 }
 
-# The end of every close-out: a local lane's validations ended, the item's
+# A record's identity FIELD, launch or wake, as pid and start into RECORD_PID
+# and RECORD_START, each empty where the record names none.
+RECORD_PID=""
+RECORD_START=""
+record_identity() { # FIELD
+  RECORD_PID="$(jq -r --arg f "$1" '.[$f].pid // empty' <<<"$record")" \
+    && RECORD_START="$(jq -r --arg f "$1" '.[$f].start // empty' <<<"$record")" \
+    || { message record-invalid "item=$ITEM" "field=$1" >&2; exit 1; }
+}
+# STOP_IDENTITY is the identity a local stop signalled by, which the exit wait
+# names where the pane outlives it; empty for a hosted lane and for a local
+# lane whose harness stop did not run.
+STOP_IDENTITY=""
+# The turn a wake started, for a local lane whose harness stop did not run:
+# an idle lane's stop ends it with the harness (lib/lane-state.sh
+# lane_stop_local), and an exited lane's harness is already gone.
+stop_wake() {
+  local fields=("item=$ITEM" "harness=$harness" "target=wake")
+  record_identity wake
+  [[ -n "$RECORD_PID$RECORD_START" ]] || return 0
+  case "$harness" in
+    claude|codex|pi|copilot) ;;
+    *) message harness-unsupported "item=$ITEM" "harness=${harness:-unknown}" >&2; exit 1 ;;
+  esac
+  if ! lane_stop_wake "$RECORD_PID" "$RECORD_START" "$harness"; then
+    [[ -z "$LANE_STOP_PID" ]] || fields+=("pid=$LANE_STOP_PID")
+    message stop-failed "${fields[@]}" "cause=$LANE_STOP_CAUSE" >&2
+    exit 1
+  fi
+}
+
+# The end of every close-out: a local lane's wake and validations ended, the item's
 # files removed and the host closed unless --keep-sandbox, the window closed where
 # pane_id names one tmux still lists, then the record and the line naming the
 # outcome, pane= carried where the close had a pane.
 pane_id=""
 finish_close() {
   local next_status=done pane_rc=0 fields=("item=$ITEM")
-  [[ -n "$host" ]] || stop_validations
+  [[ -n "$host" ]] || { [[ -n "$STOP_IDENTITY" ]] || stop_wake; stop_validations; }
   if [[ "$KEEP_SANDBOX" == true ]]; then next_status=stopped; else remove_item_files; close_host || exit $?; fi
   if [[ -n "$pane_id" ]]; then
     pane_still_exists || pane_rc=$?
@@ -896,8 +946,11 @@ pane_now_exited() {
 # The harness is ended by signal to its own process, never by keystrokes into
 # its pane. A hosted lane is signalled by its provider, which alone reaches the
 # host's process table; a local lane by the same library stop against the
-# worktree its record names. STOPPED_COUNT is how many processes the stop
-# signalled, which the exit wait below names where the pane outlives it.
+# launch identity its record names, or one read off its pane where it names
+# none or a stale one, then the turn its record's wake names (lib/lane-state.sh
+# lane_stop_local). STOPPED_COUNT is how
+# many processes the stop signalled, which the exit wait below names where the
+# pane outlives it.
 STOPPED_COUNT=""
 STOP_SKIPPED=false
 STOP_WORKTREE_REMOVED=4
@@ -911,7 +964,7 @@ stop_answered_worktree_removed() { # STDERR_FILE
     END { exit !found }' "$1"
 }
 stop_harness() {
-  local out err rc=0 removed=false fields=("item=$ITEM" "harness=$harness")
+  local out err rc=0 removed=false wake_pid wake_start fields=("item=$ITEM" "harness=$harness")
   if [[ -n "$host" ]]; then
     [[ -x "$LANE_HOST" ]] || { message record-invalid "item=$ITEM" "field=lane-host" >&2; exit 1; }
     err="$(mktemp)" || { message stop-failed "${fields[@]}" "cause=stderr-unsaved" >&2; exit 1; }
@@ -921,7 +974,8 @@ stop_harness() {
     rm -f -- "$err"
     [[ "$rc" -ne "$LANE_HOST_BUSY_EXIT" ]] || { message lane-host-busy "${fields[@]}" step=stop >&2; exit "$rc"; }
     # A merged lane's own close-out removes its worktree before the lane goes
-    # idle, so the provider has no directory to find the harness by. Only an
+    # idle, so a provider that finds the harness by that directory has nothing
+    # to find it by; lane-host-ssh stops by launch identity instead. Only an
     # idle lane on a terminal item reaches this stop, and what follows ends the
     # harness, so the stop is skipped rather than refused: the host close where
     # the provider's close ends the sandbox, otherwise the window kill, which
@@ -940,12 +994,17 @@ stop_harness() {
       exit 1
     fi
   else
-    if ! lane_stop_owned "$mail_root" "$harness"; then
+    record_identity wake
+    wake_pid="$RECORD_PID" wake_start="$RECORD_START"
+    record_identity launch
+    if ! lane_stop_local "$pane_pid" "$RECORD_PID" "$RECORD_START" "$wake_pid" "$wake_start" "$harness"; then
+      [[ "$LANE_STOP_TARGET" != wake ]] || fields+=("target=wake")
       [[ -z "$LANE_STOP_PID" ]] || fields+=("pid=$LANE_STOP_PID")
       message stop-failed "${fields[@]}" "cause=$LANE_STOP_CAUSE" >&2
       exit 1
     fi
     STOPPED_COUNT="$LANE_STOP_COUNT"
+    STOP_IDENTITY="$LANE_STOP_IDENTITY"
   fi
 }
 
@@ -974,7 +1033,7 @@ stop_and_await_exit() {
     esac
     passes=$((passes - 1))
     (( passes > 0 )) \
-      || { message exit-timeout "item=$ITEM" "harness=$harness" "pane=$pane_id" "processes=$STOPPED_COUNT" >&2; exit 1; }
+      || { message exit-timeout "item=$ITEM" "harness=$harness" "pane=$pane_id" "processes=$STOPPED_COUNT" ${STOP_IDENTITY:+"identity=$STOP_IDENTITY"} >&2; exit 1; }
     sleep 0.2
   done
 }
