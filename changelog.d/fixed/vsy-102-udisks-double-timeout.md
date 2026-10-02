@@ -1,0 +1,1 @@
+- A down or unresponsive system bus during udisks' 10-minute hold now has its swap-check listing asked once per sample, not twice, and reported as that sample's own outcome.

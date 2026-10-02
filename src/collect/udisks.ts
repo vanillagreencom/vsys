@@ -377,9 +377,12 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
  * dropped and the full read runs again, rather than serving the departed
  * drive's numbers for the rest of the hold. A listing that could not itself
  * be read proves nothing either way, so it is read as a sign to drop the
- * held reading too: the full read below re-asks the same listing and, where
- * the failure persists, surfaces it as this sample's own outcome rather than
- * letting the held reading's old, unrelated outcome stand in for it.
+ * held reading too: this sample reports that failure as its own outcome at
+ * once, without asking the listing again within this same call. A later
+ * sample, while the hold still has time left, takes the full read below and
+ * asks the listing fresh; if the failure persists there, it is that later
+ * sample's own outcome in turn, rather than the held reading's old,
+ * unrelated outcome standing in for it.
  */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
@@ -392,10 +395,24 @@ export class Udisks {
     const at = this.now();
     if (this.held && at - this.held.at < udisksHoldMs) {
       const listing = await listUdisks(this.run, this.timeoutMs);
-      if (
-        listing.targets !== null &&
-        !identitySwapped(this.held.reading, listing.targets)
-      )
+      if (listing.targets === null) {
+        // The swap-check listing itself failed: that is this sample's own
+        // outcome. The held reading is dropped outright rather than kept as
+        // an empty-drives placeholder — identitySwapped compares against
+        // held.drives by iterating it, so an empty array would read as
+        // "nothing to compare" and vacuously pass as unswapped, letting this
+        // stale failure answer for every sample until the hold expires.
+        // Dropping it sends a single next sample through the non-held
+        // branch below, which runs a genuine readUdisks() and recovers if
+        // the bus is back by then; a bus still down on that next sample
+        // fails readUdisks() the same way and is held again, so two
+        // consecutive failures still ride out the rest of the hold. Either
+        // way, this call alone no longer repeats the identical listing call
+        // readUdisks() would otherwise make.
+        this.held = null;
+        return { drives: [], outcome: listing.outcome };
+      }
+      if (!identitySwapped(this.held.reading, listing.targets))
         return this.held.reading;
     }
     const reading = await readUdisks(this.run, this.timeoutMs);

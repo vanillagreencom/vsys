@@ -459,25 +459,31 @@ test("a drive replaced by one with no SMART interface is dropped, not left answe
   const second = await udisks.read();
   expect(second).toEqual({ drives: [], outcome: null });
 });
-test("a listing that fails during the hold is never read as proof of no swap: its own failure surfaces rather than the held reading's stale outcome", async () => {
-  const good = fakeBus([
-    {
-      name: "sda",
-      model: "B",
-      kind: "ata",
-      attributes: ata(10, 3),
-      serial: "SN1",
-    },
-  ]);
+test("a listing that fails during the hold is never read as proof of no swap: its own failure surfaces rather than the held reading's stale outcome, and is never asked a second time", async () => {
+  const calls: string[][] = [];
+  const good = fakeBus(
+    [
+      {
+        name: "sda",
+        model: "B",
+        kind: "ata",
+        attributes: ata(10, 3),
+        serial: "SN1",
+      },
+    ],
+    calls,
+  );
   let failing = false;
   const run: typeof spawnText = async (argv, timeoutMs) => {
-    if (failing && argv.includes("GetManagedObjects"))
+    if (failing && argv.includes("GetManagedObjects")) {
+      calls.push(argv);
       return {
         out: "",
         error: "Failed to connect to bus: No such file or directory\n",
         status: 1,
         timedOut: false,
       };
+    }
     return good(argv, timeoutMs);
   };
   let now = 0;
@@ -488,6 +494,9 @@ test("a listing that fails during the hold is never read as proof of no swap: it
   // listing call read() makes to check for a swap.
   failing = true;
   now = udisksHoldMs - 1;
+  const listingsBefore = calls.filter((argv) =>
+    argv.includes("GetManagedObjects"),
+  ).length;
   const second = await udisks.read();
   expect(second).toEqual({
     drives: [],
@@ -495,5 +504,69 @@ test("a listing that fails during the hold is never read as proof of no swap: it
       failure: "absent",
       detail: "Failed to connect to bus: No such file or directory",
     },
+  });
+  // A failed swap-check listing must not fall through to readUdisks() for a
+  // second, identical listing call: only one listing call per read().
+  const listingsAfter = calls.filter((argv) =>
+    argv.includes("GetManagedObjects"),
+  ).length;
+  expect(listingsAfter - listingsBefore).toBe(1);
+});
+test("a listing failure during the hold does not poison the samples after it: a healthy listing on the very next one fully recovers", async () => {
+  // Same identity throughout, so identitySwapped() never forces a fresh
+  // read on that ground alone; the drive's own SMART reading changes after
+  // the blip so a served-stale pre-outage value reads differently from a
+  // genuine fresh re-query, and the assertion below can tell them apart.
+  let live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "B",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "SN1",
+    },
+  ];
+  let failNext = false;
+  const run: typeof spawnText = async (argv, timeoutMs) => {
+    if (failNext && argv.includes("GetManagedObjects")) {
+      failNext = false;
+      return {
+        out: "",
+        error: "Failed to connect to bus: No such file or directory\n",
+        status: 1,
+        timedOut: false,
+      };
+    }
+    return fakeBus(live)(argv, timeoutMs);
+  };
+  let now = 0;
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives).toEqual([
+    { name: "sda", model: "B", written: 5_120, identity: "SN1" },
+  ]);
+  // One listing blip, well inside the hold. The drive's SMART reading moves
+  // before the bus answers again.
+  now = 10;
+  failNext = true;
+  live = [
+    {
+      name: "sda",
+      model: "B",
+      kind: "ata",
+      attributes: ata(20, 3),
+      serial: "SN1",
+    },
+  ];
+  const second = await udisks.read();
+  expect(second.outcome?.failure).toBe("absent");
+  // The bus answers again for the very next sample, still inside the same
+  // hold window: the fresh reading must come back, not the pre-outage one —
+  // a served-stale held.reading would still show 5_120, not 10_240.
+  now = 20;
+  const third = await udisks.read();
+  expect(third).toEqual({
+    outcome: null,
+    drives: [{ name: "sda", model: "B", written: 10_240, identity: "SN1" }],
   });
 });
