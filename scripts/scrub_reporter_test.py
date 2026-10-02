@@ -333,8 +333,13 @@ class InstallTest(unittest.TestCase):
         fail_download: str = "",
         fail_sums: bool = False,
         sums_text: str | None = None,
-        version: str = "vfixture",
+        version: str | None = "vfixture",
+        api_tag: str | None = "vlatest-fixture",
+        fail_api: bool = False,
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        """version=None leaves VSYS_VERSION unset, so install resolves the tag
+        itself from the stubbed GitHub API, the same lookup install.sh uses.
+        """
         bin_dir = base / "bin"
         bin_dir.mkdir()
         calls = base / "calls"
@@ -346,24 +351,37 @@ class InstallTest(unittest.TestCase):
         sums_path = base / "SHA256SUMS"
         sums_path.write_text(sums_text if sums_text is not None else reporter_sums())
         sums_fetch = "exit 22" if fail_sums else f'cp "{sums_path}" "$4"'
+        if fail_api:
+            api_fetch = "exit 22"
+        else:
+            body = f'{{"tag_name": "{api_tag}"}}' if api_tag is not None else '{"message": "Not Found"}'
+            api_fetch = f"printf '%s\\n' '{body}'"
         # The download serves the checkout's own files, by the name the URL ends in,
-        # so the call carries the resolved version in its path either way.
+        # so the call carries the resolved version in its path either way. The
+        # version lookup has no -o: curl writes the release JSON to stdout.
         stub(
             bin_dir,
             "curl",
             record
-            + f"""name=${{2##*/}}
-case "$name" in
-SHA256SUMS) {sums_fetch} ;;
-"{fail_download}") exit 22 ;;
-*) cp "{REPORTER}/$name" "$4" ;;
+            + f"""url=$2
+case "$url" in
+*/releases/latest) {api_fetch} ;;
+*)
+	name=${{url##*/}}
+	case "$name" in
+	SHA256SUMS) {sums_fetch} ;;
+	"{fail_download}") exit 22 ;;
+	*) cp "{REPORTER}/$name" "$4" ;;
+	esac
+	;;
 esac
 """,
         )
+        env_extra = {} if version is None else {"VSYS_VERSION": version}
         done = subprocess.run(
             ["bash", "-s"],
             input=(REPORTER / "install").read_text(),
-            env=child_env(bin_dir, VSYS_VERSION=version),
+            env=child_env(bin_dir, **env_extra),
             capture_output=True,
             text=True,
             check=False,
@@ -400,6 +418,32 @@ esac
                 any("/vanillagreencom/vsys/releases/download/v9.9.9/SHA256SUMS" in call for call in fetches),
                 fetches,
             )
+
+    def test_an_unset_version_resolves_the_latest_release(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), version=None, api_tag="vlatest-fixture")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout.splitlines()[0], "scrub-reporter: installed vlatest-fixture")
+            fetches = [call for call in calls if call.startswith("curl ")]
+            self.assertTrue(any("api.github.com/repos/vanillagreencom/vsys/releases/latest" in call for call in fetches), fetches)
+            self.assertTrue(
+                any("/vanillagreencom/vsys/vlatest-fixture/scripts/scrub-reporter/vsys-scrub-report" in call for call in fetches),
+                fetches,
+            )
+
+    def test_a_failed_version_lookup_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), version=None, fail_api=True)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: could not reach GitHub to read the latest release tag.")
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
+
+    def test_a_release_response_with_no_tag_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), version=None, api_tag=None)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: GitHub reported no latest release for vanillagreencom/vsys.")
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
     def test_no_scrub_unit_installs_nothing(self) -> None:
         with scratch() as tmp:
