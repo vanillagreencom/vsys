@@ -1,0 +1,1 @@
+- Storage's damage count and file list no longer say no check has reported, or claim a report is confirmed gone, when a finished check is remembered but the current report is unavailable.

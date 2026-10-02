@@ -452,8 +452,14 @@ export function Storage({
           <Detail>
             {/* The headline reading is what the last check found. The
                 lifetime counter is a different quantity and sits below it. */}
-            <Field label="Blocks found" width={16} value={blocksText(item)} />
-            {item.groups.length === 0 && <Empty text={noDamageText(item)} />}
+            <Field
+              label="Blocks found"
+              width={16}
+              value={blocksText(item, scrubSource)}
+            />
+            {item.groups.length === 0 && (
+              <Empty text={noDamageText(item, scrubSource)} />
+            )}
             {unnamedText(item) && <Empty text={unnamedText(item) ?? ""} />}
             {(counts.files ?? 0) > 0 && (
               <Line

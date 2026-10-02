@@ -60,12 +60,40 @@ export function integrityLine(item: Integrity, scrub?: Capability): string {
   ].join(" · ");
 }
 /**
+ * Whether the remembered finished check standing in for an unavailable
+ * current report found damage. Both `blocksText` and `noDamageText` read
+ * this one function rather than each testing `item.state` on their own, so
+ * the two can never disagree about what the same remembered check found.
+ */
+function rememberedFoundDamage(item: Integrity): boolean {
+  return item.state === "damaged";
+}
+/**
  * The headline reading: what the last check found. A count vsys did not read
  * never becomes a zero, and the two reasons it can be missing are different
  * facts: nothing has checked, or the check's report omitted the count.
  */
-export function blocksText(item: Integrity): string {
-  if (!item.scrub) return `${gap}: no check has reported on this filesystem`;
+export function blocksText(item: Integrity, scrub?: Capability): string {
+  if (!item.scrub) {
+    // The directory listing itself failed, or has never run, this sample —
+    // a different fact from a report that once existed and is now gone: vsys
+    // does not know whether a report is there at all, so it must not claim
+    // the remembered check's report is gone when the read simply failed.
+    if (scrub && !scrub.available) return `${gap}: ${capabilityReason(scrub)}`;
+    if (item.checkAge === null)
+      return `${gap}: no check has reported on this filesystem`;
+    // The current report matched to this filesystem is absent, but that
+    // covers a report never written and one that exists on disk unreadable
+    // and so unmatched (`reportFor()` matches by fsid, which an unreadable
+    // report never carries): "unavailable" is true either way, while "gone"
+    // would claim a cause vsys has not established. A finished check is
+    // remembered for this filesystem (`integrityLine` already names its
+    // age), so the last word on it is what that check found, never that
+    // nothing has reported.
+    return rememberedFoundDamage(item)
+      ? `${gap}: a remembered finished check found damage, but its current report is unavailable, so no count was kept`
+      : `${gap}: a remembered finished check found no damage, but its current report is unavailable, so no count was kept`;
+  }
   if (!item.readable) return `${gap}: the report could not be read`;
   // A check still running, or one that stopped early, has counted nothing
   // yet. Saying its report carried no count would blame the report for that.
@@ -84,9 +112,25 @@ export function blocksText(item: Integrity): string {
  * facts, and one of them is that nothing has looked: the sentence never lets
  * an absent list read as a check that found nothing.
  */
-export function noDamageText(item: Integrity): string {
-  if (!item.scrub)
-    return "No check has reported on this filesystem, so no file is named.";
+export function noDamageText(item: Integrity, scrub?: Capability): string {
+  if (!item.scrub) {
+    // Same read-failure case as `blocksText`: a failed or not-yet-run
+    // listing is not proof the report is gone, so it speaks first.
+    if (scrub && !scrub.available) {
+      const reason = capabilityReason(scrub);
+      return `${reason.charAt(0).toUpperCase()}${reason.slice(1)}, so no file is named.`;
+    }
+    if (item.checkAge === null)
+      return "No check has reported on this filesystem, so no file is named.";
+    // Same remembered-check case as `blocksText`: the report that would name
+    // the files is unavailable (never written, or on disk but unreadable and
+    // so unmatched), so the sentence says what the remembered check found
+    // rather than claiming the filesystem was never looked at or that its
+    // report is confirmed gone.
+    return rememberedFoundDamage(item)
+      ? "A remembered finished check found damage, but its current report is unavailable, so no file is named for it."
+      : "A remembered finished check found no damage, and its current report is unavailable, so no file is named.";
+  }
   if (!item.readable)
     return "The report could not be read, so nothing in it names a file.";
   if (item.scrub.status !== "finished")

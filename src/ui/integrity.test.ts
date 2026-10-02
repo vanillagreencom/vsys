@@ -353,6 +353,164 @@ test("a finished report superseded by a newer remembered check is not told it ne
   );
 });
 
+test("a remembered finished check speaks when its current report is unavailable", () => {
+  // The scrub report itself has vanished, but the collector remembers a
+  // finished check for this filesystem, found via its own damaged flag. The
+  // integrity card's age line already names that remembered check, so the
+  // block count and file-list sentences must say what it found rather than
+  // claiming nothing has reported, or that the current report's absence is
+  // confirmed to be a removal rather than merely unavailable.
+  const clean = integrity(
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      "root device",
+    ),
+    {
+      scrubs: [],
+      lastFinishedScrub: { fs: { at: now - 2 * day, damaged: false } },
+    },
+    now,
+    c,
+  );
+  expect(blocksText(clean)).toBe(
+    "not available: a remembered finished check found no damage, but its current report is unavailable, so no count was kept",
+  );
+  expect(noDamageText(clean)).toBe(
+    "A remembered finished check found no damage, and its current report is unavailable, so no file is named.",
+  );
+  const damaged = integrity(
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      "root device",
+    ),
+    {
+      scrubs: [],
+      lastFinishedScrub: { fs: { at: now - 2 * day, damaged: true } },
+    },
+    now,
+    c,
+  );
+  expect(blocksText(damaged)).toBe(
+    "not available: a remembered finished check found damage, but its current report is unavailable, so no count was kept",
+  );
+  expect(noDamageText(damaged)).toBe(
+    "A remembered finished check found damage, but its current report is unavailable, so no file is named for it.",
+  );
+});
+
+test("an unreadable report that cannot be matched to a filesystem is not read as a gone report", () => {
+  // readdir succeeded (the scrub directory capability stays available), but
+  // this filesystem's own report file could not be read, so the collector
+  // pushes it with fsid: null and readable: false. reportFor() matches by
+  // fsid, so a null-fsid entry attaches to no filesystem, and item.scrub
+  // stays null exactly as if no report had ever been written. vsys has not
+  // established that the report is gone -- it may exist on disk right now,
+  // just unreadable and unmatched -- so the remembered-check sentence must
+  // say "unavailable", never "gone".
+  const unreadableFsidNull: Scrub = {
+    path: "/run/btrfs-scrub/root.result",
+    text: "",
+    readable: false,
+    problem: true,
+    fsid: null,
+    startedAt: null,
+    status: null,
+    uncorrectable: null,
+    corrected: null,
+    addresses: null,
+  };
+  const item = integrity(
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      "root device",
+    ),
+    {
+      scrubs: [unreadableFsidNull],
+      lastFinishedScrub: { fs: { at: now - 2 * day, damaged: true } },
+    },
+    now,
+    c,
+  );
+  const available: Capability = {
+    id: "scrub",
+    available: true,
+    failure: null,
+    source: "/run/btrfs-scrub",
+    detail: "",
+  };
+  expect(item.scrub).toBeNull();
+  expect(blocksText(item, available)).toBe(
+    "not available: a remembered finished check found damage, but its current report is unavailable, so no count was kept",
+  );
+  expect(noDamageText(item, available)).toBe(
+    "A remembered finished check found damage, but its current report is unavailable, so no file is named for it.",
+  );
+});
+
+test("a failed directory read is never read as a report that is gone", () => {
+  // The directory listing itself failed this sample (or has never run), so
+  // storage.scrubs is empty for a reason that has nothing to do with whether
+  // a report exists: vsys must say the read failed, not that the remembered
+  // check's report is gone, even where a finished check is remembered.
+  const failedScrub: Capability = {
+    id: "scrub",
+    available: false,
+    failure: "unreadable",
+    source: "/run/btrfs-scrub",
+    detail: "EACCES: permission denied",
+  };
+  const withMemory = integrity(
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      "root device",
+    ),
+    {
+      scrubs: [],
+      lastFinishedScrub: { fs: { at: now - 2 * day, damaged: true } },
+    },
+    now,
+    c,
+  );
+  expect(blocksText(withMemory, failedScrub)).toBe(
+    "not available: /run/btrfs-scrub exists but cannot be read",
+  );
+  expect(noDamageText(withMemory, failedScrub)).toBe(
+    "/run/btrfs-scrub exists but cannot be read, so no file is named.",
+  );
+  // No memory either: same read-failure wording, not "no check has reported".
+  const noMemory = state([]);
+  expect(blocksText(noMemory, failedScrub)).toBe(
+    "not available: /run/btrfs-scrub exists but cannot be read",
+  );
+  expect(noDamageText(noMemory, failedScrub)).toBe(
+    "/run/btrfs-scrub exists but cannot be read, so no file is named.",
+  );
+});
+
 test("a check that has not finished counted nothing, and its report is not blamed", () => {
   // A running check is a different fact from a report that omitted its count.
   const running = state([report({ status: "running", uncorrectable: 26 })]);
