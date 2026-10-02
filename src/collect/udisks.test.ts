@@ -570,3 +570,104 @@ test("a listing failure during the hold does not poison the samples after it: a 
     drives: [{ name: "sda", model: "B", written: 10_240, identity: "SN1" }],
   });
 });
+test("two consecutive listing failures inside the hold end up holding an empty reading, but the next healthy sample restores it at once rather than for the rest of the hold", async () => {
+  const calls: string[][] = [];
+  const good = fakeBus(
+    [
+      {
+        name: "sda",
+        model: "B",
+        kind: "ata",
+        attributes: ata(10, 3),
+        serial: "SN1",
+      },
+    ],
+    calls,
+  );
+  let failing = false;
+  const run: typeof spawnText = async (argv, timeoutMs) => {
+    if (failing && argv.includes("GetManagedObjects")) {
+      calls.push(argv);
+      return {
+        out: "",
+        error: "Failed to connect to bus: No such file or directory\n",
+        status: 1,
+        timedOut: false,
+      };
+    }
+    return good(argv, timeoutMs);
+  };
+  let now = 0;
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives).toHaveLength(1);
+  // The first failure drops the held reading outright; the next read() then
+  // takes the non-held branch and runs readUdisks() fresh, whose own listing
+  // fails again — this second failure's empty result is what ends up held.
+  failing = true;
+  now = 10;
+  const second = await udisks.read();
+  expect(second.outcome?.failure).toBe("absent");
+  now = 20;
+  const third = await udisks.read();
+  expect(third.drives).toEqual([]);
+  expect(third.outcome?.failure).toBe("absent");
+  // The bus answers again on the very next sample, still inside the hold
+  // that first failure started: the empty held reading must not keep being
+  // served for the rest of it.
+  failing = false;
+  now = 30;
+  const fourth = await udisks.read();
+  expect(fourth).toEqual({
+    outcome: null,
+    drives: [{ name: "sda", model: "B", written: 5_120, identity: "SN1" }],
+  });
+});
+test("an initial listing failure, with no prior held reading at all, is not kept as an empty placeholder once the bus answers", async () => {
+  const calls: string[][] = [];
+  const good = fakeBus(
+    [
+      {
+        name: "sda",
+        model: "B",
+        kind: "ata",
+        attributes: ata(10, 3),
+        serial: "SN1",
+      },
+    ],
+    calls,
+  );
+  let failing = true;
+  const run: typeof spawnText = async (argv, timeoutMs) => {
+    if (failing && argv.includes("GetManagedObjects")) {
+      calls.push(argv);
+      return {
+        out: "",
+        error: "Failed to connect to bus: No such file or directory\n",
+        status: 1,
+        timedOut: false,
+      };
+    }
+    return good(argv, timeoutMs);
+  };
+  let now = 0;
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first).toEqual({
+    drives: [],
+    outcome: {
+      failure: "absent",
+      detail: "Failed to connect to bus: No such file or directory",
+    },
+  });
+  // The bus answers on the very next sample, still inside the hold that
+  // failed first read started: the empty reading it held must not stand in
+  // for "no drives" for the rest of it.
+  failing = false;
+  now = 10;
+  const second = await udisks.read();
+  expect(second).toEqual({
+    outcome: null,
+    drives: [{ name: "sda", model: "B", written: 5_120, identity: "SN1" }],
+  });
+});
