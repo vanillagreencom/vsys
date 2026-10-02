@@ -305,11 +305,7 @@ export async function readUdisks(
  * out of the test suite.
  */
 export class Udisks {
-  private held: {
-    at: number;
-    reading: UdisksReading;
-    targets: Target[];
-  } | null = null;
+  private held: { at: number; reading: UdisksReading } | null = null;
   constructor(
     private run: Run = spawnText,
     private now: () => number = () => performance.now(),
@@ -317,45 +313,9 @@ export class Udisks {
   ) {}
   async read(): Promise<UdisksReading> {
     const at = this.now();
-    if (this.held && at - this.held.at < udisksHoldMs)
-      return this.confirm(this.held.reading, this.held.targets);
-    const listing = await listUdisks(this.run, this.timeoutMs);
-    const targets = listing.targets ?? [];
-    const reading =
-      listing.targets === null
-        ? { drives: [], outcome: listing.outcome }
-        : await queryDrives(this.run, this.timeoutMs, targets);
-    this.held = { at, reading, targets };
+    if (this.held && at - this.held.at < udisksHoldMs) return this.held.reading;
+    const reading = await readUdisks(this.run, this.timeoutMs);
+    this.held = { at, reading };
     return reading;
-  }
-  /**
-   * A held drive is shown only where a fresh listing — cheap, because
-   * udisksd answers it from its own object cache rather than asking any
-   * drive — still names the same object path for its kernel name. udisks
-   * assigns that path from the drive's own identity, so a drive that
-   * replaced another gets a different object path even where the kernel
-   * reused the block device's name. Where the listing cannot be re-asked, or
-   * no longer agrees, the row's total goes back to unknown rather than carry
-   * a figure that may belong to whatever replaced it.
-   */
-  private async confirm(
-    reading: UdisksReading,
-    heldTargets: Target[],
-  ): Promise<UdisksReading> {
-    if (reading.drives.length === 0) return reading;
-    const listing = await listUdisks(this.run, this.timeoutMs);
-    const current = new Map(
-      (listing.targets ?? []).map((t) => [t.name, t.drive]),
-    );
-    const held = new Map(heldTargets.map((t) => [t.name, t.drive]));
-    return {
-      ...reading,
-      drives: reading.drives.map((d) => {
-        const confirmed = current.get(d.name);
-        return confirmed !== undefined && confirmed === held.get(d.name)
-          ? d
-          : { name: d.name, model: null, written: null };
-      }),
-    };
   }
 }

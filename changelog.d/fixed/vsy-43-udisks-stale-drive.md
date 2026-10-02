@@ -1,1 +1,0 @@
-- A drive read through udisks no longer carries the model and lifetime writes of a different drive that previously answered under the same kernel device name.

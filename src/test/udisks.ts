@@ -8,13 +8,6 @@ export interface FakeDrive {
   kind: "nvme" | "ata" | "none";
   /** The SmartGetAttributes reply's `data`, or a refusal in busctl's words. */
   attributes: unknown | { refuse: string };
-  /**
-   * The drive object path's own key, where a test needs it to differ from
-   * the kernel name: a drive that replaces another while the kernel reuses
-   * its name needs a distinct identity, the way udisks itself would give
-   * it. Defaults to `name`.
-   */
-  id?: string;
 }
 const bytes = (path: string) => [...Buffer.from(path), 0];
 /**
@@ -33,7 +26,7 @@ export function fakeBus(
 ) {
   const objects: Record<string, unknown> = {};
   for (const d of drives) {
-    const drive = `/org/freedesktop/UDisks2/drives/${d.id ?? d.name}_drive`;
+    const drive = `/org/freedesktop/UDisks2/drives/${d.name}_drive`;
     objects[drive] = {
       "org.freedesktop.UDisks2.Drive": { Model: { type: "s", data: d.model } },
       ...(d.kind === "none"
@@ -73,7 +66,7 @@ export function fakeBus(
         status: 0,
       };
     const d = drives.find((x) =>
-      argv.some((a) => a.endsWith(`/${x.id ?? x.name}_drive`)),
+      argv.some((a) => a.endsWith(`/${x.name}_drive`)),
     );
     if (!d) throw new Error(`fakeBus: no drive for ${argv.join(" ")}`);
     const a = d.attributes as { refuse?: string };

@@ -224,7 +224,7 @@ test("a drive whose SMART query never answers keeps its row, written unknown", a
     },
   });
 });
-test("a read is held for the hold time on the clock it is given, but the listing is re-asked to confirm identity", async () => {
+test("a read is held for the hold time on the clock it is given", async () => {
   const calls: string[][] = [];
   let now = 0;
   const udisks = new Udisks(
@@ -234,72 +234,11 @@ test("a read is held for the hold time on the clock it is given, but the listing
     ),
     () => now,
   );
-  const smartCalls = () =>
-    calls.filter((c) => !c.includes("GetManagedObjects")).length;
+  await udisks.read();
+  now = udisksHoldMs - 1;
   await udisks.read();
   expect(calls).toHaveLength(2);
-  expect(smartCalls()).toBe(1);
-  now = udisksHoldMs - 1;
-  // Within the hold, the cheap listing is re-asked to confirm the drive's
-  // identity, but the expensive SmartGetAttributes query is not repeated.
-  await udisks.read();
-  expect(calls).toHaveLength(3);
-  expect(smartCalls()).toBe(1);
   now = udisksHoldMs;
   await udisks.read();
-  expect(calls).toHaveLength(5);
-  expect(smartCalls()).toBe(2);
-});
-test("a drive replaced within the hold window, reusing its kernel name, is not shown with the old drive's total", async () => {
-  const calls: string[][] = [];
-  let now = 0;
-  const original = fakeBus(
-    [
-      {
-        name: "sda",
-        model: "Original",
-        kind: "ata",
-        attributes: ata(10, 3),
-        id: "original",
-      },
-    ],
-    calls,
-  );
-  const replacement = fakeBus(
-    [
-      {
-        name: "sda",
-        model: "Replacement",
-        kind: "ata",
-        attributes: ata(99, 3),
-        id: "replacement",
-      },
-    ],
-    calls,
-  );
-  let swapped = false;
-  const udisks = new Udisks(
-    (argv, timeoutMs) => (swapped ? replacement : original)(argv, timeoutMs),
-    () => now,
-  );
-  expect(await udisks.read()).toEqual({
-    drives: [{ name: "sda", model: "Original", written: 5120 }],
-    outcome: null,
-  });
-  // The drive behind "sda" is swapped, the kernel reusing the name, while
-  // still inside the hold window: the cached figure is not shown as the
-  // replacement's own.
-  swapped = true;
-  now = udisksHoldMs - 1;
-  expect(await udisks.read()).toEqual({
-    drives: [{ name: "sda", model: null, written: null }],
-    outcome: null,
-  });
-  // Once the hold expires, the live query for "sda" reaches the drive now
-  // actually there.
-  now = udisksHoldMs;
-  expect(await udisks.read()).toEqual({
-    drives: [{ name: "sda", model: "Replacement", written: 50688 }],
-    outcome: null,
-  });
+  expect(calls).toHaveLength(4);
 });
