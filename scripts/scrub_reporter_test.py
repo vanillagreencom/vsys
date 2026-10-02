@@ -336,6 +336,8 @@ class InstallTest(unittest.TestCase):
         version: str | None = "vfixture",
         api_tag: str | None = "vlatest-fixture",
         fail_api: bool = False,
+        legacy_dir: Path | None = None,
+        scrub_dir: Path | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """version=None leaves VSYS_VERSION unset, so install resolves the tag
         itself from the stubbed GitHub API, the same lookup install.sh uses.
@@ -378,10 +380,18 @@ esac
 """,
         )
         env_extra = {} if version is None else {"VSYS_VERSION": version}
+        # VSYS_SCRUB_DIR/VSYS_SCRUB_LEGACY_DIR keep the install script's own
+        # migration logic off the real /var/lib and /run: a path under `base`
+        # that nothing creates reproduces "legacy directory absent".
         done = subprocess.run(
             ["bash", "-s"],
             input=(REPORTER / "install").read_text(),
-            env=child_env(bin_dir, **env_extra),
+            env=child_env(
+                bin_dir,
+                VSYS_SCRUB_DIR=str(scrub_dir if scrub_dir is not None else base / "unused-persistent"),
+                VSYS_SCRUB_LEGACY_DIR=str(legacy_dir if legacy_dir is not None else base / "unused-legacy"),
+                **env_extra,
+            ),
             capture_output=True,
             text=True,
             check=False,
@@ -486,6 +496,44 @@ esac
             )
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
+    def test_a_report_in_the_old_tmpfs_directory_is_migrated(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("btrfs scrub finished, no errors: /\n")
+            persistent = base / "persistent"
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(
+                (persistent / "root.result").read_text(),
+                "btrfs scrub finished, no errors: /\n",
+            )
+
+    def test_migration_never_overwrites_a_report_already_in_the_persistent_directory(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("stale, from before this install\n")
+            persistent = base / "persistent"
+            persistent.mkdir()
+            (persistent / "root.result").write_text("the report already there\n")
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(
+                (persistent / "root.result").read_text(),
+                "the report already there\n",
+            )
+
+    def test_no_legacy_directory_migrates_nothing(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            persistent = base / "persistent"
+            done, calls = self.run_install(base, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse(persistent.exists())
+
 
 class ShippedFilesTest(unittest.TestCase):
     def test_the_drop_in_and_the_tmpfiles_line_name_one_directory(self) -> None:
@@ -494,11 +542,11 @@ class ShippedFilesTest(unittest.TestCase):
         drop_in = (REPORTER / "vsys-report.conf").read_text()
         tmpfiles = (REPORTER / "vsys-scrub.conf").read_text()
         exec_line = next(line for line in drop_in.splitlines() if line.startswith("ExecStopPost="))
-        self.assertEqual(exec_line, "ExecStopPost=/usr/local/bin/vsys-scrub-report %f /run/btrfs-scrub")
+        self.assertEqual(exec_line, "ExecStopPost=/usr/local/bin/vsys-scrub-report %f /var/lib/btrfs-scrub")
         rule = next(line for line in tmpfiles.splitlines() if line and not line.startswith("#"))
-        self.assertEqual(rule.split()[:2], ["d", "/run/btrfs-scrub"])
+        self.assertEqual(rule.split()[:2], ["d", "/var/lib/btrfs-scrub"])
         config = (ROOT / "src" / "config" / "config.ts").read_text()
-        self.assertIn('scrubDir: "/run/btrfs-scrub",', config)
+        self.assertIn('scrubDir: "/var/lib/btrfs-scrub",', config)
 
 
 if __name__ == "__main__":

@@ -4,20 +4,30 @@
 #   curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash
 #
 # It installs vsys-scrub-report, the btrfs-scrub@.service drop-in that runs it
-# after every scrub, and the tmpfiles line that creates its report directory at
-# boot. Every name is vsys's own, so a reporter already set up under another
-# name keeps working beside it. It schedules no scrub: enabling
-# btrfs-scrub@<mount>.timer for each filesystem stays the reader's choice.
+# after every scrub, and the tmpfiles line that creates its report directory,
+# under /var/lib so a report outlives a reboot. Every name is vsys's own, so a
+# reporter already set up under another name keeps working beside it. It
+# schedules no scrub: enabling btrfs-scrub@<mount>.timer for each filesystem
+# stays the reader's choice.
 #
 # The three files come from a tagged release and are checked against that
 # release's published SHA256SUMS before anything is installed; a missing or
 # mismatched checksum installs nothing.
 #
+# A machine already running the old tmpfs default (/run/btrfs-scrub) keeps
+# whatever it reported since boot only until this install takes effect, so
+# any report found there is copied into the persistent directory, never
+# overwriting a report already there.
+#
 # Environment:
-#   VSYS_VERSION  Tag to install from. Defaults to the latest release.
+#   VSYS_VERSION           Tag to install from. Defaults to the latest release.
+#   VSYS_SCRUB_DIR         Persistent report directory (default /var/lib/btrfs-scrub).
+#   VSYS_SCRUB_LEGACY_DIR  Previous tmpfs report directory to migrate from (default /run/btrfs-scrub).
 set -euo pipefail
 
 REPO="vanillagreencom/vsys"
+SCRUB_DIR="${VSYS_SCRUB_DIR:-/var/lib/btrfs-scrub}"
+LEGACY_SCRUB_DIR="${VSYS_SCRUB_LEGACY_DIR:-/run/btrfs-scrub}"
 WORK=""
 
 die() {
@@ -81,11 +91,25 @@ Could not fetch $source/$name. Nothing was installed."
 	install -Dm644 "$WORK/vsys-scrub.conf" /etc/tmpfiles.d/vsys-scrub.conf
 	systemd-tmpfiles --create /etc/tmpfiles.d/vsys-scrub.conf
 	systemctl daemon-reload
+	migrate_legacy_reports
 	printf '%s\n' \
 		"scrub-reporter: installed ${version}" \
-		"Each scrub now leaves a report in /run/btrfs-scrub. To check a filesystem" \
-		"on a schedule, enable its timer, for example:" \
+		"Each scrub now leaves a report in $SCRUB_DIR, which survives a reboot." \
+		"To check a filesystem on a schedule, enable its timer, for example:" \
 		"  systemctl enable --now btrfs-scrub@-.timer"
+}
+
+# A machine already running the tmpfs default has whatever it reported since
+# boot sitting in LEGACY_SCRUB_DIR; copy it into SCRUB_DIR now, before a
+# reboot clears it, without overwriting a report already there.
+migrate_legacy_reports() {
+	[[ -d $LEGACY_SCRUB_DIR && $LEGACY_SCRUB_DIR != "$SCRUB_DIR" ]] || return 0
+	mkdir -p -- "$SCRUB_DIR"
+	local report
+	for report in "$LEGACY_SCRUB_DIR"/*.result; do
+		[[ -e $report ]] || continue
+		cp -n -- "$report" "$SCRUB_DIR/"
+	done
 }
 
 main "$@"
