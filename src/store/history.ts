@@ -261,7 +261,15 @@ export class History {
       );
       const capacity = Math.max(next.points.capacity, points.size);
       next.points = new Points(capacity);
-      next.archive = this.archive.copy(cutoff);
+      // A database that is neither new nor swapped for another already
+      // agrees with the source archive, so copying it forward is enough;
+      // the rebuild below replaces this whole copy wherever `next.db` can
+      // hold rows the source never had, and doing both would decompress a
+      // full retained window on every plain settings change.
+      const rebuildsFromDb =
+        next.db !== undefined &&
+        (this.db === undefined || c.sqlitePath !== this.c.sqlitePath);
+      if (!rebuildsFromDb) next.archive = this.archive.copy(cutoff);
       // Derivation continues across a settings change, so an alert that opened
       // before it still closes with its full duration.
       next.eventLog = this.eventLog;
@@ -272,11 +280,7 @@ export class History {
           next.db
             .query("INSERT OR REPLACE INTO samples VALUES (?, ?, ?)")
             .run(row.time, row.data, row.point);
-        if (!next.db)
-          next.archive.add(
-            row.time,
-            new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(row.data))),
-          );
+        if (!next.db) next.archive.add(row.time, History.decodeRow(row.data));
       };
       if (this.db && (!next.db || c.sqlitePath !== this.c.sqlitePath)) {
         if (!next.db) next.archive = new Archive();
@@ -315,12 +319,17 @@ export class History {
       // see, because it trusts the archive to be complete from its first
       // time onward. Rebuilding from `next.db` itself, now that the transfer
       // above has settled its final content, keeps that promise.
-      if (next.db) next.archive = History.loadArchive(next.db, cutoff);
+      if (next.db && rebuildsFromDb)
+        next.archive = History.loadArchive(next.db, cutoff);
       return next;
     } catch (error) {
       next.close();
       throw error;
     }
+  }
+  /** One snapshot's JSON, inflated from the compressed blob a row stores it as. */
+  private static decodeRow(data: Uint8Array): string {
+    return new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(data)));
   }
   /** The archive built from a database's own rows, so the two agree on coverage. */
   private static loadArchive(db: Database, cutoff: number): Archive {
@@ -330,10 +339,7 @@ export class History {
         "SELECT time, data FROM samples WHERE time >= ? ORDER BY time",
       )
       .iterate(cutoff))
-      archive.add(
-        row.time,
-        new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(row.data))),
-      );
+      archive.add(row.time, History.decodeRow(row.data));
     return archive;
   }
   /** Display and rule preferences affect new points without discarding old ones. */
@@ -396,11 +402,7 @@ export class History {
     const data = row?.data;
     // Rows an older build wrote lack the fields this build reads.
     return data
-      ? normalizeSnapshot(
-          JSON.parse(
-            new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(data))),
-          ) as Snapshot,
-        )
+      ? normalizeSnapshot(JSON.parse(History.decodeRow(data)) as Snapshot)
       : null;
   }
   /** Recorded changes in the window, newest first. */
@@ -535,11 +537,7 @@ export class History {
             .iterate(pass.from, pass.to)) {
             if (this.closed)
               throw new Error("History closed while a lane read was out");
-            const s = JSON.parse(
-              new TextDecoder().decode(
-                Bun.gunzipSync(new Uint8Array(row.data)),
-              ),
-            ) as Snapshot;
+            const s = JSON.parse(History.decodeRow(row.data)) as Snapshot;
             const lanes = new Map(s.lanes.map((l) => [l.id, l]));
             const groups = new Map(s.groups.map((g) => [g.path, g]));
             for (const [id, samples] of lists) {

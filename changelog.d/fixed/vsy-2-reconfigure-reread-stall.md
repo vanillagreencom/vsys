@@ -1,0 +1,1 @@
+- A Settings change no longer stalls the dashboard by rereading the whole retained history when the history database itself did not change.

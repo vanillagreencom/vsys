@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, statSync } from "node:fs";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
@@ -315,6 +315,64 @@ test("a destination database keeps its intervening samples when history is merge
     now + 1000,
     now + 2000,
   ]);
+});
+test("a different destination database keeps its pre-existing row in lane series", async () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const now = Date.now();
+  const id = laneSnapshot().id;
+  const laned = (time: number) => {
+    const s = emptySnapshot(time);
+    s.lanes = [laneSnapshot()];
+    return s;
+  };
+  const otherPath = f.config.sqlitePath.replace(/history\.db$/, "other.db");
+  const target = new History({
+    ...f.config,
+    persistence: true,
+    sqlitePath: otherPath,
+  });
+  target.add(laned(now + 1000));
+  target.close();
+  const source = new History({ ...f.config, persistence: true });
+  cleanup.push(() => source.close());
+  source.add(laned(now));
+  source.add(laned(now + 2000));
+  const merged = source.reconfigure({
+    ...f.config,
+    persistence: true,
+    sqlitePath: otherPath,
+  });
+  cleanup.push(() => merged.close());
+  expect(merged.window(now + 2000, 3000).map((p) => p.time)).toEqual([
+    now,
+    now + 1000,
+    now + 2000,
+  ]);
+  const series = (await merged.laneWindows([id], now + 2000, 3000)).get(id);
+  expect(series?.map((sample) => sample.time)).toEqual([
+    now,
+    now + 1000,
+    now + 2000,
+  ]);
+});
+test("a same-path reconfigure does not re-read the retained window from disk", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const h = new History({ ...f.config, persistence: true });
+  cleanup.push(() => h.close());
+  const now = Date.now();
+  for (let i = 0; i < 50; i++) h.add(emptySnapshot(now + i * 1000));
+  const spy = spyOn(Bun, "gunzipSync");
+  spy.mockClear();
+  const changed = h.reconfigure({
+    ...f.config,
+    persistence: true,
+    refreshMs: 2000,
+  });
+  cleanup.push(() => changed.close());
+  expect(spy).not.toHaveBeenCalled();
+  expect(changed.window(now + 49000, 60000)).toHaveLength(50);
 });
 test("persisted snapshots and their sidecars stay readable only by the owner", () => {
   const f = fixture();
