@@ -138,7 +138,7 @@ test("a process whose agent name was not confirmed by install location gets a vi
   ];
   const items = attention(s, c, { basePath: base });
   expect(items.map((item) => item.id)).toEqual(["unconfirmed-tool"]);
-  const card = items[0];
+  const card = present(items[0], "the unconfirmed-tool card");
   // Visible, but housekeeping never speaks for the machine.
   expect(card.verdictWorthy).toBe(false);
   expect(verdictLine(items, s)).toBe("Healthy");
@@ -183,7 +183,7 @@ test("several unconfirmed processes share one card, and a repeated tool name is 
   ];
   const items = attention(s, c, { basePath: base });
   expect(items.map((item) => item.id)).toEqual(["unconfirmed-tool"]);
-  const card = items[0];
+  const card = present(items[0], "the unconfirmed-tool card");
   // Three processes, two distinct tool names: the title's count and its name
   // list disagree in length, and neither double-counts "pi". The plural verb
   // follows the process count, not the deduped name count.
@@ -217,7 +217,10 @@ test("five or more unconfirmed processes are all named, none dropped behind a co
       unconfirmedPath: `/opt/name${i}/bin`,
     }),
   );
-  const card = attention(s, c, { basePath: base })[0];
+  const card = present(
+    attention(s, c, { basePath: base })[0],
+    "the unconfirmed-tool card",
+  );
   // Nothing else on the dashboard names an unconfirmed process, so this card
   // never elides the fifth one behind "and N more" the way a lane list does.
   for (let i = 0; i < 6; i++) {
@@ -242,7 +245,10 @@ test("an unconfirmed process with no readable path gets guidance to check it dir
       unconfirmedPath: null,
     }),
   ];
-  const card = attention(s, c, { basePath: base })[0];
+  const card = present(
+    attention(s, c, { basePath: base })[0],
+    "the unconfirmed-tool card",
+  );
   expect(said(card)).toContain(
     "bash (pid 20): pi at a path vsys could not read",
   );
@@ -272,7 +278,10 @@ test("a mix of readable and unreadable unconfirmed paths gets both pieces of adv
       unconfirmedPath: null,
     }),
   ];
-  const card = attention(s, c, { basePath: base })[0];
+  const card = present(
+    attention(s, c, { basePath: base })[0],
+    "the unconfirmed-tool card",
+  );
   // The readable one still gets the fragment advice, naming its own path.
   expect(card.next).toContain("add a paths fragment");
   expect(card.next).toContain("/usr/bin/pi (pi)");

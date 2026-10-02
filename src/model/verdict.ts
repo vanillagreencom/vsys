@@ -534,10 +534,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   // confirm never became a lane, so this is the one place it is still
   // visible: nowhere on Agents names a process the collector left out.
   const unconfirmed = s.procs.filter((proc) => proc.unconfirmedTool);
-  if (unconfirmed.length)
+  const [firstUnconfirmed] = unconfirmed;
+  if (firstUnconfirmed)
     add("unconfirmed-tool", "warn", {
       procs: unconfirmed,
-      consumer: unconfirmed[0].unconfirmedTool ?? "",
+      consumer: firstUnconfirmed.unconfirmedTool ?? "",
       verdictWorthy: false,
       values: { processes: unconfirmed.length },
     });
