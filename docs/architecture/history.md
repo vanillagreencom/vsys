@@ -20,7 +20,7 @@ The store keeps complete snapshots for replay and one point per sample for the c
 
 ## Invariants
 
-1. A snapshot a previous build stored is filled with the unknown value for every field it predates before any screen reads it, and a stored point takes the same step. `src/store/history.test.ts` checks a stored lane, a snapshot older than the capability probe, a scratch row older than root origins, and a cache reading older than its query outcome.
+1. A snapshot a previous build stored is filled with the unknown value for every field it predates before any screen reads it, and a stored point takes the same step. `src/store/history.test.ts` checks a stored lane, a snapshot older than the capability probe, a scratch row older than root origins, a device row older than lifetime-write sources, and a cache reading older than its query outcome.
 2. A stored event is decoded only where the record proves it held a unit. `src/store/history.test.ts` checks four stored events a suffix cannot tell apart.
 3. Historical snapshots stay independent of live objects and of callers, so an exported snapshot can be edited without changing the replay cache. `src/store/archive.test.ts` checks exact reconstruction and mutation isolation.
 4. A duplicate time and a checkpoint past the budget fail visibly rather than silently, and the uncompressed lines a checkpoint has not sealed yet count against that budget. `src/store/archive.test.ts` checks all three.
