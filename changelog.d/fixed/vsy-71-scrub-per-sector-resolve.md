@@ -1,1 +1,1 @@
-- Storage no longer misses a damaged file that sits later in a scrub's logged 64 KiB block: the reporter now resolves each of its 4 KiB sectors.
+- Storage no longer misses a damaged file that sits later in a scrub's logged 64 KiB block, and still flags a block as unresolved when part of it could not be checked.

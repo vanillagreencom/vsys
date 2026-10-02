@@ -218,16 +218,22 @@ resolve_sector() {
 	done
 	printf '%s\n' "${listed[@]}"
 }
-# The 64 KiB block the kernel logged this address as the start of. Every one
-# of its 16 sectors is resolved, and the union of every name any of them
-# gives is listed: a real resolution failure at one sector never hides a
-# name a different sector of the same block proved, because that name is
-# still a file the block's damage may sit in.
+# The 64 KiB block the kernel logged this address as a sector of. On the
+# affected kernels the address is already that block's start; on a fixed
+# kernel it is some exact sector inside one, and flooring it to its own grid
+# still lands on that same block's start, so the scan this floor feeds never
+# reaches into the next, unrelated block. Every one of the block's 16
+# sectors is resolved, and the union of every name any of them gives is
+# listed. A real resolution failure at one sector is never silently dropped:
+# it still marks the whole block not resolved, even beside names a
+# different sector proved, because this report cannot say every file in the
+# block was found once one sector could not be read.
 resolve() {
-	local address=$1 sector reason rc failure=""
+	local address=$1 block=$((address - address % (sector_bytes * sectors_per_block)))
+	local sector reason rc failure=""
 	local -A names=()
 	for ((sector = 0; sector < sectors_per_block; sector++)); do
-		if reason=$(resolve_sector "$((address + sector * sector_bytes))"); then
+		if reason=$(resolve_sector "$((block + sector * sector_bytes))"); then
 			rc=0
 		else
 			rc=$?
@@ -242,9 +248,10 @@ resolve() {
 	done
 	if ((${#names[@]})); then
 		printf '%s\n' "${!names[@]}" | sort | sed 's/^/  /'
-	elif [[ -n $failure ]]; then
+	fi
+	if [[ -n $failure ]]; then
 		echo "  (not resolved: $failure)"
-	else
+	elif ((${#names[@]} == 0)); then
 		no_extent "$address"
 	fi
 }

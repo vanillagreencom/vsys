@@ -53,12 +53,19 @@ NAMED = 953118621696
 # by printing no inode. On some kernels a logged block start can sit in a gap
 # before the block's first extent, so neither answer is free space.
 NO_EXTENT = 1597612883968
-EMPTY = 1597612888064
-UNMOUNTED = 1597612883969
-SPLIT = 1597612883970
-SPACED = 1597612883971
-UNNAMED = 1597612883972
-STDERR = 1597612883973
+# The second sector (offset 4096) of NO_EXTENT's own floored block: resolving
+# it exercises the "ioctl succeeds but holds no inode" no-extent path beside
+# NO_EXTENT's own "ioctl fails" path, within the one block both now floor to.
+EMPTY = NO_EXTENT + 4096
+# Each of these is the start of its own 64 KiB block, not an address a few
+# bytes from NO_EXTENT: once the scan floors to a block and sweeps only its
+# own 16 sectors, an address that close would floor into NO_EXTENT's block
+# and never reach the fixture below that gives it its own distinct failure.
+UNMOUNTED = NO_EXTENT + 65536 * 6
+SPLIT = NO_EXTENT + 65536 * 7
+SPACED = NO_EXTENT + 65536 * 8
+UNNAMED = NO_EXTENT + 65536 * 9
+STDERR = NO_EXTENT + 65536 * 10
 OTHER_FS = 5555
 # The kernel logs this block's start, which has no extent; the file the scrub
 # actually damaged sits five 4 KiB sectors later in the same 64 KiB block.
@@ -66,6 +73,16 @@ LATE_SECTOR = NO_EXTENT + 65536 * 2
 # This block's start fails resolution for a real reason (btrfs warns on
 # stderr); a different sector of the same block resolves cleanly.
 MIXED_SECTOR = NO_EXTENT + 65536 * 3
+# The file the scrub damaged sits only at the block's very last 4 KiB
+# sector (offset 15 * 4096), proving the full 16-sector sweep runs to its end.
+LAST_SECTOR = NO_EXTENT + 65536 * 4
+# A non-block-aligned address, as a kernel that logs the exact sector
+# (33ce0aa4c576) would write: 63488 bytes into its own 64 KiB block. A file
+# that sits in the next, unrelated 64 KiB block must never be listed under
+# this address, however far an unfloored sector scan would otherwise reach.
+UNALIGNED_BLOCK = NO_EXTENT + 65536 * 5
+UNALIGNED_ADDRESS = UNALIGNED_BLOCK + 63488
+NEXT_BLOCK_FILE = UNALIGNED_ADDRESS + 4096
 
 
 def fixup(device: str, address: int) -> str:
@@ -147,6 +164,12 @@ class ReporterTest(unittest.TestCase):
         late.write_text("damaged")
         safe = fs / "target" / "safe"
         safe.write_text("damaged")
+        # A file reachable only from the block's very last sector, and one
+        # reachable only from the next, unrelated block.
+        last = fs / "target" / "last"
+        last.write_text("damaged")
+        next_block = fs / "target" / "next-block"
+        next_block.write_text("healthy")
         refs = base / "refs"
         names = base / "names"
         refs.mkdir()
@@ -182,6 +205,13 @@ class ReporterTest(unittest.TestCase):
         (names / f"{MIXED_SECTOR}.warn").write_text("ERROR: ino paths ioctl: Permission denied\n")
         held(MIXED_SECTOR + 3 * 4096, safe)
         (names / str(MIXED_SECTOR + 3 * 4096)).write_text(f"{safe}\n")
+        # LAST_SECTOR's file sits only at its block's final sector (index 15).
+        held(LAST_SECTOR + 15 * 4096, last)
+        (names / str(LAST_SECTOR + 15 * 4096)).write_text(f"{last}\n")
+        # NEXT_BLOCK_FILE sits in the block after UNALIGNED_ADDRESS's own
+        # block, reachable only if the scan is never floored to that block.
+        held(NEXT_BLOCK_FILE, next_block)
+        (names / str(NEXT_BLOCK_FILE)).write_text(f"{next_block}\n")
         stub(bin_dir, "systemd-escape", 'echo "-"\n')
         if kernel is None:
             stub(bin_dir, "journalctl", "echo 'No journal files were found.' >&2\nexit 1\n")
@@ -248,6 +278,7 @@ esac
                     # No extent holds it: damage the report cannot name,
                     # never free space.
                     {"logical": NO_EXTENT, "paths": [], "resolved": False},
+                    {"logical": EMPTY, "paths": [], "resolved": False},
                     # Unresolved, never free space: a snapshot not mounted, and
                     # a name btrfs split in two whose halves are healthy files.
                     {"logical": UNMOUNTED, "paths": [], "resolved": False},
@@ -259,7 +290,6 @@ esac
                     {"logical": UNNAMED, "paths": [], "resolved": False},
                     # btrfs failed to name an inode on stderr and exited 0.
                     {"logical": STDERR, "paths": [], "resolved": False},
-                    {"logical": EMPTY, "paths": [], "resolved": False},
                 ],
             )
             # Each way the resolver says no extent gets the not-resolved line,
@@ -293,19 +323,50 @@ esac
             # listed because every sector was tried, not only the start.
             self.assertEqual(read["addresses"], [{"logical": LATE_SECTOR, "paths": [f"{fs}/target/late"]}])
 
-    def test_a_resolution_failure_in_one_sector_does_not_hide_a_name_a_different_sector_proves(self) -> None:
+    def test_a_resolution_failure_in_one_sector_marks_the_block_not_resolved_even_beside_a_name_a_different_sector_proves(self) -> None:
         kernel = fixup("vsys-test-a", MIXED_SECTOR)
         with scratch() as tmp:
             base = Path(tmp)
             done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
             self.assertEqual(done.returncode, 0, done.stderr)
             fs = base / "fs"
+            text = report.read_text()
+            # The raw report still carries the name a clean sector proved, for
+            # a reader of the file itself, beside the other sector's failure.
+            self.assertIn(f"  {fs}/target/safe", text.splitlines())
+            self.assertIn("  (not resolved: ERROR: ino paths ioctl: Permission denied )", text.splitlines())
+            # Once vsys parses it, the not-resolved mark drops that name too:
+            # the report cannot say every file in the block was found, so the
+            # address is not resolved rather than partially listed.
             read = parse(report, base)
-            # The block's first sector fails to name an inode on stderr, but
-            # a later sector of the same block resolves cleanly, and that
-            # name is listed rather than dropped for the other sector's
-            # failure.
-            self.assertEqual(read["addresses"], [{"logical": MIXED_SECTOR, "paths": [f"{fs}/target/safe"]}])
+            self.assertEqual(read["addresses"], [{"logical": MIXED_SECTOR, "paths": [], "resolved": False}])
+
+    def test_the_blocks_last_sector_is_still_resolved(self) -> None:
+        kernel = fixup("vsys-test-a", LAST_SECTOR)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fs = base / "fs"
+            read = parse(report, base)
+            # The file sits only at sector index 15, the sweep's last
+            # iteration, so a scan that stopped one sector short would miss it.
+            self.assertEqual(read["addresses"], [{"logical": LAST_SECTOR, "paths": [f"{fs}/target/last"]}])
+
+    def test_the_sector_scan_never_reaches_the_next_block(self) -> None:
+        kernel = fixup("vsys-test-a", UNALIGNED_ADDRESS)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            read = parse(report, base)
+            # UNALIGNED_ADDRESS is not 64 KiB aligned, as a kernel that logs
+            # the exact sector would write. A file sits in the next block, at
+            # an offset an unfloored 16-sector scan from this address would
+            # reach; floored to this address's own block, none of its 16
+            # sectors holds an extent, so that file is never listed here.
+            self.assertEqual(read["addresses"], [{"logical": UNALIGNED_ADDRESS, "paths": [], "resolved": False}])
+            self.assertNotIn("next-block", report.read_text())
 
     def test_a_start_time_that_does_not_parse_searches_the_last_hour(self) -> None:
         with scratch() as tmp:
