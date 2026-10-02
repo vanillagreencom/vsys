@@ -36,6 +36,11 @@ main() {
 This system has no smartctl for the reporter to run.
 Install the package that ships it, smartmontools on most distributions, then run this again."
 
+	command -v timeout >/dev/null 2>&1 ||
+		die "command=timeout missing
+This system has no timeout for the reporter to bound smartctl with.
+Install coreutils, which ships it on nearly every Linux distribution, then run this again."
+
 	if command -v sha256sum >/dev/null 2>&1; then
 		checksum() { sha256sum "$1" | cut -d' ' -f1; }
 	elif command -v shasum >/dev/null 2>&1; then

@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -70,13 +71,15 @@ def bun() -> str:
 # tool under test: symlinked in so a checksum_tool case can exclude the
 # system PATH, and so hide sha256sum and shasum from it, without losing
 # these.
-RESTRICTED_TOOLS = ("bash", "rm", "cut", "head", "sed", "mktemp", "basename", "cp")
+RESTRICTED_TOOLS = ("bash", "rm", "cut", "head", "sed", "mktemp", "basename", "cp", "timeout")
 
 
-def restricted_system_bin(base: Path) -> Path:
+def restricted_system_bin(base: Path, *, exclude: tuple[str, ...] = ()) -> Path:
     sys_bin = base / "sysbin"
     sys_bin.mkdir()
     for name in RESTRICTED_TOOLS:
+        if name in exclude:
+            continue
         found = shutil.which(name)
         if found is None:
             raise AssertionError(f"{name}=missing: the installer needs it")
@@ -255,6 +258,38 @@ esac
                 {"model": "Crucial CT1000MX500SSD1", "lifetimeWritten": 2_000_000 * 512},
             )
 
+    def test_a_missing_timeout_command_fails_loudly_instead_of_every_drive_going_unknown(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            # A PATH with no timeout at all, not merely one hidden behind the
+            # stub dir: the reporter must refuse before writing any report,
+            # not let a `timeout: command not found` line stand in for every
+            # drive's reading.
+            restricted = base / "restricted"
+            restricted.mkdir()
+            for name in ("mkdir", "mv", "rm"):
+                found = shutil.which(name)
+                if found is None:
+                    raise AssertionError(f"{name}=missing: the reporter needs it")
+                (restricted / name).symlink_to(found)
+            stub(bin_dir, "smartctl", "exit 0\n")
+            sys_block = base / "block"
+            (sys_block / "nvme0n1").mkdir(parents=True)
+            (sys_block / "nvme0n1" / "device").mkdir()
+            reports = base / "reports"
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={"PATH": f"{bin_dir}:{restricted}", "LC_ALL": "C", "SYS_BLOCK": str(sys_block)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=timeout missing")
+            self.assertFalse(reports.exists(), "a missing timeout must refuse before any report directory is made")
+
 
 REPORTER_FILES = ("vsys-smart-report", "vsys-smart-report.service", "vsys-smart-report.timer", "vsys-smart.conf")
 
@@ -270,6 +305,7 @@ class InstallTest(unittest.TestCase):
         base: Path,
         *,
         smartctl: bool = True,
+        timeout_cmd: bool = True,
         checksum_tool: str = "sha256sum",
         fail_download: str = "",
         fail_sums: bool = False,
@@ -339,9 +375,13 @@ esac
         # The system directories come after the stubs only where the case
         # needs a real tool unaffected by checksum_tool; with no smartctl the
         # installer stops before any, and a non-default checksum_tool needs
-        # sha256sum itself kept off the path.
-        if not smartctl or checksum_tool != "sha256sum":
-            path = f"{bin_dir}:{restricted_system_bin(base)}"
+        # sha256sum itself kept off the path. RESTRICTED_TOOLS carries no
+        # smartctl, so that case needs no further exclusion; timeout_cmd=False
+        # excludes RESTRICTED_TOOLS' own timeout entry instead of relying on
+        # its absence from the list.
+        if not smartctl or not timeout_cmd or checksum_tool != "sha256sum":
+            exclude = () if timeout_cmd else ("timeout",)
+            path = f"{bin_dir}:{restricted_system_bin(base, exclude=exclude)}"
         else:
             path = f"{bin_dir}:/usr/bin:/bin"
         env_extra = {} if version is None else {"VSYS_VERSION": version}
@@ -426,6 +466,13 @@ esac
             self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: command=smartctl missing")
             self.assertEqual(calls, [])
 
+    def test_no_timeout_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), timeout_cmd=False)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: command=timeout missing")
+            self.assertEqual(calls, [])
+
     def test_a_system_with_only_shasum_still_installs(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), checksum_tool="shasum")
@@ -508,6 +555,23 @@ class ShippedFilesTest(unittest.TestCase):
         self.assertIn('smartDir: "/run/smartctl",', config)
         timer = (REPORTER / "vsys-smart-report.timer").read_text()
         self.assertIn("WantedBy=timers.target", timer.splitlines())
+
+    def test_the_service_timeout_covers_more_than_one_drives_worst_case(self) -> None:
+        # A later drive's report depends on TimeoutStartSec staying wider than
+        # one drive's own worst case (SMARTCTL_TIMEOUT plus the kill-after
+        # grace); read both from their own source so a change to either value
+        # keeps this proof honest instead of pinning a second copy here.
+        reporter = (REPORTER / "vsys-smart-report").read_text()
+        default_timeout = int(re.search(r"SMARTCTL_TIMEOUT:-(\d+)", reporter).group(1))
+        kill_grace = int(re.search(r"timeout -k (\d+) ", reporter).group(1))
+        per_drive_budget = default_timeout + kill_grace
+        service = (REPORTER / "vsys-smart-report.service").read_text()
+        timeout_start_sec = int(re.search(r"^TimeoutStartSec=(\d+)$", service, re.MULTILINE).group(1))
+        self.assertGreater(
+            timeout_start_sec,
+            2 * per_drive_budget,
+            "TimeoutStartSec must outlast more than one drive's worst case, or systemd kills the run before a later drive is reported",
+        )
 
 
 if __name__ == "__main__":
