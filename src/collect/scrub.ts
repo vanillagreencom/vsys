@@ -5,10 +5,18 @@
  * here anchors on a labelled field or on the `logical <address>:` heading, and
  * a report that carries no damaged-file section at all still parses.
  *
- * `docs/architecture/storage.md` holds the format the helper must write.
+ * `docs/architecture/storage-integrity.md` holds the format the reporter must write,
+ * and `scripts/scrub-reporter/` ships the reporter that writes it.
  */
 
 import type { DamagedAddress } from "../model/types";
+
+/**
+ * Whether a file in the report directory is a report. A reporter writes its
+ * report under a hidden name and renames it whole, so a hidden file is one
+ * still being written, or one a stopped run left behind.
+ */
+export const isReportName = (name: string): boolean => !name.startsWith(".");
 
 /** What one report file says, with every field it did not carry left null. */
 export interface ScrubReport {
@@ -65,6 +73,19 @@ export function counted(raw: string, name: string): boolean {
 }
 
 /**
+ * Whether a report line carries a name exactly: no whitespace at either end,
+ * which a reader trimming the line would drop, no control character, and no
+ * byte that was not UTF-8, which reading replaced with U+FFFD.
+ */
+const carried = (name: string): boolean =>
+  name !== "" &&
+  name === name.trim() &&
+  ![...name].some((char) => {
+    const code = char.codePointAt(0) ?? 0;
+    return code < 0x20 || code === 0x7f || code === 0xfffd;
+  });
+
+/**
  * Read a report. Unknown text is not an error here: `scrubProblem` is what
  * refuses to call unreadable output clean, and this fills what it can.
  */
@@ -79,7 +100,7 @@ export function parseScrub(raw: string): ScrubReport {
   let current: DamagedAddress | null = null;
   // Only the lines under the section heading hold addresses. Anything above
   // it is the report's own prose, and a prose line shaped like an address
-  // would otherwise become damage with a delete command attached.
+  // would otherwise become damage with a file listed under it.
   for (const line of opened < 0 ? [] : lines.slice(opened + 1)) {
     const heading = line.match(/^logical (\d+):\s*$/);
     if (heading) {
@@ -87,14 +108,23 @@ export function parseScrub(raw: string): ScrubReport {
       addresses = [...(addresses ?? []), current];
       continue;
     }
-    // A path is indented under its address. The parenthesised line saying no
-    // file resolved is not a path, and a line at column zero ends the group.
-    const path = line.match(/^ {2}(\S.*?)\s*$/);
+    // A path is indented under its address, and taken byte for byte: the
+    // screen lists exactly the name read here. A parenthesised line
+    // is not a path, and a line at column zero ends the group.
+    const path = line.match(/^ {2}(.*)$/);
     if (!path || !current) {
       if (!/^\s/.test(line)) current = null;
       continue;
     }
-    if (!path[1].startsWith("(")) current.paths.push(path[1]);
+    const name = path[1];
+    // The reporter could not name every file under this address. It is
+    // damage all the same, and no path under it is listed.
+    if (name.startsWith("(not resolved")) current.resolved = false;
+    else if (name.startsWith("(")) continue;
+    // A name this text cannot carry exactly may be a different file's name
+    // once read, so the address is not resolved either.
+    else if (!carried(name)) current.resolved = false;
+    else current.paths.push(name);
   }
   return {
     uuid: field(raw, "UUID")?.match(/^[0-9a-f-]{36}$/i)?.[0] ?? null,

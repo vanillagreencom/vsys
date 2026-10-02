@@ -1,16 +1,16 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { integrity, volumesByDevice } from "../model/integrity";
-import type { Scrub } from "../model/types";
+import type { Capability, CsumFailure, Scrub } from "../model/types";
 import { volumeSnapshot } from "../test/fixture";
 import {
   blocksText,
   damageAdvice,
-  deleteCommand,
   integrityLine,
   integrityWords,
+  loggedText,
   noDamageText,
-  rebuildCommand,
+  unnamedText,
 } from "./integrity";
 
 const day = 86400000;
@@ -27,7 +27,7 @@ function state(scrubs: Scrub[], lastErrorAt: number | null = null) {
         lastErrorSize: lastErrorAt === null ? null : 26,
       }),
     ])[0],
-    scrubs,
+    { scrubs },
     now,
     c,
   );
@@ -54,12 +54,76 @@ test("the line answers both questions without opening anything", () => {
     state([report({ startedAt: now - 4 * day })], now - 31 * 3600000),
   );
   expect(line).toBe(
-    "New errors since last check · last full check 4.0d ago · last new error 31.0h ago",
+    "New errors since last check · last full check 4.0d ago (scrub report) · last new error 31.0h ago (error counter)",
   );
   // Nothing checked, nothing recorded: both times say so rather than reading
   // as zero or as healthy.
   expect(integrityLine(state([]))).toBe(
-    "Never checked · last full check never · last new error none recorded",
+    "Never checked · last full check never · last new error none (error counter)",
+  );
+});
+
+test("the line names the source of each time it gives", () => {
+  const failure: CsumFailure = { root: 257, inode: 4242, at: now - 7200000 };
+  const absent: Capability = {
+    id: "scrub",
+    available: false,
+    failure: "absent",
+    source: "/run/btrfs-scrub",
+    detail: "ENOENT: no such file or directory",
+  };
+  const item = (
+    scrubs: Scrub[],
+    csumFailures: Record<string, CsumFailure[]> | null,
+    countersAvailable = true,
+  ) =>
+    integrity(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: countersAvailable ? { "1/corruption_errs": 0 } : {},
+          countersAvailable,
+        }),
+      ])[0],
+      { scrubs, csumFailures },
+      now,
+      c,
+    );
+  const rows: [string, string][] = [
+    [
+      integrityLine(item([report()], { fs: [failure] })),
+      "New errors since last check · last full check 24.0h ago (scrub report) · last new error 2.0h ago (kernel log)",
+    ],
+    [
+      integrityLine(item([report()], {})),
+      "Healthy · last full check 24.0h ago (scrub report) · last new error none (error counter, kernel log)",
+    ],
+    [
+      integrityLine(item([report()], null)),
+      "Healthy · last full check 24.0h ago (scrub report) · last new error none (error counter)",
+    ],
+    [
+      integrityLine(item([], { fs: [failure] }), absent),
+      "New errors since last check · last full check never · last new error 2.0h ago (kernel log)",
+    ],
+    [
+      integrityLine(item([], null), absent),
+      "Never checked: no readable scrub report directory · last full check never · last new error none (error counter)",
+    ],
+    // A counter vsys could not read recorded nothing either way, so "none"
+    // names only the log, and with neither read the time is not available.
+    [
+      integrityLine(item([report()], {}, false)),
+      "Damage state unknown · last full check 24.0h ago (scrub report) · last new error none (kernel log)",
+    ],
+    [
+      integrityLine(item([report()], null, false)),
+      "Damage state unknown · last full check 24.0h ago (scrub report) · last new error not available",
+    ],
+  ];
+  for (const [line, expected] of rows) expect(line).toBe(expected);
+  expect(loggedText(failure, now)).toBe(
+    "inode 4242 in subvolume 257, logged 2.0h ago",
   );
 });
 
@@ -77,36 +141,47 @@ test("no words but Healthy say the filesystem was checked and found sound", () =
   ).toBe("Damage state unknown");
 });
 
-test("the damaged-file headline counts files and says when a rebuild fixes it", () => {
-  const build = state([
-    report({
-      problem: true,
-      uncorrectable: 26,
-      addresses: [
-        { logical: 1, paths: ["/r/target/a", "/r/target/b"] },
-        { logical: 2, paths: ["/r/target/c"] },
-      ],
-    }),
+test("the damaged-file headline counts possibly damaged files and the blocks none covers", () => {
+  const addresses = [
+    { logical: 1, paths: ["/r/target/a", "/r/target/b"] },
+    { logical: 2, paths: ["/home/r/letter.txt"] },
+  ];
+  const named = state([report({ problem: true, uncorrectable: 2, addresses })]);
+  expect(integrityWords(named)).toBe("Damage found: 3 possibly damaged files");
+  // The check counted more blocks than the report names, so the files listed
+  // are not all of the damage, and the headline says how many are not.
+  const partial = state([
+    report({ problem: true, uncorrectable: 26, addresses }),
   ]);
-  expect(integrityWords(build)).toBe(
-    "Damaged files found: 3 files, all build output",
+  expect(integrityWords(partial)).toBe(
+    "Damage found: 3 possibly damaged files, 24 blocks unnamed",
   );
-  // One file outside build output and the claim is withdrawn, because a
-  // rebuild does not replace it.
-  const mixed = state([
+  expect(unnamedText(partial)).toBe(
+    "The check counted 24 more damaged blocks than its report names, so the files above are not all of the damage.",
+  );
+  expect(unnamedText(named)).toBeUndefined();
+  // An address the reporter could not name is unnamed damage too.
+  const unresolved = state([
     report({
       problem: true,
-      uncorrectable: 26,
-      addresses: [
-        { logical: 1, paths: ["/r/target/a"] },
-        { logical: 2, paths: ["/home/r/letter.txt"] },
-      ],
+      uncorrectable: 3,
+      addresses: [...addresses, { logical: 3, paths: [], resolved: false }],
     }),
   ]);
-  expect(integrityWords(mixed)).toBe("Damaged files found: 2 files");
+  expect(integrityWords(unresolved)).toBe(
+    "Damage found: 3 possibly damaged files, 1 block unnamed",
+  );
+  // A report naming no address under a counted block names none of them,
+  // which is not a filesystem with nothing left.
+  const none = state([
+    report({ problem: true, uncorrectable: 3, addresses: [] }),
+  ]);
+  expect(noDamageText(none)).toBe(
+    "The check counted 3 damaged blocks and its report names none of them, so no file is offered.",
+  );
 });
 
-test("a delete command removes every name of its address, never the first", () => {
+test("every name of an address is listed, and each address says what it names", () => {
   const item = state([
     report({
       problem: true,
@@ -120,26 +195,24 @@ test("a delete command removes every name of its address, never the first", () =
         },
         { logical: 2, paths: ["/home/r/letter.txt"] },
         { logical: 3, paths: [] },
+        { logical: 4, paths: [], resolved: false },
       ],
     }),
   ]);
-  // Both names in one line. Deleting the first alone leaves the extent on
-  // disk, and the next check reports it again.
-  expect(deleteCommand(item.groups[0])).toBe(
-    "rm -f /r/target/debug/build/glib-sys/build-script-build /r/target/debug/build/glib-sys/build_script_build-c664",
-  );
-  // An address with no file has nothing to delete.
-  expect(deleteCommand(item.groups[2])).toBeUndefined();
-  expect(item.groups.map(damageAdvice)).toEqual([
-    "safe to delete and rebuild",
-    "restore from a backup or a snapshot",
-    "free space or already deleted, clears on the next check",
+  // Both names of one extent are listed: the check read the block, and either
+  // name can be the file the damage sits in.
+  expect(item.groups[0].paths).toEqual([
+    "/r/target/debug/build/glib-sys/build-script-build",
+    "/r/target/debug/build/glib-sys/build_script_build-c664",
   ]);
-  // The one-line command covers build output only: the letter is not in it.
-  expect(rebuildCommand(item)).toBe(
-    "rm -f /r/target/debug/build/glib-sys/build-script-build /r/target/debug/build/glib-sys/build_script_build-c664",
-  );
-  expect(rebuildCommand(state([report()]))).toBeUndefined();
+  // Build output and a letter read alike: the block start names no file
+  // exactly, so neither is called safe to remove.
+  expect(item.groups.map(damageAdvice)).toEqual([
+    "possibly damaged",
+    "possibly damaged",
+    "free space or already deleted, clears on the next check",
+    "its files could not be named",
+  ]);
 });
 
 test("an absent damaged-file list never reads as a check that found none", () => {
@@ -170,24 +243,6 @@ test("a block count vsys did not read never reads as a count of none", () => {
   ).toBe("26 by the last full check");
 });
 
-test("only an address a rebuild replaces is offered as a delete", () => {
-  const item = state([
-    report({
-      problem: true,
-      addresses: [
-        { logical: 1, paths: ["/r/target/a"] },
-        { logical: 2, paths: ["/home/r/letter.txt"] },
-      ],
-    }),
-  ]);
-  expect(deleteCommand(item.groups[0])).toBe("rm -f /r/target/a");
-  // The letter is restored from a backup, so no line offers to remove it.
-  expect(damageAdvice(item.groups[1])).toBe(
-    "restore from a backup or a snapshot",
-  );
-  expect(deleteCommand(item.groups[1])).toBeUndefined();
-});
-
 test("an unreadable record of past growth is not a record of no errors", () => {
   const unreadable = integrity(
     volumesByDevice([
@@ -198,13 +253,34 @@ test("an unreadable record of past growth is not a record of no errors", () => {
         lastErrorKnown: false,
       }),
     ])[0],
-    [report()],
+    { scrubs: [report()] },
     now,
     c,
   );
   expect(integrityLine(unreadable)).toContain("last new error not available");
+  // The kernel log dated a failure, so the line gives it with its source even
+  // though the counter's record could not be read.
+  const logged = integrity(
+    volumesByDevice([
+      volumeSnapshot("/", {
+        fsid: "fs",
+        errors: { "1/corruption_errs": 1390 },
+        countersAvailable: true,
+        lastErrorKnown: false,
+      }),
+    ])[0],
+    {
+      scrubs: [],
+      csumFailures: { fs: [{ root: 5, inode: 9, at: now - 7200000 }] },
+    },
+    now,
+    c,
+  );
+  expect(integrityLine(logged)).toBe(
+    "New errors since last check · last full check never · last new error 2.0h ago (kernel log)",
+  );
   expect(integrityLine(state([report()]))).toContain(
-    "last new error none recorded",
+    "last new error none (error counter)",
   );
 });
 
@@ -224,40 +300,6 @@ test("nothing parsed from unreadable output is reported as a reading", () => {
   expect(noDamageText(item)).toBe(
     "The report could not be read, so nothing in it names a file.",
   );
-});
-
-test("an address written since the check is never offered as a delete", () => {
-  const changed = state([
-    report({
-      problem: true,
-      addresses: [
-        {
-          logical: 1,
-          paths: ["/r/target/a", "/r/target/b"],
-          changed: ["/r/target/b"],
-        },
-      ],
-    }),
-  ]);
-  // The file is still named, because dropping it would hide damage. Nothing
-  // offers to remove it: the block can have been freed and reused, and the
-  // name may now be a healthy file.
-  expect(changed.groups[0].paths).toEqual(["/r/target/a", "/r/target/b"]);
-  expect(damageAdvice(changed.groups[0])).toBe(
-    "written since the check: look before you remove anything",
-  );
-  expect(deleteCommand(changed.groups[0])).toBeUndefined();
-  expect(rebuildCommand(changed)).toBeUndefined();
-  // The same address with nothing written since keeps its command.
-  const stable = state([
-    report({
-      problem: true,
-      addresses: [
-        { logical: 1, paths: ["/r/target/a", "/r/target/b"], changed: [] },
-      ],
-    }),
-  ]);
-  expect(deleteCommand(stable.groups[0])).toBe("rm -f /r/target/a /r/target/b");
 });
 
 test("a check that has not finished counted nothing, and its report is not blamed", () => {

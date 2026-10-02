@@ -14,6 +14,7 @@ import {
 } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
+import { KernelLog, probeKernelLog } from "./kernel-log";
 import { kernelCgroupRoot, readMounts } from "./mounts";
 import { ProcessThread } from "./process-thread";
 import { ProcessCollector, type ProcessSource } from "./procs";
@@ -26,6 +27,11 @@ import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
 export interface SampleOptions {
   /** Skip scratch collection for cheap consumers that must treat it as unknown. */
   skipScratch?: boolean;
+  /**
+   * Skip the kernel log for the same consumers. A collector's first search
+   * reads every boot the journal holds, which a one-shot run pays in full.
+   */
+  skipKernelLog?: boolean;
 }
 /**
  * Reading the tmux server: the probe that decides the capability, and the one
@@ -41,11 +47,31 @@ const noTmux: Outcome = {
   failure: "absent",
   detail: "this collector was given no tmux reader",
 };
+/**
+ * Searching the kernel log: the probe that decides the capability, and the
+ * log each sample searches from the cursor the last search ended on. A
+ * collector given none reads no journal, which keeps the machine's own log
+ * out of the test suite; the program always supplies one.
+ */
+export interface KernelLogReader {
+  probe: () => Outcome;
+  log: KernelLog;
+}
+const noKernelLog: Outcome = {
+  failure: "absent",
+  detail: "this collector was given no kernel log reader",
+};
 
 /** The scheduler awaits each sample, so ticks cannot overlap. */
 export class Collector {
   private previous?: Snapshot;
-  private storage = new StorageCollector();
+  private storage: StorageCollector;
+  /**
+   * The kernel log this collector searches, null where it cannot. It is
+   * handed to a replacement collector, so a settings change resumes from its
+   * cursor rather than searching every boot again.
+   */
+  readonly kernelLog: KernelLog | null;
   private engine = new AlertEngine();
   private processes: ProcessSource;
   private controller = new AbortController();
@@ -54,7 +80,9 @@ export class Collector {
    * The agent slice is not one of these and is read with each sample's groups.
    * tmux is the exception, and only half of it. Whether tmux is on the path is
    * as static as the rest; whether a server answers is not, and this program
-   * is a dashboard for agents that start after it.
+   * is a dashboard for agents that start after it. The scrub report directory
+   * is the other: the reader creates it by installing the reporter vsys
+   * offers, so each sample takes it from the storage read of the reports.
    */
   private capabilities: Capability[];
   /** tmux is installed, so a read is worth attempting however it went last. */
@@ -80,21 +108,35 @@ export class Collector {
      * supplies them, so no test reads the host's systemd configuration.
      */
     private units: string[] = [],
+    /** Absent unless a caller supplies one, so no test reads the journal. */
+    kernelLog?: KernelLogReader,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
     this.capabilities = probeCapabilities(
       config,
       tmux?.probe ?? (() => noTmux),
+      kernelLog?.probe ?? (() => noKernelLog),
     );
+    // A log this user cannot search is a capability with its reason, probed
+    // once. Searching it anyway would add the same source error every sample.
+    const searchable =
+      this.capabilities.find((cap) => cap.id === "kernel-log")?.available ===
+      true;
+    this.kernelLog = kernelLog && searchable ? kernelLog.log : null;
+    this.storage = new StorageCollector(this.kernelLog);
     const probed = this.capabilities.find((cap) => cap.id === "tmux");
     this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
     this.tmuxServed = probed?.available === true;
   }
-  /** What the last read says about the server, carried into the next sample. */
-  private recordTmux(outcome: Outcome): void {
+  /**
+   * What the last read of a capability asked again each sample says, carried
+   * into the next sample: whether a tmux server answers, and whether the
+   * scrub report directory exists yet.
+   */
+  private record(id: "tmux" | "scrub", outcome: Outcome): void {
     this.capabilities = this.capabilities.map((cap) =>
-      cap.id === "tmux"
+      cap.id === id
         ? {
             ...cap,
             available: outcome === null,
@@ -169,7 +211,13 @@ export class Collector {
       !this.live,
       options.skipScratch ?? false,
       agentScratchDirs(procs),
+      options.skipKernelLog ?? false,
     );
+    // The scrub capability comes from the same asynchronous listing the
+    // reports were read from, so the two never disagree within a sample. A
+    // collection that never listed the directory leaves the last answer.
+    if (this.storage.scrubDir !== undefined)
+      this.record("scrub", this.storage.scrubDir);
     // Device totals cover the whole machine, so they are read above the watched tree.
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);
     this.controller.signal.throwIfAborted();
@@ -197,7 +245,7 @@ export class Collector {
     if (this.tmux && this.tmuxOnPath)
       try {
         panes = await this.tmux.panes();
-        this.recordTmux(null);
+        this.record("tmux", null);
         this.tmuxServed = true;
       } catch (error) {
         // A server that never answered is a capability with a reason, which
@@ -207,7 +255,7 @@ export class Collector {
         // Losing a server that was answering is the thing worth a line.
         if (this.tmuxServed) r.error("tmux list-panes", error);
         this.tmuxServed = false;
-        this.recordTmux({
+        this.record("tmux", {
           failure: "incomplete",
           detail: error instanceof Error ? error.message : String(error),
         });
@@ -241,15 +289,19 @@ export class Collector {
 /**
  * getconf reads libc's clock and page units; no machine-specific constants.
  * The predecessor's build cache reader is carried over, so its counts stay
- * measured since vsys started rather than since the last settings change.
+ * measured since vsys started rather than since the last settings change, and
+ * so is the kernel log it was searching, so the replacement resumes from that
+ * cursor rather than searching every boot again.
  * The agent-tool install locations and desktop paths come from the shared
  * agent-tool data and its overlay, read again for every collector built.
  */
 export async function createCollector(
   c: CollectionConfig,
   live = true,
-  previous?: { sccache?: SccacheCollector },
+  previous?: { sccache?: SccacheCollector; kernelLog?: KernelLog | null },
   toolsPath = agentToolsPath,
+  /** Injected so no test reads this machine's journal. */
+  kernelLogProbe: () => Outcome = probeKernelLog,
 ): Promise<Collector> {
   const read = async (name: string) => {
     const child = Bun.spawn(["getconf", name], {
@@ -283,5 +335,9 @@ export async function createCollector(
     { probe: probeTmux, panes: readPanes },
     new ProcessThread(c, ticks, pages, tools),
     unitDirs(),
+    {
+      probe: kernelLogProbe,
+      log: previous?.kernelLog ?? new KernelLog(),
+    },
   );
 }

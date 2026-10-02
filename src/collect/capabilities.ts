@@ -9,6 +9,7 @@ import type {
   Group,
 } from "../model/types";
 import { pressure } from "./io";
+import { kernelLogProbeArgv, probeKernelLog } from "./kernel-log";
 import type { CollectionConfig } from "./settings";
 import { listPanesArgv } from "./tmux";
 
@@ -23,7 +24,7 @@ export type Outcome = Failure | null;
  * that does not exist is an absent interface; any other errno is a source this
  * user cannot read; a throw with no errno came from parsing what was read.
  */
-function classify(error: unknown): Failure {
+export function classify(error: unknown): Failure {
   const code = (error as NodeJS.ErrnoException).code;
   const detail = error instanceof Error ? error.message : String(error);
   if (code === "ENOENT" || code === "ENOTDIR" || code === "ENODEV")
@@ -95,6 +96,8 @@ export function probeCapabilities(
   c: CollectionConfig,
   /** Injected so no test spawns tmux, and so a stub can fail it on purpose. */
   tmux: () => Outcome = probeTmux,
+  /** Injected for the same reason: no test reads this machine's journal. */
+  kernelLog: () => Outcome = probeKernelLog,
 ): Capability[] {
   const probes: [CapabilityId, string, () => Outcome][] = [
     [
@@ -135,6 +138,7 @@ export function probeCapabilities(
         return null;
       },
     ],
+    ["kernel-log", kernelLogProbeArgv.join(" "), kernelLog],
     [
       "smart",
       c.smartDir,

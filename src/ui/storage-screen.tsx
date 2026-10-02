@@ -27,10 +27,12 @@ import {
   blocksText,
   counterSentence,
   damageAdvice,
-  deleteCommand,
   integrityLine,
+  loggedSentence,
+  loggedText,
   noDamageText,
-  rebuildCommand,
+  possibleSentence,
+  unnamedText,
 } from "./integrity";
 import { useScreenKeys } from "./keys";
 import {
@@ -41,9 +43,11 @@ import {
   storageRegions,
 } from "./regions";
 import { firstRow, useSelection } from "./selection";
+import { reporterOffer, reporterSentence } from "./settings";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
+  CommandOffer,
   Detail,
   Disclosure,
   Empty,
@@ -182,7 +186,6 @@ export function Storage({
   onTargetUsed,
   onNotice,
   onCopy,
-  live,
 }: {
   snapshot: Snapshot;
   config: Config;
@@ -193,8 +196,6 @@ export function Storage({
   onNotice: (text: string, level: Level) => void;
   /** Undefined text tells the shell the selected row carries no command. */
   onCopy: (command: string | undefined) => void;
-  /** False while a pinned sample is shown, which is not the disk as it is. */
-  live: boolean;
 }) {
   const items = storageItems(s);
   const ids = items.map(storageKey);
@@ -254,26 +255,15 @@ export function Storage({
       return move((i) => stepToRegion(counts, i, -1));
     if (name === c.keys.next || name === c.keys.right || name === "right")
       return move((i) => stepToRegion(counts, i, 1));
-    // Only the filesystem row carries a command, and only where the last
-    // check found build output to remove. Every other row copies nothing,
-    // which the shell says rather than copying something the reader did not
-    // select.
+    // Only a filesystem row carries a command, and only where no reporter
+    // is installed to run a check: the line that installs it. It names no
+    // file, so a pinned sample copies it as a live one does. Every other row
+    // copies nothing, which the shell says rather than copying something the
+    // reader did not select.
     if (name === c.keys.copy) {
-      // A delete command is built from paths checked against the sample it
-      // came from. On a pinned sample those checks are as old as the sample:
-      // a path freed and reused since then is a healthy file now, and the
-      // line would remove it.
-      if (!live) {
-        onNotice(
-          `Pinned sample · the files it names may have changed · ${keyLabel(c.keys.pin)} shows live data`,
-          "warn",
-        );
-        return true;
-      }
-      const item = items[selected];
       onCopy(
-        item?.kind === "filesystem"
-          ? rebuildCommand(integrity(item.group, s.storage.scrubs, s.time, c))
+        items[selected]?.kind === "filesystem"
+          ? reporterOffer(s.capabilities, c)
           : undefined,
       );
       return true;
@@ -403,16 +393,17 @@ export function Storage({
    * report text one level below that: a reader asking "is my data damaged"
    * gets the answer without opening anything.
    */
+  const scrubSource = s.capabilities.find((cap) => cap.id === "scrub");
+  const install = reporterOffer(s.capabilities, c);
   const integrityRow = (i: number, item: Integrity, first: Volume) => {
     const level = integrityLevel(item.state);
     const counts = damageCounts(item);
-    const rebuild = rebuildCommand(item);
     return storageRow(
       i,
       (open) => (
         <Disclosure
           open={open}
-          name={integrityLine(item)}
+          name={integrityLine(item, scrubSource)}
           count={counts.files || undefined}
         />
       ),
@@ -424,41 +415,61 @@ export function Storage({
                 lifetime counter is a different quantity and sits below it. */}
             <Field label="Blocks found" width={16} value={blocksText(item)} />
             {item.groups.length === 0 && <Empty text={noDamageText(item)} />}
-            {item.groups.map((group) => {
-              const command = deleteCommand(group);
-              return (
-                <box
-                  key={group.logical}
-                  flexDirection="column"
-                  flexShrink={0}
-                  marginTop={1}
-                >
-                  <Line height={1} flexShrink={0} truncate>
-                    <span attributes={ui.dim}>{fit("block", 16)}</span>
-                    {`${group.logical}  `}
-                    <span fg={group.kind === "other" ? ui.danger : undefined}>
-                      {damageAdvice(group)}
-                    </span>
-                  </Line>
-                  {group.paths.map((path) => (
-                    <Line key={path} flexShrink={0} wrapMode="word">
-                      {`      ${safe(path)}`}
-                    </Line>
-                  ))}
-                  {command && (
-                    <Line
-                      flexShrink={0}
-                      wrapMode="word"
-                      fg={ui.accent}
-                    >{`      ${safe(command)}`}</Line>
-                  )}
-                </box>
-              );
-            })}
-            {rebuild && (
-              <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                {`${keyLabel(c.keys.copy)} copies one line that removes every build-output path above.`}
+            {unnamedText(item) && <Empty text={unnamedText(item) ?? ""} />}
+            {counts.files > 0 && (
+              <Line
+                flexShrink={0}
+                wrapMode="word"
+                marginTop={1}
+                attributes={ui.dim}
+              >
+                {possibleSentence}
               </Line>
+            )}
+            {item.groups.map((group) => (
+              <box
+                key={group.logical}
+                flexDirection="column"
+                flexShrink={0}
+                marginTop={1}
+              >
+                <Line height={1} flexShrink={0} truncate>
+                  <span attributes={ui.dim}>{fit("block", 16)}</span>
+                  {`${group.logical}  `}
+                  <span fg={group.kind === "none" ? undefined : ui.danger}>
+                    {damageAdvice(group)}
+                  </span>
+                </Line>
+                {group.paths.map((path) => (
+                  <Line key={path} flexShrink={0} wrapMode="word">
+                    {`      ${safe(path)}`}
+                  </Line>
+                ))}
+              </box>
+            ))}
+            {install && (
+              <CommandOffer
+                sentence={reporterSentence}
+                command={install}
+                hint={`${keyLabel(c.keys.copy)} copies the install command.`}
+              />
+            )}
+            {item.logged.length > 0 && (
+              <box flexDirection="column" flexShrink={0} marginTop={1}>
+                <Line flexShrink={0} wrapMode="word">
+                  {loggedSentence}
+                </Line>
+                {item.logged.map((failure) => (
+                  <Line
+                    key={`${failure.root}/${failure.inode}`}
+                    height={1}
+                    flexShrink={0}
+                    truncate
+                  >
+                    {`      ${loggedText(failure, s.time)}`}
+                  </Line>
+                ))}
+              </box>
             )}
             <box height={1} flexShrink={0} />
             <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
@@ -555,7 +566,7 @@ export function Storage({
   /** A filesystem's heading, then its integrity row: one row of the selection. */
   const filesystemRows = (i: number, group: DeviceVolumes) => {
     const { id, device, volumes } = group;
-    const state = integrity(group, st.scrubs, s.time, c);
+    const state = integrity(group, st, s.time, c);
     // Subvolumes of one filesystem each report the whole device's free
     // space, so the device states it once and its mounts carry only what
     // differs between them. `statfs` is attempted per mount, so one

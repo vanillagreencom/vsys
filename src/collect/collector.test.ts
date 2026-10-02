@@ -1,8 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { loadAgentTools, parseAgentToolsDocument } from "../config/agent-tools";
 import { defaults } from "../config/config";
+import { sampleSummary } from "../main";
 import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherCopy, launcherTrail } from "../model/launcher";
 import { laneText } from "../model/naming";
@@ -13,6 +15,7 @@ import { claudeLink, fixture } from "../test/fixture";
 import { capabilityLine } from "../ui/settings";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
 import { Collector, createCollector } from "./collector";
+import { KernelLog } from "./kernel-log";
 import { ProcessCollector, parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
 import { ScratchCollector } from "./scratch";
@@ -1661,4 +1664,154 @@ test("a tmux server that stops answering mid-run costs the addresses, not the sa
   // of the sample still arrives.
   expect(s.errors.map((e) => e.source)).toContain("tmux list-panes");
   expect(s.system.cores).toBeGreaterThan(0);
+});
+
+test("a kernel log this user cannot search is probed once and never searched", async () => {
+  const f = setup();
+  const searched: (string | null)[] = [];
+  const log = new KernelLog(async (cursor) => {
+    searched.push(cursor);
+    return `-- cursor: after-${cursor}\n`;
+  });
+  const reader = (outcome: null | { failure: "incomplete"; detail: string }) =>
+    new Collector(
+      f.config,
+      100,
+      4096,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      {
+        probe: () => outcome,
+        log,
+      },
+    );
+  const refused = await reader({
+    failure: "incomplete",
+    detail: "no kernel message",
+  }).sample(1000);
+  expect(
+    refused.capabilities.find((cap) => cap.id === "kernel-log"),
+  ).toMatchObject({ available: false, failure: "incomplete" });
+  // The capability states the gap once; searching anyway would add a source
+  // error to every sample.
+  expect(searched).toEqual([]);
+  expect(refused.storage.csumFailures).toBeNull();
+  const collector = reader(null);
+  // The summary path skips the search: a one-shot run would pay for every
+  // boot the journal holds.
+  const { snapshot } = await sampleSummary(collector, async () => {});
+  expect(snapshot.storage.csumFailures).toBeNull();
+  expect(searched).toEqual([]);
+  const first = await collector.sample(1000);
+  expect(first.storage.csumFailures).toEqual({});
+  // A replacement collector is handed the log, and resumes from its cursor
+  // rather than searching every boot again.
+  const replacement = new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    [],
+    { probe: () => null, log: collector.kernelLog ?? new KernelLog() },
+  );
+  await replacement.sample(2000);
+  expect(searched).toEqual([null, "after-null"]);
+});
+
+test("a scrub report directory created while vsys runs is read the next sample", async () => {
+  const f = setup();
+  const collector = new Collector(f.config, 100, 4096);
+  const scrub = async (time: number) =>
+    (await collector.sample(time)).capabilities.find(
+      (cap) => cap.id === "scrub",
+    );
+  expect(await scrub(1000)).toMatchObject({
+    available: false,
+    failure: "absent",
+  });
+  // The reader ran the install line vsys offered, which creates the directory.
+  mkdirSync(f.config.scrubDir, { recursive: true });
+  expect(await scrub(2000)).toMatchObject({ available: true, failure: null });
+});
+
+test("a sample reads the scrub report directory only through the storage listing", async () => {
+  const f = setup();
+  mkdirSync(f.config.scrubDir, { recursive: true });
+  const collector = new Collector(f.config, 100, 4096);
+  // The start probe may list it synchronously; a sample may not, because a
+  // slow or networked directory would stall the dashboard on every refresh.
+  const listed = spyOn(fs, "readdirSync");
+  try {
+    const s = await collector.sample(1000);
+    expect(s.capabilities.find((cap) => cap.id === "scrub")).toMatchObject({
+      available: true,
+      failure: null,
+    });
+    expect(
+      listed.mock.calls.filter(([path]) => String(path) === f.config.scrubDir),
+    ).toEqual([]);
+  } finally {
+    listed.mockRestore();
+  }
+});
+
+test("the program's collector resumes the kernel log the one it replaces held", async () => {
+  const f = setup();
+  const searched: (string | null)[] = [];
+  const held = new KernelLog(async (cursor) => {
+    searched.push(cursor);
+    return `-- cursor: after-${cursor}\n`;
+  });
+  const before = new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    [],
+    { probe: () => null, log: held },
+  );
+  await before.sample(1000);
+  // A settings change builds the replacement through the program's own path,
+  // which picks the search up from the cursor the first one ended on.
+  const after = await createCollector(
+    f.config,
+    false,
+    before,
+    f.agentToolsPath,
+    () => null,
+  );
+  const fresh = await createCollector(
+    f.config,
+    false,
+    undefined,
+    f.agentToolsPath,
+    () => null,
+  );
+  const unread = await createCollector(
+    f.config,
+    false,
+    { kernelLog: null },
+    f.agentToolsPath,
+    () => null,
+  );
+  try {
+    expect(after.kernelLog).toBe(held);
+    await after.sample(2000);
+    expect(searched).toEqual([null, "after-null"]);
+    // With no predecessor, or one that searched no log, a new log starts.
+    expect(fresh.kernelLog).toBeInstanceOf(KernelLog);
+    expect(fresh.kernelLog).not.toBe(held);
+    expect(unread.kernelLog).toBeInstanceOf(KernelLog);
+  } finally {
+    for (const collector of [after, fresh, unread]) collector.close();
+  }
 });

@@ -8,8 +8,10 @@ import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
 import { osc52 } from "./clipboard";
+import { possibleSentence } from "./integrity";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { regionOf, regionRanges, storageRegions } from "./regions";
+import { reporterInstall } from "./settings";
 import {
   itemPath,
   Storage,
@@ -490,7 +492,6 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
       },
       onNotice: (text: string, level: string) => notices.push([text, level]),
       onCopy: () => {},
-      live: true,
     };
     const ui = await testRender(
       <KeyProvider handlers={handlers}>
@@ -560,7 +561,7 @@ function damagedSnapshot(time: number) {
   return s;
 }
 
-test("a damaged filesystem names its files, grouped by address, with what to do", async () => {
+test("a damaged filesystem lists every file each damaged address may hold", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;
   const s = damagedSnapshot(time);
@@ -569,18 +570,19 @@ test("a damaged filesystem names its files, grouped by address, with what to do"
     await t.press("5");
     const frame = t.frame();
     // The line itself, before anything is opened.
-    expect(frame).toContain("Damaged files found: 3 files");
+    expect(frame).toContain("Damage found: 3 possibly damaged files");
     expect(frame).toContain("last full check 1.0h ago");
     expect(frame).toContain("last new error 31.0h ago");
-    // Both names of the first address, and one command that removes both.
+    // Both names of the first address and the letter, each possibly
+    // damaged: the report names the block's start, not the damaged file, so
+    // no line offers to remove one.
     expect(frame).toContain("/r/target/debug/build-script-build");
     expect(frame).toContain("/r/target/debug/bsb-c664");
-    expect(frame).toContain(
-      "rm -f /r/target/debug/build-script-build /r/target/debug/bsb-c664",
-    );
-    expect(frame).toContain("safe to delete and rebuild");
-    // The letter is not build output, so it is never offered as a rebuild.
-    expect(frame).toContain("restore from a backup or a snapshot");
+    expect(frame).toContain("/home/reader/letter.txt");
+    expect(frame).toContain("possibly damaged");
+    // The sentence wraps; its opening sits whole on its first row.
+    expect(frame).toContain(possibleSentence.slice(0, 40));
+    expect(frame).not.toContain("rm -f");
     expect(frame).toContain("free space or already deleted");
     // The counter is explained where it is shown, one level under the line.
     expect(frame).toContain("counts reads that failed their checksum");
@@ -597,7 +599,7 @@ test("a damaged filesystem names its files, grouped by address, with what to do"
   }
 });
 
-test("a deleted file leaves the list and the filesystem stops reading damaged", async () => {
+test("a removed file leaves the list and the filesystem stops reading damaged", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;
   const s = damagedSnapshot(time);
@@ -605,8 +607,9 @@ test("a deleted file leaves the list and the filesystem stops reading damaged", 
   try {
     await t.press("5");
     expect(t.frame()).toContain("/home/reader/letter.txt");
+    expect(t.frame()).toContain(possibleSentence.slice(0, 40));
     // The next sample carries the report with nothing left on disk under it,
-    // which is what the collector produces once the reader deletes the files.
+    // which is what the collector produces once the reader removes the files.
     const cleared = damagedSnapshot(time + 1000);
     cleared.storage.scrubs[0].addresses = [];
     cleared.storage.scrubs[0].uncorrectable = 0;
@@ -614,6 +617,8 @@ test("a deleted file leaves the list and the filesystem stops reading damaged", 
     await t.update(cleared);
     const frame = t.frame();
     expect(frame).not.toContain("/home/reader/letter.txt");
+    // With no file listed there is nothing to call possibly damaged.
+    expect(frame).not.toContain(possibleSentence.slice(0, 40));
     // The check that found nothing ran after the counter last grew, so the
     // filesystem has been read end to end since the last error.
     expect(frame).toContain("Healthy");
@@ -623,44 +628,141 @@ test("a deleted file leaves the list and the filesystem stops reading damaged", 
   }
 });
 
-test("a pinned sample offers no delete command, because its files may have moved on", async () => {
+test("the copy key on a damaged filesystem copies nothing, because no file is named exactly", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;
   const t = await mount(damagedSnapshot(time), c, { width: 160, height: 60 });
   try {
     await t.press("5");
-    // Pin, then ask for the command. The paths were checked against the
-    // sample that was pinned, and a block freed and reused since then is a
-    // healthy file now.
-    await t.press(c.keys.pin);
     await t.press(c.keys.copy);
     expect(t.written).toEqual([]);
-    expect(t.frame()).toContain("the files it names may have changed");
-    // Live again, and the command is there.
-    await t.press(c.keys.pin);
-    await t.press(c.keys.copy);
-    expect(t.written).toHaveLength(1);
   } finally {
     await t.close();
   }
 });
 
-test("the copy key on a filesystem copies one line that removes its build output", async () => {
+/**
+ * A machine with no scrub reporter: one filesystem, no report directory, and
+ * the kernel log as the caller says.
+ */
+function unreportedSnapshot(
+  time: number,
+  csumFailures: Snapshot["storage"]["csumFailures"],
+) {
+  const s = emptySnapshot(time);
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "scrub"
+      ? {
+          ...cap,
+          available: false,
+          failure: "absent" as const,
+          source: "/run/btrfs-scrub",
+          detail: "ENOENT: no such file or directory",
+        }
+      : cap,
+  );
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      device: "/dev/nvme0n1p2",
+      fsid: "fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.csumFailures = csumFailures;
+  return s;
+}
+
+test("a machine with no scrub reporter says so and copies the command that installs one", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;
-  const t = await mount(damagedSnapshot(time), c, { width: 160, height: 60 });
+  const t = await mount(unreportedSnapshot(time, null), c, {
+    width: 160,
+    height: 60,
+  });
   try {
     await t.press("5");
+    const frame = t.frame();
+    expect(frame).toContain(
+      "Never checked: no readable scrub report directory",
+    );
+    expect(frame).toContain("No scrub reporter is installed");
+    expect(frame).toContain(reporterInstall);
+    expect(frame).not.toContain("Healthy");
     await t.press(c.keys.copy);
-    expect(t.written).toEqual([
-      osc52(
-        "rm -f /r/target/debug/build-script-build /r/target/debug/bsb-c664",
-      ),
-    ]);
-    // A mount row carries no command of its own, so nothing more is copied.
-    await t.press("down");
+    expect(t.written).toEqual([osc52(reporterInstall)]);
+  } finally {
+    await t.close();
+  }
+  // A reader who pointed the reports elsewhere runs a reporter of their own,
+  // so the shipped one is not offered.
+  const elsewhere = { ...c, scrubDir: "/srv/checks" };
+  const other = await mount(unreportedSnapshot(time, null), elsewhere, {
+    width: 160,
+    height: 60,
+  });
+  try {
+    await other.press("5");
+    expect(other.frame()).not.toContain(reporterInstall);
+    await other.press(c.keys.copy);
+    expect(other.written).toEqual([]);
+  } finally {
+    await other.close();
+  }
+});
+
+test("the install line is offered only where installing fills the gap, and copies on a pinned sample", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  // A pinned sample copies the install line: it names no file that could
+  // have changed since.
+  const pinned = await mount(unreportedSnapshot(time, null), c, {
+    width: 160,
+    height: 60,
+  });
+  try {
+    await pinned.press("5");
+    await pinned.press(c.keys.pin);
+    await pinned.press(c.keys.copy);
+    expect(pinned.written).toEqual([osc52(reporterInstall)]);
+  } finally {
+    await pinned.close();
+  }
+  // A directory that exists and cannot be read is not fixed by installing
+  // anything, so it is offered no install line and copies nothing.
+  const unreadable = unreportedSnapshot(time, null);
+  unreadable.capabilities = unreadable.capabilities.map((cap) =>
+    cap.id === "scrub"
+      ? { ...cap, failure: "unreadable" as const, detail: "EACCES" }
+      : cap,
+  );
+  const t = await mount(unreadable, c, { width: 160, height: 60 });
+  try {
+    await t.press("5");
+    expect(t.frame()).not.toContain(reporterInstall);
     await t.press(c.keys.copy);
-    expect(t.written.length).toBe(1);
+    expect(t.written).toEqual([]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("with only the kernel log, a filesystem still dates its last new error", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const t = await mount(
+    unreportedSnapshot(time, {
+      fs: [{ root: 257, inode: 4242, at: time - 7200000 }],
+    }),
+    c,
+    { width: 160, height: 60 },
+  );
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    expect(frame).toContain("New errors since last check");
+    expect(frame).toContain("last new error 2.0h ago (kernel log)");
+    expect(frame).toContain("inode 4242 in subvolume 257, logged 2.0h ago");
   } finally {
     await t.close();
   }

@@ -1,12 +1,15 @@
+import type { Dirent } from "node:fs";
 import { readdir, realpath, stat, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Scrub, Storage, Volume } from "../model/types";
+import { classify, type Outcome } from "./capabilities";
 import { collectDevices } from "./devices";
 import { ErrorMemory } from "./errors";
 import { pairs, type Reader } from "./io";
+import type { KernelLog } from "./kernel-log";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
-import { counted, parseScrub, stated } from "./scrub";
+import { counted, isReportName, parseScrub, stated } from "./scrub";
 import type { CollectionConfig } from "./settings";
 
 /** Either a mount restriction or a superblock restriction makes a mount read-only. */
@@ -53,42 +56,22 @@ export function scrubProblem(raw: string): boolean {
 }
 
 /**
- * The paths of a damaged address that are still on disk, and which of them no
- * longer name what the check read.
- *
- * A path vsys cannot stat is kept: an unreadable directory is not proof the
- * file is gone, and dropping it would tell the reader to delete less than the
- * address holds. A path written since the check began is kept too, because
- * dropping it would hide damage, but it is named as changed: the block it sat
- * in can have been freed and reused, so the file under that name now may be a
- * healthy one a delete command would destroy.
+ * The paths of a damaged address that are still on disk. A path vsys cannot
+ * stat is kept: an unreadable directory is not proof the file is gone, and
+ * dropping it would list less than the address holds.
  */
-async function present(
-  paths: string[],
-  startedAt: number | null,
-): Promise<{ paths: string[]; changed: string[] }> {
+async function present(paths: string[]): Promise<string[]> {
   const kept = await Promise.all(
     paths.map(async (path) => {
       try {
-        const stats = await stat(path);
-        return {
-          path,
-          // Without a check time nothing can be compared against it, so no
-          // path is called unchanged.
-          changed: startedAt === null || stats.mtimeMs >= startedAt,
-        };
+        await stat(path);
+        return path;
       } catch (e) {
-        return (e as NodeJS.ErrnoException).code === "ENOENT"
-          ? null
-          : { path, changed: true };
+        return (e as NodeJS.ErrnoException).code === "ENOENT" ? null : path;
       }
     }),
   );
-  const found = kept.filter((entry) => entry !== null);
-  return {
-    paths: found.map((entry) => entry.path),
-    changed: found.filter((entry) => entry.changed).map((entry) => entry.path),
-  };
+  return kept.filter((path) => path !== null);
 }
 /**
  * The corruption counter for a whole filesystem: the sum over its devices,
@@ -110,11 +93,26 @@ export function corruptionTotal(
 
 /** Counter baselines belong to a filesystem/device, not a mount alias. */
 export class StorageCollector {
+  /**
+   * The kernel log, where this user can search it. A collector built without
+   * one reads no journal, which is what keeps the machine's own log out of
+   * the test suite.
+   */
+  constructor(private kernelLog: KernelLog | null = null) {}
   private initial = new Map<string, number>();
   private last = new Map<string, number>();
   private scratch = new ScratchCollector();
   private memory: ErrorMemory | null = null;
   private memoryPath = "";
+  /**
+   * The scrub report directory as the last collection's read of it found it:
+   * null where the listing answered, the failure where it did not, and
+   * undefined until a collection has listed it. The directory appears while
+   * vsys runs, when the reader installs the reporter vsys offers, so the
+   * collector takes the capability from this read rather than reading the
+   * directory a second time, synchronously, on the sample path.
+   */
+  scrubDir: Outcome | undefined = undefined;
   close(): void {
     this.scratch.close();
   }
@@ -144,6 +142,7 @@ export class StorageCollector {
     skipScratch = false,
     /** The temporary directories running agents name, measured as scratch. */
     agentScratch: string[] = [],
+    skipKernelLog = false,
   ): Promise<Storage> {
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
@@ -154,6 +153,8 @@ export class StorageCollector {
       scrubs: [],
     };
     const devices = new Map<string, string>();
+    /** This boot's block device names, as the kernel log writes them. */
+    const names = new Map<string, string>();
     const memory = this.errorMemory(r, c.errorMemoryPath);
     const growth = new Map<
       string,
@@ -176,6 +177,7 @@ export class StorageCollector {
         for (const entry of await readdir(join(root, "devices"))) {
           const link = r.link(join(root, "devices", entry));
           if (link) {
+            names.set(entry, fsid);
             devices.set(`/dev/${entry}`, fsid);
             devices.set(
               resolve(root, "devices", link).split("/").at(-1) ?? entry,
@@ -240,6 +242,19 @@ export class StorageCollector {
       if (corruption !== null)
         growth.set(fsid, memory.observe(fsid, corruption, time));
     }
+    storage.csumFailures = null;
+    if (this.kernelLog && !skipKernelLog)
+      try {
+        storage.csumFailures = await this.kernelLog.read(
+          names,
+          r.text(join(c.procRoot, "sys/kernel/random/boot_id")),
+        );
+      } catch (e) {
+        r.error("journalctl", e);
+        // What earlier searches read still stands; the log is unread only
+        // where no search has ever completed.
+        storage.csumFailures = this.kernelLog.held();
+      }
     try {
       memory.save();
     } catch (e) {
@@ -297,11 +312,20 @@ export class StorageCollector {
         }),
       });
     }
+    this.scrubDir = undefined;
     try {
-      for (const entry of await readdir(c.scrubDir, { withFileTypes: true })) {
-        if (!entry.isFile()) continue;
+      let entries: Dirent[];
+      try {
+        entries = await readdir(c.scrubDir, { withFileTypes: true });
+        this.scrubDir = null;
+      } catch (e) {
+        this.scrubDir = classify(e);
+        throw e;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !isReportName(entry.name)) continue;
         const path = join(c.scrubDir, entry.name);
-        const text = r.text(path);
+        const text = r.exact(path);
         // A report vsys cannot read is not a report that is not there. Losing
         // the row would take its problem card with it and leave the reader
         // with no sign that a check had run at all. `r.text` has already
@@ -322,16 +346,16 @@ export class StorageCollector {
           continue;
         }
         const report = parseScrub(text);
-        // A path the report named can be gone: the reader deleted the file
-        // this screen told them to delete. Only what is still on disk is
-        // listed, so the list empties as the work is done.
+        // A path the report named can be gone: the reader removed or rebuilt
+        // the file since the check. Only what is still on disk is listed, so
+        // the list empties as the reader restores what it held.
         const addresses =
           report.addresses === null
             ? null
             : await Promise.all(
                 report.addresses.map(async (address) => ({
-                  logical: address.logical,
-                  ...(await present(address.paths, report.startedAt)),
+                  ...address,
+                  paths: await present(address.paths),
                 })),
               );
         const found: Omit<Scrub, "problem" | "readable"> = {

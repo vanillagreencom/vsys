@@ -116,18 +116,22 @@ export interface ScratchRoot extends Scratch {
 }
 /**
  * One damaged block address from a scrub report, with every path it is
- * reachable under. The address is the unit of damage, not the file: one extent
- * can carry several names, and removing the first leaves the damage on disk.
- * No path means free space or a file already deleted.
+ * reachable under. The address is the unit of damage, not the file: on some
+ * kernels it is only the start of the 64 KiB block the check could not
+ * repair, so a path under it is possibly damaged, the damaged file may not be
+ * under it, and one extent can carry several names.
+ * No path and no not-resolved mark is an older report's free space or file
+ * already deleted; the shipped reporter marks every no-extent answer.
  */
 export interface DamagedAddress {
   logical: number;
   paths: string[];
   /**
-   * The paths above that were written since the check began, so the name no
-   * longer proves what the check read. Absent where nothing was compared.
+   * False where the reporter could not name every file the address belongs
+   * to, so the address lists none. Absent in a report that predates the
+   * mark, which named what it resolved.
    */
-  changed?: string[];
+  resolved?: boolean;
 }
 export interface Scrub {
   path: string;
@@ -146,6 +150,18 @@ export interface Scrub {
    * report carries no damaged-file section, which says nothing about files.
    */
   addresses?: DamagedAddress[] | null;
+}
+/**
+ * One inode the kernel failed a checksum read in, as its log names it. The
+ * kernel names the subvolume tree and the inode, not a path: resolving an
+ * inode to a path needs root, which vsys does not have.
+ */
+export interface CsumFailure {
+  /** The subvolume's tree id, the kernel's `root`. */
+  root: number;
+  inode: number;
+  /** When the kernel last logged a failed read in this inode, in milliseconds. */
+  at: number;
 }
 /** A block device with its lifetime writes, when SMART output is readable. */
 export interface Device {
@@ -169,6 +185,12 @@ export interface Storage {
    */
   scratchAbsent?: string[];
   scrubs: Scrub[];
+  /**
+   * Failed checksum reads the kernel logged, by filesystem id, newest first.
+   * Null where the kernel log was not read, which is not a log of none; a
+   * filesystem the log names no failure for has no entry.
+   */
+  csumFailures?: Record<string, CsumFailure[]> | null;
   scratchTime?: number | null;
   scratchPending?: boolean;
 }
@@ -311,6 +333,7 @@ export type CapabilityId =
   | "psi"
   | "io-stat"
   | "scrub"
+  | "kernel-log"
   | "smart"
   | "tmux"
   | "agent-slice";

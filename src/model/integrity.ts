@@ -1,6 +1,6 @@
 import { corruptionTotal } from "../collect/btrfs";
 import type { Config } from "../config/config";
-import type { Scrub, Snapshot, Volume } from "./types";
+import type { CsumFailure, Scrub, Snapshot, Storage, Volume } from "./types";
 import type { Level } from "./verdict";
 
 /**
@@ -47,45 +47,24 @@ export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
 }
 
 /**
- * A path glob. `**` crosses directory separators, `*` and `?` do not, so
- * `**​/target/**` names build output at any depth without also naming a file
- * called `target`.
+ * What a damaged address names. `files` lists every name the reporter
+ * resolved for it, `none` is the free space or file already gone that an
+ * older report wrote, and
+ * `unresolved` is damage the reporter could not name every file of, so no
+ * file under it is listed.
  */
-export function globMatch(pattern: string, path: string): boolean {
-  let source = "^";
-  for (let at = 0; at < pattern.length; at++) {
-    const char = pattern[at];
-    if (char === "*") {
-      if (pattern[at + 1] === "*") {
-        // A `**/` segment must also match nothing at all, so `**​/target/**`
-        // matches an absolute path whose first segment is already `target`.
-        source += pattern[at + 2] === "/" ? "(?:.*/)?" : ".*";
-        at += pattern[at + 2] === "/" ? 2 : 1;
-      } else source += "[^/]*";
-    } else if (char === "?") source += "[^/]";
-    else source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  }
-  return new RegExp(`${source}$`).test(path);
-}
-
-/** What a reader should do with a damaged address. */
-export type DamageKind = "build" | "other" | "none";
+export type DamageKind = "files" | "none" | "unresolved";
 /**
- * One damaged block address as the screen groups it. Every path of a group is
- * deleted together: one extent under two names is one piece of damage, and
- * removing the first name leaves it on disk for the next scrub to find again.
+ * One damaged block address as the screen groups it. On some kernels the
+ * address is the start of the 64 KiB block the check could not repair, not
+ * the damaged sector, so every path under it is possibly damaged rather than
+ * proven so, the damaged file may not be under it, and one extent under two
+ * names lists both.
  */
 export interface DamagedGroup {
   logical: number;
   paths: string[];
   kind: DamageKind;
-  /**
-   * True where a path under this address was written after the check began.
-   * The check resolved these names as it ended, so a block freed and reused
-   * since then resolves to an unrelated file: the name no longer proves what
-   * was read, and no command offers to remove it.
-   */
-  changed: boolean;
 }
 /**
  * A filesystem's integrity state, worst first. Every state but `healthy` and
@@ -100,6 +79,12 @@ export type IntegrityState =
   | "unknown"
   | "checking"
   | "healthy";
+/**
+ * Which source dated the last new error. They are different facts: the
+ * counter grew while a vsys process watched it, or the kernel logged a failed
+ * checksum read, whether or not anything was watching.
+ */
+export type ErrorSource = "counter" | "kernel-log";
 /** One filesystem's answer to: is my data damaged, and was the disk checked. */
 export interface Integrity {
   id: string;
@@ -108,8 +93,25 @@ export interface Integrity {
   state: IntegrityState;
   /** Seconds since the last full check ended, null where there was none. */
   checkAge: number | null;
-  /** Seconds since the counter last grew, null while no growth was observed. */
+  /**
+   * Seconds since the newest error either source recorded, null while neither
+   * recorded one.
+   */
   errorAge: number | null;
+  /** The source that recorded that error, null where neither did. */
+  errorSource: ErrorSource | null;
+  /** Seconds since the counter last grew, null while no growth was observed. */
+  growthAge: number | null;
+  /** Seconds since the kernel last logged a failed checksum read here. */
+  loggedAge: number | null;
+  /** False where the kernel log was not read, which is not a log of none. */
+  kernelLog: boolean;
+  /**
+   * The inodes the kernel logged a failed read in since the last finished
+   * check, newest first. A check that finished later read the filesystem end
+   * to end, so an older failure is its to report.
+   */
+  logged: CsumFailure[];
   /** False where the record of past growth could not be read at all. */
   errorKnown: boolean;
   /** How far the counter grew that time. */
@@ -146,15 +148,6 @@ const level: Record<IntegrityState, Level> = {
 export function integrityLevel(state: IntegrityState): Level {
   return level[state];
 }
-/** A damaged address is safe to rebuild only when every name under it is. */
-function classify(paths: string[], c: Config): DamageKind {
-  if (!paths.length) return "none";
-  return paths.every((path) =>
-    c.buildOutputGlobs.some((glob) => globMatch(glob, path)),
-  )
-    ? "build"
-    : "other";
-}
 /** The newest report naming this filesystem, or none where no report does. */
 function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
   // A filesystem id is a UUID, and a report writing it in capitals names the
@@ -175,25 +168,29 @@ function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
  */
 export function integrity(
   group: DeviceVolumes,
-  scrubs: Scrub[],
+  storage: Pick<Storage, "scrubs" | "csumFailures">,
   time: number,
   c: Config,
 ): Integrity {
-  const scrub = reportFor(group.id, scrubs);
+  const scrub = reportFor(group.id, storage.scrubs);
   // Output vsys could not read names no file it can stand behind. An address
-  // parsed out of otherwise unreadable text would put a delete command under a
+  // parsed out of otherwise unreadable text would list damaged files under a
   // headline saying the state is unknown, which is two claims at once.
   const readable = !scrub || scrub.readable !== false;
   // Only a finished check has a result. A running or half-written report can
-  // carry addresses, and standing behind those would put a delete command
-  // under a check that has not said what it found.
+  // carry addresses, and standing behind those would list damaged files under
+  // a check that has not said what it found.
   const complete = readable && scrub?.status === "finished";
   const groups: DamagedGroup[] = (complete ? (scrub?.addresses ?? []) : []).map(
     (address) => ({
       logical: address.logical,
       paths: address.paths,
-      kind: classify(address.paths, c),
-      changed: (address.changed ?? []).length > 0,
+      kind:
+        address.resolved === false
+          ? "unresolved"
+          : address.paths.length
+            ? "files"
+            : "none",
     }),
   );
   const counted = group.volumes.find((v) => v.countersAvailable !== false);
@@ -203,8 +200,23 @@ export function integrity(
   // Every mount of one filesystem carries the same remembered growth, so the
   // time and its size are read from one of them rather than from two.
   const grew = group.volumes.find((v) => v.lastErrorAt != null);
-  const errorAt = grew?.lastErrorAt;
-  const errorSize = grew?.lastErrorSize;
+  const grownAt = grew?.lastErrorAt ?? null;
+  // A snapshot recorded before the kernel log was read carries nothing for
+  // it, which is the same reading as a log vsys could not search.
+  const kernelLog = storage.csumFailures != null;
+  const failures = storage.csumFailures?.[group.id.toLowerCase()] ?? [];
+  const loggedAt = failures.length
+    ? Math.max(...failures.map((f) => f.at))
+    : null;
+  // The newer of the two is the last new error. On a tie the log speaks,
+  // because it names the inode the counter cannot.
+  const errorSource: ErrorSource | null =
+    loggedAt !== null && (grownAt === null || loggedAt >= grownAt)
+      ? "kernel-log"
+      : grownAt !== null
+        ? "counter"
+        : null;
+  const errorAt = errorSource === "kernel-log" ? loggedAt : grownAt;
   // The record of past growth failed to load, so "no error recorded" is a
   // reading vsys does not have rather than a reading of none.
   const errorKnown = group.volumes.every((v) => v.lastErrorKnown !== false);
@@ -217,7 +229,8 @@ export function integrity(
   const finished = complete;
   const checkedAt = finished ? (scrub?.startedAt ?? null) : null;
   const checkAge = checkedAt === null ? null : Math.max(0, time - checkedAt);
-  const errorAge = errorAt == null ? null : Math.max(0, time - errorAt);
+  const since = (at: number | null) =>
+    at === null ? null : Math.max(0, time - at) / 1000;
   const state: IntegrityState =
     scrub && scrub.readable === false
       ? "unknown"
@@ -254,9 +267,16 @@ export function integrity(
     mounts: group.volumes.map((v) => v.mount),
     state,
     checkAge: checkAge === null ? null : checkAge / 1000,
-    errorAge: errorAge === null ? null : errorAge / 1000,
+    errorAge: since(errorAt),
+    errorSource,
+    growthAge: since(grownAt),
+    loggedAge: since(loggedAt),
+    kernelLog,
+    logged: failures
+      .filter((f) => checkedAt === null || f.at > checkedAt)
+      .sort((a, b) => b.at - a.at),
     errorKnown,
-    errorSize: errorSize ?? null,
+    errorSize: grew?.lastErrorSize ?? null,
     blocks: complete ? (scrub?.uncorrectable ?? null) : null,
     counter,
     groups,
@@ -268,22 +288,29 @@ export function integrity(
 /** One integrity reading per filesystem, in the order Storage draws them. */
 export function integrities(s: Snapshot, c: Config): Integrity[] {
   return volumesByDevice(s.storage.volumes).map((group) =>
-    integrity(group, s.storage.scrubs, s.time, c),
+    integrity(group, s.storage, s.time, c),
   );
 }
-/** The damaged addresses a reader can delete and rebuild, and the rest. */
+/**
+ * The damaged addresses by what they name, and the files they list.
+ * `unnamed` is how many blocks the check counted beyond the addresses its
+ * report lists: the kernel rate-limits the line that names an address, and a
+ * reporter lists a bounded number, so a list can be shorter than the damage.
+ * Any unnamed or unresolved block means the listed files are not all of it.
+ */
 export function damageCounts(item: Integrity): {
   files: number;
-  build: number;
-  other: number;
   free: number;
+  unresolved: number;
+  unnamed: number;
 } {
   const of = (kind: DamageKind) =>
     item.groups.filter((group) => group.kind === kind);
   return {
     files: item.groups.reduce((sum, group) => sum + group.paths.length, 0),
-    build: of("build").length,
-    other: of("other").length,
     free: of("none").length,
+    unresolved: of("unresolved").length,
+    unnamed:
+      item.blocks === null ? 0 : Math.max(0, item.blocks - item.groups.length),
   };
 }

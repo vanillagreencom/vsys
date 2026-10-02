@@ -112,8 +112,6 @@ export interface Config {
   errorMemoryPath: string;
   /** A filesystem unchecked for longer than this stops reading as healthy. */
   scrubMaxAgeDays: number;
-  /** Paths matching these are build output a reader can delete and rebuild. */
-  buildOutputGlobs: string[];
   columns: string[];
   sort: string;
   descending: boolean;
@@ -231,7 +229,6 @@ export function defaults(
     // A weekly timer that misses one run is eight days late on the day after
     // the run it missed, so eight days is where a weekly schedule trips.
     scrubMaxAgeDays: 8,
-    buildOutputGlobs: ["**/target/**", "**/node_modules/**", "**/.cache/**"],
     columns: [...columns],
     sort: "cpu",
     descending: true,

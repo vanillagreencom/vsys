@@ -15,7 +15,7 @@ Error summary:    csum=26
   Unverified:     0
 
 Damaged files: 6 damaged block addresses from the kernel log.
-Delete every path listed under an address, not the first: one block can have several names.
+On some kernels each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector: a path listed under it may be sound, and the damaged file may not be listed.
 logical 953118621696:
   /repo/target/debug/build/glib-sys/build-script-build
   /repo/target/debug/build/glib-sys/build_script_build-c664
@@ -44,12 +44,47 @@ test("a report names its filesystem, its check and every path of each address", 
   ]);
 });
 
+test("an address the reporter could not resolve is damage with no path", () => {
+  const report =
+    parseScrub(`UUID:             2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6
+Status:           finished
+
+Damaged files: 2 damaged block addresses from the kernel log.
+logical 1:
+  (not resolved: inode 257 subvol snap could not be accessed: not mounted)
+logical 2:
+  (no file: free space, or already deleted)
+`);
+  // Free space carries no mark; an unresolved address is marked, because it
+  // is damage in files nobody named rather than damage in no file at all.
+  expect(report.addresses).toEqual([
+    { logical: 1, paths: [], resolved: false },
+    { logical: 2, paths: [] },
+  ]);
+});
+
+test("a name the report cannot carry exactly marks its address unresolved", () => {
+  const names = [" /lead", "/trail ", "/tab\tname", "/replaced\ufffd"];
+  for (const name of names) {
+    const report = parseScrub(
+      `Status: finished\n\nDamaged files: 1\nlogical 1:\n  /fine\n  ${name}\n`,
+    );
+    expect({ name, addresses: report.addresses }).toEqual({
+      name,
+      addresses: [{ logical: 1, paths: ["/fine"], resolved: false }],
+    });
+  }
+});
+
 test("the parser anchors on the address heading, not on the prose above it", () => {
   // Every line the helper writes as prose, reworded. The addresses still read.
   const reworded = damaged
     .replace(/^btrfs scrub.*$/m, "check over, found trouble on the root disk")
     .replace(/^Damaged files:.*$/m, "Damaged files: what the kernel resolved")
-    .replace(/^Delete every path.*$/m, "remove all of these together");
+    .replace(
+      /^On some kernels each address.*$/m,
+      "any of these may be the damaged one",
+    );
   expect(parseScrub(reworded).addresses).toEqual(parseScrub(damaged).addresses);
 });
 
@@ -105,7 +140,7 @@ test("a field the report states twice holds no single reading", () => {
 
 test("an address-shaped line outside the section names no file", () => {
   // The older format carries no damaged-file section. A prose line shaped
-  // like an address must not become damage with a delete command attached.
+  // like an address must not become damage with a file listed under it.
   const report = parseScrub(`btrfs scrub finished: /
 Status:           finished
 Error summary:    no errors found
@@ -126,7 +161,7 @@ test("a count with anything after it is not a count", () => {
 
 test("an address-shaped line above the section is prose, not damage", () => {
   // The helper's own prose sits above the heading. A line shaped like an
-  // address up there must not become a file the reader is told to delete.
+  // address up there must not become a file listed as damaged.
   const report = parseScrub(`btrfs scrub finished: /
 Status:           finished
 logical 111:

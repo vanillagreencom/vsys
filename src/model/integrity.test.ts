@@ -3,13 +3,13 @@ import { defaults } from "../config/config";
 import { volumeSnapshot } from "../test/fixture";
 import {
   damageCounts,
-  globMatch,
+  type Integrity,
   type IntegrityState,
   integrity,
   integrityLevel,
   volumesByDevice,
 } from "./integrity";
-import type { Scrub, Volume } from "./types";
+import type { Scrub, Storage, Volume } from "./types";
 import type { Level } from "./verdict";
 
 const day = 86400000;
@@ -40,64 +40,45 @@ function report(overrides: Partial<Scrub> = {}): Scrub {
   };
 }
 
-test("a glob crosses directories only where it says it does", () => {
-  const rows: [string, string, boolean][] = [
-    ["**/target/**", "/repo/target/debug/x", true],
-    ["**/target/**", "/target/debug/x", true],
-    // The must-fail direction: a file named target is not a target directory,
-    // and a directory whose name merely ends in target is not one either.
-    ["**/target/**", "/repo/target", false],
-    ["**/target/**", "/repo/mytarget/debug/x", false],
-    ["**/node_modules/**", "/a/b/node_modules/c/d", true],
-    ["**/.cache/**", "/home/r/.cache/x", true],
-    ["**/.cache/**", "/home/r/cache/x", false],
-    ["/repo/*/x", "/repo/one/x", true],
-    ["/repo/*/x", "/repo/one/two/x", false],
-    ["/repo/?.txt", "/repo/a.txt", true],
-    ["/repo/?.txt", "/repo/ab.txt", false],
-  ];
-  for (const [pattern, path, matches] of rows)
-    expect({ pattern, path, matches: globMatch(pattern, path) }).toEqual({
-      pattern,
-      path,
-      matches,
-    });
-});
-
-test("an address is build output only when every name under it is", () => {
+test("an address names its files, free space, or damage it could not name", () => {
   const c = defaults();
   const item = integrity(
     filesystem(),
-    [
-      report({
-        problem: true,
-        uncorrectable: 3,
-        addresses: [
-          {
-            logical: 1,
-            paths: ["/r/target/debug/a", "/r/target/debug/b"],
-          },
-          // One name outside build output makes the whole address data: the
-          // delete command removes every name, so calling this safe would
-          // invite the reader to delete the letter with the object file.
-          { logical: 2, paths: ["/r/target/debug/c", "/home/r/letter.txt"] },
-          { logical: 3, paths: [] },
-        ],
-      }),
-    ],
+    {
+      scrubs: [
+        report({
+          problem: true,
+          // Six blocks counted, four addresses listed: the kernel named only
+          // some of them, so two blocks are damage no file is named for.
+          uncorrectable: 6,
+          addresses: [
+            {
+              logical: 1,
+              paths: ["/r/target/debug/a", "/r/target/debug/b"],
+            },
+            { logical: 2, paths: ["/r/target/debug/c", "/home/r/letter.txt"] },
+            { logical: 3, paths: [] },
+            // The reporter could not name every file here, so it is damage
+            // with no file to offer, never free space.
+            { logical: 4, paths: [], resolved: false },
+          ],
+        }),
+      ],
+    },
     now,
     c,
   );
   expect(item.groups.map((group) => group.kind)).toEqual([
-    "build",
-    "other",
+    "files",
+    "files",
     "none",
+    "unresolved",
   ]);
   expect(damageCounts(item)).toEqual({
     files: 4,
-    build: 1,
-    other: 1,
     free: 1,
+    unresolved: 1,
+    unnamed: 2,
   });
 });
 
@@ -191,10 +172,134 @@ test("every integrity state, and which reading produces it", () => {
     ],
   ];
   for (const [name, group, scrubs, state] of rows)
-    expect({ name, state: integrity(group, scrubs, now, c).state }).toEqual({
+    expect({
+      name,
+      state: integrity(group, { scrubs }, now, c).state,
+    }).toEqual({
       name,
       state,
     });
+});
+
+test("each source answers on its own, and neither makes a filesystem healthy", () => {
+  const c = defaults();
+  const failure = { root: 257, inode: 4242, at: now - 2 * 3600000 };
+  const older = { root: 257, inode: 17, at: now - 2 * day };
+  type Answer = Pick<
+    Integrity,
+    "state" | "errorSource" | "errorAge" | "kernelLog" | "logged"
+  >;
+  const rows: [
+    string,
+    ReturnType<typeof filesystem>,
+    Pick<Storage, "scrubs" | "csumFailures">,
+    Answer,
+  ][] = [
+    [
+      // The log speaks for the reads since the check, and names the inode.
+      "both sources, a failure logged after the check",
+      filesystem(),
+      { scrubs: [report()], csumFailures: { fs: [failure, older] } },
+      {
+        state: "new-errors",
+        errorSource: "kernel-log",
+        errorAge: 7200,
+        kernelLog: true,
+        logged: [failure],
+      },
+    ],
+    [
+      // A check that finished after the failure read past it, so the
+      // failure is the report's to speak for.
+      "both sources, a failure the check read past",
+      filesystem(),
+      {
+        scrubs: [report({ startedAt: now - 3600000 })],
+        csumFailures: { fs: [failure] },
+      },
+      {
+        state: "healthy",
+        errorSource: "kernel-log",
+        errorAge: 7200,
+        kernelLog: true,
+        logged: [],
+      },
+    ],
+    [
+      // The counter grew after the logged failure, so it is the newer error.
+      "both sources, the counter grew last",
+      filesystem({ lastErrorAt: now - 3600000, lastErrorSize: 3 }),
+      { scrubs: [report()], csumFailures: { fs: [failure] } },
+      {
+        state: "new-errors",
+        errorSource: "counter",
+        errorAge: 3600,
+        kernelLog: true,
+        logged: [failure],
+      },
+    ],
+    [
+      "reports only",
+      filesystem(),
+      { scrubs: [report()], csumFailures: null },
+      {
+        state: "healthy",
+        errorSource: null,
+        errorAge: null,
+        kernelLog: false,
+        logged: [],
+      },
+    ],
+    [
+      // No report, and still a dated error and the inode it was in.
+      "kernel log only",
+      filesystem(),
+      { scrubs: [], csumFailures: { fs: [failure] } },
+      {
+        state: "new-errors",
+        errorSource: "kernel-log",
+        errorAge: 7200,
+        kernelLog: true,
+        logged: [failure],
+      },
+    ],
+    [
+      // A log holding nothing for this filesystem is not a check.
+      "kernel log only, nothing logged",
+      filesystem(),
+      { scrubs: [], csumFailures: { other: [failure] } },
+      {
+        state: "never-checked",
+        errorSource: null,
+        errorAge: null,
+        kernelLog: true,
+        logged: [],
+      },
+    ],
+    [
+      "neither",
+      filesystem(),
+      { scrubs: [] },
+      {
+        state: "never-checked",
+        errorSource: null,
+        errorAge: null,
+        kernelLog: false,
+        logged: [],
+      },
+    ],
+  ];
+  for (const [name, group, storage, answer] of rows) {
+    const item = integrity(group, storage, now, c);
+    expect({
+      name,
+      state: item.state,
+      errorSource: item.errorSource,
+      errorAge: item.errorAge,
+      kernelLog: item.kernelLog,
+      logged: item.logged,
+    }).toEqual({ name, ...answer });
+  }
 });
 
 test("no state but healthy and checking reads as untroubled", () => {
@@ -215,14 +320,14 @@ test("the line carries both times, whether or not either is known", () => {
   const c = defaults();
   const known = integrity(
     filesystem({ lastErrorAt: now - 31 * 3600000, lastErrorSize: 26 }),
-    [report({ startedAt: now - 4 * day })],
+    { scrubs: [report({ startedAt: now - 4 * day })] },
     now,
     c,
   );
   expect(known.checkAge).toBe(4 * 86400);
   expect(known.errorAge).toBe(31 * 3600);
   expect(known.errorSize).toBe(26);
-  const unknown = integrity(filesystem(), [], now, c);
+  const unknown = integrity(filesystem(), { scrubs: [] }, now, c);
   expect(unknown.checkAge).toBeNull();
   expect(unknown.errorAge).toBeNull();
 });
@@ -235,7 +340,9 @@ test("a report names a filesystem by its own identity, not by arriving first", (
     uncorrectable: 9,
   });
   const mine = report({ fsid: "fs", startedAt: now - 2 * day });
-  expect(integrity(filesystem(), [other, mine], now, c).state).toBe("healthy");
+  expect(integrity(filesystem(), { scrubs: [other, mine] }, now, c).state).toBe(
+    "healthy",
+  );
   // The newest report for this filesystem is the one that speaks for it.
   const newer = report({
     fsid: "fs",
@@ -243,23 +350,27 @@ test("a report names a filesystem by its own identity, not by arriving first", (
     problem: true,
     uncorrectable: 4,
   });
-  expect(integrity(filesystem(), [mine, newer], now, c).blocks).toBe(4);
+  expect(
+    integrity(filesystem(), { scrubs: [mine, newer] }, now, c).blocks,
+  ).toBe(4);
 });
 
-test("output vsys could not read names no file and offers no delete", () => {
+test("output vsys could not read names no file", () => {
   const c = defaults();
   // Text that failed the readable check but still carries a parseable
-  // address. Standing behind that address would put a delete command under a
+  // address. Standing behind that address would list damaged files under a
   // headline saying the state is unknown.
   const item = integrity(
     filesystem(),
-    [
-      report({
-        readable: false,
-        problem: true,
-        addresses: [{ logical: 1, paths: ["/r/target/a"] }],
-      }),
-    ],
+    {
+      scrubs: [
+        report({
+          readable: false,
+          problem: true,
+          addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+        }),
+      ],
+    },
     now,
     c,
   );
@@ -271,7 +382,7 @@ test("an unreadable record of past growth cannot report a healthy filesystem", (
   const c = defaults();
   const item = integrity(
     filesystem({ lastErrorKnown: false }),
-    [report()],
+    { scrubs: [report()] },
     now,
     c,
   );
@@ -279,7 +390,9 @@ test("an unreadable record of past growth cannot report a healthy filesystem", (
   expect(item.errorKnown).toBe(false);
   // The same filesystem with a record that loaded reads healthy, so the state
   // turns on the record and on nothing else here.
-  expect(integrity(filesystem(), [report()], now, c).state).toBe("healthy");
+  expect(integrity(filesystem(), { scrubs: [report()] }, now, c).state).toBe(
+    "healthy",
+  );
 });
 
 test("a check that repaired every error it found leaves no damage", () => {
@@ -288,7 +401,7 @@ test("a check that repaired every error it found leaves no damage", () => {
   // filesystem does not read as damaged, however many errors were corrected.
   const corrected = integrity(
     filesystem(),
-    [report({ problem: true, corrected: 5, uncorrectable: 0 })],
+    { scrubs: [report({ problem: true, corrected: 5, uncorrectable: 0 })] },
     now,
     c,
   );
@@ -298,7 +411,7 @@ test("a check that repaired every error it found leaves no damage", () => {
   expect(
     integrity(
       filesystem(),
-      [report({ problem: true, uncorrectable: null })],
+      { scrubs: [report({ problem: true, uncorrectable: null })] },
       now,
       c,
     ).state,
@@ -320,36 +433,45 @@ test("only a check that says it finished counts as a check", () => {
   ])
     expect({
       status,
-      state: integrity(filesystem(), [report({ status })], now, c).state,
+      state: integrity(filesystem(), { scrubs: [report({ status })] }, now, c)
+        .state,
     }).toEqual({ status, state: "unknown" });
   expect(
-    integrity(filesystem(), [report({ status: "running" })], now, c).state,
+    integrity(filesystem(), { scrubs: [report({ status: "running" })] }, now, c)
+      .state,
   ).toBe("checking");
   expect(
-    integrity(filesystem(), [report({ status: "finished" })], now, c).state,
+    integrity(
+      filesystem(),
+      { scrubs: [report({ status: "finished" })] },
+      now,
+      c,
+    ).state,
   ).toBe("healthy");
 });
 
 test("a report names its filesystem however it spells the identity", () => {
   const c = defaults();
   const shouted = report({ fsid: "FS", problem: true, uncorrectable: 4 });
-  expect(integrity(filesystem(), [shouted], now, c).blocks).toBe(4);
+  expect(integrity(filesystem(), { scrubs: [shouted] }, now, c).blocks).toBe(4);
 });
 
 test("a check that has not finished offers no damaged file to act on", () => {
   const c = defaults();
   // A running check can already have written addresses. Standing behind them
-  // would put a delete command under a check that has not said what it found.
+  // would list damaged files under a check that has not said what it found.
   const running = integrity(
     filesystem(),
-    [
-      report({
-        status: "running",
-        problem: true,
-        uncorrectable: 26,
-        addresses: [{ logical: 1, paths: ["/r/target/a"] }],
-      }),
-    ],
+    {
+      scrubs: [
+        report({
+          status: "running",
+          problem: true,
+          uncorrectable: 26,
+          addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+        }),
+      ],
+    },
     now,
     c,
   );
@@ -359,13 +481,15 @@ test("a check that has not finished offers no damaged file to act on", () => {
   // The same report, finished, is a result.
   const done = integrity(
     filesystem(),
-    [
-      report({
-        problem: true,
-        uncorrectable: 26,
-        addresses: [{ logical: 1, paths: ["/r/target/a"] }],
-      }),
-    ],
+    {
+      scrubs: [
+        report({
+          problem: true,
+          uncorrectable: 26,
+          addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+        }),
+      ],
+    },
     now,
     c,
   );

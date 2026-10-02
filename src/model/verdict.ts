@@ -316,20 +316,23 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       values: {
         filesystems: damaged.length,
         files: counts.reduce((sum, n) => sum + n.files, 0),
-        build: counts.reduce((sum, n) => sum + n.build, 0),
-        other: counts.reduce((sum, n) => sum + n.other, 0),
+        // Damage no listed file covers: blocks the report names no address
+        // for, and addresses whose files could not be named.
+        unnamed: counts.reduce((sum, n) => sum + n.unnamed + n.unresolved, 0),
         blocks,
-        // An address written since the check, or one outside build output,
-        // is not one a delete step may sweep up.
-        changed: damaged.filter((item) =>
-          item.groups.some((group) => group.changed),
-        ).length,
       },
     });
   }
-  // The counter grew and nothing has read the filesystem since, so no check
-  // has confirmed what that growth cost. This is the reading that was missing.
+  // The counter grew, or the kernel logged a failed read, and nothing has read
+  // the filesystem since, so no check has confirmed what that cost. This is
+  // the reading that was missing.
   const grown = filesystems.filter((item) => item.state === "new-errors");
+  // Only an error newer than the last check is new. The card says nothing has
+  // read the filesystem since, which an older one would contradict.
+  const sinceCheck = (age: number | null): number | null =>
+    age !== null && (grown[0].checkAge === null || age < grown[0].checkAge)
+      ? age
+      : null;
   if (grown.length)
     add("new-errors", "danger", {
       paths: grown.map((item) => item.mounts[0] ?? item.device),
@@ -342,14 +345,19 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         grown.length === 1
           ? {
               filesystems: 1,
-              size: grown[0].errorSize,
-              since: grown[0].errorAge,
+              size:
+                sinceCheck(grown[0].growthAge) === null
+                  ? null
+                  : grown[0].errorSize,
+              since: sinceCheck(grown[0].growthAge),
+              logged: sinceCheck(grown[0].loggedAge),
               checked: grown[0].checkAge,
             }
           : {
               filesystems: grown.length,
               size: null,
               since: null,
+              logged: null,
               checked: null,
             },
     });

@@ -1,11 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  chmodSync,
-  mkdirSync,
-  symlinkSync,
-  unlinkSync,
-  utimesSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { point } from "../store/point";
 import { emptySnapshot, fixture } from "../test/fixture";
@@ -127,33 +121,20 @@ logical 953118621696:
   ${gone}
 `,
   );
-  // Both files were last written before the check began, so each name still
-  // stands for what the check read.
-  const checked = Date.parse("Fri Sep 11 13:25:54 2026");
-  for (const path of [kept, gone])
-    utimesSync(path, new Date(checked - 60000), new Date(checked - 60000));
   const r = new Reader();
   const collector = new StorageCollector();
   const first = await collector.collect(r, f.config, 1000);
   expect(first.scrubs[0].fsid).toBe(uuid);
   expect(first.scrubs[0].uncorrectable).toBe(26);
   expect(first.scrubs[0].addresses).toEqual([
-    { logical: 953118621696, paths: [kept, gone], changed: [] },
+    { logical: 953118621696, paths: [kept, gone] },
   ]);
-  // One of them is written again after the check. The block it sat in can
-  // have been freed and reused, so that name no longer proves what was read.
-  utimesSync(kept, new Date(checked + 60000), new Date(checked + 60000));
-  const rewritten = await collector.collect(r, f.config, 1500);
-  expect(rewritten.scrubs[0].addresses).toEqual([
-    { logical: 953118621696, paths: [kept, gone], changed: [kept] },
-  ]);
-  utimesSync(kept, new Date(checked - 60000), new Date(checked - 60000));
-  // The reader deletes one of the two names. It leaves the list; the name
+  // The reader removes one of the two names. It leaves the list; the name
   // still on disk stays, because the damage is still there.
   unlinkSync(gone);
   const second = await collector.collect(r, f.config, 2000);
   expect(second.scrubs[0].addresses).toEqual([
-    { logical: 953118621696, paths: [kept], changed: [] },
+    { logical: 953118621696, paths: [kept] },
   ]);
   expect(r.errors).toEqual([]);
 });
@@ -214,6 +195,53 @@ test("device mapper aliases resolve to filesystem counters", async () => {
   expect(s.volumes[0].fsid).toBe("fsid");
   expect(s.volumes[0].errors["1/corruption_errs"]).toBe(2);
   expect(r.errors).toEqual([]);
+});
+
+test("a hidden file in the report directory is not a report", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  // The reporter writes under a hidden name and renames the report whole, so
+  // a hidden file is one still being written or one a stopped run left.
+  f.write(
+    join(f.config.scrubDir, ".root.result.tmp"),
+    "UUID: 2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6\nStatus: finished\n",
+  );
+  f.write(
+    join(f.config.scrubDir, "root.result"),
+    "UUID: 2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6\nStatus: finished\n\nDamaged files: 1\nlogical 7:\n  (not resolved: subvol snap could not be accessed: not mounted)\n",
+  );
+  const storage = await new StorageCollector().collect(
+    new Reader(),
+    f.config,
+    1000,
+  );
+  expect(storage.scrubs.map((scrub) => scrub.path)).toEqual([
+    join(f.config.scrubDir, "root.result"),
+  ]); // The mark that the address could not be resolved reaches the sample.
+  expect(storage.scrubs[0].addresses).toEqual([
+    { logical: 7, paths: [], resolved: false },
+  ]);
+});
+
+test("a name that differs from a healthy one by an end space is never listed", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  // A healthy file, and a report whose last line names it with a trailing
+  // space: read trimmed, that line would list the healthy file as damaged.
+  const healthy = join(f.root, "target", "victim");
+  f.write(healthy, "healthy");
+  f.write(
+    join(f.config.scrubDir, "root.result"),
+    `UUID: 2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6\nStatus: finished\n\nDamaged files: 1\nlogical 7:\n  ${healthy} `,
+  );
+  const storage = await new StorageCollector().collect(
+    new Reader(),
+    f.config,
+    1000,
+  );
+  expect(storage.scrubs[0].addresses).toEqual([
+    { logical: 7, paths: [], resolved: false },
+  ]);
 });
 
 test("an unreadable report stays a report rather than vanishing", async () => {

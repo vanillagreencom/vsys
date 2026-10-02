@@ -849,12 +849,10 @@ test("the lane sentence stops rather than growing with the machine", () => {
   ]);
 });
 
-test("a storage card never tells the reader to delete data a rebuild cannot replace", () => {
+test("a storage card never tells the reader to remove a listed file", () => {
   const c = defaults();
   const s = emptySnapshot();
-  const scrub = (
-    addresses: { logical: number; paths: string[]; changed?: string[] }[],
-  ) => ({
+  const scrub = (addresses: { logical: number; paths: string[] }[]) => ({
     path: "/run/btrfs-scrub/root.result",
     text: "Error summary: csum=1",
     problem: true,
@@ -862,7 +860,7 @@ test("a storage card never tells the reader to delete data a rebuild cannot repl
     fsid: "fs",
     startedAt: s.time - 1000,
     status: "finished",
-    uncorrectable: 1,
+    uncorrectable: 2,
     addresses,
   });
   s.storage.volumes = [
@@ -872,36 +870,27 @@ test("a storage card never tells the reader to delete data a rebuild cannot repl
       countersAvailable: true,
     }),
   ];
-  // Every damaged address is build output, so deleting all of them is safe.
-  s.storage.scrubs = [scrub([{ logical: 1, paths: ["/r/target/a"] }])];
-  const build = attention(s, c, { basePath: base }).find(
-    (i) => i.id === "damaged-files",
-  );
-  expect(build?.next).toContain("delete every path listed");
-  // One address holds a file only a backup restores, and the step changes.
+  // Build output and a letter alike: the report names the block's start, so
+  // either file may be sound, and the card says so rather than calling one
+  // safe to remove.
   s.storage.scrubs = [
     scrub([
       { logical: 1, paths: ["/r/target/a"] },
       { logical: 2, paths: ["/home/r/letter.txt"] },
     ]),
   ];
-  const mixed = attention(s, c, { basePath: base }).find(
+  const card = attention(s, c, { basePath: base }).find(
     (i) => i.id === "damaged-files",
   );
-  expect(mixed?.next).toContain("Delete only the addresses it marks as build");
-  expect(mixed?.next).not.toContain("delete every path");
-  // All build output, but one address was written since the check, so that
-  // one carries no command either and the step cannot say delete everything.
-  s.storage.scrubs = [
-    scrub([
-      { logical: 1, paths: ["/r/target/a"] },
-      { logical: 2, paths: ["/r/target/b"], changed: ["/r/target/b"] },
-    ]),
-  ];
-  const stale = attention(s, c, { basePath: base }).find(
-    (i) => i.id === "damaged-files",
-  );
-  expect(stale?.next).toContain("Delete only the addresses it marks as build");
+  expect(card?.title).toContain("2 possibly damaged files");
+  expect(said(card)).toContain("a listed file may be sound");
+  expect(said(card)).toContain("the damaged file may not be listed");
+  expect(card?.next).toContain("the files listed there may not include it");
+  // No step tells the reader to judge a file by reading it: a refused read
+  // is not damage, and a cached one is not soundness.
+  expect(`${said(card)} ${card?.next}`).not.toMatch(/\bread\b/i);
+  expect(said(card)).not.toMatch(/delete|build output/i);
+  expect(card?.next).not.toMatch(/delete|build output/i);
 });
 
 test("an unchecked card counts never-checked filesystems apart from stale ones", () => {
@@ -986,4 +975,112 @@ test("a card naming several filesystems shows no one filesystem's numbers", () =
   );
   expect(said(two)).not.toContain("26");
   expect(said(two)).toContain("Open each one for its own times");
+});
+
+test("a new error only the kernel log recorded is not told as counter growth", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes.push(
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  );
+  s.storage.csumFailures = {
+    fs: [{ root: 257, inode: 4242, at: s.time - 7200000 }],
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
+  expect(said(card)).toContain(
+    "The kernel logged a failed checksum read 2.0h ago.",
+  );
+  expect(said(card)).not.toContain("The counter grew");
+});
+
+test("a damage card never calls a partial list the whole of the damage", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 3 },
+      countersAvailable: true,
+    }),
+  ];
+  const card = (addresses: { logical: number; paths: string[] }[]) => {
+    s.storage.scrubs = [
+      {
+        path: "/run/btrfs-scrub/root.result",
+        text: "Error summary: csum=3",
+        problem: true,
+        readable: true,
+        fsid: "fs",
+        startedAt: s.time - 1000,
+        status: "finished",
+        uncorrectable: 3,
+        addresses,
+      },
+    ];
+    return attention(s, c, { basePath: base }).find(
+      (i) => i.id === "damaged-files",
+    );
+  };
+  // Three blocks counted and none named: the damage is unnamed, not free space.
+  const none = card([]);
+  expect(said(none)).not.toContain("free space");
+  expect(said(none)).toContain("could not name a file for 3 damaged blocks");
+  expect(none?.next).toContain("restore what the unnamed blocks held");
+  // One address named of three blocks: its files are not all of the damage.
+  const some = card([{ logical: 1, paths: ["/r/target/a"] }]);
+  expect(said(some)).toContain("2 damaged blocks could not be tied to a file");
+});
+
+test("a new-errors card tells only the errors newer than the last check", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const hour = 3600000;
+  const card = (lastErrorAt: number, logged: number, checked: number) => {
+    s.storage.volumes = [
+      volumeSnapshot("/", {
+        fsid: "fs",
+        errors: { "1/corruption_errs": 26 },
+        countersAvailable: true,
+        lastErrorAt: s.time - lastErrorAt,
+        lastErrorSize: 26,
+      }),
+    ];
+    s.storage.csumFailures = {
+      fs: [{ root: 257, inode: 4242, at: s.time - logged }],
+    };
+    s.storage.scrubs = [
+      {
+        path: "/run/btrfs-scrub/root.result",
+        text: "Error summary: no errors found",
+        problem: false,
+        readable: true,
+        fsid: "fs",
+        startedAt: s.time - checked,
+        status: "finished",
+        uncorrectable: 0,
+        corrected: 0,
+        addresses: [],
+      },
+    ];
+    return said(
+      attention(s, c, { basePath: base }).find((i) => i.id === "new-errors"),
+    );
+  };
+  // Both sources recorded an error since the check: one sentence names both.
+  expect(card(hour, 2 * hour, 3 * hour)).toContain(
+    "The counter grew 1.0h ago by 26 failed reads, and the kernel logged a failed checksum read 2.0h ago. The last full check ran 3.0h ago.",
+  );
+  // The counter grew before the check and the log after it: only the log's
+  // error is new, so the counter's is not told as one.
+  const between = card(3 * hour, hour, 2 * hour);
+  expect(between).toContain(
+    "The kernel logged a failed checksum read 1.0h ago. The last full check ran 2.0h ago.",
+  );
+  expect(between).not.toContain("counter grew");
 });

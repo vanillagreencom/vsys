@@ -22,6 +22,7 @@ import {
   percent,
   share,
 } from "./format";
+import { possibleSentence } from "./integrity";
 import { capabilityReason } from "./settings";
 
 /**
@@ -302,8 +303,7 @@ function copy(
       };
     case "damaged-files": {
       const files = v.files ?? 0;
-      const other = v.other ?? 0;
-      const build = v.build ?? 0;
+      const unnamed = v.unnamed ?? 0;
       // A block count vsys did not read is left out rather than shown as zero.
       const repaired =
         v.blocks === null || v.blocks === undefined
@@ -312,26 +312,41 @@ function copy(
       return {
         word: "Danger",
         title: files
-          ? `Damaged files on ${mounts}: ${count(files, "file")}${other ? "" : ", all build output"}`
+          ? `Damage on ${mounts}: ${count(files, "possibly damaged file")}`
           : `Damaged data on ${mounts}`,
         ways: [
           files
-            ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.`
-            : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+            ? `${repaired}${possibleSentence}${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}`
+            : unnamed
+              ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.`
+              : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
         ],
-        // The step never says to delete everything listed: an address holding
-        // data a rebuild cannot replace is restored, not removed, and a card
-        // that blurs the two invites the reader to delete their own files.
-        next: !files
-          ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
-          : other || v.changed
-            ? "Open Storage and open the filesystem. Delete only the addresses it marks as build output, and leave the rest to a backup or a snapshot."
-            : "Open Storage, open the filesystem, and delete every path listed under each damaged address before rebuilding.",
+        // The step never says to remove a listed file: the report cannot say
+        // which file under a block is damaged, so a step that names one may
+        // name a sound file.
+        next:
+          !files && !unnamed
+            ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
+            : !files
+              ? "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot."
+              : "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; the files listed there may not include it.",
         view: "Storage",
         target: cause.at ?? first,
       };
     }
-    case "new-errors":
+    case "new-errors": {
+      // One sentence for either source or both: the clauses are written in
+      // lower case and the sentence starts with a capital.
+      const recorded = [
+        ...(v.since == null
+          ? []
+          : [
+              `the counter grew ${age(v.since)} ago${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}`,
+            ]),
+        ...(v.logged == null
+          ? []
+          : [`the kernel logged a failed checksum read ${age(v.logged)} ago`]),
+      ].join(", and ");
       return {
         word: "Danger",
         title: `New errors on ${mounts} since the last check`,
@@ -339,14 +354,15 @@ function copy(
         // sentence without them rather than one filesystem's as the whole.
         ways: [
           paths === 1
-            ? `The counter grew${v.since == null ? "" : ` ${age(v.since)} ago`}${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}, and the last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
-            : "Each of these counters grew after the last check that read its filesystem end to end, so no check has said what the damage cost. Open each one for its own times.",
+            ? `${recorded.charAt(0).toUpperCase()}${recorded.slice(1)}. The last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
+            : "Each of these filesystems recorded an error after the last check that read it end to end, so no check has said what the damage cost. Open each one for its own times.",
         ],
         next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
         view: "Storage",
         target: cause.at ?? first,
         headline: `Danger: new errors on ${mounts}, unchecked since`,
       };
+    }
     case "integrity-unknown":
       return {
         word: "Unknown",

@@ -17,13 +17,10 @@ export async function sampleSummary(
   pause: () => Promise<void> = () => Bun.sleep(100),
   now: () => number = Date.now,
 ) {
-  const first = await collector.sample(now(), undefined, {
-    skipScratch: true,
-  });
+  const cheap = { skipScratch: true, skipKernelLog: true };
+  const first = await collector.sample(now(), undefined, cheap);
   await pause();
-  const snapshot = await collector.sample(now(), undefined, {
-    skipScratch: true,
-  });
+  const snapshot = await collector.sample(now(), undefined, cheap);
   return { snapshot, errors: [...first.errors, ...snapshot.errors] };
 }
 

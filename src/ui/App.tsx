@@ -477,7 +477,6 @@ export function App({
         onTargetUsed={clearTarget}
         onNotice={notice}
         onCopy={copy}
-        live={!pinned}
       />
     );
   else if (view === "Timeline")
