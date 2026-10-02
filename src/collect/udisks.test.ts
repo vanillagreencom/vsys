@@ -40,6 +40,7 @@ test("busctl's refusals are classified from its own words", () => {
       "Failed to connect to system scope bus via local transport: Operation not permitted",
       "unreadable",
     ],
+    ["Failed to connect to bus: Connection refused", "unreadable"],
   ];
   for (const [error, failure] of rows)
     expect({ error, ...classifyBusctl(`${error}\n`) }).toEqual({
