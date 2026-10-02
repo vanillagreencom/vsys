@@ -373,6 +373,17 @@ export interface Capability {
   source: string;
   /** The system's own words when a read failed, or the values that decided it. */
   detail: string;
+  /**
+   * io-stat's "incomplete" failure alone: whether the failing ancestor sits at
+   * or below the configured agent slice's own occurrence in the instance path
+   * `probeIoStat` was walking, rather than strictly above it. A slice's own
+   * `cgroup.subtree_control` gates only what it hands to its children, never
+   * its own `io.stat`, so this is true from the depth the walk first reaches
+   * the slice onward, whichever instance owns that depth: `writeTotals`'s
+   * slice total survives exactly when this holds. Undefined for every other
+   * failure, where the distinction does not apply.
+   */
+  belowSlice?: boolean;
 }
 /** A complete sample carries failures rather than converting them to zero. */
 export interface Snapshot {

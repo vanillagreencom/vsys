@@ -16,7 +16,13 @@ import { listPanesArgv } from "./tmux";
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
 /** A failure may name the source that decided it when a probe reads two. */
-type Failure = { failure: CapabilityFailure; detail: string; source?: string };
+type Failure = {
+  failure: CapabilityFailure;
+  detail: string;
+  source?: string;
+  /** io-stat's ancestry walk alone; see `Capability.belowSlice`. */
+  belowSlice?: boolean;
+};
 export type Outcome = Failure | null;
 
 /**
@@ -90,7 +96,10 @@ export function probeTmux(argv: string[] = listPanesArgv): Outcome {
  * absent kernel interface is reported as an absence with its reason rather
  * than as a per-sample source failure on every tick. Most capabilities take
  * one read; io-stat also reads the root's `cgroup.subtree_control`, because
- * its readings come from the groups below the root.
+ * its readings come from the groups below the root. That answer is the floor:
+ * a slice between the root and the agent scopes can still withhold io from
+ * them while the root hands it down, so `probeIoStat` below refines this
+ * capability with each sample's groups.
  */
 export function probeCapabilities(
   c: CollectionConfig,
@@ -171,6 +180,7 @@ function record(
     failure: outcome?.failure ?? null,
     source: outcome?.source ?? source,
     detail: outcome?.detail ?? detail,
+    belowSlice: outcome?.belowSlice,
   };
 }
 /** Null when the path exists, otherwise what stat met, diagnosed as above. */
@@ -281,4 +291,105 @@ export function probeAgentSlice(
       ? `${atCgroup.detail}; no unit file or drop-in in ${units.join(", ")}`
       : atCgroup.detail,
   });
+}
+/**
+ * Whether the groups the agent lanes' readings come from have io.stat. The
+ * root's own delegation is probed once, by `probeCapabilities`, because the
+ * root's `cgroup.subtree_control` does not come and go; this refines that
+ * answer with each sample's groups, because the agent slice's ancestry can
+ * appear after vsys starts, just as the slice itself can. Where the root
+ * already withholds io, its diagnosis stands: nothing below it can do better.
+ * Where the root hands it down, each of the agent slice's own ancestors, from
+ * directly below the root to the slice itself, decides again for its own
+ * children, so the first one that does not re-delegate io is why the agent
+ * scopes under it have no io.stat. This walk covers only the agent slice's
+ * own ancestry, not every group in the tree, so a desktop slice with no
+ * agents never counts against it.
+ *
+ * The ancestry is read from each matching slice's own path, directory by
+ * directory from the cgroup root down, never by following `parent` links
+ * through the sample's `groups`: a group `collectGroups` could not read
+ * (a failed `cpu.stat` or `cgroup.procs`) is still a real, readable directory
+ * on disk, and a `parent` walk through `groups` would lose it and stop short
+ * of the slice, wrongly reading the gap as a clean ancestry. `sliceInstancePaths`
+ * below names every real instance of the agent slice this sample's groups
+ * reveal, including one nested inside another and one `collectGroups` itself
+ * could not read, so a reading that checked only one instance never misses a
+ * second one withholding io.
+ *
+ * Each failure also records `belowSlice`: whether the failing ancestor sits at
+ * or below the agent slice's own occurrence in the instance path being walked,
+ * true from the depth that path first names the slice onward. A slice's own
+ * `cgroup.subtree_control` gates only what it hands to its children, never its
+ * own `io.stat`, so `writeTotals`'s slice total survives exactly when this
+ * holds, whatever the failing component is named: a plain directory between
+ * two instances of a slice nested inside itself sits below the outer one just
+ * as the slice's own last step does, even though neither names the slice. The
+ * failing component's bare name cannot carry this: it can equal the
+ * configured slice's name at a depth that is not that occurrence's own, once
+ * the name recurs under nesting, and it never names an ancestor that is not
+ * itself a slice instance at all.
+ */
+export function probeIoStat(
+  c: CollectionConfig,
+  groups: Group[],
+  root: Capability,
+): Capability {
+  if (!root.available) return root;
+  const slices = sliceInstancePaths(groups, c.agentSlice);
+  for (const slicePath of slices) {
+    const parts = slicePath.split("/");
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const ancestorPath = parts.slice(0, depth).join("/");
+      const source = join(c.cgroupRoot, ancestorPath, "cgroup.subtree_control");
+      let enabled: string[];
+      try {
+        enabled = readFileSync(source, "utf8").split(/\s+/);
+      } catch (error) {
+        return record("io-stat", source, classify(error));
+      }
+      if (!enabled.includes("io")) {
+        const part = parts[depth - 1];
+        if (part === undefined) continue;
+        return record("io-stat", source, {
+          failure: "incomplete",
+          detail: part,
+          belowSlice: parts.slice(0, depth).includes(c.agentSlice),
+        });
+      }
+    }
+  }
+  return root;
+}
+/**
+ * The path of every group, among this sample's groups, whose final or
+ * interior component names the configured agent slice, each path ending at
+ * that component and deduplicated. Scanning every group's own path rather
+ * than matching `g.name === name` on a group record for the slice itself
+ * finds two cases a name-only match on the slice's own group would miss: a
+ * second instance nested inside another match, which `sliceRoots` in
+ * `../model/verdict.ts` deliberately drops for its own callers (summing
+ * resource totals, where a nested instance's counters are already carried by
+ * the outer one and would double-count), but which is here a second real
+ * directory with its own `cgroup.subtree_control` to check; and a slice
+ * `collectGroups` could not itself read (a failed `cpu.stat` or
+ * `cgroup.procs`) but a collected descendant's path still reveals, because
+ * `collectGroups` walks every child directory on disk whether or not its
+ * parent was readable.
+ */
+export function sliceInstancePaths(groups: Group[], name: string): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const g of groups) {
+    const parts = g.path.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] !== name) continue;
+      const path = parts.slice(0, i + 1).join("/");
+      if (!seen.has(path)) {
+        seen.add(path);
+        found.push(path);
+      }
+    }
+  }
+  return found;
 }
