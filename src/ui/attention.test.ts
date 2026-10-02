@@ -565,11 +565,19 @@ test("the desktop-swap card drops the agents.slice command and step where no age
       ? { ...cap, available: false, failure: "absent" as const }
       : cap,
   );
+  // A memory-capped group can produce a lane with no tool at all (a bare
+  // scope, not an agent). The step names agent lanes only, so this one
+  // must not appear alongside them.
+  s.lanes = [
+    ...s.lanes,
+    laneSnapshot({ id: "bare.scope", name: "idle", tool: "", pids: [99] }),
+  ];
   const absent = swapCard();
   expect(absent?.command).toBeUndefined();
   expect(absent?.next).toBe(
     "Reduce concurrent build work, or check escaped PID 40, capped PID 40, writer PID 40 for the memory holding the desktop's pages.",
   );
+  expect(absent?.next).not.toContain("idle");
   // No lane left to name falls back to a step naming no slice at all.
   s.lanes = [];
   expect(swapCard()?.next).toBe(
