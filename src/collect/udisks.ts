@@ -186,41 +186,63 @@ export function udisksTargets(out: string): Target[] {
 }
 
 /**
- * The drives udisks answers for, read through busctl. A drive whose own call
- * fails keeps its row with lifetime writes unknown; when every drive failed,
- * the first refusal is the reading's outcome, because a source that answered
- * for no drive has not given what the reading needs.
+ * The listing alone, busctl's cheapest call: udisksd answers it from its own
+ * object cache, never by asking a drive anything. Returns the targets it
+ * named, or why the listing itself could not be read.
  */
-export async function readUdisks(
-  run: Run = spawnText,
-  timeoutMs: number = udisksTimeoutMs,
-): Promise<UdisksReading> {
+async function listUdisks(
+  run: Run,
+  timeoutMs: number,
+): Promise<
+  { targets: Target[]; outcome: null } | { targets: null; outcome: Outcome }
+> {
   let listed: Awaited<ReturnType<Run>>;
   try {
     listed = await withDeadline(run(udisksObjectsArgv, timeoutMs), timeoutMs);
   } catch (error) {
     if (error instanceof BusctlTimeout)
       return {
-        drives: [],
+        targets: null,
         outcome: { failure: "unreadable", detail: error.message },
       };
-    // Nothing ran: busctl is not on the path.
+    // Nothing ran. A confirmed-missing executable surfaces its own errno,
+    // ENOENT; anything else that stopped busctl from starting — EAGAIN at
+    // the process limit, EACCES, ... — is a launch failure, distinct from a
+    // confirmed absence, because the executable may be there all along.
+    const code = (error as NodeJS.ErrnoException)?.code;
     return {
-      drives: [],
-      outcome: { failure: "absent", detail: String(error) },
+      targets: null,
+      outcome: {
+        failure: code === "ENOENT" ? "absent" : "unreadable",
+        detail: String(error),
+      },
     };
   }
   if (listed.status !== 0)
-    return { drives: [], outcome: classifyBusctl(listed.error) };
-  let targets: Target[];
+    return { targets: null, outcome: classifyBusctl(listed.error) };
   try {
-    targets = udisksTargets(listed.out);
+    return { targets: udisksTargets(listed.out), outcome: null };
   } catch (error) {
     return {
-      drives: [],
+      targets: null,
       outcome: { failure: "malformed", detail: String(error) },
     };
   }
+}
+
+/**
+ * Each target's SmartGetAttributes. A drive whose own call fails — by
+ * refusal, by timeout, or by a launch failure that kept the call from even
+ * starting — keeps its row with lifetime writes unknown rather than take
+ * down every other drive's reading with it. When every drive failed, the
+ * first refusal is the reading's outcome, because a source that answered for
+ * no drive has not given what the reading needs.
+ */
+async function queryDrives(
+  run: Run,
+  timeoutMs: number,
+  targets: Target[],
+): Promise<UdisksReading> {
   const refusals: string[] = [];
   let firstRefusal: string | undefined;
   const noteRefusal = (detail: string) => {
@@ -236,8 +258,7 @@ export async function readUdisks(
           timeoutMs,
         );
       } catch (error) {
-        if (!(error instanceof BusctlTimeout)) throw error;
-        noteRefusal(error.message);
+        noteRefusal(error instanceof Error ? error.message : String(error));
         return { name, model, written: null };
       }
       if (answer.status !== 0) {
@@ -266,12 +287,29 @@ export async function readUdisks(
 }
 
 /**
+ * The drives udisks answers for, read through busctl: the listing, then each
+ * target's SmartGetAttributes.
+ */
+export async function readUdisks(
+  run: Run = spawnText,
+  timeoutMs: number = udisksTimeoutMs,
+): Promise<UdisksReading> {
+  const listing = await listUdisks(run, timeoutMs);
+  if (listing.targets === null) return { drives: [], outcome: listing.outcome };
+  return queryDrives(run, timeoutMs, listing.targets);
+}
+
+/**
  * One collector's udisks reading, held for `udisksHoldMs` on the clock it is
  * given. A collector given none never asks udisks, which keeps the system bus
  * out of the test suite.
  */
 export class Udisks {
-  private held: { at: number; reading: UdisksReading } | null = null;
+  private held: {
+    at: number;
+    reading: UdisksReading;
+    targets: Target[];
+  } | null = null;
   constructor(
     private run: Run = spawnText,
     private now: () => number = () => performance.now(),
@@ -279,9 +317,45 @@ export class Udisks {
   ) {}
   async read(): Promise<UdisksReading> {
     const at = this.now();
-    if (this.held && at - this.held.at < udisksHoldMs) return this.held.reading;
-    const reading = await readUdisks(this.run, this.timeoutMs);
-    this.held = { at, reading };
+    if (this.held && at - this.held.at < udisksHoldMs)
+      return this.confirm(this.held.reading, this.held.targets);
+    const listing = await listUdisks(this.run, this.timeoutMs);
+    const targets = listing.targets ?? [];
+    const reading =
+      listing.targets === null
+        ? { drives: [], outcome: listing.outcome }
+        : await queryDrives(this.run, this.timeoutMs, targets);
+    this.held = { at, reading, targets };
     return reading;
+  }
+  /**
+   * A held drive is shown only where a fresh listing — cheap, because
+   * udisksd answers it from its own object cache rather than asking any
+   * drive — still names the same object path for its kernel name. udisks
+   * assigns that path from the drive's own identity, so a drive that
+   * replaced another gets a different object path even where the kernel
+   * reused the block device's name. Where the listing cannot be re-asked, or
+   * no longer agrees, the row's total goes back to unknown rather than carry
+   * a figure that may belong to whatever replaced it.
+   */
+  private async confirm(
+    reading: UdisksReading,
+    heldTargets: Target[],
+  ): Promise<UdisksReading> {
+    if (reading.drives.length === 0) return reading;
+    const listing = await listUdisks(this.run, this.timeoutMs);
+    const current = new Map(
+      (listing.targets ?? []).map((t) => [t.name, t.drive]),
+    );
+    const held = new Map(heldTargets.map((t) => [t.name, t.drive]));
+    return {
+      ...reading,
+      drives: reading.drives.map((d) => {
+        const confirmed = current.get(d.name);
+        return confirmed !== undefined && confirmed === held.get(d.name)
+          ? d
+          : { name: d.name, model: null, written: null };
+      }),
+    };
   }
 }
