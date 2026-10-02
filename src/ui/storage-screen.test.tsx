@@ -772,8 +772,13 @@ function lifetimeSnapshot(
   udisks: Snapshot["storage"]["udisks"],
 ) {
   const s = emptySnapshot();
+  // `collector.ts` stands the capability up wherever a device already carries
+  // a udisks-sourced write, whatever the report directory itself says, so an
+  // "absent" directory with such a device is still available here, as it is
+  // in the real collector.
+  const udisksSupplies = (devices ?? []).some((d) => d.source === "udisks");
   s.capabilities = s.capabilities.map((cap) =>
-    cap.id === "smart" && smart === "absent"
+    cap.id === "smart" && smart === "absent" && !udisksSupplies
       ? {
           ...cap,
           available: false,
@@ -822,6 +827,9 @@ test("drive lifetime writes name their source, and a machine with neither source
       ],
     },
     {
+      // No report directory exists, but the capability still stands up: a
+      // device already carries a udisks-sourced write, so Settings must never
+      // say Storage has no drive lifetime writes while this row has one.
       name: "udisks alone",
       snapshot: lifetimeSnapshot(
         "absent",
@@ -839,11 +847,14 @@ test("drive lifetime writes name their source, and a machine with neither source
       ),
       shows: [
         /nvme0n1\s+█+\s+9\.1 TiB\s+udisks2/,
-        "Drive lifetime reports: not available: no readable drive report directory",
         "udisks2 answered in its place",
+      ],
+      hides: [
+        /9\.1 TiB\s+smartctl/,
+        "Drive lifetime reports: not available",
+        "no readable drive report directory",
         driveReporterInstall,
       ],
-      hides: [/9\.1 TiB\s+smartctl/],
     },
     {
       name: "neither source",
