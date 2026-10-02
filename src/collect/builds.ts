@@ -66,9 +66,11 @@ export type ToolMatch =
    * `path` is the one path tested against the name's install locations: the
    * executable for a name match, the script for a scripted match. A card
    * naming where to add a paths fragment names this path, never the other
-   * kind's, because only this one was checked.
+   * kind's, because only this one was checked. Null only for a scripted
+   * match against a tool with no install location, where a failed read of
+   * the script path never hides an unconfirmed name either.
    */
-  | { kind: "unconfirmed"; name: string; path: string }
+  | { kind: "unconfirmed"; name: string; path: string | null }
   | { kind: "none" };
 // REVISIT(D010): a layout no fragment or executable path describes needs another signal.
 /**
@@ -148,12 +150,13 @@ export function toolName(
   // always resolved a non-null script too, caught above otherwise; only a
   // tool with none at all leaves `script` null without ever reading it, so
   // that read happens here instead, lazily, for the rare process it affects.
+  // A failed read never hides the unconfirmed name, so it is reported as
+  // null rather than thrown: a process this tool does not understand is not
+  // one the collector should drop.
   const path =
     candidate === named
       ? executable
       : (script ?? (argument === undefined ? null : paths.script(argument)));
-  if (path === null)
-    throw new Error("toolName: unconfirmed match carries no checked path");
   return { kind: "unconfirmed", name: candidate, path };
 }
 /** The kernel marks a binary replaced while it ran with ` (deleted)`. */

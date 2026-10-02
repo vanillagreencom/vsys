@@ -76,3 +76,24 @@ test("a scripted match against a tool with no install location still carries the
     path: "/home/reader/bin/pi.sh",
   });
 });
+
+test("an unreadable script against a tool with no install location carries a null path, not a throw", () => {
+  // The lazy read this case takes can itself fail. A failed read never hides
+  // the unconfirmed name, so toolName() reports the name with no path rather
+  // than throwing, which would otherwise drop the whole process one layer up.
+  const signals: ToolSignals = {
+    installs: new Map([["pi", { fragments: [], executables: [] }]]),
+    desktop: { desktopExePrefixes: [], bundledCliSuffixes: [] },
+  };
+  const scripted = toolName(
+    "bash",
+    ["bash", "/home/reader/bin/pi.sh"],
+    ["pi"],
+    signals,
+    {
+      executable: () => "/usr/bin/bash",
+      script: () => null,
+    },
+  );
+  expect(scripted).toEqual({ kind: "unconfirmed", name: "pi", path: null });
+});

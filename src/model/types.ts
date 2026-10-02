@@ -66,9 +66,12 @@ export interface Proc {
   unconfirmedTool?: string | null;
   /**
    * The one path `unconfirmedTool` was tested against: the executable for a
-   * name match, the script for a scripted match. Null only alongside a null
-   * `unconfirmedTool`. Absent in snapshots recorded before vsys carried it,
-   * even where `unconfirmedTool` is set.
+   * name match, the script for a scripted match. Null alongside a null
+   * `unconfirmedTool`, and also where `unconfirmedTool` is set but vsys could
+   * not read the script of a name with no configured install location, a
+   * read failure that never drops the process or the name it carries.
+   * Absent in snapshots recorded before vsys carried it, even where
+   * `unconfirmedTool` is set.
    */
   unconfirmedPath?: string | null;
   build: string | null;
