@@ -28,7 +28,7 @@ test("counters become a delta since start and a five minute delta", async () => 
   const r = new Reader();
   const c = new SccacheCollector(async () => stats(hits, misses), 0, 300000);
   const first = await c.collect(r, 0);
-  expect(first.available).toBe(true);
+  expect(first.state).toBe("read");
   expect(first.sinceStart).toEqual({ hits: 0, misses: 0, windowMs: 0 });
   hits = 130;
   misses = 30;
@@ -63,14 +63,14 @@ test("a restarted cache server rebases instead of reporting a negative delta", a
   expect(later.sinceStart).toEqual({ hits: 40, misses: 10, windowMs: 1000 });
 });
 
-test("a missing binary is unavailable, other failures are reported once", async () => {
+test("a missing binary is absent, other failures are reported once", async () => {
   const r = new Reader();
   const absent = Object.assign(new Error("no sccache"), { code: "ENOENT" });
   const missing = new SccacheCollector(async () => {
     throw absent;
   }, 0);
   expect(await missing.collect(r, 0)).toEqual({
-    available: false,
+    state: "absent",
     hits: null,
     misses: null,
     sinceStart: null,
@@ -80,7 +80,7 @@ test("a missing binary is unavailable, other failures are reported once", async 
   const broken = new SccacheCollector(async () => {
     throw new Error("server unreachable");
   }, 0);
-  expect((await broken.collect(r, 0)).available).toBe(false);
+  expect((await broken.collect(r, 0)).state).toBe("failed");
   expect(r.errors.map((e) => e.source)).toEqual(["sccache --show-stats"]);
 });
 
@@ -99,7 +99,7 @@ test("a wedged cache server times out rather than holding the sample", async () 
     5,
   );
   const started = Date.now();
-  expect((await wedged.collect(r, 0)).available).toBe(false);
+  expect((await wedged.collect(r, 0)).state).toBe("failed");
   expect(Date.now() - started).toBeLessThan(2000);
   expect(given).toEqual([5]);
   expect(r.errors.map((e) => e.source)).toEqual(["sccache --show-stats"]);
@@ -119,4 +119,50 @@ test("the stats query is not repeated on every sample", async () => {
   expect(calls).toBe(1);
   await c.collect(r, 5000);
   expect(calls).toBe(2);
+});
+
+test("a failed query keeps its source error on the samples the throttle skips", async () => {
+  let calls = 0;
+  let answer: string | Error = new Error("server unreachable");
+  const c = new SccacheCollector(async () => {
+    calls++;
+    if (answer instanceof Error) throw answer;
+    return answer;
+  }, 5000);
+  // A fresh reader per sample, as the collector builds one. Each row is the
+  // sample time and the error that sample must report.
+  const rows: [number, string][] = [
+    [0, "server unreachable"],
+    [1000, "server unreachable"],
+    [4999, "server unreachable"],
+    [5000, "Missing cache hit and miss counters"],
+    [9999, "Missing cache hit and miss counters"],
+  ];
+  for (const [time, message] of rows) {
+    if (time === 1000) answer = "Compile requests 3\n";
+    const r = new Reader();
+    expect((await c.collect(r, time)).state).toBe("failed");
+    expect(r.errors).toEqual([{ source: "sccache --show-stats", message }]);
+  }
+  expect(calls).toBe(2);
+  // A query that reads the counters clears the error on its sample and the
+  // skipped ones.
+  answer = stats(1, 1);
+  for (const time of [10000, 14999]) {
+    const r = new Reader();
+    expect((await c.collect(r, time)).state).toBe("read");
+    expect(r.errors).toEqual([]);
+  }
+  expect(calls).toBe(3);
+  // So does a query that finds no sccache after a failure: the program is
+  // absent, and the old error is not kept.
+  answer = new Error("server unreachable");
+  expect((await c.collect(new Reader(), 15000)).state).toBe("failed");
+  answer = Object.assign(new Error("no sccache"), { code: "ENOENT" });
+  for (const time of [20000, 24999]) {
+    const r = new Reader();
+    expect((await c.collect(r, time)).state).toBe("absent");
+    expect(r.errors).toEqual([]);
+  }
+  expect(calls).toBe(5);
 });

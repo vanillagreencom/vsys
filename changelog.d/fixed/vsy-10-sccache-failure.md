@@ -1,0 +1,1 @@
+- A failed sccache query stays an unreadable source on every sample, and the Builds cache tile says the query failed rather than that sccache is not running.

@@ -1,5 +1,5 @@
 import { unitLabel } from "../model/naming";
-import type { Lane, Snapshot } from "../model/types";
+import type { Lane, Sccache, Snapshot } from "../model/types";
 import type { TimelineEvent } from "./events";
 import type { Point } from "./point";
 
@@ -62,13 +62,30 @@ function laneUnknowns(): Lane {
 export function normalizeLane(stored: Partial<Lane>): Lane {
   return { ...laneUnknowns(), ...stored };
 }
+/** A cache reading as a build before the query outcome stored it. */
+type StoredSccache = Omit<Sccache, "state"> & { available: boolean };
+/**
+ * A stored flag said only whether counters were read. Counters read is the
+ * read state; a reading without them cannot tell a missing program from a
+ * failed query, so it becomes no reading rather than either cause.
+ */
+function normalizeSccache(
+  stored: Sccache | StoredSccache | undefined,
+): Sccache | undefined {
+  if (stored === undefined || "state" in stored) return stored;
+  const { available, ...counters } = stored;
+  return available ? { state: "read", ...counters } : undefined;
+}
 /**
  * One step on the load path, so no screen reads a field a stored record never
  * carried. It is idempotent: a snapshot of the current shape passes through.
  */
 export function normalizeSnapshot(s: Snapshot): Snapshot {
+  const { sccache: stored, ...rest } = s;
+  const sccache = normalizeSccache(stored);
   return {
-    ...s,
+    ...rest,
+    ...(sccache ? { sccache } : {}),
     // A build older than the capability probe recorded no capabilities. An
     // empty list is the unknown value: no reading claims a missing interface.
     capabilities: s.capabilities ?? [],

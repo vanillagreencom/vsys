@@ -1,6 +1,6 @@
 # Build work
 
-Covers: src/model/builds.ts src/collect/builds.ts src/collect/sccache.ts src/ui/builds-screen.tsx
+Covers: src/model/builds.ts src/model/builds.test.ts src/collect/builds.ts src/collect/sccache.ts src/collect/sccache.test.ts src/ui/builds-screen.tsx
 
 Compile and link work is counted machine wide and per lane from one classification, so the Builds screen and the Home build tile cannot disagree. The build cache and the make token pools are read alongside it.
 
@@ -21,6 +21,8 @@ Compile and link work is counted machine wide and per lane from one classificati
 6. The token pool variable is inherited, so only the outermost build process holding each pool counts its tokens, and a pool whose flags omit a job count has an unknown total. `src/model/builds.test.ts` checks a linker under its compiler, sibling compilers under one make, and a pool without a job count.
 7. Qualified cache lines are subsets of the totals and never add to them. `src/collect/sccache.test.ts` checks the parser.
 8. Cache counters are compared with the latest reading, so a server restarted at any point rebases rather than producing a negative delta. `src/collect/sccache.test.ts` checks a restart after the counters grew.
-9. A missing cache binary is an absent feature rather than a source error, and a query that does not answer in time is a source error with an unavailable reading. `src/collect/sccache.test.ts` checks the missing binary, a failing query and one that never answers.
-10. A settings change replaces the collector and carries the cache reader over, so the counts stay measured since vsys started. `src/runtime.test.ts` checks the handover and `src/collect/collector.test.ts` checks the continued delta.
-11. A build process's own environment supplies its compiler wrapper and its make token pool. `src/collect/collector.test.ts` checks both fields against the unselected variables.
+9. A missing cache binary is an absent feature rather than a source error, and a query that does not answer in time is a source error with a failed reading. `src/collect/sccache.test.ts` checks the missing binary, a failing query and one that never answers.
+10. A failed query stays a source error on every sample until a query reads the counters or finds no sccache, including the samples the rate limit skips. `src/collect/sccache.test.ts` checks a failure followed by skipped samples, and both ways it clears.
+11. The Cache hits tile names a failed query apart from a missing program and warns on the failed query alone, and a stored reading that cannot tell the two apart claims neither. `src/ui/builds-screen.test.ts` checks the tile and `src/store/history.test.ts` checks the stored reading.
+12. A settings change replaces the collector and carries the cache reader over, so the counts stay measured since vsys started. `src/runtime.test.ts` checks the handover and `src/collect/collector.test.ts` checks the continued delta.
+13. A build process's own environment supplies its compiler wrapper and its make token pool. `src/collect/collector.test.ts` checks both fields against the unselected variables.

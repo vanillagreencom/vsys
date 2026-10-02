@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
-import { buildsSummary, type Rates } from "../model/builds";
+import { buildsSummary, type CacheEffect, type Rates } from "../model/builds";
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
+import type { Level } from "../model/verdict";
 import { meters } from "../model/verdict";
 import { meterTile } from "./attention";
 import { keyLabel, screenPad } from "./chrome";
@@ -41,6 +42,34 @@ export function cacheText(r: Rates | null): string {
     r.windowMs > 0 ? `over ${age(r.windowMs / 1000)}` : "over no elapsed time";
   if (r.rate === null) return `no requests ${over}`;
   return `${share(r.rate)} hits · ${count(r.hits, "hit")}, ${count(r.misses, "miss", "misses")} ${over}`;
+}
+/**
+ * The Cache hits detail. A query that ran and failed names the query, so the
+ * reader is not sent to start a program that is already running.
+ */
+export function cacheDetail(cache: CacheEffect): string {
+  switch (cache.state) {
+    case "read":
+      return `since start ${cacheText(cache.sinceStart)}`;
+    case "absent":
+      return "sccache is not on the PATH";
+    case "failed":
+      return "sccache --show-stats failed, see Data sources";
+    case null:
+      return "no cache reading in this sample";
+    default: {
+      const unknown: never = cache.state;
+      throw new Error(`Unknown cache state: ${String(unknown)}`);
+    }
+  }
+}
+
+/**
+ * A failed query is a reading that could not be taken, so it warns like a
+ * bypassed cache. A missing program is an absent feature and does not.
+ */
+export function cacheLevel(cache: CacheEffect): Level {
+  return cache.state === "failed" || cache.bypassed.length ? "warn" : "ok";
 }
 
 /** Compile and link work: the fleet total, each lane's share, then the processes. */
@@ -164,14 +193,12 @@ export function Builds({
           key="Cache hits"
           label="Cache hits"
           value={
-            cache.available && cache.recent ? share(cache.recent.rate) : gap
+            cache.state === "read" && cache.recent
+              ? share(cache.recent.rate)
+              : gap
           }
-          level={cache.bypassed.length ? "warn" : "ok"}
-          detail={
-            cache.available
-              ? `since start ${cacheText(cache.sinceStart)}`
-              : "sccache is not running"
-          }
+          level={cacheLevel(cache)}
+          detail={cacheDetail(cache)}
         />
         <Tile
           key="Make tokens"

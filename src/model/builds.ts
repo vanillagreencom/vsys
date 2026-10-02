@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
 import { jobserver, laneText } from "./naming";
-import type { Proc, Sccache, SccacheDelta, Snapshot } from "./types";
+import type { Proc, SccacheDelta, SccacheState, Snapshot } from "./types";
 import { buildLoad } from "./verdict";
 
 /** One row per lane that is building, plus one row for everything outside them. */
@@ -25,7 +25,8 @@ export interface Jobserver {
 }
 export type Rates = SccacheDelta & { rate: number | null };
 export interface CacheEffect {
-  available: boolean;
+  /** Null when the sample holds no cache reading at all. */
+  state: SccacheState | null;
   sinceStart: Rates | null;
   recent: Rates | null;
   /** Lanes whose build processes carry an empty RUSTC_WRAPPER. */
@@ -174,11 +175,10 @@ export function jobservers(s: Snapshot, c: Config): Jobserver[] {
   return [...rows.values()].sort((a, b) => a.fifo.localeCompare(b.fifo));
 }
 export function cacheEffect(s: Snapshot): CacheEffect {
-  const reading: Sccache | undefined = s.sccache;
   return {
-    available: reading?.available === true,
-    sinceStart: rates(reading?.sinceStart ?? null),
-    recent: rates(reading?.recent ?? null),
+    state: s.sccache?.state ?? null,
+    sinceStart: rates(s.sccache?.sinceStart ?? null),
+    recent: rates(s.sccache?.recent ?? null),
     bypassed: bypassedLanes(s),
   };
 }

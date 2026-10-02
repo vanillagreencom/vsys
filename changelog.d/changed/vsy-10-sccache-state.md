@@ -1,0 +1,1 @@
+- **Breaking:** `vsys --once` reports `sccache.state` in place of `sccache.available`. Read `true` as `"read"`; `false` is now `"absent"` or `"failed"`.

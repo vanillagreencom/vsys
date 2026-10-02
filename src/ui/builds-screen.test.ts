@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
+import type { CacheEffect } from "../model/builds";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
 import { mount } from "../test/harness";
-import { cacheText } from "./builds-screen";
+import { cacheDetail, cacheLevel, cacheText } from "./builds-screen";
 
 test("the cache reading states its window and never divides by nothing", () => {
   expect(cacheText(null)).toBe("not available");
@@ -15,6 +16,39 @@ test("the cache reading states its window and never divides by nothing", () => {
   expect(cacheText({ hits: 1, misses: 3, rate: 25, windowMs: 60000 })).toBe(
     "25.0% hits · 1 hit, 3 misses over 1m",
   );
+});
+
+test("the cache tile names a query that failed apart from a missing program", async () => {
+  // A failed query warns like a bypassed cache; a missing program does not.
+  const rows: [CacheEffect["state"], string[], string, string][] = [
+    ["read", [], "since start not available", "ok"],
+    ["read", ["lane-a"], "since start not available", "warn"],
+    ["absent", [], "sccache is not on the PATH", "ok"],
+    ["failed", [], "sccache --show-stats failed, see Data sources", "warn"],
+    [null, [], "no cache reading in this sample", "ok"],
+  ];
+  for (const [state, bypassed, detail, level] of rows) {
+    const cache = { state, sinceStart: null, recent: null, bypassed };
+    expect([cacheDetail(cache), cacheLevel(cache)]).toEqual([detail, level]);
+  }
+  // The tile draws the failed query rather than the missing program.
+  const s = emptySnapshot();
+  s.sccache = {
+    state: "failed",
+    hits: null,
+    misses: null,
+    sinceStart: null,
+    recent: null,
+  };
+  const t = await mount(s, defaults(), { width: 220, height: 30 });
+  try {
+    await t.press("4");
+    const frame = t.frame();
+    expect(frame).toContain("sccache --show-stats failed");
+    expect(frame).not.toContain("not on the PATH");
+  } finally {
+    await t.close();
+  }
 });
 
 test("an unstated pool size is not reported as an unreadable one", async () => {
