@@ -394,13 +394,17 @@ export class Udisks {
       const listing = await listUdisks(this.run, this.timeoutMs);
       if (listing.targets === null) {
         // The swap-check listing itself failed: that is this sample's own
-        // outcome, and the held reading is dropped exactly as a full read's
-        // failure would drop it. readUdisks() below would only repeat this
-        // identical listing call, paying its timeout a second time for the
-        // same answer.
-        const reading: UdisksReading = { drives: [], outcome: listing.outcome };
-        this.held = { at, reading };
-        return reading;
+        // outcome. The held reading is dropped outright rather than kept as
+        // an empty-drives placeholder — identitySwapped compares against
+        // held.drives by iterating it, so an empty array would read as
+        // "nothing to compare" and vacuously pass as unswapped, letting this
+        // stale failure answer for every sample until the hold expires.
+        // Dropping it means the very next sample takes the non-held branch
+        // below and runs a genuine readUdisks(), recovering immediately once
+        // the bus answers again, without this call repeating the identical
+        // listing call readUdisks() would otherwise make.
+        this.held = null;
+        return { drives: [], outcome: listing.outcome };
       }
       if (!identitySwapped(this.held.reading, listing.targets))
         return this.held.reading;

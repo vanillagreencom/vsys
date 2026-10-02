@@ -512,3 +512,44 @@ test("a listing that fails during the hold is never read as proof of no swap: it
   ).length;
   expect(listingsAfter - listingsBefore).toBe(1);
 });
+test("a listing failure during the hold does not poison the samples after it: a healthy listing on the very next one fully recovers", async () => {
+  const good = fakeBus([
+    {
+      name: "sda",
+      model: "B",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "SN1",
+    },
+  ]);
+  let failNext = false;
+  const run: typeof spawnText = async (argv, timeoutMs) => {
+    if (failNext && argv.includes("GetManagedObjects")) {
+      failNext = false;
+      return {
+        out: "",
+        error: "Failed to connect to bus: No such file or directory\n",
+        status: 1,
+        timedOut: false,
+      };
+    }
+    return good(argv, timeoutMs);
+  };
+  let now = 0;
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.outcome).toBeNull();
+  // One listing blip, well inside the hold.
+  now = 10;
+  failNext = true;
+  const second = await udisks.read();
+  expect(second.outcome?.failure).toBe("absent");
+  // The bus answers again for the very next sample, still inside the same
+  // hold window: the drive reading must come back, not the prior failure.
+  now = 20;
+  const third = await udisks.read();
+  expect(third).toEqual({
+    outcome: null,
+    drives: [{ name: "sda", model: "B", written: 5_120, identity: "SN1" }],
+  });
+});

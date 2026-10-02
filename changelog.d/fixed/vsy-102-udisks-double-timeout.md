@@ -1,1 +1,1 @@
-- A down or unresponsive system bus during udisks' 10-minute hold now reports its swap-check failure directly, instead of waiting out the same busctl timeout twice before giving up.
+- A down or unresponsive system bus during udisks' 10-minute hold now reports its swap-check failure once and recovers on the next healthy sample, instead of waiting twice or staying stuck.
