@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { loadAgentTools, parseAgentToolsDocument } from "../config/agent-tools";
@@ -1737,6 +1738,27 @@ test("a scrub report directory created while vsys runs is read the next sample",
   // The reader ran the install line vsys offered, which creates the directory.
   mkdirSync(f.config.scrubDir, { recursive: true });
   expect(await scrub(2000)).toMatchObject({ available: true, failure: null });
+});
+
+test("a sample reads the scrub report directory only through the storage listing", async () => {
+  const f = setup();
+  mkdirSync(f.config.scrubDir, { recursive: true });
+  const collector = new Collector(f.config, 100, 4096);
+  // The start probe may list it synchronously; a sample may not, because a
+  // slow or networked directory would stall the dashboard on every refresh.
+  const listed = spyOn(fs, "readdirSync");
+  try {
+    const s = await collector.sample(1000);
+    expect(s.capabilities.find((cap) => cap.id === "scrub")).toMatchObject({
+      available: true,
+      failure: null,
+    });
+    expect(
+      listed.mock.calls.filter(([path]) => String(path) === f.config.scrubDir),
+    ).toEqual([]);
+  } finally {
+    listed.mockRestore();
+  }
 });
 
 test("the program's collector resumes the kernel log the one it replaces held", async () => {

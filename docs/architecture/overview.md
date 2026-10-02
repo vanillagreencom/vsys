@@ -22,7 +22,7 @@ Ladder: the causes ranked worst first. Its first verdict-worthy element is the v
 
 Verdict-worthy: a cause that may speak for the machine. A housekeeping cause is a card but never the verdict.
 
-Capability: a system interface a reading needs, probed once at start. Three answers are re-read each sample: whether a tmux server answers, whether the agent slice exists, and whether the scrub report directory exists. The kernel log is a capability too, because whether this user can read the system journal depends on group membership.
+Capability: a system interface a reading needs, probed once at start. Three answers are re-read each sample: whether a tmux server answers, whether the agent slice exists, and whether the scrub report directory exists, which the storage read of the reports answers. The kernel log is a capability too, because whether this user can read the system journal depends on group membership.
 
 Point: the per-sample record the charts and the timeline strip read, kept for every retained sample.
 

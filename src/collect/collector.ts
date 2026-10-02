@@ -9,7 +9,6 @@ import {
   type Outcome,
   probeAgentSlice,
   probeCapabilities,
-  probeScrub,
   probeTmux,
   unitDirs,
 } from "./capabilities";
@@ -83,7 +82,7 @@ export class Collector {
    * as static as the rest; whether a server answers is not, and this program
    * is a dashboard for agents that start after it. The scrub report directory
    * is the other: the reader creates it by installing the reporter vsys
-   * offers, so it is asked for again every sample.
+   * offers, so each sample takes it from the storage read of the reports.
    */
   private capabilities: Capability[];
   /** tmux is installed, so a read is worth attempting however it went last. */
@@ -204,7 +203,6 @@ export class Collector {
     const procs = processes.procs;
     r.errors.push(...processes.errors);
     mark("processes");
-    this.record("scrub", probeScrub(c));
     const storage = await this.storage.collect(
       r,
       c,
@@ -215,6 +213,11 @@ export class Collector {
       agentScratchDirs(procs),
       options.skipKernelLog ?? false,
     );
+    // The scrub capability comes from the same asynchronous listing the
+    // reports were read from, so the two never disagree within a sample. A
+    // collection that never listed the directory leaves the last answer.
+    if (this.storage.scrubDir !== undefined)
+      this.record("scrub", this.storage.scrubDir);
     // Device totals cover the whole machine, so they are read above the watched tree.
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);
     this.controller.signal.throwIfAborted();

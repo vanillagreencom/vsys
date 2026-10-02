@@ -1,6 +1,8 @@
+import type { Dirent } from "node:fs";
 import { readdir, realpath, stat, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Scrub, Storage, Volume } from "../model/types";
+import { classify, type Outcome } from "./capabilities";
 import { collectDevices } from "./devices";
 import { ErrorMemory } from "./errors";
 import { pairs, type Reader } from "./io";
@@ -102,6 +104,15 @@ export class StorageCollector {
   private scratch = new ScratchCollector();
   private memory: ErrorMemory | null = null;
   private memoryPath = "";
+  /**
+   * The scrub report directory as the last collection's read of it found it:
+   * null where the listing answered, the failure where it did not, and
+   * undefined until a collection has listed it. The directory appears while
+   * vsys runs, when the reader installs the reporter vsys offers, so the
+   * collector takes the capability from this read rather than reading the
+   * directory a second time, synchronously, on the sample path.
+   */
+  scrubDir: Outcome | undefined = undefined;
   close(): void {
     this.scratch.close();
   }
@@ -301,8 +312,17 @@ export class StorageCollector {
         }),
       });
     }
+    this.scrubDir = undefined;
     try {
-      for (const entry of await readdir(c.scrubDir, { withFileTypes: true })) {
+      let entries: Dirent[];
+      try {
+        entries = await readdir(c.scrubDir, { withFileTypes: true });
+        this.scrubDir = null;
+      } catch (e) {
+        this.scrubDir = classify(e);
+        throw e;
+      }
+      for (const entry of entries) {
         if (!entry.isFile() || !isReportName(entry.name)) continue;
         const path = join(c.scrubDir, entry.name);
         const text = r.exact(path);

@@ -24,7 +24,7 @@ export type Outcome = Failure | null;
  * that does not exist is an absent interface; any other errno is a source this
  * user cannot read; a throw with no errno came from parsing what was read.
  */
-function classify(error: unknown): Failure {
+export function classify(error: unknown): Failure {
   const code = (error as NodeJS.ErrnoException).code;
   const detail = error instanceof Error ? error.message : String(error);
   if (code === "ENOENT" || code === "ENOTDIR" || code === "ENODEV")
@@ -86,21 +86,6 @@ export function probeTmux(argv: string[] = listPanesArgv): Outcome {
 }
 
 /**
- * Whether the scrub report directory can be read. Unlike a kernel interface,
- * it appears while vsys runs: the reader installs the reporter from the line
- * vsys offers, and the directory is created then. So the collector asks again
- * every sample, and the offer leaves the screen once it is filled.
- */
-export function probeScrub(c: Pick<CollectionConfig, "scrubDir">): Outcome {
-  try {
-    readdirSync(c.scrubDir);
-    return null;
-  } catch (error) {
-    return classify(error);
-  }
-}
-
-/**
  * These reads decide each capability once, when vsys starts, so a permanently
  * absent kernel interface is reported as an absence with its reason rather
  * than as a per-sample source failure on every tick. Most capabilities take
@@ -145,7 +130,14 @@ export function probeCapabilities(
         return undelegated(c, ["io"]);
       },
     ],
-    ["scrub", c.scrubDir, () => probeScrub(c)],
+    [
+      "scrub",
+      c.scrubDir,
+      () => {
+        readdirSync(c.scrubDir);
+        return null;
+      },
+    ],
     ["kernel-log", kernelLogProbeArgv.join(" "), kernelLog],
     [
       "smart",
