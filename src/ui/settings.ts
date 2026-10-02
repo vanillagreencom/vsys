@@ -1,4 +1,5 @@
 import { type Config, choices } from "../config/config";
+import { shellLine } from "../model/shell";
 import type { Capability, CapabilityId } from "../model/types";
 import { age, bytes } from "./format";
 import { homeRegions, storageRegions } from "./regions";
@@ -60,7 +61,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   },
   agentSlice: {
     label: "Agent slice",
-    help: "The slice agents belong in. A tool running outside it has escaped.",
+    help: "The slice agents belong in. On a machine that has it, a tool running outside it has escaped.",
   },
   desktopSlice: {
     label: "Desktop slice",
@@ -293,6 +294,7 @@ export const capabilityLabels: Record<CapabilityId, string> = {
   scrub: "Disk scrub reports",
   smart: "Drive lifetime reports",
   tmux: "Terminal panes (tmux)",
+  "agent-slice": "Agent slice",
 };
 /** What the interface never existing means, per capability. */
 const absentReasons: Record<CapabilityId, string> = {
@@ -303,6 +305,7 @@ const absentReasons: Record<CapabilityId, string> = {
   scrub: "no readable scrub report directory",
   smart: "no readable drive report directory",
   tmux: "no tmux on the path",
+  "agent-slice": "no agent slice is defined or running on this machine",
 };
 /** What a present interface that answered with too little means, per capability. */
 const incompleteReasons: Partial<Record<CapabilityId, string>> = {
@@ -327,10 +330,47 @@ const capabilityCost: Record<CapabilityId, string> = {
   smart:
     "Storage shows no drive lifetime writes, which is not the same as none written",
   tmux: "a tmux pane id resolves to no address, and no agent's terminal can be read or switched to",
+  "agent-slice":
+    "agents are shown, but not compared against a shared limit, so none is called escaped",
+};
+/**
+ * What a present interface vsys could not read costs, where that differs from
+ * its absence. A slice vsys cannot read is still compared against; a masked
+ * one is not, so it costs what an absent one does.
+ */
+const unreadCost: Partial<Record<CapabilityId, string>> = {
+  "agent-slice":
+    "agent totals are blank rather than zero, and an agent outside the slice still raises a card",
 };
 /** What a reader loses while this capability is missing. */
 export function capabilityLoss(cap: Capability): string {
-  return cap.available ? "" : capabilityCost[cap.id];
+  if (cap.available) return "";
+  const unread = cap.failure !== "absent" && cap.failure !== "masked";
+  return (unread && unreadCost[cap.id]) || capabilityCost[cap.id];
+}
+/**
+ * A line a reader can copy to supply a missing capability, and what it does.
+ * vsys never runs it. It carries the MemoryHigh and MemoryMax values of the
+ * warden's slice template in `warden/systemd/agents.slice`, and none of that
+ * template's other limits. A masked slice is offered nothing: systemctl
+ * refuses to set a property on a masked unit.
+ */
+export function capabilityOffer(
+  cap: Capability,
+  c: Pick<Config, "agentSlice">,
+): { text: string; command: string } | null {
+  if (cap.id !== "agent-slice" || cap.failure !== "absent") return null;
+  return {
+    text: `Optional: one line gives ${c.agentSlice} a memory limit. Agents started with systemd-run --user --slice=${c.agentSlice} --scope then share it, and any agent outside it is called escaped.`,
+    command: shellLine([
+      "systemctl",
+      "--user",
+      "set-property",
+      c.agentSlice,
+      "MemoryHigh=65%",
+      "MemoryMax=90%",
+    ]),
+  };
 }
 /**
  * One cause per capability, derived from what the probe found rather than from
@@ -341,6 +381,8 @@ export function capabilityReason(cap: Capability): string {
   switch (cap.failure) {
     case "absent":
       return absentReasons[cap.id];
+    case "masked":
+      return `${cap.source} is masked, so systemd never starts it`;
     case "unreadable":
       return `${cap.source} exists but cannot be read`;
     case "malformed":

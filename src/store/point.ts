@@ -2,7 +2,7 @@ import { corruptionTotal } from "../collect/btrfs";
 import type { Config } from "../config/config";
 import { escaped } from "../model/lanes";
 import type { Alert, Snapshot } from "../model/types";
-import { sliceSum } from "../model/verdict";
+import { agentTotal, sliceSum } from "../model/verdict";
 import type { TimelineEvent } from "./events";
 
 export interface Point {
@@ -54,7 +54,7 @@ export function point(
   const available = s.system.memory.MemAvailable;
   return {
     time: s.time,
-    agents: sliceSum(s.groups, c.agentSlice, (g) => g.cpuPercent),
+    agents: agentTotal(s, c, "cpu"),
     desktop: sliceSum(s.groups, c.desktopSlice, (g) => g.cpuPercent),
     memory:
       total === undefined || available === undefined ? null : total - available,
@@ -62,7 +62,7 @@ export function point(
     memoryPressure: s.system.pressure.memory?.some ?? null,
     ioPressure: s.system.pressure.io?.some ?? null,
     corruption,
-    unconfined: s.procs.filter((p) => escaped(p, c)).length,
+    unconfined: s.procs.filter((p) => escaped(p, c, s.capabilities)).length,
     builds: s.procs.filter((p) => p.build).length,
     alerts: s.alerts.map((alert) => ({ ...alert })),
     events,

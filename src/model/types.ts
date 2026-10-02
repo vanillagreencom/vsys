@@ -301,18 +301,25 @@ export type CapabilityId =
   | "io-stat"
   | "scrub"
   | "smart"
-  | "tmux";
+  | "tmux"
+  | "agent-slice";
 /**
  * Why a source could not be used. The kinds are distinct diagnoses: a kernel
- * that never built the interface, a file the user cannot read, a file that did
- * not parse, and an interface present but not giving what a reading needs.
+ * that never built the interface, a unit the user masked so systemd never
+ * starts it, a file the user cannot read, a file that did not parse, and an
+ * interface present but not giving what a reading needs.
  */
 export type CapabilityFailure =
   | "absent"
+  | "masked"
   | "unreadable"
   | "malformed"
   | "incomplete";
-/** Probed once when vsys starts; absence is a known limit, not a read failure. */
+/**
+ * Probed once when vsys starts; absence is a known limit, not a read failure.
+ * Whether a tmux server answers and whether the agent slice exists are re-read
+ * each sample.
+ */
 export interface Capability {
   id: CapabilityId;
   available: boolean;

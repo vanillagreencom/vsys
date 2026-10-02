@@ -220,8 +220,13 @@ export class EventLog {
           toSlice: sliceOf(p.group),
           tool: p.tool ?? "",
         },
-        // Confinement changed only when the move left the agent slice.
-        cause: escaped(p, c) && !escaped(was, c) ? "unconfined" : "",
+        // Confinement changed only when the move left the agent slice. Both
+        // ends are judged against this sample's probe, so a slice appearing
+        // between the two samples is not a move out of it.
+        cause:
+          escaped(p, c, s.capabilities) && !escaped(was, c, s.capabilities)
+            ? "unconfined"
+            : "",
         values: { pid: p.pid },
       });
     }

@@ -12,7 +12,7 @@ Scope: a systemd cgroup whose name ends in `.scope`. Only a scope can be named t
 
 Lane: a watched scope, or a group an agent or a resource alarm made worth watching.
 
-Escaped agent: a configured agent tool running outside the configured agent slice. `escaped()` in `src/model/lanes.ts` is its only definition.
+Escaped agent: a configured agent tool running outside the configured agent slice, on a machine that has that slice. `escaped()` in `src/model/lanes.ts` is its only definition.
 
 Account: the basename of the agent configuration directory the lane's main process names, unknown when it names none.
 
@@ -22,7 +22,7 @@ Ladder: the causes ranked worst first. Its first verdict-worthy element is the v
 
 Verdict-worthy: a cause that may speak for the machine. A housekeeping cause is a card but never the verdict.
 
-Capability: a system interface a reading needs, probed once at start. Whether a tmux server answers is the exception and is re-read each sample.
+Capability: a system interface a reading needs, probed once at start. Whether a tmux server answers and whether the agent slice exists are the exceptions and are re-read each sample.
 
 Point: the per-sample record the charts and the timeline strip read, kept for every retained sample.
 
@@ -36,7 +36,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 
 ## Boundaries
 
-- `src/collect/`: reads source files and takes `CollectionConfig`. It never imports the UI and never writes kernel state. Enforced by the type in `src/collect/settings.ts`, which is the only declaration of what collection may read. The program reads processes on a thread of its own, which the collector owns and the runtime never schedules.
+- `src/collect/`: reads source files and takes `CollectionConfig`. It never imports the UI and never writes kernel state. Enforced by the type in `src/collect/settings.ts`, which is the only declaration of what collection may read. Two reads sit outside it, and the program hands the collector both. One is the tmux server: vsys's own `TMUX` and `TMUX_PANE` and the `tmux list-panes` that `src/collect/tmux.ts` runs. The other is whether the agent slice's systemd unit file or drop-in directory exists in the standard unit directories ([D009](../decisions/D009-agent-slice-unit-file.md)). A collector given neither reads neither, so no test reaches the host's tmux server or its systemd configuration unless it asks to. `src/collect/capabilities.test.ts` and `src/collect/collector.test.ts` check the unit-file read. The program reads processes on a thread of its own, which the collector owns and the runtime never schedules.
 - `src/model/`: derives lanes, the cause ladder, the meters and the alert transitions as numbers. Every word and every formatted number belongs to the UI.
 - `src/store/`: owns application persistence and derives the timeline events. The collector does not depend on SQLite.
 - `src/runtime.ts`: owns scheduling and settings changes. Samples never overlap, and a replaced source is handed its predecessor so readings measured since vsys started survive the replacement.
@@ -47,7 +47,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 ## Invariants
 
 1. A source error never becomes a measured zero. `src/collect/collector.test.ts` plants an invalid counter.
-2. An agent outside its slice is decided in one place, and lanes, alerts, points and timeline events all read that decision. `src/collect/collector.test.ts` checks an escaped agent against an inherited cap.
+2. An agent outside its slice is decided in one place, and lanes, alerts, points and timeline events all read that decision. Where the probe finds no agent slice, no agent is escaped. `src/collect/collector.test.ts` checks an escaped agent against an inherited cap, and two agents with and without the slice.
 3. Repeated refresh leaves one mounted screen, a stable listener count and the selected view. `src/ui/screen.test.tsx` drives the production mount function.
 4. No lane action reaches an effect while write mode is off, while a past sample is pinned, or when the current sample no longer names the confirmed line. `src/ui/agent.test.tsx` checks all four answers and `src/model/actions.test.ts` pins each command.
 5. Every host-specific name ships a systemd user-session default, and write mode ships off. `src/config/config.test.ts` checks both.
@@ -62,6 +62,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [D006](../decisions/D006-settings-save-writes-only-changed-keys.md): Settings saves only changed keys, and agent-tool edits go to the shared overlay.
 - [D007](../decisions/D007-scratch-scan-duty.md): scratch traversal runs on its own thread under a duty cycle, rather than keeping a filesystem index.
 - [D008](../decisions/D008-process-reads-on-their-own-thread.md): processes are read on a thread the collector keeps, one file at a time, trading the 20 ms elapsed fixture target for lower processor time.
+- [D009](../decisions/D009-agent-slice-unit-file.md): a slice whose unit file exists is present before its group does, so a defined, inactive agent slice still holds agents to it.
 
 ## Topics
 

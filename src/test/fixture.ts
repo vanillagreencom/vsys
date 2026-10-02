@@ -163,6 +163,7 @@ export function capabilitySnapshot(): Capability[] {
       "io-stat",
       "scrub",
       "smart",
+      "agent-slice",
     ] as CapabilityId[]
   ).map((id) => ({
     id,

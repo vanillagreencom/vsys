@@ -199,6 +199,53 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
   expect(said(other)).not.toContain("shadowed");
 });
 
+test("the unconfined card names a launcher only where a slice and markers exist", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: "a", pids: [11], unconfined: true })];
+  s.procs = [
+    processSnapshot({ pid: 11, group: "/app.slice/tmux-spawn-4.scope" }),
+  ];
+  const slice = (failure: "unreadable" | null) =>
+    s.capabilities.map((cap) =>
+      cap.id === "agent-slice"
+        ? { ...cap, available: failure === null, failure }
+        : cap,
+    );
+  const rows: [string, Snapshot["capabilities"], string[], boolean][] = [
+    ["slice and markers", slice(null), c.capMarkers, true],
+    ["no markers configured", slice(null), [], false],
+    // A slice vsys could not read still raises the card, but nothing says a
+    // launcher exists to have placed the agent there.
+    ["unreadable slice", slice("unreadable"), c.capMarkers, false],
+    // A sample stored before the probe still names its slice's launcher.
+    [
+      "unrecorded slice",
+      s.capabilities.filter((cap) => cap.id !== "agent-slice"),
+      c.capMarkers,
+      true,
+    ],
+  ];
+  for (const [name, capabilities, capMarkers, launcher] of rows) {
+    const card = attention(
+      { ...s, capabilities },
+      { ...c, capMarkers },
+      { basePath: base },
+    ).find((item) => item.id === "unconfined");
+    expect({
+      name,
+      bare: said(card).includes("Launched bare"),
+      next: card?.next.includes("launcher"),
+      command: card?.command,
+    }).toEqual({
+      name,
+      bare: launcher,
+      next: launcher,
+      command: "systemd-run --user --slice=agents.slice --scope -- claude",
+    });
+  }
+});
+
 test("a saturated disk card names the lane, its linkers and a read command", () => {
   const c = defaults();
   const s = emptySnapshot();

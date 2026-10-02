@@ -8,8 +8,9 @@ import {
   ownPaneMark,
   parentChain,
   processTree,
+  sliceCompared,
 } from "./lanes";
-import type { Lane } from "./types";
+import type { Capability, Lane } from "./types";
 
 /** What one tmux read gave, defaulting to a vsys that draws in no pane. */
 const tmuxRead = (byId: Map<string, PaneAddress>, socket = "", own = "") => ({
@@ -691,4 +692,61 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
   // The lane keeps the address the reader configured either way: the map is
   // what vsys lost, not what the reader typed.
   expect(refused[1]?.pane).toBe(ownAt);
+});
+
+test("only a slice the probe found absent or masked turns off the escape comparison", () => {
+  const c = defaults();
+  const probe = (failure: Capability["failure"]): Capability[] => [
+    {
+      id: "agent-slice",
+      available: failure === null,
+      failure,
+      source: "/fixture/agents.slice",
+      detail: "",
+    },
+  ];
+  // A non-scope group in a slice nothing watches: only the escape rule, or the
+  // absence of a slice, makes this agent a lane at all.
+  const agent = processSnapshot({
+    pid: 7,
+    group: "/background.slice/a.service",
+  });
+  const helper = processSnapshot({
+    pid: 8,
+    group: "/background.slice/b.service",
+    tool: null,
+  });
+  const rows: [string, Capability[], boolean, [string, boolean][]][] = [
+    ["present", probe(null), true, [["/background.slice/a.service", true]]],
+    // A slice vsys could not read, and a sample recorded before the probe,
+    // keep the comparison: a failed read never silences an escaped agent.
+    [
+      "unreadable",
+      probe("unreadable"),
+      true,
+      [["/background.slice/a.service", true]],
+    ],
+    ["unrecorded", [], true, [["/background.slice/a.service", true]]],
+    [
+      "absent",
+      probe("absent"),
+      false,
+      [["/background.slice/a.service", false]],
+    ],
+    // systemd never starts a masked slice, so no agent is outside it.
+    [
+      "masked",
+      probe("masked"),
+      false,
+      [["/background.slice/a.service", false]],
+    ],
+  ];
+  for (const [name, capabilities, compared, shown] of rows)
+    expect({
+      name,
+      compared: sliceCompared(capabilities),
+      lanes: lanes([], [agent, helper], c, 0, undefined, capabilities).map(
+        (l) => [l.id, l.unconfined],
+      ),
+    }).toEqual({ name, compared, lanes: shown });
 });

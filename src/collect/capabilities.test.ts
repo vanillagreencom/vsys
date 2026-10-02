@@ -1,10 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Capability, CapabilityId } from "../model/types";
-import { fixture } from "../test/fixture";
-import { capabilityReason } from "../ui/settings";
-import { probeCapabilities, probeTmux } from "./capabilities";
+import { fixture, groupSnapshot } from "../test/fixture";
+import { capabilityOffer, capabilityReason } from "../ui/settings";
+import {
+  probeAgentSlice,
+  probeCapabilities,
+  probeTmux,
+  unitDirs,
+} from "./capabilities";
 import { Collector } from "./collector";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
@@ -204,4 +210,210 @@ test("a tmux with no server running is not a missing tmux", () => {
   expect(missing?.failure).toBe("absent");
   // And a server that answers is no failure of either kind.
   expect(probeTmux(["sh", "-c", "exit 0"])).toBeNull();
+});
+
+test("the agent slice is present, defined, absent, or unknown", () => {
+  const nested = "cgroup/user.slice/agents.slice";
+  const gone = (root: string) =>
+    rmSync(join(root, "cgroup/agents.slice"), { recursive: true });
+  // A link to itself fails with an errno whatever user runs the test, so a
+  // path that exists and cannot be told is planted the same way everywhere.
+  const loop = (path: string) => {
+    mkdirSync(join(path, ".."), { recursive: true });
+    symlinkSync(path, path);
+  };
+  const rows: {
+    name: string;
+    slice: string;
+    prepare: (root: string) => void;
+    groups: ReturnType<typeof groupSnapshot>[];
+    failure: Capability["failure"];
+    source: string;
+  }[] = [
+    {
+      name: "the fixture's own slice",
+      slice: "agents.slice",
+      prepare: () => {},
+      groups: [],
+      failure: null,
+      source: "cgroup/agents.slice",
+    },
+    {
+      name: "no group and no unit",
+      slice: "agents.slice",
+      prepare: gone,
+      groups: [],
+      failure: "absent",
+      source: "cgroup/agents.slice",
+    },
+    {
+      // systemd nests a dashed slice inside the slice its name prefixes.
+      name: "a dashed name",
+      slice: "agents-work.slice",
+      prepare: () => {},
+      groups: [],
+      failure: "absent",
+      source: "cgroup/agents.slice/agents-work.slice",
+    },
+    {
+      // The totals find a slice by name anywhere in the tree, so does this.
+      name: "a slice the walk read below another group",
+      slice: "agents.slice",
+      prepare: gone,
+      groups: [
+        groupSnapshot({
+          path: "user.slice/agents.slice",
+          name: "agents.slice",
+        }),
+      ],
+      failure: null,
+      source: nested,
+    },
+    {
+      name: "a group path that cannot be read",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        loop(join(root, "cgroup/agents.slice"));
+      },
+      groups: [],
+      failure: "unreadable",
+      source: "cgroup/agents.slice",
+    },
+    {
+      // systemd starts a slice with no install section only when a unit is
+      // placed in it, so a defined slice has no group until then (D009).
+      name: "a unit file and no group yet",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        mkdirSync(join(root, "user"), { recursive: true });
+        writeFileSync(join(root, "user/agents.slice"), "[Slice]\n");
+      },
+      groups: [],
+      failure: null,
+      source: "user/agents.slice",
+    },
+    {
+      name: "a drop-in directory and no group yet",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        mkdirSync(join(root, "control/agents.slice.d"), { recursive: true });
+      },
+      groups: [],
+      failure: null,
+      source: "control/agents.slice.d",
+    },
+    {
+      name: "a unit path that cannot be read",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        loop(join(root, "control/agents.slice"));
+      },
+      groups: [],
+      failure: "unreadable",
+      source: "control/agents.slice",
+    },
+    {
+      // A drop-in cannot mask, so one directory whose drop-in cannot be read
+      // does not outweigh another whose drop-in answers.
+      name: "a drop-in beside a drop-in path that cannot be read",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        loop(join(root, "user/agents.slice.d"));
+        mkdirSync(join(root, "control/agents.slice.d"), { recursive: true });
+      },
+      groups: [],
+      failure: null,
+      source: "control/agents.slice.d",
+    },
+    {
+      // `systemctl --user mask` links the unit file to /dev/null in a
+      // directory systemd reads first, which shadows the unit file a later
+      // directory holds; systemd never starts a masked slice.
+      name: "a masked unit file before a defined one",
+      slice: "agents.slice",
+      prepare: (root) => {
+        gone(root);
+        mkdirSync(join(root, "user"), { recursive: true });
+        symlinkSync("/dev/null", join(root, "user/agents.slice"));
+        mkdirSync(join(root, "control/agents.slice.d"), { recursive: true });
+        writeFileSync(join(root, "control/agents.slice"), "[Slice]\n");
+      },
+      groups: [],
+      failure: "masked",
+      source: "user/agents.slice",
+    },
+  ];
+  for (const row of rows) {
+    const f = setup();
+    row.prepare(f.root);
+    // The second directory is never created: a missing one is no answer.
+    const units = [
+      join(f.root, "user"),
+      join(f.root, "missing"),
+      join(f.root, "control"),
+    ];
+    const c = { ...f.config, agentSlice: row.slice };
+    const cap = probeAgentSlice(c, row.groups, units);
+    expect({
+      row: row.name,
+      id: cap.id,
+      available: cap.available,
+      failure: cap.failure,
+      source: cap.source,
+      // Only a slice with neither a group nor a unit is offered one.
+      offered: capabilityOffer(cap, c) !== null,
+    }).toEqual({
+      row: row.name,
+      id: "agent-slice",
+      available: row.failure === null,
+      failure: row.failure,
+      source: join(f.root, row.source),
+      offered: row.failure === "absent",
+    });
+  }
+});
+
+test("a slice that appears after vsys starts is present from the next sample", async () => {
+  const f = setup();
+  rmSync(join(f.config.cgroupRoot, "agents.slice"), { recursive: true });
+  const collector = new Collector(f.config, 100, 4096);
+  const before = byId((await collector.sample(1000)).capabilities);
+  expect(before.get("agent-slice")?.failure).toBe("absent");
+  // systemd starts the slice when the first unit is placed in it.
+  f.group("agents.slice");
+  const after = byId((await collector.sample(2000)).capabilities);
+  expect(after.get("agent-slice")?.available).toBe(true);
+});
+
+test("unit files are looked for where the user manager loads them, in its order", () => {
+  // In the order the user manager reads them, so the first holding a unit file
+  // is the one systemd uses. The system manager's own directories are not
+  // read: the agent slice belongs to the user manager, which never loads them.
+  const ordered = (config: string, data: string) => [
+    // Where the line Settings offers for a missing slice writes.
+    join(config, "systemd/user.control"),
+    join(config, "systemd/user"),
+    "/etc/systemd/user",
+    join(data, "systemd/user"),
+    "/usr/lib/systemd/user",
+  ];
+  const rows: [string, NodeJS.ProcessEnv, string[]][] = [
+    [
+      "XDG directories set",
+      { XDG_CONFIG_HOME: "/x/config", XDG_DATA_HOME: "/x/data" },
+      ordered("/x/config", "/x/data"),
+    ],
+    [
+      "XDG directories unset",
+      {},
+      ordered(join(homedir(), ".config"), join(homedir(), ".local/share")),
+    ],
+  ];
+  for (const [name, env, dirs] of rows)
+    expect({ name, dirs: unitDirs(env) }).toEqual({ name, dirs });
 });

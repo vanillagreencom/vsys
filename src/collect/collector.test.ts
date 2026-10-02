@@ -6,7 +6,10 @@ import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherCopy, launcherTrail } from "../model/launcher";
 import { laneText } from "../model/naming";
 import type { Proc } from "../model/types";
+import { causes, meters } from "../model/verdict";
+import { point } from "../store/point";
 import { fixture } from "../test/fixture";
+import { capabilityLine } from "../ui/settings";
 import { buildKind, toolName } from "./builds";
 import { Collector, createCollector } from "./collector";
 import { parseStat } from "./procs";
@@ -197,6 +200,89 @@ test("escaped agent and inherited dangerous cap appear as separate rule hits", a
     "memory-cap",
     "unconfined",
   ]);
+});
+test("an agent is escaped only on a machine that has the agent slice", async () => {
+  // Two agent CLIs, one in a watched slice and one in a slice nothing
+  // watches. Where the slice exists both run outside it; where it does not,
+  // both are still lanes, measured by their own scopes.
+  const rows = [
+    {
+      slice: "present",
+      unconfined: [true, true],
+      cause: true,
+      escaped: 2,
+      agents: 0,
+      // The slice's own page cache, which the fixture writes for every group.
+      cache: 4000,
+      line: "Agent slice: available",
+    },
+    {
+      slice: "absent",
+      unconfined: [false, false],
+      cause: false,
+      escaped: 0,
+      agents: 30,
+      // Each agent scope's own page cache.
+      cache: 8000,
+      line: "Agent slice: not available: no agent slice is defined or running",
+    },
+  ];
+  for (const row of rows) {
+    const f = setup();
+    if (row.slice === "absent")
+      rmSync(join(f.config.cgroupRoot, "agents.slice"), { recursive: true });
+    f.group("background.slice");
+    const scopes = [
+      [40, "app.slice/run-a.scope", 201000],
+      [41, "background.slice/run-b.scope", 101000],
+    ] as const;
+    for (const [pid, scope] of scopes) {
+      f.group(scope, [pid]);
+      f.proc(pid, scope);
+    }
+    const collector = new Collector(f.config, 100, 4096);
+    // An alert opens on the first sample that shows its rule and only then.
+    const first = await collector.sample(1000);
+    for (const [, scope, usage] of scopes)
+      f.write(
+        join(f.config.cgroupRoot, scope, "cpu.stat"),
+        `usage_usec ${usage}`,
+      );
+    const s = await collector.sample(2000);
+    const slice = s.capabilities.find((cap) => cap.id === "agent-slice");
+    if (!slice) throw new Error("agent-slice: no capability in the sample");
+    expect({
+      slice: row.slice,
+      errors: s.errors,
+      // The collector keeps the order the filesystem lists directories in,
+      // which differs between hosts, so lanes are compared by id.
+      lanes: s.lanes
+        .toSorted((a, b) => a.id.localeCompare(b.id))
+        .map((l) => [l.id, l.unconfined]),
+      cause: causes(s, f.config).some((x) => x.id === "unconfined"),
+      alert: first.alerts.some((a) => a.rule === "unconfined"),
+      agents: meters(s, f.config).find((m) => m.id === "cpu")?.values.agents,
+      cache: meters(s, f.config).find((m) => m.id === "memory")?.values.cache,
+      // What the history keeps for the sample says the same.
+      stored: [point(s, f.config).unconfined, point(s, f.config).agents],
+      line: capabilityLine(slice).startsWith(row.line),
+      source: slice.source,
+    }).toEqual({
+      slice: row.slice,
+      errors: [],
+      lanes: [
+        ["app.slice/run-a.scope", row.unconfined[0]],
+        ["background.slice/run-b.scope", row.unconfined[1]],
+      ],
+      cause: row.cause,
+      alert: row.cause,
+      agents: row.agents,
+      cache: row.cache,
+      stored: [row.escaped, row.agents],
+      line: true,
+      source: join(f.config.cgroupRoot, "agents.slice"),
+    });
+  }
 });
 test("process outside the configured root remains visible", async () => {
   const f = setup();
@@ -532,6 +618,38 @@ test("a settings change keeps the cache counts measured since vsys started", asy
     misses: 0,
     windowMs: 1000,
   });
+});
+
+test("the program's collector finds a slice defined only by a drop-in", async () => {
+  const f = setup();
+  rmSync(join(f.config.cgroupRoot, "agents.slice"), { recursive: true });
+  // What the line Settings offers writes, with no group started yet. Both XDG
+  // roots point into the fixture, so the host's own units are not read.
+  mkdirSync(join(f.root, "config/systemd/user.control/agents.slice.d"), {
+    recursive: true,
+  });
+  const prior = {
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+  };
+  process.env.XDG_CONFIG_HOME = join(f.root, "config");
+  process.env.XDG_DATA_HOME = join(f.root, "data");
+  const collector = await createCollector(f.config, false).finally(() => {
+    for (const [name, value] of Object.entries(prior))
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+  });
+  try {
+    const s = await collector.sample(1000);
+    expect(
+      s.capabilities.find((cap) => cap.id === "agent-slice"),
+    ).toMatchObject({
+      available: true,
+      source: join(f.root, "config/systemd/user.control/agents.slice.d"),
+    });
+  } finally {
+    collector.close();
+  }
 });
 
 /** Puts back what a test borrowed from vsys's own environment. */

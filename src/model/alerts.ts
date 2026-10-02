@@ -29,7 +29,7 @@ export class AlertEngine {
       hit(
         "unconfined",
         `${p.pid}:${p.start}:${p.tool}`,
-        escaped(p, c),
+        escaped(p, c, s.capabilities),
         `${p.tool} PID ${p.pid} runs outside ${c.agentSlice}`,
       );
     }
