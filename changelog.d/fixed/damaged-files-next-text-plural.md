@@ -1,0 +1,1 @@
+- The damaged-files card's next step now says "each of these filesystems" rather than "that filesystem" when the card names more than one.

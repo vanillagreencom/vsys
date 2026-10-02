@@ -1443,6 +1443,50 @@ test("a damage card known only from a remembered check never says the damage is 
   expect(said(gone)).toContain("no longer available");
 });
 
+test("a damaged-files card's next step matches the ways text's singular/plural framing", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const damaged = (fsid: string, mount: string) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+    });
+  };
+  damaged("a", "/a");
+  const one = present(
+    attention(s, c, { basePath: base }).find((i) => i.id === "damaged-files"),
+    "the one-filesystem damaged-files card",
+  );
+  expect(one.next).toContain("open the filesystem");
+  expect(one.next).not.toContain("each of these filesystems");
+  expect(one.target).toEqual({ kind: "path", path: "a" });
+  // A second damaged filesystem turns the title and ways plural; `next` and
+  // `target` must still agree with it, rather than the first filesystem's
+  // singular wording, and `target` keeps pointing at the first filesystem.
+  damaged("b", "/b");
+  const two = present(
+    attention(s, c, { basePath: base }).find((i) => i.id === "damaged-files"),
+    "the multi-filesystem damaged-files card",
+  );
+  expect(two.next).toContain("open each of these filesystems");
+  expect(two.next).not.toContain("open the filesystem");
+  expect(two.target).toEqual({ kind: "path", path: "a" });
+});
+
 test("a new-errors card tells only the errors newer than the last check", () => {
   const c = defaults();
   const s = emptySnapshot();
