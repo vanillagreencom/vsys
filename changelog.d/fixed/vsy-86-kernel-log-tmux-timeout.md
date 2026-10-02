@@ -1,0 +1,1 @@
+- vsys no longer hangs on every future sample when journalctl stalls or tmux's server wedges; both now give up after a bounded wait.
