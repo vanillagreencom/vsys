@@ -671,10 +671,16 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         # sibling directory (same numeric prefix, no separator) must not
         # false-positive the match and block a reap that should happen --
         # "agent-confine-100-2000" is not inside "agent-confine-100-200".
+        # The fourth row proves the match still holds across a doubled
+        # separator: a trailing slash on AGENT_TMPDIR makes agent-confine's
+        # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a "/"
+        # in the live process's real TMPDIR, while os.path.join (this
+        # candidate path's source) never does.
         rows = [
             ("a live process's TMPDIR resolves here", "in-use", False),
             ("a live process's environ cannot be read", "unreadable", False),
             ("a live process's TMPDIR names an unrelated sibling", "sibling", True),
+            ("a live process's TMPDIR has a doubled separator", "double-slash", False),
         ]
         for name, kind, should_remove in rows:
             with self.subTest(name=name):
@@ -696,12 +702,14 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                         os.utime(moved, (old_mtime, old_mtime))
                         old_read = self.w.read
 
-                        def flaky_read(path, default=None, kind=kind, moved=moved):
+                        def flaky_read(path, default=None, kind=kind, moved=moved, scratch_dir=scratch_dir):
                             if str(path) == "/proc/555/environ":
                                 if kind == "in-use":
                                     return f"TMPDIR={moved}\0OTHER=1\0"
                                 if kind == "sibling":
                                     return f"TMPDIR={moved}0\0OTHER=1\0"
+                                if kind == "double-slash":
+                                    return f"TMPDIR={scratch_dir}//agent-confine-100-200\0OTHER=1\0"
                                 return default  # read() swallows OSError (process gone) into default
                             return old_read(path, default)
 
@@ -761,6 +769,84 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 self.assertFalse(moved.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def test_run_reaps_scratch_with_a_fresh_scan_not_plan_procs(self):
+        # run() takes one scan() snapshot up front for plan()'s move
+        # decisions (move() itself does not run until much later in the
+        # tick). Passing that same early snapshot to reap_scratch_dirs
+        # reopens the staleness gap the liveness check exists to close: a
+        # process that starts between the snapshot and the reap call --  a
+        # prior tick's moved worker spawning a new child, say -- is simply
+        # absent from it, which _scratch_in_use cannot tell apart from "no
+        # such process". The call site must take a fresh snapshot instead.
+        text = WARDEN.read_text()
+        self.assertEqual(text.count("reap_scratch_dirs(correct, scan())\n"), 1)
+        self.assertEqual(text.count("reap_scratch_dirs(correct, procs)\n"), 0)
+
+    def test_reap_scratch_dirs_stale_snapshot_misses_a_new_live_pid(self):
+        # Behavioral proof, against a real subprocess and its real
+        # /proc/<pid>/environ rather than a faked pid: a snapshot that does
+        # not include that process's pid (as if taken before it started)
+        # lets its directory be reaped out from under it; a snapshot that
+        # does include it (as scan() would, once the process has started --
+        # proven below -- which is what the fixed run() call site passes)
+        # keeps the directory. This is the mechanism
+        # test_run_reaps_scratch_with_a_fresh_scan_not_plan_procs proves the
+        # call site relies on. The two procs dicts here are {} and
+        # {pid: None} rather than a full self.w.scan() of this shared
+        # machine's whole process list, which would make the "unknown"
+        # branch (an unrelated live pid's environ read losing a race against
+        # that pid exiting) nondeterministic and unrelated to what this test
+        # is proving.
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_cg, old_parent = self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT
+            self.w.CG_ROOT = base / "cg"
+            self.w.AGENT_TMPDIR_PARENT = str(base / "scratch")
+            try:
+                agent_slice = self.w.CG_ROOT / self.w.SLICE
+                agent_slice.mkdir(parents=True)
+                scratch_dir = Path(self.w.AGENT_TMPDIR_PARENT)
+                scratch_dir.mkdir(parents=True)
+                moved = scratch_dir / "agent-confine-100-200"
+                moved.mkdir()
+                old_mtime = time.time() - self.w.SCRATCH_GRACE - 1
+                os.utime(moved, (old_mtime, old_mtime))
+
+                stale = {}  # as if taken before the process below started
+                env = {**os.environ, "TMPDIR": str(moved)}
+                proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"], env=env)
+                try:
+                    # Real wait: the child needs to exec before its environ
+                    # reflects the new process image rather than the parent's.
+                    environ_path = f"/proc/{proc.pid}/environ"
+                    deadline = time.monotonic() + 5
+                    while True:
+                        content = self.w.read(environ_path, "")
+                        if f"TMPDIR={moved}" in content.split("\0"):
+                            break
+                        if time.monotonic() >= deadline:
+                            self.fail("subprocess did not exec in time for its environ to carry TMPDIR")
+                        time.sleep(0.02)
+                    # scan() itself -- what the fixed run() call site uses --
+                    # really does see the process once it has started.
+                    self.assertIn(proc.pid, self.w.scan())
+                    fresh = {proc.pid: None}
+
+                    removed = self.w.reap_scratch_dirs(True, stale)
+                    self.assertEqual(removed, ["agent-confine-100-200"])
+                    self.assertFalse(moved.is_dir())
+
+                    moved.mkdir()
+                    os.utime(moved, (old_mtime, old_mtime))
+                    removed = self.w.reap_scratch_dirs(True, fresh)
+                    self.assertEqual(removed, [])
+                    self.assertTrue(moved.is_dir())
+                finally:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+            finally:
+                self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
 
     def test_scope_units_skips_one_vanished_entry(self):
         # scope_units() must not discard scopes it already read just because

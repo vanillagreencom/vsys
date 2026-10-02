@@ -801,15 +801,24 @@ def _scratch_in_use(path, procs):
     directory regardless of any other pid's unreadable environ. "unknown"
     means at least one live pid's TMPDIR could not be ruled out -- never
     read as proof that pid has no user of this directory. "free" means
-    every live pid's TMPDIR was read and none points here."""
-    prefix = path + os.sep
+    every live pid's TMPDIR was read and none points here. Both sides are
+    normalized before comparing: a trailing slash on AGENT_TMPDIR makes
+    agent-confine's bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit")
+    double a separator in the live process's real TMPDIR string, while
+    os.path.join (path's caller) never does; an unnormalized compare would
+    miss that live match and wrongly read the directory as free."""
+    candidate = os.path.normpath(path)
+    prefix = candidate + os.sep
     unknown = False
     for pid in procs:
         tmpdir = _proc_tmpdir(pid)
         if tmpdir is None:
             unknown = True
             continue
-        if tmpdir == path or tmpdir.startswith(prefix):
+        if not tmpdir:
+            continue
+        resolved = os.path.normpath(tmpdir)
+        if resolved == candidate or resolved.startswith(prefix):
             return "in-use"
     return "unknown" if unknown else "free"
 
@@ -817,18 +826,22 @@ def _scratch_in_use(path, procs):
 def reap_scratch_dirs(correct, procs):
     """Remove a per-scope scratch directory agent-confine created under
     AGENT_TMPDIR once its scope unit is gone from agents.slice AND no live
-    process this user owns still has TMPDIR pointing there. The scope-gone
-    check alone is not enough: move() (the "nested session" plan() branch)
-    relocates a process into a new scope by cgroup membership only, so a
-    moved child keeps the TMPDIR string naming its PARENT's original
-    agent-confine scope. When that parent later exits, its now-empty scope
-    is garbage-collected out of agents.slice even though the moved child is
-    still using the directory as its live TMPDIR. The launcher execs
-    systemd-run and cannot run code after its own scope ends, so this pass
-    -- which already enumerates agents.slice scopes via scope_units() for
-    enforce_task_caps -- is the only thing that can clean these up. Without
-    the warden installed the directories stay until removed by hand
-    (docs/architecture/warden.md). Returns the directory names removed."""
+    process this user owns still has TMPDIR pointing there. procs must be a
+    snapshot taken immediately before this call, not reused from earlier in
+    the tick: a process that started since an older snapshot was taken is
+    simply absent from it, which _scratch_in_use cannot tell apart from "no
+    such process". The scope-gone check alone is not enough: move() (the
+    "nested session" plan() branch) relocates a process into a new scope by
+    cgroup membership only, so a moved child keeps the TMPDIR string naming
+    its PARENT's original agent-confine scope. When that parent later exits,
+    its now-empty scope is garbage-collected out of agents.slice even though
+    the moved child is still using the directory as its live TMPDIR. The
+    launcher execs systemd-run and cannot run code after its own scope ends,
+    so this pass -- which already enumerates agents.slice scopes via
+    scope_units() for enforce_task_caps -- is the only thing that can clean
+    these up. Without the warden installed the directories stay until
+    removed by hand (docs/architecture/warden.md). Returns the directory
+    names removed."""
     try:
         entries = os.listdir(AGENT_TMPDIR_PARENT)
     except OSError:
@@ -2294,7 +2307,16 @@ def run(correct):
         if only is None:
             try:
                 enforce_task_caps(correct)
-                reap_scratch_dirs(correct, procs)
+                # A fresh scan, not the plan-time procs above: a worker this
+                # tick's plan() has not even moved yet (move() runs later,
+                # after this block) can be a prior tick's moved child that
+                # spawned a grandchild since procs was captured. That
+                # grandchild's TMPDIR would be invisible to _scratch_in_use
+                # against the stale snapshot. A sub-second window remains
+                # (scan() itself is not atomic); SCRATCH_GRACE and
+                # ORPHAN_GRACE already accept the same class of residual risk
+                # elsewhere in this file.
+                reap_scratch_dirs(correct, scan())
                 near, unknown_near, near_complete = warn_near_cap()
                 record_near_events(st, near, unknown_near, near_complete, now=tick_now)
                 for unit, kind, human in near:
