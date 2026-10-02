@@ -121,9 +121,11 @@ export async function mount(
   /**
    * Lets the deferred passes the last render set land, then draws where they
    * left the screen. A row that has just grown does not know its size until
-   * the layout after the render that grew it, so a screen measures it again on
-   * a timer. Timers of equal delay run in the order they were set, so the one
-   * set here runs after every pass already waiting.
+   * the layout after the render that grew it, so a pass reads it again on the
+   * renderer's own next frame rather than a timer. Under this harness's
+   * default uncapped renderer that frame has already fired, inside the render
+   * the triggering `press` or `update` call made, so what remains here is one
+   * more render to draw the correction that frame already made.
    */
   const settle = async () => {
     await act(async () => {
