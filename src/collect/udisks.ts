@@ -222,6 +222,11 @@ export async function readUdisks(
     };
   }
   const refusals: string[] = [];
+  let firstRefusal: string | undefined;
+  const noteRefusal = (detail: string) => {
+    refusals.push(detail);
+    firstRefusal ??= detail;
+  };
   const drives = await Promise.all(
     targets.map(async ({ name, model, drive, iface }) => {
       let answer: Awaited<ReturnType<Run>>;
@@ -232,11 +237,11 @@ export async function readUdisks(
         );
       } catch (error) {
         if (!(error instanceof BusctlTimeout)) throw error;
-        refusals.push(error.message);
+        noteRefusal(error.message);
         return { name, model, written: null };
       }
       if (answer.status !== 0) {
-        refusals.push(answer.error.trim());
+        noteRefusal(answer.error.trim());
         return { name, model, written: null };
       }
       try {
@@ -246,14 +251,16 @@ export async function readUdisks(
             : ataWritten(answer.out);
         return { name, model, written };
       } catch (error) {
-        refusals.push(String(error));
+        noteRefusal(String(error));
         return { name, model, written: null };
       }
     }),
   );
   const outcome: Outcome =
-    targets.length > 0 && refusals.length === targets.length
-      ? { failure: "incomplete", detail: refusals[0] }
+    targets.length > 0 &&
+    refusals.length === targets.length &&
+    firstRefusal !== undefined
+      ? { failure: "incomplete", detail: firstRefusal }
       : null;
   return { drives, outcome };
 }
