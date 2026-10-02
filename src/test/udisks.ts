@@ -64,6 +64,7 @@ export function fakeBus(
         out: JSON.stringify({ type: "a{oa{sa{sv}}}", data: [objects] }),
         error: "",
         status: 0,
+        timedOut: false,
       };
     const d = drives.find((x) =>
       argv.some((a) => a.endsWith(`/${x.name}_drive`)),
@@ -71,11 +72,17 @@ export function fakeBus(
     if (!d) throw new Error(`fakeBus: no drive for ${argv.join(" ")}`);
     const a = d.attributes as { refuse?: string };
     if (typeof a === "object" && a !== null && typeof a.refuse === "string")
-      return { out: "", error: `Call failed: ${a.refuse}\n`, status: 1 };
+      return {
+        out: "",
+        error: `Call failed: ${a.refuse}\n`,
+        status: 1,
+        timedOut: false,
+      };
     return {
       out: JSON.stringify({ type: "a{sv}", data: [d.attributes] }),
       error: "",
       status: 0,
+      timedOut: false,
     };
   };
   return run;
@@ -85,4 +92,5 @@ export const noBus: typeof spawnText = async () => ({
   out: "",
   error: "Failed to connect to bus: No such file or directory\n",
   status: 1,
+  timedOut: false,
 });

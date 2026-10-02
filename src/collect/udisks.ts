@@ -20,7 +20,7 @@
  */
 
 import type { Outcome } from "./capabilities";
-import { spawnText } from "./io";
+import { killGraceMs, spawnText } from "./io";
 
 const service = "org.freedesktop.UDisks2";
 const nvmeInterface = "org.freedesktop.UDisks2.NVMe.Controller";
@@ -50,18 +50,25 @@ export const udisksHoldMs = 10 * 60 * 1000;
 export const udisksTimeoutMs = 5000;
 /** A busctl call that did not answer within its deadline. */
 class BusctlTimeout extends Error {}
+/** How `timeout did not answer` reads for a given deadline, in one place. */
+const timeoutDetail = (ms: number) => `busctl did not answer within ${ms} ms`;
 /**
- * Bound a call whatever it does with the timeout it is given: a real
- * `spawnText` kills its child on that signal, but this also abandons an
- * injected `run` that never resolves, so the sample is never the one left
- * waiting.
+ * A margin above the longest a real `spawnText(argv, ms)` can take once its
+ * own deadline fires: `ms` to the kill, `killGraceMs` more to the SIGKILL
+ * escalation, plus a cushion for the child actually exiting. `withDeadline`'s
+ * own clock stays above that span so it never fires before a real call's own
+ * `timedOut` outcome does — racing the same `ms` against spawnText's own
+ * timer let a real timeout resolve as an ordinary, unexplained result purely
+ * by which timer callback ran first. This margin exists only to abandon an
+ * injected `run` that never resolves at all, never to detect a real timeout.
  */
+const deadlineMarginMs = killGraceMs + 500;
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new BusctlTimeout(`busctl did not answer within ${ms} ms`)),
-      ms,
+      () => reject(new BusctlTimeout(timeoutDetail(ms))),
+      ms + deadlineMarginMs,
     );
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
@@ -220,6 +227,11 @@ async function listUdisks(
       },
     };
   }
+  if (listed.timedOut)
+    return {
+      targets: null,
+      outcome: { failure: "unreadable", detail: timeoutDetail(timeoutMs) },
+    };
   if (listed.status !== 0)
     return { targets: null, outcome: classifyBusctl(listed.error) };
   try {
@@ -261,6 +273,10 @@ async function queryDrives(
         );
       } catch (error) {
         noteRefusal(error instanceof Error ? error.message : String(error));
+        return { name, model, written: null };
+      }
+      if (answer.timedOut) {
+        noteRefusal(timeoutDetail(timeoutMs));
         return { name, model, written: null };
       }
       if (answer.status !== 0) {

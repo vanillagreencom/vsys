@@ -1,0 +1,1 @@
+- A udisks SMART query that stalls past its deadline is now always reported as a timeout, instead of sometimes showing as an unexplained empty result.

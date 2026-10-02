@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { CapabilityFailure } from "../model/types";
 import { fakeBus, noBus } from "../test/udisks";
+import { spawnText } from "./io";
 import {
   ataWritten,
   classifyBusctl,
@@ -133,6 +134,7 @@ test("a source that could not be asked, or answered for no drive, says why", asy
     out: "{",
     error: "",
     status: 0,
+    timedOut: false,
   }));
   expect(garbled.outcome?.failure).toBe("malformed");
   // One refusal among two drives keeps both rows and is no outcome; refusals
@@ -184,6 +186,23 @@ test("a block device with no drive, and a drive with no SMART interface, are exc
   // to ask, and sdb's drive answers on neither SMART interface.
   expect(calls.slice(1)).toHaveLength(1);
 });
+test("a real child that outlives its deadline is read as an explained timeout, not an ordinary unexplained refusal", async () => {
+  // A real busctl, not an unresolved promise: `trap "" TERM` makes it immune
+  // to spawnText's own SIGTERM, so it is still running when spawnText's
+  // deadline fires. Its outcome rests on spawnText's own `timedOut`, never on
+  // which of two same-valued timers happened to fire first, so the explained
+  // timeout lands every time, not only when the race broke vsys's way.
+  const stalled = async (_argv: string[], timeoutMs?: number) =>
+    spawnText(["bash", "-c", 'trap "" TERM; sleep 30'], timeoutMs);
+  const reading = await readUdisks(stalled, 50);
+  expect(reading).toEqual({
+    drives: [],
+    outcome: {
+      failure: "unreadable",
+      detail: "busctl did not answer within 50 ms",
+    },
+  });
+});
 test("a listing that never answers is abandoned at the deadline, not left hanging", async () => {
   const reading = await readUdisks(hangs, 10);
   expect(reading).toEqual({
@@ -211,6 +230,27 @@ test("a drive whose SMART query fails to launch keeps its row, written unknown, 
   expect(reading).toEqual({
     drives: [{ name: "sda", model: "B", written: null }],
     outcome: { failure: "incomplete", detail: launchFailure.message },
+  });
+});
+test("a drive query spawnText reports timed out is read as a timeout, even though its status and empty stderr alone look like an ordinary SIGTERM exit", async () => {
+  const calls: string[][] = [];
+  const run = fakeBus(
+    [{ name: "sda", model: "B", kind: "ata", attributes: ata(10, 3) }],
+    calls,
+  );
+  const reading = await readUdisks(async (argv) => {
+    if (argv.includes("GetManagedObjects")) return run(argv);
+    // The exact ambiguity a deadline-killed busctl can leave behind: the
+    // same status and empty stderr an ordinary SIGTERM exit would have.
+    // `timedOut` is the one field telling this apart from that.
+    return { out: "", error: "", status: 143, timedOut: true };
+  }, 50);
+  expect(reading).toEqual({
+    drives: [{ name: "sda", model: "B", written: null }],
+    outcome: {
+      failure: "incomplete",
+      detail: "busctl did not answer within 50 ms",
+    },
   });
 });
 test("a drive whose SMART query never answers keeps its row, written unknown", async () => {

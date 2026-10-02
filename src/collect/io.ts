@@ -92,7 +92,7 @@ export class Reader {
  * otherwise leave `child.exited` pending past its own `timeoutMs`, which is
  * the one failure this grace period closes off.
  */
-const killGraceMs = 2000;
+export const killGraceMs = 2000;
 
 /**
  * Run a program and keep everything it said. The exit status is returned
@@ -103,11 +103,16 @@ const killGraceMs = 2000;
  * critical path must not wait forever on a wedged subprocess. SIGTERM alone
  * cannot promise that, so the deadline sends it first and escalates to
  * SIGKILL after `killGraceMs` for a child still running.
+ *
+ * `timedOut` is set the moment that deadline fires, which can still produce
+ * the same `status` an ordinary exit would (143 from SIGTERM, say). It is
+ * the one field that tells a caller which happened, so a caller never has to
+ * race a second clock against this one to find out.
  */
 export async function spawnText(
   argv: string[],
   timeoutMs?: number,
-): Promise<{ out: string; error: string; status: number }> {
+): Promise<{ out: string; error: string; status: number; timedOut: boolean }> {
   const child = Bun.spawn(argv, {
     stdin: "ignore",
     stdout: "pipe",
@@ -115,8 +120,10 @@ export async function spawnText(
   });
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let escalateTimer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   if (timeoutMs !== undefined)
     killTimer = setTimeout(() => {
+      timedOut = true;
       child.kill();
       escalateTimer = setTimeout(() => child.kill("SIGKILL"), killGraceMs);
     }, timeoutMs);
@@ -126,7 +133,7 @@ export async function spawnText(
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    return { out, error, status };
+    return { out, error, status, timedOut };
   } finally {
     clearTimeout(killTimer);
     clearTimeout(escalateTimer);
