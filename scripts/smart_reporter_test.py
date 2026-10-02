@@ -64,6 +64,25 @@ def bun() -> str:
     return path
 
 
+# Every external tool install uses besides what run_install already stubs
+# (curl, install, systemctl, systemd-tmpfiles, smartctl) and the checksum
+# tool under test: symlinked in so a checksum_tool case can exclude the
+# system PATH, and so hide sha256sum and shasum from it, without losing
+# these.
+RESTRICTED_TOOLS = ("bash", "rm", "cut", "head", "sed", "mktemp", "basename", "cp")
+
+
+def restricted_system_bin(base: Path) -> Path:
+    sys_bin = base / "sysbin"
+    sys_bin.mkdir()
+    for name in RESTRICTED_TOOLS:
+        found = shutil.which(name)
+        if found is None:
+            raise AssertionError(f"{name}=missing: the installer needs it")
+        (sys_bin / name).symlink_to(found)
+    return sys_bin
+
+
 def parse(report: Path, home: Path) -> dict:
     """The report as vsys reads it."""
     done = subprocess.run(
@@ -131,16 +150,9 @@ esac
 REPORTER_FILES = ("vsys-smart-report", "vsys-smart-report.service", "vsys-smart-report.timer", "vsys-smart.conf")
 
 
-def reporter_sums(**overrides: str) -> str:
-    """The checksums a release publishing the checkout's own files would
-    carry, except a name given in overrides checksums that text instead: a
-    test corrupting one downloaded file still needs the others, and that
-    one, to pass checksum verification before it reaches its own guard.
-    """
-    return "".join(
-        f"{hashlib.sha256(overrides[name].encode() if name in overrides else (REPORTER / name).read_bytes()).hexdigest()}  {name}\n"
-        for name in REPORTER_FILES
-    )
+def reporter_sums() -> str:
+    """The checksums a release publishing the checkout's own files would carry."""
+    return "".join(f"{hashlib.sha256((REPORTER / name).read_bytes()).hexdigest()}  {name}\n" for name in REPORTER_FILES)
 
 
 class InstallTest(unittest.TestCase):
@@ -149,6 +161,7 @@ class InstallTest(unittest.TestCase):
         base: Path,
         *,
         smartctl: bool = True,
+        checksum_tool: str = "sha256sum",
         fail_download: str = "",
         fail_sums: bool = False,
         sums_text: str | None = None,
@@ -159,6 +172,12 @@ class InstallTest(unittest.TestCase):
         """version=None leaves VSYS_VERSION unset, so install resolves the tag
         itself from the stubbed GitHub API, the same lookup the scrub-reporter
         installer uses.
+
+        checksum_tool="sha256sum" (default) runs with the system PATH, where
+        sha256sum resolves first. "shasum" and "none" instead exclude the
+        system PATH, reaching only RESTRICTED_TOOLS plus, for "shasum", a
+        stub of that name wrapping the real sha256sum, so neither tool
+        resolves for "none" and only shasum does for "shasum".
         """
         bin_dir = base / "bin"
         bin_dir.mkdir()
@@ -169,6 +188,18 @@ class InstallTest(unittest.TestCase):
             stub(bin_dir, name, record)
         if smartctl:
             stub(bin_dir, "smartctl", record)
+        if checksum_tool == "shasum":
+            sha256sum = shutil.which("sha256sum")
+            if sha256sum is None:
+                raise AssertionError("sha256sum=missing: the shasum-only case wraps the real tool")
+            stub(
+                bin_dir,
+                "shasum",
+                f"""[[ $1 == -a && $2 == 256 ]] || exit 2
+sum=$("{sha256sum}" "$3" | cut -d' ' -f1)
+printf '%s  %s\\n' "$sum" "$3"
+""",
+            )
         sums_path = base / "SHA256SUMS"
         sums_path.write_text(sums_text if sums_text is not None else reporter_sums())
         sums_fetch = "exit 22" if fail_sums else f'cp "{sums_path}" "$4"'
@@ -197,8 +228,13 @@ esac
 """,
         )
         # The system directories come after the stubs only where the case
-        # needs a real tool; with no smartctl the installer stops before any.
-        path = f"{bin_dir}:/usr/bin:/bin" if smartctl else str(bin_dir)
+        # needs a real tool unaffected by checksum_tool; with no smartctl the
+        # installer stops before any, and a non-default checksum_tool needs
+        # sha256sum itself kept off the path.
+        if not smartctl or checksum_tool != "sha256sum":
+            path = f"{bin_dir}:{restricted_system_bin(base)}"
+        else:
+            path = f"{bin_dir}:/usr/bin:/bin"
         env_extra = {} if version is None else {"VSYS_VERSION": version}
         done = subprocess.run(
             [bash(), "-s"],
@@ -280,6 +316,23 @@ esac
             self.assertEqual(done.returncode, 1)
             self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: command=smartctl missing")
             self.assertEqual(calls, [])
+
+    def test_a_system_with_only_shasum_still_installs(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), checksum_tool="shasum")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            installs = [call.split() for call in calls if call.startswith("install ")]
+            self.assertEqual([Path(call[2]).name for call in installs], list(REPORTER_FILES))
+
+    def test_neither_checksum_tool_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), checksum_tool="none")
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(
+                done.stderr.splitlines()[0],
+                "smart-reporter: this installer needs sha256sum or shasum to verify the download.",
+            )
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_a_failed_download_installs_nothing(self) -> None:
         with scratch() as tmp:
