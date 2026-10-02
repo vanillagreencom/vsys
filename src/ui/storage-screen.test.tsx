@@ -3,7 +3,11 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { defaults } from "../config/config";
 import { volumesByDevice } from "../model/integrity";
-import type { ScratchOrigin, Snapshot } from "../model/types";
+import type {
+  CapabilityFailure,
+  ScratchOrigin,
+  Snapshot,
+} from "../model/types";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
@@ -18,6 +22,7 @@ import {
   type StorageItem,
   scratchSummary,
   storageItems,
+  udisksText,
   volumeLevel,
 } from "./storage-screen";
 import { ui } from "./theme";
@@ -850,38 +855,6 @@ test("drive lifetime writes name their source, and a machine with neither source
       ],
       hides: ["9.1 TiB"],
     },
-    {
-      name: "udisks answered for no drive",
-      snapshot: lifetimeSnapshot("absent", [unknownDrive], {
-        failure: "incomplete",
-        detail: "Access denied by UDisks2 (polkit)",
-      }),
-      shows: [
-        "udisks2 answered for no drive",
-        "Access denied by UDisks2 (polkit)",
-      ],
-      hides: [
-        "not in the expected format",
-        "not on the system bus",
-        "refused to answer",
-      ],
-    },
-    {
-      name: "udisks reply is malformed",
-      snapshot: lifetimeSnapshot("absent", [unknownDrive], {
-        failure: "malformed",
-        detail: "SyntaxError: Unexpected end of JSON input",
-      }),
-      shows: [
-        "udisks2's answer is not in the expected format",
-        "SyntaxError: Unexpected end of JSON input",
-      ],
-      hides: [
-        "answered for no drive",
-        "not on the system bus",
-        "refused to answer",
-      ],
-    },
   ];
   for (const row of rows) {
     const t = await mount(row.snapshot, c, { width: 200, height: 60 });
@@ -918,6 +891,59 @@ test("drive lifetime writes name their source, and a machine with neither source
     expect(elsewhere.frame()).not.toContain(driveReporterInstall);
   } finally {
     await elsewhere.close();
+  }
+});
+
+test("udisksText gives every CapabilityFailure, and the null outcome, its own sentence", () => {
+  const detail = "unit-test detail";
+  // The fragment each failure's sentence is known by. unreadable and masked
+  // share one switch branch and so share one fragment by design.
+  const fragmentByFailure: Record<CapabilityFailure, string> = {
+    absent: "not on the system bus either",
+    unreadable: "refused to answer",
+    masked: "refused to answer",
+    incomplete: "answered for no drive",
+    malformed: "not in the expected format",
+  };
+  const nullFragment = "answered in its place";
+  const allFragments = [
+    nullFragment,
+    ...new Set(Object.values(fragmentByFailure)),
+  ];
+  const rows: Array<{
+    name: string;
+    outcome: { failure: CapabilityFailure; detail: string } | null;
+    fragment: string;
+  }> = [
+    { name: "null", outcome: null, fragment: nullFragment },
+    ...(Object.keys(fragmentByFailure) as CapabilityFailure[]).map(
+      (failure) => ({
+        name: failure,
+        outcome: { failure, detail },
+        fragment: fragmentByFailure[failure],
+      }),
+    ),
+  ];
+  for (const { name, outcome, fragment } of rows) {
+    const text = udisksText(outcome);
+    expect({ name, text, hasOwn: text.includes(fragment) }).toEqual({
+      name,
+      text,
+      hasOwn: true,
+    });
+    if (outcome !== null)
+      expect({ name, hasDetail: text.includes(detail) }).toEqual({
+        name,
+        hasDetail: true,
+      });
+    for (const other of allFragments) {
+      if (other === fragment) continue;
+      expect({ name, other, hasOther: text.includes(other) }).toEqual({
+        name,
+        other,
+        hasOther: false,
+      });
+    }
   }
 });
 
