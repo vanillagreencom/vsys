@@ -377,9 +377,12 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
  * dropped and the full read runs again, rather than serving the departed
  * drive's numbers for the rest of the hold. A listing that could not itself
  * be read proves nothing either way, so it is read as a sign to drop the
- * held reading too: the full read below re-asks the same listing and, where
- * the failure persists, surfaces it as this sample's own outcome rather than
- * letting the held reading's old, unrelated outcome stand in for it.
+ * held reading too: this sample reports that failure as its own outcome at
+ * once, without asking the listing again within this same call. A later
+ * sample, while the hold still has time left, takes the full read below and
+ * asks the listing fresh; if the failure persists there, it is that later
+ * sample's own outcome in turn, rather than the held reading's old,
+ * unrelated outcome standing in for it.
  */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
