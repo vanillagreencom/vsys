@@ -663,14 +663,20 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         # move() (the "nested session" plan() branch) relocates a process's
         # cgroup membership only; it never rewrites TMPDIR. A moved child can
         # still be using a scratch directory after the parent scope it was
-        # created under is gone and garbage-collected. Each row names a live
-        # pid the reaper cannot rule out as that directory's user, and the
-        # directory must survive regardless of why it cannot be ruled out.
+        # created under is gone and garbage-collected. The first two rows
+        # name a live pid the reaper cannot rule out as that directory's
+        # user, and the directory must survive regardless of why it cannot
+        # be ruled out. The third row proves the boundary the other two
+        # don't reach: a live, readable pid whose TMPDIR names an unrelated
+        # sibling directory (same numeric prefix, no separator) must not
+        # false-positive the match and block a reap that should happen --
+        # "agent-confine-100-2000" is not inside "agent-confine-100-200".
         rows = [
-            ("a live process's TMPDIR resolves here", "in-use"),
-            ("a live process's environ cannot be read", "unreadable"),
+            ("a live process's TMPDIR resolves here", "in-use", False),
+            ("a live process's environ cannot be read", "unreadable", False),
+            ("a live process's TMPDIR names an unrelated sibling", "sibling", True),
         ]
-        for name, kind in rows:
+        for name, kind, should_remove in rows:
             with self.subTest(name=name):
                 with scratch() as tmp:
                     base = Path(tmp)
@@ -694,6 +700,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                             if str(path) == "/proc/555/environ":
                                 if kind == "in-use":
                                     return f"TMPDIR={moved}\0OTHER=1\0"
+                                if kind == "sibling":
+                                    return f"TMPDIR={moved}0\0OTHER=1\0"
                                 return default  # read() swallows OSError (process gone) into default
                             return old_read(path, default)
 
@@ -702,8 +710,12 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                             removed = self.w.reap_scratch_dirs(True, {555: None})
                         finally:
                             self.w.read = old_read
-                        self.assertTrue(moved.is_dir())
-                        self.assertEqual(removed, [])
+                        if should_remove:
+                            self.assertFalse(moved.is_dir())
+                            self.assertEqual(removed, ["agent-confine-100-200"])
+                        else:
+                            self.assertTrue(moved.is_dir())
+                            self.assertEqual(removed, [])
                     finally:
                         self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
 
