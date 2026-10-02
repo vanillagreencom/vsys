@@ -5,7 +5,7 @@ import { choices, defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
-import { isChildLine, mount, selectedRow } from "../test/harness";
+import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
 import { osc52 } from "./clipboard";
 import { fit } from "./columns";
 import {
@@ -938,6 +938,8 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
   const t = await mount(s, c, { width: 140, height: 10 });
   try {
     await t.press("7");
+    // A reader arrives at a screen that has finished drawing itself.
+    await t.settle();
     for (const [at, item] of items.entries()) {
       if (at > 0) await t.press("down");
       // A row whose help opens under it is placed after the layout that
@@ -951,16 +953,6 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
   } finally {
     await t.close();
   }
-  /**
-   * The marked row and what is drawn under it. How far the screen scrolled
-   * on the way there is the walk's, not the row's, so the scrollbar column
-   * and everything above the row are left out.
-   */
-  const opened = (frame: string) => {
-    const lines = frame.split("\n");
-    const y = lines.findIndex((line) => line.includes("▍"));
-    return lines.slice(y, y + 8).map((line) => line.slice(0, -2));
-  };
   // The first row of each kind, opened once by Enter and once by a click on a
   // terminal that holds every row: the two open the same thing.
   for (const kind of Object.keys(kinds)) {
@@ -972,7 +964,7 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
       await keyed.press("7");
       for (let i = 0; i < at; i++) await keyed.press("down");
       await keyed.press("enter");
-      byKey = opened(keyed.frame());
+      byKey = underMarked(keyed.frame());
     } finally {
       await keyed.close();
     }
@@ -982,7 +974,7 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
       const lines = clicked.frame().split("\n");
       const y = lines.findIndex((line) => line.includes(words(items[at])));
       await clicked.click(lines[y].indexOf(words(items[at])), y);
-      expect({ kind, opened: opened(clicked.frame()) }).toEqual({
+      expect({ kind, opened: underMarked(clicked.frame()) }).toEqual({
         kind,
         opened: byKey,
       });

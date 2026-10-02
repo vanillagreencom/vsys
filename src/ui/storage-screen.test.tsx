@@ -938,8 +938,11 @@ test("every kind of Storage row is placed, marked, opened and followed by one ru
     const t = await mount(s, c, { width: 140, height: 16 });
     try {
       await t.press("5");
+      // A reader arrives at a screen that has finished drawing itself.
+      await t.settle();
       await t.press(c.keys[storageRegions[region].action]);
       for (let i = 0; i < offset; i++) await t.press("down");
+      await t.settle();
       expect({ key, marked: marks(t.frame(), item) }).toEqual({
         key,
         marked: true,

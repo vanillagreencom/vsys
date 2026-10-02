@@ -6,7 +6,7 @@ import type { LaneCommand } from "../model/actions";
 import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
-import { isChildLine, mount, selectedRow } from "../test/harness";
+import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
 import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
 
@@ -850,11 +850,14 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
   for (const [kind, words] of Object.entries(opens)) {
     const byKey: string[] = [];
     const k = await everyKind(byKey);
-    let keyed = "";
+    let keyed: { opened: string[]; notice: boolean } | null = null;
     try {
       await walkTo(k, words);
       await k.press("enter");
-      keyed = k.frame();
+      keyed = {
+        opened: underMarked(k.frame()),
+        notice: k.frame().includes("Write mode is off"),
+      };
     } finally {
       await k.close();
     }
@@ -864,11 +867,12 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
       const lines = m.frame().split("\n");
       const y = lines.findIndex((line) => line.includes(words));
       await m.click(lines[y].indexOf(words), y);
-      expect({ kind, frame: m.frame(), switched: byMouse }).toEqual({
+      expect({
         kind,
-        frame: keyed,
-        switched: byKey,
-      });
+        opened: underMarked(m.frame()),
+        notice: m.frame().includes("Write mode is off"),
+        switched: byMouse,
+      }).toEqual({ kind, ...keyed, switched: byKey });
     } finally {
       await m.close();
     }

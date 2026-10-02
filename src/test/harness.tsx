@@ -172,6 +172,19 @@ export function selectedRow(frame: string): string {
 }
 
 /**
+ * The row a screen marks and the lines under it, without the scrollbar
+ * column. Two frames of one screen reached by different routes differ in how
+ * far the screen scrolled and in charts and tiles above the row, whose widths
+ * settle on a later layout pass, while showing the same row and what it opened.
+ */
+export function underMarked(frame: string, lines = 8): string[] {
+  const rows = frame.split("\n");
+  const y = rows.findIndex((row) => row.includes("▍"));
+  if (y < 0) return [];
+  return rows.slice(y, y + lines).map((row) => row.slice(0, -2));
+}
+
+/**
  * A line drawn as a child of the row above it: the rule at its left, then the
  * indent, then its text. An indent alone reads as a new top-level line, which
  * is the whole reason the rule exists.

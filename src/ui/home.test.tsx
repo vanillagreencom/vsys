@@ -18,6 +18,7 @@ import {
   overflowing,
   selectedRow,
   sortMarks,
+  underMarked,
 } from "../test/harness";
 import { attention, cardDetail } from "./attention";
 import {
@@ -1858,12 +1859,15 @@ test("every kind of Home row is kept in view, and opened and chosen alike by the
   );
   try {
     await t.press("1");
+    // A reader arrives at a screen that has finished drawing itself.
+    await t.settle();
     const last = rows.findLast((row) => row.kind === "agent");
     expect(last && t.frame().includes(words(last))).toBe(false);
     const walked = new Set<string>();
     for (const [region, kind] of Object.keys(kinds).entries()) {
       await t.press(c.keys[homeRegions[region + 1].action]);
       for (const row of rows.filter((row) => row.kind === kind)) {
+        await t.settle();
         expect({ kind, on: selectedRow(t.frame()) }).toEqual({
           kind,
           on: expect.stringContaining(words(row)) as unknown as string,
@@ -1885,13 +1889,13 @@ test("every kind of Home row is kept in view, and opened and chosen alike by the
     const size = { width: 160, height: 60 };
     const keyed = fresh();
     const k = await mount(keyed.s, c, size, { history: keyed.h });
-    let byKey = "";
+    let byKey: string[] = [];
     try {
       await k.press("1");
       await k.press(c.keys[homeRegions[region + 1].action]);
       for (let i = 0; i < offset; i++) await k.press("down");
       await k.press("enter");
-      byKey = k.frame();
+      byKey = underMarked(k.frame());
     } finally {
       await k.close();
     }
@@ -1909,7 +1913,10 @@ test("every kind of Home row is kept in view, and opened and chosen alike by the
         (line, at) => at > heading && line.includes(words(row)),
       );
       await m.click(lines[y].indexOf(words(row)), y);
-      expect({ kind, frame: m.frame() }).toEqual({ kind, frame: byKey });
+      expect({ kind, opened: underMarked(m.frame()) }).toEqual({
+        kind,
+        opened: byKey,
+      });
       // A click chooses the row it opens, as the keys that reach it do, so
       // coming back to Home lands on it.
       await m.press("1");
