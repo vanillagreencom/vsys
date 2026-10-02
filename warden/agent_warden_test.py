@@ -457,7 +457,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 old_log = self.w.log
                 self.w.log = logs.append
                 try:
-                    self.assertEqual(self.w.reap_scratch_dirs(False), [])
+                    self.assertEqual(self.w.reap_scratch_dirs(False, {}), [])
                 finally:
                     self.w.log = old_log
                 report_rows = [
@@ -468,7 +468,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 for name, actual, expected in report_rows:
                     with self.subTest(name=name):
                         self.assertEqual(actual, expected)
-                removed = self.w.reap_scratch_dirs(True)
+                removed = self.w.reap_scratch_dirs(True, {})
                 correct_rows = [
                     ("a live scope's directory survives", live.is_dir(), True),
                     ("a gone scope's directory is removed", gone.exists(), False),
@@ -510,7 +510,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
 
                 self.w.shutil.rmtree = flaky_rmtree
                 try:
-                    removed = self.w.reap_scratch_dirs(True)
+                    removed = self.w.reap_scratch_dirs(True, {})
                 finally:
                     self.w.log, self.w.shutil.rmtree = old_log, old_rmtree
                 rows = [
@@ -545,7 +545,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 live.mkdir()
                 old_mtime = time.time() - mutant.SCRATCH_GRACE - 1
                 os.utime(live, (old_mtime, old_mtime))
-                mutant.reap_scratch_dirs(True)
+                mutant.reap_scratch_dirs(True, {})
                 self.assertFalse(live.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -568,7 +568,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 scratch_dir.mkdir(parents=True)
                 fresh = scratch_dir / "agent-confine-900-111"
                 fresh.mkdir()  # no matching scope yet, and not backdated
-                removed = self.w.reap_scratch_dirs(True)
+                removed = self.w.reap_scratch_dirs(True, {})
                 self.assertTrue(fresh.is_dir())
                 self.assertEqual(removed, [])
             finally:
@@ -592,7 +592,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 scratch_dir.mkdir(parents=True)
                 fresh = scratch_dir / "agent-confine-900-111"
                 fresh.mkdir()
-                mutant.reap_scratch_dirs(True)
+                mutant.reap_scratch_dirs(True, {})
                 self.assertFalse(fresh.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -621,7 +621,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 self.w.log = logs.append
                 try:
                     self.assertIsNone(self.w.scope_units())
-                    removed = self.w.reap_scratch_dirs(True)
+                    removed = self.w.reap_scratch_dirs(True, {})
                 finally:
                     self.w.log = old_log
                 self.assertEqual(removed, [])
@@ -654,8 +654,99 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 live.mkdir()
                 old_mtime = time.time() - mutant.SCRATCH_GRACE - 1
                 os.utime(live, (old_mtime, old_mtime))
-                mutant.reap_scratch_dirs(True)
+                mutant.reap_scratch_dirs(True, {})
                 self.assertFalse(live.is_dir())
+            finally:
+                mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def test_reap_scratch_dirs_tmpdir_liveness_rows(self):
+        # move() (the "nested session" plan() branch) relocates a process's
+        # cgroup membership only; it never rewrites TMPDIR. A moved child can
+        # still be using a scratch directory after the parent scope it was
+        # created under is gone and garbage-collected. Each row names a live
+        # pid the reaper cannot rule out as that directory's user, and the
+        # directory must survive regardless of why it cannot be ruled out.
+        rows = [
+            ("a live process's TMPDIR resolves here", "in-use"),
+            ("a live process's environ cannot be read", "unreadable"),
+        ]
+        for name, kind in rows:
+            with self.subTest(name=name):
+                with scratch() as tmp:
+                    base = Path(tmp)
+                    old_cg, old_parent = self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT
+                    self.w.CG_ROOT = base / "cg"
+                    self.w.AGENT_TMPDIR_PARENT = str(base / "scratch")
+                    try:
+                        agent_slice = self.w.CG_ROOT / self.w.SLICE
+                        agent_slice.mkdir(parents=True)
+                        # the parent's original scope is gone: no matching
+                        # agent-confine-100-200.scope under agents.slice
+                        scratch_dir = Path(self.w.AGENT_TMPDIR_PARENT)
+                        scratch_dir.mkdir(parents=True)
+                        moved = scratch_dir / "agent-confine-100-200"
+                        moved.mkdir()
+                        old_mtime = time.time() - self.w.SCRATCH_GRACE - 1
+                        os.utime(moved, (old_mtime, old_mtime))
+                        old_read = self.w.read
+
+                        def flaky_read(path, default=None, kind=kind, moved=moved):
+                            if str(path) == "/proc/555/environ":
+                                if kind == "in-use":
+                                    return f"TMPDIR={moved}\0OTHER=1\0"
+                                return default  # read() swallows OSError (process gone) into default
+                            return old_read(path, default)
+
+                        self.w.read = flaky_read
+                        try:
+                            removed = self.w.reap_scratch_dirs(True, {555: None})
+                        finally:
+                            self.w.read = old_read
+                        self.assertTrue(moved.is_dir())
+                        self.assertEqual(removed, [])
+                    finally:
+                        self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def test_reap_scratch_dirs_tmpdir_liveness_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = (
+            '        status = _scratch_in_use(path, procs)\n'
+            '        if status == "in-use":\n'
+            '            log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")\n'
+            '            continue\n'
+            '        if status == "unknown":\n'
+            '            log(f"scratch {name}: scope gone but a live process\'s TMPDIR could not be read; not reaping this tick")\n'
+            '            continue\n'
+        )
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, ""), "agent_warden_mutant_scratch_tmpdir_liveness")
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_cg, old_parent = mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT
+            mutant.CG_ROOT = base / "cg"
+            mutant.AGENT_TMPDIR_PARENT = str(base / "scratch")
+            try:
+                agent_slice = mutant.CG_ROOT / mutant.SLICE
+                agent_slice.mkdir(parents=True)
+                scratch_dir = Path(mutant.AGENT_TMPDIR_PARENT)
+                scratch_dir.mkdir(parents=True)
+                moved = scratch_dir / "agent-confine-100-200"
+                moved.mkdir()
+                old_mtime = time.time() - mutant.SCRATCH_GRACE - 1
+                os.utime(moved, (old_mtime, old_mtime))
+                old_read = mutant.read
+
+                def flaky_read(path, default=None):
+                    if str(path) == "/proc/555/environ":
+                        return f"TMPDIR={moved}\0OTHER=1\0"
+                    return old_read(path, default)
+
+                mutant.read = flaky_read
+                try:
+                    mutant.reap_scratch_dirs(True, {555: None})
+                finally:
+                    mutant.read = old_read
+                self.assertFalse(moved.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
 

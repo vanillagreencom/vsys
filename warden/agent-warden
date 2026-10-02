@@ -778,13 +778,56 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 SCRATCH_GRACE = float(os.environ.get("AGENT_WARDEN_SCRATCH_GRACE", "60"))
 
 
-def reap_scratch_dirs(correct):
+def _proc_tmpdir(pid):
+    """The TMPDIR this pid's environment names: "" when the environ was read
+    and carries no TMPDIR, None when the environ could not be read at all
+    (process gone, permission denied). Callers must treat None as "not proven
+    unused", never as "no TMPDIR": an agent-warden move() relocates a nested
+    session's cgroup membership but never rewrites its environment, so a
+    moved child keeps pointing at a scratch directory its original scope no
+    longer names."""
+    env = read(f"/proc/{pid}/environ")
+    if env is None:
+        return None
+    for entry in env.split("\0"):
+        if entry.startswith("TMPDIR="):
+            return entry[len("TMPDIR="):]
+    return ""
+
+
+def _scratch_in_use(path, procs):
+    """Whether any pid in procs still has TMPDIR resolving inside path.
+    "in-use" beats "unknown": one confirmed user is enough to keep the
+    directory regardless of any other pid's unreadable environ. "unknown"
+    means at least one live pid's TMPDIR could not be ruled out -- never
+    read as proof that pid has no user of this directory. "free" means
+    every live pid's TMPDIR was read and none points here."""
+    prefix = path + os.sep
+    unknown = False
+    for pid in procs:
+        tmpdir = _proc_tmpdir(pid)
+        if tmpdir is None:
+            unknown = True
+            continue
+        if tmpdir == path or tmpdir.startswith(prefix):
+            return "in-use"
+    return "unknown" if unknown else "free"
+
+
+def reap_scratch_dirs(correct, procs):
     """Remove a per-scope scratch directory agent-confine created under
-    AGENT_TMPDIR once its scope unit is gone from agents.slice. The launcher
-    execs systemd-run and cannot run code after its own scope ends, so this
-    pass -- which already enumerates agents.slice scopes via scope_units()
-    for enforce_task_caps -- is the only thing that can clean these up.
-    Without the warden installed the directories stay until removed by hand
+    AGENT_TMPDIR once its scope unit is gone from agents.slice AND no live
+    process this user owns still has TMPDIR pointing there. The scope-gone
+    check alone is not enough: move() (the "nested session" plan() branch)
+    relocates a process into a new scope by cgroup membership only, so a
+    moved child keeps the TMPDIR string naming its PARENT's original
+    agent-confine scope. When that parent later exits, its now-empty scope
+    is garbage-collected out of agents.slice even though the moved child is
+    still using the directory as its live TMPDIR. The launcher execs
+    systemd-run and cannot run code after its own scope ends, so this pass
+    -- which already enumerates agents.slice scopes via scope_units() for
+    enforce_task_caps -- is the only thing that can clean these up. Without
+    the warden installed the directories stay until removed by hand
     (docs/architecture/warden.md). Returns the directory names removed."""
     try:
         entries = os.listdir(AGENT_TMPDIR_PARENT)
@@ -812,6 +855,13 @@ def reap_scratch_dirs(correct):
                 f"(< {int(SCRATCH_GRACE)}s grace); not reaping yet")
             continue
         if not os.path.isdir(path):
+            continue
+        status = _scratch_in_use(path, procs)
+        if status == "in-use":
+            log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")
+            continue
+        if status == "unknown":
+            log(f"scratch {name}: scope gone but a live process's TMPDIR could not be read; not reaping this tick")
             continue
         if not correct:
             log(f"scratch {name}: scope gone; would remove (report mode)")
@@ -2244,7 +2294,7 @@ def run(correct):
         if only is None:
             try:
                 enforce_task_caps(correct)
-                reap_scratch_dirs(correct)
+                reap_scratch_dirs(correct, procs)
                 near, unknown_near, near_complete = warn_near_cap()
                 record_near_events(st, near, unknown_near, near_complete, now=tick_now)
                 for unit, kind, human in near:
