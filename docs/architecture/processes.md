@@ -19,7 +19,7 @@ Process collection reads every process in the configured `/proc` once per sample
 
 `WorkerHost` in `src/collect/worker-host.ts` is the one lifecycle for every collection thread: the process thread here and the scratch scan thread in [storage](storage.md). `ProcessThread` and `WorkerScan` each supply only how their thread starts, its setup message and how its reply is read. `src/collect/worker-host.test.ts` drives each rule below through a stand-in thread.
 
-- Start: the first request starts the thread and sends its setup message, when the host has one, before the request. The process thread's setup carries the collection settings and the clock and page units.
+- Start: the first request starts the thread and sends its setup message, when the host has one, before the request. The process thread's setup carries the collection settings, the clock and page units, and the desktop paths `createCollector()` reads from the shared agent-tool data and its overlay each time it builds a collector.
 - Request: a waiting request keeps the program alive; an idle thread does not.
 - Failure: an answer that reports a failure rejects the request with its message and keeps the thread. A thread error or an exit before the answer rejects the request and ends the thread.
 - Replacement: the next request after an ended thread starts a new one. A replacement process thread's first reading has no rate, which is unknown rather than a rate measured against a reading it never took.
@@ -30,7 +30,7 @@ Process collection reads every process in the configured `/proc` once per sample
 
 ## Invariants
 
-1. A reading taken on the thread equals the reading the same reader takes in its caller's thread, and a collector on a thread publishes the same snapshot as one without. `src/collect/process-thread.test.ts` compares both over a fixture with watched and unwatched processes, an agent, a build tool, a Git branch, an invalid stat line and an unreadable environment.
+1. A reading taken on the thread equals the reading the same reader takes in its caller's thread, and a collector on a thread publishes the same snapshot as one without. `src/collect/process-thread.test.ts` compares both over a fixture with watched and unwatched processes, an agent, a desktop app named like an agent, a build tool, a Git branch, an invalid stat line and an unreadable environment.
 2. Counters and launch environments are keyed by process id and start time, never by process id alone, and a command line is read fresh at every sample. `src/collect/process-thread.test.ts` covers an exit, a reused id and a changed command line through the thread.
 3. A source the thread could not read reaches the snapshot's errors and never becomes a value. `src/collect/process-thread.test.ts` checks the invalid stat line in the published snapshot.
 4. Every failure path answers the waiting sample and ends a thread that can no longer be trusted. `src/collect/worker-host.test.ts` drives each one through a stand-in thread, and `src/collect/process-thread.test.ts` checks the setup each process thread is sent and that its JSON reply reaches the caller.

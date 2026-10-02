@@ -6,9 +6,10 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { type DesktopPaths, shippedAgentTools } from "../config/agent-tools";
 import { scopeMain } from "../model/scopes";
 import type { Group, Proc, SourceError } from "../model/types";
-import { buildKind, excludedArgv, toolName } from "./builds";
+import { buildKind, desktopApp, excludedArgv, toolName } from "./builds";
 import { Reader } from "./io";
 import type { CollectionConfig } from "./settings";
 
@@ -144,6 +145,12 @@ export class ProcessCollector implements ProcessSource {
     private c: CollectionConfig,
     private ticksPerSecond: number,
     private pageSize: number,
+    /**
+     * The program hands over the shipped paths with the machine overlay's
+     * merged in; a collector built any other way reads the shipped paths, so
+     * no test reads the host's overlay.
+     */
+    private desktop: DesktopPaths = shippedAgentTools,
   ) {}
   async collect(
     request: ProcessRequest,
@@ -180,6 +187,8 @@ export class ProcessCollector implements ProcessSource {
     }
     const branches = new Map<string, string | null>();
     const identities = new Set<number>();
+    // Executables already read, so the launch chain below reads none twice.
+    const executables = new Map<number, string | null>();
     const result: Proc[] = [];
     for (const id of r.dirs(c.procRoot).filter((n) => /^\d+$/.test(n))) {
       const root = join(c.procRoot, id);
@@ -199,7 +208,18 @@ export class ProcessCollector implements ProcessSource {
         if (group === undefined)
           throw new Error("cgroup v2 membership missing");
         const helper = excludedArgv(command, c.excludeArgv);
-        const tool = helper ? null : toolName(stat.comm, command, c.agentTools);
+        const named = helper
+          ? null
+          : toolName(stat.comm, command, c.agentTools);
+        // A desktop app may name its binary after the agent it ships with, so
+        // a named process is an agent unless its executable is the app's own.
+        // An executable that could not be read keeps it an agent: a failed
+        // read never hides an escaped one.
+        if (named !== null && command.length)
+          executables.set(stat.pid, r.link(`${root}/exe`));
+        const executable = executables.get(stat.pid);
+        const tool =
+          executable && desktopApp(executable, this.desktop) ? null : named;
         // Kernel threads and zombies have no userspace executable or cwd.
         const cwd = command.length ? r.link(`${root}/cwd`) : null;
         const candidate = before.get(stat.pid);
@@ -328,7 +348,9 @@ export class ProcessCollector implements ProcessSource {
     for (const pid of launchChain) {
       const p = byPid.get(pid);
       if (p?.command.length)
-        p.executable = r.link(join(c.procRoot, String(pid), "exe"));
+        p.executable = executables.has(pid)
+          ? (executables.get(pid) ?? null)
+          : r.link(join(c.procRoot, String(pid), "exe"));
     }
     for (const key of this.env.keys())
       if (!identities.has(key)) this.env.delete(key);

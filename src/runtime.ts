@@ -106,7 +106,8 @@ export class Session {
   ) {
     this.makeSource =
       options.makeSource ??
-      ((config, previous) => createCollector(config, true, previous));
+      ((config, previous) =>
+        createCollector(config, true, previous, this.agentToolsPath));
     this.agentToolsPath = options.agentToolsPath ?? defaultAgentToolsPath;
     this.writeConfig = options.writeConfig ?? writeFileAtomic;
   }

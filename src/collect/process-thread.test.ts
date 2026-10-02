@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { shippedAgentTools } from "../config/agent-tools";
 import { fixture } from "../test/fixture";
 import { Collector } from "./collector";
 import {
@@ -73,7 +74,7 @@ function fakes() {
   const ports: FakePort[] = [];
   const f = setup();
   const thread = owned(
-    new ProcessThread(f.config, 100, 4096, () => {
+    new ProcessThread(f.config, 100, 4096, shippedAgentTools, () => {
       const port = new FakePort();
       ports.push(port);
       return port;
@@ -85,8 +86,8 @@ function fakes() {
 /**
  * A fixture whose readings exercise every per-process rule: watched and
  * unwatched membership, agents and build tools whose environment is read, a
- * Git branch, a stat line the kernel would never write, and an environment
- * this user may not read.
+ * desktop app whose binary carries an agent's name, a Git branch, a stat line
+ * the kernel would never write, and an environment this user may not read.
  */
 function populated() {
   const f = setup();
@@ -110,6 +111,9 @@ function populated() {
     parent: 40,
   });
   f.proc(50, "app.slice/other.scope", { command: ["/usr/bin/editor"] });
+  f.proc(51, "app.slice/app-com.anthropic.Claude-51.scope", {
+    command: ["/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude"],
+  });
   f.proc(60, "app.slice/other.scope");
   rmSync(join(f.config.procRoot, "60/environ"));
   mkdirSync(join(f.config.procRoot, "60/environ"));
@@ -121,7 +125,9 @@ test("the thread reads exactly what the same collector reads in its caller's thr
   const f = populated();
   const groups = [{ pids: [40, 41, 42], kernelPath: undefined }];
   const here = new ProcessCollector(f.config, 100, 4096);
-  const thread = owned(new ProcessThread(f.config, 100, 4096));
+  const thread = owned(
+    new ProcessThread(f.config, 100, 4096, shippedAgentTools),
+  );
   // Time, the agent's cumulative ticks, and the rate those make against the
   // reading before: 50 ticks over one second at 100 ticks a second is 50%.
   for (const [time, ticks, rate] of [
@@ -140,7 +146,10 @@ test("the thread reads exactly what the same collector reads in its caller's thr
     expect(actual).toEqual(expected);
     // The fixture must reach what it was built to reach, or equality above
     // proves nothing about those rules.
-    expect(actual.procs.map((p) => p.pid).sort()).toEqual([40, 41, 42, 50, 60]);
+    expect(actual.procs.map((p) => p.pid).sort()).toEqual([
+      40, 41, 42, 50, 51, 60,
+    ]);
+    expect(actual.procs.find((p) => p.pid === 51)?.tool).toBeNull();
     expect(actual.errors.map((e) => e.source)).toEqual([
       join(f.config.procRoot, "70"),
       join(f.config.procRoot, "60/environ"),
@@ -166,14 +175,14 @@ test("a collector on a thread publishes the snapshot a collector without one doe
       false,
       undefined,
       undefined,
-      new ProcessThread(f.config, 100, 4096),
+      new ProcessThread(f.config, 100, 4096, shippedAgentTools),
     ),
   );
   for (const time of [1000, 2000]) {
     const a = await here.sample(time);
     const b = await there.sample(time);
     expect({ ...b, durationMs: 0 }).toEqual({ ...a, durationMs: 0 });
-    expect(b.procs.length).toBe(5);
+    expect(b.procs.length).toBe(6);
     // What the thread could not read reaches the snapshot's own errors.
     expect(b.errors.map((e) => e.source)).toContain(
       join(f.config.procRoot, "70"),
@@ -189,7 +198,9 @@ test("exit, identity reuse and a changed command line each read fresh through th
     ticks: 10,
   });
   f.proc(41, "agents.slice/a.scope", { parent: 40 });
-  const thread = owned(new ProcessThread(f.config, 100, 4096));
+  const thread = owned(
+    new ProcessThread(f.config, 100, 4096, shippedAgentTools),
+  );
   const first = await thread.collect(request(1000, [40, 41]), live());
   expect(first.procs.map((p) => p.pid).sort()).toEqual([40, 41]);
 
@@ -228,7 +239,7 @@ test("a new thread for new settings reads under those settings and the old one e
     command: ["/usr/bin/newagent"],
     comm: "newagent",
   });
-  const old = new ProcessThread(f.config, 100, 4096);
+  const old = new ProcessThread(f.config, 100, 4096, shippedAgentTools);
   const before = new Collector(
     f.config,
     100,
@@ -251,7 +262,7 @@ test("a new thread for new settings reads under those settings and the old one e
       false,
       undefined,
       undefined,
-      new ProcessThread(next, 100, 4096),
+      new ProcessThread(next, 100, 4096, shippedAgentTools),
     ),
   );
   before.close();
@@ -304,7 +315,13 @@ test("each thread is set up with its collector's settings and answers in JSON te
   const answer = thread.collect(request(1000), live());
   const [port] = ports;
   expect(port.sent).toEqual([
-    { kind: "setup", config, ticksPerSecond: 100, pageSize: 4096 },
+    {
+      kind: "setup",
+      config,
+      ticksPerSecond: 100,
+      pageSize: 4096,
+      desktop: shippedAgentTools,
+    },
     { kind: "collect", id: 1, request: request(1000) },
   ]);
   port.reply({ kind: "answer", id: port.lastId(), value: reading });

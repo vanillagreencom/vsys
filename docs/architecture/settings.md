@@ -6,7 +6,7 @@ Settings are validated before they reach a running dashboard. The runtime replac
 
 ## Boundaries
 
-- Every host-specific name is configuration: the agent and desktop slices, the excluded argv patterns, the confinement cap markers, the compiler, linker and cache names, and the environment variables carrying the account, the pane, the window title and the build token pool.
+- Every host-specific name is configuration: the agent and desktop slices, the excluded argv patterns, the confinement cap markers, the compiler, linker and cache names, and the environment variables carrying the account, the pane, the window title and the build token pool. Desktop app install paths are configured in the shared agent-tool data and its overlay, not in `config.toml`; [lanes.md](lanes.md) owns how collection reads them.
 - `collectionKeys` in `src/collect/settings.ts` is the only declaration of what collection reads, and `CollectionConfig` is the type every collection entry point takes. Reading an undeclared setting fails the type check rather than leaving the collector stale.
 - Display settings and notification rules are deliberately not collection settings, because rebuilding the collector discards the counters and alert state a sample compares against.
 - `Session` in `src/runtime.ts` owns one scheduler for collection and settings changes, so samples never overlap and a failed settings write leaves the active source and history usable.

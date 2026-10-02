@@ -55,7 +55,7 @@ Settings are in `$XDG_CONFIG_HOME/vsys/config.toml`, or `~/.config/vsys/config.t
 | Setting | What it changes |
 | --- | --- |
 | `watchedSlices` | The Linux resource groups that appear in the agent list. |
-| `agentTools` | The program names that vsys treats as agents. The default comes from `data/agent-tools.json`. Settings saves machine-local additions in `~/.config/vsys/agent-tools.json`, which the warden also reads. Shipped names cannot be removed from that overlay. A diverging hand-written `agentTools` value in `config.toml` still replaces the shared list for the dashboard. Lists equal to the shipped or layered names migrate away. |
+| `agentTools` | The program names that vsys treats as agents. The default comes from `data/agent-tools.json`. Settings saves machine-local additions in `~/.config/vsys/agent-tools.json`, which the warden also reads. A program whose executable sits under a desktop install prefix in either file is a desktop app, not an agent, unless a bundled CLI suffix there names it. Shipped names cannot be removed from that overlay. A diverging hand-written `agentTools` value in `config.toml` still replaces the shared list for the dashboard. Lists equal to the shipped or layered names migrate away. |
 | `laneNameParts` | The information used to name each agent. |
 | `historyHours` | The time range available in charts and the timeline. |
 | `persistence` | Saves history across restarts. It is off by default. |

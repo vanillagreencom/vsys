@@ -1,0 +1,1 @@
+- Desktop apps whose binary carries an agent's name no longer appear as escaped agent lanes, and a bundled agent engine stays an agent after an update replaces it.

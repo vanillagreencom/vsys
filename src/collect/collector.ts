@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
+import { agentToolsPath, loadAgentTools } from "../config/agent-tools";
 import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Capability, Snapshot } from "../model/types";
@@ -241,11 +242,14 @@ export class Collector {
  * getconf reads libc's clock and page units; no machine-specific constants.
  * The predecessor's build cache reader is carried over, so its counts stay
  * measured since vsys started rather than since the last settings change.
+ * The desktop paths come from the shared agent-tool data and its overlay,
+ * read again for every collector built.
  */
 export async function createCollector(
   c: CollectionConfig,
   live = true,
   previous?: { sccache?: SccacheCollector },
+  toolsPath = agentToolsPath,
 ): Promise<Collector> {
   const read = async (name: string) => {
     const child = Bun.spawn(["getconf", name], {
@@ -262,7 +266,12 @@ export async function createCollector(
       throw new Error(`getconf ${name} failed: ${error}`);
     return n;
   };
-  const [ticks, pages] = await Promise.all([read("CLK_TCK"), read("PAGESIZE")]);
+  const [ticks, pages, tools] = await Promise.all([
+    read("CLK_TCK"),
+    read("PAGESIZE"),
+    loadAgentTools(toolsPath),
+  ]);
+  const { desktopExePrefixes, bundledCliSuffixes } = tools;
   const sccache = previous?.sccache ?? new SccacheCollector();
   // The program reads the real tmux server; a collector built any other way
   // reads none, which is what keeps tmux out of the test suite.
@@ -273,7 +282,10 @@ export async function createCollector(
     live,
     sccache,
     { probe: probeTmux, panes: readPanes },
-    new ProcessThread(c, ticks, pages),
+    new ProcessThread(c, ticks, pages, {
+      desktopExePrefixes,
+      bundledCliSuffixes,
+    }),
     unitDirs(),
   );
 }

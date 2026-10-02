@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import type { DesktopPaths } from "../config/agent-tools";
 
 /** Match executable or script names, never arbitrary prompt arguments. */
 export function toolName(
@@ -18,14 +19,32 @@ export function toolName(
 /**
  * Tool processes that are not lanes are recognised by their executable name or
  * by a whole flag. Never by prompt text: `claude -p "fix the language server"`
- * must stay an agent.
+ * must stay an agent. A pattern ending in `=` names an option and matches it
+ * whatever its value, so `--type=` rules out every Chromium helper process.
  */
 export function excludedArgv(command: string[], patterns: string[]): boolean {
   const exe = command[0] ?? "";
   const names = [exe, basename(exe)];
   const flags = command.filter((a) => a.startsWith("-"));
   return patterns.some(
-    (p) => p !== "" && (names.includes(p) || flags.includes(p)),
+    (p) =>
+      p !== "" &&
+      (names.includes(p) ||
+        flags.some((f) => (p.endsWith("=") ? f.startsWith(p) : f === p))),
+  );
+}
+/**
+ * A desktop app's own binary, known by where it is installed and never by its
+ * name: Claude Desktop's Electron binary is called `claude`. An agent engine
+ * the app bundles under the same prefix stays an agent, known by its suffix.
+ * The kernel marks a binary a package update replaced while it ran with a
+ * trailing ` (deleted)`, which is not part of its path.
+ */
+export function desktopApp(executable: string, paths: DesktopPaths): boolean {
+  const path = executable.replace(/ \(deleted\)$/, "");
+  return (
+    paths.desktopExePrefixes.some((prefix) => path.startsWith(prefix)) &&
+    !paths.bundledCliSuffixes.some((suffix) => path.endsWith(suffix))
   );
 }
 /**

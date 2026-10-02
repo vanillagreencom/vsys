@@ -416,6 +416,11 @@ def read(path, default=None):
         return default
 
 
+def exe_path(link):
+    """A binary a package update replaced while it ran reads "<path> (deleted)"."""
+    return link.removesuffix(" (deleted)")
+
+
 class Proc:
     __slots__ = ("pid", "ppid", "comm", "argv", "exe", "cgroup", "start", "uid", "tty", "_marked")
 
@@ -424,7 +429,7 @@ class Proc:
         self.pid = pid
         self._marked = None
         if comm is not None:  # injected record
-            self.ppid, self.comm, self.argv, self.exe = ppid, comm, list(argv or []), exe
+            self.ppid, self.comm, self.argv, self.exe = ppid, comm, list(argv or []), exe_path(exe)
             self.cgroup, self.start, self.uid = cgroup, start, UID if uid is None else uid
             self.tty = tty
             self._marked = marked
@@ -443,7 +448,7 @@ class Proc:
         raw = read(f"/proc/{pid}/cmdline", "")
         self.argv = [a for a in raw.split("\0") if a] if raw else []
         try:
-            self.exe = os.readlink(f"/proc/{pid}/exe")
+            self.exe = exe_path(os.readlink(f"/proc/{pid}/exe"))
         except OSError:
             self.exe = ""
         cg = (read(f"/proc/{pid}/cgroup", "") or "").strip()
