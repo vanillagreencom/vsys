@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { defaultScratchDirs, sameValue } from "../config/config";
 import type { Proc } from "../model/types";
 import { scratchEnv } from "./procs";
@@ -67,6 +67,28 @@ export function scratchRoots(
   for (const path of agentDirs)
     if (!covered(path)) roots.push({ path, origin: "agent", owner });
   return roots;
+}
+
+/**
+ * The part of a reading that belongs to the roots one sample names. A root
+ * leaves between scans when its agent stops, and the last scan's row for it,
+ * its session rows and its source error describe a directory this sample
+ * does not name. A root that joins between scans has no row until the next due
+ * scan measures it, as any size waits for that scan.
+ */
+function forRoots(scan: ScratchScan, roots: ScanRoot[]): ScratchScan {
+  const kept = new Set(roots.map(({ path }) => path));
+  const parents = new Set(roots.map(({ path }) => resolve(path)));
+  const left = new Set(
+    scan.scratch.map(({ path }) => path).filter((path) => !kept.has(path)),
+  );
+  return {
+    ...scan,
+    scratch: scan.scratch.filter(({ path }) => kept.has(path)),
+    sessions: scan.sessions.filter(({ path }) => parents.has(dirname(path))),
+    absent: scan.absent.filter((path) => kept.has(path)),
+    errors: scan.errors.filter(({ source }) => !left.has(source)),
+  };
 }
 
 /** What this host calls on a scan thread. */
@@ -208,7 +230,7 @@ export class ScratchCollector {
     }
     if (wait) await this.job;
     if (this.closed) throw new Error("Scratch collector has closed");
-    return this.data;
+    return forRoots(this.data, roots);
   }
   close(): void {
     this.closed = true;

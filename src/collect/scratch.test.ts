@@ -219,6 +219,50 @@ test("an agent's temporary directory is scratch work even with no root set", asy
   }
 });
 
+test("a reading names only the roots of the sample it is published for", async () => {
+  const c = { ...defaults(), scratchDirs: [], scratchRefreshMs: 30000 };
+  const scans = held();
+  let now = 0;
+  const collector = new ScratchCollector(scans.runner, () => now);
+  try {
+    await collector.collect(c, ["/a"], 1000, false);
+    scans.waiting[0].resolve({
+      scratch: [
+        {
+          path: "/a",
+          bytes: 4096,
+          age: 0,
+          modifiedAt: 1,
+          error: "Permission denied",
+          origin: "agent",
+        },
+      ],
+      sessions: [
+        { path: "/a/s", bytes: 4096, age: 0, modifiedAt: 1, error: null },
+      ],
+      absent: [],
+      time: 1000,
+      errors: [{ source: "/a", message: "Permission denied" }],
+    });
+    const scanned = await collector.collect(c, ["/a"], 1000, true);
+    expect(scanned.scratch.map((x) => x.path)).toEqual(["/a"]);
+    // Within the interval agent A stops, then agent B starts. Neither sample
+    // republishes A's row from the cached scan, and B waits for the next one.
+    now = 1;
+    const read = (dirs: string[], time: number) =>
+      collector.collect(c, dirs, time, false);
+    for (const reading of [await read([], 2000), await read(["/b"], 3000)])
+      expect(reading).toMatchObject({
+        scratch: [],
+        sessions: [],
+        errors: [],
+      });
+    expect(scans.waiting.length).toBe(1);
+  } finally {
+    collector.close();
+  }
+});
+
 test("a list equal to the shipped one is default and any other list is the reader's", async () => {
   const shipped = defaultScratchDirs();
   // The author's workstation runs with no settings file, so these three are
