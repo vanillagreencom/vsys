@@ -107,8 +107,12 @@ One-shot measurement for `--summary`:
 | --- | --- | --- | --- | --- | --- |
 | 2026-09-29 | cachy | Linux 7.2.8-1-cachyos x86_64 GNU/Linux | `bun src/main.ts --once` | 1.11 | 138% |
 | 2026-09-29 | cachy | Linux 7.2.8-1-cachyos x86_64 GNU/Linux | `bun src/main.ts --once --summary` | 0.18 | 82% |
+| 2026-10-01 | cachy | Linux 7.2.8-1-cachyos x86_64 GNU/Linux | `bun src/main.ts --once`, before the kernel log reading | 0.82 to 0.83 | 115% |
+| 2026-10-01 | cachy | Linux 7.2.8-1-cachyos x86_64 GNU/Linux | `bun src/main.ts --once`, with it | 1.33 to 1.36 | 110 to 111% |
+| 2026-10-01 | cachy | Linux 7.2.8-1-cachyos x86_64 GNU/Linux | `bun src/main.ts --once --summary`, before the kernel log reading | 0.29 to 0.31 | 93 to 98% |
+| 2026-10-01 | cachy | Linux 7.2.8-1-cachyos x86_64 GNU/Linux | `bun src/main.ts --once --summary`, with it | 0.28 to 0.31 | 93 to 96% |
 
-Both measured commands exited with status 2 on this machine because source errors were present.
+Every measured command exited with status 2 on this machine because source errors were present. The 2026-10-01 rows are 3 to 5 runs each of the base commit and this branch, taken one after the other; the base measured 0.29 to 0.31 s for the summary that day, so the 0.18 s row reflects a different machine state rather than a change. A plain `--once` pays the kernel log's first search over every boot the journal holds, 12 on this machine; the summary skips it.
 
 ## Repository tooling
 

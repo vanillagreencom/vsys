@@ -100,9 +100,12 @@ if ! kernel=$(journalctl -k --since "$since" --no-pager 2>&1); then
 	unnamed "the kernel log could not be read: ${kernel//$'\n'/; }"
 fi
 # The scrub logs an unrepaired block as `unable to fixup (regular) error at
-# logical N`, prefixed by the device. The kernel rate-limits that line, so the
-# addresses here can be fewer than the blocks the scrub counted; vsys compares
-# the two and says so.
+# logical N`, prefixed by the device. That line is kernel prose, not an
+# interface, and it is read only because no interface gives the address:
+# `btrfs scrub status` gives counts and no address, and on btrfs-progs v7.1 it
+# has no JSON form. A rewording leaves no line matched, and the report then
+# lists fewer addresses than the blocks it counts, which vsys shows as unnamed
+# damage. The kernel also rate-limits the line, with the same result.
 declare -A seen=()
 fixup='\(device ([^ ):]+)[^)]*\): unable to fixup \(regular\) error at logical ([0-9]+)'
 while IFS= read -r line; do

@@ -309,6 +309,14 @@ const absentReasons: Record<CapabilityId, string> = {
   tmux: "no tmux on the path",
   "agent-slice": "no agent slice is defined or running on this machine",
 };
+/**
+ * What a source that refused means, where the generic sentence about a file
+ * would mislead: the kernel log is a command, and its refusal is in its own
+ * words beside this.
+ */
+const unreadableReasons: Partial<Record<CapabilityId, string>> = {
+  "kernel-log": "journalctl refused the search",
+};
 /** What a present interface that answered with too little means, per capability. */
 const incompleteReasons: Partial<Record<CapabilityId, string>> = {
   "io-stat":
@@ -392,7 +400,9 @@ export function capabilityReason(cap: Capability): string {
     case "masked":
       return `${cap.source} is masked, so systemd never starts it`;
     case "unreadable":
-      return `${cap.source} exists but cannot be read`;
+      return (
+        unreadableReasons[cap.id] ?? `${cap.source} exists but cannot be read`
+      );
     case "malformed":
       return `${cap.source} is not in the expected format`;
     case "incomplete":

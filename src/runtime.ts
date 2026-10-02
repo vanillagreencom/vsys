@@ -1,5 +1,6 @@
 import { readFile, rm } from "node:fs/promises";
 import { createCollector } from "./collect/collector";
+import type { KernelLog } from "./collect/kernel-log";
 import type { SccacheCollector } from "./collect/sccache";
 import { collectionKeys } from "./collect/settings";
 import {
@@ -26,6 +27,8 @@ interface Source {
   close?(): void;
   /** Readings measured since vsys started, handed to the replacement source. */
   sccache?: SccacheCollector;
+  /** The kernel log and its cursor, handed on the same way. */
+  kernelLog?: KernelLog | null;
 }
 type SourceFactory = (config: Config, previous: Source) => Promise<Source>;
 interface SessionOptions {

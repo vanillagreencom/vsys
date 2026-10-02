@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
+import { capabilityReason } from "../ui/settings";
 import { StorageCollector } from "./btrfs";
 import { Reader } from "./io";
 import {
@@ -9,6 +10,7 @@ import {
   KernelLog,
   kernelLogArgv,
   probeKernelLog,
+  readKernelLog,
 } from "./kernel-log";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
@@ -137,15 +139,26 @@ test("only a search that answered counts as a kernel log this user can read", ()
     failure: "incomplete",
     detail: "sh exited 1 with no kernel message",
   });
-  // journalctl ran and refused, in its own words.
-  expect(
-    probeKernelLog(
-      sh("echo 'Compiled without pattern matching support' >&2; exit 1"),
-    ),
-  ).toEqual({
-    failure: "incomplete",
+  // journalctl ran and refused, in its own words. Joining a group fixes
+  // nothing there, so it is a refusal rather than a journal out of sight.
+  const refused = probeKernelLog(
+    sh("echo 'Compiled without pattern matching support' >&2; exit 1"),
+  );
+  expect(refused).toEqual({
+    failure: "unreadable",
     detail: "Compiled without pattern matching support",
   });
+  const cap = (outcome: typeof refused) => ({
+    id: "kernel-log" as const,
+    available: false,
+    failure: outcome?.failure ?? null,
+    source: "journalctl",
+    detail: outcome?.detail ?? "",
+  });
+  expect(capabilityReason(cap(refused))).toBe("journalctl refused the search");
+  expect(capabilityReason(cap(probeKernelLog(sh("exit 1"))))).toContain(
+    "systemd-journal group",
+  );
   // Nothing ran at all.
   expect(probeKernelLog(["vsys-has-no-such-program"])?.failure).toBe("absent");
 });
@@ -156,6 +169,36 @@ test("the search asks after the cursor only once there is one", () => {
   );
   expect(kernelLogArgv("s=1")).toContain("--after-cursor=s=1");
   expect(kernelLogArgv(null)).toContain("_TRANSPORT=kernel");
+});
+
+test("the search journalctl runs keeps exactly the lines the parser reads", () => {
+  const grep = kernelLogArgv(null)
+    .find((arg) => arg.startsWith("--grep="))
+    ?.slice("--grep=".length);
+  expect(grep).toBeDefined();
+  // The pattern is PCRE2; this one is also a JavaScript expression.
+  const search = new RegExp(grep ?? "");
+  expect(search.test(mounted("dm-0", fsA))).toBe(true);
+  expect(search.test(failed("dm-0 state M", 257, 7))).toBe(true);
+  expect(
+    search.test("BTRFS info (device dm-0): using crc32c checksum algorithm"),
+  ).toBe(false);
+});
+
+test("a search that matched nothing is an answer, and a refusal is not", async () => {
+  const sh = (script: string) => ["sh", "-c", script];
+  // Output, and the exit 1 a search matching nothing gives with no message.
+  expect(await readKernelLog(null, sh("echo found"))).toBe("found\n");
+  expect(await readKernelLog(null, sh("echo '-- cursor: c'; exit 1"))).toBe(
+    "-- cursor: c\n",
+  );
+  // A message, or an exit no search gives, is a failure named in its words.
+  await expect(
+    readKernelLog(null, sh("echo 'Failed to seek' >&2; exit 1")),
+  ).rejects.toThrow("Failed to seek");
+  await expect(readKernelLog(null, sh("exit 2"))).rejects.toThrow(
+    "sh exited 2",
+  );
 });
 
 test("storage carries the kernel log's failures, and an unread log as unread", async () => {
@@ -194,6 +237,23 @@ test("storage carries the kernel log's failures, and an unread log as unread", a
     source: "journalctl",
     message: "journalctl exited 2",
   });
+  // A search that fails after one succeeded loses nothing that one read: the
+  // failure stays in the sample beside the source error.
+  let fail = false;
+  const resumed = new StorageCollector(
+    new KernelLog(async () => {
+      if (fail) throw new Error("journalctl exited 2");
+      return answer;
+    }),
+  );
+  await resumed.collect(new Reader(), f.config, 1000);
+  fail = true;
+  const later = new Reader();
+  const held = await resumed.collect(later, f.config, 2000);
+  expect(held.csumFailures).toEqual({
+    [fsA]: [{ root: 257, inode: 4242, at: 500_000 }],
+  });
+  expect(later.errors.map((e) => e.source)).toContain("journalctl");
   // A collector given no log reads none, and says so the same way.
   const none = await new StorageCollector().collect(
     new Reader(),

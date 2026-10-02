@@ -337,7 +337,19 @@ function copy(
         target: cause.at ?? first,
       };
     }
-    case "new-errors":
+    case "new-errors": {
+      // One sentence for either source or both: the clauses are written in
+      // lower case and the sentence starts with a capital.
+      const recorded = [
+        ...(v.since == null
+          ? []
+          : [
+              `the counter grew ${age(v.since)} ago${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}`,
+            ]),
+        ...(v.logged == null
+          ? []
+          : [`the kernel logged a failed checksum read ${age(v.logged)} ago`]),
+      ].join(", and ");
       return {
         word: "Danger",
         title: `New errors on ${mounts} since the last check`,
@@ -345,20 +357,7 @@ function copy(
         // sentence without them rather than one filesystem's as the whole.
         ways: [
           paths === 1
-            ? `${[
-                ...(v.since == null
-                  ? []
-                  : [
-                      `The counter grew ${age(v.since)} ago${v.size == null ? "" : ` by ${count(v.size, "failed read")}`}`,
-                    ]),
-                ...(v.logged == null
-                  ? []
-                  : [
-                      `The kernel logged a failed checksum read ${age(v.logged)} ago`,
-                    ]),
-              ].join(
-                ", and ",
-              )}. The last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
+            ? `${recorded.charAt(0).toUpperCase()}${recorded.slice(1)}. The last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
             : "Each of these filesystems recorded an error after the last check that read it end to end, so no check has said what the damage cost. Open each one for its own times.",
         ],
         next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
@@ -366,6 +365,7 @@ function copy(
         target: cause.at ?? first,
         headline: `Danger: new errors on ${mounts}, unchecked since`,
       };
+    }
     case "integrity-unknown":
       return {
         word: "Unknown",

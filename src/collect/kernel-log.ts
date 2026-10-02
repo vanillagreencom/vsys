@@ -5,6 +5,12 @@
  * with no privileged helper. Resolving the inode to a path needs root, so the
  * reading stays an inode until a check names the file.
  *
+ * The message text is kernel prose, not an interface: no release promises its
+ * wording. It stands in for the documented counters, `error_stats` under
+ * `/sys/fs/btrfs`, which the collector also reads, because a counter gives a
+ * count with no inode and no time it failed. A rewording leaves the lines
+ * unmatched, so the log then names no failure the counter has not counted.
+ *
  * journalctl's JSON output is the journal's documented interface, and every
  * entry carries `__REALTIME_TIMESTAMP` and `_BOOT_ID` whatever fields are
  * asked for. `--grep` keeps the read to the lines that matter: on a journal
@@ -71,18 +77,24 @@ export function probeKernelLog(argv: string[] = kernelLogProbeArgv): Outcome {
     return { failure: "absent", detail: String(error) };
   }
   const out = new TextDecoder().decode(result.stdout);
-  const error = new TextDecoder().decode(result.stderr);
+  const error = new TextDecoder().decode(result.stderr).trim();
   if (answered(result.exitCode, error) && out.trim() !== "") return null;
-  return {
-    failure: "incomplete",
-    detail:
-      error.trim() ||
-      `${argv[0]} exited ${result.exitCode} with no kernel message`,
-  };
+  // journalctl refusing in its own words is a refusal to read, and joining a
+  // group fixes nothing that words like "Compiled without pattern matching"
+  // describe. Silence with no message is the journal this user cannot see.
+  return error
+    ? { failure: "unreadable", detail: error }
+    : {
+        failure: "incomplete",
+        detail: `${argv[0]} exited ${result.exitCode} with no kernel message`,
+      };
 }
 /** One search of the kernel log, after the cursor when there is one. */
-export async function readKernelLog(cursor: string | null): Promise<string> {
-  const argv = kernelLogArgv(cursor);
+export async function readKernelLog(
+  cursor: string | null,
+  /** Injected so a test can run a stand-in for journalctl. */
+  argv: string[] = kernelLogArgv(cursor),
+): Promise<string> {
   const { out, error, status } = await spawnText(argv);
   if (!answered(status, error))
     throw new Error(error.trim() || `${argv[0]} exited ${status}`);
@@ -111,13 +123,30 @@ export class KernelLog {
   private mounted = new Map<string, Map<string, string>>();
   /** For each filesystem id, each inode's newest failure. */
   private failures = new Map<string, Map<string, CsumFailure>>();
+  /** Whether any search has completed, so `held()` is a reading. */
+  private searched = false;
   constructor(
     private search: (cursor: string | null) => Promise<string> = readKernelLog,
   ) {}
   /**
+   * Every failure held, newest first per filesystem. Null until a search has
+   * completed: before that, vsys has not read the log at all. After one, a
+   * later search that failed loses nothing the earlier ones read.
+   */
+  held(): Record<string, CsumFailure[]> | null {
+    if (!this.searched) return null;
+    return Object.fromEntries(
+      [...this.failures].map(([fsid, inodes]) => [
+        fsid,
+        [...inodes.values()].sort((a, b) => b.at - a.at),
+      ]),
+    );
+  }
+  /**
    * Read what the log gained since the last read, and return every failure
    * held. `devices` maps this boot's device names to filesystem ids, and
-   * `boot` is this boot's id, null where it could not be read.
+   * `boot` is this boot's id, null where it could not be read. A search that
+   * fails throws, and `held()` still answers with what was read before it.
    */
   async read(
     devices: Map<string, string>,
@@ -166,19 +195,18 @@ export class KernelLog {
     // The cursor moves only once the whole answer parsed, so a read that
     // failed part way is asked again rather than skipped.
     this.cursor = cursor;
-    return Object.fromEntries(
-      [...this.failures].map(([fsid, inodes]) => {
-        const newest = [...inodes.values()]
-          .sort((a, b) => b.at - a.at)
-          .slice(0, inodeLimit);
-        // Only the newest are kept, so the map stays as small as what a
-        // sample carries.
-        this.failures.set(
-          fsid,
-          new Map(newest.map((f) => [`${f.root}/${f.inode}`, f])),
-        );
-        return [fsid, newest];
-      }),
-    );
+    this.searched = true;
+    for (const [fsid, inodes] of this.failures) {
+      // Only the newest are kept, so the map stays as small as what a
+      // sample carries.
+      const newest = [...inodes.values()]
+        .sort((a, b) => b.at - a.at)
+        .slice(0, inodeLimit);
+      this.failures.set(
+        fsid,
+        new Map(newest.map((f) => [`${f.root}/${f.inode}`, f])),
+      );
+    }
+    return this.held() ?? {};
   }
 }

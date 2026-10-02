@@ -288,6 +288,27 @@ test("an unreadable record of past growth is not a record of no errors", () => {
     c,
   );
   expect(integrityLine(unreadable)).toContain("last new error not available");
+  // The kernel log dated a failure, so the line gives it with its source even
+  // though the counter's record could not be read.
+  const logged = integrity(
+    volumesByDevice([
+      volumeSnapshot("/", {
+        fsid: "fs",
+        errors: { "1/corruption_errs": 1390 },
+        countersAvailable: true,
+        lastErrorKnown: false,
+      }),
+    ])[0],
+    {
+      scrubs: [],
+      csumFailures: { fs: [{ root: 5, inode: 9, at: now - 7200000 }] },
+    },
+    now,
+    c,
+  );
+  expect(integrityLine(logged)).toBe(
+    "New errors since last check · last full check never · last new error 2.0h ago (kernel log)",
+  );
   expect(integrityLine(state([report()]))).toContain(
     "last new error none (error counter only)",
   );

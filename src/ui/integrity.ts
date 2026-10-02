@@ -154,7 +154,9 @@ const sourceWords: Record<ErrorSource, string> = {
  * search recorded nothing either way.
  */
 const errorTime = (item: Integrity): string => {
-  if (!item.errorKnown) return gap;
+  // A failure the kernel logged is a dated reading whatever the counter's
+  // record says. Only a time the counter alone would give goes unread.
+  if (!item.errorKnown && item.errorSource !== "kernel-log") return gap;
   if (item.errorSource === null)
     return item.kernelLog
       ? "none (error counter, kernel log)"

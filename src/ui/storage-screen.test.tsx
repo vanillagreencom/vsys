@@ -737,6 +737,42 @@ test("a machine with no scrub reporter says so and copies the command that insta
   }
 });
 
+test("the install line is offered only where installing fills the gap, and copies on a pinned sample", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  // A pinned sample copies the install line: it names no file that could
+  // have changed since.
+  const pinned = await mount(unreportedSnapshot(time, null), c, {
+    width: 160,
+    height: 60,
+  });
+  try {
+    await pinned.press("5");
+    await pinned.press(c.keys.pin);
+    await pinned.press(c.keys.copy);
+    expect(pinned.written).toEqual([osc52(reporterInstall)]);
+  } finally {
+    await pinned.close();
+  }
+  // A directory that exists and cannot be read is not fixed by installing
+  // anything, so it is offered no install line and copies nothing.
+  const unreadable = unreportedSnapshot(time, null);
+  unreadable.capabilities = unreadable.capabilities.map((cap) =>
+    cap.id === "scrub"
+      ? { ...cap, failure: "unreadable" as const, detail: "EACCES" }
+      : cap,
+  );
+  const t = await mount(unreadable, c, { width: 160, height: 60 });
+  try {
+    await t.press("5");
+    expect(t.frame()).not.toContain(reporterInstall);
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([]);
+  } finally {
+    await t.close();
+  }
+});
+
 test("with only the kernel log, a filesystem still dates its last new error", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;

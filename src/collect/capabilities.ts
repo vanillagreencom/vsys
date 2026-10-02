@@ -86,6 +86,21 @@ export function probeTmux(argv: string[] = listPanesArgv): Outcome {
 }
 
 /**
+ * Whether the scrub report directory can be read. Unlike a kernel interface,
+ * it appears while vsys runs: the reader installs the reporter from the line
+ * vsys offers, and the directory is created then. So the collector asks again
+ * every sample, and the offer leaves the screen once it is filled.
+ */
+export function probeScrub(c: Pick<CollectionConfig, "scrubDir">): Outcome {
+  try {
+    readdirSync(c.scrubDir);
+    return null;
+  } catch (error) {
+    return classify(error);
+  }
+}
+
+/**
  * These reads decide each capability once, when vsys starts, so a permanently
  * absent kernel interface is reported as an absence with its reason rather
  * than as a per-sample source failure on every tick. Most capabilities take
@@ -130,14 +145,7 @@ export function probeCapabilities(
         return undelegated(c, ["io"]);
       },
     ],
-    [
-      "scrub",
-      c.scrubDir,
-      () => {
-        readdirSync(c.scrubDir);
-        return null;
-      },
-    ],
+    ["scrub", c.scrubDir, () => probeScrub(c)],
     ["kernel-log", kernelLogProbeArgv.join(" "), kernelLog],
     [
       "smart",

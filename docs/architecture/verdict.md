@@ -34,7 +34,7 @@ One detection produces one cause. The ladder ranks the causes worst first, its f
 
 `schema` is the summary contract identifier. `time` is the sample time in milliseconds since the Unix epoch. `verdict[].cause` is a `CauseId`. `verdict[].level` is a `Level`, or null when the value was not measured. `verdict[].subject` is the first affected lane id, affected cgroup path, affected filesystem path or null. A navigation-only `at` target never becomes a subject. `meters[].id` is a meter id. `meters[].value` and `meters[].max` are raw numbers or null. A null meter value means the reading was not measured. `meters[].level` is always a `Level`, and an unread quantity grades `warn` by the model's unknown-reading rule. `errors` uses the same source-error records as `--once`.
 
-The summary path takes two samples. The second sample gives CPU and I/O rates a baseline. It skips scratch collection through the collector sample option. The scratch cause is still present with null level and null subject, so a skipped scratch scan never reads as healthy. No scratch size enters a meter.
+The summary path takes two samples. The second sample gives CPU and I/O rates a baseline. It skips scratch collection through the collector sample option. The scratch cause is still present with null level and null subject, so a skipped scratch scan never reads as healthy. It skips the kernel log search the same way, because a collector's first search reads every boot the journal holds; the summary's integrity causes read the error counter alone. No scratch size enters a meter.
 
 ## Invariants
 

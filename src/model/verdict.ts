@@ -334,6 +334,12 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   // the filesystem since, so no check has confirmed what that cost. This is
   // the reading that was missing.
   const grown = filesystems.filter((item) => item.state === "new-errors");
+  // Only an error newer than the last check is new. The card says nothing has
+  // read the filesystem since, which an older one would contradict.
+  const sinceCheck = (age: number | null): number | null =>
+    age !== null && (grown[0].checkAge === null || age < grown[0].checkAge)
+      ? age
+      : null;
   if (grown.length)
     add("new-errors", "danger", {
       paths: grown.map((item) => item.mounts[0] ?? item.device),
@@ -346,9 +352,12 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         grown.length === 1
           ? {
               filesystems: 1,
-              size: grown[0].errorSize,
-              since: grown[0].growthAge,
-              logged: grown[0].loggedAge,
+              size:
+                sinceCheck(grown[0].growthAge) === null
+                  ? null
+                  : grown[0].errorSize,
+              since: sinceCheck(grown[0].growthAge),
+              logged: sinceCheck(grown[0].loggedAge),
               checked: grown[0].checkAge,
             }
           : {

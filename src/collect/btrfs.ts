@@ -151,6 +151,7 @@ export class StorageCollector {
     skipScratch = false,
     /** The temporary directories running agents name, measured as scratch. */
     agentScratch: string[] = [],
+    skipKernelLog = false,
   ): Promise<Storage> {
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
@@ -251,7 +252,7 @@ export class StorageCollector {
         growth.set(fsid, memory.observe(fsid, corruption, time));
     }
     storage.csumFailures = null;
-    if (this.kernelLog)
+    if (this.kernelLog && !skipKernelLog)
       try {
         storage.csumFailures = await this.kernelLog.read(
           names,
@@ -259,6 +260,9 @@ export class StorageCollector {
         );
       } catch (e) {
         r.error("journalctl", e);
+        // What earlier searches read still stands; the log is unread only
+        // where no search has ever completed.
+        storage.csumFailures = this.kernelLog.held();
       }
     try {
       memory.save();

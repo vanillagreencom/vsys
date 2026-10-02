@@ -1,1 +1,1 @@
-- Ship a Btrfs scrub reporter that names only files proved to hold the damage, with a one-command installer offered on Settings and Storage when no scrub report directory exists.
+- Ship a Btrfs scrub reporter that names only files proved damaged, with a one-command installer Settings and Storage offer while the default scrub report directory is missing.

@@ -265,24 +265,24 @@ export function Storage({
     // nothing, which the shell says rather than copying something the reader
     // did not select.
     if (name === c.keys.copy) {
+      const item = items[selected];
+      const group = item?.kind === "filesystem" ? item.group : undefined;
+      const rebuild = group
+        ? rebuildCommand(integrity(group, s.storage, s.time, c))
+        : undefined;
       // A delete command is built from paths checked against the sample it
       // came from. On a pinned sample those checks are as old as the sample:
       // a path freed and reused since then is a healthy file now, and the
-      // line would remove it.
-      if (!live) {
+      // line would remove it. The install line names no file, so a pinned
+      // sample copies it as a live one does.
+      if (rebuild && !live) {
         onNotice(
           `Pinned sample · the files it names may have changed · ${keyLabel(c.keys.pin)} shows live data`,
           "warn",
         );
         return true;
       }
-      const item = items[selected];
-      onCopy(
-        item?.kind === "filesystem"
-          ? (rebuildCommand(integrity(item.group, s.storage, s.time, c)) ??
-              reporterOffer(s.capabilities, c))
-          : undefined,
-      );
+      onCopy(rebuild ?? (group ? reporterOffer(s.capabilities, c) : undefined));
       return true;
     }
     // A list's own key lands on its first row. A list with no row has no row

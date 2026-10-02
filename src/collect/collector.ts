@@ -9,12 +9,13 @@ import {
   type Outcome,
   probeAgentSlice,
   probeCapabilities,
+  probeScrub,
   probeTmux,
   unitDirs,
 } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
-import { KernelLog, probeKernelLog, readKernelLog } from "./kernel-log";
+import { KernelLog, probeKernelLog } from "./kernel-log";
 import { kernelCgroupRoot, readMounts } from "./mounts";
 import { ProcessThread } from "./process-thread";
 import { ProcessCollector, type ProcessSource } from "./procs";
@@ -27,6 +28,11 @@ import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
 export interface SampleOptions {
   /** Skip scratch collection for cheap consumers that must treat it as unknown. */
   skipScratch?: boolean;
+  /**
+   * Skip the kernel log for the same consumers. A collector's first search
+   * reads every boot the journal holds, which a one-shot run pays in full.
+   */
+  skipKernelLog?: boolean;
 }
 /**
  * Reading the tmux server: the probe that decides the capability, and the one
@@ -44,13 +50,13 @@ const noTmux: Outcome = {
 };
 /**
  * Searching the kernel log: the probe that decides the capability, and the
- * search each sample runs from the cursor the last one ended on. A collector
- * given none reads no journal, which keeps the machine's own log out of the
- * test suite; the program always supplies one.
+ * log each sample searches from the cursor the last search ended on. A
+ * collector given none reads no journal, which keeps the machine's own log
+ * out of the test suite; the program always supplies one.
  */
 export interface KernelLogReader {
   probe: () => Outcome;
-  search: (cursor: string | null) => Promise<string>;
+  log: KernelLog;
 }
 const noKernelLog: Outcome = {
   failure: "absent",
@@ -61,6 +67,12 @@ const noKernelLog: Outcome = {
 export class Collector {
   private previous?: Snapshot;
   private storage: StorageCollector;
+  /**
+   * The kernel log this collector searches, null where it cannot. It is
+   * handed to a replacement collector, so a settings change resumes from its
+   * cursor rather than searching every boot again.
+   */
+  readonly kernelLog: KernelLog | null;
   private engine = new AlertEngine();
   private processes: ProcessSource;
   private controller = new AbortController();
@@ -69,7 +81,9 @@ export class Collector {
    * The agent slice is not one of these and is read with each sample's groups.
    * tmux is the exception, and only half of it. Whether tmux is on the path is
    * as static as the rest; whether a server answers is not, and this program
-   * is a dashboard for agents that start after it.
+   * is a dashboard for agents that start after it. The scrub report directory
+   * is the other: the reader creates it by installing the reporter vsys
+   * offers, so it is asked for again every sample.
    */
   private capabilities: Capability[];
   /** tmux is installed, so a read is worth attempting however it went last. */
@@ -110,17 +124,20 @@ export class Collector {
     const searchable =
       this.capabilities.find((cap) => cap.id === "kernel-log")?.available ===
       true;
-    this.storage = new StorageCollector(
-      kernelLog && searchable ? new KernelLog(kernelLog.search) : null,
-    );
+    this.kernelLog = kernelLog && searchable ? kernelLog.log : null;
+    this.storage = new StorageCollector(this.kernelLog);
     const probed = this.capabilities.find((cap) => cap.id === "tmux");
     this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
     this.tmuxServed = probed?.available === true;
   }
-  /** What the last read says about the server, carried into the next sample. */
-  private recordTmux(outcome: Outcome): void {
+  /**
+   * What the last read of a capability asked again each sample says, carried
+   * into the next sample: whether a tmux server answers, and whether the
+   * scrub report directory exists yet.
+   */
+  private record(id: "tmux" | "scrub", outcome: Outcome): void {
     this.capabilities = this.capabilities.map((cap) =>
-      cap.id === "tmux"
+      cap.id === id
         ? {
             ...cap,
             available: outcome === null,
@@ -187,6 +204,7 @@ export class Collector {
     const procs = processes.procs;
     r.errors.push(...processes.errors);
     mark("processes");
+    this.record("scrub", probeScrub(c));
     const storage = await this.storage.collect(
       r,
       c,
@@ -195,6 +213,7 @@ export class Collector {
       !this.live,
       options.skipScratch ?? false,
       agentScratchDirs(procs),
+      options.skipKernelLog ?? false,
     );
     // Device totals cover the whole machine, so they are read above the watched tree.
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);
@@ -223,7 +242,7 @@ export class Collector {
     if (this.tmux && this.tmuxOnPath)
       try {
         panes = await this.tmux.panes();
-        this.recordTmux(null);
+        this.record("tmux", null);
         this.tmuxServed = true;
       } catch (error) {
         // A server that never answered is a capability with a reason, which
@@ -233,7 +252,7 @@ export class Collector {
         // Losing a server that was answering is the thing worth a line.
         if (this.tmuxServed) r.error("tmux list-panes", error);
         this.tmuxServed = false;
-        this.recordTmux({
+        this.record("tmux", {
           failure: "incomplete",
           detail: error instanceof Error ? error.message : String(error),
         });
@@ -274,7 +293,7 @@ export class Collector {
 export async function createCollector(
   c: CollectionConfig,
   live = true,
-  previous?: { sccache?: SccacheCollector },
+  previous?: { sccache?: SccacheCollector; kernelLog?: KernelLog | null },
   toolsPath = agentToolsPath,
 ): Promise<Collector> {
   const read = async (name: string) => {
@@ -309,6 +328,6 @@ export async function createCollector(
     { probe: probeTmux, panes: readPanes },
     new ProcessThread(c, ticks, pages, tools),
     unitDirs(),
-    { probe: probeKernelLog, search: readKernelLog },
+    { probe: probeKernelLog, log: previous?.kernelLog ?? new KernelLog() },
   );
 }

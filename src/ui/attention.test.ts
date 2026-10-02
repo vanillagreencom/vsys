@@ -1049,3 +1049,51 @@ test("a damage card never calls a partial list the whole of the damage", () => {
   expect(said(some)).toContain("2 damaged blocks could not be tied to a file");
   expect(some?.next).toContain("Delete only the addresses it marks as build");
 });
+
+test("a new-errors card tells only the errors newer than the last check", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const hour = 3600000;
+  const card = (lastErrorAt: number, logged: number, checked: number) => {
+    s.storage.volumes = [
+      volumeSnapshot("/", {
+        fsid: "fs",
+        errors: { "1/corruption_errs": 26 },
+        countersAvailable: true,
+        lastErrorAt: s.time - lastErrorAt,
+        lastErrorSize: 26,
+      }),
+    ];
+    s.storage.csumFailures = {
+      fs: [{ root: 257, inode: 4242, at: s.time - logged }],
+    };
+    s.storage.scrubs = [
+      {
+        path: "/run/btrfs-scrub/root.result",
+        text: "Error summary: no errors found",
+        problem: false,
+        readable: true,
+        fsid: "fs",
+        startedAt: s.time - checked,
+        status: "finished",
+        uncorrectable: 0,
+        corrected: 0,
+        addresses: [],
+      },
+    ];
+    return said(
+      attention(s, c, { basePath: base }).find((i) => i.id === "new-errors"),
+    );
+  };
+  // Both sources recorded an error since the check: one sentence names both.
+  expect(card(hour, 2 * hour, 3 * hour)).toContain(
+    "The counter grew 1.0h ago by 26 failed reads, and the kernel logged a failed checksum read 2.0h ago. The last full check ran 3.0h ago.",
+  );
+  // The counter grew before the check and the log after it: only the log's
+  // error is new, so the counter's is not told as one.
+  const between = card(3 * hour, hour, 2 * hour);
+  expect(between).toContain(
+    "The kernel logged a failed checksum read 1.0h ago. The last full check ran 2.0h ago.",
+  );
+  expect(between).not.toContain("counter grew");
+});
