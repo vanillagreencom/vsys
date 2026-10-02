@@ -80,7 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/s
 
 The installer refuses when the system has no `btrfs-scrub@.service` unit. Arch Linux's btrfs-progs package ships that unit. Fedora's and Ubuntu's btrfs-progs packages do not, so a reader on those distributions supplies the unit before this installer will proceed. It schedules no scrub. Enable a timer for each filesystem you want checked, for example `sudo systemctl enable --now btrfs-scrub@-.timer` for the root filesystem. Settings and Storage show the same install command while no report directory exists and the `scrubDir` setting is unchanged.
 
-vsys also reads the kernel log, when your user can read the system journal. It shows when the kernel last logged a failed read and which inode it was in, with no reporter installed. Storage names the source of each time it shows: the scrub report, the error counter or the kernel log. See [storage integrity](docs/architecture/storage-integrity.md) for the report format.
+vsys also reads the kernel log, when your user can read the system journal. It shows when the kernel last logged a failed read and which inode it was in, with no reporter installed. Storage names the source of each time it shows: the scrub report, the error counter or the kernel log. See [the scrub reporter](docs/architecture/scrub-reporter.md) for the report format.
 
 ## Drive lifetime writes
 

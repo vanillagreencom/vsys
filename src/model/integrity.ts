@@ -48,10 +48,12 @@ export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
 
 /**
  * What a damaged address names. `files` lists every name the reporter
- * resolved for it, `none` is the free space or file already gone that an
- * older report wrote, and
- * `unresolved` is damage the reporter could not name every file of, so no
- * file under it is listed.
+ * resolved for it, `none` is an address with no path left: the free space
+ * or file already gone that an older report wrote, or the files a report
+ * listed that have all been removed since it was written, which the
+ * collector drops because only paths still on disk are listed. `unresolved`
+ * is damage the reporter could not name every file of, so no file under it
+ * is listed.
  */
 export type DamageKind = "files" | "none" | "unresolved";
 /**

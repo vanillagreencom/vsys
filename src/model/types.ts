@@ -131,8 +131,11 @@ export interface ScratchRoot extends Scratch {
  * repair, so the reporter resolves every 4 KiB sector of that block, a path
  * under it is possibly damaged, more than one file can share the block, and
  * one extent can carry several names.
- * No path and no not-resolved mark is an older report's free space or file
- * already deleted; the shipped reporter marks every no-extent answer.
+ * No path and no not-resolved mark has two sources: an older report's free
+ * space or file already deleted, which the shipped reporter no longer writes
+ * because it marks every no-extent answer, and a report whose listed files
+ * have all been removed since it was written, which the collector drops
+ * because only paths still on disk are listed.
  */
 export interface DamagedAddress {
   logical: number;
