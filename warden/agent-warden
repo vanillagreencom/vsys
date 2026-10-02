@@ -26,18 +26,20 @@ Rules, per process, never per pane
   * A comm equal to a configured name is a candidate, never the decision
     (D010): it is an agent once its executable lies under that tool's own
     mise install directory, equals one of its configured executable paths,
-    is a bundled CLI engine under a desktop prefix, or the tool names no
-    install location at all. Each check is a path-prefix or exact match
-    against the process's own resolved executable, never a bare substring or
-    suffix, so a self-chosen writable path that merely contains an install
-    fragment (a scratch directory holding a fake `node_modules/...`) never
-    confirms. A package-path fragment, the dashboard's own weaker signal for
-    display, never confirms a match the warden acts on automatically. An
-    unreadable executable keeps the name. A node/bun/python-hosted CLI
-    instead matches by a mise install path in argv[0] or argv[1]. Claude's
-    embedded search mode (argv[0] "ugrep") is a helper, not a session. A
-    bundled CLI under /opt (codex-desktop ships one) is an agent by name;
-    the app around it is not.
+    is a bundled CLI engine under a genuinely access-controlled desktop
+    prefix, or the tool names no install location at all. Each check is a
+    path-prefix or exact match against the process's own resolved
+    executable, never a bare substring or suffix, so a self-chosen writable
+    path that merely contains an install fragment (a scratch directory
+    holding a fake `node_modules/...`) never confirms. A package-path
+    fragment, the dashboard's own weaker signal for display, never confirms
+    a match the warden acts on automatically. An unreadable executable
+    keeps the name. A node/bun/python-hosted CLI instead matches by a mise
+    install path in argv[0] or argv[1]. Claude's embedded search mode
+    (argv[0] "ugrep") is a helper, not a session. A bundled CLI under /opt
+    (codex-desktop ships one) is an agent by name; the app around it is not.
+    A desktop prefix under /tmp never confirms a bundled CLI, because /tmp is
+    world-writable on every Linux target and so is no install location at all.
   * Build tools match by comm or by the script they run. They are adopted only
     when the nearest marker above them is an agent or the tmux server; a
     desktop app, an excluded helper, or nothing leaves them alone (reported).
@@ -310,12 +312,23 @@ DESKTOP_EXE_PREFIXES = tuple(AGENT_TOOLS["desktopExePrefixes"])
 # suffix, never by name: Claude Desktop's own Electron binary is named
 # "claude" (2026-09-09, nine UI processes were moved before this rule).
 BUNDLED_CLI_SUFFIXES = tuple(AGENT_TOOLS["bundledCliSuffixes"])
+# A bundled CLI engine confirms an agent only under a desktop prefix that is a
+# real install location. /tmp is world-writable (mode 1777) on every Linux
+# target, so any same-uid process can create a path under it, including an
+# AppImage's own mount point, with zero real install evidence; every other
+# shipped prefix (/opt/, /usr/lib/*) is root-owned and access-controlled. The
+# dashboard's display-only match (src/collect/builds.ts) carries no equivalent
+# anchor because it never acts automatically; is_desktop below still reads the
+# full DESKTOP_EXE_PREFIXES, since excluding a process from the agent slice is
+# the safe direction for a forgeable prefix.
+BUNDLED_CLI_PREFIXES = tuple(prefix for prefix in DESKTOP_EXE_PREFIXES if not prefix.startswith("/tmp/"))
 # D010: a configured name is a candidate, never the decision. Each tool's own
 # mise install directory and whole executable paths are where its real
 # installs put it; a comm match confirms only when the process's executable
 # lies under the mise directory, equals a configured executable exactly, is a
-# bundled CLI engine under a desktop prefix, or the tool names no install
-# location at all (a reader's own Settings addition, trusted by name alone).
+# bundled CLI engine under a genuinely access-controlled desktop prefix, or
+# the tool names no install location at all (a reader's own Settings
+# addition, trusted by name alone).
 # The tool's own path fragments (tool["paths"]) are the dashboard's weaker,
 # display-only signal (src/collect/builds.ts): a bare substring of them is
 # forgeable by any same-uid process that recreates the fragment under a
@@ -575,7 +588,7 @@ class Proc:
             return True
         if self.exe in location["executables"]:
             return True
-        return self.exe.startswith(DESKTOP_EXE_PREFIXES) and self.exe.endswith(BUNDLED_CLI_SUFFIXES)
+        return self.exe.startswith(BUNDLED_CLI_PREFIXES) and self.exe.endswith(BUNDLED_CLI_SUFFIXES)
 
     @property
     def is_agent(self):

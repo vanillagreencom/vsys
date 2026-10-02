@@ -49,7 +49,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             (data_dir / "agent-tools.json").write_text(json.dumps({
                 "version": 1.0,
                 "tools": [{"name": "zz-agent", "mise": ["zz-install"]}],
-                "desktopExePrefixes": ["/zz/"],
+                "desktopExePrefixes": ["/zz/", "/tmp/.mount_"],
                 "bundledCliSuffixes": ["/zz/cli"],
             }))
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
@@ -60,8 +60,10 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("agent names from data", module.AGENT_COMMS, {"zz-agent"}),
             ("mise path from data", bool(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/zz-install/bin/zz")), True),
             ("old mise absent", bool(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/claude/bin/claude")), False),
-            ("desktop prefixes from data", module.DESKTOP_EXE_PREFIXES, ("/zz/",)),
+            ("desktop prefixes from data", module.DESKTOP_EXE_PREFIXES, ("/zz/", "/tmp/.mount_")),
             ("bundled suffixes from data", module.BUNDLED_CLI_SUFFIXES, ("/zz/cli",)),
+            ("bundled CLI prefixes drop a /tmp desktop prefix, world-writable on every target",
+             module.BUNDLED_CLI_PREFIXES, ("/zz/",)),
         ]
         for name, actual, expected in rows:
             with self.subTest(name=name):
@@ -232,6 +234,9 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("bundled helper replaced while running", self.P(11, 0, "node_repl", ["/opt/codex-desktop/resources/node_repl"], exe="/opt/codex-desktop/resources/node_repl (deleted)").rides_along, True),
             ("agent confirmed by an exact configured executable path", self.P(14, 0, "opencode", ["opencode"], exe="/usr/bin/opencode").is_agent, True),
             ("an executable path containing but not equal to the configured one is not confirmed", self.P(15, 0, "opencode", ["opencode-fake"], exe="/usr/bin/opencode-fake").is_agent, False),
+            ("a bundled CLI planted under the shipped /tmp/.mount_ prefix is not an agent: /tmp is world-writable on every target",
+             self.P(16, 0, "codex", ["/tmp/.mount_zzzzzz/codex-desktop/resources/codex", "exec"],
+                    exe="/tmp/.mount_zzzzzz/codex-desktop/resources/codex").is_agent, False),
         ]
         for name, actual, expected in rows:
             with self.subTest(name=name):
@@ -245,9 +250,12 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         # (paths) are the dashboard's own, weaker, display-only signal; the
         # warden, which moves a confirmed match automatically, never reads
         # them, so a self-chosen writable path that merely contains one is
-        # not proof of install location. A generic name with no configured
-        # location stays trusted, and an unreadable executable never hides
-        # an escaped agent.
+        # not proof of install location. A desktop prefix under /tmp is the
+        # same kind of non-proof: /tmp is world-writable on every target, so
+        # it never confirms a bundled CLI even where it is configured as a
+        # desktop prefix. A generic name with no configured location stays
+        # trusted, and an unreadable executable never hides an escaped
+        # agent.
         with scratch() as tmp:
             base = Path(tmp)
             script = base / "warden" / "agent-warden"
@@ -262,7 +270,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                     {"name": "dsh", "mise": ["dsh-install"]},
                     {"name": "ownersonly"},
                 ],
-                "desktopExePrefixes": ["/opt/"],
+                "desktopExePrefixes": ["/opt/", "/tmp/.mount_"],
                 "bundledCliSuffixes": ["/vendor/pi"],
             }))
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
@@ -291,6 +299,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
              rec("pi", ["/opt/app/vendor/pi"], "/opt/app/vendor/pi").is_agent, True),
             ("pi's bundled CLI suffix outside any desktop prefix is not an agent",
              rec("pi", [f"{scratch_home}/vendor/pi"], f"{scratch_home}/vendor/pi").is_agent, False),
+            ("pi as a bundled CLI engine under a /tmp desktop prefix is not an agent: /tmp is world-writable on every target",
+             rec("pi", ["/tmp/.mount_zzzzzz/app/vendor/pi"], "/tmp/.mount_zzzzzz/app/vendor/pi").is_agent, False),
             ("an unreadable executable keeps the name",
              rec("pi", ["pi"], "").is_agent, True),
             ("a name with no configured install location is trusted",
