@@ -47,10 +47,9 @@ def default_tool_exe(module, comm):
     that tool's install layout; a row that tests install-location
     confirmation itself passes its own `exe`."""
     location = module.TOOL_LOCATIONS.get(comm)
-    if location:
-        for fragment in location["fragments"]:
-            if fragment.startswith("/installs/"):
-                return f"{module.MISE_DATA}{fragment}0.0.0/{comm}"
+    if location and location["mise"]:
+        directory = location["mise"][0]
+        return f"{module.MISE_DATA}/installs/{directory}/0.0.0/{comm}"
     return "/usr/bin/x"
 
 

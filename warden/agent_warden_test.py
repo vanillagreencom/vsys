@@ -239,10 +239,15 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
 
     def test_agent_name_confirmed_by_install_location(self):
         # D010, ported to the warden: a configured name is a candidate, and
-        # install-location data (paths, mise dirs, executables) it already
-        # parses and validates is what confirms it. A generic name with no
-        # configured location stays trusted, and an unreadable executable
-        # never hides an escaped agent.
+        # install-location data it already parses and validates is what
+        # confirms it, each as a path-prefix or exact match against the
+        # process's own resolved executable. The tool's path fragments
+        # (paths) are the dashboard's own, weaker, display-only signal; the
+        # warden, which moves a confirmed match automatically, never reads
+        # them, so a self-chosen writable path that merely contains one is
+        # not proof of install location. A generic name with no configured
+        # location stays trusted, and an unreadable executable never hides
+        # an escaped agent.
         with scratch() as tmp:
             base = Path(tmp)
             script = base / "warden" / "agent-warden"
@@ -253,10 +258,11 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             (base / "data" / "agent-tools.json").write_text(json.dumps({
                 "version": 1,
                 "tools": [
-                    {"name": "pi", "paths": ["/node_modules/pi-coding-agent/"]},
+                    {"name": "pi", "mise": ["pi-install"], "paths": ["/node_modules/pi-coding-agent/"]},
                     {"name": "dsh", "mise": ["dsh-install"]},
                     {"name": "ownersonly"},
                 ],
+                "desktopExePrefixes": ["/opt/"],
                 "bundledCliSuffixes": ["/vendor/pi"],
             }))
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
@@ -267,17 +273,24 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         def rec(comm, argv, exe):
             return module.Proc(1, ppid=0, comm=comm, argv=argv, exe=exe, cgroup=self.A, start=1)
 
+        scratch_home = f"{env['HOME']}/scratch"
         rows = [
             ("planted pi outside every install location is not an agent",
              rec("pi", ["/usr/local/bin/pi"], "/usr/local/bin/pi").is_agent, False),
             ("planted dsh outside its mise install dir is not an agent",
              rec("dsh", ["/usr/bin/dsh"], "/usr/bin/dsh").is_agent, False),
-            ("pi under its own package directory is an agent",
-             rec("pi", ["/opt/x/node_modules/pi-coding-agent/pi"], "/opt/x/node_modules/pi-coding-agent/pi").is_agent, True),
+            ("a same-uid process whose exe lives under a writable path that merely contains pi's package fragment is not an agent",
+             rec("pi", [f"{scratch_home}/node_modules/pi-coding-agent/evil"], f"{scratch_home}/node_modules/pi-coding-agent/evil").is_agent, False),
+            ("a same-uid process whose exe merely contains pi's mise install fragment outside the real mise root is not an agent",
+             rec("pi", [f"{scratch_home}/fake-mise/installs/pi-install/1.0/pi"], f"{scratch_home}/fake-mise/installs/pi-install/1.0/pi").is_agent, False),
+            ("pi under its mise install directory is an agent",
+             rec("pi", ["x"], f"{module.MISE_DATA}/installs/pi-install/1.0/pi").is_agent, True),
             ("dsh under its mise install directory is an agent",
              rec("dsh", ["x"], f"{module.MISE_DATA}/installs/dsh-install/1.0/dsh").is_agent, True),
-            ("pi as a bundled CLI engine is an agent",
+            ("pi as a bundled CLI engine under its desktop prefix is an agent",
              rec("pi", ["/opt/app/vendor/pi"], "/opt/app/vendor/pi").is_agent, True),
+            ("pi's bundled CLI suffix outside any desktop prefix is not an agent",
+             rec("pi", [f"{scratch_home}/vendor/pi"], f"{scratch_home}/vendor/pi").is_agent, False),
             ("an unreadable executable keeps the name",
              rec("pi", ["pi"], "").is_agent, True),
             ("a name with no configured install location is trusted",
@@ -412,8 +425,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def _mutant_splits_contained_scope(self, m):
         contained_scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/contained.scope"
         recs = {
-            20: m.Proc(20, ppid=1, comm="codex", argv=["codex"], exe=f"{m.HOME}/.codex/packages/latest/codex", cgroup=contained_scope, start=1),
-            21: m.Proc(21, ppid=20, comm="claude", argv=["claude"], exe=f"{m.HOME}/.local/share/claude/versions/2.1.0/claude", cgroup=contained_scope, start=2),
+            20: m.Proc(20, ppid=1, comm="codex", argv=["codex"], exe=default_tool_exe(m, "codex"), cgroup=contained_scope, start=1),
+            21: m.Proc(21, ppid=20, comm="claude", argv=["claude"], exe=default_tool_exe(m, "claude"), cgroup=contained_scope, start=2),
         }
         moves, _, _, _ = m.plan(recs, capped=lambda cg: False, contained=lambda cg: m.unit_of(cg) == "contained.scope", split=True)
         return any([21] == [p.pid for p in tree] for reason, tree in moves if reason == "nested session")
