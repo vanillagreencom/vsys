@@ -454,18 +454,30 @@ test("a remembered finished check that found damage is never promoted to healthy
 test("a finished report that moved backward in time never outranks the remembered check", () => {
   const c = defaults();
   const lastFinishedScrub = { fs: { at: now - 3 * day, damaged: true } };
-  // A restored older report: it is itself finished, and found nothing, but
-  // it started before the remembered finished check that found damage. It
-  // must not read as the authoritative, newer check.
+  // A restored older report: it is itself finished and reports real damage of
+  // its own, but it started before the remembered finished check that found
+  // damage. It must not read as the authoritative, newer check, so its own
+  // damage data must not surface either.
   const older = integrity(
     filesystem(),
-    { scrubs: [report({ startedAt: now - 5 * day })], lastFinishedScrub },
+    {
+      scrubs: [
+        report({
+          startedAt: now - 5 * day,
+          problem: true,
+          uncorrectable: 3,
+          addresses: [{ logical: 1, paths: ["/r/target/x"] }],
+        }),
+      ],
+      lastFinishedScrub,
+    },
     now,
     c,
   );
   expect(older.state).toBe("damaged");
   expect(older.checkAge).toBe(3 * 86400);
   expect(older.groups).toEqual([]);
+  expect(older.blocks).toBeNull();
   expect(damageCounts(older)).toEqual({
     files: null,
     free: null,
@@ -484,6 +496,72 @@ test("a finished report that moved backward in time never outranks the remembere
   );
   expect(tied.state).toBe("healthy");
   expect(tied.checkAge).toBe(3 * 86400);
+  // Mirror polarity: the remembered check is clean, and the backward-moved
+  // report is the one reporting damage. The stale report still does not
+  // outrank the newer, clean, remembered check.
+  const staleDamage = integrity(
+    filesystem(),
+    {
+      scrubs: [
+        report({
+          startedAt: now - 5 * day,
+          problem: true,
+          uncorrectable: 3,
+          addresses: [{ logical: 1, paths: ["/r/target/x"] }],
+        }),
+      ],
+      lastFinishedScrub: { fs: { at: now - 3 * day, damaged: false } },
+    },
+    now,
+    c,
+  );
+  expect(staleDamage.state).toBe("healthy");
+  expect(staleDamage.groups).toEqual([]);
+  expect(staleDamage.blocks).toBeNull();
+});
+
+test("a finished report with no readable start time still speaks for itself", () => {
+  const c = defaults();
+  // The report finished and carries real damage, but its own start time could
+  // not be read. An unknown start time is not known to be older than the
+  // remembered check, so the report still stands behind its own data, and a
+  // clean remembered check must not mask the damage it found.
+  const undatedDamage = integrity(
+    filesystem(),
+    {
+      scrubs: [
+        report({
+          startedAt: null,
+          problem: true,
+          uncorrectable: 3,
+          addresses: [{ logical: 1, paths: ["/r/target/x"] }],
+        }),
+      ],
+      lastFinishedScrub: { fs: { at: now - 3 * day, damaged: false } },
+    },
+    now,
+    c,
+  );
+  expect(undatedDamage.state).toBe("damaged");
+  expect(undatedDamage.blocks).toBe(3);
+  expect(undatedDamage.groups).toEqual([
+    { logical: 1, paths: ["/r/target/x"], kind: "files" },
+  ]);
+  // The accepted scope boundary: an undated report that finished clean still
+  // clears a remembered damaged check, rather than letting the memory of
+  // damage outrank a newer, if undated, clean result. It reads "unknown"
+  // rather than "healthy", because a report with no start time dates no
+  // check, which matches pre-existing behavior for a dateless report.
+  const undatedClean = integrity(
+    filesystem(),
+    {
+      scrubs: [report({ startedAt: null })],
+      lastFinishedScrub: { fs: { at: now - 3 * day, damaged: true } },
+    },
+    now,
+    c,
+  );
+  expect(undatedClean.state).toBe("unknown");
 });
 
 test("the remembered check, not the aborted one, decides which logged failures are new", () => {

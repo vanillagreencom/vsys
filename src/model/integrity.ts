@@ -195,11 +195,16 @@ export function integrity(
   // it: a report that finished but started before the remembered finished
   // check is still itself finished, but it is not the authoritative, newer
   // check, so standing behind its own addresses or block count here would
-  // report a stale zero over a remembered check that found damage.
+  // report a stale zero over a remembered check that found damage. A report
+  // with no readable start time is not known to be older, only undated: it
+  // keeps standing for itself, because the restored-older-file case this
+  // guards against always carries its own readable, older start time.
   const complete =
     readable &&
     scrub?.status === "finished" &&
-    (remembered === null || (scrub?.startedAt ?? -Infinity) >= remembered.at);
+    (remembered === null ||
+      scrub?.startedAt == null ||
+      scrub.startedAt >= remembered.at);
   const groups: DamagedGroup[] = (complete ? (scrub?.addresses ?? []) : []).map(
     (address) => ({
       logical: address.logical,
