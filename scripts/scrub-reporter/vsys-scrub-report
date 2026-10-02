@@ -121,12 +121,12 @@ if ((${#seen[@]})); then
 	mapfile -t addresses < <(printf '%s\n' "${!seen[@]}" | sort -n)
 fi
 
-# The lines one address gets under its heading. vsys offers to delete every
-# name an address lists, so the list is all of the address or none of it, and
-# each name reaches the delete command byte for byte:
+# The lines one address gets under its heading. vsys lists every name an
+# address carries as possibly damaged, so the list is all of the address or
+# none of it, and each name reaches the screen byte for byte:
 # - every name is checked against the inodes the address belongs to, because
 #   btrfs prints a name with a newline in it as two lines, and a line that is
-#   not a name of a damaged inode would put an unrelated file under a delete;
+#   not a name of a damaged inode would list an unrelated file;
 # - every inode the address belongs to must get a name, because an inode
 #   btrfs could not name, or one with no link left, is damage the list would
 #   leave out;
@@ -204,7 +204,7 @@ max_addresses=${BTRFS_SCRUB_MAX_ADDRESSES:-64}
 		echo "Damaged files: no line in the kernel log for this run named an address."
 	else
 		echo "Damaged files: ${#addresses[@]} damaged block addresses from the kernel log."
-		echo "Delete every path listed under an address, not the first: one block can have several names."
+		echo "Each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector, so a path listed under it may be sound."
 		echo "Paths are resolved as the scrub ends; a block freed and reused later resolves to an unrelated file."
 		for address in "${addresses[@]:0:$max_addresses}"; do
 			echo "logical $address:"

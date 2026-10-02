@@ -3,7 +3,6 @@ import { defaults } from "../config/config";
 import { volumeSnapshot } from "../test/fixture";
 import {
   damageCounts,
-  globMatch,
   type Integrity,
   type IntegrityState,
   integrity,
@@ -41,31 +40,7 @@ function report(overrides: Partial<Scrub> = {}): Scrub {
   };
 }
 
-test("a glob crosses directories only where it says it does", () => {
-  const rows: [string, string, boolean][] = [
-    ["**/target/**", "/repo/target/debug/x", true],
-    ["**/target/**", "/target/debug/x", true],
-    // The must-fail direction: a file named target is not a target directory,
-    // and a directory whose name merely ends in target is not one either.
-    ["**/target/**", "/repo/target", false],
-    ["**/target/**", "/repo/mytarget/debug/x", false],
-    ["**/node_modules/**", "/a/b/node_modules/c/d", true],
-    ["**/.cache/**", "/home/r/.cache/x", true],
-    ["**/.cache/**", "/home/r/cache/x", false],
-    ["/repo/*/x", "/repo/one/x", true],
-    ["/repo/*/x", "/repo/one/two/x", false],
-    ["/repo/?.txt", "/repo/a.txt", true],
-    ["/repo/?.txt", "/repo/ab.txt", false],
-  ];
-  for (const [pattern, path, matches] of rows)
-    expect({ pattern, path, matches: globMatch(pattern, path) }).toEqual({
-      pattern,
-      path,
-      matches,
-    });
-});
-
-test("an address is build output only when every name under it is", () => {
+test("an address names its files, free space, or damage it could not name", () => {
   const c = defaults();
   const item = integrity(
     filesystem(),
@@ -81,9 +56,6 @@ test("an address is build output only when every name under it is", () => {
               logical: 1,
               paths: ["/r/target/debug/a", "/r/target/debug/b"],
             },
-            // One name outside build output makes the whole address data: the
-            // delete command removes every name, so calling this safe would
-            // invite the reader to delete the letter with the object file.
             { logical: 2, paths: ["/r/target/debug/c", "/home/r/letter.txt"] },
             { logical: 3, paths: [] },
             // The reporter could not name every file here, so it is damage
@@ -97,15 +69,13 @@ test("an address is build output only when every name under it is", () => {
     c,
   );
   expect(item.groups.map((group) => group.kind)).toEqual([
-    "build",
-    "other",
+    "files",
+    "files",
     "none",
     "unresolved",
   ]);
   expect(damageCounts(item)).toEqual({
     files: 4,
-    build: 1,
-    other: 1,
     free: 1,
     unresolved: 1,
     unnamed: 2,
@@ -385,10 +355,10 @@ test("a report names a filesystem by its own identity, not by arriving first", (
   ).toBe(4);
 });
 
-test("output vsys could not read names no file and offers no delete", () => {
+test("output vsys could not read names no file", () => {
   const c = defaults();
   // Text that failed the readable check but still carries a parseable
-  // address. Standing behind that address would put a delete command under a
+  // address. Standing behind that address would list damaged files under a
   // headline saying the state is unknown.
   const item = integrity(
     filesystem(),
@@ -489,7 +459,7 @@ test("a report names its filesystem however it spells the identity", () => {
 test("a check that has not finished offers no damaged file to act on", () => {
   const c = defaults();
   // A running check can already have written addresses. Standing behind them
-  // would put a delete command under a check that has not said what it found.
+  // would list damaged files under a check that has not said what it found.
   const running = integrity(
     filesystem(),
     {

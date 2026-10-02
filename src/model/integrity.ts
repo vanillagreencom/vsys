@@ -47,48 +47,22 @@ export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
 }
 
 /**
- * A path glob. `**` crosses directory separators, `*` and `?` do not, so
- * `**​/target/**` names build output at any depth without also naming a file
- * called `target`.
+ * What a damaged address names. `files` lists every name the reporter
+ * resolved for it, `none` is free space or a file already gone, and
+ * `unresolved` is damage the reporter could not name every file of, so no
+ * file under it is listed.
  */
-export function globMatch(pattern: string, path: string): boolean {
-  let source = "^";
-  for (let at = 0; at < pattern.length; at++) {
-    const char = pattern[at];
-    if (char === "*") {
-      if (pattern[at + 1] === "*") {
-        // A `**/` segment must also match nothing at all, so `**​/target/**`
-        // matches an absolute path whose first segment is already `target`.
-        source += pattern[at + 2] === "/" ? "(?:.*/)?" : ".*";
-        at += pattern[at + 2] === "/" ? 2 : 1;
-      } else source += "[^/]*";
-    } else if (char === "?") source += "[^/]";
-    else source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  }
-  return new RegExp(`${source}$`).test(path);
-}
-
+export type DamageKind = "files" | "none" | "unresolved";
 /**
- * What a reader should do with a damaged address. `unresolved` is damage the
- * reporter could not name every file of, so no file under it is offered.
- */
-export type DamageKind = "build" | "other" | "none" | "unresolved";
-/**
- * One damaged block address as the screen groups it. Every path of a group is
- * deleted together: one extent under two names is one piece of damage, and
- * removing the first name leaves it on disk for the next scrub to find again.
+ * One damaged block address as the screen groups it. The address is the start
+ * of the 64 KiB block the check could not repair, not the damaged sector, so
+ * every path under it is possibly damaged rather than proven so, and one
+ * extent under two names lists both.
  */
 export interface DamagedGroup {
   logical: number;
   paths: string[];
   kind: DamageKind;
-  /**
-   * True where a path under this address was written after the check began.
-   * The check resolved these names as it ended, so a block freed and reused
-   * since then resolves to an unrelated file: the name no longer proves what
-   * was read, and no command offers to remove it.
-   */
-  changed: boolean;
 }
 /**
  * A filesystem's integrity state, worst first. Every state but `healthy` and
@@ -173,15 +147,6 @@ const level: Record<IntegrityState, Level> = {
 export function integrityLevel(state: IntegrityState): Level {
   return level[state];
 }
-/** A damaged address is safe to rebuild only when every name under it is. */
-function classify(paths: string[], c: Config): DamageKind {
-  if (!paths.length) return "none";
-  return paths.every((path) =>
-    c.buildOutputGlobs.some((glob) => globMatch(glob, path)),
-  )
-    ? "build"
-    : "other";
-}
 /** The newest report naming this filesystem, or none where no report does. */
 function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
   // A filesystem id is a UUID, and a report writing it in capitals names the
@@ -208,20 +173,23 @@ export function integrity(
 ): Integrity {
   const scrub = reportFor(group.id, storage.scrubs);
   // Output vsys could not read names no file it can stand behind. An address
-  // parsed out of otherwise unreadable text would put a delete command under a
+  // parsed out of otherwise unreadable text would list damaged files under a
   // headline saying the state is unknown, which is two claims at once.
   const readable = !scrub || scrub.readable !== false;
   // Only a finished check has a result. A running or half-written report can
-  // carry addresses, and standing behind those would put a delete command
-  // under a check that has not said what it found.
+  // carry addresses, and standing behind those would list damaged files under
+  // a check that has not said what it found.
   const complete = readable && scrub?.status === "finished";
   const groups: DamagedGroup[] = (complete ? (scrub?.addresses ?? []) : []).map(
     (address) => ({
       logical: address.logical,
       paths: address.paths,
       kind:
-        address.resolved === false ? "unresolved" : classify(address.paths, c),
-      changed: (address.changed ?? []).length > 0,
+        address.resolved === false
+          ? "unresolved"
+          : address.paths.length
+            ? "files"
+            : "none",
     }),
   );
   const counted = group.volumes.find((v) => v.countersAvailable !== false);
@@ -323,7 +291,7 @@ export function integrities(s: Snapshot, c: Config): Integrity[] {
   );
 }
 /**
- * The damaged addresses a reader can delete and rebuild, and the rest.
+ * The damaged addresses by what they name, and the files they list.
  * `unnamed` is how many blocks the check counted beyond the addresses its
  * report lists: the kernel rate-limits the line that names an address, and a
  * reporter lists a bounded number, so a list can be shorter than the damage.
@@ -331,8 +299,6 @@ export function integrities(s: Snapshot, c: Config): Integrity[] {
  */
 export function damageCounts(item: Integrity): {
   files: number;
-  build: number;
-  other: number;
   free: number;
   unresolved: number;
   unnamed: number;
@@ -341,8 +307,6 @@ export function damageCounts(item: Integrity): {
     item.groups.filter((group) => group.kind === kind);
   return {
     files: item.groups.reduce((sum, group) => sum + group.paths.length, 0),
-    build: of("build").length,
-    other: of("other").length,
     free: of("none").length,
     unresolved: of("unresolved").length,
     unnamed:

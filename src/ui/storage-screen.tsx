@@ -27,12 +27,11 @@ import {
   blocksText,
   counterSentence,
   damageAdvice,
-  deleteCommand,
   integrityLine,
   loggedSentence,
   loggedText,
   noDamageText,
-  rebuildCommand,
+  possibleSentence,
   unnamedText,
 } from "./integrity";
 import { useScreenKeys } from "./keys";
@@ -187,7 +186,6 @@ export function Storage({
   onTargetUsed,
   onNotice,
   onCopy,
-  live,
 }: {
   snapshot: Snapshot;
   config: Config;
@@ -198,8 +196,6 @@ export function Storage({
   onNotice: (text: string, level: Level) => void;
   /** Undefined text tells the shell the selected row carries no command. */
   onCopy: (command: string | undefined) => void;
-  /** False while a pinned sample is shown, which is not the disk as it is. */
-  live: boolean;
 }) {
   const items = storageItems(s);
   const ids = items.map(storageKey);
@@ -259,30 +255,17 @@ export function Storage({
       return move((i) => stepToRegion(counts, i, -1));
     if (name === c.keys.next || name === c.keys.right || name === "right")
       return move((i) => stepToRegion(counts, i, 1));
-    // Only the filesystem row carries a command: the one that removes the
-    // build output the last check found, or, where no reporter is installed
-    // to run a check, the one that installs it. Every other row copies
-    // nothing, which the shell says rather than copying something the reader
-    // did not select.
+    // Only a filesystem row carries a command, and only where no reporter
+    // is installed to run a check: the line that installs it. It names no
+    // file, so a pinned sample copies it as a live one does. Every other row
+    // copies nothing, which the shell says rather than copying something the
+    // reader did not select.
     if (name === c.keys.copy) {
-      const item = items[selected];
-      const group = item?.kind === "filesystem" ? item.group : undefined;
-      const rebuild = group
-        ? rebuildCommand(integrity(group, s.storage, s.time, c))
-        : undefined;
-      // A delete command is built from paths checked against the sample it
-      // came from. On a pinned sample those checks are as old as the sample:
-      // a path freed and reused since then is a healthy file now, and the
-      // line would remove it. The install line names no file, so a pinned
-      // sample copies it as a live one does.
-      if (rebuild && !live) {
-        onNotice(
-          `Pinned sample · the files it names may have changed · ${keyLabel(c.keys.pin)} shows live data`,
-          "warn",
-        );
-        return true;
-      }
-      onCopy(rebuild ?? (group ? reporterOffer(s.capabilities, c) : undefined));
+      onCopy(
+        items[selected]?.kind === "filesystem"
+          ? reporterOffer(s.capabilities, c)
+          : undefined,
+      );
       return true;
     }
     // A list's own key lands on its first row. A list with no row has no row
@@ -415,7 +398,6 @@ export function Storage({
   const integrityRow = (i: number, item: Integrity, first: Volume) => {
     const level = integrityLevel(item.state);
     const counts = damageCounts(item);
-    const rebuild = rebuildCommand(item);
     return storageRow(
       i,
       (open) => (
@@ -434,49 +416,38 @@ export function Storage({
             <Field label="Blocks found" width={16} value={blocksText(item)} />
             {item.groups.length === 0 && <Empty text={noDamageText(item)} />}
             {unnamedText(item) && <Empty text={unnamedText(item) ?? ""} />}
-            {item.groups.map((group) => {
-              const command = deleteCommand(group);
-              return (
-                <box
-                  key={group.logical}
-                  flexDirection="column"
-                  flexShrink={0}
-                  marginTop={1}
-                >
-                  <Line height={1} flexShrink={0} truncate>
-                    <span attributes={ui.dim}>{fit("block", 16)}</span>
-                    {`${group.logical}  `}
-                    <span
-                      fg={
-                        group.kind === "other" || group.kind === "unresolved"
-                          ? ui.danger
-                          : undefined
-                      }
-                    >
-                      {damageAdvice(group)}
-                    </span>
-                  </Line>
-                  {group.paths.map((path) => (
-                    <Line key={path} flexShrink={0} wrapMode="word">
-                      {`      ${safe(path)}`}
-                    </Line>
-                  ))}
-                  {command && (
-                    <Line
-                      flexShrink={0}
-                      wrapMode="word"
-                      fg={ui.accent}
-                    >{`      ${safe(command)}`}</Line>
-                  )}
-                </box>
-              );
-            })}
-            {rebuild && (
-              <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                {`${keyLabel(c.keys.copy)} copies one line that removes every build-output path above.${counts.unresolved + counts.unnamed ? " It cannot reach the blocks no file is named for." : ""}`}
+            {counts.files > 0 && (
+              <Line
+                flexShrink={0}
+                wrapMode="word"
+                marginTop={1}
+                attributes={ui.dim}
+              >
+                {possibleSentence}
               </Line>
             )}
-            {!rebuild && install && (
+            {item.groups.map((group) => (
+              <box
+                key={group.logical}
+                flexDirection="column"
+                flexShrink={0}
+                marginTop={1}
+              >
+                <Line height={1} flexShrink={0} truncate>
+                  <span attributes={ui.dim}>{fit("block", 16)}</span>
+                  {`${group.logical}  `}
+                  <span fg={group.kind === "none" ? undefined : ui.danger}>
+                    {damageAdvice(group)}
+                  </span>
+                </Line>
+                {group.paths.map((path) => (
+                  <Line key={path} flexShrink={0} wrapMode="word">
+                    {`      ${safe(path)}`}
+                  </Line>
+                ))}
+              </box>
+            ))}
+            {install && (
               <CommandOffer
                 sentence={reporterSentence}
                 command={install}

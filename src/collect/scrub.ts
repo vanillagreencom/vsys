@@ -100,7 +100,7 @@ export function parseScrub(raw: string): ScrubReport {
   let current: DamagedAddress | null = null;
   // Only the lines under the section heading hold addresses. Anything above
   // it is the report's own prose, and a prose line shaped like an address
-  // would otherwise become damage with a delete command attached.
+  // would otherwise become damage with a file listed under it.
   for (const line of opened < 0 ? [] : lines.slice(opened + 1)) {
     const heading = line.match(/^logical (\d+):\s*$/);
     if (heading) {
@@ -109,7 +109,7 @@ export function parseScrub(raw: string): ScrubReport {
       continue;
     }
     // A path is indented under its address, and taken byte for byte: the
-    // delete command removes exactly the name read here. A parenthesised line
+    // screen lists exactly the name read here. A parenthesised line
     // is not a path, and a line at column zero ends the group.
     const path = line.match(/^ {2}(.*)$/);
     if (!path || !current) {
@@ -118,7 +118,7 @@ export function parseScrub(raw: string): ScrubReport {
     }
     const name = path[1];
     // The reporter could not name every file under this address. It is
-    // damage all the same, and no path under it may be offered for removal.
+    // damage all the same, and no path under it is listed.
     if (name.startsWith("(not resolved")) current.resolved = false;
     else if (name.startsWith("(")) continue;
     // A name this text cannot carry exactly may be a different file's name

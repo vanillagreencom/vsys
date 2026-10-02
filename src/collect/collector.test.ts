@@ -13,7 +13,7 @@ import { point } from "../store/point";
 import { claudeLink, fixture } from "../test/fixture";
 import { capabilityLine } from "../ui/settings";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
-import { Collector, createCollector, kernelLogReader } from "./collector";
+import { Collector, createCollector } from "./collector";
 import { KernelLog } from "./kernel-log";
 import { ProcessCollector, parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
@@ -1739,10 +1739,57 @@ test("a scrub report directory created while vsys runs is read the next sample",
   expect(await scrub(2000)).toMatchObject({ available: true, failure: null });
 });
 
-test("the program's collector resumes the kernel log the one it replaces held", () => {
-  const held = new KernelLog(async () => "");
-  expect(kernelLogReader({ kernelLog: held }).log).toBe(held);
-  // With no predecessor, or one that searched no log, a new log starts.
-  expect(kernelLogReader().log).not.toBe(held);
-  expect(kernelLogReader({ kernelLog: null }).log).toBeInstanceOf(KernelLog);
+test("the program's collector resumes the kernel log the one it replaces held", async () => {
+  const f = setup();
+  const searched: (string | null)[] = [];
+  const held = new KernelLog(async (cursor) => {
+    searched.push(cursor);
+    return `-- cursor: after-${cursor}\n`;
+  });
+  const before = new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    [],
+    { probe: () => null, log: held },
+  );
+  await before.sample(1000);
+  // A settings change builds the replacement through the program's own path,
+  // which picks the search up from the cursor the first one ended on.
+  const after = await createCollector(
+    f.config,
+    false,
+    before,
+    f.agentToolsPath,
+    () => null,
+  );
+  const fresh = await createCollector(
+    f.config,
+    false,
+    undefined,
+    f.agentToolsPath,
+    () => null,
+  );
+  const unread = await createCollector(
+    f.config,
+    false,
+    { kernelLog: null },
+    f.agentToolsPath,
+    () => null,
+  );
+  try {
+    expect(after.kernelLog).toBe(held);
+    await after.sample(2000);
+    expect(searched).toEqual([null, "after-null"]);
+    // With no predecessor, or one that searched no log, a new log starts.
+    expect(fresh.kernelLog).toBeInstanceOf(KernelLog);
+    expect(fresh.kernelLog).not.toBe(held);
+    expect(unread.kernelLog).toBeInstanceOf(KernelLog);
+  } finally {
+    for (const collector of [after, fresh, unread]) collector.close();
+  }
 });

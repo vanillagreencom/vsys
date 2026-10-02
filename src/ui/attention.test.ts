@@ -849,12 +849,10 @@ test("the lane sentence stops rather than growing with the machine", () => {
   ]);
 });
 
-test("a storage card never tells the reader to delete data a rebuild cannot replace", () => {
+test("a storage card never tells the reader to remove a listed file", () => {
   const c = defaults();
   const s = emptySnapshot();
-  const scrub = (
-    addresses: { logical: number; paths: string[]; changed?: string[] }[],
-  ) => ({
+  const scrub = (addresses: { logical: number; paths: string[] }[]) => ({
     path: "/run/btrfs-scrub/root.result",
     text: "Error summary: csum=1",
     problem: true,
@@ -862,7 +860,7 @@ test("a storage card never tells the reader to delete data a rebuild cannot repl
     fsid: "fs",
     startedAt: s.time - 1000,
     status: "finished",
-    uncorrectable: 1,
+    uncorrectable: 2,
     addresses,
   });
   s.storage.volumes = [
@@ -872,36 +870,23 @@ test("a storage card never tells the reader to delete data a rebuild cannot repl
       countersAvailable: true,
     }),
   ];
-  // Every damaged address is build output, so deleting all of them is safe.
-  s.storage.scrubs = [scrub([{ logical: 1, paths: ["/r/target/a"] }])];
-  const build = attention(s, c, { basePath: base }).find(
-    (i) => i.id === "damaged-files",
-  );
-  expect(build?.next).toContain("delete every path listed");
-  // One address holds a file only a backup restores, and the step changes.
+  // Build output and a letter alike: the report names the block's start, so
+  // either file may be sound, and the card says so rather than calling one
+  // safe to remove.
   s.storage.scrubs = [
     scrub([
       { logical: 1, paths: ["/r/target/a"] },
       { logical: 2, paths: ["/home/r/letter.txt"] },
     ]),
   ];
-  const mixed = attention(s, c, { basePath: base }).find(
+  const card = attention(s, c, { basePath: base }).find(
     (i) => i.id === "damaged-files",
   );
-  expect(mixed?.next).toContain("Delete only the addresses it marks as build");
-  expect(mixed?.next).not.toContain("delete every path");
-  // All build output, but one address was written since the check, so that
-  // one carries no command either and the step cannot say delete everything.
-  s.storage.scrubs = [
-    scrub([
-      { logical: 1, paths: ["/r/target/a"] },
-      { logical: 2, paths: ["/r/target/b"], changed: ["/r/target/b"] },
-    ]),
-  ];
-  const stale = attention(s, c, { basePath: base }).find(
-    (i) => i.id === "damaged-files",
-  );
-  expect(stale?.next).toContain("Delete only the addresses it marks as build");
+  expect(card?.title).toContain("2 possibly damaged files");
+  expect(said(card)).toContain("a listed file may be sound");
+  expect(card?.next).toContain("one whose read fails is damaged");
+  expect(said(card)).not.toMatch(/delete|build output/i);
+  expect(card?.next).not.toMatch(/delete|build output/i);
 });
 
 test("an unchecked card counts never-checked filesystems apart from stale ones", () => {
@@ -1043,11 +1028,9 @@ test("a damage card never calls a partial list the whole of the damage", () => {
   expect(said(none)).not.toContain("free space");
   expect(said(none)).toContain("could not name a file for 3 damaged blocks");
   expect(none?.next).toContain("restore what the unnamed blocks held");
-  // One build-output address named of three blocks: deleting it is not all.
+  // One address named of three blocks: its files are not all of the damage.
   const some = card([{ logical: 1, paths: ["/r/target/a"] }]);
-  expect(some?.title).not.toContain("all build output");
   expect(said(some)).toContain("2 damaged blocks could not be tied to a file");
-  expect(some?.next).toContain("Delete only the addresses it marks as build");
 });
 
 test("a new-errors card tells only the errors newer than the last check", () => {

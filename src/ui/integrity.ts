@@ -4,7 +4,6 @@ import {
   type ErrorSource,
   type Integrity,
 } from "../model/integrity";
-import { shellLine } from "../model/shell";
 import type { Capability, CsumFailure } from "../model/types";
 import { age, count, gap } from "./format";
 import { capabilityReason } from "./settings";
@@ -21,10 +20,10 @@ export function integrityWords(item: Integrity, scrub?: Capability): string {
     case "damaged": {
       const n = damageCounts(item);
       // Blocks no file is named for are damage the listed files do not
-      // cover, so the list is never called all build output beside them.
+      // cover, so the count of them stands beside the files.
       const unnamed = n.unresolved + n.unnamed;
       return n.files
-        ? `Damaged files found: ${count(n.files, "file")}${unnamed ? `, ${count(unnamed, "block")} unnamed` : n.other ? "" : ", all build output"}`
+        ? `Damage found: ${count(n.files, "possibly damaged file")}${unnamed ? `, ${count(unnamed, "block")} unnamed` : ""}`
         : "Damaged data found";
     }
     case "new-errors":
@@ -103,46 +102,25 @@ export function unnamedText(item: Integrity): string | undefined {
     ? `The check counted ${count(unnamed, "more damaged block")} than its report names, so the files above are not all of the damage.`
     : undefined;
 }
-/** What the reader should do with one damaged address. */
+/** What one damaged address names, beside its block number. */
 export function damageAdvice(group: DamagedGroup): string {
-  // A name written since the check no longer proves what was read, so no
-  // advice sends the reader at it with a delete.
-  if (group.changed)
-    return "written since the check: look before you remove anything";
   switch (group.kind) {
-    case "build":
-      return "safe to delete and rebuild";
-    case "other":
-      return "restore from a backup or a snapshot";
+    case "files":
+      return "possibly damaged";
     case "unresolved":
-      return "its files could not be named, so nothing is offered to delete";
+      return "its files could not be named";
     case "none":
       return "free space or already deleted, clears on the next check";
   }
 }
 /**
- * The command that removes one damaged address, offered only for an address a
- * rebuild replaces. Every path of such an address goes in one line: a Cargo
- * build script writes one extent under two names, and removing the first
- * leaves the damage on disk for the next check to find again, which reads as a
- * delete that worked and fixed nothing.
- *
- * An address holding anything else gets no command at all. A line a reader can
- * copy is a line a reader will run, and the data under that address is
- * restored from a backup rather than deleted.
+ * Why a listed file is possibly damaged rather than damaged, in one sentence.
+ * The kernel line the reporter reads carries only the start of the block the
+ * check could not repair, so no report can name the damaged file exactly, and
+ * vsys offers no command to remove one.
  */
-export function deleteCommand(group: DamagedGroup): string | undefined {
-  return group.kind === "build" && !group.changed && group.paths.length
-    ? shellLine(["rm", "-f", ...group.paths])
-    : undefined;
-}
-/** One line that removes every damaged path a rebuild would replace. */
-export function rebuildCommand(item: Integrity): string | undefined {
-  const paths = item.groups
-    .filter((group) => group.kind === "build" && !group.changed)
-    .flatMap((group) => group.paths);
-  return paths.length ? shellLine(["rm", "-f", ...paths]) : undefined;
-}
+export const possibleSentence =
+  "The check names the start of each 64 KiB block it could not repair, not the damaged file, so a file listed under a block may be sound. A read of a damaged file fails, which tells the two apart.";
 const sourceWords: Record<ErrorSource, string> = {
   counter: "error counter",
   "kernel-log": "kernel log",

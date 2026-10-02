@@ -58,19 +58,6 @@ export interface KernelLogReader {
   probe: () => Outcome;
   log: KernelLog;
 }
-/**
- * The kernel log reader the program gives a collector: the real probe, and
- * the log the collector it replaces was searching, so a settings change
- * resumes from that cursor rather than searching every boot again.
- */
-export function kernelLogReader(previous?: {
-  kernelLog?: KernelLog | null;
-}): KernelLogReader {
-  return {
-    probe: probeKernelLog,
-    log: previous?.kernelLog ?? new KernelLog(),
-  };
-}
 const noKernelLog: Outcome = {
   failure: "absent",
   detail: "this collector was given no kernel log reader",
@@ -299,7 +286,9 @@ export class Collector {
 /**
  * getconf reads libc's clock and page units; no machine-specific constants.
  * The predecessor's build cache reader is carried over, so its counts stay
- * measured since vsys started rather than since the last settings change.
+ * measured since vsys started rather than since the last settings change, and
+ * so is the kernel log it was searching, so the replacement resumes from that
+ * cursor rather than searching every boot again.
  * The agent-tool install locations and desktop paths come from the shared
  * agent-tool data and its overlay, read again for every collector built.
  */
@@ -308,6 +297,8 @@ export async function createCollector(
   live = true,
   previous?: { sccache?: SccacheCollector; kernelLog?: KernelLog | null },
   toolsPath = agentToolsPath,
+  /** Injected so no test reads this machine's journal. */
+  kernelLogProbe: () => Outcome = probeKernelLog,
 ): Promise<Collector> {
   const read = async (name: string) => {
     const child = Bun.spawn(["getconf", name], {
@@ -341,6 +332,9 @@ export async function createCollector(
     { probe: probeTmux, panes: readPanes },
     new ProcessThread(c, ticks, pages, tools),
     unitDirs(),
-    kernelLogReader(previous),
+    {
+      probe: kernelLogProbe,
+      log: previous?.kernelLog ?? new KernelLog(),
+    },
   );
 }

@@ -15,7 +15,7 @@ Error summary:    csum=26
   Unverified:     0
 
 Damaged files: 6 damaged block addresses from the kernel log.
-Delete every path listed under an address, not the first: one block can have several names.
+Each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector, so a path listed under it may be sound.
 logical 953118621696:
   /repo/target/debug/build/glib-sys/build-script-build
   /repo/target/debug/build/glib-sys/build_script_build-c664
@@ -81,7 +81,7 @@ test("the parser anchors on the address heading, not on the prose above it", () 
   const reworded = damaged
     .replace(/^btrfs scrub.*$/m, "check over, found trouble on the root disk")
     .replace(/^Damaged files:.*$/m, "Damaged files: what the kernel resolved")
-    .replace(/^Delete every path.*$/m, "remove all of these together");
+    .replace(/^Each address is.*$/m, "any of these may be the damaged one");
   expect(parseScrub(reworded).addresses).toEqual(parseScrub(damaged).addresses);
 });
 
@@ -137,7 +137,7 @@ test("a field the report states twice holds no single reading", () => {
 
 test("an address-shaped line outside the section names no file", () => {
   // The older format carries no damaged-file section. A prose line shaped
-  // like an address must not become damage with a delete command attached.
+  // like an address must not become damage with a file listed under it.
   const report = parseScrub(`btrfs scrub finished: /
 Status:           finished
 Error summary:    no errors found
@@ -158,7 +158,7 @@ test("a count with anything after it is not a count", () => {
 
 test("an address-shaped line above the section is prose, not damage", () => {
   // The helper's own prose sits above the heading. A line shaped like an
-  // address up there must not become a file the reader is told to delete.
+  // address up there must not become a file listed as damaged.
   const report = parseScrub(`btrfs scrub finished: /
 Status:           finished
 logical 111:

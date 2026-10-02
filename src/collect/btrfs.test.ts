@@ -1,11 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  chmodSync,
-  mkdirSync,
-  symlinkSync,
-  unlinkSync,
-  utimesSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { point } from "../store/point";
 import { emptySnapshot, fixture } from "../test/fixture";
@@ -127,33 +121,20 @@ logical 953118621696:
   ${gone}
 `,
   );
-  // Both files were last written before the check began, so each name still
-  // stands for what the check read.
-  const checked = Date.parse("Fri Sep 11 13:25:54 2026");
-  for (const path of [kept, gone])
-    utimesSync(path, new Date(checked - 60000), new Date(checked - 60000));
   const r = new Reader();
   const collector = new StorageCollector();
   const first = await collector.collect(r, f.config, 1000);
   expect(first.scrubs[0].fsid).toBe(uuid);
   expect(first.scrubs[0].uncorrectable).toBe(26);
   expect(first.scrubs[0].addresses).toEqual([
-    { logical: 953118621696, paths: [kept, gone], changed: [] },
+    { logical: 953118621696, paths: [kept, gone] },
   ]);
-  // One of them is written again after the check. The block it sat in can
-  // have been freed and reused, so that name no longer proves what was read.
-  utimesSync(kept, new Date(checked + 60000), new Date(checked + 60000));
-  const rewritten = await collector.collect(r, f.config, 1500);
-  expect(rewritten.scrubs[0].addresses).toEqual([
-    { logical: 953118621696, paths: [kept, gone], changed: [kept] },
-  ]);
-  utimesSync(kept, new Date(checked - 60000), new Date(checked - 60000));
-  // The reader deletes one of the two names. It leaves the list; the name
+  // The reader removes one of the two names. It leaves the list; the name
   // still on disk stays, because the damage is still there.
   unlinkSync(gone);
   const second = await collector.collect(r, f.config, 2000);
   expect(second.scrubs[0].addresses).toEqual([
-    { logical: 953118621696, paths: [kept], changed: [] },
+    { logical: 953118621696, paths: [kept] },
   ]);
   expect(r.errors).toEqual([]);
 });
@@ -238,15 +219,15 @@ test("a hidden file in the report directory is not a report", async () => {
     join(f.config.scrubDir, "root.result"),
   ]); // The mark that the address could not be resolved reaches the sample.
   expect(storage.scrubs[0].addresses).toEqual([
-    { logical: 7, paths: [], changed: [], resolved: false },
+    { logical: 7, paths: [], resolved: false },
   ]);
 });
 
-test("a name that differs from a healthy one by an end space never reaches a delete", async () => {
+test("a name that differs from a healthy one by an end space is never listed", async () => {
   const f = fixture();
   fixtures.push(f);
   // A healthy file, and a report whose last line names it with a trailing
-  // space: read trimmed, that line would put the healthy file under rm.
+  // space: read trimmed, that line would list the healthy file as damaged.
   const healthy = join(f.root, "target", "victim");
   f.write(healthy, "healthy");
   f.write(
@@ -259,7 +240,7 @@ test("a name that differs from a healthy one by an end space never reaches a del
     1000,
   );
   expect(storage.scrubs[0].addresses).toEqual([
-    { logical: 7, paths: [], changed: [], resolved: false },
+    { logical: 7, paths: [], resolved: false },
   ]);
 });
 

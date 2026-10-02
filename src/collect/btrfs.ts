@@ -54,42 +54,22 @@ export function scrubProblem(raw: string): boolean {
 }
 
 /**
- * The paths of a damaged address that are still on disk, and which of them no
- * longer name what the check read.
- *
- * A path vsys cannot stat is kept: an unreadable directory is not proof the
- * file is gone, and dropping it would tell the reader to delete less than the
- * address holds. A path written since the check began is kept too, because
- * dropping it would hide damage, but it is named as changed: the block it sat
- * in can have been freed and reused, so the file under that name now may be a
- * healthy one a delete command would destroy.
+ * The paths of a damaged address that are still on disk. A path vsys cannot
+ * stat is kept: an unreadable directory is not proof the file is gone, and
+ * dropping it would list less than the address holds.
  */
-async function present(
-  paths: string[],
-  startedAt: number | null,
-): Promise<{ paths: string[]; changed: string[] }> {
+async function present(paths: string[]): Promise<string[]> {
   const kept = await Promise.all(
     paths.map(async (path) => {
       try {
-        const stats = await stat(path);
-        return {
-          path,
-          // Without a check time nothing can be compared against it, so no
-          // path is called unchanged.
-          changed: startedAt === null || stats.mtimeMs >= startedAt,
-        };
+        await stat(path);
+        return path;
       } catch (e) {
-        return (e as NodeJS.ErrnoException).code === "ENOENT"
-          ? null
-          : { path, changed: true };
+        return (e as NodeJS.ErrnoException).code === "ENOENT" ? null : path;
       }
     }),
   );
-  const found = kept.filter((entry) => entry !== null);
-  return {
-    paths: found.map((entry) => entry.path),
-    changed: found.filter((entry) => entry.changed).map((entry) => entry.path),
-  };
+  return kept.filter((path) => path !== null);
 }
 /**
  * The corruption counter for a whole filesystem: the sum over its devices,
@@ -346,16 +326,16 @@ export class StorageCollector {
           continue;
         }
         const report = parseScrub(text);
-        // A path the report named can be gone: the reader deleted the file
-        // this screen told them to delete. Only what is still on disk is
-        // listed, so the list empties as the work is done.
+        // A path the report named can be gone: the reader removed or rebuilt
+        // the file since the check. Only what is still on disk is listed, so
+        // the list empties as the reader restores what it held.
         const addresses =
           report.addresses === null
             ? null
             : await Promise.all(
                 report.addresses.map(async (address) => ({
                   ...address,
-                  ...(await present(address.paths, report.startedAt)),
+                  paths: await present(address.paths),
                 })),
               );
         const found: Omit<Scrub, "problem" | "readable"> = {

@@ -68,9 +68,9 @@ Run `vsys --help` for command options.
 
 Storage says whether a filesystem's data is damaged, and when the disk was last checked. A filesystem that nothing has checked is never shown as healthy. The error counter alone cannot tell you: it counts reads that failed, so it stays still while nothing reads the damaged part.
 
-Open a filesystem to see the damaged files. Each damaged block is listed with every file name that uses it, and one command that deletes them all together. Build output is marked as safe to delete and rebuild. Other files need a backup or a snapshot.
+Open a filesystem to see the files that may be damaged. Each damaged block is listed with every file name that uses it. The check names only where a 64 KiB block starts, not the damaged file, so a listed file may be sound. A read of a damaged file fails, which tells the two apart. Restore a damaged file from a backup or a snapshot.
 
-vsys deletes nothing. It copies the command to your clipboard for you to run.
+vsys deletes nothing and offers no command to delete a listed file.
 
 Checking a filesystem and naming its damaged files needs root, so vsys reads a report that a root timer writes after each Btrfs scrub, one file for each filesystem. vsys ships that reporter. Install it with:
 

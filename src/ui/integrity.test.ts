@@ -6,12 +6,10 @@ import { volumeSnapshot } from "../test/fixture";
 import {
   blocksText,
   damageAdvice,
-  deleteCommand,
   integrityLine,
   integrityWords,
   loggedText,
   noDamageText,
-  rebuildCommand,
   unnamedText,
 } from "./integrity";
 
@@ -132,27 +130,25 @@ test("no words but Healthy say the filesystem was checked and found sound", () =
   ).toBe("Damage state unknown");
 });
 
-test("the damaged-file headline counts files and says when a rebuild fixes it", () => {
+test("the damaged-file headline counts possibly damaged files and the blocks none covers", () => {
   const addresses = [
     { logical: 1, paths: ["/r/target/a", "/r/target/b"] },
-    { logical: 2, paths: ["/r/target/c"] },
+    { logical: 2, paths: ["/home/r/letter.txt"] },
   ];
-  const build = state([report({ problem: true, uncorrectable: 2, addresses })]);
-  expect(integrityWords(build)).toBe(
-    "Damaged files found: 3 files, all build output",
-  );
-  // The check counted more blocks than the report names, so the build output
-  // listed is not all of the damage, and the headline does not say it is.
+  const named = state([report({ problem: true, uncorrectable: 2, addresses })]);
+  expect(integrityWords(named)).toBe("Damage found: 3 possibly damaged files");
+  // The check counted more blocks than the report names, so the files listed
+  // are not all of the damage, and the headline says how many are not.
   const partial = state([
     report({ problem: true, uncorrectable: 26, addresses }),
   ]);
   expect(integrityWords(partial)).toBe(
-    "Damaged files found: 3 files, 24 blocks unnamed",
+    "Damage found: 3 possibly damaged files, 24 blocks unnamed",
   );
   expect(unnamedText(partial)).toBe(
     "The check counted 24 more damaged blocks than its report names, so the files above are not all of the damage.",
   );
-  expect(unnamedText(build)).toBeUndefined();
+  expect(unnamedText(named)).toBeUndefined();
   // An address the reporter could not name is unnamed damage too.
   const unresolved = state([
     report({
@@ -162,12 +158,8 @@ test("the damaged-file headline counts files and says when a rebuild fixes it", 
     }),
   ]);
   expect(integrityWords(unresolved)).toBe(
-    "Damaged files found: 3 files, 1 block unnamed",
+    "Damage found: 3 possibly damaged files, 1 block unnamed",
   );
-  expect(damageAdvice(unresolved.groups[2])).toBe(
-    "its files could not be named, so nothing is offered to delete",
-  );
-  expect(deleteCommand(unresolved.groups[2])).toBeUndefined();
   // A report naming no address under a counted block names none of them,
   // which is not a filesystem with nothing left.
   const none = state([
@@ -176,22 +168,9 @@ test("the damaged-file headline counts files and says when a rebuild fixes it", 
   expect(noDamageText(none)).toBe(
     "The check counted 3 damaged blocks and its report names none of them, so no file is offered.",
   );
-  // One file outside build output and the claim is withdrawn, because a
-  // rebuild does not replace it.
-  const mixed = state([
-    report({
-      problem: true,
-      uncorrectable: 2,
-      addresses: [
-        { logical: 1, paths: ["/r/target/a"] },
-        { logical: 2, paths: ["/home/r/letter.txt"] },
-      ],
-    }),
-  ]);
-  expect(integrityWords(mixed)).toBe("Damaged files found: 2 files");
 });
 
-test("a delete command removes every name of its address, never the first", () => {
+test("every name of an address is listed, and each address says what it names", () => {
   const item = state([
     report({
       problem: true,
@@ -205,26 +184,24 @@ test("a delete command removes every name of its address, never the first", () =
         },
         { logical: 2, paths: ["/home/r/letter.txt"] },
         { logical: 3, paths: [] },
+        { logical: 4, paths: [], resolved: false },
       ],
     }),
   ]);
-  // Both names in one line. Deleting the first alone leaves the extent on
-  // disk, and the next check reports it again.
-  expect(deleteCommand(item.groups[0])).toBe(
-    "rm -f /r/target/debug/build/glib-sys/build-script-build /r/target/debug/build/glib-sys/build_script_build-c664",
-  );
-  // An address with no file has nothing to delete.
-  expect(deleteCommand(item.groups[2])).toBeUndefined();
-  expect(item.groups.map(damageAdvice)).toEqual([
-    "safe to delete and rebuild",
-    "restore from a backup or a snapshot",
-    "free space or already deleted, clears on the next check",
+  // Both names of one extent are listed: the check read the block, and either
+  // name can be the file the damage sits in.
+  expect(item.groups[0].paths).toEqual([
+    "/r/target/debug/build/glib-sys/build-script-build",
+    "/r/target/debug/build/glib-sys/build_script_build-c664",
   ]);
-  // The one-line command covers build output only: the letter is not in it.
-  expect(rebuildCommand(item)).toBe(
-    "rm -f /r/target/debug/build/glib-sys/build-script-build /r/target/debug/build/glib-sys/build_script_build-c664",
-  );
-  expect(rebuildCommand(state([report()]))).toBeUndefined();
+  // Build output and a letter read alike: the block start names no file
+  // exactly, so neither is called safe to remove.
+  expect(item.groups.map(damageAdvice)).toEqual([
+    "possibly damaged",
+    "possibly damaged",
+    "free space or already deleted, clears on the next check",
+    "its files could not be named",
+  ]);
 });
 
 test("an absent damaged-file list never reads as a check that found none", () => {
@@ -253,24 +230,6 @@ test("a block count vsys did not read never reads as a count of none", () => {
   expect(
     blocksText(state([report({ uncorrectable: 26, problem: true })])),
   ).toBe("26 by the last full check");
-});
-
-test("only an address a rebuild replaces is offered as a delete", () => {
-  const item = state([
-    report({
-      problem: true,
-      addresses: [
-        { logical: 1, paths: ["/r/target/a"] },
-        { logical: 2, paths: ["/home/r/letter.txt"] },
-      ],
-    }),
-  ]);
-  expect(deleteCommand(item.groups[0])).toBe("rm -f /r/target/a");
-  // The letter is restored from a backup, so no line offers to remove it.
-  expect(damageAdvice(item.groups[1])).toBe(
-    "restore from a backup or a snapshot",
-  );
-  expect(deleteCommand(item.groups[1])).toBeUndefined();
 });
 
 test("an unreadable record of past growth is not a record of no errors", () => {
@@ -330,40 +289,6 @@ test("nothing parsed from unreadable output is reported as a reading", () => {
   expect(noDamageText(item)).toBe(
     "The report could not be read, so nothing in it names a file.",
   );
-});
-
-test("an address written since the check is never offered as a delete", () => {
-  const changed = state([
-    report({
-      problem: true,
-      addresses: [
-        {
-          logical: 1,
-          paths: ["/r/target/a", "/r/target/b"],
-          changed: ["/r/target/b"],
-        },
-      ],
-    }),
-  ]);
-  // The file is still named, because dropping it would hide damage. Nothing
-  // offers to remove it: the block can have been freed and reused, and the
-  // name may now be a healthy file.
-  expect(changed.groups[0].paths).toEqual(["/r/target/a", "/r/target/b"]);
-  expect(damageAdvice(changed.groups[0])).toBe(
-    "written since the check: look before you remove anything",
-  );
-  expect(deleteCommand(changed.groups[0])).toBeUndefined();
-  expect(rebuildCommand(changed)).toBeUndefined();
-  // The same address with nothing written since keeps its command.
-  const stable = state([
-    report({
-      problem: true,
-      addresses: [
-        { logical: 1, paths: ["/r/target/a", "/r/target/b"], changed: [] },
-      ],
-    }),
-  ]);
-  expect(deleteCommand(stable.groups[0])).toBe("rm -f /r/target/a /r/target/b");
 });
 
 test("a check that has not finished counted nothing, and its report is not blamed", () => {

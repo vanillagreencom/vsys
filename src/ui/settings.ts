@@ -189,10 +189,6 @@ export const settingInfo: Record<string, SettingInfo> = {
     help: "A filesystem checked longer ago than this stops reading as healthy.",
     unit: "days",
   },
-  buildOutputGlobs: {
-    label: "Build output paths",
-    help: "Damaged files matching these are named as safe to delete and rebuild.",
-  },
   columns: {
     label: "Table columns",
     help: "The columns of the Agents table, in display order.",
@@ -277,7 +273,6 @@ export const settingGroups: [string, string[]][] = [
       "scrubDir",
       "smartDir",
       "errorMemoryPath",
-      "buildOutputGlobs",
       "scratchDirs",
       "scratchRefreshMs",
       "scratchDutyPercent",

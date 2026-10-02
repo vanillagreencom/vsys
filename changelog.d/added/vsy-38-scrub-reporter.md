@@ -1,1 +1,1 @@
-- Ship a Btrfs scrub reporter that lists every file of a damaged block exactly or none, with a one-command installer offered while the default scrub report directory is missing.
+- Ship a Btrfs scrub reporter that lists every file name of a damaged block, or none, with a one-command installer offered while the default scrub report directory is missing.

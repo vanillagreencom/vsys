@@ -491,7 +491,6 @@ test("a target whose row has gone is said out loud, not dropped", async () => {
       },
       onNotice: (text: string, level: string) => notices.push([text, level]),
       onCopy: () => {},
-      live: true,
     };
     const ui = await testRender(
       <KeyProvider handlers={handlers}>
@@ -561,7 +560,7 @@ function damagedSnapshot(time: number) {
   return s;
 }
 
-test("a damaged filesystem names its files, grouped by address, with what to do", async () => {
+test("a damaged filesystem lists every file each damaged address may hold", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;
   const s = damagedSnapshot(time);
@@ -570,18 +569,18 @@ test("a damaged filesystem names its files, grouped by address, with what to do"
     await t.press("5");
     const frame = t.frame();
     // The line itself, before anything is opened.
-    expect(frame).toContain("Damaged files found: 3 files");
+    expect(frame).toContain("Damage found: 3 possibly damaged files");
     expect(frame).toContain("last full check 1.0h ago");
     expect(frame).toContain("last new error 31.0h ago");
-    // Both names of the first address, and one command that removes both.
+    // Both names of the first address and the letter, each possibly
+    // damaged: the report names the block's start, not the damaged file, so
+    // no line offers to remove one.
     expect(frame).toContain("/r/target/debug/build-script-build");
     expect(frame).toContain("/r/target/debug/bsb-c664");
-    expect(frame).toContain(
-      "rm -f /r/target/debug/build-script-build /r/target/debug/bsb-c664",
-    );
-    expect(frame).toContain("safe to delete and rebuild");
-    // The letter is not build output, so it is never offered as a rebuild.
-    expect(frame).toContain("restore from a backup or a snapshot");
+    expect(frame).toContain("/home/reader/letter.txt");
+    expect(frame).toContain("possibly damaged");
+    expect(frame).toContain("a file listed under a block may be sound");
+    expect(frame).not.toContain("rm -f");
     expect(frame).toContain("free space or already deleted");
     // The counter is explained where it is shown, one level under the line.
     expect(frame).toContain("counts reads that failed their checksum");
@@ -598,7 +597,7 @@ test("a damaged filesystem names its files, grouped by address, with what to do"
   }
 });
 
-test("a deleted file leaves the list and the filesystem stops reading damaged", async () => {
+test("a removed file leaves the list and the filesystem stops reading damaged", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;
   const s = damagedSnapshot(time);
@@ -607,7 +606,7 @@ test("a deleted file leaves the list and the filesystem stops reading damaged", 
     await t.press("5");
     expect(t.frame()).toContain("/home/reader/letter.txt");
     // The next sample carries the report with nothing left on disk under it,
-    // which is what the collector produces once the reader deletes the files.
+    // which is what the collector produces once the reader removes the files.
     const cleared = damagedSnapshot(time + 1000);
     cleared.storage.scrubs[0].addresses = [];
     cleared.storage.scrubs[0].uncorrectable = 0;
@@ -624,44 +623,14 @@ test("a deleted file leaves the list and the filesystem stops reading damaged", 
   }
 });
 
-test("a pinned sample offers no delete command, because its files may have moved on", async () => {
+test("the copy key on a damaged filesystem copies nothing, because no file is named exactly", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;
   const t = await mount(damagedSnapshot(time), c, { width: 160, height: 60 });
   try {
     await t.press("5");
-    // Pin, then ask for the command. The paths were checked against the
-    // sample that was pinned, and a block freed and reused since then is a
-    // healthy file now.
-    await t.press(c.keys.pin);
     await t.press(c.keys.copy);
     expect(t.written).toEqual([]);
-    expect(t.frame()).toContain("the files it names may have changed");
-    // Live again, and the command is there.
-    await t.press(c.keys.pin);
-    await t.press(c.keys.copy);
-    expect(t.written).toHaveLength(1);
-  } finally {
-    await t.close();
-  }
-});
-
-test("the copy key on a filesystem copies one line that removes its build output", async () => {
-  const c = defaults();
-  const time = 1_760_000_000_000;
-  const t = await mount(damagedSnapshot(time), c, { width: 160, height: 60 });
-  try {
-    await t.press("5");
-    await t.press(c.keys.copy);
-    expect(t.written).toEqual([
-      osc52(
-        "rm -f /r/target/debug/build-script-build /r/target/debug/bsb-c664",
-      ),
-    ]);
-    // A mount row carries no command of its own, so nothing more is copied.
-    await t.press("down");
-    await t.press(c.keys.copy);
-    expect(t.written.length).toBe(1);
   } finally {
     await t.close();
   }
