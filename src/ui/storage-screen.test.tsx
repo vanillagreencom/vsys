@@ -1107,7 +1107,15 @@ test("each rule the Storage wheel follows", async () => {
       keys: [],
       wheel: async (t) => {
         const y = marked(t);
-        const ways = ["down", "down", "down", "down", "up", "down", "down"];
+        const ways = [
+          "down",
+          "down",
+          "down",
+          "down",
+          "up",
+          "down",
+          "down",
+        ] as const;
         const reached = [];
         for (const way of [...ways, "down"] as const) {
           await t.wheel(10, y, way);
