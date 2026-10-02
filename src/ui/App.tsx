@@ -74,6 +74,8 @@ export interface AppProps {
   snapshot: Snapshot;
   history: History;
   config: Config;
+  /** The file vsys read this configuration from, and will save an edit to. */
+  settingsPath: string;
   onSave: (c: Config) => Promise<void>;
   onQuit: () => void;
   onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
@@ -179,6 +181,7 @@ export function App({
   snapshot,
   history,
   config: c,
+  settingsPath,
   onSave,
   onQuit,
   onExport,
@@ -501,6 +504,7 @@ export function App({
       <Settings
         snapshot={snapshot}
         config={c}
+        settingsPath={settingsPath}
         width={screenWidth(width)}
         onSave={onSave}
         onNotice={notice}

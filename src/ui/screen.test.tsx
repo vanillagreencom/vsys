@@ -24,6 +24,7 @@ test("live refresh keeps one screen, stable listeners and the selected view", as
   let quits = 0;
   await act(async () => {
     screen = mountScreen(ui.renderer, c, {
+      settingsPath: "/home/test/.config/vsys/config.toml",
       onQuit: () => {
         quits++;
       },
@@ -140,6 +141,7 @@ test("a serious cause that appears between samples raises a notice on any view",
   let screen!: ReturnType<typeof mountScreen>;
   await act(async () => {
     screen = mountScreen(ui.renderer, c, {
+      settingsPath: "/home/test/.config/vsys/config.toml",
       onQuit: () => {},
       onSave: async () => {},
       onExport: async () => "report.json",

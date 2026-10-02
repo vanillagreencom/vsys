@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { act } from "react";
 import type { Config } from "../config/config";
-import { choices, defaults } from "../config/config";
+import { choices, configPath, defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
@@ -15,6 +15,7 @@ import {
   settingGroups,
   settingHelp,
   settingLabel,
+  settingsFileInfo,
 } from "./settings";
 import {
   type SettingItem,
@@ -54,6 +55,32 @@ test("unreadable sources are counted once each, most failed reads first", () => 
   expect(sourceCounts(emptySnapshot())).toEqual([]);
 });
 
+test("Settings names the file it read, for the XDG default and an explicit --config", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // main.ts resolves the XDG default with no --config flag, and the path an
+  // explicit --config names otherwise; either way the row names the one this
+  // process actually read, not a fixed sentence.
+  const xdgDefault = configPath({});
+  const explicit = "/etc/vsys/custom-config.toml";
+  for (const settingsPath of [xdgDefault, explicit]) {
+    const t = await mount(s, c, undefined, { settingsPath });
+    try {
+      await t.press("7");
+      expect(t.frame()).toContain(settingsPath);
+      const at = settingItems(c, s.capabilities).findIndex(
+        (item) => item.kind === "settingsFile",
+      );
+      expect(at).toBeGreaterThan(-1);
+      for (let i = 0; i < at; i++) await t.press("down");
+      expect(selectedRow(t.frame())).toContain("Settings file");
+      expect(t.frame()).toContain(settingsFileInfo.help);
+    } finally {
+      await t.close();
+    }
+  }
+});
+
 test("Settings edits a value in place and honours a changed quit binding", async () => {
   const c = defaults();
   c.keys.quit = "alt+q";
@@ -71,10 +98,10 @@ test("Settings edits a value in place and honours a changed quit binding", async
   try {
     await t.press("7");
     expect(t.frame()).toContain("Refresh interval");
-    // The capability rows and the unreadable-sources row come before the
-    // settings, and the refresh interval is the last of the five Display
-    // settings above it.
-    const above = s.capabilities.length + 1 + 5;
+    // The capability rows, the unreadable-sources row and the settings-file
+    // row come before the settings, and the refresh interval is the last of
+    // the five Display settings above it.
+    const above = s.capabilities.length + 2 + 5;
     for (let i = 0; i < above; i++) await t.press("down");
     await t.press("enter");
     expect(t.frame()).toContain("Enter saves");
@@ -946,6 +973,7 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
     capability: true,
     sources: true,
     setting: true,
+    settingsFile: true,
   };
   for (const kind of Object.keys(kinds))
     expect({ kind, drawn: items.some((item) => item.kind === kind) }).toEqual({
@@ -961,6 +989,8 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
         return "Every source was read";
       case "setting":
         return fit(settingLabel(item.key), 24).trimEnd();
+      case "settingsFile":
+        return fit(settingsFileInfo.label, 24).trimEnd();
       default: {
         const unknown: never = item;
         throw new Error(`Unknown setting row: ${String(unknown)}`);

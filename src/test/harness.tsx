@@ -30,6 +30,7 @@ export async function mount(
     onSwitch: (paneId: string) => Promise<void>;
     onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
     history: History;
+    settingsPath: string;
   }> = {},
 ) {
   const h = hooks.history ?? new History(c);
@@ -52,6 +53,9 @@ export async function mount(
         snapshot={current}
         history={h}
         config={config}
+        settingsPath={
+          hooks.settingsPath ?? "/home/test/.config/vsys/config.toml"
+        }
         onSave={async (next) => {
           await hooks.onSave?.(next);
           setConfig(next);

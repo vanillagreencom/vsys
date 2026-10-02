@@ -56,7 +56,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   const explicit =
     values.config !== undefined ? resolve(values.config) : undefined;
   const settingsPath = () => explicit ?? configPath();
-  const config = await loadConfig(settingsPath());
+  const resolvedSettingsPath = settingsPath();
+  const config = await loadConfig(resolvedSettingsPath);
   const collector = await createCollector(config, !values.once);
   if (values.once) {
     try {
@@ -119,6 +120,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     }
   }
   const screen = mountScreen(renderer, config, {
+    settingsPath: resolvedSettingsPath,
     onQuit: stop,
     onSave: (next) => session.configure(next),
     onExport: async (snapshot, format) => {

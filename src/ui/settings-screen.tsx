@@ -24,6 +24,7 @@ import {
   settingGroups,
   settingHelp,
   settingLabel,
+  settingsFileInfo,
 } from "./settings";
 import { scrollbar, textInput, ui } from "./theme";
 import {
@@ -48,7 +49,8 @@ import {
 export type SettingItem =
   | { kind: "capability"; id: CapabilityId }
   | { kind: "setting"; key: string }
-  | { kind: "sources" };
+  | { kind: "sources" }
+  | { kind: "settingsFile" };
 /** What tells one Settings row from another, whichever kind it is. */
 function settingKey(item: SettingItem): string {
   switch (item.kind) {
@@ -58,6 +60,8 @@ function settingKey(item: SettingItem): string {
       return `setting:${item.key}`;
     case "sources":
       return "sources";
+    case "settingsFile":
+      return "settingsFile";
     default: {
       const unknown: never = item;
       throw new Error(`Unknown setting row: ${String(unknown)}`);
@@ -81,7 +85,9 @@ export function settingItems(
     // listed whatever the filter says: the render and the selection read one
     // order or the selection lands on a row the reader is not looking at.
     ...capabilities.map((cap) => ({ kind: "capability", id: cap.id }) as const),
-    ...(q ? [] : [{ kind: "sources" } as const]),
+    ...(q
+      ? []
+      : [{ kind: "sources" } as const, { kind: "settingsFile" } as const]),
     ...settingGroups.flatMap(([, keys]) =>
       keys.filter(matches).map((key) => ({ kind: "setting", key }) as const),
     ),
@@ -105,6 +111,7 @@ const settingValue = (c: Config, key: string): unknown =>
 export function Settings({
   snapshot: s,
   config: c,
+  settingsPath,
   width,
   onSave,
   onNotice,
@@ -112,6 +119,8 @@ export function Settings({
 }: {
   snapshot: Snapshot;
   config: Config;
+  /** The file vsys read this configuration from, and will save an edit to. */
+  settingsPath: string;
   width: number;
   onSave: (c: Config) => Promise<void>;
   onNotice: (text: string, level: Level) => void;
@@ -277,6 +286,10 @@ export function Settings({
         return;
       case "setting":
         beginEdit(item.key);
+        return;
+      case "settingsFile":
+        // A path vsys resolved at start, not a stored setting: selecting it
+        // already shows its help line, and there is nothing further to open.
         return;
       default: {
         const unknown: never = item;
@@ -686,6 +699,29 @@ export function Settings({
                         </span>
                       </Line>
                     ))}
+                  </Detail>
+                ),
+            },
+          )}
+        {items.some((item) => item.kind === "settingsFile") &&
+          settingRow(
+            { kind: "settingsFile" },
+            (chosen) => (
+              <>
+                {fit(settingsFileInfo.label, 24)}
+                {columnGap}
+                <span attributes={chosen ? ui.none : ui.dim}>
+                  {safe(settingsPath)}
+                </span>
+              </>
+            ),
+            {
+              under: (chosen) =>
+                chosen && (
+                  <Detail>
+                    <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                      {settingsFileInfo.help}
+                    </Line>
                   </Detail>
                 ),
             },

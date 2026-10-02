@@ -12,6 +12,7 @@ export function mountScreen(
   config: Config,
   actions: Pick<
     AppProps,
+    | "settingsPath"
     | "onQuit"
     | "onSave"
     | "onExport"
