@@ -192,10 +192,10 @@ export function udisksText(
     return "udisks2 answered in its place, without root; a drive it gives no total for stays unknown.";
   switch (outcome.failure) {
     case "absent":
-      return `udisks2 is not on the system bus either, so no source gives lifetime writes (${outcome.detail}).`;
+      return `udisks2 is unavailable, so no source gives lifetime writes (${outcome.detail}).`;
     case "unreadable":
     case "masked":
-      return `udisks2 refused to answer (${outcome.detail}).`;
+      return `udisks2 did not answer (${outcome.detail}).`;
     case "incomplete":
       return `udisks2 answered for no drive (${outcome.detail}).`;
     case "malformed":
