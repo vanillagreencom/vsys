@@ -1,0 +1,1 @@
+- Closing the terminal vsys draws in, dropping its SSH session or killing its tmux pane now ends vsys the way the quit key does, instead of leaving it sampling with nothing attached.

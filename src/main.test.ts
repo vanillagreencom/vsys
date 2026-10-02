@@ -205,37 +205,55 @@ test("summary sampling gives rate-backed activity a baseline", async () => {
     f.cleanup();
   }
 });
-test("quit and failed shutdown restore their own terminal settings", async () => {
+test("quit, hangup and failed shutdown all take the quit key's shutdown", async () => {
   const f = fixture();
   try {
     const path = join(f.root, "config.toml");
     await saveConfig({ ...f.config, refreshMs: 100 }, path, f.agentToolsPath);
-    const script = `import os, pty, select, subprocess, sys, termios, time
+    // The child owns the terminal as its controlling terminal, so closing the
+    // master side is the hangup a closed window or a killed tmux pane sends.
+    // A hangup leaves no terminal whose settings could be restored.
+    const script = `import fcntl, os, pty, select, subprocess, sys, termios, time
+binary, config, trigger, home, fault = sys.argv[1:6]
 master, slave = pty.openpty()
 before = termios.tcgetattr(slave)
-argv = [sys.argv[1], "src/main.ts", "--config", sys.argv[2]]
-if sys.argv[3] == "fault":
+argv = [binary, "src/main.ts", "--config", config]
+if fault == "fault":
     code = 'import { History } from "./src/store/history"; import { main } from "./src/main"; const close = History.prototype.close; History.prototype.close = function() { close.call(this); throw new Error("injected shutdown failure"); }; await main(["--config", process.argv.at(-1)]);'
-    argv = [sys.argv[1], "-e", code, sys.argv[2]]
-child = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, env={**os.environ, "TERM": "xterm-256color", "HOME": sys.argv[4]})
+    argv = [binary, "-e", code, config]
+def attach():
+    os.setsid()
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+child = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, preexec_fn=attach, env={**os.environ, "TERM": "xterm-256color", "HOME": home})
 output = b""
 sent = False
 ready_at = None
 try:
     deadline = time.monotonic() + 6
     while child.poll() is None and time.monotonic() < deadline:
+        if trigger == "hangup" and sent:
+            try:
+                child.wait(timeout=deadline - time.monotonic())
+            except subprocess.TimeoutExpired:
+                pass
+            break
         ready, _, _ = select.select([master], [], [], 0.05)
         if ready:
             output += os.read(master, 65536)
         if ready_at is None and b"Agents" in output:
             ready_at = time.monotonic()
-        if not sent and ready_at is not None and (sys.argv[3] != "refresh" or time.monotonic() - ready_at > 2):
-            os.write(master, bytes([3]) if sys.argv[3] == "ctrl+c" else b"q")
+        if not sent and ready_at is not None and (trigger != "refresh" or time.monotonic() - ready_at > 2):
+            if trigger == "hangup":
+                os.close(master)
+                master = None
+            else:
+                os.write(master, bytes([3]) if trigger == "ctrl+c" else b"q")
             sent = True
     assert b"Agents" in output, "Application did not render its tabs"
-    expected = 1 if sys.argv[3] == "fault" else 0
+    expected = 1 if fault == "fault" else 0
     assert child.poll() == expected, f"Unexpected exit: {child.poll()}, {output!r}"
-    assert termios.tcgetattr(slave) == before, "Application changed terminal settings after quit"
+    if trigger != "hangup":
+        assert termios.tcgetattr(slave) == before, "Application changed terminal settings after quit"
     assert b"MaxListenersExceededWarning" not in output, "Refresh leaked event listeners"
 finally:
     if child.poll() is None:
@@ -245,12 +263,32 @@ finally:
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait(timeout=3)
-    os.close(master)
+    if master is not None:
+        os.close(master)
     os.close(slave)
 `;
-    for (const mode of ["q", "ctrl+c", "fault", "refresh"]) {
+    // A failure injected into the history close shows as exit 1 only through
+    // the quit key's shutdown, so the hangup row with it proves the hangup
+    // reaches that shutdown rather than one of its own.
+    for (const [trigger, fault] of [
+      ["q", "clean"],
+      ["ctrl+c", "clean"],
+      ["refresh", "clean"],
+      ["hangup", "clean"],
+      ["q", "fault"],
+      ["hangup", "fault"],
+    ]) {
       const child = Bun.spawn(
-        ["python3", "-c", script, process.execPath, path, mode, f.root],
+        [
+          "python3",
+          "-c",
+          script,
+          process.execPath,
+          path,
+          trigger,
+          f.root,
+          fault,
+        ],
         {
           stdout: "pipe",
           stderr: "pipe",
@@ -261,9 +299,14 @@ finally:
         child.exited,
         new Response(child.stderr).text(),
       ]);
-      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      expect({ trigger, fault, code, stderr }).toEqual({
+        trigger,
+        fault,
+        code: 0,
+        stderr: "",
+      });
     }
   } finally {
     f.cleanup();
   }
-}, 10000);
+}, 20000);

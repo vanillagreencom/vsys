@@ -84,10 +84,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     throw new Error(
       "Interactive mode needs a terminal; use --once for scripts",
     );
-  const [{ createCliRenderer }, { mountScreen }] = await Promise.all([
-    import("@opentui/core"),
-    import("./ui/screen"),
-  ]);
+  const [{ CliRenderEvents, createCliRenderer }, { mountScreen }] =
+    await Promise.all([import("@opentui/core"), import("./ui/screen")]);
   const history = new History(config);
   let stopped = false;
   let renderer: Awaited<ReturnType<typeof createCliRenderer>>;
@@ -117,8 +115,6 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         errors.push(error);
       }
     }
-    process.off("SIGINT", stop);
-    process.off("SIGTERM", stop);
     if (errors.length) {
       console.error(`vsys shutdown: ${errors.map(String).join("; ")}`);
       process.exitCode = 1;
@@ -165,8 +161,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     },
     { agentToolsPath },
   );
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
+  // The renderer listens for the exit signals, a hangup among them, and
+  // destroys itself on one. Its listener also keeps the process from dying, so
+  // every way the renderer ends must lead here, or sampling outlives the
+  // terminal.
+  renderer.once(CliRenderEvents.DESTROY, stop);
   session.start();
 }
 
