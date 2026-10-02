@@ -1,0 +1,1 @@
+- The desktop-swap card no longer offers an `agents.slice` command or next step on a machine with no agent slice; it names the agent lanes holding the swap instead.
