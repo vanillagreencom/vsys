@@ -102,7 +102,13 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   // A scratch overage is a card, but it never speaks for the machine.
   const idle = emptySnapshot();
   idle.storage.scratch = [
-    { path: "/scratch", bytes: c.scratchQuota + 1, age: 0, error: null },
+    {
+      path: "/scratch",
+      bytes: c.scratchQuota + 1,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
   ];
   const housekeeping = attention(idle, c, { basePath: base });
   expect(housekeeping.map((item) => item.verdictWorthy)).toEqual([false]);

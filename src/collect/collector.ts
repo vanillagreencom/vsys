@@ -11,6 +11,7 @@ import { kernelCgroupRoot, readMounts } from "./mounts";
 import { ProcessThread } from "./process-thread";
 import { ProcessCollector, type ProcessSource } from "./procs";
 import { SccacheCollector } from "./sccache";
+import { agentScratchDirs } from "./scratch";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
@@ -154,6 +155,7 @@ export class Collector {
       mountInfo,
       !this.live,
       options.skipScratch ?? false,
+      agentScratchDirs(procs),
     );
     // Device totals cover the whole machine, so they are read above the watched tree.
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);

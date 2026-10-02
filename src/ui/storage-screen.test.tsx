@@ -3,7 +3,7 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { defaults } from "../config/config";
 import { volumesByDevice } from "../model/integrity";
-import type { Snapshot } from "../model/types";
+import type { ScratchOrigin, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
@@ -22,7 +22,9 @@ test("Storage lists filesystems, then scrubs, then scratch directories, then ses
   const s = emptySnapshot();
   s.storage.volumes = [volumeSnapshot("/a")];
   s.storage.scrubs = [{ path: "/a", text: "ok", problem: false }];
-  s.storage.scratch = [{ path: "/tmp/x", bytes: 1, age: 0, error: null }];
+  s.storage.scratch = [
+    { path: "/tmp/x", bytes: 1, age: 0, error: null, origin: "configured" },
+  ];
   s.storage.sessions = [{ path: "/tmp/s", bytes: 1, age: 0, error: null }];
   expect(storageItems(s).map((item) => item.kind)).toEqual([
     "filesystem",
@@ -225,8 +227,20 @@ function everyList() {
     { path: "/run/btrfs-scrub/one", text: "clean", problem: false },
   ];
   s.storage.scratch = [
-    { path: "/scratch/a", bytes: 10, age: 0, error: null },
-    { path: "/scratch/b", bytes: 20, age: 0, error: null },
+    {
+      path: "/scratch/a",
+      bytes: 10,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
+    {
+      path: "/scratch/b",
+      bytes: 20,
+      age: 0,
+      error: null,
+      origin: "configured",
+    },
   ];
   return s;
 }
@@ -657,6 +671,7 @@ test("the scratch heading and its empty line are decided together", () => {
     age: 0,
     modifiedAt: null,
     error: null,
+    origin: "configured" as const,
   });
   const rows: [
     string,
@@ -672,6 +687,15 @@ test("the scratch heading and its empty line are decided together", () => {
       { scratchTime: 1000 },
       "measured ",
       "No scratch directory is configured.",
+    ],
+    // The shipped roots were measured and none is on this machine. That is a
+    // reading, so it is neither a scan still to come nor a failure.
+    [
+      "default roots absent",
+      ["/default"],
+      { scratchTime: 1000, scratchAbsent: ["/default"] },
+      "measured ",
+      "None of the default scratch directories exists here.",
     ],
     // Roots set and the first traversal running. A reader who set them is
     // never told that none are set.
@@ -750,5 +774,82 @@ test("scratch roots with no reading yet are measuring, not unconfigured", async 
     } finally {
       await t.close();
     }
+  }
+});
+
+test("each scratch root says where it came from under its row", async () => {
+  const s = emptySnapshot();
+  const root = (path: string, origin: ScratchOrigin | null) => ({
+    path,
+    bytes: 1,
+    age: 0,
+    error: null,
+    origin,
+  });
+  s.storage.scratch = [
+    root("/typed", "configured"),
+    root("/shipped", "default"),
+    root("/agent", "agent"),
+    // A row an older build stored, whose origin is not known.
+    root("/stored", null),
+  ];
+  s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 0, error: null }];
+  // The narrowest terminal the screen is drawn for: an origin after the
+  // row's fixed columns would start past its last column.
+  const t = await mount(s, defaults(), { width: 80, height: 40 });
+  try {
+    await t.press("5");
+    // Only the selected root opens its detail: with /typed selected, the
+    // root under it says nothing about where it came from.
+    const opened = t.frame().split("\n");
+    const shipped = opened.findIndex((line) => line.includes("/shipped "));
+    expect(opened[shipped + 1]).not.toContain("Origin");
+    const origins: Record<string, string | null> = {};
+    for (const path of [
+      "/typed",
+      "/shipped",
+      "/agent",
+      "/stored",
+      "/agent/s",
+    ]) {
+      const lines = t.frame().split("\n");
+      const row = lines.findIndex((line) => line.includes(`${path} `));
+      expect(selectedRow(t.frame())).toContain(`${path} `);
+      const under = lines[row + 1] ?? "";
+      origins[path] = under.includes("Origin")
+        ? under.slice(under.indexOf("Origin") + "Origin".length).trim()
+        : null;
+      await t.press("down");
+    }
+    expect(origins).toEqual({
+      "/typed": "configured",
+      "/shipped": "default setting",
+      "/agent": "found on an agent",
+      "/stored": null,
+      // A session sits under its root and repeats nothing about it.
+      "/agent/s": null,
+    });
+  } finally {
+    await t.close();
+  }
+});
+
+test("a missing scratch root's error follows its age on the row", async () => {
+  const s = emptySnapshot();
+  const error = "No such file or directory";
+  s.storage.scratch = [
+    { path: "/typed", bytes: null, age: 0, error, origin: "configured" },
+  ];
+  const t = await mount(s, defaults(), { width: 120, height: 30 });
+  try {
+    await t.press("5");
+    const line =
+      t
+        .frame()
+        .split("\n")
+        .find((row) => row.includes("/typed ")) ?? "";
+    expect(line.trimEnd().endsWith(`ago  ${error}`)).toBe(true);
+  } finally {
+    await t.close();
   }
 });

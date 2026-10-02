@@ -11,7 +11,7 @@ self.onmessage = (event: MessageEvent<ScanRequest>) => {
   const reply = (message: ScanReply) => {
     self.postMessage(message);
   };
-  void scanScratch(request.config, request.time, request.budget).then(
+  void scanScratch(request.roots, request.time, request.budget).then(
     (paced) => {
       reply({ kind: "answer", id: request.id, value: paced });
     },

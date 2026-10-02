@@ -1,6 +1,6 @@
 # History store
 
-Covers: src/store/archive.ts src/store/history.ts src/store/migrate.ts src/store/point.ts src/store/lane-series.ts src/store/archive.test.ts src/store/lane-series.test.ts scripts/bench-history.ts scripts/percentile.ts
+Covers: src/store/archive.ts src/store/history.ts src/store/migrate.ts src/store/point.ts src/store/lane-series.ts src/store/archive.test.ts src/store/history.test.ts src/store/lane-series.test.ts scripts/bench-history.ts scripts/percentile.ts
 
 The store keeps complete snapshots for replay and one point per sample for the charts. It owns application persistence; the collector does not depend on SQLite.
 
@@ -19,7 +19,7 @@ The store keeps complete snapshots for replay and one point per sample for the c
 
 ## Invariants
 
-1. A snapshot a previous build stored is filled with the unknown value for every field it predates before any screen reads it, and a stored point takes the same step. `src/store/history.test.ts` checks a stored lane and a snapshot older than the capability probe.
+1. A snapshot a previous build stored is filled with the unknown value for every field it predates before any screen reads it, and a stored point takes the same step. `src/store/history.test.ts` checks a stored lane, a snapshot older than the capability probe, and a scratch row older than root origins.
 2. A stored event is decoded only where the record proves it held a unit. `src/store/history.test.ts` checks four stored events a suffix cannot tell apart.
 3. Historical snapshots stay independent of live objects and of callers, so an exported snapshot can be edited without changing the replay cache. `src/store/archive.test.ts` checks exact reconstruction and mutation isolation.
 4. A duplicate time and a checkpoint past the budget fail visibly rather than silently, and the uncompressed lines a checkpoint has not sealed yet count against that budget. `src/store/archive.test.ts` checks all three.

@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
 import { WorkerScan } from "./scratch";
+import type { ScanRoot } from "./scratch-scan";
 
 const full = { sliceMs: 10, dutyPercent: 100 };
 const loose = () => new AbortController().signal;
@@ -12,7 +13,7 @@ test("the scan thread answers with a complete reading and closes", async () => {
   const path = join(f.root, "scratch");
   try {
     f.write(join(path, "session/file"), "1234");
-    const roots = { ...f.config, scratchDirs: [path] };
+    const roots: ScanRoot[] = [{ path, origin: "configured" }];
     const runner = new WorkerScan();
     try {
       const { scan } = await runner.run(roots, 5000, full, loose());
@@ -38,7 +39,7 @@ test("the scan thread rests under the duty it is sent and not at 100", async () 
   const path = join(f.root, "scratch");
   try {
     for (let i = 0; i < 4; i++) f.write(join(path, `dir-${i}/file`), "1234");
-    const roots = { ...f.config, scratchDirs: [path] };
+    const roots: ScanRoot[] = [{ path, origin: "configured" }];
     const runner = new WorkerScan();
     try {
       // A slice of zero ends at every entry, so every entry under 100 rests
@@ -88,11 +89,10 @@ test("quitting while the scan thread is blocked in the kernel exits rather than 
     f.write(
       quit,
       `import { constants, openSync } from "node:fs";
-import { defaults } from ${JSON.stringify(join(import.meta.dir, "../config/config"))};
 import { WorkerScan } from ${JSON.stringify(join(import.meta.dir, "scratch"))};
 const runner = new WorkerScan(() => new Worker(${JSON.stringify(blocked)}) as Bun.Worker);
 void runner
-  .run({ ...defaults(), scratchDirs: ["/scratch"] }, 0, { sliceMs: 10, dutyPercent: 100 }, new AbortController().signal)
+  .run([{ path: "/scratch", origin: "configured" }], 0, { sliceMs: 10, dutyPercent: 100 }, new AbortController().signal)
   .catch(() => {});
 // A writer opens a pipe without waiting only once a reader holds it, so this
 // returns once the thread is inside the read. Each pause waits on its start.

@@ -9,7 +9,13 @@ import {
   integrityLevel,
   volumesByDevice,
 } from "../model/integrity";
-import type { Scratch, Snapshot, Volume } from "../model/types";
+import type {
+  Scratch,
+  ScratchOrigin,
+  ScratchRoot,
+  Snapshot,
+  Volume,
+} from "../model/types";
 import type { Level } from "../model/verdict";
 import { type WriteTotal, writeTotals } from "../model/writes";
 import { keyLabel, screenPad } from "./chrome";
@@ -51,7 +57,8 @@ export type StorageItem =
   | { kind: "filesystem"; id: string }
   | { kind: "volume"; volume: Volume }
   | { kind: "scrub"; path: string }
-  | { kind: "scratch"; scratch: Scratch; session: boolean };
+  | { kind: "scratch"; scratch: ScratchRoot; session: false }
+  | { kind: "scratch"; scratch: Scratch; session: true };
 /** The path each selectable row stands for, which a card can name. */
 export function itemPath(item: StorageItem): string {
   // A filesystem is named by its identity, never by one of its mounts: a card
@@ -80,6 +87,22 @@ export function storageItems(s: Snapshot): StorageItem[] {
     ),
   ];
 }
+/** Where a scratch root came from, in the words its detail carries. */
+export function scratchOriginText(origin: ScratchOrigin): string {
+  switch (origin) {
+    case "configured":
+      return "configured";
+    case "default":
+      return "default setting";
+    case "agent":
+      return "found on an agent";
+    default: {
+      const unknown: never = origin;
+      throw new Error(`Unknown scratch origin: ${String(unknown)}`);
+    }
+  }
+}
+
 /**
  * The two things the scratch section says about itself: the state beside its
  * heading, and the line that stands in for the rows when it has none. Both
@@ -88,8 +111,10 @@ export function storageItems(s: Snapshot): StorageItem[] {
  * it: rows outlive the roots that produced them for one frame, and two lines
  * reading different inputs contradicted each other across it.
  *
- * Rows present are a reading, whatever the roots now say. Roots set with no
- * rows are a measurement still to come, never an absence of roots.
+ * Rows present are a reading, whatever the roots now say. Default roots the
+ * scan found absent are a reading too: the defaults are not on this machine.
+ * Roots set with no rows are otherwise a measurement still to come, never an
+ * absence of roots.
  */
 export function scratchSummary(
   c: Config,
@@ -101,6 +126,11 @@ export function scratchSummary(
       ? "not measured yet"
       : `measured ${new Date(st.scratchTime).toLocaleTimeString()}`;
   if (st.scratch.length || st.sessions.length) return { state, empty: null };
+  if (st.scratchAbsent?.length)
+    return {
+      state,
+      empty: "None of the default scratch directories exists here.",
+    };
   return {
     state,
     empty: c.scratchDirs.length
@@ -455,6 +485,16 @@ export function Storage({
           <span attributes={ui.dim}>{`  ${modified} ago`}</span>
           {x.error && <Ink color={ui.warn}>{`  ${safe(x.error)}`}</Ink>}
         </Row>
+        {/* The origin sits under the row rather than after its columns,
+            where a narrow terminal cuts it and pushes the error out. */}
+        {i === selected && !item.session && item.scratch.origin !== null && (
+          <Detail>
+            <Field
+              label="Origin"
+              value={scratchOriginText(item.scratch.origin)}
+            />
+          </Detail>
+        )}
       </box>
     );
   };

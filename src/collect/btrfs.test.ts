@@ -12,6 +12,7 @@ import { emptySnapshot, fixture } from "../test/fixture";
 import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
 import { Reader } from "./io";
 import { parseMounts } from "./mounts";
+import { ScratchCollector } from "./scratch";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -275,4 +276,38 @@ test("a count the report carries but cannot state cannot report clean", () => {
       "Status: finished\n  Corrected:      0\n  Uncorrectable:  invalid\n",
     ),
   ).toThrow();
+});
+
+test("storage hands the scan the agent directories and keeps the defaults it found absent", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const asked: string[][] = [];
+  const original = ScratchCollector.prototype.collect;
+  // The scan itself is pinned in its own suite; this pins what storage
+  // passes to it and carries back from it.
+  ScratchCollector.prototype.collect = async (_c, agentDirs, time) => {
+    asked.push(agentDirs);
+    return {
+      scratch: [],
+      sessions: [],
+      absent: ["/default"],
+      time,
+      errors: [],
+    };
+  };
+  try {
+    const storage = await new StorageCollector().collect(
+      new Reader(),
+      f.config,
+      1000,
+      null,
+      true,
+      false,
+      ["/agent"],
+    );
+    expect(asked).toEqual([["/agent"]]);
+    expect(storage.scratchAbsent).toEqual(["/default"]);
+  } finally {
+    ScratchCollector.prototype.collect = original;
+  }
 });

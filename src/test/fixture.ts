@@ -408,7 +408,9 @@ export function everyCauseSnapshot(c: Config): Snapshot {
       addresses: null,
     },
   ];
-  s.storage.scratch = [{ path: "/scratch", bytes, age: 0, error: null }];
+  s.storage.scratch = [
+    { path: "/scratch", bytes, age: 0, error: null, origin: "configured" },
+  ];
   return s;
 }
 /**

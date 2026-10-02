@@ -1,0 +1,1 @@
+- Storage measures the temporary directories running agents name, except one another user owns such as `/tmp`, and a selected scratch root says where it came from.

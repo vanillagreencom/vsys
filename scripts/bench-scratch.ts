@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { WorkerScan } from "../src/collect/scratch";
 import {
   type PaceClock,
+  type ScanRoot,
   type ScratchScan,
   scanScratch,
   timerPace,
@@ -27,17 +28,17 @@ async function measure(dutyPercent: number): Promise<{
   rests: number;
   scan: ScratchScan;
 }> {
-  const c = { ...defaults(), scratchDirs: [root] };
+  const roots: ScanRoot[] = [{ path: root, origin: "configured" }];
   const runner = new WorkerScan();
   const budget = { sliceMs: 10, dutyPercent };
   try {
     const signal = new AbortController().signal;
     // The first scan starts the thread and warms the page cache, so its cost
     // is startup rather than traversal.
-    await runner.run(c, Date.now(), budget, signal);
+    await runner.run(roots, Date.now(), budget, signal);
     const cpu = cpuMs();
     const started = performance.now();
-    const { scan, rests } = await runner.run(c, Date.now(), budget, signal);
+    const { scan, rests } = await runner.run(roots, Date.now(), budget, signal);
     const elapsedMs = performance.now() - started;
     return {
       dutyPercent,
@@ -70,7 +71,7 @@ async function bound(
   rests: number;
   scan: ScratchScan;
 }> {
-  const c = { ...defaults(), scratchDirs: [root] };
+  const roots: ScanRoot[] = [{ path: root, origin: "configured" }];
   const asked: number[] = [];
   const clock: PaceClock = {
     now: timerPace.now,
@@ -81,7 +82,7 @@ async function bound(
   };
   const started = performance.now();
   const { scan } = await scanScratch(
-    c,
+    roots,
     Date.now(),
     { sliceMs, dutyPercent },
     clock,

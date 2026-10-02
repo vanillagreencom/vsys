@@ -1,12 +1,22 @@
 import { lstatSync, readdirSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import type { Scratch, SourceError } from "../model/types";
-import type { CollectionConfig } from "./settings";
+import type { Scratch, ScratchRoot, SourceError } from "../model/types";
 import type { WorkerReply } from "./worker-host";
 
+/**
+ * A directory a scan is asked to measure, and why it is asked. An agent's
+ * directory carries the user whose agents vsys watches: a directory another
+ * user owns, such as the system's shared `/tmp`, is not that agent's own.
+ */
+export type ScanRoot =
+  | { path: string; origin: "configured" | "default" }
+  | { path: string; origin: "agent"; owner: number };
+
 export interface ScratchScan {
-  scratch: Scratch[];
+  scratch: ScratchRoot[];
   sessions: Scratch[];
+  /** Default roots that did not exist when the scan reached them. */
+  absent: string[];
   time: number | null;
   errors: SourceError[];
 }
@@ -98,10 +108,11 @@ class Pace {
  * blocking delays no sample.
  */
 async function scanRoot(
-  path: string,
+  root: ScanRoot,
   now: number,
   pace: Pace,
-): Promise<{ root: Scratch; sessions: Scratch[] }> {
+): Promise<{ root: ScratchRoot; sessions: Scratch[] } | "absent" | "shared"> {
+  const { path, origin } = root;
   const sessions: Scratch[] = [];
   const record = (
     path: string,
@@ -120,8 +131,28 @@ async function scanRoot(
           ? error.message
           : String(error),
   });
+  const failed = (error: unknown) => ({
+    root: { ...record(path, null, undefined, error), origin },
+    sessions: [],
+  });
+  // Only a root on a list other than the shipped one is a problem for not
+  // existing. A default, omitted or pinned unchanged, or an agent's temporary
+  // directory that is not there has no row rather than one that fails for
+  // ever. Absence is the root's own status read failing with ENOENT, or with
+  // ENOTDIR where a parent on its path is a file, so the root cannot exist:
+  // a directory that leaves deeper in the walk fails the root as any other
+  // unreadable entry does, and never hides it.
+  let top: Stats;
   try {
-    const top = lstatSync(path);
+    top = lstatSync(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (origin !== "configured" && (code === "ENOENT" || code === "ENOTDIR"))
+      return "absent";
+    return failed(error);
+  }
+  if (root.origin === "agent" && top.uid !== root.owner) return "shared";
+  try {
     if (!top.isDirectory())
       throw new Error(`Scratch path is not a directory: ${path}`);
     const global = new Set<string>();
@@ -163,32 +194,43 @@ async function scanRoot(
       return [rootBytes, sessionBytes];
     }
     const [bytes] = await walk(path, top, global, 0);
-    return { root: record(path, bytes, top), sessions };
+    return { root: { ...record(path, bytes, top), origin }, sessions };
   } catch (error) {
-    return { root: record(path, null, undefined, error), sessions: [] };
+    return failed(error);
   }
 }
 
 /**
- * One pass over every configured scratch root. It returns a complete reading
- * for every root or it throws, so no partial total is published as a complete
- * one. A root that could not be read carries a null size and its own error
- * rather than a zero.
+ * One pass over every scratch root. It returns a complete reading for every
+ * root or it throws, so no partial total is published as a complete one. A
+ * root that could not be read carries a null size and its own error rather
+ * than a zero.
  */
 export async function scanScratch(
-  c: CollectionConfig,
+  roots: ScanRoot[],
   time: number,
   budget: ScanBudget,
   clock: PaceClock = timerPace,
 ): Promise<PacedScan> {
   const pace = new Pace(budget, clock);
-  const result: ScratchScan = { scratch: [], sessions: [], time, errors: [] };
-  for (const path of c.scratchDirs) {
-    const scanned = await scanRoot(path, time, pace);
+  const result: ScratchScan = {
+    scratch: [],
+    sessions: [],
+    absent: [],
+    time,
+    errors: [],
+  };
+  for (const root of roots) {
+    const scanned = await scanRoot(root, time, pace);
+    if (scanned === "absent" || scanned === "shared") {
+      if (scanned === "absent" && root.origin === "default")
+        result.absent.push(root.path);
+      continue;
+    }
     result.scratch.push(scanned.root);
     result.sessions.push(...scanned.sessions);
     if (scanned.root.error)
-      result.errors.push({ source: path, message: scanned.root.error });
+      result.errors.push({ source: root.path, message: scanned.root.error });
   }
   return { scan: result, rests: pace.rests };
 }
@@ -196,7 +238,7 @@ export async function scanScratch(
 /** What the main thread asks the scan worker for. */
 export interface ScanRequest {
   id: number;
-  config: CollectionConfig;
+  roots: ScanRoot[];
   time: number;
   budget: ScanBudget;
 }

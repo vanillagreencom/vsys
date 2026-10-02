@@ -12,6 +12,12 @@ import { buildKind, excludedArgv, toolName } from "./builds";
 import { Reader } from "./io";
 import type { CollectionConfig } from "./settings";
 
+/**
+ * The environment names an agent's temporary directory is read from. Storage
+ * measures those directories as scratch, and reads them from the reading this
+ * collector already takes.
+ */
+export const scratchEnv = ["TMPDIR", "CLAUDE_CODE_TMPDIR"] as const;
 /** stat's command can contain spaces and closing parentheses. */
 export function parseStat(
   raw: string,
@@ -233,8 +239,7 @@ export class ProcessCollector implements ProcessSource {
     const allowed = new Set([
       "CLAUDE_CONFIG_DIR",
       "PATH",
-      "TMPDIR",
-      "CLAUDE_CODE_TMPDIR",
+      ...scratchEnv,
       "CARGO_BUILD_JOBS",
       "RUST_TEST_THREADS",
       "SHELL",
