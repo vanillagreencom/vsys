@@ -399,10 +399,13 @@ export class Udisks {
         // held.drives by iterating it, so an empty array would read as
         // "nothing to compare" and vacuously pass as unswapped, letting this
         // stale failure answer for every sample until the hold expires.
-        // Dropping it means the very next sample takes the non-held branch
-        // below and runs a genuine readUdisks(), recovering immediately once
-        // the bus answers again, without this call repeating the identical
-        // listing call readUdisks() would otherwise make.
+        // Dropping it sends a single next sample through the non-held
+        // branch below, which runs a genuine readUdisks() and recovers if
+        // the bus is back by then; a bus still down on that next sample
+        // fails readUdisks() the same way and is held again, so two
+        // consecutive failures still ride out the rest of the hold. Either
+        // way, this call alone no longer repeats the identical listing call
+        // readUdisks() would otherwise make.
         this.held = null;
         return { drives: [], outcome: listing.outcome };
       }
