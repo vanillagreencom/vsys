@@ -102,28 +102,59 @@ test("a missing interface names the source that decided it and the reason", () =
   ).toBe(true);
 });
 
-test("io.stat at the root is not available until the root hands io down", () => {
-  const f = setup();
-  const control = join(f.config.cgroupRoot, "cgroup.subtree_control");
-  // The fixture writes io.stat at the root, which the probe reads first.
-  const rows: [string, string | null, Partial<Capability>][] = [
+test("io-stat is available only when every group with groups in it passes io down", () => {
+  // The fixture writes io.stat at the root, which the probe reads first, and
+  // app.slice holds a scope; agents.slice holds no group.
+  const control = (group: string) => join(group, "cgroup.subtree_control");
+  const rows: [string, Record<string, string>, Partial<Capability>][] = [
     // With no subtree_control the groups below carry no io.stat either.
-    ["no subtree_control", null, { failure: "absent", source: control }],
+    ["no subtree_control", {}, { failure: "absent", source: "." }],
     [
-      "io not delegated",
-      "cpu memory pids\n",
-      { failure: "incomplete", source: control, detail: "io" },
+      "root withholds io",
+      { ".": "cpu memory pids" },
+      { failure: "incomplete", source: ".", detail: "." },
     ],
-    ["io delegated", "cpu io memory pids\n", { failure: null }],
+    [
+      "a slice holding a scope withholds io",
+      { ".": "cpu io memory pids", "app.slice": "memory pids" },
+      { failure: "incomplete", source: "app.slice", detail: "app.slice" },
+    ],
+    [
+      "every slice holding a group passes io",
+      { ".": "cpu io memory pids", "app.slice": "io memory pids" },
+      { failure: null },
+    ],
+    // A slice's files vanish when systemd removes it during the walk, which is
+    // an ended group rather than an absent interface.
+    [
+      "a slice that ended mid-walk",
+      { ".": "cpu io memory pids" },
+      { failure: null },
+    ],
+    // A group with nothing in it hands io to nobody, so it is never read.
+    [
+      "only an empty slice withholds io",
+      {
+        ".": "cpu io memory pids",
+        "app.slice": "io",
+        "agents.slice": "memory pids",
+      },
+      { failure: null },
+    ],
   ];
-  for (const [name, text, expected] of rows) {
-    if (text === null) rmSync(control, { force: true });
-    else writeFileSync(control, text);
+  for (const [name, files, expected] of rows) {
+    const f = setup();
+    mkdirSync(join(f.config.cgroupRoot, "app.slice/a.scope"));
+    for (const [group, text] of Object.entries(files))
+      writeFileSync(control(join(f.config.cgroupRoot, group)), `${text}\n`);
     const cap = byId(probeCapabilities(f.config, answering)).get("io-stat");
     expect({ name, ...cap }).toMatchObject({
       name,
       available: expected.failure === null,
       ...expected,
+      ...(expected.source && {
+        source: control(join(f.config.cgroupRoot, expected.source)),
+      }),
     });
   }
 });

@@ -169,16 +169,27 @@ test("the reason follows what the probe found, not the interface name", () => {
       detail: "cpu memory",
     }),
   ).toBe("this login session is not given cpu memory");
-  // A readable io.stat at the root is not one in the groups below it.
-  expect(
-    capabilityReason({
-      id: "io-stat",
-      available: false,
-      failure: "incomplete",
-      source: "/sys/fs/cgroup/cgroup.subtree_control",
-      detail: "io",
-    }),
-  ).toBe("the io controller is not delegated to the groups below this session");
+  // A readable io.stat at the root is not one in the groups below it, and the
+  // reason names the group that withholds io.
+  for (const [detail, reason] of [
+    [
+      ".",
+      "this login session does not pass the io controller to the groups in it",
+    ],
+    [
+      "app.slice/app-graphical.slice",
+      "app.slice/app-graphical.slice does not pass the io controller to the groups in it",
+    ],
+  ])
+    expect(
+      capabilityReason({
+        id: "io-stat",
+        available: false,
+        failure: "incomplete",
+        source: `/sys/fs/cgroup/${detail}/cgroup.subtree_control`,
+        detail,
+      }),
+    ).toBe(reason);
 });
 
 test("every missing capability says what it costs the reader, in its own words", () => {
