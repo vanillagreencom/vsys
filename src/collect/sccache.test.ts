@@ -123,11 +123,11 @@ test("the stats query is not repeated on every sample", async () => {
 
 test("a failed query keeps its source error on the samples the throttle skips", async () => {
   let calls = 0;
-  let text = "Compile requests 3\n";
+  let answer: string | Error = new Error("server unreachable");
   const c = new SccacheCollector(async () => {
     calls++;
-    if (calls === 1) throw new Error("server unreachable");
-    return text;
+    if (answer instanceof Error) throw answer;
+    return answer;
   }, 5000);
   // A fresh reader per sample, as the collector builds one. Each row is the
   // sample time and the error that sample must report.
@@ -139,6 +139,7 @@ test("a failed query keeps its source error on the samples the throttle skips", 
     [9999, "Missing cache hit and miss counters"],
   ];
   for (const [time, message] of rows) {
+    if (time === 1000) answer = "Compile requests 3\n";
     const r = new Reader();
     expect((await c.collect(r, time)).state).toBe("failed");
     expect(r.errors).toEqual([{ source: "sccache --show-stats", message }]);
@@ -146,11 +147,22 @@ test("a failed query keeps its source error on the samples the throttle skips", 
   expect(calls).toBe(2);
   // A query that reads the counters clears the error on its sample and the
   // skipped ones.
-  text = stats(1, 1);
+  answer = stats(1, 1);
   for (const time of [10000, 14999]) {
     const r = new Reader();
     expect((await c.collect(r, time)).state).toBe("read");
     expect(r.errors).toEqual([]);
   }
   expect(calls).toBe(3);
+  // So does a query that finds no sccache after a failure: the program is
+  // absent, and the old error is not kept.
+  answer = new Error("server unreachable");
+  expect((await c.collect(new Reader(), 15000)).state).toBe("failed");
+  answer = Object.assign(new Error("no sccache"), { code: "ENOENT" });
+  for (const time of [20000, 24999]) {
+    const r = new Reader();
+    expect((await c.collect(r, time)).state).toBe("absent");
+    expect(r.errors).toEqual([]);
+  }
+  expect(calls).toBe(5);
 });
