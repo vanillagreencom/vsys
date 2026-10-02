@@ -17,8 +17,10 @@ const ellipsis = "…";
 /**
  * The terminal cells `text` draws into once sanitized, which is how every
  * screen draws it: a CJK character or an emoji takes two, a combining mark
- * none, and a control byte one, as the blank that replaces it. OpenTUI
- * measures text with the same Bun call.
+ * none, and a control byte one, as the blank that replaces it. The renderer
+ * measures drawn text natively, by its own width method; this is the
+ * JavaScript-side measure of it, and `src/ui/home.test.tsx` checks the two
+ * agree on CJK and control-byte rows.
  */
 export const textWidth = (text: string): number => Bun.stringWidth(safe(text));
 /** One character as the terminal draws it, and the cells it takes. */
