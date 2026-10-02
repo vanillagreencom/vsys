@@ -14,7 +14,9 @@
 #   SMARTCTL_TIMEOUT Seconds to let one drive's smartctl run before it is cut
 #                     off (default 20). A stalled query or a wedged USB bridge
 #                     then costs this one drive's report, not every report
-#                     after it.
+#                     after it. 0 disables the bound entirely, as it does for
+#                     `timeout` itself. Raising it needs TimeoutStartSec raised
+#                     by a matching amount in vsys-smart-report.service.
 set -euo pipefail
 # vsys matches smartctl's field names, so they must be in English.
 export LC_ALL=C

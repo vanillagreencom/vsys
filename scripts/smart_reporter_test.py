@@ -199,6 +199,62 @@ esac
                 {"model": "Crucial CT1000MX500SSD1", "lifetimeWritten": 2_000_000 * 512},
             )
 
+    def test_a_drive_that_ignores_term_is_still_killed_within_the_grace_period(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            calls = base / "calls"
+            sys_block = base / "block"
+            for name in ("nvme0n1", "sda"):
+                (sys_block / name).mkdir(parents=True)
+                (sys_block / name / "device").mkdir()
+            (base / "ata.txt").write_text(ATA)
+            # nvme0n1's query traps and ignores TERM, as a wedged USB bridge's
+            # driver can: only the KILL `timeout -k` sends after its grace
+            # period actually stops it, and sda must still get its report.
+            stub(
+                bin_dir,
+                "smartctl",
+                f"""printf '%s\\n' "$*" >> "{calls}"
+case $3 in
+/dev/nvme0n1)
+	trap '' TERM
+	sleep 100
+	;;
+/dev/sda) cat "{base}/ata.txt" ;;
+*) exit 2 ;;
+esac
+""",
+            )
+            reports = base / "reports"
+            started = time.monotonic()
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "SYS_BLOCK": str(sys_block),
+                    "SMARTCTL_TIMEOUT": "1",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(done.returncode, 0, done.stderr)
+            # 1s SMARTCTL_TIMEOUT plus the reporter's 5s kill-after grace: a
+            # regression that drops `-k 5` leaves this at the stub's full 100s.
+            self.assertGreater(elapsed, 1, "TERM alone must not have stopped the stub")
+            self.assertLess(elapsed, 15, "the KILL after the grace period must still land")
+            self.assertEqual(sorted(os.listdir(reports)), ["nvme0n1.txt", "sda.txt"])
+            self.assertEqual((reports / "nvme0n1.txt").read_text(), "")
+            self.assertEqual(
+                parse(reports / "sda.txt", base),
+                {"model": "Crucial CT1000MX500SSD1", "lifetimeWritten": 2_000_000 * 512},
+            )
+
 
 REPORTER_FILES = ("vsys-smart-report", "vsys-smart-report.service", "vsys-smart-report.timer", "vsys-smart.conf")
 

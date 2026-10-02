@@ -6,7 +6,9 @@ Description=Drive reports for vsys
 [Service]
 Type=oneshot
 # 32 drives at the reporter's default 20s-per-drive timeout, plus headroom:
-# a run holds this long only if every drive stalls to its own deadline.
+# a run holds this long only if every drive stalls to its own deadline. A
+# SMARTCTL_TIMEOUT override, or a host with more reportable drives than that,
+# needs this raised by a matching amount or systemd kills the run mid-loop.
 TimeoutStartSec=900
 ExecStart=/usr/local/bin/vsys-smart-report /run/smartctl
 # smartctl needs /dev, but writes nowhere else: /usr, /etc, /home and /tmp
