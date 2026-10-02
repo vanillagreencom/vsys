@@ -1,0 +1,1 @@
+- Storage now tells apart a scrub check that has not finished from one that finished but was superseded by a newer remembered check, instead of saying both never finished.
