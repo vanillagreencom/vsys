@@ -32,6 +32,7 @@ test("the screen uses the terminal's own colours and marks selection in the acce
       snapshot={s}
       history={h}
       config={c}
+      settingsPath="/home/test/.config/vsys/config.toml"
       onSave={async () => {}}
       onQuit={() => {}}
       onExport={async () => "snapshot.json"}

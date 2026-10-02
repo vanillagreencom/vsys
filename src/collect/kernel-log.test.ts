@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
+import { present } from "../test/present";
 import { capabilityReason } from "../ui/settings";
 import { StorageCollector } from "./btrfs";
 import { Reader } from "./io";
@@ -119,7 +120,10 @@ test("a filesystem keeps its newest failures and no more", async () => {
   for (let inode = 1; inode <= inodeLimit + 6; inode++)
     lines.push(entry(current, 10 + inode, failed("dm-0", 5, inode)));
   const log = new KernelLog(async () => lines.join("\n"));
-  const failures = (await log.read(new Map(), currentDashed))[fsA];
+  const failures = present(
+    (await log.read(new Map(), currentDashed))[fsA],
+    "fsA failures",
+  );
   expect(failures).toHaveLength(inodeLimit);
   expect(failures[0]).toEqual({
     root: 5,

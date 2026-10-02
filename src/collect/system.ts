@@ -26,7 +26,12 @@ export function collectSystem(r: Reader, c: CollectionConfig): System {
     const raw = r.text(join(c.sysBlockRoot, device, "mm_stat"));
     if (raw !== null) {
       const [original, compressed, used] = raw.split(/\s+/).map(Number);
-      if ([original, compressed, used].every(Number.isFinite))
+      if (
+        original !== undefined &&
+        compressed !== undefined &&
+        used !== undefined &&
+        [original, compressed, used].every(Number.isFinite)
+      )
         zram.push({ device, original, compressed, used });
       else r.error(device, "Invalid zram mm_stat");
     }

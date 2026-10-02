@@ -1,6 +1,11 @@
-import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import {
+  CliRenderEvents,
+  type RGBA,
+  type ScrollBoxRenderable,
+} from "@opentui/core";
+import { useRenderer } from "@opentui/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { type Config, choices, validate } from "../config/config";
+import { type Config, choices, isKeyAction, validate } from "../config/config";
 import {
   settingText as editText,
   settingValue as editValue,
@@ -24,6 +29,7 @@ import {
   settingGroups,
   settingHelp,
   settingLabel,
+  settingsFileInfo,
 } from "./settings";
 import { scrollbar, textInput, ui } from "./theme";
 import {
@@ -48,7 +54,8 @@ import {
 export type SettingItem =
   | { kind: "capability"; id: CapabilityId }
   | { kind: "setting"; key: string }
-  | { kind: "sources" };
+  | { kind: "sources" }
+  | { kind: "settingsFile" };
 /** What tells one Settings row from another, whichever kind it is. */
 function settingKey(item: SettingItem): string {
   switch (item.kind) {
@@ -58,6 +65,8 @@ function settingKey(item: SettingItem): string {
       return `setting:${item.key}`;
     case "sources":
       return "sources";
+    case "settingsFile":
+      return "settingsFile";
     default: {
       const unknown: never = item;
       throw new Error(`Unknown setting row: ${String(unknown)}`);
@@ -81,7 +90,9 @@ export function settingItems(
     // listed whatever the filter says: the render and the selection read one
     // order or the selection lands on a row the reader is not looking at.
     ...capabilities.map((cap) => ({ kind: "capability", id: cap.id }) as const),
-    ...(q ? [] : [{ kind: "sources" } as const]),
+    ...(q
+      ? []
+      : [{ kind: "sources" } as const, { kind: "settingsFile" } as const]),
     ...settingGroups.flatMap(([, keys]) =>
       keys.filter(matches).map((key) => ({ kind: "setting", key }) as const),
     ),
@@ -98,13 +109,17 @@ export function sourceCounts(s: Snapshot): [string, number][] {
     counts.set(e.source, (counts.get(e.source) ?? 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
-const settingValue = (c: Config, key: string): unknown =>
-  key.startsWith("keys.") ? c.keys[key.slice(5)] : c[key as keyof Config];
+const settingValue = (c: Config, key: string): unknown => {
+  if (!key.startsWith("keys.")) return c[key as keyof Config];
+  const action = key.slice(5);
+  return isKeyAction(c, action) ? c.keys[action] : undefined;
+};
 
 /** What vsys can read on this machine, then every stored setting by group. */
 export function Settings({
   snapshot: s,
   config: c,
+  settingsPath,
   width,
   onSave,
   onNotice,
@@ -112,6 +127,8 @@ export function Settings({
 }: {
   snapshot: Snapshot;
   config: Config;
+  /** The file an edit here will save to. */
+  settingsPath: string;
   width: number;
   onSave: (c: Config) => Promise<void>;
   onNotice: (text: string, level: Level) => void;
@@ -139,6 +156,7 @@ export function Settings({
   const twoColumns = width >= wideWidth && !editing && !picking;
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
+  const renderer = useRenderer();
   // Every entry is a block with its row at the top, so whether anything is
   // drawn under the selected row is one question the block answers: it has a
   // second child. Naming the openers instead missed a kind twice — a
@@ -158,8 +176,13 @@ export function Settings({
       // fold could only be chosen blind.
       const onto = () => box.scrollChildIntoView(`choice-${choice}`);
       onto();
-      const waiting = setTimeout(onto, 0);
-      return () => clearTimeout(waiting);
+      // The second reading waits for the renderer's own next frame rather than
+      // a fixed timeout, so it reads the option's layout after the row that
+      // opened it has actually been laid out, not merely after one JS tick.
+      renderer.once(CliRenderEvents.FRAME, onto);
+      return () => {
+        renderer.off(CliRenderEvents.FRAME, onto);
+      };
     }
     const place = () => {
       const row = box.content.findDescendantById(`setting-${selected}`);
@@ -181,9 +204,24 @@ export function Settings({
       box.scrollBy(row.y - box.viewport.y - 1);
     };
     place();
-    const pending = setTimeout(place, 0);
-    return () => clearTimeout(pending);
-  }, [selected, twoColumns, picking, choice, editing, sourcesOpen, openCap]);
+    // The second reading waits for the renderer's own next frame because the
+    // opened detail's height is not known until the layout after the render
+    // that grew it; a bare timeout can fire before that render under the live
+    // renderer's own frame timer and read the block's old height.
+    renderer.once(CliRenderEvents.FRAME, place);
+    return () => {
+      renderer.off(CliRenderEvents.FRAME, place);
+    };
+  }, [
+    selected,
+    twoColumns,
+    picking,
+    choice,
+    editing,
+    sourcesOpen,
+    openCap,
+    renderer,
+  ]);
   /**
    * The one place the selection follows the query. Three paths change what the
    * filter shows — typing in the box, opening it on a query already there, and
@@ -278,6 +316,10 @@ export function Settings({
       case "setting":
         beginEdit(item.key);
         return;
+      case "settingsFile":
+        // A path vsys resolved at start, not a stored setting: selecting it
+        // already shows its help line, and there is nothing further to open.
+        return;
       default: {
         const unknown: never = item;
         throw new Error(`Unknown setting row: ${String(unknown)}`);
@@ -316,8 +358,10 @@ export function Settings({
         setChoice((i) => nextDown(picking.length, i));
       else if (name === c.keys.up || name === "up")
         setChoice((i) => Math.max(0, i - 1));
-      else if (name === c.keys.open && current?.kind === "setting")
-        void save(current.key, () => picking[choice]);
+      else if (name === c.keys.open && current?.kind === "setting") {
+        const option = picking[choice];
+        if (option !== undefined) void save(current.key, () => option);
+      }
       return true;
     }
     if (editing) {
@@ -686,6 +730,32 @@ export function Settings({
                         </span>
                       </Line>
                     ))}
+                  </Detail>
+                ),
+            },
+          )}
+        {items.some((item) => item.kind === "settingsFile") &&
+          settingRow(
+            { kind: "settingsFile" },
+            (chosen) => (
+              <>
+                {fit(settingsFileInfo.label, 24)}
+                {columnGap}
+                <span attributes={chosen ? ui.none : ui.dim}>
+                  {safe(settingsPath)}
+                </span>
+              </>
+            ),
+            {
+              under: (chosen) =>
+                chosen && (
+                  <Detail>
+                    {/* The row's own value cuts on a narrow terminal; naming
+                        it again here, whole, is what every cut row's detail
+                        does for what the row lost. */}
+                    <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                      {`${settingsFileInfo.help} ${safe(settingsPath)}`}
+                    </Line>
                   </Detail>
                 ),
             },

@@ -45,7 +45,7 @@ const field = (raw: string, name: string): string | null => {
   const found = [
     ...raw.matchAll(new RegExp(`^\\s*${name}:[ \\t]+(.*\\S)`, "gm")),
   ];
-  return found.length === 1 ? found[0][1] : null;
+  return found.length === 1 ? (found[0]?.[1] ?? null) : null;
 };
 /**
  * How many times the report states a labelled field. None is a field the
@@ -82,7 +82,13 @@ const carried = (name: string): boolean =>
   name === name.trim() &&
   ![...name].some((char) => {
     const code = char.codePointAt(0) ?? 0;
-    return code < 0x20 || code === 0x7f || code === 0xfffd;
+    return (
+      code < 0x20 ||
+      code === 0x7f ||
+      code === 0xfffd ||
+      code === 0x2028 ||
+      code === 0x2029
+    );
   });
 
 /**
@@ -110,21 +116,31 @@ export function parseScrub(raw: string): ScrubReport {
     }
     // A path is indented under its address, and taken byte for byte: the
     // screen lists exactly the name read here. A parenthesised line
-    // is not a path, and a line at column zero ends the group.
-    const path = line.match(/^ {2}(.*)$/);
-    if (!path || !current) {
+    // is not a path, and a line at column zero ends the group. The "s" flag
+    // lets "." reach a line terminator code point (U+2028, U+2029) the
+    // reporter wrote inside a name, rather than dropping the line.
+    const name = line.match(/^ {2}(.*)$/s)?.[1];
+    if (name === undefined || !current) {
       if (!/^\s/.test(line)) current = null;
       continue;
     }
-    const name = path[1];
     // The reporter could not name every file under this address. It is
-    // damage all the same, and no path under it is listed.
-    if (name.startsWith("(not resolved")) current.resolved = false;
-    else if (name.startsWith("(")) continue;
+    // damage all the same, and no path under it is listed. Any name already
+    // collected for this address is dropped too, whichever line marks it: an
+    // address is all-or-none regardless of where in its group the mark falls.
+    if (name.startsWith("(not resolved")) {
+      current.resolved = false;
+      current.paths = [];
+    } else if (name.startsWith("(")) continue;
     // A name this text cannot carry exactly may be a different file's name
     // once read, so the address is not resolved either.
-    else if (!carried(name)) current.resolved = false;
-    else current.paths.push(name);
+    else if (!carried(name)) {
+      current.resolved = false;
+      current.paths = [];
+    }
+    // Once the address is marked unresolved, a later name under it stays
+    // unlisted too, so the set a reader sees is never a partial one.
+    else if (current.resolved !== false) current.paths.push(name);
   }
   return {
     uuid: field(raw, "UUID")?.match(/^[0-9a-f-]{36}$/i)?.[0] ?? null,

@@ -157,9 +157,9 @@ export class KernelLog {
     let cursor = this.cursor;
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
-      const end = line.match(cursorLine);
-      if (end) {
-        cursor = end[1];
+      const end = line.match(cursorLine)?.[1];
+      if (end !== undefined) {
+        cursor = end;
         continue;
       }
       const entry = JSON.parse(line) as Record<string, unknown>;
@@ -169,20 +169,23 @@ export class KernelLog {
       const bootId =
         typeof entry._BOOT_ID === "string" ? entry._BOOT_ID.toLowerCase() : "";
       const mount = entry.MESSAGE.match(mountLine);
-      if (mount) {
+      const device = mount?.[1];
+      const filesystem = mount?.[2];
+      if (device !== undefined && filesystem !== undefined) {
         const names = this.mounted.get(bootId) ?? new Map<string, string>();
-        names.set(mount[1], mount[2].toLowerCase());
+        names.set(device, filesystem.toLowerCase());
         this.mounted.set(bootId, names);
         continue;
       }
       const failure = entry.MESSAGE.match(failureLine);
-      if (!failure) continue;
+      const failureDevice = failure?.[1];
+      if (failure === null || failureDevice === undefined) continue;
       const at = Number(entry.__REALTIME_TIMESTAMP) / 1000;
       if (!Number.isFinite(at))
         throw new Error("Kernel log entry carries no time");
       const fsid =
-        this.mounted.get(bootId)?.get(failure[1]) ??
-        (bootId === thisBoot ? devices.get(failure[1]) : undefined);
+        this.mounted.get(bootId)?.get(failureDevice) ??
+        (bootId === thisBoot ? devices.get(failureDevice) : undefined);
       if (fsid === undefined) continue;
       const root = Number(failure[2]);
       const inode = Number(failure[3]);

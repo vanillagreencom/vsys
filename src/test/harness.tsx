@@ -4,6 +4,7 @@ import {
   TextAttributes,
   TextBufferRenderable,
 } from "@opentui/core";
+import type { TestRendererOptions } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import type { Config } from "../config/config";
@@ -21,7 +22,13 @@ import { App } from "../ui/App";
 export async function mount(
   s: Snapshot,
   c: Config,
-  size = { width: 140, height: 35 },
+  // A caller that needs the live renderer's own frame cap, rather than this
+  // harness's default of none, passes `maxFps` (and, to drive it without a
+  // real wall-clock wait, `clock`) alongside the size.
+  size: { width: number; height: number } & Partial<TestRendererOptions> = {
+    width: 140,
+    height: 35,
+  },
   hooks: Partial<{
     onSave: (next: Config) => Promise<void>;
     onQuit: () => void;
@@ -30,6 +37,7 @@ export async function mount(
     onSwitch: (paneId: string) => Promise<void>;
     onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
     history: History;
+    settingsPath: string;
   }> = {},
 ) {
   const h = hooks.history ?? new History(c);
@@ -52,6 +60,9 @@ export async function mount(
         snapshot={current}
         history={h}
         config={config}
+        settingsPath={
+          hooks.settingsPath ?? "/home/test/.config/vsys/config.toml"
+        }
         onSave={async (next) => {
           await hooks.onSave?.(next);
           setConfig(next);
@@ -65,13 +76,14 @@ export async function mount(
       />
     );
   }
-  // No frame cap, so a commit is laid out on the tick after it, before any
-  // timer the commit's effects set. At the default cap a commit inside the
-  // frame interval waits for a render timer, and a screen's deferred pass can
-  // run first and measure the layout from before the commit.
+  // No frame cap by default, so a commit is laid out on the tick after it,
+  // before any timer the commit's effects set. At the default cap a commit
+  // inside the frame interval waits for a render timer, and a screen's
+  // deferred pass can run first and measure the layout from before the
+  // commit; a test driving that case passes its own `maxFps` to override this.
   const ui = await testRender(<Mounted />, {
-    ...size,
     maxFps: Number.POSITIVE_INFINITY,
+    ...size,
   });
   const update = async (next: Snapshot) => {
     await act(async () => {
@@ -113,9 +125,11 @@ export async function mount(
   /**
    * Lets the deferred passes the last render set land, then draws where they
    * left the screen. A row that has just grown does not know its size until
-   * the layout after the render that grew it, so a screen measures it again on
-   * a timer. Timers of equal delay run in the order they were set, so the one
-   * set here runs after every pass already waiting.
+   * the layout after the render that grew it, so a pass reads it again on the
+   * renderer's own next frame rather than a timer. Under this harness's
+   * default uncapped renderer that frame has already fired, inside the render
+   * the triggering `press` or `update` call made, so what remains here is one
+   * more render to draw the correction that frame already made.
    */
   const settle = async () => {
     await act(async () => {

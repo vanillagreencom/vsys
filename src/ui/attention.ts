@@ -221,8 +221,9 @@ function copy(
   const names = list(laneNames);
   const every = laneSentence(laneNames, width, `${p(n, "Lane", "Lanes")}: `);
   const mounts = list(cause.paths);
+  const [firstLane] = cause.lanes;
   const lane: Target | undefined =
-    n === 1 ? { kind: "lane", id: cause.lanes[0].id } : undefined;
+    n === 1 && firstLane ? { kind: "lane", id: firstLane.id } : undefined;
   // Where a card whose row is a group lands. A cause states `at` when the row
   // to open is not one of the things it affects; otherwise the first affected
   // group is that row.
@@ -287,7 +288,7 @@ function copy(
           `--slice=${c.agentSlice}`,
           "--scope",
           "--",
-          cause.lanes[0].tool || "AGENT",
+          firstLane?.tool || "AGENT",
         ]),
         view: "Agents",
         target: lane,
@@ -355,7 +356,7 @@ function copy(
         // sentence without them rather than one filesystem's as the whole.
         ways: [
           paths === 1
-            ? `${recorded.charAt(0).toUpperCase()}${recorded.slice(1)}. The last full check ran ${v.checked == null ? "longer ago than that" : `${age(v.checked)} ago`}. Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
+            ? `${recorded.charAt(0).toUpperCase()}${recorded.slice(1)}. ${v.checked == null ? "No full check has ever run." : `The last full check ran ${age(v.checked)} ago.`} Nothing has read the filesystem end to end since, so no check has said what the damage cost.`
             : "Each of these filesystems recorded an error after the last check that read it end to end, so no check has said what the damage cost. Open each one for its own times.",
         ],
         next: "Open Storage and run a check on that filesystem, then read the damaged files it names.",
@@ -377,6 +378,11 @@ function copy(
       };
     case "unchecked": {
       const never = v.never ?? 0;
+      // A limit the cause did not state is left out rather than shown as zero.
+      const limit =
+        v.limit === null || v.limit === undefined
+          ? ""
+          : ` The limit is ${count(v.limit, "day")}.`;
       return {
         word: "Unknown",
         // One card can name filesystems in both states. Where it does, the
@@ -389,7 +395,7 @@ function copy(
               ? `${paths} ${p(paths, "filesystem has", "filesystems have")} not been checked in ${age(v.oldest ?? 0)}: ${mounts}`
               : `${count(paths, "filesystem")} unchecked for damage, ${never} of them never: ${mounts}`,
         ways: [
-          `The error counter counts failed reads, not damaged files, so it stays flat while nothing reads the damage. Only a full check reads every block. The limit is ${count(v.limit, "day")}.`,
+          `The error counter counts failed reads, not damaged files, so it stays flat while nothing reads the damage. Only a full check reads every block.${limit}`,
         ],
         next: "Run a check on each filesystem, or install the timer that writes a report into the report directory.",
         view: "Storage",
@@ -674,10 +680,11 @@ export interface TileCopy {
 export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
   // The shared wrappers format; a capability that would have supplied a
   // missing quantity replaces their bare wording with its reason.
-  const b = (n: number | null, id?: CapabilityId) =>
-    n === null ? unread(s, id) : amount(n, c);
-  const pc = (n: number | null, id?: CapabilityId) =>
-    n === null ? unread(s, id) : share(n);
+  // A value the meter did not state is one it could not read.
+  const b = (n: number | null | undefined, id?: CapabilityId) =>
+    n === null || n === undefined ? unread(s, id) : amount(n, c);
+  const pc = (n: number | null | undefined, id?: CapabilityId) =>
+    n === null || n === undefined ? unread(s, id) : share(n);
   const who = (value: string, id?: CapabilityId) =>
     meter.consumer ? `${meter.consumer} ${value}`.trimEnd() : unread(s, id);
   const v = meter.values;
@@ -744,7 +751,7 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
   return {
     label: "Builds",
     value: `${v.builds ?? 0} of ${v.cores ?? 0} cores`,
-    detail: `${count(v.linkers, "linker")} · ${count(v.lanes, "lane")}`,
+    detail: `${count(v.linkers ?? null, "linker")} · ${count(v.lanes ?? null, "lane")}`,
     level,
     facts: [
       ["Compile and link", `${v.builds ?? 0} of ${v.cores ?? 0} cores`],

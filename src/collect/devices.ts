@@ -21,14 +21,18 @@ export function smartWrites(
     text.match(/^(?:Device Model|Model Number):\s*(.+?)\s*$/m)?.[1] ??
     text.match(/^Model Family:\s*(.+?)\s*$/m)?.[1] ??
     null;
-  const units = text.match(/^Data Units Written:\s*([\d,\s]+?)(?:\s*\[.*)?$/m);
-  if (units) return { model, lifetimeWritten: number(units[1]) * DATA_UNIT };
+  const units = text.match(
+    /^Data Units Written:\s*([\d,\s]+?)(?:\s*\[.*)?$/m,
+  )?.[1];
+  if (units !== undefined)
+    return { model, lifetimeWritten: number(units) * DATA_UNIT };
   const lbas = text.match(
     /^\s*\d+\s+(?:Total_LBAs_Written|Host_Writes_32MiB)\b.*?(\d+)\s*$/m,
   );
-  if (lbas) {
+  const written = lbas?.[1];
+  if (lbas && written !== undefined) {
     const scale = /Host_Writes_32MiB/.test(lbas[0]) ? 32 * 1024 * 1024 : BLOCK;
-    return { model, lifetimeWritten: number(lbas[1]) * scale };
+    return { model, lifetimeWritten: number(written) * scale };
   }
   return { model, lifetimeWritten: null };
 }

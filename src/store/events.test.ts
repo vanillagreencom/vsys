@@ -10,6 +10,7 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
+import { present } from "../test/present";
 import { EventLog, subjects } from "./events";
 import { History } from "./history";
 
@@ -47,20 +48,20 @@ test("a lane start and stop name the account and the slice", () => {
   );
   const start = log.advance(running, c).filter((e) => e.kind === "lane-start");
   expect(start).toHaveLength(2);
-  expect(start[0].subject).toBe("lane-a PID 40");
-  expect(start[0].names).toMatchObject({
+  expect(start[0]?.subject).toBe("lane-a PID 40");
+  expect(start[0]?.names).toMatchObject({
     account: "work",
     slice: "agents.slice",
   });
   // The slice comes from the charged cgroup, and an unread account stays empty.
-  expect(start[1].names).toMatchObject({ account: "", slice: "other.slice" });
+  expect(start[1]?.names).toMatchObject({ account: "", slice: "other.slice" });
   const stop = log
     .advance(emptySnapshot(3000), c)
     .filter((e) => e.kind === "lane-stop");
   expect(stop).toHaveLength(2);
-  expect(stop[0].subject).toBe("lane-a PID 40");
-  expect(stop[0].names.slice).toBe("agents.slice");
-  expect(stop[0].values.age).toBe(30);
+  expect(stop[0]?.subject).toBe("lane-a PID 40");
+  expect(stop[0]?.names.slice).toBe("agents.slice");
+  expect(stop[0]?.values.age).toBe(30);
 });
 test("a process changing cgroup is one move, and a reused PID is not", () => {
   const first = emptySnapshot(1000);
@@ -76,8 +77,8 @@ test("a process changing cgroup is one move, and a reused PID is not", () => {
   ];
   const move = log.advance(moved, c).filter((e) => e.kind === "cgroup-move");
   expect(move).toHaveLength(1);
-  expect(move[0].subject).toBe("claude PID 40");
-  expect(move[0].names).toMatchObject({
+  expect(move[0]?.subject).toBe("claude PID 40");
+  expect(move[0]?.names).toMatchObject({
     from: "app.slice/x.scope",
     to: "agents.slice/x.scope",
     fromSlice: "app.slice",
@@ -324,8 +325,13 @@ test("a device error increment seen for one sample opens an alert", () => {
 test("two lanes escaping at once are two alerts, not one", () => {
   const log = started();
   const both = emptySnapshot(2000);
+  const staying = laneSnapshot({
+    id: "a.scope",
+    name: "agent-a",
+    unconfined: true,
+  });
   both.lanes = [
-    laneSnapshot({ id: "a.scope", name: "agent-a", unconfined: true }),
+    staying,
     laneSnapshot({ id: "b.scope", name: "agent-b", unconfined: true }),
   ];
   const opened = log
@@ -336,7 +342,7 @@ test("two lanes escaping at once are two alerts, not one", () => {
     "agent-b PID 40",
   ]);
   const gone = emptySnapshot(3000);
-  gone.lanes = [both.lanes[0]];
+  gone.lanes = [staying];
   const closed = log.advance(gone, c).filter((e) => e.kind === "alert-close");
   expect(closed.map((e) => e.subject)).toEqual(["agent-b PID 40"]);
 });
@@ -593,9 +599,9 @@ test("host memory pressure with no lane stalled under it is one host alert", () 
   // mid-episode must not read as a different identity. The holder's name
   // still shows as the open's display name, with no unit, since it is not
   // the handle this alert's identity carries.
-  expect(opened[0].subjectId).toBe("");
-  expect(opened[0].subject).toBe("gnome");
-  expect(opened[0].names.unit ?? "").toBe("");
+  expect(opened[0]?.subjectId).toBe("");
+  expect(opened[0]?.subject).toBe("gnome");
+  expect(present(opened[0], "the open").names.unit ?? "").toBe("");
 });
 test("host memory pressure is one host alert while the swap holder changes", () => {
   const held = defaults();
@@ -678,8 +684,8 @@ test("a cause that names one thing twice opens one alert carrying its unit", () 
     .advance(s, c)
     .filter((e) => e.kind === "alert-open" && e.cause === "disk");
   expect(opened.length).toBe(1);
-  expect(opened[0].subjectId).toBe("agents.slice/a.scope");
-  expect(opened[0].names.unit).toBe("a.scope");
+  expect(opened[0]?.subjectId).toBe("agents.slice/a.scope");
+  expect(opened[0]?.names.unit).toBe("a.scope");
 });
 
 test("a verdict led by a cgroup names the unit behind its subject", () => {

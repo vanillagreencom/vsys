@@ -49,12 +49,15 @@ export function heldCount(
 type Orders = Record<string, string[]>;
 const sameOrders = (a: Orders, b: Orders): boolean =>
   Object.keys(a).length === Object.keys(b).length &&
-  Object.entries(a).every(
-    ([name, ids]) =>
+  Object.entries(a).every(([name, ids]) => {
+    const other = b[name];
+    return (
       Object.hasOwn(b, name) &&
-      b[name].length === ids.length &&
-      ids.every((key, i) => b[name][i] === key),
-  );
+      other !== undefined &&
+      other.length === ids.length &&
+      ids.every((key, i) => other[i] === key)
+    );
+  });
 
 /**
  * A screen's hold on the order of its lists. One key holds every list on the

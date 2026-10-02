@@ -22,9 +22,10 @@ export function keyName(key: Stroke): string {
 }
 export function normalizeKey(value: string): string {
   const match = value.match(/^((?:(?:ctrl|alt|shift|super|hyper)\+)*)(.+)$/u);
-  if (!match) throw new Error(`Invalid keybinding: ${value}`);
-  const prefix = match[1] ? match[1].slice(0, -1).split("+") : [];
-  let name = match[2];
+  const [, modifiers, named] = match ?? [];
+  if (named === undefined) throw new Error(`Invalid keybinding: ${value}`);
+  const prefix = modifiers ? modifiers.slice(0, -1).split("+") : [];
+  let name = named;
   if ([...name].length !== 1 && !/^[a-z][a-z0-9]*$/.test(name))
     throw new Error(`Invalid key name: ${name}`);
   if (/^[A-Z]$/.test(name)) {

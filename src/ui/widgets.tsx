@@ -1,5 +1,10 @@
-import type { MouseEvent, RGBA, ScrollBoxRenderable } from "@opentui/core";
-import type { TextProps } from "@opentui/react";
+import {
+  CliRenderEvents,
+  type MouseEvent,
+  type RGBA,
+  type ScrollBoxRenderable,
+} from "@opentui/core";
+import { type TextProps, useRenderer } from "@opentui/react";
 import {
   Children,
   cloneElement,
@@ -74,14 +79,17 @@ export function Ink({
  * reader's own scrolling leaves alone, and these boxes do take the wheel, so
  * without it every turn of it would read as the drawing moving.
  *
- * The reading is taken on a timeout because a row that has just grown does not
- * know its size until the layout after the render that grew it.
+ * The second reading waits for the renderer's own next frame, not a fixed
+ * timeout, because a row that has just grown does not know its size until the
+ * layout after the render that grew it, and a bare timeout can fire before
+ * that render under the live renderer's own frame timer.
  */
 export function useKeepInView(
   scroller: RefObject<ScrollBoxRenderable | null>,
   /** The id of the child to keep in view, which may change between renders. */
   target: string,
 ) {
+  const renderer = useRenderer();
   const placed = useRef<{ id: string; at: number } | null>(null);
   const wanted = useRef(target);
   wanted.current = target;
@@ -89,7 +97,7 @@ export function useKeepInView(
   // have, there is nothing to keep in view: a screen drawing itself moves its
   // own rows, and chasing them opens the screen part-way down.
   const moved = useRef(false);
-  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pending = useRef<(() => void) | null>(null);
   useEffect(() => {
     const place = () => {
       const box = scroller.current;
@@ -116,22 +124,28 @@ export function useKeepInView(
     // settled one look like a row that has left the screen.
     if (placed.current !== null) place();
     // One reading in flight, and the render that follows does not cancel it: a
-    // reader holding a key down renders faster than a timeout fires, so a
-    // render that cancelled would starve every reading. A late reading asks the
-    // box its own question when it runs and takes the target from a ref, so it
-    // is a current one.
-    if (pending.current === null)
-      pending.current = setTimeout(() => {
+    // reader holding a key down renders faster than a frame fires, so a render
+    // that cancelled would starve every reading. A late reading asks the box
+    // its own question when it runs and takes the target from a ref, so it is
+    // a current one. It waits for the renderer's own next frame, the one
+    // point after which the grown row's layout is the one it will keep.
+    if (pending.current === null) {
+      const onFrame = () => {
         pending.current = null;
         place();
-      }, 0);
+      };
+      pending.current = onFrame;
+      renderer.once(CliRenderEvents.FRAME, onFrame);
+    }
   });
-  // Nothing to depend on: the unmount is the whole of the reason this runs.
+  // The renderer is stable for the component's life, so this still runs once:
+  // the unmount is the whole of the reason it runs.
   useEffect(
     () => () => {
-      if (pending.current !== null) clearTimeout(pending.current);
+      if (pending.current !== null)
+        renderer.off(CliRenderEvents.FRAME, pending.current);
     },
-    [],
+    [renderer],
   );
 }
 

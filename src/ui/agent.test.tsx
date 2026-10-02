@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ManualClock } from "@opentui/core/testing";
 import { act } from "react";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
@@ -7,6 +8,7 @@ import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
 import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
+import { present } from "../test/present";
 import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
 
@@ -200,7 +202,7 @@ test("with write mode on an agent action names its scope and waits for a yes", a
     await t.update({ ...t.snapshot, lanes: [laneSnapshot()] });
     await t.press("enter");
     expect(calls.map((command) => command.text)).toEqual([stopCommand]);
-    expect(calls[0].effect).toEqual({
+    expect(calls[0]?.effect).toEqual({
       kind: "run",
       argv: ["systemctl", "--user", "kill", "--signal=TERM", "a.scope"],
     });
@@ -292,6 +294,8 @@ async function paned(
   lane: Partial<Parameters<typeof laneSnapshot>[0]> = {},
   /** Short enough that the detail overflows, when that is what is under test. */
   height = 45,
+  /** A test driving the renderer's own frame cap passes `maxFps`/`clock` here. */
+  rendererOptions: Partial<Parameters<typeof mount>[2]> = {},
 ) {
   const c = defaults();
   const s = emptySnapshot();
@@ -304,7 +308,12 @@ async function paned(
     }),
   ];
   s.groups = [groupSnapshot()];
-  const t = await mount(s, c, { width: 160, height }, hooks);
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height, ...rendererOptions },
+    hooks,
+  );
   await t.press("2");
   await t.press("enter");
   // A reader arrives at a screen that has finished drawing itself. Pressing
@@ -726,6 +735,59 @@ test("a capture arriving under the reader does not take the row they are on", as
   }
 });
 
+test("the chase after a capture waits for the renderer's own frame under its real frame cap", async () => {
+  let release: ((lines: string[]) => void) | null = null;
+  // A manual clock holds the renderer's own next frame back until this test
+  // advances it, the way a live renderer's frame cap holds its own render
+  // timer back for the whole frame interval. `maxFps: 60` is the renderer's
+  // own default cap, restored here in place of the harness's usual uncapped
+  // one, which is what let this scenario's existing coverage pass while the
+  // production bug, underneath it, went unobserved.
+  const clock = new ManualClock();
+  const t = await paned(
+    {
+      onCapture: () =>
+        new Promise<string[]>((resolve) => {
+          release = resolve;
+        }),
+    },
+    {},
+    24,
+    { maxFps: 60, clock },
+  );
+  try {
+    await t.press("enter");
+    for (let i = 0; i < 8; i++) await t.press("j");
+    expect(selectedRow(t.frame())).toContain("Actions");
+    // Deliver the capture without letting a render lay out the lines it adds:
+    // that render would compute the fresh layout itself, the way the
+    // harness's uncapped mode always did, and hide exactly the ordering this
+    // test exists to pin.
+    await act(async () => {
+      release?.(Array.from({ length: 12 }, (_, i) => `capline ${i}`));
+      await Promise.resolve();
+    });
+    // A real, short wait: long enough for a bare `setTimeout(0)`, the one the
+    // chase used to run on, to fire for real. The manual clock has not moved,
+    // so the renderer's own next frame, which only that clock can trigger,
+    // provably has not happened yet, and the screen is still drawing the
+    // frame from before the capture landed.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(selectedRow(t.frame())).toContain("Actions");
+    // Only now does the renderer's own frame arrive, under its real cap. One
+    // render runs the frame that reruns the chase; the frame event fires
+    // after that render already drew, so a second one is what shows it.
+    clock.advance(200);
+    await t.ui.renderOnce();
+    await t.ui.renderOnce();
+    const frame = t.frame();
+    expect(frame).toContain("capline 11");
+    expect(selectedRow(frame)).toContain("Actions");
+  } finally {
+    await t.close();
+  }
+});
+
 test("a sample leaves the reader where they scrolled to", async () => {
   const t = await paned(
     {
@@ -794,8 +856,10 @@ test("an open section is drawn as a child of its own row", async () => {
     const lines = t.frame().split("\n");
     const row = lines.findIndex((line) => line.includes("▾ Processes"));
     expect(row).toBeGreaterThan(-1);
-    expect(isChildLine(lines[row])).toBe(false);
-    expect(isChildLine(lines[row + 1])).toBe(true);
+    expect(isChildLine(present(lines[row], "open Processes row"))).toBe(false);
+    expect(isChildLine(present(lines[row + 1], "first process row"))).toBe(
+      true,
+    );
   } finally {
     await t.close();
   }
@@ -866,7 +930,7 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
     try {
       const lines = m.frame().split("\n");
       const y = lines.findIndex((line) => line.includes(words));
-      await m.click(lines[y].indexOf(words), y);
+      await m.click(present(lines[y], `${kind} row`).indexOf(words), y);
       expect({
         kind,
         opened: underMarked(m.frame()),

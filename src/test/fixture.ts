@@ -96,6 +96,8 @@ export function fixture() {
     const command = options.command ?? [claudeLink];
     const exe =
       options.exe ?? (command[0] === claudeLink ? claudeBinary : command[0]);
+    if (exe === undefined)
+      throw new Error(`fixture: proc ${pid} has an empty command and no exe`);
     const fields = Array.from({ length: 50 }, () => "0");
     fields[0] = "S";
     fields[1] = String(options.parent ?? 1);
@@ -115,10 +117,10 @@ export function fixture() {
     );
     write(join(path, "status"), "Name:\tclaude\nVmSwap:\t2 kB\n");
     write(join(path, "environ"), options.env ?? "");
-    for (const [name, value] of [
-      ["cwd", options.cwd ?? root],
-      ["exe", exe],
-    ]) {
+    for (const [name, value] of Object.entries({
+      cwd: options.cwd ?? root,
+      exe,
+    })) {
       const pathLink = join(path, name);
       rmSync(pathLink, { force: true });
       symlinkSync(value, pathLink);

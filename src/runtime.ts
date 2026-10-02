@@ -37,7 +37,18 @@ interface SessionOptions {
   writeConfig?: (path: string, body: string) => Promise<void>;
 }
 interface Events {
-  frame(snapshot: Snapshot, history: History, config: Config): void;
+  /**
+   * `settingsPath` is resolved by the same call `configure()` makes before a
+   * save, and published before that save writes, so the row the reader sees
+   * can never name a file other than the one the save in flight targets,
+   * even when the reader moves it mid-session.
+   */
+  frame(
+    snapshot: Snapshot,
+    history: History,
+    config: Config,
+    settingsPath: string,
+  ): void;
   error(error: unknown): void;
 }
 
@@ -100,7 +111,12 @@ export class Session {
   private writeConfig: (path: string, body: string) => Promise<void>;
   constructor(
     private config: Config,
-    /** Resolved at each save, so a save follows a settings file the reader moved. */
+    /**
+     * Resolved at each save and at each frame, so a save follows a settings
+     * file the reader moved; a save publishes its resolved value to the
+     * screen before writing, so the displayed path and the write's
+     * destination are always the same read, not two calls a move can split.
+     */
     private configPath: () => string,
     private source: Source,
     private history: History,
@@ -153,7 +169,7 @@ export class Session {
         return;
       this.history.add(snapshot);
       this.latest = snapshot;
-      this.events.frame(snapshot, this.history, this.config);
+      this.events.frame(snapshot, this.history, this.config, this.configPath());
     } catch (error) {
       if (!this.stopped && generation === this.generation) {
         let failure = error;
@@ -192,6 +208,12 @@ export class Session {
         next.agentTools,
       );
       const path = this.configPath();
+      // Published before the write starts, holding the same resolved value
+      // the write below uses, so a save that lands the instant the reader
+      // clicks it shows the file it is about to write, not the one the last
+      // sample displayed.
+      if (this.latest)
+        this.events.frame(this.latest, this.history, this.config, path);
       const currentState = await loadConfigState(path, this.agentToolsPath);
       let agentToolSave: AgentToolNamesSave | null = null;
       if (agentToolsChanged) {
@@ -289,7 +311,7 @@ export class Session {
       if (oldSource !== nextSource) oldSource.close?.();
       this.config = next;
       if (this.latest)
-        this.events.frame(this.latest, this.history, this.config);
+        this.events.frame(this.latest, this.history, this.config, path);
     } catch (error) {
       if (nextHistory !== this.history) nextHistory.close();
       throw error;

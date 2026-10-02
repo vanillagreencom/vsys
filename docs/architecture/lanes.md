@@ -1,6 +1,6 @@
 # Lanes and processes
 
-Covers: src/model/lanes.ts src/model/naming.ts src/model/launcher.ts src/model/scopes.ts src/model/alerts.ts src/model/alerts.test.ts src/model/types.ts src/collect/procs.ts src/collect/tmux.ts src/collect/io.ts src/model/lanes.test.ts src/collect/tmux.test.ts src/collect/collector.test.ts
+Covers: src/model/lanes.ts src/model/naming.ts src/model/launcher.ts src/model/launcher.test.ts src/model/scopes.ts src/model/alerts.ts src/model/alerts.test.ts src/model/types.ts src/collect/procs.ts src/collect/tmux.ts src/collect/io.ts src/collect/cgroups.ts src/model/lanes.test.ts src/collect/tmux.test.ts src/collect/collector.test.ts
 
 A lane is a watched scope, or a group an agent or a resource alarm made worth watching. The collector reads the processes; the model derives the lane, its name, its launch trail and the alert rules that fire on it. [agent-tools.md](agent-tools.md) owns which processes are agent tools.
 

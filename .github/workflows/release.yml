@@ -44,6 +44,28 @@ jobs:
               --notes "See CHANGELOG.md for the entries in this release."
           fi
 
+  reporter:
+    name: Checksum the scrub reporter
+    needs: create
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: Checksum the scrub reporter files
+        run: |
+          cd scripts/scrub-reporter
+          sha256sum vsys-scrub-report vsys-report.conf vsys-scrub.conf > scrub-reporter.sha256
+          cat scrub-reporter.sha256
+      - name: Upload the checksums to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" scripts/scrub-reporter/scrub-reporter.sha256 --clobber
+
   build:
     name: Build ${{ matrix.arch }}
     needs: create
@@ -97,7 +119,7 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: build
+    needs: [build, reporter]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -115,7 +137,17 @@ jobs:
           gh release download "$TAG" --pattern '*.sha256' --dir .
           cat ./*.sha256 | sort -k2 > ../SHA256SUMS
           cd .. && cat SHA256SUMS
-          test "$(wc -l < SHA256SUMS)" -eq 2
+          expected=$(printf '%s\n' \
+            "vsys-${TAG}-linux-aarch64.tar.gz" \
+            "vsys-${TAG}-linux-x86_64.tar.gz" \
+            vsys-report.conf \
+            vsys-scrub-report \
+            vsys-scrub.conf | sort)
+          actual=$(awk '{print $2}' SHA256SUMS | sort)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::SHA256SUMS names [$(tr '\n' ' ' <<<"$actual")] but expected [$(tr '\n' ' ' <<<"$expected")]"
+            exit 1
+          fi
           gh release upload "$TAG" SHA256SUMS --clobber
       - name: Publish
         env:

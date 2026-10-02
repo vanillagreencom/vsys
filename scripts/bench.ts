@@ -37,7 +37,8 @@ try {
   );
   const samples: number[] = [];
   const cpu: number[] = [];
-  const phases: Record<string, number>[] = [];
+  /** Each phase's durations across the measured samples. */
+  const phases = new Map<string, number[]>();
   let firstMs = 0;
   try {
     for (let i = 0; i <= measured; i++) {
@@ -61,7 +62,11 @@ try {
       else {
         samples.push(s.durationMs);
         cpu.push((used.user + used.system) / 1000);
-        phases.push(phase);
+        for (const [name, ms] of Object.entries(phase)) {
+          const durations = phases.get(name);
+          if (durations) durations.push(ms);
+          else phases.set(name, [ms]);
+        }
       }
     }
   } finally {
@@ -76,13 +81,13 @@ try {
       elapsedMs: spread(samples),
       cpuMs: spread(cpu),
       phaseMedianMs: Object.fromEntries(
-        Object.keys(phases[0]).map((key) => [
-          key,
-          percentile(
-            phases.map((p) => p[key]),
-            0.5,
-          ),
-        ]),
+        [...phases].map(([key, durations]) => {
+          if (durations.length !== samples.length)
+            throw new Error(
+              `bench: phase-missing phase=${key} samples=${durations.length}\nEvery measured sample marks the same phases.`,
+            );
+          return [key, percentile(durations, 0.5)];
+        }),
       ),
       targetMs: 20,
       meetsTarget: samples.every((n) => n < 20),

@@ -54,10 +54,10 @@ export function parseStat(
   const open = raw.indexOf("(");
   const close = raw.lastIndexOf(")");
   const fields = raw.slice(close + 2).split(/\s+/, 22);
+  const [state] = fields;
   const result = {
     pid: Number(raw.slice(0, open).trim()),
     comm: raw.slice(open + 1, close),
-    state: fields[0],
     ppid: Number(fields[1]),
     ticks: Number(fields[11]) + Number(fields[12]),
     threads: Number(fields[17]),
@@ -68,12 +68,13 @@ export function parseStat(
     open < 0 ||
     close < open ||
     fields.length < 22 ||
+    state === undefined ||
     Object.values(result).some(
       (v) => typeof v === "number" && !Number.isFinite(v),
     )
   )
     throw new Error("Invalid /proc stat");
-  return result;
+  return { ...result, state };
 }
 
 function branchAt(cwd: string): string | null {

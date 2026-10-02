@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultScratchDirs, defaults } from "../config/config";
 import { fixture, processSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import {
   agentScratchDirs,
   type ScanRunner,
@@ -65,13 +66,13 @@ test("live reads reuse a single pending scan and keep its measurement time", asy
     expect((await collector.collect(c, [], 2000, false)).time).toBeNull();
     expect(scans.waiting.length).toBe(1);
     expect(collector.pending).toBe(true);
-    scans.waiting[0].resolve(empty(1000));
+    present(scans.waiting[0], "pending scan").resolve(empty(1000));
     expect((await collector.collect(c, [], 2000, true)).time).toBe(1000);
     expect(collector.pending).toBe(false);
     expect((await collector.collect(c, [], 2001, false)).time).toBe(1000);
     expect(scans.waiting.length).toBe(1);
     collector.close();
-    expect(scans.signals[0].aborted).toBe(true);
+    expect(scans.signals[0]?.aborted).toBe(true);
     expect(scans.closed).toBe(1);
     await expect(collector.collect(c, [], 3000, false)).rejects.toThrow();
   } finally {
@@ -89,9 +90,10 @@ test("a background scan holds the configured share; a waiting caller waits on no
   const collector = new ScratchCollector(scans.runner);
   try {
     await collector.collect(c, [], 1000, false);
-    scans.waiting[0].resolve(empty(1000));
-    await scans.waiting[0].promise;
-    expect(scans.budgets[0].dutyPercent).toBe(20);
+    const scan = present(scans.waiting[0], "pending scan");
+    scan.resolve(empty(1000));
+    await scan.promise;
+    expect(scans.budgets[0]?.dutyPercent).toBe(20);
   } finally {
     collector.close();
   }
@@ -107,7 +109,7 @@ test("a background scan holds the configured share; a waiting caller waits on no
   });
   try {
     await once.collect(c, [], 1000, true);
-    expect(scripted[0].dutyPercent).toBe(100);
+    expect(scripted[0]?.dutyPercent).toBe(100);
   } finally {
     once.close();
   }
@@ -127,7 +129,7 @@ test("a scan that outlasts the interval waits the interval out from its completi
     expect(scans.waiting.length).toBe(1);
     // The traversal runs far longer than the rescan interval.
     now = 100000;
-    scans.waiting[0].resolve(empty(1000));
+    present(scans.waiting[0], "pending scan").resolve(empty(1000));
     expect((await collector.collect(c, [], 2000, true)).time).toBe(1000);
     expect(scans.waiting.length).toBe(1);
     // Measured from the attempt, the completed scan would be eligible again
@@ -150,7 +152,7 @@ test("a failed scan keeps the last complete reading and names what failed", asyn
   const collector = new ScratchCollector(scans.runner, () => now);
   try {
     await collector.collect(c, [], 1000, false);
-    scans.waiting[0].resolve({
+    present(scans.waiting[0], "pending scan").resolve({
       scratch: [
         {
           path: "/scratch",
@@ -169,10 +171,12 @@ test("a failed scan keeps the last complete reading and names what failed", asyn
     await collector.collect(c, [], 1000, true);
     now = 60000;
     await collector.collect(c, [], 2000, false);
-    scans.waiting[1].reject(new Error("Scratch scan thread exited"));
+    present(scans.waiting[1], "second scan").reject(
+      new Error("Scratch scan thread exited"),
+    );
     const after = await collector.collect(c, [], 2000, true);
     expect(after.time).toBe(1000);
-    expect(after.scratch[0].bytes).toBe(4096);
+    expect(after.scratch[0]?.bytes).toBe(4096);
     expect(after.errors).toEqual([
       { source: "scratch scan", message: "Scratch scan thread exited" },
     ]);
@@ -226,7 +230,7 @@ test("a reading names only the roots of the sample it is published for", async (
   const collector = new ScratchCollector(scans.runner, () => now);
   try {
     await collector.collect(c, ["/a"], 1000, false);
-    scans.waiting[0].resolve({
+    present(scans.waiting[0], "pending scan").resolve({
       scratch: [
         {
           path: "/a",
@@ -366,7 +370,10 @@ test("the shipped list on a machine without it reports nothing; a typed path tha
   const f = fixture();
   try {
     // The fixture's shipped list, none of which exists on this machine.
-    const shipped = [join(f.root, "agents"), join(f.root, "claude")];
+    const shipped: [string, string] = [
+      join(f.root, "agents"),
+      join(f.root, "claude"),
+    ];
     const rows: [string, string[], { rows: number; errors: string[] }][] = [
       ["no settings file", shipped, { rows: 0, errors: [] }],
       // The reader kept one of the shipped paths, so it is theirs to fix.

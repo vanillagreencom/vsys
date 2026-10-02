@@ -351,9 +351,9 @@ export function Home({
   /** Whether the row at `i` carries the selection marker. */
   const marked = (i: number) => rowsFocused && i === selected;
   /** Opening a row chooses it, whether a key or the mouse opened it. */
-  const openRow = (i: number) => {
+  const openRow = (row: HomeItem, i: number) => {
     choose(i);
-    onOpen(rows[i]);
+    onOpen(row);
   };
   /**
    * One Home row, whichever kind it is. Its identity, the place the screen
@@ -372,7 +372,7 @@ export function Home({
       id={`home-${i}`}
       selected={marked(i)}
       color={color}
-      onOpen={() => openRow(i)}
+      onOpen={() => openRow(row, i)}
       under={marked(i) && under?.()}
     >
       {line}
@@ -385,7 +385,7 @@ export function Home({
   useKeepInView(scroller, tile === null ? `home-${selected}` : tileRowId);
   const region = tile === null ? 1 + regionOf(counts, selected) : 0;
   /** A region's heading: its title, the key that jumps to it, and its focus. */
-  const heading = (at: number) => ({
+  const heading = (at: 0 | 1 | 2 | 3) => ({
     title: homeRegions[at].title,
     hotkey: c.keys[homeRegions[at].action],
     focused: region === at,
@@ -458,8 +458,9 @@ export function Home({
       onOpenView(meterView[gauges[tile].id]);
       return true;
     }
-    if (name === c.keys.open && rows[selected]) {
-      openRow(selected);
+    const row = rows[selected];
+    if (name === c.keys.open && row) {
+      openRow(row, selected);
       return true;
     }
     // A key that asks for a different order releases the held one. While an
@@ -467,11 +468,11 @@ export function Home({
     // rows do not follow.
     if (name === c.keys.sort) {
       const at = drawnSorts.findIndex(([, key]) => key === sort.key);
+      const next = drawnSorts[(at + 1) % drawnSorts.length];
+      if (next === undefined)
+        throw new Error("Home's agent table draws no heading it can sort by");
       hold.release();
-      setSort({
-        key: drawnSorts[(at + 1) % drawnSorts.length][1],
-        descending: sort.descending,
-      });
+      setSort({ key: next[1], descending: sort.descending });
       return true;
     }
     if (name === c.keys.reverse) {
@@ -513,12 +514,16 @@ export function Home({
   // state goes first — a blocked or running lane already shows in its numbers,
   // while a name that identifies nothing shows in nothing.
   const homeNameFloor = 24;
+  const barColumn: Column = { label: "", width: 10 };
+  const cpuColumn: Column = { label: "CPU", width: 7, align: "right" };
+  const memoryColumn: Column = { label: "Memory", width: 10, align: "right" };
+  const stateOption: Column = { label: "State", width: 9 };
   const fixedWith = (state: boolean): Column[] => [
     pidColumn,
-    { label: "", width: 10 },
-    { label: "CPU", width: 7, align: "right" },
-    { label: "Memory", width: 10, align: "right" },
-    ...(state ? [{ label: "State", width: 9 } as Column] : []),
+    barColumn,
+    cpuColumn,
+    memoryColumn,
+    ...(state ? [stateOption] : []),
   ];
   const nameRoom = (state: boolean) =>
     panel - 5 - columnsWidth(fixedWith(state));
@@ -528,20 +533,17 @@ export function Home({
   // as rows. The subject takes what the time and the kind leave and is cut
   // through the same helper every other cell uses, which ends a cut with its
   // mark instead of stopping mid-word.
-  const changeColumns: Column[] = [
+  const changeColumns: [Column, Column, Column] = [
     { label: "", width: 11, align: "right" },
     { label: "", width: 13 },
     { label: "", width: Math.max(8, panel - 5 - 11 - 13 - 4) },
   ];
-  const agentColumns: Column[] = [
-    {
-      label: "Agent",
-      width: Math.max(8, Math.min(40, nameRoom(withState))),
-    },
-    ...fixed,
-  ];
-  const [nameColumn, , barColumn, cpuColumn, memoryColumn] = agentColumns;
-  const stateColumn = withState ? agentColumns[5] : undefined;
+  const nameColumn: Column = {
+    label: "Agent",
+    width: Math.max(8, Math.min(40, nameRoom(withState))),
+  };
+  const agentColumns: Column[] = [nameColumn, ...fixed];
+  const stateColumn = withState ? stateOption : undefined;
   // The sorts whose heading this table draws, which the sort key cycles
   // through. A sort left on a column the width has since shed moves to the
   // first of them on the next press.

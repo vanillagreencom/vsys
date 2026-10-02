@@ -215,6 +215,15 @@ export const settingInfo: Record<string, SettingInfo> = {
     help: "Allow the agent detail's Freeze, Thaw and Stop to run, each after a confirmation. Off, they are copy text.",
   },
 };
+/**
+ * The settings file's own row. It is not a stored setting: nothing here comes
+ * from `Config`, so it sits outside `settingInfo` and `settingGroups` and is
+ * drawn by its own row, the way the sources row is.
+ */
+export const settingsFileInfo: SettingInfo = {
+  label: "Settings file",
+  help: "Where an edit here is saved.",
+};
 /** Settings by what they change, so a reader finds one without a search. */
 export const settingGroups: [string, string[]][] = [
   [

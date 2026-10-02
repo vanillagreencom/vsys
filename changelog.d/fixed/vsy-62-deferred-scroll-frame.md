@@ -1,0 +1,1 @@
+- Settings' editor and a row a capture pushes down now stay in view across the layout change under the terminal's own frame timing, instead of sometimes landing at the top of the list.

@@ -67,6 +67,44 @@ export const rules: Rule[] = [
   "pressure",
   "scratch",
 ];
+/** Every action a key can be bound to; `defaults()` binds each one. */
+export type KeyAction =
+  | "home"
+  | "agents"
+  | "resources"
+  | "builds"
+  | "storage"
+  | "timeline"
+  | "settings"
+  | "next"
+  | "previous"
+  | "tiles"
+  | "attention"
+  | "changes"
+  | "busiest"
+  | "filesystems"
+  | "scrub"
+  | "scratch"
+  | "help"
+  | "quit"
+  | "down"
+  | "up"
+  | "left"
+  | "right"
+  | "open"
+  | "back"
+  | "search"
+  | "details"
+  | "columns"
+  | "sort"
+  | "reverse"
+  | "pin"
+  | "hold"
+  | "window"
+  | "copy"
+  | "exportJson"
+  | "exportMarkdown";
+
 /** All host-specific paths and user preferences live in this contract. */
 export interface Config {
   refreshMs: number;
@@ -123,7 +161,7 @@ export interface Config {
    * Freeze, Thaw and Stop actions may run after a confirmation.
    */
   writeMode: boolean;
-  keys: Record<string, string>;
+  keys: Record<KeyAction, string>;
 }
 /**
  * The settings file, under `$XDG_CONFIG_HOME` or else `~/.config`, as
@@ -276,6 +314,11 @@ export function defaults(
   };
 }
 
+/** Whether `action` is one `base` binds, which `validate` requires of every key. */
+export function isKeyAction(base: Config, action: string): action is KeyAction {
+  return Object.hasOwn(base.keys, action);
+}
+
 export function sameStringSet(left: string[], right: string[]): boolean {
   const leftSet = new Set(left);
   const rightSet = new Set(right);
@@ -411,7 +454,7 @@ export function validate(value: unknown, base = defaults()): Config {
   if (c.notifications.some((r) => !rules.includes(r as Rule)))
     throw new Error("Unknown notification rule");
   for (const [action, key] of Object.entries(c.keys)) {
-    if (!(action in base.keys) || typeof key !== "string" || !key.trim())
+    if (!isKeyAction(base, action) || typeof key !== "string" || !key.trim())
       throw new Error(`Invalid keybinding: ${action}`);
     c.keys[action] = normalizeKey(key);
     if (c.keys[action] === "ctrl+c" && action !== "quit")
@@ -501,7 +544,9 @@ export function serialize(c: Config, base = defaults()): string {
     .filter(([key, value]) => !sameValue(key, value, base[key as keyof Config]))
     .map(([key, value]) => `${key} = ${JSON.stringify(value)}`);
   const keyLines = Object.entries(keys)
-    .filter(([key, value]) => value !== base.keys[key])
+    .filter(
+      ([key, value]) => !isKeyAction(base, key) || value !== base.keys[key],
+    )
     .map(([key, value]) => `${key} = ${JSON.stringify(value)}`);
   if (!keyLines.length)
     return valueLines.length ? `${valueLines.join("\n")}\n` : "";

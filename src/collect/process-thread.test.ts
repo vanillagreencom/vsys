@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { shippedAgentTools } from "../config/agent-tools";
 import { claudeLink, fixture } from "../test/fixture";
+import { present } from "../test/present";
 import { Collector } from "./collector";
 import {
   type ProcessMessage,
@@ -215,10 +216,10 @@ test("exit, identity reuse and a changed command line each read fresh through th
   const second = await thread.collect(request(2000, [40]), live());
   expect(second.errors).toEqual([]);
   expect(second.procs.map((p) => p.pid)).toEqual([40]);
-  expect(second.procs[0].command).toEqual([claudeLink, "--resume"]);
-  expect(second.procs[0].cpuPercent).toBe(50);
+  expect(second.procs[0]?.command).toEqual([claudeLink, "--resume"]);
+  expect(second.procs[0]?.cpuPercent).toBe(50);
   // The launch environment is fixed for one identity, so it stays cached.
-  expect(second.procs[0].env).toEqual({ CLAUDE_CONFIG_DIR: "/accounts/work" });
+  expect(second.procs[0]?.env).toEqual({ CLAUDE_CONFIG_DIR: "/accounts/work" });
 
   // Reuse: the same id with a later start is another process. Its counters
   // and environment are its own.
@@ -228,8 +229,8 @@ test("exit, identity reuse and a changed command line each read fresh through th
     env: "CLAUDE_CONFIG_DIR=/accounts/new\0",
   });
   const reused = await thread.collect(request(3000, [40]), live());
-  expect(reused.procs[0].cpuPercent).toBeNull();
-  expect(reused.procs[0].env).toEqual({ CLAUDE_CONFIG_DIR: "/accounts/new" });
+  expect(reused.procs[0]?.cpuPercent).toBeNull();
+  expect(reused.procs[0]?.env).toEqual({ CLAUDE_CONFIG_DIR: "/accounts/new" });
 });
 
 test("a new thread for new settings reads under those settings and the old one ends", async () => {
@@ -249,7 +250,7 @@ test("a new thread for new settings reads under those settings and the old one e
     undefined,
     old,
   );
-  expect((await before.sample(1000)).procs[0].tool).toBeNull();
+  expect((await before.sample(1000)).procs[0]?.tool).toBeNull();
   const next = {
     ...f.config,
     agentTools: [...f.config.agentTools, "newagent"],
@@ -269,7 +270,7 @@ test("a new thread for new settings reads under those settings and the old one e
   expect(() => old.collect(request(2000), live())).toThrow(
     "Process thread has closed",
   );
-  expect((await after.sample(2000)).procs[0].tool).toBe("newagent");
+  expect((await after.sample(2000)).procs[0]?.tool).toBe("newagent");
 });
 
 test("closing a collector ends its process thread", async () => {
@@ -286,7 +287,7 @@ test("closing a collector ends its process thread", async () => {
   );
   // A sample in flight is cancelled with the collector.
   const cancelled = collector.sample(1000);
-  const [first] = ports;
+  const first = present(ports[0], "started thread");
   collector.close();
   await expect(cancelled).rejects.toThrow();
   expect(first.calls).toContain("terminate");
@@ -302,7 +303,7 @@ test("closing a collector ends its process thread", async () => {
     later.thread,
   );
   const done = idle.sample(1000);
-  const [second] = later.ports;
+  const second = present(later.ports[0], "started thread");
   second.reply({ kind: "answer", id: second.lastId(), value: reading });
   await done;
   expect(second.calls).not.toContain("terminate");
@@ -313,7 +314,7 @@ test("closing a collector ends its process thread", async () => {
 test("each thread is set up with its collector's settings and answers in JSON text", async () => {
   const { ports, thread, config } = fakes();
   const answer = thread.collect(request(1000), live());
-  const [port] = ports;
+  const port = present(ports[0], "started thread");
   expect(port.sent).toEqual([
     {
       kind: "setup",

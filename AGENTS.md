@@ -13,6 +13,7 @@ vsys is a Linux terminal dashboard for agent processes and system health, writte
 
 - A reading that could not be taken stays unknown. Never let a failed read become a zero, and never draw a zero for a number vsys could not read.
 - The model returns numbers and identifiers. Every word and every formatted number belongs to `src/ui/`.
+- `tsconfig.json` sets `noUncheckedIndexedAccess`. Guard an indexed read or restructure it so the compiler sees it present; never assert it with `!` or a cast. A test reads an element it depends on through `present()` in `src/test/present.ts`.
 - Collection reads only the settings declared in `collectionKeys` in `src/collect/settings.ts`. A new collection setting goes there, or the runtime will not rebuild the collector when it changes.
 - Nothing is appended to a lane name to make it unique. The process id is a column of its own, and prose names a lane through `laneText()`.
 - No screen names a colour value. Colour comes from the role table in `src/ui/theme.ts`.

@@ -8,10 +8,11 @@ import { sampleSummary } from "../main";
 import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherCopy, launcherTrail } from "../model/launcher";
 import { laneText } from "../model/naming";
-import type { Proc, Snapshot } from "../model/types";
+import type { Snapshot } from "../model/types";
 import { causes, meters } from "../model/verdict";
 import { point } from "../store/point";
 import { claudeLink, fixture } from "../test/fixture";
+import { present } from "../test/present";
 import { capabilityLine } from "../ui/settings";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
 import { Collector, createCollector } from "./collector";
@@ -40,12 +41,12 @@ test("scope CPU, memory, environment and process identity survive sampling", asy
   const collector = new Collector(f.config, 100, 4096);
   const a = await collector.sample(1000);
   expect(a.errors).toEqual([]);
-  expect(a.lanes[0].account).toBe("work");
-  expect(a.procs[0].env).toEqual({
+  expect(a.lanes[0]?.account).toBe("work");
+  expect(a.procs[0]?.env).toEqual({
     CLAUDE_CONFIG_DIR: "/accounts/work",
     TMPDIR: "/tmp/lane",
   });
-  expect(a.lanes[0].cpu).toBeNull();
+  expect(a.lanes[0]?.cpu).toBeNull();
   f.proc(40, "agents.slice/run-lane.scope", {
     ticks: 60,
     env: "CLAUDE_CONFIG_DIR=/accounts/changed\0",
@@ -55,18 +56,18 @@ test("scope CPU, memory, environment and process identity survive sampling", asy
     "usage_usec 501000",
   );
   const b = await collector.sample(2000);
-  expect(b.lanes[0].cpu).toBe(50);
-  expect(b.procs[0].cpuPercent).toBe(50);
-  expect(b.lanes[0].rss).toBe(40960);
-  expect(b.lanes[0].account).toBe("work");
+  expect(b.lanes[0]?.cpu).toBe(50);
+  expect(b.procs[0]?.cpuPercent).toBe(50);
+  expect(b.lanes[0]?.rss).toBe(40960);
+  expect(b.lanes[0]?.account).toBe("work");
   f.proc(40, "agents.slice/run-lane.scope", {
     start: 500,
     ticks: 1,
     env: "CLAUDE_CONFIG_DIR=/accounts/new\0",
   });
   const reused = await collector.sample(3000);
-  expect(reused.procs[0].cpuPercent).toBeNull();
-  expect(reused.lanes[0].account).toBe("new");
+  expect(reused.procs[0]?.cpuPercent).toBeNull();
+  expect(reused.lanes[0]?.account).toBe("new");
 });
 test("summary sampling does not call the scratch collector", async () => {
   const f = setup();
@@ -151,9 +152,9 @@ test("a scope wrapper owns launch metadata even when an agent is its child", asy
     parent: 40,
   });
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.lanes[0].mainPid).toBe(40);
-  expect(s.lanes[0].account).toBe("work");
-  expect(s.lanes[0].tool).toBe("claude");
+  expect(s.lanes[0]?.mainPid).toBe(40);
+  expect(s.lanes[0]?.account).toBe("work");
+  expect(s.lanes[0]?.tool).toBe("claude");
 });
 test("launch commands preserve empty arguments", async () => {
   const f = setup();
@@ -162,7 +163,7 @@ test("launch commands preserve empty arguments", async () => {
     comm: "bash",
   });
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.procs[0].command).toEqual(["/bin/bash", "launch.sh", ""]);
+  expect(s.procs[0]?.command).toEqual(["/bin/bash", "launch.sh", ""]);
 });
 test("cgroup membership comes from the scope list when its mount root is known", async () => {
   const f = setup();
@@ -174,7 +175,7 @@ test("cgroup membership comes from the scope list when its mount root is known",
   );
   const s = await new Collector(f.config, 100, 4096).sample();
   expect(s.errors).toEqual([]);
-  expect(s.procs[0].group).toBe(
+  expect(s.procs[0]?.group).toBe(
     "/user.slice/user-1000.slice/user@1000.service/agents.slice/a.scope",
   );
 });
@@ -184,7 +185,7 @@ test("ambiguous scope membership uses the process membership file", async () => 
   f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope");
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.procs[0].group).toBe(
+  expect(s.procs[0]?.group).toBe(
     "/user.slice/user-1000.slice/user@1000.service/agents.slice/a.scope",
   );
   expect(s.lanes.find((l) => l.id === "app.slice/a.scope")?.pids).toEqual([]);
@@ -198,8 +199,8 @@ test("escaped agent and inherited dangerous cap appear as separate rule hits", a
   f.proc(40, "app.slice/run-escape.scope");
   f.write(join(f.config.cgroupRoot, "app.slice/memory.max"), "5242880");
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.lanes[0].unconfined).toBe(true);
-  expect(s.lanes[0].dangerous).toBe(true);
+  expect(s.lanes[0]?.unconfined).toBe(true);
+  expect(s.lanes[0]?.dangerous).toBe(true);
   expect(s.alerts.map((a) => a.rule).sort()).toEqual([
     "memory-cap",
     "unconfined",
@@ -230,7 +231,7 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
       cache: 8000,
       line: "Agent slice: not available: no agent slice is defined or running",
     },
-  ];
+  ] as const;
   for (const row of rows) {
     const f = setup();
     if (row.slice === "absent")
@@ -292,8 +293,8 @@ test("process outside the configured root remains visible", async () => {
   const f = setup();
   f.proc(80, "background.slice/a.service");
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.lanes[0].pids).toEqual([80]);
-  expect(s.lanes[0].unconfined).toBe(true);
+  expect(s.lanes[0]?.pids).toEqual([80]);
+  expect(s.lanes[0]?.unconfined).toBe(true);
 });
 test("a dangerous scope in an unwatched slice remains visible", async () => {
   const f = setup();
@@ -1103,12 +1104,12 @@ test("branch naming follows a linked worktree and does not hide a broken gitdir"
   f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope", { cwd });
   const collector = new Collector(f.config, 100, 4096);
-  expect((await collector.sample(1000)).lanes[0].name).toBe(
+  expect((await collector.sample(1000)).lanes[0]?.name).toBe(
     "claude feature/lane",
   );
   rmSync(join(f.root, "repo/.git/worktrees/lane/HEAD"));
   const broken = await collector.sample(2000);
-  expect(broken.procs[0].branch).toBeNull();
+  expect(broken.procs[0]?.branch).toBeNull();
   expect(broken.errors.length).toBeGreaterThan(0);
 });
 test("an unreadable environment is not labelled as the default account", async () => {
@@ -1118,24 +1119,20 @@ test("an unreadable environment is not labelled as the default account", async (
   rmSync(join(f.config.procRoot, "40/environ"));
   mkdirSync(join(f.config.procRoot, "40/environ"));
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.lanes[0].account).toBeNull();
-  expect(s.procs[0].envAvailable).toBe(false);
+  expect(s.lanes[0]?.account).toBeNull();
+  expect(s.procs[0]?.envAvailable).toBe(false);
 });
 test("an ancestor memory.max that cannot be read leaves the lane cap unknown", async () => {
   const f = setup();
   f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope");
   const readable = await new Collector(f.config, 100, 4096).sample();
-  expect([
-    readable.lanes[0].memoryMax,
-    readable.lanes[0].memoryMaxKnown,
-  ]).toEqual([null, true]);
+  const before = present(readable.lanes[0], "lane with a readable cap");
+  expect([before.memoryMax, before.memoryMaxKnown]).toEqual([null, true]);
   rmSync(join(f.config.cgroupRoot, "agents.slice/memory.max"));
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect([s.lanes[0].memoryMax, s.lanes[0].memoryMaxKnown]).toEqual([
-    null,
-    false,
-  ]);
+  const after = present(s.lanes[0], "lane with an unreadable cap");
+  expect([after.memoryMax, after.memoryMaxKnown]).toEqual([null, false]);
 });
 test("io.stat and memory.stat give byte totals, write rates and page cache", async () => {
   const f = setup();
@@ -1228,7 +1225,7 @@ test("argv exclusion hides a helper process but never an agent lane", async () =
   expect(a.procs.find((p) => p.pid === 39)?.tool).toBeNull();
   expect(a.procs.find((p) => p.pid === 40)?.tool).toBe("claude");
   expect(a.lanes).toHaveLength(1);
-  expect(a.lanes[0].id).toEndWith("app.slice/pane.scope");
+  expect(a.lanes[0]?.id).toEndWith("app.slice/pane.scope");
   expect(a.alerts.map((x) => x.subject)).toEqual(["40:100:claude"]);
   // The pattern list is configuration, so a different flag excludes instead.
   f.config.excludeArgv = ["--headless"];
@@ -1403,16 +1400,19 @@ test("an escaped agent's own environment reaches the launcher trail", async () =
   // The agent, not the pane shell, is what makes the lane unconfined.
   expect(s.procs.find((p) => p.pid === 50)?.tool).toBeNull();
   expect(s.lanes.map((l) => l.unconfined)).toEqual([true]);
-  const agent = s.procs.find((p) => p.pid === 51);
-  expect(agent?.env).toEqual({
+  const agent = present(
+    s.procs.find((p) => p.pid === 51),
+    "agent process",
+  );
+  expect(agent.env).toEqual({
     CARGO_BUILD_JOBS: "16",
     PATH: "/shadow/bin:/usr/bin",
   });
-  const trail = launcherTrail(agent as Proc, s.procs, f.config, ["/usr/bin"]);
+  const trail = launcherTrail(agent, s.procs, f.config, ["/usr/bin"]);
   expect(trail.conclusion).toBe("shadowed");
   expect(trail.prefix).toEqual(["/shadow/bin"]);
-  const [copy] = launcherCopy([agent as Proc], s.procs, f.config, ["/usr/bin"]);
-  expect(copy.conclusion).toContain("/shadow/bin");
+  const [copy] = launcherCopy([agent], s.procs, f.config, ["/usr/bin"]);
+  expect(copy?.conclusion).toContain("/shadow/bin");
 });
 
 test("build process environments carry the wrapper and the make token pool", async () => {
@@ -1441,7 +1441,9 @@ test("build process environments carry the wrapper and the make token pool", asy
     MAKEFLAGS: " -j16 --jobserver-auth=fifo:/tmp/GMfifo1",
   });
   expect(s.sccache?.hits).toBe(8);
-  expect(bypassedLanes(s)).toEqual([laneText(s.lanes[0])]);
+  expect(bypassedLanes(s)).toEqual([
+    laneText(present(s.lanes[0], "build lane")),
+  ]);
   expect(jobservers(s, f.config)).toEqual([
     { fifo: "/tmp/GMfifo1", total: 16, inUse: 1 },
   ]);
