@@ -230,6 +230,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("bundled CLI replaced while running", self.P(9, 0, "codex", ["/opt/codex-desktop/resources/codex", "exec"], exe="/opt/codex-desktop/resources/codex (deleted)").is_agent, True),
             ("bundled helper rides along", self.P(10, 0, "node_repl", ["/opt/codex-desktop/resources/node_repl"], exe="/opt/codex-desktop/resources/node_repl").rides_along, True),
             ("bundled helper replaced while running", self.P(11, 0, "node_repl", ["/opt/codex-desktop/resources/node_repl"], exe="/opt/codex-desktop/resources/node_repl (deleted)").rides_along, True),
+            ("agent confirmed by an exact configured executable path", self.P(14, 0, "opencode", ["opencode"], exe="/usr/bin/opencode").is_agent, True),
+            ("an executable path containing but not equal to the configured one is not confirmed", self.P(15, 0, "opencode", ["opencode-fake"], exe="/usr/bin/opencode-fake").is_agent, False),
         ]
         for name, actual, expected in rows:
             with self.subTest(name=name):

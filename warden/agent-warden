@@ -315,9 +315,6 @@ TOOL_LOCATIONS = {
     }
     for tool in AGENT_TOOLS["tools"]
 }
-# A Node or Bun process can overwrite its own title with the tool's name,
-# which erases the script path that would otherwise confirm it.
-TITLE_RUNTIMES = {"bun", "node", "nodejs"}
 # An Electron/Chromium helper process, whatever its binary is called
 CHROMIUM_CHILD_FLAG = "--type="
 DESKTOP_COMMS = {"chromium", "chrome", "electron", "ChatGPT", "slack", "spotify", "code",
@@ -562,11 +559,7 @@ class Proc:
             return True
         if self.exe in location["executables"]:
             return True
-        if self.exe.endswith(BUNDLED_CLI_SUFFIXES):
-            return True
-        return (os.path.basename(self.exe) in TITLE_RUNTIMES
-                and self.argv[:1] == [name]
-                and all(a == "" for a in self.argv[1:]))
+        return self.exe.endswith(BUNDLED_CLI_SUFFIXES)
 
     @property
     def is_agent(self):
