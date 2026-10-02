@@ -68,7 +68,7 @@ Run `vsys --help` for command options.
 
 Storage says whether a filesystem's data is damaged, and when the disk was last checked. A filesystem that nothing has checked is never shown as healthy. The error counter alone cannot tell you: it counts reads that failed, so it stays still while nothing reads the damaged part.
 
-Open a filesystem to see the files that may be damaged. Each damaged block is listed with every file name that uses it. The check names only where a 64 KiB block starts, not the damaged file, so a listed file may be sound. A read of a damaged file fails, which tells the two apart. Restore a damaged file from a backup or a snapshot.
+Open a filesystem to see the files that may be damaged. Through Linux 7.2 the check logs only where each damaged 64 KiB block starts, so each block lists the files at that start: a listed file may be sound, and the damaged file may not be listed. Restore damaged data from a backup or a snapshot.
 
 vsys deletes nothing and offers no command to delete a listed file.
 

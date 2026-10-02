@@ -22,6 +22,7 @@ import {
   percent,
   share,
 } from "./format";
+import { possibleSentence } from "./integrity";
 import { capabilityReason } from "./settings";
 
 /**
@@ -315,7 +316,7 @@ function copy(
           : `Damaged data on ${mounts}`,
         ways: [
           files
-            ? `${repaired}The check names the start of each block it could not repair, not the damaged file, so a listed file may be sound.${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}`
+            ? `${repaired}${possibleSentence}${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}`
             : unnamed
               ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.`
               : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
@@ -328,7 +329,7 @@ function copy(
             ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
             : !files
               ? "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot."
-              : "Open Storage and open the filesystem. Read each listed file: one whose read fails is damaged, so restore it from a backup or a snapshot.",
+              : "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; the files listed there may not include it.",
         view: "Storage",
         target: cause.at ?? first,
       };

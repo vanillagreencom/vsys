@@ -114,13 +114,14 @@ export function damageAdvice(group: DamagedGroup): string {
   }
 }
 /**
- * Why a listed file is possibly damaged rather than damaged, in one sentence.
- * The kernel line the reporter reads carries only the start of the block the
- * check could not repair, so no report can name the damaged file exactly, and
- * vsys offers no command to remove one.
+ * Why a listed file is possibly damaged rather than damaged, in one sentence
+ * Storage and the damage card both read. Through kernel 7.2 the line the
+ * reporter reads carries only the start of the block the check could not
+ * repair, so no report can name the damaged file exactly, and vsys offers no
+ * command to remove one.
  */
 export const possibleSentence =
-  "The check names the start of each 64 KiB block it could not repair, not the damaged file, so a file listed under a block may be sound. A read of a damaged file fails, which tells the two apart.";
+  "Through kernel 7.2 the check logs where each 64 KiB block it could not repair starts, not the damaged sector, so the files listed are the ones at that start: a listed file may be sound, and the damaged file may not be listed.";
 const sourceWords: Record<ErrorSource, string> = {
   counter: "error counter",
   "kernel-log": "kernel log",
@@ -150,7 +151,7 @@ export function loggedText(failure: CsumFailure, time: number): string {
 }
 /** What the inodes under a filesystem are, in one sentence. */
 export const loggedSentence =
-  "The kernel logged failed checksum reads in these files since the last full check. Naming a file takes root, so the next check names them.";
+  "The kernel logged failed checksum reads in these files since the last full check. Naming a file takes root, so each stays an inode here.";
 /** Why a flat counter is not a healthy disk, in one sentence. */
 export const counterSentence =
   "The counter counts reads that failed their checksum, not files. Every read of the same damaged block counts again, and a block nothing reads never counts at all.";

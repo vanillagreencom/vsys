@@ -8,6 +8,7 @@ import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
 import { osc52 } from "./clipboard";
+import { possibleSentence } from "./integrity";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { regionOf, regionRanges, storageRegions } from "./regions";
 import { reporterInstall } from "./settings";
@@ -579,7 +580,8 @@ test("a damaged filesystem lists every file each damaged address may hold", asyn
     expect(frame).toContain("/r/target/debug/bsb-c664");
     expect(frame).toContain("/home/reader/letter.txt");
     expect(frame).toContain("possibly damaged");
-    expect(frame).toContain("a file listed under a block may be sound");
+    // The sentence wraps; its opening sits whole on its first row.
+    expect(frame).toContain(possibleSentence.slice(0, 40));
     expect(frame).not.toContain("rm -f");
     expect(frame).toContain("free space or already deleted");
     // The counter is explained where it is shown, one level under the line.
@@ -605,6 +607,7 @@ test("a removed file leaves the list and the filesystem stops reading damaged", 
   try {
     await t.press("5");
     expect(t.frame()).toContain("/home/reader/letter.txt");
+    expect(t.frame()).toContain(possibleSentence.slice(0, 40));
     // The next sample carries the report with nothing left on disk under it,
     // which is what the collector produces once the reader removes the files.
     const cleared = damagedSnapshot(time + 1000);
@@ -614,6 +617,8 @@ test("a removed file leaves the list and the filesystem stops reading damaged", 
     await t.update(cleared);
     const frame = t.frame();
     expect(frame).not.toContain("/home/reader/letter.txt");
+    // With no file listed there is nothing to call possibly damaged.
+    expect(frame).not.toContain(possibleSentence.slice(0, 40));
     // The check that found nothing ran after the counter last grew, so the
     // filesystem has been read end to end since the last error.
     expect(frame).toContain("Healthy");

@@ -209,8 +209,8 @@ test("each source answers on its own, and neither makes a filesystem healthy", (
       },
     ],
     [
-      // A check that finished after the failure read past it: the report
-      // names what is still damaged, so the inode is the report's to name.
+      // A check that finished after the failure read past it, so the
+      // failure is the report's to speak for.
       "both sources, a failure the check read past",
       filesystem(),
       {

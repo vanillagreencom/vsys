@@ -15,7 +15,7 @@ Error summary:    csum=26
   Unverified:     0
 
 Damaged files: 6 damaged block addresses from the kernel log.
-Each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector, so a path listed under it may be sound.
+Through kernel 7.2 each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector: a path listed under it may be sound, and the damaged file may not be listed.
 logical 953118621696:
   /repo/target/debug/build/glib-sys/build-script-build
   /repo/target/debug/build/glib-sys/build_script_build-c664
@@ -81,7 +81,10 @@ test("the parser anchors on the address heading, not on the prose above it", () 
   const reworded = damaged
     .replace(/^btrfs scrub.*$/m, "check over, found trouble on the root disk")
     .replace(/^Damaged files:.*$/m, "Damaged files: what the kernel resolved")
-    .replace(/^Each address is.*$/m, "any of these may be the damaged one");
+    .replace(
+      /^Through kernel 7\.2 each address.*$/m,
+      "any of these may be the damaged one",
+    );
   expect(parseScrub(reworded).addresses).toEqual(parseScrub(damaged).addresses);
 });
 

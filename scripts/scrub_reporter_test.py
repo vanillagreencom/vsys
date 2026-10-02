@@ -48,7 +48,11 @@ Error summary:    no errors found
 """
 # Addresses the stubbed resolver answers for, each a different outcome.
 NAMED = 953118621696
-FREE = 1597612883968
+# Off a 64 KiB boundary: a no-extent answer here is free space.
+FREE = 1597612888064
+# On one: through kernel 7.2 the logged block start can sit in a gap before
+# the block's first extent, so a no-extent answer is not free space.
+GAP = 1597612883968
 UNMOUNTED = 1597612883969
 SPLIT = 1597612883970
 SPACED = 1597612883971
@@ -141,6 +145,7 @@ class ReporterTest(unittest.TestCase):
         held(NAMED, first)
         (names / str(NAMED)).write_text(f"{fs}/target/build-script-build\n{fs}/target/bsb-c664\n")
         (refs / f"{FREE}.err").write_text("ERROR: logical ino ioctl: No such file or directory\n")
+        (refs / f"{GAP}.err").write_text("ERROR: logical ino ioctl: No such file or directory\n")
         held(UNMOUNTED, first)
         (names / str(UNMOUNTED)).write_text("inode 300 subvol snapshots/1 could not be accessed: not mounted\n")
         held(SPLIT, split)
@@ -196,7 +201,7 @@ esac
         return done, reports / "-.result"
 
     def test_each_address_lists_only_names_proved_to_be_of_its_damage(self) -> None:
-        kernel = "\n".join(fixup("vsys-test-a", a) for a in (FREE, NAMED, UNMOUNTED, SPLIT, NAMED))
+        kernel = "\n".join(fixup("vsys-test-a", a) for a in (FREE, GAP, NAMED, UNMOUNTED, SPLIT, NAMED))
         # The same report from a kernel that prefixes the words with `scrub: `.
         kernel += "\n" + "\n".join(scrub_fixup("vsys-test-a", a) for a in (SPACED, UNNAMED, STDERR))
         # Another filesystem's address, logged inside this scrub's window.
@@ -216,7 +221,9 @@ esac
                 read["addresses"],
                 [
                     {"logical": NAMED, "paths": [f"{fs}/target/bsb-c664", f"{fs}/target/build-script-build"]},
-                    {"logical": FREE, "paths": []},
+                    # No extent at a 64 KiB block start is damage the report
+                    # cannot name, never free space.
+                    {"logical": GAP, "paths": [], "resolved": False},
                     # Unresolved, never free space: a snapshot not mounted, and
                     # a name btrfs split in two whose halves are healthy files.
                     {"logical": UNMOUNTED, "paths": [], "resolved": False},
@@ -228,8 +235,13 @@ esac
                     {"logical": UNNAMED, "paths": [], "resolved": False},
                     # btrfs failed to name an inode on stderr and exited 0.
                     {"logical": STDERR, "paths": [], "resolved": False},
+                    {"logical": FREE, "paths": []},
                 ],
             )
+            lines = report.read_text().splitlines()
+            gap = lines[lines.index(f"logical {GAP}:") + 1]
+            self.assertTrue(gap.startswith("  (not resolved"), gap)
+            self.assertEqual(lines[lines.index(f"logical {FREE}:") + 1], "  (no file: free space, or already deleted)")
             self.assertNotIn(f"{fs}/target/victim \n", report.read_text())
             self.assertNotIn(str(OTHER_FS), report.read_text())
             # btrfs's own reason stays in the report for the reader.

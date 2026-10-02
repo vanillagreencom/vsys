@@ -1,1 +1,1 @@
-- Storage says whether a filesystem's data is damaged, lists the files each damaged block may hold, and says when the disk was last checked. An unchecked one never reads healthy.
+- Storage says whether a filesystem's data is damaged, lists the files at the start of each damaged block, and says when the disk was last checked. An unchecked one never reads healthy.

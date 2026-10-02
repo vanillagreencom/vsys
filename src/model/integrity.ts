@@ -54,10 +54,11 @@ export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
  */
 export type DamageKind = "files" | "none" | "unresolved";
 /**
- * One damaged block address as the screen groups it. The address is the start
- * of the 64 KiB block the check could not repair, not the damaged sector, so
- * every path under it is possibly damaged rather than proven so, and one
- * extent under two names lists both.
+ * One damaged block address as the screen groups it. Through kernel 7.2 the
+ * address is the start of the 64 KiB block the check could not repair, not
+ * the damaged sector, so every path under it is possibly damaged rather than
+ * proven so, the damaged file may not be under it, and one extent under two
+ * names lists both.
  */
 export interface DamagedGroup {
   logical: number;
@@ -107,8 +108,7 @@ export interface Integrity {
   /**
    * The inodes the kernel logged a failed read in since the last finished
    * check, newest first. A check that finished later read the filesystem end
-   * to end and named what is still damaged, so an older failure is its to
-   * report.
+   * to end, so an older failure is its to report.
    */
   logged: CsumFailure[];
   /** False where the record of past growth could not be read at all. */
