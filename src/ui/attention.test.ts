@@ -543,6 +543,48 @@ test("the memory-reclaim card carries the scope its own text names", () => {
   expect(said(memory)).not.toContain(".scope");
 });
 
+test("the desktop-swap card drops the agents.slice command and step where no agent slice exists", () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const swapCard = () =>
+    attention(s, c, { basePath: base }).find(
+      (item) => item.id === "desktop-swap",
+    );
+  // With the slice present, the card still reads and caps agents.slice.
+  const present = swapCard();
+  expect(present?.command).toBe(
+    `cat ${c.cgroupRoot}/${c.agentSlice}/memory.stat`,
+  );
+  expect(present?.next).toBe(
+    "Reduce concurrent build work, or cap the agent slice memory so the desktop keeps its pages.",
+  );
+  // With no slice, the command is gone and the step names the agent lanes
+  // holding the swap instead of the nonexistent slice.
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "agent-slice"
+      ? { ...cap, available: false, failure: "absent" as const }
+      : cap,
+  );
+  // A memory-capped group can produce a lane with no tool at all (a bare
+  // scope, not an agent). The step names agent lanes only, so this one
+  // must not appear alongside them.
+  s.lanes = [
+    ...s.lanes,
+    laneSnapshot({ id: "bare.scope", name: "idle", tool: "", pids: [99] }),
+  ];
+  const absent = swapCard();
+  expect(absent?.command).toBeUndefined();
+  expect(absent?.next).toBe(
+    "Reduce concurrent build work, or check escaped PID 40, capped PID 40, writer PID 40 for the memory holding the desktop's pages.",
+  );
+  expect(absent?.next).not.toContain("idle");
+  // No lane left to name falls back to a step naming no slice at all.
+  s.lanes = [];
+  expect(swapCard()?.next).toBe(
+    "Reduce concurrent build work so the desktop keeps its pages.",
+  );
+});
+
 const escapedFleet = (lanes: number, perLane = 1) =>
   escapedSnapshot({ lanes, perLane });
 

@@ -159,6 +159,10 @@ export function sliceSum(
     ? roots.reduce((sum, g) => sum + (pick(g) ?? 0), 0)
     : null;
 }
+/** A lane running a configured agent tool, the one definition of "agent lane". */
+export function agentLanes(lanes: Lane[]): Lane[] {
+  return lanes.filter((l) => l.tool !== "");
+}
 /**
  * What agents use of one reading. Where the agent slice is compared it holds
  * every agent, so its own counter is the total. Where the probe found no slice
@@ -177,7 +181,7 @@ export function agentTotal(
       reading === "cpu" ? g.cpuPercent : g.cache,
     );
   if (s.errors.some((e) => omittedProcess(e.source, c.procRoot))) return null;
-  const agents = s.lanes.filter((l) => l.tool !== "");
+  const agents = agentLanes(s.lanes);
   return agents.every((l) => l[reading] !== null)
     ? agents.reduce((sum, l) => sum + (l[reading] ?? 0), 0)
     : null;
