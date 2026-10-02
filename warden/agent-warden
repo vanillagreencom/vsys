@@ -743,15 +743,25 @@ def scope_still_orphan(unit, managers):
 
 
 def scope_units():
-    """Every scope unit directly under agents.slice, with its pids.max."""
-    out = {}
+    """Every scope unit directly under agents.slice, with its pids.max, or
+    None when the directory itself could not be listed. A scope that stops
+    between entries is skipped for that entry alone -- a vanished scope never
+    discards every other scope the scan already read -- but a failure to
+    list agents.slice at all is reported as None, distinct from a genuinely
+    empty slice: a caller that would otherwise read "no scopes" as "every
+    scope is gone" (reap_scratch_dirs) must refuse on None instead."""
     base = CG_ROOT / SLICE
     try:
-        for d in base.iterdir():
+        entries = list(base.iterdir())
+    except OSError:
+        return None
+    out = {}
+    for d in entries:
+        try:
             if d.is_dir() and d.name.endswith(".scope"):
                 out[d.name] = (read(d / "pids.max", "") or "").strip()
-    except OSError:
-        pass
+        except OSError:
+            continue
     return out
 
 
@@ -759,6 +769,13 @@ def scope_units():
 # value it passes to systemd-run (no ".scope" suffix): see the launcher's
 # scope-creating exec.
 SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
+# agent-confine creates a lane's scratch directory, then execs systemd-run to
+# register its scope: a tick landing in that gap would see no matching scope
+# yet and reap a directory the lane is about to use. Mirrors ORPHAN_GRACE's
+# purpose (protect a startup-timing window from being read as "gone") at a
+# much shorter bound, since this window is one exec call wide rather than a
+# whole abandoned session.
+SCRATCH_GRACE = float(os.environ.get("AGENT_WARDEN_SCRATCH_GRACE", "60"))
 
 
 def reap_scratch_dirs(correct):
@@ -773,7 +790,12 @@ def reap_scratch_dirs(correct):
         entries = os.listdir(AGENT_TMPDIR_PARENT)
     except OSError:
         return []
-    live_units = set(scope_units())
+    live_units = scope_units()
+    if live_units is None:
+        log("scratch reap: agents.slice scope list unreadable; not reaping this tick")
+        return []
+    live_units = set(live_units)
+    now = time.time()
     removed = []
     for name in sorted(entries):
         if not SCRATCH_UNIT_RE.match(name):
@@ -781,6 +803,14 @@ def reap_scratch_dirs(correct):
         if f"{name}.scope" in live_units:
             continue
         path = os.path.join(AGENT_TMPDIR_PARENT, name)
+        try:
+            age = now - os.stat(path).st_mtime
+        except OSError:
+            continue
+        if age < SCRATCH_GRACE:
+            log(f"scratch {name}: scope not listed but only {int(age)}s old "
+                f"(< {int(SCRATCH_GRACE)}s grace); not reaping yet")
+            continue
         if not os.path.isdir(path):
             continue
         if not correct:
@@ -815,7 +845,11 @@ def enforce_task_caps(correct):
     still fill the slice inside one 30 s tick. Returns the units capped."""
     ceiling = slice_tasks_max()
     capped = []
-    for unit, cur in scope_units().items():
+    units = scope_units()
+    if units is None:
+        log("task caps: agents.slice scope list unreadable; not capping this tick")
+        return capped
+    for unit, cur in units.items():
         try:
             unbounded = cur == "max" or int(cur) >= ceiling
         except ValueError:

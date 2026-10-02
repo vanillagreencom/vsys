@@ -146,7 +146,14 @@ if command -v systemd-run >/dev/null 2>&1 &&
 	# since this launcher execs below and cannot run code after that.
 	agent_confine_unit="agent-confine-$$-${RANDOM}"
 	agent_confine_scratch="$AGENT_EFFECTIVE_TMPDIR/$agent_confine_unit"
-	if mkdir -p -m 700 -- "$agent_confine_scratch" 2>/dev/null && [ -d "$agent_confine_scratch" ] && [ -w "$agent_confine_scratch" ]; then
+	# Plain mkdir (no -p) for the leaf: -p succeeds silently on a directory
+	# that already exists, which would hand a $$/$RANDOM collision a
+	# pre-existing directory instead of failing, reusing scratch between two
+	# unrelated lanes exactly as this issue fixes for the shared-TMPDIR case.
+	# -p stays for the parent, which every lane legitimately shares.
+	if mkdir -p -m 700 -- "$AGENT_EFFECTIVE_TMPDIR" 2>/dev/null &&
+		mkdir -m 700 -- "$agent_confine_scratch" 2>/dev/null &&
+		[ -d "$agent_confine_scratch" ] && [ -w "$agent_confine_scratch" ]; then
 		CAPS+=("TMPDIR=$agent_confine_scratch")
 	else
 		echo "agent-confine: TMPDIR unavailable at $agent_confine_scratch; keeping inherited TMPDIR" >&2

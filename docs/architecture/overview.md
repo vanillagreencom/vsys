@@ -80,6 +80,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [ui.md](ui.md): read when changing the shell, colour, columns, regions, row expansions, cut marks, or what the reader can act on.
 - [ui-screens.md](ui-screens.md): read when changing Home's cards, Storage's integrity rows, or the Agents list and agent detail.
 - [warden.md](warden.md): read when changing the optional process-placement corrector under `warden/`.
+- [warden-notifications.md](warden-notifications.md): read when changing warden desktop notices, the episode-based fallback notifier or `--status`.
 - [warden-install.md](warden-install.md): read when changing `vsys warden install`, `warden/install` or the warden unit templates.
 - [warden-status.md](warden-status.md): read when changing the warden status file or its fixtures.
 
