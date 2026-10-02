@@ -304,6 +304,7 @@ function copy(
       const files = v.files ?? 0;
       const other = v.other ?? 0;
       const build = v.build ?? 0;
+      const unnamed = v.unnamed ?? 0;
       // A block count vsys did not read is left out rather than shown as zero.
       const repaired =
         v.blocks === null || v.blocks === undefined
@@ -312,21 +313,26 @@ function copy(
       return {
         word: "Danger",
         title: files
-          ? `Damaged files on ${mounts}: ${count(files, "file")}${other ? "" : ", all build output"}`
+          ? `Damaged files on ${mounts}: ${count(files, "file")}${other || unnamed ? "" : ", all build output"}`
           : `Damaged data on ${mounts}`,
         ways: [
           files
-            ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.`
-            : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+            ? `${repaired}${count(build, "address")} hold build output a rebuild replaces${other ? `, and ${count(other, "address")} hold data only a backup or a snapshot restores` : ""}.${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}`
+            : unnamed
+              ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.`
+              : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
         ],
         // The step never says to delete everything listed: an address holding
         // data a rebuild cannot replace is restored, not removed, and a card
         // that blurs the two invites the reader to delete their own files.
-        next: !files
-          ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
-          : other || v.changed
-            ? "Open Storage and open the filesystem. Delete only the addresses it marks as build output, and leave the rest to a backup or a snapshot."
-            : "Open Storage, open the filesystem, and delete every path listed under each damaged address before rebuilding.",
+        next:
+          !files && !unnamed
+            ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
+            : !files
+              ? "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot."
+              : other || v.changed || unnamed
+                ? "Open Storage and open the filesystem. Delete only the addresses it marks as build output, and leave the rest to a backup or a snapshot."
+                : "Open Storage, open the filesystem, and delete every path listed under each damaged address before rebuilding.",
         view: "Storage",
         target: cause.at ?? first,
       };

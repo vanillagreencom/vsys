@@ -1,19 +1,23 @@
 """The scrub reporter vsys ships, run against stub system commands.
 
-The report is a text protocol: src/collect/scrub.ts reads its `UUID:` and
-`Status:` fields, the `Damaged files:` heading, each `logical <address>:`
-heading and the two-space-indented paths under it. These tests pin what the
-reporter writes against that reader, and what the installer puts where.
+The report is a text protocol, and src/collect/scrub.ts is its reader: each
+reporter case parses the report it wrote with that parser, through Bun. The
+installer cases check what it puts where, and what it refuses.
 """
 
 from __future__ import annotations
 
+import calendar
+import json
 import os
 from pathlib import Path
+import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -21,25 +25,37 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 REPORTER = ROOT / "scripts" / "scrub-reporter"
 SCRATCH_ROOT = ROOT / "tmp" / "scrub-reporter-tests"
+UUID = "2ff9dd6d-c928-4458-9444-bffb6c01eacb"
+STARTED = "Mon Sep 28 04:56:49 2026"
 
-STATUS_FOUND = """UUID:             2ff9dd6d-c928-4458-9444-bffb6c01eacb
-Scrub started:    Mon Sep 28 04:56:49 2026
-Status:           finished
+
+def status(state: str = "finished", errors: str = "csum=4", uncorrectable: int = 4, started: str = STARTED) -> str:
+    return f"""UUID:             {UUID}
+Scrub started:    {started}
+Status:           {state}
 Duration:         0:00:54
-Error summary:    csum=3
+Error summary:    {errors}
   Corrected:      0
-  Uncorrectable:  3
+  Uncorrectable:  {uncorrectable}
   Unverified:     0
 """
-STATUS_CLEAN = """UUID:             2ff9dd6d-c928-4458-9444-bffb6c01eacb
-Scrub started:    Mon Sep 28 04:56:49 2026
+
+
+STATUS_CLEAN = f"""UUID:             {UUID}
+Scrub started:    {STARTED}
 Status:           finished
 Error summary:    no errors found
 """
-KERNEL = """Sep 28 04:57:01 host kernel: BTRFS error (device dm-0): unable to fixup (regular) error at logical 953118621696 on dev /dev/dm-0 physical 1
-Sep 28 04:57:02 host kernel: BTRFS error (device dm-0): unable to fixup (regular) error at logical 1597612883968 on dev /dev/dm-0 physical 2
-Sep 28 04:57:03 host kernel: BTRFS error (device dm-0): unable to fixup (regular) error at logical 953118621696 on dev /dev/dm-0 physical 1
-"""
+# Addresses the stubbed resolver answers for, each a different outcome.
+NAMED = 953118621696
+FREE = 1597612883968
+UNMOUNTED = 1597612883969
+SPLIT = 1597612883970
+OTHER_FS = 5555
+
+
+def fixup(device: str, address: int) -> str:
+    return f"Sep 28 04:57:01 host kernel: BTRFS error (device {device} state M): unable to fixup (regular) error at logical {address} on dev /dev/{device} physical 1"
 
 
 def scratch() -> tempfile.TemporaryDirectory[str]:
@@ -53,98 +69,198 @@ def stub(bin_dir: Path, name: str, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def child_env(bin_dir: Path) -> dict[str, str]:
+def child_env(bin_dir: Path, **extra: str) -> dict[str, str]:
     """The child's whole environment: stubs first, then the system tools."""
-    return {"PATH": f"{bin_dir}:/usr/bin:/bin", "LC_ALL": "C"}
+    return {"PATH": f"{bin_dir}:/usr/bin:/bin", "LC_ALL": "C", **extra}
+
+
+def bun() -> str:
+    found = ROOT / "node_modules" / ".bin" / "bun"
+    path = str(found) if found.exists() else shutil.which("bun")
+    if path is None:
+        raise AssertionError("bun=missing: the report is parsed with vsys's own parser, which runs on Bun")
+    return path
+
+
+def parse(report: Path, home: Path) -> dict:
+    """The report as vsys reads it."""
+    done = subprocess.run(
+        [bun(), "-e", "import { parseScrub } from './src/collect/scrub.ts'; console.log(JSON.stringify(parseScrub(await Bun.file(process.env.REPORT).text())));"],
+        cwd=ROOT,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(home), "TZ": "UTC", "REPORT": str(report)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(done.stdout)
 
 
 class ReporterTest(unittest.TestCase):
-    def run_reporter(self, base: Path, status: str, kernel: str | None) -> tuple[subprocess.CompletedProcess[str], Path]:
+    def fixture(self, base: Path, status_text: str, kernel: str | None) -> Path:
+        """Stub btrfs, journalctl and systemd-escape, and a filesystem of real files."""
         bin_dir = base / "bin"
         bin_dir.mkdir()
-        (base / "status").write_text(status)
+        (base / "status").write_text(status_text)
+        fs = base / "fs"
+        (fs / "target").mkdir(parents=True)
+        first = fs / "target" / "build-script-build"
+        first.write_text("x")
+        # Two names of one damaged extent: the second is a hard link.
+        os.link(first, fs / "target" / "bsb-c664")
+        # A directory whose name ends in a newline holds the damaged file, so
+        # btrfs prints its one name as two lines, and both lines name real,
+        # healthy files.
+        split = fs / "target" / "evil\n" / fs.relative_to("/") / "target" / "victim"
+        split.parent.mkdir(parents=True)
+        split.write_text("damaged")
+        (fs / "target" / "evil").write_text("healthy")
+        (fs / "target" / "victim").write_text("healthy")
+        refs = base / "refs"
+        names = base / "names"
+        refs.mkdir()
+        names.mkdir()
+
+        def held(address: int, *paths: Path) -> None:
+            (refs / str(address)).write_text("".join(f"inode {os.stat(p).st_ino} offset 0 root 5\n" for p in paths))
+
+        held(NAMED, first)
+        (names / str(NAMED)).write_text(f"{fs}/target/build-script-build\n{fs}/target/bsb-c664\n")
+        (refs / f"{FREE}.err").write_text("ERROR: logical ino ioctl: No such file or directory\n")
+        held(UNMOUNTED, first)
+        (names / str(UNMOUNTED)).write_text("inode 300 subvol snapshots/1 could not be accessed: not mounted\n")
+        held(SPLIT, split)
+        (names / str(SPLIT)).write_text(f"{split}\n")
         stub(bin_dir, "systemd-escape", 'echo "-"\n')
-        # None is a kernel log this user cannot read.
         if kernel is None:
             stub(bin_dir, "journalctl", "echo 'No journal files were found.' >&2\nexit 1\n")
         else:
             (base / "kernel").write_text(kernel)
-            stub(bin_dir, "journalctl", f'cat "{base}/kernel"\n')
-        # Two names for the first address, none for the second: one extent can
-        # carry several names, and an address can resolve to free space.
+            stub(bin_dir, "journalctl", f'printf "%s\\n" "$@" > "{base}/journalctl.args"\ncat "{base}/kernel"\n')
         stub(
             bin_dir,
             "btrfs",
             f"""case "$1 $2" in
 "scrub status") cat "{base}/status" ;;
+"device stats") printf '%s\\n' '[/dev/vsys-test-a].write_io_errs    0' '[/dev/vsys-test-a].corruption_errs  4' ;;
+"inspect-internal rootid") echo 5 ;;
 "inspect-internal logical-resolve")
-	case "$4" in
-	953118621696) printf '%s\\n' /r/target/debug/build-script-build /r/target/debug/bsb-c664 ;;
-	esac ;;
+	ls -A "{base}/reports" >> "{base}/listing"
+	if [[ $3 == -P ]]; then table={refs}; address=$5; else table={names}; address=$4; fi
+	if [[ -f $table/$address.stop ]]; then kill -TERM 0; sleep 5; fi
+	if [[ -f $table/$address.err ]]; then cat "$table/$address.err" >&2; exit 1; fi
+	if [[ -f $table/$address ]]; then cat "$table/$address"; fi ;;
 *) exit 2 ;;
 esac
 """,
         )
+        return bin_dir
+
+    def run_reporter(self, base: Path, status_text: str, kernel: str | None, **env: str) -> tuple[subprocess.CompletedProcess[str], Path]:
+        bin_dir = base / "bin" if (base / "bin").exists() else self.fixture(base, status_text, kernel)
         reports = base / "reports"
         done = subprocess.run(
-            ["bash", str(REPORTER / "btrfs-scrub-report"), "/", str(reports)],
-            env=child_env(bin_dir),
+            ["bash", str(REPORTER / "vsys-scrub-report"), "/", str(reports)],
+            env=child_env(bin_dir, **env),
             capture_output=True,
             text=True,
             check=False,
+            start_new_session=True,
         )
         return done, reports / "-.result"
 
-    def test_a_scrub_that_found_damage_names_every_path_under_each_address(self) -> None:
+    def test_each_address_lists_only_names_proved_to_be_of_its_damage(self) -> None:
+        kernel = "\n".join(fixup("vsys-test-a", a) for a in (FREE, NAMED, UNMOUNTED, SPLIT, NAMED))
+        # Another filesystem's address, logged inside this scrub's window.
+        kernel += "\n" + fixup("vsys-test-b", OTHER_FS) + "\n"
         with scratch() as tmp:
-            done, report = self.run_reporter(Path(tmp), STATUS_FOUND, KERNEL)
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=6), kernel)
             self.assertEqual(done.returncode, 0, done.stderr)
-            lines = report.read_text().splitlines()
-            self.assertIn("UUID:             2ff9dd6d-c928-4458-9444-bffb6c01eacb", lines)
-            self.assertIn("Status:           finished", lines)
-            self.assertIn("  Uncorrectable:  3", lines)
-            section = lines.index(next(line for line in lines if line.startswith("Damaged files:")))
-            # Each address once, in order, with every name under it.
+            fs = base / "fs"
+            read = parse(report, base)
+            self.assertEqual(read["uuid"], UUID)
+            self.assertEqual(read["status"], "finished")
+            self.assertEqual(read["uncorrectable"], 6)
+            self.assertEqual(read["corrected"], 0)
+            self.assertEqual(read["startedAt"], calendar.timegm(time.strptime(STARTED, "%a %b %d %H:%M:%S %Y")) * 1000)
             self.assertEqual(
-                [line for line in lines[section:] if line.startswith("logical ") or line.startswith("  ")],
+                read["addresses"],
                 [
-                    "logical 953118621696:",
-                    "  /r/target/debug/bsb-c664",
-                    "  /r/target/debug/build-script-build",
-                    "logical 1597612883968:",
-                    "  (no file: free space, or already deleted)",
+                    {"logical": NAMED, "paths": [f"{fs}/target/bsb-c664", f"{fs}/target/build-script-build"]},
+                    {"logical": FREE, "paths": []},
+                    # Unresolved, never free space: a snapshot not mounted, and
+                    # a name btrfs split in two whose halves are healthy files.
+                    {"logical": UNMOUNTED, "paths": [], "resolved": False},
+                    {"logical": SPLIT, "paths": [], "resolved": False},
                 ],
             )
-            self.assertFalse(report.with_suffix(".result.tmp").exists())
+            self.assertNotIn(str(OTHER_FS), report.read_text())
+            # btrfs's own reason stays in the report for the reader.
+            self.assertIn("  (not resolved: inode 300 subvol snapshots/1 could not be accessed: not mounted)", report.read_text().splitlines())
+            # The search starts when the scrub started.
+            args = (base / "journalctl.args").read_text().splitlines()
+            self.assertEqual(args[args.index("--since") + 1], "2026-09-28 04:56:49")
+            # While it resolved, only a hidden file stood in the report directory.
+            self.assertEqual(set((base / "listing").read_text().split()), {".-.result.tmp"})
+            self.assertEqual(sorted(os.listdir(base / "reports")), ["-.result"])
+
+    def test_a_start_time_that_does_not_parse_searches_the_last_hour(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, _ = self.run_reporter(base, status(started="sometime"), fixup("vsys-test-a", NAMED))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            args = (base / "journalctl.args").read_text().splitlines()
+            self.assertEqual(args[args.index("--since") + 1], "-1h")
+
+    def test_addresses_past_the_limit_are_counted_not_resolved(self) -> None:
+        kernel = "\n".join(fixup("vsys-test-a", a) for a in (NAMED, FREE))
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(), kernel, BTRFS_SCRUB_MAX_ADDRESSES="1")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual([a["logical"] for a in parse(report, base)["addresses"]], [NAMED])
+            self.assertIn("(1 more addresses not resolved; raise BTRFS_SCRUB_MAX_ADDRESSES)", report.read_text().splitlines())
 
     def test_a_clean_scrub_writes_no_damaged_file_section(self) -> None:
         with scratch() as tmp:
-            done, report = self.run_reporter(Path(tmp), STATUS_CLEAN, KERNEL)
+            done, report = self.run_reporter(Path(tmp), STATUS_CLEAN, "")
             self.assertEqual(done.returncode, 0, done.stderr)
-            text = report.read_text()
-            self.assertTrue(text.startswith("btrfs scrub finished, no errors: /\n"))
-            self.assertIn("Error summary:    no errors found", text)
-            self.assertNotIn("Damaged files:", text)
+            self.assertTrue(report.read_text().startswith("btrfs scrub finished, no errors: /\n"))
+            self.assertIsNone(parse(report, Path(tmp))["addresses"])
+
+    def test_a_scrub_that_stopped_early_is_not_called_finished(self) -> None:
+        with scratch() as tmp:
+            done, report = self.run_reporter(Path(tmp), status(state="aborted", errors="no errors found"), "")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(report.read_text().splitlines()[0], "btrfs scrub did not complete (aborted): /")
 
     def test_a_scrub_the_kernel_logged_no_address_for_says_so(self) -> None:
         with scratch() as tmp:
-            done, report = self.run_reporter(Path(tmp), STATUS_FOUND, "")
+            done, report = self.run_reporter(Path(tmp), status(), "")
             self.assertEqual(done.returncode, 0, done.stderr)
-            lines = report.read_text().splitlines()
-            self.assertIn("Damaged files: no unfixable address in the kernel log for this run.", lines)
-            self.assertFalse(any(line.startswith("logical ") for line in lines))
-
+            self.assertEqual(parse(report, Path(tmp))["addresses"], [])
 
     def test_an_unreadable_kernel_log_names_no_files_rather_than_none(self) -> None:
         # A section listing no address reads to vsys as a scrub that found no
         # damaged file, so a log the reporter could not read writes none.
         with scratch() as tmp:
-            done, report = self.run_reporter(Path(tmp), STATUS_FOUND, None)
+            done, report = self.run_reporter(Path(tmp), status(), None)
             self.assertEqual(done.returncode, 0, done.stderr)
-            text = report.read_text()
-            self.assertIn("Status:           finished", text)
-            self.assertNotIn("Damaged files:", text)
-            self.assertIn("No journal files were found.", text)
+            self.assertIsNone(parse(report, Path(tmp))["addresses"])
+            self.assertIn("No journal files were found.", report.read_text())
+
+    def test_a_run_stopped_while_resolving_leaves_no_file_vsys_reads(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            self.fixture(base, status(), fixup("vsys-test-a", NAMED))
+            (base / "reports").mkdir()
+            (base / "reports" / "-.result").write_text("last month's report\n")
+            (base / "refs" / f"{NAMED}.stop").write_text("")
+            done, report = self.run_reporter(base, "", "")
+            self.assertEqual(done.returncode, 128 + signal.SIGTERM, done.stderr)
+            # The last complete report stands, and nothing half written is left.
+            self.assertEqual(os.listdir(base / "reports"), ["-.result"])
+            self.assertEqual(report.read_text(), "last month's report\n")
 
 
 class InstallTest(unittest.TestCase):
@@ -185,7 +301,7 @@ cp "{REPORTER}/$name" "$4"
             self.assertEqual(
                 [(call[1], Path(call[2]).name, call[3]) for call in installs],
                 [
-                    ("-Dm755", "btrfs-scrub-report", "/usr/local/bin/btrfs-scrub-report"),
+                    ("-Dm755", "vsys-scrub-report", "/usr/local/bin/vsys-scrub-report"),
                     ("-Dm644", "vsys-report.conf", "/etc/systemd/system/btrfs-scrub@.service.d/vsys-report.conf"),
                     ("-Dm644", "vsys-scrub.conf", "/etc/tmpfiles.d/vsys-scrub.conf"),
                 ],
@@ -216,7 +332,7 @@ class ShippedFilesTest(unittest.TestCase):
         drop_in = (REPORTER / "vsys-report.conf").read_text()
         tmpfiles = (REPORTER / "vsys-scrub.conf").read_text()
         exec_line = next(line for line in drop_in.splitlines() if line.startswith("ExecStopPost="))
-        self.assertEqual(exec_line, "ExecStopPost=/usr/local/bin/btrfs-scrub-report %f /run/btrfs-scrub")
+        self.assertEqual(exec_line, "ExecStopPost=/usr/local/bin/vsys-scrub-report %f /run/btrfs-scrub")
         rule = next(line for line in tmpfiles.splitlines() if line and not line.startswith("#"))
         self.assertEqual(rule.split()[:2], ["d", "/run/btrfs-scrub"])
         config = (ROOT / "src" / "config" / "config.ts").read_text()

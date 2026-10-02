@@ -12,6 +12,7 @@ import {
   loggedText,
   noDamageText,
   rebuildCommand,
+  unnamedText,
 } from "./integrity";
 
 const day = 86400000;
@@ -132,25 +133,55 @@ test("no words but Healthy say the filesystem was checked and found sound", () =
 });
 
 test("the damaged-file headline counts files and says when a rebuild fixes it", () => {
-  const build = state([
-    report({
-      problem: true,
-      uncorrectable: 26,
-      addresses: [
-        { logical: 1, paths: ["/r/target/a", "/r/target/b"] },
-        { logical: 2, paths: ["/r/target/c"] },
-      ],
-    }),
-  ]);
+  const addresses = [
+    { logical: 1, paths: ["/r/target/a", "/r/target/b"] },
+    { logical: 2, paths: ["/r/target/c"] },
+  ];
+  const build = state([report({ problem: true, uncorrectable: 2, addresses })]);
   expect(integrityWords(build)).toBe(
     "Damaged files found: 3 files, all build output",
+  );
+  // The check counted more blocks than the report names, so the build output
+  // listed is not all of the damage, and the headline does not say it is.
+  const partial = state([
+    report({ problem: true, uncorrectable: 26, addresses }),
+  ]);
+  expect(integrityWords(partial)).toBe(
+    "Damaged files found: 3 files, 24 blocks unnamed",
+  );
+  expect(unnamedText(partial)).toBe(
+    "The check counted 24 more damaged blocks than its report names, so the files above are not all of the damage.",
+  );
+  expect(unnamedText(build)).toBeUndefined();
+  // An address the reporter could not name is unnamed damage too.
+  const unresolved = state([
+    report({
+      problem: true,
+      uncorrectable: 3,
+      addresses: [...addresses, { logical: 3, paths: [], resolved: false }],
+    }),
+  ]);
+  expect(integrityWords(unresolved)).toBe(
+    "Damaged files found: 3 files, 1 block unnamed",
+  );
+  expect(damageAdvice(unresolved.groups[2])).toBe(
+    "its files could not be named, so nothing is offered to delete",
+  );
+  expect(deleteCommand(unresolved.groups[2])).toBeUndefined();
+  // A report naming no address under a counted block names none of them,
+  // which is not a filesystem with nothing left.
+  const none = state([
+    report({ problem: true, uncorrectable: 3, addresses: [] }),
+  ]);
+  expect(noDamageText(none)).toBe(
+    "The check counted 3 damaged blocks and its report names none of them, so no file is offered.",
   );
   // One file outside build output and the claim is withdrawn, because a
   // rebuild does not replace it.
   const mixed = state([
     report({
       problem: true,
-      uncorrectable: 26,
+      uncorrectable: 2,
       addresses: [
         { logical: 1, paths: ["/r/target/a"] },
         { logical: 2, paths: ["/home/r/letter.txt"] },

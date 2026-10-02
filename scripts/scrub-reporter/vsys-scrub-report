@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Write the outcome of one Btrfs scrub as the report vsys reads.
+#
+#   vsys-scrub-report MOUNT DIR
+#
+# btrfs-scrub@.service runs this as root after every scrub, through the
+# vsys-report.conf drop-in, and it writes DIR/<escaped MOUNT>.result: a summary
+# line, then `btrfs scrub status`, then the files the scrub found damaged.
+# Naming those files needs root, which is why vsys cannot do it itself.
+# docs/architecture/storage-integrity.md holds the format vsys parses.
+#
+# Environment:
+#   BTRFS_SCRUB_MAX_ADDRESSES  Damaged addresses resolved to files (default 64).
+set -euo pipefail
+# btrfs's own diagnostics are matched below, so they must be in English.
+export LC_ALL=C
+
+mnt=${1:?mount point}
+dir=${2:?report directory}
+name=$(systemd-escape --path "$mnt").result
+out=$dir/$name
+# The report is written under a hidden name and renamed whole. vsys reads no
+# hidden file, so it never reads a report half written, and a run stopped
+# part way leaves nothing it would read.
+tmp=$dir/.$name.tmp
+work=""
+cleanup() {
+	rm -f -- "$tmp"
+	if [[ -n $work ]]; then rm -rf -- "${work:?}"; fi
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+work=$(mktemp -d)
+mkdir -p "$dir"
+
+field() {
+	sed -n "/^$1: */{s///p;q}" <<<"$status"
+}
+# A status that failed still leaves a report: btrfs's own words go into it,
+# and the summary says the scrub did not complete.
+status=$(btrfs scrub status "$mnt" 2>&1) || true
+if ! errors=$(field "Error summary") || ! state=$(field "Status") || ! uuid=$(field "UUID"); then
+	echo "vsys-scrub-report: parse=failed mount=$mnt" >&2
+	exit 1
+fi
+result=${SERVICE_RESULT:-unknown}
+# btrfs scrub exits 3 when it finds errors, so a finished pass with checksum
+# errors shows as SERVICE_RESULT=exit-code; that is a result, not a failure.
+# Only `Status: finished` says the filesystem was read end to end.
+if [[ $state == finished && $errors == "no errors found" ]]; then
+	summary="btrfs scrub finished, no errors: $mnt"
+elif [[ $state == finished && -n $errors ]]; then
+	summary="btrfs scrub finished, ${errors} (uncorrectable is normal on a single drive): $mnt"
+else
+	summary="btrfs scrub did not complete (${state:-$result}): $mnt"
+fi
+{
+	echo "$summary"
+	echo "$status"
+} >"$tmp"
+
+finish() {
+	mv -- "$tmp" "$out"
+	echo "$summary"
+	exit 0
+}
+# A reading this cannot take names no file. A `Damaged files:` section listing
+# no address would tell vsys the scrub found no damaged file, so the report
+# carries a sentence instead, which names no files without claiming none.
+unnamed() {
+	printf '\nThe damaged files are not named: %s\n' "$1" >>"$tmp"
+	finish
+}
+if [[ -z $errors || $errors == "no errors found" ]]; then
+	finish
+fi
+
+# The devices of this filesystem, by the name the kernel prints for each. A
+# logical address means something on one filesystem only, and every Btrfs
+# filesystem on the machine writes to one kernel log.
+declare -A devices=()
+if ! stats=$(btrfs device stats "$mnt" 2>&1); then
+	unnamed "btrfs device stats failed: ${stats//$'\n'/; }"
+fi
+while IFS= read -r line; do
+	if [[ $line =~ ^\[(/[^]]+)\]\. ]] && device=$(readlink -f -- "${BASH_REMATCH[1]}"); then
+		devices[${device##*/}]=1
+	fi
+done <<<"$stats"
+if ((${#devices[@]} == 0)); then
+	unnamed "btrfs device stats named no device of $uuid"
+fi
+
+# A start time that does not parse searches the last hour instead.
+if ! since=$(date -d "$(field "Scrub started")" '+%Y-%m-%d %H:%M:%S' 2>/dev/null); then
+	since="-1h"
+fi
+if ! kernel=$(journalctl -k --since "$since" --no-pager 2>&1); then
+	unnamed "the kernel log could not be read: ${kernel//$'\n'/; }"
+fi
+# The scrub logs an unrepaired block as `unable to fixup (regular) error at
+# logical N`, prefixed by the device. The kernel rate-limits that line, so the
+# addresses here can be fewer than the blocks the scrub counted; vsys compares
+# the two and says so.
+declare -A seen=()
+fixup='\(device ([^ ):]+)[^)]*\): unable to fixup \(regular\) error at logical ([0-9]+)'
+while IFS= read -r line; do
+	if [[ $line =~ $fixup ]]; then
+		device=${BASH_REMATCH[1]}
+		address=${BASH_REMATCH[2]}
+		if [[ -n ${devices[$device]:-} ]]; then seen[$address]=1; fi
+	fi
+done <<<"$kernel"
+addresses=()
+if ((${#seen[@]})); then
+	mapfile -t addresses < <(printf '%s\n' "${!seen[@]}" | sort -n)
+fi
+
+# The lines one address gets under its heading. Every name it lists is
+# checked against the inodes the address belongs to: btrfs prints a name with
+# a newline in it as two lines, and a line that is not a name of a damaged
+# inode would put an unrelated file under a delete command. An address with
+# any such line lists no name at all.
+resolve() {
+	local address=$1 refs names line inode root
+	local -A held=()
+	if ! refs=$(btrfs inspect-internal logical-resolve -P -o "$address" "$mnt" 2>&1); then
+		if [[ $refs == *"logical ino ioctl: No such file or directory"* ]]; then
+			echo "  (no file: free space, or already deleted)"
+		else
+			echo "  (not resolved: ${refs//$'\n'/; })"
+		fi
+		return
+	fi
+	while read -r line; do
+		if [[ $line =~ ^inode\ ([0-9]+)\ offset\ [0-9]+\ root\ ([0-9]+)$ ]]; then
+			held[${BASH_REMATCH[1]}/${BASH_REMATCH[2]}]=1
+		fi
+	done <<<"$refs"
+	if ((${#held[@]} == 0)); then
+		echo "  (no file: free space, or already deleted)"
+		return
+	fi
+	if ! names=$(btrfs inspect-internal logical-resolve -o "$address" "$mnt" 2>"$work/error" | sort -u); then
+		echo "  (not resolved: $(tr '\n' ' ' <"$work/error"))"
+		return
+	fi
+	if [[ -z $names ]]; then
+		echo "  (not resolved: btrfs printed no name for a damaged inode)"
+		return
+	fi
+	local listed=()
+	while IFS= read -r line; do
+		if [[ $line == *"could not be accessed"* ]]; then
+			echo "  (not resolved: $line)"
+			return
+		fi
+		if [[ $line != /* ]] || ! inode=$(stat -c %i -- "$line" 2>/dev/null) ||
+			! root=$(btrfs inspect-internal rootid "$line" 2>/dev/null) ||
+			[[ -z ${held[$inode/$root]:-} ]]; then
+			echo "  (not resolved: a name btrfs printed is not a name of a damaged inode)"
+			return
+		fi
+		listed+=("$line")
+	done <<<"$names"
+	printf '  %s\n' "${listed[@]}"
+}
+
+max_addresses=${BTRFS_SCRUB_MAX_ADDRESSES:-64}
+{
+	echo
+	if ((${#addresses[@]} == 0)); then
+		echo "Damaged files: no unfixable address in the kernel log for this run."
+	else
+		echo "Damaged files: ${#addresses[@]} damaged block addresses from the kernel log."
+		echo "Delete every path listed under an address, not the first: one block can have several names."
+		echo "Paths are resolved as the scrub ends; a block freed and reused later resolves to an unrelated file."
+		for address in "${addresses[@]:0:$max_addresses}"; do
+			echo "logical $address:"
+			resolve "$address"
+		done
+		if ((${#addresses[@]} > max_addresses)); then
+			echo "($((${#addresses[@]} - max_addresses)) more addresses not resolved; raise BTRFS_SCRUB_MAX_ADDRESSES)"
+		fi
+	fi
+} >>"$tmp"
+finish

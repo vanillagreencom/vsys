@@ -20,8 +20,11 @@ export function integrityWords(item: Integrity, scrub?: Capability): string {
   switch (item.state) {
     case "damaged": {
       const n = damageCounts(item);
+      // Blocks no file is named for are damage the listed files do not
+      // cover, so the list is never called all build output beside them.
+      const unnamed = n.unresolved + n.unnamed;
       return n.files
-        ? `Damaged files found: ${count(n.files, "file")}${n.other ? "" : ", all build output"}`
+        ? `Damaged files found: ${count(n.files, "file")}${unnamed ? `, ${count(unnamed, "block")} unnamed` : n.other ? "" : ", all build output"}`
         : "Damaged data found";
     }
     case "new-errors":
@@ -84,7 +87,21 @@ export function noDamageText(item: Integrity): string {
     return "The check has not finished, so it has named no file yet.";
   if (item.scrub.addresses === null || item.scrub.addresses === undefined)
     return "The report carries no damaged-file section, so it names no file. That is not a report of none.";
+  const { unnamed } = damageCounts(item);
+  if (unnamed)
+    return `The check counted ${count(unnamed, "damaged block")} and its report names none of them, so no file is offered.`;
   return "No damaged address is left on this filesystem.";
+}
+/**
+ * Why the listed files are not all of the damage, where they are not. The
+ * kernel rate-limits the line that names an address, so a check can count
+ * more damaged blocks than its report lists.
+ */
+export function unnamedText(item: Integrity): string | undefined {
+  const { unnamed } = damageCounts(item);
+  return unnamed && item.groups.length
+    ? `The check counted ${count(unnamed, "more damaged block")} than its report names, so the files above are not all of the damage.`
+    : undefined;
 }
 /** What the reader should do with one damaged address. */
 export function damageAdvice(group: DamagedGroup): string {
@@ -92,9 +109,16 @@ export function damageAdvice(group: DamagedGroup): string {
   // advice sends the reader at it with a delete.
   if (group.changed)
     return "written since the check: look before you remove anything";
-  if (group.kind === "build") return "safe to delete and rebuild";
-  if (group.kind === "other") return "restore from a backup or a snapshot";
-  return "free space or already deleted, clears on the next check";
+  switch (group.kind) {
+    case "build":
+      return "safe to delete and rebuild";
+    case "other":
+      return "restore from a backup or a snapshot";
+    case "unresolved":
+      return "its files could not be named, so nothing is offered to delete";
+    case "none":
+      return "free space or already deleted, clears on the next check";
+  }
 }
 /**
  * The command that removes one damaged address, offered only for an address a

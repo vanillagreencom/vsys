@@ -7,7 +7,7 @@ import { pairs, type Reader } from "./io";
 import type { KernelLog } from "./kernel-log";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
-import { counted, parseScrub, stated } from "./scrub";
+import { counted, isReportName, parseScrub, stated } from "./scrub";
 import type { CollectionConfig } from "./settings";
 
 /** Either a mount restriction or a superblock restriction makes a mount read-only. */
@@ -319,7 +319,7 @@ export class StorageCollector {
     }
     try {
       for (const entry of await readdir(c.scrubDir, { withFileTypes: true })) {
-        if (!entry.isFile()) continue;
+        if (!entry.isFile() || !isReportName(entry.name)) continue;
         const path = join(c.scrubDir, entry.name);
         const text = r.text(path);
         // A report vsys cannot read is not a report that is not there. Losing
@@ -350,7 +350,7 @@ export class StorageCollector {
             ? null
             : await Promise.all(
                 report.addresses.map(async (address) => ({
-                  logical: address.logical,
+                  ...address,
                   ...(await present(address.paths, report.startedAt)),
                 })),
               );

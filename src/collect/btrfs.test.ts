@@ -216,6 +216,32 @@ test("device mapper aliases resolve to filesystem counters", async () => {
   expect(r.errors).toEqual([]);
 });
 
+test("a hidden file in the report directory is not a report", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  // The reporter writes under a hidden name and renames the report whole, so
+  // a hidden file is one still being written or one a stopped run left.
+  f.write(
+    join(f.config.scrubDir, ".root.result.tmp"),
+    "UUID: 2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6\nStatus: finished\n",
+  );
+  f.write(
+    join(f.config.scrubDir, "root.result"),
+    "UUID: 2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6\nStatus: finished\n\nDamaged files: 1\nlogical 7:\n  (not resolved: subvol snap could not be accessed: not mounted)\n",
+  );
+  const storage = await new StorageCollector().collect(
+    new Reader(),
+    f.config,
+    1000,
+  );
+  expect(storage.scrubs.map((scrub) => scrub.path)).toEqual([
+    join(f.config.scrubDir, "root.result"),
+  ]); // The mark that the address could not be resolved reaches the sample.
+  expect(storage.scrubs[0].addresses).toEqual([
+    { logical: 7, paths: [], changed: [], resolved: false },
+  ]);
+});
+
 test("an unreadable report stays a report rather than vanishing", async () => {
   const f = fixture();
   fixtures.push(f);

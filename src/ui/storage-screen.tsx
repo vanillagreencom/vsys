@@ -33,6 +33,7 @@ import {
   loggedText,
   noDamageText,
   rebuildCommand,
+  unnamedText,
 } from "./integrity";
 import { useScreenKeys } from "./keys";
 import {
@@ -432,6 +433,7 @@ export function Storage({
                 lifetime counter is a different quantity and sits below it. */}
             <Field label="Blocks found" width={16} value={blocksText(item)} />
             {item.groups.length === 0 && <Empty text={noDamageText(item)} />}
+            {unnamedText(item) && <Empty text={unnamedText(item) ?? ""} />}
             {item.groups.map((group) => {
               const command = deleteCommand(group);
               return (
@@ -444,7 +446,13 @@ export function Storage({
                   <Line height={1} flexShrink={0} truncate>
                     <span attributes={ui.dim}>{fit("block", 16)}</span>
                     {`${group.logical}  `}
-                    <span fg={group.kind === "other" ? ui.danger : undefined}>
+                    <span
+                      fg={
+                        group.kind === "other" || group.kind === "unresolved"
+                          ? ui.danger
+                          : undefined
+                      }
+                    >
                       {damageAdvice(group)}
                     </span>
                   </Line>
@@ -465,7 +473,7 @@ export function Storage({
             })}
             {rebuild && (
               <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                {`${keyLabel(c.keys.copy)} copies one line that removes every build-output path above.`}
+                {`${keyLabel(c.keys.copy)} copies one line that removes every build-output path above.${counts.unresolved + counts.unnamed ? " It cannot reach the blocks no file is named for." : ""}`}
               </Line>
             )}
             {!rebuild && install && (

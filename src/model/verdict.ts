@@ -318,6 +318,9 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         files: counts.reduce((sum, n) => sum + n.files, 0),
         build: counts.reduce((sum, n) => sum + n.build, 0),
         other: counts.reduce((sum, n) => sum + n.other, 0),
+        // Damage no listed file covers: blocks the report names no address
+        // for, and addresses whose files could not be named.
+        unnamed: counts.reduce((sum, n) => sum + n.unnamed + n.unresolved, 0),
         blocks,
         // An address written since the check, or one outside build output,
         // is not one a delete step may sweep up.

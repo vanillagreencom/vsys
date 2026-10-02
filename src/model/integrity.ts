@@ -68,8 +68,11 @@ export function globMatch(pattern: string, path: string): boolean {
   return new RegExp(`${source}$`).test(path);
 }
 
-/** What a reader should do with a damaged address. */
-export type DamageKind = "build" | "other" | "none";
+/**
+ * What a reader should do with a damaged address. `unresolved` is damage the
+ * reporter could not name every file of, so no file under it is offered.
+ */
+export type DamageKind = "build" | "other" | "none" | "unresolved";
 /**
  * One damaged block address as the screen groups it. Every path of a group is
  * deleted together: one extent under two names is one piece of damage, and
@@ -216,7 +219,8 @@ export function integrity(
     (address) => ({
       logical: address.logical,
       paths: address.paths,
-      kind: classify(address.paths, c),
+      kind:
+        address.resolved === false ? "unresolved" : classify(address.paths, c),
       changed: (address.changed ?? []).length > 0,
     }),
   );
@@ -318,12 +322,20 @@ export function integrities(s: Snapshot, c: Config): Integrity[] {
     integrity(group, s.storage, s.time, c),
   );
 }
-/** The damaged addresses a reader can delete and rebuild, and the rest. */
+/**
+ * The damaged addresses a reader can delete and rebuild, and the rest.
+ * `unnamed` is how many blocks the check counted beyond the addresses its
+ * report lists: the kernel rate-limits the line that names an address, and a
+ * reporter lists a bounded number, so a list can be shorter than the damage.
+ * Any unnamed or unresolved block means the listed files are not all of it.
+ */
 export function damageCounts(item: Integrity): {
   files: number;
   build: number;
   other: number;
   free: number;
+  unresolved: number;
+  unnamed: number;
 } {
   const of = (kind: DamageKind) =>
     item.groups.filter((group) => group.kind === kind);
@@ -332,5 +344,8 @@ export function damageCounts(item: Integrity): {
     build: of("build").length,
     other: of("other").length,
     free: of("none").length,
+    unresolved: of("unresolved").length,
+    unnamed:
+      item.blocks === null ? 0 : Math.max(0, item.blocks - item.groups.length),
   };
 }

@@ -73,7 +73,9 @@ test("an address is build output only when every name under it is", () => {
       scrubs: [
         report({
           problem: true,
-          uncorrectable: 3,
+          // Six blocks counted, four addresses listed: the kernel named only
+          // some of them, so two blocks are damage no file is named for.
+          uncorrectable: 6,
           addresses: [
             {
               logical: 1,
@@ -84,6 +86,9 @@ test("an address is build output only when every name under it is", () => {
             // invite the reader to delete the letter with the object file.
             { logical: 2, paths: ["/r/target/debug/c", "/home/r/letter.txt"] },
             { logical: 3, paths: [] },
+            // The reporter could not name every file here, so it is damage
+            // with no file to offer, never free space.
+            { logical: 4, paths: [], resolved: false },
           ],
         }),
       ],
@@ -95,12 +100,15 @@ test("an address is build output only when every name under it is", () => {
     "build",
     "other",
     "none",
+    "unresolved",
   ]);
   expect(damageCounts(item)).toEqual({
     files: 4,
     build: 1,
     other: 1,
     free: 1,
+    unresolved: 1,
+    unnamed: 2,
   });
 });
 

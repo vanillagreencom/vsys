@@ -44,6 +44,25 @@ test("a report names its filesystem, its check and every path of each address", 
   ]);
 });
 
+test("an address the reporter could not resolve is damage with no path", () => {
+  const report =
+    parseScrub(`UUID:             2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6
+Status:           finished
+
+Damaged files: 2 damaged block addresses from the kernel log.
+logical 1:
+  (not resolved: inode 257 subvol snap could not be accessed: not mounted)
+logical 2:
+  (no file: free space, or already deleted)
+`);
+  // Free space carries no mark; an unresolved address is marked, because it
+  // is damage in files nobody named rather than damage in no file at all.
+  expect(report.addresses).toEqual([
+    { logical: 1, paths: [], resolved: false },
+    { logical: 2, paths: [] },
+  ]);
+});
+
 test("the parser anchors on the address heading, not on the prose above it", () => {
   // Every line the helper writes as prose, reworded. The addresses still read.
   const reworded = damaged

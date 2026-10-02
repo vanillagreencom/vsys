@@ -3,10 +3,11 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash
 #
-# It installs btrfs-scrub-report, the btrfs-scrub@.service drop-in that runs it
+# It installs vsys-scrub-report, the btrfs-scrub@.service drop-in that runs it
 # after every scrub, and the tmpfiles line that creates its report directory at
-# boot. It schedules no scrub: enabling btrfs-scrub@<mount>.timer for each
-# filesystem stays the reader's choice.
+# boot. Every name is vsys's own, so a reporter already set up under another
+# name keeps working beside it. It schedules no scrub: enabling
+# btrfs-scrub@<mount>.timer for each filesystem stays the reader's choice.
 set -euo pipefail
 
 SOURCE="https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter"
@@ -31,12 +32,12 @@ Install the package that ships it, btrfs-progs on Arch Linux, then run this agai
 	WORK="$(mktemp -d)" || die "scratch=mktemp-failed"
 	trap cleanup EXIT
 	local name
-	for name in btrfs-scrub-report vsys-report.conf vsys-scrub.conf; do
+	for name in vsys-scrub-report vsys-report.conf vsys-scrub.conf; do
 		curl -fsSL "$SOURCE/$name" -o "$WORK/$name" ||
 			die "download=$name failed
 Could not fetch $SOURCE/$name. Nothing was installed."
 	done
-	install -Dm755 "$WORK/btrfs-scrub-report" /usr/local/bin/btrfs-scrub-report
+	install -Dm755 "$WORK/vsys-scrub-report" /usr/local/bin/vsys-scrub-report
 	install -Dm644 "$WORK/vsys-report.conf" /etc/systemd/system/btrfs-scrub@.service.d/vsys-report.conf
 	install -Dm644 "$WORK/vsys-scrub.conf" /etc/tmpfiles.d/vsys-scrub.conf
 	systemd-tmpfiles --create /etc/tmpfiles.d/vsys-scrub.conf

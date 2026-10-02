@@ -11,6 +11,13 @@
 
 import type { DamagedAddress } from "../model/types";
 
+/**
+ * Whether a file in the report directory is a report. A reporter writes its
+ * report under a hidden name and renames it whole, so a hidden file is one
+ * still being written, or one a stopped run left behind.
+ */
+export const isReportName = (name: string): boolean => !name.startsWith(".");
+
 /** What one report file says, with every field it did not carry left null. */
 export interface ScrubReport {
   /** The filesystem UUID, which is also its directory name under `btrfsRoot`. */
@@ -88,14 +95,17 @@ export function parseScrub(raw: string): ScrubReport {
       addresses = [...(addresses ?? []), current];
       continue;
     }
-    // A path is indented under its address. The parenthesised line saying no
-    // file resolved is not a path, and a line at column zero ends the group.
+    // A path is indented under its address. A parenthesised line is not a
+    // path, and a line at column zero ends the group.
     const path = line.match(/^ {2}(\S.*?)\s*$/);
     if (!path || !current) {
       if (!/^\s/.test(line)) current = null;
       continue;
     }
-    if (!path[1].startsWith("(")) current.paths.push(path[1]);
+    // The reporter could not name every file under this address. It is
+    // damage all the same, and no path under it may be offered for removal.
+    if (path[1].startsWith("(not resolved")) current.resolved = false;
+    else if (!path[1].startsWith("(")) current.paths.push(path[1]);
   }
   return {
     uuid: field(raw, "UUID")?.match(/^[0-9a-f-]{36}$/i)?.[0] ?? null,

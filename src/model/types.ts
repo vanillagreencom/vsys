@@ -128,6 +128,12 @@ export interface DamagedAddress {
    * longer proves what the check read. Absent where nothing was compared.
    */
   changed?: string[];
+  /**
+   * False where the reporter could not name every file the address belongs
+   * to, so the address lists none. Absent in a report that predates the
+   * mark, which named what it resolved.
+   */
+  resolved?: boolean;
 }
 export interface Scrub {
   path: string;

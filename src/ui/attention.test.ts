@@ -1009,3 +1009,43 @@ test("a new error only the kernel log recorded is not told as counter growth", (
   );
   expect(said(card)).not.toContain("The counter grew");
 });
+
+test("a damage card never calls a partial list the whole of the damage", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 3 },
+      countersAvailable: true,
+    }),
+  ];
+  const card = (addresses: { logical: number; paths: string[] }[]) => {
+    s.storage.scrubs = [
+      {
+        path: "/run/btrfs-scrub/root.result",
+        text: "Error summary: csum=3",
+        problem: true,
+        readable: true,
+        fsid: "fs",
+        startedAt: s.time - 1000,
+        status: "finished",
+        uncorrectable: 3,
+        addresses,
+      },
+    ];
+    return attention(s, c, { basePath: base }).find(
+      (i) => i.id === "damaged-files",
+    );
+  };
+  // Three blocks counted and none named: the damage is unnamed, not free space.
+  const none = card([]);
+  expect(said(none)).not.toContain("free space");
+  expect(said(none)).toContain("could not name a file for 3 damaged blocks");
+  expect(none?.next).toContain("restore what the unnamed blocks held");
+  // One build-output address named of three blocks: deleting it is not all.
+  const some = card([{ logical: 1, paths: ["/r/target/a"] }]);
+  expect(some?.title).not.toContain("all build output");
+  expect(said(some)).toContain("2 damaged blocks could not be tied to a file");
+  expect(some?.next).toContain("Delete only the addresses it marks as build");
+});
