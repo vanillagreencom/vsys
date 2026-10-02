@@ -91,7 +91,9 @@ logical 1:
   (not resolved: inode 257 subvol snap could not be accessed: not mounted)
   /seen/after/the/mark
 `);
-  expect(report.addresses).toEqual([{ logical: 1, paths: [], resolved: false }]);
+  expect(report.addresses).toEqual([
+    { logical: 1, paths: [], resolved: false },
+  ]);
 });
 
 test("the parser anchors on the address heading, not on the prose above it", () => {
