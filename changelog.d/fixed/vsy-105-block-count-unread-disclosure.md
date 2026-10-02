@@ -1,0 +1,1 @@
+- The damaged-files card's block-repair count now names a filesystem whose own block count is unread instead of silently leaving its share out.

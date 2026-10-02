@@ -315,15 +315,20 @@ function copy(
       const allUnread = known.length === 0;
       const files = known.reduce((sum, d) => sum + (d.files ?? 0), 0);
       const unnamed = known.reduce((sum, d) => sum + (d.unnamed ?? 0), 0);
+      // A filesystem's own block count is null independently of its files
+      // count: a finished, readable report can still carry no uncorrectable
+      // figure. Summing only the filesystems that do have one, with no word
+      // about the rest, would fold their unread share in as if it were zero;
+      // naming how many are missing keeps the stated total honest instead.
       const blocksKnown = cause.damage.filter((d) => d.blocks !== null);
-      // A block count vsys did not read is left out rather than shown as zero.
+      const blocksUnread = cause.damage.length - blocksKnown.length;
       const blocks = blocksKnown.length
         ? blocksKnown.reduce((sum, d) => sum + (d.blocks ?? 0), 0)
         : null;
       const repaired =
         blocks === null
           ? ""
-          : `The last check could not repair ${count(blocks, "block")}. `;
+          : `The last check could not repair ${count(blocks, "block")}${blocksUnread ? `, not counting ${count(blocksUnread, "filesystem")} whose block count is unread` : ""}. `;
       // Names how many of the aggregated filesystems have no report of their
       // own, so a mixed card never reads a readable filesystem's own total as
       // if it already covered one that stayed unread.

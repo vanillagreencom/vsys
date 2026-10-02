@@ -1498,11 +1498,142 @@ test("a damaged-files card keeps a readable filesystem's own count beside one th
   expect(said(card)).toContain(
     "1 filesystem here has no report naming its damage, so the damage there is not in this count.",
   );
+  // The block total is /a's own count alone, and says so: /b's block count
+  // is just as unread as the rest of its damage, never folded in as zero.
+  expect(said(card)).toContain(
+    "The last check could not repair 1 block, not counting 1 filesystem whose block count is unread.",
+  );
   // /a's card never reads as if /b had no damage at all.
   expect(said(card)).not.toContain("no longer available");
   expect(card?.next).toContain("open each of these filesystems, then restore");
   // The first affected filesystem still lands the card, VSY-98's precedent.
   expect(card?.target).toEqual({ kind: "path", path: "a" });
+});
+
+test("a damaged-files card's block total discloses a filesystem whose own block count is unread, independent of its files", () => {
+  const c = defaults();
+  // A finished, readable report whose own files are always named, so `files`
+  // is known for every row here; only `blocks` (the "Uncorrectable:" field)
+  // varies, to isolate the block-only disclosure from the files-based one.
+  const row = (fsid: string, mount: string, blocks: number | null) => ({
+    volume: volumeSnapshot(mount, {
+      fsid,
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    scrub: {
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: 500,
+      status: "finished",
+      uncorrectable: blocks,
+      addresses: [{ logical: 1, paths: [`/r/target/${fsid}`] }],
+    },
+  });
+  const build = (rows: ReturnType<typeof row>[]) => {
+    const s = emptySnapshot();
+    s.storage.volumes = rows.map((r) => r.volume);
+    s.storage.scrubs = rows.map((r) => r.scrub);
+    return attention(s, c, { basePath: base }).find(
+      (i) => i.id === "damaged-files",
+    );
+  };
+  // /b's own file is still named and counted (`files` known for both), so
+  // the files-based unread note stays silent; only /b's block count could
+  // not be read, which must still be disclosed rather than dropped as zero.
+  const mixed = build([row("a", "/a", 9), row("b", "/b", null)]);
+  expect(said(mixed)).not.toContain("no report naming its damage");
+  expect(said(mixed)).toContain(
+    "The last check could not repair 9 blocks, not counting 1 filesystem whose block count is unread.",
+  );
+  // Every filesystem's own block count is unread: the sentence is omitted
+  // rather than stating a total of zero blocks repaired.
+  const allUnknown = build([row("a", "/a", null), row("b", "/b", null)]);
+  expect(said(allUnknown)).not.toContain("The last check could not repair");
+});
+
+test("a damaged-files card's unread note reaches the unnamed-only and free-space branches too", () => {
+  const c = defaults();
+  const unread = (s: Snapshot, fsid: string, mount: string) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    });
+    s.storage.lastFinishedScrub = {
+      ...s.storage.lastFinishedScrub,
+      [fsid]: { at: s.time - 3 * 86400000, damaged: true },
+    };
+  };
+  const known = (
+    s: Snapshot,
+    fsid: string,
+    mount: string,
+    uncorrectable: number | null,
+  ) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable,
+      addresses: [],
+    });
+  };
+  // The readable filesystem names blocks but no file: the unnamed-only
+  // branch, beside a filesystem whose damage is only remembered.
+  const unnamedOnly = emptySnapshot();
+  known(unnamedOnly, "a", "/a", 1);
+  unread(unnamedOnly, "b", "/b");
+  const unnamedCard = attention(unnamedOnly, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(said(unnamedCard)).toContain(
+    "The report could not name a file for 1 damaged block",
+  );
+  expect(said(unnamedCard)).toContain(
+    "1 filesystem here has no report naming its damage, so the damage there is not in this count.",
+  );
+  // The readable filesystem names neither block nor file: the free-space
+  // branch, beside the same kind of remembered-only filesystem.
+  const freeSpace = emptySnapshot();
+  known(freeSpace, "a", "/a", null);
+  unread(freeSpace, "b", "/b");
+  const freeCard = attention(freeSpace, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(said(freeCard)).toContain(
+    "The report named no file, so the damage is in free space or in a file already deleted.",
+  );
+  expect(said(freeCard)).toContain(
+    "1 filesystem here has no report naming its damage, so the damage there is not in this count.",
+  );
 });
 
 test("a damaged-files card's next step matches the ways text's singular/plural framing across every branch", () => {
