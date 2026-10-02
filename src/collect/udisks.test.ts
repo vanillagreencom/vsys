@@ -530,6 +530,73 @@ test("two identity-less drives swapped under one kernel name are told apart by T
     calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
   ).toBe(queriesSoFar);
 });
+test("a provable drive newly seen within the hold is read in that same sample beside an unchanged held drive, and forces no query after it, whether its own query answers or fails", async () => {
+  const cases: {
+    attributes: FakeDrive["attributes"];
+    written: number | null;
+  }[] = [
+    { attributes: ata(20, 3), written: 10_240 },
+    { attributes: { refuse: "Drive is asleep" }, written: null },
+  ];
+  for (const { attributes, written } of cases) {
+    const calls: string[][] = [];
+    const queries = () =>
+      calls.filter((argv) => argv.includes("SmartGetAttributes")).length;
+    let now = 0;
+    const held: FakeDrive = {
+      name: "sda",
+      model: "Held Drive",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "SN-HELD",
+    };
+    let live: FakeDrive[] = [held];
+    const run: typeof spawnText = (argv, timeoutMs) =>
+      fakeBus(live, calls)(argv, timeoutMs);
+    const udisks = new Udisks(run, () => now);
+    await udisks.read();
+    expect(queries()).toBe(1);
+    // sdb appears inside the hold while sda stays the same drive: nothing
+    // held names sdb, so its own appearance forces the fresh read.
+    now = udisksHoldMs / 2;
+    live = [
+      held,
+      {
+        name: "sdb",
+        model: "New Drive",
+        kind: "ata",
+        attributes,
+        serial: "SN-NEW",
+      },
+    ];
+    const appeared = await udisks.read();
+    expect(appeared).toEqual({
+      outcome: null,
+      drives: [
+        {
+          name: "sda",
+          model: "Held Drive",
+          written: 5_120,
+          identity: "SN-HELD",
+          detected: null,
+        },
+        {
+          name: "sdb",
+          model: "New Drive",
+          written,
+          identity: "SN-NEW",
+          detected: null,
+        },
+      ],
+    });
+    expect(queries()).toBe(3);
+    // sdb now has a held row, its failed query's included, so the next
+    // sample inside the hold serves the held reading and asks no drive.
+    now = udisksHoldMs - 1;
+    expect(await udisks.read()).toEqual(appeared);
+    expect(queries()).toBe(3);
+  }
+});
 test("a drive with neither an identity nor a TimeDetected reads as unknown on every sample, never queried at all, with no effect on an unrelated sibling", async () => {
   const calls: string[][] = [];
   let now = 0;
