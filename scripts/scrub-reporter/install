@@ -103,9 +103,15 @@ Could not read the report directory from vsys-report.conf's ExecStopPost= line. 
 	systemd-tmpfiles --create /etc/tmpfiles.d/vsys-scrub.conf
 	systemctl daemon-reload
 	migrate_legacy_reports "$report_dir"
+	local persistence_line
+	if [[ $report_dir == /run || $report_dir == /run/* ]]; then
+		persistence_line="Each scrub leaves a report in $report_dir, which lasts only until the next reboot, not across one."
+	else
+		persistence_line="Each scrub now leaves a report in $report_dir, which survives a reboot."
+	fi
 	printf '%s\n' \
 		"scrub-reporter: installed ${version}" \
-		"Each scrub now leaves a report in $report_dir, which survives a reboot." \
+		"$persistence_line" \
 		"To check a filesystem on a schedule, enable its timer, for example:" \
 		"  systemctl enable --now btrfs-scrub@-.timer"
 }

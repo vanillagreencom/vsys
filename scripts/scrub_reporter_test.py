@@ -502,6 +502,29 @@ esac
                 done.stdout.splitlines(),
             )
 
+    def test_the_success_message_never_claims_a_tmpfs_report_directory_survives_a_reboot(self) -> None:
+        # An old tag's vsys-report.conf (VSYS_VERSION pinned to it, or the
+        # unversioned install run before a new release is cut) can still name
+        # the pre-VSY-75 tmpfs default. No legacy directory is set up here,
+        # so migrate_legacy_reports returns before touching any real path;
+        # this case is only about what the message claims.
+        with scratch() as tmp:
+            base = Path(tmp)
+            conf = (REPORTER / "vsys-report.conf").read_text().replace("/var/lib/btrfs-scrub", "/run/btrfs-scrub")
+            self.assertIn("ExecStopPost=/usr/local/bin/vsys-scrub-report %f /run/btrfs-scrub", conf)
+            done, calls = self.run_install(
+                base,
+                report_conf=conf,
+                sums_text=reporter_sums(**{"vsys-report.conf": conf}),
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            lines = done.stdout.splitlines()
+            self.assertFalse(any("survives a reboot" in line for line in lines), lines)
+            self.assertIn(
+                "Each scrub leaves a report in /run/btrfs-scrub, which lasts only until the next reboot, not across one.",
+                lines,
+            )
+
     def test_no_scrub_unit_installs_nothing(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), unit=False)
