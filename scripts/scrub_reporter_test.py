@@ -319,9 +319,16 @@ esac
 REPORTER_FILES = ("vsys-scrub-report", "vsys-report.conf", "vsys-scrub.conf")
 
 
-def reporter_sums() -> str:
-    """The checksums a release publishing the checkout's own files would carry."""
-    return "".join(f"{hashlib.sha256((REPORTER / name).read_bytes()).hexdigest()}  {name}\n" for name in REPORTER_FILES)
+def reporter_sums(**overrides: str) -> str:
+    """The checksums a release publishing the checkout's own files would
+    carry, except a name given in overrides checksums that text instead: a
+    test corrupting one downloaded file still needs the others, and that
+    one, to pass checksum verification before it reaches its own guard.
+    """
+    return "".join(
+        f"{hashlib.sha256(overrides[name].encode() if name in overrides else (REPORTER / name).read_bytes()).hexdigest()}  {name}\n"
+        for name in REPORTER_FILES
+    )
 
 
 class InstallTest(unittest.TestCase):
@@ -338,6 +345,8 @@ class InstallTest(unittest.TestCase):
         fail_api: bool = False,
         legacy_dir: Path | None = None,
         scrub_dir: Path | None = None,
+        report_conf: str | None = None,
+        cp_stub: str = "",
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """version=None leaves VSYS_VERSION unset, so install resolves the tag
         itself from the stubbed GitHub API, the same lookup install.sh uses.
@@ -358,9 +367,17 @@ class InstallTest(unittest.TestCase):
         else:
             body = f'{{"tag_name": "{api_tag}"}}' if api_tag is not None else '{"message": "Not Found"}'
             api_fetch = f"printf '%s\\n' '{body}'"
-        # The download serves the checkout's own files, by the name the URL ends in,
-        # so the call carries the resolved version in its path either way. The
-        # version lookup has no -o: curl writes the release JSON to stdout.
+        if cp_stub:
+            stub(bin_dir, "cp", cp_stub)
+        # report_conf hands the installer a corrupted vsys-report.conf for
+        # just that one download (a case the installer must itself refuse,
+        # so it never touches a real system that way).
+        if report_conf is not None:
+            (base / "vsys-report.conf").write_text(report_conf)
+        # The download serves the checkout's own files, by the name the URL ends
+        # in, so the call carries the resolved version in its path either way,
+        # except vsys-report.conf when a test hands its own text. The version
+        # lookup has no -o: curl writes the release JSON to stdout.
         stub(
             bin_dir,
             "curl",
@@ -373,6 +390,13 @@ case "$url" in
 	case "$name" in
 	SHA256SUMS) {sums_fetch} ;;
 	"{fail_download}") exit 22 ;;
+	vsys-report.conf)
+		if [[ -f "{base}/vsys-report.conf" ]]; then
+			cp "{base}/vsys-report.conf" "$4"
+		else
+			cp "{REPORTER}/$name" "$4"
+		fi
+		;;
 	*) cp "{REPORTER}/$name" "$4" ;;
 	esac
 	;;
@@ -475,6 +499,36 @@ esac
             self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: unit=btrfs-scrub@.service missing")
             self.assertEqual(calls, ["systemctl cat btrfs-scrub@.service"])
 
+    def test_a_report_conf_with_no_execstoppost_line_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            broken = "\n".join(
+                line
+                for line in (REPORTER / "vsys-report.conf").read_text().splitlines()
+                if not line.startswith("ExecStopPost=")
+            ) + "\n"
+            done, calls = self.run_install(base, report_conf=broken, sums_text=reporter_sums(**{"vsys-report.conf": broken}))
+            self.assertEqual(done.returncode, 1)
+            self.assertTrue(
+                done.stderr.splitlines()[0].startswith("scrub-reporter: parse=vsys-report.conf-missing-execstoppost"),
+                done.stderr,
+            )
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
+
+    def test_a_report_conf_with_a_relative_execstoppost_path_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            original = (REPORTER / "vsys-report.conf").read_text()
+            broken = original.replace("/var/lib/btrfs-scrub", "var/lib/btrfs-scrub")
+            self.assertIn("ExecStopPost=", broken)
+            done, calls = self.run_install(base, report_conf=broken, sums_text=reporter_sums(**{"vsys-report.conf": broken}))
+            self.assertEqual(done.returncode, 1)
+            self.assertTrue(
+                done.stderr.splitlines()[0].startswith("scrub-reporter: parse=vsys-report.conf-bad-execstoppost value="),
+                done.stderr,
+            )
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
+
     def test_a_failed_download_installs_nothing(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), fail_download="vsys-scrub.conf")
@@ -555,11 +609,58 @@ esac
             (legacy / "root.result").write_text("the real report\n")
             persistent = base / "persistent"
             persistent.mkdir()
-            (persistent / ".root.result.tmp").write_text("half-written garbage from a killed run\n")
+            # No "orphan.result" exists in the legacy directory, so nothing
+            # in the ordinary migration loop ever names or recreates this
+            # stray; only the explicit cleanup sweep can remove it, which
+            # makes this a real control for that sweep rather than for the
+            # copy loop that migrates root.result regardless.
+            (persistent / ".migrate.orphan.result.tmp").write_text("half-written garbage from a killed run\n")
             done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual((persistent / "root.result").read_text(), "the real report\n")
             self.assertEqual(sorted(os.listdir(persistent)), ["root.result"])
+
+    def test_migration_never_touches_a_report_the_reporter_is_still_writing(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("the legacy report\n")
+            persistent = base / "persistent"
+            persistent.mkdir()
+            # The reporter's own temp name (vsys-scrub-report writes
+            # .<name>.tmp, never migration's .migrate.<name>.tmp), standing
+            # in for a scrub of another mount still being written while this
+            # install runs. The stray-cleanup sweep must never touch it.
+            writing = persistent / ".home.result.tmp"
+            writing.write_text("a report vsys-scrub-report is still writing\n")
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(writing.read_text(), "a report vsys-scrub-report is still writing\n")
+            self.assertEqual((persistent / "root.result").read_text(), "the legacy report\n")
+
+    def test_a_report_the_reporter_finishes_mid_migration_is_never_overwritten(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("stale, from before this install\n")
+            persistent = base / "persistent"
+            # While migration's cp is copying the legacy report into its own
+            # temp name, the reporter finishes writing a fresh report for the
+            # same mount directly into the destination: a real race, forced
+            # open deterministically at the one point migration touches
+            # disk for this report, rather than by timing.
+            cp_stub = f"""if [[ $3 == *.migrate.root.result.tmp ]]; then
+	mkdir -p -- "{persistent}"
+	printf '%s\\n' "the fresh report, just finished" >"{persistent}/root.result"
+fi
+exec /usr/bin/cp "$@"
+"""
+            done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent, cp_stub=cp_stub)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((persistent / "root.result").read_text(), "the fresh report, just finished\n")
+            self.assertEqual(os.listdir(persistent), ["root.result"])
 
     def test_a_migration_copy_failure_is_reported_as_a_carry_over_problem_not_an_install_failure(self) -> None:
         with scratch() as tmp:

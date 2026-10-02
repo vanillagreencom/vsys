@@ -113,19 +113,26 @@ Could not read the report directory from vsys-report.conf's ExecStopPost= line. 
 
 # A machine already running the tmpfs default has whatever it reported since
 # boot sitting in LEGACY_SCRUB_DIR; copy it into SCRUB_DIR now, before a
-# reboot clears it, without overwriting a report already there. Each copy
-# lands under a hidden temp name and is renamed into place, the same
-# atomicity vsys-scrub-report itself uses, so an interruption (signal,
-# dropped connection, full disk) never leaves a truncated *.result visible
-# to vsys. This runs after the core install already succeeded, so its own
-# failures are reported as a carry-over problem, not an install failure.
+# reboot clears it, without overwriting a report already there. This runs
+# after the core install already succeeded, so its own failures are
+# reported as a carry-over problem, not an install failure.
+#
+# LEGACY_SCRUB_DIR can outlive the whole boot, so this can run while
+# vsys-scrub-report is writing a report for the same mount. Migration's own
+# temp names (.migrate.<name>.tmp) are never the reporter's own
+# (.<name>.tmp), so the stray-cleanup sweep below can never remove a report
+# the reporter is actively writing. The final publish is a no-clobber
+# rename, read by whether the temp name survives it rather than by its exit
+# status (unpatched coreutils 9.2-9.4 can report failure on a skipped
+# destination), so a fresh report the reporter just finished writing for
+# that mount always wins over the stale legacy one, whenever it lands.
 migrate_legacy_reports() {
 	[[ -d $LEGACY_SCRUB_DIR && $LEGACY_SCRUB_DIR != "$SCRUB_DIR" ]] || return 0
 	mkdir -p -- "$SCRUB_DIR" 2>/dev/null ||
 		die "legacy-migrate=mkdir-failed dir=$SCRUB_DIR
 The reporter is installed and will run after the next scrub. Could not create $SCRUB_DIR to carry its old reports over from $LEGACY_SCRUB_DIR, so they stay there until a reboot clears them."
 	local stray
-	for stray in "$SCRUB_DIR"/.*.result.tmp; do
+	for stray in "$SCRUB_DIR"/.migrate.*.result.tmp; do
 		[[ -e $stray ]] || continue
 		rm -f -- "$stray"
 	done
@@ -135,10 +142,17 @@ The reporter is installed and will run after the next scrub. Could not create $S
 		name="${report##*/}"
 		dest="$SCRUB_DIR/$name"
 		[[ -e $dest ]] && continue
-		tmp="$SCRUB_DIR/.$name.tmp"
-		{ cp -- "$report" "$tmp" && mv -- "$tmp" "$dest"; } 2>/dev/null ||
+		tmp="$SCRUB_DIR/.migrate.$name.tmp"
+		cp -- "$report" "$tmp" 2>/dev/null ||
 			die "legacy-migrate=copy-failed report=$report
 The reporter is installed and will run after the next scrub. Could not carry $report over into $SCRUB_DIR, so it stays in $LEGACY_SCRUB_DIR until a reboot clears it."
+		mv -n -- "$tmp" "$dest" 2>/dev/null
+		if [[ -e $tmp ]]; then
+			rm -f -- "$tmp"
+			[[ -e $dest ]] ||
+				die "legacy-migrate=copy-failed report=$report
+The reporter is installed and will run after the next scrub. Could not carry $report over into $SCRUB_DIR, so it stays in $LEGACY_SCRUB_DIR until a reboot clears it."
+		fi
 	done
 }
 

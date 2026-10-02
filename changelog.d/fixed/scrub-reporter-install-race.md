@@ -1,0 +1,1 @@
+- The scrub reporter installer no longer risks deleting or overwriting a report the reporter is actively writing while it carries old reports over from the previous tmpfs directory.
