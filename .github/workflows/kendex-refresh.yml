@@ -41,7 +41,7 @@ jobs:
           # tag can be moved, and a moved one would run another installer
           # here. Both values are written together from one tag.
           KENDEX_VERSION: v1.4.0
-          KENDEX_INSTALLER_SHA: f6ad9491a810a9256f04f66f8d083eb9db709602
+          KENDEX_INSTALLER_SHA: ea97e1e3d5dda3432e7c1d1771cdaf01363ca2d5
           KENDEX_INSTALLER_REPO: vanillagreencom/kendex
         run: |
           set -euo pipefail
