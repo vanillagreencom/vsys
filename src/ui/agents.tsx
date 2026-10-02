@@ -18,6 +18,7 @@ import {
   pidCell,
   pidColumn,
   sortedLabel,
+  textWidth,
 } from "./columns";
 import {
   amount,
@@ -622,7 +623,7 @@ export function Agents({
   const paneHeading = "Pane".length;
   const paneLongest = Math.max(
     paneHeading,
-    ...lanes.map((lane) => [...lane.address].length),
+    ...lanes.map((lane) => textWidth(lane.address)),
   );
   const readingsWith = (shown: Set<string>, pane: number): Column[] => [
     ...(shown.has("Pane") ? [{ label: "Pane", width: pane }] : []),

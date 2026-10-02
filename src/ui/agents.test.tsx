@@ -698,13 +698,20 @@ test("two agents in one session keep what tells their addresses apart", async ()
     );
     return { heading, at, cells };
   };
-  const wide = await mount(s, c, { width: 140, height: 24 });
-  try {
-    await wide.press("2");
-    // With the width to spare, each address is drawn whole.
-    expect(paneCells(wide.frame()).cells).toEqual(addresses);
-  } finally {
-    await wide.close();
+  // With the width to spare, each address is drawn whole, a session named in
+  // wide characters too: the column is sized in the cells `fitAddress` cuts in.
+  for (const whole of [addresses, ["开发环境:1.1", "开发环境:2.1"]]) {
+    const named = structuredClone(s);
+    whole.forEach((address, i) => {
+      named.lanes[i].address = address;
+    });
+    const wide = await mount(named, c, { width: 140, height: 24 });
+    try {
+      await wide.press("2");
+      expect(paneCells(wide.frame()).cells).toEqual(whole);
+    } finally {
+      await wide.close();
+    }
   }
   // Too narrow for the whole address beside a name at its floor: the column
   // narrows and the session is what gives.

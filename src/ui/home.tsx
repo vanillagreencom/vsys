@@ -232,9 +232,12 @@ export function Home({
   // What this screen draws above its lists, measured rather than guessed: the
   // verdict at the rows it wraps to here, and the tile row at the rows a tile
   // takes. `listRows` and `detailRows` take it from there, so the rows a list
-  // has and the rows an open card has come from one place.
-  const verdict = verdictLine(items, s);
-  const above = wrapLines(verdict, width).length;
+  // has and the rows an open card has come from one place. The verdict is
+  // drawn from these rows, because the renderer's own wrapping also breaks
+  // after a full stop and would split `agents.slice` across a row these
+  // never counted.
+  const verdict = wrapLines(verdictLine(items, s), width);
+  const above = verdict.length;
   const tiles = tilesHeight(gauges.length, width, tileLines);
   const room = { screen: height, verdict: above, tiles };
   // The agents list has what its own heading leaves; side by side it has the
@@ -540,11 +543,14 @@ export function Home({
       contentOptions={{ flexShrink: 0 }}
     >
       <box flexDirection="column" flexShrink={0} paddingX={screenPad}>
-        <Line flexShrink={0} wrapMode="word">
-          <span fg={levelColor(level)} attributes={ui.bold}>
-            {safe(verdict)}
-          </span>
-        </Line>
+        {verdict.map((line, at) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a row is its place
+          <Line key={at} height={1} flexShrink={0} truncate>
+            <span fg={levelColor(level)} attributes={ui.bold}>
+              {line}
+            </span>
+          </Line>
+        ))}
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
           {`${s.lanes.length} ${plural(s.lanes.length, "agent", "agents")} · ${s.system.cores} cores · ${items.length ? `${items.length} ${plural(items.length, "concern", "concerns")}` : "nothing needs attention"}`}
         </Line>
