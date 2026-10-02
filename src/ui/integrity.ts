@@ -60,18 +60,32 @@ export function integrityLine(item: Integrity, scrub?: Capability): string {
   ].join(" · ");
 }
 /**
+ * Whether the remembered finished check standing in for a gone or absent
+ * current report found damage. Both `blocksText` and `noDamageText` read
+ * this one function rather than each testing `item.state` on their own, so
+ * the two can never disagree about what the same remembered check found.
+ */
+function rememberedFoundDamage(item: Integrity): boolean {
+  return item.state === "damaged";
+}
+/**
  * The headline reading: what the last check found. A count vsys did not read
  * never becomes a zero, and the two reasons it can be missing are different
  * facts: nothing has checked, or the check's report omitted the count.
  */
-export function blocksText(item: Integrity): string {
+export function blocksText(item: Integrity, scrub?: Capability): string {
   if (!item.scrub) {
+    // The directory listing itself failed, or has never run, this sample —
+    // a different fact from a report that once existed and is now gone: vsys
+    // does not know whether a report is there at all, so it must not claim
+    // the remembered check's report is gone when the read simply failed.
+    if (scrub && !scrub.available) return `${gap}: ${capabilityReason(scrub)}`;
     if (item.checkAge === null)
       return `${gap}: no check has reported on this filesystem`;
     // The report itself is gone, but a finished check is remembered for this
     // filesystem (`integrityLine` already names its age), so the last word
     // on it is what that check found, never that nothing has reported.
-    return item.state === "damaged"
+    return rememberedFoundDamage(item)
       ? `${gap}: a remembered finished check found damage, but its own report is gone, so no count was kept`
       : `${gap}: a remembered finished check found no damage, but its own report is gone, so no count was kept`;
   }
@@ -93,14 +107,20 @@ export function blocksText(item: Integrity): string {
  * facts, and one of them is that nothing has looked: the sentence never lets
  * an absent list read as a check that found nothing.
  */
-export function noDamageText(item: Integrity): string {
+export function noDamageText(item: Integrity, scrub?: Capability): string {
   if (!item.scrub) {
+    // Same read-failure case as `blocksText`: a failed or not-yet-run
+    // listing is not proof the report is gone, so it speaks first.
+    if (scrub && !scrub.available) {
+      const reason = capabilityReason(scrub);
+      return `${reason.charAt(0).toUpperCase()}${reason.slice(1)}, so no file is named.`;
+    }
     if (item.checkAge === null)
       return "No check has reported on this filesystem, so no file is named.";
     // Same remembered-check case as `blocksText`: the report naming its
     // files is gone, so the sentence says what that check found rather than
     // claiming the filesystem was never looked at.
-    return item.state === "damaged"
+    return rememberedFoundDamage(item)
       ? "A remembered finished check found damage, but its own report is gone, so no file is named for it."
       : "A remembered finished check found no damage, and its own report is gone, so no file is named.";
   }

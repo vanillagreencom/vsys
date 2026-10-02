@@ -1,1 +1,1 @@
-- Storage's damage count and file list no longer say no check has reported when a finished check is remembered but its report is gone; they say what that check found.
+- Storage's damage count and file list no longer say no check has reported when a finished check is remembered but its report is gone, or treat a failed directory read as proof the report is gone.

@@ -409,6 +409,52 @@ test("a remembered finished check speaks when its own report is gone from disk",
   );
 });
 
+test("a failed directory read is never read as a report that is gone", () => {
+  // The directory listing itself failed this sample (or has never run), so
+  // storage.scrubs is empty for a reason that has nothing to do with whether
+  // a report exists: vsys must say the read failed, not that the remembered
+  // check's report is gone, even where a finished check is remembered.
+  const failedScrub: Capability = {
+    id: "scrub",
+    available: false,
+    failure: "unreadable",
+    source: "/run/btrfs-scrub",
+    detail: "EACCES: permission denied",
+  };
+  const withMemory = integrity(
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      "root device",
+    ),
+    {
+      scrubs: [],
+      lastFinishedScrub: { fs: { at: now - 2 * day, damaged: true } },
+    },
+    now,
+    c,
+  );
+  expect(blocksText(withMemory, failedScrub)).toBe(
+    "not available: /run/btrfs-scrub exists but cannot be read",
+  );
+  expect(noDamageText(withMemory, failedScrub)).toBe(
+    "/run/btrfs-scrub exists but cannot be read, so no file is named.",
+  );
+  // No memory either: same read-failure wording, not "no check has reported".
+  const noMemory = state([]);
+  expect(blocksText(noMemory, failedScrub)).toBe(
+    "not available: /run/btrfs-scrub exists but cannot be read",
+  );
+  expect(noDamageText(noMemory, failedScrub)).toBe(
+    "/run/btrfs-scrub exists but cannot be read, so no file is named.",
+  );
+});
+
 test("a check that has not finished counted nothing, and its report is not blamed", () => {
   // A running check is a different fact from a report that omitted its count.
   const running = state([report({ status: "running", uncorrectable: 26 })]);
