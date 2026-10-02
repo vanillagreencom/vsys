@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 
 import type {
   Capability,
@@ -14,7 +14,7 @@ import { listPanesArgv } from "./tmux";
 
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
-/** A failure may name the source that decided it when a probe reads more than one. */
+/** A failure may name the source that decided it when a probe reads two. */
 type Failure = { failure: CapabilityFailure; detail: string; source?: string };
 export type Outcome = Failure | null;
 
@@ -31,57 +31,25 @@ function classify(error: unknown): Failure {
   return { failure: code ? "unreadable" : "malformed", detail };
 }
 
-/** The controllers a group hands to the groups in it. */
-function subtreeControl(group: string): string[] {
-  return readFileSync(join(group, "cgroup.subtree_control"), "utf8").split(
-    /\s+/,
-  );
-}
-
 /**
- * The first group, from the session root down, that has groups in it but does
- * not hand them the io controller. A group has io.stat only when every group
- * above it up to the root lists io in `cgroup.subtree_control`, and the
- * systemd user manager enables io in a slice only as its units require, so the
- * root's own file says nothing about the scopes the writer readings come from.
- * The detail names the group relative to the root, and the root itself ".".
+ * Which of these controllers the session root does not hand down to the groups
+ * below it. A group has a controller's files only when its parent lists the
+ * controller in `cgroup.subtree_control`, so the root's own file says nothing
+ * about the groups the readings come from.
  */
-function ioWithheld(root: string): Outcome {
-  const visit = (group: string): Outcome => {
-    // systemd removes a unit's group when its last process exits, which can
-    // happen between listing the parent and reading the scope.
-    const ended = (error: unknown) =>
-      group !== root && (error as NodeJS.ErrnoException).code === "ENOENT";
-    let children: string[];
-    try {
-      children = readdirSync(group, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
-        .map((d) => d.name);
-    } catch (error) {
-      return ended(error) ? null : { ...classify(error), source: group };
-    }
-    if (!children.length) return null;
-    const source = join(group, "cgroup.subtree_control");
-    let enabled: string[];
-    try {
-      enabled = subtreeControl(group);
-    } catch (error) {
-      return ended(error) ? null : { ...classify(error), source };
-    }
-    // The interface answered; it just does not carry io to these groups.
-    if (!enabled.includes("io"))
-      return {
-        failure: "incomplete",
-        detail: relative(root, group) || ".",
-        source,
-      };
-    for (const child of children) {
-      const found = visit(join(group, child));
-      if (found) return found;
-    }
-    return null;
-  };
-  return visit(root);
+function undelegated(c: CollectionConfig, names: string[]): Outcome {
+  const source = join(c.cgroupRoot, "cgroup.subtree_control");
+  let enabled: string[];
+  try {
+    enabled = readFileSync(source, "utf8").split(/\s+/);
+  } catch (error) {
+    return { ...classify(error), source };
+  }
+  const absent = names.filter((name) => !enabled.includes(name));
+  // The interface answered; it just does not carry these controllers.
+  return absent.length
+    ? { failure: "incomplete", detail: absent.join(" "), source }
+    : null;
 }
 
 /**
@@ -120,8 +88,8 @@ export function probeTmux(argv: string[] = listPanesArgv): Outcome {
  * These reads decide each capability once, when vsys starts, so a permanently
  * absent kernel interface is reported as an absence with its reason rather
  * than as a per-sample source failure on every tick. Most capabilities take
- * one read; io-stat also reads the `cgroup.subtree_control` of every group
- * above the groups its readings come from.
+ * one read; io-stat also reads the root's `cgroup.subtree_control`, because
+ * its readings come from the groups below the root.
  */
 export function probeCapabilities(
   c: CollectionConfig,
@@ -140,14 +108,7 @@ export function probeCapabilities(
     [
       "delegation",
       join(c.cgroupRoot, "cgroup.subtree_control"),
-      () => {
-        const enabled = subtreeControl(c.cgroupRoot);
-        const absent = delegated.filter((name) => !enabled.includes(name));
-        // The interface answered; it just does not carry these controllers.
-        return absent.length
-          ? { failure: "incomplete", detail: absent.join(" ") }
-          : null;
-      },
+      () => undelegated(c, delegated),
     ],
     [
       "psi",
@@ -163,7 +124,7 @@ export function probeCapabilities(
       () => {
         readFileSync(join(c.cgroupRoot, "io.stat"), "utf8");
         // The writer readings come from the groups below the root.
-        return ioWithheld(c.cgroupRoot);
+        return undelegated(c, ["io"]);
       },
     ],
     [

@@ -308,13 +308,10 @@ const absentReasons: Record<CapabilityId, string> = {
   "agent-slice": "no agent slice is defined or running on this machine",
 };
 /** What a present interface that answered with too little means, per capability. */
-const incompleteReasons: Partial<
-  Record<CapabilityId, (cap: Capability) => string>
-> = {
-  // The detail names the group that withholds io, relative to the session.
-  "io-stat": (cap) =>
-    `${cap.detail === "." ? "this login session" : cap.detail} does not pass the io controller to the groups in it`,
-  tmux: () => "tmux is installed but no server is answering",
+const incompleteReasons: Partial<Record<CapabilityId, string>> = {
+  "io-stat":
+    "the io controller is not delegated to the groups below this session",
+  tmux: "tmux is installed but no server is answering",
 };
 /**
  * What is missing from the screens while a capability is not available. A
@@ -394,7 +391,7 @@ export function capabilityReason(cap: Capability): string {
       return `${cap.source} is not in the expected format`;
     case "incomplete":
       return (
-        incompleteReasons[cap.id]?.(cap) ??
+        incompleteReasons[cap.id] ??
         `this login session is not given ${cap.detail}`
       );
     default:

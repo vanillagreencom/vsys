@@ -1,1 +1,1 @@
-- Per-group disk counters no longer read as available when a slice in the session does not hand the io controller to the groups in it; Settings names that slice.
+- Per-group disk writes no longer read as available when the session does not hand the io controller to its groups; Settings names that as the cause.
