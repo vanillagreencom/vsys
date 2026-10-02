@@ -222,7 +222,7 @@ export const settingInfo: Record<string, SettingInfo> = {
  */
 export const settingsFileInfo: SettingInfo = {
   label: "Settings file",
-  help: "Where vsys read this configuration, and where an edit here is saved.",
+  help: "Where an edit here is saved.",
 };
 /** Settings by what they change, so a reader finds one without a search. */
 export const settingGroups: [string, string[]][] = [

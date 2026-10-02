@@ -55,12 +55,12 @@ test("unreadable sources are counted once each, most failed reads first", () => 
   expect(sourceCounts(emptySnapshot())).toEqual([]);
 });
 
-test("Settings names the file it read, for the XDG default and an explicit --config", async () => {
+test("Settings names the file an edit saves to, for the XDG default and an explicit --config", async () => {
   const c = defaults();
   const s = emptySnapshot();
   // main.ts resolves the XDG default with no --config flag, and the path an
   // explicit --config names otherwise; either way the row names the one this
-  // process actually read, not a fixed sentence.
+  // process actually resolved, not a fixed sentence.
   const xdgDefault = configPath({});
   const explicit = "/etc/vsys/custom-config.toml";
   for (const settingsPath of [xdgDefault, explicit]) {
