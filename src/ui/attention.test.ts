@@ -193,6 +193,36 @@ test("several unconfirmed processes share one card, and a repeated tool name is 
   expect(said(card)).toContain(
     "node (pid 12): codex at /home/reader/scripts/codex.js",
   );
+  // Two processes share the tool name "pi" but differ in path: the advice
+  // names every distinct path, never one path standing in for both.
+  expect(card.next).toContain("/usr/bin/pi (pi)");
+  expect(card.next).toContain("/opt/pi/pi (pi)");
+  expect(card.next).toContain("/home/reader/scripts/codex.js (codex)");
+});
+
+test("five or more unconfirmed processes are all named, none dropped behind a count", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = Array.from({ length: 6 }, (_, i) =>
+    processSnapshot({
+      pid: 30 + i,
+      comm: `tool${i}`,
+      tool: null,
+      unconfirmedTool: `name${i}`,
+      unconfirmedPath: `/opt/name${i}/bin`,
+    }),
+  );
+  const card = attention(s, c, { basePath: base })[0];
+  // Nothing else on the dashboard names an unconfirmed process, so this card
+  // never elides the fifth one behind "and N more" the way a lane list does.
+  for (let i = 0; i < 6; i++) {
+    expect(said(card)).toContain(
+      `tool${i} (pid ${30 + i}): name${i} at /opt/name${i}/bin`,
+    );
+    expect(card.next).toContain(`/opt/name${i}/bin (name${i})`);
+  }
+  expect(said(card)).not.toContain("more");
+  expect(card.next).not.toContain("more");
 });
 
 test("an unconfirmed process with no readable path gets guidance to check it directly, not a path fragment", () => {
@@ -211,9 +241,9 @@ test("an unconfirmed process with no readable path gets guidance to check it dir
   expect(said(card)).toContain(
     "bash (pid 20): pi at a path vsys could not read",
   );
-  // No path was recorded, so the advice never tells the reader to cover one.
-  expect(card.next).not.toContain("the path above");
-  expect(card.next).toContain("check that process directly");
+  // No path was recorded, so the advice never names a specific path to add.
+  expect(card.next).not.toContain("(pi)");
+  expect(card.next).toContain("check each such process directly");
   expect(card.next).toContain("pi");
   expect(card.next).toContain("Settings");
 });
@@ -238,15 +268,14 @@ test("a mix of readable and unreadable unconfirmed paths gets both pieces of adv
     }),
   ];
   const card = attention(s, c, { basePath: base })[0];
-  // The readable one still gets the fragment advice, naming only its tool.
-  expect(card.next).toContain(
-    "add a paths fragment covering the path above to pi",
-  );
+  // The readable one still gets the fragment advice, naming its own path.
+  expect(card.next).toContain("add a paths fragment");
+  expect(card.next).toContain("/usr/bin/pi (pi)");
   // The unreadable one gets the direct-check advice instead, naming only its
   // tool, never telling the reader to cover a path that was never recorded.
-  expect(card.next).toContain("check that process directly");
-  expect(card.next).toContain("codex's script path");
-  expect(card.next).not.toContain("covering the path above to codex");
+  expect(card.next).toContain("check each such process directly");
+  expect(card.next).toContain("a script path for codex");
+  expect(card.next).not.toContain("/usr/bin/pi (codex)");
 });
 
 test("nine stalling lanes produce one card that names them", () => {

@@ -552,15 +552,19 @@ function copy(
       };
     case "unconfirmed-tool": {
       const unconfirmed = cause.procs;
-      const toolList = (procs: typeof unconfirmed) =>
-        list([...new Set(procs.map((proc) => proc.unconfirmedTool ?? ""))]);
-      const names = list(
-        unconfirmed.map(
+      const toolNames = list([
+        ...new Set(unconfirmed.map((proc) => proc.unconfirmedTool ?? "")),
+      ]);
+      // Every process is named here, never elided behind a count: this card
+      // is the only place on the dashboard that names an unconfirmed process
+      // at all, unlike a lane or a mount list, which still has its own
+      // screen once this card's prose gives up on naming the rest.
+      const names = unconfirmed
+        .map(
           (proc) =>
             `${proc.comm} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""} at ${proc.unconfirmedPath ?? "a path vsys could not read"}`,
-        ),
-      );
-      const toolNames = toolList(unconfirmed);
+        )
+        .join(", ");
       // A script against a tool with no install location at all is the one
       // case vsys can fail to read without ever rejecting a path, so some of
       // these processes can carry no path to name. Naming a path above the
@@ -573,13 +577,28 @@ function copy(
         : !readable.length
           ? "vsys could not read a script path for any of them, so none is counted as an agent."
           : "Each process with a path shown lies outside every install location vsys knows for its name; vsys could not read one for the rest at all. Neither is counted as an agent.";
-      const pathsAdvice = `Open Settings, then add a paths fragment covering the path above to ${toolList(readable)} in the agent-tools overlay at ${agentToolsPath}.`;
-      const checkAdvice = `vsys could not read ${toolList(unread)}'s script path, so check that process directly, by its command line or working directory, for the real one, then open Settings and add a paths fragment covering it to the agent-tools overlay at ${agentToolsPath}.`;
-      const next = !unread.length
-        ? pathsAdvice
-        : !readable.length
-          ? checkAdvice
-          : `${pathsAdvice} ${checkAdvice}`;
+      // Named per path, not per tool: two processes can share a configured
+      // name while the paths that rejected them differ, and a fragment that
+      // covers one is never guaranteed to cover the other.
+      const readablePaths = [
+        ...new Set(
+          readable.map(
+            (proc) => `${proc.unconfirmedPath} (${proc.unconfirmedTool ?? ""})`,
+          ),
+        ),
+      ];
+      const unreadTools = [
+        ...new Set(unread.map((proc) => proc.unconfirmedTool ?? "")),
+      ];
+      const pathsAdvice = readablePaths.length
+        ? `Open Settings, then add a paths fragment to the agent-tools overlay at ${agentToolsPath} covering ${readablePaths.length === 1 ? "this path" : "each of these paths"}: ${readablePaths.join(", ")}.`
+        : "";
+      const checkAdvice = unreadTools.length
+        ? `vsys could not read a script path for ${unreadTools.join(", ")}, so check each such process directly, by its command line or working directory, for the real one, then open Settings and add a paths fragment covering it to the agent-tools overlay at ${agentToolsPath}.`
+        : "";
+      const next = [pathsAdvice, checkAdvice]
+        .filter((part) => part !== "")
+        .join(" ");
       return {
         word: "Unconfirmed",
         title: `${count(unconfirmed.length, "process", "processes")} ${p(unconfirmed.length, "carries", "carry")} an unconfirmed agent name: ${toolNames}`,

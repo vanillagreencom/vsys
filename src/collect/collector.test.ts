@@ -1066,6 +1066,23 @@ test("the owner's machine keeps every agent it ran, and its local names gain no 
     ]),
   ).toEqual(["tmux-spawn-10.scope"]);
 });
+test("unconfirmedPath carries the real path a match was tested against, through the real collector", async () => {
+  // `claude` is a shipped tool with install locations; this executable lies
+  // in none of them, through the one real toolName() call the collector
+  // makes, not a hand-built ToolMatch or Proc.
+  const f = setup();
+  f.proc(50, "app.slice/tmux-spawn-50.scope", {
+    comm: "claude",
+    command: ["claude"],
+    exe: "/usr/local/bin/claude",
+  });
+  const collector = new Collector(f.config, 100, 4096);
+  const s = await collector.sample(1000);
+  const proc = s.procs.find((p) => p.pid === 50);
+  expect(proc?.tool).toBeNull();
+  expect(proc?.unconfirmedTool).toBe("claude");
+  expect(proc?.unconfirmedPath).toBe("/usr/local/bin/claude");
+});
 test("stat parser handles a closing parenthesis in comm", () => {
   const fields = Array.from({ length: 22 }, () => "0");
   fields[0] = "S";
