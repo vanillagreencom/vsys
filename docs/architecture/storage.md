@@ -1,6 +1,6 @@
 # Storage and devices
 
-Covers: src/collect/btrfs.ts src/collect/devices.ts src/collect/mounts.ts src/collect/scratch.ts src/collect/scratch-scan.ts src/collect/scratch-worker.ts src/collect/worker-file.ts src/collect/scratch.test.ts src/collect/scratch-scan.test.ts src/collect/scratch-worker.test.ts src/collect/btrfs.test.ts scripts/bench-scratch.ts scripts/sample-check.ts src/model/writes.ts src/ui/storage-screen.tsx scripts/smart-reporter/ scripts/smart_reporter_test.py src/collect/udisks.ts src/collect/udisks.test.ts src/test/udisks.ts
+Covers: src/collect/btrfs.ts src/collect/devices.ts src/collect/mounts.ts src/collect/scratch.ts src/collect/scratch-scan.ts src/collect/scratch-worker.ts src/collect/worker-file.ts src/collect/scratch.test.ts src/collect/scratch-scan.test.ts src/collect/scratch-worker.test.ts src/collect/btrfs.test.ts scripts/bench-scratch.ts scripts/sample-check.ts src/model/writes.ts src/model/writes.test.ts src/collect/devices.test.ts src/ui/storage-screen.tsx scripts/smart-reporter/ scripts/smart_reporter_test.py src/collect/udisks.ts src/collect/udisks.test.ts src/test/udisks.ts
 
 Storage collection reads filesystem state, device counters, drive reports and scratch sizes. A counter the kernel or a drive did not report stays unknown rather than becoming a zero. Whether a filesystem's data is damaged, and the sources that answer it, are in [storage integrity](storage-integrity.md).
 
