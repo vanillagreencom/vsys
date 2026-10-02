@@ -850,6 +850,38 @@ test("drive lifetime writes name their source, and a machine with neither source
       ],
       hides: ["9.1 TiB"],
     },
+    {
+      name: "udisks answered for no drive",
+      snapshot: lifetimeSnapshot("absent", [unknownDrive], {
+        failure: "incomplete",
+        detail: "Access denied by UDisks2 (polkit)",
+      }),
+      shows: [
+        "udisks2 answered for no drive",
+        "Access denied by UDisks2 (polkit)",
+      ],
+      hides: [
+        "not in the expected format",
+        "not on the system bus",
+        "refused to answer",
+      ],
+    },
+    {
+      name: "udisks reply is malformed",
+      snapshot: lifetimeSnapshot("absent", [unknownDrive], {
+        failure: "malformed",
+        detail: "SyntaxError: Unexpected end of JSON input",
+      }),
+      shows: [
+        "udisks2's answer is not in the expected format",
+        "SyntaxError: Unexpected end of JSON input",
+      ],
+      hides: [
+        "answered for no drive",
+        "not on the system bus",
+        "refused to answer",
+      ],
+    },
   ];
   for (const row of rows) {
     const t = await mount(row.snapshot, c, { width: 200, height: 60 });
