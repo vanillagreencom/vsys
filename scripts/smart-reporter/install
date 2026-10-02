@@ -72,7 +72,7 @@ Could not fetch $source/$name. Nothing was installed."
 		if ! sum=$(checksum "$WORK/$name"); then
 			die "could not checksum $name."
 		fi
-		[[ "$sum" == "$expected" ]] || die "checksum mismatch for $name; nothing was installed."
+		[[ "$sum" == "$expected" ]] || die "checksum mismatch for $name: got $sum, release names $expected; nothing was installed."
 	done
 	install -Dm755 "$WORK/vsys-smart-report" /usr/local/bin/vsys-smart-report
 	install -Dm644 "$WORK/vsys-smart-report.service" /etc/systemd/system/vsys-smart-report.service

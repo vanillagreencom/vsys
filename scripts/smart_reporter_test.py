@@ -353,7 +353,11 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), sums_text=wrong)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: checksum mismatch for vsys-smart-report; nothing was installed.")
+            got = hashlib.sha256((REPORTER / "vsys-smart-report").read_bytes()).hexdigest()
+            self.assertEqual(
+                done.stderr.splitlines()[0],
+                f"smart-reporter: checksum mismatch for vsys-smart-report: got {got}, release names {'0' * 64}; nothing was installed.",
+            )
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_sha256sums_missing_a_file_installs_nothing(self) -> None:
