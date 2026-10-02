@@ -91,7 +91,7 @@ test("a process changing cgroup is one move, and a reused PID is not", () => {
     log.advance(reused, c).filter((e) => e.kind === "cgroup-move"),
   ).toEqual([]);
 });
-test("an agent leaving the agent slice carries the cause of the move", () => {
+test("only an agent leaving the agent slice carries the cause of the move", () => {
   const probe = (s: Snapshot, failure: "absent" | null) => {
     s.capabilities = s.capabilities.map((cap) =>
       cap.id === "agent-slice"
@@ -103,6 +103,7 @@ test("an agent leaving the agent slice carries the cause of the move", () => {
     string,
     "absent" | null,
     "absent" | null,
+    string | null,
     string,
     string,
     CauseId | "",
@@ -111,15 +112,28 @@ test("an agent leaving the agent slice carries the cause of the move", () => {
       "left the slice",
       null,
       null,
+      "claude",
       "agents.slice/a.scope",
       "app.slice/a.scope",
       "unconfined",
+    ],
+    // A process that was no agent before the move, such as a shell that exec'd
+    // one, was never confined, so the move changed no confinement.
+    [
+      "became an agent",
+      null,
+      null,
+      null,
+      "agents.slice/a.scope",
+      "app.slice/a.scope",
+      "",
     ],
     // Where the probe finds no agent slice, a move is a move and nothing more.
     [
       "no slice",
       null,
       "absent",
+      "claude",
       "agents.slice/a.scope",
       "app.slice/a.scope",
       "",
@@ -130,15 +144,16 @@ test("an agent leaving the agent slice carries the cause of the move", () => {
       "slice appeared",
       "absent",
       null,
+      "claude",
       "app.slice/a.scope",
       "background.slice/a.scope",
       "",
     ],
   ];
-  for (const [name, before, after, from, to, cause] of rows) {
+  for (const [name, before, after, tool, from, to, cause] of rows) {
     const first = emptySnapshot(1000);
     probe(first, before);
-    first.procs = [processSnapshot({ group: from })];
+    first.procs = [processSnapshot({ group: from, tool })];
     const log = started(first);
     const moved = emptySnapshot(2000);
     probe(moved, after);
