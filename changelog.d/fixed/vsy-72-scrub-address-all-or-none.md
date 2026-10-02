@@ -1,1 +1,0 @@
-- Storage marks a damaged address unresolved, not dropped, when a name holds a line-separator character, and never lists a partial name set for an unresolved address.

@@ -1,1 +1,0 @@
-- The mouse wheel moves the selection on Storage and on the Timeline change list, one row per notch. On Storage it first scrolls through a detail taller than the screen.

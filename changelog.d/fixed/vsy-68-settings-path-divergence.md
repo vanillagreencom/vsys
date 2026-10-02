@@ -1,1 +1,0 @@
-- Settings now shows the settings file path the next save will actually use, even after the reader moves it mid-session or saves before the next sample.

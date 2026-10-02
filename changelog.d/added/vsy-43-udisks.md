@@ -1,1 +1,0 @@
-- Show drive lifetime writes from udisks2 without root where no drive reporter is installed, and name the source of each total.

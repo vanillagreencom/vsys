@@ -1,1 +1,0 @@
-- Clicking a Home, Settings or agent detail row opens it as Enter does, and stacked mounts can each be selected.

@@ -1,1 +1,0 @@
-- Ship a Btrfs scrub reporter that lists the files at each damaged block's start or marks the block unnamed, with a one-command installer offered until the default report directory appears.

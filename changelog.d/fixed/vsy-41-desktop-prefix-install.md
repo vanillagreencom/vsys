@@ -1,1 +1,0 @@
-- An agent installed under a desktop prefix such as `/opt` counts as an agent when an agent-tools install location names it.

@@ -1,1 +1,0 @@
-- Timeline keeps host memory pressure one alert while the swap holder changes, instead of closing and reopening it or missing it when two scopes trade the top spot.

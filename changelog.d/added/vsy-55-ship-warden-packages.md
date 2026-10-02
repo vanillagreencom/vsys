@@ -1,1 +1,0 @@
-- Ship warden files and shared data in archives, AUR packages and the curl installer. AUR keeps Bun bundles, and installer keeps shared file modes.

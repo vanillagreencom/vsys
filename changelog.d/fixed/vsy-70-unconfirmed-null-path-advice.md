@@ -1,1 +1,0 @@
-- The unconfirmed-tool card no longer tells the reader to cover a path it could not read; it points at checking the process directly instead.

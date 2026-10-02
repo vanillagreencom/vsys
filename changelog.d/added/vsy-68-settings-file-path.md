@@ -1,1 +1,0 @@
-- Settings names the file an edit here will save to, beside the history database and error-memory rows.

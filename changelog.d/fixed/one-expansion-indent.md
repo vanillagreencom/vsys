@@ -1,1 +1,0 @@
-- What a reader opens is drawn at one indent everywhere, right of the row's own text, so an expansion on Home, Storage, Settings or an agent reads as a child of its row.

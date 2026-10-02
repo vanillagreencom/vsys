@@ -1,1 +1,0 @@
-- Settings no longer reports agent-slice io delegation as available when an unreadable ancestor, or a second agent slice, actually withholds it.
