@@ -8,6 +8,7 @@ installer cases check what it puts where, and what it refuses.
 from __future__ import annotations
 
 import calendar
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -315,8 +316,25 @@ esac
             self.assertEqual(report.read_text(), "last month's report\n")
 
 
+REPORTER_FILES = ("vsys-scrub-report", "vsys-report.conf", "vsys-scrub.conf")
+
+
+def reporter_sums() -> str:
+    """The checksums a release publishing the checkout's own files would carry."""
+    return "".join(f"{hashlib.sha256((REPORTER / name).read_bytes()).hexdigest()}  {name}\n" for name in REPORTER_FILES)
+
+
 class InstallTest(unittest.TestCase):
-    def run_install(self, base: Path, *, unit: bool = True, fail_download: str = "") -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    def run_install(
+        self,
+        base: Path,
+        *,
+        unit: bool = True,
+        fail_download: str = "",
+        fail_sums: bool = False,
+        sums_text: str | None = None,
+        version: str = "vfixture",
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         bin_dir = base / "bin"
         bin_dir.mkdir()
         calls = base / "calls"
@@ -325,20 +343,27 @@ class InstallTest(unittest.TestCase):
         stub(bin_dir, "systemctl", record + ('[[ $1 == cat ]] && exit 1\n' if not unit else "") + "exit 0\n")
         stub(bin_dir, "systemd-tmpfiles", record)
         stub(bin_dir, "install", record)
-        # The download serves the checkout's own files, by the name the URL ends in.
+        sums_path = base / "SHA256SUMS"
+        sums_path.write_text(sums_text if sums_text is not None else reporter_sums())
+        sums_fetch = "exit 22" if fail_sums else f'cp "{sums_path}" "$4"'
+        # The download serves the checkout's own files, by the name the URL ends in,
+        # so the call carries the resolved version in its path either way.
         stub(
             bin_dir,
             "curl",
             record
             + f"""name=${{2##*/}}
-[[ $name == "{fail_download}" ]] && exit 22
-cp "{REPORTER}/$name" "$4"
+case "$name" in
+SHA256SUMS) {sums_fetch} ;;
+"{fail_download}") exit 22 ;;
+*) cp "{REPORTER}/$name" "$4" ;;
+esac
 """,
         )
         done = subprocess.run(
             ["bash", "-s"],
             input=(REPORTER / "install").read_text(),
-            env=child_env(bin_dir),
+            env=child_env(bin_dir, VSYS_VERSION=version),
             capture_output=True,
             text=True,
             check=False,
@@ -360,7 +385,21 @@ cp "{REPORTER}/$name" "$4"
             )
             self.assertIn("systemd-tmpfiles --create /etc/tmpfiles.d/vsys-scrub.conf", calls)
             self.assertEqual(calls[-1], "systemctl daemon-reload")
-            self.assertEqual(done.stdout.splitlines()[0], "scrub-reporter: installed")
+            self.assertEqual(done.stdout.splitlines()[0], "scrub-reporter: installed vfixture")
+
+    def test_the_installer_fetches_from_the_resolved_version_tag(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), version="v9.9.9")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fetches = [call for call in calls if call.startswith("curl ")]
+            self.assertTrue(
+                any("/vanillagreencom/vsys/v9.9.9/scripts/scrub-reporter/vsys-scrub-report" in call for call in fetches),
+                fetches,
+            )
+            self.assertTrue(
+                any("/vanillagreencom/vsys/releases/download/v9.9.9/SHA256SUMS" in call for call in fetches),
+                fetches,
+            )
 
     def test_no_scrub_unit_installs_nothing(self) -> None:
         with scratch() as tmp:
@@ -374,6 +413,33 @@ cp "{REPORTER}/$name" "$4"
             done, calls = self.run_install(Path(tmp), fail_download="vsys-scrub.conf")
             self.assertEqual(done.returncode, 1)
             self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: download=vsys-scrub.conf failed")
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
+
+    def test_a_release_with_no_sha256sums_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), fail_sums=True)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: release vfixture publishes no SHA256SUMS; refusing to install an unverified reporter.")
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
+
+    def test_a_checksum_mismatch_installs_nothing(self) -> None:
+        wrong = "".join(f"{'0' * 64}  {name}\n" for name in REPORTER_FILES)
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), sums_text=wrong)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: checksum mismatch for vsys-scrub-report; nothing was installed.")
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
+
+    def test_sha256sums_missing_a_file_installs_nothing(self) -> None:
+        digest = hashlib.sha256((REPORTER / "vsys-scrub-report").read_bytes()).hexdigest()
+        partial = f"{digest}  vsys-scrub-report\n"
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), sums_text=partial)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(
+                done.stderr.splitlines()[0],
+                "scrub-reporter: SHA256SUMS names no checksum for vsys-report.conf; refusing to install unverified.",
+            )
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
 
