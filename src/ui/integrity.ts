@@ -12,8 +12,8 @@ import { capabilityReason } from "./settings";
  * What one filesystem's integrity state says in words. Every state but
  * `healthy` says something is wrong or unknown, so a filesystem nothing has
  * checked never reads as one that has been checked and found sound. A
- * filesystem nothing checks because the reports cannot be read at all says
- * why, so the reader is not left waiting for a check that cannot come.
+ * filesystem whose reports cannot be read at all says why, so the reader is
+ * not left waiting for a report that cannot come.
  */
 export function integrityWords(item: Integrity, scrub?: Capability): string {
   switch (item.state) {
@@ -129,17 +129,21 @@ const sourceWords: Record<ErrorSource, string> = {
 /**
  * The last new error and the source that recorded it. An unreadable record of
  * past growth is not an absence of errors, so the two never share a word, and
- * "none" names the sources that recorded none: a kernel log vsys could not
- * search recorded nothing either way.
+ * "none" names only the sources vsys read: a counter it could not read, or a
+ * kernel log it could not search, recorded nothing either way, and with
+ * neither read the time is not available.
  */
 const errorTime = (item: Integrity): string => {
   // A failure the kernel logged is a dated reading whatever the counter's
   // record says. Only a time the counter alone would give goes unread.
   if (!item.errorKnown && item.errorSource !== "kernel-log") return gap;
-  if (item.errorSource === null)
-    return item.kernelLog
-      ? "none (error counter, kernel log)"
-      : "none (error counter only)";
+  if (item.errorSource === null) {
+    const read = [
+      ...(item.counter !== null ? [sourceWords.counter] : []),
+      ...(item.kernelLog ? [sourceWords["kernel-log"]] : []),
+    ];
+    return read.length ? `none (${read.join(", ")})` : gap;
+  }
   return `${age(item.errorAge ?? 0)} ago (${sourceWords[item.errorSource]})`;
 };
 /**

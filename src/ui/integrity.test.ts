@@ -59,7 +59,7 @@ test("the line answers both questions without opening anything", () => {
   // Nothing checked, nothing recorded: both times say so rather than reading
   // as zero or as healthy.
   expect(integrityLine(state([]))).toBe(
-    "Never checked · last full check never · last new error none (error counter only)",
+    "Never checked · last full check never · last new error none (error counter)",
   );
 });
 
@@ -75,13 +75,14 @@ test("the line names the source of each time it gives", () => {
   const item = (
     scrubs: Scrub[],
     csumFailures: Record<string, CsumFailure[]> | null,
+    countersAvailable = true,
   ) =>
     integrity(
       volumesByDevice([
         volumeSnapshot("/", {
           fsid: "fs",
-          errors: { "1/corruption_errs": 0 },
-          countersAvailable: true,
+          errors: countersAvailable ? { "1/corruption_errs": 0 } : {},
+          countersAvailable,
         }),
       ])[0],
       { scrubs, csumFailures },
@@ -99,7 +100,7 @@ test("the line names the source of each time it gives", () => {
     ],
     [
       integrityLine(item([report()], null)),
-      "Healthy · last full check 24.0h ago (scrub report) · last new error none (error counter only)",
+      "Healthy · last full check 24.0h ago (scrub report) · last new error none (error counter)",
     ],
     [
       integrityLine(item([], { fs: [failure] }), absent),
@@ -107,7 +108,17 @@ test("the line names the source of each time it gives", () => {
     ],
     [
       integrityLine(item([], null), absent),
-      "Never checked: no readable scrub report directory · last full check never · last new error none (error counter only)",
+      "Never checked: no readable scrub report directory · last full check never · last new error none (error counter)",
+    ],
+    // A counter vsys could not read recorded nothing either way, so "none"
+    // names only the log, and with neither read the time is not available.
+    [
+      integrityLine(item([report()], {}, false)),
+      "Damage state unknown · last full check 24.0h ago (scrub report) · last new error none (kernel log)",
+    ],
+    [
+      integrityLine(item([report()], null, false)),
+      "Damage state unknown · last full check 24.0h ago (scrub report) · last new error not available",
     ],
   ];
   for (const [line, expected] of rows) expect(line).toBe(expected);
@@ -269,7 +280,7 @@ test("an unreadable record of past growth is not a record of no errors", () => {
     "New errors since last check · last full check never · last new error 2.0h ago (kernel log)",
   );
   expect(integrityLine(state([report()]))).toContain(
-    "last new error none (error counter only)",
+    "last new error none (error counter)",
   );
 });
 

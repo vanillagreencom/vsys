@@ -174,7 +174,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   },
   scrubDir: {
     label: "Scrub reports",
-    help: "The directory a privileged timer leaves scrub reports in.",
+    help: "The directory a root scrub reporter leaves its reports in.",
   },
   smartDir: {
     label: "Drive reports",
@@ -417,9 +417,9 @@ export function capabilityReason(cap: Capability): string {
  */
 export const reporterInstall =
   "curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash";
-/** Why the install is offered, in one sentence. */
+/** Why the install is offered, and what else a check needs. */
 export const reporterSentence =
-  "No scrub reporter is installed, so nothing checks these filesystems: the check and the file names it finds need root, which vsys never has.";
+  "No scrub reporter is installed, so no check reports to vsys: the check and the file names it finds need root, which vsys never has. A check also needs a btrfs-scrub timer for each filesystem.";
 /**
  * The install line, where it would fill the gap: the report directory does
  * not exist, and it is the one the shipped reporter writes to. A reader who

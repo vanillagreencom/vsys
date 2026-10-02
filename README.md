@@ -72,7 +72,7 @@ Open a filesystem to see the files that may be damaged. On some kernels the chec
 
 vsys deletes nothing and offers no command to delete a listed file.
 
-Checking a filesystem and naming its damaged files needs root, so vsys reads a report that a root timer writes after each Btrfs scrub, one file for each filesystem. vsys ships that reporter. Install it with:
+Checking a filesystem and naming its damaged files needs root, so vsys reads a report that the reporter writes as root after each Btrfs scrub, one file for each filesystem. vsys ships that reporter. Install it with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash
