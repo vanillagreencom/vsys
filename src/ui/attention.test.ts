@@ -124,6 +124,174 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   );
 });
 
+test("a process whose agent name was not confirmed by install location gets a visible card", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 99,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
+    }),
+  ];
+  const items = attention(s, c, { basePath: base });
+  expect(items.map((item) => item.id)).toEqual(["unconfirmed-tool"]);
+  const card = present(items[0], "the unconfirmed-tool card");
+  // Visible, but housekeeping never speaks for the machine.
+  expect(card.verdictWorthy).toBe(false);
+  expect(verdictLine(items, s)).toBe("Healthy");
+  // The process, the tool it almost matched and the path tested are all
+  // named, not only carried as fields a reader never sees.
+  expect(card.title).toContain("pi");
+  expect(said(card)).toContain("pi (pid 99): pi at /usr/bin/pi");
+  // The reader is pointed at the Settings overlay's paths fragment.
+  expect(card.view).toBe("Settings");
+  expect(card.next).toContain("Settings");
+  expect(card.next).toContain("paths fragment");
+  expect(card.next).toContain("agent-tools.json");
+});
+
+test("several unconfirmed processes share one card, and a repeated tool name is counted once", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 10,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
+    }),
+    // A second process naming the same tool: the title counts the tool once,
+    // not once per process.
+    processSnapshot({
+      pid: 11,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/opt/pi/pi",
+    }),
+    processSnapshot({
+      pid: 12,
+      comm: "node",
+      tool: null,
+      unconfirmedTool: "codex",
+      unconfirmedPath: "/home/reader/scripts/codex.js",
+    }),
+  ];
+  const items = attention(s, c, { basePath: base });
+  expect(items.map((item) => item.id)).toEqual(["unconfirmed-tool"]);
+  const card = present(items[0], "the unconfirmed-tool card");
+  // Three processes, two distinct tool names: the title's count and its name
+  // list disagree in length, and neither double-counts "pi". The plural verb
+  // follows the process count, not the deduped name count.
+  expect(card.title).toBe(
+    "3 processes carry an unconfirmed agent name: pi, codex",
+  );
+  expect(card.title).not.toContain("pi, pi");
+  // Every process is still named in the detail, each with its own path, so
+  // the two "pi" processes are not collapsed into the dedup either.
+  expect(said(card)).toContain("pi (pid 10): pi at /usr/bin/pi");
+  expect(said(card)).toContain("pi (pid 11): pi at /opt/pi/pi");
+  expect(said(card)).toContain(
+    "node (pid 12): codex at /home/reader/scripts/codex.js",
+  );
+  // Two processes share the tool name "pi" but differ in path: the advice
+  // names every distinct path, never one path standing in for both.
+  expect(card.next).toContain("/usr/bin/pi (pi)");
+  expect(card.next).toContain("/opt/pi/pi (pi)");
+  expect(card.next).toContain("/home/reader/scripts/codex.js (codex)");
+});
+
+test("five or more unconfirmed processes are all named, none dropped behind a count", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = Array.from({ length: 6 }, (_, i) =>
+    processSnapshot({
+      pid: 30 + i,
+      comm: `tool${i}`,
+      tool: null,
+      unconfirmedTool: `name${i}`,
+      unconfirmedPath: `/opt/name${i}/bin`,
+    }),
+  );
+  const card = present(
+    attention(s, c, { basePath: base })[0],
+    "the unconfirmed-tool card",
+  );
+  // Nothing else on the dashboard names an unconfirmed process, so this card
+  // never elides the fifth one behind "and N more" the way a lane list does.
+  for (let i = 0; i < 6; i++) {
+    expect(said(card)).toContain(
+      `tool${i} (pid ${30 + i}): name${i} at /opt/name${i}/bin`,
+    );
+    expect(card.next).toContain(`/opt/name${i}/bin (name${i})`);
+  }
+  expect(said(card)).not.toContain("more");
+  expect(card.next).not.toContain("more");
+});
+
+test("an unconfirmed process with no readable path gets guidance to check it directly, not a path fragment", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 20,
+      comm: "bash",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: null,
+    }),
+  ];
+  const card = present(
+    attention(s, c, { basePath: base })[0],
+    "the unconfirmed-tool card",
+  );
+  expect(said(card)).toContain(
+    "bash (pid 20): pi at a path vsys could not read",
+  );
+  // No path was recorded, so the advice never names a specific path to add.
+  expect(card.next).not.toContain("(pi)");
+  expect(card.next).toContain("check each such process directly");
+  expect(card.next).toContain("pi");
+  expect(card.next).toContain("Settings");
+});
+
+test("a mix of readable and unreadable unconfirmed paths gets both pieces of advice", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 21,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
+    }),
+    processSnapshot({
+      pid: 22,
+      comm: "bash",
+      tool: null,
+      unconfirmedTool: "codex",
+      unconfirmedPath: null,
+    }),
+  ];
+  const card = present(
+    attention(s, c, { basePath: base })[0],
+    "the unconfirmed-tool card",
+  );
+  // The readable one still gets the fragment advice, naming its own path.
+  expect(card.next).toContain("add a paths fragment");
+  expect(card.next).toContain("/usr/bin/pi (pi)");
+  // The unreadable one gets the direct-check advice instead, naming only its
+  // tool, never telling the reader to cover a path that was never recorded.
+  expect(card.next).toContain("check each such process directly");
+  expect(card.next).toContain("a script path for codex");
+  expect(card.next).not.toContain("/usr/bin/pi (codex)");
+});
+
 test("nine stalling lanes produce one card that names them", () => {
   const c = defaults();
   const s = emptySnapshot();

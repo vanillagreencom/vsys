@@ -1,3 +1,4 @@
+import { agentToolsPath } from "../config/agent-tools";
 import type { Config } from "../config/config";
 import { sliceCompared } from "../model/lanes";
 import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
@@ -62,7 +63,7 @@ export interface Attention {
   next: string;
   /** Read-only text to copy, built from configured names. */
   command?: string;
-  view: "Agents" | "Storage" | "Resources" | "Builds";
+  view: "Agents" | "Storage" | "Resources" | "Builds" | "Settings";
   /** Absent when the card names no single row, such as a machine-wide stall. */
   target?: Target;
   danger: boolean;
@@ -555,6 +556,64 @@ function copy(
         view: "Storage",
         target: first,
       };
+    case "unconfirmed-tool": {
+      const unconfirmed = cause.procs;
+      const toolNames = list([
+        ...new Set(unconfirmed.map((proc) => proc.unconfirmedTool ?? "")),
+      ]);
+      // Every process is named here, never elided behind a count: this card
+      // is the only place on the dashboard that names an unconfirmed process
+      // at all, unlike a lane or a mount list, which still has its own
+      // screen once this card's prose gives up on naming the rest.
+      const names = unconfirmed
+        .map(
+          (proc) =>
+            `${proc.comm} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""} at ${proc.unconfirmedPath ?? "a path vsys could not read"}`,
+        )
+        .join(", ");
+      // A script against a tool with no install location at all is the one
+      // case vsys can fail to read without ever rejecting a path, so some of
+      // these processes can carry no path to name. Naming a path above the
+      // fragment advice, or lying outside a location that was never read, is
+      // wrong for exactly those, so the two groups get their own sentence.
+      const readable = unconfirmed.filter((proc) => proc.unconfirmedPath);
+      const unread = unconfirmed.filter((proc) => !proc.unconfirmedPath);
+      const sentence = !unread.length
+        ? "Each process's path lies outside every install location vsys knows for its name, so vsys does not count it as an agent."
+        : !readable.length
+          ? "vsys could not read a script path for any of them, so none is counted as an agent."
+          : "Each process with a path shown lies outside every install location vsys knows for its name; vsys could not read one for the rest at all. Neither is counted as an agent.";
+      // Named per path, not per tool: two processes can share a configured
+      // name while the paths that rejected them differ, and a fragment that
+      // covers one is never guaranteed to cover the other.
+      const readablePaths = [
+        ...new Set(
+          readable.map(
+            (proc) => `${proc.unconfirmedPath} (${proc.unconfirmedTool ?? ""})`,
+          ),
+        ),
+      ];
+      const unreadTools = [
+        ...new Set(unread.map((proc) => proc.unconfirmedTool ?? "")),
+      ];
+      const pathsAdvice = readablePaths.length
+        ? `Open Settings, then add a paths fragment to the agent-tools overlay at ${agentToolsPath} covering ${readablePaths.length === 1 ? "this path" : "each of these paths"}: ${readablePaths.join(", ")}.`
+        : "";
+      const checkAdvice = unreadTools.length
+        ? `vsys could not read a script path for ${unreadTools.join(", ")}, so check each such process directly, by its command line or working directory, for the real one, then open Settings and add a paths fragment covering it to the agent-tools overlay at ${agentToolsPath}.`
+        : "";
+      const next = [pathsAdvice, checkAdvice]
+        .filter((part) => part !== "")
+        .join(" ");
+      return {
+        word: "Unconfirmed",
+        title: `${count(unconfirmed.length, "process", "processes")} ${p(unconfirmed.length, "carries", "carry")} an unconfirmed agent name: ${toolNames}`,
+        ways: [`${names}. ${sentence}`],
+        next,
+        command: shellLine(["cat", agentToolsPath]),
+        view: "Settings",
+      };
+    }
   }
 }
 /**
