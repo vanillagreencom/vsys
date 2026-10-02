@@ -348,12 +348,15 @@ export function probeIoStat(
       } catch (error) {
         return record("io-stat", source, classify(error));
       }
-      if (!enabled.includes("io"))
+      if (!enabled.includes("io")) {
+        const part = parts[depth - 1];
+        if (part === undefined) continue;
         return record("io-stat", source, {
           failure: "incomplete",
-          detail: parts[depth - 1],
+          detail: part,
           belowSlice: parts.slice(0, depth).includes(c.agentSlice),
         });
+      }
     }
   }
   return root;
