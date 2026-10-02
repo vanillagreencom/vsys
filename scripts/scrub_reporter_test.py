@@ -76,13 +76,14 @@ MIXED_SECTOR = NO_EXTENT + 65536 * 3
 # The file the scrub damaged sits only at the block's very last 4 KiB
 # sector (offset 15 * 4096), proving the full 16-sector sweep runs to its end.
 LAST_SECTOR = NO_EXTENT + 65536 * 4
-# A non-block-aligned address, as a kernel that logs the exact sector
-# (33ce0aa4c576) would write: 63488 bytes into its own 64 KiB block. A file
-# that sits in the next, unrelated 64 KiB block must never be listed under
-# this address, however far an unfloored sector scan would otherwise reach.
-UNALIGNED_BLOCK = NO_EXTENT + 65536 * 5
-UNALIGNED_ADDRESS = UNALIGNED_BLOCK + 63488
-NEXT_BLOCK_FILE = UNALIGNED_ADDRESS + 4096
+# Btrfs's own reproduction: a block group that does not start on a 64 KiB
+# boundary from byte zero. The kernel logs this block's start exactly as
+# btrfs placed it, not on any absolute grid, and the file sits at the
+# block's last sector. Flooring the address to the nearest absolute 64 KiB
+# multiple, rather than scanning from the address as given, computes the
+# wrong window and misses this file.
+BLOCK_GROUP_START = 69632
+BLOCK_GROUP_LAST_SECTOR = BLOCK_GROUP_START + 15 * 4096
 
 
 def fixup(device: str, address: int) -> str:
@@ -165,11 +166,12 @@ class ReporterTest(unittest.TestCase):
         safe = fs / "target" / "safe"
         safe.write_text("damaged")
         # A file reachable only from the block's very last sector, and one
-        # reachable only from the next, unrelated block.
+        # reachable only from the last sector of a block group that does not
+        # start on an absolute 64 KiB boundary.
         last = fs / "target" / "last"
         last.write_text("damaged")
-        next_block = fs / "target" / "next-block"
-        next_block.write_text("healthy")
+        unaligned_group = fs / "target" / "unaligned-group"
+        unaligned_group.write_text("damaged")
         refs = base / "refs"
         names = base / "names"
         refs.mkdir()
@@ -208,10 +210,12 @@ class ReporterTest(unittest.TestCase):
         # LAST_SECTOR's file sits only at its block's final sector (index 15).
         held(LAST_SECTOR + 15 * 4096, last)
         (names / str(LAST_SECTOR + 15 * 4096)).write_text(f"{last}\n")
-        # NEXT_BLOCK_FILE sits in the block after UNALIGNED_ADDRESS's own
-        # block, reachable only if the scan is never floored to that block.
-        held(NEXT_BLOCK_FILE, next_block)
-        (names / str(NEXT_BLOCK_FILE)).write_text(f"{next_block}\n")
+        # BLOCK_GROUP_LAST_SECTOR sits 15 sectors past the logged, real block
+        # start btrfs placed on no absolute grid; reachable only by scanning
+        # from that given address, never by flooring it to one of this
+        # reporter's own.
+        held(BLOCK_GROUP_LAST_SECTOR, unaligned_group)
+        (names / str(BLOCK_GROUP_LAST_SECTOR)).write_text(f"{unaligned_group}\n")
         stub(bin_dir, "systemd-escape", 'echo "-"\n')
         if kernel is None:
             stub(bin_dir, "journalctl", "echo 'No journal files were found.' >&2\nexit 1\n")
@@ -353,20 +357,20 @@ esac
             # iteration, so a scan that stopped one sector short would miss it.
             self.assertEqual(read["addresses"], [{"logical": LAST_SECTOR, "paths": [f"{fs}/target/last"]}])
 
-    def test_the_sector_scan_never_reaches_the_next_block(self) -> None:
-        kernel = fixup("vsys-test-a", UNALIGNED_ADDRESS)
+    def test_a_block_group_not_on_an_absolute_64kib_boundary_still_resolves_its_last_sector(self) -> None:
+        kernel = fixup("vsys-test-a", BLOCK_GROUP_START)
         with scratch() as tmp:
             base = Path(tmp)
             done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
             self.assertEqual(done.returncode, 0, done.stderr)
+            fs = base / "fs"
             read = parse(report, base)
-            # UNALIGNED_ADDRESS is not 64 KiB aligned, as a kernel that logs
-            # the exact sector would write. A file sits in the next block, at
-            # an offset an unfloored 16-sector scan from this address would
-            # reach; floored to this address's own block, none of its 16
-            # sectors holds an extent, so that file is never listed here.
-            self.assertEqual(read["addresses"], [{"logical": UNALIGNED_ADDRESS, "paths": [], "resolved": False}])
-            self.assertNotIn("next-block", report.read_text())
+            # Btrfs rounds the logged address down within its own block
+            # group, not to any absolute 64 KiB grid. Scanning the block's
+            # 16 sectors from the address exactly as given, rather than
+            # flooring it to the nearest multiple of 65536, is what finds a
+            # file at this block's real last sector.
+            self.assertEqual(read["addresses"], [{"logical": BLOCK_GROUP_START, "paths": [f"{fs}/target/unaligned-group"]}])
 
     def test_a_start_time_that_does_not_parse_searches_the_last_hour(self) -> None:
         with scratch() as tmp:

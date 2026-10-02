@@ -143,10 +143,9 @@ fi
 # Resolving only that one address can miss the damaged file when it sits at
 # a later sector, so each of the block's 16 sectors is resolved on its own,
 # and every file any of them names is listed. A resolver answer that no
-# extent holds a sector is never free space on its own, because this
-# reporter's own 64 KiB grid cannot be checked against the block group's
-# real alignment; only a block where none of its 16 sectors holds an extent
-# reads as unresolved rather than damage this report cannot name.
+# extent holds a sector is never free space on its own: only a block where
+# none of its 16 sectors holds an extent reads as unresolved rather than
+# damage this report cannot name.
 sector_bytes=4096
 sectors_per_block=16
 no_extent() {
@@ -218,22 +217,26 @@ resolve_sector() {
 	done
 	printf '%s\n' "${listed[@]}"
 }
-# The 64 KiB block the kernel logged this address as a sector of. On the
-# affected kernels the address is already that block's start; on a fixed
-# kernel it is some exact sector inside one, and flooring it to its own grid
-# still lands on that same block's start, so the scan this floor feeds never
-# reaches into the next, unrelated block. Every one of the block's 16
-# sectors is resolved, and the union of every name any of them gives is
+# The 64 KiB block the kernel logged this address as the start of. Btrfs
+# rounds that address down within the block's own block group before
+# logging it, and a block group need not itself sit on a 64 KiB boundary
+# from byte zero, so this reporter floors to no grid of its own: the given
+# address is scanned as the block's first sector, exactly as btrfs placed
+# it. A fixed kernel logging the exact damaged sector, rather than the block
+# start, can in principle put a later sector's scan past this block into the
+# next one; nothing this reporter can read tells one block group's end from
+# another's start, so that gap stays open rather than being closed by a
+# grid this filesystem may not share. Every one of the block's 16 sectors
+# from here is resolved, and the union of every name any of them gives is
 # listed. A real resolution failure at one sector is never silently dropped:
 # it still marks the whole block not resolved, even beside names a
 # different sector proved, because this report cannot say every file in the
 # block was found once one sector could not be read.
 resolve() {
-	local address=$1 block=$((address - address % (sector_bytes * sectors_per_block)))
-	local sector reason rc failure=""
+	local address=$1 sector reason rc failure=""
 	local -A names=()
 	for ((sector = 0; sector < sectors_per_block; sector++)); do
-		if reason=$(resolve_sector "$((block + sector * sector_bytes))"); then
+		if reason=$(resolve_sector "$((address + sector * sector_bytes))"); then
 			rc=0
 		else
 			rc=$?
