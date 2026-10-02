@@ -287,8 +287,38 @@ esac
                 check=False,
             )
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=timeout missing")
+            self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=timeout misconfigured")
             self.assertFalse(reports.exists(), "a missing timeout must refuse before any report directory is made")
+
+    def test_an_invalid_smartctl_timeout_fails_loudly_instead_of_every_drive_going_unknown(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            stub(bin_dir, "smartctl", "exit 0\n")
+            sys_block = base / "block"
+            (sys_block / "nvme0n1").mkdir(parents=True)
+            (sys_block / "nvme0n1" / "device").mkdir()
+            reports = base / "reports"
+            # The same probe that catches a missing timeout command also
+            # catches a SMARTCTL_TIMEOUT no duration parses, since `timeout`
+            # itself rejects both the same way: a nonzero exit before `true`
+            # ever runs.
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "SYS_BLOCK": str(sys_block),
+                    "SMARTCTL_TIMEOUT": "not-a-duration",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=timeout misconfigured")
+            self.assertFalse(reports.exists(), "an invalid SMARTCTL_TIMEOUT must refuse before any report directory is made")
 
 
 REPORTER_FILES = ("vsys-smart-report", "vsys-smart-report.service", "vsys-smart-report.timer", "vsys-smart.conf")
