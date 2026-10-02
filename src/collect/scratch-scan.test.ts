@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, linkSync, lstatSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
+import { present } from "../test/present";
 import {
   type PaceClock,
   restMs,
@@ -28,7 +29,7 @@ test("one traversal counts hard links once per root and once per session", async
       Date.now(),
       full,
     );
-    expect(result.scratch[0].bytes).toBe(
+    expect(result.scratch[0]?.bytes).toBe(
       lstatSync(path).size +
         lstatSync(join(path, "a")).size +
         lstatSync(join(path, "b")).size +
@@ -42,9 +43,9 @@ test("one traversal counts hard links once per root and once per session", async
     );
     // A root that could not be read reports no size at all, and its own
     // failure, rather than a zero beside the roots that were read.
-    expect(result.scratch[1].bytes).toBeNull();
+    expect(result.scratch[1]?.bytes).toBeNull();
     expect(result.errors.map((e) => e.source)).toEqual([missing]);
-    expect(result.scratch[0].error).toBeNull();
+    expect(result.scratch[0]?.error).toBeNull();
   } finally {
     f.cleanup();
   }
@@ -189,7 +190,10 @@ test("a traversal rests for what each spent slice earned", async () => {
         { sliceMs: 0, dutyPercent },
         clock,
       );
-      expect({ dutyPercent, error: scan.scratch[0].error }).toEqual({
+      expect({
+        dutyPercent,
+        error: present(scan.scratch[0], "scratch root").error,
+      }).toEqual({
         dutyPercent,
         error: null,
       });

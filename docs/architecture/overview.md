@@ -51,6 +51,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 3. Repeated refresh leaves one mounted screen, a stable listener count and the selected view. `src/ui/screen.test.tsx` drives the production mount function.
 4. No lane action reaches an effect while write mode is off, while a past sample is pinned, or when the current sample no longer names the confirmed line. `src/ui/agent.test.tsx` checks all four answers and `src/model/actions.test.ts` pins each command.
 5. Every host-specific name ships a systemd user-session default, and write mode ships off. `src/config/config.test.ts` checks both.
+6. An indexed read that may find nothing is guarded where it is made. `tsconfig.json` sets `noUncheckedIndexedAccess`, so the type check treats every array element, record entry and match group as possibly undefined, including one read into a binding annotated that way, which the compiler would otherwise narrow to its initializer. `src/test/indexed-access.test.ts` type-checks an unguarded read and its guarded twin under the repository's own settings.
 
 ## Decisions
 

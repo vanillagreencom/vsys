@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { type PaneAddress, serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
 import { groupSnapshot, processSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import {
   effectiveMax,
   lanes,
@@ -56,7 +57,7 @@ test("an ungrouped lane takes its main PID from the scope root, not enumeration 
     cwd: "/repo/child",
     group: "/user.slice/escaped",
   });
-  const [only] = lanes([], [child, wrapper], c);
+  const only = present(lanes([], [child, wrapper], c)[0], "the one lane");
   expect([only.mainPid, only.name]).toEqual([100, "claude wrapper"]);
 });
 
@@ -82,7 +83,9 @@ test("two agents in one worktree under different accounts get different names", 
       env: { CODEX_HOME: "/home/x/.codex", VSYS_PANE_TITLE: "review" },
     }),
   ];
-  const [a, b] = lanes(groups, procs, c);
+  const named = lanes(groups, procs, c);
+  const a = present(named[0], "the first lane");
+  const b = present(named[1], "the second lane");
   // The accounts already separate these two, so neither carries a pane.
   expect(a.name).toBe(".2claude claude kendex");
   expect(b.name).toBe(".codex codex review kendex");
@@ -171,7 +174,7 @@ test("a lane reports its cgroup, its charged resources and its effective caps", 
       command: ["/usr/bin/sccache", "rustc"],
     }),
   ];
-  const [lane] = lanes(groups, procs, c, 4);
+  const lane = present(lanes(groups, procs, c, 4)[0], "the lane");
   expect(lane.cgroup).toBe("agents.slice/a.scope");
   expect([lane.cache, lane.readRate, lane.writeRate]).toEqual([
     4096, 1048576, 2097152,
@@ -203,17 +206,20 @@ test("counters the kernel did not report stay unknown rather than becoming zero"
       weight: null,
     }),
   ];
-  const [lane] = lanes(
-    groups,
-    [
-      processSnapshot({
-        pid: 1,
-        group: "/agents.slice/a.scope",
-        cpuPercent: null,
-      }),
-    ],
-    c,
-    4,
+  const lane = present(
+    lanes(
+      groups,
+      [
+        processSnapshot({
+          pid: 1,
+          group: "/agents.slice/a.scope",
+          cpuPercent: null,
+        }),
+      ],
+      c,
+      4,
+    )[0],
+    "the lane",
   );
   expect([
     lane.cache,
@@ -242,12 +248,11 @@ test("an unread cgroup tree leaves the memory cap unknown rather than unlimited"
     max: null,
     known: false,
   });
-  const [scoped] = lanes([covered], [proc], c);
+  const scoped = present(lanes([covered], [proc], c)[0], "the scoped lane");
   expect([scoped.memoryMax, scoped.memoryMaxKnown]).toEqual([null, true]);
-  const [escaped] = lanes(
-    [],
-    [processSnapshot({ pid: 1, group: "/app.slice/x.scope" })],
-    c,
+  const escaped = present(
+    lanes([], [processSnapshot({ pid: 1, group: "/app.slice/x.scope" })], c)[0],
+    "the escaped lane",
   );
   expect([escaped.memoryMax, escaped.memoryMaxKnown]).toEqual([null, false]);
 });
@@ -255,16 +260,19 @@ test("an unread cgroup tree leaves the memory cap unknown rather than unlimited"
 test("a lane with no configured account leaves that part out of its name", () => {
   const c = defaults();
   const group = "/agents.slice/a.scope";
-  const [lane] = lanes(
-    [
-      groupSnapshot({
-        path: "agents.slice/a.scope",
-        name: "a.scope",
-        pids: [1],
-      }),
-    ],
-    [processSnapshot({ pid: 1, group, cwd: "/repo/kendex", env: {} })],
-    c,
+  const lane = present(
+    lanes(
+      [
+        groupSnapshot({
+          path: "agents.slice/a.scope",
+          name: "a.scope",
+          pids: [1],
+        }),
+      ],
+      [processSnapshot({ pid: 1, group, cwd: "/repo/kendex", env: {} })],
+      c,
+    )[0],
+    "the lane",
   );
   expect([lane.account, lane.name]).toEqual([null, "claude kendex"]);
 });
@@ -288,7 +296,14 @@ test("a blocked lane counts its waiting tasks and names the resource they wait o
     pids: [1, 2, 3],
   };
   const on = (io: number, memory: number) =>
-    lanes([groupSnapshot({ ...base, pressure: psi(io, memory) })], procs, c)[0];
+    present(
+      lanes(
+        [groupSnapshot({ ...base, pressure: psi(io, memory) })],
+        procs,
+        c,
+      )[0],
+      "the blocked lane",
+    );
   const storage = on(40, 5);
   expect([storage.state, storage.blocked, storage.blockedOn]).toEqual([
     "blocked",
@@ -296,7 +311,7 @@ test("a blocked lane counts its waiting tasks and names the resource they wait o
     "io",
   ]);
   expect(on(5, 40).blockedOn).toBe("memory");
-  expect(lanes([groupSnapshot(base)], procs, c)[0].blockedOn).toBeNull();
+  expect(lanes([groupSnapshot(base)], procs, c)[0]?.blockedOn).toBeNull();
 });
 
 test("a configured pane address is the address, not a key into the server", () => {
@@ -317,7 +332,10 @@ test("a configured pane address is the address, not a key into the server", () =
     env: { TMUX_PANE: "%12" },
   });
   const panes = new Map([["%12", { address: "work:3.2", window: "build" }]]);
-  const [byAddress] = lanes(groups, [configured], c, 0, tmuxRead(panes));
+  const byAddress = present(
+    lanes(groups, [configured], c, 0, tmuxRead(panes))[0],
+    "the lane configured by address",
+  );
   // Looked up in a map keyed by `%N` it found nothing and the row showed no
   // address at all, for the configuration this repository documents.
   expect({ pane: byAddress.pane, address: byAddress.address }).toEqual({
@@ -328,12 +346,15 @@ test("a configured pane address is the address, not a key into the server", () =
   // was not asked about this pane.
   expect(byAddress.window).toBe("");
   // A handle still resolves through the server, which is the other half.
-  const [byHandle] = lanes(
-    [groupSnapshot({ path: "b.scope", name: "b.scope" })],
-    [handle],
-    c,
-    0,
-    tmuxRead(panes),
+  const byHandle = present(
+    lanes(
+      [groupSnapshot({ path: "b.scope", name: "b.scope" })],
+      [handle],
+      c,
+      0,
+      tmuxRead(panes),
+    )[0],
+    "the lane with a pane handle",
   );
   expect({ address: byHandle.address, window: byHandle.window }).toEqual({
     address: "work:3.2",
@@ -368,13 +389,9 @@ test("a pane on another tmux server resolves to nothing, not to a stranger", () 
     env: { TMUX_PANE: "%9", TMUX: "/tmp/tmux-1000/other,777,0" },
   });
   const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
-  const [mine, theirs] = lanes(
-    groups,
-    [here, away],
-    c,
-    0,
-    tmuxRead(panes, socket),
-  );
+  const both = lanes(groups, [here, away], c, 0, tmuxRead(panes, socket));
+  const mine = present(both[0], "the lane on this server");
+  const theirs = present(both[1], "the lane on another server");
   // The lane on this server reads as it always did.
   expect({
     address: mine.address,
@@ -391,15 +408,18 @@ test("a pane on another tmux server resolves to nothing, not to a stranger", () 
   }).toEqual({ address: "", window: "", elsewhere: true });
   // A boundary vsys cannot see is not one it refuses at: with no server known
   // for the read, or none for the lane, both resolve as before.
-  const [unknownServer] = lanes(groups, [away], c, 0, tmuxRead(panes));
-  expect(unknownServer.elsewhere).toBe(false);
+  const unknownServer = lanes(groups, [away], c, 0, tmuxRead(panes))[0];
+  expect(unknownServer?.elsewhere).toBe(false);
   const bare = processSnapshot({
     pid: 3,
     group: "a.scope",
     tool: "claude",
     env: { TMUX_PANE: "%9" },
   });
-  const [unknownLane] = lanes(groups, [bare], c, 0, tmuxRead(panes, socket));
+  const unknownLane = present(
+    lanes(groups, [bare], c, 0, tmuxRead(panes, socket))[0],
+    "the lane naming no server",
+  );
   expect(unknownLane.elsewhere).toBe(false);
   expect(unknownLane.address).toBe("work:1.1");
 });
@@ -432,13 +452,9 @@ test("a restarted server on the same socket path is a different server", () => {
     env: { TMUX_PANE: "%9", TMUX: `${path},4242,7` },
   });
   const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
-  const [dead, live] = lanes(
-    groups,
-    [stale, sibling],
-    c,
-    0,
-    tmuxRead(panes, socket),
-  );
+  const pair = lanes(groups, [stale, sibling], c, 0, tmuxRead(panes, socket));
+  const dead = present(pair[0], "the lane on the dead server");
+  const live = present(pair[1], "the lane on the live server");
   // Compared by path alone the stale lane showed `work:1.1` and offered a
   // switch, and the reader would have landed in a stranger's pane.
   expect({ address: dead.address, elsewhere: dead.elsewhere }).toEqual({
@@ -645,7 +661,10 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
     ["address, no server", { VSYS_PANE: ownAt }, "yes", false, ownAt],
   ];
   for (const [row, env, self, elsewhere, address] of rows) {
-    const [lane] = lanes(groups, [agent(1, "a", env)], c, 0, asRead);
+    const lane = present(
+      lanes(groups, [agent(1, "a", env)], c, 0, asRead)[0],
+      "the lane",
+    );
     expect({
       row,
       self: lane.self,

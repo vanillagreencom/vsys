@@ -3,6 +3,7 @@ import { defaults } from "../config/config";
 import { integrity, volumesByDevice } from "../model/integrity";
 import type { Capability, CsumFailure, Scrub } from "../model/types";
 import { volumeSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import {
   blocksText,
   damageAdvice,
@@ -18,15 +19,18 @@ const now = 1_760_000_000_000;
 const c = defaults();
 function state(scrubs: Scrub[], lastErrorAt: number | null = null) {
   return integrity(
-    volumesByDevice([
-      volumeSnapshot("/", {
-        fsid: "fs",
-        errors: { "1/corruption_errs": 1390 },
-        countersAvailable: true,
-        lastErrorAt,
-        lastErrorSize: lastErrorAt === null ? null : 26,
-      }),
-    ])[0],
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 1390 },
+          countersAvailable: true,
+          lastErrorAt,
+          lastErrorSize: lastErrorAt === null ? null : 26,
+        }),
+      ])[0],
+      "root device",
+    ),
     { scrubs },
     now,
     c,
@@ -78,13 +82,16 @@ test("the line names the source of each time it gives", () => {
     countersAvailable = true,
   ) =>
     integrity(
-      volumesByDevice([
-        volumeSnapshot("/", {
-          fsid: "fs",
-          errors: countersAvailable ? { "1/corruption_errs": 0 } : {},
-          countersAvailable,
-        }),
-      ])[0],
+      present(
+        volumesByDevice([
+          volumeSnapshot("/", {
+            fsid: "fs",
+            errors: countersAvailable ? { "1/corruption_errs": 0 } : {},
+            countersAvailable,
+          }),
+        ])[0],
+        "root device",
+      ),
       { scrubs, csumFailures },
       now,
       c,
@@ -201,7 +208,7 @@ test("every name of an address is listed, and each address says what it names", 
   ]);
   // Both names of one extent are listed: the check read the block, and either
   // name can be the file the damage sits in.
-  expect(item.groups[0].paths).toEqual([
+  expect(present(item.groups[0], "build output group").paths).toEqual([
     "/r/target/debug/build/glib-sys/build-script-build",
     "/r/target/debug/build/glib-sys/build_script_build-c664",
   ]);
@@ -245,14 +252,17 @@ test("a block count vsys did not read never reads as a count of none", () => {
 
 test("an unreadable record of past growth is not a record of no errors", () => {
   const unreadable = integrity(
-    volumesByDevice([
-      volumeSnapshot("/", {
-        fsid: "fs",
-        errors: { "1/corruption_errs": 1390 },
-        countersAvailable: true,
-        lastErrorKnown: false,
-      }),
-    ])[0],
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 1390 },
+          countersAvailable: true,
+          lastErrorKnown: false,
+        }),
+      ])[0],
+      "root device",
+    ),
     { scrubs: [report()] },
     now,
     c,
@@ -261,14 +271,17 @@ test("an unreadable record of past growth is not a record of no errors", () => {
   // The kernel log dated a failure, so the line gives it with its source even
   // though the counter's record could not be read.
   const logged = integrity(
-    volumesByDevice([
-      volumeSnapshot("/", {
-        fsid: "fs",
-        errors: { "1/corruption_errs": 1390 },
-        countersAvailable: true,
-        lastErrorKnown: false,
-      }),
-    ])[0],
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 1390 },
+          countersAvailable: true,
+          lastErrorKnown: false,
+        }),
+      ])[0],
+      "root device",
+    ),
     {
       scrubs: [],
       csumFailures: { fs: [{ root: 5, inode: 9, at: now - 7200000 }] },

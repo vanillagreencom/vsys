@@ -13,6 +13,7 @@ import {
   laneSnapshot,
 } from "../test/fixture";
 import { mount, selectedRow, sortMarks } from "../test/harness";
+import { present } from "../test/present";
 import {
   columnLabels,
   findLanes,
@@ -28,6 +29,8 @@ import { cell, columnGap, headerText } from "./columns";
 import { laneValue } from "./format";
 import { ui } from "./theme";
 import { windows } from "./timeline-screen";
+
+const defaultWindow = present(windows[0], "the default trend window");
 
 test("search matches every naming field, case-insensitively, in the sort order", () => {
   const c = defaults();
@@ -98,8 +101,8 @@ test("the table's heading and its rows are built from one column spec", () => {
     });
   // A row occupies exactly the columns the heading does.
   const lane = laneSnapshot({ name: "lane-a" });
-  const row = spec
-    .map((column, at) => cell(column, laneValue(lane, c.columns[at], c)))
+  const row = c.columns
+    .map((name) => cell(tableColumn(name), laneValue(lane, name, c)))
     .join(columnGap);
   expect(row.length).toBe(headerText(spec).length);
   // The numeric columns end where their headings end.
@@ -107,10 +110,11 @@ test("the table's heading and its rows are built from one column spec", () => {
   const before = spec
     .slice(0, cpu)
     .reduce((n, col) => n + col.width + columnGap.length, 0);
-  expect(row.slice(before, before + spec[cpu].width).trimStart()).toBe(
+  const cpuColumn = present(spec[cpu], "the cpu column");
+  expect(row.slice(before, before + cpuColumn.width).trimStart()).toBe(
     laneValue(lane, "cpu", c),
   );
-  expect(spec[cpu].align).toBe("right");
+  expect(cpuColumn.align).toBe("right");
   expect(tableColumn("name").align).toBeUndefined();
 });
 
@@ -454,7 +458,7 @@ test("a read that fails leaves its rows unread, first or after a bucket roll, an
     // The bucket rolls and its read fails. The row read before the roll has
     // an answer for the previous window, and drawn against this one its
     // newest columns would say sampled and empty, so it goes blank instead.
-    const rolled = s.time + windows[0] / trendWidth;
+    const rolled = s.time + defaultWindow / trendWidth;
     await t.update({ ...s, time: rolled });
     await t.ui.renderOnce();
     expect(reads).toBe(3);
@@ -704,7 +708,7 @@ test("two agents in one session keep what tells their addresses apart", async ()
   for (const whole of [addresses, ["开发环境:1.1", "开发环境:2.1"]]) {
     const named = structuredClone(s);
     whole.forEach((address, i) => {
-      named.lanes[i].address = address;
+      present(named.lanes[i], `lane ${i}`).address = address;
     });
     const wide = await mount(named, c, { width: 140, height: 24 });
     try {
@@ -721,8 +725,8 @@ test("two agents in one session keep what tells their addresses apart", async ()
     await narrow.press("2");
     const { heading, at, cells } = paneCells(narrow.frame());
     expect(cells[0]).toContain("…");
-    expect(cells[0].endsWith(":1.1")).toBe(true);
-    expect(cells[1].endsWith(":2.1")).toBe(true);
+    expect(cells[0]?.endsWith(":1.1")).toBe(true);
+    expect(cells[1]?.endsWith(":2.1")).toBe(true);
     expect(cells[0]).not.toBe(cells[1]);
     // The column narrowed for the name, so the name kept its floor: the pane
     // heading starts no nearer the name's than that floor and a gap.
@@ -797,7 +801,7 @@ test("an agent that leaves the sample offers only the key its screen acts on", a
     await t.press("enter");
     expect(footer()).toContain("copy");
     // The process exits. What stays on screen is one sentence saying so.
-    await t.update({ ...s, lanes: [s.lanes[1]] });
+    await t.update({ ...s, lanes: [present(s.lanes[1], "lane-b")] });
     expect(t.frame()).toContain("no longer in the sample");
     // That screen acts on Back and nothing else, so nothing else is offered.
     const gone = footer();
@@ -839,7 +843,7 @@ test("a card that names no agent opens the list, not the agent left open", async
   // and no one row is the answer.
   const at = items.findIndex((item) => item.id === "system-cpu");
   expect(at).toBeGreaterThan(-1);
-  expect(items[at].target).toBeUndefined();
+  expect(present(items[at], "the system-cpu card").target).toBeUndefined();
   const t = await mount(s, c, { width: 160, height: 44 });
   const footer = () => t.frame().split("\n").at(-2) ?? "";
   try {
@@ -874,7 +878,7 @@ test("the trend re-reads when its newest bucket rolls over, and not before", asy
   // The chart draws `trendWidth` buckets across the default window, so this is
   // the span the drawn shape cannot change within. Asserted here rather than
   // assumed, because the whole cadence is derived from it.
-  const bucketMs = windows[0] / trendWidth;
+  const bucketMs = defaultWindow / trendWidth;
   expect(bucketMs).toBe(25000);
   const t = await mount(s, c, { width: 200, height: 24 }, { history: h });
   try {
@@ -944,7 +948,7 @@ test("no trend column means the store is asked for no series at all", async () =
       });
       // A sample lands while the column is not drawn. Nothing the list would
       // have read is read for it.
-      await t.update({ ...s, time: s.time + windows[0] });
+      await t.update({ ...s, time: s.time + defaultWindow });
       expect({ what, read: [...new Set(asked.slice(before))] }).toEqual({
         what,
         read: allowed,
@@ -960,12 +964,12 @@ test("a read from the previous bucket cannot overwrite the newer one", async () 
   const s = emptySnapshot();
   s.lanes = [laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 })];
   s.groups = [groupSnapshot()];
-  const bucketMs = windows[0] / trendWidth;
+  const bucketMs = defaultWindow / trendWidth;
   const at = s.time + bucketMs + 1000;
   /** A full window of samples at one reading, so the drawn shape is flat. */
   const span = (cpu: number): LaneSample[] =>
     Array.from({ length: trendWidth }, (_, i) => ({
-      time: at - windows[0] + (i + 0.5) * bucketMs,
+      time: at - defaultWindow + (i + 0.5) * bucketMs,
       cpu,
       rss: null,
       pressure: null,
@@ -974,8 +978,8 @@ test("a read from the previous bucket cannot overwrite the newer one", async () 
     }));
   const older = span(0);
   const newer = span(100);
-  const quiet = trendMarks(older, at, windows[0], c.sparkline);
-  const busy = trendMarks(newer, at, windows[0], c.sparkline);
+  const quiet = trendMarks(older, at, defaultWindow, c.sparkline);
+  const busy = trendMarks(newer, at, defaultWindow, c.sparkline);
   // The two series have to be told apart on the screen, or the assertion below
   // holds whichever one won.
   expect(quiet).not.toBe(busy);
@@ -1002,15 +1006,17 @@ test("a read from the previous bucket cannot overwrite the newer one", async () 
     // first. A fixture with one read, or with the older resolving first, would
     // pass without touching the case.
     expect(held.length).toBe(2);
-    expect(held[1].end).toBeGreaterThan(held[0].end);
+    const first = present(held[0], "the first read");
+    const second = present(held[1], "the second read");
+    expect(second.end).toBeGreaterThan(first.end);
     // The newer answers first, then the older. Stored on arrival rather than
     // on what it answers, the older would land last and put its window back on
     // the screen.
     await act(async () => {
-      held[1].answer(newer);
+      second.answer(newer);
     });
     await act(async () => {
-      held[0].answer(older);
+      first.answer(older);
     });
     // Resolving a promise draws nothing on its own; the frame is what the
     // screen would show once it has been drawn again.
@@ -1025,18 +1031,18 @@ test("a read from the previous bucket cannot overwrite the newer one", async () 
 
 test("a sample inside a bucket does not slide the drawn window", async () => {
   const c = defaults();
-  const bucketMs = windows[0] / trendWidth;
+  const bucketMs = defaultWindow / trendWidth;
   // A sample time sitting on a bucket boundary, so the whole of the next
   // bucket is available to advance into without crossing out of it.
-  const base = 10 * windows[0];
+  const base = 10 * defaultWindow;
   const s = emptySnapshot(base);
   s.lanes = [laneSnapshot({ id: "lane-a", name: "lane-a", cpu: 9 })];
   s.groups = [groupSnapshot()];
-  expect(trendEnd(base, windows[0])).toBe(base);
+  expect(trendEnd(base, defaultWindow)).toBe(base);
   // One sample in the middle of every drawn column, so a row drawn against
   // the moment this was read for has no gap anywhere in it.
   const series: LaneSample[] = Array.from({ length: trendWidth }, (_, i) => ({
-    time: base - windows[0] + (i + 0.5) * bucketMs,
+    time: base - defaultWindow + (i + 0.5) * bucketMs,
     cpu: 50,
     rss: null,
     pressure: null,
@@ -1066,7 +1072,7 @@ test("a sample inside a bucket does not slide the drawn window", async () => {
     expect(before).not.toBe("");
     // The cell this series draws has no gap in it, and the row is drawing that
     // cell. A fixture that already gapped could not show the difference.
-    const drawn = trendMarks(series, base, windows[0], c.sparkline);
+    const drawn = trendMarks(series, base, defaultWindow, c.sparkline);
     expect(drawn).not.toContain("·");
     expect(before).toContain(drawn);
     // A sample lands inside the bucket, close to its far edge, which is where
@@ -1074,7 +1080,7 @@ test("a sample inside a bucket does not slide the drawn window", async () => {
     // What the store holds has not moved: same series, and no second read.
     const reads = ends.length;
     const inside = base + bucketMs - 1000;
-    expect(trendEnd(inside, windows[0])).toBe(base);
+    expect(trendEnd(inside, defaultWindow)).toBe(base);
     await t.update({ ...s, time: inside });
     expect(ends.length).toBe(reads);
     // So the row cannot have changed. Drawn against the sample time its last
@@ -1086,7 +1092,7 @@ test("a sample inside a bucket does not slide the drawn window", async () => {
     const over = base + bucketMs + 1000;
     await t.update({ ...s, time: over });
     expect(ends.length).toBe(reads + 1);
-    expect(ends[ends.length - 1]).toBe(trendEnd(over, windows[0]));
+    expect(ends.at(-1)).toBe(trendEnd(over, defaultWindow));
   } finally {
     await t.close();
   }
@@ -1228,8 +1234,8 @@ test("every lane carries its id in a column, and two with one name differ by it 
     const end = heading.indexOf("PID") + "PID".length;
     const lonely = lines.find((line) => line.includes("lonely")) ?? "";
     const cells: [string, string][] = [
-      [rows[0], "4071"],
-      [rows[1], "9152"],
+      [present(rows[0], "the first ken-1298 row"), "4071"],
+      [present(rows[1], "the second ken-1298 row"), "9152"],
       [lonely, "1234"],
     ];
     expect(cells.map(([row, id]) => row.indexOf(id) + id.length)).toEqual([
@@ -1414,7 +1420,7 @@ test("a lane row in the list and in the table is coloured and opened by one rule
       await show(m);
       const lines = m.frame().split("\n");
       const y = lines.findIndex((line) => line.includes("lane-b"));
-      await m.click(lines[y].indexOf("lane-b"), y);
+      await m.click(present(lines[y], "the lane-b row").indexOf("lane-b"), y);
       expect({ view, frame: m.frame() }).toEqual({ view, frame: keyed });
     } finally {
       await m.close();

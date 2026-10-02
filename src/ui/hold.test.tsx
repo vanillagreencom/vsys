@@ -8,6 +8,7 @@ import {
   processSnapshot,
 } from "../test/fixture";
 import { mount, sortMarks } from "../test/harness";
+import { present } from "../test/present";
 import { heldLabel, heldOrder, type Newcomers } from "./hold";
 
 test("a held order keeps its rows, drops an ended one, and places a new one by the list's rule", () => {
@@ -200,7 +201,8 @@ const lineOf = (frame: string, name: string) =>
 test("every list whose readings order its rows keeps a held order while the readings move", async () => {
   const c = defaults();
   for (const x of heldLists(c)) {
-    const [a, b] = x.names;
+    const a = present(x.names[0], "the first row's name");
+    const b = present(x.names[1], "the second row's name");
     const t = await mount(x.sample([3, 1]), { ...c, ...x.config }, size);
     try {
       for (const key of x.keys) await t.press(key);
@@ -278,7 +280,7 @@ test("a held Agents order is released by anything that asks for an order", async
     const y = lines.findIndex(
       (line) => line.includes("Agent") && line.includes("Memory"),
     );
-    await t.click(lines[y].indexOf("CPU"), y);
+    await t.click(present(lines[y], "the table heading").indexOf("CPU"), y);
   };
   // What releases the hold, the keys that bring the list on screen, the
   // release itself, and the CPU readings published after it. Held, lane-a
@@ -318,7 +320,7 @@ test("a held Agents order is released by anything that asks for an order", async
   for (const [what, keys, release, readings] of releases) {
     const sample = (cpu: number[]) => {
       const s = byCpu(cpu);
-      s.lanes[1] = { ...s.lanes[1], pressure: 5 };
+      s.lanes[1] = { ...present(s.lanes[1], "lane-b"), pressure: 5 };
       return s;
     };
     const t = await mount(sample([3, 1]), c, { width: 140, height: 24 });

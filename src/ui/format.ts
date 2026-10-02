@@ -116,7 +116,12 @@ export function timeBuckets<T extends { time: number }>(
       width - 1,
       Math.floor(((point.time - start) * width) / (end - start)),
     );
-    buckets[index].push(point);
+    const bucket = buckets[index];
+    if (bucket === undefined)
+      throw new Error(
+        `Point at ${point.time} has no bucket in the chart window`,
+      );
+    bucket.push(point);
   }
   return buckets;
 }

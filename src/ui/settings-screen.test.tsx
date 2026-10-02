@@ -7,6 +7,7 @@ import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
 import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
+import { present } from "../test/present";
 import { osc52 } from "./clipboard";
 import { fit } from "./columns";
 import {
@@ -671,7 +672,7 @@ test("a picker keeps its choice on the screen on a short terminal", async () => 
     for (const ch of "sort column") await t.press(ch);
     await t.press("enter");
     await t.press("enter");
-    const options = [...choices.sort];
+    const options = [...present(choices.sort, "the sort choices")];
     // What the fixture must hold: more options than the terminal has rows, so
     // a picker drawing them all runs off the bottom.
     expect(options.length).toBeGreaterThan(16);
@@ -686,12 +687,15 @@ test("a picker keeps its choice on the screen on a short terminal", async () => 
     // It opens on the value the setting holds, not on the first option.
     const from = options.indexOf(c.sort);
     expect(from).toBeGreaterThan(-1);
-    expect(chosen()).toContain(options[from]);
+    expect(chosen()).toContain(present(options[from], "the held sort choice"));
     // Walk to the last option. Every step keeps the choice on the screen;
     // drawn in full it left the viewport and the rest were chosen blind.
-    for (let i = from + 1; i < options.length; i++) {
+    for (const option of options.slice(from + 1)) {
       await t.press("j");
-      expect({ i, on: chosen().includes(options[i]) }).toEqual({ i, on: true });
+      expect({ option, on: chosen().includes(option) }).toEqual({
+        option,
+        on: true,
+      });
     }
   } finally {
     await t.close();
@@ -712,7 +716,7 @@ test("a picker's scroll read waits for the renderer's own frame under its real f
     await t.press("/");
     for (const ch of "sort column") await t.press(ch);
     await t.press("enter");
-    const options = [...choices.sort];
+    const options = [...present(choices.sort, "the sort choices")];
     // The picker's own marked line, inside its border, never the setting row
     // behind it: both can carry "▍" and the setting row's own text repeats
     // the current value, so only the bordered line names the picker's choice.
@@ -741,9 +745,11 @@ test("a picker's scroll read waits for the renderer's own frame under its real f
     // picker existed, so a second one is what shows the option the setting
     // holds, scrolled into view against the fresh layout.
     await t.ui.renderOnce();
-    expect(chosen()).not.toContain(options[from]);
+    expect(chosen()).not.toContain(
+      present(options[from], "the held sort choice"),
+    );
     await t.ui.renderOnce();
-    expect(chosen()).toContain(options[from]);
+    expect(chosen()).toContain(present(options[from], "the held sort choice"));
   } finally {
     await t.close();
   }
@@ -759,7 +765,7 @@ test("search does not open behind a picker", async () => {
     for (const ch of "sort column") await t.press(ch);
     await t.press("enter");
     await t.press("enter");
-    const options = [...choices.sort];
+    const options = [...present(choices.sort, "the sort choices")];
     const chosen = () =>
       t
         .frame()
@@ -767,7 +773,7 @@ test("search does not open behind a picker", async () => {
         .filter((l) => l.includes("▍"))
         .at(-1) ?? "";
     const from = options.indexOf(c.sort);
-    expect(chosen()).toContain(options[from]);
+    expect(chosen()).toContain(present(options[from], "the held sort choice"));
     // The find key inside a picker. It used to open search, reset the
     // selection and leave the picker running unseen, swallowing every key.
     await t.press("/");
@@ -775,7 +781,9 @@ test("search does not open behind a picker", async () => {
     // The picker is still what receives keys, which is what the reader needs:
     // the next arrow moves the choice rather than a list they cannot see.
     await t.press("j");
-    expect(chosen()).toContain(options[from + 1]);
+    expect(chosen()).toContain(
+      present(options[from + 1], "the next sort choice"),
+    );
   } finally {
     await t.close();
   }
@@ -862,28 +870,31 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     // than as part of this one. The row itself carries no rule; both of its
     // continuation lines do, and the wrapped one is the line an indent alone
     // never reached.
-    expect(isChildLine(lines[row])).toBe(false);
-    expect(isChildLine(lines[row + 1])).toBe(true);
-    expect(isChildLine(lines[row + 2])).toBe(true);
+    const pressure = present(lines[row], "the Pressure row");
+    const reason = present(lines[row + 1], "the reason line");
+    const wrapped = present(lines[row + 2], "the wrapped reason line");
+    expect(isChildLine(pressure)).toBe(false);
+    expect(isChildLine(reason)).toBe(true);
+    expect(isChildLine(wrapped)).toBe(true);
     // Where the rule and the text start, not merely that a rule precedes the
     // text: `isChildLine` takes any indent of one column or more.
     const textAt = (line: string) => {
       const rule = line.indexOf("│");
       return rule + 1 + line.slice(rule + 1).search(/\S/);
     };
-    expect(lines[row + 1].indexOf("│")).toBe(4);
-    expect(textAt(lines[row + 1])).toBe(6);
-    expect(textAt(lines[row + 2])).toBe(6);
+    expect(reason.indexOf("│")).toBe(4);
+    expect(textAt(reason)).toBe(6);
+    expect(textAt(wrapped)).toBe(6);
     // And what the drill-down says in the place it names the cause.
-    expect(lines[row + 1]).toContain("no PSI on this kernel");
-    expect(lines[row + 1]).toContain("/proc/pressure/cpu");
-    expect(lines[row + 2].trimEnd().endsWith("directory)")).toBe(true);
+    expect(reason).toContain("no PSI on this kernel");
+    expect(reason).toContain("/proc/pressure/cpu");
+    expect(wrapped.trimEnd().endsWith("directory)")).toBe(true);
     // The cost is cut on the row with its mark, and whole in the detail.
-    expect(lines[row].trimEnd().endsWith("…")).toBe(true);
+    expect(pressure.trimEnd().endsWith("…")).toBe(true);
     // What the missing reading costs is a second idea, so a blank row of the
     // same block separates it from the reason: the rule runs down that row
     // and no word does, which is why `isChildLine` does not answer it.
-    expect(lines[row + 3].trim()).toBe("│");
+    expect(lines[row + 3]?.trim()).toBe("│");
     const cost = lines
       .slice(row + 4, row + 6)
       .map((line) => line.slice(6).trim());
@@ -900,7 +911,7 @@ test("a source that could not be read shows why, at the end of a short list", as
   const s = emptySnapshot();
   // The last capability is the one that could not be read, so walking to it
   // puts it at the bottom edge of a viewport too short for the list.
-  const last = s.capabilities[s.capabilities.length - 1];
+  const last = present(s.capabilities.at(-1), "the last capability");
   s.capabilities = s.capabilities.map((cap) =>
     cap.id === last.id
       ? {
@@ -937,7 +948,7 @@ test("Enter on a readable source brings its own source line with it", async () =
   const s = emptySnapshot();
   // The last capability, so opening it at the bottom edge of a short viewport
   // is where the line it opens would fall past the fold.
-  const last = s.capabilities[s.capabilities.length - 1];
+  const last = present(s.capabilities.at(-1), "the last capability");
   const t = await mount(s, c, { width: 140, height: 10 });
   try {
     await t.press("7");
@@ -1100,8 +1111,12 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
     try {
       await clicked.press("7");
       const lines = clicked.frame().split("\n");
-      const y = lines.findIndex((line) => line.includes(words(items[at])));
-      await clicked.click(lines[y].indexOf(words(items[at])), y);
+      const label = words(present(items[at], `the first ${kind} row`));
+      const y = lines.findIndex((line) => line.includes(label));
+      await clicked.click(
+        present(lines[y], `the ${kind} row`).indexOf(label),
+        y,
+      );
       expect({ kind, opened: underMarked(clicked.frame()) }).toEqual({
         kind,
         opened: byKey,
@@ -1136,7 +1151,10 @@ test("a click on another row leaves an open editor where it is", async () => {
       await t.wheel(10, 10, "up");
     const lines = t.frame().split("\n");
     const y = lines.findIndex((line) => line.includes("Every source was read"));
-    await t.click(lines[y].indexOf("Every source was read"), y);
+    await t.click(
+      present(lines[y], "the sources row").indexOf("Every source was read"),
+      y,
+    );
     expect(t.frame()).toContain("Enter saves");
     expect(selectedRow(t.frame())).toContain("Refresh interval");
     // Leaving the editor hands the keys back to the list.
