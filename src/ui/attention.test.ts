@@ -1239,7 +1239,9 @@ test("a new-errors card names the age of a finished check an aborted one replace
       addresses: null,
     },
   ];
-  s.storage.lastFinishedScrubAt = { fs: s.time - 3 * 86400000 };
+  s.storage.lastFinishedScrub = {
+    fs: { at: s.time - 3 * 86400000, damaged: false },
+  };
   const card = attention(s, c, { basePath: base }).find(
     (item) => item.id === "new-errors",
   );

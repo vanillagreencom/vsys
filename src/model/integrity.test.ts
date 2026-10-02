@@ -340,15 +340,15 @@ test("a scrub that stops early keeps the age of the finished one it replaced", (
   const c = defaults();
   // The reporter overwrote the finished report with this aborted one, so the
   // only report in storage now is the one that did not finish. The collector
-  // remembers the finished report's start time separately, well inside the
-  // stale limit.
+  // remembers the finished report separately, well inside the stale limit,
+  // and it found no damage.
   const scrubs = [report({ status: "aborted", problem: true })];
-  const lastFinishedScrubAt = { fs: now - 3 * day };
+  const lastFinishedScrub = { fs: { at: now - 3 * day, damaged: false } };
   // Growth after the remembered check, and before the aborted attempt: the
   // card naming "no full check has ever run" would be wrong here.
   const grown = integrity(
     filesystem({ lastErrorAt: now - 1 * day, lastErrorSize: 26 }),
-    { scrubs, lastFinishedScrubAt },
+    { scrubs, lastFinishedScrub },
     now,
     c,
   );
@@ -357,19 +357,14 @@ test("a scrub that stops early keeps the age of the finished one it replaced", (
   // No growth at all: a check that stopped early leaves the remembered
   // finished check standing, so the filesystem reads as sound as it was then
   // rather than as unknown.
-  const quiet = integrity(
-    filesystem(),
-    { scrubs, lastFinishedScrubAt },
-    now,
-    c,
-  );
+  const quiet = integrity(filesystem(), { scrubs, lastFinishedScrub }, now, c);
   expect(quiet.state).toBe("healthy");
   expect(quiet.checkAge).toBe(3 * 86400);
   // Growth from before the remembered check is already covered by it, so it
   // is not new and the remembered check still stands for soundness.
   const covered = integrity(
     filesystem({ lastErrorAt: now - 5 * day, lastErrorSize: 26 }),
-    { scrubs, lastFinishedScrubAt },
+    { scrubs, lastFinishedScrub },
     now,
     c,
   );
@@ -382,10 +377,10 @@ test("a scrub report gone from disk still stands on a remembered finished check"
   // unreadable), so storage carries no scrub for this filesystem at all. The
   // collector's memory of the last finished one must not read as if nothing
   // had ever been checked.
-  const lastFinishedScrubAt = { fs: now - 2 * 3600000 };
+  const lastFinishedScrub = { fs: { at: now - 2 * 3600000, damaged: false } };
   const item = integrity(
     filesystem(),
-    { scrubs: [], lastFinishedScrubAt },
+    { scrubs: [], lastFinishedScrub },
     now,
     c,
   );
@@ -394,15 +389,54 @@ test("a scrub report gone from disk still stands on a remembered finished check"
   expect(item.checkAge).toBe(2 * 3600);
 });
 
+test("a remembered finished check that found damage is never promoted to healthy or stale", () => {
+  const c = defaults();
+  const lastFinishedScrub = { fs: { at: now - 3 * day, damaged: true } };
+  // The current report vanished entirely (deleted, or the directory
+  // transiently unreadable). The remembered damage must still speak.
+  const gone = integrity(
+    filesystem(),
+    { scrubs: [], lastFinishedScrub },
+    now,
+    c,
+  );
+  expect(gone.state).toBe("damaged");
+  expect(gone.state).not.toBe("healthy");
+  expect(gone.state).not.toBe("stale");
+  // The current report exists but stopped early, finding nothing of its own.
+  // The remembered damage still must not be silently cleared.
+  const aborted = integrity(
+    filesystem(),
+    {
+      scrubs: [report({ status: "aborted", problem: true })],
+      lastFinishedScrub,
+    },
+    now,
+    c,
+  );
+  expect(aborted.state).toBe("damaged");
+  expect(aborted.state).not.toBe("healthy");
+  expect(aborted.state).not.toBe("stale");
+  // A later report that itself finishes clean moves the memory forward and
+  // clears the remembered damage.
+  const healed = integrity(
+    filesystem(),
+    { scrubs: [report({ startedAt: now - 3600000 })], lastFinishedScrub },
+    now,
+    c,
+  );
+  expect(healed.state).toBe("healthy");
+});
+
 test("the remembered check, not the aborted one, decides which logged failures are new", () => {
   const c = defaults();
   const scrubs = [report({ status: "aborted", problem: true })];
-  const lastFinishedScrubAt = { fs: now - 3 * day };
+  const lastFinishedScrub = { fs: { at: now - 3 * day, damaged: false } };
   const before = { root: 257, inode: 1, at: now - 4 * day };
   const after = { root: 257, inode: 2, at: now - 1 * day };
   const item = integrity(
     filesystem(),
-    { scrubs, lastFinishedScrubAt, csumFailures: { fs: [before, after] } },
+    { scrubs, lastFinishedScrub, csumFailures: { fs: [before, after] } },
     now,
     c,
   );
@@ -414,7 +448,7 @@ test("the remembered check, not the aborted one, decides which logged failures a
   // With only the covered failure, the remembered check still stands.
   const onlyBefore = integrity(
     filesystem(),
-    { scrubs, lastFinishedScrubAt, csumFailures: { fs: [before] } },
+    { scrubs, lastFinishedScrub, csumFailures: { fs: [before] } },
     now,
     c,
   );

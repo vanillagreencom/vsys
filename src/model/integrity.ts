@@ -1,4 +1,4 @@
-import { corruptionTotal } from "../collect/btrfs";
+import { corruptionTotal, scrubFoundDamage } from "../collect/btrfs";
 import type { Config } from "../config/config";
 import type { CsumFailure, Scrub, Snapshot, Storage, Volume } from "./types";
 import type { Level } from "./verdict";
@@ -177,7 +177,7 @@ function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
  */
 export function integrity(
   group: DeviceVolumes,
-  storage: Pick<Storage, "scrubs" | "csumFailures" | "lastFinishedScrubAt">,
+  storage: Pick<Storage, "scrubs" | "csumFailures" | "lastFinishedScrub">,
   time: number,
   c: Config,
 ): Integrity {
@@ -240,11 +240,14 @@ export function integrity(
   const finished = complete;
   // A report that is not itself finished names no check of its own, but it
   // does not erase an earlier one: the collector remembers the last finished
-  // report's start time across the one that replaced it, so a check that
-  // stopped early still leaves the reader the age of the last that did not.
+  // report across the one that replaced it, outcome included, so a check
+  // that stopped early still leaves the reader the age and the damage state
+  // of the last that did not.
   const remembered =
-    storage.lastFinishedScrubAt?.[group.id.toLowerCase()] ?? null;
-  const checkedAt = finished ? (scrub?.startedAt ?? null) : remembered;
+    storage.lastFinishedScrub?.[group.id.toLowerCase()] ?? null;
+  const checkedAt = finished
+    ? (scrub?.startedAt ?? null)
+    : (remembered?.at ?? null);
   const checkAge = checkedAt === null ? null : Math.max(0, time - checkedAt);
   // Whether a finished check is on record at all, current or remembered. A
   // report that stopped early, or one gone from disk entirely, still leaves
@@ -257,15 +260,18 @@ export function integrity(
   const state: IntegrityState =
     scrub && scrub.readable === false
       ? "unknown"
-      : groups.length || (finished && (scrub?.uncorrectable ?? 0) > 0)
+      : finished &&
+          scrubFoundDamage({
+            addressCount: groups.length,
+            uncorrectable: scrub?.uncorrectable,
+            problem: scrub?.problem ?? false,
+          })
         ? "damaged"
-        : // A check that repaired every error it found left no damage behind,
-          // so a report counting no uncorrectable block is not damage however
-          // many errors it corrected. A problem report whose count vsys could
-          // not read says nothing either way, and reads as damage.
-          scrub?.problem &&
-            finished &&
-            (scrub.uncorrectable === null || scrub.uncorrectable === undefined)
+        : // The current report does not speak for itself, but a remembered
+          // finished one found damage: that memory must stand until a later
+          // finished report says otherwise, never silently read as sound
+          // because the report naming it is gone.
+          !finished && remembered?.damaged
           ? "damaged"
           : errorAt != null && (checkedAt === null || errorAt > checkedAt)
             ? "new-errors"

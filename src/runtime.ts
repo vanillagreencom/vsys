@@ -19,7 +19,7 @@ import {
   validate,
 } from "./config/config";
 import { notify } from "./model/alerts";
-import type { Snapshot } from "./model/types";
+import type { FinishedScrub, Snapshot } from "./model/types";
 import type { History } from "./store/history";
 
 interface Source {
@@ -29,8 +29,8 @@ interface Source {
   sccache?: SccacheCollector;
   /** The kernel log and its cursor, handed on the same way. */
   kernelLog?: KernelLog | null;
-  /** Each filesystem's last finished scrub time, handed on the same way. */
-  lastFinishedScrubAt?: Record<string, number>;
+  /** Each filesystem's last finished scrub, handed on the same way. */
+  lastFinishedScrub?: Record<string, FinishedScrub>;
 }
 type SourceFactory = (config: Config, previous: Source) => Promise<Source>;
 interface SessionOptions {

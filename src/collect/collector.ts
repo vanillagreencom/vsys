@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { agentToolsPath, loadAgentTools } from "../config/agent-tools";
 import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
-import type { Capability, Snapshot } from "../model/types";
+import type { Capability, FinishedScrub, Snapshot } from "../model/types";
 import { StorageCollector } from "./btrfs";
 import {
   type Outcome,
@@ -119,12 +119,12 @@ export class Collector {
     /** Absent unless a caller supplies one, so no test asks the system bus. */
     udisks?: Udisks,
     /**
-     * A predecessor's remembered finished-scrub times, so a settings change
-     * that replaces this collector does not read a stopped-early report as
-     * if nothing had ever finished. Absent unless a caller supplies one, so
-     * a collector built fresh starts with no memory.
+     * A predecessor's remembered finished scrubs, so a settings change that
+     * replaces this collector does not read a stopped-early report as if
+     * nothing had ever finished, or ever found damage. Absent unless a caller
+     * supplies one, so a collector built fresh starts with no memory.
      */
-    initialFinishedScrubAt?: Record<string, number>,
+    initialFinishedScrub?: Record<string, FinishedScrub>,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -142,7 +142,7 @@ export class Collector {
     this.storage = new StorageCollector(
       this.kernelLog,
       udisks ?? null,
-      initialFinishedScrubAt,
+      initialFinishedScrub,
     );
     const probed = this.capabilities.find((cap) => cap.id === "tmux");
     this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
@@ -152,8 +152,8 @@ export class Collector {
    * This process's memory of each filesystem's last finished scrub, read for
    * a replacement collector built on a settings change to carry forward.
    */
-  get lastFinishedScrubAt(): Record<string, number> {
-    return this.storage.finishedScrubAtSnapshot();
+  get lastFinishedScrub(): Record<string, FinishedScrub> {
+    return this.storage.finishedScrubSnapshot();
   }
   /**
    * What the last read of a capability asked again each sample says, carried
@@ -323,7 +323,7 @@ export class Collector {
  * so is the kernel log it was searching, so the replacement resumes from that
  * cursor rather than searching every boot again. So is its memory of each
  * filesystem's last finished scrub, so a settings change does not read a
- * stopped-early report as if nothing had ever finished.
+ * stopped-early report as if nothing had ever finished, or ever found damage.
  * The agent-tool install locations and desktop paths come from the shared
  * agent-tool data and its overlay, read again for every collector built.
  */
@@ -333,7 +333,7 @@ export async function createCollector(
   previous?: {
     sccache?: SccacheCollector;
     kernelLog?: KernelLog | null;
-    lastFinishedScrubAt?: Record<string, number>;
+    lastFinishedScrub?: Record<string, FinishedScrub>;
   },
   toolsPath = agentToolsPath,
   /** Injected so no test reads this machine's journal. */
@@ -376,6 +376,6 @@ export async function createCollector(
       log: previous?.kernelLog ?? new KernelLog(),
     },
     new Udisks(),
-    previous?.lastFinishedScrubAt,
+    previous?.lastFinishedScrub,
   );
 }

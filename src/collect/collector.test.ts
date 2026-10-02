@@ -1927,20 +1927,62 @@ test("the program's collector resumes the kernel log the one it replaces held", 
 
 test("a settings change hands the predecessor's remembered finished scrubs to its replacement", async () => {
   const f = setup();
+  const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+  const root = join(f.config.btrfsRoot, uuid);
+  mkdirSync(join(root, "devices"), { recursive: true });
+  symlinkSync("/sys/devices/test", join(root, "devices/test"));
+  f.write(
+    join(root, "devinfo/1/error_stats"),
+    "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0",
+  );
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  const reportPath = join(f.config.scrubDir, "root.result");
+  f.write(
+    reportPath,
+    `btrfs scrub finished, no errors found: /
+UUID:             ${uuid}
+Scrub started:    Fri Sep 11 13:25:54 2026
+Status:           finished
+Error summary:    no errors found
+`,
+  );
+  const before = new Collector(f.config, 100, 4096);
+  const first = await before.sample(1000);
+  const key = uuid.toLowerCase();
+  const finishedAt = first.storage.scrubs[0]?.startedAt;
+  expect(finishedAt).toBeTypeOf("number");
+  // A scrub that stops early overwrites the one report this filesystem has.
+  f.write(
+    reportPath,
+    `btrfs scrub aborted after 00:00:01, interrupted: /
+UUID:             ${uuid}
+Scrub started:    Sat Sep 12 09:00:00 2026
+Status:           aborted
+Error summary:    no errors found
+`,
+  );
+  await before.sample(2000);
   // Saving any collection setting rebuilds the collector through the
-  // program's own path. If a scrub on this filesystem has since stopped
-  // early, overwriting the report that proved an earlier one sound, the
-  // replacement must not start believing nothing has ever finished.
+  // program's own path. The replacement must not start believing nothing has
+  // ever finished.
   const after = await createCollector(
     f.config,
     false,
-    { lastFinishedScrubAt: { fs: 1700000000000 } },
+    before,
     f.agentToolsPath,
   );
   try {
-    const s = await after.sample(1000);
-    expect(s.storage.lastFinishedScrubAt).toEqual({ fs: 1700000000000 });
+    const third = await after.sample(3000);
+    expect(third.storage.scrubs[0]?.status).toBe("aborted");
+    expect(third.storage.lastFinishedScrub?.[key]).toEqual({
+      at: finishedAt as number,
+      damaged: false,
+    });
   } finally {
     after.close();
+    before.close();
   }
 });
