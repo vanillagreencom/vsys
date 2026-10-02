@@ -34,6 +34,12 @@ test("busctl's refusals are classified from its own words", () => {
     ],
     ["Call failed: Unit udisks2.service not found.", "absent"],
     ["Call failed: Access denied", "unreadable"],
+    // A reachable udisks2 refusing this user, not an absent bus.
+    ["Failed to connect to bus: Permission denied", "unreadable"],
+    [
+      "Failed to connect to system scope bus via local transport: Operation not permitted",
+      "unreadable",
+    ],
   ];
   for (const [error, failure] of rows)
     expect({ error, ...classifyBusctl(`${error}\n`) }).toEqual({

@@ -1,0 +1,1 @@
+- vsys no longer reports udisks2 as absent when it refuses a drive query with permission denied or operation not permitted; the drive's lifetime writes stay unknown instead.

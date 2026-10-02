@@ -91,8 +91,10 @@ type Run = typeof spawnText;
  * source that would not answer this user.
  */
 const absentPatterns: RegExp[] = [
-  // "Failed to connect to bus: No such file or directory"
-  /^Failed to connect to (?:system scope )?bus/m,
+  // "Failed to connect to bus: No such file or directory", but not a
+  // permission-denied or operation-not-permitted refusal from a bus that is
+  // actually reachable.
+  /^Failed to connect to (?:system scope )?bus(?!.*(?:Permission denied|Operation not permitted))/m,
   // "Call failed: The name org.freedesktop.UDisks2 was not provided by any .service files"
   /was not provided by any \.service files/,
   // "Call failed: Unit udisks2.service not found."
