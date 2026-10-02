@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ManualClock } from "@opentui/core/testing";
 import { act } from "react";
 import type { Config } from "../config/config";
 import { choices, defaults } from "../config/config";
@@ -571,6 +572,48 @@ test("the editor opens in view when the layout moves the row it edits", async ()
   }
 });
 
+test("the second scroll read waits for the renderer's own frame under its real frame cap", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // A manual clock holds the renderer's own next frame back until this test
+  // advances it, the way a live renderer's frame cap holds its own render
+  // timer back for the whole frame interval. `maxFps: 60` is the renderer's
+  // own default cap, restored here in place of the harness's usual uncapped
+  // one, which is what let VSY-29's test pass while the production bug,
+  // underneath it, went unobserved.
+  const clock = new ManualClock();
+  const t = await mount(s, c, { width: 180, height: 30, maxFps: 60, clock });
+  try {
+    await t.press("7");
+    const rows = settingItems(c, s.capabilities).length;
+    for (let i = 0; i < rows; i++) await t.press("j");
+    // Opens the editor without letting `press`'s own direct `renderOnce` lay
+    // out the row it moves: that call would compute the fresh layout itself,
+    // the way the harness's uncapped mode always did, and hide exactly the
+    // ordering this test exists to pin.
+    await act(async () => {
+      t.ui.mockInput.pressEnter();
+    });
+    // A real, short wait: long enough for a bare `setTimeout(0)`, the one the
+    // deferred pass used to run on, to fire for real. The manual clock has
+    // not moved, so the renderer's own next frame, which only that clock can
+    // trigger, provably has not happened yet.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(t.frame()).not.toContain("Export markdown · Enter saves");
+    // Only now does the renderer's own frame arrive, under its real cap. One
+    // render runs the frame that corrects the scroll; the frame event fires
+    // after that render already drew, so a second one is what shows it.
+    clock.advance(200);
+    await t.ui.renderOnce();
+    await t.ui.renderOnce();
+    const frame = t.frame();
+    expect(frame).toContain("Export markdown · Enter saves");
+    expect(frame).not.toContain("Storage units");
+  } finally {
+    await t.close();
+  }
+});
+
 test("a list the reader has not finished says why it was not saved", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -650,6 +693,57 @@ test("a picker keeps its choice on the screen on a short terminal", async () => 
       await t.press("j");
       expect({ i, on: chosen().includes(options[i]) }).toEqual({ i, on: true });
     }
+  } finally {
+    await t.close();
+  }
+});
+
+test("a picker's scroll read waits for the renderer's own frame under its real frame cap", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // A manual clock holds the renderer's own next frame back until this test
+  // advances it, the way a live renderer's frame cap holds its own render
+  // timer back for the whole frame interval, mirroring the setting-row test
+  // of the same name for the picker's own scroll read.
+  const clock = new ManualClock();
+  const t = await mount(s, c, { width: 140, height: 16, maxFps: 60, clock });
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "sort column") await t.press(ch);
+    await t.press("enter");
+    const options = [...choices.sort];
+    // The picker's own marked line, inside its border, never the setting row
+    // behind it: both can carry "▍" and the setting row's own text repeats
+    // the current value, so only the bordered line names the picker's choice.
+    const chosen = () =>
+      t
+        .frame()
+        .split("\n")
+        .filter((l) => l.includes("▍") && l.includes("│"))
+        .at(-1) ?? "";
+    const from = options.indexOf(c.sort);
+    // Opens the picker without letting `press`'s own direct `renderOnce` lay
+    // its options out itself: that call would read the fresh layout out
+    // itself, the way the harness's uncapped mode always did, and hide
+    // exactly the ordering this test exists to pin.
+    await act(async () => {
+      t.ui.mockInput.pressEnter();
+    });
+    // A real, short wait: long enough for a bare `setTimeout(0)`, the one the
+    // deferred pass used to run on, to fire for real. The manual clock has
+    // not moved, so the renderer's own next frame, which only that clock can
+    // trigger, provably has not happened yet.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    clock.advance(200);
+    // One render lays the picker out for the first time; the frame event
+    // fires after that render already drew with the layout from before the
+    // picker existed, so a second one is what shows the option the setting
+    // holds, scrolled into view against the fresh layout.
+    await t.ui.renderOnce();
+    expect(chosen()).not.toContain(options[from]);
+    await t.ui.renderOnce();
+    expect(chosen()).toContain(options[from]);
   } finally {
     await t.close();
   }
