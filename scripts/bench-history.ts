@@ -42,6 +42,13 @@ const LOADERS = 4;
 const LOAD_CHUNK = 8 * 1024 * 1024;
 /** A loader stops by itself after this long, so a bench that died leaves none running. */
 const LOAD_LIFETIME_MS = 600000;
+/**
+ * How long the bench waits for a loader's exit to arrive once the timed loop
+ * ends. The loop never yields, and Bun records a child's exit only when its
+ * event loop runs, so a loader that ended mid-run reads as running until the
+ * bench waits on it. An exit already pending arrives in well under this.
+ */
+const LOADER_EXIT_WAIT_MS = 20;
 
 if (process.argv[2] === "--disk-load") {
   const [path, until] = process.argv.slice(3);
@@ -202,9 +209,9 @@ async function writeCost(loaded: boolean): Promise<WriteCost> {
     }, run);
   } as typeof transaction;
   let history: History | undefined;
+  const until = Date.now() + LOAD_LIFETIME_MS;
   try {
     if (loaded) {
-      const until = Date.now() + LOAD_LIFETIME_MS;
       for (let n = 0; n < LOADERS; n++)
         loaders.push(
           Bun.spawn(
@@ -239,10 +246,22 @@ async function writeCost(loaded: boolean): Promise<WriteCost> {
       throw new Error(
         `bench-history: commit-count commits=${commitMs.length} writes=${addMs.length}\nEach history write is timed as one SQLite transaction, and the counts differ.`,
       );
-    if (loaders.some((loader) => loader.exitCode !== null))
-      throw new Error(
-        `bench-history: loader-stopped lifetime=${LOAD_LIFETIME_MS}ms\nA disk loader ended before the measurement under load did.`,
-      );
+    if (loaded) {
+      // The deadline holds on its own: a loader that reached it may still be
+      // finishing its last sync when the wait below gives up.
+      if (Date.now() >= until)
+        throw new Error(
+          `bench-history: loader-lifetime lifetime=${LOAD_LIFETIME_MS}ms\nThe measurement under load outlasted the disk loaders' lifetime.`,
+        );
+      const stopped = await Promise.race([
+        Promise.any(loaders.map((loader) => loader.exited)),
+        Bun.sleep(LOADER_EXIT_WAIT_MS).then(() => null),
+      ]);
+      if (stopped !== null)
+        throw new Error(
+          `bench-history: loader-stopped exit=${stopped}\nA disk loader ended before the measurement under load did.`,
+        );
+    }
     return {
       overBudget: addMs.filter((ms) => ms > WRITE_BUDGET_MS).length,
       addMedianMs: rank(addMs, 0.5),

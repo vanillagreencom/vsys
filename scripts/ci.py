@@ -22,8 +22,8 @@ ARTIFACTS = (
 # that drops a worker passes every check before it and fails only when a
 # sample starts that thread, and the binary embeds its workers at paths
 # neither the source tree nor the bundle shows. bench:writes holds a sample's
-# history writes to their budget: timed inside the test suite, a write
-# measures whatever the other suites are doing to the disk.
+# history writes on an otherwise idle disk to their budget: timed inside the
+# test suite, a write measures whatever the other suites are doing to the disk.
 CHECKS = ("lint", "typecheck", "test", "build", "smoke", "bench:scratch", "bench:writes")
 
 
