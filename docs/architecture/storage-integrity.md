@@ -1,6 +1,6 @@
 # Storage integrity
 
-Covers: src/collect/errors.ts src/collect/kernel-log.ts src/collect/kernel-log.test.ts src/collect/scrub.ts src/collect/scrub.test.ts src/model/integrity.ts src/model/integrity.test.ts src/ui/integrity.ts scripts/scrub-reporter/ scripts/scrub_reporter_test.py
+Covers: src/collect/errors.ts src/collect/kernel-log.ts src/collect/kernel-log.test.ts src/collect/scrub.ts src/collect/scrub.test.ts src/model/integrity.ts src/model/integrity.test.ts src/ui/integrity.ts scripts/scrub-reporter/ scripts/scrub_reporter_test.py scripts/reporter-install-lib.sh
 
 Storage answers two questions per filesystem: is its data damaged, and when was it last read end to end. Three sources answer them. A check report says what a completed scrub found. The error counter and the kernel log each record a failed read when one happens. Filesystem, device and mount collection are in [storage](storage.md).
 

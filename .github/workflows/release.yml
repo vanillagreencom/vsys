@@ -45,7 +45,7 @@ jobs:
           fi
 
   reporter:
-    name: Checksum the scrub reporter
+    name: Checksum the root-side reporters
     needs: create
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -61,10 +61,15 @@ jobs:
           cd scripts/scrub-reporter
           sha256sum vsys-scrub-report vsys-report.conf vsys-scrub.conf > scrub-reporter.sha256
           cat scrub-reporter.sha256
+      - name: Checksum the smart reporter files
+        run: |
+          cd scripts/smart-reporter
+          sha256sum vsys-smart-report vsys-smart-report.service vsys-smart-report.timer vsys-smart.conf > smart-reporter.sha256
+          cat smart-reporter.sha256
       - name: Upload the checksums to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" scripts/scrub-reporter/scrub-reporter.sha256 --clobber
+        run: gh release upload "$TAG" scripts/scrub-reporter/scrub-reporter.sha256 scripts/smart-reporter/smart-reporter.sha256 --clobber
 
   build:
     name: Build ${{ matrix.arch }}
@@ -142,7 +147,11 @@ jobs:
             "vsys-${TAG}-linux-x86_64.tar.gz" \
             vsys-report.conf \
             vsys-scrub-report \
-            vsys-scrub.conf | sort)
+            vsys-scrub.conf \
+            vsys-smart-report \
+            vsys-smart-report.service \
+            vsys-smart-report.timer \
+            vsys-smart.conf | sort)
           actual=$(awk '{print $2}' SHA256SUMS | sort)
           if [ "$actual" != "$expected" ]; then
             echo "::error::SHA256SUMS names [$(tr '\n' ' ' <<<"$actual")] but expected [$(tr '\n' ' ' <<<"$expected")]"
