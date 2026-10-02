@@ -3,9 +3,9 @@
 # name: block-unsafe-rm
 # event: PreToolUse
 # matcher: Bash
-# description: Block any rm with a path operand that starts with a variable that may expand empty. Names the rewrite the harness accepts without a prompt.
-# summary: Stops a delete whose path starts with a variable that may be empty. Refusing this shape lets the agent rewrite it before a harness prompt stalls the session.
-# safety: One regex over the raw command refuses any rm with an operand rooted in `$NAME`, `${NAME}` or `${NAME:-…}`, including globs, regardless of flags. `${NAME:?…}` aborts on empty and passes. A redirection target is not an operand. The scan can refuse harmless text that spells the same shape, such as `git rm --cached $X` or an echo containing `rm $X`. It does not parse shell syntax: a split command name or line continuation can escape it and still reach the harness prompt. Every refusal opens with `block-unsafe-rm: <key>=<value>`; output from a command this hook runs follows that line.
+# description: Block rm on shared directory roots, globs directly under them, child paths with . or .. segments, and paths that start with a variable that may expand empty. Keep a private mktemp directory and remove it in the same shell call.
+# summary: Stops deletes of shared directory roots, their direct globs or child paths with . or .. segments, and paths that start with a variable that may be empty. The refusal gives a safe cleanup pattern.
+# safety: The raw command scan refuses any rm on TMPDIR, TMP, TEMP, AGENT_TMPDIR or HOME roots, globs directly under them, and child paths containing . or .. segments, regardless of flags, including `${NAME:?…}`. Literal operands are compared as text against nonempty hook environment values, with trailing slashes ignored; no filesystem reads or glob expansion occur. Named child paths without . or .. segments pass this check. The existing empty-variable check refuses `$NAME`, `${NAME}` and `${NAME:-…}` roots; `${NAME:?…}` passes it. A redirection target is not an operand. Harmless text with the same shape can be refused. The scan does not parse shell: aliases such as `D=$TMPDIR`, `${!NAME}`, cd followed by relative rm, command substitutions, split command names and line continuations can escape it. Every refusal opens with `block-unsafe-rm: <key>=<value>`; captured command output follows that line.
 # ---
 
 set -euo pipefail
@@ -29,6 +29,12 @@ refuse() { # KEY VALUE [CAUSE]
       ;;
     payload=invalid-json)
       echo "the hook payload is not valid JSON, or names a command that is not a string; refusing rather than skipping the guard" >&2
+      ;;
+    refused=shared-root)
+      echo "This rm targets a shared root, its direct glob, or a child path with . or .. segments:" >&2
+      echo "  $COMMAND" >&2
+      echo 'The :? guard proves only that the variable is not empty.' >&2
+      echo 'Keep d=$(mktemp -d) and remove "${d:?}" in the same shell call.' >&2
       ;;
     refused=recursive-rm)
       echo "Any rm on a variable-rooted path stalls the session: the harness stops on" >&2
@@ -98,7 +104,7 @@ COMMAND=$(printf '%s' "$INPUT" \
 #             a newline is one of the characters this admits.
 #   ROOT      an operand rooted in a variable that may expand empty: `$NAME`,
 #             `${NAME}`, `${NAME:-…}`. `${NAME:?…}` aborts on empty and is the
-#             accepted rewrite, so it is the one variable root that passes; the
+#             accepted rewrite for a non-shared root; the
 #             identifier test is what keeps `${X+x:?}` — an unset-guarded
 #             ALTERNATIVE whose text merely contains :? — on the refused side.
 #             A leading double quote is peeled, since quoting does not stop an
@@ -108,14 +114,12 @@ COMMAND=$(printf '%s' "$INPUT" \
 #             horizontal whitespace and nothing else, because the only
 #             whitespace character in ENDERS is the newline: a gap that crossed
 #             one would read the next command's words as this rm's operands.
-#   SKIP      the words the scan crosses to get from one part to the next: GAP
-#             then a run of CROSSABLE, repeated. CROSSABLE is any character but
-#             ENDERS, `<`, `>` and whitespace, so it is a word BODY and GAP is
-#             the one thing between two words. An ender would end this rm, and
-#             a redirection target is not an operand at all, so
-#             `rm -rf /var/tmp/x > $LOG` is not a variable-rooted rm. Crossing
-#             ordinary words reaches a later variable-rooted operand after
-#             flags or literal operands.
+#   SKIP      crosses words and complete redirections in an agent's Bash call.
+#             A redirection's operator and target form one unit, so its target
+#             never becomes an operand. Quoted and escaped parts stay inside
+#             WORD, including spaces in a target. A redirection may touch a
+#             word, but an operand still needs GAP before it. Separators in
+#             ENDERS stop the scan outside words and redirections.
 #
 # Flags do not affect the rule. Shell-assembled command names and line
 # continuations remain outside this lexical scan.
@@ -132,8 +136,39 @@ GAP="[${BLANK}]"
 RM_EDGE='(^|[^[:alnum:]_.-])'
 ROOT='"*\$([A-Za-z_]|\{[A-Za-z_][A-Za-z0-9_]*([^:A-Za-z0-9_]|:[^?]))'
 CROSSABLE="[^${ENDERS}<>${SPACE_ANY}]"
-SKIP="(${GAP}+${CROSSABLE}+)*"
+WORD_PART="[^${ENDERS}<>${SPACE_ANY}\"'\\\\]"
+QUOTED_WORD='"([^"\\]|\\.)*"|'"'[^']*'"
+ESCAPED_WORD='\\[^'$'\n'']'
+WORD="(${WORD_PART}|${QUOTED_WORD}|${ESCAPED_WORD})+"
+REDIRECT='([[:digit:]]*|\{[[:alpha:]_][[:alnum:]_]*\})(&>[>]?|[<>]&|>>|<<<|<<-|<<|<>|>\||[<>])'
+SKIP="(${GAP}+${WORD}|${GAP}*${REDIRECT}${GAP}*${WORD})*"
 UNSAFE_RE="${RM_EDGE}rm${SKIP}${GAP}+${ROOT}"
+
+# The harness has no shared-root ownership check.
+# With HOME=/shared/home, rm -rf /shared/home/* is a refused direct glob.
+SHARED_NAMES='(TMPDIR|TMP|TEMP|AGENT_TMPDIR|HOME)'
+SHARED_CHILD="[^/${ENDERS}<>${SPACE_ANY}]*"
+SHARED_DOT="(${SHARED_CHILD}/+)*[\"']*\\.\\.?[\"']*(/+${CROSSABLE}*)?"
+SHARED_SLASH="/+[\"']*(${SHARED_CHILD}[*?[]${SHARED_CHILD}/*|${SHARED_DOT})?"
+SHARED_BOUNDARY="[\"']*($|[${ENDERS}<>${SPACE_ANY}])"
+SHARED_END="[\"']*(${SHARED_SLASH})?${SHARED_BOUNDARY}"
+# Apple's regex rejects an empty alternative; an optional suffix accepts none.
+SHARED_ROOT="\"*\\\$(${SHARED_NAMES}|\\{${SHARED_NAMES}([^[:alnum:]_}][^}]*)?\\})${SHARED_END}"
+SHARED_RE="${RM_EDGE}rm${SKIP}${GAP}+${SHARED_ROOT}"
+[[ ! $COMMAND =~ $SHARED_RE ]] || refuse refused shared-root
+for root_name in TMPDIR TMP TEMP AGENT_TMPDIR HOME; do
+  root_value=${!root_name-}
+  [ -n "$root_value" ] || continue
+  while [[ $root_value == */ && $root_value != / ]]; do root_value=${root_value%/}; done
+  literal_root=$root_value
+  literal_end=$SHARED_END
+  if [ "$root_value" = / ]; then literal_root=''; literal_end="${SHARED_SLASH}${SHARED_BOUNDARY}"; fi
+  for metachar in '\' '.' '[' ']' '(' ')' '{' '}' '*' '+' '?' '^' '$' '|'; do
+    literal_root=${literal_root//"$metachar"/\\"$metachar"}
+  done
+  SHARED_RE="${RM_EDGE}rm${SKIP}${GAP}+[\"']*${literal_root}${literal_end}"
+  [[ ! $COMMAND =~ $SHARED_RE ]] || refuse refused shared-root
+done
 
 if [[ ! $COMMAND =~ $UNSAFE_RE ]]; then
   exit 0
