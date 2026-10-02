@@ -1,0 +1,1 @@
+- A finished scrub report with no readable start time now still reports its own damage, instead of a clean remembered check masking it.

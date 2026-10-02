@@ -69,7 +69,12 @@ export function blocksText(item: Integrity): string {
   if (!item.readable) return `${gap}: the report could not be read`;
   // A check still running, or one that stopped early, has counted nothing
   // yet. Saying its report carried no count would blame the report for that.
-  if (!item.complete) return `${gap}: the check has not finished`;
+  if (item.scrub.status !== "finished")
+    return `${gap}: the check has not finished`;
+  // This report did finish, but it started before the newer finished check
+  // vsys remembers, so its own count is not the authoritative one.
+  if (!item.complete)
+    return `${gap}: a newer finished check is remembered instead, so this report's own count does not speak for it`;
   if (item.blocks === null || item.blocks === undefined)
     return `${gap}: the report carried no count`;
   return `${item.blocks} by the last full check`;
@@ -84,8 +89,12 @@ export function noDamageText(item: Integrity): string {
     return "No check has reported on this filesystem, so no file is named.";
   if (!item.readable)
     return "The report could not be read, so nothing in it names a file.";
-  if (!item.complete)
+  if (item.scrub.status !== "finished")
     return "The check has not finished, so it has named no file yet.";
+  // This report did finish, but a newer finished check is remembered in its
+  // place, so this report's own file list is not the one that speaks.
+  if (!item.complete)
+    return "A newer finished check is remembered instead, so this report's own file list does not speak for the damage.";
   if (item.scrub.addresses === null || item.scrub.addresses === undefined)
     return "The report carries no damaged-file section, so it names no file. That is not a report of none.";
   const { unnamed } = damageCounts(item);

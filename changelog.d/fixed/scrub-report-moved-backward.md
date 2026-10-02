@@ -1,0 +1,1 @@
+- A restored older scrub report no longer overrides a newer remembered finished check's age or damage with its own, older, clean outcome.
