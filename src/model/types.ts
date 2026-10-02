@@ -58,6 +58,12 @@ export interface Proc {
   envAvailable?: boolean;
   branch: string | null;
   tool: string | null;
+  /**
+   * A configured agent name this process carries that its tool's install
+   * locations did not confirm, so it is not an agent. Absent in snapshots
+   * recorded before vsys checked where a tool was installed.
+   */
+  unconfirmedTool?: string | null;
   build: string | null;
 }
 /** Filesystem counters stay keyed by filesystem and device. */

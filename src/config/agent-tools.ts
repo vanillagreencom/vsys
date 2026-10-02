@@ -10,13 +10,25 @@ const documentKeys = new Set([
   "desktopExePrefixes",
   "bundledCliSuffixes",
 ]);
-const toolKeys = new Set(["name", "mise"]);
+const toolKeys = new Set(["name", "mise", "paths", "executables"]);
 const toolNamePattern = /^\S+$/;
 const miseDirPattern = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
 export interface AgentToolEntry {
   name: string;
   mise: string[];
+  /**
+   * Path fragments the tool's own installs put its executable or script
+   * under, such as its npm package directory. A fragment matches anywhere in
+   * a path.
+   */
+  paths: string[];
+  /**
+   * Whole executable paths, for a package that installs the tool into a
+   * shared directory such as `/usr/bin`, where a fragment would match longer
+   * names.
+   */
+  executables: string[];
 }
 
 export interface AgentToolsDocument {
@@ -115,7 +127,38 @@ export function parseAgentToolsDocument(
             "must be a mise install directory name",
           );
     for (const dir of mise) rejectDuplicate(miseDirs, dir, path, "mise dir");
-    return { name: tool.name, mise };
+    const paths =
+      tool.paths === undefined
+        ? []
+        : stringArray(
+            tool.paths,
+            path,
+            `tools[${index}].paths`,
+            (item) => item.length > 1 && item.startsWith("/"),
+            "must be a path fragment starting with /",
+          );
+    const executables =
+      tool.executables === undefined
+        ? []
+        : stringArray(
+            tool.executables,
+            path,
+            `tools[${index}].executables`,
+            (item) =>
+              item.length > 1 && item.startsWith("/") && !item.endsWith("/"),
+            "must be an absolute executable path",
+          );
+    const locations = new Set<string>();
+    for (const fragment of paths)
+      rejectDuplicate(locations, fragment, path, `tools[${index}].paths`);
+    for (const executable of executables)
+      rejectDuplicate(
+        locations,
+        executable,
+        path,
+        `tools[${index}].executables`,
+      );
+    return { name: tool.name, mise, paths, executables };
   });
   const desktopExePrefixes =
     input.desktopExePrefixes === undefined
@@ -169,7 +212,7 @@ function mergeAgentTools(
     desktopExePrefixes: [],
     bundledCliSuffixes: [],
   };
-  const names = new Set<string>();
+  const tools = new Map<string, { entry: AgentToolEntry; seen: Set<string> }>();
   const miseDirs = new Set<string>();
   const prefixes = new Set<string>();
   const suffixes = new Set<string>();
@@ -177,11 +220,32 @@ function mergeAgentTools(
     [shipped, "data/agent-tools.json"],
     [overlay, overlayPath],
   ] as const) {
+    // An overlay entry naming a tool already listed adds install locations
+    // to that tool, so a machine can teach vsys where it installed a
+    // shipped CLI.
     for (const tool of document.tools) {
-      rejectDuplicate(names, tool.name, path, "tool name");
-      for (const dir of tool.mise)
+      let known = tools.get(tool.name);
+      if (!known) {
+        known = {
+          entry: { name: tool.name, mise: [], paths: [], executables: [] },
+          seen: new Set(),
+        };
+        tools.set(tool.name, known);
+        merged.tools.push(known.entry);
+      }
+      const { entry, seen } = known;
+      for (const dir of tool.mise) {
         rejectDuplicate(miseDirs, dir, path, "mise dir");
-      merged.tools.push({ name: tool.name, mise: [...tool.mise] });
+        entry.mise.push(dir);
+      }
+      for (const fragment of tool.paths) {
+        rejectDuplicate(seen, fragment, path, `${tool.name} paths`);
+        entry.paths.push(fragment);
+      }
+      for (const executable of tool.executables) {
+        rejectDuplicate(seen, executable, path, `${tool.name} executables`);
+        entry.executables.push(executable);
+      }
     }
     for (const prefix of document.desktopExePrefixes) {
       rejectDuplicate(prefixes, prefix, path, "desktop exe prefix");
@@ -255,12 +319,19 @@ export async function prepareAgentToolNamesSave(
   const nextOverlay = parseAgentToolsDocument(
     {
       version: 1,
-      tools: names
-        .filter((name) => !shippedNames.has(name))
-        .map((name) => ({
-          name,
-          mise: [...(existingTools.get(name)?.mise ?? [])],
-        })),
+      tools: [
+        // Entries that extend a shipped tool name no Settings edit, so they
+        // stay as the reader wrote them.
+        ...overlay.tools.filter((tool) => shippedNames.has(tool.name)),
+        ...names
+          .filter((name) => !shippedNames.has(name))
+          .map((name) => ({
+            name,
+            mise: [...(existingTools.get(name)?.mise ?? [])],
+            paths: [...(existingTools.get(name)?.paths ?? [])],
+            executables: [...(existingTools.get(name)?.executables ?? [])],
+          })),
+      ],
       desktopExePrefixes: [...overlay.desktopExePrefixes],
       bundledCliSuffixes: [...overlay.bundledCliSuffixes],
     },
@@ -276,7 +347,20 @@ export async function prepareAgentToolNamesSave(
     return { agentTools: merged.tools.map((tool) => tool.name), body: null };
   return {
     agentTools: merged.tools.map((tool) => tool.name),
-    body: `${JSON.stringify(nextOverlay, null, 2)}\n`,
+    // An entry carries a location key only when it names a location, so a
+    // save leaves entries the reader wrote without one as they were.
+    body: `${JSON.stringify(
+      {
+        ...nextOverlay,
+        tools: nextOverlay.tools.map(({ paths, executables, ...tool }) => ({
+          ...tool,
+          ...(paths.length ? { paths } : {}),
+          ...(executables.length ? { executables } : {}),
+        })),
+      },
+      null,
+      2,
+    )}\n`,
   };
 }
 

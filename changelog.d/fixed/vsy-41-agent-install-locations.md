@@ -1,0 +1,1 @@
+- A script or program that only shares an agent CLI's name, such as `bash pi.sh`, no longer appears as an agent lane.

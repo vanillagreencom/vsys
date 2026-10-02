@@ -9,6 +9,7 @@ import {
 import { dirname, join } from "node:path";
 import {
   loadAgentToolNames,
+  loadAgentTools,
   parseAgentToolsDocument,
   saveAgentToolNames,
   shippedAgentTools,
@@ -46,7 +47,7 @@ test("agent tools parser accepts valid documents and rejects malformed rows", ()
   const valid = parseAgentToolsDocument(
     {
       version: 1,
-      tools: [{ name: "zz-agent", mise: ["zz-install"] }],
+      tools: [{ name: "zz-agent", mise: ["zz-install"], paths: ["/zz/pkg/"] }],
       desktopExePrefixes: ["/zz/"],
       bundledCliSuffixes: ["/zz/cli"],
     },
@@ -59,18 +60,16 @@ test("agent tools parser accepts valid documents and rejects malformed rows", ()
       "version-one-point-zero.json",
     ),
   ).toEqual(valid);
-  const rows: [string, unknown][] = [
-    ["bad version", { ...valid, version: 2 }],
-    ["version true", { ...valid, version: true }],
-    ["unknown document key", { ...valid, extra: true }],
-    ["missing tools", { version: 1 }],
-    ["bad name", { ...valid, tools: [{ name: "bad/name" }] }],
-    ["bad mise", { ...valid, tools: [{ name: "ok", mise: ["bad/dir"] }] }],
-    ["bad prefix", { ...valid, desktopExePrefixes: ["relative"] }],
-    ["duplicate name", { ...valid, tools: [{ name: "a" }, { name: "a" }] }],
-  ];
-  for (const [name, value] of rows) {
-    expect(() => parseAgentToolsDocument(value, `${name}.json`)).toThrow(
+  // The warden's parser reads the same table, so a rule pinned for one parser
+  // is pinned for the other.
+  const rows = JSON.parse(
+    readFileSync(join(process.cwd(), "data/agent-tools-rejected.json"), "utf8"),
+  ).rows as { name: string; document: unknown }[];
+  expect(rows.length, "extractor broke: no rejected documents").toBeGreaterThan(
+    0,
+  );
+  for (const { name, document } of rows) {
+    expect(() => parseAgentToolsDocument(document, `${name}.json`)).toThrow(
       `${name}.json`,
     );
   }
@@ -82,6 +81,32 @@ test("agent tools loader merges owner overlay after shipped defaults", async () 
       join(process.cwd(), "data/owner-agent-tools.json"),
     ),
   ).toEqual([...shippedNames, ...ownerNames]);
+});
+
+test("an overlay entry naming a shipped tool adds to that tool's locations", async () => {
+  const root = scratch("agent-tools-extend");
+  const path = join(root, "agent-tools.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      version: 1,
+      tools: [{ name: "codex", mise: ["codex-alt"], paths: ["/srv/codex/"] }],
+    }),
+  );
+  const merged = await loadAgentTools(path);
+  expect(merged.tools.map((tool) => tool.name)).toEqual(shippedNames);
+  const codex = merged.tools.find((tool) => tool.name === "codex");
+  expect(codex?.mise).toEqual(["codex", "codex-alt"]);
+  expect(codex?.paths.at(-1)).toBe("/srv/codex/");
+  // A location the shipped entry already names is refused, naming the overlay.
+  writeFileSync(
+    path,
+    JSON.stringify({
+      version: 1,
+      tools: [{ name: "codex", paths: ["/.codex/packages/"] }],
+    }),
+  );
+  await expect(loadAgentTools(path)).rejects.toThrow(path);
 });
 
 test("agent tools loader uses shipped defaults when overlay is missing", async () => {
@@ -108,8 +133,13 @@ test("agent tools writer saves only overlay tools and preserves overlay signals"
       {
         version: 1,
         tools: [
-          { name: "local-agent", mise: ["local-agent"] },
+          {
+            name: "local-agent",
+            mise: ["local-agent"],
+            paths: ["/opt/local/"],
+          },
           { name: "removed-agent", mise: ["removed-agent"] },
+          { name: "codex", mise: [], executables: ["/usr/local/bin/codex"] },
         ],
         desktopExePrefixes: ["/apps/"],
         bundledCliSuffixes: ["/bin/agent"],
@@ -123,7 +153,8 @@ test("agent tools writer saves only overlay tools and preserves overlay signals"
   expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
     version: 1,
     tools: [
-      { name: "local-agent", mise: ["local-agent"] },
+      { name: "codex", mise: [], executables: ["/usr/local/bin/codex"] },
+      { name: "local-agent", mise: ["local-agent"], paths: ["/opt/local/"] },
       { name: "new-agent", mise: [] },
     ],
     desktopExePrefixes: ["/apps/"],
@@ -148,7 +179,7 @@ test("agent tools writer refuses malformed existing overlays", async () => {
   const body = `${JSON.stringify(
     {
       version: 1,
-      tools: [{ name: shippedNames[0], mise: [] }],
+      tools: [{ name: "other-agent", mise: [shippedNames[0]] }],
       desktopExePrefixes: [],
       bundledCliSuffixes: [],
     },
@@ -168,6 +199,22 @@ test("agent tool defaults match the shipped JSON file", () => {
   ).tools.map((tool: { name: string }) => tool.name);
   expect(fromFile.length).toBeGreaterThan(0);
   expect(shippedAgentTools.tools.map((tool) => tool.name)).toEqual(fromFile);
+});
+
+test("every shipped agent tool names where it is installed", () => {
+  // Control: removing one shipped tool's paths and mise names turns this red.
+  const tools = JSON.parse(
+    readFileSync(join(process.cwd(), "data/agent-tools.json"), "utf8"),
+  ).tools as { name: string; mise?: string[]; paths?: string[] }[];
+  expect(
+    tools.length,
+    "extractor broke: data/agent-tools.json yielded no tools",
+  ).toBeGreaterThan(0);
+  expect(
+    tools
+      .filter((tool) => !tool.mise?.length && !tool.paths?.length)
+      .map((tool) => tool.name),
+  ).toEqual([]);
 });
 
 test("config sources do not keep an inline shipped tool list", () => {

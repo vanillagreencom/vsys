@@ -1,0 +1,20 @@
+{
+  "rows": [
+    {"name": "bad version", "document": {"version": 2, "tools": []}},
+    {"name": "version true", "document": {"version": true, "tools": []}},
+    {"name": "unknown document key", "document": {"version": 1, "tools": [], "extra": true}},
+    {"name": "missing tools", "document": {"version": 1}},
+    {"name": "bad name", "document": {"version": 1, "tools": [{"name": "bad/name"}]}},
+    {"name": "unknown tool key", "document": {"version": 1, "tools": [{"name": "ok", "extra": true}]}},
+    {"name": "duplicate name", "document": {"version": 1, "tools": [{"name": "a"}, {"name": "a"}]}},
+    {"name": "mise slash", "document": {"version": 1, "tools": [{"name": "ok", "mise": ["bad/dir"]}]}},
+    {"name": "path relative", "document": {"version": 1, "tools": [{"name": "ok", "paths": ["pkg/"]}]}},
+    {"name": "root path", "document": {"version": 1, "tools": [{"name": "ok", "paths": ["/"]}]}},
+    {"name": "duplicate path", "document": {"version": 1, "tools": [{"name": "ok", "paths": ["/pkg/", "/pkg/"]}]}},
+    {"name": "executable relative", "document": {"version": 1, "tools": [{"name": "ok", "executables": ["codex"]}]}},
+    {"name": "executable directory", "document": {"version": 1, "tools": [{"name": "ok", "executables": ["/usr/bin/"]}]}},
+    {"name": "path repeated as executable", "document": {"version": 1, "tools": [{"name": "ok", "paths": ["/usr/bin/ok"], "executables": ["/usr/bin/ok"]}]}},
+    {"name": "prefix relative", "document": {"version": 1, "tools": [], "desktopExePrefixes": ["relative"]}},
+    {"name": "suffix relative", "document": {"version": 1, "tools": [], "bundledCliSuffixes": ["relative"]}}
+  ]
+}

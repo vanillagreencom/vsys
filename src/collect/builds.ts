@@ -1,21 +1,149 @@
 import { basename } from "node:path";
-import type { DesktopPaths } from "../config/agent-tools";
+import type { AgentToolsDocument, DesktopPaths } from "../config/agent-tools";
 
-/** Match executable or script names, never arbitrary prompt arguments. */
+/** Runtimes an agent CLI's script runs under, where the script names it. */
+const scriptRunners = ["bun", "node", "python", "python3", "bash", "sh"];
+/**
+ * Runtimes whose program can replace the process title: Node and Bun rewrite
+ * the whole argument area and the kernel's name for the process.
+ */
+const titleRuntimes = ["bun", "node", "nodejs"];
+/** Where one tool's installs put it. */
+export interface ToolInstall {
+  /** Fragments a path must contain: package and version manager directories. */
+  fragments: string[];
+  /** Whole paths, for a package that installs into a shared directory. */
+  executables: string[];
+}
+/** The agent-tool data `toolName` judges a process by, built once per collector. */
+export interface ToolSignals {
+  installs: ReadonlyMap<string, ToolInstall>;
+  desktop: DesktopPaths;
+}
+/**
+ * Each tool's install locations: its own path fragments, the directory a
+ * version manager installs each of its mise names under, and its whole
+ * executable paths. mise and asdf both keep a tool in `installs/<name>/`
+ * below their data directory, wherever a reader moved that directory.
+ */
+export function toolSignals(document: AgentToolsDocument): ToolSignals {
+  return {
+    installs: new Map(
+      document.tools.map((tool) => [
+        tool.name,
+        {
+          fragments: [
+            ...tool.paths,
+            ...tool.mise.map((dir) => `/installs/${dir}/`),
+          ],
+          executables: [...tool.executables],
+        },
+      ]),
+    ),
+    desktop: {
+      desktopExePrefixes: [...document.desktopExePrefixes],
+      bundledCliSuffixes: [...document.bundledCliSuffixes],
+    },
+  };
+}
+/**
+ * What `toolName` reads to confirm a name, read only once a name matched.
+ * `null` is a path that could not be read.
+ */
+export interface ToolPaths {
+  /** The process's executable. */
+  executable(): string | null;
+  /** A script argument with symbolic links resolved, as given if absent. */
+  script(argument: string): string | null;
+}
+/**
+ * What a process is to the agent-tool data: an agent, a configured name its
+ * install locations did not confirm, or neither.
+ */
+export type ToolMatch =
+  | { kind: "agent"; name: string }
+  | { kind: "unconfirmed"; name: string }
+  | { kind: "none" };
+// REVISIT(D010): a layout no fragment or executable path describes needs another signal.
+/**
+ * The one rule that makes a process an agent. A name alone never does: `pi`
+ * or `dsh` can be anyone's program or script. A name a tool's executable or
+ * script carries is that tool where the path lies in one of its install
+ * locations or is an engine a desktop app bundles, wherever that is, even
+ * under a desktop prefix. Short of that, a desktop app's own binary is never
+ * an agent, whatever it is called. Otherwise the name stands where a script
+ * runtime replaced its own title with it, which erases the script path; where
+ * the tool has no install location, because a reader named it without saying
+ * where it lives, though a script never matches such a tool; and where a path
+ * could not be read, because a failed read never hides an escaped agent.
+ * Never matched on prompt arguments: `bash -c claude` is not claude.
+ */
 export function toolName(
   comm: string,
   command: string[],
   tools: string[],
-): string | null {
-  const candidates = [comm, basename(command[0] ?? "")];
+  signals: ToolSignals,
+  paths: ToolPaths,
+): ToolMatch {
+  const runner = basename(command[0] ?? "");
+  const named = tools.find((tool) => tool === comm || tool === runner);
+  const argument = scriptRunners.includes(runner) ? command[1] : undefined;
+  const scriptName =
+    argument === undefined
+      ? null
+      : basename(argument).replace(/\.(js|mjs|cjs|py|sh)$/, "");
+  const scripted =
+    scriptName !== null && tools.includes(scriptName) ? scriptName : null;
+  const candidate = named ?? scripted;
+  if (candidate === null) return { kind: "none" };
+  const install = (name: string) => {
+    const found = signals.installs.get(name);
+    return found?.fragments.length || found?.executables.length ? found : null;
+  };
+  const installed = (location: ToolInstall, path: string) =>
+    location.fragments.some((fragment) => path.includes(fragment)) ||
+    location.executables.includes(path) ||
+    bundledCli(path, signals.desktop);
+  const read = paths.executable();
+  const executable = read === null ? null : liveExecutable(read);
+  const namedAt = named === undefined ? null : install(named);
   if (
-    ["bun", "node", "python", "python3", "bash", "sh"].includes(candidates[1])
+    named !== undefined &&
+    namedAt !== null &&
+    executable !== null &&
+    installed(namedAt, executable)
   )
-    candidates.push(
-      basename(command[1] ?? "").replace(/\.(js|mjs|cjs|py|sh)$/, ""),
-    );
-  return tools.find((t) => candidates.includes(t)) ?? null;
+    return { kind: "agent", name: named };
+  const scriptAt = scripted === null ? null : install(scripted);
+  const script =
+    scriptAt === null || argument === undefined ? null : paths.script(argument);
+  if (
+    scripted !== null &&
+    scriptAt !== null &&
+    script !== null &&
+    installed(scriptAt, script)
+  )
+    return { kind: "agent", name: scripted };
+  if (executable !== null && desktopApp(executable, signals.desktop))
+    return { kind: "none" };
+  if (
+    named !== undefined &&
+    (namedAt === null ||
+      executable === null ||
+      (titleRuntimes.includes(basename(executable)) &&
+        command[0] === named &&
+        command.slice(1).every((a) => a === "")))
+  )
+    return { kind: "agent", name: named };
+  if (scripted !== null && scriptAt !== null && script === null)
+    return { kind: "agent", name: scripted };
+  return { kind: "unconfirmed", name: candidate };
 }
+/** The kernel marks a binary replaced while it ran with ` (deleted)`. */
+const liveExecutable = (path: string) => path.replace(/ \(deleted\)$/, "");
+/** An agent engine a desktop app bundles beside its own binary. */
+const bundledCli = (path: string, paths: DesktopPaths) =>
+  paths.bundledCliSuffixes.some((suffix) => path.endsWith(suffix));
 /**
  * Tool processes that are not lanes are recognised by their executable name or
  * by a whole flag. Never by prompt text: `claude -p "fix the language server"`
@@ -37,14 +165,12 @@ export function excludedArgv(command: string[], patterns: string[]): boolean {
  * A desktop app's own binary, known by where it is installed and never by its
  * name: Claude Desktop's Electron binary is called `claude`. An agent engine
  * the app bundles under the same prefix stays an agent, known by its suffix.
- * The kernel marks a binary a package update replaced while it ran with a
- * trailing ` (deleted)`, which is not part of its path.
+ * The path is the live one, without the kernel's ` (deleted)` mark.
  */
-export function desktopApp(executable: string, paths: DesktopPaths): boolean {
-  const path = executable.replace(/ \(deleted\)$/, "");
+function desktopApp(executable: string, paths: DesktopPaths): boolean {
   return (
-    paths.desktopExePrefixes.some((prefix) => path.startsWith(prefix)) &&
-    !paths.bundledCliSuffixes.some((suffix) => path.endsWith(suffix))
+    paths.desktopExePrefixes.some((prefix) => executable.startsWith(prefix)) &&
+    !bundledCli(executable, paths)
   );
 }
 /**

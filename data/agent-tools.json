@@ -1,16 +1,16 @@
 {
   "version": 1,
   "tools": [
-    {"name": "claude", "mise": ["claude"]},
-    {"name": "codex", "mise": ["codex"]},
-    {"name": "gemini", "mise": ["gemini"]},
-    {"name": "copilot", "mise": ["copilot"]},
-    {"name": "opencode", "mise": ["opencode"]},
-    {"name": "crush", "mise": ["crush"]},
-    {"name": "cursor-agent", "mise": ["cursor-agent"]},
-    {"name": "pi", "mise": ["pi"]},
-    {"name": "grok", "mise": ["npm-xai-official-grok"]},
-    {"name": "antigravity", "mise": ["aqua-google-antigravity"]}
+    {"name": "claude", "mise": ["claude"], "paths": ["/node_modules/@anthropic-ai/claude-code", "/.local/share/claude/versions/", "/claude-code/"]},
+    {"name": "codex", "mise": ["codex"], "paths": ["/node_modules/@openai/codex", "/.codex/packages/", "/usr/lib/openai-codex/"]},
+    {"name": "gemini", "mise": ["gemini"], "paths": ["/node_modules/@google/gemini-cli/"]},
+    {"name": "copilot", "mise": ["copilot"], "paths": ["/node_modules/@github/copilot"]},
+    {"name": "opencode", "mise": ["opencode"], "paths": ["/node_modules/opencode-", "/.opencode/bin/"], "executables": ["/usr/bin/opencode"]},
+    {"name": "crush", "mise": ["crush"], "paths": ["/node_modules/@charmland/crush"], "executables": ["/usr/bin/crush"]},
+    {"name": "cursor-agent", "mise": ["cursor-agent"], "paths": ["/.local/share/cursor-agent/versions/"]},
+    {"name": "pi", "mise": ["pi"], "paths": ["/node_modules/@earendil-works/pi-coding-agent/", "/node_modules/@mariozechner/pi-coding-agent/"]},
+    {"name": "grok", "mise": ["npm-xai-official-grok"], "paths": ["/node_modules/@xai-official/grok/"]},
+    {"name": "antigravity", "mise": ["aqua-google-antigravity-antigravity-cli"]}
   ],
   "desktopExePrefixes": ["/opt/", "/tmp/.mount_", "/usr/lib/chromium", "/usr/lib/electron", "/usr/lib/firefox", "/usr/lib/slack", "/usr/lib/code"],
   "bundledCliSuffixes": ["/codex-desktop/resources/codex"]

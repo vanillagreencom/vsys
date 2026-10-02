@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { shippedAgentTools } from "../config/agent-tools";
-import { fixture } from "../test/fixture";
+import { claudeLink, fixture } from "../test/fixture";
 import { Collector } from "./collector";
 import {
   type ProcessMessage,
@@ -208,14 +208,14 @@ test("exit, identity reuse and a changed command line each read fresh through th
   rmSync(join(f.config.procRoot, "41"), { recursive: true });
   // A changed command line under the same identity is read again, not kept.
   f.proc(40, "agents.slice/a.scope", {
-    command: ["/usr/bin/claude", "--resume"],
+    command: [claudeLink, "--resume"],
     env: "CLAUDE_CONFIG_DIR=/accounts/changed\0",
     ticks: 60,
   });
   const second = await thread.collect(request(2000, [40]), live());
   expect(second.errors).toEqual([]);
   expect(second.procs.map((p) => p.pid)).toEqual([40]);
-  expect(second.procs[0].command).toEqual(["/usr/bin/claude", "--resume"]);
+  expect(second.procs[0].command).toEqual([claudeLink, "--resume"]);
   expect(second.procs[0].cpuPercent).toBe(50);
   // The launch environment is fixed for one identity, so it stays cached.
   expect(second.procs[0].env).toEqual({ CLAUDE_CONFIG_DIR: "/accounts/work" });
@@ -320,7 +320,7 @@ test("each thread is set up with its collector's settings and answers in JSON te
       config,
       ticksPerSecond: 100,
       pageSize: 4096,
-      desktop: shippedAgentTools,
+      tools: shippedAgentTools,
     },
     { kind: "collect", id: 1, request: request(1000) },
   ]);

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { loadAgentTools, parseAgentToolsDocument } from "../config/agent-tools";
 import { defaults } from "../config/config";
 import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherCopy, launcherTrail } from "../model/launcher";
@@ -8,11 +9,11 @@ import { laneText } from "../model/naming";
 import type { Proc, Snapshot } from "../model/types";
 import { causes, meters } from "../model/verdict";
 import { point } from "../store/point";
-import { fixture } from "../test/fixture";
+import { claudeLink, fixture } from "../test/fixture";
 import { capabilityLine } from "../ui/settings";
-import { buildKind, excludedArgv, toolName } from "./builds";
+import { buildKind, excludedArgv, toolSignals } from "./builds";
 import { Collector, createCollector } from "./collector";
-import { parseStat } from "./procs";
+import { ProcessCollector, parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
 import { ScratchCollector } from "./scratch";
 
@@ -143,7 +144,7 @@ test("a scope wrapper owns launch metadata even when an agent is its child", asy
     env: "CLAUDE_CONFIG_DIR=/accounts/work\0",
   });
   f.proc(41, "agents.slice/a.scope", {
-    command: ["/usr/bin/claude"],
+    command: [claudeLink],
     parent: 40,
   });
   const s = await new Collector(f.config, 100, 4096).sample();
@@ -334,7 +335,7 @@ test("zram symlinks under sys block expose compression stats", async () => {
     { device: "zram0", original: 1000, compressed: 500, used: 600 },
   ]);
 });
-test("build and agent classification does not match prompt arguments", () => {
+test("build classification does not match prompt arguments", () => {
   for (const [command, expected] of [
     [["/usr/bin/rustc"], "rustc"],
     [["/usr/bin/ld.mold", "-o", "app"], "ld.mold"],
@@ -360,8 +361,707 @@ test("build and agent classification does not match prompt arguments", () => {
   expect(
     buildKind("rustc", ["/usr/bin/rustc"], [], defaults().linkerNames),
   ).toBeNull();
-  expect(toolName("bash", ["bash", "-c", "claude"], ["claude"])).toBeNull();
-  expect(toolName("node", ["node", "/bin/codex.js"], ["codex"])).toBe("codex");
+});
+/**
+ * A world of agent-tool data, and the processes one collector reads in it.
+ * Each row is a process, the tool it must read as and the configured name it
+ * carries that no install location confirmed. `exe: null` leaves the
+ * executable link out and `cwd: null` the working directory link, as for a
+ * process vsys may not read; `cwd` is otherwise under the fixture root.
+ * `link` makes a real symbolic link under the root, as a package manager's
+ * launcher on PATH is, and `file` a real script.
+ */
+async function toolWorld(
+  overlay: string | object | null,
+  rows: {
+    pid: number;
+    comm: string;
+    command: (root: string) => string[];
+    exe?: string | null;
+    cwd?: string | null;
+    link?: [from: string, to: string];
+    file?: string;
+    tool: string | null;
+    unconfirmed?: string;
+  }[],
+) {
+  const f = setup();
+  if (overlay !== null && typeof overlay === "object")
+    f.write(f.agentToolsPath, JSON.stringify(overlay));
+  const tools = await loadAgentTools(
+    typeof overlay === "string"
+      ? overlay
+      : overlay === null
+        ? join(f.root, "absent.json")
+        : f.agentToolsPath,
+  );
+  f.config.agentTools = tools.tools.map((tool) => tool.name);
+  for (const row of rows) {
+    if (row.link) {
+      f.write(join(f.root, row.link[1]), "#!/usr/bin/env node\n");
+      mkdirSync(dirname(join(f.root, row.link[0])), { recursive: true });
+      symlinkSync(join(f.root, row.link[1]), join(f.root, row.link[0]));
+    }
+    if (row.file) f.write(join(f.root, row.file), "#!/bin/sh\n");
+    const command = row.command(f.root);
+    const cwd = row.cwd ? join(f.root, row.cwd) : f.root;
+    mkdirSync(cwd, { recursive: true });
+    f.proc(row.pid, `app.slice/tmux-spawn-${row.pid}.scope`, {
+      comm: row.comm,
+      command,
+      exe: row.exe ?? command[0],
+      cwd,
+    });
+    const proc = join(f.config.procRoot, String(row.pid));
+    if (row.exe === null) rmSync(join(proc, "exe"));
+    if (row.cwd === null) rmSync(join(proc, "cwd"));
+  }
+  const reading = new ProcessCollector(f.config, 100, 4096, tools).read({
+    time: 1000,
+    uptime: 1000,
+    groups: [],
+  });
+  expect(reading.errors).toEqual([]);
+  expect(
+    Object.fromEntries(
+      reading.procs.map((p) => [p.pid, [p.tool, p.unconfirmedTool]]),
+    ),
+  ).toEqual(
+    Object.fromEntries(
+      rows.map((row) => [row.pid, [row.tool, row.unconfirmed ?? null]]),
+    ),
+  );
+  const collector = new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    undefined,
+    undefined,
+    new ProcessCollector(f.config, 100, 4096, tools),
+  );
+  return (await collector.sample(1000)).lanes.map((l) => basename(l.id));
+}
+const home = "/home/reader";
+const mise = `${home}/.local/share/mise/installs`;
+test("a shipped agent CLI is recognised through its install shapes, and a name alone never is", async () => {
+  // Control: confirming every name whatever its path turns the unconfirmed
+  // rows red; resolving no launcher link, or a relative script against
+  // vsys's own directory, turns the linked and relative rows red; matching an
+  // exact executable as a fragment turns the chroot row red.
+  await toolWorld(null, [
+    // Native binaries: the executable lies where the tool installs itself.
+    {
+      pid: 10,
+      comm: "claude",
+      command: () => [`${home}/.local/bin/claude`],
+      exe: `${home}/.local/share/claude/versions/2.1.0`,
+      tool: "claude",
+    },
+    {
+      pid: 11,
+      comm: "claude",
+      command: () => ["/usr/bin/claude"],
+      exe: "/usr/lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude",
+      tool: "claude",
+    },
+    {
+      pid: 12,
+      comm: "codex",
+      command: () => [
+        "/usr/lib/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/codex/codex",
+      ],
+      tool: "codex",
+    },
+    {
+      pid: 13,
+      comm: "codex",
+      command: () => [
+        `${home}/.codex/packages/app-server-daemon/releases/0.160.0-x86_64-unknown-linux-musl/bin/codex`,
+        "app-server",
+      ],
+      tool: "codex",
+    },
+    {
+      pid: 14,
+      comm: "opencode",
+      command: () => [`${home}/.opencode/bin/opencode`],
+      tool: "opencode",
+    },
+    {
+      pid: 15,
+      comm: "crush",
+      command: () => ["/usr/lib/node_modules/@charmland/crush/bin/crush"],
+      tool: "crush",
+    },
+    {
+      pid: 16,
+      comm: "node",
+      command: () => [
+        `${home}/.local/bin/cursor-agent`,
+        "--use-system-ca",
+        "index.js",
+      ],
+      exe: `${home}/.local/share/cursor-agent/versions/2026.09.28-64d2043/node`,
+      tool: "cursor-agent",
+    },
+    // Distribution packages: Arch's openai-codex, and packages that install
+    // straight into /usr/bin.
+    {
+      pid: 17,
+      comm: "codex",
+      command: () => ["/usr/bin/codex"],
+      exe: "/usr/lib/openai-codex/bin/codex",
+      tool: "codex",
+    },
+    {
+      pid: 18,
+      comm: "opencode",
+      command: () => ["/usr/bin/opencode"],
+      tool: "opencode",
+    },
+    {
+      pid: 19,
+      comm: "crush",
+      command: () => ["/usr/bin/crush"],
+      tool: "crush",
+    },
+    // The engine Claude Desktop's Code tab downloads.
+    {
+      pid: 20,
+      comm: "claude",
+      command: () => [`${home}/.config/Claude/claude-code/2.1.260/claude`],
+      tool: "claude",
+    },
+    // A version manager's install, reached through its `latest` link.
+    {
+      pid: 21,
+      comm: "MainThread",
+      command: () => [`${mise}/copilot/latest/copilot`],
+      exe: `${mise}/copilot/1.0.90/copilot`,
+      tool: "copilot",
+    },
+    {
+      pid: 22,
+      comm: "pi",
+      command: () => [`${mise}/pi/latest/pi/pi`],
+      exe: `${mise}/pi/0.99.2/pi/pi`,
+      tool: "pi",
+    },
+    {
+      pid: 23,
+      comm: "antigravity",
+      command: () => [
+        `${mise}/aqua-google-antigravity-antigravity-cli/latest/antigravity`,
+      ],
+      tool: "antigravity",
+    },
+    // Node packages: the script lies in the tool's package directory, named
+    // directly, through the launcher link npm puts on PATH, or relative to
+    // the process's own working directory.
+    {
+      pid: 24,
+      comm: "node",
+      command: () => [
+        "node",
+        "/usr/lib/node_modules/@openai/codex/bin/codex.js",
+      ],
+      exe: "/usr/bin/node",
+      tool: "codex",
+    },
+    {
+      pid: 25,
+      comm: "node",
+      command: () => ["node", `${mise}/npm-xai-official-grok/latest/bin/grok`],
+      exe: "/usr/bin/node",
+      tool: "grok",
+    },
+    {
+      pid: 26,
+      comm: "node",
+      command: (root) => ["node", join(root, "usr/bin/gemini")],
+      exe: "/usr/bin/node",
+      link: [
+        "usr/bin/gemini",
+        "usr/lib/node_modules/@google/gemini-cli/bundle/gemini.js",
+      ],
+      tool: "gemini",
+    },
+    {
+      pid: 27,
+      comm: "node",
+      command: (root) => ["node", join(root, "usr/bin/pi")],
+      exe: "/usr/bin/node",
+      link: [
+        "usr/bin/pi",
+        "usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+      ],
+      tool: "pi",
+    },
+    {
+      pid: 28,
+      comm: "node",
+      command: (root) => ["node", join(root, "usr/bin/copilot")],
+      exe: "/usr/bin/node",
+      link: [
+        "usr/bin/copilot",
+        "usr/lib/node_modules/@github/copilot/npm-loader.js",
+      ],
+      tool: "copilot",
+    },
+    {
+      pid: 29,
+      comm: "node",
+      command: () => ["node", "bundle/gemini.js"],
+      exe: "/usr/bin/node",
+      cwd: "usr/local/lib/node_modules/@google/gemini-cli",
+      tool: "gemini",
+    },
+    // Pi after it set its process title: Node erased the script argument.
+    {
+      pid: 30,
+      comm: "pi",
+      command: () => ["pi", "", ""],
+      exe: "/usr/bin/node",
+      tool: "pi",
+    },
+    // An engine a desktop app bundles.
+    {
+      pid: 31,
+      comm: "codex",
+      command: () => ["/opt/codex-desktop/resources/codex", "exec"],
+      tool: "codex",
+    },
+    // A path vsys could not read keeps the name.
+    {
+      pid: 32,
+      comm: "bash",
+      command: () => ["bash", "pi.sh"],
+      exe: "/usr/bin/bash",
+      cwd: null,
+      tool: "pi",
+    },
+    {
+      pid: 33,
+      comm: "codex",
+      command: () => ["/usr/local/bin/codex"],
+      exe: null,
+      tool: "codex",
+    },
+    // A name alone: anyone's script or program.
+    {
+      pid: 40,
+      comm: "bash",
+      command: () => ["bash", "pi.sh"],
+      exe: "/usr/bin/bash",
+      file: "pi.sh",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 41,
+      comm: "python3",
+      command: () => ["python3", `${home}/bin/pi.py`],
+      exe: "/usr/bin/python3.14",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 42,
+      comm: "pi",
+      command: () => ["/bin/bash", `${home}/bin/pi`],
+      exe: "/usr/bin/bash",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 43,
+      comm: "pi",
+      command: () => ["/usr/local/bin/pi"],
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 44,
+      comm: "pi",
+      command: () => ["pi", `${home}/pi.js`],
+      exe: "/usr/bin/node",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 45,
+      comm: "node",
+      command: (root) => ["node", join(root, "bin/codex")],
+      exe: "/usr/bin/node",
+      link: ["bin/codex", "src/codex.js"],
+      tool: null,
+      unconfirmed: "codex",
+    },
+    {
+      pid: 46,
+      comm: "codex",
+      command: () => ["/usr/local/bin/codex"],
+      tool: null,
+      unconfirmed: "codex",
+    },
+    {
+      pid: 47,
+      comm: "opencode",
+      command: () => ["/srv/chroot/usr/bin/opencode"],
+      tool: null,
+      unconfirmed: "opencode",
+    },
+    {
+      pid: 48,
+      comm: "bash",
+      command: () => ["bash", "-c", "claude"],
+      exe: "/usr/bin/bash",
+      tool: null,
+    },
+    // Each conjunct of the retitle and script rules, alone.
+    {
+      pid: 49,
+      comm: "pi",
+      command: () => ["pi"],
+      exe: "/usr/local/bin/pi",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 50,
+      comm: "pi",
+      command: () => ["node", "", ""],
+      exe: "/usr/bin/node",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 51,
+      comm: "cat",
+      command: () => [
+        "cat",
+        "/usr/lib/node_modules/@openai/codex/bin/codex.js",
+      ],
+      exe: "/usr/bin/cat",
+      tool: null,
+    },
+    {
+      pid: 52,
+      comm: "node",
+      command: () => ["node", "/srv/app/server.js"],
+      exe: "/usr/bin/node",
+      tool: null,
+    },
+    // A package under a desktop prefix: the claude-code directory every
+    // Claude Code install shares names it; nothing names the codex one.
+    {
+      pid: 53,
+      comm: "claude",
+      command: () => ["/usr/bin/claude"],
+      exe: "/opt/claude-code/bin/claude",
+      tool: "claude",
+    },
+    {
+      pid: 54,
+      comm: "codex",
+      command: () => ["/usr/bin/codex"],
+      exe: "/opt/codex-cli/bin/codex",
+      tool: null,
+    },
+  ]);
+});
+test("an overlay entry naming a shipped tool adds where this machine installed it", async () => {
+  await toolWorld(
+    {
+      version: 1,
+      tools: [
+        {
+          name: "codex",
+          paths: ["/opt/codex-cli/"],
+          executables: ["/usr/local/bin/codex"],
+        },
+      ],
+    },
+    [
+      // A location the reader adds outranks the desktop prefix around it.
+      {
+        pid: 13,
+        comm: "codex",
+        command: () => ["/usr/bin/codex"],
+        exe: "/opt/codex-cli/bin/codex",
+        tool: "codex",
+      },
+      {
+        pid: 10,
+        comm: "codex",
+        command: () => ["/usr/local/bin/codex"],
+        tool: "codex",
+      },
+      {
+        pid: 11,
+        comm: "codex",
+        command: () => [
+          "/usr/lib/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/codex/codex",
+        ],
+        tool: "codex",
+      },
+      {
+        pid: 12,
+        comm: "codex",
+        command: () => ["/opt/bin/codex-old"],
+        exe: "/srv/codex",
+        tool: null,
+        unconfirmed: "codex",
+      },
+    ],
+  );
+});
+test("tool signals are each tool's paths, version manager directories and executables", () => {
+  expect(
+    toolSignals(
+      parseAgentToolsDocument({
+        version: 1,
+        tools: [
+          {
+            name: "a",
+            mise: ["a-dir"],
+            paths: ["/node_modules/a/"],
+            executables: ["/usr/bin/a"],
+          },
+          { name: "b" },
+        ],
+        desktopExePrefixes: ["/apps/"],
+        bundledCliSuffixes: ["/apps/a"],
+      }),
+    ),
+  ).toEqual({
+    installs: new Map([
+      [
+        "a",
+        {
+          fragments: ["/node_modules/a/", "/installs/a-dir/"],
+          executables: ["/usr/bin/a"],
+        },
+      ],
+      ["b", { fragments: [], executables: [] }],
+    ]),
+    desktop: {
+      desktopExePrefixes: ["/apps/"],
+      bundledCliSuffixes: ["/apps/a"],
+    },
+  });
+});
+test("the owner's machine keeps every agent it ran, and its local names gain no false lanes", async () => {
+  // The owner runs vsys with no config.toml, the repository's owner overlay,
+  // and every agent CLI installed by mise and launched through one shim, as
+  // these rows reproduce.
+  const owner = join(process.cwd(), "data/owner-agent-tools.json");
+  await toolWorld(owner, [
+    {
+      pid: 10,
+      comm: "claude",
+      command: () => [`${mise}/claude/latest/claude`, "--model", "opus"],
+      exe: `${mise}/claude/2.1.286/claude`,
+      tool: "claude",
+    },
+    {
+      pid: 11,
+      comm: "codex",
+      command: () => [`${mise}/codex/latest/bin/codex`],
+      exe: `${mise}/codex/0.159.3/bin/codex`,
+      tool: "codex",
+    },
+    {
+      pid: 12,
+      comm: "codex",
+      command: () => [
+        `${home}/.codex/packages/app-server-daemon/releases/0.160.0-x86_64-unknown-linux-musl/bin/codex`,
+        "app-server",
+        "daemon",
+      ],
+      tool: "codex",
+    },
+    {
+      pid: 13,
+      comm: "MainThread",
+      command: () => [
+        `${mise}/copilot/latest/copilot`,
+        "--disable-builtin-mcps",
+      ],
+      exe: `${mise}/copilot/1.0.90/copilot`,
+      tool: "copilot",
+    },
+    {
+      pid: 14,
+      comm: "node",
+      command: () => ["node", `${mise}/gemini/latest/bin/gemini`],
+      exe: `${mise}/node/24.20.0/bin/node`,
+      tool: "gemini",
+    },
+    {
+      pid: 15,
+      comm: "node",
+      command: () => ["node", `${mise}/npm-deepseek-ai-dsh/0.2.0-rc.2/bin/dsh`],
+      exe: `${mise}/node/24.20.0/bin/node`,
+      tool: "dsh",
+    },
+    {
+      pid: 16,
+      comm: "agy",
+      command: () => [
+        `${mise}/aqua-google-antigravity-antigravity-cli/latest/agy`,
+      ],
+      exe: `${mise}/aqua-google-antigravity-antigravity-cli/1.2.14/antigravity`,
+      tool: "agy",
+    },
+    {
+      pid: 17,
+      comm: "omp",
+      command: () => [`${mise}/github-can1357-oh-my-pi/latest/omp`],
+      exe: `${mise}/github-can1357-oh-my-pi/18.4.8/omp`,
+      tool: "omp",
+    },
+    {
+      pid: 18,
+      comm: "ori",
+      command: () => [
+        `${mise}/github-open-router-labs-ori-releases/cli-latest/ori`,
+      ],
+      exe: `${mise}/github-open-router-labs-ori-releases/cli-0.15.5-74c4cf2/ori`,
+      tool: "ori",
+    },
+    {
+      pid: 19,
+      comm: "fx",
+      command: () => [`${mise}/github-vercel-labs-fx/latest/fx`],
+      exe: `${mise}/github-vercel-labs-fx/0.0.12/fx`,
+      tool: "fx",
+    },
+    {
+      pid: 20,
+      comm: "node",
+      command: () => [
+        `${mise}/cursor-agent/latest/dist-package/cursor-agent`,
+        "--use-system-ca",
+        "index.js",
+      ],
+      exe: `${mise}/cursor-agent/2026.09.28-64d2043/dist-package/node`,
+      tool: "cursor-agent",
+    },
+    {
+      pid: 21,
+      comm: "opencode",
+      command: () => [`${mise}/opencode/latest/opencode`],
+      exe: `${mise}/opencode/1.18.34/opencode`,
+      tool: "opencode",
+    },
+    {
+      pid: 22,
+      comm: "crush",
+      command: () => [`${mise}/crush/latest/crush_0.97.1_Linux_x86_64/crush`],
+      exe: `${mise}/crush/0.97.1/crush_0.97.1_Linux_x86_64/crush`,
+      tool: "crush",
+    },
+    {
+      pid: 23,
+      comm: "pi",
+      command: () => [`${mise}/pi/latest/pi/pi`],
+      exe: `${mise}/pi/0.99.2/pi/pi`,
+      tool: "pi",
+    },
+    {
+      pid: 24,
+      comm: "node",
+      command: () => ["node", `${mise}/npm-xai-official-grok/latest/bin/grok`],
+      exe: `${mise}/node/24.20.0/bin/node`,
+      tool: "grok",
+    },
+    {
+      pid: 25,
+      comm: "antigravity",
+      command: () => [
+        `${mise}/aqua-google-antigravity-antigravity-cli/latest/antigravity`,
+      ],
+      tool: "antigravity",
+    },
+    {
+      pid: 26,
+      comm: "claude",
+      command: () => [`${home}/.config/Claude/claude-code/2.1.260/claude`],
+      tool: "claude",
+    },
+    // The work profile's Code tab engine, and the Electron binary of the
+    // Claude Desktop AppImage, which lies in no claude location.
+    {
+      pid: 27,
+      comm: "claude",
+      command: () => [`${home}/.config/Claude-work/claude-code/2.1.260/claude`],
+      tool: "claude",
+    },
+    {
+      pid: 28,
+      comm: "claude",
+      command: () => ["/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude"],
+      tool: null,
+    },
+    // A distributed shell sharing the local name, and a script sharing a
+    // shipped one.
+    {
+      pid: 30,
+      comm: "dsh",
+      command: () => ["/usr/bin/dsh", "-a", "uptime"],
+      tool: null,
+      unconfirmed: "dsh",
+    },
+    {
+      pid: 31,
+      comm: "bash",
+      command: () => ["bash", "pi.sh"],
+      exe: "/usr/bin/bash",
+      file: "pi.sh",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    // A script never matches a tool with no install location.
+    {
+      pid: 32,
+      comm: "bash",
+      command: () => ["bash", `${home}/bin/agy.sh`],
+      exe: "/usr/bin/bash",
+      tool: null,
+      unconfirmed: "agy",
+    },
+  ]);
+  // Neither false name makes a lane outside the agent slice; the agent
+  // beside them does.
+  expect(
+    await toolWorld(owner, [
+      {
+        pid: 10,
+        comm: "claude",
+        command: () => [`${mise}/claude/latest/claude`],
+        exe: `${mise}/claude/2.1.286/claude`,
+        tool: "claude",
+      },
+      {
+        pid: 30,
+        comm: "dsh",
+        command: () => ["/usr/bin/dsh", "-a", "uptime"],
+        tool: null,
+        unconfirmed: "dsh",
+      },
+      {
+        pid: 31,
+        comm: "bash",
+        command: () => ["bash", "pi.sh"],
+        exe: "/usr/bin/bash",
+        file: "pi.sh",
+        tool: null,
+        unconfirmed: "pi",
+      },
+    ]),
+  ).toEqual(["tmux-spawn-10.scope"]);
 });
 test("stat parser handles a closing parenthesis in comm", () => {
   const fields = Array.from({ length: 22 }, () => "0");
@@ -493,11 +1193,11 @@ test("a sample carries drive lifetime writes when a SMART report is readable", a
 test("argv exclusion hides a helper process but never an agent lane", async () => {
   const f = setup();
   f.proc(39, "app.slice/chrome.scope", {
-    command: ["/usr/bin/claude", "--chrome-native-host"],
+    command: [claudeLink, "--chrome-native-host"],
   });
   f.proc(40, "app.slice/pane.scope", {
     command: [
-      "/usr/bin/claude",
+      claudeLink,
       "-p",
       "fix the typescript-language-server config",
       "rust-analyzer",
@@ -513,7 +1213,7 @@ test("argv exclusion hides a helper process but never an agent lane", async () =
   // The pattern list is configuration, so a different flag excludes instead.
   f.config.excludeArgv = ["--headless"];
   f.proc(41, "app.slice/b.scope", {
-    command: ["/usr/bin/claude", "--headless"],
+    command: [claudeLink, "--headless"],
   });
   const b = await new Collector(f.config, 100, 4096).sample();
   expect(b.procs.find((p) => p.pid === 41)?.tool).toBeNull();
@@ -615,21 +1315,33 @@ test("an excluded pattern matches a whole flag, or an option ending in = with an
   ).toEqual(rows.map(([, , excluded]) => excluded));
 });
 
-test("the program's collector takes desktop paths from the agent-tool overlay", async () => {
+test("the program's collector takes install locations and desktop paths from the agent-tool overlay", async () => {
   const f = setup();
   f.write(
     f.agentToolsPath,
     JSON.stringify({
       version: 1,
-      tools: [],
+      tools: [{ name: "zz-agent", paths: ["/srv/agents/"] }],
       desktopExePrefixes: ["/srv/apps/"],
     }),
   );
+  f.config.agentTools = [...f.config.agentTools, "zz-agent"];
+  // Each app's binary is called claude and lies in no claude install
+  // location, so only the desktop prefix keeps it from reading as a claude
+  // whose location vsys could not confirm.
   f.proc(40, "app.slice/app-x.scope", { command: ["/srv/apps/x/claude"] });
   f.proc(41, "app.slice/app-y.scope", {
     command: ["/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude"],
   });
   f.proc(42, "app.slice/tmux-spawn-1.scope");
+  f.proc(43, "app.slice/tmux-spawn-2.scope", {
+    comm: "zz-agent",
+    command: ["/srv/agents/zz-agent"],
+  });
+  f.proc(44, "app.slice/tmux-spawn-3.scope", {
+    comm: "zz-agent",
+    command: ["/usr/local/bin/zz-agent"],
+  });
   const collector = await createCollector(
     f.config,
     false,
@@ -638,11 +1350,18 @@ test("the program's collector takes desktop paths from the agent-tool overlay", 
   );
   try {
     const s = await collector.sample(1000);
-    // The overlay's prefix joins the shipped ones on the process thread.
-    expect(Object.fromEntries(s.procs.map((p) => [p.pid, p.tool]))).toEqual({
-      40: null,
-      41: null,
-      42: "claude",
+    // The overlay's prefix joins the shipped ones on the process thread, and
+    // so does the install location of a tool the overlay adds.
+    expect(
+      Object.fromEntries(
+        s.procs.map((p) => [p.pid, [p.tool, p.unconfirmedTool]]),
+      ),
+    ).toEqual({
+      40: [null, null],
+      41: [null, null],
+      42: ["claude", null],
+      43: ["zz-agent", null],
+      44: [null, "zz-agent"],
     });
   } finally {
     collector.close();
@@ -718,7 +1437,7 @@ test("the pane handle is collected even when the pane setting is narrowed", asyn
   f.group("agents.slice/c.scope", [60]);
   f.proc(60, "agents.slice/c.scope", {
     comm: "claude",
-    command: ["/usr/bin/claude"],
+    command: [claudeLink],
     env: "TMUX_PANE=%7\0VSYS_PANE=vsys:2.1\0SECRET=hidden\0",
   });
   const collector = new Collector(f.config, 100, 4096);
