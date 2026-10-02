@@ -1252,6 +1252,7 @@ const udisksDrive = {
   model: "Bus Drive",
   kind: "nvme" as const,
   attributes: { total_data_written: { type: "t", data: 7 } },
+  serial: "BUS-DRIVE",
 };
 test("a machine whose timer leaves reports reads them, and never asks udisks", async () => {
   // The author's workstation: no settings file, a timer writing into the
@@ -1365,12 +1366,14 @@ test("the drive capability needs only one supplying device, never every one or o
         model: "No Number",
         kind: "ata",
         attributes: ataRows(10, 1),
+        serial: "SDA-SN",
       },
       {
         name: "sdb",
         model: "Has Number",
         kind: "ata",
         attributes: ataRows(2_000_000, 3),
+        serial: "SDB-SN",
       },
     ]),
   ).sample();

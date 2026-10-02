@@ -105,14 +105,27 @@ test("udisks fills a drive only where it has no report, and names itself", () =>
   const r = new Reader();
   const { reports } = smartReports(r, f.config);
   const udisks = [
-    { name: "nvme0n1", model: "Other", written: 1, identity: null },
+    {
+      name: "nvme0n1",
+      model: "Other",
+      written: 1,
+      identity: null,
+      detected: null,
+    },
     {
       name: "sda",
       model: "Crucial CT1000MX500SSD1",
       written: 1024,
       identity: "SN-SDA",
+      detected: null,
     },
-    { name: "sdb", model: "Old Disk", written: null, identity: null },
+    {
+      name: "sdb",
+      model: "Old Disk",
+      written: null,
+      identity: null,
+      detected: null,
+    },
   ];
   expect(collectDevices(r, f.config, reports, udisks)).toEqual([
     {

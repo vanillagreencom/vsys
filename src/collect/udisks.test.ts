@@ -93,12 +93,14 @@ test("each whole disk with a SMART drive is read, and a partition is no row", as
         model: "Samsung SSD 990 PRO 2TB",
         written: 9_000_000,
         identity: null,
+        detected: null,
       },
       {
         name: "sda",
         model: "Crucial CT1000MX500SSD1",
         written: 512_000,
         identity: null,
+        detected: null,
       },
     ],
   });
@@ -239,7 +241,15 @@ test("a drive whose SMART query fails to launch keeps its row, written unknown, 
     throw launchFailure;
   });
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null, identity: null }],
+    drives: [
+      {
+        name: "sda",
+        model: "B",
+        written: null,
+        identity: null,
+        detected: null,
+      },
+    ],
     outcome: { failure: "incomplete", detail: launchFailure.message },
   });
 });
@@ -257,7 +267,15 @@ test("a drive query spawnText reports timed out is read as a timeout, even thoug
     return { out: "", error: "", status: 143, timedOut: true };
   }, 50);
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null, identity: null }],
+    drives: [
+      {
+        name: "sda",
+        model: "B",
+        written: null,
+        identity: null,
+        detected: null,
+      },
+    ],
     outcome: {
       failure: "incomplete",
       detail: "busctl did not answer within 50 ms",
@@ -275,7 +293,15 @@ test("a drive whose SMART query never answers keeps its row, written unknown", a
     return hangs();
   }, 10);
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null, identity: null }],
+    drives: [
+      {
+        name: "sda",
+        model: "B",
+        written: null,
+        identity: null,
+        detected: null,
+      },
+    ],
     outcome: {
       failure: "incomplete",
       detail: "busctl runner abandoned after 2510 ms with no response",
@@ -336,6 +362,7 @@ test("a kernel name reused by a different drive within the hold is read fresh, n
         model: "Old Drive",
         written: 512_000,
         identity: "SERIAL-OLD",
+        detected: null,
       },
     ],
   });
@@ -360,6 +387,7 @@ test("a kernel name reused by a different drive within the hold is read fresh, n
         model: "New Drive",
         written: 2_560,
         identity: "SERIAL-NEW",
+        detected: null,
       },
     ],
   });
@@ -375,7 +403,7 @@ test("a kernel name reused by a different drive within the hold is read fresh, n
     calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
   ).toBe(queriesSoFar);
 });
-test("a swap into or out of a drive reporting no serial or WWN is read fresh, not served the departed drive's numbers", async () => {
+test("a drive that loses its identity, with no TimeDetected either, goes unknown rather than keep serving the departed drive's numbers; one that later regains an identity is read fresh again", async () => {
   let now = 0;
   let live: FakeDrive[] = [
     {
@@ -396,22 +424,31 @@ test("a swap into or out of a drive reporting no serial or WWN is read fresh, no
       model: "Has Identity",
       written: 512_000,
       identity: "SERIAL-OLD",
+      detected: null,
     },
   ]);
-  // Swapped, still inside the hold, for a drive udisks reports neither a
-  // serial nor a WWN for: the old identity is gone, which is itself a sign
-  // the drive changed, not proof it did not.
+  // Swapped, still inside the hold, for a drive reporting neither a serial,
+  // a WWN nor a TimeDetected: the old identity disappearing is itself a
+  // sign the drive changed, but the replacement gives nothing left to
+  // confirm or query it by, so it reads as unknown rather than keep the
+  // departed drive's numbers or invent new ones.
   now = udisksHoldMs - 1;
   live = [
     { name: "sda", model: "No Identity", kind: "ata", attributes: ata(5, 3) },
   ];
   const second = await udisks.read();
   expect(second.drives).toEqual([
-    { name: "sda", model: "No Identity", written: 2_560, identity: null },
+    {
+      name: "sda",
+      model: null,
+      written: null,
+      identity: null,
+      detected: null,
+    },
   ]);
-  // Swapped again, still inside that second hold, for a drive that now
-  // reports one: the identity appearing is just as much a sign of change as
-  // it disappearing was.
+  // A drive now reporting an identity again, after a stretch answering
+  // unprovable: the reappearing identity is read fresh, the same as any
+  // other provable drive the held reading has nothing for yet.
   now = 2 * udisksHoldMs - 2;
   live = [
     {
@@ -429,7 +466,166 @@ test("a swap into or out of a drive reporting no serial or WWN is read fresh, no
       model: "Has Identity Again",
       written: 512,
       identity: "SERIAL-NEW",
+      detected: null,
     },
+  ]);
+});
+test("two identity-less drives swapped under one kernel name are told apart by TimeDetected, never serving the departed drive's reading", async () => {
+  const calls: string[][] = [];
+  let now = 0;
+  let live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "Old Drive",
+      kind: "ata",
+      attributes: ata(1000, 3),
+      detected: 1_000_000,
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live, calls)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives).toEqual([
+    {
+      name: "sda",
+      model: "Old Drive",
+      written: 512_000,
+      identity: null,
+      detected: 1_000_000,
+    },
+  ]);
+  // The physical drive behind sda is swapped inside the hold for another
+  // that also reports neither a serial nor a WWN: identity alone cannot
+  // tell them apart, but a changed TimeDetected does.
+  now = udisksHoldMs - 1;
+  live = [
+    {
+      name: "sda",
+      model: "New Drive",
+      kind: "ata",
+      attributes: ata(5, 3),
+      detected: 2_000_000,
+    },
+  ];
+  const second = await udisks.read();
+  expect(second.drives).toEqual([
+    {
+      name: "sda",
+      model: "New Drive",
+      written: 2_560,
+      identity: null,
+      detected: 2_000_000,
+    },
+  ]);
+  // Unchanged and still inside the hold, with TimeDetected still equal: the
+  // held reading keeps serving, the drive is not re-queried.
+  const queriesSoFar = calls.filter((argv) =>
+    argv.includes("SmartGetAttributes"),
+  ).length;
+  now = udisksHoldMs;
+  const third = await udisks.read();
+  expect(third).toEqual(second);
+  expect(
+    calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
+  ).toBe(queriesSoFar);
+});
+test("a drive with neither an identity nor a TimeDetected reads as unknown on every sample, never queried at all, with no effect on an unrelated sibling", async () => {
+  const calls: string[][] = [];
+  let now = 0;
+  // sda gives udisks no identity and no TimeDetected at all: nothing ever
+  // ties one sample's sda to the next one's, so it never enters the held
+  // reading or a SMART query. sdb is a steady, identified sibling on the
+  // same host, confirmed same every sample through its own serial.
+  const live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "Ambiguous Drive",
+      kind: "ata",
+      attributes: ata(1000, 3),
+    },
+    {
+      name: "sdb",
+      model: "Sibling Drive",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "SIB-1",
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live, calls)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives).toEqual([
+    {
+      name: "sda",
+      model: null,
+      written: null,
+      identity: null,
+      detected: null,
+    },
+    {
+      name: "sdb",
+      model: "Sibling Drive",
+      written: 5_120,
+      identity: "SIB-1",
+      detected: null,
+    },
+  ]);
+  // sda was never a target queryDrives saw at all: only sdb's own query ran.
+  const queriesAfterFirst = calls.filter((argv) =>
+    argv.includes("SmartGetAttributes"),
+  ).length;
+  expect(queriesAfterFirst).toBe(1);
+  // Nothing on the bus changed — same two drives, same attributes — but sda
+  // still gives no signal to confirm or query it by, so it keeps reading as
+  // unknown; sdb, provably unchanged through its own serial, keeps serving
+  // its held reading untouched.
+  for (const sample of [udisksHoldMs / 2, udisksHoldMs - 1]) {
+    now = sample;
+    const reading = await udisks.read();
+    expect(reading.drives).toEqual([
+      {
+        name: "sda",
+        model: null,
+        written: null,
+        identity: null,
+        detected: null,
+      },
+      {
+        name: "sdb",
+        model: "Sibling Drive",
+        written: 5_120,
+        identity: "SIB-1",
+        detected: null,
+      },
+    ]);
+  }
+  // Three samples in, sda has cost no SmartGetAttributes call at all, and
+  // sdb was never dragged into a re-query either.
+  expect(
+    calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
+  ).toBe(queriesAfterFirst);
+});
+test("two drives, neither reporting a Serial, a WWN nor a TimeDetected, swapped under one kernel name within the hold, both read as unknown rather than either one's numbers ever being served", async () => {
+  let now = 0;
+  let live: FakeDrive[] = [
+    { name: "sda", model: "Old Drive", kind: "ata", attributes: ata(1000, 3) },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives).toEqual([
+    { name: "sda", model: null, written: null, identity: null, detected: null },
+  ]);
+  now = udisksHoldMs - 1;
+  live = [
+    { name: "sda", model: "New Drive", kind: "ata", attributes: ata(5, 3) },
+  ];
+  const second = await udisks.read();
+  expect(second.drives).toEqual([
+    { name: "sda", model: null, written: null, identity: null, detected: null },
   ]);
 });
 test("a drive replaced by one with no SMART interface is dropped, not left answering with the departed drive's numbers", async () => {
@@ -543,7 +739,13 @@ test("a listing failure during the hold does not poison the samples after it: a 
   const udisks = new Udisks(run, () => now);
   const first = await udisks.read();
   expect(first.drives).toEqual([
-    { name: "sda", model: "B", written: 5_120, identity: "SN1" },
+    {
+      name: "sda",
+      model: "B",
+      written: 5_120,
+      identity: "SN1",
+      detected: null,
+    },
   ]);
   // One listing blip, well inside the hold. The drive's SMART reading moves
   // before the bus answers again.
@@ -567,7 +769,15 @@ test("a listing failure during the hold does not poison the samples after it: a 
   const third = await udisks.read();
   expect(third).toEqual({
     outcome: null,
-    drives: [{ name: "sda", model: "B", written: 10_240, identity: "SN1" }],
+    drives: [
+      {
+        name: "sda",
+        model: "B",
+        written: 10_240,
+        identity: "SN1",
+        detected: null,
+      },
+    ],
   });
 });
 test("two consecutive listing failures inside the hold end up holding an empty reading, but the next healthy sample restores it at once rather than for the rest of the hold", async () => {
@@ -620,7 +830,15 @@ test("two consecutive listing failures inside the hold end up holding an empty r
   const fourth = await udisks.read();
   expect(fourth).toEqual({
     outcome: null,
-    drives: [{ name: "sda", model: "B", written: 5_120, identity: "SN1" }],
+    drives: [
+      {
+        name: "sda",
+        model: "B",
+        written: 5_120,
+        identity: "SN1",
+        detected: null,
+      },
+    ],
   });
 });
 test("an initial listing failure, with no prior held reading at all, is not kept as an empty placeholder once the bus answers", async () => {
@@ -668,6 +886,14 @@ test("an initial listing failure, with no prior held reading at all, is not kept
   const second = await udisks.read();
   expect(second).toEqual({
     outcome: null,
-    drives: [{ name: "sda", model: "B", written: 5_120, identity: "SN1" }],
+    drives: [
+      {
+        name: "sda",
+        model: "B",
+        written: 5_120,
+        identity: "SN1",
+        detected: null,
+      },
+    ],
   });
 });
