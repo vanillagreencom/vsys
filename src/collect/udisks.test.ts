@@ -459,25 +459,31 @@ test("a drive replaced by one with no SMART interface is dropped, not left answe
   const second = await udisks.read();
   expect(second).toEqual({ drives: [], outcome: null });
 });
-test("a listing that fails during the hold is never read as proof of no swap: its own failure surfaces rather than the held reading's stale outcome", async () => {
-  const good = fakeBus([
-    {
-      name: "sda",
-      model: "B",
-      kind: "ata",
-      attributes: ata(10, 3),
-      serial: "SN1",
-    },
-  ]);
+test("a listing that fails during the hold is never read as proof of no swap: its own failure surfaces rather than the held reading's stale outcome, and is never asked a second time", async () => {
+  const calls: string[][] = [];
+  const good = fakeBus(
+    [
+      {
+        name: "sda",
+        model: "B",
+        kind: "ata",
+        attributes: ata(10, 3),
+        serial: "SN1",
+      },
+    ],
+    calls,
+  );
   let failing = false;
   const run: typeof spawnText = async (argv, timeoutMs) => {
-    if (failing && argv.includes("GetManagedObjects"))
+    if (failing && argv.includes("GetManagedObjects")) {
+      calls.push(argv);
       return {
         out: "",
         error: "Failed to connect to bus: No such file or directory\n",
         status: 1,
         timedOut: false,
       };
+    }
     return good(argv, timeoutMs);
   };
   let now = 0;
@@ -488,6 +494,9 @@ test("a listing that fails during the hold is never read as proof of no swap: it
   // listing call read() makes to check for a swap.
   failing = true;
   now = udisksHoldMs - 1;
+  const listingsBefore = calls.filter((argv) =>
+    argv.includes("GetManagedObjects"),
+  ).length;
   const second = await udisks.read();
   expect(second).toEqual({
     drives: [],
@@ -496,4 +505,10 @@ test("a listing that fails during the hold is never read as proof of no swap: it
       detail: "Failed to connect to bus: No such file or directory",
     },
   });
+  // A failed swap-check listing must not fall through to readUdisks() for a
+  // second, identical listing call: only one listing call per read().
+  const listingsAfter = calls.filter((argv) =>
+    argv.includes("GetManagedObjects"),
+  ).length;
+  expect(listingsAfter - listingsBefore).toBe(1);
 });

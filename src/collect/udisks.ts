@@ -392,10 +392,17 @@ export class Udisks {
     const at = this.now();
     if (this.held && at - this.held.at < udisksHoldMs) {
       const listing = await listUdisks(this.run, this.timeoutMs);
-      if (
-        listing.targets !== null &&
-        !identitySwapped(this.held.reading, listing.targets)
-      )
+      if (listing.targets === null) {
+        // The swap-check listing itself failed: that is this sample's own
+        // outcome, and the held reading is dropped exactly as a full read's
+        // failure would drop it. readUdisks() below would only repeat this
+        // identical listing call, paying its timeout a second time for the
+        // same answer.
+        const reading: UdisksReading = { drives: [], outcome: listing.outcome };
+        this.held = { at, reading };
+        return reading;
+      }
+      if (!identitySwapped(this.held.reading, listing.targets))
         return this.held.reading;
     }
     const reading = await readUdisks(this.run, this.timeoutMs);
