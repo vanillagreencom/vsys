@@ -383,6 +383,16 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
  * asks the listing fresh; if the failure persists there, it is that later
  * sample's own outcome in turn, rather than the held reading's old,
  * unrelated outcome standing in for it.
+ *
+ * A held reading with no drives at all — kept from a failed first read, or
+ * from two listing failures in a row, each dropping the held reading in turn
+ * until the second one's own empty result is what gets held, or simply from
+ * a real system that then had zero SMART-capable drives — is read as stale
+ * by any fresh listing naming at least one target, without asking
+ * identitySwapped() to compare: an empty held reading has no prior drive to
+ * compare against, so that check would vacuously report no swap forever.
+ * This also covers a drive hot-plugged in after a genuinely driveless hold
+ * started, not only a failure's recovery.
  */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
@@ -412,7 +422,17 @@ export class Udisks {
         this.held = null;
         return { drives: [], outcome: listing.outcome };
       }
-      if (!identitySwapped(this.held.reading, listing.targets))
+      // An empty held reading cannot be proven stale by identitySwapped():
+      // with no prior drive to compare against, it is vacuously "no swap"
+      // whatever the fresh listing names. Any fresh listing naming at least
+      // one target already proves it stale on its own, with nothing left to
+      // compare by name.
+      const emptyHeldProvenStale =
+        this.held.reading.drives.length === 0 && listing.targets.length > 0;
+      if (
+        !emptyHeldProvenStale &&
+        !identitySwapped(this.held.reading, listing.targets)
+      )
         return this.held.reading;
     }
     const reading = await readUdisks(this.run, this.timeoutMs);

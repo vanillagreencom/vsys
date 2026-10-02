@@ -1,0 +1,1 @@
+- An empty held udisks reading, from a failed first read or two listing failures in a row, no longer stands in for "no drives" until the next sample finds a real one.
