@@ -254,7 +254,11 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
     expect({
       slice: row.slice,
       errors: s.errors,
-      lanes: s.lanes.map((l) => [l.id, l.unconfined]),
+      // The collector keeps the order the filesystem lists directories in,
+      // which differs between hosts, so lanes are compared by id.
+      lanes: s.lanes
+        .toSorted((a, b) => a.id.localeCompare(b.id))
+        .map((l) => [l.id, l.unconfined]),
       cause: causes(s, f.config).some((x) => x.id === "unconfined"),
       alert: first.alerts.some((a) => a.rule === "unconfined"),
       agents: meters(s, f.config).find((m) => m.id === "cpu")?.values.agents,
