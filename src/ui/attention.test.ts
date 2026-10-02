@@ -1289,6 +1289,52 @@ test("a damage card never calls a partial list the whole of the damage", () => {
   expect(said(some)).toContain("2 damaged blocks could not be tied to a file");
 });
 
+test("a damage card known only from a remembered check never says the damage is in free space", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  // The current report stopped early, so it names no address of its own. The
+  // only reason this filesystem is damaged at all is the remembered check,
+  // and that check's file-level detail is gone with its report.
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/root.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "fs",
+      startedAt: s.time - 1000,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    fs: { at: s.time - 3 * 86400000, damaged: true },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(said(card)).not.toContain("free space");
+  expect(said(card)).toContain(
+    "The report naming this damage is no longer available, so vsys cannot say which files hold it.",
+  );
+  expect(card?.next).toContain("run a check on that filesystem");
+  // The report vanishing entirely, rather than stopping early, reads the same.
+  s.storage.scrubs = [];
+  const gone = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(said(gone)).not.toContain("free space");
+  expect(said(gone)).toContain("no longer available");
+});
+
 test("a new-errors card tells only the errors newer than the last check", () => {
   const c = defaults();
   const s = emptySnapshot();

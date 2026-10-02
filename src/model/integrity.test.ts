@@ -86,6 +86,29 @@ test("an address names its files, free space, or damage it could not name", () =
   });
 });
 
+test("damage known only from a remembered check counts as unread, never zero", () => {
+  const c = defaults();
+  // The current report stopped early, so it has no addresses of its own; the
+  // only reason this filesystem is damaged is the remembered finished check.
+  const item = integrity(
+    filesystem(),
+    {
+      scrubs: [report({ status: "aborted", problem: true })],
+      lastFinishedScrub: { fs: { at: now - 3 * day, damaged: true } },
+    },
+    now,
+    c,
+  );
+  expect(item.state).toBe("damaged");
+  expect(item.groups).toEqual([]);
+  expect(damageCounts(item)).toEqual({
+    files: null,
+    free: null,
+    unresolved: null,
+    unnamed: null,
+  });
+});
+
 test("every integrity state, and which reading produces it", () => {
   const c = defaults();
   const rows: [

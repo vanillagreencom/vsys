@@ -20,8 +20,10 @@ export function integrityWords(item: Integrity, scrub?: Capability): string {
     case "damaged": {
       const n = damageCounts(item);
       // Blocks no file is named for are damage the listed files do not
-      // cover, so the count of them stands beside the files.
-      const unnamed = n.unresolved + n.unnamed;
+      // cover, so the count of them stands beside the files. A remembered
+      // damaged check with no current address data carries neither count, and
+      // `n.files` falsy below reads it as "Damaged data found" with no count.
+      const unnamed = (n.unresolved ?? 0) + (n.unnamed ?? 0);
       return n.files
         ? `Damage found: ${count(n.files, "possibly damaged file")}${unnamed ? `, ${count(unnamed, "block")} unnamed` : ""}`
         : "Damaged data found";

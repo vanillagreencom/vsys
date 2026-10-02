@@ -304,6 +304,10 @@ function copy(
         target: first,
       };
     case "damaged-files": {
+      // A remembered damaged check carries no address data at all: the
+      // current report that would have named files is gone or aborted, so
+      // this is unread, not a report that named none.
+      const filesKnown = v.files !== null && v.files !== undefined;
       const files = v.files ?? 0;
       const unnamed = v.unnamed ?? 0;
       // A block count vsys did not read is left out rather than shown as zero.
@@ -317,17 +321,20 @@ function copy(
           ? `Damage on ${mounts}: ${count(files, "possibly damaged file")}`
           : `Damaged data on ${mounts}`,
         ways: [
-          files
-            ? `${repaired}${possibleSentence}${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}`
-            : unnamed
-              ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.`
-              : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+          !filesKnown
+            ? `${repaired}The report naming this damage is no longer available, so vsys cannot say which files hold it.`
+            : files
+              ? `${repaired}${possibleSentence}${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}`
+              : unnamed
+                ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.`
+                : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
         ],
         // The step never says to remove a listed file: the report cannot say
         // which file under a block is damaged, so a step that names one may
         // name a sound file.
-        next:
-          !files && !unnamed
+        next: !filesKnown
+          ? "Open Storage and run a check on that filesystem to find out which files hold the damage."
+          : !files && !unnamed
             ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
             : !files
               ? "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot."

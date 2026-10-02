@@ -332,11 +332,18 @@ export function integrities(s: Snapshot, c: Config): Integrity[] {
  * Any unnamed or unresolved block means the listed files are not all of it.
  */
 export function damageCounts(item: Integrity): {
-  files: number;
-  free: number;
-  unresolved: number;
-  unnamed: number;
+  files: number | null;
+  free: number | null;
+  unresolved: number | null;
+  unnamed: number | null;
 } {
+  // A `damaged` state reached only through a remembered finished check (the
+  // current report does not itself speak: it stopped early, or is gone) has
+  // no address data to count at all. That is unread, not a report that named
+  // zero, so every count here is unknown rather than a zero that would read
+  // as a check that found nothing to name.
+  if (!item.complete)
+    return { files: null, free: null, unresolved: null, unnamed: null };
   const of = (kind: DamageKind) =>
     item.groups.filter((group) => group.kind === kind);
   return {

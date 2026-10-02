@@ -1,0 +1,1 @@
+- A damage card known only from a remembered scrub no longer claims the damage sits in free space; it says the report naming it is gone.

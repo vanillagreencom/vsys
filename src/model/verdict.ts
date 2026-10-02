@@ -315,9 +315,23 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     const counts = damaged.map(damageCounts);
     // The card counts damage across every filesystem it names, so its block
     // count must too. One filesystem whose report carried no count leaves the
-    // total unknown rather than a sum that silently omits it.
+    // total unknown rather than a sum that silently omits it. A filesystem
+    // whose damage is known only from a remembered check carries no address
+    // data at all, so its files and unnamed-block counts are unknown the same
+    // way rather than a sum that silently reads them as zero.
     const blocks = damaged.every((item) => item.blocks !== null)
       ? damaged.reduce((sum, item) => sum + (item.blocks ?? 0), 0)
+      : null;
+    const files = counts.every((n) => n.files !== null)
+      ? counts.reduce((sum, n) => sum + (n.files ?? 0), 0)
+      : null;
+    const unnamed = counts.every(
+      (n) => n.unnamed !== null && n.unresolved !== null,
+    )
+      ? counts.reduce(
+          (sum, n) => sum + (n.unnamed ?? 0) + (n.unresolved ?? 0),
+          0,
+        )
       : null;
     add("damaged-files", "danger", {
       paths: damaged.map((item) => item.mounts[0] ?? item.device),
@@ -327,10 +341,10 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       consumer: firstDamaged.mounts[0] ?? firstDamaged.device,
       values: {
         filesystems: damaged.length,
-        files: counts.reduce((sum, n) => sum + n.files, 0),
+        files,
         // Damage no listed file covers: blocks the report names no address
         // for, and addresses whose files could not be named.
-        unnamed: counts.reduce((sum, n) => sum + n.unnamed + n.unresolved, 0),
+        unnamed,
         blocks,
       },
     });
