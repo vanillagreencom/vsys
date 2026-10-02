@@ -10,6 +10,9 @@ import {
   udisksHoldMs,
 } from "./udisks";
 
+/** Never answers, the shape a wedged busctl call over D-Bus takes. */
+const hangs = () => new Promise<never>(() => {});
+
 /** An ATA attribute row: id, name, flags, value, worst, threshold, pretty, unit, expansion. */
 const ata = (pretty: number, unit: number) => [
   [9, "power-on-hours", 50, 99, 99, 0, 15_000_000, 2, {}],
@@ -130,6 +133,61 @@ test("a source that could not be asked, or answered for no drive, says why", asy
     detail: "Call failed: Access denied",
   });
   expect(both.drives.map((d) => d.written)).toEqual([null, null]);
+});
+test("a block device with no drive, and a drive with no SMART interface, are excluded", async () => {
+  const calls: string[][] = [];
+  const reading = await readUdisks(
+    fakeBus(
+      [
+        {
+          name: "sda",
+          model: "Crucial CT1000MX500SSD1",
+          kind: "ata",
+          attributes: ata(1000, 3),
+        },
+        {
+          name: "sdb",
+          model: "Unsupported Drive",
+          kind: "none",
+          attributes: null,
+        },
+      ],
+      calls,
+      ["dm-0"],
+    ),
+  );
+  expect(reading.drives.map((d) => d.name)).toEqual(["sda"]);
+  // Only sda's drive is ever asked for SmartGetAttributes: dm-0 has no Drive
+  // to ask, and sdb's drive answers on neither SMART interface.
+  expect(calls.slice(1)).toHaveLength(1);
+});
+test("a listing that never answers is abandoned at the deadline, not left hanging", async () => {
+  const reading = await readUdisks(hangs, 10);
+  expect(reading).toEqual({
+    drives: [],
+    outcome: {
+      failure: "unreadable",
+      detail: "busctl did not answer within 10 ms",
+    },
+  });
+});
+test("a drive whose SMART query never answers keeps its row, written unknown", async () => {
+  const calls: string[][] = [];
+  const run = fakeBus(
+    [{ name: "sda", model: "B", kind: "ata", attributes: ata(10, 3) }],
+    calls,
+  );
+  const reading = await readUdisks(async (argv) => {
+    if (argv.includes("GetManagedObjects")) return run(argv);
+    return hangs();
+  }, 10);
+  expect(reading).toEqual({
+    drives: [{ name: "sda", model: "B", written: null }],
+    outcome: {
+      failure: "incomplete",
+      detail: "busctl did not answer within 10 ms",
+    },
+  });
 });
 test("a read is held for the hold time on the clock it is given", async () => {
   const calls: string[][] = [];

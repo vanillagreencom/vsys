@@ -4,7 +4,8 @@ import type { spawnText } from "../collect/io";
 export interface FakeDrive {
   name: string;
   model: string;
-  kind: "nvme" | "ata";
+  /** "none" is a drive with neither the NVMe nor the ATA SMART interface. */
+  kind: "nvme" | "ata" | "none";
   /** The SmartGetAttributes reply's `data`, or a refusal in busctl's words. */
   attributes: unknown | { refuse: string };
 }
@@ -13,16 +14,28 @@ const bytes = (path: string) => [...Buffer.from(path), 0];
  * A stand-in for busctl against udisks, answering as `busctl --json=short`
  * prints: GetManagedObjects with each drive's whole disk and one partition,
  * and SmartGetAttributes per drive. It records each call it was asked.
+ *
+ * `orphanBlocks` names block devices with no backing Drive object, the shape
+ * a device-mapper target has: present in the listing, behind no drive udisks
+ * could be asked about.
  */
-export function fakeBus(drives: FakeDrive[], calls: string[][] = []) {
+export function fakeBus(
+  drives: FakeDrive[],
+  calls: string[][] = [],
+  orphanBlocks: string[] = [],
+) {
   const objects: Record<string, unknown> = {};
   for (const d of drives) {
     const drive = `/org/freedesktop/UDisks2/drives/${d.name}_drive`;
     objects[drive] = {
       "org.freedesktop.UDisks2.Drive": { Model: { type: "s", data: d.model } },
-      [d.kind === "nvme"
-        ? "org.freedesktop.UDisks2.NVMe.Controller"
-        : "org.freedesktop.UDisks2.Drive.Ata"]: {},
+      ...(d.kind === "none"
+        ? {}
+        : {
+            [d.kind === "nvme"
+              ? "org.freedesktop.UDisks2.NVMe.Controller"
+              : "org.freedesktop.UDisks2.Drive.Ata"]: {},
+          }),
     };
     const block = (node: string) => ({
       Device: { type: "ay", data: bytes(`/dev/${node}`) },
@@ -35,6 +48,13 @@ export function fakeBus(drives: FakeDrive[], calls: string[][] = []) {
     objects[`/org/freedesktop/UDisks2/block_devices/${d.name}p1`] = {
       "org.freedesktop.UDisks2.Block": block(`${d.name}p1`),
       "org.freedesktop.UDisks2.Partition": {},
+    };
+  }
+  for (const name of orphanBlocks) {
+    objects[`/org/freedesktop/UDisks2/block_devices/${name}`] = {
+      "org.freedesktop.UDisks2.Block": {
+        Device: { type: "ay", data: bytes(`/dev/${name}`) },
+      },
     };
   }
   const run: typeof spawnText = async (argv) => {

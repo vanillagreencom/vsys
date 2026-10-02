@@ -42,6 +42,30 @@ export const udisksAttributesArgv = (drive: string, iface: string) => [
 ];
 /** How long one read of udisks stands before the next sample asks again. */
 export const udisksHoldMs = 10 * 60 * 1000;
+/**
+ * How long one busctl call may run before the sample gives up on it. A
+ * stalled SMART query, over D-Bus through a spun-down drive or a USB
+ * bridge, must not hold every future sample waiting on it.
+ */
+export const udisksTimeoutMs = 5000;
+/** A busctl call that did not answer within its deadline. */
+class BusctlTimeout extends Error {}
+/**
+ * Bound a call whatever it does with the timeout it is given: a real
+ * `spawnText` kills its child on that signal, but this also abandons an
+ * injected `run` that never resolves, so the sample is never the one left
+ * waiting.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new BusctlTimeout(`busctl did not answer within ${ms} ms`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
 /** A sector, the unit udisks gives `total-lbas-written` in. */
 const SECTOR = 512;
 /** udisks' `pretty_unit` for a value counted in sectors. */
@@ -167,11 +191,19 @@ export function udisksTargets(out: string): Target[] {
  * the first refusal is the reading's outcome, because a source that answered
  * for no drive has not given what the reading needs.
  */
-export async function readUdisks(run: Run = spawnText): Promise<UdisksReading> {
+export async function readUdisks(
+  run: Run = spawnText,
+  timeoutMs: number = udisksTimeoutMs,
+): Promise<UdisksReading> {
   let listed: Awaited<ReturnType<Run>>;
   try {
-    listed = await run(udisksObjectsArgv);
+    listed = await withDeadline(run(udisksObjectsArgv, timeoutMs), timeoutMs);
   } catch (error) {
+    if (error instanceof BusctlTimeout)
+      return {
+        drives: [],
+        outcome: { failure: "unreadable", detail: error.message },
+      };
     // Nothing ran: busctl is not on the path.
     return {
       drives: [],
@@ -192,7 +224,17 @@ export async function readUdisks(run: Run = spawnText): Promise<UdisksReading> {
   const refusals: string[] = [];
   const drives = await Promise.all(
     targets.map(async ({ name, model, drive, iface }) => {
-      const answer = await run(udisksAttributesArgv(drive, iface));
+      let answer: Awaited<ReturnType<Run>>;
+      try {
+        answer = await withDeadline(
+          run(udisksAttributesArgv(drive, iface), timeoutMs),
+          timeoutMs,
+        );
+      } catch (error) {
+        if (!(error instanceof BusctlTimeout)) throw error;
+        refusals.push(error.message);
+        return { name, model, written: null };
+      }
       if (answer.status !== 0) {
         refusals.push(answer.error.trim());
         return { name, model, written: null };
@@ -226,11 +268,12 @@ export class Udisks {
   constructor(
     private run: Run = spawnText,
     private now: () => number = () => performance.now(),
+    private timeoutMs: number = udisksTimeoutMs,
   ) {}
   async read(): Promise<UdisksReading> {
     const at = this.now();
     if (this.held && at - this.held.at < udisksHoldMs) return this.held.reading;
-    const reading = await readUdisks(this.run);
+    const reading = await readUdisks(this.run, this.timeoutMs);
     this.held = { at, reading };
     return reading;
   }

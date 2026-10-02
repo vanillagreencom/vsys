@@ -133,6 +133,43 @@ test("a stored scratch row written before root origins loads with an unknown ori
     { path: "/scratch", bytes: 1, age: 0, error: null, origin: null },
   ]);
 });
+test("a stored device row written before lifetime-write sources loads with an unknown source", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  first.add(s);
+  first.close();
+  // What an older build wrote: a device row with no source key at all.
+  const stored = {
+    ...s,
+    storage: {
+      ...s.storage,
+      devices: [
+        { name: "sda", number: "8:0", model: null, lifetimeWritten: null },
+      ],
+    },
+  };
+  const db = new Database(f.config.sqlitePath);
+  db.query("UPDATE samples SET data = ? WHERE time = ?").run(
+    Bun.gzipSync(JSON.stringify(stored)),
+    now,
+  );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  expect(reopened.at(now)?.storage.devices).toEqual([
+    {
+      name: "sda",
+      number: "8:0",
+      model: null,
+      lifetimeWritten: null,
+      source: null,
+    },
+  ]);
+});
 test("a stored cache reading written before the query outcome loads with no invented cause", () => {
   const f = fixture();
   cleanup.push(f.cleanup);

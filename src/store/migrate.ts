@@ -98,6 +98,16 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
         ...root,
         origin: root.origin ?? null,
       })),
+      // A build older than lifetime-write sources stored device rows with
+      // none. Null is the unknown value: the row names no source.
+      ...(s.storage.devices
+        ? {
+            devices: s.storage.devices.map((device) => ({
+              ...device,
+              source: device.source ?? null,
+            })),
+          }
+        : {}),
     },
   };
 }

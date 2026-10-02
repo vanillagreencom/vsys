@@ -90,14 +90,21 @@ export class Reader {
  * Run a program and keep everything it said. The exit status is returned
  * rather than judged, because what counts as a refusal is the caller's:
  * journalctl exits 1 when a search matched nothing, which is an answer.
+ *
+ * `timeoutMs`, where given, kills the child on that deadline: a caller on the
+ * sample's critical path must not wait forever on a wedged subprocess.
  */
 export async function spawnText(
   argv: string[],
+  timeoutMs?: number,
 ): Promise<{ out: string; error: string; status: number }> {
   const child = Bun.spawn(argv, {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    ...(timeoutMs !== undefined
+      ? { signal: AbortSignal.timeout(timeoutMs) }
+      : {}),
   });
   const [out, error, status] = await Promise.all([
     new Response(child.stdout).text(),

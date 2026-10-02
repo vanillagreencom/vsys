@@ -1,0 +1,1 @@
+- The drive reporter systemd service now runs with NoNewPrivileges, ProtectSystem=full, ProtectHome and PrivateTmp, keeping only the /dev access it needs.
