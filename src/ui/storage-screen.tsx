@@ -289,18 +289,35 @@ export function Storage({
   });
   /**
    * A wheel notch moves the selection one row, through the three lists as
-   * one, the way it moves a list on every other screen; stepping from the
-   * row last chosen lets a fast flick count every notch. Where the selection
-   * can go no further the notch goes on to the scroll box, so the write
-   * totals above the first row stay in reach of the wheel. The scroll box
-   * scrolls on any notch that reaches it, whatever a handler did with it, so
-   * a notch that moved the selection stops there.
+   * one, the way it moves a windowed `List` on Agents, Resources, Builds and
+   * Timeline; stepping from the row last chosen lets a fast flick count every
+   * notch. Two notches go on to the scroll box instead. One the selection
+   * cannot take, so the write totals above the first row stay in reach. And
+   * one heading past the edge of the open row: its detail is drawn only while
+   * it is selected and can be taller than the screen, and moving off it would
+   * fold away the lines below the fold unread. The scroll box scrolls on any
+   * notch that reaches it, whatever a handler did with it, so a notch that
+   * moved the selection stops there.
    */
   const onWheel = (event: MouseEvent) => {
     if (!items.length) return;
     step((from) => {
       const to = wheelStep(event, items.length, from);
       if (to === undefined || to === from) return from;
+      // Only the drawn selection has its detail open. A row chosen by an
+      // earlier notch of this flick is not drawn open yet, so it is stepped
+      // past rather than measured.
+      const box = scroller.current;
+      const open =
+        from === selected
+          ? box?.content.findDescendantById(`storage-${from}`)
+          : undefined;
+      if (box && open) {
+        const top = box.viewport.y;
+        const bottom = top + box.viewport.height;
+        if (to > from ? open.y + open.height > bottom : open.y < top)
+          return from;
+      }
       event.stopPropagation();
       return to;
     });

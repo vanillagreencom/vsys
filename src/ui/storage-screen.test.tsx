@@ -1055,6 +1055,109 @@ test("the wheel moves the Storage selection one row per notch, through every lis
   }
 });
 
+test("the wheel reads an open detail taller than the screen to its end before moving on", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const s = damagedSnapshot(time);
+  // Thirty damaged files under the filesystem's row, then the scrub report
+  // and a scratch root below it, so the row is not the last.
+  const files = Array.from(
+    { length: 30 },
+    (_, i) => `/home/reader/file-${String(i).padStart(2, "0")}.txt`,
+  );
+  s.storage.scrubs[0].addresses = files.map((path, i) => ({
+    logical: 1000 + i,
+    paths: [path],
+  }));
+  s.storage.scratch = wheelList().storage.scratch;
+  const t = await mount(s, c, { width: 120, height: 24 });
+  try {
+    await t.press("5");
+    await t.settle();
+    expect(selectedRow(t.frame())).toContain("Damaged files found");
+    const last = files.at(-1) ?? "";
+    expect(t.frame()).not.toContain(last);
+    let read = -1;
+    let left = -1;
+    for (let notch = 0; notch < 200 && left < 0; notch++) {
+      await t.wheel(10, 8, "down");
+      await t.settle();
+      if (read < 0 && t.frame().includes(last)) read = notch;
+      if (selectedRow(t.frame()).includes("/run/btrfs-scrub/root.result"))
+        left = notch;
+    }
+    // The last file is drawn before the selection leaves the row that names
+    // it, and the wheel still goes on to the next row afterwards.
+    expect({ read: read >= 0, left: left >= 0 }).toEqual({
+      read: true,
+      left: true,
+    });
+    expect(read).toBeLessThan(left);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a wheel notch that moves the Storage selection scrolls no further than an arrow", async () => {
+  const c = defaults();
+  /** The frame after `move` takes one row down from /data. */
+  const after = async (
+    move: (t: Awaited<ReturnType<typeof mount>>) => Promise<void>,
+  ) => {
+    const t = await mount(wheelList(), c, { width: 120, height: 16 });
+    try {
+      await t.press("5");
+      await t.settle();
+      await t.press("down");
+      await t.settle();
+      expect(selectedRow(t.frame())).toContain("/data");
+      await move(t);
+      await t.settle();
+      expect(selectedRow(t.frame())).toContain("/home");
+      return t.frame();
+    } finally {
+      await t.close();
+    }
+  };
+  // Arrows scroll the box only as far as keeping the row in view takes, so
+  // the frames match only while a notch that moved the selection is kept
+  // from the scroll box.
+  const arrow = await after((t) => t.press("down"));
+  const wheeled = await after(async (t) => {
+    const y = t
+      .frame()
+      .split("\n")
+      .findIndex((line) => line.includes("▍"));
+    await t.wheel(10, y, "down");
+  });
+  expect(wheeled).toBe(arrow);
+});
+
+test("a fast flick on Storage steps through rows below the fold rather than scrolling to them", async () => {
+  const c = defaults();
+  // Four notches before a render. The later ones step from rows not drawn
+  // open yet, the last from a scratch root below the fold, and each still
+  // moves a row: only the open row's detail holds the wheel.
+  const t = await mount(wheelList(), c, { width: 120, height: 16 });
+  try {
+    await t.press("5");
+    await t.settle();
+    await t.press("down");
+    await t.settle();
+    const y = t
+      .frame()
+      .split("\n")
+      .findIndex((line) => line.includes("▍"));
+    await act(async () => {
+      for (let i = 0; i < 4; i++) await t.ui.mockMouse.scroll(10, y, "down");
+    });
+    await t.settle();
+    expect(selectedRow(t.frame())).toContain("/scratch/b");
+  } finally {
+    await t.close();
+  }
+});
+
 test("a wheel notch the selection cannot take scrolls Storage to the write totals", async () => {
   const c = defaults();
   const t = await mount(wheelList(), c, { width: 120, height: 16 });
