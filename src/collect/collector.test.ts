@@ -1304,8 +1304,10 @@ test("with no report directory, udisks answers in its place or says why it canno
     "Drive lifetime reports: available",
   );
   // The capability must name udisks2 as what actually answered, not the
-  // report directory this machine never populated.
-  expect(smart?.source).toBe(udisksCapabilitySource);
+  // report directory this machine never populated. Pinned to the literal
+  // D-Bus service name, not the production constant, so a wrong rename of
+  // that constant cannot still read as green here.
+  expect(smart?.source).toBe("org.freedesktop.UDisks2");
   const neither = await withUdisks(f, noBus).sample();
   expect(neither.storage.devices).toEqual([
     {
