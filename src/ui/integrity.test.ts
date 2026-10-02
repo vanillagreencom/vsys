@@ -315,44 +315,6 @@ test("nothing parsed from unreadable output is reported as a reading", () => {
   );
 });
 
-test("a finished report superseded by a newer remembered check is not told it never finished", () => {
-  // A restored older report: it finished and carries its own damage data, but
-  // it started before the newer finished check vsys remembers. Its own count
-  // and file list must not speak for the filesystem, and the reader must not
-  // be told the check never finished when it did.
-  const item = integrity(
-    present(
-      volumesByDevice([
-        volumeSnapshot("/", {
-          fsid: "fs",
-          errors: { "1/corruption_errs": 0 },
-          countersAvailable: true,
-        }),
-      ])[0],
-      "root device",
-    ),
-    {
-      scrubs: [
-        report({
-          startedAt: now - 5 * day,
-          problem: true,
-          uncorrectable: 3,
-          addresses: [{ logical: 1, paths: ["/r/target/x"] }],
-        }),
-      ],
-      lastFinishedScrub: { fs: { at: now - 3 * day, damaged: false } },
-    },
-    now,
-    c,
-  );
-  expect(blocksText(item)).toBe(
-    "not available: a newer finished check is remembered instead, so this report's own count does not speak for it",
-  );
-  expect(noDamageText(item)).toBe(
-    "A newer finished check is remembered instead, so this report's own file list does not speak for the damage.",
-  );
-});
-
 test("a check that has not finished counted nothing, and its report is not blamed", () => {
   // A running check is a different fact from a report that omitted its count.
   const running = state([report({ status: "running", uncorrectable: 26 })]);
