@@ -675,7 +675,13 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
             self.write_status_cgroup(self.w, scope="agent-warden-321-654.scope")
             before = self.P(321, 1, "claude", ["claude"], self.A, start=654)
             after = self.P(321, 1, "claude", ["claude"], self._cg("agent-warden-321-654.scope"), start=654)
-            calls = iter([{before.pid: before}, {after.pid: after}])
+            # Three scan() calls per correct tick with a move: the plan-time
+            # snapshot (before), the fresh snapshot reap_scratch_dirs takes
+            # for its own liveness check (irrelevant here -- AGENT_TMPDIR_PARENT
+            # does not exist under this sandboxed HOME, so reap_scratch_dirs
+            # returns before ever reading its procs argument), and the
+            # fresh_labels rescan after the move (after).
+            calls = iter([{before.pid: before}, {}, {after.pid: after}])
             old_scan, old_plan, old_reap = self.w.scan, self.w.plan, self.w.reap_orphans
             old_enforce, old_warn, old_headroom = self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom
             old_bus, old_move, old_worktree, old_notify = self.w.Bus, self.w.move, self.w._worktree_label, self.w.notify

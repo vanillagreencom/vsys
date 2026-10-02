@@ -91,6 +91,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import stat
 import sys
@@ -113,6 +114,11 @@ BUS_TIMEOUT_USEC = 10_000_000
 HOME = os.path.expanduser("~")
 MISE_DATA = os.environ.get("MISE_DATA_DIR") or os.path.join(
     os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local/share"), "mise")
+# The parent scratch directory agent-confine creates a per-scope subdirectory
+# under. Same default as the launcher's AGENT_DEFAULT_TMPDIR; kept in sync by
+# the scratch-portability rows in warden/agent_warden_test.py.
+AGENT_TMPDIR_PARENT = os.environ.get("AGENT_TMPDIR") or os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "agents", "tmp")
 
 class AgentToolsError(Exception):
     def __init__(self, kind, path, reason="", paths=()):
@@ -823,16 +829,154 @@ def scope_still_orphan(unit, managers):
 
 
 def scope_units():
-    """Every scope unit directly under agents.slice, with its pids.max."""
-    out = {}
+    """Every scope unit directly under agents.slice, with its pids.max, or
+    None when the directory itself could not be listed. A scope that stops
+    between entries is skipped for that entry alone -- a vanished scope never
+    discards every other scope the scan already read -- but a failure to
+    list agents.slice at all is reported as None, distinct from a genuinely
+    empty slice: a caller that would otherwise read "no scopes" as "every
+    scope is gone" (reap_scratch_dirs) must refuse on None instead."""
     base = CG_ROOT / SLICE
     try:
-        for d in base.iterdir():
+        entries = list(base.iterdir())
+    except OSError:
+        return None
+    out = {}
+    for d in entries:
+        try:
             if d.is_dir() and d.name.endswith(".scope"):
                 out[d.name] = (read(d / "pids.max", "") or "").strip()
-    except OSError:
-        pass
+        except OSError:
+            continue
     return out
+
+
+# agent-confine names a per-scope scratch directory after the bare --unit
+# value it passes to systemd-run (no ".scope" suffix): see the launcher's
+# scope-creating exec.
+SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
+# agent-confine creates a lane's scratch directory, then execs systemd-run to
+# register its scope: a tick landing in that gap would see no matching scope
+# yet and reap a directory the lane is about to use. Mirrors ORPHAN_GRACE's
+# purpose (protect a startup-timing window from being read as "gone") at a
+# much shorter bound, since this window is one exec call wide rather than a
+# whole abandoned session.
+SCRATCH_GRACE = float(os.environ.get("AGENT_WARDEN_SCRATCH_GRACE", "60"))
+
+
+def _proc_tmpdir(pid):
+    """The TMPDIR this pid's environment names: "" when the environ was read
+    and carries no TMPDIR, None when the environ could not be read at all
+    (process gone, permission denied). Callers must treat None as "not proven
+    unused", never as "no TMPDIR": an agent-warden move() relocates a nested
+    session's cgroup membership but never rewrites its environment, so a
+    moved child keeps pointing at a scratch directory its original scope no
+    longer names."""
+    env = read(f"/proc/{pid}/environ")
+    if env is None:
+        return None
+    for entry in env.split("\0"):
+        if entry.startswith("TMPDIR="):
+            return entry[len("TMPDIR="):]
+    return ""
+
+
+def _scratch_in_use(path, procs):
+    """Whether any pid in procs still has TMPDIR resolving inside path.
+    "in-use" beats "unknown": one confirmed user is enough to keep the
+    directory regardless of any other pid's unreadable environ. "unknown"
+    means at least one live pid's TMPDIR could not be ruled out -- never
+    read as proof that pid has no user of this directory. "free" means
+    every live pid's TMPDIR was read and none points here. Both sides are
+    resolved with os.path.realpath before comparing, not just lexically
+    normalized: a trailing slash on AGENT_TMPDIR makes agent-confine's bash
+    concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a separator in
+    the live process's real TMPDIR string, while os.path.join (path's
+    caller) never does, and AGENT_TMPDIR can also reach its target through
+    a symlink (a symlinked HOME or XDG_CACHE_HOME); an unresolved compare
+    would miss either kind of live match and wrongly read the directory as
+    free. realpath never raises on a component that does not exist or that
+    this user cannot stat -- it resolves as far as it can and leaves the
+    rest lexical -- so it needs no exception handling here."""
+    candidate = os.path.realpath(path)
+    prefix = candidate + os.sep
+    unknown = False
+    for pid in procs:
+        tmpdir = _proc_tmpdir(pid)
+        if tmpdir is None:
+            unknown = True
+            continue
+        if not tmpdir:
+            continue
+        resolved = os.path.realpath(tmpdir)
+        if resolved == candidate or resolved.startswith(prefix):
+            return "in-use"
+    return "unknown" if unknown else "free"
+
+
+def reap_scratch_dirs(correct, procs):
+    """Remove a per-scope scratch directory agent-confine created under
+    AGENT_TMPDIR once its scope unit is gone from agents.slice AND no live
+    process this user owns still has TMPDIR pointing there. procs must be a
+    snapshot taken immediately before this call, not reused from earlier in
+    the tick: a process that started since an older snapshot was taken is
+    simply absent from it, which _scratch_in_use cannot tell apart from "no
+    such process". The scope-gone check alone is not enough: move() (the
+    "nested session" plan() branch) relocates a process into a new scope by
+    cgroup membership only, so a moved child keeps the TMPDIR string naming
+    its PARENT's original agent-confine scope. When that parent later exits,
+    its now-empty scope is garbage-collected out of agents.slice even though
+    the moved child is still using the directory as its live TMPDIR. The
+    launcher execs systemd-run and cannot run code after its own scope ends,
+    so this pass -- which already enumerates agents.slice scopes via
+    scope_units() for enforce_task_caps -- is the only thing that can clean
+    these up. Without the warden installed the directories stay until
+    removed by hand (docs/architecture/warden.md). Returns the directory
+    names removed."""
+    try:
+        entries = os.listdir(AGENT_TMPDIR_PARENT)
+    except OSError:
+        return []
+    live_units = scope_units()
+    if live_units is None:
+        log("scratch reap: agents.slice scope list unreadable; not reaping this tick")
+        return []
+    live_units = set(live_units)
+    now = time.time()
+    removed = []
+    for name in sorted(entries):
+        if not SCRATCH_UNIT_RE.match(name):
+            continue
+        if f"{name}.scope" in live_units:
+            continue
+        path = os.path.join(AGENT_TMPDIR_PARENT, name)
+        try:
+            age = now - os.stat(path).st_mtime
+        except OSError:
+            continue
+        if age < SCRATCH_GRACE:
+            log(f"scratch {name}: scope not listed but only {int(age)}s old "
+                f"(< {int(SCRATCH_GRACE)}s grace); not reaping yet")
+            continue
+        if not os.path.isdir(path):
+            continue
+        status = _scratch_in_use(path, procs)
+        if status == "in-use":
+            log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")
+            continue
+        if status == "unknown":
+            log(f"scratch {name}: scope gone but a live process's TMPDIR could not be read; not reaping this tick")
+            continue
+        if not correct:
+            log(f"scratch {name}: scope gone; would remove (report mode)")
+            continue
+        try:
+            shutil.rmtree(path)
+            removed.append(name)
+            log(f"  removed scratch {name}: scope gone")
+        except OSError as e:
+            log(f"  remove of scratch {name} failed: {e}")
+    return removed
 
 
 def slice_tasks_max():
@@ -855,7 +999,11 @@ def enforce_task_caps(correct):
     still fill the slice inside one 30 s tick. Returns the units capped."""
     ceiling = slice_tasks_max()
     capped = []
-    for unit, cur in scope_units().items():
+    units = scope_units()
+    if units is None:
+        log("task caps: agents.slice scope list unreadable; not capping this tick")
+        return capped
+    for unit, cur in units.items():
         try:
             unbounded = cur == "max" or int(cur) >= ceiling
         except ValueError:
@@ -2250,6 +2398,16 @@ def run(correct):
         if only is None:
             try:
                 enforce_task_caps(correct)
+                # A fresh scan, not the plan-time procs above: a worker this
+                # tick's plan() has not even moved yet (move() runs later,
+                # after this block) can be a prior tick's moved child that
+                # spawned a grandchild since procs was captured. That
+                # grandchild's TMPDIR would be invisible to _scratch_in_use
+                # against the stale snapshot. A sub-second window remains
+                # (scan() itself is not atomic); SCRATCH_GRACE and
+                # ORPHAN_GRACE already accept the same class of residual risk
+                # elsewhere in this file.
+                reap_scratch_dirs(correct, scan())
                 near, unknown_near, near_complete = warn_near_cap()
                 record_near_events(st, near, unknown_near, near_complete, now=tick_now)
                 for unit, kind, human in near:

@@ -46,6 +46,8 @@ A scope is an orphan only when every member has lost its launcher, no member has
 
 The warden never kills an individual process. It never kills a live session. A scope with a tty, a live agent, a live launch root or a live external parent is not an orphan. The final pre-stop recheck refuses to reap when it cannot enumerate every `cgroup.procs` file that still exists under the scope. The orphan rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` enforce this claim, `test_orphan_protection_uses_comm_only_name_match` included.
 
+The warden removes a lane's scratch directory once its scope is gone. `agent-confine` execs `systemd-run` and cannot clean up after its own scope ends, so this pass reuses `enforce_task_caps`'s scope listing and removes any `agent-confine-<pid>-<n>` directory under `AGENT_TMPDIR` whose matching scope is gone. A directory younger than `AGENT_WARDEN_SCRATCH_GRACE` (60 s) survives with no matching scope yet, closing the startup gap before registration. An unreadable scope list is never read as every scope being gone. A gone scope does not prove the directory is free: `move()` relocates a nested session by cgroup membership only, not its environment, so a moved child can keep its parent's old scope's `TMPDIR`. The reap pass resolves both sides with `os.path.realpath` (symlinks included) from a fresh scan taken for this check, not plan()'s earlier one, keeping a directory one resolves inside or is unreadable. Without the warden, these directories stay until removed by hand. `test_reap_scratch_dirs_tmpdir_symlinked_parent` and `test_reap_scratch_dirs_stale_snapshot_misses_a_new_live_pid` cover this.
+
 ## Classification data
 
 The shipped classification data is `data/agent-tools.json`. It contains published agent CLI names, mise install directory names, each CLI's install path fragments and executable paths, desktop executable prefixes and bundled CLI suffixes. D010 governs how the warden and the dashboard confirm a name against this data, and why the warden reads a narrower slice of it (a mise install directory, an exact executable path, or a bundled CLI engine under a real, non-`/tmp` desktop prefix, never a `paths` fragment) than the dashboard's display-only match. An unreadable executable keeps the name, because a failed read never hides an escaped agent. The classification rows in `warden/agent_warden_test.py` cover the warden's narrower rule; `src/collect/collector.test.ts` tables the dashboard's own, wider rule.
@@ -58,13 +60,11 @@ D005 records why the dashboard and the warden share this data file. D006 records
 
 ## Scratch and mise paths
 
-`agent-confine` exports `TMPDIR` into the agent environment. vsys uses the running agent's `TMPDIR` to discover scratch. `AGENT_TMPDIR` overrides the path. The default is `${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp`. The launcher creates that directory with mode 700 before exec. If creation fails, it warns and keeps the inherited `TMPDIR`.
+`agent-confine` exports `TMPDIR`; vsys reads it to discover scratch, one root per agent. `AGENT_TMPDIR` overrides the parent path and never changes; default `${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp`. Each lane gets its own subdirectory under that parent, named after its `--unit` value for `systemd-run --scope`, so deleting one lane's `TMPDIR` cannot reach another's. A non-recursive `mkdir` of mode 700 creates it, only when creating a new scope; an in-use name fails the `mkdir` rather than reusing it. A capped-lineage nested launch, a launch with no user manager, and a failed `mkdir` all keep the inherited `TMPDIR`.
 
-The owner must set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` in the environment that starts the per-account wrappers, tmux pane shell or user manager before switching to the vsys copy. That keeps scratch on the existing scratch subvolume.
+Owners set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` before starting the wrappers, tmux shell or user manager, to keep scratch on the existing subvolume. The warden reads the mise path from `MISE_DATA_DIR`, defaulting to `${XDG_DATA_HOME:-$HOME/.local/share}/mise`; a systemd unit needs it set in `environment.d` when it differs, since it inherits no shell-only value.
 
-The warden derives the mise install path from `MISE_DATA_DIR`. If `MISE_DATA_DIR` is unset, it uses `${XDG_DATA_HOME:-$HOME/.local/share}/mise`, which is mise's default. A systemd user unit does not inherit a shell-only value. Put `MISE_DATA_DIR` in the user manager environment, such as `environment.d`, when it differs from the default.
-
-The portability rows in `warden/agent_warden_test.py` cover the mise and scratch portability rules.
+`warden/agent_warden_test.py`'s portability rows cover mise and scratch, including `test_agent_confine_and_warden_scratch_parent_agree`, proving the two formulas agree under one environment.
 
 ## Tunables
 
@@ -74,6 +74,7 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 | `AGENT_WARDEN_INTERVAL` | warden | `30` | Seconds between status ticks. Keep it equal to `OnUnitActiveSec` in `warden/systemd/agent-warden.timer`. |
 | `AGENT_WARDEN_SPLIT_SESSIONS` | warden | `1` | Splits nested agent sessions when the lineage is not capped. |
 | `AGENT_WARDEN_ORPHAN_GRACE` | warden | `300` | Seconds an orphan must stay orphaned before a reap can happen. |
+| `AGENT_WARDEN_SCRATCH_GRACE` | warden | `60` | Seconds a scratch directory with no matching scope yet survives a reap tick. |
 | `AGENT_WARDEN_REAP` | warden | `1` | Enables orphan reaping. |
 | `AGENT_WARDEN_JOB_UNITS` | warden | `orch-*.service` | Whitespace-separated systemd unit patterns left in place. |
 | `AGENT_WARDEN_ORPHAN_PROCS` | warden | `40` | Process count that makes an orphan harmful. |
@@ -83,7 +84,7 @@ The portability rows in `warden/agent_warden_test.py` cover the mise and scratch
 | `AGENT_SCOPE_MEM_HIGH` | launcher | `64G` | Per-session soft memory ceiling passed to systemd. |
 | `AGENT_SCOPE_MEM_HIGH_BYTES` | warden | `68719476736` | Per-session soft memory ceiling used for warden-created scopes and lineage baseline. |
 | `AGENT_SCOPE_MEM_WARN_BYTES` | warden | 75% of `AGENT_SCOPE_MEM_HIGH_BYTES` | Per-session memory warning threshold. |
-| `AGENT_TMPDIR` | launcher | unset | Overrides the launcher scratch directory. |
+| `AGENT_TMPDIR` | both | unset | Overrides the scratch parent directory. The launcher creates each lane's subdirectory under it; the warden reads the same value to find which subdirectories to reap. |
 | `AGENT_TEST_THREADS` | launcher | `8` | Test-thread cap exported by the launcher. |
 | `AGENT_BUILD_JOBS` | launcher | `16` | Build-job cap exported by the launcher. |
 | `AGENT_MOLD_JOBS` | launcher | `1` | Mold linker concurrency cap. Empty disables it. |
