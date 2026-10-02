@@ -88,16 +88,6 @@
             "timeout": 30
           }
         ]
-      },
-      {
-        "matcher": "Skill|skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "[ -z \"${COPILOT_PROJECT_DIR-}\" ] || exit 0; bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/skill-load-record.sh\"",
-            "timeout": 15
-          }
-        ]
       }
     ],
     "SubagentStop": [
