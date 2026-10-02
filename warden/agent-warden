@@ -19,10 +19,8 @@ Modes
 
 Rules, per process, never per pane
   * Launched work carries AGENT_CONFINE=1 in its environment (agent-confine
-    stamps it; children inherit). A marked process outside the slice is an
-    escape whatever its name, and its marked descendants go with it, unless
-    the nearest marker above it is a desktop app or an excluded helper:
-    there only a confirmed agent escapes.
+    stamps it; children inherit). D010's escaped-launch rule decides which
+    marked process outside the slice escapes; its marked descendants go too.
   * Agent CLI names and mise install directories come from agent-tools.json.
     They classify what no launcher touched: a CLI a desktop app started.
   * A comm equal to a configured name is a candidate, never the decision

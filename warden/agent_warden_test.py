@@ -361,6 +361,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("a paths-only tool's exe outside every location is not an agent", rec("/usr/local/bin/pkgonly").is_agent, False),
             ("a paths-only tool as a bundled CLI engine under a desktop prefix is an agent", rec("/opt/app/vendor/engine").is_agent, True),
             ("a paths-only tool with an unreadable executable keeps the name", rec("").is_agent, True),
+            ("a paths-only tool's exe under a desktop prefix is a desktop app", rec("/opt/pkgonly/lib/node_modules/pkgonly/cli").is_desktop, True),
             ("a paths-only tool still protects its scope through the comm-only match", rec(planted).is_named_agent, True),
         ]
 
@@ -447,15 +448,12 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("a marked launch of it outside the slice is moved as an escaped launch", [70] in escaped, True),
             ("an unmarked twin is not moved", 71 in moved, False),
             ("a marked launch of it under a desktop app stays", 81 in moved, False),
+            ("a marked desktop app itself stays", 80 in moved, False),
             ("a marked launch of it in a contained unit is listed as that unit's", [p.pid for p in units], [90]),
         ]
 
     def test_escaped_launch_moves_an_unconfirmed_name(self):
-        # D005 and D010: location confirmation gates only the automatic move
-        # of an unmarked agent. An AGENT_CONFINE=1 launch outside the slice
-        # is an escape whatever its name, unless the nearest marker above it
-        # is a desktop app or an excluded helper, where only a confirmed
-        # agent moves.
+        # D010's escaped-launch rule.
         for name, actual, expected in self._escaped_unconfirmed_rows(self.w):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
