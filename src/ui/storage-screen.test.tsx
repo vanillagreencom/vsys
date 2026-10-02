@@ -976,3 +976,69 @@ test("every kind of Storage row is placed, marked, opened and followed by one ru
     }
   }
 });
+
+test("two arrows that arrive before a render move Storage two rows", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.scratch = ["/scratch/a", "/scratch/b", "/scratch/c"].map(
+    (path) => ({ path, bytes: 1, age: 0, error: null, origin: "configured" }),
+  );
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("5");
+    await t.press(c.keys.scratch);
+    expect(selectedRow(t.frame())).toContain("/scratch/a");
+    await t.pressTogether(["down", "down"]);
+    expect(selectedRow(t.frame())).toContain("/scratch/c");
+  } finally {
+    await t.close();
+  }
+});
+
+test("two mounts stacked at one path are two rows a reader can stand on", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // One filesystem mounted twice at one path: one heading, its integrity
+  // row, and two mount rows that read alike.
+  s.storage.volumes = [
+    volumeSnapshot("/data", { options: ["subvol=/a"] }),
+    volumeSnapshot("/data", { options: ["subvol=/b"] }),
+  ];
+  /** The frame's line numbers of the two mount rows, and of the marked row. */
+  const lines = (frame: string) => {
+    const all = frame.split("\n");
+    return {
+      mounts: all.flatMap((line, at) =>
+        /[▸▾] \/data\b/.test(line) ? [at] : [],
+      ),
+      marked: all.findIndex((line) => line.includes("▍")),
+    };
+  };
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("5");
+    for (const [presses, mount] of [
+      [1, 0],
+      [2, 1],
+    ]) {
+      await t.press(c.keys.filesystems);
+      for (let i = 0; i < presses; i++) await t.press("down");
+      const at = lines(t.frame());
+      expect(at.mounts.length).toBe(2);
+      expect({ presses, marked: at.marked }).toEqual({
+        presses,
+        marked: at.mounts[mount],
+      });
+    }
+    for (const mount of [0, 1, 0]) {
+      const y = lines(t.frame()).mounts[mount];
+      await t.click(4, y);
+      expect({ mount, marked: lines(t.frame()).marked }).toEqual({
+        mount,
+        marked: lines(t.frame()).mounts[mount],
+      });
+    }
+  } finally {
+    await t.close();
+  }
+});

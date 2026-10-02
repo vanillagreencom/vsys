@@ -115,11 +115,11 @@ export function Timeline({
   // long list for a shorter one and a new sample prepends to it, so a row
   // number alone outlives what it pointed at.
   const [selection, setSelection] = useState(firstRow);
-  const { selected: row, choose } = useSelection(
-    changes.map(eventKey),
-    selection,
-    setSelection,
-  );
+  const {
+    selected: row,
+    choose,
+    move,
+  } = useSelection(changes.map(eventKey), selection, setSelection);
   const start = s.time - windowMs;
   const chartWidth = Math.max(10, width - 4 - gutter);
   const buckets = timeBuckets(points, start, s.time, chartWidth);
@@ -134,11 +134,11 @@ export function Timeline({
         );
   useScreenKeys((name, key) => {
     if (name === c.keys.down || name === "down") {
-      choose(nextDown(changes.length, row));
+      move((from) => nextDown(changes.length, from));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      choose(Math.max(0, row - 1));
+      move((from) => Math.max(0, from - 1));
       return true;
     }
     // The change list is a list: Enter moves the time cursor to the row, and

@@ -43,8 +43,8 @@ import {
   Field,
   gutter,
   Line,
+  ListRow,
   nextDown,
-  Row,
   Section,
   Sparkline,
   Tile,
@@ -374,7 +374,7 @@ export function Agent({
   ];
   // The terminal row comes and goes with the sample, above every row after
   // it, so the selection follows its row rather than its number.
-  const { selected, choose } = useSelection(
+  const { selected, choose, move } = useSelection(
     rows.map(detailKey),
     selection,
     setSelection,
@@ -384,11 +384,11 @@ export function Agent({
   useKeepInView(scroller, `detail-${selected}`);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      choose(nextDown(rows.length, selected));
+      move((from) => nextDown(rows.length, from));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      choose(Math.max(0, selected - 1));
+      move((from) => Math.max(0, from - 1));
       return true;
     }
     if (name === c.keys.open) {
@@ -464,7 +464,8 @@ export function Agent({
   /**
    * One detail row, whichever kind it is. Its identity, its scroll target,
    * its marker and what opening it does are decided here once, so a kind
-   * added later carries them without anyone remembering them.
+   * added later carries them without anyone remembering them. A section opens
+   * by Enter, not by selection, so `under` shows while its section is open.
    */
   const detailRow = (
     row: DetailRow,
@@ -476,18 +477,17 @@ export function Agent({
       under,
     }: { color?: RGBA; indent?: number; under?: ReactNode } = {},
   ) => (
-    <box
-      id={`detail-${i}`}
+    <ListRow
       key={detailKey(row)}
-      flexDirection="column"
-      flexShrink={0}
-      paddingLeft={indent}
+      id={`detail-${i}`}
+      selected={selected === i}
+      color={color}
+      indent={indent}
+      onOpen={() => openRow(i)}
+      under={under}
     >
-      <Row selected={selected === i} color={color} onOpen={() => openRow(i)}>
-        {line}
-      </Row>
-      {under}
-    </box>
+      {line}
+    </ListRow>
   );
   const chartWidth = Math.max(10, width - 4 - gutter);
   const samples = loaded?.id === lane.id ? loaded.samples : [];

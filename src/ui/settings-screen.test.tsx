@@ -983,3 +983,40 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
     }
   }
 });
+
+test("a click on another row leaves an open editor where it is", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const items = settingItems(c, s.capabilities);
+  const at = items.findIndex(
+    (item) => item.kind === "setting" && item.key === "refreshMs",
+  );
+  expect(at).toBeGreaterThan(0);
+  const t = await mount(s, c, { width: 140, height: 90 });
+  try {
+    await t.press("7");
+    for (let i = 0; i < at; i++) await t.press("down");
+    await t.press("enter");
+    const editing = t.frame();
+    expect(editing).toContain("Enter saves");
+    // The editor takes every key until the reader leaves it, so it takes the
+    // mouse's row change too. Moved off its row, it would vanish while the
+    // keys still fed it.
+    // The editor brings its row to the top, so the reader scrolls back up
+    // to the sources row before clicking it.
+    for (let i = 0; i < 20 && !t.frame().includes("Every source"); i++)
+      await t.wheel(10, 10, "up");
+    const lines = t.frame().split("\n");
+    const y = lines.findIndex((line) => line.includes("Every source was read"));
+    await t.click(lines[y].indexOf("Every source was read"), y);
+    expect(t.frame()).toContain("Enter saves");
+    expect(selectedRow(t.frame())).toContain("Refresh interval");
+    // Leaving the editor hands the keys back to the list.
+    await t.press("escape");
+    expect(t.frame()).not.toContain("Enter saves");
+    await t.press("down");
+    expect(selectedRow(t.frame())).not.toContain("Refresh interval");
+  } finally {
+    await t.close();
+  }
+});

@@ -361,7 +361,7 @@ test("a row opened with the keyboard keeps its change when one arrives above it"
     const changes = h.events(first.time, c.historyHours * 3600000);
     expect(changes.length).toBe(1);
     // Open the only row with the keyboard, without ever pressing an arrow, so
-    // this is the entry that recorded no identity.
+    // Enter is the only key that chose it.
     await t.press("enter");
     expect(selectedRow(t.frame())).toContain("alpha");
     const cursor = `cursor ${new Date(changes[0].time).toLocaleString()}`;
@@ -390,8 +390,8 @@ test("a row opened with the keyboard keeps its change when one arrives above it"
   }
   // And the first row is a choice before the reader touches anything: a
   // change arriving above it must not take the highlight off the row they
-  // were reading. This is what the seeded initial identity holds on its own,
-  // since no key has been pressed to record one.
+  // were reading. No key has been pressed, so what holds it is the selection
+  // owner recording the first row's identity on the first render with rows.
   const untouched = new History(c);
   untouched.add(emptySnapshot(1000));
   const one = emptySnapshot(2000);

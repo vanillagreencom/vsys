@@ -11,6 +11,7 @@ import type { Level } from "../model/verdict";
 import { keyLabel, screenPad, wideWidth } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { useScreenKeys } from "./keys";
+import { rowsById } from "./selection";
 import {
   capabilityLabels,
   capabilityLoss,
@@ -29,6 +30,7 @@ import {
   Empty,
   Ink,
   Line,
+  ListRow,
   nextDown,
   Row,
   Section,
@@ -256,7 +258,10 @@ export function Settings({
    */
   const openRow = (index: number) => {
     const item: SettingItem | undefined = items[index];
-    if (item === undefined) return;
+    // The find box, an editor and a picker each take every key until the
+    // reader leaves them, so they take the mouse's row changes too: a click
+    // elsewhere would move the selection off an editor the keys still feed.
+    if (item === undefined || searching || editing || picking) return;
     setSelected(index);
     switch (item.kind) {
       case "sources":
@@ -380,12 +385,12 @@ export function Settings({
   // rather than counted alongside it. A counter and a list can disagree, and a
   // filter that drops a row from the list while the render still counts it is
   // how they do: the highlight then sits on one row while Enter opens another.
-  const placed = new Map(items.map((item, at) => [settingKey(item), at]));
+  const placed = rowsById(items.map(settingKey));
   /**
-   * One selectable Settings row, whichever kind it is: the block the scroll
-   * reads for what is drawn under the row, the row's own scroll target, its
-   * place, its marker and what opening it does, decided here once. `under` is
-   * what the block draws below the row, which decides for itself when it shows.
+   * One selectable Settings row, whichever kind it is, at its place in
+   * `items`. The block is what the scroll reads for what is drawn under the
+   * row, and the line is the row's own scroll target. A row here opens by
+   * Enter, not by selection, so `under` decides for itself when it shows.
    */
   const settingRow = (
     item: SettingItem,
@@ -396,21 +401,20 @@ export function Settings({
     }: { color?: RGBA; under?: (selected: boolean) => ReactNode } = {},
   ) => {
     const key = settingKey(item);
-    const i = placed.get(key);
-    if (i === undefined)
-      throw new Error(
-        `Settings draws a row its selection does not list: ${key}`,
-      );
+    const i = placed(key);
     const chosen = i === selected;
     return (
-      <box id={`block-${i}`} key={key} flexDirection="column" flexShrink={0}>
-        <box id={`setting-${i}`} flexShrink={0}>
-          <Row selected={chosen} color={color} onOpen={() => openRow(i)}>
-            {line(chosen)}
-          </Row>
-        </box>
-        {under?.(chosen)}
-      </box>
+      <ListRow
+        key={key}
+        id={`block-${i}`}
+        lineId={`setting-${i}`}
+        selected={chosen}
+        color={color}
+        onOpen={() => openRow(i)}
+        under={under?.(chosen)}
+      >
+        {line(chosen)}
+      </ListRow>
     );
   };
   const typedItems = (text: string): string[] | null => {
@@ -626,7 +630,7 @@ export function Settings({
         {!s.capabilities.length && (
           <Empty text="This sample was recorded before vsys probed its sources." />
         )}
-        {placed.has(settingKey({ kind: "sources" })) &&
+        {items.some((item) => item.kind === "sources") &&
           settingRow(
             { kind: "sources" },
             () => (

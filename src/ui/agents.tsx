@@ -424,7 +424,11 @@ export function Agents({
   // The list sorts by its readings, so an arrival can land on the very row a
   // departed lane left behind; the selection owner records what it resolves.
   // It must be called before the effect below, which moves the selection too.
-  const { selected, choose } = useSelection(
+  const {
+    selected,
+    choose,
+    move: step,
+  } = useSelection(
     lanes.map((lane) => lane.id),
     selection,
     setSelection,
@@ -484,14 +488,16 @@ export function Agents({
       return true;
     }
     const rows = chooser ? columns.length : lanes.length;
-    const index = chooser ? column : selected;
-    const move = (next: number) => (chooser ? setColumn(next) : choose(next));
+    // Each step starts where the last one landed, which a render has not
+    // drawn yet when two keys arrive in one read.
+    const move = (to: (from: number) => number) =>
+      chooser ? setColumn(to) : step(to);
     if (name === c.keys.down || name === "down") {
-      move(nextDown(rows, index));
+      move((from) => nextDown(rows, from));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      move(Math.max(0, index - 1));
+      move((from) => Math.max(0, from - 1));
       return true;
     }
     if (name === c.keys.open) {

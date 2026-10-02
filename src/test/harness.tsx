@@ -79,18 +79,33 @@ export async function mount(
     });
     await ui.renderOnce();
   };
+  const send = async (key: string) => {
+    if (key === "enter") ui.mockInput.pressEnter();
+    else if (key === "escape") {
+      // A lone escape waits for the rest of a sequence before it is a key.
+      ui.mockInput.pressEscape();
+      await Bun.sleep(50);
+    } else if (key === "tab") ui.mockInput.pressTab();
+    else if (key === "shift+tab") ui.mockInput.pressTab({ shift: true });
+    else if (["up", "down", "left", "right"].includes(key))
+      ui.mockInput.pressArrow(key as "up" | "down" | "left" | "right");
+    else ui.mockInput.pressKey(key);
+  };
   const press = async (key: string) => {
     await act(async () => {
-      if (key === "enter") ui.mockInput.pressEnter();
-      else if (key === "escape") {
-        // A lone escape waits for the rest of a sequence before it is a key.
-        ui.mockInput.pressEscape();
-        await Bun.sleep(50);
-      } else if (key === "tab") ui.mockInput.pressTab();
-      else if (key === "shift+tab") ui.mockInput.pressTab({ shift: true });
-      else if (["up", "down", "left", "right"].includes(key))
-        ui.mockInput.pressArrow(key as "up" | "down" | "left" | "right");
-      else ui.mockInput.pressKey(key);
+      await send(key);
+    });
+    await ui.renderOnce();
+  };
+  /**
+   * Several keys delivered before the screen renders again, the way a held
+   * or double-pressed key arrives when a sample keeps the process busy: the
+   * terminal hands them over in one read and each handler runs before React
+   * commits the first.
+   */
+  const pressTogether = async (keys: string[]) => {
+    await act(async () => {
+      for (const key of keys) await send(key);
     });
     await ui.renderOnce();
   };
@@ -130,6 +145,7 @@ export async function mount(
     ui,
     h,
     press,
+    pressTogether,
     frame,
     settle,
     wheel,

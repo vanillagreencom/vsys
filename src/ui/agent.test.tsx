@@ -899,3 +899,18 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
     }
   }
 });
+
+test("two arrows that arrive before a render move the detail two rows", async () => {
+  const t = await paned();
+  try {
+    // Processes and Launch sit above Terminal, where `paned` leaves the
+    // reader; Open files and Actions sit below it.
+    expect(selectedRow(t.frame())).toContain("Terminal");
+    await t.pressTogether(["j", "j"]);
+    expect(selectedRow(t.frame())).toContain("Actions");
+    await t.pressTogether(["k", "k"]);
+    expect(selectedRow(t.frame())).toContain("Terminal");
+  } finally {
+    await t.close();
+  }
+});

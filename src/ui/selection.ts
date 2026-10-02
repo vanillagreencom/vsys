@@ -28,6 +28,41 @@ export function resolvedRow(
 }
 
 /**
+ * `ids` with every repeat told apart by its place among the rows sharing its
+ * identity: the second `a` is `a#2`. Two rows under one identity would resolve
+ * to the first of them whichever the reader chose, and a list can draw two:
+ * two mounts stacked at one path are two Storage rows with one path.
+ */
+function distinctIds(ids: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  return ids.map((id) => {
+    const n = (seen.get(id) ?? 0) + 1;
+    seen.set(id, n);
+    return n === 1 ? id : `${id}#${n}`;
+  });
+}
+
+/**
+ * The row each identity is drawn at, for a screen that draws its rows in an
+ * order of its own and looks each one up. A row the list does not hold, or an
+ * identity two rows share, is a screen drawing something its selection cannot
+ * reach, so both throw rather than draw a row no key can land on.
+ */
+export function rowsById(ids: readonly string[]): (id: string) => number {
+  const at = new Map<string, number>();
+  for (const [row, id] of ids.entries()) {
+    if (at.has(id)) throw new Error(`Two rows share one identity: ${id}`);
+    at.set(id, row);
+  }
+  return (id) => {
+    const row = at.get(id);
+    if (row === undefined)
+      throw new Error(`A row its selection does not list: ${id}`);
+    return row;
+  };
+}
+
+/**
  * A list's selection, resolved against the rows a render draws and recorded
  * as resolved. Every screen whose rows can move under a sample reads this one
  * rule rather than writing its own.
@@ -45,17 +80,25 @@ export function resolvedRow(
  * its own row on every pass and the render never settles.
  */
 export function useSelection(
-  ids: readonly string[],
+  keys: readonly string[],
   selection: Selection,
   onSelect: (next: Selection) => void,
-): { selected: number; choose: (index: number) => void } {
+): {
+  /** One identity per row, every repeat told apart: what a row is keyed by. */
+  ids: string[];
+  selected: number;
+  choose: (index: number) => void;
+  move: (step: (from: number) => number) => void;
+} {
+  const ids = distinctIds(keys);
   const selected = resolvedRow(ids, selection);
   const id = selected < 0 ? null : ids[selected];
-  // What `choose` reads, kept current so that `choose` itself never changes:
+  // What `choose` and `move` read, kept current so that neither ever changes:
   // a screen's effect that moves the selection lists it as a dependency, and
-  // a new one on every render would run that effect on every render.
-  const latest = useRef({ ids, onSelect });
-  latest.current = { ids, onSelect };
+  // a new one on every render would run that effect on every render. `at` is
+  // the row last chosen, which a render resets to the row it drew.
+  const latest = useRef({ ids, onSelect, at: selected });
+  latest.current = { ids, onSelect, at: selected };
   useEffect(() => {
     // An empty list records nothing, so the choice is kept for the rows that
     // arrive. Each pass that moved nothing writes nothing, which is how the
@@ -68,7 +111,16 @@ export function useSelection(
   // record a row number without saying which item it points at.
   const choose = useCallback((index: number) => {
     const { ids, onSelect } = latest.current;
+    latest.current.at = index;
     onSelect({ index, id: ids[index] ?? null });
   }, []);
-  return { selected, choose };
+  // A step from the row last chosen rather than the row last drawn. The
+  // terminal delivers every key in one read before the screen renders again,
+  // so two arrows pressed together step twice only if the second starts where
+  // the first landed.
+  const move = useCallback(
+    (step: (from: number) => number) => choose(step(latest.current.at)),
+    [choose],
+  );
+  return { ids, selected, choose, move };
 }

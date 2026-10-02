@@ -62,8 +62,8 @@ import {
   Empty,
   Ink,
   Line,
+  ListRow,
   Reading,
-  Row,
   Section,
   TableHeader,
   Tile,
@@ -319,7 +319,7 @@ export function Home({
   // The first row is a choice too, recorded on the first render that has any:
   // Home cannot seed it at construction, since its parent holds the selection
   // and only this screen knows the rows.
-  const { selected, choose } = useSelection(
+  const { selected, choose, move } = useSelection(
     rows.map(homeKey),
     selection,
     onSelect,
@@ -367,17 +367,16 @@ export function Home({
     line: ReactNode,
     { color, under }: { color?: RGBA; under?: () => ReactNode } = {},
   ) => (
-    <box
-      id={`home-${i}`}
+    <ListRow
       key={homeKey(row)}
-      flexDirection="column"
-      flexShrink={0}
+      id={`home-${i}`}
+      selected={marked(i)}
+      color={color}
+      onOpen={() => openRow(i)}
+      under={marked(i) && under?.()}
     >
-      <Row selected={marked(i)} color={color} onOpen={() => openRow(i)}>
-        {line}
-      </Row>
-      {marked(i) && under?.()}
-    </box>
+      {line}
+    </ListRow>
   );
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   // The tile row is a place the reader stands as much as any list row is, so
@@ -427,11 +426,11 @@ export function Home({
       return true;
     }
     if (name === c.keys.down || name === "down") {
-      if (tile === null) choose(stepWithin(counts, selected, 1));
+      if (tile === null) move((from) => stepWithin(counts, from, 1));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      if (tile === null) choose(stepWithin(counts, selected, -1));
+      if (tile === null) move((from) => stepWithin(counts, from, -1));
       return true;
     }
     if (name === c.keys.left || name === "left") {
