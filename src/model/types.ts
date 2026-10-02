@@ -116,11 +116,12 @@ export interface ScratchRoot extends Scratch {
 }
 /**
  * One damaged block address from a scrub report, with every path it is
- * reachable under. The address is the unit of damage, not the file: through
- * kernel 7.2 it is only the start of the 64 KiB block the check could not
+ * reachable under. The address is the unit of damage, not the file: on some
+ * kernels it is only the start of the 64 KiB block the check could not
  * repair, so a path under it is possibly damaged, the damaged file may not be
  * under it, and one extent can carry several names.
- * No path means free space or a file already deleted.
+ * No path and no not-resolved mark is an older report's free space or file
+ * already deleted; the shipped reporter marks every no-extent answer.
  */
 export interface DamagedAddress {
   logical: number;

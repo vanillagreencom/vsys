@@ -48,13 +48,14 @@ export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
 
 /**
  * What a damaged address names. `files` lists every name the reporter
- * resolved for it, `none` is free space or a file already gone, and
+ * resolved for it, `none` is the free space or file already gone that an
+ * older report wrote, and
  * `unresolved` is damage the reporter could not name every file of, so no
  * file under it is listed.
  */
 export type DamageKind = "files" | "none" | "unresolved";
 /**
- * One damaged block address as the screen groups it. Through kernel 7.2 the
+ * One damaged block address as the screen groups it. On some kernels the
  * address is the start of the 64 KiB block the check could not repair, not
  * the damaged sector, so every path under it is possibly damaged rather than
  * proven so, the damaged file may not be under it, and one extent under two

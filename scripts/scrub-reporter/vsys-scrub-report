@@ -135,18 +135,15 @@ fi
 #   trims it would name a different file.
 # An address that fails any of these lists no name at all.
 #
-# A resolver answer that no extent holds the address is free space only off
-# a 64 KiB boundary. Through kernel 7.2 the logged address is the start of the
-# 64 KiB block the scrub could not repair, rounded down, so it can fall in a
+#
+# A resolver answer that no extent holds the address is never free space. On
+# some kernels the logged address is the start of the 64 KiB block the scrub
+# could not repair, rounded down within its block group, so it can fall in a
 # gap before the block's first extent while a file later in the block holds
-# the damage. A kernel that logs the damaged sector itself can put one on that
-# boundary too, and reading it as unnamed damage is the safe way to be wrong.
+# the damage. Nothing in the address tells such a start from a sector, so
+# every such answer is damage this report cannot name.
 no_extent() {
-	if (($1 % 65536 == 0)); then
-		echo "  (not resolved: no extent holds this 64 KiB block start, so the damage can sit later in the block)"
-	else
-		echo "  (no file: free space, or already deleted)"
-	fi
+	echo "  (not resolved: no extent holds this address, and the damage can sit later in its block)"
 }
 resolve() {
 	local address=$1 refs names line inode root
@@ -218,7 +215,7 @@ max_addresses=${BTRFS_SCRUB_MAX_ADDRESSES:-64}
 		echo "Damaged files: no line in the kernel log for this run named an address."
 	else
 		echo "Damaged files: ${#addresses[@]} damaged block addresses from the kernel log."
-		echo "Through kernel 7.2 each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector: a path listed under it may be sound, and the damaged file may not be listed."
+		echo "On some kernels each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector: a path listed under it may be sound, and the damaged file may not be listed."
 		echo "Paths are resolved as the scrub ends; a block freed and reused later resolves to an unrelated file."
 		for address in "${addresses[@]:0:$max_addresses}"; do
 			echo "logical $address:"

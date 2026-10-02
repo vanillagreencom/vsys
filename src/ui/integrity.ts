@@ -115,13 +115,13 @@ export function damageAdvice(group: DamagedGroup): string {
 }
 /**
  * Why a listed file is possibly damaged rather than damaged, in one sentence
- * Storage and the damage card both read. Through kernel 7.2 the line the
+ * Storage and the damage card both read. On some kernels the line the
  * reporter reads carries only the start of the block the check could not
- * repair, so no report can name the damaged file exactly, and vsys offers no
- * command to remove one.
+ * repair, and vsys cannot tell which kernel wrote it, so no report names the
+ * damaged file for certain, and vsys offers no command to remove one.
  */
 export const possibleSentence =
-  "Through kernel 7.2 the check logs where each 64 KiB block it could not repair starts, not the damaged sector, so the files listed are the ones at that start: a listed file may be sound, and the damaged file may not be listed.";
+  "On some kernels the check logs where each 64 KiB block it could not repair starts, not the damaged sector, so the files listed can be the ones at that start: a listed file may be sound, and the damaged file may not be listed.";
 const sourceWords: Record<ErrorSource, string> = {
   counter: "error counter",
   "kernel-log": "kernel log",
