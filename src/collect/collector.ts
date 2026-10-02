@@ -226,8 +226,16 @@ export class Collector {
     // collection that never listed the directory leaves the last answer.
     if (this.storage.scrubDir !== undefined)
       this.record("scrub", this.storage.scrubDir);
-    if (this.storage.smartDir !== undefined)
-      this.record("smart", this.storage.smartDir);
+    if (this.storage.smartDir !== undefined) {
+      // No report directory is not the same as no lifetime writes: udisks2
+      // can still answer for a drive with none, and Storage's own row already
+      // takes that reading (`collectDevices`). A device udisks actually
+      // supplied a number for must stand the capability up with it, or
+      // Settings tells the reader Storage has nothing when it does not.
+      const udisksSupplies =
+        storage.devices?.some((d) => d.source === "udisks") ?? false;
+      this.record("smart", udisksSupplies ? null : this.storage.smartDir);
+    }
     // Device totals cover the whole machine, so they are read above the watched tree.
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);
     this.controller.signal.throwIfAborted();
