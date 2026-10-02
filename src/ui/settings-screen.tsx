@@ -632,7 +632,7 @@ export function Settings({
                 <span attributes={ui.dim}>
                   {cap.available
                     ? "available"
-                    : fit(safe(capabilityLoss(cap)), costWidth)}
+                    : fit(safe(capabilityLoss(cap, c)), costWidth)}
                 </span>
               </>
             ),
@@ -656,7 +656,7 @@ export function Settings({
                         marginTop={1}
                         attributes={ui.dim}
                       >
-                        {safe(capabilityLoss(cap))}
+                        {safe(capabilityLoss(cap, c))}
                       </Line>
                     )}
                     {offer && (

@@ -199,17 +199,28 @@ test("an unavailable root answer stands whatever the agent slice's own ancestry 
     detail: "ENOENT",
   };
   const agentsSlice = join(f.config.cgroupRoot, "agents.slice");
-  // The agent slice itself hands io down in full. Were the short-circuit on
-  // an unavailable root removed, this walk would read that and wrongly flip
-  // the capability to available.
+  // The agent slice's own ancestry ALSO withholds io here, on purpose: were
+  // the short-circuit on an unavailable root removed, the walk below would
+  // read that withholding and return a freshly built `incomplete` capability
+  // instead of `root`. A fixture where the ancestry delegates cleanly cannot
+  // tell the two apart: both the guarded and the unguarded code fall through
+  // to the same `return root` at the very end, so `toBe(root)` would hold
+  // either way (the recurrence this test replaces).
   writeFileSync(
     join(agentsSlice, "cgroup.subtree_control"),
-    "cpu io memory pids\n",
+    "cpu memory pids\n",
   );
   const groups = [
     groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
   ];
-  expect(probeIoStat(f.config, groups, root)).toBe(root);
+  const result = probeIoStat(f.config, groups, root);
+  // Identity: the root's own answer comes back unchanged, never rebuilt.
+  expect(result).toBe(root);
+  // And its failure and detail survive untouched, so a future fallthrough
+  // that reconstructs a similar-looking object is caught even where it
+  // happens to preserve reference equality by accident.
+  expect(result.failure).toBe("absent");
+  expect(result.detail).toBe("ENOENT");
 });
 
 test("a two-level ancestry under a dashed agent-slice name names whichever level withholds io", () => {

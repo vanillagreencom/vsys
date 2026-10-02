@@ -375,19 +375,30 @@ const unreadCost: Partial<Record<CapabilityId, string>> = {
 /**
  * What a reader loses while this capability is missing. io-stat's partial
  * loss (the root hands io down, but one of the agent slice's own ancestors
- * does not) costs only the groups under that ancestor, so the line names
- * only Home's per-scope reads: Storage shows slice totals, and the agent
- * slice's own total is unaffected by an ancestor withholding io from what
- * is below it.
+ * does not) always costs Home's per-scope reads under the withholding
+ * ancestor. Whether it also costs Storage's slice-aggregate row turns on
+ * which ancestor withheld it: `probeIoStat()` walks the agent slice's own
+ * ancestry from directly below the root down to the slice itself, so
+ * `cap.detail` names the slice itself only on the last step. There, the
+ * slice's own `io.stat` was already handed down by its parent one step
+ * earlier, so `writeTotals()`'s slice total still reads it and Storage is
+ * unaffected. Anywhere earlier in that walk, the withholding ancestor sits
+ * above the slice, so the slice itself never receives `io.stat` either, and
+ * Storage's row for it goes blank along with Home's.
  */
-export function capabilityLoss(cap: Capability): string {
+export function capabilityLoss(
+  cap: Capability,
+  c: Pick<Config, "agentSlice">,
+): string {
   if (cap.available) return "";
   if (
     cap.id === "io-stat" &&
     cap.failure === "incomplete" &&
     cap.detail !== "io"
   )
-    return `disk writes are blank rather than zero, on Home, for the groups under ${cap.detail}; it does not hand the io controller to them`;
+    return cap.detail === c.agentSlice
+      ? `disk writes are blank rather than zero, on Home, for the groups under ${cap.detail}; it does not hand the io controller to them`
+      : `disk writes are blank rather than zero, on Home, for the groups under ${cap.detail}, and on Storage, for ${c.agentSlice}'s own total: ${cap.detail} does not hand the io controller down to it either`;
   const unread = cap.failure !== "absent" && cap.failure !== "masked";
   return (unread && unreadCost[cap.id]) || capabilityCost[cap.id];
 }
