@@ -309,6 +309,8 @@ const absentReasons: Record<CapabilityId, string> = {
 };
 /** What a present interface that answered with too little means, per capability. */
 const incompleteReasons: Partial<Record<CapabilityId, string>> = {
+  "io-stat":
+    "the io controller is not delegated to the groups below this session",
   tmux: "tmux is installed but no server is answering",
 };
 /**

@@ -14,19 +14,42 @@ import { listPanesArgv } from "./tmux";
 
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
-export type Outcome = { failure: CapabilityFailure; detail: string } | null;
+/** A failure may name the source that decided it when a probe reads two. */
+type Failure = { failure: CapabilityFailure; detail: string; source?: string };
+export type Outcome = Failure | null;
 
 /**
  * The system decides the diagnosis, never the reader. An errno for a source
  * that does not exist is an absent interface; any other errno is a source this
  * user cannot read; a throw with no errno came from parsing what was read.
  */
-function classify(error: unknown): Outcome {
+function classify(error: unknown): Failure {
   const code = (error as NodeJS.ErrnoException).code;
   const detail = error instanceof Error ? error.message : String(error);
   if (code === "ENOENT" || code === "ENOTDIR" || code === "ENODEV")
     return { failure: "absent", detail };
   return { failure: code ? "unreadable" : "malformed", detail };
+}
+
+/**
+ * Which of these controllers the session root does not hand down to the groups
+ * below it. A group has a controller's files only when its parent lists the
+ * controller in `cgroup.subtree_control`, so the root's own file says nothing
+ * about the groups the readings come from.
+ */
+function undelegated(c: CollectionConfig, names: string[]): Outcome {
+  const source = join(c.cgroupRoot, "cgroup.subtree_control");
+  let enabled: string[];
+  try {
+    enabled = readFileSync(source, "utf8").split(/\s+/);
+  } catch (error) {
+    return { ...classify(error), source };
+  }
+  const absent = names.filter((name) => !enabled.includes(name));
+  // The interface answered; it just does not carry these controllers.
+  return absent.length
+    ? { failure: "incomplete", detail: absent.join(" "), source }
+    : null;
 }
 
 /**
@@ -83,17 +106,7 @@ export function probeCapabilities(
     [
       "delegation",
       join(c.cgroupRoot, "cgroup.subtree_control"),
-      () => {
-        const enabled = readFileSync(
-          join(c.cgroupRoot, "cgroup.subtree_control"),
-          "utf8",
-        ).split(/\s+/);
-        const absent = delegated.filter((name) => !enabled.includes(name));
-        // The interface answered; it just does not carry these controllers.
-        return absent.length
-          ? { failure: "incomplete", detail: absent.join(" ") }
-          : null;
-      },
+      () => undelegated(c, delegated),
     ],
     [
       "psi",
@@ -108,7 +121,8 @@ export function probeCapabilities(
       join(c.cgroupRoot, "io.stat"),
       () => {
         readFileSync(join(c.cgroupRoot, "io.stat"), "utf8");
-        return null;
+        // The writer readings come from the groups below the root.
+        return undelegated(c, ["io"]);
       },
     ],
     [
@@ -149,7 +163,7 @@ function record(
     id,
     available: outcome === null,
     failure: outcome?.failure ?? null,
-    source,
+    source: outcome?.source ?? source,
     detail: outcome?.detail ?? detail,
   };
 }
