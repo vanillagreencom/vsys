@@ -570,7 +570,7 @@ test("a change about a cgroup names it the way a card does, and keeps the unit",
   expect(lane?.names.unit ?? "").toBe("");
 });
 
-test("host memory pressure with no lane stalled under it still names its scope", () => {
+test("host memory pressure with no lane stalled under it is one host alert", () => {
   const log = started();
   const s = emptySnapshot(2000);
   s.system.pressure = { memory: { some: 80, full: 0, total: 0 } };
@@ -589,12 +589,70 @@ test("host memory pressure with no lane stalled under it still names its scope",
   // Still exactly one alert. `at` is where to look, not a subject, and using
   // it here changes what the one subject is rather than how many there are.
   expect(opened.length).toBe(1);
-  // And that one subject carries a real identity: the scope's path, the name
-  // a card would show, and the raw unit the row can open under itself. A bare
-  // consumer string left the reader with no handle at all.
-  expect(opened[0].subjectId).toBe("app.slice/gnome.scope");
+  // The subject is the host, not the scope `at` points at: a holder change
+  // mid-episode must not read as a different identity. The holder's name
+  // still shows as the open's display name, with no unit, since it is not
+  // the handle this alert's identity carries.
+  expect(opened[0].subjectId).toBe("");
   expect(opened[0].subject).toBe("gnome");
-  expect(opened[0].names.unit).toBe("gnome.scope");
+  expect(opened[0].names.unit ?? "").toBe("");
+});
+test("host memory pressure is one host alert while the swap holder changes", () => {
+  const held = defaults();
+  // The holder must change inside the hold, or this proves nothing.
+  expect(held.pressureHoldSeconds * 1000).toBeGreaterThan(held.refreshMs);
+  const log = new EventLog();
+  const alerts: [string, string][] = [];
+  for (let i = 0; i < 60; i++) {
+    const s = emptySnapshot(1000 + i * held.refreshMs);
+    s.system.pressure = {
+      memory: { some: held.pressureRed + 1, full: 0, total: 0 },
+    };
+    // No lane stalls on memory, and the swap holder changes identity
+    // partway through: group a holds swap through sample 29, group b from 30.
+    s.groups = [
+      groupSnapshot({
+        path: i < 30 ? "app.slice/a.scope" : "app.slice/b.scope",
+        name: i < 30 ? "a.scope" : "b.scope",
+        swap: 992,
+      }),
+    ];
+    for (const e of log.advance(s, held))
+      if (e.cause === "system-memory" && e.kind.startsWith("alert-"))
+        alerts.push([e.kind, e.subjectId]);
+  }
+  // One continuous host alert, not a closed-and-reopened pair fragmented by
+  // the holder change.
+  expect(alerts).toEqual([["alert-open", ""]]);
+});
+test("host memory pressure holds one alert while two scopes trade the top swap spot", () => {
+  const held = defaults();
+  expect(held.pressureHoldSeconds * 1000).toBeGreaterThan(held.refreshMs);
+  const log = new EventLog();
+  const alerts: [string, string][] = [];
+  for (let i = 0; i < 60; i++) {
+    const s = emptySnapshot(1000 + i * held.refreshMs);
+    s.system.pressure = {
+      memory: { some: held.pressureRed + 1, full: 0, total: 0 },
+    };
+    // Two scopes trade the top swap spot every sample.
+    s.groups = [
+      groupSnapshot({
+        path: "app.slice/a.scope",
+        name: "a.scope",
+        swap: i % 2 === 0 ? 992 : 900,
+      }),
+      groupSnapshot({
+        path: "app.slice/b.scope",
+        name: "b.scope",
+        swap: i % 2 === 0 ? 900 : 992,
+      }),
+    ];
+    for (const e of log.advance(s, held))
+      if (e.cause === "system-memory" && e.kind.startsWith("alert-"))
+        alerts.push([e.kind, e.subjectId]);
+  }
+  expect(alerts).toEqual([["alert-open", ""]]);
 });
 
 test("a cause that names one thing twice opens one alert carrying its unit", () => {

@@ -124,24 +124,13 @@ export function subjects(cause: Cause, s: Snapshot): Subject[] {
   ]);
   if (named.length) return named;
   // The cause is about nothing it can name — host pressure with no lane
-  // stalled under it — so it gets one fallback subject. Where it names a
-  // scope to look at, that scope is the identity that subject carries: its
-  // path, its decoded name, and the raw unit behind it, so the change row can
-  // still show the handle its subject decoded from.
-  //
-  // This changes what the one subject is, never how many there are. `at` is
-  // not a subject and is not added to `named`: a cause with no lanes and no
-  // groups already produced exactly one row here, and it still does.
-  const at = cause.at;
-  const scope =
-    at?.kind === "group" ? s.groups.find((g) => g.path === at.path) : undefined;
-  if (scope)
-    return [{ id: scope.path, name: consumerName(scope, s), unit: scope.name }];
-  // Nothing to point at either, so the subject is the host. The consumer is
-  // only what the open reads as its name: it is a display name two lanes can
-  // share, and the busiest lane changes from sample to sample, so letting it
-  // decide the identity would merge namesakes and delete a pending watch each
-  // time the busiest lane changed.
+  // stalled under it — so the subject is the host. The consumer is only what
+  // the open reads as its name: it is a display name two lanes can share, and
+  // a scope `at` points at can change identity mid-episode exactly as the
+  // busiest lane can, so letting either decide this identity would fragment
+  // one sustained episode into several, or merge namesakes, every time the
+  // name changed. `at` is where to look, not a subject: it never joins
+  // `named` and never decides this identity either.
   return [{ id: "", name: cause.consumer }];
 }
 /**
