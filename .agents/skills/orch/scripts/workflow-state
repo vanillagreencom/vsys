@@ -693,10 +693,10 @@ cmd_append_file() {
 # count is read from (empty when the caller keeps its own count), its
 # default, and the ceiling an item whose state records `tier` small holds it
 # to (empty for none): small.md's one fix round with one re-review, and its
-# two bot rounds. `cap`, the rereview_panel guard below, every refusal's
-# roster and the help text derive from this table, so a cap included or
-# renamed here needs no second edit kept in step, and `cap_limit` is the one
-# place a cap resolves.
+# two bot rounds. `cap`, every refusal's roster and the help text derive from
+# this table, and `cap_limit` is the one place a cap resolves. Two branches
+# name REVIEW_MAX_CYCLES and are kept in step on its rename: the
+# rereview_panel guard in `cmd_set` and the zero-cap exception in `cmd_cap`.
 cap_table() {
     printf 'REVIEW_MAX_CYCLES\trereview_cycles\t1\t1\n'
     printf 'REVIEW_MAX_EXTERNAL_ROUNDS\tpr_comment_review.iterations\t4\t2\n'
@@ -748,11 +748,17 @@ cap_limit() {
 #   cap SETTING --count N       -> "<below|at-cap> <N>/<cap>"
 #
 # `at-cap` is count >= cap: the count is entries already taken, so a count
-# equal to the cap has spent the whole budget.
+# equal to the cap has spent the whole budget. The one exception is
+# REVIEW_MAX_CYCLES=0 read with --issue: that cap allows no re-review but
+# still review-pr § 4's one blockers-only fix round (§ 4 At The Cap), so it
+# reads below while the re-review count is 0 and `review_fix_round` is
+# unset. Only § 4 Fix Delegation sets it, at every cap and whatever the
+# round's items come to, and nothing clears it; `cycles` and `fixed_items`
+# cannot key it, since other rounds raise them and later writes drop entries.
 cmd_cap() {
     local setting="${1:-}"
     shift || true
-    local issue_id="" count="" have_count=0
+    local issue_id="" count="" have_count=0 fix_round=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -783,10 +789,13 @@ cmd_cap() {
         state_file=$(get_state_file "$issue_id")
         ensure_state_exists "$state_file"
         count=$(jq -r "(.${field} // 0) | tostring" "$state_file") || return 1
+        if [[ "$setting" == REVIEW_MAX_CYCLES ]] && (( limit == 0 )); then
+            fix_round=$(jq -r '.review_fix_round // false | tostring' "$state_file") || return 1
+        fi
     fi
     [[ "$count" =~ ^[0-9]+$ ]] || { state_message invalid-count "$@" >&2; return 2; }
 
-    if (( count >= limit )); then
+    if (( count >= limit )) && [[ "$fix_round" != false || "$count" != 0 ]]; then
         printf 'at-cap %s/%s\n' "$count" "$limit"
     else
         printf 'below %s/%s\n' "$count" "$limit"
@@ -814,7 +823,7 @@ cmd_set() {
     ensure_state_exists "$state_file"
 
     # review-pr § 4 writes `rereview_panel` to re-enter § 2: that write IS the re-review cycle, so it raises `rereview_cycles` under the same lock it is gated on, and refuses once that count reaches REVIEW_MAX_CYCLES, so the setting is the number of entries allowed. The count is entries already taken, so the comparison is >=, not >.
-    # Nothing else spends that budget: `cycles` is the general fix-round tally, and § 7's QA re-check and § 2 verification pass write `qa_recheck_panel` and `verification_panel`, fields this branch never matches.
+    # Nothing else spends that budget: `cycles` is the general fix-round tally, and § 7's QA re-check and § 2 verification pass write `qa_recheck_panel` and `verification_panel`, fields this branch never matches. At a cap of 0 this write always refuses, and `cmd_cap` reads § 4's one fix round from `review_fix_round` instead.
     if [[ "$field" == "tier" ]]; then
         case "$value" in
             micro|small|standard) ;;
@@ -1479,7 +1488,11 @@ Commands:
                                 With --issue: read the state field the setting
                                 is measured against; with --count: use <n>.
                                 Either prints "<below|at-cap> <count>/<cap>",
-                                at-cap being count >= cap. Settings:
+                                at-cap being count >= cap, except that
+                                REVIEW_MAX_CYCLES=0 with --issue reads below
+                                until review_fix_round is set, which
+                                review-pr § 4 Fix Delegation writes.
+                                Settings:
 EOF
     cap_table | awk -F'\t' \
         '{ printf "%34s%s (%s, %s%s)\n", "", $1, ($2 == "" ? "--count only" : $2), $3, ($4 == "" ? "" : ", tier small " $4) }'
