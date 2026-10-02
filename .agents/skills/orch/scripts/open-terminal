@@ -35,10 +35,8 @@ parse_argv() {
   # option the caller did not pass. Settings reach the script through their own
   # ORCH_* names, resolved after the load.
   #
-  # Model, effort, and permission posture are decided per task by the caller and
-  # arrive as --launch-flags. Nothing in this script, the settings file, or a
-  # handoff template pins them: a stored default silently applies yesterday's
-  # answer to today's work item.
+  # Explicit model choices keep the caller's route. ORCH_LANE_PREFERENCE
+  # supplies the harness, model and effort only where no model is named.
   LAUNCH_FLAGS=""
   TRACKER="linear"
   REPO=""
@@ -215,6 +213,17 @@ elif [[ "$CMD_TEMPLATE" == *"{brief}"* ]]; then
   ot_message brief-file-missing "option=--cmd" >&2
   exit 1
 fi
+# The launch brief is the declared interface, not a harness status read.
+# Its workflow word names what runs; the item-tier line retains the inputs
+# without calling a tracker or classifying the item again. Older callers
+# supply no line, so their inputs are explicitly unknown.
+LAUNCH_TIER_RECORD="$(jq -cn --arg text "$CMD_TEMPLATE"$'\n'"$BRIEF_TEXT" '
+  def count: if . == "-" then null else tonumber end;
+  ([ $text | capture("(?:/orch|/skill:orch|\\$orch|execute the orch) (?<verb>micro|small|start)(?:[[:space:]]|$)"; "i") ] | first | .verb // "start") as $verb
+  | ([ $text | capture("tier=(?:micro|small|standard) brief=(?:micro|small|start) cause=[^\\n]*? estimate=(?<estimate>[0-9]+|-) delta=(?<delta>[0-9]+|-) paths=(?<paths>[0-9]+)") ] | first) as $inputs
+  | {tier: (if $verb == "start" then "standard" else $verb end),
+     tier_inputs: {estimate: ($inputs.estimate // "-" | count), delta: ($inputs.delta // "-" | count), paths: ($inputs.paths // "-" | count)}}
+')" || { ot_message tier-inputs-unreadable "option=--cmd" >&2; exit 1; }
 [[ "$HARNESS" != "codex-app" ]] || { ot_message desktop-harness "harness=$HARNESS" >&2; exit 1; }
 # lane-host owns the setting's reading; it runs from this script's checkout,
 # whose project settings this script loaded, or from the caller's directory
@@ -237,6 +246,181 @@ fi
 # copy again.
 HOST_RELAUNCH=false
 [[ "$LANE_HOST" == local || "$RELAUNCH" != true ]] || HOST_RELAUNCH=true
+
+pick_auto_lane() {
+  local model_args=() state_env=()
+  [[ -z "$LAUNCH_MODEL" ]] || model_args=(--model "$LAUNCH_MODEL")
+  [[ "$FLEET" != true ]] || state_env=("ORCH_STATE_DIR=$STATE_DIR")
+  env ${state_env[@]+"${state_env[@]}"} ORCH_LANE_HOST="$LANE_HOST" "$LANES_CLI" pick --harness "$LANE_HARNESS" \
+    ${LANE_PCT_ARGS[@]+"${LANE_PCT_ARGS[@]}"} ${model_args[@]+"${model_args[@]}"} "$@"
+}
+
+# $LAUNCH_FLAGS is interpolated verbatim into a shell-executed launch command
+# (bash -lc on GUI lanes, keystrokes into the pane shell on tmux lanes), so a
+# shell metacharacter here is arbitrary command execution at launch. Only plain
+# flag words may pass; anything else is a caller error, not a launch. Bracketed
+# model ids (`opus[1m]`) and pi's `sonnet:high` are ordinary flag values, so
+# brackets and the colon are allowed and every shell-active character is not: a
+# colon is a shell word only as a command name, which no flag value becomes, and
+# the expansions that read one all need a `$` this pattern refuses. The colon
+# also has to pass here because a --cmd launch names pi's level on its model
+# value inside the template, and a launch without --cmd names the same word
+# here.
+if [[ -n "$LAUNCH_FLAGS" ]]; then
+  # `]` leads and `-` trails inside the bracket expression, the only positions
+  # where they are literal rather than range/close syntax.
+  launch_flags_pattern='^[]A-Za-z0-9._=/:[-]+( []A-Za-z0-9._=/:[-]+)*$'
+  if [[ ! "$LAUNCH_FLAGS" =~ $launch_flags_pattern ]]; then
+    ot_message flags-invalid "option=--launch-flags" "value=$LAUNCH_FLAGS" >&2
+    exit 1
+  fi
+fi
+
+# --launch-flags beside --cmd reach NOTHING. start_cmd renders a --cmd template
+# as the whole command, substituting {issue}, {item} and {repo} and returning
+# before the block that quotes these flags into a harness command, and no other
+# site appends them to a template. A launch leaving its model or its effort here
+# would pass the gate below, have its lane judged on that word and have it
+# written into the lane record, while the harness ran whatever default its own
+# argv named — the very gap the gate exists to close. Refused before that gate,
+# so an operator is told the flags are unreachable rather than told nothing.
+#
+# The caller's own argv is the whole of a --cmd launch, permission posture
+# included, which is why the permission-prompt warning below already skips it.
+if [[ -n "$CMD_TEMPLATE" && -n "$LAUNCH_FLAGS" ]]; then
+  ot_message launch-flags-unreachable "option=--launch-flags" "flags=$LAUNCH_FLAGS" >&2
+  exit 1
+fi
+
+# Exits unless lanes clears the lane $1 names. lanes owns the name, alias and
+# retirement matching: its exit 4 is a lane a setting excludes or retires, and
+# any other failure is lanes failing, never reported as a covered lane.
+lane_check() {
+  [[ -x "$LANES_CLI" ]] || { ot_message helper-missing "path=$LANES_CLI" >&2; exit 1; }
+  local rc=0
+  "$LANES_CLI" check "$1" >&2 || rc=$?
+  case "$rc" in
+    0) ;;
+    4) ot_message lane-refused "lane=$LANE" "exit=$rc" >&2; exit 1 ;;
+    *) ot_message lane-resolution-failed "exit=$rc" >&2; exit 1 ;;
+  esac
+}
+# Resolves and checks a caller-named lane once, before its model is judged.
+named_lane_resolve() {
+  local alias_rc=0
+  lane_dir="$LANE"
+  # A value carrying a `/` is meant as a path, so a miss there is a typo,
+  # not an alias. A bare word is resolved as a lane alias — the discovered
+  # name, or whatever ORCH_LANE_ALIASES renamed it to — through the same
+  # inventory `pick` measures, so aliases need no second source of truth.
+  if [[ "$lane_dir" == */* ]]; then
+    [[ -d "$lane_dir" ]] || { ot_message lane-directory-missing "path=$LANE" >&2; exit 1; }
+  else
+    # A bare word is resolved as an alias BEFORE the filesystem. Testing
+    # `-d` first meant any same-named directory in the caller's cwd shadowed
+    # a real lane and launched the fleet against the wrong account without
+    # saying so. A bare directory name still works when no alias claims it.
+    [[ -x "$LANES_CLI" ]] || { ot_message helper-missing "path=$LANES_CLI" >&2; exit 1; }
+    # The status is taken, not left to errexit: a `lanes` or `jq` that
+    # failed would otherwise end the run here with no line naming why, and
+    # an empty result is the alias-not-found answer the branch below reads.
+    alias_rc=0
+    lane_dir="$("$LANES_CLI" list --local --json | jq -r --arg a "$LANE" 'map(select(.alias == $a)) | first | .config_dir // empty')" || alias_rc=$?
+    [[ "$alias_rc" -eq 0 ]] || { ot_message lane-resolution-failed "exit=$alias_rc" >&2; exit 1; }
+    if [[ -z "$lane_dir" ]]; then
+      # An excluded lane is absent from `list`, so its name or alias is
+      # refused here, before a same-named cwd directory can stand in for it.
+      lane_check "$LANE"
+      lane_dir="$LANE"
+      [[ -d "$lane_dir" ]] || { ot_message lane-unknown "lane=$LANE" >&2; exit 1; }
+    fi
+  fi
+  # Whether a setting excludes or retires the lane is lanes' decision, asked
+  # of the resolved directory so an alias and a path answer alike.
+  lane_check "$lane_dir"
+}
+
+# Keep the caller's input for every preference walk, including a batch's
+# rejudge and the cap's wait-slot callback. Explicit-model launches never enter.
+PREFERENCE_ENTRY="" PREFERENCE_LANE_ENV=""
+preference_pi_root="${PI_CODING_AGENT_DIR-}"
+CMD_INPUT="$CMD_TEMPLATE"
+preference_harness="$HARNESS"
+[[ -n "$preference_harness" || "$LANE" != auto:* ]] || preference_harness="${LANE#auto:}"
+preference_text="$CMD_TEMPLATE $LAUNCH_FLAGS"
+[[ -n "$preference_harness" || -z "$CMD_TEMPLATE" ]] || preference_harness="${CMD_TEMPLATE%% *}"
+PREFERENCE_ACTIVE=false
+if [[ "$WAKE" != true && -n "${ORCH_LANE_PREFERENCE:-}" \
+      && -n "$(launch_choice_row "$preference_harness")" \
+      && -z "$(launch_choice_launch_model "" "$preference_text")" ]]; then
+  PREFERENCE_ACTIVE=true
+  # shellcheck source=lib/overseer-launch.sh
+  source "$SCRIPT_DIR/lib/overseer-launch.sh"
+  ol_preference_entries "$ORCH_LANE_PREFERENCE" || {
+    ot_message invalid-preference "entry=$OL_BAD_ENTRY" >&2; exit 1;
+  }
+  [[ -x "$LANES_CLI" ]] || { ot_message helper-missing "path=$LANES_CLI" >&2; exit 1; }
+  preference_pick_args=()
+  case "$LANE" in
+    ''|auto|auto:*) ;;
+    *) named_lane_resolve; preference_pick_args=(--lane "$lane_dir" --projected) ;;
+  esac
+  preference_input=()
+  if [[ -n "$CMD_INPUT" ]]; then
+    launch_choice_shell_words "$CMD_INPUT"
+    [[ "${LAUNCH_CHOICE_ARGV[0]}" == "$preference_harness" ]] || {
+      ot_message preference-command-invalid "harness=$preference_harness" >&2; exit 1;
+    }
+    preference_input=("${LAUNCH_CHOICE_ARGV[@]:1}")
+  else
+    launch_choice_shell_words "$LAUNCH_FLAGS"
+    preference_input=(${LAUNCH_CHOICE_ARGV[@]+"${LAUNCH_CHOICE_ARGV[@]}"})
+  fi
+  OL_WALK_SOURCE_HARNESS="$preference_harness" OL_WALK_SOURCE_FLAGS="${preference_input[*]+${preference_input[*]}}"
+fi
+
+# One owner chooses and rebuilds a preference launch from the original input.
+# Permission eligibility and flag translation belong to the overseer walk.
+preference_select() {
+  local preference_entry preference_rc preference_word
+  PREFERENCE_ENTRY="" PREFERENCE_LANE_ENV=""
+  for preference_entry in "${OL_ENTRIES[@]}"; do
+    ol_entry_model "$preference_entry"
+    OL_HARNESS="$OL_ENTRY_HARNESS" OL_WALK_SKIPS=()
+    if ! ol_entry_permitted "$preference_entry"; then
+      ot_message entry-permission-untransferable "entry=$preference_entry" \
+        "source=$preference_harness" "target=$OL_ENTRY_HARNESS" >&2
+      continue
+    fi
+    LANE_HARNESS="$OL_ENTRY_HARNESS" LAUNCH_MODEL="$OL_ENTRY_MODEL"
+    preference_rc=0
+    PREFERENCE_LANE_ENV="$(pick_auto_lane ${preference_pick_args[@]+"${preference_pick_args[@]}"})" || preference_rc=$?
+    case "$preference_rc" in
+      0) PREFERENCE_ENTRY="$preference_entry"; break ;;
+      3) continue ;;
+      *) ot_message lane-resolution-failed "entry=$preference_entry" "exit=$preference_rc" >&2; return 1 ;;
+    esac
+  done
+  [[ -n "$PREFERENCE_ENTRY" ]] || { ot_message lane-unavailable "walk=$ORCH_LANE_PREFERENCE" >&2; return 1; }
+  ol_launch_flags --question-off "$OL_ENTRY_HARNESS" "$OL_ENTRY_MODEL" "$OL_ENTRY_EFFORT" \
+    "$OL_ENTRY_MODEL" "$preference_harness" ${preference_input[@]+"${preference_input[@]}"} || {
+    ot_message lane-resolution-failed "entry=$PREFERENCE_ENTRY" "step=$OL_REASON" >&2; return 1;
+  }
+  if [[ -n "$CMD_INPUT" ]]; then
+    CMD_TEMPLATE="$OL_ENTRY_HARNESS"
+    for preference_word in ${OL_FLAGS[@]+"${OL_FLAGS[@]}"}; do
+      if [[ "$preference_word" == '{brief}' ]]; then CMD_TEMPLATE+=" {brief}"
+      else CMD_TEMPLATE+=" $(printf %q "$preference_word")"; fi
+    done
+  else
+    LAUNCH_FLAGS="${OL_FLAGS[*]+${OL_FLAGS[*]}}"
+  fi
+  HARNESS="$OL_ENTRY_HARNESS"
+  case "$LANE" in ''|auto|auto:*) LANE=auto ;; esac
+  if [[ -n "$preference_pi_root" ]]; then PI_CODING_AGENT_DIR="$preference_pi_root"
+  else unset PI_CODING_AGENT_DIR; fi
+  launch_judge
+}
 # How lane_record_write treats an entry that already names the item.
 RECORD_MODE=launch
 [[ "$RELAUNCH" != true ]] || RECORD_MODE=relaunch
@@ -367,43 +551,6 @@ else
   LANE_SSH_PROMPT_SECS="$LANE_SSH_PROMPT_DEFAULT"
 fi
 
-# $LAUNCH_FLAGS is interpolated verbatim into a shell-executed launch command
-# (bash -lc on GUI lanes, keystrokes into the pane shell on tmux lanes), so a
-# shell metacharacter here is arbitrary command execution at launch. Only plain
-# flag words may pass; anything else is a caller error, not a launch. Bracketed
-# model ids (`opus[1m]`) and pi's `sonnet:high` are ordinary flag values, so
-# brackets and the colon are allowed and every shell-active character is not: a
-# colon is a shell word only as a command name, which no flag value becomes, and
-# the expansions that read one all need a `$` this pattern refuses. The colon
-# also has to pass here because a --cmd launch names pi's level on its model
-# value inside the template, and a launch without --cmd names the same word
-# here.
-if [[ -n "$LAUNCH_FLAGS" ]]; then
-  # `]` leads and `-` trails inside the bracket expression, the only positions
-  # where they are literal rather than range/close syntax.
-  launch_flags_pattern='^[]A-Za-z0-9._=/:[-]+( []A-Za-z0-9._=/:[-]+)*$'
-  if [[ ! "$LAUNCH_FLAGS" =~ $launch_flags_pattern ]]; then
-    ot_message flags-invalid "option=--launch-flags" "value=$LAUNCH_FLAGS" >&2
-    exit 1
-  fi
-fi
-
-# --launch-flags beside --cmd reach NOTHING. start_cmd renders a --cmd template
-# as the whole command, substituting {issue}, {item} and {repo} and returning
-# before the block that quotes these flags into a harness command, and no other
-# site appends them to a template. A launch leaving its model or its effort here
-# would pass the gate below, have its lane judged on that word and have it
-# written into the lane record, while the harness ran whatever default its own
-# argv named — the very gap the gate exists to close. Refused before that gate,
-# so an operator is told the flags are unreachable rather than told nothing.
-#
-# The caller's own argv is the whole of a --cmd launch, permission posture
-# included, which is why the permission-prompt warning below already skips it.
-if [[ -n "$CMD_TEMPLATE" && -n "$LAUNCH_FLAGS" ]]; then
-  ot_message launch-flags-unreachable "option=--launch-flags" "flags=$LAUNCH_FLAGS" >&2
-  exit 1
-fi
-
 # Every row field is read by the library that owns the table. The MODEL
 # spellings come back whether or not the table names this launch's harness: the
 # lane record carries the model every launch passes, and a launch naming no
@@ -427,6 +574,7 @@ fi
 # script renders into the harness command it builds. The refusal above leaves at
 # most one of the two non-empty, so this is the launch's single text and not a
 # precedence between two.
+launch_judge() {
 LAUNCH_TEXT="$CMD_TEMPLATE"
 [[ -n "$LAUNCH_TEXT" ]] || LAUNCH_TEXT="$LAUNCH_FLAGS"
 
@@ -492,7 +640,7 @@ if [[ -n "$LANE" && -n "$(launch_choice_row "$LAUNCH_HARNESS")" ]]; then
       "spellings=${LAUNCH_EFFORT_SPELLINGS// /,}" >&2
     launch_choice_missing=true
   fi
-  [[ "$launch_choice_missing" != true ]] || exit 1
+  [[ "$launch_choice_missing" != true ]] || return 1
 fi
 
 # Every command start_cmd builds carries the words its harness row names to
@@ -510,7 +658,7 @@ if ! LAUNCH_QUESTION_OFF="$(launch_choice_question_off "$LAUNCH_HARNESS")" \
   read -r -a question_words <<<"$LAUNCH_QUESTION_OFF"
   for question_word in ${question_words[@]+"${question_words[@]}"}; do question_fields+=("word=$question_word"); done
   ot_message launch-question-tool-missing "harness=$LAUNCH_HARNESS" ${question_fields[@]+"${question_fields[@]}"} >&2
-  exit 1
+  return 1
 fi
 
 # Every lane is briefed with the unattended words: start_cmd puts them in
@@ -523,7 +671,7 @@ if [[ -n "$CMD_TEMPLATE" && -n "$LAUNCH_HARNESS" && "$BRIEF_TEXT" != *"$LAUNCH_U
    && ! launch_choice_phrase_present "$LAUNCH_UNATTENDED_TEXT" "$CMD_TEMPLATE"; then
   ot_message launch-unattended-missing "harness=$LAUNCH_HARNESS" >&2
   printf '%s\n' "$LAUNCH_UNATTENDED_TEXT" >&2
-  exit 1
+  return 1
 fi
 
 # A fleet lane hands off at a share of its own window, which a harness adapter
@@ -563,19 +711,16 @@ fi
 # its gate is deferred, PI_GATE_DEFERRED says so, and pi_lane_root_apply runs
 # it once per lane it is given, whichever root that lane leaves in place.
 PI_GATE_DEFERRED=false
-# Whether the lane's pi-hooks carrier starts its turn when mail lands, as the
-# fleet gate read it: `present`, whose lane arms no mailbox monitor; `absent`,
-# a carrier without the mail wake, whose brief and relaunch line carry the
-# lane-mail watch arm line; `unread`, a launch the gate does not judge, whose
-# relaunch line re-arms the watch and whose brief is left as written. Nothing
-# refuses on it.
-PI_MAIL_WAKE=unread
-pi_mail_wake_read() { # 0 WAKES, VERSION — sets PI_MAIL_WAKE, printing the notice for an absent wake
-  if [[ "$1" -eq 0 ]]; then
-    PI_MAIL_WAKE=present
-  else
-    PI_MAIL_WAKE=absent
-    ot_message pi-mail-wake-missing "harness=pi" "version=$2"
+# Pi loads the extensions listed by pi-hooks. A carrier without the mail wake
+# cannot start an idle lane's turn when mail lands.
+pi_mail_wake_gate() { # WAKES VERSION PACKAGES PROJECT_PACKAGES LOCATION
+  if [[ "$1" -ne 0 ]]; then
+    local root="${3%/packages}" scope=global retry=launch
+    [[ "$3" != "$4" ]] || scope=project
+    [[ "$5" != hosted ]] || retry=--relaunch
+    ot_message pi-mail-wake-missing "harness=pi" "version=$2" "root=$root" \
+      "scope=$scope" "location=$5" "update=kendex update-pi --scope $scope" "retry=$retry" >&2
+    return 1
   fi
 }
 pi_local_gate() {
@@ -590,7 +735,8 @@ pi_local_gate() {
   lane_adapter_pi_window_read "$CLAIM_ROOT" || { ot_message unsupported-for-oversee "harness=pi" "reason=no-window-read" >&2; return 1; }
   local wakes=0
   lane_adapter_pi_mail_wake "$CLAIM_ROOT" || wakes=$?
-  pi_mail_wake_read "$wakes" "$LANE_ADAPTER_PI_CARRIER_VERSION"
+  pi_mail_wake_gate "$wakes" "$LANE_ADAPTER_PI_CARRIER_VERSION" \
+    "$LANE_ADAPTER_PI_CARRIER_ROOT" "$CLAIM_ROOT/.pi/packages" local
 }
 if [[ "$FLEET" == true && "$WAKE" != true ]]; then
   case "$LAUNCH_HARNESS" in
@@ -607,14 +753,14 @@ if [[ "$FLEET" == true && "$WAKE" != true ]]; then
       fi
       if [[ "$gate_window" != true ]]; then
         ot_message launch-window-unknown "harness=$LAUNCH_HARNESS" "model=${LAUNCH_MODEL:-none}" >&2
-        exit 1
+        return 1
       fi
       if [[ -n "$CMD_TEMPLATE" ]] && ! launch_choice_words_present "$LAUNCH_COMPACTION_OFF" "$CMD_TEMPLATE"; then
         compaction_fields=()
         read -r -a compaction_words <<<"$LAUNCH_COMPACTION_OFF"
         for compaction_word in "${compaction_words[@]}"; do compaction_fields+=("word=$compaction_word"); done
         ot_message launch-compaction-missing "harness=$LAUNCH_HARNESS" "${compaction_fields[@]}" >&2
-        exit 1
+        return 1
       fi
       ;;
     pi)
@@ -622,13 +768,18 @@ if [[ "$FLEET" == true && "$WAKE" != true ]]; then
         if [[ -n "$LANE" && "$(lane_pick_harness pi "$LAUNCH_MODEL")" == pi ]]; then
           PI_GATE_DEFERRED=true
         else
-          pi_local_gate || exit 1
+          pi_local_gate || return 1
         fi
       fi
       ;;
-    copilot) [[ "$LANE_HOST" == local ]] || { ot_message unsupported-for-oversee "harness=copilot" "reason=hosted" >&2; exit 1; } ;;
-    *) ot_message unsupported-for-oversee "harness=${LAUNCH_HARNESS:-none}" >&2; exit 1 ;;
+    copilot) [[ "$LANE_HOST" == local ]] || { ot_message unsupported-for-oversee "harness=copilot" "reason=hosted" >&2; return 1; } ;;
+    *) ot_message unsupported-for-oversee "harness=${LAUNCH_HARNESS:-none}" >&2; return 1 ;;
   esac
+fi
+
+if [[ -n "$LANE" && "$LANE_HOST" != local && "$LAUNCH_HARNESS" == pi && "$(lane_pick_harness pi "$LAUNCH_MODEL")" == claude ]]; then
+  ot_message host-pi-claude-seat "host=$LANE_HOST" "model=$LAUNCH_MODEL" >&2
+  return 1
 fi
 
 # Handoff is unattended. A harness whose row names a permission posture stalls
@@ -642,6 +793,10 @@ if LAUNCH_PERMISSION_SPELLINGS="$(launch_choice_permission_spellings "$LAUNCH_HA
     ot_message permission-prompt "flags=$LAUNCH_FLAGS" >&2
   fi
 fi
+
+}
+if [[ "$PREFERENCE_ACTIVE" == true ]]; then preference_select || exit 1
+else launch_judge || exit 1; fi
 
 # Resolve the launch lane BEFORE creating any worktree. A fleet launch that
 # discovers "every account is full" after spawning three worktrees has already
@@ -676,19 +831,6 @@ lane_value_error() {
   fi
   return 1
 }
-# Exits unless lanes clears the lane $1 names. lanes owns the name, alias and
-# retirement matching: its exit 4 is a lane a setting excludes or retires, and
-# any other failure is lanes failing, never reported as a covered lane.
-lane_check() {
-  [[ -x "$LANES_CLI" ]] || { ot_message helper-missing "path=$LANES_CLI" >&2; exit 1; }
-  local rc=0
-  "$LANES_CLI" check "$1" >&2 || rc=$?
-  case "$rc" in
-    0) ;;
-    4) ot_message lane-refused "lane=$LANE" "exit=$rc" >&2; exit 1 ;;
-    *) ot_message lane-resolution-failed "exit=$rc" >&2; exit 1 ;;
-  esac
-}
 # The picked lane is judged on the bucket that walls the model the launch will
 # pass, so an account with weekly room but none left for that model is never
 # chosen. The model is the one the text the launch RUNS names — the --cmd
@@ -722,189 +864,24 @@ copilot_launch_home() {
   fi
 }
 
-# Make the Copilot home HOME run the kendex context reader, the Copilot
-# extension copilot-lane-context/extension.mjs beside this script: copied to
-# HOME/extensions/kendex-lane-context/extension.mjs, rewritten only where its
-# content differs, and loaded by the EXTENSIONS feature, which Copilot keeps
-# off until `enabledFeatureFlags.EXTENSIONS` is true in HOME/settings.json.
-# Both hold for every session on that home. A settings.json that is a link is
-# written through to its target, so the link stays. Each file is renamed into
-# place from its own directory, so Copilot never reads half of one. Refused,
-# with COPILOT_CONTEXT_FILE naming the file and COPILOT_CONTEXT_DETAIL why:
-# `disabled`, an EXTENSIONS flag set false, the operator's choice and never
-# overridden; `unreadable`, a file that cannot be read, or settings that are
-# no JSON object or carry an EXTENSIONS flag that is no boolean; `unwritable`,
-# a write that failed.
-COPILOT_CONTEXT_FILE=""
-COPILOT_CONTEXT_DETAIL=""
-copilot_context_configure() { # HOME
-  local source="$SCRIPT_DIR/copilot-lane-context/extension.mjs" dest target link hops=0 doc='{}' verdict staged
-  dest="$1/extensions/kendex-lane-context/extension.mjs"
-  COPILOT_CONTEXT_FILE="$source" COPILOT_CONTEXT_DETAIL=unreadable
-  [[ -r "$source" ]] || return 1
-  COPILOT_CONTEXT_FILE="$dest" COPILOT_CONTEXT_DETAIL=unwritable
-  if ! cmp -s -- "$source" "$dest"; then
-    mkdir -p -- "${dest%/*}" && staged="$(mktemp "${dest%/*}/.extension.mjs.XXXXXX")" || return 1
-    if ! cp -- "$source" "$staged" || ! mv -f -- "$staged" "$dest"; then
-      rm -f -- "${staged:?}"
-      return 1
-    fi
-  fi
-  # The link's own target, hop by hop: readlink with no option is the one
-  # spelling every platform this runs on shares.
-  target="$1/settings.json"
-  COPILOT_CONTEXT_FILE="$target" COPILOT_CONTEXT_DETAIL=unreadable
-  while [[ -L "$target" ]]; do
-    hops=$((hops + 1))
-    (( hops <= 40 )) && link="$(readlink -- "$target")" || return 1
-    case "$link" in /*) target="$link" ;; *) target="${target%/*}/$link" ;; esac
-  done
-  if [[ -e "$target" ]]; then
-    doc="$(cat -- "$target")" || return 1
-  fi
-  # jq refuses to index a flags value that is no object, which reads as
-  # unreadable below.
-  verdict="$(jq -r '
-    if type != "object" then "unreadable"
-    else .enabledFeatureFlags.EXTENSIONS as $on
-      | if $on == true then "enabled" elif $on == false then "disabled"
-        elif $on == null then "absent" else "unreadable" end
-    end' <<<"$doc")" || verdict=unreadable
-  case "$verdict" in
-    enabled) return 0 ;;
-    absent) ;;
-    disabled) COPILOT_CONTEXT_DETAIL=disabled; return 1 ;;
-    *) return 1 ;;
-  esac
-  COPILOT_CONTEXT_DETAIL=unwritable
-  staged="$(mktemp "${target%/*}/.settings.json.XXXXXX")" || return 1
-  if ! jq '.enabledFeatureFlags = ((.enabledFeatureFlags // {}) + {EXTENSIONS: true})' <<<"$doc" >"$staged" \
-     || ! mv -f -- "$staged" "$target"; then
-    rm -f -- "${staged:?}"
-    return 1
-  fi
-}
-
-# Make the directory the context reader leaves each session's pending marker
-# in, lib/lane-context.sh's lane_context_copilot_pending_dir under this
-# launcher's HOME, which the lane's Copilot inherits, and prove it writable by
-# making and removing one probe file there, the empty file a marker is. The
-# marker stands from the moment a reading lands until the lane-mail-check run
-# that records it exits 0, so a turn end during a run that fails never judges
-# the earlier record as room (D015 § Reader); a reading the extension could not
-# mark would leave that record standing as room. The extension still names a
-# marker write that fails after this, as `pending-unwritten`. Refused with
-# COPILOT_CONTEXT_FILE naming the directory and COPILOT_CONTEXT_DETAIL
-# `pending-unwritable`.
-copilot_pending_establish() {
-  local dir probe
-  dir="$(lane_context_copilot_pending_dir)"
-  COPILOT_CONTEXT_FILE="$dir" COPILOT_CONTEXT_DETAIL=pending-unwritable
-  mkdir -p -- "$dir" && probe="$(mktemp "$dir/.probe.XXXXXX")" && rm -f -- "$probe"
-}
-
-# A Copilot fleet lane is judged by what its own Copilot loads: the
-# lane-mail-check hook at its turn end, lane-mail-compact at its automatic
-# compaction and lane-mail-start at its start, from the project or the global
-# hook scope
-# (lib/lane-context.sh § lane_context_copilot_hooks), and the context reading
-# the copilot-lane-context extension of the lane's Copilot home hands
-# lane-mail-check. Copilot runs no hook and no extension the home does not
-# name, and a lane running with either missing would be reported measured
-# while nothing measured it. copilot_fleet_gate makes the home run the
-# extension and makes the directory its pending markers land in, or admits the
-# fallback reader below, before any worktree. The project scope is the lane's worktree,
-# made from the item's base or kept from an earlier launch, never the caller's
-# checkout, so copilot_hooks_gate asks once that worktree stands and before the
-# harness starts in it. There it also asks whether Copilot runs those hooks at
-# all: `disableAllHooks` true in any settings layer Copilot reads for that home
-# and worktree switches every hook off, and true in one of the three hooks'
-# own documents in the scope that holds them switches off what that document
-# registers, while the extension still records the readings. kendex's Copilot
-# settings reader owns those layers, which one wins and a hook document's own
-# switch, so the gate asks it through `kendex hooks-off`, naming each of those
-# documents with `--hook-document`, whose stdout is one JSON object whose
-# `switched_off_by` names the file or is null; a kendex that is missing, fails
-# or answers anything else refuses the lane, since an unanswered question is
-# not hooks that run. A settings file or named document there that it cannot
-# read or parse as commented JSON fails it, naming the file.
-#
-# The home must be an absolute path. A relative one is configured and judged
-# here against this launcher's directory, the caller's checkout, while the
-# Copilot process starts in the lane's worktree and reads the same value from
-# there: the lane would pass the gate and run with no context reader.
-#
-# A home whose settings turn EXTENSIONS off (`detail=disabled`) runs no
-# extension, and that choice is the operator's. There the lane is admitted
-# only where the fallback reader serves: the account's statusLine runs
-# copilot-statusline often enough for its session record to stay fresh
-# (lib/adapters/copilot.sh § lane_adapter_copilot_status_line, whose reason
-# the refusal carries as `cause=`), the record the turn end reads where no
-# extension reading stands. Every other failure refuses, since the fallback
-# stands in for an extension the operator switched off, never for a home
-# this launcher could not set up.
-#
-# Called for the lane resolved up front and again for each one a batch
-# re-picks, so it asks whether this launch is a Copilot fleet one itself.
-# Returns 1 with the refusal printed.
+# The shared Copilot adapter owns reader installation and the hook gate.
+# Reader setup follows the resolved lane; hook coverage follows the item's
+# worktree, not this caller's checkout. Re-picking a lane repeats its setup.
 copilot_fleet_gate() {
   local home
   [[ "$FLEET" == true && "$WAKE" != true && "$LAUNCH_HARNESS" == copilot ]] || return 0
-  if ! home="$(copilot_launch_home)" || [[ "$home" != /* ]]; then
+  home="$(copilot_launch_home)" || return 1
+  copilot_context_install "$home" && return 0
+  if [[ "$COPILOT_CONTEXT_DETAIL" == relative-home ]]; then
     ot_message unsupported-for-oversee harness=copilot reason=relative-home "home=$home" >&2
     return 1
   fi
-  copilot_context_configure "$home" && copilot_pending_establish && return 0
-  if [[ "$COPILOT_CONTEXT_DETAIL" != disabled ]]; then
-    ot_message unsupported-for-oversee harness=copilot reason=no-context-reader \
-      "file=$COPILOT_CONTEXT_FILE" "detail=$COPILOT_CONTEXT_DETAIL" >&2
-    return 1
-  fi
-  lane_adapter_copilot_status_line "$home" && return 0
   ot_message unsupported-for-oversee harness=copilot reason=no-context-reader \
     "file=$COPILOT_CONTEXT_FILE" "detail=$COPILOT_CONTEXT_DETAIL" \
-    "cause=$LANE_ADAPTER_COPILOT_STATUS_REASON" >&2
-  return 1
-}
-copilot_hooks_gate() { # WORKTREE ITEM
-  local home scope="" name answer err query_rc=0 off="" documents=()
-  if ! home="$(copilot_launch_home)" || ! scope="$(lane_context_copilot_hooks "$1" "$home")"; then
-    ot_message unsupported-for-oversee harness=copilot reason=no-context-hooks "item=$2" \
-      "scope=$1/.github/hooks" "scope=$home/hooks" >&2
-    return 1
-  fi
-  if ! err="$(mktemp)"; then
-    ot_message unsupported-for-oversee harness=copilot reason=hooks-unjudged "item=$2" exit=scratch >&2
-    return 1
-  fi
-  for name in $LANE_CONTEXT_COPILOT_HOOKS; do
-    documents+=(--hook-document "$scope/$name.json")
-  done
-  answer="$(kendex hooks-off --copilot-home "$home" --project "$1" "${documents[@]}" 2>"$err")" || query_rc=$?
-  # `input` refuses an empty answer, which a bare filter would read as none.
-  [[ "$query_rc" -ne 0 ]] || off="$(jq -rn 'input
-    | if type == "object" and has("switched_off_by")
-        and ((.switched_off_by | type) as $t | $t == "string" or $t == "null")
-      then .switched_off_by // "" else error("no switched_off_by answer") end' <<<"$answer" 2>>"$err")" || query_rc=answer
-  if [[ "$query_rc" != 0 ]]; then
-    ot_message unsupported-for-oversee harness=copilot reason=hooks-unjudged "item=$2" "exit=$query_rc" >&2
-    cat -- "$err" >&2
-    rm -f -- "${err:?}"
-    return 1
-  fi
-  rm -f -- "${err:?}"
-  [[ -n "$off" ]] || return 0
-  ot_message unsupported-for-oversee harness=copilot reason=hooks-disabled "item=$2" "file=$off" >&2
+    ${COPILOT_CONTEXT_CAUSE:+"cause=$COPILOT_CONTEXT_CAUSE"} >&2
   return 1
 }
 
-pick_auto_lane() {
-  local model_args=() state_env=()
-  [[ -z "$LAUNCH_MODEL" ]] || model_args=(--model "$LAUNCH_MODEL")
-  [[ "$FLEET" != true ]] || state_env=("ORCH_STATE_DIR=$STATE_DIR")
-  env ${state_env[@]+"${state_env[@]}"} ORCH_LANE_HOST="$LANE_HOST" "$LANES_CLI" pick --harness "$LANE_HARNESS" \
-    ${LANE_PCT_ARGS[@]+"${LANE_PCT_ARGS[@]}"} ${model_args[@]+"${model_args[@]}"}
-}
 # A Pi launch on the Copilot pool runs under PI_CODING_AGENT_DIR set to its
 # lane (lane_env_prefix), so every reader here of Pi's root, the fleet gate's
 # settings and carrier reads and the relaunch transcript lookup, is pointed at
@@ -985,7 +962,7 @@ host_account_read() { # CONFIG_DIR HARNESS
 # the expected burn of the lanes already on it. Returns 1 with its refusal
 # printed. The block that calls it below says why each answer is what it is.
 named_lane_judge() {
-  local lane_rc=0 lane_record lane_wall lane_bucket lane_projected lane_status
+  local lane_rc=0 lane_record lane_wall lane_bucket lane_projected lane_status lane_detail
   # `held`, `missing` or `unanswered`, and empty until something asks. Only the
   # unmeasured arm below reads it, so that arm is the one place that asks.
   HOST_ACCOUNT=""
@@ -1055,6 +1032,7 @@ named_lane_judge() {
       # A record this script cannot read names no status, which reads as the
       # unmeasured window it is rather than as any of the answers below.
       lane_status="$(jq -r '.status // empty' <<<"$lane_record")" || lane_status=""
+      lane_detail="$(jq -r '.detail // empty' <<<"$lane_record")" || lane_detail=""
       # Whether the provider holds the account is asked here and nowhere else,
       # of host_account_read's uncached read, whatever the judge above read.
       # The judge reads the provider's windows through the usage cache, as it
@@ -1077,7 +1055,7 @@ named_lane_judge() {
         ot_message host-credential-dead "lane=${LANE_ENV#*=}" "host=$LANE_HOST" >&2
         return 1
       else
-        ot_message lane-model-unreadable "lane=${LANE_ENV#*=}" "model=$LAUNCH_MODEL" "step=windows" >&2
+        ot_message lane-model-unreadable "lane=${LANE_ENV#*=}" "model=$LAUNCH_MODEL" "step=windows" "status=${lane_status:-none}" "detail=${lane_detail:-none}" >&2
         return 1
       fi
       ;;
@@ -1098,10 +1076,6 @@ if [[ -n "$LANE" ]]; then
   # `create`), so the seat would be copied as a Pi login that is not there and
   # pi-claude-bridge would run on the host's own Claude login. Refused before
   # any pick, judge or host work.
-  if [[ "$LANE_HOST" != local && "$LAUNCH_HARNESS" == pi && "$(lane_pick_harness pi "$LAUNCH_MODEL")" == claude ]]; then
-    ot_message host-pi-claude-seat "host=$LANE_HOST" "model=$LAUNCH_MODEL" >&2
-    exit 1
-  fi
   case "$LANE" in
     auto|auto:*)
       # The spec's own harness where it names one, parsed once above beside
@@ -1113,44 +1087,19 @@ if [[ -n "$LANE" ]]; then
       LANE_AUTO=true
       LANE_HARNESS="$lane_harness"
       lane_rc=0
-      LANE_ENV="$(pick_auto_lane)" || lane_rc=$?
+      if [[ -n "$PREFERENCE_ENTRY" ]]; then LANE_ENV="$PREFERENCE_LANE_ENV"
+      else LANE_ENV="$(pick_auto_lane)" || lane_rc=$?; fi
       [[ "$lane_rc" -eq 0 ]] || { auto_pick_refusal "$lane_rc"; exit 1; }
       ;;
     *)
-      lane_dir="$LANE"
-      # A value carrying a `/` is meant as a path, so a miss there is a typo,
-      # not an alias. A bare word is resolved as a lane alias — the discovered
-      # name, or whatever ORCH_LANE_ALIASES renamed it to — through the same
-      # inventory `pick` measures, so aliases need no second source of truth.
-      if [[ "$lane_dir" == */* ]]; then
-        [[ -d "$lane_dir" ]] || { ot_message lane-directory-missing "path=$LANE" >&2; exit 1; }
+      if [[ -n "$PREFERENCE_ENTRY" ]]; then LANE_ENV="$PREFERENCE_LANE_ENV"
       else
-        # A bare word is resolved as an alias BEFORE the filesystem. Testing
-        # `-d` first meant any same-named directory in the caller's cwd shadowed
-        # a real lane and launched the fleet against the wrong account without
-        # saying so. A bare directory name still works when no alias claims it.
-        [[ -x "$LANES_CLI" ]] || { ot_message helper-missing "path=$LANES_CLI" >&2; exit 1; }
-        # The status is taken, not left to errexit: a `lanes` or `jq` that
-        # failed would otherwise end the run here with no line naming why, and
-        # an empty result is the alias-not-found answer the branch below reads.
-        alias_rc=0
-        lane_dir="$("$LANES_CLI" list --local --json | jq -r --arg a "$LANE" 'map(select(.alias == $a)) | first | .config_dir // empty')" || alias_rc=$?
-        [[ "$alias_rc" -eq 0 ]] || { ot_message lane-resolution-failed "exit=$alias_rc" >&2; exit 1; }
-        if [[ -z "$lane_dir" ]]; then
-          # An excluded lane is absent from `list`, so its name or alias is
-          # refused here, before a same-named cwd directory can stand in for it.
-          lane_check "$LANE"
-          lane_dir="$LANE"
-          [[ -d "$lane_dir" ]] || { ot_message lane-unknown "lane=$LANE" >&2; exit 1; }
-        fi
+        named_lane_resolve
+        # The harness-to-variable mapping is lib/lane-launch.sh's, the same one
+        # `lanes` hands a picked lane back through, so a harness added there is
+        # not left prefixing its launches with the other harness's variable.
+        LANE_ENV="$(lane_env_prefix "$HARNESS" "$lane_dir" "$LAUNCH_MODEL")"
       fi
-      # Whether a setting excludes or retires the lane is lanes' decision, asked
-      # of the resolved directory so an alias and a path answer alike.
-      lane_check "$lane_dir"
-      # The harness-to-variable mapping is lib/lane-launch.sh's, the same one
-      # `lanes` hands a picked lane back through, so a harness added there is
-      # not left prefixing its launches with the other harness's variable.
-      LANE_ENV="$(lane_env_prefix "$HARNESS" "$lane_dir" "$LAUNCH_MODEL")"
       ;;
   esac
   # Refused here, before any worktree is created: resolve the lane
@@ -1160,7 +1109,7 @@ if [[ -n "$LANE" ]]; then
   # separator, and a lane whose claim nobody can count is a lane that stacks
   # sessions silently.
   if lane_value_error "$LANE_ENV"; then exit 1; fi
-  # A lane named outright never went through `pick`, so the usage question is
+  # A named lane without a preference pick has not been judged, so usage is
   # still open for it. `lanes pick --lane` answers it — the one judge, which
   # also validates the threshold this script only forwards. Without the answer
   # a --wake or --relaunch onto a named account whose window is full spends its
@@ -1202,7 +1151,7 @@ if [[ -n "$LANE" ]]; then
   # A --wait-slot launch asks again once its wait ends, the window having had
   # that long to move.
   [[ "$LANE_AUTO" == true || -z "$(lane_pick_harness "$LAUNCH_HARNESS" "$LAUNCH_MODEL")" ]] || LANE_GATE=true
-  [[ "$LANE_GATE" != true ]] || named_lane_judge || exit 1
+  [[ "$LANE_GATE" != true || -n "$PREFERENCE_ENTRY" ]] || named_lane_judge || exit 1
   ot_message lane-selected "lane=$LANE_ENV"
   pi_lane_root_apply || exit 1
 fi
@@ -1347,19 +1296,23 @@ lane_record_write() { # MODE ITEM WINDOW MAIL_ROOT SESSION_ID LAUNCHED_AT [STATU
   [[ "$TRACKER" != github ]] || record_repo="$repo"
   rec="$(jq -cn --arg item "$item" --arg tracker "$TRACKER" --arg repo "$record_repo" --arg harness "$LAUNCH_HARNESS" \
     --arg window "$window" --arg account "$account" --arg host "$host" \
-    --arg mail_root "$mail_root" --arg surface "$surface" --arg model "$LAUNCH_MODEL" \
+    --arg mail_root "$mail_root" --arg surface "$surface" --arg model "$LAUNCH_MODEL" --arg preference_entry "$PREFERENCE_ENTRY" \
     --arg session_id "$session_id" --arg launched_at "$launched_at" --arg status "$status" --argjson prepare "${LAUNCH_PREPARE:-null}" \
     --arg over_cap "$CAP_PASSED" --arg running_at "$running_at" --argjson allow_all "${LAUNCH_ALLOW_ALL:-null}" \
+    --argjson tier_record "$LAUNCH_TIER_RECORD" \
     '{item: $item, tracker: $tracker, repo: $repo, harness: $harness, window: $window, account: $account, host: $host, mail_root: $mail_root, surface: $surface, model: $model, session_id: $session_id, session_since: $launched_at, launched_at: $launched_at, running_at: $running_at, status: $status, over_cap: $over_cap}
-     | map_values(if . == "" then null else . end) + {allow_all: $allow_all} + (if $prepare == null then {} else {prepare: $prepare} end)')" || return 1
+     | map_values(if . == "" then null else . end) + {allow_all: $allow_all} + $tier_record
+       + (if $preference_entry == "" then {} else {preference_entry: $preference_entry} end)
+       + (if $prepare == null then {} else {prepare: $prepare} end)')" || return 1
   # update-report, so the refusal and the write are one locked step: a wake
   # that names no entry leaves the state as it was and reports so.
   report="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} update-report oversee \
     "$UNPARK_JQ"'(.lanes // []) as $l
-     | ($rec | if $mode == "wake" then {session_id, status} elif $mode == "relaunch" then del(.launched_at, .over_cap)
-       | if .status == "running" then . else del(.harness, .model, .account, .session_id) end else . end) as $patch
+     | ($rec | if $mode == "wake" then {session_id, status} elif $mode == "relaunch" then del(.launched_at, .over_cap, .tier, .tier_inputs)
+       | if .status == "running" then . else del(.harness, .model, .preference_entry, .account, .session_id) end else . end) as $patch
      | if any($l[]; .item == $rec.item)
-       then {state: (.lanes = ($l | map(if .item == $rec.item then (if $mode == "wake" then . else del(.prepare) | unpark($rec.launched_at) end) + $patch else . end))), report: "rewritten"}
+       then {state: (.lanes = ($l | map(if .item == $rec.item then (if $mode == "wake" then . else del(.prepare) | unpark($rec.launched_at)
+         | if $rec.status == "running" then del(.preference_entry) else . end end) + $patch else . end))), report: "rewritten"}
        elif $mode == "wake" then {state: ., report: "unrecorded"}
        else {state: (.lanes = $l + [$rec]), report: "appended"} end' --argjson rec "$rec" --arg mode "$mode")" || return 1
   [[ "$report" != '"unrecorded"' ]] || return 2
@@ -1420,13 +1373,8 @@ start_cmd() { # ITEM MAIL_ID REPO [SESSION_ID] [WAKE_DIR]
     # naming a placeholder reaches the harness as written. Spliced rather than
     # substituted: bash 5.2 reads `&` in a ${var//pat/rep} replacement as the
     # matched text.
-    # A Pi lane on a carrier without the mail wake arms the lane-mail watch,
-    # and its brief says so: ../references/watch-delivery.md § Lane mailbox monitor.
-    # The overseer's own Pi brief leaves that line out.
+
     local text rendered="" quoted brief="$BRIEF_TEXT"
-    if [[ "$HARNESS" == pi && "$PI_MAIL_WAKE" == absent && -n "$brief" ]]; then
-      brief+=$'\n\n'"As your first step, arm the mailbox monitor \`lane-mail watch --item $mail_id\` per watch-delivery.md § Lane mailbox monitor, re-arm it at each expiry, and run the \`lane-mail inbox\` command each of its announcements prints."
-    fi
     if ! text="$(cmd_template_text "$item" "$repo")" || ! quoted="$(lane_single_quote "$brief")"; then
       return 1
     fi
@@ -1450,9 +1398,9 @@ start_cmd() { # ITEM MAIL_ID REPO [SESSION_ID] [WAKE_DIR]
   # the launch directory and the lane starts on a different model, or none.
   # Trailing space only when flags are present, so an unflagged launch renders
   # the exact command a human would type rather than a double-spaced one.
-  # The harness's launch-only settings and its question-tool words lead, once,
-  # on every command built here and never inside a --cmd template, which
-  # returned above as the caller's whole command.
+  # The harness's launch-only settings and its question-tool words lead once.
+  # A --cmd template returned above with the caller's settings or the ones
+  # the preference builder supplied.
   local flags="" tok
   local -a flag_tokens=()
   # read -a splits on IFS without globbing; a bare `for tok in $LAUNCH_FLAGS`
@@ -1482,11 +1430,10 @@ start_cmd() { # ITEM MAIL_ID REPO [SESSION_ID] [WAKE_DIR]
     print=" -p"
   elif [[ "$RELAUNCH" == true ]]; then
     # The harnesses whose row in ../references/watch-delivery.md § Lane mailbox monitor
-    # names an Arm; that table is the rule, and a Pi lane has one only
-    # on a carrier without the mail wake.
+    # names an Arm; that table is the rule.
     local rearm=""
     case "$HARNESS" in
-      claude | pi) [[ "$HARNESS:$PI_MAIL_WAKE" == pi:present ]] || rearm=", then re-arm your mailbox monitor on .agents/skills/orch/scripts/lane-mail watch --item $mail_id through your harness background wake" ;;
+      claude) rearm=", then re-arm your mailbox monitor on .agents/skills/orch/scripts/lane-mail watch --item $mail_id through your harness background wake" ;;
       copilot) rearm=", then re-arm your mailbox monitor on .agents/skills/orch/scripts/lane-mail watch --once --item $mail_id as a background command" ;;
       *) rearm="" ;;
     esac
@@ -2443,8 +2390,7 @@ open_wake() { # DIR TITLE CMD
 # installed. Of the carrier only package.json, whose extensions list names the
 # lane mail wake, and extensions/vocab.ts, the file that puts context_window on
 # the hook payloads, are read. A file the host does not hold is one Pi does not
-# read. Returns 1 with its keyed line printed; otherwise prints `present`, or
-# `absent VERSION` for a carrier without the mail wake, on stdout.
+# read. Returns 1 with its keyed line printed on any refusal.
 host_pi_gate() ( # ITEM WT_ID PI_ROOT REMOTE_ROOT
   local pi_item="$1" pi_wt="$2" dir i rc root="${3:-.pi/agent}" carrier=@vanillagreen/pi-hooks
   local -a remote=("$root/settings.json" "$4/.pi/settings.json") packages=("$4/.pi/packages" "$root/packages")
@@ -2495,11 +2441,12 @@ host_pi_gate() ( # ITEM WT_ID PI_ROOT REMOTE_ROOT
   done
   lane_adapter_pi_carrier_sends "$dir/packages0" "$dir/packages1" \
     || { ot_message unsupported-for-oversee "harness=pi" "reason=no-window-read" >&2; return 1; }
-  if lane_adapter_pi_carrier_wakes "$dir/packages0" "$dir/packages1"; then
-    printf 'present\n'
-  else
-    printf 'absent %s\n' "$LANE_ADAPTER_PI_CARRIER_VERSION"
-  fi
+  local wakes=0
+  lane_adapter_pi_carrier_wakes "$dir/packages0" "$dir/packages1" || wakes=$?
+  # i still names the host path whose carrier was downloaded, never the
+  # temporary path the shared adapter read.
+  pi_mail_wake_gate "$wakes" "$LANE_ADAPTER_PI_CARRIER_VERSION" \
+    "${packages[i]}" "${packages[0]}" hosted
 )
 
 # How a relaunch starts its harness, one verdict in RELAUNCH_ROUTE, read by
@@ -2573,13 +2520,7 @@ launch_finish() {
     fi
   fi
   if [[ "$LANE_HOST" != local && "$FLEET" == true && "$WAKE" != true && "$HARNESS" == pi ]]; then
-    local pi_wake
-    pi_wake="$(host_pi_gate "$item" "$wt_id" "$pi_root" "$remote_path")" || return 1
-    if [[ "$pi_wake" == present ]]; then
-      pi_mail_wake_read 0 -
-    else
-      pi_mail_wake_read 1 "${pi_wake#absent }"
-    fi
+    host_pi_gate "$item" "$wt_id" "$pi_root" "$remote_path" || return 1
   fi
   session_file=""
   wake_args=()
@@ -2867,7 +2808,15 @@ fi
 # refusal printed.
 lane_rejudge() { # ITEM
   local next rc=0
-  if [[ "$LANE_AUTO" == true ]]; then
+  if [[ "$PREFERENCE_ACTIVE" == true ]]; then
+    preference_select || return 1
+    LANE_ENV="$PREFERENCE_LANE_ENV"
+    ! lane_value_error "$LANE_ENV" || return 1
+    ot_message lane-selected "lane=$LANE_ENV"
+    pi_lane_root_apply && copilot_fleet_gate || return 1
+    COPILOT_HOOKS_GATED=false
+    [[ "$FLEET" != true || "$LAUNCH_HARNESS" != copilot ]] || COPILOT_HOOKS_GATED=true
+  elif [[ "$LANE_AUTO" == true ]]; then
     next="$(pick_auto_lane)" || rc=$?
     [[ "$rc" -eq 0 ]] || { auto_pick_refusal "$rc" "item=$1" "launched=$launched"; return 1; }
     ! lane_value_error "$next" || return 1
@@ -2951,12 +2900,12 @@ for raw in "${ITEMS[@]}"; do
   # A claim an earlier item failed to write is a lane an auto re-pick, which
   # reads claims, cannot see, so it would not move off that account. That stops
   # the batch, before this item's re-pick.
-  if [[ "$CLAIM_WRITE_FAILED" == true && "$LANE_AUTO" == true ]]; then
+  if [[ "$CLAIM_WRITE_FAILED" == true && ( "$LANE_AUTO" == true || "$PREFERENCE_ACTIVE" == true ) ]]; then
     ot_message claim-unrecorded "item=$item" "launched=$launched" >&2
     failed=$((failed + 1))
     break
   fi
-  if [[ "$LANE_AUTO" == true && "$TERMINAL_MODE" == "tmux" && "$attempted" -gt 1 ]] && ! lane_rejudge "$item"; then
+  if [[ ( "$LANE_AUTO" == true || "$PREFERENCE_ACTIVE" == true ) && "$TERMINAL_MODE" == "tmux" && "$attempted" -gt 1 ]] && ! lane_rejudge "$item"; then
     failed=$((failed + 1))
     break
   fi
@@ -2971,7 +2920,7 @@ for raw in "${ITEMS[@]}"; do
   if [[ -n "$CMD_TEMPLATE" ]]; then
     # The classifier only prints, so a failed substitution is the shell's own
     # failure, which the shell has already reported.
-    if ! quote_refusal="$(cmd_template_quote_refusal "$(cmd_template_text "$item" "$repo")")"; then exit 1; fi
+    if ! quote_refusal="$(cmd_template_quote_refusal "$CMD_INPUT")"; then exit 1; fi
     [[ -z "$quote_refusal" ]] || { ot_message "$quote_refusal" "item=$item" >&2; exit 1; }
   fi
   # The worktree create is the ownership claim: exit 75 means another session
@@ -3101,9 +3050,15 @@ for raw in "${ITEMS[@]}"; do
     failed=$((failed + 1))
     continue
   fi
-  if [[ "$COPILOT_HOOKS_GATED" == true ]] && ! copilot_hooks_gate "$wt" "$item"; then
-    failed=$((failed + 1))
-    continue
+  if [[ "$COPILOT_HOOKS_GATED" == true ]]; then
+    copilot_home="$(copilot_launch_home)" || exit 1
+    if ! copilot_hooks_gate "$wt" "$copilot_home"; then
+      ot_message unsupported-for-oversee harness=copilot "reason=$COPILOT_HOOK_REASON" "item=$item" \
+        ${COPILOT_HOOK_FIELDS[@]+"${COPILOT_HOOK_FIELDS[@]}"} >&2
+      [[ -z "$COPILOT_HOOK_ERROR" ]] || printf '%s\n' "$COPILOT_HOOK_ERROR" >&2
+      failed=$((failed + 1))
+      continue
+    fi
   fi
   # A Pi wake enters the live session through pi-bridge. Any other wake starts
   # a second process on the session, so a working one is refused.

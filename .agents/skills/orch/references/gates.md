@@ -4,16 +4,26 @@ Cross-script routing behind the gate-mode summary and the `approval-wait` / `ci-
 
 ## Gate-mode routing
 
-Read the effective reviewer-gate mode ONLY through `approval-wait <PR#> --resolve-mode`, never re-derive it, and never auto-detect the mode from the requested-reviewer list. GitHub's approval requirement on the pull request's base decides it, read two ways: the resolver reads the base and the pull request's `reviewDecision` in one `gh pr view` call, then every ruleset rule GitHub applies to that branch through `rules/branches`, organization rulesets included. That rules read does not show classic branch protection; the `reviewDecision` does, since GitHub sets it only where the base requires a review. A non-zero exit is no mode: report it and stop rather than pick one. It prints:
+Bind `[REVIEW_BASE_CHECKOUT]` to a checkout of the target pull request's consumer base, never the catalog checkout or the pull request's updated tree. If that checkout is unavailable, stop. Read its effective mode only through `approval-wait <PR#> --resolve-mode --base-checkout [REVIEW_BASE_CHECKOUT]`. The caller's trusted `approval-wait` owns the mode and runs from that consumer directory. It reads committed `REVIEW_GATE_MODE` through its trusted review-gate settings reader. It never executes the base checkout's installed resolver. `off` disables requests and waits even beside a native approval requirement. Otherwise GitHub's approval requirement decides: the owner reads the base and the pull request's `reviewDecision` in one `gh pr view` call, then every ruleset rule GitHub applies to that branch through `rules/branches`, organization rulesets included. That rules read does not show classic branch protection; the `reviewDecision` does, since GitHub sets it only where the base requires a review. A non-zero exit is no mode: report it and stop rather than pick one. It prints:
 
 | `GATE_MODE` | Meaning | Route |
 |-------------|---------|-------|
-| `approval` | the base's `pull_request` rules require at least one approval, or the pull request's `reviewDecision` is non-empty | `approval-wait` |
-| `off` | the base's rulesets require no approval (no `pull_request` rule, or one requiring 0) and the pull request's `reviewDecision` is empty | skip the wait; record the gate not-applicable |
+| `approval` | consumer policy is `enforce`, and the base's `pull_request` rules require at least one approval or the pull request's `reviewDecision` is non-empty | `approval-wait` |
+| `off` | committed consumer policy is `off`, or the base's rulesets require no approval and the pull request's `reviewDecision` is empty | skip the wait; record the gate not-applicable |
 
 Under `off`, open review threads still stop the merge: submit-pr's gate 3 applies, and so do the readers [thread-read.md § What reads an open thread](thread-read.md#what-reads-an-open-thread) lists. Required CI checks, commit guards, exact-head checks and conflict refusal are untouched in both modes, and the merge path still refuses a `CHANGES_REQUESTED` review at its readiness check. In `approval` mode an unresolved thread holds the wait at `comments` even beside an approval, because orch's own merge gates refuse an open thread: submit-pr's gate 3 and merge-pr's thread read ([thread-read.md](thread-read.md)). A base rule refuses one too where it requires thread resolution.
 
-The reviewer-gate settings, `PR_REVIEW_ON_TIMEOUT` and `PR_REVIEW_WAIT_SECS`, live in `kendex.settings.toml` `[env]`; semantics and defaults are in `approval-wait --help`. The gate predicate, writer, and engine-side `REVIEW_GATE_*` keys belong to the review-gate skill (its SKILL.md and `.agents/skills/review-gate/references/settings.md`).
+The reviewer-gate settings, `PR_REVIEW_ON_TIMEOUT` and `PR_REVIEW_WAIT_SECS`, live in `kendex.settings.toml` `[env]`; semantics and defaults are in `approval-wait --help`.
+
+## Copilot requests
+
+Every first or repeated Copilot request uses the mode owner:
+
+```bash
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --request-review --base-checkout [REVIEW_BASE_CHECKOUT]
+```
+
+`off` ends the request path without a request or a wait. `approval` confirms that the request succeeded. A nonzero exit is no successful request: report it and stop. `approval-wait --help` owns the action contract.
 
 ## Which waiter answers which state
 
@@ -37,10 +47,10 @@ Work the chain in this order:
 1. Request the review by hand on the stacked PR. This is the remedy, not a workaround:
 
    ```bash
-   gh pr edit [PR_NUMBER] --add-reviewer @copilot
+   env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --request-review --base-checkout [REVIEW_BASE_CHECKOUT]
    ```
 
-   Then re-run the wait. It works on a base the ruleset does not target.
+   On `approval`, re-run the wait. The request works on a base the automatic-review ruleset does not target.
 
 2. Merge the bottom of the stack. GitHub retargets the next PR onto the new base, but a retarget is not a documented review trigger: request the review by hand as in step 1, or push a new head where the rule's `review_on_push` is on, then re-run the wait.
 3. Fallback, only when the manual request draws nothing: close the PR and open a fresh one against the default branch. Close-and-open, never reopen — reopening re-arms the reviewer only on a PR it has already reviewed once, and does nothing for one it never reviewed.
@@ -51,4 +61,4 @@ All three waiters share `scripts/lib/gh-auth.sh`, wrapping the GitHub skill's he
 
 ## Multi-PR watching
 
-The waiters above are single-PR blocking waits. For many PRs across a long horizon, the review-gate skill (optional dependency) ships `scripts/pr-watch.sh`, a needs-attention reducer — contract in `pr-watch.sh --help`, wrap-in-anything loop in review-gate's adoption guide. Orch consumes it through `oversee-watch` when the script is installed. Each pass reads GitHub's review state for every open PR, its unresolved threads, `reviewDecision`, auto-merge arm and merge-queue entry, and writes nothing. The fallback without it is per-PR `approval-wait`/`queue-wait`. `queue-wait` watches only the one PR it is given and only while it runs, so the fallback gives no standing view across PRs and no `awaiting-stale` report. A PR that no waiter watches warrants a manual read of `gh pr view [N] --json reviewDecision,autoMergeRequest` and its queue entry.
+The waiters above are single-PR blocking waits. For many PRs across a long horizon, the review-gate skill (optional dependency) ships `scripts/pr-watch.sh`, a needs-attention reducer — contract in `pr-watch.sh --help`. Orch consumes it through `oversee-watch` when the script is installed. Each pass reads GitHub's review state for every open PR, its unresolved threads, `reviewDecision`, auto-merge arm and merge-queue entry, and writes nothing. The fallback without it is per-PR `approval-wait`/`queue-wait`. `queue-wait` watches only the one PR it is given and only while it runs, so the fallback gives no standing view across PRs and no `awaiting-stale` report. A PR that no waiter watches warrants a manual read of `gh pr view [N] --json reviewDecision,autoMergeRequest` and its queue entry.

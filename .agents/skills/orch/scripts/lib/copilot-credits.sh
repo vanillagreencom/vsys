@@ -10,7 +10,7 @@
 # THE STORED LOGIN. Copilot CLI keeps its login list in <COPILOT_HOME>/config.json,
 # a state file it writes itself and whose layout no document names. The layout
 # assumed here, and nowhere else: the file is JSON after any leading `//`
-# comment lines, and its top-level `copilot_tokens` holds the account's token
+# comment lines, and its top-level `copilotTokens` holds the account's token
 # either as a string or as an object keyed `<host>:<login>` whose one
 # GitHub.com entry, a key opening `https://github.com:`, is the token: the
 # endpoint below is GitHub.com's, and a token another host issued, a GitHub
@@ -18,9 +18,21 @@
 # file, a key or a token that does not read that way is a keyed reason, never
 # a guess: `config-missing`, `config-unreadable`, `token-missing`,
 # `token-ambiguous` for more than one GitHub.com login, and `token-foreign-host`
-# where every login names another host. On a fleet host
+# where every login names another host. `copilotTokens` is the key Copilot CLI
+# 1.0.90 writes (measured); 1.0.88 wrote the same value under `copilot_tokens`,
+# read only where the current key is absent, and dropped once the fleet's
+# Copilot CLI floor is 1.0.90. On a fleet host
 # the value is a placeholder the host's proxy rewrites for api.github.com. The
 # token crosses to curl on stdin, never in argv.
+#
+# This read is the fallback for interfaces Copilot CLI documents and that
+# cannot serve here (1.0.90). Its login inputs, `copilot login` and the
+# COPILOT_GITHUB_TOKEN, GH_TOKEN and GITHUB_TOKEN variables (`copilot help
+# environment`), hand the CLI a token; none reads back the login an account
+# already stored. Its credit budget is shown only inside a running session,
+# in the footer, the `/statusline` quota option and `/usage` (`copilot help
+# billing`), and no command or SDK reports an account's pool from outside
+# one, while `lanes` measures accounts no session runs on.
 #
 # THE ENDPOINT is internal and its shape can change, so every field is checked
 # for its type. `quota_snapshots.premium_interactions` gives `entitlement`,
@@ -49,7 +61,7 @@ copilot_credits_token() { # HOME
   COPILOT_CREDITS_TOKEN="" COPILOT_CREDITS_REASON=""
   [ -f "$config" ] || { COPILOT_CREDITS_REASON=config-missing; return 1; }
   if ! answer="$(sed '/^[[:space:]]*\/\//d' "$config" 2>/dev/null | jq -r '
-      .copilot_tokens as $t
+      (.copilotTokens // .copilot_tokens) as $t
       | if ($t | type) == "string" then "token\t" + $t
         elif ($t | type) == "object" then
           ([$t | to_entries[] | select(.value | type == "string")]) as $all

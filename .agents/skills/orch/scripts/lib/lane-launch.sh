@@ -105,11 +105,13 @@ lane_pick_harness() { # HARNESS MODEL
 # for the root, and `row` its row for the root reads no pool, STATUS and
 # DETAIL that row's own words. A failed read is no refusal of this kind: a
 # retry can answer it. Printed by `lanes`, the one caller that knows READ,
-# under copilot-pool-unstated and under pick-lane-unmeasured for a Pi root.
+# under copilot-pool-unstated and under pick-lane-unmeasured. READ `cli` names
+# a Copilot CLI account, with STATUS and DETAIL from its current record.
 lane_copilot_pool_fix() { # HOST READ [DIR [STATUS [DETAIL]]]
   local root="${3:-any Pi root}" override
   override="state the override ORCH_LANE_COPILOT_POOL=${3:-<Pi root>}=<credits used>/<credits granted>"
   case "$2" in
+    cli) printf 'fix=no Copilot pool reading for %s: status=%s detail=%s; state ORCH_LANE_COPILOT_POOL=<dir>=<used>/<granted> for this Copilot home (only where the stored login does not read), or supply a provider accounts row with harness=copilot and monthly-pct\n' "$root" "${4:-none}" "${5:-none}" ;;
     local) printf 'fix=no Copilot pool reading for %s: ORCH_LANE_HOST=local asks no lane host, and ORCH_LANE_COPILOT_POOL states none; %s, or launch through a lane host whose accounts verb carries a harness=pi row for that root\n' "$root" "$override" ;;
     absent) printf 'fix=no Copilot pool reading for %s: lane host %s implements no accounts verb, so only ORCH_LANE_COPILOT_POOL can measure the pool, and it states none; %s\n' "$root" "$1" "$override" ;;
     answered) printf 'fix=no Copilot pool reading for %s: the accounts verb of lane host %s carried no harness=pi row with monthly-pct for it that ORCH_LANE_EXCLUDE and ORCH_LANE_RETIRE leave in, and ORCH_LANE_COPILOT_POOL states none; store the Copilot seat on that provider so its accounts row reads the pool (lanes host-accounts --harness pi --no-cache prints what it answers), take the root out of those two settings, or %s\n' "$root" "$1" "$override" ;;
@@ -784,9 +786,8 @@ launch_choice_phrase_present() { # PHRASE TEXT
 
 # The flags of a launch on HARNESS with that harness's own MODEL and EFFORT
 # words taken out, left in LAUNCH_CHOICE_KEPT, a provider word the model is
-# split across (launch_choice_provider_spelling) going with the model. With
-# `--permissions`, permission words are taken out too. What is left stays in
-# its original order.
+# split across (launch_choice_provider_spelling) going with the model. What is
+# left stays in its original order.
 #
 # The inverse of launch_choice_write over the same row, and the reason it
 # exists: a caller hands its flags on to a launch it did not write, and those
@@ -810,21 +811,16 @@ launch_choice_phrase_present() { # PHRASE TEXT
 # word, and keeping them is the corruption this exists to stop. The caller
 # refuses rather than guessing.
 LAUNCH_CHOICE_KEPT=()
-launch_choice_strip() { # HARNESS [--permissions] FLAG...
-  local row attach permission_specs word words tok drop i n strip_permissions=0
+launch_choice_strip() { # HARNESS FLAG...
+  local row attach word words tok drop i n
   local -a spellings=() rest=()
   LAUNCH_CHOICE_KEPT=()
   row="$(launch_choice_row "$1")"
   [[ -n "$row" ]] || return 1
-  IFS='|' read -r _ _ _ _ attach permission_specs _ _ <<<"$row"
+  IFS='|' read -r _ _ _ _ attach _ _ _ <<<"$row"
   words="$(launch_choice_model_spellings "$1") $(launch_choice_provider_spelling "$1")"
   read -r -a spellings <<<"$words $(launch_choice_effort_spellings "$1")"
-  [[ "$permission_specs" != - ]] || permission_specs=""
   shift
-  if [[ "${1:-}" == --permissions ]]; then
-    strip_permissions=1
-    shift
-  fi
   rest=("$@")
   n=${#rest[@]}
   i=0
@@ -855,10 +851,6 @@ launch_choice_strip() { # HARNESS [--permissions] FLAG...
           break
         fi
       done
-    fi
-    if (( drop == 0 && strip_permissions == 1 )); then
-      launch_choice_permission_match "$permission_specs" "$tok" "${rest[i+1]:-}"
-      drop=$LAUNCH_CHOICE_PERMISSION_SPAN
     fi
     if (( drop == 0 )); then
       LAUNCH_CHOICE_KEPT+=("$tok")

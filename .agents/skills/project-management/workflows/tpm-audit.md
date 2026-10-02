@@ -30,9 +30,11 @@ Analyze issues and projects for relations, labels, hierarchy, placement, duplica
 
 **Team mode reads as project mode.** Every rule, `Skip if`, and output field this workflow states for `project` applies unchanged to `team`, a rule added later included; only a rule naming `team` overrides one. The two differences are the input set above and `project: null` in the output ([audit-output.md](../schemas/audit-output.md)).
 
-**issues**: read the JSON file and extract `TRACKER` (plus `REPOSITORY` for github) from the delegation's `Tracker:` line or the file's `tracker` field — absent both, infer `github` from a `parent_issue` starting with `issue-`, else `linear` — along with `WORKTREE`, `PARENT_ISSUE`, `SOURCE`, `INPUT_ITEMS` from `items[]`, and the optional research-complete fields `blocked_issues`, `research_issue`, `research_ref`, `decision_ref`, and `hierarchy_contract` (binding — § 7.0).
+**issues**: read the JSON file and extract `TRACKER` (plus `REPOSITORY` for github) from the delegation's `Tracker:` line or the file's `tracker` field, following [audit-issues-input.md § Tracker](../schemas/audit-issues-input.md#tracker) for required context and inference. Extract `WORKTREE`, `PARENT_ISSUE`, `SOURCE`, `INPUT_ITEMS` from `items[]`, and the optional research-complete fields `blocked_issues`, `research_issue`, `research_ref`, `decision_ref`, and `hierarchy_contract` (binding — § 7.0).
 
 **Done and Canceled issues are historical records.** Never recommend a change to their labels, agent, priority, or state — whichever set they arrive in, they take no disposition. They participate in relation analysis and duplicate detection as § 1.5 comparison evidence, which is the only way a Canceled issue reaches the analysis at all. Only Backlog, Todo, In Progress, and In Review issues are candidates for fixes.
+
+For an existing-issue entry in `INPUT_ITEMS`, use its `identifier` as the requested ID in § 1.4. Analyze the resolved tracker issue, not a proposed creation; preserve its input `index` and `identifier` in the issue-mode output. Proposed entries use their supplied fields.
 
 ### 1.1.1 Resolve Team Scope
 
@@ -209,6 +211,7 @@ Skip Done and Canceled issues throughout; their metadata is historical.
 |-------|------|--------|
 | Priority | In `A blocks B` with both active, A's priority must not be lower-urgency than B's; a `critical-path` label demands P1. Proposed issues with no priority are skipped | `priority_misalignment[]`: `{id, current, should_be, reason}` |
 | Agent label | Compare the issue's `agent` category label against its content and resolved target path (`ls`, `rg -n "pub fn\|export function\|def "`). In `docs-only` mode infer ownership from the contract, project definition, and documented paths | `agent_mismatch[]`: `{id, current, should_be, reason, signals[]}` |
+| Routed agent | Apply [labels § Label drift check](../references/labels.md#label-drift-check) against the repository's effective install | Stop and return its installation evidence to the caller. An installation failure alone is not `agent_mismatch[]` |
 | Label co-occurrence | An issue missing a required taxonomy category whose title or description matches 2+ detection signals for it | `label_cooccurrence[]`: `{id, title, present, missing, reason}` |
 
 Validate every recommended replacement against the § 1.2 inventory first. If the desired label does not exist or is a parent/group label, state the failure in `reason` and recommend no mutation.

@@ -5,8 +5,8 @@ summary: "Work-item orchestration for Linear or GitHub issues: prepare, delegate
 license: MIT
 user-invocable: true
 dependencies:
-  required: [github, worktree, dev, project-management, decider, reviewer]
-  optional: [harness-ci, linear, review-gate, second-opinion]
+  required: [github, worktree, dev, project-management, decider, reviewer, review-gate]
+  optional: [harness-ci, linear, second-opinion]
 metadata:
   author: vanillagreen
   source: kendex
@@ -79,7 +79,6 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 | `pr-view-json` | PR view JSON; `status=no_pr` exits 0 and routes to PR creation, not an error |
 | `resolve-base-branch` | Print a worktree's base branch; exits 1 rather than guess |
 | `sync-base` | Resolve, fetch, and fast-forward the checkout that owns the base branch; prints the branch name |
-| `adopt-writer` | After a project refresh, re-install the review-gate writer template over an unedited workflow copy; every orch step that refreshes a project runs it. `--help` |
 | `container-close` | Serialize a Linear container close across linked checkouts; prints `closed` or `deferred`, with closed diagnostics on stderr |
 | `base-freshness` | Gate the review cycle on a current base, or on a clean merge onto a merge-queue base; unverifiable = stale |
 | `review-artifact-check` | Validate a reviewer's JSON artifact, the sole reviewer completion condition |
@@ -100,7 +99,7 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 | `open-terminal` | Terminal handoff; model, effort, and permission flags via `--launch-flags` |
 | `pane-write` | The one writer into a tmux pane: pastes a file or presses one key only into a proven pane running the expected process, and refuses an empty target, the caller's own pane, a missing or shared window and any other process |
 | `lane-close` | Stop one finished recorded lane's harness by signal, unless a hosted stop answers the item's worktree is gone, close its hosted sandbox (`--merged` for a merged, completed item) and tmux window, remove a finished item's state files on a full close, and update its fleet record. With `--park --pr N`, end a hosted lane's clean merge wait instead: stop the harness and the sandbox with its disk kept and record the lane `parked`, once the checks of [references/oversee-lanes.md § Parking a merge wait](references/oversee-lanes.md#parking-a-merge-wait) admit it |
-| `lanes` | Enumerate harness auth lanes; `pick` prints the launch env prefix for the least-loaded qualifying lane, exit 3 when none qualifies; `context` reports each live lane's context use; `state <item>` prints one lane's state from the pane, by the same judge `oversee-watch` and `open-terminal --wake` ask |
+| `lanes` | Enumerate harness auth lanes; `pick` prints the launch env prefix per `lanes --help`, exit 3 when none qualifies; `context` reports each live lane's context use; `state <item>` prints one lane's state from the pane, by the same judge `oversee-watch` and `open-terminal --wake` ask |
 | `lane-host` | Resolve or call the configured host provider; protocol: [schemas/lane-host.md](schemas/lane-host.md). Static SSH reference: `lane-host-ssh --help` |
 | `overseer-host` | Resolve or call the runtime the overseer's own session runs in, `ORCH_OVERSEER_HOST`; protocol: [schemas/overseer-host.md](schemas/overseer-host.md). tmux provider: `overseer-host-tmux --help` |
 | `oversee` | `launch` opens a fleet's first overseer on the `ORCH_OVERSEER_PREFERENCE` account, from outside tmux with `ORCH_TMUX_SESSION` set, or with `--predecessor` its successor, and refuses `overseer-live` while one runs otherwise; `register` records a hand-opened one. Both write the `overseer` record [schemas/workflow-state.md § Oversee state](schemas/workflow-state.md#oversee-state) states |
@@ -108,8 +107,8 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 | `lane-marker` | Write a lane's launch record, the marker under the common git directory and the lane's own mailbox; `open-terminal` and `lane-host create` both call it, and `lane-mail-check` hands a lane its mail only where it stands |
 | `reconcile-work-items` | Read-only tracker sweep (parked containers, items stale past `RECONCILE_STALE_HOURS`, Done items with unchecked boxes). Exit 1 on findings |
 | `oversee-watch` | Block until the fleet needs the overseer, then print one wake carrying every event the pass found. Also reads the overseer's own session, from its recorded exit status, its session rows and its account, with its pane as the named fallback: `overseer-mark` reports its own account mark reached, and `overseer-dead` and `overseer-walled` relaunch an overseer that ended or whose account is spent, in its window through `oversee-succeed`, where exit 3 says a successor holds it. `--repeat` is started through the orch job runner, `scripts/lib/job-unit.sh`, by [references/waiter-launch.md](references/waiter-launch.md) |
-| `oversee-cycle` | `record` writes a merged lane's `cycle` onto its fleet record: the seven phase stamps from `launched_at` and the github skill's `pr-timeline`, the class harness-ci's classifier gives the merge, its rounds, and its open-to-merge verdict against the class's target with the phase that dominated; it logs that line, and a `repeat-miss` line at a phase's third miss. `rollup` logs and prints the per-class count, median, p90, rounds and quality counts. Its `--help` holds the targets |
-| `oversee-succeed` | Replace an overseer when its context, headroom, projected wall time or qualifying-account trigger fires, by the rules `oversee-succeed --help` states, with a successor overseer window at the same index, and restart the fleet watch from the successor pane through the orch job runner; `context-unmeasured` and `context-below-mark` exit 0, and `no-lane-qualifies` refuses at exit 3 and names the trigger. `--check-marks` judges the triggers and prints what they found, launching nothing: the turn-end hook and `oversee-watch` both act on that one answer. `--print-launch-line` prints the command a successor of this session would run, for `oversee-watch` to record, `--dead-pane` sends a recorded line into the window of an overseer that already died, and `--walled-pane` walks the preference for one whose own account is spent, its pane still answering for its harness |
+| `oversee-cycle` | Record a merged lane's cycle or report per-class totals; fields, targets and repeated-miss rules: `--help` |
+| `oversee-succeed` | Replace an overseer and restart its fleet watch through the orch job runner. Triggers, refusals, check-only mode and launch/recovery flags: `--help`; the turn-end hook and `oversee-watch` use its `--check-marks` answer |
 
 Every script takes `--help` bar `pr-view-json` and `resolve-base-branch`, whose only argument is a path. Waiter and gate semantics, including the `3` exit on hard auth failure and reading the effective gate mode (`approval`, `off`) only through `approval-wait --resolve-mode`: [references/gates.md](references/gates.md). Artifact checks: [references/artifact-checks.md](references/artifact-checks.md). Schemas: `schemas/workflow-state.md` (state file), `schemas/dev-return.md` (dev completion artifact), `schemas/dev-round.md` (fix-round item set), [`../reviewer/schemas/review-finding.md`](../reviewer/schemas/review-finding.md) (review/QA findings).
 
@@ -137,7 +136,7 @@ Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.
 
 ## Skill Rules
 
-Delegation, agent lifecycle, round closure, coordination, and lane output: [references/skill-rules.md](references/skill-rules.md). A design, an item brief or research on another system is held to [code-quality § Over-Engineering](../code-quality/SKILL.md#over-engineering).
+Delegation, planner launch, lifecycle, round closure, coordination, and lane output: [skill-rules](references/skill-rules.md). A design, an item brief or research on another system is held to [code-quality § Over-Engineering](../code-quality/SKILL.md#over-engineering).
 
 ### Workflow Execution
 
@@ -161,7 +160,7 @@ Durable data lives in workflow state through the `workflow-state` CLI only (`set
 
 For workflow state, use the preceding location rule; other temporary session state, including handoffs, lane status, and reviews, defaults to the repository's `tmp/`, which kendex's managed ignore block covers in every consumer, while `docs/` holds tracked repository content and never receives a kendex ignore rule. A plan or research report is not session state: a plan or report with no caller-supplied path lives at `docs/plans/<slug>.md` (a research report at `docs/plans/<slug>-research.md`), tracked, never under `tmp/`; the full rule, with its roadmap exception, is `agents/planner.md` § Plan Artifacts.
 
-After compaction, resume from the step after the last completed one: read workflow state, re-send delegations by stored ID, respawn only an agent silent through one idle cycle. Never repeat completed actions.
+After compaction, resume from the step after the last completed one: read the item's workflow state, or for an overseer use [oversee.md § 1](workflows/oversee.md#1-resolve-the-launch-surface)'s bounded resume reads. Apply [Delegation](references/skill-rules.md#delegation) before re-sending by stored ID. Stall recovery follows [Round Closure](references/skill-rules.md#round-closure). Never repeat completed actions.
 
 ### Review Pipeline
 
