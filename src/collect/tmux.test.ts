@@ -10,6 +10,7 @@ import {
   paneLines,
   parsePanes,
   readPanes,
+  run,
   switchClientArgv,
   switchCommand,
   targetPanes,
@@ -286,4 +287,13 @@ test("the copied line quotes its target, and the arguments do not", () => {
     "-t",
     "my work:1.1",
   ]);
+});
+
+test("a stalled tmux call is killed within its deadline rather than hanging the sample", async () => {
+  const started = Date.now();
+  // A real child that never exits on its own, the shape a wedged tmux server
+  // takes. A short deadline proves the kill rather than waiting it out.
+  await expect(run(["sleep", "30"], 50)).rejects.toThrow("exited 143");
+  // Killed well short of the child's own 30 second sleep.
+  expect(Date.now() - started).toBeLessThan(2000);
 });

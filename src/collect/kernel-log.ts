@@ -56,6 +56,14 @@ export const kernelLogArgv = (cursor: string | null): string[] => [
  */
 export const kernelLogProbeArgv = [...base, "--dmesg", "--lines=1", "--grep=."];
 
+/**
+ * How long one journalctl search may run before the sample gives up on it. A
+ * search can scan a journal holding many boots, slower than a single D-Bus
+ * call, so this stands above `udisksTimeoutMs`; it still bounds the call so a
+ * stalled journalctl never holds every future sample waiting on it.
+ */
+export const kernelLogTimeoutMs = 10_000;
+
 /** journalctl exits 1 when a search matched nothing, and that is an answer. */
 const answered = (status: number, error: string): boolean =>
   status === 0 || (status === 1 && error.trim() === "");
@@ -94,8 +102,9 @@ export async function readKernelLog(
   cursor: string | null,
   /** Injected so a test can run a stand-in for journalctl. */
   argv: string[] = kernelLogArgv(cursor),
+  timeoutMs: number = kernelLogTimeoutMs,
 ): Promise<string> {
-  const { out, error, status } = await spawnText(argv);
+  const { out, error, status } = await spawnText(argv, timeoutMs);
   if (!answered(status, error))
     throw new Error(error.trim() || `${argv[0]} exited ${status}`);
   return out;

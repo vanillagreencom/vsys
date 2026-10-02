@@ -238,9 +238,20 @@ export const insideTmux = (env: Record<string, string | undefined>): boolean =>
 export const ownPane = (env: Record<string, string | undefined>): string =>
   env.TMUX_PANE ?? "";
 
+/**
+ * How long one tmux call may run before the sample gives up on it. tmux talks
+ * to its server over a local socket, normally answering in well under this
+ * bound; it still bounds the call so a wedged server never holds every
+ * future sample waiting on it.
+ */
+export const tmuxTimeoutMs = 3000;
+
 /** A tmux read: the arguments, and what the server said if it refused. */
-async function run(argv: string[]): Promise<string> {
-  const { out, error, status } = await spawnText(argv);
+export async function run(
+  argv: string[],
+  timeoutMs: number = tmuxTimeoutMs,
+): Promise<string> {
+  const { out, error, status } = await spawnText(argv, timeoutMs);
   if (status !== 0)
     throw new Error(error.trim() || `${argv[0]} exited ${status}`);
   return out;

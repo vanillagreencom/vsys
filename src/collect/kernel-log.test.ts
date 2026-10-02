@@ -266,3 +266,14 @@ test("storage carries the kernel log's failures, and an unread log as unread", a
   );
   expect(none.csumFailures).toBeNull();
 });
+
+test("a stalled journalctl is killed within its deadline rather than hanging the sample", async () => {
+  const started = Date.now();
+  // A real child that never exits on its own, the shape a wedged journalctl
+  // takes. A short deadline proves the kill rather than waiting it out.
+  await expect(readKernelLog(null, ["sleep", "30"], 50)).rejects.toThrow(
+    "exited 143",
+  );
+  // Killed well short of the child's own 30 second sleep.
+  expect(Date.now() - started).toBeLessThan(2000);
+});
