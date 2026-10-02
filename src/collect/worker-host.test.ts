@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { present } from "../test/present";
 import {
   WorkerHost,
   type WorkerPort,
@@ -73,7 +74,7 @@ function fakes(spec: Partial<WorkerSpec<Message, Reply, string>> = {}) {
 test("the first request starts the thread after its setup, and the thread serves every request after it", async () => {
   const { ports, host } = fakes({ setup: { kind: "setup" } });
   const first = host.request(ask, live());
-  const [port] = ports;
+  const port = present(ports[0], "started thread");
   expect(port.sent.map((m) => m.kind)).toEqual(["setup", "ask"]);
   // A waiting request holds the program; an answered one does not.
   expect(port.calls).toEqual(["ref"]);
@@ -91,7 +92,7 @@ test("the first request starts the thread after its setup, and the thread serves
 test("a reply to another request is not taken as this one's", async () => {
   const { ports, host } = fakes();
   const answer = host.request(ask, live());
-  const [port] = ports;
+  const port = present(ports[0], "started thread");
   let settled = false;
   void answer.then(() => {
     settled = true;
@@ -132,14 +133,14 @@ test("a failed answer, a thread error and an early exit each reject, and the nex
   ];
   for (const [name, act, message, ends] of cases) {
     const answer = host.request(ask, live());
-    const port = ports.at(-1) as FakePort;
+    const port = present(ports.at(-1), "latest thread");
     act(port);
     await expect(answer, name).rejects.toThrow(message);
     expect(port.calls.includes("terminate"), name).toBe(ends);
   }
   expect(ports.length).toBe(2);
   const next = host.request(ask, live());
-  const fresh = ports.at(-1) as FakePort;
+  const fresh = present(ports.at(-1), "fresh thread");
   expect(ports.length).toBe(3);
   expect(fresh.sent.map((m) => m.kind)).toEqual(["setup", "ask"]);
   fresh.answer("fresh");
@@ -151,13 +152,13 @@ test("cancelling and closing end the thread, and a late reply publishes nothing"
   const { ports, host } = fakes();
   const controller = new AbortController();
   const cancelled = host.request(ask, controller.signal);
-  const [first] = ports;
+  const first = present(ports[0], "first thread");
   controller.abort(new Error("collector closed"));
   await expect(cancelled).rejects.toThrow("collector closed");
   expect(first.calls).toContain("terminate");
 
   const waiting = host.request(ask, live());
-  const second = ports[1];
+  const second = present(ports[1], "replacement thread");
   let settled = false;
   void waiting.then(
     () => {
@@ -184,11 +185,11 @@ test("a late error or exit from a thread already replaced leaves the thread now 
   for (const [name, late] of rows) {
     const { ports, host } = fakes();
     const first = host.request(ask, live());
-    const [ended] = ports;
+    const ended = present(ports[0], "first thread");
     ended.fail("ended");
     await expect(first, name).rejects.toThrow("Test thread failed: ended");
     const second = host.request(ask, live());
-    const running = ports[1];
+    const running = present(ports[1], "replacement thread");
     late(ended);
     expect(running.calls, name).not.toContain("terminate");
     running.answer("running");
@@ -216,7 +217,7 @@ test("every ending releases the thread before ending it, so a blocked read never
     const { ports, host } = fakes();
     const cancel = new AbortController();
     const answer = host.request(ask, cancel.signal);
-    const [port] = ports;
+    const port = present(ports[0], "started thread");
     end(port, cancel, host);
     await expect(answer, name).rejects.toThrow();
     expect(port.calls, name).toEqual(["ref", "unref", "terminate"]);

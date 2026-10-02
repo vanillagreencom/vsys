@@ -57,13 +57,14 @@ test("a stored lane written before this build's fields loads with unknown values
   const now = Date.now();
   const first = new History(f.config);
   const s = emptySnapshot(now);
-  s.lanes = [laneSnapshot()];
+  const written = laneSnapshot();
+  s.lanes = [written];
   first.add(s);
   first.close();
   // What an older build wrote: a lane with none of the fields added since.
   const stored = {
     ...s,
-    lanes: [{ id: s.lanes[0].id, name: "lane-a", mainPid: 40, pids: [40] }],
+    lanes: [{ id: written.id, name: "lane-a", mainPid: 40, pids: [40] }],
   };
   const db = new Database(f.config.sqlitePath);
   db.query("UPDATE samples SET data = ? WHERE time = ?").run(

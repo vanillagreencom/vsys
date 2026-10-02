@@ -287,7 +287,7 @@ finally:
       ["q", "fault"],
       ["hangup", "fault"],
       ["term", "fault"],
-    ]) {
+    ] as const) {
       const child = Bun.spawn(
         [
           "python3",

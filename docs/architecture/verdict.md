@@ -1,6 +1,6 @@
 # Cause ladder and verdict
 
-Covers: src/model/verdict.ts src/model/verdict.test.ts src/model/export.ts
+Covers: src/model/verdict.ts src/model/verdict.test.ts src/model/export.ts src/collect/system.ts
 
 One detection produces one cause. The ladder ranks the causes worst first, its first verdict-worthy element speaks for the machine, and every element is one attention card. The meters read the same numbers, so a tile and a card cannot disagree.
 

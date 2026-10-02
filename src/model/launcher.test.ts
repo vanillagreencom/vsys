@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { escapedSnapshot, processSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import { launcherCopy, launcherTrail, pathPrefix } from "./launcher";
 import type { Proc } from "./types";
 
@@ -74,7 +75,7 @@ test("caps absent is a bare launch, and an unreadable environment neither", () =
   const other = escapedAgent({ CARGO_BUILD_JOBS: "16" });
   const renamed = { ...c, capMarkers: ["MAKEFLAGS"] };
   expect(
-    launcherCopy([other.agent], other.procs, renamed, base)[0].conclusion,
+    launcherCopy([other.agent], other.procs, renamed, base)[0]?.conclusion,
   ).toContain("none of MAKEFLAGS is set");
   // An environment vsys could not read is neither conclusion.
   const blind = escapedAgent({});
@@ -105,22 +106,22 @@ test("many processes in one scope are one sentence, and two scopes are two", () 
   const one = fleet(1, 6);
   const single = launcherCopy(one.escaped, one.procs, c, base);
   expect(single).toHaveLength(1);
-  expect(single[0].conclusion).toBe(
+  expect(single[0]?.conclusion).toBe(
     "Launched bare: none of RUST_TEST_THREADS, CARGO_BUILD_JOBS is set on " +
       "6 processes in the scope tmux-spawn-0.scope.",
   );
   // The chain is a clause of its own, for an example the reader can find,
   // and a repeated neighbour in it is written once.
-  expect(single[0].started).toBe(
+  expect(single[0]?.started).toBe(
     " Started from PID 1000: systemd in init.scope.",
   );
   const two = fleet(2, 5);
   const pair = launcherCopy(two.escaped, two.procs, c, base);
   expect(pair).toHaveLength(2);
-  expect(pair[0].conclusion).toContain(
+  expect(pair[0]?.conclusion).toContain(
     "5 processes in the scope tmux-spawn-0.scope",
   );
-  expect(pair[1].conclusion).toContain(
+  expect(pair[1]?.conclusion).toContain(
     "5 processes in the scope tmux-spawn-1.scope",
   );
   expect(launcherCopy([], two.procs, c, base)).toEqual([]);
@@ -142,10 +143,10 @@ test("a group is the processes agreeing on all four facts its sentence states", 
     base,
   );
   expect(markers).toHaveLength(2);
-  expect(markers[0].conclusion).toContain(
+  expect(markers[0]?.conclusion).toContain(
     "CARGO_BUILD_JOBS is set, but PID 1000 sits in",
   );
-  expect(markers[1].conclusion).toContain(
+  expect(markers[1]?.conclusion).toContain(
     "RUST_TEST_THREADS and CARGO_BUILD_JOBS are set, but PID 1000 sits in",
   );
   // One scope, one marker set, two PATH prefixes: two sentences again,
@@ -159,10 +160,10 @@ test("a group is the processes agreeing on all four facts its sentence states", 
     base,
   );
   expect(paths).toHaveLength(2);
-  expect(paths[0].conclusion).toContain("2 processes sit in");
-  expect(paths[0].conclusion).toContain("PATH starts with /a/bin");
-  expect(paths[1].conclusion).toContain("3 processes sit in");
-  expect(paths[1].conclusion).toContain("PATH starts with /b/bin");
+  expect(paths[0]?.conclusion).toContain("2 processes sit in");
+  expect(paths[0]?.conclusion).toContain("PATH starts with /a/bin");
+  expect(paths[1]?.conclusion).toContain("3 processes sit in");
+  expect(paths[1]?.conclusion).toContain("PATH starts with /b/bin");
   // A bare group is split by its prefix too, so its sentence writes it: two
   // wrappers in one cgroup otherwise read as one sentence twice.
   const wrapped = fleet(1, 2, { PATH: "/w/bin:/usr/bin" });
@@ -174,14 +175,14 @@ test("a group is the processes agreeing on all four facts its sentence states", 
     base,
   );
   expect(bare).toHaveLength(2);
-  expect(bare[0].conclusion).toContain(
+  expect(bare[0]?.conclusion).toContain(
     "is set on 2 processes in the scope tmux-spawn-0.scope. " +
       "PATH starts with /w/bin, which the login shell does not have.",
   );
-  expect(bare[1].conclusion).toEndWith("in the scope tmux-spawn-0.scope.");
+  expect(bare[1]?.conclusion).toEndWith("in the scope tmux-spawn-0.scope.");
   // Two slices holding a scope of one unit name are two places, and one PATH
   // entry holding a comma is one entry: the key keeps both apart.
-  const twin = fleet(1, 1).escaped[0];
+  const twin = present(fleet(1, 1).escaped[0], "the escaped process");
   const apart = (a: Proc, b: Proc) => launcherCopy([a, b], [a, b], c, base);
   const elsewhere = { ...twin, pid: 9, group: "/b.slice/tmux-spawn-0.scope" };
   expect(apart(twin, elsewhere)).toHaveLength(2);
@@ -196,12 +197,15 @@ test("the example chain comes from a member that still has its ancestors", () =>
   const { procs, escaped } = fleet(1, 3);
   // The first process of the group lost its parent between samples; a card
   // that took its example from that process alone would name no ancestors.
-  escaped[0].ppid = 99999;
-  const [sentence] = launcherCopy(escaped, procs, c, base);
+  present(escaped[0], "the first escaped process").ppid = 99999;
+  const sentence = present(
+    launcherCopy(escaped, procs, c, base)[0],
+    "the one sentence",
+  );
   expect(sentence.started).toBe(
     " Started from PID 1001: systemd in init.scope.",
   );
   // A group whose members all lost their parents says nothing about them.
   for (const proc of escaped) proc.ppid = 99999;
-  expect(launcherCopy(escaped, procs, c, base)[0].started).toBe("");
+  expect(launcherCopy(escaped, procs, c, base)[0]?.started).toBe("");
 });

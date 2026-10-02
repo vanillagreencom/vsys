@@ -1,6 +1,6 @@
 # Storage and devices
 
-Covers: src/collect/btrfs.ts src/collect/devices.ts src/collect/mounts.ts src/collect/scratch.ts src/collect/scratch-scan.ts src/collect/scratch-worker.ts src/collect/worker-file.ts src/collect/scratch.test.ts src/collect/scratch-scan.test.ts src/collect/scratch-worker.test.ts src/collect/btrfs.test.ts scripts/bench-scratch.ts scripts/sample-check.ts src/model/writes.ts src/ui/storage-screen.tsx
+Covers: src/collect/btrfs.ts src/collect/cgroups.ts src/collect/devices.ts src/collect/errors.ts src/collect/mounts.ts src/collect/scratch.ts src/collect/scratch-scan.ts src/collect/scratch-worker.ts src/collect/worker-file.ts src/collect/scratch.test.ts src/collect/scratch-scan.test.ts src/collect/scratch-worker.test.ts src/collect/btrfs.test.ts scripts/bench-scratch.ts scripts/sample-check.ts src/collect/scrub.ts src/model/integrity.ts src/model/integrity.test.ts src/model/writes.ts src/ui/integrity.ts src/ui/storage-screen.tsx
 
 Storage collection reads filesystem state, device counters, drive reports and scratch sizes. A counter the kernel or a drive did not report stays unknown rather than becoming a zero. Whether a filesystem's data is damaged, and the sources that answer it, are in [storage integrity](storage-integrity.md).
 

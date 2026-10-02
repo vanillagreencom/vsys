@@ -62,11 +62,11 @@ export function jobserver(
   jobserver: string | null;
 } {
   const flags = firstEnv(main, envNames) ?? "";
-  const jobs = flags.match(/(?:^|\s)-j\s*(\d+)/);
-  const auth = flags.match(/--jobserver-(?:auth|fds)=(\S+)/);
+  const jobs = flags.match(/(?:^|\s)-j\s*(\d+)/)?.[1];
+  const auth = flags.match(/--jobserver-(?:auth|fds)=(\S+)/)?.[1];
   return {
-    jobs: jobs ? Number(jobs[1]) : null,
-    jobserver: auth ? auth[1] : null,
+    jobs: jobs === undefined ? null : Number(jobs),
+    jobserver: auth ?? null,
   };
 }
 /**
@@ -94,28 +94,28 @@ export function distinctNames<T>(
   name: (item: T) => string,
   candidates: ((item: T) => string)[],
 ): string[] {
-  const names = items.map(name);
-  const groups = new Map<string, number[]>();
-  names.forEach((value, i) => {
-    const group = groups.get(value);
-    if (group) group.push(i);
-    else groups.set(value, [i]);
-  });
-  for (const group of groups.values()) {
+  const named = items.map((item) => ({ item, name: name(item) }));
+  const groups = new Map<string, typeof named>();
+  for (const entry of named) {
+    const group = groups.get(entry.name);
+    if (group) group.push(entry);
+    else groups.set(entry.name, [entry]);
+  }
+  for (const [shared, group] of groups) {
     if (group.length < 2) continue;
     const separates = candidates.find((pick) => {
-      const values = group.map((i) => pick(items[i]));
+      const values = group.map((entry) => pick(entry.item));
       return (
         values.every((value) => value) &&
         new Set(values).size === group.length &&
-        values.every((value, at) => !names[group[at]].includes(value))
+        values.every((value) => !shared.includes(value))
       );
     });
-    if (!separates)
-      throw new Error(`Names cannot be separated: ${names[group[0]]}`);
-    for (const i of group) names[i] = `${names[i]} ${separates(items[i])}`;
+    if (!separates) throw new Error(`Names cannot be separated: ${shared}`);
+    for (const entry of group)
+      entry.name = `${shared} ${separates(entry.item)}`;
   }
-  return names;
+  return named.map((entry) => entry.name);
 }
 /**
  * systemd escapes a byte it cannot carry in a unit name as `\xNN`. Only the
@@ -151,19 +151,26 @@ export function unitLabel(name: string): string {
   const fields = bare.split("-");
   const desktop = fields[0] === "app";
   if (desktop) fields.shift();
-  const trimmed = fields.length > 1 && generated(fields[fields.length - 1]);
+  const suffix = fields.length > 1 ? fields.at(-1) : undefined;
+  const trimmed = suffix !== undefined && generated(suffix);
   if (trimmed) fields.pop();
-  if (!fields.length) return bare;
+  const outer = fields[0];
+  const inner = fields.at(-1);
+  if (outer === undefined || inner === undefined) return bare;
   // The desktop form names the launcher before the program; anything else has
   // no such contract, so its outer field is kept as the context it gives.
   const kept = desktop
-    ? [fields[fields.length - 1]]
+    ? [inner]
     : trimmed && fields.length > 2
-      ? [fields[0], fields[fields.length - 1]]
+      ? [outer, inner]
       : fields;
   const words = kept.map(unescapeUnit);
-  const [only] = words;
-  if (words.length === 1 && only.split("-").length === 2) {
+  const [only, ...others] = words;
+  if (
+    only !== undefined &&
+    others.length === 0 &&
+    only.split("-").length === 2
+  ) {
     const [program, instance] = only.split("-");
     return `${program} (${instance})`;
   }

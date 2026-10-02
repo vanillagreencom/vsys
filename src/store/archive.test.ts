@@ -5,6 +5,7 @@ import {
   laneSnapshot,
   processSnapshot,
 } from "../test/fixture";
+import { present } from "../test/present";
 import { Archive } from "./archive";
 import type { LaneSample } from "./lane-series";
 
@@ -71,8 +72,11 @@ test("checkpoint replay preserves changes, process churn and arbitrary cursor or
   const archive = new Archive();
   const expected = new Map<number, ReturnType<typeof emptySnapshot>>();
   const s = emptySnapshot();
-  s.procs = [processSnapshot(), processSnapshot({ pid: 41 })];
-  s.groups = [groupSnapshot()];
+  // The churn below pops and pushes at the end, so the first process stays put.
+  const first = processSnapshot();
+  const group = groupSnapshot();
+  s.procs = [first, processSnapshot({ pid: 41 })];
+  s.groups = [group];
   s.lanes = [laneSnapshot()];
   for (let i = 0; i < 605; i++) {
     s.time = 1000 + i * 1000;
@@ -82,21 +86,21 @@ test("checkpoint replay preserves changes, process churn and arbitrary cursor or
       p.ticks += 5;
     }
     if (i === 100) {
-      s.procs[0].cwd = "/work/中文";
-      s.procs[0].command = ["claude", "", "a\nb"];
-      s.procs[0].env.TMPDIR = "/tmp/work";
+      first.cwd = "/work/中文";
+      first.command = ["claude", "", "a\nb"];
+      first.env.TMPDIR = "/tmp/work";
     }
     if (i === 200) s.procs.pop();
     if (i === 301) {
       s.procs.push(
         processSnapshot({ pid: 42, start: 200, cpuPercent: Number.MIN_VALUE }),
       );
-      delete s.procs[0].env.TMPDIR;
+      delete first.env.TMPDIR;
     }
     if (i === 500) {
       s.lanes = [];
-      s.groups[0].max = 0;
-      s.procs[0].cpuPercent = 1e300;
+      group.max = 0;
+      first.cpuPercent = 1e300;
     }
     archive.add(s.time, JSON.stringify(s));
     if ([0, 99, 100, 200, 299, 300, 301, 500, 604].includes(i))
@@ -140,6 +144,61 @@ test("duplicate times and a checkpoint past the budget fail visibly", () => {
       open.add(next.time, JSON.stringify(next));
     }
   }).toThrow("A history checkpoint exceeds the memory budget");
+});
+/**
+ * A checkpoint built straight from its stored shape, skipping `encode()` so a
+ * case can hand `decode()` an archived table it would never produce itself:
+ * what a truncated write or a schema mismatch between archive versions would
+ * leave on disk instead.
+ */
+function plant(times: number[], open: string[]): Archive {
+  const archive = new Archive();
+  // biome-ignore lint/complexity/useLiteralKeys: writes a private field to plant a malformed checkpoint
+  archive["chunks"] = [
+    { times, segments: [], sealedBytes: 0, open, openLength: 0, length: 0 },
+  ];
+  return archive;
+}
+
+test("decode rejects a truncated or malformed archived table", () => {
+  const emptyTable = { length: 0, columns: {}, missing: {} };
+
+  // A column array shorter than the table's length, with no `missing` entry
+  // recorded for the row it does not cover.
+  const shortColumn = plant(
+    [1000],
+    [
+      JSON.stringify({
+        procs: { length: 2, columns: { pid: [1] }, missing: {} },
+        groups: emptyTable,
+        lanes: emptyTable,
+      }),
+    ],
+  );
+  expect(() => shortColumn.at(1000)).toThrow(
+    "Archived column procs.pid has no row 1",
+  );
+
+  // A `columns` entry holding anything but an array.
+  const nonArrayColumn = plant(
+    [1000],
+    [
+      JSON.stringify({
+        procs: { length: 1, columns: { pid: "oops" }, missing: {} },
+        groups: emptyTable,
+        lanes: emptyTable,
+      }),
+    ],
+  );
+  expect(() => nonArrayColumn.at(1000)).toThrow(
+    "Invalid archived column: procs.pid",
+  );
+
+  // A line index past every sealed and open line the checkpoint holds.
+  const missingLine = plant([1000, 2000], ["0"]);
+  expect(() => missingLine.at(2000)).toThrow(
+    "Archive checkpoint has no line 1",
+  );
 });
 test("an append compresses only the lines that append added", () => {
   const archive = new Archive();
@@ -209,7 +268,7 @@ test("replay and lane charts read a sealed line at the line it is", () => {
   const series = warm.laneWindows([id], 0, 380000).get(id);
   expect(series).toHaveLength(380);
   expect(series).toEqual(cold.laneWindows([id], 0, 380000).get(id));
-  expect(series?.[299].cpu).toBe(299);
+  expect(series?.[299]?.cpu).toBe(299);
 });
 /** Forty lanes, which is the Agents list on a machine running that many agents. */
 const many = Array.from({ length: 40 }, (_, n) => `agents.slice/${n}.scope`);
@@ -259,7 +318,7 @@ test("one read of many lanes inflates each sealed segment once, whatever their n
   for (const [n, id] of many.entries()) {
     const lane = series.get(id);
     expect(lane).toHaveLength(400);
-    expect([lane?.[0].cpu, lane?.[299].cpu, lane?.[399].cpu]).toEqual([
+    expect([lane?.[0]?.cpu, lane?.[299]?.cpu, lane?.[399]?.cpu]).toEqual([
       n,
       299 + n,
       399 + n,
@@ -269,7 +328,7 @@ test("one read of many lanes inflates each sealed segment once, whatever their n
   // so what is held is the checkpoints the window overlaps and no more.
   expect(checkpoints(archive).length).toBeGreaterThan(1);
   const window = archive.laneWindows(many, 301000, 400000);
-  expect(window.get(many[0])).toHaveLength(100);
+  expect(window.get(present(many[0], "the first lane"))).toHaveLength(100);
   // biome-ignore lint/complexity/useLiteralKeys: reads a private field
   expect([...archive["projections"].keys()]).toEqual(
     checkpoints(archive).slice(1),
@@ -277,7 +336,8 @@ test("one read of many lanes inflates each sealed segment once, whatever their n
 });
 test("a lane that ends leaves the lane projections", () => {
   const archive = new Archive();
-  const [kept, ended] = many;
+  const kept = present(many[0], "the first lane");
+  const ended = present(many[1], "the second lane");
   for (let i = 0; i < 10; i++) {
     const s = lanesAt(i, [kept, ended]);
     archive.add(s.time, JSON.stringify(s));

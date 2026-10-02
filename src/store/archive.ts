@@ -10,7 +10,7 @@ type Change =
   | { kind: "array"; length: number; entries: [number, Change][] }
   | { kind: "object"; entries: [string, Change][]; removed: string[] };
 
-function object(value: Json): value is ObjectValue {
+function object(value: Json | undefined): value is ObjectValue {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -52,7 +52,13 @@ function decode(encoded: Json): Snapshot {
       typeof table.length !== "number"
     )
       throw new Error(`Invalid archived table: ${key}`);
-    const columns = Object.entries(table.columns);
+    const columns = Object.entries(table.columns).map(
+      ([field, values]): [string, Json[]] => {
+        if (!Array.isArray(values))
+          throw new Error(`Invalid archived column: ${key}.${field}`);
+        return [field, values];
+      },
+    );
     const missing = new Map(
       Object.entries(table.missing).map(([field, indices]) => [
         field,
@@ -61,9 +67,13 @@ function decode(encoded: Json): Snapshot {
     );
     value[key] = Array.from({ length: table.length }, (_, i) =>
       Object.fromEntries(
-        columns.flatMap(([field, values]) =>
-          missing.get(field)?.has(i) ? [] : [[field, (values as Json[])[i]]],
-        ),
+        columns.flatMap(([field, values]) => {
+          if (missing.get(field)?.has(i)) return [];
+          const cell = values[i];
+          if (cell === undefined)
+            throw new Error(`Archived column ${key}.${field} has no row ${i}`);
+          return [[field, cell]];
+        }),
       ),
     );
   }
@@ -108,8 +118,8 @@ function difference(before: Json | undefined, after: Json): Change | undefined {
       }
     }
     const entries: [number, Change][] = [];
-    for (let i = 0; i < after.length; i++) {
-      const change = difference(before[i], after[i]);
+    for (const [i, value] of after.entries()) {
+      const change = difference(before[i], value);
       if (change) entries.push([i, change]);
     }
     return entries.length || before.length !== after.length
@@ -226,6 +236,13 @@ const openLimit = 1024 * 1024;
 
 const decoder = new TextDecoder();
 
+/** A checkpoint is made with its base line, so it always has a first time. */
+function chunkStart(chunk: Chunk): number {
+  const [first] = chunk.times;
+  if (first === undefined) throw new Error("Archive checkpoint has no sample");
+  return first;
+}
+
 function chunkBytes(chunk: Chunk): number {
   // An open line is text, so it is charged at the two bytes a UTF-16 code
   // unit costs, not at the bytes it would take once compressed.
@@ -276,7 +293,15 @@ class Reader {
     return this.chunk.segments.length === this.segments;
   }
   line(index: number): string {
-    if (index >= this.sealed) return this.chunk.open[index - this.sealed];
+    const line =
+      index >= this.sealed
+        ? this.chunk.open[index - this.sealed]
+        : this.sealedLine(index);
+    if (line === undefined)
+      throw new Error(`Archive checkpoint has no line ${index}`);
+    return line;
+  }
+  private sealedLine(index: number): string | undefined {
     if (index < this.first || index >= this.first + this.lines.length) {
       let start = 0;
       let at = 0;
@@ -285,9 +310,11 @@ class Reader {
         start += segment.count;
         at++;
       }
+      const segment = this.chunk.segments[at];
+      if (!segment) return undefined;
       this.first = start;
       this.lines = decoder
-        .decode(Bun.gunzipSync(new Uint8Array(this.chunk.segments[at].data)))
+        .decode(Bun.gunzipSync(new Uint8Array(segment.data)))
         .split("\n");
     }
     return this.lines[index - this.first];
@@ -395,10 +422,7 @@ export class Archive {
     }
   }
   prune(cutoff: number): void {
-    while (
-      this.chunks.length &&
-      (this.chunks[0].times.at(-1) ?? cutoff) < cutoff
-    ) {
+    while ((this.chunks[0]?.times.at(-1) ?? cutoff) < cutoff) {
       const old = this.chunks.shift();
       if (!old) throw new Error("Archive has no expired checkpoint");
       this.bytes -= chunkBytes(old);
@@ -408,7 +432,7 @@ export class Archive {
     }
   }
   at(time: number): Snapshot | null {
-    const chunk = this.chunks.findLast((c) => c.times[0] <= time);
+    const chunk = this.chunks.findLast((c) => chunkStart(c) <= time);
     if (!chunk) return null;
     const index = chunk.times.findLastIndex((t) => t <= time);
     // The cursor carries the snapshot it last rebuilt and the reader that
@@ -468,7 +492,7 @@ export class Archive {
     );
     if (!wanted.length) return result;
     for (const chunk of this.chunks) {
-      if (chunk.times[0] > end || (chunk.times.at(-1) ?? start) < start)
+      if (chunkStart(chunk) > end || (chunk.times.at(-1) ?? start) < start)
         continue;
       const { lanes } = this.project(chunk, wanted);
       for (const [id, out] of result) {
@@ -508,11 +532,12 @@ export class Archive {
     const first = !saved || fresh.length ? 0 : saved.index + 1;
     const reader = new Reader(chunk);
     try {
-      let table: Json =
+      let table: Json | undefined =
         first === 0 || !saved
           ? (JSON.parse(reader.line(0)) as ObjectValue).lanes
           : saved.table;
-      for (let i = first; i <= last; i++) {
+      for (const [i, time] of chunk.times.entries()) {
+        if (i < first) continue;
         if (i > 0) {
           const change = JSON.parse(reader.line(i)) as Change | null;
           if (change?.kind === "replace") {
@@ -536,8 +561,10 @@ export class Archive {
             if (!position.has(id)) position.set(id, n);
           });
         for (const [id, samples] of i <= reached ? added : every)
-          samples.push(laneSample(columns, position.get(id), chunk.times[i]));
+          samples.push(laneSample(columns, position.get(id), time));
       }
+      if (!object(table))
+        throw new Error("A lane projection walked no archived line");
       const projection = { index: last, table, lanes: new Map(every) };
       for (const id of fresh) this.projected.add(id);
       this.projections.set(chunk, projection);

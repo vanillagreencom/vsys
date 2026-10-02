@@ -117,8 +117,8 @@ export function bypassedLanes(s: Snapshot): string[] {
   const names = new Set<string>();
   for (const p of s.procs) {
     if (!p.build || p.envAvailable === false) continue;
-    if (!Object.hasOwn(p.env, "RUSTC_WRAPPER")) continue;
-    if (p.env.RUSTC_WRAPPER.trim() !== "") continue;
+    const wrapper = p.env.RUSTC_WRAPPER;
+    if (wrapper === undefined || wrapper.trim() !== "") continue;
     names.add(owners.get(p.pid)?.name || basename(p.group));
   }
   return [...names].sort();

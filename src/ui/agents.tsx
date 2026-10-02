@@ -501,8 +501,14 @@ export function Agents({
       return true;
     }
     if (name === c.keys.open) {
-      if (chooser) toggleColumn(columns[column]);
-      else if (lanes[selected]) onOpen(lanes[selected].id);
+      if (chooser) {
+        const toggled = columns[column];
+        if (toggled === undefined)
+          throw new Error(
+            `Column chooser row ${column} is outside the ${columns.length} columns`,
+          );
+        toggleColumn(toggled);
+      } else if (lanes[selected]) onOpen(lanes[selected].id);
       return true;
     }
     if (name === c.keys.search) {
@@ -529,13 +535,15 @@ export function Agents({
     // is held no heading is marked, so none names an order the rows ignore.
     if (name === c.keys.sort) {
       hold.release();
-      save({
-        ...c,
-        sort: columns[
-          (columns.indexOf(c.sort as (typeof columns)[number]) + 1) %
-            columns.length
-        ],
-      });
+      const at =
+        (columns.indexOf(c.sort as (typeof columns)[number]) + 1) %
+        columns.length;
+      const sort = columns[at];
+      if (sort === undefined)
+        throw new Error(
+          `Sort column ${at} is outside the ${columns.length} columns`,
+        );
+      save({ ...c, sort });
       return true;
     }
     if (name === c.keys.reverse) {
@@ -635,10 +643,11 @@ export function Agents({
   const showTrend = showing.has("Trend");
   const readings = readingsWith(showing, paneWidth);
   const spare = roomWith(showing, paneWidth);
-  const measured: Column[] = [
-    { label: "Agent", width: Math.max(12, Math.min(36, spare)) },
-    ...readings,
-  ];
+  const nameColumn: Column = {
+    label: "Agent",
+    width: Math.max(12, Math.min(36, spare)),
+  };
+  const measured: Column[] = [nameColumn, ...readings];
   // A lane's badge is a sentence, so State takes every column the rest leave.
   const laneColumns: Column[] = [
     ...measured,
@@ -650,7 +659,6 @@ export function Agents({
       ),
     },
   ];
-  const [nameColumn] = laneColumns;
   // The table's own columns, read by its heading and by every row in it. The
   // process id is not a configurable column: it is fixed after the name, or
   // first where the name is not shown, and has no sort to click.

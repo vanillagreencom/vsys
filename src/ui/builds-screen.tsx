@@ -110,11 +110,9 @@ export function Builds({
   // narrows the linkers column instead, and drops it where even its heading
   // would leave the name short.
   const nameFloor = 12;
-  const core: Column[] = [
-    pidColumn,
-    { label: "", width: 10 },
-    { label: "Building", width: 14, align: "right" as const },
-  ];
+  const barColumn: Column = { label: "", width: 10 };
+  const countColumn: Column = { label: "Building", width: 14, align: "right" };
+  const core: Column[] = [pidColumn, barColumn, countColumn];
   const linkersRoom =
     width - 5 - columnsWidth(core) - columnGap.length - nameFloor;
   const linkerColumn: Column | undefined =
@@ -122,14 +120,11 @@ export function Builds({
       ? { label: "Linkers", width: Math.min(30, linkersRoom) }
       : undefined;
   const fixed = linkerColumn ? [...core, linkerColumn] : core;
-  const buildColumns: Column[] = [
-    {
-      label: "Lane",
-      width: Math.max(nameFloor, Math.min(40, width - 5 - columnsWidth(fixed))),
-    },
-    ...fixed,
-  ];
-  const [nameColumn, , barColumn, countColumn] = buildColumns;
+  const nameColumn: Column = {
+    label: "Lane",
+    width: Math.max(nameFloor, Math.min(40, width - 5 - columnsWidth(fixed))),
+  };
+  const buildColumns: Column[] = [nameColumn, ...fixed];
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       setSelected((i) => nextDown(rows.length, i));

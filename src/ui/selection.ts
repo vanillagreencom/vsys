@@ -95,7 +95,7 @@ export function useSelection(
 } {
   const ids = distinctIds(keys);
   const selected = resolvedRow(ids, selection);
-  const id = selected < 0 ? null : ids[selected];
+  const id = ids[selected] ?? null;
   // What `choose` and `move` read, kept current so that neither ever changes:
   // a screen's effect that moves the selection lists it as a dependency, and
   // a new one on every render would run that effect on every render. `at` is

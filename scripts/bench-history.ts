@@ -100,6 +100,11 @@ function advance(i: number): void {
   snapshot.time = 1000 + i * c.refreshMs;
   snapshot.system.uptime = 1000 + i;
   const child = snapshot.procs[1];
+  const scope = snapshot.groups[1];
+  if (!child || !scope)
+    throw new Error(
+      `bench-history: fixture-incomplete procs=${snapshot.procs.length} groups=${snapshot.groups.length}\nEach sample moves the first scope's second process, which the fixture builds.`,
+    );
   child.pid = 2100 + i;
   child.start = snapshot.system.uptime * 100;
   child.ticks = 0;
@@ -110,7 +115,7 @@ function advance(i: number): void {
   ];
   child.build = "test";
   child.threads = 65;
-  snapshot.groups[1].pids[1] = child.pid;
+  scope.pids[1] = child.pid;
   for (const [n, p] of snapshot.procs.entries()) {
     p.age = snapshot.system.uptime - p.start / 100;
     p.ticks += 1 + ((n * 7 + i * 13) % 11);
@@ -137,7 +142,7 @@ function rank(values: number[], fraction: number): number {
  * contended. A separate process, because the workload vsys competes with is
  * other programs, not its own threads.
  */
-function diskLoad(path: string, until: number): never {
+function diskLoad(path: string | undefined, until: number): never {
   if (!path || !Number.isFinite(until))
     throw new Error(
       `bench-history: disk-load-arguments value=${process.argv.slice(3).join(" ")}\nA disk loader needs a file and a deadline.`,

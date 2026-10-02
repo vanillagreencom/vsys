@@ -45,7 +45,7 @@ const field = (raw: string, name: string): string | null => {
   const found = [
     ...raw.matchAll(new RegExp(`^\\s*${name}:[ \\t]+(.*\\S)`, "gm")),
   ];
-  return found.length === 1 ? found[0][1] : null;
+  return found.length === 1 ? (found[0]?.[1] ?? null) : null;
 };
 /**
  * How many times the report states a labelled field. None is a field the
@@ -119,12 +119,11 @@ export function parseScrub(raw: string): ScrubReport {
     // is not a path, and a line at column zero ends the group. The "s" flag
     // lets "." reach a line terminator code point (U+2028, U+2029) the
     // reporter wrote inside a name, rather than dropping the line.
-    const path = line.match(/^ {2}(.*)$/s);
-    if (!path || !current) {
+    const name = line.match(/^ {2}(.*)$/s)?.[1];
+    if (name === undefined || !current) {
       if (!/^\s/.test(line)) current = null;
       continue;
     }
-    const name = path[1];
     // The reporter could not name every file under this address. It is
     // damage all the same, and no path under it is listed. Any name already
     // collected for this address is dropped too, whichever line marks it: an
