@@ -10,7 +10,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - `src/config/`: the settings contract, validation, loading and saving, key bindings, and agent-tool classification data loading.
 - `src/ui/`: the shell, the seven screens and every word and formatted number on them.
 - `src/runtime.ts`: the sampling scheduler and the settings-change path. `src/main.ts` is the entry point and `src/effect.ts` performs a confirmed lane action.
-- `src/test/`: the temporary-file fixture and the mounted-app harness the suites share, and the warning gate `bunfig.toml` preloads into every suite.
+- `src/test/`: the temporary-file fixture, the mounted-app harness and the busctl stand-in for udisks2 that the suites share, and the warning gate `bunfig.toml` preloads into every suite.
 - `scripts/`: the CI runner, the standalone binary check, the sample check for a built program, the three benchmarks with the percentile two of them share, and the root-side scrub and drive reporters under `scripts/scrub-reporter/` and `scripts/smart-reporter/`, which vsys never runs.
 - `data/`: shipped JSON data that both the dashboard and the warden read.
 - `warden/`: the optional Python agent warden, its launcher scripts, its systemd user-unit templates and its unit tests.

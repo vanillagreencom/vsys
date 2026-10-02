@@ -1,6 +1,6 @@
 # Storage and devices
 
-Covers: src/collect/btrfs.ts src/collect/devices.ts src/collect/mounts.ts src/collect/scratch.ts src/collect/scratch-scan.ts src/collect/scratch-worker.ts src/collect/worker-file.ts src/collect/scratch.test.ts src/collect/scratch-scan.test.ts src/collect/scratch-worker.test.ts src/collect/btrfs.test.ts scripts/bench-scratch.ts scripts/sample-check.ts src/model/writes.ts src/ui/storage-screen.tsx scripts/smart-reporter/ scripts/smart_reporter_test.py
+Covers: src/collect/btrfs.ts src/collect/devices.ts src/collect/mounts.ts src/collect/scratch.ts src/collect/scratch-scan.ts src/collect/scratch-worker.ts src/collect/worker-file.ts src/collect/scratch.test.ts src/collect/scratch-scan.test.ts src/collect/scratch-worker.test.ts src/collect/btrfs.test.ts scripts/bench-scratch.ts scripts/sample-check.ts src/model/writes.ts src/ui/storage-screen.tsx scripts/smart-reporter/ scripts/smart_reporter_test.py src/collect/udisks.ts src/collect/udisks.test.ts src/test/udisks.ts
 
 Storage collection reads filesystem state, device counters, drive reports and scratch sizes. A counter the kernel or a drive did not report stays unknown rather than becoming a zero. Whether a filesystem's data is damaged, and the sources that answer it, are in [storage integrity](storage-integrity.md).
 
@@ -17,12 +17,27 @@ Storage collection reads filesystem state, device counters, drive reports and sc
 - The shipped `scratchDirs` list is one workstation's layout. A list equal to it is the default, whether `config.toml` omits it or pins it unchanged, and a root on it that does not exist is not configured on this machine: it has no row and no source error. Only the root's own lookup finding nothing excuses a default: one that exists and cannot be read, or whose walk meets a directory that left or cannot be read, still fails. Any other list is the reader's, and a missing root on it stays a failing row.
 - An agent's directory inside a listed root is measured as part of that root and adds no row. One that does not exist leaves no row and no error. One another user owns is shared, as the system's `/tmp` is, so it is not measured and leaves no row.
 - Agent directories are measured whatever the settings list holds, an empty list included. A reading holds only the roots its sample names: a stopped agent's rows and error leave at once, and a new agent's directory waits for the next due scan.
-- vsys runs no privileged code. Drive lifetime writes come from `smartctl -A` reports a privileged timer leaves in the configured directory, one file per `/sys/block` device name with at most one extension, and a file matching no device is ignored. `scripts/smart-reporter/` ships that timer for a reader to install, as [the drive reporter](#the-drive-reporter) sets out.
+- vsys runs no privileged code. Drive lifetime writes come from `smartctl -A` reports a privileged timer leaves in the configured directory, one file per `/sys/block` device name with at most one extension, and a file matching no device is ignored. `scripts/smart-reporter/` ships that timer for a reader to install, as [the drive reporter](#the-drive-reporter) sets out. Where that directory cannot be listed, udisks2 stands in, as [udisks2](#udisks2-without-root) sets out. Each drive's total carries the source it came from, and a total no source gave carries none.
 - Btrfs subvolumes of one filesystem mount separately and each reports the whole device's free space and error counters, so Storage groups them under their device and a mount row carries only what differs between mounts.
 
 ## The drive reporter
 
 `scripts/smart-reporter/` holds the root side of drive lifetime writes: `vsys-smart-report`, a oneshot service and an hourly timer that run it, and the tmpfiles line that creates `/run/smartctl` at boot, the default `smartDir`. The reporter writes `smartctl -i -A` output to `<name>.txt` for each `/sys/block` device with a drive behind it, under a hidden name renamed whole, and skips the loop, memory, optical and floppy devices vsys draws no row for. A nonzero smartctl status still leaves the report, because smartctl sets status bits for a failing drive. `install` puts the four files in place under names of vsys's own, starts the timer, and installs nothing when smartctl is missing or a download fails. vsys never runs it: Storage and Settings offer the line to copy.
+
+## udisks2 without root
+
+udisks2 runs as root and answers the logged-in user over the system bus. vsys asks it through `busctl --system --json=short`, which prints its documented D-Bus replies as JSON, and only where no drive report directory can be listed, so a machine whose timer leaves reports never asks it. One read is held for ten minutes, because udisks refreshes the readings from the drive on its own schedule.
+
+What it gives without root, from its D-Bus interface reference:
+
+| Drive | Method | Reading vsys takes | Unit |
+| --- | --- | --- | --- |
+| NVMe | `NVMe.Controller.SmartGetAttributes`, udisks 2.10 and later | `total_data_written` | bytes, derived from data units written |
+| ATA | `Drive.Ata.SmartGetAttributes` | attribute 241, `total-lbas-written` | its interpreted value, taken only where the unit is sectors |
+
+Neither method is documented as asking polkit for authorization. The ATA method gives each attribute's interpreted value and unit and never the raw counter, so a drive whose attribute 241 arrives in any other unit keeps its total unknown rather than scaled by a guess. Both methods also carry temperature, power-on time and health; vsys takes only the write total, which is all Storage shows. The replies and the claim that no authorization is asked were taken from the interface reference, not from a running udisks: the machine this was written on has no system bus.
+
+busctl's refusal is classified from its own words in `classifyBusctl()`: no bus, or no udisks on it, is absent; anything else is a refusal. A drive whose own call fails keeps its row, unknown, and when every drive failed the reading is incomplete. Storage shows what udisks answered beside the missing capability.
 
 ## Invariants
 
@@ -47,3 +62,6 @@ Storage collection reads filesystem state, device counters, drive reports and sc
 19. The shipped list stays the three roots the author's workstation measures with no settings file, and the scan receives them as defaults; any other list is the reader's. `src/collect/scratch.test.ts` pins the list, the origin of each root, and the agent directories a listed root already holds.
 20. A running agent's temporary directory is measured as a row found on that agent, and a process that is not an agent names no root. `src/collect/collector.test.ts` samples the first; `src/collect/scratch.test.ts` checks the second, that a directory inside another agent's adds no root whatever order the processes come in, and that a stopped agent's cached row is dropped; `src/ui/storage-screen.test.tsx` reads each origin from the selected root's detail at 80 columns.
 21. The reporter writes one whole report per drive that `smartWrites()` parses to the drive's model and lifetime writes, leaves no hidden file, and writes none for a device with no drive or one vsys draws no row for. The installer installs under vsys's own names and starts the timer, and installs nothing when smartctl is missing or a download fails. The service, the tmpfiles line and the default `smartDir` name one directory. `scripts/smart_reporter_test.py` runs both against stub system commands.
+22. A machine whose timer leaves reports in the default directory reads its lifetime writes from them, marked `smartctl`, and never asks udisks, whatever udisks would answer. `src/collect/collector.test.ts` pins it in "a machine whose timer leaves reports reads them, and never asks udisks".
+23. With no report directory, udisks answers in its place, marked `udisks`, or the sample says why it could not, and neither adds a source error. A report wins over udisks for the same drive, and a total udisks did not give stays unknown with no source. `src/collect/collector.test.ts` samples both; `src/collect/devices.test.ts` checks the precedence.
+24. udisks' NVMe total is taken as bytes and its ATA attribute 241 only in sectors; a partition is no row; busctl's refusals are classified from its own words, this host's included; and a read is held for its hold time on an injected clock. `src/collect/udisks.test.ts` checks each against `src/test/udisks.ts`, a stand-in for busctl.

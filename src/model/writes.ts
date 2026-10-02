@@ -1,11 +1,13 @@
 import type { Config } from "../config/config";
-import type { Snapshot } from "./types";
+import type { LifetimeSource, Snapshot } from "./types";
 import { sliceSum } from "./verdict";
 
 /** One row of written bytes. A null total is unknown, never a measured zero. */
 export interface WriteTotal {
   name: string;
   written: number | null;
+  /** Where a lifetime total came from; since-boot totals carry none. */
+  source?: LifetimeSource | null;
 }
 export interface WriteTotals {
   slices: WriteTotal[];
@@ -43,6 +45,7 @@ export function writeTotals(s: Snapshot, c: Config): WriteTotals {
       .map((d) => ({
         name: d.model ? `${d.name} (${d.model})` : d.name,
         written: d.lifetimeWritten,
+        source: d.source,
       }))
       .sort(order),
     devicesAvailable: perDevice !== null,

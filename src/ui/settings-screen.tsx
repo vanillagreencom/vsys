@@ -19,7 +19,6 @@ import {
   capabilityReason,
   editorKind,
   reporterOffer,
-  reporterSentence,
   settingDisplay,
   settingGroups,
   settingHelp,
@@ -133,7 +132,6 @@ export function Settings({
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const items = settingItems(c, s.capabilities, query);
-  const install = reporterOffer(s.capabilities, c);
   // Two columns above the stated width: forty-four settings down one column
   // leave two thirds of a wide terminal empty.
   const twoColumns = width >= wideWidth && !editing && !picking;
@@ -328,8 +326,8 @@ export function Settings({
       return true;
     }
     // Only a capability row offering a line to supply what is missing has
-    // anything to copy: the scrub reports row while it offers the reporter's
-    // install, or a row `capabilityOffer` answers. Every other row copies
+    // anything to copy: the scrub or drive reports row while it offers its
+    // reporter's install, or a row `capabilityOffer` answers. Every other row copies
     // nothing, which the shell says rather than copying something the reader
     // did not select.
     if (name === c.keys.copy) {
@@ -338,7 +336,9 @@ export function Settings({
           ? s.capabilities.find((x) => x.id === current.id)
           : undefined;
       onCopy(
-        cap?.id === "scrub" ? install : cap && capabilityOffer(cap, c)?.command,
+        cap &&
+          (reporterOffer(s.capabilities, c, cap.id)?.command ??
+            capabilityOffer(cap, c)?.command),
       );
       return true;
     }
@@ -572,6 +572,7 @@ export function Settings({
           // cost is cut to the row with its mark and drawn whole in the
           // detail.
           const offer = capabilityOffer(cap, c);
+          const install = reporterOffer(s.capabilities, c, cap.id);
           const opened = (chosen: boolean) =>
             chosen && (!cap.available || openCap === cap.id);
           return settingRow(
@@ -632,10 +633,10 @@ export function Settings({
                         </Line>
                       </>
                     )}
-                    {cap.id === "scrub" && install && (
+                    {install && (
                       <CommandOffer
-                        sentence={reporterSentence}
-                        command={install}
+                        sentence={install.sentence}
+                        command={install.command}
                         hint={`${keyLabel(c.keys.copy)} copies the install command.`}
                       />
                     )}

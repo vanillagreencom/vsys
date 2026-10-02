@@ -1,6 +1,6 @@
 import { type Config, choices, defaults } from "../config/config";
 import { shellLine } from "../model/shell";
-import type { Capability, CapabilityId } from "../model/types";
+import type { Capability, CapabilityId, LifetimeSource } from "../model/types";
 import { age, bytes } from "./format";
 import { homeRegions, storageRegions } from "./regions";
 
@@ -417,24 +417,53 @@ export function capabilityReason(cap: Capability): string {
  */
 export const reporterInstall =
   "curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash";
-/** Why the install is offered, and what else a check needs. */
-export const reporterSentence =
-  "No scrub reporter is installed, so no check reports to vsys: the check and the file names it finds need root, which vsys never has. A check also needs a btrfs-scrub timer for each filesystem.";
 /**
- * The install line, where it would fill the gap: the report directory does
- * not exist, and it is the one the shipped reporter writes to. A reader who
- * pointed `scrubDir` elsewhere runs a reporter of their own, and a directory
- * that exists but cannot be read is not fixed by installing anything.
+ * The command that installs the drive reporter vsys ships: the root helper
+ * that writes one smartctl report per drive, its service and hourly timer,
+ * and the line that creates its directory at boot.
+ */
+export const driveReporterInstall =
+  "curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/smart-reporter/install | sudo bash";
+/** The reporters vsys ships, by the capability each supplies. */
+const reporters = {
+  scrub: {
+    dir: "scrubDir",
+    command: reporterInstall,
+    sentence:
+      "No scrub reporter is installed, so no check reports to vsys: the check and the file names it finds need root, which vsys never has. A check also needs a btrfs-scrub timer for each filesystem.",
+  },
+  smart: {
+    dir: "smartDir",
+    command: driveReporterInstall,
+    sentence:
+      "No drive reporter is installed, so no smartctl report reaches vsys: smartctl needs root, which vsys never has. The reporter needs smartctl, from smartmontools.",
+  },
+} as const;
+/**
+ * The install line and why it is offered, where it would fill the gap: the
+ * report directory does not exist, and it is the one the shipped reporter
+ * writes to. A reader who pointed the directory elsewhere runs a reporter of
+ * their own, and a directory that exists but cannot be read is not fixed by
+ * installing anything.
  */
 export function reporterOffer(
   capabilities: Capability[],
-  c: Pick<Config, "scrubDir">,
-): string | undefined {
-  const scrub = capabilities.find((cap) => cap.id === "scrub");
-  return scrub?.failure === "absent" && c.scrubDir === defaults().scrubDir
-    ? reporterInstall
+  c: Pick<Config, "scrubDir" | "smartDir">,
+  id: CapabilityId,
+): { sentence: string; command: string } | undefined {
+  if (id !== "scrub" && id !== "smart") return undefined;
+  const reporter = reporters[id];
+  const cap = capabilities.find((x) => x.id === id);
+  return cap?.failure === "absent" &&
+    c[reporter.dir] === defaults()[reporter.dir]
+    ? { sentence: reporter.sentence, command: reporter.command }
     : undefined;
 }
+/** The source a drive's lifetime writes came from, as Storage names it. */
+export const lifetimeSourceText: Record<LifetimeSource, string> = {
+  smartctl: "smartctl",
+  udisks: "udisks2",
+};
 /** One Settings line per capability, naming the reason and the source that decided it. */
 export function capabilityLine(cap: Capability): string {
   if (cap.available) return `${capabilityLabels[cap.id]}: available`;
