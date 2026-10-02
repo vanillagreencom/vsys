@@ -315,6 +315,27 @@ function copy(
         v.blocks === null || v.blocks === undefined
           ? ""
           : `The last check could not repair ${count(v.blocks, "block")}. `;
+      // [singular, plural] for next's one branch; `p()` below picks between
+      // them once rather than at each branch.
+      const nextStep: [string, string] = !filesKnown
+        ? [
+            "Open Storage and run a check on that filesystem to find out which files hold the damage.",
+            "Open Storage and run a check on each of these filesystems to find out which files hold the damage.",
+          ]
+        : !files && !unnamed
+          ? [
+              "Open Storage and check the filesystem again; an address with no file clears on the next check.",
+              "Open Storage and check each of these filesystems again; an address with no file clears on the next check.",
+            ]
+          : !files
+            ? [
+                "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot.",
+                "Open Storage and read the check report for each of these filesystems; restore what the unnamed blocks held from a backup or a snapshot.",
+              ]
+            : [
+                "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
+                "Open Storage and open each of these filesystems, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
+              ];
       return {
         word: "Danger",
         title: files
@@ -331,22 +352,10 @@ function copy(
         ],
         // The step never says to remove a listed file: the report cannot say
         // which file under a block is damaged, so a step that names one may
-        // name a sound file.
-        next: !filesKnown
-          ? paths === 1
-            ? "Open Storage and run a check on that filesystem to find out which files hold the damage."
-            : "Open Storage and run a check on each of these filesystems to find out which files hold the damage."
-          : !files && !unnamed
-            ? paths === 1
-              ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
-              : "Open Storage and check each of these filesystems again; an address with no file clears on the next check."
-            : !files
-              ? paths === 1
-                ? "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot."
-                : "Open Storage and read the check report for each of these filesystems; restore what the unnamed blocks held from a backup or a snapshot."
-              : paths === 1
-                ? "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown."
-                : "Open Storage and open each of these filesystems, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
+        // name a sound file. The wording picks its branch once and lets `p`
+        // own the one singular/plural decision, rather than repeating the
+        // `paths === 1` check at each branch.
+        next: p(paths, ...nextStep),
         view: "Storage",
         target: cause.at ?? first,
       };
