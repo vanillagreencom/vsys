@@ -136,25 +136,36 @@ fi
 # An address that fails any of these lists no name at all.
 #
 #
-# A resolver answer that no extent holds the address is never free space. On
-# some kernels the logged address is the start of the 64 KiB block the scrub
-# could not repair, rounded down within its block group, so it can fall in a
-# gap before the block's first extent while a file later in the block holds
-# the damage. Nothing in the address tells such a start from a sector, so
-# every such answer is damage this report cannot name.
+# On some kernels the logged address is the start of the 64 KiB block the
+# scrub could not repair, rounded down within its block group, not the
+# damaged 4 KiB sector (33ce0aa4c576, in v7.3-rc2 and backported to 7.2.7,
+# logs the sector itself, and a report does not say which kernel wrote it).
+# Resolving only that one address can miss the damaged file when it sits at
+# a later sector, so each of the block's 16 sectors is resolved on its own,
+# and every file any of them names is listed. A resolver answer that no
+# extent holds a sector is never free space on its own: only a block where
+# none of its 16 sectors holds an extent reads as unresolved rather than
+# damage this report cannot name.
+sector_bytes=4096
+sectors_per_block=16
 no_extent() {
-	echo "  (not resolved: no extent holds this address, and the damage can sit later in its block)"
+	echo "  (not resolved: no extent holds this address or any other 4 KiB sector of its 64 KiB block)"
 }
-resolve() {
+# One exact logical address: one 4 KiB sector. Prints each name the sector's
+# extent is reachable under, one per line, and exits 0. Exits 1 and prints
+# nothing when no extent holds this sector, which is not on its own a
+# resolution failure: ordinary free space sits inside a damaged block too.
+# Exits 2 and prints one reason when resolution failed for a real cause, so
+# the caller can still report it when no sector in the block resolved.
+resolve_sector() {
 	local address=$1 refs names line inode root
 	local -A held=()
 	if ! refs=$(btrfs inspect-internal logical-resolve -P -o "$address" "$mnt" 2>&1); then
 		if [[ $refs == *"logical ino ioctl: No such file or directory"* ]]; then
-			no_extent "$address"
-		else
-			echo "  (not resolved: ${refs//$'\n'/; })"
+			return 1
 		fi
-		return
+		echo "${refs//$'\n'/; }"
+		return 2
 	fi
 	while read -r line; do
 		if [[ $line =~ ^inode\ ([0-9]+)\ offset\ [0-9]+\ root\ ([0-9]+)$ ]]; then
@@ -162,38 +173,37 @@ resolve() {
 		fi
 	done <<<"$refs"
 	if ((${#held[@]} == 0)); then
-		no_extent "$address"
-		return
+		return 1
 	fi
 	if ! names=$(btrfs inspect-internal logical-resolve -o "$address" "$mnt" 2>"$work/error" | sort -u) ||
 		[[ -s $work/error ]]; then
 		# btrfs reports a failure to name one inode on stderr and still exits
 		# 0 when a later inode resolved.
-		echo "  (not resolved: $(tr '\n' ' ' <"$work/error"))"
-		return
+		echo "$(tr '\n' ' ' <"$work/error")"
+		return 2
 	fi
 	if [[ -z $names ]]; then
-		echo "  (not resolved: btrfs printed no name for a damaged inode)"
-		return
+		echo "btrfs printed no name for a damaged inode"
+		return 2
 	fi
 	local listed=()
 	local -A named=()
 	while IFS= read -r line; do
 		if [[ $line == *"could not be accessed"* ]]; then
-			echo "  (not resolved: $line)"
-			return
+			echo "$line"
+			return 2
 		fi
 		if [[ $line =~ ^[[:space:]] || $line =~ [[:space:]]$ || $line =~ [[:cntrl:]] ]]; then
-			echo "  (not resolved: a name holds whitespace at an end or a control character, which this report cannot carry exactly)"
-			return
+			echo "a name holds whitespace at an end or a control character, which this report cannot carry exactly"
+			return 2
 		fi
 		# The containing directory answers for the subvolume: rootid opens a
 		# regular file for writing, which a read-only snapshot refuses.
 		if [[ $line != /* ]] || ! inode=$(stat -c %i -- "$line" 2>/dev/null) ||
 			! root=$(btrfs inspect-internal rootid "${line%/*}/" 2>/dev/null) ||
 			[[ -z ${held[$inode/$root]:-} ]]; then
-			echo "  (not resolved: a name btrfs printed is not a name of a damaged inode)"
-			return
+			echo "a name btrfs printed is not a name of a damaged inode"
+			return 2
 		fi
 		named[$inode/$root]=1
 		listed+=("$line")
@@ -201,11 +211,56 @@ resolve() {
 	local key
 	for key in "${!held[@]}"; do
 		if [[ -z ${named[$key]:-} ]]; then
-			echo "  (not resolved: inode ${key%/*} in subvolume ${key#*/} has no name)"
-			return
+			echo "inode ${key%/*} in subvolume ${key#*/} has no name"
+			return 2
 		fi
 	done
-	printf '  %s\n' "${listed[@]}"
+	printf '%s\n' "${listed[@]}"
+}
+# The 64 KiB block the kernel logged this address as the start of. Btrfs
+# rounds that address down within the block's own block group before
+# logging it, and a block group need not itself sit on a 64 KiB boundary
+# from byte zero, so this reporter floors to no grid of its own: the given
+# address is scanned as the block's first sector, exactly as btrfs placed
+# it. A fixed kernel logging the exact damaged sector, rather than the block
+# start, can in principle put a later sector's scan past this block into the
+# next one; nothing this reporter can read tells one block group's end from
+# another's start, so that gap stays open rather than being closed by a
+# grid this filesystem may not share. Every one of the block's 16 sectors
+# from here is resolved, and the union of every name any of them gives is
+# listed. A real resolution failure at one sector is never silently dropped:
+# it still marks the whole block not resolved, even beside names a
+# different sector proved, because this report cannot say every file in the
+# block was found once one sector could not be read.
+resolve() {
+	local address=$1 sector reason rc failure="" failed=0
+	local -A names=()
+	for ((sector = 0; sector < sectors_per_block; sector++)); do
+		if reason=$(resolve_sector "$((address + sector * sector_bytes))"); then
+			rc=0
+		else
+			rc=$?
+		fi
+		if ((rc == 0)); then
+			while IFS= read -r line; do
+				[[ -n $line ]] && names[$line]=1
+			done <<<"$reason"
+		elif ((rc == 2)) && ((!failed)); then
+			# A failure is tracked by this flag, never by whether $reason
+			# itself is non-empty: a real failure with no diagnostic text
+			# must still mark the block not resolved.
+			failed=1
+			failure=${reason:-no diagnostic text}
+		fi
+	done
+	if ((${#names[@]})); then
+		printf '%s\n' "${!names[@]}" | sort | sed 's/^/  /'
+	fi
+	if ((failed)); then
+		echo "  (not resolved: $failure)"
+	elif ((${#names[@]} == 0)); then
+		no_extent "$address"
+	fi
 }
 
 max_addresses=${BTRFS_SCRUB_MAX_ADDRESSES:-64}
@@ -215,7 +270,7 @@ max_addresses=${BTRFS_SCRUB_MAX_ADDRESSES:-64}
 		echo "Damaged files: no line in the kernel log for this run named an address."
 	else
 		echo "Damaged files: ${#addresses[@]} damaged block addresses from the kernel log."
-		echo "On some kernels each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector: a path listed under it may be sound, and the damaged file may not be listed."
+		echo "On some kernels each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector, so each of the block's 4 KiB sectors is resolved on its own: more than one file can share a block, and a listed file may be sound."
 		echo "Paths are resolved as the scrub ends; a block freed and reused later resolves to an unrelated file."
 		for address in "${addresses[@]:0:$max_addresses}"; do
 			echo "logical $address:"

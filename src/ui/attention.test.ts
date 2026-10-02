@@ -1073,8 +1073,8 @@ test("a storage card never tells the reader to remove a listed file", () => {
   );
   expect(card?.title).toContain("2 possibly damaged files");
   expect(said(card)).toContain("a listed file may be sound");
-  expect(said(card)).toContain("the damaged file may not be listed");
-  expect(card?.next).toContain("the files listed there may not include it");
+  expect(said(card)).toContain("more than one file can share a block");
+  expect(card?.next).toContain("may not be among the names shown");
   // No step tells the reader to judge a file by reading it: a refused read
   // is not damage, and a cached one is not soundness.
   expect(`${said(card)} ${card?.next}`).not.toMatch(/\bread\b/i);

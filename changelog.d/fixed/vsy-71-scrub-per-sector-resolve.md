@@ -1,0 +1,1 @@
+- The scrub reporter now checks every 4 KiB sector of a damaged 64 KiB block, not just its start, and still flags an unresolved block even with no diagnostic text.

@@ -331,7 +331,7 @@ function copy(
             ? "Open Storage and check the filesystem again; an address with no file clears on the next check."
             : !files
               ? "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot."
-              : "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; the files listed there may not include it.",
+              : "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
         view: "Storage",
         target: cause.at ?? first,
       };

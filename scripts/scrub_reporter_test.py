@@ -53,13 +53,43 @@ NAMED = 953118621696
 # by printing no inode. On some kernels a logged block start can sit in a gap
 # before the block's first extent, so neither answer is free space.
 NO_EXTENT = 1597612883968
-EMPTY = 1597612888064
-UNMOUNTED = 1597612883969
-SPLIT = 1597612883970
-SPACED = 1597612883971
-UNNAMED = 1597612883972
-STDERR = 1597612883973
+# The second sector (offset 4096) of NO_EXTENT's own floored block: resolving
+# it exercises the "ioctl succeeds but holds no inode" no-extent path beside
+# NO_EXTENT's own "ioctl fails" path, within the one block both now floor to.
+EMPTY = NO_EXTENT + 4096
+# Each of these is the start of its own 64 KiB block, not an address a few
+# bytes from NO_EXTENT: once the scan floors to a block and sweeps only its
+# own 16 sectors, an address that close would floor into NO_EXTENT's block
+# and never reach the fixture below that gives it its own distinct failure.
+UNMOUNTED = NO_EXTENT + 65536 * 6
+SPLIT = NO_EXTENT + 65536 * 7
+SPACED = NO_EXTENT + 65536 * 8
+UNNAMED = NO_EXTENT + 65536 * 9
+STDERR = NO_EXTENT + 65536 * 10
 OTHER_FS = 5555
+# The kernel logs this block's start, which has no extent; the file the scrub
+# actually damaged sits five 4 KiB sectors later in the same 64 KiB block.
+LATE_SECTOR = NO_EXTENT + 65536 * 2
+# This block's start fails resolution for a real reason (btrfs warns on
+# stderr); a different sector of the same block resolves cleanly.
+MIXED_SECTOR = NO_EXTENT + 65536 * 3
+# The file the scrub damaged sits only at the block's very last 4 KiB
+# sector (offset 15 * 4096), proving the full 16-sector sweep runs to its end.
+LAST_SECTOR = NO_EXTENT + 65536 * 4
+# Btrfs's own reproduction: a block group that does not start on a 64 KiB
+# boundary from byte zero. The kernel logs this block's start exactly as
+# btrfs placed it, not on any absolute grid, and the file sits at the
+# block's last sector. Flooring the address to the nearest absolute 64 KiB
+# multiple, rather than scanning from the address as given, computes the
+# wrong window and misses this file.
+BLOCK_GROUP_START = 69632
+BLOCK_GROUP_LAST_SECTOR = BLOCK_GROUP_START + 15 * 4096
+# This block's first sector fails resolution for a real reason, but btrfs
+# gives no diagnostic text at all (an empty stderr, e.g. a nested-subvolume
+# path-buffer error): the failure must still mark the block not resolved,
+# never read as harmless because its reason string happened to be empty. A
+# different sector of the same block resolves cleanly.
+EMPTY_DIAGNOSTIC = NO_EXTENT + 65536 * 11
 
 
 def fixup(device: str, address: int) -> str:
@@ -135,6 +165,23 @@ class ReporterTest(unittest.TestCase):
         # A second damaged inode with no name btrfs printed.
         unnamed = fs / "target" / "unlinked"
         unnamed.write_text("damaged")
+        # A file reachable only from a sector later in its 64 KiB block, and
+        # one reachable from a sector in a block whose first sector fails.
+        late = fs / "target" / "late"
+        late.write_text("damaged")
+        safe = fs / "target" / "safe"
+        safe.write_text("damaged")
+        # A file reachable only from the block's very last sector, and one
+        # reachable only from the last sector of a block group that does not
+        # start on an absolute 64 KiB boundary.
+        last = fs / "target" / "last"
+        last.write_text("damaged")
+        unaligned_group = fs / "target" / "unaligned-group"
+        unaligned_group.write_text("damaged")
+        # A file reachable from a sector beside one that fails with no
+        # diagnostic text at all.
+        clean = fs / "target" / "clean"
+        clean.write_text("damaged")
         refs = base / "refs"
         names = base / "names"
         refs.mkdir()
@@ -159,6 +206,32 @@ class ReporterTest(unittest.TestCase):
         held(STDERR, first)
         (names / str(STDERR)).write_text(f"{first}\n")
         (names / f"{STDERR}.warn").write_text("ERROR: ino paths ioctl: Permission denied\n")
+        # LATE_SECTOR's own first sector has no fixture, so it reads as no
+        # extent; its sixth sector (offset 5 * 4096) holds the file.
+        held(LATE_SECTOR + 5 * 4096, late)
+        (names / str(LATE_SECTOR + 5 * 4096)).write_text(f"{late}\n")
+        # MIXED_SECTOR's first sector fails like STDERR above; its fourth
+        # sector (offset 3 * 4096) resolves cleanly.
+        held(MIXED_SECTOR, first)
+        (names / str(MIXED_SECTOR)).write_text(f"{first}\n")
+        (names / f"{MIXED_SECTOR}.warn").write_text("ERROR: ino paths ioctl: Permission denied\n")
+        held(MIXED_SECTOR + 3 * 4096, safe)
+        (names / str(MIXED_SECTOR + 3 * 4096)).write_text(f"{safe}\n")
+        # LAST_SECTOR's file sits only at its block's final sector (index 15).
+        held(LAST_SECTOR + 15 * 4096, last)
+        (names / str(LAST_SECTOR + 15 * 4096)).write_text(f"{last}\n")
+        # BLOCK_GROUP_LAST_SECTOR sits 15 sectors past the logged, real block
+        # start btrfs placed on no absolute grid; reachable only by scanning
+        # from that given address, never by flooring it to one of this
+        # reporter's own.
+        held(BLOCK_GROUP_LAST_SECTOR, unaligned_group)
+        (names / str(BLOCK_GROUP_LAST_SECTOR)).write_text(f"{unaligned_group}\n")
+        # EMPTY_DIAGNOSTIC's own first sector fails the -P ioctl with no
+        # output at all on stdout or stderr; its second sector (offset
+        # 4096) resolves cleanly.
+        (refs / f"{EMPTY_DIAGNOSTIC}.err").write_text("")
+        held(EMPTY_DIAGNOSTIC + 4096, clean)
+        (names / str(EMPTY_DIAGNOSTIC + 4096)).write_text(f"{clean}\n")
         stub(bin_dir, "systemd-escape", 'echo "-"\n')
         if kernel is None:
             stub(bin_dir, "journalctl", "echo 'No journal files were found.' >&2\nexit 1\n")
@@ -225,6 +298,7 @@ esac
                     # No extent holds it: damage the report cannot name,
                     # never free space.
                     {"logical": NO_EXTENT, "paths": [], "resolved": False},
+                    {"logical": EMPTY, "paths": [], "resolved": False},
                     # Unresolved, never free space: a snapshot not mounted, and
                     # a name btrfs split in two whose halves are healthy files.
                     {"logical": UNMOUNTED, "paths": [], "resolved": False},
@@ -236,7 +310,6 @@ esac
                     {"logical": UNNAMED, "paths": [], "resolved": False},
                     # btrfs failed to name an inode on stderr and exited 0.
                     {"logical": STDERR, "paths": [], "resolved": False},
-                    {"logical": EMPTY, "paths": [], "resolved": False},
                 ],
             )
             # Each way the resolver says no extent gets the not-resolved line,
@@ -256,6 +329,77 @@ esac
             # While it resolved, only a hidden file stood in the report directory.
             self.assertEqual(set((base / "listing").read_text().split()), {".-.result.tmp"})
             self.assertEqual(sorted(os.listdir(base / "reports")), ["-.result"])
+
+    def test_a_file_later_in_the_block_is_found_when_the_blocks_start_has_no_extent(self) -> None:
+        kernel = fixup("vsys-test-a", LATE_SECTOR)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fs = base / "fs"
+            read = parse(report, base)
+            # The kernel-logged address itself has no extent; the file the
+            # scrub damaged sits five sectors later in the same block, and is
+            # listed because every sector was tried, not only the start.
+            self.assertEqual(read["addresses"], [{"logical": LATE_SECTOR, "paths": [f"{fs}/target/late"]}])
+
+    def test_a_resolution_failure_in_one_sector_marks_the_block_not_resolved_even_beside_a_name_a_different_sector_proves(self) -> None:
+        kernel = fixup("vsys-test-a", MIXED_SECTOR)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fs = base / "fs"
+            text = report.read_text()
+            # The raw report still carries the name a clean sector proved, for
+            # a reader of the file itself, beside the other sector's failure.
+            self.assertIn(f"  {fs}/target/safe", text.splitlines())
+            self.assertIn("  (not resolved: ERROR: ino paths ioctl: Permission denied )", text.splitlines())
+            # Once vsys parses it, the not-resolved mark drops that name too:
+            # the report cannot say every file in the block was found, so the
+            # address is not resolved rather than partially listed.
+            read = parse(report, base)
+            self.assertEqual(read["addresses"], [{"logical": MIXED_SECTOR, "paths": [], "resolved": False}])
+
+    def test_the_blocks_last_sector_is_still_resolved(self) -> None:
+        kernel = fixup("vsys-test-a", LAST_SECTOR)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fs = base / "fs"
+            read = parse(report, base)
+            # The file sits only at sector index 15, the sweep's last
+            # iteration, so a scan that stopped one sector short would miss it.
+            self.assertEqual(read["addresses"], [{"logical": LAST_SECTOR, "paths": [f"{fs}/target/last"]}])
+
+    def test_a_block_group_not_on_an_absolute_64kib_boundary_still_resolves_its_last_sector(self) -> None:
+        kernel = fixup("vsys-test-a", BLOCK_GROUP_START)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fs = base / "fs"
+            read = parse(report, base)
+            # Btrfs rounds the logged address down within its own block
+            # group, not to any absolute 64 KiB grid. Scanning the block's
+            # 16 sectors from the address exactly as given, rather than
+            # flooring it to the nearest multiple of 65536, is what finds a
+            # file at this block's real last sector.
+            self.assertEqual(read["addresses"], [{"logical": BLOCK_GROUP_START, "paths": [f"{fs}/target/unaligned-group"]}])
+
+    def test_a_failure_with_no_diagnostic_text_still_marks_the_block_not_resolved(self) -> None:
+        kernel = fixup("vsys-test-a", EMPTY_DIAGNOSTIC)
+        with scratch() as tmp:
+            base = Path(tmp)
+            done, report = self.run_reporter(base, status(uncorrectable=1), kernel)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            # The failing sector gives btrfs no diagnostic text at all, but
+            # the not-resolved marker still follows the failure itself, not
+            # whether a reason string happened to be non-empty.
+            self.assertIn("  (not resolved: no diagnostic text)", report.read_text().splitlines())
+            read = parse(report, base)
+            self.assertEqual(read["addresses"], [{"logical": EMPTY_DIAGNOSTIC, "paths": [], "resolved": False}])
 
     def test_a_start_time_that_does_not_parse_searches_the_last_hour(self) -> None:
         with scratch() as tmp:

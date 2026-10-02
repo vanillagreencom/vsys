@@ -15,7 +15,7 @@ Error summary:    csum=26
   Unverified:     0
 
 Damaged files: 6 damaged block addresses from the kernel log.
-On some kernels each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector: a path listed under it may be sound, and the damaged file may not be listed.
+On some kernels each address is the start of a 64 KiB block the scrub could not repair, not the damaged sector, so each of the block's 4 KiB sectors is resolved on its own: more than one file can share a block, and a listed file may be sound.
 logical 953118621696:
   /repo/target/debug/build/glib-sys/build-script-build
   /repo/target/debug/build/glib-sys/build_script_build-c664
