@@ -15,6 +15,8 @@ import { listPanesArgv } from "./tmux";
 
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
+/** The D-Bus service that answers in the `smart` capability's place when udisks2 supplies a drive's lifetime writes with no report directory to read. */
+export const udisksCapabilitySource = "org.freedesktop.UDisks2";
 /** A failure may name the source that decided it when a probe reads two. */
 type Failure = {
   failure: CapabilityFailure;

@@ -11,6 +11,7 @@ import {
   probeCapabilities,
   probeIoStat,
   probeTmux,
+  udisksCapabilitySource,
   unitDirs,
 } from "./capabilities";
 import { collectDeviceWrites, collectGroups } from "./cgroups";
@@ -164,8 +165,17 @@ export class Collector {
    * What the last read of a capability asked again each sample says, carried
    * into the next sample: whether a tmux server answers, and whether the
    * scrub and drive report directories exist yet.
+   *
+   * `source` names what actually decided this sample's outcome, for a
+   * capability whose answer can come from somewhere other than the probed
+   * path (the `smart` fallback through udisks2). Omitted, the capability
+   * keeps the source its last read set.
    */
-  private record(id: "tmux" | "scrub" | "smart", outcome: Outcome): void {
+  private record(
+    id: "tmux" | "scrub" | "smart",
+    outcome: Outcome,
+    source?: string,
+  ): void {
     this.capabilities = this.capabilities.map((cap) =>
       cap.id === id
         ? {
@@ -173,6 +183,7 @@ export class Collector {
             available: outcome === null,
             failure: outcome?.failure ?? null,
             detail: outcome?.detail ?? "",
+            source: source ?? cap.source,
           }
         : cap,
     );
@@ -257,7 +268,14 @@ export class Collector {
       // Settings tells the reader Storage has nothing when it does not.
       const udisksSupplies =
         storage.devices?.some((d) => d.source === "udisks") ?? false;
-      this.record("smart", udisksSupplies ? null : this.storage.smartDir);
+      // The capability's source names whichever read actually answered this
+      // sample, not the probed directory: a machine with no report
+      // directory still names it once the fallback stops supplying.
+      this.record(
+        "smart",
+        udisksSupplies ? null : this.storage.smartDir,
+        udisksSupplies ? udisksCapabilitySource : c.smartDir,
+      );
     }
     // Device totals cover the whole machine, so they are read above the watched tree.
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);

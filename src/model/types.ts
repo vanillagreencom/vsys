@@ -417,7 +417,11 @@ export interface Capability {
   available: boolean;
   /** Null while the capability is available. */
   failure: CapabilityFailure | null;
-  /** The file or directory that decided it. */
+  /**
+   * The file, directory or system interface that decided it: a path for most
+   * capabilities, but a D-Bus service name for `smart` while udisks2 answers
+   * in the report directory's place.
+   */
   source: string;
   /** The system's own words when a read failed, or the values that decided it. */
   detail: string;
