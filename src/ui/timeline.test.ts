@@ -57,10 +57,16 @@ test("every event is one line that states its cause", () => {
   ];
   for (const line of lines) expect(line).not.toContain("\n");
   expect(lines[0]).toContain("account work in agents.slice");
-  expect(
-    eventLine(event({ kind: "lane-start", names: { slice: "app.slice" } }), c),
-  ).toContain("account not available in app.slice");
-  expect(lines[1]).toContain("2m");
+  // A lane line states what its sample read: no watched slice, and no reason
+  // the lane stopped, since neither is on the event.
+  expect(lines[0]).toEndWith("| claude runs in it");
+  const bare = eventLine(
+    event({ kind: "lane-start", names: { slice: "app.slice" } }),
+    c,
+  );
+  expect(bare).toContain("account not available in app.slice");
+  expect(bare).toEndWith("| no agent tool runs in it");
+  expect(lines[1]).toEndWith("| up 2m when last seen");
   expect(lines[2]).toContain("an agent ran outside the agent slice");
   expect(lines[3]).toContain("Alert closed: storage stalled tasks");
   expect(lines[3]).toContain("open for 1m");

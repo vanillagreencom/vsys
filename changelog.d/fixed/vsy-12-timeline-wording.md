@@ -1,0 +1,1 @@
+- Timeline no longer reports a confinement change when a process that was not an agent moves cgroups, and lane start and stop lines no longer claim a watched scope or that the lane's processes left.

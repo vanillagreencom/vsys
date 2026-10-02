@@ -75,15 +75,13 @@ export function eventParts(e: TimelineEvent, c: Config): EventParts {
   const time = new Date(e.time).toLocaleTimeString();
   const n = e.names;
   const where = `account ${n.account || gap} in ${n.slice || "no slice"}`;
+  // A lane can sit outside every watched slice, hold no process, and stop
+  // while its processes run on, so its lines state only what the sample read.
   if (e.kind === "lane-start")
     return {
       time,
       kind: "Lane started",
-      text: parts(
-        e.subject,
-        where,
-        `${n.tool || "no agent tool"} entered a watched scope`,
-      ),
+      text: parts(e.subject, where, `${n.tool || "no agent tool"} runs in it`),
       level: "ok",
     };
   if (e.kind === "lane-stop")
@@ -93,7 +91,7 @@ export function eventParts(e: TimelineEvent, c: Config): EventParts {
       text: parts(
         e.subject,
         where,
-        `its processes left after ${age(e.values.age ?? 0)}`,
+        `up ${age(e.values.age ?? 0)} when last seen`,
       ),
       level: "ok",
     };
