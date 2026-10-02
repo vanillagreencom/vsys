@@ -1,0 +1,1 @@
+- Settings: the settings-file row's help text now describes only where an edit saves, not where vsys read the running configuration from.

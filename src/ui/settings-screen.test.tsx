@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { ManualClock } from "@opentui/core/testing";
 import { act } from "react";
 import type { Config } from "../config/config";
-import { choices, defaults } from "../config/config";
+import { choices, configPath, defaults } from "../config/config";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
 import { emptySnapshot, everyCauseSnapshot } from "../test/fixture";
@@ -17,6 +17,7 @@ import {
   settingGroups,
   settingHelp,
   settingLabel,
+  settingsFileInfo,
 } from "./settings";
 import {
   type SettingItem,
@@ -56,6 +57,68 @@ test("unreadable sources are counted once each, most failed reads first", () => 
   expect(sourceCounts(emptySnapshot())).toEqual([]);
 });
 
+test("Settings names the file an edit saves to, for the XDG default and an explicit --config", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // main.ts resolves the XDG default with no --config flag, and the path an
+  // explicit --config names otherwise; either way the row names the one this
+  // process actually resolved, not a fixed sentence.
+  const xdgDefault = configPath({});
+  const explicit = "/etc/vsys/custom-config.toml";
+  for (const settingsPath of [xdgDefault, explicit]) {
+    const t = await mount(s, c, undefined, { settingsPath });
+    try {
+      await t.press("7");
+      expect(t.frame()).toContain(settingsPath);
+      const at = settingItems(c, s.capabilities).findIndex(
+        (item) => item.kind === "settingsFile",
+      );
+      expect(at).toBeGreaterThan(-1);
+      for (let i = 0; i < at; i++) await t.press("down");
+      expect(selectedRow(t.frame())).toContain("Settings file");
+      expect(t.frame()).toContain(settingsFileInfo.help);
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("Settings keeps the settings path whole in its detail when the row cuts it", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const long = `/home/test/${"nested-directory-".repeat(8)}config.toml`;
+  const t = await mount(
+    s,
+    c,
+    { width: 80, height: 30 },
+    { settingsPath: long },
+  );
+  try {
+    await t.press("7");
+    const at = settingItems(c, s.capabilities).findIndex(
+      (item) => item.kind === "settingsFile",
+    );
+    expect(at).toBeGreaterThan(-1);
+    // Unselected, the row shows the label row the way every row does, with
+    // nothing yet open to carry the cut value whole.
+    expect(t.frame()).not.toContain(long);
+    for (let i = 0; i < at; i++) await t.press("down");
+    const row = selectedRow(t.frame());
+    expect(row).toContain("Settings file");
+    // The row itself is cut at the terminal edge; the detail under it is
+    // where the whole path reaches the reader. With no spaces to break on,
+    // word-wrap carries it over several lines, so it is reassembled from
+    // them rather than matched on one.
+    expect(row).not.toContain(long);
+    const joined = underMarked(t.frame(), 6)
+      .filter(isChildLine)
+      .map((line) => line.replace(/^.*│ ?/, "").trimEnd())
+      .join("");
+    expect(joined).toContain(long);
+  } finally {
+    await t.close();
+  }
+});
 test("Settings edits a value in place and honours a changed quit binding", async () => {
   const c = defaults();
   c.keys.quit = "alt+q";
@@ -73,10 +136,10 @@ test("Settings edits a value in place and honours a changed quit binding", async
   try {
     await t.press("7");
     expect(t.frame()).toContain("Refresh interval");
-    // The capability rows and the unreadable-sources row come before the
-    // settings, and the refresh interval is the last of the five Display
-    // settings above it.
-    const above = s.capabilities.length + 1 + 5;
+    // The capability rows, the unreadable-sources row and the settings-file
+    // row come before the settings, and the refresh interval is the last of
+    // the five Display settings above it.
+    const above = s.capabilities.length + 2 + 5;
     for (let i = 0; i < above; i++) await t.press("down");
     await t.press("enter");
     expect(t.frame()).toContain("Enter saves");
@@ -460,6 +523,7 @@ test("Settings filters by name and by the label the reader sees", async () => {
     expect(byLabel).toContain("Wait warning");
     expect(byLabel).toContain("Wait before alert");
     expect(byLabel).not.toContain("Storage units");
+    expect(byLabel).not.toContain("Settings file");
     // The stored name finds it too, not only the label.
     await t.press("escape");
     await t.press("/");
@@ -1051,6 +1115,7 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
     capability: true,
     sources: true,
     setting: true,
+    settingsFile: true,
   };
   for (const kind of Object.keys(kinds))
     expect({ kind, drawn: items.some((item) => item.kind === kind) }).toEqual({
@@ -1066,6 +1131,8 @@ test("every kind of Settings row is placed, kept in view, and opened alike by th
         return "Every source was read";
       case "setting":
         return fit(settingLabel(item.key), 24).trimEnd();
+      case "settingsFile":
+        return fit(settingsFileInfo.label, 24).trimEnd();
       default: {
         const unknown: never = item;
         throw new Error(`Unknown setting row: ${String(unknown)}`);

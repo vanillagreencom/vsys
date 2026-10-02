@@ -21,7 +21,12 @@ export function mountScreen(
     | "output"
   >,
 ) {
-  type Frame = { snapshot: Snapshot; history: History; config: Config };
+  type Frame = {
+    snapshot: Snapshot;
+    history: History;
+    config: Config;
+    settingsPath: string;
+  };
   let frame: Frame | null = null;
   const listeners = new Set<() => void>();
   const subscribe = (listener: () => void) => {
@@ -42,8 +47,13 @@ export function mountScreen(
   const root = createRoot(renderer);
   root.render(<Screen />);
   return {
-    update(snapshot: Snapshot, history: History, config: Config) {
-      frame = { snapshot, history, config };
+    update(
+      snapshot: Snapshot,
+      history: History,
+      config: Config,
+      settingsPath: string,
+    ) {
+      frame = { snapshot, history, config, settingsPath };
       for (const listener of listeners) listener();
     },
     close() {
