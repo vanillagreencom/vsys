@@ -18,6 +18,7 @@ import {
   overflowing,
   selectedRow,
   sortMarks,
+  underMarked,
 } from "../test/harness";
 import { attention, cardDetail } from "./attention";
 import {
@@ -31,6 +32,7 @@ import { osc52 } from "./clipboard";
 import { wrapLines } from "./columns";
 import type { HomeItem } from "./home";
 import { homeItems, homeTarget, recentChanges } from "./home";
+import { homeRegions } from "./regions";
 import { ui } from "./theme";
 import { eventKey } from "./timeline";
 
@@ -1796,4 +1798,134 @@ test("an open card draws the rows it measured, whatever its lane names hold", as
         await t.close();
       }
     }
+});
+
+test("every kind of Home row is kept in view, and opened and chosen alike by the key and the mouse", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  /** A history holding one sample that carries all three Home row kinds. */
+  const fresh = () => {
+    const h = new History(c);
+    h.add(emptySnapshot(1000));
+    const s = everyCauseSnapshot(c);
+    s.time = 2000;
+    h.add(s);
+    return { h, s };
+  };
+  const seed = fresh();
+  const rows = homeItems(
+    attention(seed.s, c),
+    seed.s,
+    5,
+    seed.h.recentEvents(seed.s.time, recentChanges),
+  );
+  // Every kind the screen draws is in the fixture. The set is the type's own:
+  // a kind added to `HomeItem` and missing here fails to compile, so this
+  // test cannot quietly narrow when the fixture changes.
+  const kinds: Record<HomeItem["kind"], true> = {
+    concern: true,
+    change: true,
+    agent: true,
+  };
+  for (const kind of Object.keys(kinds))
+    expect({ kind, drawn: rows.some((row) => row.kind === kind) }).toEqual({
+      kind,
+      drawn: true,
+    });
+  /** The words a row draws that tell it from the rows around it. */
+  const words = (row: HomeItem) => {
+    switch (row.kind) {
+      case "concern":
+        return row.item.title.slice(0, 16);
+      case "change":
+        return row.event.subject;
+      case "agent":
+        return row.lane.name;
+      default: {
+        const unknown: never = row;
+        throw new Error(`Unknown Home row: ${String(unknown)}`);
+      }
+    }
+  };
+  // Every row of every list, walked on a terminal too short to hold them: the
+  // row the reader reaches is the row marked, on the screen. The last agent
+  // starts below the fold, asserted rather than assumed, so the walk reaches
+  // rows that only the scroll can bring into view.
+  const short = fresh();
+  const t = await mount(
+    short.s,
+    c,
+    { width: 100, height: 24 },
+    { history: short.h },
+  );
+  try {
+    await t.press("1");
+    // A reader arrives at a screen that has finished drawing itself.
+    await t.settle();
+    const last = rows.findLast((row) => row.kind === "agent");
+    expect(last && t.frame().includes(words(last))).toBe(false);
+    const walked = new Set<string>();
+    for (const [region, kind] of Object.keys(kinds).entries()) {
+      await t.press(c.keys[homeRegions[region + 1].action]);
+      for (const row of rows.filter((row) => row.kind === kind)) {
+        await t.settle();
+        expect({ kind, on: selectedRow(t.frame()) }).toEqual({
+          kind,
+          on: expect.stringContaining(words(row)) as unknown as string,
+        });
+        walked.add(kind);
+        await t.press("down");
+      }
+    }
+    expect([...walked]).toEqual(Object.keys(kinds));
+  } finally {
+    await t.close();
+  }
+  // The last row of each list, opened once by Enter and once by a click: the
+  // two land on one screen.
+  for (const [region, kind] of Object.keys(kinds).entries()) {
+    const row = rows.findLast((row) => row.kind === kind);
+    if (!row) throw new Error(`The fixture draws no ${kind} row`);
+    const offset = rows.filter((other) => other.kind === kind).indexOf(row);
+    const size = { width: 160, height: 60 };
+    const keyed = fresh();
+    const k = await mount(keyed.s, c, size, { history: keyed.h });
+    let byKey: string[] = [];
+    try {
+      await k.press("1");
+      await k.press(c.keys[homeRegions[region + 1].action]);
+      for (let i = 0; i < offset; i++) await k.press("down");
+      await k.press("enter");
+      byKey = underMarked(k.frame());
+    } finally {
+      await k.close();
+    }
+    const clicked = fresh();
+    const m = await mount(clicked.s, c, size, { history: clicked.h });
+    try {
+      await m.press("1");
+      // Found under its own list's heading: a lane's name is in the change
+      // that says it started, too.
+      const lines = m.frame().split("\n");
+      const heading = lines.findIndex((line) =>
+        line.includes(homeRegions[region + 1].title),
+      );
+      const y = lines.findIndex(
+        (line, at) => at > heading && line.includes(words(row)),
+      );
+      await m.click(lines[y].indexOf(words(row)), y);
+      expect({ kind, opened: underMarked(m.frame()) }).toEqual({
+        kind,
+        opened: byKey,
+      });
+      // A click chooses the row it opens, as the keys that reach it do, so
+      // coming back to Home lands on it.
+      await m.press("1");
+      expect({ kind, on: selectedRow(m.frame()) }).toEqual({
+        kind,
+        on: expect.stringContaining(words(row)) as unknown as string,
+      });
+    } finally {
+      await m.close();
+    }
+  }
 });

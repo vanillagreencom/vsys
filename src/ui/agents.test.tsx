@@ -26,6 +26,7 @@ import {
 import { attention } from "./attention";
 import { cell, columnGap, headerText } from "./columns";
 import { laneValue } from "./format";
+import { ui } from "./theme";
 import { windows } from "./timeline-screen";
 
 test("search matches every naming field, case-insensitively, in the sort order", () => {
@@ -1354,6 +1355,69 @@ test("search finds a row by the address and the window it shows", async () => {
       });
     } finally {
       await t.close();
+    }
+  }
+});
+
+test("a lane row in the list and in the table is coloured and opened by one rule", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", cpu: 9 }),
+    laneSnapshot({ id: "b", name: "lane-b", cpu: 5 }),
+    laneSnapshot({ id: "z", name: "lane-z", cpu: 1, unconfined: true }),
+  ];
+  s.groups = [groupSnapshot()];
+  const size = { width: 140, height: 30 };
+  /** The colour the row naming `name` is drawn in, where it is not selected. */
+  const colour = (t: Awaited<ReturnType<typeof mount>>, name: string) => {
+    for (const line of t.ui.captureSpans().lines) {
+      const span = line.spans.find((span) => span.text.includes(name));
+      if (span) return span.fg.equals(ui.danger) ? "danger" : "other";
+    }
+    return "missing";
+  };
+  // The two views that draw a lane row: the list, and the table its key
+  // swaps in. Each is checked to be the view drawn before it is read.
+  const views: [
+    string,
+    (t: Awaited<ReturnType<typeof mount>>) => Promise<void>,
+    string,
+  ][] = [
+    ["list", async () => {}, "Trend"],
+    ["table", async (t) => await t.press(c.keys.details), "Account"],
+  ];
+  for (const [view, show, heading] of views) {
+    const k = await mount(s, c, size);
+    let keyed = "";
+    try {
+      await k.press("2");
+      await show(k);
+      expect({ view, drawn: k.frame().includes(heading) }).toEqual({
+        view,
+        drawn: true,
+      });
+      // The row's level is its colour, read where the highlight is not on it.
+      expect({ view, colour: colour(k, "lane-z") }).toEqual({
+        view,
+        colour: "danger",
+      });
+      await k.press("j");
+      await k.press("enter");
+      keyed = k.frame();
+    } finally {
+      await k.close();
+    }
+    const m = await mount(s, c, size);
+    try {
+      await m.press("2");
+      await show(m);
+      const lines = m.frame().split("\n");
+      const y = lines.findIndex((line) => line.includes("lane-b"));
+      await m.click(lines[y].indexOf("lane-b"), y);
+      expect({ view, frame: m.frame() }).toEqual({ view, frame: keyed });
+    } finally {
+      await m.close();
     }
   }
 });

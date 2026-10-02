@@ -1,5 +1,5 @@
-import type { ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef, useState } from "react";
+import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Config, choices, validate } from "../config/config";
 import {
   settingText as editText,
@@ -11,6 +11,7 @@ import type { Level } from "../model/verdict";
 import { keyLabel, screenPad, wideWidth } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { useScreenKeys } from "./keys";
+import { rowsById } from "./selection";
 import {
   capabilityLabels,
   capabilityLoss,
@@ -29,6 +30,7 @@ import {
   Empty,
   Ink,
   Line,
+  ListRow,
   nextDown,
   Row,
   Section,
@@ -44,6 +46,21 @@ export type SettingItem =
   | { kind: "capability"; id: CapabilityId }
   | { kind: "setting"; key: string }
   | { kind: "sources" };
+/** What tells one Settings row from another, whichever kind it is. */
+function settingKey(item: SettingItem): string {
+  switch (item.kind) {
+    case "capability":
+      return `capability:${item.id}`;
+    case "setting":
+      return `setting:${item.key}`;
+    case "sources":
+      return "sources";
+    default: {
+      const unknown: never = item;
+      throw new Error(`Unknown setting row: ${String(unknown)}`);
+    }
+  }
+}
 export function settingItems(
   c: Config,
   capabilities: Capability[] = [],
@@ -214,28 +231,53 @@ export function Settings({
     }
   }
   /**
-   * What Enter does on a row, by the kind of value it holds. A boolean has two
-   * states and needs no editor; an enum has a listed set and needs no grammar;
-   * everything else opens the text box.
+   * What Enter does on a setting, by the kind of value it holds. A boolean has
+   * two states and needs no editor; an enum has a listed set and needs no
+   * grammar; everything else opens the text box.
    */
-  const beginEdit = (index: number) => {
-    const item: SettingItem | undefined = items[index];
-    if (item?.kind !== "setting") return;
-    setSelected(index);
-    const value = settingValue(c, item.key);
-    const kind = editorKind(item.key, value);
+  const beginEdit = (key: string) => {
+    const value = settingValue(c, key);
+    const kind = editorKind(key, value);
     if (kind === "toggle") {
-      void save(item.key, () => !value);
+      void save(key, () => !value);
       return;
     }
     if (kind === "choice") {
-      const allowed = [...(choices[item.key] ?? [])];
+      const allowed = [...(choices[key] ?? [])];
       setChoice(Math.max(0, allowed.indexOf(String(value))));
       setPicking(allowed);
       return;
     }
     setInput(editText(value));
     setEditing(true);
+  };
+  /**
+   * Open the row at `index`, which chooses it: the one answer to what opening
+   * a row does, for Enter and for the mouse alike, so a click cannot select a
+   * row without opening what Enter opens.
+   */
+  const openRow = (index: number) => {
+    const item: SettingItem | undefined = items[index];
+    // The find box, an editor and a picker each take every key until the
+    // reader leaves them, so they take the mouse's row changes too: a click
+    // elsewhere would move the selection off an editor the keys still feed.
+    if (item === undefined || searching || editing || picking) return;
+    setSelected(index);
+    switch (item.kind) {
+      case "sources":
+        setSourcesOpen((v) => !v);
+        return;
+      case "capability":
+        setOpenCap((v) => (v === item.id ? null : item.id));
+        return;
+      case "setting":
+        beginEdit(item.key);
+        return;
+      default: {
+        const unknown: never = item;
+        throw new Error(`Unknown setting row: ${String(unknown)}`);
+      }
+    }
   };
   async function commit(text: string) {
     if (current?.kind !== "setting") return;
@@ -304,10 +346,7 @@ export function Settings({
       return true;
     }
     if (name === c.keys.open) {
-      if (current?.kind === "sources") setSourcesOpen((v) => !v);
-      else if (current?.kind === "capability")
-        setOpenCap((v) => (v === current.id ? null : current.id));
-      else if (current?.kind === "setting") beginEdit(selected);
+      openRow(selected);
       return true;
     }
     return false;
@@ -342,13 +381,42 @@ export function Settings({
     return before < rowsTotal / 2;
   });
   const sides = twoColumns ? [left, sections.slice(left.length)] : [sections];
-  // A row's index is its position in `items`, looked up rather than counted
-  // alongside it. A counter and a list can disagree, and a filter that drops a
-  // row from the list while the render still counts it is how they do: the
-  // highlight then sits on one row while Enter opens another.
-  const sourcesIndex = items.findIndex((item) => item.kind === "sources");
-  const settingIndex = (key: string) =>
-    items.findIndex((item) => item.kind === "setting" && item.key === key);
+  // A row's index is its position in `items`, looked up by its identity
+  // rather than counted alongside it. A counter and a list can disagree, and a
+  // filter that drops a row from the list while the render still counts it is
+  // how they do: the highlight then sits on one row while Enter opens another.
+  const placed = rowsById(items.map(settingKey));
+  /**
+   * One selectable Settings row, whichever kind it is, at its place in
+   * `items`. The block is what the scroll reads for what is drawn under the
+   * row, and the line is the row's own scroll target. `under` decides for
+   * itself when it shows.
+   */
+  const settingRow = (
+    item: SettingItem,
+    line: (selected: boolean) => ReactNode,
+    {
+      color,
+      under,
+    }: { color?: RGBA; under?: (selected: boolean) => ReactNode } = {},
+  ) => {
+    const key = settingKey(item);
+    const i = placed(key);
+    const chosen = i === selected;
+    return (
+      <ListRow
+        key={key}
+        id={`block-${i}`}
+        lineId={`setting-${i}`}
+        selected={chosen}
+        color={color}
+        onOpen={() => openRow(i)}
+        under={under?.(chosen)}
+      >
+        {line(chosen)}
+      </ListRow>
+    );
+  };
   const typedItems = (text: string): string[] | null => {
     try {
       const value = editValue([], text);
@@ -359,90 +427,93 @@ export function Settings({
       return null;
     }
   };
-  let index = 0;
-  const settingRow = (key: string) => {
-    const i = settingIndex(key);
+  const valueRow = (key: string) => {
     const help = settingHelp(key);
-    return (
-      <box id={`block-${i}`} key={key} flexDirection="column" flexShrink={0}>
-        <box id={`setting-${i}`} flexShrink={0}>
-          <Row selected={i === selected} onOpen={() => beginEdit(i)}>
-            {fit(settingLabel(key), 24)}
-            {columnGap}
-            <span attributes={i === selected ? ui.none : ui.dim}>
-              {safe(settingDisplay(key, settingValue(c, key), c))}
-            </span>
-          </Row>
-        </box>
-        {!editing && !picking && i === selected && help !== "" && (
-          <Detail>
-            <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-              {help}
-            </Line>
-          </Detail>
-        )}
-        {editing && i === selected && (
-          <box
-            flexDirection="column"
-            flexShrink={0}
-            border
-            borderStyle="rounded"
-            borderColor={ui.accent}
-            title={` ${settingLabel(key)} · ${keyLabel(c.keys.open)} saves · ${keyLabel(c.keys.back)} cancels `}
-          >
-            <box height={1} flexShrink={0}>
-              <input
-                {...textInput}
-                focused
-                value={input}
-                onInput={setInput}
-                onSubmit={() => {
-                  void commit(input);
-                }}
-              />
-            </box>
-            {/* A list on one line is a wall of quotes and commas. The same
-                text, one item per line, is a list the reader can count. */}
-            {editorKind(key, settingValue(c, key)) === "list" &&
-              typedItems(input)?.map((item, at) => (
-                <Line
-                  // biome-ignore lint/suspicious/noArrayIndexKey: a list item is its position
-                  key={`item-${at}`}
-                  height={1}
-                  flexShrink={0}
-                  truncate
-                  attributes={ui.dim}
-                >
-                  {safe(`${at + 1}. ${item}`)}
+    return settingRow(
+      { kind: "setting", key },
+      (chosen) => (
+        <>
+          {fit(settingLabel(key), 24)}
+          {columnGap}
+          <span attributes={chosen ? ui.none : ui.dim}>
+            {safe(settingDisplay(key, settingValue(c, key), c))}
+          </span>
+        </>
+      ),
+      {
+        under: (chosen) => (
+          <>
+            {!editing && !picking && chosen && help !== "" && (
+              <Detail>
+                <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                  {help}
                 </Line>
-              ))}
-          </box>
-        )}
-        {picking && i === selected && (
-          <box
-            flexDirection="column"
-            flexShrink={0}
-            border
-            borderStyle="rounded"
-            borderColor={ui.accent}
-            title={` ${settingLabel(key)} · ${keyLabel(c.keys.open)} saves · ${keyLabel(c.keys.back)} cancels `}
-          >
-            {picking.map((option, at) => (
-              <box id={`choice-${at}`} key={option} flexShrink={0}>
-                <Row
-                  selected={at === choice}
-                  onOpen={() => {
-                    setChoice(at);
-                    void save(key, () => option);
-                  }}
-                >
-                  {option}
-                </Row>
+              </Detail>
+            )}
+            {editing && chosen && (
+              <box
+                flexDirection="column"
+                flexShrink={0}
+                border
+                borderStyle="rounded"
+                borderColor={ui.accent}
+                title={` ${settingLabel(key)} · ${keyLabel(c.keys.open)} saves · ${keyLabel(c.keys.back)} cancels `}
+              >
+                <box height={1} flexShrink={0}>
+                  <input
+                    {...textInput}
+                    focused
+                    value={input}
+                    onInput={setInput}
+                    onSubmit={() => {
+                      void commit(input);
+                    }}
+                  />
+                </box>
+                {/* A list on one line is a wall of quotes and commas. The same
+                text, one item per line, is a list the reader can count. */}
+                {editorKind(key, settingValue(c, key)) === "list" &&
+                  typedItems(input)?.map((item, at) => (
+                    <Line
+                      // biome-ignore lint/suspicious/noArrayIndexKey: a list item is its position
+                      key={`item-${at}`}
+                      height={1}
+                      flexShrink={0}
+                      truncate
+                      attributes={ui.dim}
+                    >
+                      {safe(`${at + 1}. ${item}`)}
+                    </Line>
+                  ))}
               </box>
-            ))}
-          </box>
-        )}
-      </box>
+            )}
+            {picking && chosen && (
+              <box
+                flexDirection="column"
+                flexShrink={0}
+                border
+                borderStyle="rounded"
+                borderColor={ui.accent}
+                title={` ${settingLabel(key)} · ${keyLabel(c.keys.open)} saves · ${keyLabel(c.keys.back)} cancels `}
+              >
+                {picking.map((option, at) => (
+                  <box id={`choice-${at}`} key={option} flexShrink={0}>
+                    <Row
+                      selected={at === choice}
+                      onOpen={() => {
+                        setChoice(at);
+                        void save(key, () => option);
+                      }}
+                    >
+                      {option}
+                    </Row>
+                  </box>
+                ))}
+              </box>
+            )}
+          </>
+        ),
+      },
     );
   };
   return (
@@ -484,116 +555,109 @@ export function Settings({
           marginTop={0}
         />
         {s.capabilities.map((cap) => {
-          const i = index++;
           // The row less its marker, its dot, its disclosure and its label.
           const costWidth = width - 1 - 2 - 2 - 40;
           // One answer for the marker and the detail under it. A missing
           // source opens on selection; one that answered opens on Enter. The
           // cost is cut to the row with its mark and drawn whole in the
           // detail.
-          const opened =
-            i === selected && (!cap.available || openCap === cap.id);
           const offer = capabilityOffer(cap, c);
-          return (
-            <box
-              id={`block-${i}`}
-              key={cap.id}
-              flexDirection="column"
-              flexShrink={0}
-            >
-              <box id={`setting-${i}`} flexShrink={0}>
-                <Row selected={i === selected} onOpen={() => setSelected(i)}>
-                  <Ink color={cap.available ? ui.ok : ui.warn}>
-                    {cap.available ? "● " : "○ "}
-                  </Ink>
-                  <Disclosure
-                    open={opened}
-                    name={fit(capabilityLabels[cap.id], 40)}
-                  />
-                  <span attributes={ui.dim}>
-                    {cap.available
-                      ? "available"
-                      : fit(safe(capabilityLoss(cap)), costWidth)}
-                  </span>
-                </Row>
-              </box>
-              {opened && (
-                <Detail>
-                  <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                    {safe(
-                      cap.available
-                        ? `${cap.source}: ${cap.detail}`
-                        : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
-                    )}
-                  </Line>
-                  {/* What the reading costs is a second idea, not more of the
-                      reason above it, so it starts after a blank row. */}
-                  {!cap.available && (
-                    <Line
-                      flexShrink={0}
-                      wrapMode="word"
-                      marginTop={1}
-                      attributes={ui.dim}
-                    >
-                      {safe(capabilityLoss(cap))}
+          const opened = (chosen: boolean) =>
+            chosen && (!cap.available || openCap === cap.id);
+          return settingRow(
+            { kind: "capability", id: cap.id },
+            (chosen) => (
+              <>
+                <Ink color={cap.available ? ui.ok : ui.warn}>
+                  {cap.available ? "● " : "○ "}
+                </Ink>
+                <Disclosure
+                  open={opened(chosen)}
+                  name={fit(capabilityLabels[cap.id], 40)}
+                />
+                <span attributes={ui.dim}>
+                  {cap.available
+                    ? "available"
+                    : fit(safe(capabilityLoss(cap)), costWidth)}
+                </span>
+              </>
+            ),
+            {
+              under: (chosen) =>
+                opened(chosen) && (
+                  <Detail>
+                    <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+                      {safe(
+                        cap.available
+                          ? `${cap.source}: ${cap.detail}`
+                          : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
+                      )}
                     </Line>
-                  )}
-                  {offer && (
-                    <>
+                    {/* What the reading costs is a second idea, not more of
+                        the reason above it, so it starts after a blank row. */}
+                    {!cap.available && (
                       <Line
                         flexShrink={0}
                         wrapMode="word"
                         marginTop={1}
                         attributes={ui.dim}
                       >
-                        {safe(offer.text)}
+                        {safe(capabilityLoss(cap))}
                       </Line>
-                      <Line flexShrink={0} wrapMode="word">
-                        {safe(
-                          `${keyLabel(c.keys.copy)} copies: ${offer.command}`,
-                        )}
-                      </Line>
-                    </>
-                  )}
-                </Detail>
-              )}
-            </box>
+                    )}
+                    {offer && (
+                      <>
+                        <Line
+                          flexShrink={0}
+                          wrapMode="word"
+                          marginTop={1}
+                          attributes={ui.dim}
+                        >
+                          {safe(offer.text)}
+                        </Line>
+                        <Line flexShrink={0} wrapMode="word">
+                          {safe(
+                            `${keyLabel(c.keys.copy)} copies: ${offer.command}`,
+                          )}
+                        </Line>
+                      </>
+                    )}
+                  </Detail>
+                ),
+            },
           );
         })}
         {!s.capabilities.length && (
           <Empty text="This sample was recorded before vsys probed its sources." />
         )}
-        {sourcesIndex >= 0 &&
-          (() => {
-            const i = sourcesIndex;
-            return (
-              <box id={`block-${i}`} flexDirection="column" flexShrink={0}>
-                <box id={`setting-${i}`} flexShrink={0}>
-                  <Row
-                    selected={i === selected}
-                    color={sources.length ? ui.warn : undefined}
-                    onOpen={() => setSourcesOpen((v) => !v)}
-                  >
-                    {/* Two columns stand in for the capability rows' own
-                        dot, so this row's marker lines up with theirs
-                        rather than sitting two columns to their left. */}
-                    {"  "}
-                    <Disclosure
-                      open={sourcesOpen}
-                      name={
-                        sources.length
-                          ? "Sources vsys cannot read"
-                          : "Every source was read"
-                      }
-                      count={
-                        sources.length
-                          ? `${sources.length} failed on the last sample`
-                          : undefined
-                      }
-                    />
-                  </Row>
-                </box>
-                {sourcesOpen && (
+        {items.some((item) => item.kind === "sources") &&
+          settingRow(
+            { kind: "sources" },
+            () => (
+              <>
+                {/* Two columns stand in for the capability rows' own dot, so
+                    this row's marker lines up with theirs rather than sitting
+                    two columns to their left. */}
+                {"  "}
+                <Disclosure
+                  open={sourcesOpen}
+                  name={
+                    sources.length
+                      ? "Sources vsys cannot read"
+                      : "Every source was read"
+                  }
+                  count={
+                    sources.length
+                      ? `${sources.length} failed on the last sample`
+                      : undefined
+                  }
+                />
+              </>
+            ),
+            {
+              color: sources.length ? ui.warn : undefined,
+              under: () =>
+                sourcesOpen && (
                   <Detail>
                     {sources.map(([source, n]) => (
                       <Line key={source} height={1} flexShrink={0} truncate>
@@ -606,10 +670,9 @@ export function Settings({
                       </Line>
                     ))}
                   </Detail>
-                )}
-              </box>
-            );
-          })()}
+                ),
+            },
+          )}
         <box
           flexDirection={twoColumns ? "row" : "column"}
           flexShrink={0}
@@ -628,7 +691,7 @@ export function Settings({
               {side.map(({ title, keys }) => (
                 <box key={title} flexDirection="column" flexShrink={0}>
                   <Section title={title} width={column} />
-                  {keys.map(settingRow)}
+                  {keys.map(valueRow)}
                 </box>
               ))}
             </box>

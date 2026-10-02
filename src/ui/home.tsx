@@ -1,5 +1,5 @@
 import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
@@ -52,6 +52,7 @@ import {
   stepToRegion,
   stepWithin,
 } from "./regions";
+import { type Selection, useSelection } from "./selection";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import { eventKey, eventParts } from "./timeline";
 import {
@@ -61,8 +62,8 @@ import {
   Empty,
   Ink,
   Line,
+  ListRow,
   Reading,
-  Row,
   Section,
   TableHeader,
   Tile,
@@ -215,12 +216,12 @@ export function Home({
   points: Point[];
   windowMs: number;
   /** The row the reader chose, and the item that row named. */
-  selection: { index: number; id: string | null };
+  selection: Selection;
   width: number;
   /** The columns an open card's copy is written and drawn at: `detailWidth`. */
   cardWidth: number;
   height: number;
-  onSelect: (selection: { index: number; id: string | null }) => void;
+  onSelect: (selection: Selection) => void;
   onOpen: (item: HomeItem) => void;
   /** Opens the screen behind a tile, which breaks that meter down. */
   onOpenView: (view: View) => void;
@@ -314,17 +315,15 @@ export function Home({
   const recent = rows.filter((r) => r.kind === "change");
   // The tile the reader moved to, null while they have chosen none.
   const [chosenTile, setTile] = useState<number | null>(null);
-  /**
-   * The row to draw, resolved against the rows this render has. Following the
-   * chosen item keeps the reader on it when a change arrives above it, and
-   * where that item has gone the nearest row that exists takes over. Same rule
-   * as the Agents list and the Timeline list.
-   */
-  const found = rows.findIndex((row) => homeKey(row) === selection.id);
-  const selected =
-    found >= 0
-      ? found
-      : Math.min(selection.index, Math.max(0, rows.length - 1));
+  // The row to draw, following the chosen item when a change arrives above it.
+  // The first row is a choice too, recorded on the first render that has any:
+  // Home cannot seed it at construction, since its parent holds the selection
+  // and only this screen knows the rows.
+  const { selected, choose, move } = useSelection(
+    rows.map(homeKey),
+    selection,
+    onSelect,
+  );
   // Home holds four regions and the tile row is one of them. The three lists
   // are ranges over the one flat selection the render draws; the tiles keep
   // their own index, which is why they are region zero rather than rows inside
@@ -349,20 +348,36 @@ export function Home({
    * value, so the screen cannot mark one item while a key acts on another.
    */
   const rowsFocused = tile === null;
-  /** Move the selection, recording the row and the item it names together. */
-  const choose = (index: number) =>
-    onSelect({ index, id: rows[index] ? homeKey(rows[index]) : null });
-  // The first row is a choice too. Home cannot seed it at construction, since
-  // its parent holds the selection and only this screen knows the rows, so it
-  // is recorded on the first render that has any.
-  useEffect(() => {
-    if (selection.id === null && rows.length) choose(selection.index);
-  });
-  /**
-   * Whether the row at `i` carries the selection marker. All three row types
-   * ask here rather than repeating the rule at each render site.
-   */
+  /** Whether the row at `i` carries the selection marker. */
   const marked = (i: number) => rowsFocused && i === selected;
+  /** Opening a row chooses it, whether a key or the mouse opened it. */
+  const openRow = (i: number) => {
+    choose(i);
+    onOpen(rows[i]);
+  };
+  /**
+   * One Home row, whichever kind it is. Its identity, the place the screen
+   * scrolls to, its marker, what opening it does and what is drawn under it
+   * while marked are decided here once: a rule written at each kind's render
+   * site reaches the kinds someone remembered, and misses the one added last.
+   */
+  const homeRow = (
+    row: HomeItem,
+    i: number,
+    line: ReactNode,
+    { color, under }: { color?: RGBA; under?: () => ReactNode } = {},
+  ) => (
+    <ListRow
+      key={homeKey(row)}
+      id={`home-${i}`}
+      selected={marked(i)}
+      color={color}
+      onOpen={() => openRow(i)}
+      under={marked(i) && under?.()}
+    >
+      {line}
+    </ListRow>
+  );
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   // The tile row is a place the reader stands as much as any list row is, so
   // it is what has to be in view while it holds the focus, however far down a
@@ -411,11 +426,11 @@ export function Home({
       return true;
     }
     if (name === c.keys.down || name === "down") {
-      if (tile === null) choose(stepWithin(counts, selected, 1));
+      if (tile === null) move((from) => stepWithin(counts, from, 1));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      if (tile === null) choose(stepWithin(counts, selected, -1));
+      if (tile === null) move((from) => stepWithin(counts, from, -1));
       return true;
     }
     if (name === c.keys.left || name === "left") {
@@ -444,7 +459,7 @@ export function Home({
       return true;
     }
     if (name === c.keys.open && rows[selected]) {
-      onOpen(rows[selected]);
+      openRow(selected);
       return true;
     }
     // A key that asks for a different order releases the held one. While an
@@ -605,74 +620,70 @@ export function Home({
               <Empty text="No current problems in the data vsys can read." />
             )}
             {rows.map((row, i) =>
-              row.kind === "concern" ? (
-                <box
-                  id={`home-${i}`}
-                  key={row.item.id}
-                  flexDirection="column"
-                  flexShrink={0}
-                >
-                  <Row
-                    selected={marked(i)}
-                    color={row.item.danger ? ui.danger : ui.warn}
-                    onOpen={() => onOpen(row)}
-                  >
-                    {/* The same question the detail below is drawn under, so
-                        the marker says open only while the detail is drawn.
-                        The title is cut to the row with its mark, and the
-                        detail repeats what a cut can lose. */}
+              row.kind === "concern"
+                ? homeRow(
+                    row,
+                    i,
+                    // The same question the detail below is drawn under, so
+                    // the marker says open only while the detail is drawn.
+                    // The title is cut to the row with its mark, and the
+                    // detail repeats what a cut can lose.
                     <Disclosure
                       open={marked(i)}
                       name={fit(safe(row.item.title), panel - 3)}
-                    />
-                  </Row>
-                  {marked(i) && (
-                    <Detail>
-                      {/* One paragraph per idea, every one after the first
-                          under a blank row that says a new idea starts here.
-                          Each paragraph is drawn a wrapped row at a time, so
-                          the rows it takes are the rows it was measured at. */}
-                      {described(row.item).map((part, at) =>
-                        wrapLines(part, cardWidth).map((line, row) => (
+                    />,
+                    {
+                      color: row.item.danger ? ui.danger : ui.warn,
+                      under: () => (
+                        <Detail>
+                          {/* One paragraph per idea, every one after the first
+                              under a blank row that says a new idea starts
+                              here. Each paragraph is drawn a wrapped row at a
+                              time, so the rows it takes are the rows it was
+                              measured at. */}
+                          {described(row.item).map((part, at) =>
+                            wrapLines(part, cardWidth).map((line, row) => (
+                              <Line
+                                // biome-ignore lint/suspicious/noArrayIndexKey: a row is its place
+                                key={`${at}-${row}`}
+                                height={1}
+                                flexShrink={0}
+                                truncate
+                                attributes={ui.dim}
+                                marginTop={at > 0 && row === 0 ? 1 : 0}
+                              >
+                                {safe(line)}
+                              </Line>
+                            )),
+                          )}
+                          {/* The blank row the confirm dialog draws above its
+                              key line, here between the description and
+                              everything the reader can act on: `Next`, the
+                              command, and the keys that reach them. One row,
+                              out of the same budget, so the action lines sit
+                              where they sat. */}
+                          {action(nextLabel, row.item.next, undefined, 1)}
+                          {row.item.command !== undefined &&
+                            action(copyLabel, row.item.command, ui.accent)}
+                          {/* One row, cut with its mark where the card is
+                              narrower than the line: a row the edge shortens
+                              says nothing of what it dropped. */}
                           <Line
-                            // biome-ignore lint/suspicious/noArrayIndexKey: a row is its place
-                            key={`${at}-${row}`}
                             height={1}
                             flexShrink={0}
                             truncate
                             attributes={ui.dim}
-                            marginTop={at > 0 && row === 0 ? 1 : 0}
                           >
-                            {safe(line)}
+                            {fit(
+                              `${keyLabel(c.keys.open)} opens ${row.item.target?.kind === "lane" ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`,
+                              cardWidth,
+                            )}
                           </Line>
-                        )),
-                      )}
-                      {/* The blank row the confirm dialog draws above its key
-                          line, here between the description and everything
-                          the reader can act on: `Next`, the command, and the
-                          keys that reach them. One row, out of the same
-                          budget, so the action lines sit where they sat. */}
-                      {action(nextLabel, row.item.next, undefined, 1)}
-                      {row.item.command !== undefined &&
-                        action(copyLabel, row.item.command, ui.accent)}
-                      {/* One row, cut with its mark where the card is
-                          narrower than the line: a row the edge shortens
-                          says nothing of what it dropped. */}
-                      <Line
-                        height={1}
-                        flexShrink={0}
-                        truncate
-                        attributes={ui.dim}
-                      >
-                        {fit(
-                          `${keyLabel(c.keys.open)} opens ${row.item.target?.kind === "lane" ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`,
-                          cardWidth,
-                        )}
-                      </Line>
-                    </Detail>
-                  )}
-                </box>
-              ) : null,
+                        </Detail>
+                      ),
+                    },
+                  )
+                : null,
             )}
           </box>
           <box
@@ -693,33 +704,27 @@ export function Home({
             {!recent.length && (
               <Empty text="Nothing has changed since vsys started." />
             )}
-            {rows.map((row, i) =>
-              row.kind === "change" ? (
-                <box id={`home-${i}`} key={eventKey(row.event)} flexShrink={0}>
-                  <Row selected={marked(i)} onOpen={() => onOpen(row)}>
-                    {(() => {
-                      const e = eventParts(row.event, c);
-                      const [timeColumn, kindColumn, subjectColumn] =
-                        changeColumns;
-                      return (
-                        <>
-                          <span attributes={ui.dim}>
-                            {`${cell(timeColumn, e.time)}${columnGap}`}
-                          </span>
-                          <Ink
-                            color={levelColor(e.level)}
-                            attributes={e.level === "ok" ? ui.none : ui.bold}
-                          >
-                            {cell(kindColumn, e.kind)}
-                          </Ink>
-                          {safe(cell(subjectColumn, e.text))}
-                        </>
-                      );
-                    })()}
-                  </Row>
-                </box>
-              ) : null,
-            )}
+            {rows.map((row, i) => {
+              if (row.kind !== "change") return null;
+              const e = eventParts(row.event, c);
+              const [timeColumn, kindColumn, subjectColumn] = changeColumns;
+              return homeRow(
+                row,
+                i,
+                <>
+                  <span attributes={ui.dim}>
+                    {`${cell(timeColumn, e.time)}${columnGap}`}
+                  </span>
+                  <Ink
+                    color={levelColor(e.level)}
+                    attributes={e.level === "ok" ? ui.none : ui.bold}
+                  >
+                    {cell(kindColumn, e.kind)}
+                  </Ink>
+                  {safe(cell(subjectColumn, e.text))}
+                </>,
+              );
+            })}
             <Section
               {...heading(3)}
               width={panel}
@@ -745,37 +750,39 @@ export function Home({
               />
             )}
             {rows.map((row, i) =>
-              row.kind === "agent" ? (
-                <box id={`home-${i}`} key={row.lane.id} flexShrink={0}>
-                  <Row selected={marked(i)} onOpen={() => onOpen(row)}>
-                    {safe(cell(nameColumn, row.lane.name))}
-                    <span attributes={ui.dim}>
-                      {`${columnGap}${pidCell(row.lane.mainPid)}`}
-                    </span>
-                    {columnGap}
-                    <Bar
-                      value={row.lane.cpu}
-                      max={topCpu}
-                      width={barColumn.width}
-                      color={metric.cpu}
-                    />
-                    {columnGap}
-                    <Reading
-                      value={row.lane.cpu}
-                      text={cell(cpuColumn, share(row.lane.cpu))}
-                    />
-                    {columnGap}
-                    <Reading
-                      value={row.lane.rss}
-                      text={cell(memoryColumn, amount(row.lane.rss, c))}
-                    />
-                    {stateColumn && columnGap}
-                    <span attributes={ui.dim}>
-                      {stateColumn ? cell(stateColumn, row.lane.state) : ""}
-                    </span>
-                  </Row>
-                </box>
-              ) : null,
+              row.kind === "agent"
+                ? homeRow(
+                    row,
+                    i,
+                    <>
+                      {safe(cell(nameColumn, row.lane.name))}
+                      <span attributes={ui.dim}>
+                        {`${columnGap}${pidCell(row.lane.mainPid)}`}
+                      </span>
+                      {columnGap}
+                      <Bar
+                        value={row.lane.cpu}
+                        max={topCpu}
+                        width={barColumn.width}
+                        color={metric.cpu}
+                      />
+                      {columnGap}
+                      <Reading
+                        value={row.lane.cpu}
+                        text={cell(cpuColumn, share(row.lane.cpu))}
+                      />
+                      {columnGap}
+                      <Reading
+                        value={row.lane.rss}
+                        text={cell(memoryColumn, amount(row.lane.rss, c))}
+                      />
+                      {stateColumn && columnGap}
+                      <span attributes={ui.dim}>
+                        {stateColumn ? cell(stateColumn, row.lane.state) : ""}
+                      </span>
+                    </>,
+                  )
+                : null,
             )}
           </box>
         </box>

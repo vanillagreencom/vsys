@@ -1,8 +1,9 @@
-import type { ScrollBoxRenderable } from "@opentui/core";
-import { useEffect, useRef, useState } from "react";
+import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import {
+  type DeviceVolumes,
   damageCounts,
   type Integrity,
   integrity,
@@ -13,6 +14,7 @@ import type {
   Scratch,
   ScratchOrigin,
   ScratchRoot,
+  Scrub,
   Snapshot,
   Volume,
 } from "../model/types";
@@ -38,6 +40,7 @@ import {
   stepWithin,
   storageRegions,
 } from "./regions";
+import { firstRow, useSelection } from "./selection";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
   Bar,
@@ -47,25 +50,35 @@ import {
   Field,
   Ink,
   Line,
+  ListRow,
   Reading,
-  Row,
   Section,
+  useKeepInView,
 } from "./widgets";
 
 /** Everything the reader can select on Storage, top to bottom. */
 export type StorageItem =
-  | { kind: "filesystem"; id: string }
+  | { kind: "filesystem"; group: DeviceVolumes }
   | { kind: "volume"; volume: Volume }
-  | { kind: "scrub"; path: string }
+  | { kind: "scrub"; scrub: Scrub }
   | { kind: "scratch"; scratch: ScratchRoot; session: false }
   | { kind: "scratch"; scratch: Scratch; session: true };
 /** The path each selectable row stands for, which a card can name. */
 export function itemPath(item: StorageItem): string {
   // A filesystem is named by its identity, never by one of its mounts: a card
   // naming a mount means that mount's row, and the two would collide.
-  if (item.kind === "filesystem") return item.id;
+  if (item.kind === "filesystem") return item.group.id;
   if (item.kind === "volume") return item.volume.mount;
-  return item.kind === "scrub" ? item.path : item.scratch.path;
+  return item.kind === "scrub" ? item.scrub.path : item.scratch.path;
+}
+/**
+ * What tells one Storage row from another, whichever kind it is. A scratch
+ * root and a session are both scratch rows, and a path names no kind, so the
+ * kind leads the path.
+ */
+function storageKey(item: StorageItem): string {
+  const kind = item.kind === "scratch" && item.session ? "session" : item.kind;
+  return `${kind}:${itemPath(item)}`;
 }
 export function storageItems(s: Snapshot): StorageItem[] {
   return [
@@ -73,12 +86,10 @@ export function storageItems(s: Snapshot): StorageItem[] {
     // and the selection counts them as it draws them. Each filesystem states
     // its integrity once, above the mounts that share it.
     ...volumesByDevice(s.storage.volumes).flatMap((group) => [
-      { kind: "filesystem", id: group.id } as const,
+      { kind: "filesystem", group } as const,
       ...group.volumes.map((volume) => ({ kind: "volume", volume }) as const),
     ]),
-    ...s.storage.scrubs.map(
-      (scrub) => ({ kind: "scrub", path: scrub.path }) as const,
-    ),
+    ...s.storage.scrubs.map((scrub) => ({ kind: "scrub", scrub }) as const),
     ...s.storage.scratch.map(
       (scratch) => ({ kind: "scratch", scratch, session: false }) as const,
     ),
@@ -184,17 +195,23 @@ export function Storage({
   /** False while a pinned sample is shown, which is not the disk as it is. */
   live: boolean;
 }) {
-  const [chosen, setSelected] = useState(0);
   const items = storageItems(s);
-  // The selection held inside the rows there are: a list that shrinks under
-  // it leaves the reader on its last row, and with no rows at all nothing is
-  // selected and no region is focused.
-  const within = (index: number) => Math.min(index, items.length - 1);
-  const selected = within(chosen);
+  const ids = items.map(storageKey);
+  // The selection follows its row, because a mount or a directory that sorts
+  // above it moves every row below. Where the row has gone the nearest row
+  // takes over, and with no rows nothing is selected and no region focused.
+  const [selection, setSelection] = useState(firstRow);
+  const {
+    ids: rowIds,
+    selected,
+    choose,
+    move: step,
+  } = useSelection(ids, selection, setSelection);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
-  useEffect(() => {
-    scroller.current?.scrollChildIntoView(`storage-${selected}`);
-  }, [selected]);
+  // The selection moves with a sample as well as with a key, and a sample
+  // moves the rows in the same render, so the row is found after the layout
+  // that places it rather than in the render that asked for it.
+  useKeepInView(scroller, `storage-${selected}`);
   // A card names a row and this lands on it. The row is found before the
   // request is acknowledged, because a collector refresh between the keypress
   // and this effect can remove the mount or directory it named. Acknowledging
@@ -204,10 +221,10 @@ export function Storage({
   useEffect(() => {
     if (target === null) return;
     const at = storageItems(s).findIndex((item) => itemPath(item) === target);
-    if (at >= 0) setSelected(at);
+    if (at >= 0) choose(at);
     else onNotice(`${target} is no longer in the sample`, "warn");
     onTargetUsed();
-  }, [target, onTargetUsed, onNotice, s]);
+  }, [target, onTargetUsed, onNotice, s, choose]);
   // Storage's three lists are three regions of one flat selection, in the
   // order they are drawn: filesystems, scrub reports, scratch directories.
   const counts = [
@@ -222,7 +239,7 @@ export function Storage({
   // With no rows there is nothing to move to, and the choice is kept for the
   // rows that arrive.
   const move = (to: (index: number) => number) => {
-    if (items.length) setSelected((i) => to(within(i)));
+    if (items.length) step(to);
     return true;
   };
   useScreenKeys((name) => {
@@ -253,13 +270,9 @@ export function Storage({
         return true;
       }
       const item = items[selected];
-      const group =
-        item?.kind === "filesystem"
-          ? volumesByDevice(s.storage.volumes).find((g) => g.id === item.id)
-          : undefined;
       onCopy(
-        group
-          ? rebuildCommand(integrity(group, s.storage.scrubs, s.time, c))
+        item?.kind === "filesystem"
+          ? rebuildCommand(integrity(item.group, s.storage.scrubs, s.time, c))
           : undefined,
       );
       return true;
@@ -270,7 +283,7 @@ export function Storage({
       ({ action }) => name === c.keys[action],
     );
     if (jump < 0) return false;
-    if (counts[jump]) setSelected(regionRanges(counts)[jump][0]);
+    if (counts[jump]) choose(regionRanges(counts)[jump][0]);
     return true;
   });
   /** A list's heading: its title, the key that jumps to it, and its focus. */
@@ -318,8 +331,30 @@ export function Storage({
     ));
   };
   const mapped = totals.devices.some((d) => /^dm-/.test(d.name));
-  let index = -1;
-  const next = () => ++index;
+  /**
+   * One selectable Storage row, whichever kind it is, drawn at its place in
+   * `items`. Opening a row is selecting it, so the detail under a row shows
+   * while it is selected.
+   */
+  const storageRow = (
+    i: number,
+    line: (open: boolean) => ReactNode,
+    { color, under }: { color?: RGBA; under?: () => ReactNode } = {},
+  ) => {
+    const open = i === selected;
+    return (
+      <ListRow
+        key={rowIds[i]}
+        id={`storage-${i}`}
+        selected={open}
+        color={color}
+        onOpen={() => choose(i)}
+        under={open && under?.()}
+      >
+        {line(open)}
+      </ListRow>
+    );
+  };
   const st = s.storage;
   const scratch = scratchSummary(c, st);
   const scratchTop = Math.max(
@@ -332,30 +367,22 @@ export function Storage({
    * report text one level below that: a reader asking "is my data damaged"
    * gets the answer without opening anything.
    */
-  const integrityRow = (item: Integrity, first: Volume) => {
-    const i = next();
+  const integrityRow = (i: number, item: Integrity, first: Volume) => {
     const level = integrityLevel(item.state);
     const counts = damageCounts(item);
     const rebuild = rebuildCommand(item);
-    return (
-      <box
-        id={`storage-${i}`}
-        key={`integrity-${item.id}`}
-        flexDirection="column"
-        flexShrink={0}
-      >
-        <Row
-          selected={i === selected}
-          color={level === "ok" ? undefined : levelColor(level)}
-          onOpen={() => setSelected(i)}
-        >
-          <Disclosure
-            open={i === selected}
-            name={integrityLine(item)}
-            count={counts.files || undefined}
-          />
-        </Row>
-        {i === selected && (
+    return storageRow(
+      i,
+      (open) => (
+        <Disclosure
+          open={open}
+          name={integrityLine(item)}
+          count={counts.files || undefined}
+        />
+      ),
+      {
+        color: level === "ok" ? undefined : levelColor(level),
+        under: () => (
           <Detail>
             {/* The headline reading is what the last check found. The
                 lifetime counter is a different quantity and sits below it. */}
@@ -415,41 +442,35 @@ export function Storage({
               </Line>
             )}
           </Detail>
-        )}
-      </box>
+        ),
+      },
     );
   };
-  const volumeRow = (v: Volume) => {
-    const i = next();
-    const level = volumeLevel(v, c.freeFloor);
-    return (
-      <box
-        id={`storage-${i}`}
-        key={v.mount}
-        flexDirection="column"
-        flexShrink={0}
-      >
-        <Row
-          selected={i === selected}
-          color={levelColor(level)}
-          onOpen={() => setSelected(i)}
-        >
-          <Disclosure open={i === selected} name={fit(v.mount, 40)} />
+  const volumeRow = (i: number, v: Volume) =>
+    storageRow(
+      i,
+      (open) => (
+        <>
+          <Disclosure open={open} name={fit(v.mount, 40)} />
           {v.readOnly && <Ink color={ui.danger}>read-only</Ink>}
-        </Row>
-        {i === selected && (
+        </>
+      ),
+      {
+        color: levelColor(volumeLevel(v, c.freeFloor)),
+        under: () => (
           <Detail>
             {/* The device row above names the device and its error counters
                 once for every mount grouped under it, and subvolumes of one
                 filesystem share both. The options are the mount's own. */}
             <Field label="Options" value={v.options.join(", ")} />
           </Detail>
-        )}
-      </box>
+        ),
+      },
     );
-  };
-  const scratchRow = (item: Extract<StorageItem, { kind: "scratch" }>) => {
-    const i = next();
+  const scratchRow = (
+    i: number,
+    item: Extract<StorageItem, { kind: "scratch" }>,
+  ) => {
     const x = item.scratch;
     const over = x.bytes !== null && !item.session && x.bytes > c.scratchQuota;
     const modified = age(
@@ -457,18 +478,10 @@ export function Storage({
         ? x.age
         : Math.max(0, (s.time - x.modifiedAt) / 1000),
     );
-    return (
-      <box
-        id={`storage-${i}`}
-        key={x.path}
-        flexDirection="column"
-        flexShrink={0}
-      >
-        <Row
-          selected={i === selected}
-          color={over ? ui.warn : undefined}
-          onOpen={() => setSelected(i)}
-        >
+    return storageRow(
+      i,
+      () => (
+        <>
           {safe(fit(x.path, 40))}
           {columnGap}
           <Bar
@@ -484,20 +497,115 @@ export function Storage({
           />
           <span attributes={ui.dim}>{`  ${modified} ago`}</span>
           {x.error && <Ink color={ui.warn}>{`  ${safe(x.error)}`}</Ink>}
-        </Row>
-        {/* The origin sits under the row rather than after its columns,
-            where a narrow terminal cuts it and pushes the error out. */}
-        {i === selected && !item.session && item.scratch.origin !== null && (
-          <Detail>
-            <Field
-              label="Origin"
-              value={scratchOriginText(item.scratch.origin)}
-            />
-          </Detail>
-        )}
-      </box>
+        </>
+      ),
+      {
+        color: over ? ui.warn : undefined,
+        // The origin sits under the row rather than after its columns, where
+        // a narrow terminal cuts it and pushes the error out.
+        under: () =>
+          !item.session &&
+          item.scratch.origin !== null && (
+            <Detail>
+              <Field
+                label="Origin"
+                value={scratchOriginText(item.scratch.origin)}
+              />
+            </Detail>
+          ),
+      },
     );
   };
+  /** A filesystem's heading, then its integrity row: one row of the selection. */
+  const filesystemRows = (i: number, group: DeviceVolumes) => {
+    const { id, device, volumes } = group;
+    const state = integrity(group, st.scrubs, s.time, c);
+    // Subvolumes of one filesystem each report the whole device's free
+    // space, so the device states it once and its mounts carry only what
+    // differs between them. `statfs` is attempted per mount, so one
+    // member can have failed where another succeeded: read the figures
+    // from a member that has them rather than from whichever came first.
+    const first =
+      volumes.find((v) => v.free !== null && v.total !== null) ?? volumes[0];
+    const used =
+      first.total !== null && first.free !== null
+        ? first.total - first.free
+        : null;
+    // The heading's colour is the worse of what its mounts report and
+    // what the filesystem's integrity says, so damage found by a check
+    // colours the heading even while every mount reads normally.
+    const worst: Level =
+      volumes.some((v) => volumeLevel(v, c.freeFloor) === "danger") ||
+      integrityLevel(state.state) === "danger"
+        ? "danger"
+        : integrityLevel(state.state) === "warn"
+          ? "warn"
+          : "ok";
+    return (
+      <Fragment key={`filesystem-${id}`}>
+        <Line height={1} flexShrink={0} truncate>
+          <span fg={levelColor(worst)}>{safe(fit(device, 42))}</span>
+          {columnGap}
+          <Bar value={used} max={first.total ?? 1} width={12} level={worst} />
+          {`${columnGap}${fit(amount(first.free, c), 10, "right")} free of ${amount(first.total, c)}`}
+          <span attributes={ui.dim}>
+            {`  ${volumes.length} ${volumes.length === 1 ? "mount" : "mounts"}`}
+          </span>
+        </Line>
+        {integrityRow(i, state, first)}
+      </Fragment>
+    );
+  };
+  const scrubRow = (i: number, scrub: Scrub) =>
+    storageRow(
+      i,
+      () => (
+        <>
+          {safe(scrub.path)}
+          {/* A file vsys could not read reported nothing at all, and
+              saying it reported a problem puts words in it. */}
+          <span attributes={scrub.problem ? ui.none : ui.dim}>
+            {scrub.readable === false
+              ? "  could not be read"
+              : scrub.problem
+                ? "  problem reported"
+                : "  clean"}
+          </span>
+        </>
+      ),
+      {
+        color: scrub.problem ? ui.danger : undefined,
+        under: () => (
+          <Detail>
+            <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+              {safe(scrub.text)}
+            </Line>
+          </Detail>
+        ),
+      },
+    );
+  /** Draws `item`, the row at `i`, by its kind. */
+  const drawItem = (item: StorageItem, i: number): ReactNode => {
+    switch (item.kind) {
+      case "filesystem":
+        return filesystemRows(i, item.group);
+      case "volume":
+        return volumeRow(i, item.volume);
+      case "scrub":
+        return scrubRow(i, item.scrub);
+      case "scratch":
+        return scratchRow(i, item);
+      default: {
+        const unknown: never = item;
+        throw new Error(`Unknown Storage row: ${String(unknown)}`);
+      }
+    }
+  };
+  /** The rows of one region, in the order the selection counts them. */
+  const inRegion = (at: number) =>
+    items.map((item, i) =>
+      regionOf(counts, i) === at ? drawItem(item, i) : null,
+    );
   return (
     <scrollbox
       ref={scroller}
@@ -535,52 +643,7 @@ export function Storage({
         {st.mountsAvailable !== false && !st.volumes.length && (
           <Empty text="No watched Btrfs mount." />
         )}
-        {volumesByDevice(st.volumes).map((group) => {
-          const { id, device, volumes } = group;
-          const state = integrity(group, st.scrubs, s.time, c);
-          // Subvolumes of one filesystem each report the whole device's free
-          // space, so the device states it once and its mounts carry only what
-          // differs between them. `statfs` is attempted per mount, so one
-          // member can have failed where another succeeded: read the figures
-          // from a member that has them rather than from whichever came first.
-          const first =
-            volumes.find((v) => v.free !== null && v.total !== null) ??
-            volumes[0];
-          const used =
-            first.total !== null && first.free !== null
-              ? first.total - first.free
-              : null;
-          // The heading's colour is the worse of what its mounts report and
-          // what the filesystem's integrity says, so damage found by a check
-          // colours the heading even while every mount reads normally.
-          const worst: Level =
-            volumes.some((v) => volumeLevel(v, c.freeFloor) === "danger") ||
-            integrityLevel(state.state) === "danger"
-              ? "danger"
-              : integrityLevel(state.state) === "warn"
-                ? "warn"
-                : "ok";
-          return (
-            <box key={id} flexDirection="column" flexShrink={0}>
-              <Line height={1} flexShrink={0} truncate>
-                <span fg={levelColor(worst)}>{safe(fit(device, 42))}</span>
-                {columnGap}
-                <Bar
-                  value={used}
-                  max={first.total ?? 1}
-                  width={12}
-                  level={worst}
-                />
-                {`${columnGap}${fit(amount(first.free, c), 10, "right")} free of ${amount(first.total, c)}`}
-                <span attributes={ui.dim}>
-                  {`  ${volumes.length} ${volumes.length === 1 ? "mount" : "mounts"}`}
-                </span>
-              </Line>
-              {integrityRow(state, first)}
-              {volumes.map(volumeRow)}
-            </box>
-          );
-        })}
+        {inRegion(0)}
         <Section
           {...heading(1)}
           width={width}
@@ -589,48 +652,14 @@ export function Storage({
         {!st.scrubs.length && (
           <Empty text="No scrub report in the report directory." />
         )}
-        {st.scrubs.map((scrub) => {
-          const i = next();
-          return (
-            <box
-              id={`storage-${i}`}
-              key={scrub.path}
-              flexDirection="column"
-              flexShrink={0}
-            >
-              <Row
-                selected={i === selected}
-                color={scrub.problem ? ui.danger : undefined}
-                onOpen={() => setSelected(i)}
-              >
-                {safe(scrub.path)}
-                {/* A file vsys could not read reported nothing at all, and
-                    saying it reported a problem puts words in it. */}
-                <span attributes={scrub.problem ? ui.none : ui.dim}>
-                  {scrub.readable === false
-                    ? "  could not be read"
-                    : scrub.problem
-                      ? "  problem reported"
-                      : "  clean"}
-                </span>
-              </Row>
-              {i === selected && (
-                <Detail>
-                  <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                    {safe(scrub.text)}
-                  </Line>
-                </Detail>
-              )}
-            </box>
-          );
-        })}
+        {inRegion(1)}
         <Section
           {...heading(2)}
           width={width}
           count={`${scratch.state} · quota ${amount(c.scratchQuota, c)}`}
         />
         {scratch.empty !== null && <Empty text={scratch.empty} />}
-        {items.filter((item) => item.kind === "scratch").map(scratchRow)}
+        {inRegion(2)}
       </box>
     </scrollbox>
   );

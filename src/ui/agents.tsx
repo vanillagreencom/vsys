@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Config, columns, validate } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
@@ -31,6 +31,7 @@ import {
 } from "./format";
 import { heldLabel, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
+import { firstRow, useSelection } from "./selection";
 import { levelColor, metric, scrollbar, textInput, ui } from "./theme";
 import {
   Bar,
@@ -395,16 +396,11 @@ export function Agents({
   onSwitch?: (paneId: string) => Promise<void>;
 }) {
   /**
-   * What the reader chose: the row they moved to, and the lane that row named
-   * at the time. The row number alone cannot survive a live list — a lane
-   * exits and every row below it moves up — and this screen reads the
-   * selection three times over, for the highlight, for the summary beside the
-   * list, and for what the open action opens.
+   * What the reader chose, followed by lane. This screen reads the selection
+   * three times over, for the highlight, for the summary beside the list, and
+   * for what the open action opens.
    */
-  const [selection, setSelection] = useState<{
-    index: number;
-    id: string | null;
-  }>({ index: 0, id: null });
+  const [selection, setSelection] = useState(firstRow);
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const [table, setTable] = useState(false);
@@ -425,43 +421,24 @@ export function Agents({
     lanes.map((lane) => lane.id),
   );
   const open = laneId === null ? null : s.lanes.find((l) => l.id === laneId);
-  /** Move the selection, recording the row and the lane it names together. */
-  const choose = (index: number) =>
-    setSelection({ index, id: lanes[index]?.id ?? null });
-  /**
-   * The row to draw, resolved against the list this render actually has.
-   * Following the chosen lane keeps the reader on it when a re-sort or an exit
-   * above them moves it; where that lane has gone, the nearest row that exists
-   * takes over. Resolving here rather than in an effect means no frame is ever
-   * drawn with a selection the list cannot honour.
-   */
-  const found = lanes.findIndex((lane) => lane.id === selection.id);
-  const selected =
-    found >= 0
-      ? found
-      : Math.min(selection.index, Math.max(0, lanes.length - 1));
-  // The resolution above is only for this frame, and it has to be recorded or
-  // the next list is resolved against a lane that has gone. A departed lane
-  // leaves `selection.index` naming a row that no longer exists, and a lane
-  // arriving lower down the order makes that row number valid again: the
-  // highlight would leave the fallback for the newcomer. Writing the resolved
-  // row back makes the fallback a choice, the way a key press is one.
-  //
-  // The order of the two effects is load-bearing. This one must run first, so
-  // that a lane opened from elsewhere wins the pass it arrives in; declared
-  // after, the two write different rows on every pass and never settle, which
-  // hangs the render rather than merely picking the wrong row. Each settles by
-  // returning the current object when nothing moved.
-  useEffect(() => {
-    const id = lanes[selected]?.id ?? null;
-    setSelection((current) =>
-      current.index === selected && current.id === id
-        ? current
-        : { index: selected, id },
-    );
-  }, [lanes, selected]);
+  // The list sorts by its readings, so an arrival can land on the very row a
+  // departed lane left behind; the selection owner records what it resolves.
+  // It must be called before the effect below, which moves the selection too.
+  const {
+    selected,
+    choose,
+    move: step,
+  } = useSelection(
+    lanes.map((lane) => lane.id),
+    selection,
+    setSelection,
+  );
   // A lane opened from Home or from a card was never selected in this list,
   // so going back would land on the first row. Follow the open lane instead.
+  // Declared after the selection owner, so that a lane opened from elsewhere
+  // wins the pass it arrives in: declared before it, the two write different
+  // rows on every pass and never settle, which hangs the render rather than
+  // merely picking the wrong row.
   useEffect(() => {
     if (laneId === null) return;
     const at = lanes.findIndex((lane) => lane.id === laneId);
@@ -511,14 +488,16 @@ export function Agents({
       return true;
     }
     const rows = chooser ? columns.length : lanes.length;
-    const index = chooser ? column : selected;
-    const move = (next: number) => (chooser ? setColumn(next) : choose(next));
+    // Each step starts where the last one landed, which a render has not
+    // drawn yet when two keys arrive in one read.
+    const move = (to: (from: number) => number) =>
+      chooser ? setColumn(to) : step(to);
     if (name === c.keys.down || name === "down") {
-      move(nextDown(rows, index));
+      move((from) => nextDown(rows, from));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      move(Math.max(0, index - 1));
+      move((from) => Math.max(0, from - 1));
       return true;
     }
     if (name === c.keys.open) {
@@ -706,6 +685,22 @@ export function Agents({
       c.sparkline,
     );
 
+  /**
+   * One lane row, in the list or in the table. Its identity, its marker, its
+   * colour and what opening it does are decided here once, so neither view
+   * can draw a lane by a rule the other has dropped.
+   */
+  const laneRow = (lane: Lane, isSelected: boolean, line: ReactNode) => (
+    <Row
+      key={lane.id}
+      selected={isSelected}
+      color={levelColor(laneLevel(lane, c))}
+      onOpen={() => onOpen(lane.id)}
+    >
+      {line}
+    </Row>
+  );
+
   if (laneId !== null)
     return open ? (
       <Agent
@@ -859,25 +854,19 @@ export function Agents({
                 height={listHeight - 1}
                 onSelect={choose}
                 empty="No agent matches."
-                render={(lane, i, isSelected) => (
-                  <Row
-                    key={lane.id}
-                    selected={isSelected}
-                    color={levelColor(laneLevel(lane, c))}
-                    onOpen={() => {
-                      choose(i);
-                      onOpen(lane.id);
-                    }}
-                  >
-                    {tableCells
+                render={(lane, _, isSelected) =>
+                  laneRow(
+                    lane,
+                    isSelected,
+                    tableCells
                       .map(({ name, column }) =>
                         name === null
                           ? pidCell(lane.mainPid)
                           : cell(column, safe(laneValue(lane, name, c))),
                       )
-                      .join(columnGap)}
-                  </Row>
-                )}
+                      .join(columnGap),
+                  )
+                }
               />
             </box>
           </scrollbox>
@@ -906,18 +895,12 @@ export function Agents({
                   ? "No agent matches."
                   : "No process runs in a watched scope, and no agent has escaped one."
               }
-              render={(lane, i, isSelected) => {
+              render={(lane, _, isSelected) => {
                 const badge = laneBadge(lane);
-                return (
-                  <Row
-                    key={lane.id}
-                    selected={isSelected}
-                    color={levelColor(laneLevel(lane, c))}
-                    onOpen={() => {
-                      choose(i);
-                      onOpen(lane.id);
-                    }}
-                  >
+                return laneRow(
+                  lane,
+                  isSelected,
+                  <>
                     {safe(cell(nameColumn, lane.name))}
                     {showing.has("Pane") && (
                       <span attributes={ui.dim}>
@@ -977,7 +960,7 @@ export function Agents({
                         {cell(laneColumn("State"), lane.state)}
                       </span>
                     )}
-                  </Row>
+                  </>,
                 );
               }}
             />

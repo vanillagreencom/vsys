@@ -613,6 +613,52 @@ export function Row({
 }
 
 /**
+ * One selectable row of a list, with whatever it opened drawn under it. Every
+ * screen that lists more than one kind of row draws each kind through this,
+ * so the scroll target, the marker, the click and the nesting cannot differ
+ * between kinds or between screens. The caller decides when `under` shows.
+ */
+export function ListRow({
+  id,
+  lineId,
+  selected,
+  color,
+  indent,
+  onOpen,
+  children,
+  under,
+}: {
+  /** What the screen scrolls into view: the row and everything under it. */
+  id: string;
+  /** The row's own line, for a screen that places the line and the block apart. */
+  lineId?: string;
+  selected: boolean;
+  color?: RGBA;
+  indent?: number;
+  onOpen: () => void;
+  children: ReactNode;
+  under?: ReactNode;
+}) {
+  const row = (
+    <Row selected={selected} color={color} onOpen={onOpen}>
+      {children}
+    </Row>
+  );
+  return (
+    <box id={id} flexDirection="column" flexShrink={0} paddingLeft={indent}>
+      {lineId === undefined ? (
+        row
+      ) : (
+        <box id={lineId} flexShrink={0}>
+          {row}
+        </box>
+      )}
+      {under}
+    </box>
+  );
+}
+
+/**
  * The selection one row below `index` in a list of `count` rows. Clamped at 0
  * so an empty list holds the selection on the first row: a bare
  * `count - 1` yields -1, and no row highlights when the rows come back.

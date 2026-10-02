@@ -6,7 +6,8 @@ import type { LaneCommand } from "../model/actions";
 import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
-import { isChildLine, mount, selectedRow } from "../test/harness";
+import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
+import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
 
 test("agent detail names the account, the charged resources, the limits and the block", async () => {
@@ -795,6 +796,120 @@ test("an open section is drawn as a child of its own row", async () => {
     expect(row).toBeGreaterThan(-1);
     expect(isChildLine(lines[row])).toBe(false);
     expect(isChildLine(lines[row + 1])).toBe(true);
+  } finally {
+    await t.close();
+  }
+});
+
+test("every kind of detail row is opened alike by the key and the mouse, and followed when the rows move", async () => {
+  // The row of each kind this test opens, by the words it draws. The set is
+  // the type's own: a kind added to `DetailRow` and missing here fails to
+  // compile, so this test cannot quietly narrow when the fixture changes.
+  const opens: Record<DetailRow["kind"], string> = {
+    section: "Open files",
+    terminal: "Go to terminal",
+    action: "Thaw",
+  };
+  /**
+   * The detail with every kind of row drawn: the Terminal section open, so
+   * its terminal row is drawn under it, and the Actions section open below.
+   * The reader is left on Actions.
+   */
+  const everyKind = async (switched: string[]) => {
+    const t = await paned(
+      {
+        onCapture: async () => ["output"],
+        onSwitch: async (paneId) => {
+          switched.push(paneId);
+        },
+      },
+      {},
+      60,
+    );
+    await t.press("enter");
+    for (let i = 0; i < 3; i++) await t.press("j");
+    await t.press("enter");
+    for (const words of Object.values(opens))
+      expect({ words, drawn: t.frame().includes(words) }).toEqual({
+        words,
+        drawn: true,
+      });
+    return t;
+  };
+  /** Moves the reader from wherever they are up or down to the row `words` names. */
+  const walkTo = async (
+    t: Awaited<ReturnType<typeof everyKind>>,
+    words: string,
+  ) => {
+    for (let i = 0; i < 10 && !selectedRow(t.frame()).includes(words); i++)
+      await t.press("k");
+    for (let i = 0; i < 10 && !selectedRow(t.frame()).includes(words); i++)
+      await t.press("j");
+    expect(selectedRow(t.frame())).toContain(words);
+  };
+  for (const [kind, words] of Object.entries(opens)) {
+    const byKey: string[] = [];
+    const k = await everyKind(byKey);
+    let keyed: { opened: string[]; notice: boolean } | null = null;
+    try {
+      await walkTo(k, words);
+      await k.press("enter");
+      keyed = {
+        opened: underMarked(k.frame()),
+        notice: k.frame().includes("Write mode is off"),
+      };
+    } finally {
+      await k.close();
+    }
+    const byMouse: string[] = [];
+    const m = await everyKind(byMouse);
+    try {
+      const lines = m.frame().split("\n");
+      const y = lines.findIndex((line) => line.includes(words));
+      await m.click(lines[y].indexOf(words), y);
+      expect({
+        kind,
+        opened: underMarked(m.frame()),
+        notice: m.frame().includes("Write mode is off"),
+        switched: byMouse,
+      }).toEqual({ kind, ...keyed, switched: byKey });
+    } finally {
+      await m.close();
+    }
+  }
+  // The terminal row comes and goes with the sample. A reader on a row below
+  // it stays on that row when it goes, rather than on the row that moved up
+  // into its number.
+  for (const words of [opens.section, "Actions", opens.action]) {
+    const t = await everyKind([]);
+    try {
+      await walkTo(t, words);
+      await t.update({
+        ...t.snapshot,
+        time: t.snapshot.time + 1000,
+        lanes: t.snapshot.lanes.map((lane) => ({ ...lane, pane: "" })),
+      });
+      expect(t.frame()).not.toContain(opens.terminal);
+      expect({ words, on: selectedRow(t.frame()) }).toEqual({
+        words,
+        on: expect.stringContaining(words) as unknown as string,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("two arrows that arrive before a render move the detail two rows", async () => {
+  const t = await paned();
+  try {
+    // Processes and Launch sit above Terminal, where `paned` leaves the
+    // reader; Open files and Actions sit below it.
+    expect(selectedRow(t.frame())).toContain("Terminal");
+    await t.pressTogether(["j", "j"]);
+    expect(selectedRow(t.frame())).toContain("Actions");
+    await t.pressTogether(["k", "k"]);
+    expect(selectedRow(t.frame())).toContain("Terminal");
   } finally {
     await t.close();
   }

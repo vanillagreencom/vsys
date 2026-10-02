@@ -1,0 +1,1 @@
+- Storage and agent detail keep the selected row when rows change above it, and two quick arrow presses move two rows.
