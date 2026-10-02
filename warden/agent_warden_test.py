@@ -117,6 +117,31 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(result.stderr.splitlines()[0].startswith("agent-warden: agent-tools=missing "))
 
+    def test_overlay_entry_naming_a_shipped_tool_extends_it(self):
+        with scratch() as tmp:
+            base = Path(tmp)
+            script = base / "warden" / "agent-warden"
+            script.parent.mkdir(parents=True)
+            shutil.copy2(WARDEN, script)
+            script.chmod(0o755)
+            (base / "data").mkdir()
+            (base / "data" / "agent-tools.json").write_text(json.dumps({
+                "version": 1,
+                "tools": [{"name": "xi-agent", "mise": ["xi-install"]}],
+            }))
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            overlay = Path(env["HOME"]) / ".config" / "vsys" / "agent-tools.json"
+            overlay.parent.mkdir(parents=True)
+            overlay.write_text(json.dumps({
+                "version": 1,
+                "tools": [{"name": "xi-agent", "mise": ["xi-other"], "executables": ["/usr/bin/xi-agent"]}],
+            }))
+            module = load_warden(env, "agent_warden_overlay_extends", script)
+        self.assertEqual(module.AGENT_COMMS, {"xi-agent"})
+        self.assertEqual(module.MISE_AGENT_NAMES, {"xi-install": "xi-agent", "xi-other": "xi-agent"})
+
     def test_owner_agent_tool_overlay_pins_workstation_set(self):
         with scratch() as tmp:
             base = Path(tmp)
@@ -148,9 +173,13 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             ("bad shipped version", {"version": 2, "tools": []}, None, "agent-tools.json"),
             ("version true", {"version": True, "tools": []}, None, "agent-tools.json"),
             ("unknown overlay key", {"version": 1, "tools": []}, {"version": 1, "tools": [], "extra": True}, ".config/vsys/agent-tools.json"),
-            ("duplicate overlay name", {"version": 1, "tools": [{"name": "claude"}]}, {"version": 1, "tools": [{"name": "claude"}]}, ".config/vsys/agent-tools.json"),
+            ("duplicate overlay mise dir", {"version": 1, "tools": [{"name": "claude", "mise": ["claude"]}]}, {"version": 1, "tools": [{"name": "other", "mise": ["claude"]}]}, ".config/vsys/agent-tools.json"),
             ("mise slash", {"version": 1, "tools": [{"name": "ok", "mise": ["bad/dir"]}]}, None, "agent-tools.json"),
             ("path relative", {"version": 1, "tools": [{"name": "ok", "paths": ["pkg/"]}]}, None, "agent-tools.json"),
+            ("root path", {"version": 1, "tools": [{"name": "ok", "paths": ["/"]}]}, None, "agent-tools.json"),
+            ("duplicate path", {"version": 1, "tools": [{"name": "ok", "paths": ["/pkg/", "/pkg/"]}]}, None, "agent-tools.json"),
+            ("executable directory", {"version": 1, "tools": [{"name": "ok", "executables": ["/usr/bin/"]}]}, None, "agent-tools.json"),
+            ("duplicate overlay path", {"version": 1, "tools": [{"name": "ok", "paths": ["/pkg/"]}]}, {"version": 1, "tools": [{"name": "ok", "paths": ["/pkg/"]}]}, ".config/vsys/agent-tools.json"),
             ("prefix relative", {"version": 1, "tools": [], "desktopExePrefixes": ["relative"]}, None, "agent-tools.json"),
             ("non json", "{", None, "agent-tools.json"),
             ("invalid utf8", b"\xff", None, "agent-tools.json"),

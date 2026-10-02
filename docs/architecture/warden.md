@@ -48,11 +48,11 @@ The warden never kills an individual process. It never kills a live session. A s
 
 ## Classification data
 
-The shipped classification data is `data/agent-tools.json`. It contains published agent CLI names, mise install directory names, each CLI's install path fragments, desktop executable prefixes and bundled CLI suffixes. The warden validates the path fragments and does not classify by them; the dashboard confirms an agent's name with them.
+The shipped classification data is `data/agent-tools.json`. It contains published agent CLI names, mise install directory names, each CLI's install path fragments and executable paths, desktop executable prefixes and bundled CLI suffixes. The warden validates the path fragments and executable paths and does not classify by them; the dashboard confirms an agent's name with them.
 
 At startup, the warden first looks beside a checkout at `data/agent-tools.json`. If that file is absent, it looks at `${XDG_DATA_HOME:-$HOME/.local/share}/vsys/agent-tools.json`. If neither file exists, it exits with `agent-tools=missing`.
 
-The local overlay is `$HOME/.config/vsys/agent-tools.json`. It uses the same schema and adds entries. A missing overlay is normal. A malformed shipped file or overlay exits with `agent-tools=invalid` and names the file. The dashboard reads the same overlay. A diverging hand-written `config.toml` `agentTools` value still replaces the shared list for the dashboard.
+The local overlay is `$HOME/.config/vsys/agent-tools.json`. It uses the same schema and adds entries. An overlay entry with a name the shipped file lists adds its mise directories to that tool. A missing overlay is normal. A malformed shipped file or overlay exits with `agent-tools=invalid` and names the file. The dashboard reads the same overlay. A diverging hand-written `config.toml` `agentTools` value still replaces the shared list for the dashboard.
 
 D005 records why the dashboard and the warden share this data file. D006 records which Settings saves update the overlay and why they do not pin the layered list.
 

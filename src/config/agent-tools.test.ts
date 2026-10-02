@@ -8,8 +8,8 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
-  installLocations,
   loadAgentToolNames,
+  loadAgentTools,
   parseAgentToolsDocument,
   saveAgentToolNames,
   shippedAgentTools,
@@ -73,6 +73,19 @@ test("agent tools parser accepts valid documents and rejects malformed rows", ()
       "duplicate path",
       { ...valid, tools: [{ name: "ok", paths: ["/pkg/", "/pkg/"] }] },
     ],
+    [
+      "executable directory",
+      { ...valid, tools: [{ name: "ok", executables: ["/usr/bin/"] }] },
+    ],
+    [
+      "path repeated as executable",
+      {
+        ...valid,
+        tools: [
+          { name: "ok", paths: ["/usr/bin/ok"], executables: ["/usr/bin/ok"] },
+        ],
+      },
+    ],
     ["bad prefix", { ...valid, desktopExePrefixes: ["relative"] }],
     ["duplicate name", { ...valid, tools: [{ name: "a" }, { name: "a" }] }],
   ];
@@ -89,6 +102,32 @@ test("agent tools loader merges owner overlay after shipped defaults", async () 
       join(process.cwd(), "data/owner-agent-tools.json"),
     ),
   ).toEqual([...shippedNames, ...ownerNames]);
+});
+
+test("an overlay entry naming a shipped tool adds to that tool's locations", async () => {
+  const root = scratch("agent-tools-extend");
+  const path = join(root, "agent-tools.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      version: 1,
+      tools: [{ name: "codex", mise: ["codex-alt"], paths: ["/srv/codex/"] }],
+    }),
+  );
+  const merged = await loadAgentTools(path);
+  expect(merged.tools.map((tool) => tool.name)).toEqual(shippedNames);
+  const codex = merged.tools.find((tool) => tool.name === "codex");
+  expect(codex?.mise).toEqual(["codex", "codex-alt"]);
+  expect(codex?.paths.at(-1)).toBe("/srv/codex/");
+  // A location the shipped entry already names is refused, naming the overlay.
+  writeFileSync(
+    path,
+    JSON.stringify({
+      version: 1,
+      tools: [{ name: "codex", paths: ["/.codex/packages/"] }],
+    }),
+  );
+  await expect(loadAgentTools(path)).rejects.toThrow(path);
 });
 
 test("agent tools loader uses shipped defaults when overlay is missing", async () => {
@@ -121,6 +160,7 @@ test("agent tools writer saves only overlay tools and preserves overlay signals"
             paths: ["/opt/local/"],
           },
           { name: "removed-agent", mise: ["removed-agent"] },
+          { name: "codex", mise: [], executables: ["/usr/local/bin/codex"] },
         ],
         desktopExePrefixes: ["/apps/"],
         bundledCliSuffixes: ["/bin/agent"],
@@ -134,6 +174,7 @@ test("agent tools writer saves only overlay tools and preserves overlay signals"
   expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
     version: 1,
     tools: [
+      { name: "codex", mise: [], executables: ["/usr/local/bin/codex"] },
       { name: "local-agent", mise: ["local-agent"], paths: ["/opt/local/"] },
       { name: "new-agent", mise: [] },
     ],
@@ -159,7 +200,7 @@ test("agent tools writer refuses malformed existing overlays", async () => {
   const body = `${JSON.stringify(
     {
       version: 1,
-      tools: [{ name: shippedNames[0], mise: [] }],
+      tools: [{ name: "other-agent", mise: [shippedNames[0]] }],
       desktopExePrefixes: [],
       bundledCliSuffixes: [],
     },
@@ -195,25 +236,6 @@ test("every shipped agent tool names where it is installed", () => {
       .filter((tool) => !tool.mise?.length && !tool.paths?.length)
       .map((tool) => tool.name),
   ).toEqual([]);
-});
-
-test("install locations are each tool's paths and its version manager directories", () => {
-  expect(
-    installLocations(
-      parseAgentToolsDocument({
-        version: 1,
-        tools: [
-          { name: "a", mise: ["a-dir"], paths: ["/node_modules/a/"] },
-          { name: "b" },
-        ],
-      }),
-    ),
-  ).toEqual(
-    new Map([
-      ["a", ["/node_modules/a/", "/installs/a-dir/"]],
-      ["b", []],
-    ]),
-  );
 });
 
 test("config sources do not keep an inline shipped tool list", () => {

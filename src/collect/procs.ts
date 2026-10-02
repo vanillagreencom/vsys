@@ -9,12 +9,17 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   type AgentToolsDocument,
-  installLocations,
   shippedAgentTools,
 } from "../config/agent-tools";
 import { scopeMain } from "../model/scopes";
 import type { Group, Proc, SourceError } from "../model/types";
-import { buildKind, desktopApp, excludedArgv, toolName } from "./builds";
+import {
+  buildKind,
+  excludedArgv,
+  type ToolSignals,
+  toolName,
+  toolSignals,
+} from "./builds";
 import { Reader } from "./io";
 import type { CollectionConfig } from "./settings";
 
@@ -146,7 +151,7 @@ export class ProcessCollector implements ProcessSource {
     time: number;
     counters: Map<number, { start: number; ticks: number }>;
   };
-  private installs: Map<string, string[]>;
+  private signals: ToolSignals;
   constructor(
     private c: CollectionConfig,
     private ticksPerSecond: number,
@@ -156,9 +161,9 @@ export class ProcessCollector implements ProcessSource {
      * overlay merged in; a collector built any other way reads the shipped
      * data, so no test reads the host's overlay.
      */
-    private tools: AgentToolsDocument = shippedAgentTools,
+    tools: AgentToolsDocument = shippedAgentTools,
   ) {
-    this.installs = installLocations(tools);
+    this.signals = toolSignals(tools);
   }
   async collect(
     request: ProcessRequest,
@@ -223,26 +228,13 @@ export class ProcessCollector implements ProcessSource {
             executables.set(stat.pid, r.link(`${root}/exe`));
           return executables.get(stat.pid) ?? null;
         };
-        const named =
+        const match =
           helper || !command.length
             ? null
-            : toolName(
-                stat.comm,
-                command,
-                c.agentTools,
-                this.installs,
-                this.tools.bundledCliSuffixes,
-                {
-                  executable,
-                  script: (argument) => scriptPath(r, argument, cwd),
-                },
-              );
-        // A desktop app may name its binary after the agent it ships with, so
-        // a named process is an agent unless its executable is the app's own.
-        // An executable that could not be read keeps it an agent: a failed
-        // read never hides an escaped one.
-        const exe = named === null ? null : executable();
-        const tool = exe && desktopApp(exe, this.tools) ? null : named;
+            : toolName(stat.comm, command, c.agentTools, this.signals, {
+                executable,
+                script: (argument) => scriptPath(r, argument, cwd),
+              });
         const candidate = before.get(stat.pid);
         const old = candidate?.start === stat.start ? candidate : undefined;
         // Watched lanes use the cgroup's aggregate swap counter.
@@ -261,7 +253,8 @@ export class ProcessCollector implements ProcessSource {
           rss: Math.max(0, stat.rssPages * this.pageSize),
           command,
           group,
-          tool,
+          tool: match?.kind === "agent" ? match.name : null,
+          unconfirmedTool: match?.kind === "unconfirmed" ? match.name : null,
           build: helper
             ? null
             : buildKind(stat.comm, command, c.compilerNames, c.linkerNames),

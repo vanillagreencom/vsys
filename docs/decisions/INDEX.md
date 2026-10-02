@@ -11,6 +11,7 @@
 | 2026-09-15 | D007 | VSY-45 | Bound scratch traversal with a duty cycle on its own thread | Resting a worker thread bounds the cost a large root can demand | A root outgrows what a bounded traversal can finish in time | Active | [Full](D007-scratch-scan-duty.md) |
 | 2026-10-01 | D008 | VSY-46 | Read processes on a persistent thread, one file at a time | Less processor time, and no keystroke waits on /proc reads | The 20 ms elapsed fixture target becomes a requirement again | Active | [Full](D008-process-reads-on-their-own-thread.md) |
 | 2026-10-01 | D009 | VSY-39 | Read a slice unit file as a present slice before its group exists | An inactive, defined slice still holds agents to its limits | A slice is defined by a generator or an unlisted directory | Active | [Full](D009-agent-slice-unit-file.md) |
+| 2026-10-01 | D010 | VSY-41 | Confirm a configured agent name by the tool's install location | A name alone matches anyone's program or script of that name | An agent ships a layout no path fragment or executable path describes | Active | [Full](D010-agent-names-confirmed-by-install-location.md) |
 
 ---
 

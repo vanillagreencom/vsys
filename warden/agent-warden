@@ -156,7 +156,7 @@ def _parse_agent_tools(value, path):
     tools = []
     for index, raw_tool in enumerate(tools_raw):
         tool = _object(raw_tool, path, f"tools[{index}]")
-        _reject_unknown_keys(tool, {"name", "mise", "paths"}, path, f"tools[{index}]")
+        _reject_unknown_keys(tool, {"name", "mise", "paths", "executables"}, path, f"tools[{index}]")
         name = tool.get("name")
         if not isinstance(name, str) or not name or re.search(r"\s", name) or "/" in name:
             raise _invalid_agent_tools(path, f"tools[{index}].name is invalid")
@@ -167,16 +167,22 @@ def _parse_agent_tools(value, path):
             "must be a mise install directory name")
         for directory in mise:
             _reject_duplicate(mise_dirs, directory, path, "mise dir")
-        # The dashboard confirms an agent's name by these; the warden only
-        # refuses a document that holds a malformed one.
+        # The dashboard confirms an agent's name by these install locations;
+        # the warden only refuses a document that holds a malformed one.
         tool_paths = [] if "paths" not in tool else _string_array(
             tool["paths"], path, f"tools[{index}].paths",
             lambda item: len(item) > 1 and item.startswith("/"),
             "must be a path fragment starting with /")
-        seen_paths = set()
+        executables = [] if "executables" not in tool else _string_array(
+            tool["executables"], path, f"tools[{index}].executables",
+            lambda item: len(item) > 1 and item.startswith("/") and not item.endswith("/"),
+            "must be an absolute executable path")
+        locations = set()
         for fragment in tool_paths:
-            _reject_duplicate(seen_paths, fragment, path, f"tools[{index}].paths")
-        tools.append({"name": name, "mise": mise})
+            _reject_duplicate(locations, fragment, path, f"tools[{index}].paths")
+        for executable in executables:
+            _reject_duplicate(locations, executable, path, f"tools[{index}].executables")
+        tools.append({"name": name, "mise": mise, "paths": tool_paths, "executables": executables})
     prefixes = _string_array(value.get("desktopExePrefixes", []), path, "desktopExePrefixes",
                              lambda item: bool(item) and item.startswith("/"),
                              "must be a nonempty absolute path prefix")
@@ -207,13 +213,23 @@ def _read_agent_tools(path):
 
 def _merge_agent_tools(documents):
     merged = {"tools": [], "desktopExePrefixes": [], "bundledCliSuffixes": []}
-    names, mise_dirs, prefixes, suffixes = set(), set(), set(), set()
+    tools, locations, mise_dirs, prefixes, suffixes = {}, {}, set(), set(), set()
     for path, document in documents:
         for tool in document["tools"]:
-            _reject_duplicate(names, tool["name"], path, "tool name")
+            # An overlay entry naming a listed tool adds to that tool, as the
+            # dashboard merges it.
+            entry = tools.get(tool["name"])
+            if entry is None:
+                entry = tools[tool["name"]] = {"name": tool["name"], "mise": []}
+                locations[tool["name"]] = set()
+                merged["tools"].append(entry)
             for directory in tool["mise"]:
                 _reject_duplicate(mise_dirs, directory, path, "mise dir")
-            merged["tools"].append({"name": tool["name"], "mise": list(tool["mise"])})
+                entry["mise"].append(directory)
+            for fragment in tool["paths"]:
+                _reject_duplicate(locations[tool["name"]], fragment, path, f"{tool['name']} paths")
+            for executable in tool["executables"]:
+                _reject_duplicate(locations[tool["name"]], executable, path, f"{tool['name']} executables")
         for prefix in document["desktopExePrefixes"]:
             _reject_duplicate(prefixes, prefix, path, "desktop exe prefix")
             merged["desktopExePrefixes"].append(prefix)

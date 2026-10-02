@@ -1,7 +1,7 @@
 import { Collector } from "../src/collect/collector";
 import { ProcessThread } from "../src/collect/process-thread";
 import { shippedAgentTools } from "../src/config/agent-tools";
-import { fixture } from "../src/test/fixture";
+import { claudeLink, fixture } from "../src/test/fixture";
 import { percentile } from "./percentile";
 
 const measured = 20;
@@ -17,10 +17,10 @@ try {
     const pids = Array.from({ length: 40 }, (_, i) => 100 + scope * 40 + i);
     f.group(name, pids);
     for (const pid of pids) {
-      const comm = pids[0] === pid ? "claude" : "worker";
+      const lead = pids[0] === pid;
       f.proc(pid, name, {
-        command: [`/usr/bin/${comm}`],
-        comm,
+        command: [lead ? claudeLink : "/usr/bin/worker"],
+        comm: lead ? "claude" : "worker",
         parent: pids[0] === pid ? 1 : pids[0],
       });
     }
@@ -52,7 +52,8 @@ try {
       if (
         s.procs.length !== 2000 ||
         s.groups.filter((g) => g.name.endsWith(".scope")).length !== 50 ||
-        s.lanes.length !== 50
+        s.lanes.length !== 50 ||
+        s.procs.filter((p) => p.tool !== null).length !== 50
       )
         throw new Error("Benchmark did not collect its complete fixture");
       // The first sample starts the process thread, so it is reported alone.
