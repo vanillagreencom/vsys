@@ -35,7 +35,7 @@ bun src/main.ts --once        # one JSON snapshot, exit 2 on source errors
 bun src/main.ts --once --summary # cheap verdict JSON, exit 2 on source errors
 bun src/main.ts --markdown --once
 bun src/main.ts --config PATH # another TOML settings file
-python3 scripts/ci.py         # install, lint, types, tests, build, a sample with the bundle and a compiled binary, scratch bound
+python3 scripts/ci.py         # install, lint, types, tests, build, a sample with the bundle and a compiled binary, scratch bound, history write budget
 bun test src/                 # the application suites alone
 bun run build                 # dist/main.js and both workers under dist/collect/; run main.js with Bun from the project directory
 bun run compile               # the standalone ./vsys binary the release and the vsys-git package ship
@@ -97,7 +97,9 @@ It is the only instrument that can see the processor bound, which is why it is i
 
 Its processor figure covers the whole process, so it includes the main thread receiving the reading, and its tree sits in the page cache, so the result does not establish the cost of a cold traversal.
 
-`bun run bench:history` fills the configured history window while replacing a process at each sample and moving every counter by a different amount per row, then compares selected replayed snapshots against their originals across checkpoint boundaries. It reports incomplete retention, memory use, and the median, 95th percentile and slowest append for both `History.add` and `Archive.add`. Its generated workload does not establish a memory bound for every command line or process mix, and its timings come from one machine under whatever else it was running.
+`bun run bench:history` first times the history writes of one sample with SQLite on, alone and beside processes that write and sync to the same disk, and reports the whole `History.add` and its SQLite commit apart. It then fills the configured history window while replacing a process at each sample and moving every counter by a different amount per row, then compares selected replayed snapshots against their originals across checkpoint boundaries. It reports incomplete retention, memory use, and the median, 95th percentile and slowest append for both `History.add` and `Archive.add`. Its generated workload does not establish a memory bound for every command line or process mix, and its timings come from one machine under whatever else it was running.
+
+`bun run bench:writes`, in the check contract, is the first measurement alone without the load, and fails when its median exceeds the write budget; [the history store](docs/architecture/history.md#limits-of-the-checks) says why only that figure is held to it.
 
 One-shot measurement for `--summary`:
 

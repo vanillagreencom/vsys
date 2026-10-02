@@ -14,7 +14,8 @@
     "smoke": "bun scripts/sample-check.ts bun dist/main.js && bun scripts/sample-check.ts --compile",
     "bench": "bun scripts/bench.ts",
     "bench:history": "bun scripts/bench-history.ts",
-    "bench:scratch": "bun scripts/bench-scratch.ts"
+    "bench:scratch": "bun scripts/bench-scratch.ts",
+    "bench:writes": "bun scripts/bench-history.ts --budget"
   },
   "dependencies": {
     "@opentui/core": "0.5.11",
