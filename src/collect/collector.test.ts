@@ -17,7 +17,6 @@ import { fakeBus, noBus } from "../test/udisks";
 import { capabilityLine } from "../ui/settings";
 import { FinishedScrubMemory } from "./btrfs";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
-import { udisksCapabilitySource } from "./capabilities";
 import { Collector, createCollector } from "./collector";
 import { KernelLog } from "./kernel-log";
 import { ProcessCollector, parseStat } from "./procs";
@@ -1333,7 +1332,7 @@ test("the smart capability's source drops udisks2 once a report directory starts
   const collector = withUdisks(f, fakeBus([udisksDrive]));
   const fromUdisks = await collector.sample();
   expect(fromUdisks.capabilities.find((c) => c.id === "smart")?.source).toBe(
-    udisksCapabilitySource,
+    "org.freedesktop.UDisks2",
   );
   f.write(
     join(f.config.smartDir, "nvme0n1"),
