@@ -1,0 +1,42 @@
+# UI screens
+
+Covers: src/ui/attention.ts src/ui/home.tsx src/ui/chrome.tsx src/ui/integrity.ts src/ui/storage-screen.tsx src/ui/agents.tsx src/ui/agent.tsx
+
+This file holds what one screen does that no other does: Home's attention cards, Storage's integrity rows, and the Agents list and agent detail. The rules every screen shares are in [ui.md](ui.md).
+
+## Terms
+
+Card: one cause from the ladder as Home draws it, a title row that opens to a description and the lines the reader can act on.
+
+Target: the row a card names, handed to the destination screen, which selects it and clears it as it takes it.
+
+## Home cards
+
+- `src/ui/attention.ts` turns the cause ladder and the meters into the verdict line, one card per cause and one tile per meter. Card copy is written against the width it is drawn at: `detailWidth` in `src/ui/chrome.tsx` is the one rule for that width, taking the terminal row through the screen padding, the panel and the block's own indent; `detailRows` beside it does the same for the rows, from the terminal's own through everything drawn above the card and below it, so no number states how tall a description may be. `wrapLines` and `capLines` in `src/ui/columns.ts` measure and cut against both.
+- A card's detail is the conclusions it draws, the ancestors behind each, and one sentence naming the lanes the title above it cut. A card offers its ways of writing the first part, best first, each a paragraph, and the sentence it keeps; the screen fits the card it opens, giving ground in that order and only where the room is short: the breaks first, then the ancestors, then a conclusion at a time from the last, never the first. Every conclusion given up is counted in what stays.
+- At the floor a panel can be, one whole conclusion and the count of the rest do not fit together. There the last way of writing the detail states every conclusion as a count per kind, from `launcherTally` in `src/model/launcher.ts`, which is what the card can say there with nothing cut.
+- The lane sentence holds two rows whatever the names in it: what it cannot fit it counts. Where not even one name fits beside that count, the name is cut with its mark and the count stays, because the names are on the screen the card opens and the count is only here. The sentence carries the process count beside the lane count wherever the two differ, so nothing states one number without the other.
+
+## Storage integrity
+
+- Storage's filesystems region holds each filesystem's integrity row and the mounts under it. That row is one line of plain words with both of the filesystem's times; the damaged files, their copy commands and the sentence explaining the counter sit under it, and the lifetime counter and the raw report text under those. `src/ui/integrity.ts` writes every one of those words.
+
+## Agents and the agent detail
+
+- A tmux pane id is a server handle that names no window a reader can place, so it stays on the lane as the handle an action addresses and never enters a name. The resolved `session:window.pane` address is a column of its own.
+- The agent detail reads its pane only while the Terminal section is open, and again on each sample. Captured text is the agent's own output, so complete escape sequences are dropped and every remaining control byte is removed. Reading a pane and moving the reader's tmux view change no process, so neither waits on write mode.
+- The detail reads a pane only where the model settled that the lane is not the one vsys draws in; [lanes.md](lanes.md) owns the three answers it can give. The other two each get a line of their own, and neither is offered a switch or a copied command: the pane is vsys's own, so what it holds is this screen; or vsys cannot tell whether it is, so it is not reading it. A read would be this screen nested one copy deeper on every sample, and a switch would move a reader who is already there, which tmux answers by doing nothing. Said only of a live sample: the answer was taken with the sample, and the vsys that recorded an older one may have been drawing somewhere else, so a pinned sample falls through to the line that says it is past.
+
+## Invariants
+
+1. Right from the last tile enters the first list with a row, and left from the first list returns to the last tile, so each arrow undoes the other. `src/ui/home.test.tsx` crosses between the tiles and the lists both ways.
+2. Home opens on the most urgent row it lists: a concern where there is one, else the newest change, else the busiest agent. `src/ui/home.test.tsx` checks all three.
+3. Opening a card lands on the row it names, and a card that names no single row carries none. `src/ui/attention.test.ts` checks the targets the cards carry; `src/ui/home.test.tsx` checks where the screen lands.
+4. No card offers a command carrying an unresolved value, which would reach the reader as the word `undefined` in text they are invited to run. `src/ui/attention.test.ts` checks every cause.
+5. Card copy wraps at the card's own width. `src/ui/home.test.tsx` checks every character of an open card at 24 and 20 columns.
+6. A card's description takes the rows the screen has left it: the row the scroll box keeps, the verdict, the tiles and the headings above the list, then the card's own title and the action lines under it, blank rows counted among the sentences. A floor overrides that room rather than sitting inside it: on a terminal too short for the first thing the card says and the sentence naming the lanes, the card draws taller than its room and the list scrolls it. What the room cannot hold is counted, and a sentence cut mid-word ends in the mark. `src/ui/attention.test.ts` fits every cause the ladder can report, read from the ladder's own table, at three rooms and four widths, and at 20 columns reads back the count per kind and a lane name cut beside the count of the rest; `src/ui/chrome.test.ts` pins the width against the renderer's own constants and the rows against written-out arithmetic; `src/ui/home.test.tsx` reads a card off the frame over a width and height sweep, one blank row per paragraph and every action line on the screen.
+7. Search filters every field a reader can see, including the pane address and the tmux window, so typing what the screen shows finds the row showing it. `src/ui/agents.test.tsx` checks each field and clearing the filter.
+8. Leaving an agent returns to the list with that agent selected, including one opened from Home. `src/ui/agents.test.tsx` checks both routes.
+9. What a pane drew cannot move the cursor, repaint the screen or write the clipboard, and the pane is read only while its section is open. `src/collect/tmux.test.ts` feeds it a screen clear and a clipboard write; `src/ui/agent.test.tsx` counts the captures across a closed section, an open one and a new sample.
+10. The switch to a terminal is offered only from inside the server holding the pane; outside it the command is copied instead, and no path launches a terminal emulator. `src/ui/agent.test.tsx` checks both.
+11. A lane the model did not settle as a pane other than vsys's own is captured zero times, switched to never, and copies no command, the pane vsys draws in and the pane it could not decide about alike, while every other pane is still read and still switched to; each draws one explanation of its own and no other, and a past sample is named as past. `src/ui/agent.test.tsx` counts the captures and the switches for all three answers and pins the section's whole message.
