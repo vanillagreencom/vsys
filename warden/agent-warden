@@ -862,16 +862,19 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
 SCRATCH_GRACE = float(os.environ.get("AGENT_WARDEN_SCRATCH_GRACE", "60"))
+# The scopes move() creates (warden_scope_name). A process in one has left the
+# agent-confine scope its TMPDIR names.
+WARDEN_MOVE_SCOPE_RE = re.compile(r"agent-warden(?:-build)?-\d+-\d+\.scope")
 
 
 def _proc_tmpdir(pid):
     """The TMPDIR this pid's environment names: "" when the environ was read
     and carries no TMPDIR, None when the environ could not be read at all
-    (process gone, permission denied). Callers must treat None as "not proven
-    unused", never as "no TMPDIR": an agent-warden move() relocates a nested
-    session's cgroup membership but never rewrites its environment, so a
-    moved child keeps pointing at a scratch directory its original scope no
-    longer names."""
+    (process gone, permission denied); None is never read as "no TMPDIR".
+    The environment, not the cgroup, names the directory: an agent-warden
+    move() relocates a nested session's cgroup membership but never rewrites
+    its environment, so a moved child keeps pointing at a scratch directory
+    its original scope no longer names."""
     env = read(f"/proc/{pid}/environ")
     if env is None:
         return None
@@ -882,12 +885,26 @@ def _proc_tmpdir(pid):
 
 
 def _scratch_in_use(path, procs):
-    """Whether any pid in procs still has TMPDIR resolving inside path.
-    "in-use" beats "unknown": one confirmed user is enough to keep the
-    directory regardless of any other pid's unreadable environ. "unknown"
-    means at least one live pid's TMPDIR could not be ruled out -- never
-    read as proof that pid has no user of this directory. "free" means
-    every live pid's TMPDIR was read and none points here. Both sides are
+    """Whether any pid in procs still has TMPDIR resolving inside path:
+    "in-use" when one does, "unknown" when none does but a pid that could
+    hold path has an environ that cannot be read, "free" otherwise.
+    "in-use" beats "unknown": one confirmed user is enough to keep path.
+    Most unreadable pids are skipped. Non-dumpable programs (ssh-agent, op,
+    systemd --user) refuse /proc/PID/environ even to their own user, and a
+    desktop always runs some, so counting them would keep every directory
+    forever. Skipping one loses no holder while its nearest readable
+    ancestor is in procs: a child inherits its environment, so that
+    ancestor carries the same TMPDIR and is itself checked here. With no
+    readable ancestor, a pid still in its original scope cannot hold path:
+    the caller asks only about a scope that is already gone, and a scope
+    stays alive while any process in it runs. The exception is a pid in a
+    scope move() created (WARDEN_MOVE_SCOPE_RE). Such a pid has left the
+    scope its TMPDIR names, and once its agent parents exit no readable
+    ancestor is left to check. Nothing ties that pid to any one
+    directory, so it makes every gone-scope path "unknown", not just its
+    own: each such directory no readable pid holds is kept for as long as
+    that pid lives. This fail-closed cost is accepted, and only a pid in a
+    warden move scope incurs it. Both sides are
     resolved with os.path.realpath before comparing, not just lexically
     normalized: a trailing slash on AGENT_TMPDIR makes agent-confine's bash
     concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a separator in
@@ -901,10 +918,12 @@ def _scratch_in_use(path, procs):
     candidate = os.path.realpath(path)
     prefix = candidate + os.sep
     unknown = False
-    for pid in procs:
+    for pid, p in procs.items():
         tmpdir = _proc_tmpdir(pid)
         if tmpdir is None:
-            unknown = True
+            m = SCOPE_RE.search(p.cgroup or "")
+            if m and WARDEN_MOVE_SCOPE_RE.fullmatch(m.group(1)):
+                unknown = True
             continue
         if not tmpdir:
             continue
@@ -965,7 +984,7 @@ def reap_scratch_dirs(correct, procs):
             log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")
             continue
         if status == "unknown":
-            log(f"scratch {name}: scope gone but a live process's TMPDIR could not be read; not reaping this tick")
+            log(f"scratch {name}: scope gone but a moved process's TMPDIR could not be read; not reaping this tick")
             continue
         if not correct:
             log(f"scratch {name}: scope gone; would remove (report mode)")
