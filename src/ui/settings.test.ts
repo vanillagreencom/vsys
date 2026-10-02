@@ -179,6 +179,22 @@ test("the reason follows what the probe found, not the interface name", () => {
       detail: "io",
     }),
   ).toBe("the io controller is not delegated to the groups below this session");
+  // The root can delegate io fine while a slice below it withholds it from
+  // the agent scopes; the reason and the cost both name that slice, not the
+  // whole session.
+  const withheldBySlice: Capability = {
+    id: "io-stat",
+    available: false,
+    failure: "incomplete",
+    source: "/sys/fs/cgroup/agents.slice/cgroup.subtree_control",
+    detail: "agents.slice",
+  };
+  expect(capabilityReason(withheldBySlice)).toBe(
+    "agents.slice does not hand the io controller down to the groups below it",
+  );
+  expect(capabilityLoss(withheldBySlice)).toBe(
+    "disk writes are blank rather than zero, on Home and Storage, for the groups under agents.slice; it does not hand the io controller to them",
+  );
 });
 
 test("every missing capability says what it costs the reader, in its own words", () => {

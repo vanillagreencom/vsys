@@ -90,7 +90,10 @@ export function probeTmux(argv: string[] = listPanesArgv): Outcome {
  * absent kernel interface is reported as an absence with its reason rather
  * than as a per-sample source failure on every tick. Most capabilities take
  * one read; io-stat also reads the root's `cgroup.subtree_control`, because
- * its readings come from the groups below the root.
+ * its readings come from the groups below the root. That answer is the floor:
+ * a slice between the root and the agent scopes can still withhold io from
+ * them while the root hands it down, so `probeIoStat` below refines this
+ * capability with each sample's groups.
  */
 export function probeCapabilities(
   c: CollectionConfig,
@@ -281,4 +284,51 @@ export function probeAgentSlice(
       ? `${atCgroup.detail}; no unit file or drop-in in ${units.join(", ")}`
       : atCgroup.detail,
   });
+}
+/**
+ * Whether the groups the agent lanes' readings come from have io.stat. The
+ * root's own delegation is probed once, by `probeCapabilities`, because the
+ * root's `cgroup.subtree_control` does not come and go; this refines that
+ * answer with each sample's groups, because the agent slice's ancestry can
+ * appear after vsys starts, just as the slice itself can. Where the root
+ * already withholds io, its diagnosis stands: nothing below it can do better.
+ * Where the root hands it down, each of the agent slice's own ancestors, from
+ * directly below the root to the slice itself, decides again for its own
+ * children, so the first one that does not re-delegate io is why the agent
+ * scopes under it have no io.stat. A walk of every group in the tree was
+ * tried and reverted: it read desktop slices that hold no agents as
+ * unavailable too, so this walk is limited to the one ancestry the agent
+ * scopes actually have.
+ */
+export function probeIoStat(
+  c: CollectionConfig,
+  groups: Group[],
+  root: Capability,
+): Capability {
+  if (!root.available) return root;
+  const slice = groups.find((g) => g.name === c.agentSlice);
+  if (!slice) return root;
+  const byPath = new Map(groups.map((g) => [g.path, g]));
+  const ancestry: Group[] = [];
+  for (
+    let g: Group | undefined = slice;
+    g && g.path !== ".";
+    g = byPath.get(g.parent)
+  )
+    ancestry.unshift(g);
+  for (const g of ancestry) {
+    const source = join(c.cgroupRoot, g.path, "cgroup.subtree_control");
+    let enabled: string[];
+    try {
+      enabled = readFileSync(source, "utf8").split(/\s+/);
+    } catch (error) {
+      return record("io-stat", source, classify(error));
+    }
+    if (!enabled.includes("io"))
+      return record("io-stat", source, {
+        failure: "incomplete",
+        detail: g.name,
+      });
+  }
+  return root;
 }

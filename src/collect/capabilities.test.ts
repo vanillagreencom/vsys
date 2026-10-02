@@ -8,6 +8,7 @@ import { capabilityOffer, capabilityReason } from "../ui/settings";
 import {
   probeAgentSlice,
   probeCapabilities,
+  probeIoStat,
   probeTmux,
   unitDirs,
 } from "./capabilities";
@@ -129,6 +130,63 @@ test("io.stat at the root is not available until the root hands io down", () => 
       ...expected,
     });
   }
+});
+
+test("a slice between a delegating root and the agent scopes can still withhold io", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  expect(root.available).toBe(true);
+  // No group named for the configured slice yet: nothing below the root to
+  // check, so the root's own answer stands.
+  expect(probeIoStat(f.config, [], root)).toBe(root);
+  const agentsSlice = join(f.config.cgroupRoot, "agents.slice");
+  const desktopSlice = join(f.config.cgroupRoot, "app.slice");
+  mkdirSync(agentsSlice, { recursive: true });
+  mkdirSync(desktopSlice, { recursive: true });
+  // The agent slice does not hand io to its own children, so their io.stat is
+  // withheld even though the root delegated it.
+  writeFileSync(
+    join(agentsSlice, "cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+    groupSnapshot({
+      path: "agents.slice/a.scope",
+      parent: "agents.slice",
+      name: "a.scope",
+    }),
+  ];
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(agentsSlice, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
+  // A desktop slice that holds no agents is not on the agent slice's own
+  // ancestry, so its own withholding of io costs it nothing here, as today.
+  writeFileSync(
+    join(desktopSlice, "cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  writeFileSync(
+    join(agentsSlice, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const withDesktop = [
+    ...groups,
+    groupSnapshot({ path: "app.slice", parent: ".", name: "app.slice" }),
+  ];
+  expect(probeIoStat(f.config, withDesktop, root)).toMatchObject({
+    available: true,
+    failure: null,
+  });
 });
 
 test("a kernel without PSI and without io.stat reports both absences", () => {
@@ -430,6 +488,38 @@ test("a slice that appears after vsys starts is present from the next sample", a
   f.group("agents.slice");
   const after = byId((await collector.sample(2000)).capabilities);
   expect(after.get("agent-slice")?.available).toBe(true);
+});
+
+test("a sample re-reads io-stat against the agent slice it actually found", async () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const collector = new Collector(f.config, 100, 4096);
+  const before = byId((await collector.sample(1000)).capabilities);
+  // The fixture's own agents.slice has no cgroup.subtree_control at all yet,
+  // which is a read failure rather than the withholding this probe diagnoses.
+  expect(before.get("io-stat")?.available).toBe(false);
+  // The slice starts delegating io to its own children: the capability a
+  // fresh sample reports follows, though it was probed available at startup.
+  writeFileSync(
+    join(f.config.cgroupRoot, "agents.slice/cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const after = byId((await collector.sample(2000)).capabilities);
+  expect(after.get("io-stat")?.available).toBe(true);
+  // It can withdraw it again, and the next sample says so.
+  writeFileSync(
+    join(f.config.cgroupRoot, "agents.slice/cgroup.subtree_control"),
+    "cpu memory pids\n",
+  );
+  const withdrawn = byId((await collector.sample(3000)).capabilities);
+  expect(withdrawn.get("io-stat")).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    detail: "agents.slice",
+  });
 });
 
 test("unit files are looked for where the user manager loads them, in its order", () => {

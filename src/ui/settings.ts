@@ -321,10 +321,20 @@ const absentReasons: Record<CapabilityId, string> = {
 const unreadableReasons: Partial<Record<CapabilityId, string>> = {
   "kernel-log": "journalctl refused the search",
 };
-/** What a present interface that answered with too little means, per capability. */
-const incompleteReasons: Partial<Record<CapabilityId, string>> = {
-  "io-stat":
-    "the io controller is not delegated to the groups below this session",
+/**
+ * What a present interface that answered with too little means, per
+ * capability. A string covers the whole session; io-stat also covers the
+ * narrower case where the root hands io down but one of the agent slice's own
+ * ancestors does not hand it further, named by `cap.detail`, which `probeIoStat`
+ * sets to that ancestor's name rather than to the missing controller list.
+ */
+const incompleteReasons: Partial<
+  Record<CapabilityId, string | ((cap: Capability) => string)>
+> = {
+  "io-stat": (cap) =>
+    cap.detail === "io"
+      ? "the io controller is not delegated to the groups below this session"
+      : `${cap.detail} does not hand the io controller down to the groups below it`,
   tmux: "tmux is installed but no server is answering",
   "kernel-log":
     "journalctl answered with no kernel message this user can read, which usually takes membership of the systemd-journal group",
@@ -362,9 +372,20 @@ const unreadCost: Partial<Record<CapabilityId, string>> = {
   "agent-slice":
     "agent totals are blank rather than zero, and an agent outside the slice still raises a card",
 };
-/** What a reader loses while this capability is missing. */
+/**
+ * What a reader loses while this capability is missing. io-stat's partial
+ * loss (the root hands io down, but one of the agent slice's own ancestors
+ * does not) costs only the groups under that ancestor, so the line names it
+ * rather than the session-wide sentence a root-level loss costs.
+ */
 export function capabilityLoss(cap: Capability): string {
   if (cap.available) return "";
+  if (
+    cap.id === "io-stat" &&
+    cap.failure === "incomplete" &&
+    cap.detail !== "io"
+  )
+    return `disk writes are blank rather than zero, on Home and Storage, for the groups under ${cap.detail}; it does not hand the io controller to them`;
   const unread = cap.failure !== "absent" && cap.failure !== "masked";
   return (unread && unreadCost[cap.id]) || capabilityCost[cap.id];
 }
@@ -409,11 +430,11 @@ export function capabilityReason(cap: Capability): string {
       );
     case "malformed":
       return `${cap.source} is not in the expected format`;
-    case "incomplete":
-      return (
-        incompleteReasons[cap.id] ??
-        `this login session is not given ${cap.detail}`
-      );
+    case "incomplete": {
+      const reason = incompleteReasons[cap.id];
+      if (typeof reason === "function") return reason(cap);
+      return reason ?? `this login session is not given ${cap.detail}`;
+    }
     default:
       return "";
   }
