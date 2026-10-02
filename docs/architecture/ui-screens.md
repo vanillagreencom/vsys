@@ -19,7 +19,7 @@ Target: the row a card names, handed to the destination screen, which selects it
 
 ## Storage integrity
 
-- Storage's filesystems region holds each filesystem's integrity row and the mounts under it. That row is one line of plain words with both of the filesystem's times; the damaged files, their copy commands and the sentence explaining the counter sit under it, and the lifetime counter and the raw report text under those. `src/ui/integrity.ts` writes every one of those words.
+- Storage's filesystems region holds each filesystem's integrity row and the mounts under it. That row is one line of plain words with both of the filesystem's times; the damaged files, their copy commands and the sentence explaining the counter sit under it, and the lifetime counter and the raw report text under those. `src/ui/integrity.ts` writes every one of those words. Enter acts on nothing on Storage: a row shows its detail while selected, and a click selects it. `src/ui/storage-screen.test.tsx` clicks every row kind and reads the mark.
 
 ## Agents and the agent detail
 
