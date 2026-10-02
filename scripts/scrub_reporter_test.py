@@ -345,12 +345,18 @@ class InstallTest(unittest.TestCase):
         fail_api: bool = False,
         legacy_dir: Path | None = None,
         scrub_dir: Path | None = None,
+        scrub_dir_unset: bool = False,
         report_conf: str | None = None,
         cp_stub: str = "",
         mv_stub: str = "",
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """version=None leaves VSYS_VERSION unset, so install resolves the tag
         itself from the stubbed GitHub API, the same lookup install.sh uses.
+
+        scrub_dir_unset=True drops VSYS_SCRUB_DIR from the child's environment
+        entirely, so migration falls back to the installer's own report_dir
+        resolution; the caller must then keep report_dir (via report_conf)
+        off the real /var/lib and /run so the test stays scratch-only.
         """
         bin_dir = base / "bin"
         bin_dir.mkdir()
@@ -407,6 +413,8 @@ esac
 """,
         )
         env_extra = {} if version is None else {"VSYS_VERSION": version}
+        if not scrub_dir_unset:
+            env_extra["VSYS_SCRUB_DIR"] = str(scrub_dir if scrub_dir is not None else base / "unused-persistent")
         # VSYS_SCRUB_DIR/VSYS_SCRUB_LEGACY_DIR keep the install script's own
         # migration logic off the real /var/lib and /run: a path under `base`
         # that nothing creates reproduces "legacy directory absent".
@@ -415,7 +423,6 @@ esac
             input=(REPORTER / "install").read_text(),
             env=child_env(
                 bin_dir,
-                VSYS_SCRUB_DIR=str(scrub_dir if scrub_dir is not None else base / "unused-persistent"),
                 VSYS_SCRUB_LEGACY_DIR=str(legacy_dir if legacy_dir is not None else base / "unused-legacy"),
                 **env_extra,
             ),
@@ -579,6 +586,36 @@ esac
                 (persistent / "root.result").read_text(),
                 "btrfs scrub finished, no errors: /\n",
             )
+
+    def test_migration_targets_the_downloaded_confs_own_report_directory_not_the_hardcoded_default(self) -> None:
+        # An old tag's vsys-report.conf (VSYS_VERSION pinned to it, or the
+        # unversioned install run in the window before a new release is cut)
+        # still points ExecStopPost at a pre-VSY-75 report directory, never
+        # at the new hardcoded default. Migration must follow that directory,
+        # not the hardcoded one, so a carried-over report is never written
+        # somewhere nothing else reads.
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_tag_dir = base / "old-tag-report-dir"
+            conf = (REPORTER / "vsys-report.conf").read_text().replace("/var/lib/btrfs-scrub", str(old_tag_dir))
+            self.assertIn(f"ExecStopPost=/usr/local/bin/vsys-scrub-report %f {old_tag_dir}", conf)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("the carried-over report\n")
+            done, calls = self.run_install(
+                base,
+                legacy_dir=legacy,
+                scrub_dir_unset=True,
+                report_conf=conf,
+                sums_text=reporter_sums(**{"vsys-report.conf": conf}),
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(
+                f"Each scrub now leaves a report in {old_tag_dir}, which survives a reboot.",
+                done.stdout.splitlines(),
+            )
+            self.assertEqual((old_tag_dir / "root.result").read_text(), "the carried-over report\n")
+            self.assertFalse((Path("/var/lib/btrfs-scrub") / "root.result").exists())
 
     def test_migration_never_overwrites_a_report_already_in_the_persistent_directory(self) -> None:
         with scratch() as tmp:
