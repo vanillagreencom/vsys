@@ -99,10 +99,10 @@ export function launcherTrail(
  * process is named by its PID, which is what a reader looks it up by.
  */
 function groupSentence(
-  trails: LauncherTrail[],
+  trails: [LauncherTrail, ...LauncherTrail[]],
   c: CollectionConfig,
 ): LauncherSentence {
-  const first = trails[0];
+  const [first] = trails;
   const n = trails.length;
   const many = n === 1 ? `PID ${first.pid}` : `${n} processes`;
   const where = first.scope
@@ -142,7 +142,7 @@ export function launcherCopy(
   c: CollectionConfig,
   basePath: string[],
 ): LauncherSentence[] {
-  const groups = new Map<string, LauncherTrail[]>();
+  const groups = new Map<string, [LauncherTrail, ...LauncherTrail[]]>();
   for (const proc of procs) {
     const trail = launcherTrail(proc, all, c, basePath);
     // The whole cgroup path, and the arrays as arrays: two scopes of one unit

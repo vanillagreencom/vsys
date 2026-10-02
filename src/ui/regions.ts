@@ -1,3 +1,5 @@
+import type { KeyAction } from "../config/config";
+
 /**
  * A screen's regions, and the arithmetic for moving between them. A screen
  * that holds several lists reaches them as one flat selection unless something
@@ -14,26 +16,26 @@
  * this one entry, so the name a key is listed under is the name drawn beside it.
  */
 export interface NamedRegion {
-  action: string;
+  action: KeyAction;
   title: string;
 }
 /** Home's regions in the order drawn. The tile row is region zero. */
-export const homeRegions: NamedRegion[] = [
+export const homeRegions = [
   { action: "tiles", title: "Tiles" },
   { action: "attention", title: "Needs attention" },
   { action: "changes", title: "Recent changes" },
   { action: "busiest", title: "Busiest agents" },
-];
+] as const satisfies readonly NamedRegion[];
 /** Storage's selectable lists in the order drawn. */
-export const storageRegions: NamedRegion[] = [
+export const storageRegions = [
   { action: "filesystems", title: "Filesystems" },
   { action: "scrub", title: "Scrub reports" },
   { action: "scratch", title: "Scratch" },
-];
+] as const satisfies readonly NamedRegion[];
 /** The keys that jump to `regions`, in the order drawn, one space apart. */
 export function jumpKeys(
-  regions: NamedRegion[],
-  keys: Record<string, string>,
+  regions: readonly NamedRegion[],
+  keys: Record<KeyAction, string>,
 ): string {
   return regions.map((region) => keys[region.action]).join(" ");
 }
@@ -55,8 +57,8 @@ export function regionRanges(counts: number[]): [number, number][] {
 export function regionOf(counts: number[], index: number): number {
   if (index < 0) return -1;
   let at = 0;
-  for (let region = 0; region < counts.length; region++) {
-    at += counts[region];
+  for (const [region, count] of counts.entries()) {
+    at += count;
     if (index < at) return region;
   }
   return -1;
@@ -72,9 +74,11 @@ export function stepRegion(
   from: number,
   way: -1 | 1,
 ): number {
-  for (let at = from + way; at >= 0 && at < counts.length; at += way)
-    if (counts[at] > 0) return at;
-  return from;
+  for (let at = from + way; ; at += way) {
+    const count = counts[at];
+    if (count === undefined) return from;
+    if (count > 0) return at;
+  }
 }
 /**
  * The row the region key selects: the first row of the next region with rows
@@ -89,7 +93,11 @@ export function stepToRegion(
 ): number {
   const from = regionOf(counts, index);
   const to = stepRegion(counts, from, way);
-  return to === from ? index : regionRanges(counts)[to][0];
+  if (to === from) return index;
+  const range = regionRanges(counts)[to];
+  if (range === undefined)
+    throw new Error(`stepRegion returned region ${to} outside the ranges`);
+  return range[0];
 }
 /**
  * The row above or below, without leaving the region it is in. An index no
@@ -102,6 +110,9 @@ export function stepWithin(
 ): number {
   const region = regionOf(counts, index);
   if (region < 0) return index;
-  const [start, end] = regionRanges(counts)[region];
+  const range = regionRanges(counts)[region];
+  if (range === undefined)
+    throw new Error(`regionOf returned region ${region} outside the ranges`);
+  const [start, end] = range;
   return Math.max(start, Math.min(end - 1, index + way));
 }

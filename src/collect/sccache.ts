@@ -129,6 +129,11 @@ export class SccacheCollector {
     this.baseline ??= { time, ...now };
     this.samples.push({ time, ...now });
     this.samples = this.samples.filter((s) => s.time >= time - this.windowMs);
+    const [oldest] = this.samples;
+    if (!oldest)
+      throw new Error(
+        `sccache window=${this.windowMs}ms dropped the reading just taken`,
+      );
     const since = (from: {
       time: number;
       hits: number;
@@ -143,7 +148,7 @@ export class SccacheCollector {
       hits: now.hits,
       misses: now.misses,
       sinceStart: since(this.baseline),
-      recent: since(this.samples[0]),
+      recent: since(oldest),
     };
   }
 }

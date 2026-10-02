@@ -19,7 +19,7 @@ test("the scan thread answers with a complete reading and closes", async () => {
       const { scan } = await runner.run(roots, 5000, full, loose());
       expect(scan.time).toBe(5000);
       expect(scan.errors).toEqual([]);
-      expect(scan.scratch[0].bytes).toBe(
+      expect(scan.scratch[0]?.bytes).toBe(
         lstatSync(path).size + lstatSync(join(path, "session")).size + 4,
       );
       expect(scan.sessions.map((s) => s.path)).toEqual([join(path, "session")]);

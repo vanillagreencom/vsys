@@ -20,6 +20,7 @@ import {
   sortMarks,
   underMarked,
 } from "../test/harness";
+import { present } from "../test/present";
 import { attention, cardDetail } from "./attention";
 import {
   detailWidth,
@@ -91,7 +92,7 @@ test("Home lists the newest changes first, and each opens the moment it names", 
   // Opening one asks for that moment and for which change at it. Every change
   // found in one sample carries that sample's time, so the time alone would
   // name the first of them however far down the reader had moved.
-  const first = rows[0];
+  const first = present(rows[0], "first Home row");
   expect(first.kind).toBe("change");
   if (first.kind !== "change") throw new Error("no change row to open");
   expect(homeTarget(first)).toEqual({
@@ -99,7 +100,10 @@ test("Home lists the newest changes first, and each opens the moment it names", 
     at: 5000,
     id: eventKey(first.event),
   });
-  expect(homeTarget(rows[3])).toEqual({ kind: "lane", id: s.lanes[0].id });
+  expect(homeTarget(present(rows[3], "agent row"))).toEqual({
+    kind: "lane",
+    id: present(s.lanes[0], "the snapshot's lane").id,
+  });
   // With no changes recorded, the section lists none rather than inventing one.
   expect(homeItems([], s, 5).some((row) => row.kind === "change")).toBe(false);
 });
@@ -143,7 +147,7 @@ test("the copy key puts the selected card's command on the clipboard", async () 
   const s = everyCauseSnapshot(c);
   const items = attention(s, c);
   const index = items.findIndex((item) => item.command !== undefined);
-  const command = items[index].command;
+  const command = present(items[index], "a card with a command").command;
   const t = await mount(s, c, { width: 160, height: 45 });
   try {
     for (let i = 0; i < index; i++) await t.press("j");
@@ -235,7 +239,9 @@ test("Home opens with the most urgent row selected", async () => {
     await t.press("1");
     // With a concern open, the selection is that concern, not an agent. The
     // two columns share a row, so the line carries the agent heading too.
-    expect(selectedRow(t.frame())).toContain(attention(busy, c)[0].title);
+    expect(selectedRow(t.frame())).toContain(
+      present(attention(busy, c)[0], "the busy concern").title,
+    );
   } finally {
     await t.close();
   }
@@ -491,7 +497,7 @@ test("clicking a tile opens the screen its key opens", async () => {
         (line) => line.includes("CPU wait") && line.includes("Builds"),
       );
       expect(row).toBeGreaterThan(-1);
-      await t.click(lines[row].indexOf(label), row);
+      await t.click(present(lines[row], "concern row").indexOf(label), row);
       expect({ label, on: t.frame().includes(lands) }).toEqual({
         label,
         on: true,
@@ -566,7 +572,7 @@ test("Home marks one focus at a time, on every kind of row it lists", async () =
       for (let i = 0; i < region; i++) await t.press(c.keys.next);
       expect({ kind, lit: focusMarks(t).lit }).toEqual({
         kind,
-        lit: [regionTitles[region]],
+        lit: [present(regionTitles[region], `${kind} region title`)],
       });
       // The rows hold the focus, so this row is marked.
       expect({ kind, marked: selectedRow(t.frame()) !== "" }).toEqual({
@@ -757,14 +763,15 @@ test("a Home row opens the change the reader chose, not the first at its moment"
     const at = rows.findIndex((row) => row.kind === "change");
     expect(at).toBeGreaterThan(-1);
     for (let i = 0; i < at + 1; i++) await t.press("j");
+    const second = present(changes[1], "second change");
     const chosen = selectedRow(t.frame());
-    expect(chosen).toContain(changes[1].subject);
+    expect(chosen).toContain(second.subject);
     await t.press("enter");
     // The Timeline lands on that change, not on the first one sharing its
     // time. Matching by time always found the first however far down the
     // reader had moved.
     expect(t.frame()).toContain("What changed");
-    expect(selectedRow(t.frame())).toContain(changes[1].subject);
+    expect(selectedRow(t.frame())).toContain(second.subject);
   } finally {
     await t.close();
   }
@@ -1033,8 +1040,8 @@ test("a concern's detail is drawn as a child of its row while the row holds the 
     const row = lines.findIndex((line) => line.includes("▍▾ "));
     expect(row).toBeGreaterThan(-1);
     // The row carries the marker; the lines under it carry the rule.
-    expect(isChildLine(lines[row])).toBe(false);
-    expect(isChildLine(lines[row + 1])).toBe(true);
+    expect(isChildLine(present(lines[row], "open concern row"))).toBe(false);
+    expect(isChildLine(present(lines[row + 1], "first detail row"))).toBe(true);
     // An unselected concern still says it has more inside it.
     expect(lines.some((line) => line.includes("▸ "))).toBe(true);
     // The verdict line names the same concern, so the row is the one carrying
@@ -1391,7 +1398,7 @@ test("Home keeps the name readable rather than the state column", async () => {
   // them and a reader would be left with two identical stubs.
   const long = ["method-worktree-alpha-01", "method-worktree-alpha-02"];
   s.lanes.forEach((lane, i) => {
-    lane.name = long[i];
+    lane.name = present(long[i], `name for lane ${i}`);
   });
   // Two Home columns, and not enough width for the name, the id and the state
   // together: the state is what goes.
@@ -1510,21 +1517,23 @@ test("an open card writes what its room holds, and every action line shows", asy
   // The tall screen holds every paragraph the card's data has: a conclusion
   // and its trail for each scope, then the sentence naming the lanes, each
   // its own paragraph with a blank row between them.
-  const tall = seen["160x36"].join(" ").replace(/\s+/g, " ");
+  const tallRows = present(seen["160x36"], "the tall screen's card");
+  const shortRows = present(seen["80x32"], "the short screen's card");
+  const tall = tallRows.join(" ").replace(/\s+/g, " ");
   expect(tall.split("Launched bare")).toHaveLength(3);
   expect(tall).toContain("tmux-spawn-0.scope. Started from PID 1000");
   expect(tall).toContain("tmux-spawn-1.scope. Started from PID 1002");
   expect(tall).toContain("10 processes in 5 lanes: kendex agent-0 PID 1000");
-  expect(seen["160x36"].filter((row) => row === "")).toHaveLength(3);
+  expect(tallRows.filter((row) => row === "")).toHaveLength(3);
   // The short screen spends twelve of its rows on the verdict, the tiles and
   // the headings above the list, so the card gives ground the way it is
   // written to: the trails go, then a conclusion, counted where it stood.
-  const short = seen["80x32"].join(" ").replace(/\s+/g, " ");
+  const short = shortRows.join(" ").replace(/\s+/g, " ");
   expect(short).not.toContain("Started from PID");
   expect(short.split("Launched bare")).toHaveLength(2);
   expect(short).toContain("And 1 more group of processes not written here.");
   expect(short).toContain("10 processes in 5 lanes: kendex agent-0 PID 1000");
-  expect(seen["80x32"].length).toBeLessThan(seen["160x36"].length);
+  expect(shortRows.length).toBeLessThan(tallRows.length);
 });
 
 test("an open card breaks its detail into paragraphs, one per idea", async () => {
@@ -1700,7 +1709,7 @@ test("an open card on a narrow terminal draws every row whole or cut with its ma
       expect(title).toBeGreaterThan(0);
       expect(copied).toBeGreaterThan(title);
       expect(keys).toBeGreaterThan(copied);
-      const [item] = attention(s, c, { width: room });
+      const item = present(attention(s, c, { width: room })[0], "the card");
       if (item.command === undefined) throw new Error("no command to copy");
       // A row the edge shortens loses characters with nothing to say so; a
       // wrapped row loses none. Every character the card holds, in order, is
@@ -1720,12 +1729,10 @@ test("an open card on a narrow terminal draws every row whole or cut with its ma
       // The two rows that are cut rather than wrapped end in the mark, and
       // what they keep is how the line they cut begins.
       const keyLine = `${keyLabel(c.keys.open)} opens Agents · ${keyLabel(c.keys.copy)} copies the command`;
+      const titleRow = present(rows[title], "card title row");
       for (const [row, whole] of [
-        [
-          rows[title].slice(rows[title].indexOf("▾") + 2, panel).trim(),
-          item.title,
-        ],
-        [words(rows[keys]), keyLine],
+        [titleRow.slice(titleRow.indexOf("▾") + 2, panel).trim(), item.title],
+        [words(present(rows[keys], "key line")), keyLine],
       ] as const) {
         expect(row.endsWith("…")).toBe(true);
         expect(whole.startsWith(row.slice(0, -1))).toBe(true);
@@ -1745,7 +1752,7 @@ test("an open card draws the rows it measured, whatever its lane names hold", as
   const named = (names: string[]) => {
     const s = escapedSnapshot({ lanes: 2, perLane: 1 });
     names.forEach((name, i) => {
-      s.lanes[i].name = name;
+      present(s.lanes[i], `lane ${i}`).name = name;
     });
     return s;
   };
@@ -1772,7 +1779,7 @@ test("an open card draws the rows it measured, whatever its lane names hold", as
         const next = rows.findIndex((row) => row.startsWith("Next "));
         expect(`${at}: ${title > 0 && next > title}`).toBe(`${at}: true`);
         const room = detailWidth(width);
-        const [item] = attention(s, c, { width: room });
+        const item = present(attention(s, c, { width: room })[0], `${at} card`);
         const measured = cardDetail(item, room, 1000).flatMap((part, i) => [
           ...(i > 0 ? [""] : []),
           ...wrapLines(part, room),
@@ -1865,7 +1872,9 @@ test("every kind of Home row is kept in view, and opened and chosen alike by the
     expect(last && t.frame().includes(words(last))).toBe(false);
     const walked = new Set<string>();
     for (const [region, kind] of Object.keys(kinds).entries()) {
-      await t.press(c.keys[homeRegions[region + 1].action]);
+      await t.press(
+        c.keys[present(homeRegions[region + 1], `${kind} region`).action],
+      );
       for (const row of rows.filter((row) => row.kind === kind)) {
         await t.settle();
         expect({ kind, on: selectedRow(t.frame()) }).toEqual({
@@ -1885,6 +1894,7 @@ test("every kind of Home row is kept in view, and opened and chosen alike by the
   for (const [region, kind] of Object.keys(kinds).entries()) {
     const row = rows.findLast((row) => row.kind === kind);
     if (!row) throw new Error(`The fixture draws no ${kind} row`);
+    const list = present(homeRegions[region + 1], `${kind} region`);
     const offset = rows.filter((other) => other.kind === kind).indexOf(row);
     const size = { width: 160, height: 60 };
     const keyed = fresh();
@@ -1892,7 +1902,7 @@ test("every kind of Home row is kept in view, and opened and chosen alike by the
     let byKey: string[] = [];
     try {
       await k.press("1");
-      await k.press(c.keys[homeRegions[region + 1].action]);
+      await k.press(c.keys[list.action]);
       for (let i = 0; i < offset; i++) await k.press("down");
       await k.press("enter");
       byKey = underMarked(k.frame());
@@ -1906,13 +1916,11 @@ test("every kind of Home row is kept in view, and opened and chosen alike by the
       // Found under its own list's heading: a lane's name is in the change
       // that says it started, too.
       const lines = m.frame().split("\n");
-      const heading = lines.findIndex((line) =>
-        line.includes(homeRegions[region + 1].title),
-      );
+      const heading = lines.findIndex((line) => line.includes(list.title));
       const y = lines.findIndex(
         (line, at) => at > heading && line.includes(words(row)),
       );
-      await m.click(lines[y].indexOf(words(row)), y);
+      await m.click(present(lines[y], `${kind} row`).indexOf(words(row)), y);
       expect({ kind, opened: underMarked(m.frame()) }).toEqual({
         kind,
         opened: byKey,

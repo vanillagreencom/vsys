@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { buildKind, compileOrLink } from "../collect/builds";
 import { defaults } from "../config/config";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import {
   buildsSummary,
   bypassedLanes,
@@ -71,8 +72,8 @@ test("linkers are counted and named apart from the compilers in each lane", () =
     ["lane-b", 1, 1],
     ["", 1, 0],
   ]);
-  expect(rows[0].linkerNames).toEqual(["ld.mold"]);
-  expect(rows[2].linkerNames).toEqual([]);
+  expect(rows[0]?.linkerNames).toEqual(["ld.mold"]);
+  expect(rows[2]?.linkerNames).toEqual([]);
 });
 
 test("a supervising cargo is not a build slot beside the compilers it runs", () => {
@@ -181,7 +182,7 @@ test("only the outermost holder of a token pool is counted", () => {
 
 test("a pipe jobserver and a missing environment produce no token pool", () => {
   const s = building();
-  const p = s.procs[0];
+  const p = present(s.procs[0], "first process");
   p.env = { MAKEFLAGS: " -j16 --jobserver-auth=3,4" };
   expect(jobservers(s, defaults())).toEqual([]);
 });
@@ -191,7 +192,11 @@ test("a configured wrapper name occupies a build slot like any compiler", () => 
   c.compilerNames = [...c.compilerNames, "distcc"];
   const s = building();
   s.procs = [
-    processSnapshot({ pid: 10, build: "distcc", group: s.procs[0].group }),
+    processSnapshot({
+      pid: 10,
+      build: "distcc",
+      group: present(s.procs[0], "first process").group,
+    }),
   ];
   // The classifier, the fleet total and the lane row read one configured list.
   expect(

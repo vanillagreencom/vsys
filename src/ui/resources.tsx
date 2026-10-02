@@ -55,7 +55,14 @@ export function groupLabels(groups: Group[]): Map<string, string> {
     (g) => (g.pids[0] ? `PID ${g.pids[0]}` : ""),
     (g) => g.path,
   ]);
-  return new Map(groups.map((g, i) => [g.path, names[i]]));
+  return new Map(
+    groups.map((g, i) => {
+      const name = names[i];
+      if (name === undefined)
+        throw new Error(`distinctNames returned no name for group ${g.path}`);
+      return [g.path, name];
+    }),
+  );
 }
 /**
  * How deep a path sits. A group's parent is its own path with the last segment
@@ -188,22 +195,23 @@ export function Resources({
   const current = rows[Math.min(selected, rows.length - 1)];
   const topCpu = Math.max(100, ...rows.map((g) => g.cpuPercent ?? 0));
   const topMemory = Math.max(1, ...rows.map((g) => g.memory ?? 0));
+  const cpuBar: Column = { label: "", width: 8 };
+  const cpuColumn: Column = { label: "CPU", width: 7, align: "right" };
+  const memoryBar: Column = { label: "", width: 8 };
+  const memoryColumn: Column = { label: "Memory", width: 10, align: "right" };
+  const tasksColumn: Column = { label: "Tasks", width: 14, align: "right" };
   const fixed: Column[] = [
-    { label: "", width: 8 },
-    { label: "CPU", width: 7, align: "right" as const },
-    { label: "", width: 8 },
-    { label: "Memory", width: 10, align: "right" as const },
-    { label: "Tasks", width: 14, align: "right" as const },
+    cpuBar,
+    cpuColumn,
+    memoryBar,
+    memoryColumn,
+    tasksColumn,
   ];
-  const groupColumns: Column[] = [
-    {
-      label: "Group",
-      width: Math.max(12, Math.min(44, width - 5 - columnsWidth(fixed))),
-    },
-    ...fixed,
-  ];
-  const [nameColumn, cpuBar, cpuColumn, memoryBar, memoryColumn, tasksColumn] =
-    groupColumns;
+  const nameColumn: Column = {
+    label: "Group",
+    width: Math.max(12, Math.min(44, width - 5 - columnsWidth(fixed))),
+  };
+  const groupColumns: Column[] = [nameColumn, ...fixed];
   const inner = width - 4;
   // The meters that are not builds, and the Swap tile beside them.
   const tileCount = tiles.length + 1;

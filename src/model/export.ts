@@ -47,34 +47,42 @@ function subject(cause: ReturnType<typeof causes>[number]): string | null {
   return null;
 }
 
+/** A reading `meters()` sets on every meter of this id; an unread one is null. */
+function reading(meter: Meter, name: string): number | null {
+  const value = meter.values[name];
+  if (value === undefined)
+    throw new Error(`Meter ${meter.id} carries no ${name} reading`);
+  return value;
+}
+
 function summaryMeter(meter: ReturnType<typeof meters>[number]): SummaryMeter {
   switch (meter.id) {
     case "cpu":
       return {
         id: meter.id,
-        value: meter.values.system,
+        value: reading(meter, "system"),
         max: 100,
         level: meter.level,
       };
     case "memory":
       return {
         id: meter.id,
-        value: meter.values.used,
-        max: meter.values.total,
+        value: reading(meter, "used"),
+        max: reading(meter, "total"),
         level: meter.level,
       };
     case "disk":
       return {
         id: meter.id,
-        value: meter.values.some,
+        value: reading(meter, "some"),
         max: 100,
         level: meter.level,
       };
     case "builds":
       return {
         id: meter.id,
-        value: meter.values.builds,
-        max: meter.values.cores,
+        value: reading(meter, "builds"),
+        max: reading(meter, "cores"),
         level: meter.level,
       };
     default:

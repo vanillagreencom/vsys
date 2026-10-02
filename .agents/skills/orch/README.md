@@ -8,7 +8,7 @@ orch takes Linear or GitHub issues from implementation to merge with coding and 
 kendex add vanillagreencom/kendex --skill orch
 ```
 
-Requires jq, Bash 3.2, flock, setsid and timeout or gtimeout; the included SSH host provider also needs Python 3.8+ on the controlling machine. kendex installs the required skills. Add linear for Linear issues. Second-opinion and review-gate are optional.
+Requires jq, Bash 3.2, Python 3.8+, flock, setsid and timeout or gtimeout. Local lane-mail and the included SSH host provider use Python on the controlling machine. kendex installs the required skills. Add linear for Linear issues. Second-opinion and review-gate are optional.
 
 ## Features
 
@@ -81,7 +81,7 @@ Until KEN-2466 lands, the Claude Code agent renderer maps `haiku` to `sonnet` an
 | `WORKTREE_CLI` | Path to the worktree CLI `open-terminal` drives; empty resolves the installed worktree skill's script | resolved |
 | Review-gate settings | `PR_REVIEW_WAIT_SECS`: [references/gates.md](references/gates.md) | |
 | `ORCH_LANE_MAX_PCT` | Usage share at or above which `lanes pick` refuses an account; the bucket it reads and its overrides: `lanes --help`, `open-terminal --help` | `95` |
-| Lane settings | `ORCH_LANE_BURN_PCT_PER_HOUR`, `ORCH_LANE_DIRS`, `ORCH_LANE_ALIASES`, `ORCH_LANE_EXCLUDE`, `ORCH_LANE_RETIRE`, `ORCH_LANE_COPILOT_POOL` (overrides the Copilot pool read live from the lane host), `ORCH_LANES_USAGE_TTL`, `ORCH_LANES_USAGE_MAX_AGE`, `ORCH_TMUX_VERIFY_SECS`, `ORCH_LANE_SSH_PROMPT_SECS`, `ORCH_TMUX_SESSION`: `lanes --help`, `open-terminal --help` | |
+| Lane settings | Account selection and terminal launch settings: `lanes --help`, `open-terminal --help` | |
 | `ORCH_SIZE_RENDER_ROOTS` | Render-mirror roots excluded from production and test counts when their source changes in the same branch | `.agents .claude .codex .pi` |
 | `ORCH_SIZE_TEST_PATHS` | Path globs counted as test lines in size reports and cut comparisons | empty |
 

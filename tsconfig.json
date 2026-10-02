@@ -8,6 +8,7 @@
     "jsx": "react-jsx",
     "jsxImportSource": "@opentui/react",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "skipLibCheck": true,
     "noUnusedLocals": true,

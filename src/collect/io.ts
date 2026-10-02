@@ -119,7 +119,7 @@ export function pairs(text: string): Record<string, number> {
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     const [key, raw, unit] = line.trim().split(/\s+/);
-    if (!/^\d+(\.\d+)?$/.test(raw ?? ""))
+    if (key === undefined || raw === undefined || !/^\d+(\.\d+)?$/.test(raw))
       throw new Error(`Invalid numeric field: ${key}`);
     result[key.replace(/:$/, "")] = Number(raw) * (unit === "kB" ? 1024 : 1);
   }

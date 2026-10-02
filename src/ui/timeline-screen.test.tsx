@@ -8,6 +8,7 @@ import {
   laneSnapshot,
 } from "../test/fixture";
 import { mount, selectedRow } from "../test/harness";
+import { present } from "../test/present";
 import { markerRuns, pointAt, windowLabel } from "./timeline-screen";
 
 test("marker runs merge neighbours and let the cursor win over a change", () => {
@@ -235,7 +236,7 @@ test("the wheel moves the Timeline change list one row per notch", async () => {
       await t.wheel(10, y, way);
       expect({ way, on: selectedRow(t.frame()) }).toEqual({
         way,
-        on: rows[row],
+        on: present(rows[row], `timeline row ${row}`),
       });
     }
   } finally {
@@ -407,7 +408,8 @@ test("a row opened with the keyboard keeps its change when one arrives above it"
     // Enter is the only key that chose it.
     await t.press("enter");
     expect(selectedRow(t.frame())).toContain("alpha");
-    const cursor = `cursor ${new Date(changes[0].time).toLocaleString()}`;
+    const only = present(changes[0], "the alpha change");
+    const cursor = `cursor ${new Date(only.time).toLocaleString()}`;
     expect(t.frame()).toContain(cursor);
     // A later sample puts a change above it. The list is newest first, so the
     // row the reader opened is no longer row zero.
@@ -420,7 +422,7 @@ test("a row opened with the keyboard keeps its change when one arrives above it"
     await t.update(second);
     const after = h.events(second.time, c.historyHours * 3600000);
     expect(after.length).toBe(2);
-    expect(after[0].subject).toBe("beta PID 40");
+    expect(after[0]?.subject).toBe("beta PID 40");
     // The highlight, the cursor and the sample the pin key acts on all still
     // name the row the reader chose, rather than the highlight jumping to the
     // new top row while the cursor stayed behind.
