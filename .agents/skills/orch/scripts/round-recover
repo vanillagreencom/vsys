@@ -48,6 +48,11 @@
 # none joins that text as a ### Proposed Rules section. Recovery never verifies
 # a tracker post, so a recovered artifact records summary_posted false.
 #
+# A recovered receipt declares no labels and carries no mac run test record, so
+# where the writer's Apple gate refuses it (labels-undeclared, or
+# mac-run-missing) the round re-delegates as mac-run-unproven, and the fresh
+# round runs the test.
+#
 # No report, or a report the disk contradicts, is one re-delegation: this script
 # mints the fresh round id (workflow-state new-round-id ID dev_round_id) and
 # records it as recovery_round_id. The round that id names is never re-delegated
@@ -60,8 +65,8 @@
 #   round-recover: round-live run-dir=PATH                         exit 4
 # round-live is the round's validation run still going by dev-validate-run's own
 # answer: the round is not stalled. Reasons: no-transcript, no-report, unparsed,
-# commit-mismatch, validate-unproven. Usage and environment errors exit 2 with a
-# keyed line on stderr.
+# commit-mismatch, validate-unproven, mac-run-unproven. Usage and environment
+# errors exit 2 with a keyed line on stderr.
 
 set -euo pipefail
 
@@ -364,9 +369,22 @@ if [[ -n "$FIELD" && "$FIELD" != none ]]; then
   printf '\n### Proposed Rules\n\n- %s\n' "$FIELD" >> "$report_file"
 fi
 
-if ! artifact="$("$SCRIPT_DIR/dev-return-write" --worktree "$worktree" --kind "$kind" \
+# The writer's refusal reaches stderr as it would unrecovered; only the Apple
+# gate's keys re-delegate, since the report cannot carry what they ask for.
+write_err="$worktree/tmp/round-recovered-$issue-$round_id.err"
+write_status=0
+artifact="$("$SCRIPT_DIR/dev-return-write" --worktree "$worktree" --kind "$kind" \
   --issue "$issue" --round-id "$round_id" --branch "$branch" --commit "$head_sha" \
-  --validate "$validate" --recovered-text "$report_file" ${args[@]+"${args[@]}"})"; then
+  --validate "$validate" --recovered-text "$report_file" ${args[@]+"${args[@]}"} 2>"$write_err")" \
+  || write_status=$?
+refusal=""
+IFS= read -r refusal <"$write_err" || true
+cat -- "$write_err" >&2
+rm -f -- "${write_err:?}"
+if (( write_status != 0 )); then
+  case "$refusal" in
+    "dev-return-write: mac-run-missing "* | "dev-return-write: labels-undeclared "*) no_report mac-run-unproven ;;
+  esac
   die write-failed "issue=$issue" "round-id=$round_id"
 fi
 
