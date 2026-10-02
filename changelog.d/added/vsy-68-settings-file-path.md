@@ -1,1 +1,1 @@
-- Settings names the file vsys read, and will save an edit to, beside the history database and error-memory rows.
+- Settings names the file an edit here will save to, beside the history database and error-memory rows.

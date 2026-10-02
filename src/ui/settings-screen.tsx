@@ -119,7 +119,7 @@ export function Settings({
 }: {
   snapshot: Snapshot;
   config: Config;
-  /** The file vsys read this configuration from, and will save an edit to. */
+  /** The file an edit here will save to. */
   settingsPath: string;
   width: number;
   onSave: (c: Config) => Promise<void>;

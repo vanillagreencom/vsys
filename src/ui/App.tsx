@@ -74,7 +74,7 @@ export interface AppProps {
   snapshot: Snapshot;
   history: History;
   config: Config;
-  /** The file vsys read this configuration from, and will save an edit to. */
+  /** The file an edit here will save to. */
   settingsPath: string;
   onSave: (c: Config) => Promise<void>;
   onQuit: () => void;
