@@ -1,0 +1,1 @@
+- A drive swapped in under a reused kernel name, even into or out of one reporting no serial or WWN, no longer shows the previous drive's stale reading for the rest of udisks' 10-minute hold.

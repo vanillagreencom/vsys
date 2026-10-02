@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { CapabilityFailure } from "../model/types";
+import type { FakeDrive } from "../test/udisks";
 import { fakeBus, noBus } from "../test/udisks";
 import { spawnText } from "./io";
 import {
@@ -87,8 +88,18 @@ test("each whole disk with a SMART drive is read, and a partition is no row", as
   expect(reading).toEqual({
     outcome: null,
     drives: [
-      { name: "nvme0n1", model: "Samsung SSD 990 PRO 2TB", written: 9_000_000 },
-      { name: "sda", model: "Crucial CT1000MX500SSD1", written: 512_000 },
+      {
+        name: "nvme0n1",
+        model: "Samsung SSD 990 PRO 2TB",
+        written: 9_000_000,
+        identity: null,
+      },
+      {
+        name: "sda",
+        model: "Crucial CT1000MX500SSD1",
+        written: 512_000,
+        identity: null,
+      },
     ],
   });
   expect(calls.slice(1).map((argv) => argv.slice(5, 7))).toEqual([
@@ -228,7 +239,7 @@ test("a drive whose SMART query fails to launch keeps its row, written unknown, 
     throw launchFailure;
   });
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null }],
+    drives: [{ name: "sda", model: "B", written: null, identity: null }],
     outcome: { failure: "incomplete", detail: launchFailure.message },
   });
 });
@@ -246,7 +257,7 @@ test("a drive query spawnText reports timed out is read as a timeout, even thoug
     return { out: "", error: "", status: 143, timedOut: true };
   }, 50);
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null }],
+    drives: [{ name: "sda", model: "B", written: null, identity: null }],
     outcome: {
       failure: "incomplete",
       detail: "busctl did not answer within 50 ms",
@@ -264,28 +275,225 @@ test("a drive whose SMART query never answers keeps its row, written unknown", a
     return hangs();
   }, 10);
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null }],
+    drives: [{ name: "sda", model: "B", written: null, identity: null }],
     outcome: {
       failure: "incomplete",
       detail: "busctl runner abandoned after 2510 ms with no response",
     },
   });
 });
-test("a read is held for the hold time on the clock it is given", async () => {
+test("the SMART query is held for the hold time, but the cheap listing is asked every sample", async () => {
   const calls: string[][] = [];
   let now = 0;
   const udisks = new Udisks(
     fakeBus(
-      [{ name: "sda", model: "B", kind: "ata", attributes: ata(10, 3) }],
+      [
+        {
+          name: "sda",
+          model: "B",
+          kind: "ata",
+          attributes: ata(10, 3),
+          serial: "SN1",
+        },
+      ],
       calls,
     ),
     () => now,
   );
   await udisks.read();
+  expect(calls).toHaveLength(2); // listing + SmartGetAttributes
   now = udisksHoldMs - 1;
   await udisks.read();
-  expect(calls).toHaveLength(2);
+  // Within the hold the listing runs again to check identity, costing one
+  // more call, but the SMART query is not repeated.
+  expect(calls).toHaveLength(3);
   now = udisksHoldMs;
   await udisks.read();
-  expect(calls).toHaveLength(4);
+  // The hold has expired: the full read, listing and query both, runs again.
+  expect(calls).toHaveLength(5);
+});
+test("a kernel name reused by a different drive within the hold is read fresh, not served the departed drive's numbers", async () => {
+  const calls: string[][] = [];
+  let now = 0;
+  let live = [
+    {
+      name: "sda",
+      model: "Old Drive",
+      kind: "ata" as const,
+      attributes: ata(1000, 3),
+      serial: "SERIAL-OLD",
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live, calls)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first).toEqual({
+    outcome: null,
+    drives: [
+      {
+        name: "sda",
+        model: "Old Drive",
+        written: 512_000,
+        identity: "SERIAL-OLD",
+      },
+    ],
+  });
+  // The physical drive behind sda is swapped well inside the hold window:
+  // same kernel name, a different serial and a different SMART history.
+  now = udisksHoldMs - 1;
+  live = [
+    {
+      name: "sda",
+      model: "New Drive",
+      kind: "ata" as const,
+      attributes: ata(5, 3),
+      serial: "SERIAL-NEW",
+    },
+  ];
+  const second = await udisks.read();
+  expect(second).toEqual({
+    outcome: null,
+    drives: [
+      {
+        name: "sda",
+        model: "New Drive",
+        written: 2_560,
+        identity: "SERIAL-NEW",
+      },
+    ],
+  });
+  // A same-identity re-read within the hold still serves the held reading,
+  // never re-querying the drive.
+  const queriesSoFar = calls.filter((argv) =>
+    argv.includes("SmartGetAttributes"),
+  ).length;
+  now = udisksHoldMs; // still within the hold the swap read started
+  const third = await udisks.read();
+  expect(third).toEqual(second);
+  expect(
+    calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
+  ).toBe(queriesSoFar);
+});
+test("a swap into or out of a drive reporting no serial or WWN is read fresh, not served the departed drive's numbers", async () => {
+  let now = 0;
+  let live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "Has Identity",
+      kind: "ata",
+      attributes: ata(1000, 3),
+      serial: "SERIAL-OLD",
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives).toEqual([
+    {
+      name: "sda",
+      model: "Has Identity",
+      written: 512_000,
+      identity: "SERIAL-OLD",
+    },
+  ]);
+  // Swapped, still inside the hold, for a drive udisks reports neither a
+  // serial nor a WWN for: the old identity is gone, which is itself a sign
+  // the drive changed, not proof it did not.
+  now = udisksHoldMs - 1;
+  live = [
+    { name: "sda", model: "No Identity", kind: "ata", attributes: ata(5, 3) },
+  ];
+  const second = await udisks.read();
+  expect(second.drives).toEqual([
+    { name: "sda", model: "No Identity", written: 2_560, identity: null },
+  ]);
+  // Swapped again, still inside that second hold, for a drive that now
+  // reports one: the identity appearing is just as much a sign of change as
+  // it disappearing was.
+  now = 2 * udisksHoldMs - 2;
+  live = [
+    {
+      name: "sda",
+      model: "Has Identity Again",
+      kind: "ata",
+      attributes: ata(1, 3),
+      serial: "SERIAL-NEW",
+    },
+  ];
+  const third = await udisks.read();
+  expect(third.drives).toEqual([
+    {
+      name: "sda",
+      model: "Has Identity Again",
+      written: 512,
+      identity: "SERIAL-NEW",
+    },
+  ]);
+});
+test("a drive replaced by one with no SMART interface is dropped, not left answering with the departed drive's numbers", async () => {
+  let now = 0;
+  let live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "Old Drive",
+      kind: "ata",
+      attributes: ata(1000, 3),
+      serial: "SERIAL-OLD",
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives).toHaveLength(1);
+  // The physical drive behind sda is swapped, inside the hold, for one with
+  // neither the NVMe nor the ATA SMART interface: `udisksTargets` names no
+  // target for it at all, so the held name is simply absent from the fresh
+  // listing rather than mismatched against it.
+  now = udisksHoldMs - 1;
+  live = [
+    { name: "sda", model: "Unsupported Drive", kind: "none", attributes: null },
+  ];
+  const second = await udisks.read();
+  expect(second).toEqual({ drives: [], outcome: null });
+});
+test("a listing that fails during the hold is never read as proof of no swap: its own failure surfaces rather than the held reading's stale outcome", async () => {
+  const good = fakeBus([
+    {
+      name: "sda",
+      model: "B",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "SN1",
+    },
+  ]);
+  let failing = false;
+  const run: typeof spawnText = async (argv, timeoutMs) => {
+    if (failing && argv.includes("GetManagedObjects"))
+      return {
+        out: "",
+        error: "Failed to connect to bus: No such file or directory\n",
+        status: 1,
+        timedOut: false,
+      };
+    return good(argv, timeoutMs);
+  };
+  let now = 0;
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.outcome).toBeNull();
+  // The bus goes down for the rest of this hold, starting with the very
+  // listing call read() makes to check for a swap.
+  failing = true;
+  now = udisksHoldMs - 1;
+  const second = await udisks.read();
+  expect(second).toEqual({
+    drives: [],
+    outcome: {
+      failure: "absent",
+      detail: "Failed to connect to bus: No such file or directory",
+    },
+  });
 });

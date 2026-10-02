@@ -15,8 +15,14 @@
  *   attribute 241, `total-lbas-written`, given in sectors is a byte count; any
  *   other unit for it stays unknown rather than scaled by a guess.
  *
- * udisks itself refreshes these from the drive on its own schedule, so a read
- * is held for `udisksHoldMs` rather than asked for again every sample.
+ * udisks itself refreshes these from the drive on its own schedule, so each
+ * drive's SMART query is held for `udisksHoldMs` rather than asked for again
+ * every sample. The listing of which drive answers to which kernel name is
+ * asked again every sample regardless, because it costs udisksd only a
+ * lookup in its own object cache; a kernel name that now answers with a
+ * different identity, that stopped or started reporting one at all, or that
+ * the listing no longer names, drops the held reading rather than keep
+ * serving it, and so does a listing that could not itself be read.
  */
 
 import type { Outcome } from "./capabilities";
@@ -92,6 +98,13 @@ export interface UdisksDrive {
   name: string;
   model: string | null;
   written: number | null;
+  /**
+   * The drive's serial, or its WWN where udisks reports no serial; null
+   * where udisks reports neither. A held reading is checked against this on
+   * the next sample, because a kernel name survives a hot swap and this
+   * does not.
+   */
+  identity: string | null;
 }
 export interface UdisksReading {
   drives: UdisksDrive[];
@@ -173,6 +186,7 @@ interface Target {
   model: string | null;
   drive: string;
   iface: string;
+  identity: string | null;
 }
 /**
  * Whole-disk block devices and the drive behind each. A partition names the
@@ -196,8 +210,10 @@ export function udisksTargets(out: string): Target[] {
         ? ataInterface
         : null;
     if (!iface) continue;
-    const model = text(owner["org.freedesktop.UDisks2.Drive"]?.Model);
-    targets.push({ name, model, drive, iface });
+    const drv = owner["org.freedesktop.UDisks2.Drive"];
+    const model = text(drv?.Model);
+    const identity = text(drv?.Serial) ?? text(drv?.WWN);
+    targets.push({ name, model, drive, iface, identity });
   }
   return targets.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -272,7 +288,7 @@ async function queryDrives(
     firstRefusal ??= detail;
   };
   const drives = await Promise.all(
-    targets.map(async ({ name, model, drive, iface }) => {
+    targets.map(async ({ name, model, drive, iface, identity }) => {
       let answer: Awaited<ReturnType<Run>>;
       try {
         answer = await withDeadline(
@@ -281,25 +297,25 @@ async function queryDrives(
         );
       } catch (error) {
         noteRefusal(error instanceof Error ? error.message : String(error));
-        return { name, model, written: null };
+        return { name, model, written: null, identity };
       }
       if (answer.timedOut) {
         noteRefusal(timeoutDetail(timeoutMs));
-        return { name, model, written: null };
+        return { name, model, written: null, identity };
       }
       if (answer.status !== 0) {
         noteRefusal(answer.error.trim());
-        return { name, model, written: null };
+        return { name, model, written: null, identity };
       }
       try {
         const written =
           iface === nvmeInterface
             ? nvmeWritten(answer.out)
             : ataWritten(answer.out);
-        return { name, model, written };
+        return { name, model, written, identity };
       } catch (error) {
         noteRefusal(String(error));
-        return { name, model, written: null };
+        return { name, model, written: null, identity };
       }
     }),
   );
@@ -326,9 +342,44 @@ export async function readUdisks(
 }
 
 /**
+ * Whether the fresh listing proves the held reading stale: a name both name
+ * now answers a different identity for (`null` on either side counts, since
+ * a drive that stopped or started reporting one is not provably the drive
+ * that was held), or a name the held reading answered for that the fresh
+ * listing no longer names at all — gone, or replaced by a drive with neither
+ * the NVMe nor the ATA SMART interface, which `udisksTargets` already drops.
+ * Udisks reuses a kernel name for whatever is plugged in next, so without
+ * this check a drive swapped mid-hold would keep answering with the drive
+ * that left.
+ */
+function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
+  const priorByName = new Map(held.drives.map((d) => [d.name, d]));
+  const freshNames = new Set(targets.map((t) => t.name));
+  return (
+    targets.some((target) => {
+      const prior = priorByName.get(target.name);
+      return prior !== undefined && target.identity !== prior.identity;
+    }) || held.drives.some((d) => !freshNames.has(d.name))
+  );
+}
+
+/**
  * One collector's udisks reading, held for `udisksHoldMs` on the clock it is
  * given. A collector given none never asks udisks, which keeps the system bus
  * out of the test suite.
+ *
+ * The hold hides the expensive part — asking each drive for its own SMART
+ * attributes — but never the listing: `listUdisks` is udisksd answering from
+ * its own object cache, not a drive query, so re-reading it every sample
+ * costs nothing the hold exists to save, and it is what notices a kernel
+ * name now sitting behind a different serial or WWN, or a held name the
+ * listing no longer answers for at all. On either sign the held reading is
+ * dropped and the full read runs again, rather than serving the departed
+ * drive's numbers for the rest of the hold. A listing that could not itself
+ * be read proves nothing either way, so it is read as a sign to drop the
+ * held reading too: the full read below re-asks the same listing and, where
+ * the failure persists, surfaces it as this sample's own outcome rather than
+ * letting the held reading's old, unrelated outcome stand in for it.
  */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
@@ -339,7 +390,14 @@ export class Udisks {
   ) {}
   async read(): Promise<UdisksReading> {
     const at = this.now();
-    if (this.held && at - this.held.at < udisksHoldMs) return this.held.reading;
+    if (this.held && at - this.held.at < udisksHoldMs) {
+      const listing = await listUdisks(this.run, this.timeoutMs);
+      if (
+        listing.targets !== null &&
+        !identitySwapped(this.held.reading, listing.targets)
+      )
+        return this.held.reading;
+    }
     const reading = await readUdisks(this.run, this.timeoutMs);
     this.held = { at, reading };
     return reading;
