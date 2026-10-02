@@ -616,9 +616,7 @@ export function Row({
  * One selectable row of a list, with whatever it opened drawn under it. Every
  * screen that lists more than one kind of row draws each kind through this,
  * so the scroll target, the marker, the click and the nesting cannot differ
- * between kinds or between screens. The caller decides when `under` shows:
- * Home and Storage open a row by selecting it, Settings and the agent detail
- * by Enter.
+ * between kinds or between screens. The caller decides when `under` shows.
  */
 export function ListRow({
   id,

@@ -389,8 +389,8 @@ export function Settings({
   /**
    * One selectable Settings row, whichever kind it is, at its place in
    * `items`. The block is what the scroll reads for what is drawn under the
-   * row, and the line is the row's own scroll target. A row here opens by
-   * Enter, not by selection, so `under` decides for itself when it shows.
+   * row, and the line is the row's own scroll target. `under` decides for
+   * itself when it shows.
    */
   const settingRow = (
     item: SettingItem,

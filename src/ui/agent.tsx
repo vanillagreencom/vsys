@@ -464,8 +464,7 @@ export function Agent({
   /**
    * One detail row, whichever kind it is. Its identity, its scroll target,
    * its marker and what opening it does are decided here once, so a kind
-   * added later carries them without anyone remembering them. A section opens
-   * by Enter, not by selection, so `under` shows while its section is open.
+   * added later carries them without anyone remembering them.
    */
   const detailRow = (
     row: DetailRow,
