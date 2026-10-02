@@ -470,7 +470,6 @@
   ".claude/hooks/reviewer-stop-check.sh",
   ".claude/hooks/session-drift-check.sh",
   ".claude/hooks/skill-load-check.sh",
-  ".claude/hooks/skill-load-record.sh",
   ".claude/hooks/task-completed-check.sh",
   ".claude/settings.json",
   ".claude/skills/bot-instructions",
@@ -523,7 +522,6 @@
   ".codex/hooks/pre-commit-check.sh",
   ".codex/hooks/session-drift-check.sh",
   ".codex/hooks/skill-load-check.sh",
-  ".codex/hooks/skill-load-record.sh",
   {"path":".github/workflows/kendex-refresh.yml","template":".agents/skills/review-gate/templates/kendex-refresh.yml","templateHash":"sha256:b39ecd17540b0efd71077fb50e798b79728b667995a2b18a619a7937f419a882"},
   ".kendex-generated.json",
   ".kendex-lock.json",
@@ -557,7 +555,6 @@
   ".pi/kendex/hooks/pre-commit-check.sh",
   ".pi/kendex/hooks/reviewer-read-only.sh",
   ".pi/kendex/hooks/skill-load-check.sh",
-  ".pi/kendex/hooks/skill-load-record.sh",
   ".pi/prompts/code-scrub.md",
   "CLAUDE.md"
 ]
