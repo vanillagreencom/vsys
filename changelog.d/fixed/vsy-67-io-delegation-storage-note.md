@@ -1,0 +1,1 @@
+- The per-group io-delegation loss note no longer names Storage, which an ancestor withholding io never affects.

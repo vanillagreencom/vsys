@@ -189,6 +189,158 @@ test("a slice between a delegating root and the agent scopes can still withhold 
   });
 });
 
+test("an unavailable root answer stands whatever the agent slice's own ancestry shows", () => {
+  const f = setup();
+  const root: Capability = {
+    id: "io-stat",
+    available: false,
+    failure: "absent",
+    source: join(f.config.cgroupRoot, "io.stat"),
+    detail: "ENOENT",
+  };
+  const agentsSlice = join(f.config.cgroupRoot, "agents.slice");
+  // The agent slice itself hands io down in full. Were the short-circuit on
+  // an unavailable root removed, this walk would read that and wrongly flip
+  // the capability to available.
+  writeFileSync(
+    join(agentsSlice, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+  ];
+  expect(probeIoStat(f.config, groups, root)).toBe(root);
+});
+
+test("a two-level ancestry under a dashed agent-slice name names whichever level withholds io", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  // systemd nests a dashed slice inside the slice its name prefixes.
+  const c = { ...f.config, agentSlice: "agents-work.slice" };
+  const outer = join(f.config.cgroupRoot, "agents.slice");
+  const leaf = join(outer, "agents-work.slice");
+  mkdirSync(leaf, { recursive: true });
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+    groupSnapshot({
+      path: "agents.slice/agents-work.slice",
+      parent: "agents.slice",
+      name: "agents-work.slice",
+    }),
+  ];
+  // The outer slice withholds io; the leaf still delegates to its own
+  // children, but the walk never reaches the leaf because the outer already
+  // decided it.
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu memory pids\n");
+  writeFileSync(join(leaf, "cgroup.subtree_control"), "cpu io memory pids\n");
+  expect(probeIoStat(c, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(outer, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
+  // The outer slice delegates; the leaf itself withholds io from its own
+  // scopes, so the leaf is named instead of the outer slice.
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu io memory pids\n");
+  writeFileSync(join(leaf, "cgroup.subtree_control"), "cpu memory pids\n");
+  expect(probeIoStat(c, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(leaf, "cgroup.subtree_control"),
+    detail: "agents-work.slice",
+  });
+});
+
+test("an ancestor collectGroups could not read still answers for delegation", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const c = { ...f.config, agentSlice: "agents-work.slice" };
+  const outer = join(f.config.cgroupRoot, "agents.slice");
+  const leaf = join(outer, "agents-work.slice");
+  mkdirSync(leaf, { recursive: true });
+  // The outer ancestor withholds io from what is below it, but it never made
+  // it into this sample's groups: say its own cpu.stat failed to read, which
+  // collectGroups drops without dropping the children it still finds below.
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu memory pids\n");
+  writeFileSync(join(leaf, "cgroup.subtree_control"), "cpu io memory pids\n");
+  const groups = [
+    groupSnapshot({
+      path: "agents.slice/agents-work.slice",
+      parent: "agents.slice",
+      name: "agents-work.slice",
+    }),
+  ];
+  const result = probeIoStat(c, groups, root);
+  expect(result).not.toBe(root);
+  expect(result).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(outer, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
+});
+
+test("a cgroup root covering two user managers checks every agent slice it finds", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const managerA = join(f.config.cgroupRoot, "user-1000.slice");
+  const managerB = join(f.config.cgroupRoot, "user-1001.slice");
+  const sliceA = join(managerA, "agents.slice");
+  const sliceB = join(managerB, "agents.slice");
+  mkdirSync(sliceA, { recursive: true });
+  mkdirSync(sliceB, { recursive: true });
+  // The first manager's agent slice delegates io all the way down.
+  writeFileSync(
+    join(managerA, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  writeFileSync(join(sliceA, "cgroup.subtree_control"), "cpu io memory pids\n");
+  // The second manager's agent slice withholds io from its own scopes.
+  writeFileSync(
+    join(managerB, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  writeFileSync(join(sliceB, "cgroup.subtree_control"), "cpu memory pids\n");
+  const groups = [
+    groupSnapshot({
+      path: "user-1000.slice/agents.slice",
+      parent: "user-1000.slice",
+      name: "agents.slice",
+    }),
+    groupSnapshot({
+      path: "user-1001.slice/agents.slice",
+      parent: "user-1001.slice",
+      name: "agents.slice",
+    }),
+  ];
+  // A probe that checked only the first match would miss the second, which
+  // withholds io even though the first delegates it in full.
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(sliceB, "cgroup.subtree_control"),
+    detail: "agents.slice",
+  });
+});
+
 test("a kernel without PSI and without io.stat reports both absences", () => {
   const f = setup();
   rmSync(join(f.config.procRoot, "pressure"), { recursive: true });

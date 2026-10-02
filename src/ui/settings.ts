@@ -375,8 +375,10 @@ const unreadCost: Partial<Record<CapabilityId, string>> = {
 /**
  * What a reader loses while this capability is missing. io-stat's partial
  * loss (the root hands io down, but one of the agent slice's own ancestors
- * does not) costs only the groups under that ancestor, so the line names it
- * rather than the session-wide sentence a root-level loss costs.
+ * does not) costs only the groups under that ancestor, so the line names
+ * only Home's per-scope reads: Storage shows slice totals, and the agent
+ * slice's own total is unaffected by an ancestor withholding io from what
+ * is below it.
  */
 export function capabilityLoss(cap: Capability): string {
   if (cap.available) return "";
@@ -385,7 +387,7 @@ export function capabilityLoss(cap: Capability): string {
     cap.failure === "incomplete" &&
     cap.detail !== "io"
   )
-    return `disk writes are blank rather than zero, on Home and Storage, for the groups under ${cap.detail}; it does not hand the io controller to them`;
+    return `disk writes are blank rather than zero, on Home, for the groups under ${cap.detail}; it does not hand the io controller to them`;
   const unread = cap.failure !== "absent" && cap.failure !== "masked";
   return (unread && unreadCost[cap.id]) || capabilityCost[cap.id];
 }

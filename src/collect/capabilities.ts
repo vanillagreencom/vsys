@@ -8,6 +8,7 @@ import type {
   CapabilityId,
   Group,
 } from "../model/types";
+import { sliceRoots } from "../model/verdict";
 import { pressure } from "./io";
 import { kernelLogProbeArgv, probeKernelLog } from "./kernel-log";
 import type { CollectionConfig } from "./settings";
@@ -295,10 +296,20 @@ export function probeAgentSlice(
  * Where the root hands it down, each of the agent slice's own ancestors, from
  * directly below the root to the slice itself, decides again for its own
  * children, so the first one that does not re-delegate io is why the agent
- * scopes under it have no io.stat. A walk of every group in the tree was
- * tried and reverted: it read desktop slices that hold no agents as
- * unavailable too, so this walk is limited to the one ancestry the agent
- * scopes actually have.
+ * scopes under it have no io.stat. This walk covers only the agent slice's
+ * own ancestry, not every group in the tree, so a desktop slice with no
+ * agents never counts against it.
+ *
+ * The ancestry is read from each matching slice's own path, directory by
+ * directory from the cgroup root down, never by following `parent` links
+ * through the sample's `groups`: a group `collectGroups` could not read
+ * (a failed `cpu.stat` or `cgroup.procs`) is still a real, readable directory
+ * on disk, and a `parent` walk through `groups` would lose it and stop short
+ * of the slice, wrongly reading the gap as a clean ancestry. `sliceRoots`
+ * finds every group named for the agent slice that is not nested inside
+ * another match, because a cgroup root covering more than one systemd user
+ * manager gives each its own agent slice, and a reading that checked only
+ * the first would miss a second one withholding io.
  */
 export function probeIoStat(
   c: CollectionConfig,
@@ -306,29 +317,24 @@ export function probeIoStat(
   root: Capability,
 ): Capability {
   if (!root.available) return root;
-  const slice = groups.find((g) => g.name === c.agentSlice);
-  if (!slice) return root;
-  const byPath = new Map(groups.map((g) => [g.path, g]));
-  const ancestry: Group[] = [];
-  for (
-    let g: Group | undefined = slice;
-    g && g.path !== ".";
-    g = byPath.get(g.parent)
-  )
-    ancestry.unshift(g);
-  for (const g of ancestry) {
-    const source = join(c.cgroupRoot, g.path, "cgroup.subtree_control");
-    let enabled: string[];
-    try {
-      enabled = readFileSync(source, "utf8").split(/\s+/);
-    } catch (error) {
-      return record("io-stat", source, classify(error));
+  const slices = sliceRoots(groups, c.agentSlice);
+  for (const slice of slices) {
+    const parts = slice.path.split("/");
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const ancestorPath = parts.slice(0, depth).join("/");
+      const source = join(c.cgroupRoot, ancestorPath, "cgroup.subtree_control");
+      let enabled: string[];
+      try {
+        enabled = readFileSync(source, "utf8").split(/\s+/);
+      } catch (error) {
+        return record("io-stat", source, classify(error));
+      }
+      if (!enabled.includes("io"))
+        return record("io-stat", source, {
+          failure: "incomplete",
+          detail: parts[depth - 1],
+        });
     }
-    if (!enabled.includes("io"))
-      return record("io-stat", source, {
-        failure: "incomplete",
-        detail: g.name,
-      });
   }
   return root;
 }

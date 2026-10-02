@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { defaults } from "../config/config";
 import type { Capability, CapabilityId } from "../model/types";
-import { capabilitySnapshot } from "../test/fixture";
+import { writeTotals } from "../model/writes";
+import {
+  capabilitySnapshot,
+  emptySnapshot,
+  groupSnapshot,
+} from "../test/fixture";
 import {
   capabilityLine,
   capabilityLoss,
@@ -193,8 +198,31 @@ test("the reason follows what the probe found, not the interface name", () => {
     "agents.slice does not hand the io controller down to the groups below it",
   );
   expect(capabilityLoss(withheldBySlice)).toBe(
-    "disk writes are blank rather than zero, on Home and Storage, for the groups under agents.slice; it does not hand the io controller to them",
+    "disk writes are blank rather than zero, on Home, for the groups under agents.slice; it does not hand the io controller to them",
   );
+  // The loss line names Home alone: Storage shows only slice totals, and the
+  // agent slice's own total comes from its own io.stat, which an ancestor
+  // withholding io from what is below it never touches.
+  const c = defaults();
+  const s = emptySnapshot();
+  s.groups = [
+    groupSnapshot({
+      path: "agents.slice",
+      parent: ".",
+      name: "agents.slice",
+      ioWrite: 2_000_000,
+    }),
+    groupSnapshot({
+      path: "agents.slice/a.scope",
+      parent: "agents.slice",
+      name: "a.scope",
+      ioWrite: null,
+      writeRate: null,
+    }),
+  ];
+  expect(
+    writeTotals(s, c).slices.find((slice) => slice.name === c.agentSlice),
+  ).toEqual({ name: c.agentSlice, written: 2_000_000 });
 });
 
 test("every missing capability says what it costs the reader, in its own words", () => {
