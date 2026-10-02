@@ -874,3 +874,240 @@ test("an initial listing failure, with no prior held reading at all, is not kept
     ],
   });
 });
+test("a standing busctl refusal survives an unrelated drive going unprovable, then gone, across within-hold samples", async () => {
+  let now = 0;
+  let live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "Refuses",
+      kind: "ata",
+      attributes: { refuse: "Access denied" },
+      serial: "SN-A",
+    },
+    {
+      name: "sdb",
+      model: "Ambiguous",
+      kind: "ata",
+      attributes: { refuse: "Access denied" },
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  // Every drive this sample tried to ask refused: the whole reading is
+  // incomplete, not merely each drive's own row.
+  expect(first.outcome).toEqual({
+    failure: "incomplete",
+    detail: "Call failed: Access denied",
+  });
+  expect(first.drives.map((d) => d.written)).toEqual([null, null]);
+  // sda keeps its identity, so it is never re-asked (same, served from the
+  // hold); sdb has neither a Serial/WWN nor a TimeDetected, so once its one
+  // real query lands it reads as unprovable from here on. Neither is
+  // queried this sample, yet the standing refusal sda's own query hit a
+  // moment ago must still answer for the reading.
+  now = 10;
+  const second = await udisks.read();
+  expect(second.outcome).toEqual({
+    failure: "incomplete",
+    detail: "Call failed: Access denied",
+  });
+  // sdb disappears from the listing entirely; sda is still untouched. The
+  // standing refusal must still stand, not reset to null just because an
+  // unrelated, already-unprovable drive left.
+  now = 20;
+  live = [
+    {
+      name: "sda",
+      model: "Refuses",
+      kind: "ata",
+      attributes: { refuse: "Access denied" },
+      serial: "SN-A",
+    },
+  ];
+  const third = await udisks.read();
+  expect(third.outcome).toEqual({
+    failure: "incomplete",
+    detail: "Call failed: Access denied",
+  });
+  expect(third.drives.map((d) => d.name)).toEqual(["sda"]);
+});
+test("one freshly-swapped drive's own refusal does not overstate the outcome when the rest of the fleet answered fine", async () => {
+  let now = 0;
+  let live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "A",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "SN-A",
+    },
+    {
+      name: "sdb",
+      model: "B",
+      kind: "ata",
+      attributes: ata(20, 3),
+      serial: "SN-B",
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.outcome).toBeNull();
+  // sdb is swapped for a drive with a different serial, and that one
+  // drive's own SmartGetAttributes call refuses; sda, untouched and still
+  // confirmed the same drive, keeps serving its own good reading. The
+  // reading as a whole still carries a real number, so this is not "udisks
+  // answered for no drive".
+  now = 10;
+  live = [
+    {
+      name: "sda",
+      model: "A",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "SN-A",
+    },
+    {
+      name: "sdb",
+      model: "B2",
+      kind: "ata",
+      attributes: { refuse: "Access denied" },
+      serial: "SN-B2",
+    },
+  ];
+  const second = await udisks.read();
+  expect(second.outcome).toBeNull();
+  expect(second.drives).toEqual([
+    {
+      name: "sda",
+      model: "A",
+      written: 5_120,
+      identity: "SN-A",
+      detected: null,
+    },
+    {
+      name: "sdb",
+      model: "B2",
+      written: null,
+      identity: "SN-B2",
+      detected: null,
+    },
+  ]);
+});
+test("an unrelated drive's own hold deadline still fires while another drive keeps changing, so it is not held hostage by someone else's churn", async () => {
+  let now = 0;
+  let live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "Churns",
+      kind: "ata",
+      attributes: ata(1, 3),
+      serial: "A0",
+    },
+    {
+      name: "sdb",
+      model: "Stable",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "B",
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives.find((d) => d.name === "sdb")).toEqual({
+    name: "sdb",
+    model: "Stable",
+    written: 5_120,
+    identity: "B",
+    detected: null,
+  });
+  // sda keeps swapping identity well inside sdb's own hold window; sdb never
+  // changes and is not yet due, so it must keep serving its original
+  // reading untouched, never re-queried just because sda was.
+  now = 1000;
+  live = [
+    {
+      name: "sda",
+      model: "Churns",
+      kind: "ata",
+      attributes: ata(2, 3),
+      serial: "A1",
+    },
+    {
+      name: "sdb",
+      model: "Stable",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "B",
+    },
+  ];
+  let reading = await udisks.read();
+  expect(reading.drives.find((d) => d.name === "sdb")).toEqual({
+    name: "sdb",
+    model: "Stable",
+    written: 5_120,
+    identity: "B",
+    detected: null,
+  });
+  now = 2000;
+  live = [
+    {
+      name: "sda",
+      model: "Churns",
+      kind: "ata",
+      attributes: ata(3, 3),
+      serial: "A2",
+    },
+    {
+      name: "sdb",
+      model: "Stable",
+      kind: "ata",
+      attributes: ata(20, 3),
+      serial: "B",
+    },
+  ];
+  reading = await udisks.read();
+  // Still well inside sdb's own window: it keeps serving its original
+  // reading even though sdb's own live attributes have since changed,
+  // because nothing has told Udisks.read() to ask it again yet.
+  expect(reading.drives.find((d) => d.name === "sdb")).toEqual({
+    name: "sdb",
+    model: "Stable",
+    written: 5_120,
+    identity: "B",
+    detected: null,
+  });
+  // sdb's own hold has now elapsed since its one and only query at t=0,
+  // even though sda has kept the fleet "changing" the whole time: sdb is
+  // queried fresh on its own schedule, not held hostage by sda's churn.
+  now = udisksHoldMs;
+  live = [
+    {
+      name: "sda",
+      model: "Churns",
+      kind: "ata",
+      attributes: ata(4, 3),
+      serial: "A3",
+    },
+    {
+      name: "sdb",
+      model: "Stable",
+      kind: "ata",
+      attributes: ata(20, 3),
+      serial: "B",
+    },
+  ];
+  reading = await udisks.read();
+  expect(reading.drives.find((d) => d.name === "sdb")).toEqual({
+    name: "sdb",
+    model: "Stable",
+    written: 10_240,
+    identity: "B",
+    detected: null,
+  });
+});

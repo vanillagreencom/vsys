@@ -389,63 +389,70 @@ function compareDrive(
 }
 
 /**
- * One collector's udisks reading, held for `udisksHoldMs` on the clock it is
- * given. A collector given none never asks udisks, which keeps the system bus
- * out of the test suite.
+ * One collector's udisks reading. Each drive's own `SmartGetAttributes` is
+ * held for `udisksHoldMs` on the clock it is given, counted from that
+ * drive's own last real query, independent of every other drive — one
+ * drive's churn never pushes back another, unrelated drive's own refresh. A
+ * collector given no clock never asks udisks, which keeps the system bus out
+ * of the test suite.
  *
  * The hold hides the expensive part — asking each drive for its own SMART
  * attributes — but never the listing: `listUdisks` is udisksd answering from
- * its own object cache, not a drive query, so re-reading it every sample
- * costs nothing the hold exists to save, and it is what notices a kernel
- * name now sitting behind a different serial, WWN or `TimeDetected`, or a
- * held name the listing no longer answers for at all.
+ * its own object cache, not a drive query, so asking it every sample costs
+ * nothing the hold exists to save, and it is what notices a kernel name now
+ * sitting behind a different serial, WWN or `TimeDetected`, or a held name
+ * the listing no longer answers for at all.
  *
- * `compareDrive` sorts every fresh target against its held counterpart, by
- * name, into three groups, and only the first changes what the next sample
- * asks over the bus:
+ * Every sample sorts each fresh target against its held entry, by name, into
+ * groups, and only the first two cost a query:
  *
- * - `changed` (a confirmed swap, or a name with no held counterpart at all)
- *   is queried fresh, scoped to that drive alone — every other held drive
- *   keeps serving its own reading untouched, so one swapped or newly seen
- *   drive never forces a machine-wide re-query.
- * - `unprovable` (neither side has an identity, and `detected` is unknown on
- *   at least one side, so nothing ties this name to the drive now behind
- *   it, or rules it out) reads as unknown rather than either keep serving
- *   the held drive's numbers or ask again: a repeat ask would not make the
- *   pair any more provable, so it is never queried, and the hold's clock
- *   runs on undisturbed for every other, provable drive.
- * - `same` keeps the held value, unchanged, with no query.
+ * - No held entry at all, or that entry's own hold has elapsed since its
+ *   last real query: queried fresh, scoped to that drive alone — every
+ *   other held drive keeps serving its own reading untouched, so one
+ *   swapped, newly seen, or merely overdue drive never forces a
+ *   machine-wide re-query, and no other drive's own schedule moves because
+ *   of it.
+ * - `compareDrive` says `changed` (a confirmed swap): queried fresh the same
+ *   way, resetting that drive's own clock to this sample.
+ * - `compareDrive` says `unprovable` (neither side has an identity, and
+ *   `detected` is unknown on at least one side, so nothing ties this name to
+ *   the drive now behind it, or rules it out): reads as unknown rather than
+ *   either keep serving the held drive's numbers or ask again — asking
+ *   again would not make the pair any more provable — and its own clock is
+ *   left exactly where its last real query set it, so the ordinary
+ *   `udisksHoldMs` cycle still reaches it on schedule and gives it one
+ *   sample's worth of a real reading before the checks that follow read it
+ *   as unprovable again.
+ * - `compareDrive` says `same`: keeps the held value, unchanged, with no
+ *   query and no change to its clock.
  *
- * A name the held reading answered for that the fresh listing no longer
- * names at all is simply absent from that sorted result, so it drops out of
- * the served reading on its own. Once any name queries fresh, the hold's
- * clock restarts from this sample, as a full read below would; an
- * `unprovable` name alone does not restart it, so a drive that never gives
- * either signal does not hold every other drive's clock hostage — the
- * ordinary `udisksHoldMs` cycle still reaches it, each cycle giving it one
- * sample's worth of a real reading before the within-hold checks that
- * follow read it as unprovable again.
+ * A name the held map answered for that the fresh listing no longer names at
+ * all is dropped from the map outright and is simply absent from the sorted
+ * result, so it drops out of the served reading on its own.
  *
- * A listing that could not itself be read proves nothing either way, so it
- * is read as a sign to drop the held reading too: this sample reports that
- * failure as its own outcome at once, without asking the listing again
- * within this same call. A later sample, while the hold still has time
- * left, takes the full read below and asks the listing fresh; if the
- * failure persists there, it is that later sample's own outcome in turn,
- * rather than the held reading's old, unrelated outcome standing in for it.
+ * The reading's own `outcome` is never read off the queried subset alone,
+ * which would either mask a standing failure behind an unrelated drive
+ * going unprovable or gone (nothing queried, so the subset's own outcome is
+ * vacuously null) or overstate a lone swapped-in drive's own refusal as the
+ * whole reading's (the subset is "every target", trivially, when it is
+ * small). A sample that queries nothing carries the last sample's outcome
+ * forward unchanged, neither re-confirmed nor newly failed; one that queries
+ * something reads `incomplete` only when every drive in the full, merged
+ * reading — queried, reused and unprovable alike — ends up with no written
+ * total, so one drive's refusal stands for the whole reading only when
+ * nothing elsewhere in it is still carrying a real number.
  *
- * A held reading with no drives at all — kept from a failed first read, or
- * from two listing failures in a row, each dropping the held reading in turn
- * until the second one's own empty result is what gets held, or simply from
- * a real system that then had zero SMART-capable drives — is read as stale
- * by any fresh listing naming at least one target, without asking
- * `compareDrive` to sort it: an empty held reading has no prior drive to
- * compare against, so that sort would vacuously report nothing changed
- * forever. This also covers a drive hot-plugged in after a genuinely
- * driveless hold started, not only a failure's recovery.
+ * A listing that could not itself be read proves nothing either way, so
+ * every held drive is dropped outright rather than kept as unconfirmed:
+ * this sample reports that failure as its own outcome, and the next sample
+ * starts every name cold, recovering in full once the bus answers again. A
+ * bus still down on that next sample fails the same way and is dropped
+ * again, so repeated failures each report their own outcome in turn, never
+ * the previous failure's standing in for a later one.
  */
 export class Udisks {
-  private held: { at: number; reading: UdisksReading } | null = null;
+  private held = new Map<string, { at: number; drive: UdisksDrive }>();
+  private lastOutcome: Outcome = null;
   constructor(
     private run: Run = spawnText,
     private now: () => number = () => performance.now(),
@@ -453,85 +460,60 @@ export class Udisks {
   ) {}
   async read(): Promise<UdisksReading> {
     const at = this.now();
-    if (this.held && at - this.held.at < udisksHoldMs) {
-      const listing = await listUdisks(this.run, this.timeoutMs);
-      if (listing.targets === null) {
-        // The swap-check listing itself failed: that is this sample's own
-        // outcome. The held reading is dropped outright rather than kept as
-        // an empty-drives placeholder — a compare against held.drives by
-        // iterating it would read an empty array as "nothing to compare"
-        // and vacuously pass as unchanged, letting this stale failure answer
-        // for every sample until the hold expires. Dropping it sends a
-        // single next sample through the non-held branch below, which runs
-        // a genuine readUdisks() and recovers if the bus is back by then; a
-        // bus still down on that next sample fails readUdisks() the same way
-        // and is held again, so two consecutive failures still ride out the
-        // rest of the hold. Either way, this call alone no longer repeats
-        // the identical listing call readUdisks() would otherwise make.
-        this.held = null;
-        return { drives: [], outcome: listing.outcome };
-      }
-      // An empty held reading cannot be proven stale by sorting: with no
-      // prior drive to compare against, every fresh target would vacuously
-      // sort as having nothing to compare. Any fresh listing naming at least
-      // one target already proves it stale on its own, with nothing left to
-      // compare by name.
-      const emptyHeldProvenStale =
-        this.held.reading.drives.length === 0 && listing.targets.length > 0;
-      if (!emptyHeldProvenStale) {
-        const priorByName = new Map(
-          this.held.reading.drives.map((d) => [d.name, d]),
-        );
-        const freshNames = new Set(listing.targets.map((t) => t.name));
-        const goneDrive = this.held.reading.drives.some(
-          (d) => !freshNames.has(d.name),
-        );
-        const toQuery: Target[] = [];
-        const unprovable = new Set<string>();
-        for (const target of listing.targets) {
-          const verdict = compareDrive(priorByName.get(target.name), target);
-          if (verdict === "changed") toQuery.push(target);
-          else if (verdict === "unprovable") unprovable.add(target.name);
-        }
-        if (toQuery.length === 0 && unprovable.size === 0 && !goneDrive)
-          return this.held.reading;
-        // The clock restarts only where a real query ran: an unprovable or
-        // gone name alone changes what this sample serves, not when the
-        // SMART data behind every other drive was last actually asked for.
-        const heldAt = toQuery.length > 0 ? at : this.held.at;
-        const refreshed = await queryDrives(this.run, this.timeoutMs, toQuery);
-        const refreshedByName = new Map(
-          refreshed.drives.map((d) => [d.name, d]),
-        );
-        const drives: UdisksDrive[] = listing.targets.map((target) => {
-          const fresh = refreshedByName.get(target.name);
-          if (fresh) return fresh;
-          if (unprovable.has(target.name))
-            return {
-              name: target.name,
-              model: null,
-              written: null,
-              identity: target.identity,
-              detected: target.detected,
-            };
-          const prior = priorByName.get(target.name);
-          if (prior) return prior;
-          // compareDrive sorted this target as neither changed nor
-          // unprovable, which only happens with a held counterpart (`same`
-          // needs `prior !== undefined`), so this is unreachable.
-          throw new Error(
-            `udisks: target ${target.name} resolved to neither a fresh, unprovable, nor held reading`,
-          );
-        });
-        this.held = {
-          at: heldAt,
-          reading: { drives, outcome: refreshed.outcome },
-        };
-        return this.held.reading;
-      }
+    const listing = await listUdisks(this.run, this.timeoutMs);
+    if (listing.targets === null) {
+      this.held.clear();
+      this.lastOutcome = listing.outcome;
+      return { drives: [], outcome: listing.outcome };
     }
-    const reading = await readUdisks(this.run, this.timeoutMs);
-    this.held = { at, reading };
-    return reading;
+    const freshNames = new Set(listing.targets.map((t) => t.name));
+    for (const name of this.held.keys())
+      if (!freshNames.has(name)) this.held.delete(name);
+    const toQuery: Target[] = [];
+    const unprovable = new Set<string>();
+    for (const target of listing.targets) {
+      const entry = this.held.get(target.name);
+      if (entry === undefined || at - entry.at >= udisksHoldMs) {
+        toQuery.push(target);
+        continue;
+      }
+      const verdict = compareDrive(entry.drive, target);
+      if (verdict === "changed") toQuery.push(target);
+      else if (verdict === "unprovable") unprovable.add(target.name);
+    }
+    const served = (target: Target): UdisksDrive => {
+      if (unprovable.has(target.name))
+        return {
+          name: target.name,
+          model: null,
+          written: null,
+          identity: target.identity,
+          detected: target.detected,
+        };
+      const entry = this.held.get(target.name);
+      if (entry) return entry.drive;
+      // Reached only for a target neither queried nor unprovable, which
+      // means a held entry that the loop above never queried because it was
+      // neither missing nor overdue nor changed — so it must exist.
+      throw new Error(
+        `udisks: target ${target.name} resolved to neither queried, unprovable, nor held`,
+      );
+    };
+    if (toQuery.length === 0)
+      return {
+        drives: listing.targets.map(served),
+        outcome: this.lastOutcome,
+      };
+    const refreshed = await queryDrives(this.run, this.timeoutMs, toQuery);
+    for (const drive of refreshed.drives)
+      this.held.set(drive.name, { at, drive });
+    const refreshedByName = new Map(refreshed.drives.map((d) => [d.name, d]));
+    const drives: UdisksDrive[] = listing.targets.map(
+      (target) => refreshedByName.get(target.name) ?? served(target),
+    );
+    this.lastOutcome = drives.every((d) => d.written === null)
+      ? refreshed.outcome
+      : null;
+    return { drives, outcome: this.lastOutcome };
   }
 }

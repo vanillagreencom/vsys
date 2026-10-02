@@ -1,1 +1,1 @@
-- A drive swapped under a reused kernel name for one also reporting no Serial and no WWN no longer shows the departed drive's stale reading; with no signal at all it shows unknown instead.
+- A drive swapped under a reused kernel name for one also reporting no Serial and no WWN no longer shows the departed drive's stale reading, nor disturbs any other drive's own reading or hold.
