@@ -999,6 +999,28 @@ test("a new error only the kernel log recorded is not told as counter growth", (
   expect(said(card)).not.toContain("The counter grew");
 });
 
+test("a new-errors card says no full check has ever run, not an unstated age", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes.push(
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  );
+  s.storage.csumFailures = {
+    fs: [{ root: 257, inode: 4242, at: s.time - 7200000 }],
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
+  expect(said(card)).toContain(
+    "The kernel logged a failed checksum read 2.0h ago. No full check has ever run.",
+  );
+  expect(said(card)).not.toContain("longer ago than that");
+});
+
 test("a damage card never calls a partial list the whole of the damage", () => {
   const c = defaults();
   const s = emptySnapshot();

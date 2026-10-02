@@ -1,0 +1,1 @@
+- The new-errors card says no full check has ever run on a filesystem that was never checked, instead of claiming one ran longer ago than some unstated time.
