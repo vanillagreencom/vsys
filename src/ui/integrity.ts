@@ -60,7 +60,7 @@ export function integrityLine(item: Integrity, scrub?: Capability): string {
   ].join(" · ");
 }
 /**
- * Whether the remembered finished check standing in for a gone or absent
+ * Whether the remembered finished check standing in for an unavailable
  * current report found damage. Both `blocksText` and `noDamageText` read
  * this one function rather than each testing `item.state` on their own, so
  * the two can never disagree about what the same remembered check found.
@@ -82,12 +82,17 @@ export function blocksText(item: Integrity, scrub?: Capability): string {
     if (scrub && !scrub.available) return `${gap}: ${capabilityReason(scrub)}`;
     if (item.checkAge === null)
       return `${gap}: no check has reported on this filesystem`;
-    // The report itself is gone, but a finished check is remembered for this
-    // filesystem (`integrityLine` already names its age), so the last word
-    // on it is what that check found, never that nothing has reported.
+    // The current report matched to this filesystem is absent, but that
+    // covers a report never written and one that exists on disk unreadable
+    // and so unmatched (`reportFor()` matches by fsid, which an unreadable
+    // report never carries): "unavailable" is true either way, while "gone"
+    // would claim a cause vsys has not established. A finished check is
+    // remembered for this filesystem (`integrityLine` already names its
+    // age), so the last word on it is what that check found, never that
+    // nothing has reported.
     return rememberedFoundDamage(item)
-      ? `${gap}: a remembered finished check found damage, but its own report is gone, so no count was kept`
-      : `${gap}: a remembered finished check found no damage, but its own report is gone, so no count was kept`;
+      ? `${gap}: a remembered finished check found damage, but its current report is unavailable, so no count was kept`
+      : `${gap}: a remembered finished check found no damage, but its current report is unavailable, so no count was kept`;
   }
   if (!item.readable) return `${gap}: the report could not be read`;
   // A check still running, or one that stopped early, has counted nothing
@@ -117,12 +122,14 @@ export function noDamageText(item: Integrity, scrub?: Capability): string {
     }
     if (item.checkAge === null)
       return "No check has reported on this filesystem, so no file is named.";
-    // Same remembered-check case as `blocksText`: the report naming its
-    // files is gone, so the sentence says what that check found rather than
-    // claiming the filesystem was never looked at.
+    // Same remembered-check case as `blocksText`: the report that would name
+    // the files is unavailable (never written, or on disk but unreadable and
+    // so unmatched), so the sentence says what the remembered check found
+    // rather than claiming the filesystem was never looked at or that its
+    // report is confirmed gone.
     return rememberedFoundDamage(item)
-      ? "A remembered finished check found damage, but its own report is gone, so no file is named for it."
-      : "A remembered finished check found no damage, and its own report is gone, so no file is named.";
+      ? "A remembered finished check found damage, but its current report is unavailable, so no file is named for it."
+      : "A remembered finished check found no damage, and its current report is unavailable, so no file is named.";
   }
   if (!item.readable)
     return "The report could not be read, so nothing in it names a file.";
