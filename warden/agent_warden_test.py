@@ -1366,6 +1366,79 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(actual, expected_value)
 
+    def _run_collision_launcher(self, script_text, fixed_unit):
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir(parents=True)
+            launcher = base / "agent-confine"
+            launcher.write_text(script_text)
+            (bin_dir / "grep").write_text("#!/bin/sh\nexit 1\n")
+            (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+            systemd_run = "\n".join([
+                "#!/bin/sh",
+                'case " $* " in',
+                '*" --unit=agent-confine-"*)',
+                '  while [ $# -gt 0 ]; do',
+                '    if [ "$1" = env ]; then shift; exec env "$@"; fi',
+                '    shift',
+                '  done',
+                '  exit 99;;',
+                '*) exit 0;;',
+                'esac',
+            ]) + "\n"
+            (bin_dir / "systemd-run").write_text(systemd_run)
+            for path in [launcher, *bin_dir.iterdir()]:
+                path.chmod(0o755)
+            env = self._confine_env(base, bin_dir)
+            inherited = str(base / "inherited-tmp")
+            Path(inherited).mkdir()
+            env["TMPDIR"] = inherited
+            default_tmpdir = str(Path(env["XDG_CACHE_HOME"]) / "agents" / "tmp")
+            # Pre-create the exact scratch directory a second lane with this
+            # fixed unit name would land in, as if an earlier lane still owns
+            # it (a $$/$RANDOM collision) or left it behind.
+            colliding = Path(default_tmpdir, fixed_unit)
+            colliding.mkdir(parents=True)
+            marker = colliding / "marker"
+            marker.write_text("pre-existing lane's scratch")
+            result = subprocess.run([str(launcher), "env"], env=env, capture_output=True, text=True)
+            marker_untouched = marker.exists() and marker.read_text() == "pre-existing lane's scratch"
+        return result, inherited, default_tmpdir, marker_untouched
+
+    def test_agent_confine_scratch_collision_keeps_inherited_tmpdir(self):
+        text = (ROOT / "warden" / "agent-confine").read_text()
+        unit_old = 'agent_confine_unit="agent-confine-$$-${RANDOM}"'
+        self.assertEqual(text.count(unit_old), 1)
+        fixed_unit = "agent-confine-900-111"
+        deterministic = text.replace(unit_old, f'agent_confine_unit="{fixed_unit}"')
+        result, inherited, _default_tmpdir, marker_untouched = self._run_collision_launcher(deterministic, fixed_unit)
+        rows = [
+            ("exits 0 even with a scratch-directory name collision", result.returncode, 0),
+            ("warns that TMPDIR is unavailable", "TMPDIR unavailable" in result.stderr, True),
+            ("keeps the inherited TMPDIR instead of the colliding directory",
+             f"TMPDIR={inherited}" in result.stdout.splitlines(), True),
+            ("the pre-existing lane's marker file is untouched", marker_untouched, True),
+        ]
+        for name, actual, expected_value in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected_value)
+
+    def test_agent_confine_scratch_collision_mutant_fails(self):
+        text = (ROOT / "warden" / "agent-confine").read_text()
+        mkdir_old = 'mkdir -m 700 -- "$agent_confine_scratch"'
+        self.assertEqual(text.count(mkdir_old), 1)
+        mutated = text.replace(mkdir_old, 'mkdir -p -m 700 -- "$agent_confine_scratch"')
+        unit_old = 'agent_confine_unit="agent-confine-$$-${RANDOM}"'
+        self.assertEqual(mutated.count(unit_old), 1)
+        fixed_unit = "agent-confine-900-111"
+        deterministic = mutated.replace(unit_old, f'agent_confine_unit="{fixed_unit}"')
+        result, _inherited, default_tmpdir, _marker_untouched = self._run_collision_launcher(deterministic, fixed_unit)
+        # With -p restored, the mkdir succeeds silently on the pre-existing
+        # directory instead of refusing: the mutant hands this lane another
+        # lane's scratch directory as its own TMPDIR.
+        self.assertIn(f"TMPDIR={default_tmpdir}/{fixed_unit}", result.stdout.splitlines())
+
     def test_agent_confine_and_warden_scratch_parent_agree(self):
         # agent-confine (bash) and agent-warden (python) each compute the
         # default scratch-parent path independently. Comparing their actual
