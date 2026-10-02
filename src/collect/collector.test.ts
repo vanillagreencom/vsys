@@ -1268,8 +1268,14 @@ test("with no report directory, udisks answers in its place or says why it canno
     },
   ]);
   expect(alone.storage.udisks).toBeNull();
-  expect(alone.capabilities.find((c) => c.id === "smart")?.failure).toBe(
-    "absent",
+  // Storage already shows this drive's lifetime writes from udisks alone, so
+  // the capability must say the same: available, not absent. A reader on a
+  // udisks-only machine must never be told by Settings that Storage has
+  // nothing when the row above it already has a number.
+  const smart = alone.capabilities.find((c) => c.id === "smart");
+  expect(smart?.available).toBe(true);
+  expect(capabilityLine(smart as NonNullable<typeof smart>)).toBe(
+    "Drive lifetime reports: available",
   );
   const neither = await withUdisks(f, noBus).sample();
   expect(neither.storage.devices).toEqual([
@@ -1283,6 +1289,11 @@ test("with no report directory, udisks answers in its place or says why it canno
   ]);
   expect(neither.storage.udisks?.failure).toBe("absent");
   expect(neither.errors).toEqual([]);
+  // With udisks absent too, no source supplies a number, and the capability
+  // still says so: this is not the scenario the fix above changes.
+  expect(neither.capabilities.find((c) => c.id === "smart")?.failure).toBe(
+    "absent",
+  );
 });
 test("installing the drive reporter while vsys runs makes the capability available", async () => {
   const f = setup();

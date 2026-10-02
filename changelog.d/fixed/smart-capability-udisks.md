@@ -1,0 +1,1 @@
+- Settings no longer says Storage has no drive lifetime writes when udisks2 already supplies them with no drive reporter installed.
