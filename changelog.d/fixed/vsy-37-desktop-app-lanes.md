@@ -1,0 +1,1 @@
+- Claude Desktop and other desktop apps whose binary carries an agent's name no longer appear as escaped agent lanes.

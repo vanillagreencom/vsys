@@ -1,16 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { defaults } from "../config/config";
 import { bypassedLanes, jobservers } from "../model/builds";
 import { launcherCopy, launcherTrail } from "../model/launcher";
 import { laneText } from "../model/naming";
-import type { Proc } from "../model/types";
+import type { Proc, Snapshot } from "../model/types";
 import { causes, meters } from "../model/verdict";
 import { point } from "../store/point";
 import { fixture } from "../test/fixture";
 import { capabilityLine } from "../ui/settings";
-import { buildKind, toolName } from "./builds";
+import { buildKind, excludedArgv, toolName } from "./builds";
 import { Collector, createCollector } from "./collector";
 import { parseStat } from "./procs";
 import { SccacheCollector } from "./sccache";
@@ -519,6 +519,112 @@ test("argv exclusion hides a helper process but never an agent lane", async () =
   expect(b.procs.find((p) => p.pid === 41)?.tool).toBeNull();
   expect(b.procs.find((p) => p.pid === 39)?.tool).toBe("claude");
 });
+test("a desktop app named after an agent is no lane, and agents beside it still escape", async () => {
+  const f = setup();
+  // Claude Desktop as an AppImage runs it: the window process carries no
+  // --type= flag, so only its executable's path tells it from the agent CLI.
+  // Their scopes are left out of the fixture, so only an agent makes a lane.
+  const appImage = "/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude";
+  f.proc(1702778, "app.slice/app-com.anthropic.Claude-1702778.scope", {
+    command: [appImage, "--enable-transparent-visuals"],
+  });
+  f.proc(1702955, "app.slice/app-com.anthropic.Claude-work-1702778.scope", {
+    command: [appImage, "--type=zygote", "--no-zygote-sandbox"],
+    parent: 1702778,
+  });
+  const collector = new Collector(f.config, 100, 4096);
+  const unconfined = (s: Snapshot) => ({
+    tools: Object.fromEntries(s.procs.map((p) => [p.pid, p.tool])),
+    lanes: s.lanes.map((l) => basename(l.id)).sort(),
+    cause: causes(s, f.config).some((x) => x.id === "unconfined"),
+    alerts: s.alerts
+      .filter((a) => a.rule === "unconfined")
+      .map((a) => a.subject)
+      .sort(),
+  });
+  expect(unconfined(await collector.sample(1000))).toEqual({
+    tools: { 1702778: null, 1702955: null },
+    lanes: [],
+    cause: false,
+    alerts: [],
+  });
+  // The agent CLI outside the slice; the engine a desktop app bundles, which
+  // its path names an agent; and an app binary whose executable could not be
+  // read, which stays an agent rather than hiding an escape.
+  f.proc(40, "app.slice/tmux-spawn-1.scope", {
+    command: ["/home/reader/.local/bin/claude", "--resume"],
+  });
+  f.proc(41, "app.slice/app-codex.scope", {
+    command: ["/opt/codex-desktop/resources/codex", "exec"],
+    comm: "codex",
+  });
+  f.proc(42, "app.slice/app-gone.scope", { command: [appImage] });
+  rmSync(join(f.config.procRoot, "42/exe"));
+  const s = await collector.sample(2000);
+  expect(unconfined(s)).toEqual({
+    tools: {
+      40: "claude",
+      41: "codex",
+      42: "claude",
+      1702778: null,
+      1702955: null,
+    },
+    lanes: ["app-codex.scope", "app-gone.scope", "tmux-spawn-1.scope"],
+    cause: true,
+    alerts: ["40:100:claude", "41:100:codex", "42:100:claude"],
+  });
+  expect(s.errors).toEqual([]);
+});
+
+test("one --type= pattern rules out every Chromium helper process", () => {
+  const appImage = "/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude";
+  const rows = [
+    [[appImage, "--type=renderer"], true],
+    [[appImage, "--type=gpu-process"], true],
+    [[appImage, "--type=utility"], true],
+    [[appImage, "--type=zygote", "--no-zygote-sandbox"], true],
+    [["/usr/bin/claude", "--chrome-native-host"], true],
+    [["/usr/bin/claude", "--resume"], false],
+  ] as const;
+  expect(
+    rows.map(([command]) => excludedArgv([...command], defaults().excludeArgv)),
+  ).toEqual(rows.map(([, excluded]) => excluded));
+});
+
+test("the program's collector takes desktop paths from the agent-tool overlay", async () => {
+  const f = setup();
+  f.write(
+    f.agentToolsPath,
+    JSON.stringify({
+      version: 1,
+      tools: [],
+      desktopExePrefixes: ["/srv/apps/"],
+    }),
+  );
+  f.proc(40, "app.slice/app-x.scope", { command: ["/srv/apps/x/claude"] });
+  f.proc(41, "app.slice/app-y.scope", {
+    command: ["/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude"],
+  });
+  f.proc(42, "app.slice/tmux-spawn-1.scope");
+  const collector = await createCollector(
+    f.config,
+    false,
+    undefined,
+    f.agentToolsPath,
+  );
+  try {
+    const s = await collector.sample(1000);
+    // The overlay's prefix joins the shipped ones on the process thread.
+    expect(Object.fromEntries(s.procs.map((p) => [p.pid, p.tool]))).toEqual({
+      40: null,
+      41: null,
+      42: "claude",
+    });
+  } finally {
+    collector.close();
+  }
+});
+
 test("an escaped agent's own environment reaches the launcher trail", async () => {
   const f = setup();
   f.group("app.slice/tmux-spawn-4.scope", [50, 51]);
@@ -612,7 +718,12 @@ test("a settings change keeps the cache counts measured since vsys started", asy
   hits = 140;
   // The replacement a settings change builds carries the same reader, so the
   // delta is not restarted by editing a setting.
-  const after = await createCollector(f.config, false, before);
+  const after = await createCollector(
+    f.config,
+    false,
+    before,
+    f.agentToolsPath,
+  );
   expect((await after.sample(2000)).sccache?.sinceStart).toEqual({
     hits: 40,
     misses: 0,
@@ -634,7 +745,12 @@ test("the program's collector finds a slice defined only by a drop-in", async ()
   };
   process.env.XDG_CONFIG_HOME = join(f.root, "config");
   process.env.XDG_DATA_HOME = join(f.root, "data");
-  const collector = await createCollector(f.config, false).finally(() => {
+  const collector = await createCollector(
+    f.config,
+    false,
+    undefined,
+    f.agentToolsPath,
+  ).finally(() => {
     for (const [name, value] of Object.entries(prior))
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;

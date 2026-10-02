@@ -73,7 +73,7 @@ export const settingInfo: Record<string, SettingInfo> = {
   },
   excludeArgv: {
     label: "Not an agent",
-    help: "Command patterns that rule a process out, such as browser helpers.",
+    help: "Program names and whole flags that rule a process out, such as browser helpers. A flag ending in = matches any value.",
   },
   capMarkers: {
     label: "Build cap variables",

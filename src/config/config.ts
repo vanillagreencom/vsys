@@ -159,10 +159,7 @@ export function defaults(
     agentTools: [...agentTools],
     excludeArgv: [
       "--chrome-native-host",
-      "--type=renderer",
-      "--type=gpu-process",
-      "--type=utility",
-      "--type=zygote",
+      "--type=",
       "rust-analyzer",
       "typescript-language-server",
     ],

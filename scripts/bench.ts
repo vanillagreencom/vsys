@@ -1,5 +1,6 @@
 import { Collector } from "../src/collect/collector";
 import { ProcessThread } from "../src/collect/process-thread";
+import { shippedAgentTools } from "../src/config/agent-tools";
 import { fixture } from "../src/test/fixture";
 import { percentile } from "./percentile";
 
@@ -32,7 +33,7 @@ try {
     false,
     undefined,
     undefined,
-    new ProcessThread(f.config, 100, 4096),
+    new ProcessThread(f.config, 100, 4096, shippedAgentTools),
   );
   const samples: number[] = [];
   const cpu: number[] = [];

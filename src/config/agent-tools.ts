@@ -26,6 +26,16 @@ export interface AgentToolsDocument {
   bundledCliSuffixes: string[];
 }
 
+/**
+ * Where desktop apps install their own binaries, and the agent engines such an
+ * app bundles beside them. Process collection reads these from the same data
+ * the warden does.
+ */
+export type DesktopPaths = Pick<
+  AgentToolsDocument,
+  "desktopExePrefixes" | "bundledCliSuffixes"
+>;
+
 export const agentToolsPath = join(homedir(), ".config/vsys/agent-tools.json");
 
 function invalid(path: string, reason: string): never {
@@ -200,14 +210,19 @@ async function loadOverlayDocument(
   }
 }
 
+/** The shipped document with the machine overlay merged in, when there is one. */
+export async function loadAgentTools(
+  overlayPath = agentToolsPath,
+): Promise<AgentToolsDocument> {
+  const overlay = await loadOverlayDocument(overlayPath);
+  if (!overlay) return shippedAgentTools;
+  return mergeAgentTools(shippedAgentTools, overlay, overlayPath);
+}
+
 export async function loadAgentToolNames(
   overlayPath = agentToolsPath,
 ): Promise<string[]> {
-  const overlay = await loadOverlayDocument(overlayPath);
-  if (!overlay) return shippedAgentTools.tools.map((tool) => tool.name);
-  return mergeAgentTools(shippedAgentTools, overlay, overlayPath).tools.map(
-    (tool) => tool.name,
-  );
+  return (await loadAgentTools(overlayPath)).tools.map((tool) => tool.name);
 }
 
 export interface AgentToolNamesSave {
