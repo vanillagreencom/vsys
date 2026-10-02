@@ -284,7 +284,11 @@ export function Storage({
       ({ action }) => name === c.keys[action],
     );
     if (jump < 0) return false;
-    if (counts[jump]) choose(regionRanges(counts)[jump][0]);
+    const range = regionRanges(counts)[jump];
+    if (range === undefined)
+      throw new Error(`Storage region ${jump} has no row range`);
+    const [start, end] = range;
+    if (end > start) choose(start);
     return true;
   });
   /**
@@ -323,7 +327,7 @@ export function Storage({
     });
   };
   /** A list's heading: its title, the key that jumps to it, and its focus. */
-  const heading = (at: number) => ({
+  const heading = (at: 0 | 1 | 2) => ({
     title: storageRegions[at].title,
     hotkey: c.keys[storageRegions[at].action],
     focused: region === at,
@@ -563,6 +567,8 @@ export function Storage({
     // from a member that has them rather than from whichever came first.
     const first =
       volumes.find((v) => v.free !== null && v.total !== null) ?? volumes[0];
+    if (first === undefined)
+      throw new Error(`Filesystem ${id} is a device group with no mount`);
     const used =
       first.total !== null && first.free !== null
         ? first.total - first.free

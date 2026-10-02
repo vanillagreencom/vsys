@@ -21,16 +21,25 @@ export function parseMounts(raw: string): MountInfo[] {
     .map((line) => {
       const [left, right] = line.split(" - ");
       if (!left || !right) throw new Error("Invalid mountinfo line");
-      const fields = left.split(" ");
-      const fs = right.split(" ");
-      if (fields.length < 6 || fs.length < 3)
+      const [, , , root, mount, mountOptions] = left.split(" ");
+      const [type, device, superOptions] = right.split(" ");
+      if (
+        root === undefined ||
+        mount === undefined ||
+        mountOptions === undefined ||
+        type === undefined ||
+        device === undefined ||
+        superOptions === undefined
+      )
         throw new Error("Incomplete mountinfo line");
       return {
-        root: unescapePath(fields[3]),
-        mount: unescapePath(fields[4]),
-        device: unescapePath(fs[1]),
-        type: fs[0],
-        options: [...new Set([...fields[5].split(","), ...fs[2].split(",")])],
+        root: unescapePath(root),
+        mount: unescapePath(mount),
+        device: unescapePath(device),
+        type,
+        options: [
+          ...new Set([...mountOptions.split(","), ...superOptions.split(",")]),
+        ],
       };
     });
 }

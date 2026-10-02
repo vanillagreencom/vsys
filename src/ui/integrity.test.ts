@@ -3,6 +3,7 @@ import { defaults } from "../config/config";
 import { integrity, volumesByDevice } from "../model/integrity";
 import type { Scrub } from "../model/types";
 import { volumeSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import {
   blocksText,
   damageAdvice,
@@ -18,15 +19,18 @@ const now = 1_760_000_000_000;
 const c = defaults();
 function state(scrubs: Scrub[], lastErrorAt: number | null = null) {
   return integrity(
-    volumesByDevice([
-      volumeSnapshot("/", {
-        fsid: "fs",
-        errors: { "1/corruption_errs": 1390 },
-        countersAvailable: true,
-        lastErrorAt,
-        lastErrorSize: lastErrorAt === null ? null : 26,
-      }),
-    ])[0],
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 1390 },
+          countersAvailable: true,
+          lastErrorAt,
+          lastErrorSize: lastErrorAt === null ? null : 26,
+        }),
+      ])[0],
+      "root device",
+    ),
     scrubs,
     now,
     c,
@@ -125,11 +129,13 @@ test("a delete command removes every name of its address, never the first", () =
   ]);
   // Both names in one line. Deleting the first alone leaves the extent on
   // disk, and the next check reports it again.
-  expect(deleteCommand(item.groups[0])).toBe(
+  expect(deleteCommand(present(item.groups[0], "build output group"))).toBe(
     "rm -f /r/target/debug/build/glib-sys/build-script-build /r/target/debug/build/glib-sys/build_script_build-c664",
   );
   // An address with no file has nothing to delete.
-  expect(deleteCommand(item.groups[2])).toBeUndefined();
+  expect(
+    deleteCommand(present(item.groups[2], "address with no file")),
+  ).toBeUndefined();
   expect(item.groups.map(damageAdvice)).toEqual([
     "safe to delete and rebuild",
     "restore from a backup or a snapshot",
@@ -180,24 +186,28 @@ test("only an address a rebuild replaces is offered as a delete", () => {
       ],
     }),
   ]);
-  expect(deleteCommand(item.groups[0])).toBe("rm -f /r/target/a");
-  // The letter is restored from a backup, so no line offers to remove it.
-  expect(damageAdvice(item.groups[1])).toBe(
-    "restore from a backup or a snapshot",
+  expect(deleteCommand(present(item.groups[0], "build output group"))).toBe(
+    "rm -f /r/target/a",
   );
-  expect(deleteCommand(item.groups[1])).toBeUndefined();
+  // The letter is restored from a backup, so no line offers to remove it.
+  const letter = present(item.groups[1], "letter group");
+  expect(damageAdvice(letter)).toBe("restore from a backup or a snapshot");
+  expect(deleteCommand(letter)).toBeUndefined();
 });
 
 test("an unreadable record of past growth is not a record of no errors", () => {
   const unreadable = integrity(
-    volumesByDevice([
-      volumeSnapshot("/", {
-        fsid: "fs",
-        errors: { "1/corruption_errs": 1390 },
-        countersAvailable: true,
-        lastErrorKnown: false,
-      }),
-    ])[0],
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 1390 },
+          countersAvailable: true,
+          lastErrorKnown: false,
+        }),
+      ])[0],
+      "root device",
+    ),
     [report()],
     now,
     c,
@@ -242,11 +252,12 @@ test("an address written since the check is never offered as a delete", () => {
   // The file is still named, because dropping it would hide damage. Nothing
   // offers to remove it: the block can have been freed and reused, and the
   // name may now be a healthy file.
-  expect(changed.groups[0].paths).toEqual(["/r/target/a", "/r/target/b"]);
-  expect(damageAdvice(changed.groups[0])).toBe(
+  const rewritten = present(changed.groups[0], "rewritten address group");
+  expect(rewritten.paths).toEqual(["/r/target/a", "/r/target/b"]);
+  expect(damageAdvice(rewritten)).toBe(
     "written since the check: look before you remove anything",
   );
-  expect(deleteCommand(changed.groups[0])).toBeUndefined();
+  expect(deleteCommand(rewritten)).toBeUndefined();
   expect(rebuildCommand(changed)).toBeUndefined();
   // The same address with nothing written since keeps its command.
   const stable = state([
@@ -257,7 +268,9 @@ test("an address written since the check is never offered as a delete", () => {
       ],
     }),
   ]);
-  expect(deleteCommand(stable.groups[0])).toBe("rm -f /r/target/a /r/target/b");
+  expect(deleteCommand(present(stable.groups[0], "stable address group"))).toBe(
+    "rm -f /r/target/a /r/target/b",
+  );
 });
 
 test("a check that has not finished counted nothing, and its report is not blamed", () => {

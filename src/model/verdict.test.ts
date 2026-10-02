@@ -57,7 +57,7 @@ test("severity ranks the ladder and housekeeping never leads it", () => {
     consumer: "kendex hclaude",
     values: { lanes: 1 },
   });
-  expect(ladder[0].lanes.map((l) => l.name)).toEqual(["kendex hclaude"]);
+  expect(ladder[0]?.lanes.map((l) => l.name)).toEqual(["kendex hclaude"]);
   // A warn disk cause is authored first, so only a sort puts the scrub above it.
   s.lanes = [];
   s.system.pressure.io = { some: 15, full: 2, total: 0 };
@@ -93,10 +93,10 @@ test("the agent slice name comes from config, not a hardcoded name", () => {
     g("robots.slice", "robots.slice", { cache: 7 }),
     g("app.slice", c.desktopSlice, { swap: c.swapFloor + 1 }),
   ];
-  expect(causes(s, c)[0].values.cache).toBe(7);
-  expect(meters(s, c)[1].values.cache).toBe(7);
+  expect(causes(s, c)[0]?.values.cache).toBe(7);
+  expect(meters(s, c)[1]?.values.cache).toBe(7);
   // The default slice name must not be consulted anywhere.
-  expect(meters(s, defaults())[1].values.cache).toBeNull();
+  expect(meters(s, defaults())[1]?.values.cache).toBeNull();
 });
 
 test("a saturated disk names the writing scope and carries its numbers", () => {
@@ -106,14 +106,20 @@ test("a saturated disk names the writing scope and carries its numbers", () => {
     g("a/x.scope", "x.scope", { writeRate: 10 }),
     g("a/510341.scope", "510341.scope", { writeRate: 200 }),
   ];
+  const waiter = laneSnapshot({ id: "other", name: "waiter", ioPressure: 30 });
+  const cruncher = laneSnapshot({
+    id: "cpu-bound",
+    name: "cruncher",
+    pressure: 30,
+  });
   s.lanes = [
     laneSnapshot({ id: "a/510341.scope", name: "lane-510341", pids: [1] }),
-    laneSnapshot({ id: "other", name: "waiter", ioPressure: 30 }),
-    laneSnapshot({ id: "cpu-bound", name: "cruncher", pressure: 30 }),
+    waiter,
+    cruncher,
   ];
   s.procs = [processSnapshot({ pid: 1, build: "ld.mold" })];
-  expect(worstKind(s.lanes[1])).toBe("io");
-  expect(worstKind(s.lanes[2])).toBe("cpu");
+  expect(worstKind(waiter)).toBe("io");
+  expect(worstKind(cruncher)).toBe("cpu");
   const ladder = causes(s, defaults());
   expect(ladder[0]).toMatchObject({
     id: "disk",
@@ -123,8 +129,11 @@ test("a saturated disk names the writing scope and carries its numbers", () => {
   });
   // Storage stallers join the disk card; only the CPU one stays generic.
   expect(ladder.map((cause) => cause.id)).toEqual(["disk", "stalls"]);
-  expect(ladder[0].lanes.map((l) => l.name)).toEqual(["lane-510341", "waiter"]);
-  expect(ladder[1].lanes.map((l) => l.name)).toEqual(["cruncher"]);
+  expect(ladder[0]?.lanes.map((l) => l.name)).toEqual([
+    "lane-510341",
+    "waiter",
+  ]);
+  expect(ladder[1]?.lanes.map((l) => l.name)).toEqual(["cruncher"]);
 });
 
 test("a filesystem below the free-space floor is its own cause", () => {
@@ -141,7 +150,7 @@ test("a filesystem below the free-space floor is its own cause", () => {
     paths: ["/full"],
     values: { free: 5, total: 100 },
   });
-  expect(meters(s, c)[2].values.free).toBe(5);
+  expect(meters(s, c)[2]?.values.free).toBe(5);
   // Above the floor there is no cause at all.
   s.storage.volumes = [volume("/big", c.freeFloor + 1)];
   expect(causes(s, c).find((item) => item.id === "free-space")).toBeUndefined();
@@ -372,7 +381,7 @@ test("every integrity state but healthy and checking reaches the verdict", () =>
     const s = emptySnapshot();
     s.storage.volumes = [v];
     s.storage.scrubs = scrubs;
-    expect({ state, integrity: integrities(s, c)[0].state }).toEqual({
+    expect({ state, integrity: integrities(s, c)[0]?.state }).toEqual({
       state,
       integrity: state,
     });
@@ -392,7 +401,7 @@ test("every integrity state but healthy and checking reaches the verdict", () =>
   const well = emptySnapshot();
   well.storage.volumes = [volume("f")];
   well.storage.scrubs = [report("f")];
-  expect(integrities(well, c)[0].state).toBe("healthy");
+  expect(integrities(well, c)[0]?.state).toBe("healthy");
   expect(causes(well, c)).toEqual([]);
 });
 
@@ -454,10 +463,9 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
   s.groups = [g("app.slice", c.desktopSlice, { swap: c.swapFloor + 1 })];
   // A lane with no agent in it is not the agents' use, whatever it costs.
   const desktop = laneSnapshot({ id: "d", tool: "", cpu: 400, cache: 9 });
-  const agents = [
-    laneSnapshot({ id: "a", tool: "claude", cpu: 20, cache: 100 }),
-    laneSnapshot({ id: "b", tool: "codex", cpu: 10, cache: 50 }),
-  ];
+  const claude = laneSnapshot({ id: "a", tool: "claude", cpu: 20, cache: 100 });
+  const codex = laneSnapshot({ id: "b", tool: "codex", cpu: 10, cache: 50 });
+  const agents = [claude, codex];
   const figures = (snapshot: Snapshot, config: typeof c) => {
     const meter = (id: string) =>
       meters(snapshot, config).find((m) => m.id === id);
@@ -469,11 +477,13 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
         ?.values.cache,
     };
   };
-  const rows: [string, Lane[], string[], (number | null)[], string?][] = [
+  type Figure = number | null;
+  type Figures = [Figure, Figure, Figure, Figure];
+  const rows: [string, Lane[], string[], Figures, string?][] = [
     ["two agents", [...agents, desktop], [], [30, 30, 150, 150]],
     [
       "an agent lane with no CPU reading",
-      [agents[0], { ...agents[1], cpu: null }, desktop],
+      [claude, { ...codex, cpu: null }, desktop],
       [],
       [null, null, 150, 150],
     ],

@@ -20,8 +20,8 @@ import { buildBinary } from "./build";
  * `--compile` builds the standalone binary into the fixture, the way the
  * `compile` script builds it, and samples that.
  */
-const args = process.argv.slice(2);
-if (!args.length) {
+const [program, ...rest] = process.argv.slice(2);
+if (program === undefined) {
   console.error("sample-check: usage=missing-program");
   process.exit(2);
 }
@@ -29,12 +29,11 @@ if (!args.length) {
 const f = fixture();
 try {
   let argv: string[];
-  if (args[0] === "--compile") {
+  if (program === "--compile") {
     const binary = join(f.root, "vsys");
     await buildBinary(binary);
     argv = [binary];
   } else {
-    const [program, ...rest] = args;
     const executable = program.includes("/")
       ? resolve(program)
       : Bun.which(program);

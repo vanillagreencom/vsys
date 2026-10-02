@@ -53,8 +53,12 @@ const textOf = (drawn: Glyph[]): string =>
 function reach(drawn: Glyph[], from: number, cells: number): number {
   let used = 0;
   let to = from;
-  while (to < drawn.length && used + drawn[to].cells <= cells)
-    used += drawn[to++].cells;
+  for (
+    let glyph = drawn[to];
+    glyph !== undefined && used + glyph.cells <= cells;
+    glyph = drawn[++to]
+  )
+    used += glyph.cells;
   return to;
 }
 /** `text` beside the blanks that bring it to `width` cells, on its side. */
@@ -179,17 +183,19 @@ function wrapRows(
     // A row holds at least one character, so one wider than the column draws
     // past it on a row of its own rather than wrapping forever.
     const edge = Math.max(at + 1, reach(drawn, at, width));
-    if (edge >= drawn.length) {
+    const next = drawn[edge];
+    if (next === undefined) {
       rows.push({ from: at, to: drawn.length });
       break;
     }
-    if (drawn[edge].text === " ") {
+    if (next.text === " ") {
       rows.push({ from: at, to: edge });
       at = edge;
       continue;
     }
-    let space = edge;
-    while (space > at && drawn[space - 1].text !== " ") space--;
+    // Just past the last blank before the edge, or `at` when there is none.
+    const space =
+      at + 1 + drawn.slice(at, edge).findLastIndex((g) => g.text === " ");
     // A word wider than the column has nowhere to break, so it is broken at
     // the column: the row before it would otherwise be empty.
     if (space > at) {
@@ -224,10 +230,13 @@ export function capLines(text: string, width: number, lines: number): string {
   const drawn = glyphs(text);
   const rows = wrapRows(drawn, width);
   if (rows.length <= lines) return textOf(drawn);
-  const { from, to } = rows[lines - 1];
-  let end = to;
+  const row = rows[lines - 1];
+  if (row === undefined)
+    throw new Error(`Cut row ${lines} is missing from ${rows.length} rows`);
+  const { from, to } = row;
   // The row a cut ends on is never the last, so it never ends on a blank.
-  while (end > from && /[,.]/.test(drawn[end - 1].text)) end--;
+  let end =
+    from + 1 + drawn.slice(from, to).findLastIndex((g) => !/[,.]/.test(g.text));
   // The mark draws a cell of its own, so the row gives up what it needs to
   // carry it.
   while (end > from && cellsOf(drawn.slice(from, end)) + 1 > width) end--;

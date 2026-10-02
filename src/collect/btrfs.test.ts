@@ -53,21 +53,21 @@ test("counter deltas use device identity and preserve startup baseline", async (
   const collector = new StorageCollector();
   const r = new Reader();
   const first = await collector.collect(r, f.config, 1000);
-  expect(first.volumes[0].delta["1/corruption_errs"]).toBe(0);
+  expect(first.volumes[0]?.delta["1/corruption_errs"]).toBe(0);
   f.write(
     file,
     "corruption_errs 5\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0",
   );
   const second = await collector.collect(r, f.config, 2000);
-  expect(second.volumes[0].delta["1/corruption_errs"]).toBe(3);
-  expect(second.volumes[0].sinceStart["1/corruption_errs"]).toBe(3);
+  expect(second.volumes[0]?.delta["1/corruption_errs"]).toBe(3);
+  expect(second.volumes[0]?.sinceStart["1/corruption_errs"]).toBe(3);
   f.write(
     file,
     "corruption_errs 6\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0",
   );
   const third = await collector.collect(r, f.config, 3000);
-  expect(third.volumes[0].delta["1/corruption_errs"]).toBe(1);
-  expect(third.volumes[0].sinceStart["1/corruption_errs"]).toBe(4);
+  expect(third.volumes[0]?.delta["1/corruption_errs"]).toBe(1);
+  expect(third.volumes[0]?.sinceStart["1/corruption_errs"]).toBe(4);
   expect(r.errors).toEqual([]);
   unlinkSync(file);
   const missing = await collector.collect(r, f.config, 4000);
@@ -135,16 +135,16 @@ logical 953118621696:
   const r = new Reader();
   const collector = new StorageCollector();
   const first = await collector.collect(r, f.config, 1000);
-  expect(first.scrubs[0].fsid).toBe(uuid);
-  expect(first.scrubs[0].uncorrectable).toBe(26);
-  expect(first.scrubs[0].addresses).toEqual([
+  expect(first.scrubs[0]?.fsid).toBe(uuid);
+  expect(first.scrubs[0]?.uncorrectable).toBe(26);
+  expect(first.scrubs[0]?.addresses).toEqual([
     { logical: 953118621696, paths: [kept, gone], changed: [] },
   ]);
   // One of them is written again after the check. The block it sat in can
   // have been freed and reused, so that name no longer proves what was read.
   utimesSync(kept, new Date(checked + 60000), new Date(checked + 60000));
   const rewritten = await collector.collect(r, f.config, 1500);
-  expect(rewritten.scrubs[0].addresses).toEqual([
+  expect(rewritten.scrubs[0]?.addresses).toEqual([
     { logical: 953118621696, paths: [kept, gone], changed: [kept] },
   ]);
   utimesSync(kept, new Date(checked - 60000), new Date(checked - 60000));
@@ -152,7 +152,7 @@ logical 953118621696:
   // still on disk stays, because the damage is still there.
   unlinkSync(gone);
   const second = await collector.collect(r, f.config, 2000);
-  expect(second.scrubs[0].addresses).toEqual([
+  expect(second.scrubs[0]?.addresses).toEqual([
     { logical: 953118621696, paths: [kept], changed: [] },
   ]);
   expect(r.errors).toEqual([]);
@@ -175,18 +175,18 @@ test("the last new error outlives the process that observed it", async () => {
   const r = new Reader();
   const first = new StorageCollector();
   // A counter already above zero says damage happened, not when.
-  expect((await first.collect(r, f.config, 1000)).volumes[0].lastErrorAt).toBe(
+  expect((await first.collect(r, f.config, 1000)).volumes[0]?.lastErrorAt).toBe(
     null,
   );
   f.write(file, counters(1390));
   const grown = await first.collect(r, f.config, 5000);
-  expect(grown.volumes[0].lastErrorAt).toBe(5000);
-  expect(grown.volumes[0].lastErrorSize).toBe(26);
+  expect(grown.volumes[0]?.lastErrorAt).toBe(5000);
+  expect(grown.volumes[0]?.lastErrorSize).toBe(26);
   // A restart, and a sample a day and a half later: past the history window
   // and past the process that saw the growth.
   const later = await new StorageCollector().collect(r, f.config, 135000000);
-  expect(later.volumes[0].lastErrorAt).toBe(5000);
-  expect(later.volumes[0].lastErrorSize).toBe(26);
+  expect(later.volumes[0]?.lastErrorAt).toBe(5000);
+  expect(later.volumes[0]?.lastErrorSize).toBe(26);
   expect(r.errors).toEqual([]);
 });
 
@@ -211,8 +211,8 @@ test("device mapper aliases resolve to filesystem counters", async () => {
   );
   const r = new Reader();
   const s = await new StorageCollector().collect(r, f.config, 1000);
-  expect(s.volumes[0].fsid).toBe("fsid");
-  expect(s.volumes[0].errors["1/corruption_errs"]).toBe(2);
+  expect(s.volumes[0]?.fsid).toBe("fsid");
+  expect(s.volumes[0]?.errors["1/corruption_errs"]).toBe(2);
   expect(r.errors).toEqual([]);
 });
 

@@ -1,4 +1,4 @@
-import type { Config } from "../config/config";
+import type { Config, KeyAction } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
 import { fit } from "./columns";
@@ -32,7 +32,16 @@ export function keyLabel(key: string): string {
   );
 }
 /** The settings key that opens a view is the view's own name. */
-export const viewKey = (view: View): string => view.toLowerCase();
+const viewKeys: Record<View, KeyAction> = {
+  Home: "home",
+  Agents: "agents",
+  Resources: "resources",
+  Builds: "builds",
+  Storage: "storage",
+  Timeline: "timeline",
+  Settings: "settings",
+};
+export const viewKey = (view: View): KeyAction => viewKeys[view];
 
 /** The width under which a list drops the columns it can do without. */
 export const narrowWidth = 100;

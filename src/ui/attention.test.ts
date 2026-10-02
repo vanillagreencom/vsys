@@ -11,6 +11,7 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
+import { present } from "../test/present";
 import {
   type Attention,
   attention,
@@ -53,8 +54,12 @@ test("overview promotes active problems and does not call past events current", 
   s.lanes = [laneSnapshot({ dangerous: true })];
   const problems = attention(s, c, { basePath: base });
   expect(problems).toHaveLength(1);
-  expect(problems[0].target).toEqual({ kind: "lane", id: s.lanes[0].id });
-  expect(problems[0].danger).toBe(true);
+  const problem = present(problems[0], "the lane card");
+  expect(problem.target).toEqual({
+    kind: "lane",
+    id: present(s.lanes[0], "the dangerous lane").id,
+  });
+  expect(problem.danger).toBe(true);
 });
 
 test("every card kind ends with a next step of its own", () => {
@@ -134,15 +139,16 @@ test("nine stalling lanes produce one card that names them", () => {
     (item) => item.id === "stalls",
   );
   expect(stalls).toHaveLength(1);
-  expect(stalls[0].title).toBe(
+  const stall = present(stalls[0], "the stalls card");
+  expect(stall.title).toBe(
     "9 lanes are stalling on a resource: kendex PID 100, kendex PID 101, kendex PID 102, kendex PID 103 and 5 more",
   );
   // The title lists four; the detail under it names every lane.
   const every = Array.from({ length: 9 }, (_, i) => `kendex PID ${100 + i}`);
-  expect(said(stalls[0])).toBe(
+  expect(said(stall)).toBe(
     `Highest stall share 40.0% of the recent window. Lanes: ${every.join(", ")}.`,
   );
-  expect(stalls[0].target?.kind).not.toBe("lane");
+  expect(stall.target?.kind).not.toBe("lane");
   const cause = causes(s, c).find((x) => x.id === "stalls");
   expect(cause?.consumer).toBe("kendex PID 100");
 });
@@ -285,8 +291,11 @@ test("a saturated disk card names the lane, its linkers and a read command", () 
   expect(card.view).toBe("Agents");
   expect(card.next).toContain("build job count for that lane");
   // A desktop scope that is not a lane sends the reader to Resources instead.
-  s.groups[0].path = "app.slice/gnome.scope";
-  const scope = attention(s, c, { basePath: base })[0];
+  present(s.groups[0], "the writer scope").path = "app.slice/gnome.scope";
+  const scope = present(
+    attention(s, c, { basePath: base })[0],
+    "the scope card",
+  );
   expect(scope.view).toBe("Resources");
   expect(scope.target?.kind).not.toBe("lane");
   expect(scope.next).toContain("what is writing in that scope");
@@ -296,7 +305,8 @@ test("counted nouns in the meters and the cards are singular at one", () => {
   const c = defaults();
   const s = emptySnapshot();
   s.procs = [processSnapshot({ pid: 1, build: "ld.mold" })];
-  const builds = () => meterTile(meters(s, c)[3], s, c);
+  const builds = () =>
+    meterTile(present(meters(s, c)[3], "the builds meter"), s, c);
   expect(builds().value).toBe("1 of 8 cores");
   expect(builds().detail).toBe("1 linker · 1 lane");
   expect(builds().facts).toEqual([
@@ -332,7 +342,7 @@ test("read-only mounts and device errors are one card each, not one per mount", 
     "device-errors",
     "unchecked",
   ]);
-  expect(items[0].title).toBe("2 mounts are read-only: /a, /b");
+  expect(items[0]?.title).toBe("2 mounts are read-only: /a, /b");
 });
 
 test("the memory meter names the largest scope and only then the swap holder", () => {
@@ -346,7 +356,7 @@ test("the memory meter names the largest scope and only then the swap holder", (
     g("b.scope", "b.scope", { memory: 900 }),
   ];
   const tile = (snapshot: Snapshot) =>
-    meterTile(meters(snapshot, c)[1], snapshot, c);
+    meterTile(present(meters(snapshot, c)[1], "the memory meter"), snapshot, c);
   expect(tile(s).value).toBe("500 B");
   expect(tile(s).detail).toBe("of 1000 B · swap 0 B");
   expect(tile(s).facts).toEqual([
@@ -355,16 +365,17 @@ test("the memory meter names the largest scope and only then the swap holder", (
     ["Desktop swap", "0 B"],
     ["Largest", "b 900 B"],
   ]);
-  expect(meters(s, c)[1].level).toBe("ok");
-  s.groups[0].swap = c.swapFloor + 1;
+  expect(present(meters(s, c)[1], "the memory meter").level).toBe("ok");
+  const desktop = present(s.groups[0], "the desktop slice");
+  desktop.swap = c.swapFloor + 1;
   expect(tile(s).facts.slice(2)).toEqual([
     ["Desktop swap", "512.0 MiB"],
     ["Largest", "b 900 B"],
     ["Most swapped", "gnome 992 B"],
   ]);
   // Swap vsys could not read is a warning, never an untroubled reading.
-  s.groups[0].swap = null;
-  expect(meters(s, c)[1].level).toBe("warn");
+  desktop.swap = null;
+  expect(present(meters(s, c)[1], "the memory meter").level).toBe("warn");
   expect(tile(s).detail).toBe("of 1000 B · swap not available");
 });
 
@@ -374,7 +385,7 @@ test("the disk meter reports free space and says when mounts are unreadable", ()
   s.system.pressure.io = { some: 12, full: 3, total: 0 };
   s.storage.volumes = [volumeSnapshot("/full", { free: 5368709120 })];
   const tile = (snapshot: Snapshot) =>
-    meterTile(meters(snapshot, c)[2], snapshot, c);
+    meterTile(present(meters(snapshot, c)[2], "the disk meter"), snapshot, c);
   expect(tile(s).value).toBe("12.0%");
   expect(tile(s).facts).toEqual([
     ["Tasks waiting", "12.0% · nothing runnable 3.0%"],
@@ -382,7 +393,7 @@ test("the disk meter reports free space and says when mounts are unreadable", ()
     ["Top writer", "not available"],
   ]);
   // A readable mount whose free space is unknown says so, in the same words.
-  s.storage.volumes[0].free = null;
+  present(s.storage.volumes[0], "the /full volume").free = null;
   expect(tile(s).detail).toBe("not available free");
   s.storage.mountsAvailable = false;
   expect(tile(s).detail).toBe("mount information unavailable");
@@ -401,7 +412,9 @@ test("a meter names the interface behind a missing reading", () => {
     );
   };
   const facts = (index: number) =>
-    Object.fromEntries(meterTile(meters(s, c)[index], s, c).facts);
+    Object.fromEntries(
+      meterTile(present(meters(s, c)[index], `meter ${index}`), s, c).facts,
+    );
   const cpu = () => facts(0);
   const memory = () => facts(1);
   const disk = () => facts(2);
@@ -453,7 +466,9 @@ test("a snapshot stored before the probe reads plainly and never claims a cause"
   // What History.at returns for a row an older build wrote.
   s.capabilities = [];
   s.system.pressure.cpu = null;
-  expect(meterTile(meters(s, c)[0], s, c).facts).toEqual([
+  expect(
+    meterTile(present(meters(s, c)[0], "the cpu meter"), s, c).facts,
+  ).toEqual([
     ["Time tasks waited", "not available"],
     ["Cores agents use", "not available"],
     ["Cores desktop uses", "not available"],
@@ -662,7 +677,10 @@ test("a card's description holds the rows the screen gives it", () => {
         else expect(atFloor).toBeLessThanOrEqual(5);
         // Given the rows its best way of writing itself needs, a card writes
         // that way: every paragraph of its own, nothing given up, nothing cut.
-        const whole = [...item.ways[0], item.keep].filter((p) => p !== "");
+        const whole = [
+          ...present(item.ways[0], "the first way"),
+          item.keep,
+        ].filter((p) => p !== "");
         expect(fitted(item, width, drawnRows(whole, width))).toEqual(whole);
       }
     }
@@ -752,7 +770,9 @@ test("a card short of room gives up the chain, then a conclusion, and counts bot
   // Two groups in one cgroup: the one given up is counted even though the one
   // kept still names that cgroup, and one group is one, not one groups.
   const shared = escapedSnapshot({ lanes: 2, scopes: 1 });
-  shared.procs[2].env = { CARGO_BUILD_JOBS: "16" };
+  present(shared.procs[2], "the third process").env = {
+    CARGO_BUILD_JOBS: "16",
+  };
   const merged = fitted(
     attention(shared, c, { basePath: base, width: 44 }).find(
       (item) => item.id === "unconfined",
@@ -837,7 +857,8 @@ test("the lane sentence stops rather than growing with the machine", () => {
   // One lane has no second name to count, so a name too long for the rows it
   // has is written whole and cut by the budget, never counted as 0 more.
   const alone = escapedSnapshot({ lanes: 1 });
-  alone.lanes[0].name = `${"kendex vsys/issue-1234 ".repeat(3)}hclaude`;
+  present(alone.lanes[0], "the one lane").name =
+    `${"kendex vsys/issue-1234 ".repeat(3)}hclaude`;
   const single = attention(alone, c, { basePath: base, width: 24 }).find(
     (item) => item.id === "unconfined",
   );

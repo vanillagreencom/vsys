@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import { History } from "./history";
 import type { LaneSample } from "./lane-series";
 
@@ -29,15 +30,15 @@ test("lane charts keep brief spikes across checkpoints and update their cache", 
     };
     const series = await read(601000, 86400000);
     expect(series).toHaveLength(601);
-    expect(series[301].cpu).toBe(99);
-    expect(series[302].memoryPressure).toBe(50);
-    expect(series[303].ioPressure).toBe(25);
-    expect(series[400].rss).toBeNull();
-    series[0].cpu = 700;
+    expect(series[301]?.cpu).toBe(99);
+    expect(series[302]?.memoryPressure).toBe(50);
+    expect(series[303]?.ioPressure).toBe(25);
+    expect(series[400]?.rss).toBeNull();
+    present(series[0], "the first sample").cpu = 700;
     const next = emptySnapshot(602000);
     next.lanes = [laneSnapshot({ cpu: 20 })];
     h.add(next);
-    expect((await read(602000, 86400000))[0].cpu).toBe(0);
+    expect((await read(602000, 86400000))[0]?.cpu).toBe(0);
     expect((await read(602000, 1000)).at(-1)?.cpu).toBe(20);
   } finally {
     h.close();
@@ -64,7 +65,7 @@ test("reopened history loads complete lane series without duplicating concurrent
       ]).then((both) => both.map((series) => series.get(id)));
       expect(a).toHaveLength(130);
       expect(b).toHaveLength(130);
-      expect(a?.[65].cpu).toBe(99);
+      expect(a?.[65]?.cpu).toBe(99);
       expect(b).toEqual(a);
     } finally {
       reopened.close();
@@ -86,6 +87,7 @@ test("one read of many stored lanes decompresses each stored row once, and keeps
   // Forty lanes, which is the Agents list on a machine running that many
   // agents. A pass per lane decompresses every row forty times.
   const ids = Array.from({ length: 40 }, (_, n) => `agents.slice/${n}.scope`);
+  const kept = present(ids[0], "the first lane");
   const rows = 30;
   const end = now + (rows - 1) * 1000;
   try {
@@ -134,17 +136,17 @@ test("one read of many stored lanes decompresses each stored row once, and keeps
       ).toBe(end - 10000);
       // A lane that ends leaves the stored lanes.
       const next = emptySnapshot(end + 1000);
-      next.lanes = [laneSnapshot({ id: ids[0], cpu: 0 })];
+      next.lanes = [laneSnapshot({ id: kept, cpu: 0 })];
       reopened.add(next);
-      expect([...(stored()?.lanes.keys() ?? [])]).toEqual([ids[0]]);
+      expect([...(stored()?.lanes.keys() ?? [])]).toEqual([kept]);
       // Once the window starts after the last stored row it reads only the
       // archive, and the stored series go.
       for (let i = 2; i <= 12; i++) {
         const s = emptySnapshot(end + i * 1000);
-        s.lanes = [laneSnapshot({ id: ids[0], cpu: 0 })];
+        s.lanes = [laneSnapshot({ id: kept, cpu: 0 })];
         reopened.add(s);
       }
-      await reopened.laneWindows([ids[0]], end + 12000, 10000);
+      await reopened.laneWindows([kept], end + 12000, 10000);
       expect(stored()).toBeUndefined();
     } finally {
       reopened.close();

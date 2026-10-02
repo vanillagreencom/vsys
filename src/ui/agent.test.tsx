@@ -7,6 +7,7 @@ import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
 import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
+import { present } from "../test/present";
 import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
 
@@ -200,7 +201,7 @@ test("with write mode on an agent action names its scope and waits for a yes", a
     await t.update({ ...t.snapshot, lanes: [laneSnapshot()] });
     await t.press("enter");
     expect(calls.map((command) => command.text)).toEqual([stopCommand]);
-    expect(calls[0].effect).toEqual({
+    expect(calls[0]?.effect).toEqual({
       kind: "run",
       argv: ["systemctl", "--user", "kill", "--signal=TERM", "a.scope"],
     });
@@ -794,8 +795,10 @@ test("an open section is drawn as a child of its own row", async () => {
     const lines = t.frame().split("\n");
     const row = lines.findIndex((line) => line.includes("▾ Processes"));
     expect(row).toBeGreaterThan(-1);
-    expect(isChildLine(lines[row])).toBe(false);
-    expect(isChildLine(lines[row + 1])).toBe(true);
+    expect(isChildLine(present(lines[row], "open Processes row"))).toBe(false);
+    expect(isChildLine(present(lines[row + 1], "first process row"))).toBe(
+      true,
+    );
   } finally {
     await t.close();
   }
@@ -866,7 +869,7 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
     try {
       const lines = m.frame().split("\n");
       const y = lines.findIndex((line) => line.includes(words));
-      await m.click(lines[y].indexOf(words), y);
+      await m.click(present(lines[y], `${kind} row`).indexOf(words), y);
       expect({
         kind,
         opened: underMarked(m.frame()),

@@ -37,7 +37,7 @@ const field = (raw: string, name: string): string | null => {
   const found = [
     ...raw.matchAll(new RegExp(`^\\s*${name}:[ \\t]+(.*\\S)`, "gm")),
   ];
-  return found.length === 1 ? found[0][1] : null;
+  return found.length === 1 ? (found[0]?.[1] ?? null) : null;
 };
 /**
  * How many times the report states a labelled field. None is a field the
@@ -89,12 +89,12 @@ export function parseScrub(raw: string): ScrubReport {
     }
     // A path is indented under its address. The parenthesised line saying no
     // file resolved is not a path, and a line at column zero ends the group.
-    const path = line.match(/^ {2}(\S.*?)\s*$/);
-    if (!path || !current) {
+    const path = line.match(/^ {2}(\S.*?)\s*$/)?.[1];
+    if (path === undefined || !current) {
       if (!/^\s/.test(line)) current = null;
       continue;
     }
-    if (!path[1].startsWith("(")) current.paths.push(path[1]);
+    if (!path.startsWith("(")) current.paths.push(path);
   }
   return {
     uuid: field(raw, "UUID")?.match(/^[0-9a-f-]{36}$/i)?.[0] ?? null,

@@ -7,5 +7,8 @@
 export function percentile(values: number[], fraction: number): number {
   if (!values.length) throw new Error("percentile: no values to rank");
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
+  const value = sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
+  if (value === undefined)
+    throw new Error(`percentile: fraction=${fraction} is outside 0 to 1`);
+  return value;
 }

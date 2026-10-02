@@ -11,6 +11,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { mount } from "../test/harness";
+import { present } from "../test/present";
 import { hints, Waiting } from "./App";
 import { headerRowWidth, views } from "./chrome";
 
@@ -198,8 +199,9 @@ test("the help panel covers what it sits on, at any terminal size", async () => 
       const bottom = lines.findIndex((line) => line.includes("╰"));
       expect(top).toBeGreaterThan(-1);
       expect(bottom).toBeGreaterThan(top);
-      const left = lines[top].indexOf("╭");
-      const right = lines[top].lastIndexOf("╮");
+      const topLine = present(lines[top], "panel top border");
+      const left = topLine.indexOf("╭");
+      const right = topLine.lastIndexOf("╮");
       expect(right).toBeGreaterThan(left);
       // The panel is as wide as its own content, so it is the same width in
       // both terminals and never reaches either edge.
@@ -209,7 +211,10 @@ test("the help panel covers what it sits on, at any terminal size", async () => 
       // Inside the border, every cell belongs to the panel: nothing from the
       // screen behind it shows through its blank columns.
       for (let row = top + 1; row < bottom; row++) {
-        const inside = lines[row].slice(left, right + 1);
+        const inside = present(lines[row], `panel row ${row}`).slice(
+          left,
+          right + 1,
+        );
         expect({ row, edges: `${inside[0]}${inside.at(-1)}` }).toEqual({
           row,
           edges: "││",
@@ -347,7 +352,7 @@ test("the header lays out on the row its own predicate promised", async () => {
     const lines = fits.frame().split("\n");
     expect(lines[0]).toContain("cachy");
     expect(lines[0]).toContain("Settings");
-    expect(lines[0].trimEnd().endsWith(clock)).toBe(true);
+    expect(lines[0]?.trimEnd().endsWith(clock)).toBe(true);
   } finally {
     await fits.close();
   }
@@ -359,7 +364,7 @@ test("the header lays out on the row its own predicate promised", async () => {
     await tight.press("z");
     const lines = tight.frame().split("\n");
     expect(lines[0]).toContain("cachy");
-    expect(lines[0].trimEnd().endsWith(clock)).toBe(true);
+    expect(lines[0]?.trimEnd().endsWith(clock)).toBe(true);
     expect(lines[1]).toContain("Home");
     expect(lines[1]).toContain("Settings");
   } finally {
@@ -424,13 +429,15 @@ test("every row expansion starts its copy in one column, right of its row", asyn
       const rows = t.frame().split("\n");
       const at = rows.findIndex((row) => row.includes("▍"));
       expect(at).toBeGreaterThan(-1);
-      const marker = rows[at].indexOf("▍");
-      const rule = rows[at + 1].indexOf("│");
+      const selected = present(rows[at], `${screen} selected row`);
+      const below = present(rows[at + 1], `${screen} row below selection`);
+      const marker = selected.indexOf("▍");
+      const rule = below.indexOf("│");
       expect(`${screen}: ${rule > -1}`).toBe(`${screen}: true`);
       return {
-        row: marker + 1 + rows[at].slice(marker + 1).search(/\S/),
+        row: marker + 1 + selected.slice(marker + 1).search(/\S/),
         rule,
-        copy: rule + 1 + rows[at + 1].slice(rule + 1).search(/\S/),
+        copy: rule + 1 + below.slice(rule + 1).search(/\S/),
       };
     };
     // Home opens on its worst concern, and Storage on its first filesystem,

@@ -283,23 +283,26 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     return kind === null || !covered.has(kind);
   });
   const escaped = s.lanes.filter((l) => l.unconfined);
-  if (escaped.length)
+  const [firstEscaped] = escaped;
+  if (firstEscaped)
     add("unconfined", "danger", {
       lanes: escaped,
-      consumer: laneText(escaped[0]),
+      consumer: laneText(firstEscaped),
       values: { lanes: escaped.length },
     });
   const readOnly = s.storage.volumes.filter((v) => v.readOnly);
-  if (readOnly.length)
+  const [firstReadOnly] = readOnly;
+  if (firstReadOnly)
     add("read-only", "danger", {
       paths: readOnly.map((v) => v.mount),
-      consumer: readOnly[0].mount,
+      consumer: firstReadOnly.mount,
     });
   // One reading per filesystem, shared by the damage card, the unchecked card
   // and Storage, so the three never disagree about one filesystem's state.
   const filesystems = integrities(s, c);
   const damaged = filesystems.filter((item) => item.state === "damaged");
-  if (damaged.length) {
+  const [firstDamaged] = damaged;
+  if (firstDamaged) {
     const counts = damaged.map(damageCounts);
     // The card counts damage across every filesystem it names, so its block
     // count must too. One filesystem whose report carried no count leaves the
@@ -311,8 +314,8 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       paths: damaged.map((item) => item.mounts[0] ?? item.device),
       // The card opens the filesystem's integrity row, which is not one of
       // the mounts it names: the damage belongs to the filesystem.
-      at: { kind: "path", path: damaged[0].id },
-      consumer: damaged[0].mounts[0] ?? damaged[0].device,
+      at: { kind: "path", path: firstDamaged.id },
+      consumer: firstDamaged.mounts[0] ?? firstDamaged.device,
       values: {
         filesystems: damaged.length,
         files: counts.reduce((sum, n) => sum + n.files, 0),
@@ -330,21 +333,22 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   // The counter grew and nothing has read the filesystem since, so no check
   // has confirmed what that growth cost. This is the reading that was missing.
   const grown = filesystems.filter((item) => item.state === "new-errors");
-  if (grown.length)
+  const [firstGrown, ...moreGrown] = grown;
+  if (firstGrown)
     add("new-errors", "danger", {
       paths: grown.map((item) => item.mounts[0] ?? item.device),
-      at: { kind: "path", path: grown[0].id },
-      consumer: grown[0].mounts[0] ?? grown[0].device,
+      at: { kind: "path", path: firstGrown.id },
+      consumer: firstGrown.mounts[0] ?? firstGrown.device,
       // One filesystem's numbers describe one filesystem. Naming several and
       // showing the first one's growth would present its count and its ages
       // as the whole cause's.
       values:
-        grown.length === 1
+        moreGrown.length === 0
           ? {
               filesystems: 1,
-              size: grown[0].errorSize,
-              since: grown[0].errorAge,
-              checked: grown[0].checkAge,
+              size: firstGrown.errorSize,
+              since: firstGrown.errorAge,
+              checked: firstGrown.checkAge,
             }
           : {
               filesystems: grown.length,
@@ -356,10 +360,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   const failing = s.storage.volumes.filter((v) =>
     Object.values(v.delta).some((n) => n > 0),
   );
-  if (failing.length)
+  const [firstFailing] = failing;
+  if (firstFailing)
     add("device-errors", "danger", {
       paths: failing.map((v) => v.mount),
-      consumer: failing[0].device,
+      consumer: firstFailing.device,
     });
   if (diskFired && writer) {
     const lane = s.lanes.find((l) => l.id === writer.path);
@@ -409,17 +414,19 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       values: { free: free.free, total: free.total },
     });
   const capped = s.lanes.filter((l) => l.dangerous);
-  if (capped.length)
+  const [firstCapped] = capped;
+  if (firstCapped)
     add("memory-cap", "danger", {
       lanes: capped,
-      consumer: laneText(capped[0]),
+      consumer: laneText(firstCapped),
       values: { lanes: capped.length, floor: c.memoryFloor },
     });
-  if (loose.length) {
+  const [firstLoose] = loose;
+  if (firstLoose) {
     const worst = Math.max(...loose.map((l) => lanePressure(l) ?? 0));
     add("stalls", worst > c.pressureRed ? "danger" : "warn", {
       lanes: loose,
-      consumer: laneText(loose[0]),
+      consumer: laneText(firstLoose),
       values: { lanes: loose.length, worst },
     });
   }
@@ -439,10 +446,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   const near = s.groups.filter(
     (g) => g.memory !== null && g.high !== null && g.memory >= g.high * 0.9,
   );
-  if (near.length)
+  const [firstNear] = near;
+  if (firstNear)
     add("memory-high", "warn", {
       groups: near,
-      consumer: near[0].name,
+      consumer: firstNear.name,
       verdictWorthy: false,
     });
   // A report the damage card already speaks for is not a second card: it names
@@ -453,21 +461,23 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   const scrubs = s.storage.scrubs.filter(
     (scrub) => scrub.problem && !spoken.has(scrub.path),
   );
-  if (scrubs.length)
+  const [firstScrub] = scrubs;
+  if (firstScrub)
     add("scrub", "danger", {
       paths: scrubs.map((scrub) => scrub.path),
-      consumer: scrubs[0].path,
+      consumer: firstScrub.path,
     });
   // A filesystem nothing has checked cannot report that it is undamaged, so
   // silence about it is the reading this card refuses to give.
   const unchecked = filesystems.filter(
     (item) => item.state === "never-checked" || item.state === "stale",
   );
-  if (unchecked.length)
+  const [firstUnchecked] = unchecked;
+  if (firstUnchecked)
     add("unchecked", "warn", {
       paths: unchecked.map((item) => item.mounts[0] ?? item.device),
-      at: { kind: "path", path: unchecked[0].id },
-      consumer: unchecked[0].mounts[0] ?? unchecked[0].device,
+      at: { kind: "path", path: firstUnchecked.id },
+      consumer: firstUnchecked.mounts[0] ?? firstUnchecked.device,
       values: {
         filesystems: unchecked.length,
         never: unchecked.filter((item) => item.state === "never-checked")
@@ -479,20 +489,22 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   // A filesystem whose state vsys could not read is not one it can pass over
   // in silence: Storage says the state is unknown, and so must the verdict.
   const opaque = filesystems.filter((item) => item.state === "unknown");
-  if (opaque.length)
+  const [firstOpaque] = opaque;
+  if (firstOpaque)
     add("integrity-unknown", "warn", {
       paths: opaque.map((item) => item.mounts[0] ?? item.device),
-      at: { kind: "path", path: opaque[0].id },
-      consumer: opaque[0].mounts[0] ?? opaque[0].device,
+      at: { kind: "path", path: firstOpaque.id },
+      consumer: firstOpaque.mounts[0] ?? firstOpaque.device,
       values: { filesystems: opaque.length },
     });
   const large = s.storage.scratch.filter(
     (scratch) => scratch.bytes !== null && scratch.bytes > c.scratchQuota,
   );
-  if (large.length)
+  const [firstLarge] = large;
+  if (firstLarge)
     add("scratch", "warn", {
       paths: large.map((scratch) => scratch.path),
-      consumer: large[0].path,
+      consumer: firstLarge.path,
       verdictWorthy: false,
       values: {
         largest: Math.max(...large.map((scratch) => scratch.bytes ?? 0)),

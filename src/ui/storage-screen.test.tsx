@@ -7,6 +7,7 @@ import type { ScratchOrigin, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
+import { present } from "../test/present";
 import { osc52 } from "./clipboard";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { regionOf, regionRanges, storageRegions } from "./regions";
@@ -178,8 +179,10 @@ test("a filesystem's detail is drawn as a child of its row", async () => {
     const lines = t.frame().split("\n");
     const row = lines.findIndex((line) => line.includes("▾ /data"));
     expect(row).toBeGreaterThan(-1);
-    expect(isChildLine(lines[row])).toBe(false);
-    expect(isChildLine(lines[row + 1])).toBe(true);
+    expect(isChildLine(present(lines[row], "the /data row"))).toBe(false);
+    expect(isChildLine(present(lines[row + 1], "the line under /data"))).toBe(
+      true,
+    );
     // The mount's own detail, not the device row's: subvolumes of one
     // filesystem share a device and its error counters, stated once above.
     expect(lines[row + 1]).toContain("Options");
@@ -439,14 +442,14 @@ test("one filesystem is one heading, however its mounts name their device", () =
     volumeSnapshot("/other", { device: "/dev/sdb1", fsid: "def" }),
   ]);
   expect(groups.map((group) => group.id)).toEqual(["abc", "def"]);
-  expect(groups[0].volumes.map((v) => v.mount)).toEqual([
+  expect(groups[0]?.volumes.map((v) => v.mount)).toEqual([
     "/data",
     "/data/home",
     "/data/log",
   ]);
   // The heading still names a device a reader would type.
-  expect(groups[0].device).toBe("/dev/mapper/pool");
-  expect(groups[1].volumes.map((v) => v.mount)).toEqual(["/other"]);
+  expect(groups[0]?.device).toBe("/dev/mapper/pool");
+  expect(groups[1]?.volumes.map((v) => v.mount)).toEqual(["/other"]);
   // Where the id could not be resolved the source string is the fallback, so
   // those mounts still group rather than each standing alone.
   const unresolved = volumesByDevice([
@@ -590,7 +593,7 @@ test("a damaged filesystem names its files, grouped by address, with what to do"
     // word does.
     const rows = frame.split("\n");
     const counter = rows.findIndex((row) => row.includes("corruption 1390"));
-    expect(rows[counter + 1].trim()).toBe("│");
+    expect(rows[counter + 1]?.trim()).toBe("│");
     expect(rows[counter + 2]).toContain("Error summary:    csum=26");
   } finally {
     await t.close();
@@ -608,9 +611,10 @@ test("a deleted file leaves the list and the filesystem stops reading damaged", 
     // The next sample carries the report with nothing left on disk under it,
     // which is what the collector produces once the reader deletes the files.
     const cleared = damagedSnapshot(time + 1000);
-    cleared.storage.scrubs[0].addresses = [];
-    cleared.storage.scrubs[0].uncorrectable = 0;
-    cleared.storage.scrubs[0].problem = false;
+    const scrub = present(cleared.storage.scrubs[0], "the scrub report");
+    scrub.addresses = [];
+    scrub.uncorrectable = 0;
+    scrub.problem = false;
     await t.update(cleared);
     const frame = t.frame();
     expect(frame).not.toContain("/home/reader/letter.txt");
@@ -907,8 +911,10 @@ test("every kind of Storage row is placed, marked, opened and followed by one ru
     const y = lines.findIndex((line) => line.includes("▍"));
     if (y < 0) return false;
     return item.kind === "filesystem"
-      ? lines[y - 1].includes("/dev/data")
-      : names(lines[y], itemPath(item));
+      ? present(lines[y - 1], "the line above the marked row").includes(
+          "/dev/data",
+        )
+      : names(present(lines[y], "the marked row"), itemPath(item));
   };
   // A filesystem that sorts above every row, arriving with a sample, so each
   // row's number names another row afterwards.
@@ -934,13 +940,16 @@ test("every kind of Storage row is placed, marked, opened and followed by one ru
     // Reached from the keyboard on a terminal too short to hold the screen,
     // so the row is only on it if the scroll found it.
     const region = regionOf(counts, at);
-    const offset = at - regionRanges(counts)[region][0];
+    const [start] = present(regionRanges(counts)[region], `region ${region}`);
+    const offset = at - start;
     const t = await mount(s, c, { width: 140, height: 16 });
     try {
       await t.press("5");
       // A reader arrives at a screen that has finished drawing itself.
       await t.settle();
-      await t.press(c.keys[storageRegions[region].action]);
+      await t.press(
+        c.keys[present(storageRegions[region], `region ${region}`).action],
+      );
       for (let i = 0; i < offset; i++) await t.press("down");
       await t.settle();
       expect({ key, marked: marks(t.frame(), item) }).toEqual({
@@ -1027,10 +1036,12 @@ const tallFiles = Array.from(
  */
 function tallDetail() {
   const s = damagedSnapshot(1_760_000_000_000);
-  s.storage.scrubs[0].addresses = tallFiles.map((path, i) => ({
-    logical: 1000 + i,
-    paths: [path],
-  }));
+  present(s.storage.scrubs[0], "the scrub report").addresses = tallFiles.map(
+    (path, i) => ({
+      logical: 1000 + i,
+      paths: [path],
+    }),
+  );
   s.storage.volumes = [
     volumeSnapshot("/data", { device: "/dev/sda1", fsid: "sda1" }),
     ...s.storage.volumes,
@@ -1168,7 +1179,8 @@ test("each rule the Storage wheel follows", async () => {
       snapshot: tallDetail,
       height: 24,
       keys: ["down", "down"],
-      wheel: (t) => readTall(t, "down", tallFiles[29]),
+      wheel: (t) =>
+        readTall(t, "down", present(tallFiles[29], "the last tall file")),
       expected: [false, tallFiles[29], "moved on"],
     },
     {
@@ -1181,7 +1193,7 @@ test("each rule the Storage wheel follows", async () => {
       wheel: async (t) => {
         for (let i = 0; i < 60; i++) await t.wheel(119, 8, "down");
         await t.settle();
-        return readTall(t, "up", tallFiles[0]);
+        return readTall(t, "up", present(tallFiles[0], "the first tall file"));
       },
       expected: [false, tallFiles[0], "moved on"],
     },
@@ -1259,25 +1271,26 @@ test("two mounts stacked at one path are two rows a reader can stand on", async 
   const t = await mount(s, c, { width: 140, height: 40 });
   try {
     await t.press("5");
-    for (const [presses, mount] of [
+    const steps: [presses: number, mount: number][] = [
       [1, 0],
       [2, 1],
-    ]) {
+    ];
+    for (const [presses, mount] of steps) {
       await t.press(c.keys.filesystems);
       for (let i = 0; i < presses; i++) await t.press("down");
       const at = lines(t.frame());
       expect(at.mounts.length).toBe(2);
       expect({ presses, marked: at.marked }).toEqual({
         presses,
-        marked: at.mounts[mount],
+        marked: present(at.mounts[mount], `mount ${mount}`),
       });
     }
     for (const mount of [0, 1, 0]) {
-      const y = lines(t.frame()).mounts[mount];
+      const y = present(lines(t.frame()).mounts[mount], `mount ${mount}`);
       await t.click(4, y);
       expect({ mount, marked: lines(t.frame()).marked }).toEqual({
         mount,
-        marked: lines(t.frame()).mounts[mount],
+        marked: present(lines(t.frame()).mounts[mount], `mount ${mount}`),
       });
     }
   } finally {

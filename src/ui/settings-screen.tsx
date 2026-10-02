@@ -1,6 +1,6 @@
 import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { type Config, choices, validate } from "../config/config";
+import { type Config, choices, isKeyAction, validate } from "../config/config";
 import {
   settingText as editText,
   settingValue as editValue,
@@ -95,8 +95,11 @@ export function sourceCounts(s: Snapshot): [string, number][] {
     counts.set(e.source, (counts.get(e.source) ?? 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
-const settingValue = (c: Config, key: string): unknown =>
-  key.startsWith("keys.") ? c.keys[key.slice(5)] : c[key as keyof Config];
+const settingValue = (c: Config, key: string): unknown => {
+  if (!key.startsWith("keys.")) return c[key as keyof Config];
+  const action = key.slice(5);
+  return isKeyAction(c, action) ? c.keys[action] : undefined;
+};
 
 /** What vsys can read on this machine, then every stored setting by group. */
 export function Settings({
@@ -311,8 +314,10 @@ export function Settings({
         setChoice((i) => nextDown(picking.length, i));
       else if (name === c.keys.up || name === "up")
         setChoice((i) => Math.max(0, i - 1));
-      else if (name === c.keys.open && current?.kind === "setting")
-        void save(current.key, () => picking[choice]);
+      else if (name === c.keys.open && current?.kind === "setting") {
+        const option = picking[choice];
+        if (option !== undefined) void save(current.key, () => option);
+      }
       return true;
     }
     if (editing) {

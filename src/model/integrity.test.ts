@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { volumeSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import {
   damageCounts,
   globMatch,
@@ -16,14 +17,17 @@ const day = 86400000;
 const now = 1_760_000_000_000;
 /** One filesystem with a readable counter, named so a report can match it. */
 function filesystem(overrides: Partial<Volume> = {}) {
-  return volumesByDevice([
-    volumeSnapshot("/", {
-      fsid: "fs",
-      errors: { "1/corruption_errs": 0 },
-      countersAvailable: true,
-      ...overrides,
-    }),
-  ])[0];
+  return present(
+    volumesByDevice([
+      volumeSnapshot("/", {
+        fsid: "fs",
+        errors: { "1/corruption_errs": 0 },
+        countersAvailable: true,
+        ...overrides,
+      }),
+    ])[0],
+    "the filesystem's device group",
+  );
 }
 function report(overrides: Partial<Scrub> = {}): Scrub {
   return {

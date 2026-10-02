@@ -45,7 +45,7 @@ import { Resources } from "./resources";
 import { Settings } from "./settings-screen";
 import { Storage } from "./storage-screen";
 import { levelColor, ui } from "./theme";
-import { Timeline, windows } from "./timeline-screen";
+import { Timeline, windowAt, windows } from "./timeline-screen";
 import { Line, Toast } from "./widgets";
 
 /** A slow initial source cannot leave the terminal without a quit handler. */
@@ -213,7 +213,8 @@ export function App({
   const { width, height } = useTerminalDimensions();
   const shown = pinned ?? snapshot;
   const issues = attention(snapshot, c, { width: detailWidth(width) });
-  const points = history.window(snapshot.time, windows[windowIndex]);
+  const windowMs = windowAt(windowIndex);
+  const points = history.window(snapshot.time, windowMs);
   const notice = useCallback(
     (text: string, level: Level = "ok") => setToast({ text, level }),
     [],
@@ -408,7 +409,7 @@ export function App({
         changes={history.recentEvents(snapshot.time, recentChanges)}
         alertsOpened={opened}
         points={points}
-        windowMs={windows[windowIndex]}
+        windowMs={windowMs}
         selection={homeSelection}
         width={screenWidth(width)}
         cardWidth={detailWidth(width)}
@@ -434,7 +435,7 @@ export function App({
         config={c}
         laneId={laneId}
         live={!pinned}
-        windowMs={windows[windowIndex]}
+        windowMs={windowMs}
         width={width}
         height={contentHeight}
         onSave={onSave}

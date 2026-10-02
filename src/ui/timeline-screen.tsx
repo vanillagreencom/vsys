@@ -37,7 +37,16 @@ import {
 } from "./widgets";
 
 /** The windows the reader can step through, shortest first. */
-export const windows = [300000, 900000, 3600000, 21600000, 86400000];
+export const windows = [300000, 900000, 3600000, 21600000, 86400000] as const;
+/** The window at `index`, which the shell only ever steps within `windows`. */
+export function windowAt(index: number): number {
+  const ms = windows[index];
+  if (ms === undefined)
+    throw new Error(
+      `Window index ${index} is outside the ${windows.length} windows`,
+    );
+  return ms;
+}
 /** The point the cursor stands on: the last sample at or before it. */
 export function pointAt(
   points: Point[],
@@ -109,7 +118,7 @@ export function Timeline({
   target: { at: number; id: string } | null;
   onTargetUsed: () => void;
 }) {
-  const windowMs = windows[windowIndex];
+  const windowMs = windowAt(windowIndex);
   const changes = history.events(s.time, windowMs);
   // What the reader chose, followed by identity: the window key can swap a
   // long list for a shorter one and a new sample prepends to it, so a row
@@ -179,7 +188,7 @@ export function Timeline({
   };
   const pick = (column: number) =>
     onCursor(
-      buckets[column].at(-1)?.time ?? start + (column * windowMs) / chartWidth,
+      buckets[column]?.at(-1)?.time ?? start + (column * windowMs) / chartWidth,
     );
   const onChart = (event: {
     x: number;
@@ -223,8 +232,9 @@ export function Timeline({
     // sample's time, so matching on the time lands on the first of them
     // whichever row the reader opened.
     const at = changes.findIndex((event) => eventKey(event) === target.id);
-    if (at >= 0) {
-      open(at, changes[at]);
+    const event = changes[at];
+    if (event) {
+      open(at, event);
       onTargetUsed();
       return;
     }

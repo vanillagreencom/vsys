@@ -81,7 +81,7 @@ test("a cell is measured in the terminal cells its text draws", () => {
     });
     expect(textWidth(got)).toBe(width);
   }
-  const columns: Column[] = [
+  const columns: [Column, Column] = [
     { label: "Agent", width: 6 },
     { label: "CPU", width: 6, align: "right" },
   ];
@@ -95,7 +95,7 @@ test("a cell is measured in the terminal cells its text draws", () => {
 });
 
 test("the heading is built from the same spec its rows read", () => {
-  const columns: Column[] = [
+  const columns: [Column, Column] = [
     { label: "Agent", width: 10 },
     { label: "CPU", width: 6, align: "right" },
   ];

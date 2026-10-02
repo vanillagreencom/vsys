@@ -54,7 +54,7 @@ export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
 export function globMatch(pattern: string, path: string): boolean {
   let source = "^";
   for (let at = 0; at < pattern.length; at++) {
-    const char = pattern[at];
+    const char = pattern.charAt(at);
     if (char === "*") {
       if (pattern[at + 1] === "*") {
         // A `**/` segment must also match nothing at all, so `**​/target/**`

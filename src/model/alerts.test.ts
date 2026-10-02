@@ -117,18 +117,19 @@ test("pressure holds for elapsed seconds and resets when samples recover", () =>
   const c = defaults();
   c.pressureHoldSeconds = 5;
   const s = emptySnapshot(1000);
-  s.groups = [
-    groupSnapshot({ pressure: { cpu: { some: 15, full: 0, total: 1 } } }),
-  ];
+  const group = groupSnapshot({
+    pressure: { cpu: { some: 15, full: 0, total: 1 } },
+  });
+  s.groups = [group];
   expect(engine.evaluate(s, c)).toEqual([]);
   s.time = 5999;
   expect(engine.evaluate(s, c)).toEqual([]);
   s.time = 6000;
   expect(engine.evaluate(s, c).map((a) => a.rule)).toEqual(["pressure"]);
-  s.groups[0].pressure.cpu = { some: 0, full: 0, total: 1 };
+  group.pressure.cpu = { some: 0, full: 0, total: 1 };
   s.time = 7000;
   expect(engine.evaluate(s, c)).toEqual([]);
-  s.groups[0].pressure.cpu = { some: 15, full: 0, total: 1 };
+  group.pressure.cpu = { some: 15, full: 0, total: 1 };
   s.time = 8000;
   expect(engine.evaluate(s, c)).toEqual([]);
 });

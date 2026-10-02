@@ -16,7 +16,8 @@ function ioTotals(text: string): IoTotals | null {
     const device = line.trim().split(/\s+/)[0];
     if (!device) continue;
     for (const [, key, raw] of line.matchAll(/\b(rbytes|wbytes)=(\S+)/g)) {
-      if (!/^\d+$/.test(raw)) throw new Error("Invalid io.stat counter");
+      if (raw === undefined || !/^\d+$/.test(raw))
+        throw new Error("Invalid io.stat counter");
       seen = true;
       if (key === "rbytes") totals.read += Number(raw);
       else {
@@ -72,7 +73,7 @@ export function collectGroups(
     if (stat !== null && pids !== null) {
       try {
         const cpuUsec = pairs(stat).usage_usec;
-        if (!Number.isFinite(cpuUsec))
+        if (cpuUsec === undefined || !Number.isFinite(cpuUsec))
           throw new Error("Missing cpu usage_usec");
         const old = before.get(id);
         const psi = Object.fromEntries(

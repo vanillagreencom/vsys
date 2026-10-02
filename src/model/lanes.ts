@@ -357,9 +357,9 @@ export function processTree(procs: Proc[]): { proc: Proc; depth: number }[] {
       chain: [...parentChain(proc, procs).reverse(), proc],
     }))
     .sort((a, b) => {
-      for (let i = 0; i < Math.min(a.chain.length, b.chain.length); i++) {
-        const left = a.chain[i];
+      for (const [i, left] of a.chain.entries()) {
         const right = b.chain[i];
+        if (right === undefined) break;
         if (left.pid !== right.pid)
           return left.start - right.start || left.pid - right.pid;
       }
