@@ -552,22 +552,39 @@ function copy(
       };
     case "unconfirmed-tool": {
       const unconfirmed = cause.procs;
+      const toolList = (procs: typeof unconfirmed) =>
+        list([...new Set(procs.map((proc) => proc.unconfirmedTool ?? ""))]);
       const names = list(
         unconfirmed.map(
           (proc) =>
-            `${proc.comm} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""} at ${proc.unconfirmedPath ?? "a path vsys did not record"}`,
+            `${proc.comm} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""} at ${proc.unconfirmedPath ?? "a path vsys could not read"}`,
         ),
       );
-      const toolNames = list([
-        ...new Set(unconfirmed.map((proc) => proc.unconfirmedTool ?? "")),
-      ]);
+      const toolNames = toolList(unconfirmed);
+      // A script against a tool with no install location at all is the one
+      // case vsys can fail to read without ever rejecting a path, so some of
+      // these processes can carry no path to name. Naming a path above the
+      // fragment advice, or lying outside a location that was never read, is
+      // wrong for exactly those, so the two groups get their own sentence.
+      const readable = unconfirmed.filter((proc) => proc.unconfirmedPath);
+      const unread = unconfirmed.filter((proc) => !proc.unconfirmedPath);
+      const sentence = !unread.length
+        ? "Each process's path lies outside every install location vsys knows for its name, so vsys does not count it as an agent."
+        : !readable.length
+          ? "vsys could not read a script path for any of them, so none is counted as an agent."
+          : "Each process with a path shown lies outside every install location vsys knows for its name; vsys could not read one for the rest at all. Neither is counted as an agent.";
+      const pathsAdvice = `Open Settings, then add a paths fragment covering the path above to ${toolList(readable)} in the agent-tools overlay at ${agentToolsPath}.`;
+      const checkAdvice = `vsys could not read ${toolList(unread)}'s script path, so check that process directly, by its command line or working directory, for the real one, then open Settings and add a paths fragment covering it to the agent-tools overlay at ${agentToolsPath}.`;
+      const next = !unread.length
+        ? pathsAdvice
+        : !readable.length
+          ? checkAdvice
+          : `${pathsAdvice} ${checkAdvice}`;
       return {
         word: "Unconfirmed",
         title: `${count(unconfirmed.length, "process", "processes")} ${p(unconfirmed.length, "carries", "carry")} an unconfirmed agent name: ${toolNames}`,
-        ways: [
-          `${names}. Each process's path lies outside every install location vsys knows for its name, so vsys does not count it as an agent.`,
-        ],
-        next: `Open Settings, then add a paths fragment covering the path above to ${toolNames} in the agent-tools overlay at ${agentToolsPath}.`,
+        ways: [`${names}. ${sentence}`],
+        next,
         command: shellLine(["cat", agentToolsPath]),
         view: "Settings",
       };

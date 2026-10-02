@@ -195,6 +195,60 @@ test("several unconfirmed processes share one card, and a repeated tool name is 
   );
 });
 
+test("an unconfirmed process with no readable path gets guidance to check it directly, not a path fragment", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 20,
+      comm: "bash",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: null,
+    }),
+  ];
+  const card = attention(s, c, { basePath: base })[0];
+  expect(said(card)).toContain(
+    "bash (pid 20): pi at a path vsys could not read",
+  );
+  // No path was recorded, so the advice never tells the reader to cover one.
+  expect(card.next).not.toContain("the path above");
+  expect(card.next).toContain("check that process directly");
+  expect(card.next).toContain("pi");
+  expect(card.next).toContain("Settings");
+});
+
+test("a mix of readable and unreadable unconfirmed paths gets both pieces of advice", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 21,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
+    }),
+    processSnapshot({
+      pid: 22,
+      comm: "bash",
+      tool: null,
+      unconfirmedTool: "codex",
+      unconfirmedPath: null,
+    }),
+  ];
+  const card = attention(s, c, { basePath: base })[0];
+  // The readable one still gets the fragment advice, naming only its tool.
+  expect(card.next).toContain(
+    "add a paths fragment covering the path above to pi",
+  );
+  // The unreadable one gets the direct-check advice instead, naming only its
+  // tool, never telling the reader to cover a path that was never recorded.
+  expect(card.next).toContain("check that process directly");
+  expect(card.next).toContain("codex's script path");
+  expect(card.next).not.toContain("covering the path above to codex");
+});
+
 test("nine stalling lanes produce one card that names them", () => {
   const c = defaults();
   const s = emptySnapshot();
