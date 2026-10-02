@@ -439,6 +439,11 @@ test("unit files are looked for where the user manager loads them, in its order"
       {},
       ordered(join(homedir(), ".config"), join(homedir(), ".local/share")),
     ],
+    [
+      "XDG directories relative",
+      { XDG_CONFIG_HOME: "x/config", XDG_DATA_HOME: "x/data" },
+      ordered(join(homedir(), ".config"), join(homedir(), ".local/share")),
+    ],
   ];
   for (const [name, env, dirs] of rows)
     expect({ name, dirs: unitDirs(env) }).toEqual({ name, dirs });

@@ -153,6 +153,39 @@ export function hermeticBin(root: string): string {
   chmodSync(getconf, 0o755);
   return bin;
 }
+/**
+ * Runs `body` as a module in a child whose whole environment is `HOME=home`
+ * and `VSYS_TEST_INPUT`, the JSON of `input`, with `module` imported as
+ * `subject`, and returns the JSON the body prints. Bun reads the home
+ * directory once per process, so a path under a planted home resolves only in
+ * a child.
+ */
+export async function underHome(
+  home: string,
+  module: string,
+  body: string,
+  input: unknown,
+): Promise<unknown> {
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `import * as subject from ${JSON.stringify(module)};\n${body}`,
+    ],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { HOME: home, VSYS_TEST_INPUT: JSON.stringify(input) },
+    },
+  );
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (code !== 0) throw new Error(`underHome: exit=${code}\n${stderr}`);
+  return JSON.parse(stdout);
+}
 /** Tests assume a complete host unless they remove a capability themselves. */
 export function capabilitySnapshot(): Capability[] {
   return (

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { fixture } from "../test/fixture";
+import { fixture, underHome } from "../test/fixture";
 import { shippedAgentTools } from "./agent-tools";
 import {
   defaults,
@@ -26,9 +26,11 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
 });
 
+/** A directory under tmp/ that the next afterEach removes. */
 function scratchRoot(name: string) {
   const root = join(process.cwd(), "tmp", `${name}-${crypto.randomUUID()}`);
   mkdirSync(root, { recursive: true });
+  scratchRoots.push(root);
   return root;
 }
 function agentToolsDocument(names: string[]) {
@@ -135,6 +137,155 @@ test("every host-specific name ships a systemd user-session default", () => {
     expect(list.length).toBeGreaterThan(0);
 });
 
+/** Prints each row's settings file, loaded refresh and state paths. */
+const resolvedPaths = `
+const out = [];
+for (const env of JSON.parse(process.env.VSYS_TEST_INPUT)) {
+  const file = subject.configPath(env);
+  const c = subject.defaults(undefined, env);
+  out.push({
+    file,
+    refreshMs: (await subject.loadConfig(file)).refreshMs,
+    sqlite: c.sqlitePath,
+    memory: c.errorMemoryPath,
+  });
+}
+console.log(JSON.stringify(out));
+`;
+
+test("the settings file follows XDG_CONFIG_HOME and history follows XDG_STATE_HOME", async () => {
+  const home = join(scratchRoot("xdg-home"), "home");
+  mkdirSync(home);
+  // Today's paths. A machine with no config file and both variables set to
+  // these, or neither set, must keep reading and writing exactly here.
+  const config = join(home, ".config/vsys/config.toml");
+  const history = join(home, ".local/state/vsys/history.db");
+  const errors = join(home, ".local/state/vsys/filesystem-errors.json");
+  const rows: [string, NodeJS.ProcessEnv, string, string, string][] = [
+    ["both unset", {}, config, history, errors],
+    [
+      "both empty",
+      { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" },
+      config,
+      history,
+      errors,
+    ],
+    [
+      "both relative",
+      { XDG_CONFIG_HOME: "x/config", XDG_STATE_HOME: "x/state" },
+      config,
+      history,
+      errors,
+    ],
+    [
+      "both set to today's paths",
+      {
+        XDG_CONFIG_HOME: join(home, ".config"),
+        XDG_STATE_HOME: join(home, ".local/state"),
+      },
+      config,
+      history,
+      errors,
+    ],
+    [
+      "config set",
+      { XDG_CONFIG_HOME: "/x/config" },
+      "/x/config/vsys/config.toml",
+      history,
+      errors,
+    ],
+    [
+      "state set",
+      { XDG_STATE_HOME: "/x/state" },
+      config,
+      "/x/state/vsys/history.db",
+      "/x/state/vsys/filesystem-errors.json",
+    ],
+  ];
+  const resolved = await underHome(
+    home,
+    join(import.meta.dir, "config.ts"),
+    resolvedPaths,
+    rows.map(([, env]) => env),
+  );
+  expect(resolved).toEqual(
+    rows.map(([, , file, sqlite, memory]) => ({
+      file,
+      refreshMs: 1000,
+      sqlite,
+      memory,
+    })),
+  );
+});
+
+test("an install under the home defaults keeps its settings and history when the variables move", async () => {
+  const root = scratchRoot("xdg-legacy");
+  const home = join(root, "home");
+  const config = join(home, ".config/vsys/config.toml");
+  const state = join(home, ".local/state/vsys");
+  mkdirSync(dirname(config), { recursive: true });
+  writeFileSync(config, "refreshMs = 2500\n");
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, "filesystem-errors.json"), "{}\n");
+  const moved = join(root, "xdg-config");
+  mkdirSync(join(moved, "vsys"), { recursive: true });
+  writeFileSync(join(moved, "vsys/config.toml"), "refreshMs = 4000\n");
+  const env = (config: string) => ({
+    XDG_CONFIG_HOME: config,
+    XDG_STATE_HOME: join(root, "xdg-state"),
+  });
+  const resolved = await underHome(
+    home,
+    join(import.meta.dir, "config.ts"),
+    resolvedPaths,
+    [env(join(root, "empty-config")), env(moved)],
+  );
+  expect(resolved).toEqual([
+    {
+      file: config,
+      refreshMs: 2500,
+      sqlite: join(state, "history.db"),
+      memory: join(state, "filesystem-errors.json"),
+    },
+    {
+      file: join(moved, "vsys/config.toml"),
+      refreshMs: 4000,
+      sqlite: join(state, "history.db"),
+      memory: join(state, "filesystem-errors.json"),
+    },
+  ]);
+});
+
+test("a save after the reader moves the state directory pins no state path", async () => {
+  const root = scratchRoot("xdg-moved-state");
+  const home = join(root, "home");
+  const legacy = join(home, ".local/state/vsys");
+  const moved = join(root, "xdg-state");
+  mkdirSync(legacy, { recursive: true });
+  mkdirSync(moved);
+  const saved = await underHome(
+    home,
+    join(import.meta.dir, "config.ts"),
+    `
+const { renameSync } = await import("node:fs");
+const { legacy, moved } = JSON.parse(process.env.VSYS_TEST_INPUT);
+// A save resolves its defaults from the process environment.
+process.env.XDG_STATE_HOME = moved;
+const c = subject.defaults();
+renameSync(legacy, moved + "/vsys");
+console.log(JSON.stringify({
+  sqlite: c.sqlitePath,
+  body: subject.configBody({ ...c, refreshMs: 2000 }, c.agentTools),
+}));
+`,
+    { legacy, moved },
+  );
+  expect(saved).toEqual({
+    sqlite: join(legacy, "history.db"),
+    body: "refreshMs = 2000\n",
+  });
+});
+
 test("vsys observes only: the reserved write mode defaults off", async () => {
   expect(defaults().writeMode).toBe(false);
   expect(validate({}).writeMode).toBe(false);
@@ -147,7 +298,6 @@ test("vsys observes only: the reserved write mode defaults off", async () => {
 
 test("agent tool overlay reaches defaults and config overrides it", async () => {
   const root = scratchRoot("config-agent-tools");
-  scratchRoots.push(root);
   const configPath = join(root, "config.toml");
   const toolsPath = join(process.cwd(), "data/owner-agent-tools.json");
   expect((await loadConfig(configPath, toolsPath)).agentTools).toEqual([
@@ -176,7 +326,6 @@ test("agent tool overlay reaches defaults and config overrides it", async () => 
 
 test("saving defaults leaves agent tools unpinned and later overlay edits visible", async () => {
   const root = scratchRoot("config-agent-tools-unpinned");
-  scratchRoots.push(root);
   const configPath = join(root, "config.toml");
   const toolsPath = join(root, ".config/vsys/agent-tools.json");
   const config = defaults();
@@ -191,7 +340,6 @@ test("saving defaults leaves agent tools unpinned and later overlay edits visibl
 
 test("a diverging agent tools pin hides later overlay edits", async () => {
   const root = scratchRoot("config-agent-tools-pinned");
-  scratchRoots.push(root);
   const configPath = join(root, "config.toml");
   const toolsPath = join(root, ".config/vsys/agent-tools.json");
   const pinned = [
@@ -205,7 +353,6 @@ test("a diverging agent tools pin hides later overlay edits", async () => {
 
 test("agent tools pins matching shipped or layered names migrate away", async () => {
   const root = scratchRoot("config-agent-tools-migrate");
-  scratchRoots.push(root);
   const toolsPath = join(root, ".config/vsys/agent-tools.json");
   writeAgentTools(toolsPath, ["overlay-extra"]);
   const shippedNames = shippedAgentTools.tools.map((tool) => tool.name);

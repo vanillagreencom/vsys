@@ -97,7 +97,8 @@ export class Session {
   private writeConfig: (path: string, body: string) => Promise<void>;
   constructor(
     private config: Config,
-    private configPath: string,
+    /** Resolved at each save, so a save follows a settings file the reader moved. */
+    private configPath: () => string,
     private source: Source,
     private history: History,
     private events: Events,
@@ -186,10 +187,8 @@ export class Session {
         this.config.agentTools,
         next.agentTools,
       );
-      const currentState = await loadConfigState(
-        this.configPath,
-        this.agentToolsPath,
-      );
+      const path = this.configPath();
+      const currentState = await loadConfigState(path, this.agentToolsPath);
       let agentToolSave: AgentToolNamesSave | null = null;
       if (agentToolsChanged) {
         if (currentState.agentToolsPinned) {
@@ -253,7 +252,7 @@ export class Session {
       }
       const writtenOverlayBody = agentToolSave?.body ?? null;
       try {
-        await this.writeConfig(this.configPath, configText);
+        await this.writeConfig(path, configText);
       } catch (error) {
         if (overlayWritten && writtenOverlayBody !== null) {
           try {

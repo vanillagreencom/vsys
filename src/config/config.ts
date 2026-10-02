@@ -9,6 +9,7 @@ import {
 } from "./agent-tools";
 import { writeFileAtomic } from "./atomic";
 import { normalizeKey } from "./keys";
+import { xdgHome, xdgPath } from "./xdg";
 
 export const columns = [
   "name",
@@ -126,7 +127,14 @@ export interface Config {
   writeMode: boolean;
   keys: Record<string, string>;
 }
-export const configPath = join(homedir(), ".config/vsys/config.toml");
+/**
+ * The settings file, under `$XDG_CONFIG_HOME` or else `~/.config`, as
+ * `xdgPath()` resolves it. A save resolves it again, so it writes where the
+ * next start will read even after the reader moves the file.
+ */
+export function configPath(env: NodeJS.ProcessEnv = process.env): string {
+  return xdgPath("XDG_CONFIG_HOME", "vsys/config.toml", env);
+}
 /**
  * The shipped scratch roots. They are one workstation's layout. A list equal
  * to this one is the default, whether `config.toml` omits it or pins it
@@ -140,14 +148,38 @@ export function defaultScratchDirs(): string[] {
     "/var/tmp/claude",
   ];
 }
+/**
+ * The state directory each `XDG_STATE_HOME` base first resolved to in this
+ * process. History holds its database open there for the life of the process,
+ * so every later default names that same directory: re-resolved after the
+ * reader moves it, the default would differ from the loaded path, and a save
+ * would pin the old directory into `config.toml`.
+ */
+const stateDirs = new Map<string, string>();
+function stateDir(env: NodeJS.ProcessEnv): string {
+  const base = xdgHome("XDG_STATE_HOME", env);
+  let dir = stateDirs.get(base);
+  if (dir === undefined) {
+    dir = xdgPath("XDG_STATE_HOME", "vsys", env);
+    stateDirs.set(base, dir);
+  }
+  return dir;
+}
+/**
+ * The shipped settings. History and error memory live under
+ * `$XDG_STATE_HOME/vsys`, or else `~/.local/state/vsys`, as `xdgPath()`
+ * resolves the directory, so the two never split across locations.
+ */
 export function defaults(
   agentTools = shippedAgentTools.tools.map((tool) => tool.name),
+  env: NodeJS.ProcessEnv = process.env,
 ): Config {
+  const state = stateDir(env);
   return {
     refreshMs: 1000,
     historyHours: 24,
     persistence: false,
-    sqlitePath: join(homedir(), ".local/state/vsys/history.db"),
+    sqlitePath: join(state, "history.db"),
     cgroupRoot: `/sys/fs/cgroup/user.slice/user-${process.getuid?.() ?? 1000}.slice/user@${process.getuid?.() ?? 1000}.service`,
     cgroupTop: "/sys/fs/cgroup",
     procRoot: "/proc",
@@ -198,10 +230,7 @@ export function defaults(
     btrfsMounts: [],
     scrubDir: "/run/btrfs-scrub",
     smartDir: "/run/smartctl",
-    errorMemoryPath: join(
-      homedir(),
-      ".local/state/vsys/filesystem-errors.json",
-    ),
+    errorMemoryPath: join(state, "filesystem-errors.json"),
     // A weekly timer that misses one run is eight days late on the day after
     // the run it missed, so eight days is where a weekly schedule trips.
     scrubMaxAgeDays: 8,
@@ -442,7 +471,7 @@ function prepareConfigInput(
 
 /** Parse with Bun's TOML parser; a missing file uses defaults. */
 export async function loadConfigState(
-  path = configPath,
+  path = configPath(),
   toolsPath = agentToolsPath,
 ): Promise<LoadedConfig> {
   const layeredAgentTools = await loadAgentToolNames(toolsPath);
@@ -466,7 +495,7 @@ export async function loadConfigState(
 }
 
 export async function loadConfig(
-  path = configPath,
+  path = configPath(),
   toolsPath = agentToolsPath,
 ): Promise<Config> {
   return (await loadConfigState(path, toolsPath)).config;
@@ -489,7 +518,7 @@ export function serialize(c: Config, base = defaults()): string {
 }
 export async function saveConfig(
   c: Config,
-  path = configPath,
+  path = configPath(),
   toolsPath = agentToolsPath,
 ): Promise<void> {
   const body = configBody(c, await loadAgentToolNames(toolsPath));
