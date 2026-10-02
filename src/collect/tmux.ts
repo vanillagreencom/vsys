@@ -244,14 +244,11 @@ export const ownPane = (env: Record<string, string | undefined>): string =>
  * bound; it still bounds the call so a wedged server never holds every
  * future sample waiting on it.
  */
-export const tmuxTimeoutMs = 3000;
+const tmuxTimeoutMs = 3000;
 
 /** A tmux read: the arguments, and what the server said if it refused. */
-export async function run(
-  argv: string[],
-  timeoutMs: number = tmuxTimeoutMs,
-): Promise<string> {
-  const { out, error, status } = await spawnText(argv, timeoutMs);
+async function run(argv: string[]): Promise<string> {
+  const { out, error, status } = await spawnText(argv, tmuxTimeoutMs);
   if (status !== 0)
     throw new Error(error.trim() || `${argv[0]} exited ${status}`);
   return out;

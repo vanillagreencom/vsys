@@ -102,9 +102,8 @@ export async function readKernelLog(
   cursor: string | null,
   /** Injected so a test can run a stand-in for journalctl. */
   argv: string[] = kernelLogArgv(cursor),
-  timeoutMs: number = kernelLogTimeoutMs,
 ): Promise<string> {
-  const { out, error, status } = await spawnText(argv, timeoutMs);
+  const { out, error, status } = await spawnText(argv, kernelLogTimeoutMs);
   if (!answered(status, error))
     throw new Error(error.trim() || `${argv[0]} exited ${status}`);
   return out;

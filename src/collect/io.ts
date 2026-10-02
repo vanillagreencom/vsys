@@ -87,12 +87,22 @@ export class Reader {
 }
 
 /**
+ * How long a child is given to exit after SIGTERM before `spawnText`
+ * escalates to SIGKILL. A child that traps or cannot process SIGTERM would
+ * otherwise leave `child.exited` pending past its own `timeoutMs`, which is
+ * the one failure this grace period closes off.
+ */
+const killGraceMs = 2000;
+
+/**
  * Run a program and keep everything it said. The exit status is returned
  * rather than judged, because what counts as a refusal is the caller's:
  * journalctl exits 1 when a search matched nothing, which is an answer.
  *
- * `timeoutMs`, where given, kills the child on that deadline: a caller on the
- * sample's critical path must not wait forever on a wedged subprocess.
+ * `timeoutMs`, where given, bounds the call: a caller on the sample's
+ * critical path must not wait forever on a wedged subprocess. SIGTERM alone
+ * cannot promise that, so the deadline sends it first and escalates to
+ * SIGKILL after `killGraceMs` for a child still running.
  */
 export async function spawnText(
   argv: string[],
@@ -102,16 +112,25 @@ export async function spawnText(
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    ...(timeoutMs !== undefined
-      ? { signal: AbortSignal.timeout(timeoutMs) }
-      : {}),
   });
-  const [out, error, status] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  return { out, error, status };
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  let escalateTimer: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs !== undefined)
+    killTimer = setTimeout(() => {
+      child.kill();
+      escalateTimer = setTimeout(() => child.kill("SIGKILL"), killGraceMs);
+    }, timeoutMs);
+  try {
+    const [out, error, status] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { out, error, status };
+  } finally {
+    clearTimeout(killTimer);
+    clearTimeout(escalateTimer);
+  }
 }
 /** Kernel key/value files carry bytes, microseconds, or counters by source. */
 export function pairs(text: string): Record<string, number> {
