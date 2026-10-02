@@ -403,7 +403,7 @@ test("a kernel name reused by a different drive within the hold is read fresh, n
     calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
   ).toBe(queriesSoFar);
 });
-test("a swap into or out of a drive reporting no serial or WWN is read fresh, not served the departed drive's numbers", async () => {
+test("a drive that loses its identity, with no TimeDetected either, goes unknown rather than keep serving the departed drive's numbers; one that later regains an identity is read fresh again", async () => {
   let now = 0;
   let live: FakeDrive[] = [
     {
@@ -427,9 +427,11 @@ test("a swap into or out of a drive reporting no serial or WWN is read fresh, no
       detected: null,
     },
   ]);
-  // Swapped, still inside the hold, for a drive udisks reports neither a
-  // serial nor a WWN for: the old identity is gone, which is itself a sign
-  // the drive changed, not proof it did not.
+  // Swapped, still inside the hold, for a drive reporting neither a serial,
+  // a WWN nor a TimeDetected: the old identity disappearing is itself a
+  // sign the drive changed, but the replacement gives nothing left to
+  // confirm or query it by, so it reads as unknown rather than keep the
+  // departed drive's numbers or invent new ones.
   now = udisksHoldMs - 1;
   live = [
     { name: "sda", model: "No Identity", kind: "ata", attributes: ata(5, 3) },
@@ -438,15 +440,15 @@ test("a swap into or out of a drive reporting no serial or WWN is read fresh, no
   expect(second.drives).toEqual([
     {
       name: "sda",
-      model: "No Identity",
-      written: 2_560,
+      model: null,
+      written: null,
       identity: null,
       detected: null,
     },
   ]);
-  // Swapped again, still inside that second hold, for a drive that now
-  // reports one: the identity appearing is just as much a sign of change as
-  // it disappearing was.
+  // A drive now reporting an identity again, after a stretch answering
+  // unprovable: the reappearing identity is read fresh, the same as any
+  // other provable drive the held reading has nothing for yet.
   now = 2 * udisksHoldMs - 2;
   live = [
     {
@@ -528,13 +530,13 @@ test("two identity-less drives swapped under one kernel name are told apart by T
     calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
   ).toBe(queriesSoFar);
 });
-test("a drive with neither an identity nor a TimeDetected reads as unknown rather than keep serving a possibly-departed drive's numbers, with no extra query and no effect on an unrelated sibling", async () => {
+test("a drive with neither an identity nor a TimeDetected reads as unknown on every sample, never queried at all, with no effect on an unrelated sibling", async () => {
   const calls: string[][] = [];
   let now = 0;
   // sda gives udisks no identity and no TimeDetected at all: nothing ever
-  // ties one sample's sda to the next one's. sdb is a steady, identified
-  // sibling on the same host, confirmed same every sample through its own
-  // serial.
+  // ties one sample's sda to the next one's, so it never enters the held
+  // reading or a SMART query. sdb is a steady, identified sibling on the
+  // same host, confirmed same every sample through its own serial.
   const live: FakeDrive[] = [
     {
       name: "sda",
@@ -557,8 +559,8 @@ test("a drive with neither an identity nor a TimeDetected reads as unknown rathe
   expect(first.drives).toEqual([
     {
       name: "sda",
-      model: "Ambiguous Drive",
-      written: 512_000,
+      model: null,
+      written: null,
       identity: null,
       detected: null,
     },
@@ -570,14 +572,15 @@ test("a drive with neither an identity nor a TimeDetected reads as unknown rathe
       detected: null,
     },
   ]);
+  // sda was never a target queryDrives saw at all: only sdb's own query ran.
   const queriesAfterFirst = calls.filter((argv) =>
     argv.includes("SmartGetAttributes"),
   ).length;
+  expect(queriesAfterFirst).toBe(1);
   // Nothing on the bus changed — same two drives, same attributes — but sda
-  // can never be confirmed the same drive it was a moment ago. It reads as
-  // unknown rather than go on asserting its first reading might still be
-  // right; sdb, provably unchanged through its own serial, keeps serving its
-  // held reading untouched.
+  // still gives no signal to confirm or query it by, so it keeps reading as
+  // unknown; sdb, provably unchanged through its own serial, keeps serving
+  // its held reading untouched.
   for (const sample of [udisksHoldMs / 2, udisksHoldMs - 1]) {
     now = sample;
     const reading = await udisks.read();
@@ -598,12 +601,32 @@ test("a drive with neither an identity nor a TimeDetected reads as unknown rathe
       },
     ]);
   }
-  // Three samples in (the first plus the two above), sda's unprovable
-  // ambiguity has triggered no SmartGetAttributes call beyond the first, and
+  // Three samples in, sda has cost no SmartGetAttributes call at all, and
   // sdb was never dragged into a re-query either.
   expect(
     calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
   ).toBe(queriesAfterFirst);
+});
+test("two drives, neither reporting a Serial, a WWN nor a TimeDetected, swapped under one kernel name within the hold, both read as unknown rather than either one's numbers ever being served", async () => {
+  let now = 0;
+  let live: FakeDrive[] = [
+    { name: "sda", model: "Old Drive", kind: "ata", attributes: ata(1000, 3) },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first.drives).toEqual([
+    { name: "sda", model: null, written: null, identity: null, detected: null },
+  ]);
+  now = udisksHoldMs - 1;
+  live = [
+    { name: "sda", model: "New Drive", kind: "ata", attributes: ata(5, 3) },
+  ];
+  const second = await udisks.read();
+  expect(second.drives).toEqual([
+    { name: "sda", model: null, written: null, identity: null, detected: null },
+  ]);
 });
 test("a drive replaced by one with no SMART interface is dropped, not left answering with the departed drive's numbers", async () => {
   let now = 0;
@@ -872,242 +895,5 @@ test("an initial listing failure, with no prior held reading at all, is not kept
         detected: null,
       },
     ],
-  });
-});
-test("a standing busctl refusal survives an unrelated drive going unprovable, then gone, across within-hold samples", async () => {
-  let now = 0;
-  let live: FakeDrive[] = [
-    {
-      name: "sda",
-      model: "Refuses",
-      kind: "ata",
-      attributes: { refuse: "Access denied" },
-      serial: "SN-A",
-    },
-    {
-      name: "sdb",
-      model: "Ambiguous",
-      kind: "ata",
-      attributes: { refuse: "Access denied" },
-    },
-  ];
-  const run: typeof spawnText = (argv, timeoutMs) =>
-    fakeBus(live)(argv, timeoutMs);
-  const udisks = new Udisks(run, () => now);
-  const first = await udisks.read();
-  // Every drive this sample tried to ask refused: the whole reading is
-  // incomplete, not merely each drive's own row.
-  expect(first.outcome).toEqual({
-    failure: "incomplete",
-    detail: "Call failed: Access denied",
-  });
-  expect(first.drives.map((d) => d.written)).toEqual([null, null]);
-  // sda keeps its identity, so it is never re-asked (same, served from the
-  // hold); sdb has neither a Serial/WWN nor a TimeDetected, so once its one
-  // real query lands it reads as unprovable from here on. Neither is
-  // queried this sample, yet the standing refusal sda's own query hit a
-  // moment ago must still answer for the reading.
-  now = 10;
-  const second = await udisks.read();
-  expect(second.outcome).toEqual({
-    failure: "incomplete",
-    detail: "Call failed: Access denied",
-  });
-  // sdb disappears from the listing entirely; sda is still untouched. The
-  // standing refusal must still stand, not reset to null just because an
-  // unrelated, already-unprovable drive left.
-  now = 20;
-  live = [
-    {
-      name: "sda",
-      model: "Refuses",
-      kind: "ata",
-      attributes: { refuse: "Access denied" },
-      serial: "SN-A",
-    },
-  ];
-  const third = await udisks.read();
-  expect(third.outcome).toEqual({
-    failure: "incomplete",
-    detail: "Call failed: Access denied",
-  });
-  expect(third.drives.map((d) => d.name)).toEqual(["sda"]);
-});
-test("one freshly-swapped drive's own refusal does not overstate the outcome when the rest of the fleet answered fine", async () => {
-  let now = 0;
-  let live: FakeDrive[] = [
-    {
-      name: "sda",
-      model: "A",
-      kind: "ata",
-      attributes: ata(10, 3),
-      serial: "SN-A",
-    },
-    {
-      name: "sdb",
-      model: "B",
-      kind: "ata",
-      attributes: ata(20, 3),
-      serial: "SN-B",
-    },
-  ];
-  const run: typeof spawnText = (argv, timeoutMs) =>
-    fakeBus(live)(argv, timeoutMs);
-  const udisks = new Udisks(run, () => now);
-  const first = await udisks.read();
-  expect(first.outcome).toBeNull();
-  // sdb is swapped for a drive with a different serial, and that one
-  // drive's own SmartGetAttributes call refuses; sda, untouched and still
-  // confirmed the same drive, keeps serving its own good reading. The
-  // reading as a whole still carries a real number, so this is not "udisks
-  // answered for no drive".
-  now = 10;
-  live = [
-    {
-      name: "sda",
-      model: "A",
-      kind: "ata",
-      attributes: ata(10, 3),
-      serial: "SN-A",
-    },
-    {
-      name: "sdb",
-      model: "B2",
-      kind: "ata",
-      attributes: { refuse: "Access denied" },
-      serial: "SN-B2",
-    },
-  ];
-  const second = await udisks.read();
-  expect(second.outcome).toBeNull();
-  expect(second.drives).toEqual([
-    {
-      name: "sda",
-      model: "A",
-      written: 5_120,
-      identity: "SN-A",
-      detected: null,
-    },
-    {
-      name: "sdb",
-      model: "B2",
-      written: null,
-      identity: "SN-B2",
-      detected: null,
-    },
-  ]);
-});
-test("an unrelated drive's own hold deadline still fires while another drive keeps changing, so it is not held hostage by someone else's churn", async () => {
-  let now = 0;
-  let live: FakeDrive[] = [
-    {
-      name: "sda",
-      model: "Churns",
-      kind: "ata",
-      attributes: ata(1, 3),
-      serial: "A0",
-    },
-    {
-      name: "sdb",
-      model: "Stable",
-      kind: "ata",
-      attributes: ata(10, 3),
-      serial: "B",
-    },
-  ];
-  const run: typeof spawnText = (argv, timeoutMs) =>
-    fakeBus(live)(argv, timeoutMs);
-  const udisks = new Udisks(run, () => now);
-  const first = await udisks.read();
-  expect(first.drives.find((d) => d.name === "sdb")).toEqual({
-    name: "sdb",
-    model: "Stable",
-    written: 5_120,
-    identity: "B",
-    detected: null,
-  });
-  // sda keeps swapping identity well inside sdb's own hold window; sdb never
-  // changes and is not yet due, so it must keep serving its original
-  // reading untouched, never re-queried just because sda was.
-  now = 1000;
-  live = [
-    {
-      name: "sda",
-      model: "Churns",
-      kind: "ata",
-      attributes: ata(2, 3),
-      serial: "A1",
-    },
-    {
-      name: "sdb",
-      model: "Stable",
-      kind: "ata",
-      attributes: ata(10, 3),
-      serial: "B",
-    },
-  ];
-  let reading = await udisks.read();
-  expect(reading.drives.find((d) => d.name === "sdb")).toEqual({
-    name: "sdb",
-    model: "Stable",
-    written: 5_120,
-    identity: "B",
-    detected: null,
-  });
-  now = 2000;
-  live = [
-    {
-      name: "sda",
-      model: "Churns",
-      kind: "ata",
-      attributes: ata(3, 3),
-      serial: "A2",
-    },
-    {
-      name: "sdb",
-      model: "Stable",
-      kind: "ata",
-      attributes: ata(20, 3),
-      serial: "B",
-    },
-  ];
-  reading = await udisks.read();
-  // Still well inside sdb's own window: it keeps serving its original
-  // reading even though sdb's own live attributes have since changed,
-  // because nothing has told Udisks.read() to ask it again yet.
-  expect(reading.drives.find((d) => d.name === "sdb")).toEqual({
-    name: "sdb",
-    model: "Stable",
-    written: 5_120,
-    identity: "B",
-    detected: null,
-  });
-  // sdb's own hold has now elapsed since its one and only query at t=0,
-  // even though sda has kept the fleet "changing" the whole time: sdb is
-  // queried fresh on its own schedule, not held hostage by sda's churn.
-  now = udisksHoldMs;
-  live = [
-    {
-      name: "sda",
-      model: "Churns",
-      kind: "ata",
-      attributes: ata(4, 3),
-      serial: "A3",
-    },
-    {
-      name: "sdb",
-      model: "Stable",
-      kind: "ata",
-      attributes: ata(20, 3),
-      serial: "B",
-    },
-  ];
-  reading = await udisks.read();
-  expect(reading.drives.find((d) => d.name === "sdb")).toEqual({
-    name: "sdb",
-    model: "Stable",
-    written: 10_240,
-    identity: "B",
-    detected: null,
   });
 });

@@ -1,1 +1,1 @@
-- A drive swapped under a reused kernel name for one also reporting no Serial and no WWN no longer shows the departed drive's stale reading, nor disturbs any other drive's own reading or hold.
+- A drive reporting no Serial, no WWN and no TimeDetected now shows unknown rather than risk a departed drive's stale reading; one with a TimeDetected is told apart by it like any other drive.
