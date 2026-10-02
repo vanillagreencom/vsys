@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 
-from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, load_warden, scratch
+from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, scratch
 
 sys.dont_write_bytecode = True
 
@@ -31,7 +31,9 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def P(self, pid, ppid, comm, argv, cg=None, exe="/usr/bin/x", start=1, marked=False, tty=0):
+    def P(self, pid, ppid, comm, argv, cg=None, exe=None, start=1, marked=False, tty=0):
+        if exe is None:
+            exe = default_tool_exe(self.w, comm)
         return self.w.Proc(pid, ppid=ppid, comm=comm, argv=argv, exe=exe, cgroup=cg or self.A, start=start, marked=marked, tty=tty)
 
 
@@ -215,7 +217,9 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def test_classification_rows(self):
         mise = f"{self.w.MISE_DATA}/installs"
         rows = [
-            ("agent by comm", self.P(1, 0, "claude", ["claude"]).is_agent, True),
+            ("agent by comm, confirmed by its install location", self.P(1, 0, "claude", ["claude"], exe=f"{mise}/claude/2.1.0/claude").is_agent, True),
+            ("a non-agent program sharing an agent's name is not an agent", self.P(12, 0, "pi", ["/usr/local/bin/pi"], exe="/usr/local/bin/pi").is_agent, False),
+            ("a machine-local script sharing an agent's name is not an agent", self.P(13, 0, "codex", ["/usr/local/bin/codex"], exe="/usr/local/bin/codex").is_agent, False),
             ("hosted mise cli", self.P(2, 0, "node", [f"{mise}/pi/latest/pi/node", f"{mise}/pi/latest/pi/dist/cli.js"], exe="/usr/bin/node").is_agent, True),
             ("hosted mise label", self.w._tool_label(self.P(8, 0, "node", [f"{mise}/npm-xai-official-grok/latest/bin/grok"], exe="/usr/bin/node")), "grok"),
             ("build by comm", self.P(3, 0, "cargo", ["cargo", "test"]).is_build, True),
@@ -230,6 +234,65 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         for name, actual, expected in rows:
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
+
+    def test_agent_name_confirmed_by_install_location(self):
+        # D010, ported to the warden: a configured name is a candidate, and
+        # install-location data (paths, mise dirs, executables) it already
+        # parses and validates is what confirms it. A generic name with no
+        # configured location stays trusted, and an unreadable executable
+        # never hides an escaped agent.
+        with scratch() as tmp:
+            base = Path(tmp)
+            script = base / "warden" / "agent-warden"
+            script.parent.mkdir(parents=True)
+            shutil.copy2(WARDEN, script)
+            script.chmod(0o755)
+            (base / "data").mkdir()
+            (base / "data" / "agent-tools.json").write_text(json.dumps({
+                "version": 1,
+                "tools": [
+                    {"name": "pi", "paths": ["/node_modules/pi-coding-agent/"]},
+                    {"name": "dsh", "mise": ["dsh-install"]},
+                    {"name": "ownersonly"},
+                ],
+                "bundledCliSuffixes": ["/vendor/pi"],
+            }))
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            module = load_warden(env, "agent_warden_install_location", script)
+
+        def rec(comm, argv, exe):
+            return module.Proc(1, ppid=0, comm=comm, argv=argv, exe=exe, cgroup=self.A, start=1)
+
+        rows = [
+            ("planted pi outside every install location is not an agent",
+             rec("pi", ["/usr/local/bin/pi"], "/usr/local/bin/pi").is_agent, False),
+            ("planted dsh outside its mise install dir is not an agent",
+             rec("dsh", ["/usr/bin/dsh"], "/usr/bin/dsh").is_agent, False),
+            ("pi under its own package directory is an agent",
+             rec("pi", ["/opt/x/node_modules/pi-coding-agent/pi"], "/opt/x/node_modules/pi-coding-agent/pi").is_agent, True),
+            ("dsh under its mise install directory is an agent",
+             rec("dsh", ["x"], f"{module.MISE_DATA}/installs/dsh-install/1.0/dsh").is_agent, True),
+            ("pi as a bundled CLI engine is an agent",
+             rec("pi", ["/opt/app/vendor/pi"], "/opt/app/vendor/pi").is_agent, True),
+            ("an unreadable executable keeps the name",
+             rec("pi", ["pi"], "").is_agent, True),
+            ("a name with no configured install location is trusted",
+             rec("ownersonly", ["ownersonly"], "/usr/bin/ownersonly").is_agent, True),
+        ]
+        for name, actual, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_agent_name_confirmation_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "        if self.comm in AGENT_COMMS:\n            return self._confirmed_by_location(self.comm)"
+        self.assertEqual(text.count(old), 1)
+        mutant = text.replace(old, "        if self.comm in AGENT_COMMS:\n            return True")
+        module = self.load_mutant(mutant, "agent_warden_confirmation_mutant")
+        p = module.Proc(1, ppid=0, comm="pi", argv=["/usr/local/bin/pi"], exe="/usr/local/bin/pi", cgroup=self.A, start=1)
+        self.assertTrue(p.is_agent)
 
     def test_plan_rows(self):
         T = "/user.slice/user-1000.slice/user@1000.service/agents.slice/tight.scope"
@@ -347,8 +410,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def _mutant_splits_contained_scope(self, m):
         contained_scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/contained.scope"
         recs = {
-            20: m.Proc(20, ppid=1, comm="codex", argv=["codex"], exe=f"{m.HOME}/.local/bin/codex", cgroup=contained_scope, start=1),
-            21: m.Proc(21, ppid=20, comm="claude", argv=["claude"], exe=f"{m.HOME}/.local/bin/claude", cgroup=contained_scope, start=2),
+            20: m.Proc(20, ppid=1, comm="codex", argv=["codex"], exe=f"{m.HOME}/.codex/packages/latest/codex", cgroup=contained_scope, start=1),
+            21: m.Proc(21, ppid=20, comm="claude", argv=["claude"], exe=f"{m.HOME}/.local/share/claude/versions/2.1.0/claude", cgroup=contained_scope, start=2),
         }
         moves, _, _, _ = m.plan(recs, capped=lambda cg: False, contained=lambda cg: m.unit_of(cg) == "contained.scope", split=True)
         return any([21] == [p.pid for p in tree] for reason, tree in moves if reason == "nested session")

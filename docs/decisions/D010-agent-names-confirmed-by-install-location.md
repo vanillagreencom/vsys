@@ -19,8 +19,8 @@
 - The `AGENT_CONFINE=1` launcher marker was rejected as a signal. Every descendant of a confined launch inherits it, so it would vouch for any `dsh` or `pi.sh` an agent runs.
 - Recording the rejected name keeps a missed install layout visible in the snapshot instead of silent.
 
-**Revisit When**: An agent CLI ships an install layout that no path fragment or executable path can describe, or the warden adopts install locations for its own classification.
+**Revisit When**: An agent CLI ships an install layout that no path fragment or executable path can describe.
 
-**Verification**: `src/collect/collector.test.ts` tables each shipped CLI's install shapes, scripts and programs that only share a name, unreadable paths, an overlay that extends a shipped tool, and the owner's machine. `src/config/agent-tools.test.ts` fails if a shipped tool names no install location.
+**Verification**: `src/collect/collector.test.ts` tables each shipped CLI's install shapes, scripts and programs that only share a name, unreadable paths, an overlay that extends a shipped tool, and the owner's machine. `src/config/agent-tools.test.ts` fails if a shipped tool names no install location. The warden applies the same comm rule, without the script or retitle cases: `warden/agent_warden_test.py` tables a planted name outside every install location, a confirmed match, a bundled CLI engine, an unreadable executable, and a name with no configured location.
 
 **References**: [D005](D005-shared-agent-tool-data.md), [D006](D006-settings-save-writes-only-changed-keys.md)

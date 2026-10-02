@@ -23,10 +23,14 @@ Rules, per process, never per pane
     escape whatever its name, and its marked descendants go with it.
   * Agent CLI names and mise install directories come from agent-tools.json.
     They classify what no launcher touched: a CLI a desktop app started.
-  * Agent CLIs match by comm, or by a mise install path in argv[0] or argv[1]
-    for node/bun/python-hosted CLIs. Claude's embedded search mode
-    (argv[0] "ugrep") is a helper, not a session. A bundled CLI under /opt
-    (codex-desktop ships one) is an agent by name; the app around it is not.
+  * A comm equal to a configured name is a candidate, never the decision
+    (D010): it is an agent once its executable lies in that tool's own path
+    fragments or executable paths, is a bundled CLI engine, or the tool names
+    no install location at all. An unreadable executable keeps the name.
+    A node/bun/python-hosted CLI instead matches by a mise install path in
+    argv[0] or argv[1]. Claude's embedded search mode (argv[0] "ugrep") is a
+    helper, not a session. A bundled CLI under /opt (codex-desktop ships one)
+    is an agent by name; the app around it is not.
   * Build tools match by comm or by the script they run. They are adopted only
     when the nearest marker above them is an agent or the tmux server; a
     desktop app, an excluded helper, or nothing leaves them alone (reported).
@@ -216,7 +220,7 @@ def _merge_agent_tools(documents):
             # dashboard merges it.
             entry = tools.get(tool["name"])
             if entry is None:
-                entry = tools[tool["name"]] = {"name": tool["name"], "mise": []}
+                entry = tools[tool["name"]] = {"name": tool["name"], "mise": [], "paths": [], "executables": []}
                 locations[tool["name"]] = set()
                 merged["tools"].append(entry)
             for directory in tool["mise"]:
@@ -224,8 +228,10 @@ def _merge_agent_tools(documents):
                 entry["mise"].append(directory)
             for fragment in tool["paths"]:
                 _reject_duplicate(locations[tool["name"]], fragment, path, f"{tool['name']} paths")
+                entry["paths"].append(fragment)
             for executable in tool["executables"]:
                 _reject_duplicate(locations[tool["name"]], executable, path, f"{tool['name']} executables")
+                entry["executables"].append(executable)
         for prefix in document["desktopExePrefixes"]:
             _reject_duplicate(prefixes, prefix, path, "desktop exe prefix")
             merged["desktopExePrefixes"].append(prefix)
@@ -297,6 +303,21 @@ DESKTOP_EXE_PREFIXES = tuple(AGENT_TOOLS["desktopExePrefixes"])
 # suffix, never by name: Claude Desktop's own Electron binary is named
 # "claude" (2026-09-09, nine UI processes were moved before this rule).
 BUNDLED_CLI_SUFFIXES = tuple(AGENT_TOOLS["bundledCliSuffixes"])
+# D010: a configured name is a candidate, never the decision. Each tool's own
+# path fragments, mise install directory and whole executable paths are where
+# its real installs put it; a comm match confirms only when the process's
+# executable lies there, is a bundled CLI engine, or the tool names no install
+# location at all (a reader's own Settings addition, trusted by name alone).
+TOOL_LOCATIONS = {
+    tool["name"]: {
+        "fragments": [*tool["paths"], *(f"/installs/{directory}/" for directory in tool["mise"])],
+        "executables": list(tool["executables"]),
+    }
+    for tool in AGENT_TOOLS["tools"]
+}
+# A Node or Bun process can overwrite its own title with the tool's name,
+# which erases the script path that would otherwise confirm it.
+TITLE_RUNTIMES = {"bun", "node", "nodejs"}
 # An Electron/Chromium helper process, whatever its binary is called
 CHROMIUM_CHILD_FLAG = "--type="
 DESKTOP_COMMS = {"chromium", "chrome", "electron", "ChatGPT", "slack", "spotify", "code",
@@ -528,12 +549,31 @@ class Proc:
             return not (self.exe.endswith(BUNDLED_CLI_SUFFIXES) or self.exe_name in HELPER_NAMES)
         return False
 
+    def _confirmed_by_location(self, name):
+        """D010: a name matches only where the tool's own install locations
+        confirm it, a reader's own name with no location is trusted as-is,
+        and an unreadable executable never hides an escaped agent."""
+        location = TOOL_LOCATIONS.get(name)
+        if not location or not (location["fragments"] or location["executables"]):
+            return True
+        if not self.exe:
+            return True
+        if any(fragment in self.exe for fragment in location["fragments"]):
+            return True
+        if self.exe in location["executables"]:
+            return True
+        if self.exe.endswith(BUNDLED_CLI_SUFFIXES):
+            return True
+        return (os.path.basename(self.exe) in TITLE_RUNTIMES
+                and self.argv[:1] == [name]
+                and all(a == "" for a in self.argv[1:]))
+
     @property
     def is_agent(self):
         if self.excluded or self.is_desktop:
             return False
         if self.comm in AGENT_COMMS:
-            return True
+            return self._confirmed_by_location(self.comm)
         return self.comm in HOST_COMMS and any(AGENT_PATH_RE.search(a) for a in self.argv[:2])
 
     @property

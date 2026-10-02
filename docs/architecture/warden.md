@@ -48,7 +48,7 @@ The warden never kills an individual process. It never kills a live session. A s
 
 ## Classification data
 
-The shipped classification data is `data/agent-tools.json`. It contains published agent CLI names, mise install directory names, each CLI's install path fragments and executable paths, desktop executable prefixes and bundled CLI suffixes. The warden validates the path fragments and executable paths and does not classify by them; the dashboard confirms an agent's name with them.
+The shipped classification data is `data/agent-tools.json`. It contains published agent CLI names, mise install directory names, each CLI's install path fragments and executable paths, desktop executable prefixes and bundled CLI suffixes. D010 applies to both readers: a process whose comm equals a configured name is an agent only once its executable lies in one of that tool's install locations, is a bundled CLI engine, or the tool names no install location at all. An unreadable executable keeps the name, because a failed read never hides an escaped agent. The classification rows in `warden/agent_warden_test.py` cover this, matching the dashboard's own table in `src/collect/collector.test.ts`.
 
 At startup, the warden first looks beside a checkout at `data/agent-tools.json`. If that file is absent, it looks at `${XDG_DATA_HOME:-$HOME/.local/share}/vsys/agent-tools.json`. If neither file exists, it exits with `agent-tools=missing`.
 
