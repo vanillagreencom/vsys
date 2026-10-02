@@ -753,26 +753,38 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         # move() (the "nested session" plan() branch) relocates a process's
         # cgroup membership only; it never rewrites TMPDIR. A moved child can
         # still be using a scratch directory after the parent scope it was
-        # created under is gone and garbage-collected. The first two rows
-        # name a live pid the reaper cannot rule out as that directory's
-        # user, and the directory must survive regardless of why it cannot
-        # be ruled out. The third row proves the boundary the other two
-        # don't reach: a live, readable pid whose TMPDIR names an unrelated
-        # sibling directory (same numeric prefix, no separator) must not
-        # false-positive the match and block a reap that should happen --
-        # "agent-confine-100-2000" is not inside "agent-confine-100-200".
-        # The fourth row proves the match still holds across a doubled
-        # separator: a trailing slash on AGENT_TMPDIR makes agent-confine's
-        # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a "/"
-        # in the live process's real TMPDIR, while os.path.join (this
-        # candidate path's source) never does.
+        # created under is gone and garbage-collected. Each row is one
+        # snapshot of live pids with their environ (None: unreadable, as a
+        # non-dumpable program's is even to its own user) and the scopes
+        # still live under agents.slice. The sibling row proves the match
+        # needs a separator: "agent-confine-100-2000" is not inside
+        # "agent-confine-100-200". The doubled-separator row proves the match
+        # survives a trailing slash on AGENT_TMPDIR, which agent-confine's
+        # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") doubles while
+        # os.path.join (this candidate path's source) never does. The
+        # unreadable rows prove a desktop's non-dumpable processes never
+        # pin a gone scope's directory, while an agent shell that handed it
+        # down still does.
+        user = "/user.slice/user-1000.slice/user@1000.service"
+        app = f"{user}/app.slice/x.scope"
+        nested = f"{user}/agents.slice/agent-warden-555-1.scope"
+        other = f"{user}/agents.slice/agent-confine-300-400.scope"
+        manager = (700, 1, "systemd", f"{user}/init.scope", None)
         rows = [
-            ("a live process's TMPDIR resolves here", "in-use", False),
-            ("a live process's environ cannot be read", "unreadable", False),
-            ("a live process's TMPDIR names an unrelated sibling", "sibling", True),
-            ("a live process's TMPDIR has a doubled separator", "double-slash", False),
+            ("a live process's TMPDIR resolves here",
+             [(555, 1, "bash", nested, "TMPDIR={moved}")], [], False),
+            ("a live process's TMPDIR names an unrelated sibling",
+             [(555, 1, "bash", nested, "TMPDIR={moved}0")], [], True),
+            ("a live process's TMPDIR has a doubled separator",
+             [(555, 1, "bash", nested, "TMPDIR={scratch}//agent-confine-100-200")], [], False),
+            ("an unreadable desktop daemon outside agents.slice",
+             [manager, (701, 700, "ssh-agent", app, None)], [], True),
+            ("an unreadable child of an agent shell whose TMPDIR names it",
+             [(555, 1, "bash", nested, "TMPDIR={moved}"), (556, 555, "op", nested, None)], [], False),
+            ("an orphaned unreadable daemon in another live agents.slice scope",
+             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"], True),
         ]
-        for name, kind, should_remove in rows:
+        for name, members, live_scopes, should_remove in rows:
             with self.subTest(name=name):
                 with scratch() as tmp:
                     base = Path(tmp)
@@ -782,6 +794,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                     try:
                         agent_slice = self.w.CG_ROOT / self.w.SLICE
                         agent_slice.mkdir(parents=True)
+                        for scope in live_scopes:
+                            (agent_slice / scope).mkdir()
                         # the parent's original scope is gone: no matching
                         # agent-confine-100-200.scope under agents.slice
                         scratch_dir = Path(self.w.AGENT_TMPDIR_PARENT)
@@ -790,22 +804,26 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                         moved.mkdir()
                         old_mtime = time.time() - self.w.SCRATCH_GRACE - 1
                         os.utime(moved, (old_mtime, old_mtime))
+                        procs = {pid: self.P(pid, ppid, comm, [comm], cg=cg)
+                                 for pid, ppid, comm, cg, _ in members}
+                        environs = {
+                            f"/proc/{pid}/environ":
+                                None if env is None
+                                else env.format(moved=moved, scratch=scratch_dir) + "\0OTHER=1\0"
+                            for pid, _, _, _, env in members}
                         old_read = self.w.read
 
-                        def flaky_read(path, default=None, kind=kind, moved=moved, scratch_dir=scratch_dir):
-                            if str(path) == "/proc/555/environ":
-                                if kind == "in-use":
-                                    return f"TMPDIR={moved}\0OTHER=1\0"
-                                if kind == "sibling":
-                                    return f"TMPDIR={moved}0\0OTHER=1\0"
-                                if kind == "double-slash":
-                                    return f"TMPDIR={scratch_dir}//agent-confine-100-200\0OTHER=1\0"
-                                return default  # read() swallows OSError (process gone) into default
+                        def flaky_read(path, default=None, environs=environs):
+                            if str(path) in environs:
+                                # read() swallows OSError (permission denied,
+                                # process gone) into default
+                                found = environs[str(path)]
+                                return default if found is None else found
                             return old_read(path, default)
 
                         self.w.read = flaky_read
                         try:
-                            removed = self.w.reap_scratch_dirs(True, {555: None})
+                            removed = self.w.reap_scratch_dirs(True, procs)
                         finally:
                             self.w.read = old_read
                         if should_remove:
@@ -820,12 +838,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
     def test_reap_scratch_dirs_tmpdir_liveness_mutant_fails(self):
         text = WARDEN.read_text()
         old = (
-            '        status = _scratch_in_use(path, procs)\n'
-            '        if status == "in-use":\n'
+            '        if _scratch_in_use(path, procs):\n'
             '            log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")\n'
-            '            continue\n'
-            '        if status == "unknown":\n'
-            '            log(f"scratch {name}: scope gone but a live process\'s TMPDIR could not be read; not reaping this tick")\n'
             '            continue\n'
         )
         self.assertEqual(text.count(old), 1)
