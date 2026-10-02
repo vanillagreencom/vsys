@@ -113,6 +113,13 @@ export class StorageCollector {
   private memory: ErrorMemory | null = null;
   private memoryPath = "";
   /**
+   * When each filesystem's last finished scrub started, by lowercased
+   * filesystem id. Carried across samples because the reporter keeps one
+   * report per filesystem and a check that stops early overwrites it; this
+   * process's own memory of the last one that finished is otherwise lost.
+   */
+  private finishedScrubAt = new Map<string, number>();
+  /**
    * The scrub report directory as the last collection's read of it found it:
    * null where the listing answered, the failure where it did not, and
    * undefined until a collection has listed it. The directory appears while
@@ -395,6 +402,20 @@ export class StorageCollector {
             readable: true,
             problem: scrubProblem(text),
           });
+          // The reporter keeps one report per filesystem, so a later scrub
+          // that stops early overwrites the very report that proved this one
+          // sound. Only a finished reading ever moves this memory, and it
+          // never moves backward: a stopped-early report leaves it standing.
+          if (
+            report.uuid &&
+            report.status === "finished" &&
+            typeof report.startedAt === "number"
+          ) {
+            const key = report.uuid.toLowerCase();
+            const remembered = this.finishedScrubAt.get(key);
+            if (remembered === undefined || report.startedAt > remembered)
+              this.finishedScrubAt.set(key, report.startedAt);
+          }
         } catch (e) {
           r.error(path, e);
           storage.scrubs.push({ ...found, readable: false, problem: true });
@@ -404,6 +425,7 @@ export class StorageCollector {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT")
         r.error(c.scrubDir, e);
     }
+    storage.lastFinishedScrubAt = Object.fromEntries(this.finishedScrubAt);
     if (!skipScratch) {
       const scratch = await this.scratch.collect(
         c,

@@ -94,7 +94,13 @@ export interface Integrity {
   device: string;
   mounts: string[];
   state: IntegrityState;
-  /** Seconds since the last full check ended, null where there was none. */
+  /**
+   * Seconds since the last FINISHED full check started, null where none has
+   * ever finished. A later report that stopped early never moves this
+   * backward to null: the collector remembers the last finished report's
+   * start time across the one it overwrote, so a reader still learns how old
+   * the last proof of a sound filesystem is.
+   */
   checkAge: number | null;
   /**
    * Seconds since the newest error either source recorded, null while neither
@@ -171,7 +177,7 @@ function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
  */
 export function integrity(
   group: DeviceVolumes,
-  storage: Pick<Storage, "scrubs" | "csumFailures">,
+  storage: Pick<Storage, "scrubs" | "csumFailures" | "lastFinishedScrubAt">,
   time: number,
   c: Config,
 ): Integrity {
@@ -230,7 +236,13 @@ export function integrity(
   // would call each new word a completed check, which is the wrong way to be
   // wrong about whether the disk was read.
   const finished = complete;
-  const checkedAt = finished ? (scrub?.startedAt ?? null) : null;
+  // A report that is not itself finished names no check of its own, but it
+  // does not erase an earlier one: the collector remembers the last finished
+  // report's start time across the one that replaced it, so a check that
+  // stopped early still leaves the reader the age of the last that did not.
+  const checkedAt = finished
+    ? (scrub?.startedAt ?? null)
+    : (storage.lastFinishedScrubAt?.[group.id.toLowerCase()] ?? null);
   const checkAge = checkedAt === null ? null : Math.max(0, time - checkedAt);
   const since = (at: number | null) =>
     at === null ? null : Math.max(0, time - at) / 1000;

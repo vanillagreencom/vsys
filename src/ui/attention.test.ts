@@ -1210,6 +1210,45 @@ test("a new-errors card says no full check has ever run, not an unstated age", (
   expect(said(card)).not.toContain("longer ago than that");
 });
 
+test("a new-errors card names the age of a finished check an aborted one replaced", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.storage.volumes.push(
+    volumeSnapshot("/", {
+      fsid: "fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  );
+  s.storage.csumFailures = {
+    fs: [{ root: 257, inode: 4242, at: s.time - 7200000 }],
+  };
+  // The reporter's one report for this filesystem now holds an aborted scrub,
+  // started after the error above, which overwrote the finished report that
+  // ran 3 days ago. The collector still remembers that finished report.
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/root.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "fs",
+      startedAt: s.time - 3600000,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+  ];
+  s.storage.lastFinishedScrubAt = { fs: s.time - 3 * 86400000 };
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "new-errors",
+  );
+  expect(said(card)).toContain(
+    "The kernel logged a failed checksum read 2.0h ago. The last full check ran 3.0d ago.",
+  );
+  expect(said(card)).not.toContain("No full check has ever run.");
+});
+
 test("a damage card never calls a partial list the whole of the damage", () => {
   const c = defaults();
   const s = emptySnapshot();

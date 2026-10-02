@@ -207,6 +207,16 @@ export interface Storage {
   scratchAbsent?: string[];
   scrubs: Scrub[];
   /**
+   * When each filesystem's last FINISHED scrub started, by lowercased
+   * filesystem id. The reporter writes one report per filesystem and a later
+   * scrub overwrites it, so a report that stopped early would otherwise erase
+   * the memory of an earlier one that completed; this map is the collector's
+   * own memory, carried across samples, and only a finished report ever moves
+   * it forward. Absent entries mean no scrub has ever finished for that
+   * filesystem since the collector started.
+   */
+  lastFinishedScrubAt?: Record<string, number>;
+  /**
    * Failed checksum reads the kernel logged, by filesystem id, newest first.
    * Null where the kernel log was not read, which is not a log of none; a
    * filesystem the log names no failure for has no entry.

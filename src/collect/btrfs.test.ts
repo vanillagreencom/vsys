@@ -139,6 +139,55 @@ logical 953118621696:
   expect(r.errors).toEqual([]);
 });
 
+test("a later scrub that stops early keeps the memory of the one it overwrote", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+  const root = join(f.config.btrfsRoot, uuid);
+  mkdirSync(join(root, "devices"), { recursive: true });
+  symlinkSync("/sys/devices/test", join(root, "devices/test"));
+  f.write(
+    join(root, "devinfo/1/error_stats"),
+    "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0",
+  );
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  const reportPath = join(f.config.scrubDir, "root.result");
+  f.write(
+    reportPath,
+    `btrfs scrub finished, no errors found: /
+UUID:             ${uuid}
+Scrub started:    Fri Sep 11 13:25:54 2026
+Status:           finished
+Error summary:    no errors found
+`,
+  );
+  const r = new Reader();
+  const collector = new StorageCollector();
+  const first = await collector.collect(r, f.config, 1000);
+  const key = uuid.toLowerCase();
+  const finishedAt = first.scrubs[0]?.startedAt;
+  expect(finishedAt).toBeTypeOf("number");
+  expect(first.lastFinishedScrubAt?.[key]).toBe(finishedAt as number);
+  // The reporter's one report for this filesystem is overwritten by a scrub
+  // that stops early. Nothing on disk still says the earlier one finished.
+  f.write(
+    reportPath,
+    `btrfs scrub aborted after 00:00:01, interrupted: /
+UUID:             ${uuid}
+Scrub started:    Sat Sep 12 09:00:00 2026
+Status:           aborted
+Error summary:    no errors found
+`,
+  );
+  const second = await collector.collect(r, f.config, 2000);
+  expect(second.scrubs[0]?.status).toBe("aborted");
+  // The collector's own memory still holds the finished report's start time.
+  expect(second.lastFinishedScrubAt?.[key]).toBe(finishedAt as number);
+});
+
 test("the last new error outlives the process that observed it", async () => {
   const f = fixture();
   fixtures.push(f);

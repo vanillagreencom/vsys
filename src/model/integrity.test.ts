@@ -336,6 +336,44 @@ test("the line carries both times, whether or not either is known", () => {
   expect(unknown.errorAge).toBeNull();
 });
 
+test("a scrub that stops early keeps the age of the finished one it replaced", () => {
+  const c = defaults();
+  // The reporter overwrote the finished report with this aborted one, so the
+  // only report in storage now is the one that did not finish. The collector
+  // remembers the finished report's start time separately.
+  const scrubs = [report({ status: "aborted", problem: true })];
+  const lastFinishedScrubAt = { fs: now - 10 * day };
+  // Growth after the remembered check, and before the aborted attempt: the
+  // card naming "no full check has ever run" would be wrong here.
+  const grown = integrity(
+    filesystem({ lastErrorAt: now - 5 * day, lastErrorSize: 26 }),
+    { scrubs, lastFinishedScrubAt },
+    now,
+    c,
+  );
+  expect(grown.state).toBe("new-errors");
+  expect(grown.checkAge).toBe(10 * 86400);
+  // No growth at all: the remembered age still shows, but a check that
+  // stopped early still cannot say the filesystem is sound.
+  const quiet = integrity(
+    filesystem(),
+    { scrubs, lastFinishedScrubAt },
+    now,
+    c,
+  );
+  expect(quiet.state).toBe("unknown");
+  expect(quiet.checkAge).toBe(10 * 86400);
+  // Growth from before the remembered check is already covered by it, so it
+  // is not new.
+  const covered = integrity(
+    filesystem({ lastErrorAt: now - 20 * day, lastErrorSize: 26 }),
+    { scrubs, lastFinishedScrubAt },
+    now,
+    c,
+  );
+  expect(covered.state).toBe("unknown");
+});
+
 test("a report names a filesystem by its own identity, not by arriving first", () => {
   const c = defaults();
   const other = report({
