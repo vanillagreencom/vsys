@@ -770,6 +770,53 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
 
+    def test_reap_scratch_dirs_tmpdir_symlinked_parent(self):
+        # A lexical normalize (os.path.normpath) is not enough: AGENT_TMPDIR
+        # can reach its scratch parent through a symlink (a symlinked HOME or
+        # XDG_CACHE_HOME), which gives the candidate path and a live
+        # process's real TMPDIR two lexically different spellings of the
+        # same directory. Only os.path.realpath, which also resolves
+        # symlinks, unifies them.
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_cg, old_parent = self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT
+            self.w.CG_ROOT = base / "cg"
+            real_dir = base / "real-scratch"
+            real_dir.mkdir(parents=True)
+            linked_dir = base / "scratch"
+            linked_dir.symlink_to(real_dir, target_is_directory=True)
+            self.w.AGENT_TMPDIR_PARENT = str(linked_dir)
+            try:
+                agent_slice = self.w.CG_ROOT / self.w.SLICE
+                agent_slice.mkdir(parents=True)
+                # created through the symlinked parent, as agent-confine's
+                # own mkdir -m 700 -- "$agent_confine_scratch" would
+                moved = linked_dir / "agent-confine-100-200"
+                moved.mkdir()
+                old_mtime = time.time() - self.w.SCRATCH_GRACE - 1
+                os.utime(moved, (old_mtime, old_mtime))
+                old_read = self.w.read
+                # the live pid's real TMPDIR, spelled through the real
+                # (unsymlinked) directory -- a different string than the
+                # candidate path os.path.join(AGENT_TMPDIR_PARENT, name)
+                # builds from the symlinked AGENT_TMPDIR_PARENT
+                real_tmpdir = real_dir / "agent-confine-100-200"
+
+                def flaky_read(path, default=None):
+                    if str(path) == "/proc/555/environ":
+                        return f"TMPDIR={real_tmpdir}\0OTHER=1\0"
+                    return old_read(path, default)
+
+                self.w.read = flaky_read
+                try:
+                    removed = self.w.reap_scratch_dirs(True, {555: None})
+                finally:
+                    self.w.read = old_read
+                self.assertTrue(moved.is_dir())
+                self.assertEqual(removed, [])
+            finally:
+                self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
     def test_run_reaps_scratch_with_a_fresh_scan_not_plan_procs(self):
         # run() takes one scan() snapshot up front for plan()'s move
         # decisions (move() itself does not run until much later in the

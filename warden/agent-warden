@@ -802,12 +802,17 @@ def _scratch_in_use(path, procs):
     means at least one live pid's TMPDIR could not be ruled out -- never
     read as proof that pid has no user of this directory. "free" means
     every live pid's TMPDIR was read and none points here. Both sides are
-    normalized before comparing: a trailing slash on AGENT_TMPDIR makes
-    agent-confine's bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit")
-    double a separator in the live process's real TMPDIR string, while
-    os.path.join (path's caller) never does; an unnormalized compare would
-    miss that live match and wrongly read the directory as free."""
-    candidate = os.path.normpath(path)
+    resolved with os.path.realpath before comparing, not just lexically
+    normalized: a trailing slash on AGENT_TMPDIR makes agent-confine's bash
+    concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a separator in
+    the live process's real TMPDIR string, while os.path.join (path's
+    caller) never does, and AGENT_TMPDIR can also reach its target through
+    a symlink (a symlinked HOME or XDG_CACHE_HOME); an unresolved compare
+    would miss either kind of live match and wrongly read the directory as
+    free. realpath never raises on a component that does not exist or that
+    this user cannot stat -- it resolves as far as it can and leaves the
+    rest lexical -- so it needs no exception handling here."""
+    candidate = os.path.realpath(path)
     prefix = candidate + os.sep
     unknown = False
     for pid in procs:
@@ -817,7 +822,7 @@ def _scratch_in_use(path, procs):
             continue
         if not tmpdir:
             continue
-        resolved = os.path.normpath(tmpdir)
+        resolved = os.path.realpath(tmpdir)
         if resolved == candidate or resolved.startswith(prefix):
             return "in-use"
     return "unknown" if unknown else "free"
