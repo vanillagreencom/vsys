@@ -1443,6 +1443,153 @@ test("a damage card known only from a remembered check never says the damage is 
   expect(said(gone)).toContain("no longer available");
 });
 
+test("a damaged-files card's next step matches the ways text's singular/plural framing across every branch", () => {
+  // One row per `next` branch in copy()'s damaged-files case: the report is
+  // gone, the report named neither block nor file, the report named blocks
+  // but no file, and the report named a file. Each row is built identically
+  // for every filesystem in the card, so the aggregate across several stays
+  // in that same branch.
+  const branches: {
+    name: string;
+    build: (s: Snapshot, fsid: string, mount: string) => void;
+    singular: string;
+    plural: string;
+  }[] = [
+    {
+      name: "the report naming the damage is gone",
+      build: (s, fsid, mount) => {
+        s.storage.volumes.push(
+          volumeSnapshot(mount, {
+            fsid,
+            errors: { "1/corruption_errs": 1 },
+            countersAvailable: true,
+          }),
+        );
+        s.storage.scrubs.push({
+          path: `/run/btrfs-scrub/${fsid}.result`,
+          text: "scrub status:\naborted",
+          problem: true,
+          readable: true,
+          fsid,
+          startedAt: s.time - 1000,
+          status: "aborted",
+          uncorrectable: null,
+          addresses: null,
+        });
+        s.storage.lastFinishedScrub = {
+          ...s.storage.lastFinishedScrub,
+          [fsid]: { at: s.time - 3 * 86400000, damaged: true },
+        };
+      },
+      singular: "run a check on that filesystem to find out",
+      plural: "run a check on each of these filesystems to find out",
+    },
+    {
+      name: "the report named neither block nor file",
+      build: (s, fsid, mount) => {
+        s.storage.volumes.push(
+          volumeSnapshot(mount, {
+            fsid,
+            errors: { "1/corruption_errs": 1 },
+            countersAvailable: true,
+          }),
+        );
+        s.storage.scrubs.push({
+          path: `/run/btrfs-scrub/${fsid}.result`,
+          text: "Error summary: no errors found",
+          problem: true,
+          readable: true,
+          fsid,
+          startedAt: s.time - 1000,
+          status: "finished",
+          uncorrectable: null,
+          addresses: [],
+        });
+      },
+      singular: "check the filesystem again; an address",
+      plural: "check each of these filesystems again; an address",
+    },
+    {
+      name: "the report named blocks but no file",
+      build: (s, fsid, mount) => {
+        s.storage.volumes.push(
+          volumeSnapshot(mount, {
+            fsid,
+            errors: { "1/corruption_errs": 1 },
+            countersAvailable: true,
+          }),
+        );
+        s.storage.scrubs.push({
+          path: `/run/btrfs-scrub/${fsid}.result`,
+          text: "Error summary: csum=1",
+          problem: true,
+          readable: true,
+          fsid,
+          startedAt: s.time - 1000,
+          status: "finished",
+          uncorrectable: 1,
+          addresses: [],
+        });
+      },
+      singular: "read the check report; restore",
+      plural: "read the check report for each of these filesystems; restore",
+    },
+    {
+      name: "the report named a file",
+      build: (s, fsid, mount) => {
+        s.storage.volumes.push(
+          volumeSnapshot(mount, {
+            fsid,
+            errors: { "1/corruption_errs": 1 },
+            countersAvailable: true,
+          }),
+        );
+        s.storage.scrubs.push({
+          path: `/run/btrfs-scrub/${fsid}.result`,
+          text: "Error summary: csum=1",
+          problem: true,
+          readable: true,
+          fsid,
+          startedAt: s.time - 1000,
+          status: "finished",
+          uncorrectable: 1,
+          addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+        });
+      },
+      singular: "open the filesystem, then restore",
+      plural: "open each of these filesystems, then restore",
+    },
+  ];
+  for (const branch of branches) {
+    const c = defaults();
+    const one = emptySnapshot();
+    branch.build(one, "a", "/a");
+    const oneCard = present(
+      attention(one, c, { basePath: base }).find(
+        (i) => i.id === "damaged-files",
+      ),
+      `the one-filesystem card for ${branch.name}`,
+    );
+    expect(oneCard.next).toContain(branch.singular);
+    expect(oneCard.next).not.toContain(branch.plural);
+    expect(oneCard.target).toEqual({ kind: "path", path: "a" });
+    // A second filesystem built the same way turns `next` plural; `target`
+    // still points at the first filesystem, per VSY-98's decision.
+    const two = emptySnapshot();
+    branch.build(two, "a", "/a");
+    branch.build(two, "b", "/b");
+    const twoCard = present(
+      attention(two, c, { basePath: base }).find(
+        (i) => i.id === "damaged-files",
+      ),
+      `the multi-filesystem card for ${branch.name}`,
+    );
+    expect(twoCard.next).toContain(branch.plural);
+    expect(twoCard.next).not.toContain(branch.singular);
+    expect(twoCard.target).toEqual({ kind: "path", path: "a" });
+  }
+});
+
 test("a new-errors card tells only the errors newer than the last check", () => {
   const c = defaults();
   const s = emptySnapshot();
