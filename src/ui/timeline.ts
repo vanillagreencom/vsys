@@ -81,11 +81,7 @@ export function eventParts(e: TimelineEvent, c: Config): EventParts {
     return {
       time,
       kind: "Lane started",
-      text: parts(
-        e.subject,
-        where,
-        `${n.tool || "no agent tool"} runs in it`,
-      ),
+      text: parts(e.subject, where, `${n.tool || "no agent tool"} runs in it`),
       level: "ok",
     };
   if (e.kind === "lane-stop")
