@@ -373,7 +373,17 @@ export function everyCauseSnapshot(c: Config): Snapshot {
     laneSnapshot({ id: "lane-capped", name: "capped", dangerous: true }),
     laneSnapshot({ id: "w.scope", name: "writer", pids: [1], ioPressure: 40 }),
   ];
-  s.procs = [processSnapshot({ pid: 1, build: "ld.mold" })];
+  s.procs = [
+    processSnapshot({ pid: 1, build: "ld.mold" }),
+    processSnapshot({
+      pid: 2,
+      comm: "pi",
+      command: ["/usr/bin/pi"],
+      executable: "/usr/bin/pi",
+      tool: null,
+      unconfirmedTool: "pi",
+    }),
+  ];
   s.groups = [
     g("w.scope", "w.scope", { writeRate: 209715200 }),
     g("app.slice", c.desktopSlice, { swap: c.swapFloor + 1 }),

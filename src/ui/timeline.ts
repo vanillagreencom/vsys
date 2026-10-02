@@ -23,6 +23,8 @@ const phrases: Record<CauseId, string> = {
   "integrity-unknown":
     "a filesystem could not report whether its data is sound",
   scratch: "scratch data passed its quota",
+  "unconfirmed-tool":
+    "a process named an agent its install location did not confirm",
 };
 export function causePhrase(cause: CauseId | ""): string {
   return cause ? phrases[cause] : "nothing needs attention";

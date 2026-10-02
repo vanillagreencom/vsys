@@ -119,6 +119,29 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   );
 });
 
+test("a process whose agent name was not confirmed by install location gets a visible card", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({ pid: 99, comm: "pi", tool: null, unconfirmedTool: "pi" }),
+  ];
+  const items = attention(s, c, { basePath: base });
+  expect(items.map((item) => item.id)).toEqual(["unconfirmed-tool"]);
+  const card = items[0];
+  // Visible, but housekeeping never speaks for the machine.
+  expect(card.verdictWorthy).toBe(false);
+  expect(verdictLine(items, s)).toBe("Healthy");
+  // The process and the tool it almost matched are both named, not only
+  // carried as a field a reader never sees.
+  expect(card.title).toContain("pi");
+  expect(said(card)).toContain("pi (pid 99): pi");
+  // The reader is pointed at the Settings overlay's paths fragment.
+  expect(card.view).toBe("Settings");
+  expect(card.next).toContain("Settings");
+  expect(card.next).toContain("paths fragment");
+  expect(card.next).toContain("agent-tools.json");
+});
+
 test("nine stalling lanes produce one card that names them", () => {
   const c = defaults();
   const s = emptySnapshot();

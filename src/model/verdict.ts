@@ -5,7 +5,7 @@ import type { Config } from "../config/config";
 import { damageCounts, integrities } from "./integrity";
 import { inSlice, lanePressure, sliceCompared } from "./lanes";
 import { laneText, unitLabel } from "./naming";
-import type { Group, Lane, Snapshot, Volume } from "./types";
+import type { Group, Lane, Proc, Snapshot, Volume } from "./types";
 
 export type Level = "ok" | "warn" | "danger";
 /** Every cause is detected once. The verdict, the meters and the cards read it. */
@@ -26,7 +26,8 @@ export type CauseId =
   | "scrub"
   | "unchecked"
   | "integrity-unknown"
-  | "scratch";
+  | "scratch"
+  | "unconfirmed-tool";
 /**
  * The order that breaks a tie between two causes of one severity, worst first.
  * The ladder sorts by it, and anything ranking a cause the ladder is not
@@ -50,7 +51,8 @@ export const causeOrder: Record<CauseId, number> = {
   scrub: 13,
   unchecked: 14,
   "integrity-unknown": 15,
-  scratch: 16,
+  "unconfirmed-tool": 16,
+  scratch: 17,
 };
 export function causeRank(id: CauseId): number {
   return causeOrder[id];
@@ -85,6 +87,7 @@ export const causeEvidence: Record<CauseId, "level" | "event"> = {
   unchecked: "level",
   "integrity-unknown": "level",
   scratch: "level",
+  "unconfirmed-tool": "level",
 };
 /**
  * Where a cause points the reader. This is not a subject: a cause about a
@@ -108,6 +111,11 @@ export interface Cause {
   lanes: Lane[];
   groups: Group[];
   paths: string[];
+  /**
+   * Processes this cause is about that named no lane and no group, because
+   * becoming one is exactly what the cause says did not happen.
+   */
+  procs: Proc[];
   /** Where the card lands, when that row is not one of the subjects above. */
   at?: CauseAt;
   /** The single biggest consumer behind the cause, empty when there is none. */
@@ -256,6 +264,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       lanes: [],
       groups: [],
       paths: [],
+      procs: [],
       consumer: "",
       values: {},
       verdictWorthy: true,
@@ -506,6 +515,17 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         largest: Math.max(...large.map((scratch) => scratch.bytes ?? 0)),
         quota: c.scratchQuota,
       },
+    });
+  // A name a process carries that its tool's install locations did not
+  // confirm never became a lane, so this is the one place it is still
+  // visible: nowhere on Agents names a process the collector left out.
+  const unconfirmed = s.procs.filter((proc) => proc.unconfirmedTool);
+  if (unconfirmed.length)
+    add("unconfirmed-tool", "warn", {
+      procs: unconfirmed,
+      consumer: unconfirmed[0].unconfirmedTool ?? "",
+      verdictWorthy: false,
+      values: { processes: unconfirmed.length },
     });
   // Severity decides the order; the cause order table breaks a tie.
   const rank = { danger: 2, warn: 1, ok: 0 };

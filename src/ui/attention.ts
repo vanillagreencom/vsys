@@ -1,3 +1,4 @@
+import { agentToolsPath } from "../config/agent-tools";
 import type { Config } from "../config/config";
 import { sliceCompared } from "../model/lanes";
 import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
@@ -62,7 +63,7 @@ export interface Attention {
   next: string;
   /** Read-only text to copy, built from configured names. */
   command?: string;
-  view: "Agents" | "Storage" | "Resources" | "Builds";
+  view: "Agents" | "Storage" | "Resources" | "Builds" | "Settings";
   /** Absent when the card names no single row, such as a machine-wide stall. */
   target?: Target;
   danger: boolean;
@@ -549,6 +550,28 @@ function copy(
         view: "Storage",
         target: first,
       };
+    case "unconfirmed-tool": {
+      const unconfirmed = cause.procs;
+      const names = list(
+        unconfirmed.map(
+          (proc) =>
+            `${proc.comm} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""}`,
+        ),
+      );
+      const toolNames = list([
+        ...new Set(unconfirmed.map((proc) => proc.unconfirmedTool ?? "")),
+      ]);
+      return {
+        word: "Unconfirmed",
+        title: `${count(unconfirmed.length, "process")} ${p(unconfirmed.length, "carries", "carry")} an unconfirmed agent name: ${toolNames}`,
+        ways: [
+          `${names}. Its executable or script lies outside every install location vsys knows for that name, so vsys does not count it as an agent.`,
+        ],
+        next: `Open Settings, then add the executable's directory as a paths fragment to ${toolNames} in the agent-tools overlay at ${agentToolsPath}.`,
+        command: shellLine(["cat", agentToolsPath]),
+        view: "Settings",
+      };
+    }
   }
 }
 /**
