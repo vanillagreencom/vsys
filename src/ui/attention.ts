@@ -1,10 +1,16 @@
 import type { Config } from "../config/config";
-import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
 import { sliceCompared } from "../model/lanes";
+import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
 import { laneText, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
-import { type Cause, causes, type Level, type Meter } from "../model/verdict";
+import {
+  agentLanes,
+  type Cause,
+  causes,
+  type Level,
+  type Meter,
+} from "../model/verdict";
 import { capLines, fit, textWidth, wrapLines } from "./columns";
 import {
   age,
@@ -415,8 +421,8 @@ function copy(
       // Where no agent slice exists, there is no systemd unit to read or cap:
       // the agent lanes holding the swap are what the reader has instead.
       const compared = sliceCompared(s.capabilities);
-      const agentLanes = s.lanes.filter((l) => l.tool !== "");
-      const agentNames = list(agentLanes.map(laneText));
+      const swapping = agentLanes(s.lanes);
+      const agentNames = list(swapping.map(laneText));
       return {
         word: "Slow",
         headline: `Slow: desktop swapped out, agents hold ${b(v.cache)} of page cache`,
@@ -426,7 +432,7 @@ function copy(
         ],
         next: compared
           ? "Reduce concurrent build work, or cap the agent slice memory so the desktop keeps its pages."
-          : agentLanes.length
+          : swapping.length
             ? `Reduce concurrent build work, or check ${agentNames} for the memory holding the desktop's pages.`
             : "Reduce concurrent build work so the desktop keeps its pages.",
         command: compared
