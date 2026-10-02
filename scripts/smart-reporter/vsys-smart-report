@@ -26,18 +26,21 @@ export LC_ALL=C
 dir=${1:?report directory}
 sys=${SYS_BLOCK:-/sys/block}
 smartctl_timeout=${SMARTCTL_TIMEOUT:-20}
-# One probe closes every way `timeout -k 5 "$smartctl_timeout"` itself can
+# One probe closes every way `timeout -k 5 -- "$smartctl_timeout"` itself can
 # fail, not one failure at a time: a missing timeout command (127), or a
 # SMARTCTL_TIMEOUT that is not a duration timeout accepts (125, its own
 # "invalid time interval" diagnostic). Either would otherwise land inside
 # >"$tmp" 2>&1 below, where `|| true` masks a real drive's smartctl failure
 # on purpose, and every drive would silently read as lifetime writes unknown
 # instead of the service failing loudly. `true` never itself fails or stalls,
-# so a nonzero exit here is the timeout invocation's alone.
-probe_error=$(timeout -k 5 "$smartctl_timeout" true 2>&1) || {
+# so a nonzero exit here is the timeout invocation's alone. The `--` ends
+# timeout's own option parsing before the duration: without it, an
+# option-shaped value such as `--help` is timeout's own flag, not a bad
+# duration, and timeout exits 0 having run neither `true` nor smartctl.
+probe_error=$(timeout -k 5 -- "$smartctl_timeout" true 2>&1) || {
 	printf 'vsys-smart-report: command=timeout misconfigured\n' >&2
 	printf '%s\n' "$probe_error" >&2
-	printf 'timeout -k 5 "%s" could not run. Check SMARTCTL_TIMEOUT and that timeout, from coreutils, is installed, then run this again.\n' "$smartctl_timeout" >&2
+	printf 'timeout -k 5 -- "%s" could not run. Check SMARTCTL_TIMEOUT and that timeout, from coreutils, is installed, then run this again.\n' "$smartctl_timeout" >&2
 	exit 1
 }
 tmp=""
@@ -64,7 +67,7 @@ for path in "$sys"/*; do
 	# lifetime writes unknown. A drive past smartctl_timeout is sent TERM, then
 	# KILL 5s later if it is still running; what it wrote before that is the
 	# report, and a cut-off report also reads as lifetime writes unknown.
-	timeout -k 5 "$smartctl_timeout" smartctl -i -A "/dev/$name" >"$tmp" 2>&1 || true
+	timeout -k 5 -- "$smartctl_timeout" smartctl -i -A "/dev/$name" >"$tmp" 2>&1 || true
 	mv -f -- "$tmp" "$dir/$name.txt"
 	tmp=""
 done
