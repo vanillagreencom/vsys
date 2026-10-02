@@ -1,0 +1,1 @@
+- The drive reporter installer now installs from a tagged release and checks its SHA256SUMS, refusing an unverified or mismatched download.
