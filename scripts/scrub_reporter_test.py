@@ -347,6 +347,7 @@ class InstallTest(unittest.TestCase):
         scrub_dir: Path | None = None,
         report_conf: str | None = None,
         cp_stub: str = "",
+        mv_stub: str = "",
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """version=None leaves VSYS_VERSION unset, so install resolves the tag
         itself from the stubbed GitHub API, the same lookup install.sh uses.
@@ -369,6 +370,8 @@ class InstallTest(unittest.TestCase):
             api_fetch = f"printf '%s\\n' '{body}'"
         if cp_stub:
             stub(bin_dir, "cp", cp_stub)
+        if mv_stub:
+            stub(bin_dir, "mv", mv_stub)
         # report_conf hands the installer a corrupted vsys-report.conf for
         # just that one download (a case the installer must itself refuse,
         # so it never touches a real system that way).
@@ -658,6 +661,38 @@ fi
 exec /usr/bin/cp "$@"
 """
             done, calls = self.run_install(base, legacy_dir=legacy, scrub_dir=persistent, cp_stub=cp_stub)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((persistent / "root.result").read_text(), "the fresh report, just finished\n")
+            self.assertEqual(os.listdir(persistent), ["root.result"])
+
+    def test_an_mv_that_reports_failure_on_a_skipped_destination_still_installs(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            legacy = base / "legacy"
+            legacy.mkdir()
+            (legacy / "root.result").write_text("stale, from before this install\n")
+            persistent = base / "persistent"
+            # Same race as the test above (a fresh report lands while cp is
+            # still copying the legacy one into its temp name), but mv -n
+            # itself now also mimics unpatched coreutils 9.2-9.4, which can
+            # report failure for a skip it still performs correctly. Without
+            # a `|| true` on that bare statement, set -e would abort the
+            # script on this exit code before the [[ -e $tmp ]] fallback runs.
+            cp_stub = f"""if [[ $3 == *.migrate.root.result.tmp ]]; then
+	mkdir -p -- "{persistent}"
+	printf '%s\\n' "the fresh report, just finished" >"{persistent}/root.result"
+fi
+exec /usr/bin/cp "$@"
+"""
+            mv_stub = """dest=$4
+if [[ -e $dest ]]; then
+	exit 1
+fi
+exec /usr/bin/mv "$@"
+"""
+            done, calls = self.run_install(
+                base, legacy_dir=legacy, scrub_dir=persistent, cp_stub=cp_stub, mv_stub=mv_stub
+            )
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual((persistent / "root.result").read_text(), "the fresh report, just finished\n")
             self.assertEqual(os.listdir(persistent), ["root.result"])

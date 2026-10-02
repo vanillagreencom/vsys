@@ -146,7 +146,7 @@ The reporter is installed and will run after the next scrub. Could not create $S
 		cp -- "$report" "$tmp" 2>/dev/null ||
 			die "legacy-migrate=copy-failed report=$report
 The reporter is installed and will run after the next scrub. Could not carry $report over into $SCRUB_DIR, so it stays in $LEGACY_SCRUB_DIR until a reboot clears it."
-		mv -n -- "$tmp" "$dest" 2>/dev/null
+		mv -n -- "$tmp" "$dest" 2>/dev/null || true
 		if [[ -e $tmp ]]; then
 			rm -f -- "$tmp"
 			[[ -e $dest ]] ||
