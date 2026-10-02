@@ -90,7 +90,7 @@ Reading a drive's lifetime writes with smartctl needs root, so vsys reads the re
 curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/smart-reporter/install | sudo bash
 ```
 
-The installer needs smartctl, from smartmontools. It installs the files from the latest release, or from the tag `VSYS_VERSION` names, and installs nothing when a file does not match the release's `SHA256SUMS`. It starts an hourly timer, and the first report lands a minute after boot. Settings and Storage show the same install command while no report directory exists and the `smartDir` setting is unchanged.
+The installer needs smartctl, from smartmontools, and timeout, from coreutils (already on nearly every Linux system), and refuses to install without either. It installs the files from the latest release, or from the tag `VSYS_VERSION` names, and installs nothing when a file does not match the release's `SHA256SUMS`. It starts an hourly timer, and the first report lands a minute after boot. Settings and Storage show the same install command while no report directory exists and the `smartDir` setting is unchanged.
 
 Without the timer, vsys asks udisks2, which most desktops run, over the system bus without root. It gives the total for NVMe drives, and for SATA drives where udisks reports it in sectors. Storage names the source of each total: smartctl or udisks2. See [storage](docs/architecture/storage.md) for what each source gives.
 

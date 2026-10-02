@@ -12,11 +12,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -69,13 +71,15 @@ def bun() -> str:
 # tool under test: symlinked in so a checksum_tool case can exclude the
 # system PATH, and so hide sha256sum and shasum from it, without losing
 # these.
-RESTRICTED_TOOLS = ("bash", "rm", "cut", "head", "sed", "mktemp", "basename", "cp")
+RESTRICTED_TOOLS = ("bash", "rm", "cut", "head", "sed", "mktemp", "basename", "cp", "timeout")
 
 
-def restricted_system_bin(base: Path) -> Path:
+def restricted_system_bin(base: Path, *, exclude: tuple[str, ...] = ()) -> Path:
     sys_bin = base / "sysbin"
     sys_bin.mkdir()
     for name in RESTRICTED_TOOLS:
+        if name in exclude:
+            continue
         found = shutil.which(name)
         if found is None:
             raise AssertionError(f"{name}=missing: the installer needs it")
@@ -146,6 +150,207 @@ esac
                 {"model": "Crucial CT1000MX500SSD1", "lifetimeWritten": 2_000_000 * 512},
             )
 
+    def test_a_stalled_drive_does_not_block_the_report_for_the_drive_after_it(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            calls = base / "calls"
+            sys_block = base / "block"
+            for name in ("nvme0n1", "sda"):
+                (sys_block / name).mkdir(parents=True)
+                (sys_block / name / "device").mkdir()
+            (base / "ata.txt").write_text(ATA)
+            # nvme0n1 never answers, as a wedged USB bridge would leave it;
+            # sda comes after it in SYS_BLOCK order and must still get its
+            # own report.
+            stub(
+                bin_dir,
+                "smartctl",
+                f"""printf '%s\\n' "$*" >> "{calls}"
+case $3 in
+/dev/nvme0n1) exec sleep 100 ;;
+/dev/sda) cat "{base}/ata.txt" ;;
+*) exit 2 ;;
+esac
+""",
+            )
+            reports = base / "reports"
+            started = time.monotonic()
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "SYS_BLOCK": str(sys_block),
+                    "SMARTCTL_TIMEOUT": "1",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertLess(elapsed, 10, "a stalled drive must not hold the run past its own timeout")
+            self.assertEqual(sorted(os.listdir(reports)), ["nvme0n1.txt", "sda.txt"])
+            # Cut off mid-query, nvme0n1 leaves whatever it wrote before the
+            # signal, here nothing: vsys reads that as lifetime writes unknown.
+            self.assertEqual((reports / "nvme0n1.txt").read_text(), "")
+            self.assertEqual(
+                parse(reports / "sda.txt", base),
+                {"model": "Crucial CT1000MX500SSD1", "lifetimeWritten": 2_000_000 * 512},
+            )
+
+    def test_a_drive_that_ignores_term_is_still_killed_within_the_grace_period(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            calls = base / "calls"
+            sys_block = base / "block"
+            for name in ("nvme0n1", "sda"):
+                (sys_block / name).mkdir(parents=True)
+                (sys_block / name / "device").mkdir()
+            (base / "ata.txt").write_text(ATA)
+            # nvme0n1's query traps and ignores TERM, as a wedged USB bridge's
+            # driver can: only the KILL `timeout -k` sends after its grace
+            # period actually stops it, and sda must still get its report.
+            stub(
+                bin_dir,
+                "smartctl",
+                f"""printf '%s\\n' "$*" >> "{calls}"
+case $3 in
+/dev/nvme0n1)
+	trap '' TERM
+	sleep 100
+	;;
+/dev/sda) cat "{base}/ata.txt" ;;
+*) exit 2 ;;
+esac
+""",
+            )
+            reports = base / "reports"
+            started = time.monotonic()
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "SYS_BLOCK": str(sys_block),
+                    "SMARTCTL_TIMEOUT": "1",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(done.returncode, 0, done.stderr)
+            # 1s SMARTCTL_TIMEOUT plus the reporter's 5s kill-after grace: a
+            # regression that drops `-k 5` leaves this at the stub's full 100s.
+            self.assertGreater(elapsed, 1, "TERM alone must not have stopped the stub")
+            self.assertLess(elapsed, 15, "the KILL after the grace period must still land")
+            self.assertEqual(sorted(os.listdir(reports)), ["nvme0n1.txt", "sda.txt"])
+            self.assertEqual((reports / "nvme0n1.txt").read_text(), "")
+            self.assertEqual(
+                parse(reports / "sda.txt", base),
+                {"model": "Crucial CT1000MX500SSD1", "lifetimeWritten": 2_000_000 * 512},
+            )
+
+    def test_a_missing_timeout_command_fails_loudly_instead_of_every_drive_going_unknown(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            # A PATH with no timeout at all, not merely one hidden behind the
+            # stub dir: the reporter must refuse before writing any report,
+            # not let a `timeout: command not found` line stand in for every
+            # drive's reading.
+            restricted = base / "restricted"
+            restricted.mkdir()
+            for name in ("mkdir", "mv", "rm"):
+                found = shutil.which(name)
+                if found is None:
+                    raise AssertionError(f"{name}=missing: the reporter needs it")
+                (restricted / name).symlink_to(found)
+            stub(bin_dir, "smartctl", "exit 0\n")
+            sys_block = base / "block"
+            (sys_block / "nvme0n1").mkdir(parents=True)
+            (sys_block / "nvme0n1" / "device").mkdir()
+            reports = base / "reports"
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={"PATH": f"{bin_dir}:{restricted}", "LC_ALL": "C", "SYS_BLOCK": str(sys_block)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=timeout misconfigured")
+            self.assertFalse(reports.exists(), "a missing timeout must refuse before any report directory is made")
+
+    def test_an_invalid_smartctl_timeout_fails_loudly_instead_of_every_drive_going_unknown(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            stub(bin_dir, "smartctl", "exit 0\n")
+            sys_block = base / "block"
+            (sys_block / "nvme0n1").mkdir(parents=True)
+            (sys_block / "nvme0n1" / "device").mkdir()
+            reports = base / "reports"
+            # The same probe that catches a missing timeout command also
+            # catches a SMARTCTL_TIMEOUT no duration parses, since `timeout`
+            # itself rejects both the same way: a nonzero exit before `true`
+            # ever runs.
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "SYS_BLOCK": str(sys_block),
+                    "SMARTCTL_TIMEOUT": "not-a-duration",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=timeout misconfigured")
+            self.assertFalse(reports.exists(), "an invalid SMARTCTL_TIMEOUT must refuse before any report directory is made")
+
+    def test_an_option_shaped_smartctl_timeout_fails_loudly_instead_of_every_drive_going_unknown(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            stub(bin_dir, "smartctl", "exit 0\n")
+            sys_block = base / "block"
+            (sys_block / "nvme0n1").mkdir(parents=True)
+            (sys_block / "nvme0n1" / "device").mkdir()
+            reports = base / "reports"
+            # With no `--` before it, SMARTCTL_TIMEOUT=--help would be
+            # timeout's own flag rather than the duration: timeout prints
+            # help and exits 0 having run neither the probe's `true` nor the
+            # real smartctl call, so the probe would pass and every drive's
+            # invocation would publish help text instead of a report.
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "SYS_BLOCK": str(sys_block),
+                    "SMARTCTL_TIMEOUT": "--help",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=timeout misconfigured")
+            self.assertFalse(reports.exists(), "an option-shaped SMARTCTL_TIMEOUT must refuse before any report directory is made")
+
 
 REPORTER_FILES = ("vsys-smart-report", "vsys-smart-report.service", "vsys-smart-report.timer", "vsys-smart.conf")
 
@@ -161,6 +366,7 @@ class InstallTest(unittest.TestCase):
         base: Path,
         *,
         smartctl: bool = True,
+        timeout_cmd: bool = True,
         checksum_tool: str = "sha256sum",
         fail_download: str = "",
         fail_sums: bool = False,
@@ -230,9 +436,13 @@ esac
         # The system directories come after the stubs only where the case
         # needs a real tool unaffected by checksum_tool; with no smartctl the
         # installer stops before any, and a non-default checksum_tool needs
-        # sha256sum itself kept off the path.
-        if not smartctl or checksum_tool != "sha256sum":
-            path = f"{bin_dir}:{restricted_system_bin(base)}"
+        # sha256sum itself kept off the path. RESTRICTED_TOOLS carries no
+        # smartctl, so that case needs no further exclusion; timeout_cmd=False
+        # excludes RESTRICTED_TOOLS' own timeout entry instead of relying on
+        # its absence from the list.
+        if not smartctl or not timeout_cmd or checksum_tool != "sha256sum":
+            exclude = () if timeout_cmd else ("timeout",)
+            path = f"{bin_dir}:{restricted_system_bin(base, exclude=exclude)}"
         else:
             path = f"{bin_dir}:/usr/bin:/bin"
         env_extra = {} if version is None else {"VSYS_VERSION": version}
@@ -317,6 +527,13 @@ esac
             self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: command=smartctl missing")
             self.assertEqual(calls, [])
 
+    def test_no_timeout_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), timeout_cmd=False)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: command=timeout missing")
+            self.assertEqual(calls, [])
+
     def test_a_system_with_only_shasum_still_installs(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), checksum_tool="shasum")
@@ -399,6 +616,23 @@ class ShippedFilesTest(unittest.TestCase):
         self.assertIn('smartDir: "/run/smartctl",', config)
         timer = (REPORTER / "vsys-smart-report.timer").read_text()
         self.assertIn("WantedBy=timers.target", timer.splitlines())
+
+    def test_the_service_timeout_covers_more_than_one_drives_worst_case(self) -> None:
+        # A later drive's report depends on TimeoutStartSec staying wider than
+        # one drive's own worst case (SMARTCTL_TIMEOUT plus the kill-after
+        # grace); read both from their own source so a change to either value
+        # keeps this proof honest instead of pinning a second copy here.
+        reporter = (REPORTER / "vsys-smart-report").read_text()
+        default_timeout = int(re.search(r"SMARTCTL_TIMEOUT:-(\d+)", reporter).group(1))
+        kill_grace = int(re.search(r"timeout -k (\d+) ", reporter).group(1))
+        per_drive_budget = default_timeout + kill_grace
+        service = (REPORTER / "vsys-smart-report.service").read_text()
+        timeout_start_sec = int(re.search(r"^TimeoutStartSec=(\d+)$", service, re.MULTILINE).group(1))
+        self.assertGreater(
+            timeout_start_sec,
+            2 * per_drive_budget,
+            "TimeoutStartSec must outlast more than one drive's worst case, or systemd kills the run before a later drive is reported",
+        )
 
 
 if __name__ == "__main__":
