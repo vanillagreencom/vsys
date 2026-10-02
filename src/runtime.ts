@@ -39,8 +39,9 @@ interface SessionOptions {
 interface Events {
   /**
    * `settingsPath` is resolved by the same call `configure()` makes before a
-   * save, so the row the reader sees can never diverge from the file a save
-   * would write to, even when the reader moves it mid-session.
+   * save, and published before that save writes, so the row the reader sees
+   * can never name a file other than the one the save in flight targets,
+   * even when the reader moves it mid-session.
    */
   frame(
     snapshot: Snapshot,
@@ -112,7 +113,9 @@ export class Session {
     private config: Config,
     /**
      * Resolved at each save and at each frame, so a save follows a settings
-     * file the reader moved, and the displayed path never lags behind it.
+     * file the reader moved; a save publishes its resolved value to the
+     * screen before writing, so the displayed path and the write's
+     * destination are always the same read, not two calls a move can split.
      */
     private configPath: () => string,
     private source: Source,
@@ -205,6 +208,12 @@ export class Session {
         next.agentTools,
       );
       const path = this.configPath();
+      // Published before the write starts, holding the same resolved value
+      // the write below uses, so a save that lands the instant the reader
+      // clicks it shows the file it is about to write, not the one the last
+      // sample displayed.
+      if (this.latest)
+        this.events.frame(this.latest, this.history, this.config, path);
       const currentState = await loadConfigState(path, this.agentToolsPath);
       let agentToolSave: AgentToolNamesSave | null = null;
       if (agentToolsChanged) {

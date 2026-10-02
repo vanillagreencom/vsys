@@ -719,8 +719,11 @@ export function Settings({
               under: (chosen) =>
                 chosen && (
                   <Detail>
+                    {/* The row's own value cuts on a narrow terminal; naming
+                        it again here, whole, is what every cut row's detail
+                        does for what the row lost. */}
                     <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                      {settingsFileInfo.help}
+                      {`${settingsFileInfo.help} ${safe(settingsPath)}`}
                     </Line>
                   </Detail>
                 ),

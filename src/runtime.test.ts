@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SccacheCollector } from "./collect/sccache";
+import { writeFileAtomic } from "./config/atomic";
 import { loadConfig } from "./config/config";
 import { Session } from "./runtime";
 import { History } from "./store/history";
@@ -85,6 +86,55 @@ test("the frame's settings path follows the resolver on the next sample, before 
     // it chose.
     resolved = join(f.root, "moved-config.toml");
     expect(await second.promise).toBe(resolved);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+test("a save publishes the moved file's path before it writes, with no sample in between", async () => {
+  const f = fixture();
+  const h = new History(f.config);
+  let resolved = join(f.root, "config.toml");
+  const first = Promise.withResolvers<void>();
+  let calls = 0;
+  const framePaths: string[] = [];
+  let writeConfigCalls = 0;
+  const session = new Session(
+    f.config,
+    () => resolved,
+    { sample: async () => emptySnapshot(++calls * 1000) },
+    h,
+    {
+      frame: (s, _history, _c, settingsPath) => {
+        framePaths.push(settingsPath);
+        if (s.time === 1000) first.resolve();
+      },
+      error: (error) => first.reject(error),
+    },
+    {
+      agentToolsPath: f.agentToolsPath,
+      writeConfig: async (path, body) => {
+        writeConfigCalls++;
+        // The write is about to use `path`; the fix publishes that same
+        // value to the screen before this call, so the last frame already
+        // names it. Without the fix, the last frame still names the file
+        // from before the move, and this assertion catches that.
+        expect(framePaths.at(-1)).toBe(path);
+        await writeFileAtomic(path, body);
+      },
+    },
+  );
+  try {
+    session.start();
+    await first.promise;
+    // The reader moved XDG_CONFIG_HOME's target and saves right away, before
+    // the next sample tick would have re-resolved and republished the path.
+    const moved = join(f.root, "moved-config.toml");
+    resolved = moved;
+    await session.configure({ ...f.config, refreshMs: 2000 });
+    expect(writeConfigCalls).toBe(1);
+    expect(framePaths.at(-1)).toBe(moved);
+    expect(existsSync(moved)).toBe(true);
   } finally {
     session.stop();
     f.cleanup();

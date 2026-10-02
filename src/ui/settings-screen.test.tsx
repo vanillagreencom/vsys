@@ -81,6 +81,42 @@ test("Settings names the file it read, for the XDG default and an explicit --con
   }
 });
 
+test("Settings keeps the settings path whole in its detail when the row cuts it", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const long = `/home/test/${"nested-directory-".repeat(8)}config.toml`;
+  const t = await mount(
+    s,
+    c,
+    { width: 80, height: 30 },
+    { settingsPath: long },
+  );
+  try {
+    await t.press("7");
+    const at = settingItems(c, s.capabilities).findIndex(
+      (item) => item.kind === "settingsFile",
+    );
+    expect(at).toBeGreaterThan(-1);
+    // Unselected, the row shows the label row the way every row does, with
+    // nothing yet open to carry the cut value whole.
+    expect(t.frame()).not.toContain(long);
+    for (let i = 0; i < at; i++) await t.press("down");
+    const row = selectedRow(t.frame());
+    expect(row).toContain("Settings file");
+    // The row itself is cut at the terminal edge; the detail under it is
+    // where the whole path reaches the reader. With no spaces to break on,
+    // word-wrap carries it over several lines, so it is reassembled from
+    // them rather than matched on one.
+    expect(row).not.toContain(long);
+    const joined = underMarked(t.frame(), 6)
+      .filter(isChildLine)
+      .map((line) => line.replace(/^.*│ ?/, "").trimEnd())
+      .join("");
+    expect(joined).toContain(long);
+  } finally {
+    await t.close();
+  }
+});
 test("Settings edits a value in place and honours a changed quit binding", async () => {
   const c = defaults();
   c.keys.quit = "alt+q";
@@ -485,6 +521,7 @@ test("Settings filters by name and by the label the reader sees", async () => {
     expect(byLabel).toContain("Wait warning");
     expect(byLabel).toContain("Wait before alert");
     expect(byLabel).not.toContain("Storage units");
+    expect(byLabel).not.toContain("Settings file");
     // The stored name finds it too, not only the label.
     await t.press("escape");
     await t.press("/");
