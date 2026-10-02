@@ -26,9 +26,11 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
 });
 
+/** A directory under tmp/ that the next afterEach removes. */
 function scratchRoot(name: string) {
   const root = join(process.cwd(), "tmp", `${name}-${crypto.randomUUID()}`);
   mkdirSync(root, { recursive: true });
+  scratchRoots.push(root);
   return root;
 }
 function agentToolsDocument(names: string[]) {
@@ -296,7 +298,6 @@ test("vsys observes only: the reserved write mode defaults off", async () => {
 
 test("agent tool overlay reaches defaults and config overrides it", async () => {
   const root = scratchRoot("config-agent-tools");
-  scratchRoots.push(root);
   const configPath = join(root, "config.toml");
   const toolsPath = join(process.cwd(), "data/owner-agent-tools.json");
   expect((await loadConfig(configPath, toolsPath)).agentTools).toEqual([
@@ -325,7 +326,6 @@ test("agent tool overlay reaches defaults and config overrides it", async () => 
 
 test("saving defaults leaves agent tools unpinned and later overlay edits visible", async () => {
   const root = scratchRoot("config-agent-tools-unpinned");
-  scratchRoots.push(root);
   const configPath = join(root, "config.toml");
   const toolsPath = join(root, ".config/vsys/agent-tools.json");
   const config = defaults();
@@ -340,7 +340,6 @@ test("saving defaults leaves agent tools unpinned and later overlay edits visibl
 
 test("a diverging agent tools pin hides later overlay edits", async () => {
   const root = scratchRoot("config-agent-tools-pinned");
-  scratchRoots.push(root);
   const configPath = join(root, "config.toml");
   const toolsPath = join(root, ".config/vsys/agent-tools.json");
   const pinned = [
@@ -354,7 +353,6 @@ test("a diverging agent tools pin hides later overlay edits", async () => {
 
 test("agent tools pins matching shipped or layered names migrate away", async () => {
   const root = scratchRoot("config-agent-tools-migrate");
-  scratchRoots.push(root);
   const toolsPath = join(root, ".config/vsys/agent-tools.json");
   writeAgentTools(toolsPath, ["overlay-extra"]);
   const shippedNames = shippedAgentTools.tools.map((tool) => tool.name);
