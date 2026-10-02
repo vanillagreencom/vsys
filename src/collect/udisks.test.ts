@@ -528,42 +528,82 @@ test("two identity-less drives swapped under one kernel name are told apart by T
     calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
   ).toBe(queriesSoFar);
 });
-test("two identity-less drives swapped under one kernel name with no TimeDetected either are never read as provably unswapped", async () => {
+test("a drive with neither an identity nor a TimeDetected reads as unknown rather than keep serving a possibly-departed drive's numbers, with no extra query and no effect on an unrelated sibling", async () => {
+  const calls: string[][] = [];
   let now = 0;
-  let live: FakeDrive[] = [
-    { name: "sda", model: "Old Drive", kind: "ata", attributes: ata(1000, 3) },
+  // sda gives udisks no identity and no TimeDetected at all: nothing ever
+  // ties one sample's sda to the next one's. sdb is a steady, identified
+  // sibling on the same host, confirmed same every sample through its own
+  // serial.
+  const live: FakeDrive[] = [
+    {
+      name: "sda",
+      model: "Ambiguous Drive",
+      kind: "ata",
+      attributes: ata(1000, 3),
+    },
+    {
+      name: "sdb",
+      model: "Sibling Drive",
+      kind: "ata",
+      attributes: ata(10, 3),
+      serial: "SIB-1",
+    },
   ];
   const run: typeof spawnText = (argv, timeoutMs) =>
-    fakeBus(live)(argv, timeoutMs);
+    fakeBus(live, calls)(argv, timeoutMs);
   const udisks = new Udisks(run, () => now);
   const first = await udisks.read();
   expect(first.drives).toEqual([
     {
       name: "sda",
-      model: "Old Drive",
+      model: "Ambiguous Drive",
       written: 512_000,
       identity: null,
       detected: null,
     },
-  ]);
-  // Swapped within the hold for another drive reporting neither an identity
-  // nor a TimeDetected either: with no signal at all left to tell them
-  // apart, this must read as an unprovable swap, never a vacuous non-swap
-  // that keeps serving the departed drive's numbers.
-  now = udisksHoldMs - 1;
-  live = [
-    { name: "sda", model: "New Drive", kind: "ata", attributes: ata(5, 3) },
-  ];
-  const second = await udisks.read();
-  expect(second.drives).toEqual([
     {
-      name: "sda",
-      model: "New Drive",
-      written: 2_560,
-      identity: null,
+      name: "sdb",
+      model: "Sibling Drive",
+      written: 5_120,
+      identity: "SIB-1",
       detected: null,
     },
   ]);
+  const queriesAfterFirst = calls.filter((argv) =>
+    argv.includes("SmartGetAttributes"),
+  ).length;
+  // Nothing on the bus changed — same two drives, same attributes — but sda
+  // can never be confirmed the same drive it was a moment ago. It reads as
+  // unknown rather than go on asserting its first reading might still be
+  // right; sdb, provably unchanged through its own serial, keeps serving its
+  // held reading untouched.
+  for (const sample of [udisksHoldMs / 2, udisksHoldMs - 1]) {
+    now = sample;
+    const reading = await udisks.read();
+    expect(reading.drives).toEqual([
+      {
+        name: "sda",
+        model: null,
+        written: null,
+        identity: null,
+        detected: null,
+      },
+      {
+        name: "sdb",
+        model: "Sibling Drive",
+        written: 5_120,
+        identity: "SIB-1",
+        detected: null,
+      },
+    ]);
+  }
+  // Three samples in (the first plus the two above), sda's unprovable
+  // ambiguity has triggered no SmartGetAttributes call beyond the first, and
+  // sdb was never dragged into a re-query either.
+  expect(
+    calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
+  ).toBe(queriesAfterFirst);
 });
 test("a drive replaced by one with no SMART interface is dropped, not left answering with the departed drive's numbers", async () => {
   let now = 0;

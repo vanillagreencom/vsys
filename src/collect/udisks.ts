@@ -365,43 +365,27 @@ export async function readUdisks(
 
 /**
  * Whether a held drive and the fresh target under its name are provably the
- * same physical drive. A differing `identity` (`null` on either side counts,
- * since a drive that stopped or started reporting one is not provably the
- * drive that was held) means no. Where both report no identity at all,
- * `identity` alone cannot tell them apart — `null !== null` is false — so
- * `detected` corroborates instead: equal and known on both sides is the one
- * case that proves this is still the same drive, and unequal or unknown on
- * either side cannot be proven, so it reads as a swap rather than vacuously
- * as no change.
+ * same physical drive, a confirmed change, or neither provable: `changed`
+ * also covers a name the held reading never answered for, which has no
+ * prior to compare and so is always queried fresh. A differing `identity`
+ * (`null` on either side counts, since a drive that stopped or started
+ * reporting one is not provably the drive that was held) is `changed`.
+ * Where both report no identity at all, `identity` alone cannot tell them
+ * apart — `null !== null` is false — so `detected` corroborates instead:
+ * equal and known on both sides is `same`, unequal and both known is
+ * `changed`, and unknown on either side is `unprovable` — no signal at all
+ * ties this name to the drive now behind it, or rules it out.
  */
-function sameDrive(prior: UdisksDrive, target: Target): boolean {
-  if (target.identity !== prior.identity) return false;
-  if (target.identity !== null) return true;
-  return (
-    prior.detected !== null &&
-    target.detected !== null &&
-    prior.detected === target.detected
-  );
-}
-
-/**
- * Whether the fresh listing proves the held reading stale: a name both name
- * now answers for a drive `sameDrive` cannot confirm, or a name the held
- * reading answered for that the fresh listing no longer names at all — gone,
- * or replaced by a drive with neither the NVMe nor the ATA SMART interface,
- * which `udisksTargets` already drops. Udisks reuses a kernel name for
- * whatever is plugged in next, so without this check a drive swapped
- * mid-hold would keep answering with the drive that left.
- */
-function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
-  const priorByName = new Map(held.drives.map((d) => [d.name, d]));
-  const freshNames = new Set(targets.map((t) => t.name));
-  return (
-    targets.some((target) => {
-      const prior = priorByName.get(target.name);
-      return prior !== undefined && !sameDrive(prior, target);
-    }) || held.drives.some((d) => !freshNames.has(d.name))
-  );
+function compareDrive(
+  prior: UdisksDrive | undefined,
+  target: Target,
+): "same" | "changed" | "unprovable" {
+  if (prior === undefined) return "changed";
+  if (target.identity !== prior.identity) return "changed";
+  if (target.identity !== null) return "same";
+  if (prior.detected !== null && target.detected !== null)
+    return prior.detected === target.detected ? "same" : "changed";
+  return "unprovable";
 }
 
 /**
@@ -413,27 +397,52 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
  * attributes — but never the listing: `listUdisks` is udisksd answering from
  * its own object cache, not a drive query, so re-reading it every sample
  * costs nothing the hold exists to save, and it is what notices a kernel
- * name now sitting behind a different serial or WWN, or a held name the
- * listing no longer answers for at all. On either sign the held reading is
- * dropped and the full read runs again, rather than serving the departed
- * drive's numbers for the rest of the hold. A listing that could not itself
- * be read proves nothing either way, so it is read as a sign to drop the
- * held reading too: this sample reports that failure as its own outcome at
- * once, without asking the listing again within this same call. A later
- * sample, while the hold still has time left, takes the full read below and
- * asks the listing fresh; if the failure persists there, it is that later
- * sample's own outcome in turn, rather than the held reading's old,
- * unrelated outcome standing in for it.
+ * name now sitting behind a different serial, WWN or `TimeDetected`, or a
+ * held name the listing no longer answers for at all.
+ *
+ * `compareDrive` sorts every fresh target against its held counterpart, by
+ * name, into three groups, and only the first changes what the next sample
+ * asks over the bus:
+ *
+ * - `changed` (a confirmed swap, or a name with no held counterpart at all)
+ *   is queried fresh, scoped to that drive alone — every other held drive
+ *   keeps serving its own reading untouched, so one swapped or newly seen
+ *   drive never forces a machine-wide re-query.
+ * - `unprovable` (neither side has an identity, and `detected` is unknown on
+ *   at least one side, so nothing ties this name to the drive now behind
+ *   it, or rules it out) reads as unknown rather than either keep serving
+ *   the held drive's numbers or ask again: a repeat ask would not make the
+ *   pair any more provable, so it is never queried, and the hold's clock
+ *   runs on undisturbed for every other, provable drive.
+ * - `same` keeps the held value, unchanged, with no query.
+ *
+ * A name the held reading answered for that the fresh listing no longer
+ * names at all is simply absent from that sorted result, so it drops out of
+ * the served reading on its own. Once any name queries fresh, the hold's
+ * clock restarts from this sample, as a full read below would; an
+ * `unprovable` name alone does not restart it, so a drive that never gives
+ * either signal does not hold every other drive's clock hostage — the
+ * ordinary `udisksHoldMs` cycle still reaches it, each cycle giving it one
+ * sample's worth of a real reading before the within-hold checks that
+ * follow read it as unprovable again.
+ *
+ * A listing that could not itself be read proves nothing either way, so it
+ * is read as a sign to drop the held reading too: this sample reports that
+ * failure as its own outcome at once, without asking the listing again
+ * within this same call. A later sample, while the hold still has time
+ * left, takes the full read below and asks the listing fresh; if the
+ * failure persists there, it is that later sample's own outcome in turn,
+ * rather than the held reading's old, unrelated outcome standing in for it.
  *
  * A held reading with no drives at all — kept from a failed first read, or
  * from two listing failures in a row, each dropping the held reading in turn
  * until the second one's own empty result is what gets held, or simply from
  * a real system that then had zero SMART-capable drives — is read as stale
  * by any fresh listing naming at least one target, without asking
- * identitySwapped() to compare: an empty held reading has no prior drive to
- * compare against, so that check would vacuously report no swap forever.
- * This also covers a drive hot-plugged in after a genuinely driveless hold
- * started, not only a failure's recovery.
+ * `compareDrive` to sort it: an empty held reading has no prior drive to
+ * compare against, so that sort would vacuously report nothing changed
+ * forever. This also covers a drive hot-plugged in after a genuinely
+ * driveless hold started, not only a failure's recovery.
  */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
@@ -449,32 +458,77 @@ export class Udisks {
       if (listing.targets === null) {
         // The swap-check listing itself failed: that is this sample's own
         // outcome. The held reading is dropped outright rather than kept as
-        // an empty-drives placeholder — identitySwapped compares against
-        // held.drives by iterating it, so an empty array would read as
-        // "nothing to compare" and vacuously pass as unswapped, letting this
-        // stale failure answer for every sample until the hold expires.
-        // Dropping it sends a single next sample through the non-held
-        // branch below, which runs a genuine readUdisks() and recovers if
-        // the bus is back by then; a bus still down on that next sample
-        // fails readUdisks() the same way and is held again, so two
-        // consecutive failures still ride out the rest of the hold. Either
-        // way, this call alone no longer repeats the identical listing call
-        // readUdisks() would otherwise make.
+        // an empty-drives placeholder — a compare against held.drives by
+        // iterating it would read an empty array as "nothing to compare"
+        // and vacuously pass as unchanged, letting this stale failure answer
+        // for every sample until the hold expires. Dropping it sends a
+        // single next sample through the non-held branch below, which runs
+        // a genuine readUdisks() and recovers if the bus is back by then; a
+        // bus still down on that next sample fails readUdisks() the same way
+        // and is held again, so two consecutive failures still ride out the
+        // rest of the hold. Either way, this call alone no longer repeats
+        // the identical listing call readUdisks() would otherwise make.
         this.held = null;
         return { drives: [], outcome: listing.outcome };
       }
-      // An empty held reading cannot be proven stale by identitySwapped():
-      // with no prior drive to compare against, it is vacuously "no swap"
-      // whatever the fresh listing names. Any fresh listing naming at least
+      // An empty held reading cannot be proven stale by sorting: with no
+      // prior drive to compare against, every fresh target would vacuously
+      // sort as having nothing to compare. Any fresh listing naming at least
       // one target already proves it stale on its own, with nothing left to
       // compare by name.
       const emptyHeldProvenStale =
         this.held.reading.drives.length === 0 && listing.targets.length > 0;
-      if (
-        !emptyHeldProvenStale &&
-        !identitySwapped(this.held.reading, listing.targets)
-      )
+      if (!emptyHeldProvenStale) {
+        const priorByName = new Map(
+          this.held.reading.drives.map((d) => [d.name, d]),
+        );
+        const freshNames = new Set(listing.targets.map((t) => t.name));
+        const goneDrive = this.held.reading.drives.some(
+          (d) => !freshNames.has(d.name),
+        );
+        const toQuery: Target[] = [];
+        const unprovable = new Set<string>();
+        for (const target of listing.targets) {
+          const verdict = compareDrive(priorByName.get(target.name), target);
+          if (verdict === "changed") toQuery.push(target);
+          else if (verdict === "unprovable") unprovable.add(target.name);
+        }
+        if (toQuery.length === 0 && unprovable.size === 0 && !goneDrive)
+          return this.held.reading;
+        // The clock restarts only where a real query ran: an unprovable or
+        // gone name alone changes what this sample serves, not when the
+        // SMART data behind every other drive was last actually asked for.
+        const heldAt = toQuery.length > 0 ? at : this.held.at;
+        const refreshed = await queryDrives(this.run, this.timeoutMs, toQuery);
+        const refreshedByName = new Map(
+          refreshed.drives.map((d) => [d.name, d]),
+        );
+        const drives: UdisksDrive[] = listing.targets.map((target) => {
+          const fresh = refreshedByName.get(target.name);
+          if (fresh) return fresh;
+          if (unprovable.has(target.name))
+            return {
+              name: target.name,
+              model: null,
+              written: null,
+              identity: target.identity,
+              detected: target.detected,
+            };
+          const prior = priorByName.get(target.name);
+          if (prior) return prior;
+          // compareDrive sorted this target as neither changed nor
+          // unprovable, which only happens with a held counterpart (`same`
+          // needs `prior !== undefined`), so this is unreachable.
+          throw new Error(
+            `udisks: target ${target.name} resolved to neither a fresh, unprovable, nor held reading`,
+          );
+        });
+        this.held = {
+          at: heldAt,
+          reading: { drives, outcome: refreshed.outcome },
+        };
         return this.held.reading;
+      }
     }
     const reading = await readUdisks(this.run, this.timeoutMs);
     this.held = { at, reading };
