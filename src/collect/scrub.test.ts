@@ -64,16 +64,49 @@ logical 2:
 });
 
 test("a name the report cannot carry exactly marks its address unresolved", () => {
-  const names = [" /lead", "/trail ", "/tab\tname", "/replaced\ufffd"];
+  const names = [
+    " /lead",
+    "/trail ",
+    "/tab\tname",
+    "/replaced\ufffd",
+    "/line\u2028sep",
+    "/para\u2029sep",
+  ];
   for (const name of names) {
     const report = parseScrub(
       `Status: finished\n\nDamaged files: 1\nlogical 1:\n  /fine\n  ${name}\n`,
     );
     expect({ name, addresses: report.addresses }).toEqual({
       name,
-      addresses: [{ logical: 1, paths: ["/fine"], resolved: false }],
+      addresses: [{ logical: 1, paths: [], resolved: false }],
     });
   }
+});
+
+test("a name after a not-resolved line stays unlisted, not a partial set", () => {
+  const report = parseScrub(`Status: finished
+
+Damaged files: 1
+logical 1:
+  (not resolved: inode 257 subvol snap could not be accessed: not mounted)
+  /seen/after/the/mark
+`);
+  expect(report.addresses).toEqual([
+    { logical: 1, paths: [], resolved: false },
+  ]);
+});
+
+test("a name already listed is dropped once a later line marks its address unresolved", () => {
+  const report = parseScrub(`Status: finished
+
+Damaged files: 1
+logical 1:
+  /seen/before/the/mark
+  (not resolved: inode 257 subvol snap could not be accessed: not mounted)
+`);
+  expect(report.addresses).toEqual([
+    { logical: 1, paths: [], resolved: false },
+  ]);
 });
 
 test("the parser anchors on the address heading, not on the prose above it", () => {
