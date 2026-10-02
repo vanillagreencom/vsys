@@ -74,6 +74,16 @@ export interface Proc {
    * `unconfirmedTool` is set.
    */
   unconfirmedPath?: string | null;
+  /**
+   * Which of the two checks `unconfirmedPath` went through: `"name"` when
+   * the process matched the tool by its own executable name, where an
+   * `executables` entry is the narrower fix; `"script"` when it matched by a
+   * script a runtime ran, where a paths fragment stays right. Null alongside
+   * a null `unconfirmedTool`. Absent in snapshots recorded before vsys
+   * carried it, even where `unconfirmedTool` is set; advice there falls back
+   * to the paths-fragment wording this field did not yet distinguish from.
+   */
+  unconfirmedMatch?: "name" | "script" | null;
   build: string | null;
 }
 /** Filesystem counters stay keyed by filesystem and device. */

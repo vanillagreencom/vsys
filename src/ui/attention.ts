@@ -583,12 +583,29 @@ function copy(
         : !readable.length
           ? "vsys could not read a script path for any of them, so none is counted as an agent."
           : "Each process with a path shown lies outside every install location vsys knows for its name; vsys could not read one for the rest at all. Neither is counted as an agent.";
+      // A name match checked one whole executable path, where an executables
+      // entry is the right, narrower fix; a scripted match (or a snapshot
+      // recorded before vsys distinguished the two) checked a script path,
+      // where a paths fragment stays right because the script can move.
+      const readableNamed = readable.filter(
+        (proc) => proc.unconfirmedMatch === "name",
+      );
+      const readableScripted = readable.filter(
+        (proc) => proc.unconfirmedMatch !== "name",
+      );
       // Named per path, not per tool: two processes can share a configured
       // name while the paths that rejected them differ, and a fragment that
       // covers one is never guaranteed to cover the other.
-      const readablePaths = [
+      const namedPaths = [
         ...new Set(
-          readable.map(
+          readableNamed.map(
+            (proc) => `${proc.unconfirmedPath} (${proc.unconfirmedTool ?? ""})`,
+          ),
+        ),
+      ];
+      const scriptedPaths = [
+        ...new Set(
+          readableScripted.map(
             (proc) => `${proc.unconfirmedPath} (${proc.unconfirmedTool ?? ""})`,
           ),
         ),
@@ -596,13 +613,16 @@ function copy(
       const unreadTools = [
         ...new Set(unread.map((proc) => proc.unconfirmedTool ?? "")),
       ];
-      const pathsAdvice = readablePaths.length
-        ? `Open Settings, then add a paths fragment to the agent-tools overlay at ${agentToolsPath} covering ${readablePaths.length === 1 ? "this path" : "each of these paths"}: ${readablePaths.join(", ")}.`
+      const executablesAdvice = namedPaths.length
+        ? `Open Settings, then add an executables entry to the agent-tools overlay at ${agentToolsPath} covering ${namedPaths.length === 1 ? "this executable" : "each of these executables"}: ${namedPaths.join(", ")}.`
+        : "";
+      const pathsAdvice = scriptedPaths.length
+        ? `Open Settings, then add a paths fragment to the agent-tools overlay at ${agentToolsPath} covering ${scriptedPaths.length === 1 ? "this path" : "each of these paths"}: ${scriptedPaths.join(", ")}.`
         : "";
       const checkAdvice = unreadTools.length
         ? `vsys could not read a script path for ${unreadTools.join(", ")}, so check each such process directly, by its command line or working directory, for the real one, then open Settings and add a paths fragment covering it to the agent-tools overlay at ${agentToolsPath}.`
         : "";
-      const next = [pathsAdvice, checkAdvice]
+      const next = [executablesAdvice, pathsAdvice, checkAdvice]
         .filter((part) => part !== "")
         .join(" ");
       return {

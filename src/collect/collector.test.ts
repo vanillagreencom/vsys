@@ -1085,6 +1085,9 @@ test("unconfirmedPath carries the real path a match was tested against, through 
   expect(proc?.tool).toBeNull();
   expect(proc?.unconfirmedTool).toBe("claude");
   expect(proc?.unconfirmedPath).toBe("/usr/local/bin/claude");
+  // A name match, not a scripted one: `claude` ran directly, with no
+  // interpreter argument to carry a script path instead.
+  expect(proc?.unconfirmedMatch).toBe("name");
 });
 test("stat parser handles a closing parenthesis in comm", () => {
   const fields = Array.from({ length: 22 }, () => "0");

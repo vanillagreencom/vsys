@@ -1,0 +1,1 @@
+- The unconfirmed-tool card now recommends an `executables` entry, not a paths fragment, for a process that matched a configured tool by its own executable name rather than by a script.

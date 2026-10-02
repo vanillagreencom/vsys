@@ -292,6 +292,62 @@ test("a mix of readable and unreadable unconfirmed paths gets both pieces of adv
   expect(card.next).not.toContain("/usr/bin/pi (codex)");
 });
 
+test("a named-executable match gets an executables entry recommended, not a paths fragment", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 23,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
+      unconfirmedMatch: "name",
+    }),
+  ];
+  const card = present(
+    attention(s, c, { basePath: base })[0],
+    "the unconfirmed-tool card",
+  );
+  // The process matched by its own executable name, so the narrower fix is
+  // an executables entry naming that whole path, never a paths fragment,
+  // which would over-match other processes sharing the same bin directory.
+  expect(card.next).toContain("add an executables entry");
+  expect(card.next).toContain("/usr/bin/pi (pi)");
+  expect(card.next).not.toContain("paths fragment");
+});
+
+test("a mix of a named match and a scripted match gets both pieces of advice", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.procs = [
+    processSnapshot({
+      pid: 24,
+      comm: "pi",
+      tool: null,
+      unconfirmedTool: "pi",
+      unconfirmedPath: "/usr/bin/pi",
+      unconfirmedMatch: "name",
+    }),
+    processSnapshot({
+      pid: 25,
+      comm: "node",
+      tool: null,
+      unconfirmedTool: "codex",
+      unconfirmedPath: "/home/reader/scripts/codex.js",
+      unconfirmedMatch: "script",
+    }),
+  ];
+  const card = present(
+    attention(s, c, { basePath: base })[0],
+    "the unconfirmed-tool card",
+  );
+  expect(card.next).toContain("add an executables entry");
+  expect(card.next).toContain("/usr/bin/pi (pi)");
+  expect(card.next).toContain("add a paths fragment");
+  expect(card.next).toContain("/home/reader/scripts/codex.js (codex)");
+});
+
 test("nine stalling lanes produce one card that names them", () => {
   const c = defaults();
   const s = emptySnapshot();

@@ -29,6 +29,7 @@ test("an unconfirmed match carries the one path toolName tested, executable or s
     kind: "unconfirmed",
     name: "claude",
     path: "/usr/bin/claude",
+    matchedBy: "name",
   });
   // A scripted match: node's own executable is never tested here, only the
   // script it runs, and that script lies outside the tool's install location.
@@ -43,6 +44,7 @@ test("an unconfirmed match carries the one path toolName tested, executable or s
     kind: "unconfirmed",
     name: "pi",
     path: "/home/reader/scripts/pi.js",
+    matchedBy: "script",
   });
   // The interpreter's own directory would confirm nothing: a card that named
   // it instead of the script would point the reader at the wrong fix.
@@ -74,6 +76,7 @@ test("a scripted match against a tool with no install location still carries the
     kind: "unconfirmed",
     name: "pi",
     path: "/home/reader/bin/pi.sh",
+    matchedBy: "script",
   });
 });
 
@@ -95,5 +98,10 @@ test("an unreadable script against a tool with no install location carries a nul
       script: () => null,
     },
   );
-  expect(scripted).toEqual({ kind: "unconfirmed", name: "pi", path: null });
+  expect(scripted).toEqual({
+    kind: "unconfirmed",
+    name: "pi",
+    path: null,
+    matchedBy: "script",
+  });
 });
