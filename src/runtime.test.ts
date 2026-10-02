@@ -50,6 +50,46 @@ test("refresh changes apply immediately and preserve collected history", async (
     f.cleanup();
   }
 });
+test("the frame's settings path follows the resolver on the next sample, before any save", async () => {
+  const f = fixture();
+  const h = new History(f.config);
+  let resolved = join(f.root, "config.toml");
+  const first = Promise.withResolvers<void>();
+  const second = Promise.withResolvers<string>();
+  let calls = 0;
+  const session = new Session(
+    f.config,
+    () => resolved,
+    { sample: async () => emptySnapshot(++calls * 1000) },
+    h,
+    {
+      frame: (s, _history, _c, settingsPath) => {
+        if (s.time === 1000) {
+          expect(settingsPath).toBe(resolved);
+          first.resolve();
+        }
+        if (s.time === 2000) second.resolve(settingsPath);
+      },
+      error: (error) => {
+        first.reject(error);
+        second.reject(error);
+      },
+    },
+    { agentToolsPath: f.agentToolsPath },
+  );
+  try {
+    session.start();
+    await first.promise;
+    // The reader moved XDG_CONFIG_HOME's target mid-session; no save ran, so
+    // this is the resolver changing underneath the session, not a new value
+    // it chose.
+    resolved = join(f.root, "moved-config.toml");
+    expect(await second.promise).toBe(resolved);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
 test("a config change waits for the in-flight source before sampling again", async () => {
   const f = fixture();
   const h = new History(f.config);

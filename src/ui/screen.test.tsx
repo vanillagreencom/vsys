@@ -24,7 +24,6 @@ test("live refresh keeps one screen, stable listeners and the selected view", as
   let quits = 0;
   await act(async () => {
     screen = mountScreen(ui.renderer, c, {
-      settingsPath: "/home/test/.config/vsys/config.toml",
       onQuit: () => {
         quits++;
       },
@@ -46,7 +45,7 @@ test("live refresh keeps one screen, stable listeners and the selected view", as
       );
       h.add(s);
       await act(async () => {
-        screen.update(s, h, c);
+        screen.update(s, h, c, "/home/test/.config/vsys/config.toml");
       });
       await ui.renderOnce();
     };
@@ -141,7 +140,6 @@ test("a serious cause that appears between samples raises a notice on any view",
   let screen!: ReturnType<typeof mountScreen>;
   await act(async () => {
     screen = mountScreen(ui.renderer, c, {
-      settingsPath: "/home/test/.config/vsys/config.toml",
       onQuit: () => {},
       onSave: async () => {},
       onExport: async () => "report.json",
@@ -153,7 +151,7 @@ test("a serious cause that appears between samples raises a notice on any view",
     const calm = emptySnapshot(1000);
     h.add(calm);
     await act(async () => {
-      screen.update(calm, h, c);
+      screen.update(calm, h, c, "/home/test/.config/vsys/config.toml");
     });
     await act(async () => {
       ui.mockInput.pressKey("5");
@@ -164,7 +162,7 @@ test("a serious cause that appears between samples raises a notice on any view",
     alarmed.storage.volumes = [volumeSnapshot("/mnt/data", { readOnly: true })];
     h.add(alarmed);
     await act(async () => {
-      screen.update(alarmed, h, c);
+      screen.update(alarmed, h, c, "/home/test/.config/vsys/config.toml");
     });
     await ui.renderOnce();
     const frame = ui.captureCharFrame();
@@ -178,9 +176,62 @@ test("a serious cause that appears between samples raises a notice on any view",
     still.storage.volumes = alarmed.storage.volumes;
     h.add(still);
     await act(async () => {
-      screen.update(still, h, c);
+      screen.update(still, h, c, "/home/test/.config/vsys/config.toml");
     });
     expect(notified.length).toBe(1);
+  } finally {
+    await act(async () => {
+      screen.close();
+    });
+    ui.renderer.destroy();
+    environment.IS_REACT_ACT_ENVIRONMENT = previousEnvironment;
+    h.close();
+  }
+});
+
+test("the Settings screen shows the path the latest update() resolved, not the one from an earlier sample", async () => {
+  const c = defaults();
+  const environment = globalThis as typeof globalThis & {
+    IS_REACT_ACT_ENVIRONMENT?: boolean;
+  };
+  const previousEnvironment = environment.IS_REACT_ACT_ENVIRONMENT;
+  environment.IS_REACT_ACT_ENVIRONMENT = true;
+  const h = new History(c);
+  const ui = await createTestRenderer({ width: 120, height: 28 });
+  let screen!: ReturnType<typeof mountScreen>;
+  await act(async () => {
+    screen = mountScreen(ui.renderer, c, {
+      onQuit: () => {},
+      onSave: async () => {},
+      onExport: async () => "report.json",
+      onAction: async () => {},
+      output: { write: () => {} },
+    });
+  });
+  try {
+    const first = emptySnapshot(1000);
+    h.add(first);
+    await act(async () => {
+      screen.update(first, h, c, "/home/test/.config/vsys/config.toml");
+    });
+    await act(async () => {
+      ui.mockInput.pressKey("7");
+    });
+    await ui.renderOnce();
+    expect(ui.captureCharFrame()).toContain(
+      "/home/test/.config/vsys/config.toml",
+    );
+    // A later sample resolves a settings path the reader moved mid-session;
+    // the row must follow it rather than keep showing the mounted value.
+    const second = emptySnapshot(2000);
+    h.add(second);
+    await act(async () => {
+      screen.update(second, h, c, "/etc/vsys/moved-config.toml");
+    });
+    await ui.renderOnce();
+    const frame = ui.captureCharFrame();
+    expect(frame).toContain("/etc/vsys/moved-config.toml");
+    expect(frame).not.toContain("/home/test/.config/vsys/config.toml");
   } finally {
     await act(async () => {
       screen.close();

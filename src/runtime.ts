@@ -37,7 +37,17 @@ interface SessionOptions {
   writeConfig?: (path: string, body: string) => Promise<void>;
 }
 interface Events {
-  frame(snapshot: Snapshot, history: History, config: Config): void;
+  /**
+   * `settingsPath` is resolved by the same call `configure()` makes before a
+   * save, so the row the reader sees can never diverge from the file a save
+   * would write to, even when the reader moves it mid-session.
+   */
+  frame(
+    snapshot: Snapshot,
+    history: History,
+    config: Config,
+    settingsPath: string,
+  ): void;
   error(error: unknown): void;
 }
 
@@ -100,7 +110,10 @@ export class Session {
   private writeConfig: (path: string, body: string) => Promise<void>;
   constructor(
     private config: Config,
-    /** Resolved at each save, so a save follows a settings file the reader moved. */
+    /**
+     * Resolved at each save and at each frame, so a save follows a settings
+     * file the reader moved, and the displayed path never lags behind it.
+     */
     private configPath: () => string,
     private source: Source,
     private history: History,
@@ -153,7 +166,7 @@ export class Session {
         return;
       this.history.add(snapshot);
       this.latest = snapshot;
-      this.events.frame(snapshot, this.history, this.config);
+      this.events.frame(snapshot, this.history, this.config, this.configPath());
     } catch (error) {
       if (!this.stopped && generation === this.generation) {
         let failure = error;
@@ -289,7 +302,7 @@ export class Session {
       if (oldSource !== nextSource) oldSource.close?.();
       this.config = next;
       if (this.latest)
-        this.events.frame(this.latest, this.history, this.config);
+        this.events.frame(this.latest, this.history, this.config, path);
     } catch (error) {
       if (nextHistory !== this.history) nextHistory.close();
       throw error;
