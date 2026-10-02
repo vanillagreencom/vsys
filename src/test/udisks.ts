@@ -12,6 +12,8 @@ export interface FakeDrive {
   serial?: string;
   /** The Drive object's `WWN`; omitted drives report none. */
   wwn?: string;
+  /** The Drive object's `TimeDetected`; omitted drives report none. */
+  detected?: number;
 }
 const bytes = (path: string) => [...Buffer.from(path), 0];
 /**
@@ -38,6 +40,9 @@ export function fakeBus(
           ? { Serial: { type: "s", data: d.serial } }
           : {}),
         ...(d.wwn !== undefined ? { WWN: { type: "s", data: d.wwn } } : {}),
+        ...(d.detected !== undefined
+          ? { TimeDetected: { type: "t", data: d.detected } }
+          : {}),
       },
       ...(d.kind === "none"
         ? {}

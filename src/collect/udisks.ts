@@ -105,6 +105,13 @@ export interface UdisksDrive {
    * does not.
    */
   identity: string | null;
+  /**
+   * `Drive.TimeDetected`, null where udisks gives none. Checked against the
+   * held reading only where `identity` is null on both sides, since two
+   * drives neither reporting a Serial nor a WWN cannot otherwise be told
+   * apart under one kernel name.
+   */
+  detected: number | null;
 }
 export interface UdisksReading {
   drives: UdisksDrive[];
@@ -150,6 +157,19 @@ function payload(out: string): unknown[] {
 }
 const text = (v: Variant | undefined): string | null =>
   typeof v?.data === "string" && v.data.trim() ? v.data.trim() : null;
+/**
+ * `Drive.TimeDetected`: usec since the Epoch the currently-plugged drive was
+ * detected; `0` is the Epoch itself, not a time any attached drive could
+ * report, so it reads as no usable value rather than a real timestamp.
+ * Serial and WWN already tell two drives apart; this is the one signal
+ * udisks still gives when a drive reports neither, since a swap under one
+ * kernel name changes it even where the drive's identity stays `null` on
+ * both sides.
+ */
+const timeDetected = (v: Variant | undefined): number | null =>
+  typeof v?.data === "number" && Number.isSafeInteger(v.data) && v.data > 0
+    ? v.data
+    : null;
 /** A device node arrives as its bytes with a trailing zero. */
 function node(v: Variant | undefined): string | null {
   if (!Array.isArray(v?.data)) return null;
@@ -187,6 +207,7 @@ interface Target {
   drive: string;
   iface: string;
   identity: string | null;
+  detected: number | null;
 }
 /**
  * Whole-disk block devices and the drive behind each. A partition names the
@@ -213,7 +234,8 @@ export function udisksTargets(out: string): Target[] {
     const drv = owner["org.freedesktop.UDisks2.Drive"];
     const model = text(drv?.Model);
     const identity = text(drv?.Serial) ?? text(drv?.WWN);
-    targets.push({ name, model, drive, iface, identity });
+    const detected = timeDetected(drv?.TimeDetected);
+    targets.push({ name, model, drive, iface, identity, detected });
   }
   return targets.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -288,7 +310,7 @@ async function queryDrives(
     firstRefusal ??= detail;
   };
   const drives = await Promise.all(
-    targets.map(async ({ name, model, drive, iface, identity }) => {
+    targets.map(async ({ name, model, drive, iface, identity, detected }) => {
       let answer: Awaited<ReturnType<Run>>;
       try {
         answer = await withDeadline(
@@ -297,25 +319,25 @@ async function queryDrives(
         );
       } catch (error) {
         noteRefusal(error instanceof Error ? error.message : String(error));
-        return { name, model, written: null, identity };
+        return { name, model, written: null, identity, detected };
       }
       if (answer.timedOut) {
         noteRefusal(timeoutDetail(timeoutMs));
-        return { name, model, written: null, identity };
+        return { name, model, written: null, identity, detected };
       }
       if (answer.status !== 0) {
         noteRefusal(answer.error.trim());
-        return { name, model, written: null, identity };
+        return { name, model, written: null, identity, detected };
       }
       try {
         const written =
           iface === nvmeInterface
             ? nvmeWritten(answer.out)
             : ataWritten(answer.out);
-        return { name, model, written, identity };
+        return { name, model, written, identity, detected };
       } catch (error) {
         noteRefusal(String(error));
-        return { name, model, written: null, identity };
+        return { name, model, written: null, identity, detected };
       }
     }),
   );
@@ -342,15 +364,34 @@ export async function readUdisks(
 }
 
 /**
+ * Whether a held drive and the fresh target under its name are provably the
+ * same physical drive. A differing `identity` (`null` on either side counts,
+ * since a drive that stopped or started reporting one is not provably the
+ * drive that was held) means no. Where both report no identity at all,
+ * `identity` alone cannot tell them apart — `null !== null` is false — so
+ * `detected` corroborates instead: equal and known on both sides is the one
+ * case that proves this is still the same drive, and unequal or unknown on
+ * either side cannot be proven, so it reads as a swap rather than vacuously
+ * as no change.
+ */
+function sameDrive(prior: UdisksDrive, target: Target): boolean {
+  if (target.identity !== prior.identity) return false;
+  if (target.identity !== null) return true;
+  return (
+    prior.detected !== null &&
+    target.detected !== null &&
+    prior.detected === target.detected
+  );
+}
+
+/**
  * Whether the fresh listing proves the held reading stale: a name both name
- * now answers a different identity for (`null` on either side counts, since
- * a drive that stopped or started reporting one is not provably the drive
- * that was held), or a name the held reading answered for that the fresh
- * listing no longer names at all — gone, or replaced by a drive with neither
- * the NVMe nor the ATA SMART interface, which `udisksTargets` already drops.
- * Udisks reuses a kernel name for whatever is plugged in next, so without
- * this check a drive swapped mid-hold would keep answering with the drive
- * that left.
+ * now answers for a drive `sameDrive` cannot confirm, or a name the held
+ * reading answered for that the fresh listing no longer names at all — gone,
+ * or replaced by a drive with neither the NVMe nor the ATA SMART interface,
+ * which `udisksTargets` already drops. Udisks reuses a kernel name for
+ * whatever is plugged in next, so without this check a drive swapped
+ * mid-hold would keep answering with the drive that left.
  */
 function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
   const priorByName = new Map(held.drives.map((d) => [d.name, d]));
@@ -358,7 +399,7 @@ function identitySwapped(held: UdisksReading, targets: Target[]): boolean {
   return (
     targets.some((target) => {
       const prior = priorByName.get(target.name);
-      return prior !== undefined && target.identity !== prior.identity;
+      return prior !== undefined && !sameDrive(prior, target);
     }) || held.drives.some((d) => !freshNames.has(d.name))
   );
 }
