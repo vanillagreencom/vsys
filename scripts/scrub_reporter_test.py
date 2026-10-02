@@ -42,6 +42,9 @@ Error summary:    {errors}
 """
 
 
+# What `btrfs device stats` prints for the one device of the fixture filesystem.
+DEVICE_STATS = "[/dev/vsys-test-a].write_io_errs    0\n[/dev/vsys-test-a].corruption_errs  4\n"
+
 STATUS_CLEAN = f"""UUID:             {UUID}
 Scrub started:    {STARTED}
 Status:           finished
@@ -140,11 +143,16 @@ def parse(report: Path, home: Path) -> dict:
 
 
 class ReporterTest(unittest.TestCase):
-    def fixture(self, base: Path, status_text: str, kernel: str | None) -> Path:
-        """Stub btrfs, journalctl and systemd-escape, and a filesystem of real files."""
+    def fixture(self, base: Path, status_text: str, kernel: str | None, device_stats: str | None = DEVICE_STATS) -> Path:
+        """Stub btrfs, journalctl and systemd-escape, and a filesystem of real files.
+
+        A `device_stats` of None makes `btrfs device stats` fail.
+        """
         bin_dir = base / "bin"
         bin_dir.mkdir()
         (base / "status").write_text(status_text)
+        if device_stats is not None:
+            (base / "device-stats").write_text(device_stats)
         fs = base / "fs"
         (fs / "target").mkdir(parents=True)
         first = fs / "target" / "build-script-build"
@@ -243,7 +251,8 @@ class ReporterTest(unittest.TestCase):
             "btrfs",
             f"""case "$1 $2" in
 "scrub status") cat "{base}/status" ;;
-"device stats") printf '%s\\n' '[/dev/vsys-test-a].write_io_errs    0' '[/dev/vsys-test-a].corruption_errs  4' ;;
+"device stats")
+	if [[ -f {base}/device-stats ]]; then cat "{base}/device-stats"; else echo "ERROR: getting device info for $3 failed: Inappropriate ioctl for device" >&2; exit 1; fi ;;
 "inspect-internal rootid")
 	# rootid opens a regular file for writing, which a read-only snapshot
 	# refuses; a directory it opens read-only.
@@ -261,8 +270,10 @@ esac
         )
         return bin_dir
 
-    def run_reporter(self, base: Path, status_text: str, kernel: str | None, **env: str) -> tuple[subprocess.CompletedProcess[str], Path]:
-        bin_dir = base / "bin" if (base / "bin").exists() else self.fixture(base, status_text, kernel)
+    def run_reporter(
+        self, base: Path, status_text: str, kernel: str | None, device_stats: str | None = DEVICE_STATS, **env: str
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        bin_dir = base / "bin" if (base / "bin").exists() else self.fixture(base, status_text, kernel, device_stats)
         reports = base / "reports"
         done = subprocess.run(
             ["bash", str(REPORTER / "vsys-scrub-report"), "/", str(reports)],
@@ -445,6 +456,21 @@ esac
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIsNone(parse(report, Path(tmp))["addresses"])
             self.assertIn("No journal files were found.", report.read_text())
+
+    def test_a_device_list_it_cannot_read_names_no_files_rather_than_none(self) -> None:
+        # Without this filesystem's devices no logged address can be kept, so
+        # a section would list none and read as a scrub that found no damaged
+        # file. The kernel log names a damaged address on the device each time.
+        cases = (
+            (None, "The damaged files are not named: btrfs device stats failed: ERROR: getting device info for / failed: Inappropriate ioctl for device"),
+            ("", f"The damaged files are not named: btrfs device stats named no device of {UUID}"),
+        )
+        for device_stats, reason in cases:
+            with self.subTest(device_stats=device_stats), scratch() as tmp:
+                done, report = self.run_reporter(Path(tmp), status(), fixup("vsys-test-a", NAMED), device_stats)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIsNone(parse(report, Path(tmp))["addresses"])
+                self.assertIn(reason, report.read_text().splitlines())
 
     def test_a_run_stopped_while_resolving_leaves_no_file_vsys_reads(self) -> None:
         with scratch() as tmp:

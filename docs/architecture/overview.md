@@ -73,7 +73,8 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [verdict.md](verdict.md): read when changing what counts as a problem, how problems rank, or the summary JSON.
 - [builds.md](builds.md): read when changing how compile and link work, the build cache or the token pools are counted.
 - [storage.md](storage.md): read when changing filesystem, device, drive or scratch collection, the drive reporter under `scripts/smart-reporter/`, or the udisks2 reading.
-- [storage-integrity.md](storage-integrity.md): read when changing whether a filesystem reads as damaged or checked, the check report format, the kernel log reading or the scrub reporter under `scripts/scrub-reporter/`.
+- [storage-integrity.md](storage-integrity.md): read when changing whether a filesystem reads as damaged or checked, or the kernel log reading.
+- [scrub-reporter.md](scrub-reporter.md): read when changing the check report format or the scrub reporter under `scripts/scrub-reporter/`.
 - [events.md](events.md): read when changing what the timeline records or when a change counts.
 - [history.md](history.md): read when changing replay, retention or persistence.
 - [settings.md](settings.md): read when adding a setting or changing what a settings change replaces.
@@ -81,6 +82,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [ui-screens.md](ui-screens.md): read when changing Home's cards, Storage's integrity rows, or the Agents list and agent detail.
 - [warden.md](warden.md): read when changing the optional process-placement corrector under `warden/`.
 - [warden-install.md](warden-install.md): read when changing `vsys warden install`, `warden/install` or the warden unit templates.
+- [warden-notifications.md](warden-notifications.md): read when changing the warden's desktop notices or episode retries.
 - [warden-status.md](warden-status.md): read when changing the warden status file or its fixtures.
 
 Subsystems with no topic file of their own: `src/model/shell.ts` quotes a copied command so a paste survives an escaped scope name; `src/collect/io.ts` holds the `Reader` that records a source error against the source that failed, and `spawnText()`, which [lanes](lanes.md) describes; `src/config/editor.ts` parses a setting a reader typed.
