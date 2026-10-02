@@ -73,7 +73,8 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [events.md](events.md): read when changing what the timeline records or when a change counts.
 - [history.md](history.md): read when changing replay, retention or persistence.
 - [settings.md](settings.md): read when adding a setting or changing what a settings change replaces.
-- [ui.md](ui.md): read when changing the shell, a screen, colour, or what the reader can act on.
+- [ui.md](ui.md): read when changing the shell, colour, columns, regions, row expansions, cut marks, or what the reader can act on.
+- [ui-screens.md](ui-screens.md): read when changing Home's cards, Storage's integrity rows, or the Agents list and agent detail.
 - [warden.md](warden.md): read when changing the optional process-placement corrector under `warden/`.
 - [warden-install.md](warden-install.md): read when changing `vsys warden install`, `warden/install` or the warden unit templates.
 - [warden-status.md](warden-status.md): read when changing the warden status file or its fixtures.
