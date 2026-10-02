@@ -48,8 +48,8 @@ export const udisksHoldMs = 10 * 60 * 1000;
  * bridge, must not hold every future sample waiting on it.
  */
 export const udisksTimeoutMs = 5000;
-/** A busctl call that did not answer within its deadline. */
-class BusctlTimeout extends Error {}
+/** `withDeadline`'s own clock gave up on a `run` that never settled at all. */
+class RunnerAbandoned extends Error {}
 /** How `timeout did not answer` reads for a given deadline, in one place. */
 const timeoutDetail = (ms: number) => `busctl did not answer within ${ms} ms`;
 /**
@@ -60,15 +60,23 @@ const timeoutDetail = (ms: number) => `busctl did not answer within ${ms} ms`;
  * `timedOut` outcome does — racing the same `ms` against spawnText's own
  * timer let a real timeout resolve as an ordinary, unexplained result purely
  * by which timer callback ran first. This margin exists only to abandon an
- * injected `run` that never resolves at all, never to detect a real timeout.
+ * injected `run` that never resolves at all, never to detect a real timeout,
+ * so its own message carries no borrowed `timeoutDetail` wording: the two
+ * outcomes are different events and must not read alike.
  */
 const deadlineMarginMs = killGraceMs + 500;
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
+    const abandonMs = ms + deadlineMarginMs;
     timer = setTimeout(
-      () => reject(new BusctlTimeout(timeoutDetail(ms))),
-      ms + deadlineMarginMs,
+      () =>
+        reject(
+          new RunnerAbandoned(
+            `busctl runner abandoned after ${abandonMs} ms with no response`,
+          ),
+        ),
+      abandonMs,
     );
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
@@ -209,7 +217,7 @@ async function listUdisks(
   try {
     listed = await withDeadline(run(udisksObjectsArgv, timeoutMs), timeoutMs);
   } catch (error) {
-    if (error instanceof BusctlTimeout)
+    if (error instanceof RunnerAbandoned)
       return {
         targets: null,
         outcome: { failure: "unreadable", detail: error.message },

@@ -209,7 +209,7 @@ test("a listing that never answers is abandoned at the deadline, not left hangin
     drives: [],
     outcome: {
       failure: "unreadable",
-      detail: "busctl did not answer within 10 ms",
+      detail: "busctl runner abandoned after 2510 ms with no response",
     },
   });
 });
@@ -267,7 +267,7 @@ test("a drive whose SMART query never answers keeps its row, written unknown", a
     drives: [{ name: "sda", model: "B", written: null }],
     outcome: {
       failure: "incomplete",
-      detail: "busctl did not answer within 10 ms",
+      detail: "busctl runner abandoned after 2510 ms with no response",
     },
   });
 });
