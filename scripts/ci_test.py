@@ -104,7 +104,7 @@ class ApplicationChecks(unittest.TestCase):
         # gates unmeasured with the rest of the suite green.
         self.assertEqual(
             CHECKS,
-            ("lint", "typecheck", "test", "build", "smoke", "bench:scratch"),
+            ("lint", "typecheck", "test", "build", "smoke", "bench:scratch", "bench:writes"),
         )
         self.assertEqual(
             ARTIFACTS,

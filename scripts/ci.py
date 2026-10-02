@@ -21,8 +21,10 @@ ARTIFACTS = (
 # standalone binary it compiles, each starting both worker threads. A build
 # that drops a worker passes every check before it and fails only when a
 # sample starts that thread, and the binary embeds its workers at paths
-# neither the source tree nor the bundle shows.
-CHECKS = ("lint", "typecheck", "test", "build", "smoke", "bench:scratch")
+# neither the source tree nor the bundle shows. bench:writes holds a sample's
+# history writes on an otherwise idle disk to their budget: timed inside the
+# test suite, a write measures whatever the other suites are doing to the disk.
+CHECKS = ("lint", "typecheck", "test", "build", "smoke", "bench:scratch", "bench:writes")
 
 
 def run_warden_checks() -> None:
