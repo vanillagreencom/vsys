@@ -309,11 +309,32 @@ export class History {
         if (next.db) next.db.transaction(transfer)();
         else transfer();
       }
+      // A copied source archive carries only what the source held, so a
+      // destination that already had its own rows would leave them out of
+      // the archive while `next.db` kept them — the gap `laneWindows` cannot
+      // see, because it trusts the archive to be complete from its first
+      // time onward. Rebuilding from `next.db` itself, now that the transfer
+      // above has settled its final content, keeps that promise.
+      if (next.db) next.archive = History.loadArchive(next.db, cutoff);
       return next;
     } catch (error) {
       next.close();
       throw error;
     }
+  }
+  /** The archive built from a database's own rows, so the two agree on coverage. */
+  private static loadArchive(db: Database, cutoff: number): Archive {
+    const archive = new Archive();
+    for (const row of db
+      .query<{ time: number; data: Uint8Array }, [number]>(
+        "SELECT time, data FROM samples WHERE time >= ? ORDER BY time",
+      )
+      .iterate(cutoff))
+      archive.add(
+        row.time,
+        new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(row.data))),
+      );
+    return archive;
   }
   /** Display and rule preferences affect new points without discarding old ones. */
   configure(c: Config): void {

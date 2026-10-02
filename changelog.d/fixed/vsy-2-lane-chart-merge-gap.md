@@ -1,0 +1,1 @@
+- Lane charts no longer skip rows a destination database already held before history was merged into it.

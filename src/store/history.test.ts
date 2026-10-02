@@ -284,21 +284,33 @@ test("expired snapshots cannot be replayed after a sampling gap", () => {
   expect(h.at(1000)).toBeNull();
   expect(h.at(7200000)?.time).toBe(7200000);
 });
-test("a destination database keeps its intervening samples when history is merged", () => {
+test("a destination database keeps its intervening samples when history is merged", async () => {
   const f = fixture();
   cleanup.push(f.cleanup);
   const now = Date.now();
+  const id = laneSnapshot().id;
+  const laned = (time: number) => {
+    const s = emptySnapshot(time);
+    s.lanes = [laneSnapshot()];
+    return s;
+  };
   const target = new History({ ...f.config, persistence: true });
-  target.add(emptySnapshot(now + 1000));
+  target.add(laned(now + 1000));
   target.close();
   const source = new History(f.config);
   cleanup.push(() => source.close());
-  source.add(emptySnapshot(now));
-  source.add(emptySnapshot(now + 2000));
+  source.add(laned(now));
+  source.add(laned(now + 2000));
   const merged = source.reconfigure({ ...f.config, persistence: true });
   cleanup.push(() => merged.close());
   expect(merged.at(now + 1500)?.time).toBe(now + 1000);
   expect(merged.window(now + 2000, 3000).map((p) => p.time)).toEqual([
+    now,
+    now + 1000,
+    now + 2000,
+  ]);
+  const series = (await merged.laneWindows([id], now + 2000, 3000)).get(id);
+  expect(series?.map((sample) => sample.time)).toEqual([
     now,
     now + 1000,
     now + 2000,
