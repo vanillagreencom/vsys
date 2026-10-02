@@ -57,7 +57,8 @@ main() {
 	systemctl cat btrfs-scrub@.service >/dev/null 2>&1 ||
 		die "unit=btrfs-scrub@.service missing
 This system has no btrfs-scrub@.service for the reporter to run after.
-Install the package that ships it, btrfs-progs on Arch Linux, then run this again."
+Arch Linux's btrfs-progs package ships this unit; Fedora's and Ubuntu's btrfs-progs
+packages do not, so installing btrfs-progs there will not add it."
 
 	local version="${VSYS_VERSION:-}"
 	if [[ -z $version ]]; then
