@@ -498,8 +498,10 @@ class Proc:
             return True  # zygote, gpu-process, renderer, utility
         if "/claude-desktop/" in self.exe or "/Claude" in self.exe:
             return True
-        if self.exe.startswith(DESKTOP_EXE_PREFIXES):
-            return not (self.exe.endswith(BUNDLED_CLI_SUFFIXES) or self.exe_name in HELPER_NAMES)
+        # A binary a package update replaced while it ran reads "<path> (deleted)".
+        exe = self.exe.removesuffix(" (deleted)")
+        if exe.startswith(DESKTOP_EXE_PREFIXES):
+            return not (exe.endswith(BUNDLED_CLI_SUFFIXES) or os.path.basename(exe) in HELPER_NAMES)
         return False
 
     @property

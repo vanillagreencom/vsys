@@ -549,8 +549,9 @@ test("a desktop app named after an agent is no lane, and agents beside it still 
     alerts: [],
   });
   // The agent CLI outside the slice; the engine a desktop app bundles, which
-  // its path names an agent; and an app binary whose executable could not be
-  // read, which stays an agent rather than hiding an escape.
+  // its path names an agent, also once an update replaced it while it ran;
+  // and an app binary whose executable could not be read, which stays an
+  // agent rather than hiding an escape.
   f.proc(40, "app.slice/tmux-spawn-1.scope", {
     command: ["/home/reader/.local/bin/claude", "--resume"],
   });
@@ -560,35 +561,58 @@ test("a desktop app named after an agent is no lane, and agents beside it still 
   });
   f.proc(42, "app.slice/app-gone.scope", { command: [appImage] });
   rmSync(join(f.config.procRoot, "42/exe"));
+  f.proc(43, "app.slice/app-codex-updated.scope", {
+    command: ["/opt/codex-desktop/resources/codex", "exec"],
+    comm: "codex",
+  });
+  rmSync(join(f.config.procRoot, "43/exe"));
+  symlinkSync(
+    "/opt/codex-desktop/resources/codex (deleted)",
+    join(f.config.procRoot, "43/exe"),
+  );
   const s = await collector.sample(2000);
   expect(unconfined(s)).toEqual({
     tools: {
       40: "claude",
       41: "codex",
       42: "claude",
+      43: "codex",
       1702778: null,
       1702955: null,
     },
-    lanes: ["app-codex.scope", "app-gone.scope", "tmux-spawn-1.scope"],
+    lanes: [
+      "app-codex-updated.scope",
+      "app-codex.scope",
+      "app-gone.scope",
+      "tmux-spawn-1.scope",
+    ],
     cause: true,
-    alerts: ["40:100:claude", "41:100:codex", "42:100:claude"],
+    alerts: ["40:100:claude", "41:100:codex", "42:100:claude", "43:100:codex"],
   });
   expect(s.errors).toEqual([]);
 });
 
-test("one --type= pattern rules out every Chromium helper process", () => {
+test("an excluded pattern matches a whole flag, or an option ending in = with any value", () => {
   const appImage = "/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude";
+  const shipped = defaults().excludeArgv;
   const rows = [
-    [[appImage, "--type=renderer"], true],
-    [[appImage, "--type=gpu-process"], true],
-    [[appImage, "--type=utility"], true],
-    [[appImage, "--type=zygote", "--no-zygote-sandbox"], true],
-    [["/usr/bin/claude", "--chrome-native-host"], true],
-    [["/usr/bin/claude", "--resume"], false],
+    [[appImage, "--type=renderer"], shipped, true],
+    [[appImage, "--type=gpu-process"], shipped, true],
+    [[appImage, "--type=utility"], shipped, true],
+    [[appImage, "--type=zygote", "--no-zygote-sandbox"], shipped, true],
+    // A helper type the shipped list never named one by one.
+    [["/usr/lib/slack/slack", "--type=broker"], shipped, true],
+    [["/usr/bin/claude", "--chrome-native-host"], shipped, true],
+    [["/usr/bin/claude", "--resume"], shipped, false],
+    // A pattern without = names one whole flag, never a longer one.
+    [["/usr/bin/claude", "--agents", "{}"], ["--agent"], false],
+    [["/usr/bin/claude", "--agent", "reviewer"], ["--agent"], true],
   ] as const;
   expect(
-    rows.map(([command]) => excludedArgv([...command], defaults().excludeArgv)),
-  ).toEqual(rows.map(([, excluded]) => excluded));
+    rows.map(([command, patterns]) =>
+      excludedArgv([...command], [...patterns]),
+    ),
+  ).toEqual(rows.map(([, , excluded]) => excluded));
 });
 
 test("the program's collector takes desktop paths from the agent-tool overlay", async () => {
