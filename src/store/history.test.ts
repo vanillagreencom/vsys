@@ -141,8 +141,16 @@ test("a stored cache reading written before the query outcome loads with no inve
   const first = new History(f.config);
   first.add(emptySnapshot(now));
   first.add(emptySnapshot(now + 1000));
+  first.add(emptySnapshot(now + 2000));
   first.close();
   const delta = { hits: 3, misses: 1, windowMs: 1000 };
+  const failed = {
+    state: "failed" as const,
+    hits: null,
+    misses: null,
+    sinceStart: null,
+    recent: null,
+  };
   // What an older build wrote: a flag for counters read, and no state.
   const rows = [
     {
@@ -174,6 +182,12 @@ test("a stored cache reading written before the query outcome loads with no inve
         recent: null,
       },
       loaded: undefined,
+    },
+    {
+      // The current shape passes through unchanged.
+      time: now + 2000,
+      stored: failed,
+      loaded: failed,
     },
   ];
   const db = new Database(f.config.sqlitePath);

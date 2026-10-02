@@ -3,7 +3,7 @@ import { defaults } from "../config/config";
 import type { CacheEffect } from "../model/builds";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
 import { mount } from "../test/harness";
-import { cacheDetail, cacheText } from "./builds-screen";
+import { cacheDetail, cacheLevel, cacheText } from "./builds-screen";
 
 test("the cache reading states its window and never divides by nothing", () => {
   expect(cacheText(null)).toBe("not available");
@@ -19,16 +19,18 @@ test("the cache reading states its window and never divides by nothing", () => {
 });
 
 test("the cache tile names a query that failed apart from a missing program", async () => {
-  const rows: [CacheEffect["state"], string][] = [
-    ["read", "since start not available"],
-    ["absent", "sccache is not on the PATH"],
-    ["failed", "sccache --show-stats failed, see Data sources"],
-    [null, "no cache reading in this sample"],
+  // A failed query warns like a bypassed cache; a missing program does not.
+  const rows: [CacheEffect["state"], string[], string, string][] = [
+    ["read", [], "since start not available", "ok"],
+    ["read", ["lane-a"], "since start not available", "warn"],
+    ["absent", [], "sccache is not on the PATH", "ok"],
+    ["failed", [], "sccache --show-stats failed, see Data sources", "warn"],
+    [null, [], "no cache reading in this sample", "ok"],
   ];
-  for (const [state, detail] of rows)
-    expect(
-      cacheDetail({ state, sinceStart: null, recent: null, bypassed: [] }),
-    ).toBe(detail);
+  for (const [state, bypassed, detail, level] of rows) {
+    const cache = { state, sinceStart: null, recent: null, bypassed };
+    expect([cacheDetail(cache), cacheLevel(cache)]).toEqual([detail, level]);
+  }
   // The tile draws the failed query rather than the missing program.
   const s = emptySnapshot();
   s.sccache = {

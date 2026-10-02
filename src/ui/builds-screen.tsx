@@ -4,6 +4,7 @@ import type { Config } from "../config/config";
 import { buildsSummary, type CacheEffect, type Rates } from "../model/builds";
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
+import type { Level } from "../model/verdict";
 import { meters } from "../model/verdict";
 import { meterTile } from "./attention";
 import { keyLabel, screenPad } from "./chrome";
@@ -61,6 +62,14 @@ export function cacheDetail(cache: CacheEffect): string {
       throw new Error(`Unknown cache state: ${String(unknown)}`);
     }
   }
+}
+
+/**
+ * A failed query is a reading that could not be taken, so it warns like a
+ * bypassed cache. A missing program is an absent feature and does not.
+ */
+export function cacheLevel(cache: CacheEffect): Level {
+  return cache.state === "failed" || cache.bypassed.length ? "warn" : "ok";
 }
 
 /** Compile and link work: the fleet total, each lane's share, then the processes. */
@@ -188,7 +197,7 @@ export function Builds({
               ? share(cache.recent.rate)
               : gap
           }
-          level={cache.bypassed.length ? "warn" : "ok"}
+          level={cacheLevel(cache)}
           detail={cacheDetail(cache)}
         />
         <Tile

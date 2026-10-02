@@ -144,7 +144,8 @@ test("a failed query keeps its source error on the samples the throttle skips", 
     expect(r.errors).toEqual([{ source: "sccache --show-stats", message }]);
   }
   expect(calls).toBe(2);
-  // A query that answers clears the error on its sample and the skipped ones.
+  // A query that reads the counters clears the error on its sample and the
+  // skipped ones.
   text = stats(1, 1);
   for (const time of [10000, 14999]) {
     const r = new Reader();

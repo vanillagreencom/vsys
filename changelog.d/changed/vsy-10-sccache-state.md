@@ -1,1 +1,1 @@
-- `vsys --once` reports the build cache as `sccache.state` (`read`, `absent` or `failed`) in place of `sccache.available`.
+- **Breaking:** `vsys --once` reports `sccache.state` in place of `sccache.available`. Read `true` as `"read"`; `false` is now `"absent"` or `"failed"`.
