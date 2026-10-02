@@ -16,7 +16,13 @@ import { listPanesArgv } from "./tmux";
 /** Controllers a lane's CPU and memory numbers need delegated to this session. */
 const delegated = ["cpu", "memory"];
 /** A failure may name the source that decided it when a probe reads two. */
-type Failure = { failure: CapabilityFailure; detail: string; source?: string };
+type Failure = {
+  failure: CapabilityFailure;
+  detail: string;
+  source?: string;
+  /** io-stat's ancestry walk alone; see `Capability.belowSlice`. */
+  belowSlice?: boolean;
+};
 export type Outcome = Failure | null;
 
 /**
@@ -174,6 +180,7 @@ function record(
     failure: outcome?.failure ?? null,
     source: outcome?.source ?? source,
     detail: outcome?.detail ?? detail,
+    belowSlice: outcome?.belowSlice,
   };
 }
 /** Null when the path exists, otherwise what stat met, diagnosed as above. */
@@ -309,6 +316,19 @@ export function probeAgentSlice(
  * reveal, including one nested inside another and one `collectGroups` itself
  * could not read, so a reading that checked only one instance never misses a
  * second one withholding io.
+ *
+ * Each failure also records `belowSlice`: whether the failing ancestor sits at
+ * or below the agent slice's own occurrence in the instance path being walked,
+ * true from the depth that path first names the slice onward. A slice's own
+ * `cgroup.subtree_control` gates only what it hands to its children, never its
+ * own `io.stat`, so `writeTotals`'s slice total survives exactly when this
+ * holds, whatever the failing component is named: a plain directory between
+ * two instances of a slice nested inside itself sits below the outer one just
+ * as the slice's own last step does, even though neither names the slice. The
+ * failing component's bare name cannot carry this: it can equal the
+ * configured slice's name at a depth that is not that occurrence's own, once
+ * the name recurs under nesting, and it never names an ancestor that is not
+ * itself a slice instance at all.
  */
 export function probeIoStat(
   c: CollectionConfig,
@@ -332,6 +352,7 @@ export function probeIoStat(
         return record("io-stat", source, {
           failure: "incomplete",
           detail: parts[depth - 1],
+          belowSlice: parts.slice(0, depth).includes(c.agentSlice),
         });
     }
   }

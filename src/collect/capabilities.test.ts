@@ -168,6 +168,9 @@ test("a slice between a delegating root and the agent scopes can still withhold 
     failure: "incomplete",
     source: join(agentsSlice, "cgroup.subtree_control"),
     detail: "agents.slice",
+    // The withholding directory IS the configured slice's own occurrence, so
+    // its own io.stat (and Storage's total for it) is unaffected.
+    belowSlice: true,
   });
   // A desktop slice that holds no agents is not on the agent slice's own
   // ancestry, so its own withholding of io costs it nothing here, as today.
@@ -255,6 +258,9 @@ test("a two-level ancestry under a dashed agent-slice name names whichever level
     failure: "incomplete",
     source: join(outer, "cgroup.subtree_control"),
     detail: "agents.slice",
+    // "agents.slice" sits strictly above "agents-work.slice" here, never
+    // naming it, so the configured slice's own io.stat is cut off too.
+    belowSlice: false,
   });
   // The outer slice delegates; the leaf itself withholds io from its own
   // scopes, so the leaf is named instead of the outer slice.
@@ -265,6 +271,7 @@ test("a two-level ancestry under a dashed agent-slice name names whichever level
     failure: "incomplete",
     source: join(leaf, "cgroup.subtree_control"),
     detail: "agents-work.slice",
+    belowSlice: true,
   });
 });
 
@@ -396,6 +403,55 @@ test("an agent slice nested below another instance of itself is checked even whe
     failure: "incomplete",
     source: join(inner, "cgroup.subtree_control"),
     detail: "agents.slice",
+    belowSlice: true,
+  });
+});
+
+test("a plain directory between two nested instances of the same slice name withholds io without reaching the outer occurrence's own total", () => {
+  const f = setup();
+  writeFileSync(
+    join(f.config.cgroupRoot, "cgroup.subtree_control"),
+    "cpu io memory pids\n",
+  );
+  const root = byId(probeCapabilities(f.config, answering)).get(
+    "io-stat",
+  ) as Capability;
+  const outer = join(f.config.cgroupRoot, "agents.slice");
+  // A plain directory, not itself a slice, sits between the outer occurrence
+  // and an inner one that happens to share its name.
+  const between = join(outer, "somegroup");
+  const inner = join(between, "agents.slice");
+  mkdirSync(inner, { recursive: true });
+  // The outer occurrence delegates to its own children...
+  writeFileSync(join(outer, "cgroup.subtree_control"), "cpu io memory pids\n");
+  // ...but the plain directory below it does not hand io on, even though the
+  // inner instance's own last step would otherwise delegate fine.
+  writeFileSync(join(between, "cgroup.subtree_control"), "cpu memory pids\n");
+  writeFileSync(join(inner, "cgroup.subtree_control"), "cpu io memory pids\n");
+  const groups = [
+    groupSnapshot({ path: "agents.slice", parent: ".", name: "agents.slice" }),
+    groupSnapshot({
+      path: "agents.slice/somegroup",
+      parent: "agents.slice",
+      name: "somegroup",
+    }),
+    groupSnapshot({
+      path: "agents.slice/somegroup/agents.slice",
+      parent: "agents.slice/somegroup",
+      name: "agents.slice",
+    }),
+  ];
+  // The failing component is named neither "io" nor the configured slice,
+  // and it is reached while walking the inner occurrence's longer path at a
+  // depth short of that occurrence's own last step; a check keyed on either
+  // fact alone would misname this as an ancestor strictly above the slice.
+  // It sits below the outer occurrence instead, so `belowSlice` is true.
+  expect(probeIoStat(f.config, groups, root)).toMatchObject({
+    available: false,
+    failure: "incomplete",
+    source: join(between, "cgroup.subtree_control"),
+    detail: "somegroup",
+    belowSlice: true,
   });
 });
 

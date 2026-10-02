@@ -194,6 +194,7 @@ test("the reason follows what the probe found, not the interface name", () => {
     failure: "incomplete",
     source: "/sys/fs/cgroup/agents.slice/cgroup.subtree_control",
     detail: "agents.slice",
+    belowSlice: true,
   };
   expect(capabilityReason(withheldBySlice)).toBe(
     "agents.slice does not hand the io controller down to the groups below it",
@@ -227,13 +228,18 @@ test("the reason follows what the probe found, not the interface name", () => {
   ).toEqual({ name: c.agentSlice, written: 2_000_000 });
   // Mirrors capabilities.test.ts's dashed-slice ancestry: the configured
   // slice is agents-work.slice, nested inside agents.slice, and the
-  // OUTER slice (strictly above the configured one, so cap.detail differs
-  // from c.agentSlice) withholds io. The configured slice's parent never
-  // delegates io to it, so its own io.stat never arrives either, and
-  // Storage's row for it goes blank along with Home's, which the loss line
-  // must say instead of claiming Storage stays whole.
+  // OUTER slice (strictly above the configured one, so it is not the
+  // occurrence `probeIoStat` set `belowSlice` for) withholds io. The
+  // configured slice's parent never delegates io to it, so its own io.stat
+  // never arrives either, and Storage's row for it goes blank along with
+  // Home's, which the loss line must say instead of claiming Storage stays
+  // whole.
   const nested = { ...c, agentSlice: "agents-work.slice" };
-  expect(capabilityLoss(withheldBySlice, nested)).toBe(
+  const withheldByOuterAncestor: Capability = {
+    ...withheldBySlice,
+    belowSlice: false,
+  };
+  expect(capabilityLoss(withheldByOuterAncestor, nested)).toBe(
     "disk writes are blank rather than zero, on Home, for the groups under agents.slice, and on Storage, for agents-work.slice's own total: agents.slice does not hand the io controller down to it either",
   );
   const nestedSnapshot = emptySnapshot();
@@ -249,6 +255,53 @@ test("the reason follows what the probe found, not the interface name", () => {
       (slice) => slice.name === nested.agentSlice,
     ),
   ).toEqual({ name: nested.agentSlice, written: null });
+  // A same-named slice can recur nested inside itself: a withholding
+  // directory between the outer occurrence and the inner one ("somegroup",
+  // which names neither the slice nor "io") still sits below the outer
+  // occurrence Storage reads, so Storage stays whole. Comparing cap.detail
+  // against c.agentSlice could not tell this apart from a true ancestor
+  // above the slice; `belowSlice` can, because `probeIoStat` set it from the
+  // walk's own structure rather than from the failing component's name.
+  const withheldByIntermediate: Capability = {
+    id: "io-stat",
+    available: false,
+    failure: "incomplete",
+    source: "/sys/fs/cgroup/agents.slice/somegroup/cgroup.subtree_control",
+    detail: "somegroup",
+    belowSlice: true,
+  };
+  expect(capabilityLoss(withheldByIntermediate, c)).toBe(
+    "disk writes are blank rather than zero, on Home, for the groups under somegroup; it does not hand the io controller to them",
+  );
+  const nestedSameName = emptySnapshot();
+  nestedSameName.groups = [
+    groupSnapshot({
+      path: "agents.slice",
+      parent: ".",
+      name: "agents.slice",
+      ioWrite: 2_000_000,
+    }),
+    groupSnapshot({
+      path: "agents.slice/somegroup",
+      parent: "agents.slice",
+      name: "somegroup",
+    }),
+    groupSnapshot({
+      path: "agents.slice/somegroup/agents.slice",
+      parent: "agents.slice/somegroup",
+      name: "agents.slice",
+      ioWrite: null,
+      writeRate: null,
+    }),
+  ];
+  // The message says Home alone, and Storage's own total for the configured
+  // slice agrees: it is the outer occurrence's real total, untouched by the
+  // intermediate directory withholding io from what sits below it.
+  expect(
+    writeTotals(nestedSameName, c).slices.find(
+      (slice) => slice.name === c.agentSlice,
+    ),
+  ).toEqual({ name: c.agentSlice, written: 2_000_000 });
 });
 
 test("every missing capability says what it costs the reader, in its own words", () => {

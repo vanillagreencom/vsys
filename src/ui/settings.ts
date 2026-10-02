@@ -377,14 +377,17 @@ const unreadCost: Partial<Record<CapabilityId, string>> = {
  * loss (the root hands io down, but one of the agent slice's own ancestors
  * does not) always costs Home's per-scope reads under the withholding
  * ancestor. Whether it also costs Storage's slice-aggregate row turns on
- * which ancestor withheld it: `probeIoStat()` walks the agent slice's own
- * ancestry from directly below the root down to the slice itself, so
- * `cap.detail` names the slice itself only on the last step. There, the
- * slice's own `io.stat` was already handed down by its parent one step
- * earlier, so `writeTotals()`'s slice total still reads it and Storage is
- * unaffected. Anywhere earlier in that walk, the withholding ancestor sits
- * above the slice, so the slice itself never receives `io.stat` either, and
- * Storage's row for it goes blank along with Home's.
+ * `cap.belowSlice`, which `probeIoStat()` sets structurally rather than this
+ * function inferring it from the failing component's name: a slice's own
+ * `cgroup.subtree_control` gates only what it hands to its children, never
+ * its own `io.stat`, so once the walk reaches the slice, `writeTotals()`'s
+ * slice total still reads it and Storage is unaffected, whatever lower
+ * ancestor withheld it next (the same holds for a plain directory between two
+ * nested instances of the slice, which names neither the slice nor "io").
+ * Only a withholding ancestor strictly above the slice cuts its own
+ * `io.stat` off too, blanking Storage's row along with Home's. Comparing
+ * `cap.detail` against `c.agentSlice` could not carry this once the slice's
+ * name can recur at a depth that is not that occurrence's own.
  */
 export function capabilityLoss(
   cap: Capability,
@@ -396,7 +399,7 @@ export function capabilityLoss(
     cap.failure === "incomplete" &&
     cap.detail !== "io"
   )
-    return cap.detail === c.agentSlice
+    return cap.belowSlice
       ? `disk writes are blank rather than zero, on Home, for the groups under ${cap.detail}; it does not hand the io controller to them`
       : `disk writes are blank rather than zero, on Home, for the groups under ${cap.detail}, and on Storage, for ${c.agentSlice}'s own total: ${cap.detail} does not hand the io controller down to it either`;
   const unread = cap.failure !== "absent" && cap.failure !== "masked";
