@@ -270,7 +270,7 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                     {"name": "dsh", "mise": ["dsh-install"]},
                     {"name": "ownersonly"},
                 ],
-                "desktopExePrefixes": ["/opt/", "/tmp/.mount_"],
+                "desktopExePrefixes": ["/opt/", "/tmp/.mount_", "/tmp"],
                 "bundledCliSuffixes": ["/vendor/pi"],
             }))
             env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": base / "mise"})
@@ -301,6 +301,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
              rec("pi", [f"{scratch_home}/vendor/pi"], f"{scratch_home}/vendor/pi").is_agent, False),
             ("pi as a bundled CLI engine under a /tmp desktop prefix is not an agent: /tmp is world-writable on every target",
              rec("pi", ["/tmp/.mount_zzzzzz/app/vendor/pi"], "/tmp/.mount_zzzzzz/app/vendor/pi").is_agent, False),
+            ("pi as a bundled CLI engine under a bare /tmp desktop prefix (no trailing slash) is not an agent: the same forgeable root under another spelling",
+             rec("pi", ["/tmp/app/vendor/pi"], "/tmp/app/vendor/pi").is_agent, False),
             ("an unreadable executable keeps the name",
              rec("pi", ["pi"], "").is_agent, True),
             ("a name with no configured install location is trusted",

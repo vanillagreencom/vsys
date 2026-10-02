@@ -321,7 +321,10 @@ BUNDLED_CLI_SUFFIXES = tuple(AGENT_TOOLS["bundledCliSuffixes"])
 # anchor because it never acts automatically; is_desktop below still reads the
 # full DESKTOP_EXE_PREFIXES, since excluding a process from the agent slice is
 # the safe direction for a forgeable prefix.
-BUNDLED_CLI_PREFIXES = tuple(prefix for prefix in DESKTOP_EXE_PREFIXES if not prefix.startswith("/tmp/"))
+BUNDLED_CLI_PREFIXES = tuple(
+    prefix for prefix in DESKTOP_EXE_PREFIXES
+    if prefix != "/tmp" and not prefix.startswith("/tmp/")
+)
 # D010: a configured name is a candidate, never the decision. Each tool's own
 # mise install directory and whole executable paths are where its real
 # installs put it; a comm match confirms only when the process's executable
