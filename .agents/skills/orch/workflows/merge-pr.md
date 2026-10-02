@@ -88,25 +88,31 @@ env -u GH_REPO -u GITHUB_REPOSITORY gh pr view [PR_NUMBER] --json headRefName --
 .agents/skills/orch/scripts/workflow-state update [STATE_KEY] '.post_pr_stop = null'
 ```
 
+Read `[CHECK_HEAD]` before each readiness check:
+
+```bash
+env -u GH_REPO -u GITHUB_REPOSITORY gh pr view [PR_NUMBER] --json headRefOid --jq .headRefOid
+```
+
 ```bash
 .agents/skills/github/scripts/github.sh pr-merge [PR_NUMBER] --check
 ```
 
 ### 3.1 Resolve Transient Blockers First
 
-`CHECK.transient == true` → route on the issue prefix before any user prompt, and never loop indefinitely. Continue to § 3.2 once `transient` is `false` or the bounded wait expires.
+`CHECK.transient == true` → route on the issue prefix before any user prompt, then continue to § 3.2. Each re-check repeats § 3's head read.
 
 | Prefix | Wait |
 |--------|------|
 | `unknown:` (GitHub still computing mergeable status) | No wait of its own: GitHub computes the state before an armed PR merges. Re-check once, then continue to § 3.2 with the latest `CHECK` |
-| `ci_pending:` | `.agents/skills/orch/scripts/ci-wait [PR_NUMBER] 180 600 --item [STATE_KEY]`, then re-check. On a non-zero exit other than `5`, or a timeout, re-check once for fresh state; if still pending, `auto-recommended` records `merge-ci-pending`, while `ask` surfaces the result. Never another automatic wait |
+| `ci_pending:` | No wait here. Continue to § 3.2's gates, then § 5 step 1's owned CI wait and `CI_PENDING_LIMIT` |
 | `ci_fetch_failed:`, `ci_unconfigured:` | Re-check, at most three checks total, then continue with the latest `CHECK` |
 
 ### 3.2 Act On The Result
 
 `CHECK.state` decides first: `MERGED` → set `[ALREADY_MERGED]=true`, run § 4 EXCEPT § 4.1, then enter § 5 step 1, which skips the thread read, the arm and the wait and goes straight to post-merge work; `CLOSED` → records `pr-closed-unmerged`.
 
-`can_merge: true` → § 4 once the gates below are met, showing any warnings. `can_merge: false` with `transient: true`, once § 3.1 has run and recorded no stop, takes the same route only where `unknown:` is the only issue left: GitHub computes the mergeable state itself while it holds an armed PR, and § 5 step 1's `--auto` arm lets it hold the merge until it has. On that `unknown:` path an `arm: no-merge-gate` answer records `merge-readiness-unresolved` instead of taking the direct attempt, which would refuse on the same issue. Any other `false`, a `ci_pending:` or `ci_fetch_failed:` issue left after § 3.1 included, → show the issues with their suggested fixes: GitHub holds an armed PR only on the base's required status checks, so this route never arms over a CI state the lane could not read. `auto-recommended` logs `Fix and retry` and takes that route once; the same blocker after the retry records `merge-check-blocked`. `ask` presents `Skip` | `Fix and retry`, with `Fix and retry` recommended.
+`can_merge: true` → § 4 once the gates below are met, showing any warnings. `can_merge: false` with `transient: true` takes that route after § 3.1 only when all remaining issues are `ci_pending:`, or `unknown:` is the only issue. Pending CI takes § 5 step 1's direct-attempt wait; unknown takes its explicit queue arm and refusal handler. Any other `false`, including `ci_fetch_failed:`, → show the issues and suggested fixes. `auto-recommended` takes `Fix and retry` once; the same blocker then records `merge-check-blocked`. `ask` presents `Skip` | `Fix and retry`, recommending the latter.
 
 The following conditions are merge gates, not advice:
 
@@ -206,7 +212,7 @@ Use the output as `MAIN_REPO_ROOT`.
    env -u GH_REPO -u GITHUB_REPOSITORY gh repo view --json nameWithOwner --jq .nameWithOwner
    ```
 
-   `[ALREADY_MERGED]=true` skips to step 2 HERE, ahead of every read below: the squash orphans a merged head, a resumed lane may not hold it, and a refusal for want of it must not block that merge's cleanup.
+   `[ALREADY_MERGED]=true` keeps the recorded merge decision in status and the PR body, then skips to step 2 before every read below. A merged head may be unavailable; cleanup needs no fresh attempt or route.
 
    **Thread read.** Run § 3.3 first, on every entry to this step and every return from the cycles below. Then read the endpoints:
 
@@ -214,7 +220,7 @@ Use the output as `MAIN_REPO_ROOT`.
    env -u GH_REPO -u GITHUB_REPOSITORY gh pr view [PR_NUMBER] --json baseRefOid,headRefOid --jq '[.baseRefOid,.headRefOid]|@tsv'
    ```
 
-   That head is `[PREPARED_HEAD]` and that base is `[PREPARED_BASE]`. A `[MICRO_ENTRY]` run classifies them, fetching both first so a base tip newer than the worktree's last fetch is still measured:
+   That head is `[PREPARED_HEAD]` and that base is `[PREPARED_BASE]`. Except on `[MICRO_ENTRY]`, require `[PREPARED_HEAD]=[CHECK_HEAD]`; a mismatch returns to § 3 for fresh readiness and approval. A `[MICRO_ENTRY]` run classifies them, fetching both first so a base tip newer than the worktree's last fetch is still measured:
 
    ```bash
    git -C [WORKTREE_PATH] fetch --quiet --no-tags --no-write-fetch-head origin [PREPARED_BASE] [PREPARED_HEAD]
@@ -232,35 +238,21 @@ Use the output as `MAIN_REPO_ROOT`.
 
    A `[MICRO_ENTRY]` run continues only where the `item-tier` answer is `tier=micro`, the gate mode is `approval`, AND `[MICRO_HEAD]` equals `[PREPARED_HEAD]`: a retarget can change the class or the base's approval rule without moving the head, so the fresh answers carry the micro tier and the head says it is the same run. Any other answer arms nothing and escapes by micro.md condition 9. Read workflow state `pr.size_check` for `[STATE_KEY]`, and use it only when its `head_sha` equals `[PREPARED_HEAD]`, per [workflow-state.md § Field Definitions](../schemas/workflow-state.md#field-definitions). Its verdict and counts inform the reviewer's or orchestrator's cut decision under [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow). A missing or stale report supplies no current counts. The report does not gate merge.
 
-   **Merge route.** `pr-merge` picks the route, per kendex decision [D016](https://github.com/vanillagreencom/kendex/blob/main/docs/decisions/D016-merge-route-reads-bypass.md), and no step here judges it: it merges past the queue with `--admin` bound to the prepared head and exits `0`, or takes the queue and exits `75`, naming the cause on its `merge-route:` line (`pr-merge --help` § Merge route). Take the direct attempt below first. [submit-pr.md](submit-pr.md) § 2 step 5 arms at creation only a PR this route takes through the queue; where GitHub has already queued a PR, the attempt answers exit `75`. An item whose workflow state carries `pr_approval.forced`, and a PR on § 3.2's `unknown:` path, whose direct attempt would refuse on that issue, take the `--auto` arm below instead, which never passes `--admin`.
+   **Merge route.** `pr-merge` picks the route, per kendex decision [D016](https://github.com/vanillagreencom/kendex/blob/main/docs/decisions/D016-merge-route-reads-bypass.md), and no step here judges it: it merges past the queue with `--admin` bound to the prepared head and exits `0`, or takes the queue and exits `75`, naming the cause on its `merge-route:` line (`pr-merge --help` § Merge route). Take the direct attempt below first. [submit-pr.md](submit-pr.md) § 2 step 5 arms at creation only a PR this route takes through the queue; where GitHub has already queued a PR, the attempt answers exit `75`. An item whose workflow state carries `pr_approval.forced`, and a PR on § 3.2's `unknown:` path, whose direct attempt would refuse on that issue, take the explicit `--auto --queue` arm below instead, which never passes `--admin`.
 
    **Who acts.** The lane merges its own PR under the token the `github.sh` router selects, the lanes app's installation token in a lane sandbox. The emergency merge of [review-gate SKILL.md § 4. Operations](../../review-gate/SKILL.md#4-operations) is the overseer's GitHub App's alone.
 
-   **The direct attempt** follows a CI wait on the PR, on every entry to it, since the immediate merge refuses a pending check. Wait through [Waiter launch](../references/waiter-launch.md):
+   **The direct attempt.** Follow [merge-attempt.md](../references/merge-attempt.md#direct-attempt) for the approved-head CI wait, its pending bound, the exact-head attempt and exit routing. Its exit `75` enters the queue-wait block below.
 
-   ```bash
-   env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/ci-wait [PR_NUMBER] 180 600 --json --item [STATE_KEY]
-   ```
-
-   A settled failure returns at once, and a settled green run the wait never saw in progress after its stale window (`ci-wait --help`). A `status=timeout` result waits once more. Every other result goes on to the attempt, which judges it: the wait counts every red check, the attempt only the required ones. The attempt's `--expected-head` refuses a head a push moved meanwhile.
-
-   ```bash
-   env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/github/scripts/github.sh -C [MAIN_REPO_ROOT] pr-merge [PR_NUMBER] --expected-head [PREPARED_HEAD]
-   ```
-
-   Exit `0` merged the prepared head — continue to step 2.
-
-   Exit `75` means GitHub queued or armed the PR: take the queue-wait block below the `--auto` arm.
-
-   Exit `1` BLOCKED → run `env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/github/scripts/github.sh -C [MAIN_REPO_ROOT] ci-classify-refusal [PR_NUMBER]` and return to § 3.2 with its cause and detail.
+   **Record the merge decision.** After each attempt here or in [submit-pr.md](submit-pr.md) § 2 step 5, apply [merge-attempt.md § Record the merge decision](../references/merge-attempt.md#record-the-merge-decision) before routing its exit.
 
    **The `--auto` arm** takes only that same head:
 
    ```bash
-   env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/github/scripts/github.sh -C [MAIN_REPO_ROOT] pr-merge [PR_NUMBER] --auto --expected-head [PREPARED_HEAD]
+   env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/github/scripts/github.sh -C [MAIN_REPO_ROOT] pr-merge [PR_NUMBER] --auto --queue --expected-head [PREPARED_HEAD]
    ```
 
-   Exit `0` merged the prepared head immediately — continue to step 2. Exit `1` with first line `arm: no-merge-gate=<condition>` means the arm armed nothing and names why: on § 3.2's `unknown:` path record `merge-readiness-unresolved`; otherwise take the direct attempt above, whose exit `75` routes a base that still queues the PR, and never fall back to a raw `gh pr merge --auto`. Any other exit but `0` or `75` is an exact-head arm failure: surface it and return to § 3.2.
+   Exit `0` merged the prepared head immediately — continue to step 2. Exit `1` with a diagnostic line starting `arm: no-merge-gate=<condition>`, including after a `merge-route:` line, means the arm armed nothing and names why: on § 3.2's `unknown:` path record `merge-readiness-unresolved`; otherwise take the direct attempt above, whose exit `75` routes a base that still queues the PR, and never fall back to a raw `gh pr merge --auto`. Any other exit but `0` or `75` is an exact-head arm failure: surface it and return to § 3.2.
 
    Exit `75` means queued or armed. Run the command below through [Waiter launch](../references/waiter-launch.md), under every gate mode. Keep the lane active while polling the completion file, then route the recorded exit and result. A changes-requested review blocked at § 3.2's readiness check, before this arm; past it no mode reads review state. The wait's late-findings guard reads the review threads while the PR is queued or armed, an armed PR GitHub holds before any queue entry included, and its `dequeued` verdict routes an open thread to Late-findings triage: a thread posted after this step's thread read.
 
