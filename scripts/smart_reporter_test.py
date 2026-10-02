@@ -8,6 +8,7 @@ where, and what it refuses.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,25 @@ def bun() -> str:
     if path is None:
         raise AssertionError("bun=missing: the report is parsed with vsys's own parser, which runs on Bun")
     return path
+
+
+# Every external tool install uses besides what run_install already stubs
+# (curl, install, systemctl, systemd-tmpfiles, smartctl) and the checksum
+# tool under test: symlinked in so a checksum_tool case can exclude the
+# system PATH, and so hide sha256sum and shasum from it, without losing
+# these.
+RESTRICTED_TOOLS = ("bash", "rm", "cut", "head", "sed", "mktemp", "basename", "cp")
+
+
+def restricted_system_bin(base: Path) -> Path:
+    sys_bin = base / "sysbin"
+    sys_bin.mkdir()
+    for name in RESTRICTED_TOOLS:
+        found = shutil.which(name)
+        if found is None:
+            raise AssertionError(f"{name}=missing: the installer needs it")
+        (sys_bin / name).symlink_to(found)
+    return sys_bin
 
 
 def parse(report: Path, home: Path) -> dict:
@@ -127,8 +147,38 @@ esac
             )
 
 
+REPORTER_FILES = ("vsys-smart-report", "vsys-smart-report.service", "vsys-smart-report.timer", "vsys-smart.conf")
+
+
+def reporter_sums() -> str:
+    """The checksums a release publishing the checkout's own files would carry."""
+    return "".join(f"{hashlib.sha256((REPORTER / name).read_bytes()).hexdigest()}  {name}\n" for name in REPORTER_FILES)
+
+
 class InstallTest(unittest.TestCase):
-    def run_install(self, base: Path, *, smartctl: bool = True, fail_download: str = "") -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    def run_install(
+        self,
+        base: Path,
+        *,
+        smartctl: bool = True,
+        checksum_tool: str = "sha256sum",
+        fail_download: str = "",
+        fail_sums: bool = False,
+        sums_text: str | None = None,
+        version: str | None = "vfixture",
+        api_tag: str | None = "vlatest-fixture",
+        fail_api: bool = False,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        """version=None leaves VSYS_VERSION unset, so install resolves the tag
+        itself from the stubbed GitHub API, the same lookup the scrub-reporter
+        installer uses.
+
+        checksum_tool="sha256sum" (default) runs with the system PATH, where
+        sha256sum resolves first. "shasum" and "none" instead exclude the
+        system PATH, reaching only RESTRICTED_TOOLS plus, for "shasum", a
+        stub of that name wrapping the real sha256sum, so neither tool
+        resolves for "none" and only shasum does for "shasum".
+        """
         bin_dir = base / "bin"
         bin_dir.mkdir()
         calls = base / "calls"
@@ -138,23 +188,58 @@ class InstallTest(unittest.TestCase):
             stub(bin_dir, name, record)
         if smartctl:
             stub(bin_dir, "smartctl", record)
+        if checksum_tool == "shasum":
+            sha256sum = shutil.which("sha256sum")
+            if sha256sum is None:
+                raise AssertionError("sha256sum=missing: the shasum-only case wraps the real tool")
+            stub(
+                bin_dir,
+                "shasum",
+                f"""[[ $1 == -a && $2 == 256 ]] || exit 2
+sum=$("{sha256sum}" "$3" | cut -d' ' -f1)
+printf '%s  %s\\n' "$sum" "$3"
+""",
+            )
+        sums_path = base / "SHA256SUMS"
+        sums_path.write_text(sums_text if sums_text is not None else reporter_sums())
+        sums_fetch = "exit 22" if fail_sums else f'cp "{sums_path}" "$4"'
+        if fail_api:
+            api_fetch = "exit 22"
+        else:
+            body = f'{{"tag_name": "{api_tag}"}}' if api_tag is not None else '{"message": "Not Found"}'
+            api_fetch = f"printf '%s\\n' '{body}'"
         # The download serves the checkout's own files, by the name the URL ends in.
         stub(
             bin_dir,
             "curl",
             record
-            + f"""name=${{2##*/}}
-[[ $name == "{fail_download}" ]] && exit 22
-cp "{REPORTER}/$name" "$4"
+            + f"""url=$2
+case "$url" in
+*/releases/latest) {api_fetch} ;;
+*)
+	name=${{url##*/}}
+	case "$name" in
+	SHA256SUMS) {sums_fetch} ;;
+	"{fail_download}") exit 22 ;;
+	*) cp "{REPORTER}/$name" "$4" ;;
+	esac
+	;;
+esac
 """,
         )
         # The system directories come after the stubs only where the case
-        # needs a real tool; with no smartctl the installer stops before any.
-        path = f"{bin_dir}:/usr/bin:/bin" if smartctl else str(bin_dir)
+        # needs a real tool unaffected by checksum_tool; with no smartctl the
+        # installer stops before any, and a non-default checksum_tool needs
+        # sha256sum itself kept off the path.
+        if not smartctl or checksum_tool != "sha256sum":
+            path = f"{bin_dir}:{restricted_system_bin(base)}"
+        else:
+            path = f"{bin_dir}:/usr/bin:/bin"
+        env_extra = {} if version is None else {"VSYS_VERSION": version}
         done = subprocess.run(
             [bash(), "-s"],
             input=(REPORTER / "install").read_text(),
-            env={"PATH": path, "LC_ALL": "C"},
+            env={"PATH": path, "LC_ALL": "C", **env_extra},
             capture_output=True,
             text=True,
             check=False,
@@ -183,7 +268,47 @@ cp "{REPORTER}/$name" "$4"
                     "systemctl enable --now vsys-smart-report.timer",
                 ],
             )
-            self.assertEqual(done.stdout.splitlines()[0], "smart-reporter: installed")
+            self.assertEqual(done.stdout.splitlines()[0], "smart-reporter: installed vfixture")
+
+    def test_the_installer_fetches_from_the_resolved_version_tag(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), version="v9.9.9")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fetches = [call for call in calls if call.startswith("curl ")]
+            self.assertTrue(
+                any("/vanillagreencom/vsys/v9.9.9/scripts/smart-reporter/vsys-smart-report" in call for call in fetches),
+                fetches,
+            )
+            self.assertTrue(
+                any("/vanillagreencom/vsys/releases/download/v9.9.9/SHA256SUMS" in call for call in fetches),
+                fetches,
+            )
+
+    def test_an_unset_version_resolves_the_latest_release(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), version=None, api_tag="vlatest-fixture")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout.splitlines()[0], "smart-reporter: installed vlatest-fixture")
+            fetches = [call for call in calls if call.startswith("curl ")]
+            self.assertTrue(any("api.github.com/repos/vanillagreencom/vsys/releases/latest" in call for call in fetches), fetches)
+            self.assertTrue(
+                any("/vanillagreencom/vsys/vlatest-fixture/scripts/smart-reporter/vsys-smart-report" in call for call in fetches),
+                fetches,
+            )
+
+    def test_a_failed_version_lookup_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), version=None, fail_api=True)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: could not reach GitHub to read the latest release tag.")
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
+
+    def test_a_release_response_with_no_tag_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), version=None, api_tag=None)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: GitHub reported no latest release for vanillagreencom/vsys.")
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_no_smartctl_installs_nothing(self) -> None:
         with scratch() as tmp:
@@ -192,12 +317,72 @@ cp "{REPORTER}/$name" "$4"
             self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: command=smartctl missing")
             self.assertEqual(calls, [])
 
+    def test_a_system_with_only_shasum_still_installs(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), checksum_tool="shasum")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            installs = [call.split() for call in calls if call.startswith("install ")]
+            self.assertEqual([Path(call[2]).name for call in installs], list(REPORTER_FILES))
+
+    def test_neither_checksum_tool_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), checksum_tool="none")
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(
+                done.stderr.splitlines()[0],
+                "smart-reporter: this installer needs sha256sum or shasum to verify the download.",
+            )
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
+
     def test_a_failed_download_installs_nothing(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), fail_download="vsys-smart.conf")
             self.assertEqual(done.returncode, 1)
             self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: download=vsys-smart.conf failed")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
+
+    def test_a_release_with_no_sha256sums_installs_nothing(self) -> None:
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), fail_sums=True)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: release vfixture publishes no SHA256SUMS; refusing to install an unverified reporter.")
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
+
+    def test_a_checksum_mismatch_installs_nothing(self) -> None:
+        wrong = "".join(f"{'0' * 64}  {name}\n" for name in REPORTER_FILES)
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), sums_text=wrong)
+            self.assertEqual(done.returncode, 1)
+            got = hashlib.sha256((REPORTER / "vsys-smart-report").read_bytes()).hexdigest()
+            self.assertEqual(
+                done.stderr.splitlines()[0],
+                f"smart-reporter: checksum mismatch for vsys-smart-report: got {got}, release names {'0' * 64}; nothing was installed.",
+            )
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
+
+    def test_sha256sums_missing_a_file_installs_nothing(self) -> None:
+        digest = hashlib.sha256((REPORTER / "vsys-smart-report").read_bytes()).hexdigest()
+        partial = f"{digest}  vsys-smart-report\n"
+        with scratch() as tmp:
+            done, calls = self.run_install(Path(tmp), sums_text=partial)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(
+                done.stderr.splitlines()[0],
+                "smart-reporter: SHA256SUMS names no checksum for vsys-smart-report.service; refusing to install unverified.",
+            )
+            self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
+
+    def test_the_release_checksums_every_file_the_installer_fetches(self) -> None:
+        # The installer refuses a file SHA256SUMS does not name, so the
+        # release must checksum each one and expect it in the combined list.
+        install = [line.strip() for line in (REPORTER / "install").read_text().splitlines()]
+        loop = next(line for line in install if line.startswith("for name in "))
+        self.assertEqual(tuple(loop.removeprefix("for name in ").removesuffix("; do").split()), REPORTER_FILES)
+        release = [line.strip() for line in (ROOT / ".github" / "workflows" / "release.yml").read_text().splitlines()]
+        self.assertIn(f"sha256sum {' '.join(REPORTER_FILES)} > smart-reporter.sha256", release)
+        expected = [line.removesuffix(" | sort)").removesuffix(" \\") for line in release]
+        for name in REPORTER_FILES:
+            self.assertIn(name, expected)
 
 
 class ShippedFilesTest(unittest.TestCase):

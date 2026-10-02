@@ -1,0 +1,1 @@
+- The drive reporter installer's checksum-mismatch refusal now names both the downloaded file's digest and the release's expected one.

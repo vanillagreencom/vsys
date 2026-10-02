@@ -15,6 +15,7 @@
 | Job | Runner | Output |
 | --- | --- | --- |
 | `build` | `ubuntu-latest`, `ubuntu-24.04-arm` | `vsys-<tag>-linux-<arch>.tar.gz`, each holding `vsys`, `LICENSE`, `README.md` and `lib/vsys/` |
+| `reporter` | `ubuntu-latest` | `scrub-reporter.sha256` and `smart-reporter.sha256`, uploaded to the release and folded into `SHA256SUMS` |
 | `release` | `ubuntu-latest` | A GitHub Release carrying both archives and `SHA256SUMS` |
 | `aur` | `ubuntu-latest` | The `vsys` AUR package, updated to the new `pkgver` and checksums |
 
