@@ -19,8 +19,8 @@ Modes
 
 Rules, per process, never per pane
   * Launched work carries AGENT_CONFINE=1 in its environment (agent-confine
-    stamps it; children inherit). A marked process outside the slice is an
-    escape whatever its name, and its marked descendants go with it.
+    stamps it; children inherit). D010's escaped-launch rule decides which
+    marked process outside the slice escapes; its marked descendants go too.
   * Agent CLI names and mise install directories come from agent-tools.json.
     They classify what no launcher touched: a CLI a desktop app started.
   * A comm equal to a configured name is a candidate, never the decision
@@ -33,11 +33,15 @@ Rules, per process, never per pane
     path that merely contains an install fragment (a scratch directory
     holding a fake `node_modules/...`) never confirms. A package-path
     fragment, the dashboard's own weaker signal for display, never confirms
-    a match the warden acts on automatically. An unreadable executable
-    keeps the name. A node/bun/python-hosted CLI instead matches by a mise
-    install path in argv[0] or argv[1]. Claude's embedded search mode
-    (argv[0] "ugrep") is a helper, not a session. A bundled CLI under /opt
-    (codex-desktop ships one) is an agent by name; the app around it is not.
+    a match the warden acts on automatically, and a tool that names only
+    such fragments still names a location, so its name alone is no proof.
+    An unreadable executable keeps the name. A node/bun/python-hosted CLI
+    instead matches by a mise install path in argv[0] or argv[1]. Claude's
+    embedded search mode (argv[0] "ugrep") is a helper, not a session. A
+    bundled CLI under /opt (codex-desktop ships one) is an agent by name;
+    the app around it is not. The same holds for an executable under an
+    agent's mise install directory or equal to a configured executable
+    path: a desktop prefix around it does not make it the desktop app.
     A desktop prefix under /tmp never confirms a bundled CLI, because /tmp is
     world-writable on every Linux target and so is no install location at all.
   * Build tools match by comm or by the script they run. They are adopted only
@@ -342,14 +346,22 @@ BUNDLED_CLI_PREFIXES = tuple(
 # display-only signal (src/collect/builds.ts): a bare substring of them is
 # forgeable by any same-uid process that recreates the fragment under a
 # writable directory, so the warden, which moves a match automatically,
-# never reads them.
+# never matches against them. It reads only whether a tool has any: a tool
+# that names its location in `paths` alone does name one, so it is not a
+# no-location name trusted as-is, and only a rule the warden does read can
+# confirm it.
 TOOL_LOCATIONS = {
     tool["name"]: {
         "mise": list(tool["mise"]),
         "executables": list(tool["executables"]),
+        "has_paths": bool(tool["paths"]),
     }
     for tool in AGENT_TOOLS["tools"]
 }
+# Every configured whole executable path, for is_desktop: an exact configured
+# agent executable under a desktop prefix is that agent's install, not the
+# desktop app around it, as a mise-anchored one (AGENT_PATH_RE) is.
+AGENT_EXECUTABLES = frozenset(executable for tool in AGENT_TOOLS["tools"] for executable in tool["executables"])
 # An Electron/Chromium helper process, whatever its binary is called
 CHROMIUM_CHILD_FLAG = "--type="
 DESKTOP_COMMS = {"chromium", "chrome", "electron", "ChatGPT", "slack", "spotify", "code",
@@ -578,7 +590,8 @@ class Proc:
         if "/claude-desktop/" in self.exe or "/Claude" in self.exe:
             return True
         if self.exe.startswith(DESKTOP_EXE_PREFIXES):
-            return not (self.exe.endswith(BUNDLED_CLI_SUFFIXES) or self.exe_name in HELPER_NAMES)
+            return not (self.exe.endswith(BUNDLED_CLI_SUFFIXES) or self.exe_name in HELPER_NAMES
+                        or self.exe in AGENT_EXECUTABLES or bool(AGENT_PATH_RE.search(self.exe)))
         return False
 
     def _confirmed_by_location(self, name):
@@ -587,9 +600,11 @@ class Proc:
         process's own resolved executable, never a bare substring or suffix
         a same-uid process could reproduce under any writable directory it
         chooses. A reader's own name with no location is trusted as-is, and
-        an unreadable executable never hides an escaped agent."""
+        an unreadable executable never hides an escaped agent. A tool whose
+        only location is `paths` is no such name: it confirms only as a
+        bundled CLI engine, or by name when its executable cannot be read."""
         location = TOOL_LOCATIONS.get(name)
-        if not location or not (location["mise"] or location["executables"]):
+        if not location or not (location["mise"] or location["executables"] or location["has_paths"]):
             return True
         if not self.exe:
             return True

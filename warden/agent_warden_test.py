@@ -8,7 +8,7 @@ import sys
 import time
 import unittest
 
-from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, scratch
+from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, materialize_warden_script, scratch
 
 sys.dont_write_bytecode = True
 
@@ -322,6 +322,149 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         module = self.load_mutant(mutant, "agent_warden_confirmation_mutant")
         p = module.Proc(1, ppid=0, comm="pi", argv=["/usr/local/bin/pi"], exe="/usr/local/bin/pi", cgroup=self.A, start=1)
         self.assertTrue(p.is_agent)
+
+    def _install_gap_module(self, name, text=None):
+        """Shipped data with an agent installed under the /opt desktop prefix,
+        once as an exact executable and once under a mise root that itself
+        lies in /opt, plus an overlay naming a tool by `paths` alone, as a
+        machine's ~/.config/vsys/agent-tools.json can."""
+        with scratch() as tmp:
+            base = Path(tmp)
+            script = materialize_warden_script(base, text)
+            (base / "data" / "agent-tools.json").write_text(json.dumps({
+                "version": 1,
+                "tools": [
+                    {"name": "pi", "mise": ["pi-install"]},
+                    {"name": "optagent", "executables": ["/opt/optagent/bin/optagent"]},
+                ],
+                "desktopExePrefixes": ["/opt/"],
+                "bundledCliSuffixes": ["/vendor/engine"],
+            }))
+            env = clean_env({"HOME": base / "home", "XDG_RUNTIME_DIR": base / "run", "MISE_DATA_DIR": "/opt/mise"})
+            for key in ("HOME", "XDG_RUNTIME_DIR"):
+                Path(env[key]).mkdir(parents=True, exist_ok=True)
+            overlay = Path(env["HOME"]) / ".config" / "vsys" / "agent-tools.json"
+            overlay.parent.mkdir(parents=True)
+            overlay.write_text(json.dumps({
+                "version": 1,
+                "tools": [{"name": "pkgonly", "paths": ["/node_modules/pkgonly/"]}],
+            }))
+            return load_warden(env, name, script)
+
+    def _paths_only_rows(self, module):
+        def rec(exe):
+            return module.Proc(1, ppid=0, comm="pkgonly", argv=["pkgonly"], exe=exe, cgroup=self.A, start=1)
+
+        planted = f"{module.HOME}/scratch/node_modules/pkgonly/cli"
+        return [
+            ("a paths-only tool's exe under a writable dir holding its fragment is not an agent", rec(planted).is_agent, False),
+            ("a paths-only tool's exe outside every location is not an agent", rec("/usr/local/bin/pkgonly").is_agent, False),
+            ("a paths-only tool as a bundled CLI engine under a desktop prefix is an agent", rec("/opt/app/vendor/engine").is_agent, True),
+            ("a paths-only tool with an unreadable executable keeps the name", rec("").is_agent, True),
+            ("a paths-only tool's exe under a desktop prefix is a desktop app", rec("/opt/pkgonly/lib/node_modules/pkgonly/cli").is_desktop, True),
+            ("a paths-only tool still protects its scope through the comm-only match", rec(planted).is_named_agent, True),
+        ]
+
+    def test_paths_only_tool_needs_location_evidence(self):
+        # D010: a tool whose only location is `paths` names a location the
+        # warden never matches against, so its name alone does not confirm
+        # it, unlike a name with no location at all.
+        module = self._install_gap_module("agent_warden_paths_only")
+        for name, actual, expected in self._paths_only_rows(module):
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_paths_only_tool_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = ' or location["has_paths"]'
+        self.assertEqual(text.count(old), 1)
+        module = self._install_gap_module("agent_warden_mutant_paths_only", text.replace(old, ""))
+        rows = {name: actual for name, actual, _ in self._paths_only_rows(module)}
+        self.assertTrue(rows["a paths-only tool's exe under a writable dir holding its fragment is not an agent"])
+
+    def _desktop_prefix_install_rows(self, module):
+        def rec(pid, comm, exe):
+            return module.Proc(pid, ppid=0, comm=comm, argv=[comm], exe=exe, cgroup=self.A, start=1)
+
+        exact = rec(1, "optagent", "/opt/optagent/bin/optagent")
+        mise = rec(2, "pi", "/opt/mise/installs/pi-install/1.0/pi")
+        recs = {1: exact, 2: mise}
+        moves, _, _, _ = module.plan(recs, capped=lambda cg: False, contained=lambda cg: False)
+        moved = {pid for reason, tree in moves if reason == "unconfined agent" for pid in (p.pid for p in tree)}
+        return [
+            ("an exact configured executable under a desktop prefix is an agent", exact.is_agent, True),
+            ("an exact configured executable under a desktop prefix is a named agent", exact.is_named_agent, True),
+            ("an exact configured executable under a desktop prefix is moved", 1 in moved, True),
+            ("a mise-anchored executable under a desktop prefix is an agent", mise.is_agent, True),
+            ("a mise-anchored executable under a desktop prefix is a named agent", mise.is_named_agent, True),
+            ("a mise-anchored executable under a desktop prefix is moved", 2 in moved, True),
+            ("a desktop binary beside the configured executable stays desktop",
+             rec(3, "optagent", "/opt/optagent/bin/optagent-ui").is_desktop, True),
+            ("a desktop binary in an unlisted mise directory stays desktop",
+             rec(4, "pi", "/opt/mise/installs/other/1.0/pi").is_desktop, True),
+        ]
+
+    def test_desktop_prefix_keeps_a_confirmed_install(self):
+        # A confirmed executables or mise match under a desktop prefix is the
+        # agent's install, not the desktop app, as a bundled CLI engine is.
+        module = self._install_gap_module("agent_warden_desktop_prefix_install")
+        for name, actual, expected in self._desktop_prefix_install_rows(module):
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_desktop_prefix_install_mutants_fail(self):
+        text = WARDEN.read_text()
+        cases = [
+            ("executables", "\n                        or self.exe in AGENT_EXECUTABLES or bool(AGENT_PATH_RE.search(self.exe)))",
+             "\n                        or bool(AGENT_PATH_RE.search(self.exe)))",
+             "an exact configured executable under a desktop prefix is an agent"),
+            ("mise", "\n                        or self.exe in AGENT_EXECUTABLES or bool(AGENT_PATH_RE.search(self.exe)))",
+             "\n                        or self.exe in AGENT_EXECUTABLES)",
+             "a mise-anchored executable under a desktop prefix is an agent"),
+        ]
+        for name, old, new, row in cases:
+            with self.subTest(name=name):
+                self.assertEqual(text.count(old), 1)
+                module = self._install_gap_module(f"agent_warden_mutant_desktop_{name}", text.replace(old, new))
+                rows = {label: actual for label, actual, _ in self._desktop_prefix_install_rows(module)}
+                self.assertFalse(rows[row])
+
+    def _escaped_unconfirmed_rows(self, module):
+        native_install = f"{module.HOME}/.local/share/claude/versions/2.1.0/claude"
+        job = "/user.slice/user-1000.slice/user@1000.service/app.slice/orch-x.service"
+        recs = {
+            1: module.Proc(1, ppid=0, comm="tmux: server", argv=["tmux"], exe="/usr/bin/tmux", cgroup=self.A, start=1),
+            70: module.Proc(70, ppid=1, comm="claude", argv=["claude"], exe=native_install, cgroup=self.A, start=2, marked=True),
+            71: module.Proc(71, ppid=1, comm="claude", argv=["claude"], exe=native_install, cgroup=self.A, start=3),
+            80: module.Proc(80, ppid=1, comm="ChatGPT", argv=["ChatGPT"], exe="/opt/codex-desktop/ChatGPT", cgroup=self.A, start=4, marked=True),
+            81: module.Proc(81, ppid=80, comm="claude", argv=["claude"], exe=native_install, cgroup=self.A, start=5, marked=True),
+            90: module.Proc(90, ppid=1, comm="claude", argv=["claude"], exe=native_install, cgroup=job, start=6, marked=True),
+        }
+        moves, _, _, units = module.plan(recs, capped=lambda cg: False, contained=lambda cg: cg == job)
+        escaped = [sorted(p.pid for p in tree) for reason, tree in moves if reason == "escaped launch"]
+        moved = {p.pid for _, tree in moves for p in tree}
+        return [
+            ("a native install the warden cannot confirm is not an agent", recs[70].is_agent, False),
+            ("a marked launch of it outside the slice is moved as an escaped launch", [70] in escaped, True),
+            ("an unmarked twin is not moved", 71 in moved, False),
+            ("a marked launch of it under a desktop app stays", 81 in moved, False),
+            ("a marked desktop app itself stays", 80 in moved, False),
+            ("a marked launch of it in a contained unit is listed as that unit's", [p.pid for p in units], [90]),
+        ]
+
+    def test_escaped_launch_moves_an_unconfirmed_name(self):
+        # D010's escaped-launch rule.
+        for name, actual, expected in self._escaped_unconfirmed_rows(self.w):
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
+    def test_escaped_launch_unconfirmed_name_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "               and (p.is_agent or not desktop_owned(p))]"
+        self.assertEqual(text.count(old), 1)
+        module = self.load_mutant(text.replace(old, "               and p.is_agent]"), "agent_warden_mutant_escaped_unconfirmed")
+        rows = {name: actual for name, actual, _ in self._escaped_unconfirmed_rows(module)}
+        self.assertFalse(rows["a marked launch of it outside the slice is moved as an escaped launch"])
 
     def test_plan_rows(self):
         T = "/user.slice/user-1000.slice/user@1000.service/agents.slice/tight.scope"
