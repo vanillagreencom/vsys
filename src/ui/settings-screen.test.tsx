@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ManualClock } from "@opentui/core/testing";
 import { act } from "react";
 import type { Config } from "../config/config";
 import { choices, defaults } from "../config/config";
@@ -530,6 +531,48 @@ test("the editor opens in view when the layout moves the row it edits", async ()
     const frame = t.frame();
     // This row's editor, named by the row it edits. Measuring on the old
     // layout scrolled to the top of the list, where the opened row is not.
+    expect(frame).toContain("Export markdown · Enter saves");
+    expect(frame).not.toContain("Storage units");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the second scroll read waits for the renderer's own frame under its real frame cap", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // A manual clock holds the renderer's own next frame back until this test
+  // advances it, the way a live renderer's frame cap holds its own render
+  // timer back for the whole frame interval. `maxFps: 60` is the renderer's
+  // own default cap, restored here in place of the harness's usual uncapped
+  // one, which is what let VSY-29's test pass while the production bug,
+  // underneath it, went unobserved.
+  const clock = new ManualClock();
+  const t = await mount(s, c, { width: 180, height: 30, maxFps: 60, clock });
+  try {
+    await t.press("7");
+    const rows = settingItems(c, s.capabilities).length;
+    for (let i = 0; i < rows; i++) await t.press("j");
+    // Opens the editor without letting `press`'s own direct `renderOnce` lay
+    // out the row it moves: that call would compute the fresh layout itself,
+    // the way the harness's uncapped mode always did, and hide exactly the
+    // ordering this test exists to pin.
+    await act(async () => {
+      t.ui.mockInput.pressEnter();
+    });
+    // A real, short wait: long enough for a bare `setTimeout(0)`, the one the
+    // deferred pass used to run on, to fire for real. The manual clock has
+    // not moved, so the renderer's own next frame, which only that clock can
+    // trigger, provably has not happened yet.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(t.frame()).not.toContain("Export markdown · Enter saves");
+    // Only now does the renderer's own frame arrive, under its real cap. One
+    // render runs the frame that corrects the scroll; the frame event fires
+    // after that render already drew, so a second one is what shows it.
+    clock.advance(200);
+    await t.ui.renderOnce();
+    await t.ui.renderOnce();
+    const frame = t.frame();
     expect(frame).toContain("Export markdown · Enter saves");
     expect(frame).not.toContain("Storage units");
   } finally {

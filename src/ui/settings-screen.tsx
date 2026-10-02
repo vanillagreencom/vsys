@@ -1,4 +1,9 @@
-import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import {
+  CliRenderEvents,
+  type RGBA,
+  type ScrollBoxRenderable,
+} from "@opentui/core";
+import { useRenderer } from "@opentui/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Config, choices, validate } from "../config/config";
 import {
@@ -134,6 +139,7 @@ export function Settings({
   const twoColumns = width >= wideWidth && !editing && !picking;
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
+  const renderer = useRenderer();
   // Every entry is a block with its row at the top, so whether anything is
   // drawn under the selected row is one question the block answers: it has a
   // second child. Naming the openers instead missed a kind twice — a
@@ -153,8 +159,13 @@ export function Settings({
       // fold could only be chosen blind.
       const onto = () => box.scrollChildIntoView(`choice-${choice}`);
       onto();
-      const waiting = setTimeout(onto, 0);
-      return () => clearTimeout(waiting);
+      // The second reading waits for the renderer's own next frame rather than
+      // a fixed timeout, so it reads the option's layout after the row that
+      // opened it has actually been laid out, not merely after one JS tick.
+      renderer.once(CliRenderEvents.FRAME, onto);
+      return () => {
+        renderer.off(CliRenderEvents.FRAME, onto);
+      };
     }
     const place = () => {
       const row = box.content.findDescendantById(`setting-${selected}`);
@@ -176,9 +187,24 @@ export function Settings({
       box.scrollBy(row.y - box.viewport.y - 1);
     };
     place();
-    const pending = setTimeout(place, 0);
-    return () => clearTimeout(pending);
-  }, [selected, twoColumns, picking, choice, editing, sourcesOpen, openCap]);
+    // The second reading waits for the renderer's own next frame because the
+    // opened detail's height is not known until the layout after the render
+    // that grew it; a bare timeout can fire before that render under the live
+    // renderer's own frame timer and read the block's old height.
+    renderer.once(CliRenderEvents.FRAME, place);
+    return () => {
+      renderer.off(CliRenderEvents.FRAME, place);
+    };
+  }, [
+    selected,
+    twoColumns,
+    picking,
+    choice,
+    editing,
+    sourcesOpen,
+    openCap,
+    renderer,
+  ]);
   /**
    * The one place the selection follows the query. Three paths change what the
    * filter shows — typing in the box, opening it on a query already there, and

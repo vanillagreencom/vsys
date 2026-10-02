@@ -4,6 +4,7 @@ import {
   TextAttributes,
   TextBufferRenderable,
 } from "@opentui/core";
+import type { TestRendererOptions } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import type { Config } from "../config/config";
@@ -21,7 +22,13 @@ import { App } from "../ui/App";
 export async function mount(
   s: Snapshot,
   c: Config,
-  size = { width: 140, height: 35 },
+  // A caller that needs the live renderer's own frame cap, rather than this
+  // harness's default of none, passes `maxFps` (and, to drive it without a
+  // real wall-clock wait, `clock`) alongside the size.
+  size: { width: number; height: number } & Partial<TestRendererOptions> = {
+    width: 140,
+    height: 35,
+  },
   hooks: Partial<{
     onSave: (next: Config) => Promise<void>;
     onQuit: () => void;
@@ -65,13 +72,14 @@ export async function mount(
       />
     );
   }
-  // No frame cap, so a commit is laid out on the tick after it, before any
-  // timer the commit's effects set. At the default cap a commit inside the
-  // frame interval waits for a render timer, and a screen's deferred pass can
-  // run first and measure the layout from before the commit.
+  // No frame cap by default, so a commit is laid out on the tick after it,
+  // before any timer the commit's effects set. At the default cap a commit
+  // inside the frame interval waits for a render timer, and a screen's
+  // deferred pass can run first and measure the layout from before the
+  // commit; a test driving that case passes its own `maxFps` to override this.
   const ui = await testRender(<Mounted />, {
-    ...size,
     maxFps: Number.POSITIVE_INFINITY,
+    ...size,
   });
   const update = async (next: Snapshot) => {
     await act(async () => {
