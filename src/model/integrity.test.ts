@@ -451,6 +451,41 @@ test("a remembered finished check that found damage is never promoted to healthy
   expect(healed.state).toBe("healthy");
 });
 
+test("a finished report that moved backward in time never outranks the remembered check", () => {
+  const c = defaults();
+  const lastFinishedScrub = { fs: { at: now - 3 * day, damaged: true } };
+  // A restored older report: it is itself finished, and found nothing, but
+  // it started before the remembered finished check that found damage. It
+  // must not read as the authoritative, newer check.
+  const older = integrity(
+    filesystem(),
+    { scrubs: [report({ startedAt: now - 5 * day })], lastFinishedScrub },
+    now,
+    c,
+  );
+  expect(older.state).toBe("damaged");
+  expect(older.checkAge).toBe(3 * 86400);
+  expect(older.groups).toEqual([]);
+  expect(damageCounts(older)).toEqual({
+    files: null,
+    free: null,
+    unresolved: null,
+    unnamed: null,
+  });
+  // A report exactly as new as the remembered check speaks for itself.
+  const tied = integrity(
+    filesystem(),
+    {
+      scrubs: [report({ startedAt: now - 3 * day })],
+      lastFinishedScrub,
+    },
+    now,
+    c,
+  );
+  expect(tied.state).toBe("healthy");
+  expect(tied.checkAge).toBe(3 * 86400);
+});
+
 test("the remembered check, not the aborted one, decides which logged failures are new", () => {
   const c = defaults();
   const scrubs = [report({ status: "aborted", problem: true })];

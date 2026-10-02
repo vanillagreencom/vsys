@@ -186,10 +186,20 @@ export function integrity(
   // parsed out of otherwise unreadable text would list damaged files under a
   // headline saying the state is unknown, which is two claims at once.
   const readable = !scrub || scrub.readable !== false;
-  // Only a finished check has a result. A running or half-written report can
-  // carry addresses, and standing behind those would list damaged files under
-  // a check that has not said what it found.
-  const complete = readable && scrub?.status === "finished";
+  // The collector's own memory of the last finished check, read here because
+  // a report that finished but moved backward in time, such as a restored
+  // older report, must not outrank it below.
+  const remembered =
+    storage.lastFinishedScrub?.[group.id.toLowerCase()] ?? null;
+  // Only a finished check has a result, and only the newest one speaks for
+  // it: a report that finished but started before the remembered finished
+  // check is still itself finished, but it is not the authoritative, newer
+  // check, so standing behind its own addresses or block count here would
+  // report a stale zero over a remembered check that found damage.
+  const complete =
+    readable &&
+    scrub?.status === "finished" &&
+    (remembered === null || (scrub?.startedAt ?? -Infinity) >= remembered.at);
   const groups: DamagedGroup[] = (complete ? (scrub?.addresses ?? []) : []).map(
     (address) => ({
       logical: address.logical,
@@ -230,21 +240,17 @@ export function integrity(
   // reading vsys does not have rather than a reading of none.
   const errorKnown = group.volumes.every((v) => v.lastErrorKnown !== false);
   const running = scrub?.status === "running";
-  // Only a check that says it finished read the filesystem end to end. Every
-  // other word the current report carries, including one the helper did not
-  // write and one vsys has never seen, is not itself a finished check: a list
-  // of the ways a check can stop early would call each new word a completed
-  // check, which is the wrong way to be wrong about whether the disk was
-  // read. Soundness can still rest on an earlier report that did finish,
-  // through `hasFinishedRecord` below.
+  // Only a check that says it finished, and is no older than the remembered
+  // finished check, read the filesystem end to end on the newest known pass.
+  // Every other word the current report carries, including one the helper
+  // did not write and one vsys has never seen, is not itself a finished
+  // check, and neither is a finished report that moved backward in time,
+  // such as a restored older report: a list of the ways a check can stop
+  // early, or an older report that still finished, would each call its own
+  // word a completed, authoritative check, which is the wrong way to be
+  // wrong about whether the disk was read. Soundness can still rest on an
+  // earlier report that did finish, through `hasFinishedRecord` below.
   const finished = complete;
-  // A report that is not itself finished names no check of its own, but it
-  // does not erase an earlier one: the collector remembers the last finished
-  // report across the one that replaced it, outcome included, so a check
-  // that stopped early still leaves the reader the age and the damage state
-  // of the last that did not.
-  const remembered =
-    storage.lastFinishedScrub?.[group.id.toLowerCase()] ?? null;
   const checkedAt = finished
     ? (scrub?.startedAt ?? null)
     : (remembered?.at ?? null);
@@ -267,10 +273,12 @@ export function integrity(
             problem: scrub?.problem ?? false,
           })
         ? "damaged"
-        : // The current report does not speak for itself, but a remembered
-          // finished one found damage: that memory must stand until a later
-          // finished report says otherwise, never silently read as sound
-          // because the report naming it is gone.
+        : // The current report does not speak for itself, either unfinished
+          // or finished but older than the remembered check, while a
+          // remembered finished one found damage: that memory must stand
+          // until a later finished report says otherwise, never silently
+          // read as sound because the report naming it is gone or moved
+          // backward in time.
           !finished && remembered?.damaged
           ? "damaged"
           : errorAt != null && (checkedAt === null || errorAt > checkedAt)
