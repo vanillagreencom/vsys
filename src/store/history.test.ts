@@ -365,6 +365,7 @@ test("a same-path reconfigure does not re-read the retained window from disk", (
   const now = Date.now();
   for (let i = 0; i < 50; i++) h.add(emptySnapshot(now + i * 1000));
   const spy = spyOn(Bun, "gunzipSync");
+  cleanup.push(() => spy.mockRestore());
   spy.mockClear();
   const changed = h.reconfigure({
     ...f.config,
