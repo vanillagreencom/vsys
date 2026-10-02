@@ -263,7 +263,7 @@ try:
     assert (failure in report) == (fault == "fault"), f"Unexpected shutdown report: {report!r}"
     if trigger != "hangup":
         assert termios.tcgetattr(slave) == before, "Application changed terminal settings after quit"
-    assert b"MaxListenersExceededWarning" not in output, "Refresh leaked event listeners"
+    assert b"MaxListenersExceededWarning" not in output + report, "Refresh leaked event listeners"
 finally:
     if child.poll() is None:
         child.terminate()
