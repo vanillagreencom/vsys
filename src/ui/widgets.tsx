@@ -1,4 +1,4 @@
-import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import type { MouseEvent, RGBA, ScrollBoxRenderable } from "@opentui/core";
 import type { TextProps } from "@opentui/react";
 import {
   Children,
@@ -687,6 +687,21 @@ export function listWindow(
   return { start, end: Math.min(count, start + rows) };
 }
 /**
+ * The row one wheel notch moves a selection of `count` rows to from `from`:
+ * one row up or down, held at the ends rather than wrapping. A scroll that is
+ * neither up nor down is no step, and answers undefined.
+ */
+export function wheelStep(
+  event: MouseEvent,
+  count: number,
+  from: number,
+): number | undefined {
+  const direction = event.scroll?.direction;
+  if (direction !== "up" && direction !== "down") return undefined;
+  const way = direction === "up" ? -1 : 1;
+  return Math.max(0, Math.min(count - 1, from + way));
+}
+/**
  * A list windowed to the rows it has. Selection owns paging: the selected row
  * stays in view and the viewport never moves on its own. The wheel moves the
  * selection rather than the viewport, for the same reason.
@@ -722,13 +737,10 @@ export function List<T>({
       onMouseScroll={
         onSelect &&
         ((event) => {
-          const up = event.scroll?.direction === "up";
-          if (!up && event.scroll?.direction !== "down") return;
-          wheeled.current = Math.max(
-            0,
-            Math.min(items.length - 1, wheeled.current + (up ? -1 : 1)),
-          );
-          onSelect(wheeled.current);
+          const to = wheelStep(event, items.length, wheeled.current);
+          if (to === undefined) return;
+          wheeled.current = to;
+          onSelect(to);
         })
       }
     >

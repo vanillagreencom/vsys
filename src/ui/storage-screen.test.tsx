@@ -995,6 +995,248 @@ test("two arrows that arrive before a render move Storage two rows", async () =>
   }
 });
 
+/** One filesystem with two mounts, a scrub report and two scratch roots. */
+function wheelList() {
+  const s = emptySnapshot();
+  s.storage.volumes = [
+    volumeSnapshot("/data", { device: "/dev/sda1", fsid: "sda1" }),
+    volumeSnapshot("/home", { device: "/dev/sda1", fsid: "sda1" }),
+  ];
+  s.storage.scrubs = [
+    { path: "/run/btrfs-scrub/one", text: "clean", problem: false },
+  ];
+  s.storage.scratch = ["/scratch/a", "/scratch/b"].map((path) => ({
+    path,
+    bytes: 1,
+    age: 0,
+    error: null,
+    origin: "configured" as const,
+  }));
+  return s;
+}
+
+/** The thirty files the tall detail names, first to last. */
+const tallFiles = Array.from(
+  { length: 30 },
+  (_, i) => `/home/reader/file-${String(i).padStart(2, "0")}.txt`,
+);
+/**
+ * A damaged filesystem whose detail names every one of `tallFiles`, taller
+ * than any screen the wheel table uses, with a clean filesystem above it and
+ * the scrub report and two scratch roots below it.
+ */
+function tallDetail() {
+  const s = damagedSnapshot(1_760_000_000_000);
+  s.storage.scrubs[0].addresses = tallFiles.map((path, i) => ({
+    logical: 1000 + i,
+    paths: [path],
+  }));
+  s.storage.volumes = [
+    volumeSnapshot("/data", { device: "/dev/sda1", fsid: "sda1" }),
+    ...s.storage.volumes,
+  ];
+  s.storage.scratch = wheelList().storage.scratch;
+  return s;
+}
+
+test("each rule the Storage wheel follows", async () => {
+  type Mounted = Awaited<ReturnType<typeof mount>>;
+  const c = defaults();
+  /** The line of the marked row, which a notch is turned over. */
+  const marked = (t: Mounted) =>
+    t
+      .frame()
+      .split("\n")
+      .findIndex((line) => line.includes("▍"));
+  /** The selected row, named by the label it carries. */
+  const on = (t: Mounted) => {
+    const row = selectedRow(t.frame());
+    const labels = [
+      "Never checked",
+      "/data",
+      "/home",
+      "/run/btrfs-scrub/one",
+      "/scratch/a",
+      "/scratch/b",
+    ];
+    return labels.find((label) => row.includes(label)) ?? row;
+  };
+  /** The first line drawn under the header, without rules or scrollbar. */
+  const top = (t: Mounted) =>
+    t
+      .frame()
+      .split("\n")
+      .slice(2)
+      .map((line) => line.replace(/[─▀▄█]/g, "").trim())
+      .find((line) => line !== "");
+  /**
+   * Turns the wheel `way` until the selection leaves the tall row, and lists
+   * in order the first frame drawing `watch` and the notch that moved on.
+   * Whether `watch` was drawn before the first notch leads the list.
+   */
+  const readTall = async (t: Mounted, way: "up" | "down", watch: string) => {
+    const seen: (string | boolean)[] = [t.frame().includes(watch)];
+    for (let notch = 0; notch < 200; notch++) {
+      await t.wheel(10, 8, way);
+      await t.settle();
+      if (!seen.includes(watch) && t.frame().includes(watch)) seen.push(watch);
+      const row = selectedRow(t.frame());
+      if (row !== "" && !row.includes("Damaged files found")) {
+        seen.push("moved on");
+        break;
+      }
+    }
+    return seen;
+  };
+  // The rule, the screen, the keys pressed on Storage before the wheel, what
+  // the wheel does and reads back, and what it must read.
+  const rows: {
+    rule: string;
+    snapshot: () => Snapshot;
+    height: number;
+    keys: string[];
+    wheel: (t: Mounted) => Promise<unknown>;
+    expected: unknown;
+  }[] = [
+    {
+      // The arrows stop at a list's end; the wheel walks on into the next,
+      // and stops at the last row.
+      rule: "a notch moves one row, through every list",
+      snapshot: wheelList,
+      height: 44,
+      keys: [],
+      wheel: async (t) => {
+        const y = marked(t);
+        const ways = [
+          "down",
+          "down",
+          "down",
+          "down",
+          "up",
+          "down",
+          "down",
+        ] as const;
+        const reached = [];
+        for (const way of [...ways, "down"] as const) {
+          await t.wheel(10, y, way);
+          reached.push(on(t));
+        }
+        return reached;
+      },
+      expected: [
+        "/data",
+        "/home",
+        "/run/btrfs-scrub/one",
+        "/scratch/a",
+        "/run/btrfs-scrub/one",
+        "/scratch/a",
+        "/scratch/b",
+        "/scratch/b",
+      ],
+    },
+    {
+      // An arrow from /data to /home leaves this heading on top.
+      rule: "a notch that moves the selection scrolls no further than an arrow",
+      snapshot: wheelList,
+      height: 16,
+      keys: ["down"],
+      wheel: async (t) => {
+        await t.wheel(10, marked(t), "down");
+        await t.settle();
+        return { on: on(t), top: top(t) };
+      },
+      expected: { on: "/home", top: "Drive lifetime writes" },
+    },
+    {
+      // Down to the scratch list and back: the write totals are above the
+      // fold, and nothing above the first row is selectable.
+      rule: "a notch the selection cannot take scrolls the screen",
+      snapshot: wheelList,
+      height: 16,
+      keys: ["right", "right", "right", "left", "left", "left"],
+      wheel: async (t) => {
+        const y = marked(t);
+        for (let i = 0; i < 15; i++) await t.wheel(10, y, "up");
+        await t.settle();
+        return { on: on(t), top: top(t) };
+      },
+      expected: { on: "Never checked", top: "Written since boot" },
+    },
+    {
+      // Reached from /data, the tall row is drawn from its top.
+      rule: "a notch down reads an open detail to its end before moving on",
+      snapshot: tallDetail,
+      height: 24,
+      keys: ["down", "down"],
+      wheel: (t) => readTall(t, "down", tallFiles[29]),
+      expected: [false, tallFiles[29], "moved on"],
+    },
+    {
+      // Turned over the scrollbar, the wheel scrolls the box alone, which
+      // leaves the tall row drawn to its end.
+      rule: "a notch up reads an open detail back to its start before moving on",
+      snapshot: tallDetail,
+      height: 24,
+      keys: ["down", "down"],
+      wheel: async (t) => {
+        for (let i = 0; i < 60; i++) await t.wheel(119, 8, "down");
+        await t.settle();
+        return readTall(t, "up", tallFiles[0]);
+      },
+      expected: [false, tallFiles[0], "moved on"],
+    },
+    {
+      // Four notches before a render. The later ones step from rows the
+      // earlier ones chose, not drawn open yet, the last from a scratch root
+      // below the fold, and each still moves a row.
+      rule: "a fast flick steps from the row last chosen",
+      snapshot: wheelList,
+      height: 16,
+      keys: ["down"],
+      wheel: async (t) => {
+        const y = marked(t);
+        await act(async () => {
+          for (let i = 0; i < 4; i++)
+            await t.ui.mockMouse.scroll(10, y, "down");
+        });
+        await t.settle();
+        return on(t);
+      },
+      expected: "/scratch/b",
+    },
+    {
+      rule: "with no row to select, a notch scrolls the screen",
+      snapshot: () => emptySnapshot(),
+      height: 12,
+      keys: [],
+      wheel: async (t) => {
+        for (let i = 0; i < 30; i++) await t.wheel(10, 4, "down");
+        await t.settle();
+        return top(t);
+      },
+      expected: "f Filesystems",
+    },
+  ];
+  for (const row of rows) {
+    const size = { width: 120, height: row.height };
+    const t = await mount(row.snapshot(), c, size);
+    try {
+      await t.press("5");
+      await t.settle();
+      for (const key of row.keys) {
+        await t.press(key);
+        await t.settle();
+      }
+      expect({ rule: row.rule, got: await row.wheel(t) }).toEqual({
+        rule: row.rule,
+        got: row.expected,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
 test("two mounts stacked at one path are two rows a reader can stand on", async () => {
   const c = defaults();
   const s = emptySnapshot();

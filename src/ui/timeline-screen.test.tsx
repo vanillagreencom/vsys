@@ -200,6 +200,49 @@ test("the Timeline change list is driven from the keyboard, not the mouse alone"
   }
 });
 
+test("the wheel moves the Timeline change list one row per notch", async () => {
+  const c = defaults();
+  const h = new History(c);
+  h.add(emptySnapshot(1000));
+  const busy = emptySnapshot(5000);
+  busy.lanes = [1, 2, 3].map((n) =>
+    laneSnapshot({ id: `lane-${n}`, name: `lane-${n}` }),
+  );
+  h.add(busy);
+  const t = await mount(busy, c, { width: 180, height: 44 }, { history: h });
+  try {
+    await t.press("6");
+    // The rows the arrows reach, which the wheel must reach the same way.
+    const rows = [selectedRow(t.frame())];
+    for (let i = 0; i < 2; i++) {
+      await t.press("j");
+      rows.push(selectedRow(t.frame()));
+    }
+    expect(new Set(rows).size).toBe(3);
+    for (let i = 0; i < 2; i++) await t.press("k");
+    const y = t
+      .frame()
+      .split("\n")
+      .findIndex((line) => line.includes("▍"));
+    // The notch, then the row it lands on, stopping at the last row.
+    const steps: ["up" | "down", number][] = [
+      ["down", 1],
+      ["down", 2],
+      ["down", 2],
+      ["up", 1],
+    ];
+    for (const [way, row] of steps) {
+      await t.wheel(10, y, way);
+      expect({ way, on: selectedRow(t.frame()) }).toEqual({
+        way,
+        on: rows[row],
+      });
+    }
+  } finally {
+    await t.close();
+  }
+});
+
 test("a change about a cgroup reads as a name, with the unit under the selection", async () => {
   const c = { ...defaults(), pressureHoldSeconds: 0 };
   const h = new History(c);
