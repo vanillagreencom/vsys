@@ -68,15 +68,15 @@ export type ToolMatch =
 /**
  * The one rule that makes a process an agent. A name alone never does: `pi`
  * or `dsh` can be anyone's program or script. A name a tool's executable or
- * script carries is that tool only where the path lies in one of its install
- * locations or is an engine a desktop app bundles, or where a script runtime
- * replaced its own title with the name, which erases the script path. A tool
- * with no install location is one a reader named without saying where it
- * lives, so its executable name alone is their claim; a script never matches
- * one. A path that could not be read keeps the name, because a failed read
- * never hides an escaped agent. A desktop app's own binary is never an
- * agent, whatever it is called. Never matched on prompt arguments:
- * `bash -c claude` is not claude.
+ * script carries is that tool where the path lies in one of its install
+ * locations or is an engine a desktop app bundles, wherever that is, even
+ * under a desktop prefix. Short of that, a desktop app's own binary is never
+ * an agent, whatever it is called. Otherwise the name stands where a script
+ * runtime replaced its own title with it, which erases the script path; where
+ * the tool has no install location, because a reader named it without saying
+ * where it lives, though a script never matches such a tool; and where a path
+ * could not be read, because a failed read never hides an escaped agent.
+ * Never matched on prompt arguments: `bash -c claude` is not claude.
  */
 export function toolName(
   comm: string,
@@ -87,21 +87,15 @@ export function toolName(
 ): ToolMatch {
   const runner = basename(command[0] ?? "");
   const named = tools.find((tool) => tool === comm || tool === runner);
-  const argument = command[1];
+  const argument = scriptRunners.includes(runner) ? command[1] : undefined;
   const scriptName =
-    scriptRunners.includes(runner) &&
-    argument !== undefined &&
-    !argument.startsWith("-")
-      ? basename(argument).replace(/\.(js|mjs|cjs|py|sh)$/, "")
-      : null;
+    argument === undefined
+      ? null
+      : basename(argument).replace(/\.(js|mjs|cjs|py|sh)$/, "");
   const scripted =
     scriptName !== null && tools.includes(scriptName) ? scriptName : null;
   const candidate = named ?? scripted;
   if (candidate === null) return { kind: "none" };
-  const read = paths.executable();
-  const executable = read === null ? null : liveExecutable(read);
-  if (executable !== null && desktopApp(executable, signals.desktop))
-    return { kind: "none" };
   const install = (name: string) => {
     const found = signals.installs.get(name);
     return found?.fragments.length || found?.executables.length ? found : null;
@@ -110,28 +104,39 @@ export function toolName(
     location.fragments.some((fragment) => path.includes(fragment)) ||
     location.executables.includes(path) ||
     bundledCli(path, signals.desktop);
-  if (named !== undefined) {
-    const location = install(named);
-    if (
-      location === null ||
+  const read = paths.executable();
+  const executable = read === null ? null : liveExecutable(read);
+  const namedAt = named === undefined ? null : install(named);
+  if (
+    named !== undefined &&
+    namedAt !== null &&
+    executable !== null &&
+    installed(namedAt, executable)
+  )
+    return { kind: "agent", name: named };
+  const scriptAt = scripted === null ? null : install(scripted);
+  const script =
+    scriptAt === null || argument === undefined ? null : paths.script(argument);
+  if (
+    scripted !== null &&
+    scriptAt !== null &&
+    script !== null &&
+    installed(scriptAt, script)
+  )
+    return { kind: "agent", name: scripted };
+  if (executable !== null && desktopApp(executable, signals.desktop))
+    return { kind: "none" };
+  if (
+    named !== undefined &&
+    (namedAt === null ||
       executable === null ||
-      installed(location, executable) ||
       (titleRuntimes.includes(basename(executable)) &&
         command[0] === named &&
-        command.slice(1).every((a) => a === ""))
-    )
-      return { kind: "agent", name: named };
-  }
-  if (scripted !== null && argument !== undefined) {
-    const location = install(scripted);
-    if (location !== null) {
-      if (installed(location, argument))
-        return { kind: "agent", name: scripted };
-      const resolved = paths.script(argument);
-      if (resolved === null || installed(location, resolved))
-        return { kind: "agent", name: scripted };
-    }
-  }
+        command.slice(1).every((a) => a === "")))
+  )
+    return { kind: "agent", name: named };
+  if (scripted !== null && scriptAt !== null && script === null)
+    return { kind: "agent", name: scripted };
   return { kind: "unconfirmed", name: candidate };
 }
 /** The kernel marks a binary replaced while it ran with ` (deleted)`. */

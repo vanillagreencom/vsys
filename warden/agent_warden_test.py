@@ -169,18 +169,13 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         self.assertFalse(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/unlisted/bin/tool"))
 
     def test_malformed_agent_tool_documents_are_refused(self):
-        rows = [
-            ("bad shipped version", {"version": 2, "tools": []}, None, "agent-tools.json"),
-            ("version true", {"version": True, "tools": []}, None, "agent-tools.json"),
+        # The dashboard's parser reads the same table of rejected documents.
+        shared = json.loads((ROOT / "data" / "agent-tools-rejected.json").read_text())["rows"]
+        self.assertTrue(shared, "extractor broke: no rejected documents")
+        rows = [(row["name"], row["document"], None, "agent-tools.json") for row in shared] + [
             ("unknown overlay key", {"version": 1, "tools": []}, {"version": 1, "tools": [], "extra": True}, ".config/vsys/agent-tools.json"),
             ("duplicate overlay mise dir", {"version": 1, "tools": [{"name": "claude", "mise": ["claude"]}]}, {"version": 1, "tools": [{"name": "other", "mise": ["claude"]}]}, ".config/vsys/agent-tools.json"),
-            ("mise slash", {"version": 1, "tools": [{"name": "ok", "mise": ["bad/dir"]}]}, None, "agent-tools.json"),
-            ("path relative", {"version": 1, "tools": [{"name": "ok", "paths": ["pkg/"]}]}, None, "agent-tools.json"),
-            ("root path", {"version": 1, "tools": [{"name": "ok", "paths": ["/"]}]}, None, "agent-tools.json"),
-            ("duplicate path", {"version": 1, "tools": [{"name": "ok", "paths": ["/pkg/", "/pkg/"]}]}, None, "agent-tools.json"),
-            ("executable directory", {"version": 1, "tools": [{"name": "ok", "executables": ["/usr/bin/"]}]}, None, "agent-tools.json"),
             ("duplicate overlay path", {"version": 1, "tools": [{"name": "ok", "paths": ["/pkg/"]}]}, {"version": 1, "tools": [{"name": "ok", "paths": ["/pkg/"]}]}, ".config/vsys/agent-tools.json"),
-            ("prefix relative", {"version": 1, "tools": [], "desktopExePrefixes": ["relative"]}, None, "agent-tools.json"),
             ("non json", "{", None, "agent-tools.json"),
             ("invalid utf8", b"\xff", None, "agent-tools.json"),
         ]

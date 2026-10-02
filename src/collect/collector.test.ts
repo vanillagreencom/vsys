@@ -719,15 +719,68 @@ test("a shipped agent CLI is recognised through its install shapes, and a name a
       exe: "/usr/bin/bash",
       tool: null,
     },
+    // Each conjunct of the retitle and script rules, alone.
+    {
+      pid: 49,
+      comm: "pi",
+      command: () => ["pi"],
+      exe: "/usr/local/bin/pi",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 50,
+      comm: "pi",
+      command: () => ["node", "", ""],
+      exe: "/usr/bin/node",
+      tool: null,
+      unconfirmed: "pi",
+    },
+    {
+      pid: 51,
+      comm: "cat",
+      command: () => [
+        "cat",
+        "/usr/lib/node_modules/@openai/codex/bin/codex.js",
+      ],
+      exe: "/usr/bin/cat",
+      tool: null,
+    },
+    {
+      pid: 52,
+      comm: "node",
+      command: () => ["node", "/srv/app/server.js"],
+      exe: "/usr/bin/node",
+      tool: null,
+    },
+    // A package under a desktop prefix with no location naming it.
+    {
+      pid: 53,
+      comm: "claude",
+      command: () => ["/usr/bin/claude"],
+      exe: "/opt/claude-code/bin/claude",
+      tool: null,
+    },
   ]);
 });
 test("an overlay entry naming a shipped tool adds where this machine installed it", async () => {
   await toolWorld(
     {
       version: 1,
-      tools: [{ name: "codex", executables: ["/usr/local/bin/codex"] }],
+      tools: [
+        { name: "codex", executables: ["/usr/local/bin/codex"] },
+        { name: "claude", paths: ["/opt/claude-code/"] },
+      ],
     },
     [
+      // A location the reader adds outranks the desktop prefix around it.
+      {
+        pid: 13,
+        comm: "claude",
+        command: () => ["/usr/bin/claude"],
+        exe: "/opt/claude-code/bin/claude",
+        tool: "claude",
+      },
       {
         pid: 10,
         comm: "codex",
@@ -944,6 +997,15 @@ test("the owner's machine keeps every agent it ran, and its local names gain no 
       file: "pi.sh",
       tool: null,
       unconfirmed: "pi",
+    },
+    // A script never matches a tool with no install location.
+    {
+      pid: 32,
+      comm: "bash",
+      command: () => ["bash", `${home}/bin/agy.sh`],
+      exe: "/usr/bin/bash",
+      tool: null,
+      unconfirmed: "agy",
     },
   ]);
   // Neither false name makes a lane outside the agent slice; the agent
@@ -1239,15 +1301,12 @@ test("the program's collector takes install locations and desktop paths from the
     }),
   );
   f.config.agentTools = [...f.config.agentTools, "zz-agent"];
-  // Each app ships the Claude Code package, so only the desktop prefix tells
-  // its binary from the agent CLI.
-  f.proc(40, "app.slice/app-x.scope", {
-    command: ["/srv/apps/x/node_modules/@anthropic-ai/claude-code/claude"],
-  });
+  // Each app's binary is called claude and lies in no claude install
+  // location, so only the desktop prefix keeps it from reading as a claude
+  // whose location vsys could not confirm.
+  f.proc(40, "app.slice/app-x.scope", { command: ["/srv/apps/x/claude"] });
   f.proc(41, "app.slice/app-y.scope", {
-    command: [
-      "/tmp/.mount_claudeBHBhLJ/usr/lib/node_modules/@anthropic-ai/claude-code/claude",
-    ],
+    command: ["/tmp/.mount_claudeBHBhLJ/usr/lib/claude-desktop/claude"],
   });
   f.proc(42, "app.slice/tmux-spawn-1.scope");
   f.proc(43, "app.slice/tmux-spawn-2.scope", {
@@ -1268,12 +1327,16 @@ test("the program's collector takes install locations and desktop paths from the
     const s = await collector.sample(1000);
     // The overlay's prefix joins the shipped ones on the process thread, and
     // so does the install location of a tool the overlay adds.
-    expect(Object.fromEntries(s.procs.map((p) => [p.pid, p.tool]))).toEqual({
-      40: null,
-      41: null,
-      42: "claude",
-      43: "zz-agent",
-      44: null,
+    expect(
+      Object.fromEntries(
+        s.procs.map((p) => [p.pid, [p.tool, p.unconfirmedTool]]),
+      ),
+    ).toEqual({
+      40: [null, null],
+      41: [null, null],
+      42: ["claude", null],
+      43: ["zz-agent", null],
+      44: [null, "zz-agent"],
     });
   } finally {
     collector.close();

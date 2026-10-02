@@ -60,37 +60,16 @@ test("agent tools parser accepts valid documents and rejects malformed rows", ()
       "version-one-point-zero.json",
     ),
   ).toEqual(valid);
-  const rows: [string, unknown][] = [
-    ["bad version", { ...valid, version: 2 }],
-    ["version true", { ...valid, version: true }],
-    ["unknown document key", { ...valid, extra: true }],
-    ["missing tools", { version: 1 }],
-    ["bad name", { ...valid, tools: [{ name: "bad/name" }] }],
-    ["bad mise", { ...valid, tools: [{ name: "ok", mise: ["bad/dir"] }] }],
-    ["relative path", { ...valid, tools: [{ name: "ok", paths: ["pkg/"] }] }],
-    ["root path", { ...valid, tools: [{ name: "ok", paths: ["/"] }] }],
-    [
-      "duplicate path",
-      { ...valid, tools: [{ name: "ok", paths: ["/pkg/", "/pkg/"] }] },
-    ],
-    [
-      "executable directory",
-      { ...valid, tools: [{ name: "ok", executables: ["/usr/bin/"] }] },
-    ],
-    [
-      "path repeated as executable",
-      {
-        ...valid,
-        tools: [
-          { name: "ok", paths: ["/usr/bin/ok"], executables: ["/usr/bin/ok"] },
-        ],
-      },
-    ],
-    ["bad prefix", { ...valid, desktopExePrefixes: ["relative"] }],
-    ["duplicate name", { ...valid, tools: [{ name: "a" }, { name: "a" }] }],
-  ];
-  for (const [name, value] of rows) {
-    expect(() => parseAgentToolsDocument(value, `${name}.json`)).toThrow(
+  // The warden's parser reads the same table, so a rule pinned for one parser
+  // is pinned for the other.
+  const rows = JSON.parse(
+    readFileSync(join(process.cwd(), "data/agent-tools-rejected.json"), "utf8"),
+  ).rows as { name: string; document: unknown }[];
+  expect(rows.length, "extractor broke: no rejected documents").toBeGreaterThan(
+    0,
+  );
+  for (const { name, document } of rows) {
+    expect(() => parseAgentToolsDocument(document, `${name}.json`)).toThrow(
       `${name}.json`,
     );
   }

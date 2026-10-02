@@ -168,7 +168,8 @@ def _parse_agent_tools(value, path):
         for directory in mise:
             _reject_duplicate(mise_dirs, directory, path, "mise dir")
         # The dashboard confirms an agent's name by these install locations;
-        # the warden only refuses a document that holds a malformed one.
+        # the warden only refuses a document that holds a malformed one. A
+        # repeated location is refused when the documents merge.
         tool_paths = [] if "paths" not in tool else _string_array(
             tool["paths"], path, f"tools[{index}].paths",
             lambda item: len(item) > 1 and item.startswith("/"),
@@ -177,11 +178,6 @@ def _parse_agent_tools(value, path):
             tool["executables"], path, f"tools[{index}].executables",
             lambda item: len(item) > 1 and item.startswith("/") and not item.endswith("/"),
             "must be an absolute executable path")
-        locations = set()
-        for fragment in tool_paths:
-            _reject_duplicate(locations, fragment, path, f"tools[{index}].paths")
-        for executable in executables:
-            _reject_duplicate(locations, executable, path, f"tools[{index}].executables")
         tools.append({"name": name, "mise": mise, "paths": tool_paths, "executables": executables})
     prefixes = _string_array(value.get("desktopExePrefixes", []), path, "desktopExePrefixes",
                              lambda item: bool(item) and item.startswith("/"),
