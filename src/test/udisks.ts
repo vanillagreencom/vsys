@@ -8,6 +8,10 @@ export interface FakeDrive {
   kind: "nvme" | "ata" | "none";
   /** The SmartGetAttributes reply's `data`, or a refusal in busctl's words. */
   attributes: unknown | { refuse: string };
+  /** The Drive object's `Serial`; omitted drives report none. */
+  serial?: string;
+  /** The Drive object's `WWN`; omitted drives report none. */
+  wwn?: string;
 }
 const bytes = (path: string) => [...Buffer.from(path), 0];
 /**
@@ -28,7 +32,13 @@ export function fakeBus(
   for (const d of drives) {
     const drive = `/org/freedesktop/UDisks2/drives/${d.name}_drive`;
     objects[drive] = {
-      "org.freedesktop.UDisks2.Drive": { Model: { type: "s", data: d.model } },
+      "org.freedesktop.UDisks2.Drive": {
+        Model: { type: "s", data: d.model },
+        ...(d.serial !== undefined
+          ? { Serial: { type: "s", data: d.serial } }
+          : {}),
+        ...(d.wwn !== undefined ? { WWN: { type: "s", data: d.wwn } } : {}),
+      },
       ...(d.kind === "none"
         ? {}
         : {

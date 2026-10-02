@@ -1,0 +1,1 @@
+- A drive swapped in under a reused kernel name no longer shows the previous drive's model and lifetime writes for the rest of udisks' 10-minute cache hold.

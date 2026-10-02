@@ -87,8 +87,18 @@ test("each whole disk with a SMART drive is read, and a partition is no row", as
   expect(reading).toEqual({
     outcome: null,
     drives: [
-      { name: "nvme0n1", model: "Samsung SSD 990 PRO 2TB", written: 9_000_000 },
-      { name: "sda", model: "Crucial CT1000MX500SSD1", written: 512_000 },
+      {
+        name: "nvme0n1",
+        model: "Samsung SSD 990 PRO 2TB",
+        written: 9_000_000,
+        identity: null,
+      },
+      {
+        name: "sda",
+        model: "Crucial CT1000MX500SSD1",
+        written: 512_000,
+        identity: null,
+      },
     ],
   });
   expect(calls.slice(1).map((argv) => argv.slice(5, 7))).toEqual([
@@ -228,7 +238,7 @@ test("a drive whose SMART query fails to launch keeps its row, written unknown, 
     throw launchFailure;
   });
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null }],
+    drives: [{ name: "sda", model: "B", written: null, identity: null }],
     outcome: { failure: "incomplete", detail: launchFailure.message },
   });
 });
@@ -246,7 +256,7 @@ test("a drive query spawnText reports timed out is read as a timeout, even thoug
     return { out: "", error: "", status: 143, timedOut: true };
   }, 50);
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null }],
+    drives: [{ name: "sda", model: "B", written: null, identity: null }],
     outcome: {
       failure: "incomplete",
       detail: "busctl did not answer within 50 ms",
@@ -264,28 +274,103 @@ test("a drive whose SMART query never answers keeps its row, written unknown", a
     return hangs();
   }, 10);
   expect(reading).toEqual({
-    drives: [{ name: "sda", model: "B", written: null }],
+    drives: [{ name: "sda", model: "B", written: null, identity: null }],
     outcome: {
       failure: "incomplete",
       detail: "busctl runner abandoned after 2510 ms with no response",
     },
   });
 });
-test("a read is held for the hold time on the clock it is given", async () => {
+test("the SMART query is held for the hold time, but the cheap listing is asked every sample", async () => {
   const calls: string[][] = [];
   let now = 0;
   const udisks = new Udisks(
     fakeBus(
-      [{ name: "sda", model: "B", kind: "ata", attributes: ata(10, 3) }],
+      [
+        {
+          name: "sda",
+          model: "B",
+          kind: "ata",
+          attributes: ata(10, 3),
+          serial: "SN1",
+        },
+      ],
       calls,
     ),
     () => now,
   );
   await udisks.read();
+  expect(calls).toHaveLength(2); // listing + SmartGetAttributes
   now = udisksHoldMs - 1;
   await udisks.read();
-  expect(calls).toHaveLength(2);
+  // Within the hold the listing runs again to check identity, costing one
+  // more call, but the SMART query is not repeated.
+  expect(calls).toHaveLength(3);
   now = udisksHoldMs;
   await udisks.read();
-  expect(calls).toHaveLength(4);
+  // The hold has expired: the full read, listing and query both, runs again.
+  expect(calls).toHaveLength(5);
+});
+test("a kernel name reused by a different drive within the hold is read fresh, not served the departed drive's numbers", async () => {
+  const calls: string[][] = [];
+  let now = 0;
+  let live = [
+    {
+      name: "sda",
+      model: "Old Drive",
+      kind: "ata" as const,
+      attributes: ata(1000, 3),
+      serial: "SERIAL-OLD",
+    },
+  ];
+  const run: typeof spawnText = (argv, timeoutMs) =>
+    fakeBus(live, calls)(argv, timeoutMs);
+  const udisks = new Udisks(run, () => now);
+  const first = await udisks.read();
+  expect(first).toEqual({
+    outcome: null,
+    drives: [
+      {
+        name: "sda",
+        model: "Old Drive",
+        written: 512_000,
+        identity: "SERIAL-OLD",
+      },
+    ],
+  });
+  // The physical drive behind sda is swapped well inside the hold window:
+  // same kernel name, a different serial and a different SMART history.
+  now = udisksHoldMs - 1;
+  live = [
+    {
+      name: "sda",
+      model: "New Drive",
+      kind: "ata" as const,
+      attributes: ata(5, 3),
+      serial: "SERIAL-NEW",
+    },
+  ];
+  const second = await udisks.read();
+  expect(second).toEqual({
+    outcome: null,
+    drives: [
+      {
+        name: "sda",
+        model: "New Drive",
+        written: 2_560,
+        identity: "SERIAL-NEW",
+      },
+    ],
+  });
+  // A same-identity re-read within the hold still serves the held reading,
+  // never re-querying the drive.
+  const queriesSoFar = calls.filter((argv) =>
+    argv.includes("SmartGetAttributes"),
+  ).length;
+  now = udisksHoldMs; // still within the hold the swap read started
+  const third = await udisks.read();
+  expect(third).toEqual(second);
+  expect(
+    calls.filter((argv) => argv.includes("SmartGetAttributes")).length,
+  ).toBe(queriesSoFar);
 });
