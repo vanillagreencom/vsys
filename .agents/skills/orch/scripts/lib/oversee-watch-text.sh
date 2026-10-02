@@ -89,14 +89,14 @@ The long pass's events, checked and reported in this order:
                              StopFailure row whose error is `rate_limit`,
                              standing unless its account measures room, its
                              message, or message=unrecorded, under the line; from `account`, a live
-                             session whose own account the mark judgement
-                             reads at zero headroom, its account and reset
-                             under the line; both on the first pass that
+                             session whose own account judgement reads
+                             mark-reached kind=headroom value=0, account
+                             and reset under the line; both on the first pass that
                              reads them. Or, from the `pane` fallback, on N
                              consecutive passes read by the same judge AND
-                             its own account judged
-                             at or below its trigger: the harness is still
-                             running and its ACCOUNT is spent. Such a session
+                             that judgement reading mark-reached
+                             kind=headroom: the harness is still running
+                             and its ACCOUNT is spent. Such a session
                              takes no turn, so it answers no lane, reads no
                              mail and cannot hand itself over — a fleet as
                              unattended as a death leaves, reached by the
@@ -362,7 +362,9 @@ The long pass's events, checked and reported in this order:
                              the last pass that read it, as `lanes list --json`
                              reads it once per pass: its status word changed,
                              its verdict against ORCH_LANE_MAX_PCT crossed in
-                             either direction, or the binding bucket reset the
+                             either direction (a Codex account on its credits
+                             reads room, binding_bucket=credits: `lanes
+                             --help`, pick), or the binding bucket reset the
                              last reading named has passed and the reading has
                              moved off it. `change=` names every one that
                              applies and `was=` the status and verdict before
@@ -803,11 +805,11 @@ Environment:
                               overseer-walled does (default 2). One pass is a
                               poll that caught a live session between its
                               harness and its shell. A screen wall also needs
-                              its account judged at or below
-                              ORCH_OVERSEER_HEADROOM_PCT; passes alone never
+                              its account judged mark-reached
+                              kind=headroom; passes alone never
                               close a window whose harness is alive. A rows
                               wall, which stands unless its account measures
-                              room, and an account read at zero headroom go
+                              room, and an account wall at value=0 go
                               out on the first pass
   ORCH_OVERSEER_SUCCESSION    `off` leaves the overseer-dead and
                               overseer-walled notices and
