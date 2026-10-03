@@ -434,6 +434,32 @@ test("a scrub covers growth this process bounded by its end, or its exact csum c
   }
 });
 
+test("a stored reading is dated when the counter was read, not when its sample began", async () => {
+  const { f, count } = corrected();
+  const r = new Reader();
+  // A sample that began a moment before the scrub started read the counter
+  // after it, with the scrub's first error already counted.
+  count(1);
+  await new StorageCollector().collect(
+    r,
+    f.config,
+    started - 1000,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    () => started + 1000,
+  );
+  // A new process after the scrub sees the scrub's other two errors and one
+  // failure after it: growth of the csum count that is not the scrub's own.
+  count(4);
+  const s = emptySnapshot();
+  s.time = started + 40 * 60_000;
+  s.storage = await new StorageCollector().collect(r, f.config, s.time);
+  expect(integrities(s, f.config)[0]?.state).toBe("new-errors");
+});
+
 test("a stale finished report never moves the remembered time backward", async () => {
   const f = fixture();
   fixtures.push(f);

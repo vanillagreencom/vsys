@@ -254,6 +254,7 @@ export class Collector {
       options.skipScratch ?? false,
       agentScratchDirs(procs),
       options.skipKernelLog ?? false,
+      () => time + (performance.now() - start),
     );
     // The scrub capability comes from the same asynchronous listing the
     // reports were read from, so the two never disagree within a sample. A

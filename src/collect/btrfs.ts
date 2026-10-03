@@ -266,6 +266,13 @@ export class StorageCollector {
     /** The temporary directories running agents name, measured as scratch. */
     agentScratch: string[] = [],
     skipKernelLog = false,
+    /**
+     * When a counter is read, on `time`'s base. The sample's time is taken
+     * before anything is read, and a stored reading that dates the counter
+     * earlier than it was read could predate a scrub whose first errors it
+     * already holds; the read's own time never does.
+     */
+    readTime: () => number = () => time,
   ): Promise<Storage> {
     const smart = smartReports(r, c);
     this.smartDir = smart.outcome;
@@ -375,7 +382,7 @@ export class StorageCollector {
         values.countersAvailable,
       );
       if (corruption !== null)
-        growth.set(fsid, memory.observe(fsid, corruption, time));
+        growth.set(fsid, memory.observe(fsid, corruption, readTime()));
     }
     storage.csumFailures = null;
     if (this.kernelLog && !skipKernelLog)
