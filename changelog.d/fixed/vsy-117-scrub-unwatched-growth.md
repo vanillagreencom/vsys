@@ -1,0 +1,1 @@
+- A filesystem whose scrub corrected every checksum error it found while vsys was not running no longer reads "New errors since last check" when vsys next starts.

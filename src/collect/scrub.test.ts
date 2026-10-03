@@ -153,6 +153,7 @@ test("fields the report did not carry stay null rather than becoming zero", () =
     duration: null,
     uncorrectable: null,
     corrected: null,
+    csum: null,
     addresses: null,
   });
   // A start time that is not a time is unread, never the epoch.
@@ -170,6 +171,21 @@ test("fields the report did not carry stay null rather than becoming zero", () =
       text,
       duration: null,
     });
+});
+
+test("the error summary counts the checksum errors the scrub found", () => {
+  expect(parseScrub(damaged).csum).toBe(26);
+  const rows: [string, number | null][] = [
+    ["Error summary:    csum=26\n", 26],
+    ["Error summary:    read=1 csum=4 verify=2\n", 4],
+    ["Error summary:    no errors found\n", 0],
+    // Another kind counted, and no csum among them, is none.
+    ["Error summary:    verify=2\n", 0],
+    ["Status:           finished\n", null],
+    ["Error summary:    csum=lots\n", null],
+  ];
+  for (const [text, csum] of rows)
+    expect({ text, csum: parseScrub(text).csum }).toEqual({ text, csum });
 });
 
 test("a field the report states twice holds no single reading", () => {

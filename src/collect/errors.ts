@@ -21,6 +21,14 @@ export interface ErrorRecord {
    */
   before: number | null;
   /**
+   * When the reading from the file that growth was measured against was
+   * taken. The counter read no higher then, so the growth happened after it,
+   * but readings after it that changed nothing were never written, so it
+   * bounds the growth only loosely. Null where `before` holds the bound, and
+   * where that reading carries no time.
+   */
+  storedBefore: number | null;
+  /**
    * When this reading was taken. A record is one observation of one counter,
    * so a merge takes the later reading whole rather than mixing a counter
    * from one with a growth time from another.
@@ -89,6 +97,10 @@ export class ErrorMemory {
           typeof r.before === "number" && Number.isFinite(r.before)
             ? r.before
             : null,
+        storedBefore:
+          typeof r.storedBefore === "number" && Number.isFinite(r.storedBefore)
+            ? r.storedBefore
+            : null,
         // A record written before this field existed loses every merge to a
         // reading taken now, which is the reading that is current.
         seen:
@@ -105,19 +117,30 @@ export class ErrorMemory {
    *
    * Every reading is held as the latest one, so the next growth is bounded
    * by the reading just before it. Growth after a reading from the file has
-   * no such bound.
+   * no such bound, only the time that reading was written.
    */
   observe(fsid: string, counter: number, time: number): ErrorRecord {
     const prior = this.records.get(fsid);
+    const here = this.readHere.has(fsid);
     const record: ErrorRecord =
       prior === undefined
-        ? { counter, at: null, size: null, before: null, seen: time }
+        ? {
+            counter,
+            at: null,
+            size: null,
+            before: null,
+            storedBefore: null,
+            seen: time,
+          }
         : counter > prior.counter
           ? {
               counter,
               at: time,
               size: counter - prior.counter,
-              before: this.readHere.has(fsid) ? prior.seen : null,
+              before: here ? prior.seen : null,
+              // A record written before `seen` existed loads it as zero,
+              // which is no time at all.
+              storedBefore: here || prior.seen === 0 ? null : prior.seen,
               seen: time,
             }
           : { ...prior, counter, seen: time };

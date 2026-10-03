@@ -91,13 +91,15 @@ export function scrubFoundDamage(outcome: {
  * The counter growth a FINISHED scrub's own numbers account for, judged by
  * the same one rule for the live report and a remembered one. A report that
  * does not carry its start, its duration, or both counts dates or counts no
- * growth, so it covers none.
+ * growth, so it covers none. Its csum count is carried as read: an unread one
+ * leaves the rest of the coverage standing.
  */
 export function scrubCoverage(report: {
   startedAt?: number | null;
   duration?: number | null;
   corrected?: number | null;
   uncorrectable?: number | null;
+  csum?: number | null;
 }): ScrubCoverage | null {
   const { startedAt, duration, corrected, uncorrectable } = report;
   if (
@@ -107,7 +109,12 @@ export function scrubCoverage(report: {
     uncorrectable == null
   )
     return null;
-  return { endedAt: startedAt + duration, errors: corrected + uncorrectable };
+  return {
+    startedAt,
+    endedAt: startedAt + duration,
+    errors: corrected + uncorrectable,
+    csum: report.csum ?? null,
+  };
 }
 
 /**
@@ -281,7 +288,12 @@ export class StorageCollector {
     const memory = this.errorMemory(r, c.errorMemoryPath);
     const growth = new Map<
       string,
-      { at: number | null; size: number | null; before: number | null }
+      {
+        at: number | null;
+        size: number | null;
+        before: number | null;
+        storedBefore: number | null;
+      }
     >();
     const counters = new Map<
       string,
@@ -427,6 +439,7 @@ export class StorageCollector {
         lastErrorAt: seen?.at ?? null,
         lastErrorSize: seen?.size ?? null,
         lastErrorBefore: seen?.before ?? null,
+        lastErrorStoredBefore: seen?.storedBefore ?? null,
         lastErrorKnown: memory.available,
         ...((fsid ? counters.get(fsid) : undefined) ?? {
           errors: {},
@@ -466,6 +479,7 @@ export class StorageCollector {
             duration: null,
             uncorrectable: null,
             corrected: null,
+            csum: null,
             addresses: null,
           });
           continue;
@@ -492,6 +506,7 @@ export class StorageCollector {
           duration: report.duration,
           uncorrectable: report.uncorrectable,
           corrected: report.corrected,
+          csum: report.csum,
           addresses,
         };
         try {
