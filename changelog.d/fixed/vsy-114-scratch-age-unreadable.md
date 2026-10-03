@@ -1,1 +1,1 @@
-- Storage's scratch rows and markdown export no longer show "0s ago" for a scratch root vsys could not read.
+- Storage's scratch rows no longer show "0s ago" for a scratch root vsys could not read, and the markdown export no longer writes a false 0 for its age.
