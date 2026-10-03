@@ -74,7 +74,7 @@ test("scrub errors and unknown output cannot report healthy", () => {
   for (const [text, problem] of [
     ["Error summary: no errors found", false],
     ["Error summary: 2 errors", true],
-    ["scrub aborted", true],
+    ["Status: aborted", true],
     ["read_errors=0 csum_errors=1", true],
   ] as const)
     expect(scrubProblem(text)).toBe(problem);
@@ -86,6 +86,27 @@ test("aborted scrub stays a problem even when no errors were counted", () => {
       "Status: aborted\nError summary: no errors found\nUncorrectable: 0",
     ),
   ).toBe(true);
+});
+test("an interrupted scrub report is not a clean one", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  f.write(
+    join(f.config.scrubDir, "-.result"),
+    `btrfs scrub did not complete (interrupted): /
+UUID:             2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6
+Scrub started:    Fri Sep 11 13:25:54 2026
+Status:           interrupted
+Duration:         0:03:10
+Error summary:    no errors found
+`,
+  );
+  const storage = await new StorageCollector().collect(
+    new Reader(),
+    f.config,
+    1000,
+  );
+  expect(storage.scrubs[0]?.status).toBe("interrupted");
+  expect(storage.scrubs[0]?.problem).toBe(true);
 });
 test("a report is matched to its filesystem and lists only files still there", async () => {
   const f = fixture();

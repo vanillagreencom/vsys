@@ -1,0 +1,1 @@
+- An interrupted scrub no longer reads clean. Its Storage row now shows a problem and the `scrub` alert fires.
