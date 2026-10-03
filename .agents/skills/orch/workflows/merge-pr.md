@@ -320,15 +320,17 @@ Use the output as `MAIN_REPO_ROOT`.
 
    Complete `[ISSUE]` only when its Done-when is on the default branch, not only because a merged PR carries its number, and give every remainder from a cut its own issue or bundle before completion.
 
-   When `[ISSUE]` was extracted, read it from the synced cache; a completed state needs no write, and for a live state run the completion command only after the default-branch Done-when check passes.
+   When `[ISSUE]` was extracted, read it from the synced cache. For a live state, run the completion command only after the default-branch Done-when check passes. A completed state takes the same check, because Linear's GitHub integration sets Done from the PR's `Closes` line at merge: when the issue's `## Done when` section still holds an unchecked box that check found met, run the same completion command, which sets Done again and ticks those boxes; with no such box, skip the write.
 
    ```bash
    [MAIN_REPO_ROOT]/.agents/skills/linear/scripts/linear.sh cache issues get [ISSUE]
    ```
 
    ```bash
-   [MAIN_REPO_ROOT]/.agents/skills/linear/scripts/linear.sh issues complete [ISSUE]
+   [MAIN_REPO_ROOT]/.agents/skills/linear/scripts/linear.sh issues complete [ISSUE] --done-when-met [MET_BOXES]
    ```
+
+   `[MET_BOXES]` is the `## Done when` boxes that check found on the default branch: `all` when it found every box, otherwise their numbers in section order from 1, comma-separated. A section that holds no checkbox, only plain bullets, takes `all`, which ticks nothing and sets Done.
 
    A canceled or unreadable issue is a tracker failure, not a completed merge record. Carry the diagnostic into § 6 and do not claim tracker completion.
 
