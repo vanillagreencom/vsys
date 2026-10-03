@@ -4,7 +4,7 @@
 
 **Date**: 2026-09-09
 
-**Status**: Active
+**Status**: Revisited
 
 **Research**: —
 
@@ -23,3 +23,7 @@
 **Verification**: `src/model/actions.test.ts` pins the exact path, value and argv of each action, the refusal for a lane with no scope, the action set for a scope under the root, in a slice, in a nested slice, nested in another unit and in a slice inside another unit, and that a collected container's nested `init.scope` resolves Stop as `unaddressable` while `agents.slice/a.scope` still resolves it. `src/ui/agent.test.tsx` checks that the agent screen lists no Stop for a nested scope.
 
 **References**: [D001](D001-clipboard-sequence.md)
+
+## Revisit Outcome (2026-10-03)
+
+The original trigger occurred: a watched lane ran in a cgroup systemd does not own, a scope nested inside a container. The mechanism stays. Freeze and Thaw keep writing `cgroup.freeze` by path. Stop keeps `systemctl --user kill`, but is refused for any scope with a directory other than a `.slice` between the configured root and the scope, because its bare unit name can resolve to a different unit, such as the user manager's own `init.scope`. The next trigger is Stop needing to reach such a scope, which needs a mechanism that addresses it by path rather than by unit name.
