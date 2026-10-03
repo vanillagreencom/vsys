@@ -1,6 +1,6 @@
 # Storage check memory
 
-Covers: src/collect/btrfs.ts src/collect/btrfs.test.ts src/collect/collector.test.ts src/collect/errors.test.ts src/collect/scrub.test.ts src/model/integrity.ts src/model/integrity.test.ts src/model/verdict.test.ts src/ui/integrity.test.ts src/ui/attention.test.ts
+Covers: src/collect/btrfs.ts src/collect/btrfs.test.ts src/collect/collector.ts src/collect/collector.test.ts src/collect/errors.ts src/collect/errors.test.ts src/collect/scrub.ts src/collect/scrub.test.ts src/model/integrity.ts src/model/integrity.test.ts src/model/verdict.ts src/model/verdict.test.ts src/ui/integrity.ts src/ui/integrity.test.ts src/ui/attention.ts src/ui/attention.test.ts src/runtime.ts
 
 The memory of a filesystem's last finished check, and what counter growth a finished check accounts for. The sources, the boundaries these invariants rest on and invariants 1 to 13 are in [storage integrity](storage-integrity.md). The numbers continue from that file.
 
