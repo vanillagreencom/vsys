@@ -4,13 +4,13 @@ schema = 6
 repo = "vanillagreencom/kendex"
 
 [install]
-# No "copilot" entry: no vsys lane runs the Copilot CLI. The `copilot = true` entry
-# under [bot-instructions.bots] is the GitHub pull-request reviewer, not a CLI harness.
 harnesses = [
     "claude",
     "codex",
+    "copilot",
     "pi",
 ]
+method = "symlink"
 
 [agents.maintainer]
 source = "kendex"
@@ -158,6 +158,7 @@ source = "kendex"
 harnesses = [
     "claude",
     "codex",
+    "copilot",
     "pi",
 ]
 
@@ -166,6 +167,7 @@ source = "kendex"
 harnesses = [
     "claude",
     "codex",
+    "copilot",
     "pi",
 ]
 
@@ -174,10 +176,32 @@ source = "kendex"
 harnesses = [
     "claude",
     "codex",
+    "copilot",
     "pi",
 ]
 
+[hooks.lane-mail-prompt]
+source = "kendex"
+harnesses = [
+    "copilot",
+]
+
+[hooks.lane-mail-start]
+source = "kendex"
+harnesses = [
+    "copilot",
+]
+
+[hooks.lane-mail-compact]
+source = "kendex"
+harnesses = [
+    "copilot",
+]
+
 [hooks.skill-load-check]
+source = "kendex"
+
+[hooks.skill-load-record]
 source = "kendex"
 
 [commands.code-scrub]
@@ -241,4 +265,12 @@ reason = "Generated from vanillagreencom/kendex; fix the upstream package and re
 
 [[bot-instructions.exclusions.path]]
 glob = ".pi/prompts/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".github/agents/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".github/hooks/*"
 reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."

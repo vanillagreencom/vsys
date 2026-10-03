@@ -30,7 +30,7 @@ Read the PR's decline replies and the repo's instruction files before reporting 
 
 Do not report findings on tracked files that the repo renders from an upstream package. Apply this exclusion to every bot and every review round. Fix the upstream package and render it again; a local edit is overwritten. Include the excluded paths with this block wherever the bot has no other way to receive them.
 
-Those paths here: .agents/skills/**, .claude/agents/**, .claude/commands/**, .claude/hooks/*.sh, .claude/skills/**, .codex/agents/**, .codex/hooks/*.sh, .pi/agents/**, .pi/kendex/hooks/*.sh, .pi/prompts/**.
+Those paths here: .agents/skills/**, .claude/agents/**, .claude/commands/**, .claude/hooks/*.sh, .claude/skills/**, .codex/agents/**, .codex/hooks/*.sh, .pi/agents/**, .pi/kendex/hooks/*.sh, .pi/prompts/**, .github/agents/**, .github/hooks/*.
 
 ## trust-model
 
