@@ -683,7 +683,7 @@ test("growth a finished scrub could have counted is that scrub's finding, not ne
   // The scrub started an hour ago and ran thirty minutes. The kernel counts
   // every mismatch the scrub finds, and vsys dates that growth at the sample
   // that saw it, which follows the scrub's end when no vsys process watched
-  // it. The reading before that sample bounds when the growth happened.
+  // it. The reading before it bounds the growth where that process took it.
   const startedAt = now - 3600000;
   const endedAt = startedAt + 30 * 60000;
   const ahead = startedAt - 60000;
@@ -705,8 +705,8 @@ test("growth a finished scrub could have counted is that scrub's finding, not ne
   });
   const rows: [string, Partial<Volume>, Scrub[], IntegrityState][] = [
     [
-      "growth seen during the run that the scrub corrected",
-      grew(during, ahead, 3),
+      "growth seen during the run, the reading before it from disk",
+      grew(during, null, 3),
       [scrub()],
       "healthy",
     ],
@@ -759,8 +759,8 @@ test("growth a finished scrub could have counted is that scrub's finding, not ne
       "new-errors",
     ],
     [
-      "growth whose reading before it is unread",
-      grew(during, null, 3),
+      "growth first seen after the run, the reading before it from disk",
+      grew(after, null, 3),
       [scrub()],
       "new-errors",
     ],

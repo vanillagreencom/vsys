@@ -110,6 +110,11 @@ test("what was remembered survives a restart", () => {
     before: 1000,
     seen: 90000000,
   });
+  // The reading on disk is the last one written, and readings after it that
+  // changed nothing never were, so it bounds no growth after it.
+  const third = new ErrorMemory(path);
+  third.load();
+  expect(third.observe("fs", 40, 90000000).before).toBeNull();
 });
 
 test("a state file that is not what it claims is refused, not half read", () => {
@@ -126,13 +131,6 @@ test("a state file that is not what it claims is refused, not half read", () => 
   const memory = new ErrorMemory(good);
   memory.load();
   expect(memory.observe("fs", 3, 9000).at).toBe(5000);
-  // A record that does not say when it was read bounds no growth from it.
-  const unread = statePath();
-  mkdirSync(dirname(unread), { recursive: true });
-  writeFileSync(unread, '{"fs":{"counter":3,"at":5000,"size":2}}');
-  const fresh = new ErrorMemory(unread);
-  fresh.load();
-  expect(fresh.observe("fs", 5, 9000).before).toBeNull();
 });
 
 test("a write that failed is tried again rather than dropped", () => {
@@ -217,6 +215,9 @@ test("a growth time on disk is never replaced by an older one", () => {
   const read = new ErrorMemory(path);
   read.load();
   expect(read.observe("fs", 30, 9000).at).toBe(8000);
+  // The reading the merge took from the other process is its last one
+  // written, so it bounds no growth after it either.
+  expect(stale.observe("fs", 31, 9000).before).toBeNull();
 });
 
 test("a reboot does not hide the errors counted after it", () => {

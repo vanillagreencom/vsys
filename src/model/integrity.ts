@@ -282,18 +282,17 @@ export function integrity(
   const coverage =
     finished && scrub ? scrubCoverage(scrub) : (remembered?.covers ?? null);
   const errorSize = grew?.lastErrorSize ?? null;
-  const priorReadAt = grew?.lastErrorBefore ?? null;
   // A scrub's own finding is dated at the sample that saw the counter grow,
-  // which can be long after the scrub ended when no vsys process watched it,
-  // so the growth is bounded by the reading before it as well. A check
-  // covers growth whose previous reading came no later than its end and that
-  // its own count accounts for. Growth whose previous reading came after it
-  // ended, or larger than it counted, is still new.
+  // which follows the scrub's end when no vsys sample fell inside it. The
+  // reading before that sample, where this process took it, bounds the
+  // growth exactly; one from the file may be long stale, so without it the
+  // growth is bounded by the sample that saw it. A check covers growth bounded
+  // no later than its end that its own count accounts for.
+  const grownSince = grew?.lastErrorBefore ?? grownAt;
   const grownCovered =
-    grownAt !== null &&
-    priorReadAt !== null &&
+    grownSince !== null &&
     coverage !== null &&
-    priorReadAt <= coverage.endedAt &&
+    grownSince <= coverage.endedAt &&
     errorSize !== null &&
     errorSize <= coverage.errors;
   const growthNew =

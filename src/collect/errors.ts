@@ -17,16 +17,15 @@ export interface ErrorRecord {
   /**
    * When the reading before that growth was taken, which still read the
    * counter below it. The growth happened after this and by `at`; null where
-   * that reading's time is unread.
+   * that reading came from the file rather than this process.
    */
   before: number | null;
   /**
-   * When this reading was taken, null where a stored record does not say. A
-   * record is one observation of one counter, so a merge takes the later
-   * reading whole rather than mixing a counter from one with a growth time
-   * from another.
+   * When this reading was taken. A record is one observation of one counter,
+   * so a merge takes the later reading whole rather than mixing a counter
+   * from one with a growth time from another.
    */
-  seen: number | null;
+  seen: number;
 }
 
 /**
@@ -35,6 +34,13 @@ export interface ErrorRecord {
  */
 export class ErrorMemory {
   private records = new Map<string, ErrorRecord>();
+  /**
+   * Filesystems whose held record is a reading this process took. This
+   * process holds every reading it takes, so only those bound the next growth
+   * to one sample interval; the file holds the last reading written, and the
+   * readings after it that changed nothing never were.
+   */
+  private readonly readHere = new Set<string>();
   private loaded = false;
   private dirty = false;
   /**
@@ -83,10 +89,10 @@ export class ErrorMemory {
           typeof r.before === "number" && Number.isFinite(r.before)
             ? r.before
             : null,
-        // A record that does not say when it was read loses every merge to a
+        // A record written before this field existed loses every merge to a
         // reading taken now, which is the reading that is current.
         seen:
-          typeof r.seen === "number" && Number.isFinite(r.seen) ? r.seen : null,
+          typeof r.seen === "number" && Number.isFinite(r.seen) ? r.seen : 0,
       });
     }
     this.records = read;
@@ -98,8 +104,8 @@ export class ErrorMemory {
    * not when.
    *
    * Every reading is held as the latest one, so the next growth is bounded
-   * by the reading just before it. Only a changed counter or growth is
-   * written, so across a restart that bound is the last reading written.
+   * by the reading just before it. Growth after a reading from the file has
+   * no such bound.
    */
   observe(fsid: string, counter: number, time: number): ErrorRecord {
     const prior = this.records.get(fsid);
@@ -111,11 +117,12 @@ export class ErrorMemory {
               counter,
               at: time,
               size: counter - prior.counter,
-              before: prior.seen,
+              before: this.readHere.has(fsid) ? prior.seen : null,
               seen: time,
             }
           : { ...prior, counter, seen: time };
     this.records.set(fsid, record);
+    this.readHere.add(fsid);
     if (
       !prior ||
       prior.counter !== record.counter ||
@@ -191,11 +198,10 @@ export class ErrorMemory {
       // counter with another's growth time: taking the higher counter, in
       // particular, restores a pre-reboot high-water mark and hides every
       // error counted after the reboot until the counter passes it again.
-      if (
-        theirs.seen !== null &&
-        (mine.seen === null || theirs.seen > mine.seen)
-      )
+      if (theirs.seen > mine.seen) {
         this.records.set(fsid, theirs);
+        this.readHere.delete(fsid);
+      }
     }
     return true;
   }

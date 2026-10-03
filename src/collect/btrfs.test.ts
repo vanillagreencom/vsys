@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { integrities } from "../model/integrity";
+import { type IntegrityState, integrities } from "../model/integrity";
 import { point } from "../store/point";
 import { emptySnapshot, fixture } from "../test/fixture";
 import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
@@ -254,36 +254,23 @@ Error summary:    no errors found
   expect(second.lastFinishedScrub?.[key]?.damaged).toBe(true);
 });
 
-test("a scrub that corrected every error it found is not new errors since that scrub", async () => {
+const started = Date.parse("Fri Sep 11 13:25:54 2026");
+/**
+ * A filesystem whose scrub from `started` ran thirty minutes and corrected
+ * three errors, with a writer for its corruption counter.
+ */
+function corrected() {
   const f = fixture();
   fixtures.push(f);
   const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
   const root = join(f.config.btrfsRoot, uuid);
   mkdirSync(join(root, "devices"), { recursive: true });
   symlinkSync("/sys/devices/test", join(root, "devices/test"));
-  const stats = (n: number) =>
-    `corruption_errs ${n}\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0`;
-  const file = join(root, "devinfo/1/error_stats");
   f.write(
     join(f.config.procRoot, "self/mountinfo"),
     `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
   );
   const reportPath = join(f.config.scrubDir, "root.result");
-  const started = Date.parse("Fri Sep 11 13:25:54 2026");
-  const collector = new StorageCollector();
-  const r = new Reader();
-  const state = async (time: number) => {
-    const s = emptySnapshot();
-    s.storage = await collector.collect(r, f.config, time);
-    s.time = time;
-    return { storage: s.storage, item: integrities(s, f.config)[0] };
-  };
-  f.write(file, stats(0));
-  await collector.collect(r, f.config, started - 60_000);
-  // Five minutes into a thirty-minute scrub, the kernel has counted the
-  // three bad copies it found and repaired.
-  f.write(file, stats(3));
-  await collector.collect(r, f.config, started + 5 * 60_000);
   f.write(
     reportPath,
     `btrfs scrub finished, csum=3: /
@@ -297,6 +284,30 @@ Error summary:    csum=3
   Unverified:     0
 `,
   );
+  const count = (n: number) =>
+    f.write(
+      join(root, "devinfo/1/error_stats"),
+      `corruption_errs ${n}\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0`,
+    );
+  return { f, uuid, reportPath, count };
+}
+
+test("a scrub that corrected every error it found is not new errors since that scrub", async () => {
+  const { f, uuid, reportPath, count } = corrected();
+  const collector = new StorageCollector();
+  const r = new Reader();
+  const state = async (time: number) => {
+    const s = emptySnapshot();
+    s.storage = await collector.collect(r, f.config, time);
+    s.time = time;
+    return { storage: s.storage, item: integrities(s, f.config)[0] };
+  };
+  count(0);
+  await collector.collect(r, f.config, started - 60_000);
+  // Five minutes into the scrub, the kernel has counted the three bad
+  // copies it found and repaired.
+  count(3);
+  await collector.collect(r, f.config, started + 5 * 60_000);
   const finished = await state(started + 40 * 60_000);
   expect(finished.item?.complete).toBe(true);
   expect(finished.item?.state).toBe("healthy");
@@ -317,72 +328,57 @@ Error summary:    no errors found
   );
   expect((await state(started + 100 * 60_000)).item?.state).toBe("healthy");
   // Growth after the scrub ended is new however many it corrected.
-  f.write(file, stats(4));
+  count(4);
   expect((await state(started + 110 * 60_000)).item?.state).toBe("new-errors");
 });
 
-test("a scrub no vsys sample watched still accounts for the growth it found", async () => {
-  const started = Date.parse("Fri Sep 11 13:25:54 2026");
-  // A monthly scrub runs while no dashboard samples: the last reading before
-  // it is a minute ahead of its start, and the next comes ten minutes after
-  // its thirty-minute run ended, from the same process or a new one reading
-  // the baseline the old one saved.
-  for (const fresh of [false, true]) {
-    const f = fixture();
-    fixtures.push(f);
-    const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
-    const root = join(f.config.btrfsRoot, uuid);
-    mkdirSync(join(root, "devices"), { recursive: true });
-    symlinkSync("/sys/devices/test", join(root, "devices/test"));
-    const stats = (n: number) =>
-      `corruption_errs ${n}\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0`;
-    const file = join(root, "devinfo/1/error_stats");
-    f.write(
-      join(f.config.procRoot, "self/mountinfo"),
-      `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
-    );
+test("a scrub covers growth only where this process took the reading before it", async () => {
+  // Each step reads the counter, minutes from the scrub's start, from the
+  // same collector or a new one reading what the last saved, and names the
+  // state it must read, or null.
+  const rows: [string, [number, number, boolean, IntegrityState | null][]][] = [
+    [
+      "growth first seen after the scrub by the process that read before it",
+      [
+        [-1, 0, false, null],
+        [40, 3, false, "healthy"],
+      ],
+    ],
+    [
+      "growth seen during the scrub, then more a new process sees a week later",
+      [
+        [-1, 0, false, null],
+        [5, 3, false, null],
+        [40, 3, true, "healthy"],
+        [10080, 4, true, "new-errors"],
+      ],
+    ],
+    [
+      "a baseline saved an hour before the scrub, then growth a new process sees three days later",
+      [
+        [-60, 0, false, null],
+        [4320, 1, true, "new-errors"],
+      ],
+    ],
+  ];
+  for (const [name, steps] of rows) {
+    const { f, count } = corrected();
     const r = new Reader();
     let collector = new StorageCollector();
-    const state = async (time: number) => {
+    for (const [minutes, counter, fresh, want] of steps) {
+      if (fresh) collector = new StorageCollector();
+      count(counter);
       const s = emptySnapshot();
-      s.storage = await collector.collect(r, f.config, time);
-      s.time = time;
-      return integrities(s, f.config)[0]?.state;
-    };
-    f.write(file, stats(0));
-    await collector.collect(r, f.config, started - 60_000);
-    if (fresh) collector = new StorageCollector();
-    f.write(file, stats(3));
-    f.write(
-      join(f.config.scrubDir, "root.result"),
-      `btrfs scrub finished, csum=3: /
-UUID:             ${uuid}
-Scrub started:    Fri Sep 11 13:25:54 2026
-Status:           finished
-Duration:         0:30:00
-Error summary:    csum=3
-  Corrected:      3
-  Uncorrectable:  0
-  Unverified:     0
-`,
-    );
-    expect({ fresh, state: await state(started + 40 * 60_000) }).toEqual({
-      fresh,
-      state: "healthy",
-    });
-    // Growth after a reading taken past the scrub's end happened after it,
-    // however many the scrub corrected, in this process and the next.
-    f.write(file, stats(4));
-    expect({ fresh, state: await state(started + 50 * 60_000) }).toEqual({
-      fresh,
-      state: "new-errors",
-    });
-    collector = new StorageCollector();
-    f.write(file, stats(5));
-    expect({ fresh, state: await state(started + 60 * 60_000) }).toEqual({
-      fresh,
-      state: "new-errors",
-    });
+      s.time = started + minutes * 60_000;
+      s.storage = await collector.collect(r, f.config, s.time);
+      const state = integrities(s, f.config)[0]?.state;
+      if (want)
+        expect({ name, minutes, state }).toEqual({
+          name,
+          minutes,
+          state: want,
+        });
+    }
   }
 });
 

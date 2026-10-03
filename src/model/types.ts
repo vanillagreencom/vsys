@@ -109,7 +109,7 @@ export interface Volume {
   lastErrorSize?: number | null;
   /**
    * When the reading before that growth was taken, so the growth happened
-   * after this and by `lastErrorAt`. Null where that time is unread.
+   * after this and by `lastErrorAt`. Null where that reading came from disk.
    */
   lastErrorBefore?: number | null;
   /**
