@@ -102,8 +102,7 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
       scratch: s.storage.scratch.map((root) => ({
         ...root,
         origin: root.origin ?? null,
-        age:
-          root.bytes === null && root.modifiedAt == null ? null : root.age,
+        age: root.bytes === null && root.modifiedAt == null ? null : root.age,
       })),
       // A build older than lifetime-write sources stored device rows with
       // none. Null is the unknown value: the row names no source.
