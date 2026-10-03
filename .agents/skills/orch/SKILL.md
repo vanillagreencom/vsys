@@ -137,7 +137,7 @@ Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.
 
 ## Skill Rules
 
-Delegation, planner launch, lifecycle, round closure, coordination, and lane output: [skill-rules](references/skill-rules.md). A design, an item brief or research on another system is held to [code-quality § Over-Engineering](../code-quality/SKILL.md#over-engineering).
+Delegation, planner launch, lifecycle, round closure, coordination, and lane output: [skill-rules](references/skill-rules.md). A design, an item brief or research on another system is held to [code-quality § Over-Engineering](../code-quality/SKILL.md#over-engineering); an overseer's directive, item or fix names the problem's source in the core mechanics or architecture and fixes it there first. A patch, shim, workaround or gate standing in for that fix names why it cannot happen now, and an item that removes it.
 
 ### Workflow Execution
 
@@ -157,9 +157,9 @@ An `ISSUE_ID` starting with `issue-` is GitHub (`TRACKER=github`, issue number `
 
 ### State Management
 
-Durable data lives in workflow state through the `workflow-state` CLI only (`set-git-head`/`set-now`, never inline substitution). Location: `<state-dir>/workflow-state-[ID].json`, where `<state-dir>` is the `--state-dir` flag, then `$ORCH_STATE_DIR`, then `tmp/`.
+Durable data lives in workflow state through the `workflow-state` CLI only (`set-git-head`/`set-now`, never inline substitution). Location: `<state-dir>/workflow-state-[ID].json`, where `<state-dir>` resolves by the one rule `workflow-state --help` states under State directory.
 
-For workflow state, use the preceding location rule; other temporary session state, including handoffs, lane status, and reviews, defaults to the repository's `tmp/`, which kendex's managed ignore block covers in every consumer, while `docs/` holds tracked repository content and never receives a kendex ignore rule. A plan or research report is not session state: a plan or report with no caller-supplied path lives at `docs/plans/<slug>.md` (a research report at `docs/plans/<slug>-research.md`), tracked, never under `tmp/`; the full rule, with its roadmap exception, is `agents/planner.md` § Plan Artifacts.
+For workflow state, use the preceding location rule; other temporary session state, including handoffs, lane status, and reviews, defaults to the repository's `tmp/`, which kendex's managed ignore block covers in every consumer, while `docs/` holds tracked repository content and never receives a kendex ignore rule. A plan or research report is not session state; `agents/planner.md` § Plan Artifacts places it, tracked.
 
 After compaction, resume from the step after the last completed one: read the item's workflow state, or for an overseer use [oversee.md § 1](workflows/oversee.md#1-resolve-the-launch-surface)'s bounded resume reads. Apply [Delegation](references/skill-rules.md#delegation) before re-sending by stored ID. Stall recovery follows [Round Closure](references/skill-rules.md#round-closure). Never repeat completed actions.
 
