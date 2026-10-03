@@ -1,6 +1,6 @@
 # Label Management Reference
 
-Every create/update path uses two inputs: the **live issue-label inventory** from the tracker, and the **project taxonomy** the project supplies (`kendex.toml` `[skill-instructions]`, a project doc, or a project reference file). The project defines the names, colors, and required categories.
+Every create/update path uses two inputs: the **live issue-label inventory** from the tracker, and the **project taxonomy** § Project Taxonomy Contract defines. The project defines the names, colors, and required categories.
 
 ## Issue Labels vs Project Labels
 
@@ -20,6 +20,8 @@ Run before any workflow creates an issue or updates issue labels:
 .agents/skills/linear/scripts/linear.sh cache labels list --format=safe
 ```
 
+Under a declared taxonomy, also run `linear.sh labels audit`. It lists the undeclared labels on the team's open issues, with the issues carrying them, and each name both a team label and a workspace label use. Report each finding to the user; it does not halt the create. A non-zero audit exit is reported with its error output and never read as clean, and `taxonomy-unreadable` halts the create.
+
 GitHub-tracked runs read live instead — `gh label list --repo [OWNER/REPO] --limit 200 --json name,description` — with no cache or sync step.
 
 Safe inventory row shape:
@@ -34,14 +36,14 @@ For Linear, match each label by ID and scope as well as name. The inventory's `t
 
 ## Project Taxonomy Contract
 
-Storage may be TOML, JSON, or prose mapping unambiguously to this shape:
+Declare it in the project's kendex manifest (`kendex.toml`, or `kendex-local.toml` in a source-catalog checkout) under `[skill-instructions].project-management`, as this JSON in a fenced `json` code block under a `### Project taxonomy` heading. kendex renders it into this skill's SKILL.md in each project skills directory it delivers the skill to. The linear CLI reads every render in one project's `.<tool>/skills` directories, never the source layout `skills/`. That project is the nearest directory from the working directory up to a bound that holds a render, else the bound. The bound is the project holding the linear install when the install sits in a `.<tool>/skills` directory in the repository, so a nested project's own taxonomy applies inside it; run from outside that project, the CLI reads the install's project. For any other install, global or source layout, the bound is the git top level:
 
 ```json
 {
   "required_categories_for_new_issues": ["agent", "domain"],
   "categories": {
     "agent":     {"required": true,  "exclusive": true,  "match": {"prefix": "agent:"}, "forbid_group_labels": true},
-    "platform":  {"required": false, "exclusive": true,  "match": {"parent": "Platform"}, "forbid_group_labels": true},
+    "platform":  {"required": false, "exclusive": true,  "match": {"parent": "Platform"}, "labels": ["macos", "linux"], "forbid_group_labels": true},
     "domain":    {"required": true,  "exclusive": false, "labels": ["project-specific-domain-labels"]},
     "workflow":  {"required": false, "exclusive": false, "labels": ["research", "blocked"]},
     "classification": {"required": false, "exclusive": false, "labels": []}
@@ -50,6 +52,10 @@ Storage may be TOML, JSON, or prose mapping unambiguously to this shape:
 ```
 
 Category matching order: explicit `labels[]`, then `match.prefix`, then `match.parent` from live inventory, then a project-documented matcher. A label matching two categories must be disambiguated by the taxonomy before mutation.
+
+The declared names are every category's `labels[]` names and its `match.parent` group name, plus each name in `LINEAR_AGENT_LABELS`; a `match.prefix` declares none. The group name declares none of its children, so a `match.parent` category lists in `labels[]` the child labels issues carry. Under a declared taxonomy the linear CLI refuses, before any write, a label it does not declare, on the commands [linear SKILL.md § Issue Creation Routing](../../linear/SKILL.md#issue-creation-routing) names. A label the issue already carries is kept, and `labels audit` lists it. A `### Project taxonomy` heading with no readable JSON block, an empty one included, refuses every label write, and so do two renders whose taxonomy sections differ; with no heading the CLI enforces nothing.
+
+A taxonomy still in an earlier form (TOML, JSON or prose in `[skill-instructions]`, or a linked project doc or reference file) under no `### Project taxonomy` heading still binds agents: they validate labels against it as before until it moves into that block. The linear CLI enforces nothing for it, as in earlier releases, and `linear.sh labels audit` reports `taxonomy-absent` until it moves.
 
 ## Validation
 
@@ -84,9 +90,9 @@ A bare `issues update [ID] --labels "agent:new"` strips every other label; use i
 
 ## Creating Labels
 
-**Never create a label unprompted** — all label creation requires explicit user authorization, workflow and classification labels included. An `agent:*` label additionally requires the agent definition and the taxonomy entry to exist first; `agent:researcher` is reserved for research issues owned by the researcher agent.
+A label is a taxonomy change, never a side effect of the work at hand. A lane never creates a label. Change the taxonomy in a reviewed commit whose message gives a one-line reason, and create the label only after that commit merges and the user authorizes the creation, workflow and classification labels included. An `agent:*` label additionally requires the agent definition to exist first; `agent:researcher` is reserved for research issues owned by the researcher agent.
 
-Create only when the taxonomy requires a label the tracker lacks and the user authorizes it. Do not create for a one-off categorization, when an existing label covers the case, or for a project label. After creating, update the taxonomy and rerun preflight before mutating.
+Do not create for a one-off categorization, when an existing label covers the case, or for a project label. The label commands that refuse a name are listed in [linear SKILL.md § Issue Creation Routing](../../linear/SKILL.md#issue-creation-routing). After creating, rerun preflight before mutating.
 
 ## Label drift check
 

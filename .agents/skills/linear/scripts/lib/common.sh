@@ -847,6 +847,195 @@ resolve_label_id() {
     echo "$label_id"
 }
 
+# Label taxonomy
+# -----------------------------------------------------------------------------
+# A repository declares its labels once: the JSON contract of project-management
+# references/labels.md, in the first ```json block under `### Project taxonomy`
+# in that skill's project instructions, which kendex renders from the manifest's
+# [skill-instructions].project-management into each project skills directory a
+# delivery writes: `.agents/skills`, and under method = "copy" each tool's own
+# `.<tool>/skills` (every project root in crates/core/src/guard/resolve.rs
+# SKILL_ROOTS but the source layout `skills`). Every render read is one
+# project's, so all of them render one manifest: each
+# `<root>/.<tool>/skills/project-management/SKILL.md` (`.[!.]*` keeps out `.`
+# and `..`, which bash before 5.2 matches with `.*`, and the source layout).
+# linear_taxonomy_root names that project. Renders of one manifest carry one
+# block, so two that differ refuse. Its declared names are every category's
+# `labels[]` and `match.parent`, plus each LINEAR_AGENT_LABELS name. With no
+# such heading the repository declares no taxonomy, and no rule below applies.
+# LINEAR_TAXONOMY_FILE is the render a message names: the first found, or the
+# shared one when none is.
+
+# Print the project whose renders hold the taxonomy: the nearest directory
+# from the working directory up to a bound that holds a render, else the
+# bound. A linear install in a `.<tool>/skills` directory in the repository
+# bounds the walk at the project holding that directory, as commit-guards'
+# gg_project_root derives it, so a kendex project nested inside it that
+# declares its own taxonomy keeps it; run from outside that project, the
+# install's project is the answer. Any other install, at global scope or in
+# the catalog's source layout, is bounded at the git top level: reading the
+# global render would enforce nothing in a project that declares a taxonomy.
+# The walk stops at the bound: a render above it, in a home directory say,
+# never applies.
+linear_taxonomy_root() {
+    local install bound dir render
+    if ! install=$(cd -- "$_LIB_DIR/../../.." && pwd -P); then
+        jq -cn --arg dir "$_LIB_DIR" '{error: ("Could not resolve the skills directory holding the linear install at " + $dir)}' >&2
+        return 1
+    fi
+    bound="$PROJECT_ROOT"
+    if [[ "$install/" == "$PROJECT_ROOT/"* && "$install" =~ ^(.*)/\.[^./][^/]*/skills$ ]]; then
+        bound="${BASH_REMATCH[1]}"
+    fi
+    if ! dir=$(pwd -P); then
+        jq -cn '{error: "Could not resolve the working directory to find the project whose label taxonomy applies."}' >&2
+        return 1
+    fi
+    if [[ "$dir/" == "$bound/"* ]]; then
+        while :; do
+            for render in "$dir"/.[!.]*/skills/project-management/SKILL.md; do
+                if [[ -e "$render" || -L "$render" ]]; then
+                    printf '%s\n' "$dir"
+                    return 0
+                fi
+            done
+            [[ "$dir" != "$bound" ]] || break
+            dir="${dir%/*}"
+        done
+    fi
+    printf '%s\n' "$bound"
+}
+
+_linear_taxonomy_root=$(linear_taxonomy_root) || exit 1
+LINEAR_TAXONOMY_RENDERS=()
+for _linear_render in "$_linear_taxonomy_root"/.[!.]*/skills/project-management/SKILL.md; do
+    [[ -e "$_linear_render" || -L "$_linear_render" ]] || continue
+    LINEAR_TAXONOMY_RENDERS+=("$_linear_render")
+done
+LINEAR_TAXONOMY_FILE="${LINEAR_TAXONOMY_RENDERS[0]:-$_linear_taxonomy_root/.agents/skills/project-management/SKILL.md}"
+unset _linear_taxonomy_root _linear_render
+
+# Every taxonomy and label-definition refusal: the keyed first line, then the
+# JSON error.
+linear_label_message() {
+    local key="$1" value="$2" other="${3:-}"
+    case "$key" in
+    undeclared)
+        printf 'linear-labels: undeclared labels=%s taxonomy=%s\n' "$value" "$LINEAR_TAXONOMY_FILE"
+        jq -cn --arg labels "$value" --arg file "$LINEAR_TAXONOMY_FILE" \
+            '{error: ("Refusing labels the repository taxonomy does not declare: " + $labels + ". A label is a taxonomy change, never a side effect: use a declared label, or add this one to the taxonomy in the manifest [skill-instructions].project-management (agent labels: LINEAR_AGENT_LABELS) through a reviewed commit and render it; " + $file + " is that render.")}'
+        ;;
+    declared-missing)
+        printf 'linear-labels: declared-missing label=%s taxonomy=%s\n' "$value" "$LINEAR_TAXONOMY_FILE"
+        jq -cn --arg label "$value" --arg file "$LINEAR_TAXONOMY_FILE" \
+            '{error: ("The taxonomy in " + $file + " declares label " + ($label | tojson) + " but Linear has no such label for this team or the workspace. Refusing rather than writing the issue without a declared label: create the label (project-management references/labels.md § Creating Labels), then retry.")}'
+        ;;
+    unreadable)
+        printf 'linear-labels: taxonomy-unreadable taxonomy=%s\n' "$value"
+        jq -cn --arg file "$value" \
+            '{error: ("The repository declares a label taxonomy in " + $file + " but its ### Project taxonomy section holds no readable JSON contract (project-management references/labels.md § Project Taxonomy Contract), so no label can be judged. Fix the manifest [skill-instructions].project-management and render it.")}'
+        ;;
+    renders-differ)
+        printf 'linear-labels: taxonomy-unreadable taxonomy=%s differs=%s\n' "$value" "$other"
+        jq -cn --arg file "$value" --arg other "$other" \
+            '{error: ("The project-management renders " + $file + " and " + $other + " carry different ### Project taxonomy sections, so no label can be judged: one is a stale render. Render the manifest [skill-instructions].project-management again (kendex refresh) so every render carries one taxonomy.")}'
+        ;;
+    absent)
+        printf 'linear-labels: taxonomy-absent taxonomy=%s\n' "$value"
+        jq -cn --arg file "$value" \
+            '{error: ("No label taxonomy is declared (no ### Project taxonomy section in " + $file + "), so there is nothing to audit labels against.")}'
+        ;;
+    workspace-duplicate)
+        printf 'linear-labels: workspace-duplicate name=%s\n' "$value"
+        jq -cn --arg name "$value" \
+            '{error: ("Refusing label name " + ($name | tojson) + ": a workspace label already uses this name, and a second label of one name makes every name lookup ambiguous. Use the workspace label.")}'
+        ;;
+    audit-incomplete)
+        printf 'linear-labels: audit-incomplete connection=%s\n' "$value"
+        jq -cn --arg connection "$value" \
+            '{error: ("labels audit could not read every page of " + $connection + ", and an audit of part of the team would report drift it never read as clean.")}'
+        ;;
+    no-team)
+        printf 'linear-labels: no-team\n'
+        jq -cn '{error: "labels audit reads the open issues of one team: set LINEAR_TEAM in kendex.settings.toml [env] or pass --team <key-or-name>."}'
+        ;;
+    *)
+        printf 'linear-labels: unknown-message key=%s\n' "$key"
+        return 1
+        ;;
+    esac
+}
+
+# Print the declared label names as a JSON array, or nothing when the
+# repository declares no taxonomy. A declared taxonomy this cannot read
+# refuses: enforcing nothing then would pass every label it exists to stop.
+linear_declared_labels() {
+    local file block rc=0 first=""
+    [[ ${#LINEAR_TAXONOMY_RENDERS[@]} -gt 0 ]] || return 0
+    for file in "${LINEAR_TAXONOMY_RENDERS[@]}"; do
+        rc=0
+        block=$(awk '
+            $0 == "<!-- kendex:project-instructions:start -->" { inside = 1; next }
+            $0 == "<!-- kendex:project-instructions:end -->" { inside = 0; next }
+            !inside { next }
+            state == 0 && $0 == "### Project taxonomy" { state = 1; next }
+            state == 1 && /^```json *$/ { state = 2; next }
+            state == 1 && /^##?#? / { exit 3 }
+            state == 2 && /^``` *$/ { state = 3; exit }
+            state == 2 { print }
+            END { if (state == 0) exit 5; if (state != 3) exit 3 }
+        ' "$file") || rc=$?
+        [[ -n "$first" ]] || first="$rc:$block"
+        if [[ "$rc:$block" != "$first" ]]; then
+            linear_label_message renders-differ "$LINEAR_TAXONOMY_FILE" "$file" >&2
+            return 1
+        fi
+    done
+    # Exit 5 is no heading: the repository declares no taxonomy. A heading
+    # whose block is empty reaches jq with no input, which refuses it.
+    [[ "$rc" != 5 ]] || return 0
+    if [[ "$rc" != 0 ]]; then
+        linear_label_message unreadable "$LINEAR_TAXONOMY_FILE" >&2
+        return 1
+    fi
+    if ! jq -ce --arg agents "${LINEAR_AGENT_LABELS:-}" '
+        select(type == "object" and (.categories | type == "object")
+            and all(.categories[]; type == "object"
+                and ((.labels // []) | type == "array" and all(type == "string"))
+                and ((.match.parent // "") | type == "string")))
+        | [.categories[] | (.labels // [])[], (.match.parent // empty)]
+            + [$agents | splits("[, ]+") | select(length > 0)]
+        | unique' <<<"$block" 2>/dev/null; then
+        linear_label_message unreadable "$LINEAR_TAXONOMY_FILE" >&2
+        return 1
+    fi
+}
+
+# Refuse, before any write, a label name the taxonomy does not declare.
+# Usage: linear_require_declared_labels "a,b" ['["name already on the issue"]']
+#        linear_require_declared_labels --name NAME
+# A list is an issue's comma-separated label assignment. --name judges the
+# whole string as one label name, commas and all, for a label definition. A
+# name the issue already carries is kept, not applied: it is drift for
+# `labels audit` to list, and refusing it would stop every write to an issue
+# labelled before the taxonomy.
+linear_require_declared_labels() {
+    local requested kept="[]" declared undeclared
+    declared=$(linear_declared_labels) || return 1
+    [[ -n "$declared" ]] || return 0
+    if [[ "$1" == --name ]]; then
+        requested=$(jq -cn --arg name "$2" '[$name]') || return 1
+    else
+        requested=$(jq -cn --arg list "$1" '$list | split(",") | map(select(length > 0))') || return 1
+        kept="${2:-[]}"
+    fi
+    undeclared=$(jq -nr --argjson requested "$requested" --argjson kept "$kept" --argjson declared "$declared" '
+        $requested - $declared - $kept | unique | join(",")') || return 1
+    [[ -n "$undeclared" ]] || return 0
+    linear_label_message undeclared "$undeclared" >&2
+    return 1
+}
+
 # A milestone reference that is already a UUID, and so needs no project to
 # resolve it in. One statement of the rule: the pre-upload guard below and
 # resolve_milestone_id must agree on it, or a reference one calls a name the
