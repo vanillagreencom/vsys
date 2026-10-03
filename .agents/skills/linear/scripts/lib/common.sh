@@ -412,6 +412,28 @@ linear_require_option_value() {
     return 0
 }
 
+# A --team read filter must name a team. A workflow interpolating an unresolved
+# $LINEAR_TEAM writes `--team ""`, which would send no team filter and read
+# every team as if it were the one named, or, unquoted, `--team --max`, which
+# would bind the next flag as the team and swallow it. No Linear team key or
+# name begins with a dash, so a dash-led value is a missing one.
+# Usage: linear_require_team_value "$@", with $1 the --team flag.
+linear_require_team_value() {
+    linear_require_option_value "$@" || return 1
+    case "$2" in
+    -*)
+        linear_require_option_value "$1"
+        return 1
+        ;;
+    "")
+        jq -cn --arg flag "$1" \
+            '{error: ($flag + " requires a non-empty team key or name: an empty value would read every team, not the one named")}' >&2
+        return 1
+        ;;
+    esac
+    return 0
+}
+
 # Days-before-now as an ISO timestamp, for the --updated-since/--created-since
 # "7d" spelling. GNU and BSD date disagree on the flag, so both are tried; a
 # non-numeric count is rejected here rather than reaching either.
@@ -433,6 +455,7 @@ linear_iso_days_ago() {
 # holding a quote or backslash must not be able to reshape the filter object.
 parse_filter() {
     local filter_parts=()
+    local team=""
     local first=75
     local include_archived="false"
 
@@ -465,8 +488,8 @@ parse_filter() {
             shift 2
             ;;
         --team)
-            linear_require_option_value "$@" || return 1
-            filter_parts+=("$(jq -cn --arg v "$2" '{team: {name: {eq: $v}}}')")
+            linear_require_team_value "$@" || return 1
+            team="$2"
             shift 2
             ;;
         --assignee)
@@ -517,6 +540,13 @@ parse_filter() {
             ;;
         esac
     done
+
+    # Resolved after the loop, so a malformed option refuses before any API call.
+    if [ -n "$team" ]; then
+        local team_id
+        team_id=$(resolve_team_id "$team") || return 1
+        filter_parts+=("$(jq -cn --arg v "$team_id" '{team: {id: {eq: $v}}}')")
+    fi
 
     if [ ${#filter_parts[@]} -gt 0 ]; then
         FILTER_JSON=$(printf '%s\n' "${filter_parts[@]}" | jq -cs 'add')
@@ -589,7 +619,7 @@ linear_set_team_target() {
 }
 
 linear_team_target_error() {
-    echo '{"error": "No Linear team configured for this project - refusing to write. A team name resolves inside whatever workspace LINEAR_API_KEY reaches, so writing without one can land in another project tracker. Fix: set LINEAR_TEAM in this project kendex.settings.toml [env] (committed, non-secret) or .env.local. The create actions that take a team (issues, projects, cycles, labels) also accept --team <name> for one call. Verify with: linear.sh auth-check --strict"}' >&2
+    echo '{"error": "No Linear team configured for this project - refusing to write. A team name resolves inside whatever workspace LINEAR_API_KEY reaches, so writing without one can land in another project tracker. Fix: set LINEAR_TEAM in this project kendex.settings.toml [env] (committed, non-secret) or .env.local. The create actions that take a team (issues, projects, cycles, labels) also accept --team <key-or-name> for one call. Verify with: linear.sh auth-check --strict"}' >&2
 }
 
 # Fail-closed gate for every Linear write.
@@ -683,21 +713,22 @@ resolve_project_id() {
     return 1
 }
 
-# Resolve team name to UUID
+# Resolve a team UUID, key or name to its UUID. A reference that is one team's
+# key and another team's name is refused as ambiguous, naming both.
 # Usage: resolve_team_id "$LINEAR_TEAM_TARGET"
 resolve_team_id() {
     local team_ref="$1"
 
     # Check if it's already a UUID
-    if [[ "$team_ref" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    if [[ "$team_ref" =~ $LINEAR_UUID_PATTERN ]]; then
         echo "$team_ref"
         return 0
     fi
 
-    # Look up by name. A FAILED query must propagate as the API failure it
-    # is (rate limit, outage) — "Team not found" is only true for a
-    # successful lookup that returned no match.
-    local query='query GetTeam($name: String!) { teams(filter: {name: {eq: $name}}) { nodes { id } } }'
+    # Look up by key or name. A FAILED query must propagate as the API
+    # failure it is (rate limit, outage) — "Team not found" is only true for
+    # a successful lookup that returned no match.
+    local query='query GetTeam($name: String!) { teams(filter: {or: [{key: {eq: $name}}, {name: {eq: $name}}]}) { nodes { id key name } } }'
     # Build variables and diagnostics with jq: a team name containing a
     # quote or backslash must neither break the request JSON nor the error.
     local vars result
@@ -707,20 +738,30 @@ resolve_team_id() {
             '{error: ("Could not resolve team '\''" + $team + "'\'': Linear API request failed (see previous error)")}' >&2
         return 1
     fi
-    local team_id
-    team_id=$(echo "$result" | jq -r '.teams.nodes[0].id // empty')
-
-    if [ -z "$team_id" ]; then
-        jq -cn --arg team "$team_ref" '{error: ("Team not found: " + $team)}' >&2
-        return 1
-    fi
-
-    echo "$team_id"
+    # Keys are unique and names are unique, so more than one node is one
+    # team's key and another team's name.
+    local teams
+    teams=$(echo "$result" | jq -c '.teams.nodes // []') || return 1
+    case "$(jq -r 'length' <<<"$teams")" in
+        0)
+            jq -cn --arg team "$team_ref" '{error: ("Team not found: " + $team)}' >&2
+            return 1
+            ;;
+        1)
+            jq -r '.[0].id' <<<"$teams"
+            ;;
+        *)
+            jq -c --arg team "$team_ref" \
+                '{error: ("Ambiguous team: " + $team + " matches " + (map(.name + " (key " + .key + ")") | join(" and ")))}' \
+                <<<"$teams" >&2
+            return 1
+            ;;
+    esac
 }
 
 # Resolve workflow state name to UUID for a specific team
 # Usage: resolve_state_id "In Progress" "team-uuid-or-name"
-# Second arg can be team UUID or team name (will resolve)
+# Second arg can be team UUID, key or name (will resolve)
 resolve_state_id() {
     local state_name="$1"
     local team_ref="$2"
@@ -759,23 +800,40 @@ resolve_state_id() {
 }
 
 # Resolve label name to UUID
-# Usage: resolve_label_id "backend" ["issue-team-name"]
-# With an issue team, only that team's labels and workspace labels can match.
-# Exit 1 = the workspace has no such label (a caller handling several labels may
-# skip it). Exit 2 = the lookup itself failed, so whether the label exists is
+# Usage: resolve_label_id "backend" team-id|team-name "issue-team"
+# Only that team's labels and workspace labels can match. Two teams can each
+# own a label of one name, and an unscoped lookup returns whichever the API
+# lists first, which Linear refuses as another team's label. The caller says
+# which form its team is in: resolve_team_id alone decides whether a reference
+# is an id or a name, so this function never guesses.
+# Exit 1 = no label of that name in scope, with nothing printed: the caller
+# names the miss, because whether it is a warning (a create skips the label) or
+# a refusal (an update replaces the whole set) is the caller's decision.
+# Exit 2 = the lookup itself failed, so whether the label exists is
 # unknown — a caller rebuilding a label set must abort rather than drop it,
 # because "not found" and "could not ask" produce the same empty result.
 resolve_label_id() {
-    local label_name="$1"
-    local team_name="${2:-}"
+    local label_name="$1" scope="$2" team="$3"
 
-    local query='query GetLabel($name: String!) { issueLabels(filter: {name: {eq: $name}}) { nodes { id } } }'
-    local vars result
-    if [ -n "$team_name" ]; then
+    local query team_var
+    case "$scope" in
+    team-id)
+        team_var=teamId
+        query='query GetLabel($name: String!, $teamId: ID!) { issueLabels(filter: {name: {eq: $name}, or: [{team: {id: {eq: $teamId}}}, {team: {null: true}}]}) { nodes { id } } }'
+        ;;
+    team-name)
+        team_var=teamName
         query='query GetLabel($name: String!, $teamName: String!) { issueLabels(filter: {name: {eq: $name}, or: [{team: {name: {eq: $teamName}}}, {team: {null: true}}]}) { nodes { id } } }'
-    fi
-    vars=$(jq -cn --arg name "$label_name" --arg teamName "$team_name" \
-        '{name: $name} + (if $teamName == "" then {} else {teamName: $teamName} end)') || return 2
+        ;;
+    *)
+        jq -cn --arg scope "$scope" \
+            '{error: ("resolve_label_id: unknown team scope " + ($scope | tojson) + "; callers pass team-id or team-name")}' >&2
+        return 2
+        ;;
+    esac
+    local vars result
+    vars=$(jq -cn --arg name "$label_name" --arg key "$team_var" --arg team "$team" \
+        '{name: $name, ($key): $team}') || return 2
     if ! result=$(graphql_query "$query" "$vars"); then
         jq -cn --arg name "$label_name" \
             '{error: ("Label lookup failed for " + ($name | tojson) + ": Linear API request failed (see previous error)")}' >&2
@@ -784,15 +842,7 @@ resolve_label_id() {
     local label_id
     label_id=$(echo "$result" | jq -r '.issueLabels.nodes[0].id // empty') || return 2
 
-    if [ -z "$label_id" ]; then
-        if [ -n "$team_name" ]; then
-            jq -cn --arg team "$team_name" --arg label "$label_name" \
-                '{error: ("Label not found for team " + ($team | tojson) + ": " + ($label | tojson))}' >&2
-        else
-            echo "Warning: Label not found: '$label_name'" >&2
-        fi
-        return 1
-    fi
+    [ -n "$label_id" ] || return 1
 
     echo "$label_id"
 }

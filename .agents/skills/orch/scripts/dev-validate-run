@@ -42,7 +42,7 @@
 # setsid. The log's first line is the runner line.
 #
 # Usage:
-#   dev-validate-run --worktree PATH [--poll SECS] [--validate-mode full|range] [--base REF] [--attached]
+#   dev-validate-run --worktree PATH [--poll SECS] [--validate-mode full|range|ci] [--base REF] [--attached]
 #       Start the run detached, then block until it ends. Prints the run
 #       directory first and the verdict last. Harness launch and resume routes:
 #       ../../dev/SKILL.md § Long-Running Validation.
@@ -97,8 +97,8 @@
 # once the command returned by itself), timing (the command's wall time) and
 # exit (the sentinel).
 #
-# timing holds three lines, written whole by the detached child just before
-# the sentinel, so a run with a sentinel has one:
+# timing holds three lines, written whole by write_verdict just before the
+# sentinel, so a run with a sentinel has one:
 #   started-at=TIME   when the command started, UTC
 #   ended-at=TIME     when it ended, the sentinel's own at= value
 #   seconds=N         ended-at less started-at
@@ -116,8 +116,16 @@
 #          branch is recorded as the validate-base-orphaned= line of start in
 #          either mode, and a range run then runs from the merge base of HEAD
 #          with the origin base branch.
+#   ci     a post-open fix round's run, which the pull request's CI on the
+#          pushed head validates. It runs no command and passes at once, with
+#          a zero-second wall time. It runs as range does, and records the
+#          mode that ran, where HEAD holds no file under .github/workflows or
+#          that tree cannot be read, so no pull request CI is known to run,
+#          and for a class other than micro, small or standard, a docs-only
+#          diff, or a class the classifier did not measure or fell back to,
+#          since harness-ci may stand CI's checks down for it.
 #
-# Both modes record the worktree's HEAD when the run started as the head= line
+# Every mode records the worktree's HEAD when the run started as the head= line
 # of start, empty where the worktree has no commit, beside the start= epoch
 # second. dev-return-write binds those fields to the delegated round, per
 # schemas/dev-return.md.
@@ -128,7 +136,7 @@
 #   state=running elapsed-secs=N cap-secs=N run-dir=…
 #   state=timeout elapsed-secs=N cap-secs=N validate=FAILING run-dir=… [log=…]
 #   state=lost elapsed-secs=N cap-secs=N validate=FAILING run-dir=… [log=…]
-#   validate-mode=full|range [lanes=NAMES] selection=all|subset|unreported verdict=pass|FAILING|no-verdict|unfinished head=SHA| start=EPOCH [validate-base-orphaned=SHA] [seconds=N started-at=TIME ended-at=TIME]   (--record)
+#   validate-mode=full|range|ci [lanes=NAMES] selection=all|subset|unreported verdict=pass|FAILING|no-verdict|unfinished head=SHA| start=EPOCH [validate-base-orphaned=SHA] [seconds=N started-at=TIME ended-at=TIME]   (--record)
 #   validate-mode=full|range                                                  (--resolve-mode)
 #
 # --record's verdict is pass only for a sentinel of guard-exit=0, no-verdict
@@ -155,10 +163,12 @@
 #
 # The sentinel file holds exactly one line, `guard-exit=N at=TIME`, with
 # ` verdict=no-verdict` after it for a run the bound ended, written by the
-# detached child. A harness that kills the launching shell or drops its
-# completion notice changes neither the verdict nor where it is recorded.
+# detached child, or for a ci run by the start path. A harness that kills the
+# launching shell or drops its completion notice changes neither the verdict
+# nor where it is recorded.
 #
-# Exit: 0 the command passed, or --stop left nothing running; 1 it failed,
+# Exit: 0 the command passed, a ci run left its validation to the pull request
+# CI, or --stop left nothing running; 1 it failed,
 # the bound ended it, it was lost, or the cap elapsed with no verdict, or a --stop could
 # not end a run; 2 usage or configuration error; 3 --wait's budget elapsed
 # while the run was still going, so poll again.
@@ -200,12 +210,12 @@ die() {
       required) printf 'The required option is absent or empty.\n' ;;
       unknown-argument) printf 'The argument is not supported.\n' ;;
       mode-conflict) printf 'Use one of --worktree, --wait, --stop, --record, --resolve-mode or --child.\n' ;;
-      record-unreadable) printf 'The start record names no validation mode of full or range.\n' ;;
+      record-unreadable) printf 'The start record names no validation mode of full, range or ci.\n' ;;
       option-unused) printf 'The option has no meaning in this mode and would be silently dropped.\n' ;;
       repeated) printf 'The option was given twice, and one of its values would be silently dropped.\n' ;;
       not-directory) printf 'The path is not a directory.\n' ;;
       empty-validate-cmd) printf 'Set it in kendex.settings.toml [env] to the project full test, lint and typecheck command.\n' ;;
-      invalid-mode) printf 'The validation mode must be full or range.\n' ;;
+      invalid-mode) printf 'The validation mode must be full, range or ci.\n' ;;
       invalid-base) printf 'The base does not name a commit in the worktree.\n' ;;
       orphaned-base-unresolved) printf 'The base is not on the branch, and no merge base with the origin base branch could replace it.\n' ;;
       ancestry-unreadable) printf 'Git could not say whether the base is on the branch.\n' ;;
@@ -252,6 +262,17 @@ check_seconds() { # LABEL VALUE
 
 start_field() { # FILE KEY
   sed -n "s/^$2=\\(.*\\)\$/\\1/p" < "$1"
+}
+
+# The run's wall time, then its sentinel, in the run directory. The wall time
+# lands first, so every verdict has one. Both are written whole or not at all:
+# a poll that caught a half-written sentinel would read a verdict that is not
+# one. The child and the ci route both write through here.
+write_verdict() { # STARTED-AT ENDED-AT SECONDS SENTINEL-LINE
+  printf 'started-at=%s\nended-at=%s\nseconds=%s\n' "$1" "$2" "$3" > "$run_dir/timing.part"
+  mv "$run_dir/timing.part" "$run_dir/timing"
+  printf '%s\n' "$4" > "$run_dir/exit.part"
+  mv "$run_dir/exit.part" "$run_dir/exit"
 }
 
 # The worktree's diff against the base branch, read once by lib/change-class.sh
@@ -379,7 +400,7 @@ case "$mode" in
     else
       case "$validate_mode" in
         full) [[ "$base_given" == false ]] || die option-unused "option=--base" "validate-mode=$validate_mode" ;;
-        range) [[ -n "$base" ]] || die required "option=--base" "validate-mode=$validate_mode" ;;
+        range|ci) [[ -n "$base" ]] || die required "option=--base" "validate-mode=$validate_mode" ;;
         *) die invalid-mode "option=--validate-mode" "value=$validate_mode" ;;
       esac
     fi
@@ -431,7 +452,19 @@ if [[ "$mode" == start ]]; then
   base_sha=""
   orphaned_sha=""
   cmd=""
-  if [[ "$validate_mode" == range ]]; then
+  # Read before the run directory exists, since that directory sits inside the
+  # worktree the class judges.
+  classify
+  # A ci request runs as range where CI may not run the checks for the change;
+  # --help's ci mode names when.
+  if [[ "$validate_mode" == ci ]]; then
+    validate_mode=range
+    workflows="$(git ls-tree -r --full-tree --name-only HEAD -- .github/workflows 2>/dev/null)" || workflows=""
+    if [[ -n "$workflows" && -z "$class_fallback" && "$CHANGE_CLASS_MEASURED" == true && "$docs_only" == false ]]; then
+      case "$class" in micro|small|standard) validate_mode=ci ;; esac
+    fi
+  fi
+  if [[ "$validate_mode" != full ]]; then
     base_sha="$(git rev-parse --verify -q "$base^{commit}")" || die invalid-base "base=$base"
     # A base a rebase left off the branch is recorded whichever mode runs: a
     # fix round's receipt names the run through it once the round's base is no
@@ -440,10 +473,10 @@ if [[ "$mode" == start ]]; then
     git merge-base --is-ancestor "$base_sha" HEAD || ancestor_rc=$?
     (( ancestor_rc <= 1 )) || die ancestry-unreadable "base=$base_sha"
     (( ancestor_rc == 0 )) || orphaned_sha="$base_sha"
-    resolve_range_mode
-    if [[ "$validate_mode" != range ]]; then
+    [[ "$validate_mode" == ci ]] || resolve_range_mode
+    if [[ "$validate_mode" == full ]]; then
       base_sha=""
-    elif [[ -n "$orphaned_sha" ]]; then
+    elif [[ "$validate_mode" == range && -n "$orphaned_sha" ]]; then
       # A range from the orphaned base spans every commit the base branch
       # gained; the branch's fork point holds only its own changes.
       base_branch="$("$SCRIPT_DIR/resolve-base-branch" "$worktree")" \
@@ -480,9 +513,6 @@ if [[ "$mode" == start ]]; then
   # A worktree with no commit has no HEAD to record; the empty value binds the
   # run to no round.
   head_sha="$(git rev-parse --verify -q 'HEAD^{commit}')" || head_sha=""
-  # Read before the run directory exists, since that directory sits inside the
-  # worktree the class judges.
-  classify
 
   # A fresh directory per start, so a poll can never read the previous round's
   # verdict as this one's.
@@ -514,7 +544,13 @@ if [[ "$mode" == start ]]; then
       "$class" "$docs_only" "${class_fallback:+ class-fallback=$class_fallback}"
   }
   launch_rc=0
-  if [[ "$attached" == true ]]; then
+  if [[ "$validate_mode" == ci ]]; then
+    # A ci run starts nothing: the pull request CI on the pushed head is its
+    # validation, so it passes here, through the writer the child uses.
+    ci_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'runner=none class=%s: the pull request CI on the pushed head validates this change\n' "$class" > "$run_dir/log"
+    write_verdict "$ci_at" "$ci_at" 0 "guard-exit=0 at=$ci_at"
+  elif [[ "$attached" == true ]]; then
     # Printed first, since the call below returns only once the run has ended:
     # a harness that cuts the call off has already been told the directory.
     started_line
@@ -532,7 +568,7 @@ if [[ "$mode" == start ]]; then
     4) die launch-failed "$JOB_UNIT_ERROR" ;;
     *) die launch-failed "status=$launch_rc" ;;
   esac
-  [[ "$attached" == true ]] || started_line
+  [[ "$attached" == true && "$validate_mode" != ci ]] || started_line
   # Blocking form: the same poll --wait runs, with no per-call budget, so a
   # foreground caller returns only with the verdict.
   mode=wait
@@ -623,14 +659,8 @@ if [[ "$mode" == child ]]; then
   if [[ ( "$status" == 124 || "$status" == 137 ) && ! -e "$run_dir/own-exit" ]]; then
     ended_by=" verdict=no-verdict"
   fi
-  # The wall time lands before the sentinel, so every verdict has one. Both
-  # are written whole or not at all: a poll that caught a half-written sentinel
-  # would read a verdict that is not one.
-  printf 'started-at=%s\nended-at=%s\nseconds=%s\n' "${started#* }" "${ended#* }" \
-    "$(( ${ended%% *} - ${started%% *} ))" > "$run_dir/timing.part"
-  mv "$run_dir/timing.part" "$run_dir/timing"
-  printf 'guard-exit=%s at=%s%s\n' "$status" "${ended#* }" "$ended_by" > "$run_dir/exit.part"
-  mv "$run_dir/exit.part" "$run_dir/exit"
+  write_verdict "${started#* }" "${ended#* }" "$(( ${ended%% *} - ${started%% *} ))" \
+    "guard-exit=$status at=${ended#* }$ended_by"
   # The verdict is on disk, so nothing the command left behind is still owed a
   # run. Under setsid, setsid -f made this process its group's leader, and the
   # call tears down what else the group holds before this process exits. In a
@@ -681,7 +711,7 @@ if [[ "$mode" == record ]]; then
   fi
   record_mode="$(start_field "$run_dir/start" validate-mode)"
   case "$record_mode" in
-    full|range) ;;
+    full|range|ci) ;;
     *) die record-unreadable "path=$run_dir/start" "validate-mode=$record_mode" ;;
   esac
   record_verdict=unfinished

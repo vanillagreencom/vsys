@@ -76,7 +76,8 @@ Environment:
   LINEAR_TEAM     Required for writes; no default. Set it in kendex.settings.toml
                   [env] (committed, non-secret). With no team, writes refuse and
                   reads run without a team filter. Only issues/projects/cycles/
-                  labels create take --team <name> as a per-call override.
+                  labels create, cycles list and statuses list/get take
+                  --team <key-or-name> as a per-call override.
 
 For resource-specific help:
   ./linear.sh <resource> --help

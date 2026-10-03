@@ -16,19 +16,17 @@
 # take the mailbox's own lock and line rules (lib/mailbox-append.sh), so a
 # killed writer leaves a fragment no reader parses and no row glued to another.
 #
-# The writer is the lane-mail-check hook, run with the argument `row` by the
-# session-start-row, session-end-row and stop-failure-row hooks, and in its own
-# turn-end run for the overseer: SessionStart on every harness that fires it,
-# SessionEnd and StopFailure on Claude Code alone, and Stop at every overseer
-# turn end, which lifts a standing StopFailure row and dates the turn end
-# oversee-watch holds the overseer's context record against. The readers
-# are oversee-watch's overseer judgement, `oversee register` and
-# oversee-succeed's caller identity.
+# The writer is the lane-mail-check hook, run with the argument `row` and the
+# event by the session-start-row, session-end-row and stop-failure-row hooks,
+# on the harnesses each one's harnesses line names (hooks/README.md), and in
+# its own turn-end run for the overseer: a Stop at every overseer turn end,
+# which lifts a standing StopFailure row and dates the turn end oversee-watch
+# holds the overseer's context record against. The readers are oversee-watch's
+# overseer judgement, `oversee register` and oversee-succeed's caller identity.
 #
-# The rows answer for Claude Code alone: Codex fires SessionStart but no
-# session end and no usage-limit event, and Pi a session start alone, so a
-# session whose last row names another harness reads `unsupported` and its
-# reader takes the pane, the named fallback, reported as fallback.
+# The verdict answers for Claude Code alone: a session whose last row names
+# another harness reads `unsupported` and its reader takes the pane, the named
+# fallback, reported as fallback.
 #
 # ONE OWNER, THE WRITER, for "whose facts are these": only the pane's own
 # top-level harness writes a row, so a harness that session starts in its own
@@ -130,8 +128,8 @@ session_rows_last() { # FILE [EVENT]
 # session_rows_verdict FILE — what the last row says of the session, into
 # SESSION_ROWS_VERDICT, with that row in SESSION_ROW:
 #   none         no row, so nothing the harness said can be read
-#   unsupported  the row names a harness that emits no session end and no
-#                usage-limit event, so its silence settles nothing
+#   unsupported  the row names any harness but Claude Code, the one whose
+#                rows this verdict answers for, so its silence settles nothing
 #   ended        SessionEnd for any reason but `clear` and `resume`, the two a
 #                SessionStart follows in the same harness
 #   walled       StopFailure with `rate_limit`, the harness's own word for a
@@ -225,7 +223,9 @@ session_rows_top_level() { # PANE_PID
 # from this process's own environment, which is the harness's: a hook is its
 # child, so no wrapper's value stands in for the one the session holds. EVENT
 # names the event a payload that spells no hook_event_name is taken for: the
-# turn-end run knows it ran at a Stop whatever its payload carries.
+# turn-end run knows it ran at a Stop whatever its payload carries, and a row
+# hook names its own event for Copilot's camelCase payloads, which spell none
+# and name the session `sessionId` and the transcript `transcriptPath`.
 #
 # Nothing is written, with exit 0, where that directory is not there, since no
 # fleet made it and no reader will look, for a session that is not its pane's
@@ -256,7 +256,7 @@ session_rows_write() { # DIR HARNESS [EVENT]
     if [ "$(jq -r '.event // ""' <<<"${SESSION_ROW:-null}")" != StopFailure ]; then
       row="$(jq -c --arg harness "$2" --argjson at "$(date +%s)" '
         {at: $at, event: "Stop", harness: $harness}
-        + ({session_id} | with_entries(select(.value | type == "string" and . != "")))' <<<"$payload")" || return 1
+        + ({session_id: (.session_id // .sessionId)} | with_entries(select(.value | type == "string" and . != "")))' <<<"$payload")" || return 1
       printf '%s\n' "$row" | mailbox_append_locked "$file" "$SESSION_ROWS_WAIT"
       return
     fi
@@ -264,7 +264,8 @@ session_rows_write() { # DIR HARNESS [EVENT]
   account="$(lane_context_caller_cfg "$2")"
   row="$(jq -c --arg event "$event" --arg harness "$2" --arg account "$account" --argjson at "$(date +%s)" '
     {at: $at, event: $event, harness: $harness}
-    + ({session_id, transcript_path, cwd, source, model, reason, error, error_details}
+    + ({session_id: (.session_id // .sessionId), transcript_path: (.transcript_path // .transcriptPath),
+        cwd, source, model, reason, error, error_details}
        | with_entries(select(.value | type == "string" and . != "")))
     + (if (.last_assistant_message | type) == "string" then {message: .last_assistant_message} else {} end)
     + (if $account == "" then {} else {account: $account} end)' <<<"$payload")" || return 1
