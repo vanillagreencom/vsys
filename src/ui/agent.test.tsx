@@ -211,6 +211,31 @@ test("with write mode on an agent action names its scope and waits for a yes", a
   }
 });
 
+test("a scope nested in another unit's subtree lists Freeze and Thaw but no Stop", async () => {
+  const s = emptySnapshot();
+  const cgroup = "user.slice/libpod-abc.scope/container/init.scope";
+  s.lanes = [laneSnapshot({ id: cgroup, cgroup })];
+  const t = await mount(
+    s,
+    { ...defaults(), writeMode: true },
+    {
+      width: 200,
+      height: 45,
+    },
+  );
+  try {
+    await t.press("2");
+    await t.press("enter");
+    for (let i = 0; i < 4; i++) await t.press("j");
+    await t.press("enter");
+    const frame = t.frame();
+    expect(frame).toContain("init.scope/cgroup.freeze");
+    expect(frame).not.toContain("--signal=TERM");
+  } finally {
+    await t.close();
+  }
+});
+
 test("the agent detail names only its own keys, and the list gets its back", async () => {
   const c = defaults();
   const s = emptySnapshot();

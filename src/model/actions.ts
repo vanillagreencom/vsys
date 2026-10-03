@@ -48,6 +48,8 @@ export interface LaneTarget {
   mainPid: number;
   scope: string;
   directory: string;
+  /** The actions this lane offers, in menu order. */
+  actions: readonly LaneAction[];
 }
 /**
  * The scope an action would address, or null when the lane has none. Two
@@ -57,17 +59,27 @@ export interface LaneTarget {
  * against the configured root, so joining it would name a different group
  * than the lane. A lane failing either gets no actions rather than a
  * command aimed at the wrong cgroup.
+ *
+ * Stop names the scope to the user manager by its bare name, which is only
+ * this lane's unit when systemd created the scope: every directory between the
+ * root and the scope is a slice. Any other directory on the way, such as a
+ * container's `libpod-<id>.scope` or a nested `user@0.service`, belongs to a
+ * unit whose subtree a different systemd manages, and there the bare name can
+ * name a different unit. Such a scope keeps Freeze and Thaw, which address its
+ * directory, and gets no Stop.
  */
 export function laneTarget(lane: Lane, c: Config): LaneTarget | null {
   const parts = lane.cgroup.split("/").filter(Boolean);
   const scope = parts.at(-1);
   if (lane.cgroup.startsWith("/") || parts.includes("..")) return null;
   if (scope === undefined || !scope.endsWith(".scope")) return null;
+  const unit = parts.slice(0, -1).every((part) => part.endsWith(".slice"));
   return {
     laneId: lane.id,
     mainPid: lane.mainPid,
     scope,
     directory: join(c.cgroupRoot, ...parts),
+    actions: laneActions.filter((action) => unit || action !== "Stop"),
   };
 }
 /**
@@ -127,7 +139,8 @@ export function resolveIntent(
   if (lane === undefined) return { state: "ended" };
   if (lane.mainPid !== intent.mainPid) return { state: "replaced" };
   const target = laneTarget(lane, c);
-  if (target === null) return { state: "unaddressable" };
+  if (target === null || !target.actions.includes(intent.action))
+    return { state: "unaddressable" };
   const command = laneCommand(intent.action, target);
   return command.text === intent.text
     ? { state: "ready", command }

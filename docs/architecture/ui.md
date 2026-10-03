@@ -1,6 +1,6 @@
 # UI shell and shared rules
 
-Covers: src/ui/ src/main.ts src/effect.ts src/test/
+Covers: src/ui/ src/main.ts src/effect.ts src/test/ src/model/actions.ts src/model/actions.test.ts
 
 The screen owns one mounted React tree, and collection publishes a stable snapshot into it. Navigation, selection, search and editing belong to that tree and survive a sample. The model hands the UI numbers; every word and every formatted number is written here. This file holds the shell and the rules every screen shares: colour, columns, regions, row expansions, cut marks and actions. [ui-screens.md](ui-screens.md) holds what one screen does that no other does.
 
@@ -38,7 +38,7 @@ Region: a range over the one flat selection a screen draws. `src/ui/regions.ts` 
 - Above `wideWidth` a screen holds two columns and below it they stack. `narrowWidth` is the separate threshold at which a list drops the columns it can do without. Both live in `src/ui/chrome.tsx`, with `tabsFitOneRow` deciding whether the tabs share the header row.
 - `chartRows`, `sparkline` and `bucketPeaks` draw charts as text. Both chart forms read the peak of each bucket, so a short spike is never averaged away, and `bucketPeaks` places samples by time so a collection gap stays visible. `spanLabel` labels a window vsys has not filled with the span it holds, so a first run reads as a screen waiting for data.
 - A missing capability says what it costs rather than which interface failed: the readings it feeds are blank, never zero, because a dashboard showing zero for a number it could not read is lying. The interface and the system's own words stay in the drill-down.
-- Actions are the one thing the UI does to the system. A screen holds a `LaneIntent` carrying no effect, so nothing it keeps can be run; `resolveIntent` in `src/model/actions.ts` is the only exported way to a command, and `runEffect` performs it. A lane whose cgroup names no scope gets no actions. See [D003](../decisions/D003-action-resolved-at-the-keypress.md).
+- Actions are the one thing the UI does to the system. A screen holds a `LaneIntent` carrying no effect, so nothing it keeps can be run; `resolveIntent` in `src/model/actions.ts` is the only exported way to a command, and `runEffect` performs it. A lane whose cgroup names no scope gets no actions, and a scope nested in another unit's subtree gets Freeze and Thaw but no Stop ([D002](../decisions/D002-lane-action-mechanism.md)). See [D003](../decisions/D003-action-resolved-at-the-keypress.md).
 - The copy key writes an OSC 52 sequence built by `src/ui/clipboard.ts`, which reaches the system clipboard over SSH and inside tmux. The payload is base64, so text in a command cannot close the sequence. See [D001](../decisions/D001-clipboard-sequence.md). Home, Storage, Settings and the agent detail offer the key; on Settings the scrub and drive reports rows each carry their reporter's install line, and a row `capabilityOffer()` answers carries its line ([settings](settings.md)).
 
 ## Invariants
