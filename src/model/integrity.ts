@@ -289,12 +289,27 @@ export function integrity(
   // growth is bounded by the sample that saw it. A check covers growth bounded
   // no later than its end that its own count accounts for.
   const grownSince = grew?.lastErrorBefore ?? grownAt;
+  // Growth with no reading of this process's own before it was measured from
+  // the reading on disk, whose time the collector keeps where it is known.
+  // The kernel adds one to the counter for each csum error a scrub counts, so
+  // while nothing reset the counter since a reading taken before the scrub
+  // started, growth measured from it holds all of that scrub's csum count,
+  // and any error after the scrub makes it larger. Growth of exactly that
+  // count is the scrub's own finding however late it was first seen; growth
+  // of any other size, or against a count the report did not state, is not
+  // known to be. A reset no vsys process saw, such as `btrfs device stats -z`,
+  // followed by exactly that many new failures reads as covered here; a
+  // readable kernel log still dates those failures after the check.
+  const storedBefore = grew?.lastErrorStoredBefore ?? null;
   const grownCovered =
-    grownSince !== null &&
     coverage !== null &&
-    grownSince <= coverage.endedAt &&
     errorSize !== null &&
-    errorSize <= coverage.errors;
+    ((grownSince !== null &&
+      grownSince <= coverage.endedAt &&
+      errorSize <= coverage.errors) ||
+      (storedBefore !== null &&
+        storedBefore <= coverage.startedAt &&
+        errorSize === coverage.csum));
   const growthNew =
     grownAt !== null &&
     (checkedAt === null || grownAt > checkedAt) &&

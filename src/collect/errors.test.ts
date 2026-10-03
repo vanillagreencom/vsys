@@ -29,6 +29,7 @@ test("a counter already above zero establishes a baseline and claims no time", (
     at: null,
     size: null,
     before: null,
+    storedBefore: null,
     seen: 1000,
   });
   expect(memory.observe("fs", 1390, 2000)).toEqual({
@@ -36,6 +37,7 @@ test("a counter already above zero establishes a baseline and claims no time", (
     at: null,
     size: null,
     before: null,
+    storedBefore: null,
     seen: 2000,
   });
 });
@@ -50,6 +52,7 @@ test("growth records when the counter grew, by how much, and the reading before 
     at: 5000,
     size: 26,
     before: 3000,
+    storedBefore: null,
     seen: 5000,
   });
   // A later sample that finds no growth keeps the time of the growth it saw.
@@ -58,6 +61,7 @@ test("growth records when the counter grew, by how much, and the reading before 
     at: 5000,
     size: 26,
     before: 3000,
+    storedBefore: null,
     seen: 9000,
   });
 });
@@ -72,6 +76,7 @@ test("a counter reset moves the baseline and never reads as a repair", () => {
     at: 5000,
     size: 26,
     before: 1000,
+    storedBefore: null,
     seen: 9000,
   });
   // And growth from the new baseline is measured against it, not against 36.
@@ -80,6 +85,7 @@ test("a counter reset moves the baseline and never reads as a repair", () => {
     at: 12000,
     size: 2,
     before: 9000,
+    storedBefore: null,
     seen: 12000,
   });
 });
@@ -108,6 +114,7 @@ test("what was remembered survives a restart", () => {
     at: 5000,
     size: 26,
     before: 1000,
+    storedBefore: null,
     seen: 90000000,
   });
   // The reading on disk is the last one written, and readings after it that
@@ -115,6 +122,43 @@ test("what was remembered survives a restart", () => {
   const third = new ErrorMemory(path);
   third.load();
   expect(third.observe("fs", 40, 90000000).before).toBeNull();
+});
+
+test("growth after a reading from the file keeps that reading's time", () => {
+  const path = statePath();
+  const first = new ErrorMemory(path);
+  first.observe("fs", 10, 1000);
+  first.save();
+  // A new process whose first reading has grown measured it against the
+  // file's reading, which bounds it only loosely.
+  const second = new ErrorMemory(path);
+  second.load();
+  expect(second.observe("fs", 13, 50000)).toEqual({
+    counter: 13,
+    at: 50000,
+    size: 3,
+    before: null,
+    storedBefore: 1000,
+    seen: 50000,
+  });
+  second.save();
+  // Readings that change nothing carry it, and so does the file.
+  expect(second.observe("fs", 13, 70000).storedBefore).toBe(1000);
+  const third = new ErrorMemory(path);
+  third.load();
+  expect(third.observe("fs", 13, 90000000).storedBefore).toBe(1000);
+  // Growth after this process's own reading is bounded by `before` instead.
+  expect(third.observe("fs", 14, 90060000)).toMatchObject({
+    before: 90000000,
+    storedBefore: null,
+  });
+  // A record written before reading times were kept dates nothing.
+  const legacy = statePath();
+  mkdirSync(dirname(legacy), { recursive: true });
+  writeFileSync(legacy, '{"fs":{"counter":10,"at":null,"size":null}}');
+  const old = new ErrorMemory(legacy);
+  old.load();
+  expect(old.observe("fs", 13, 50000).storedBefore).toBeNull();
 });
 
 test("a state file that is not what it claims is refused, not half read", () => {
@@ -190,6 +234,7 @@ test("a second process writing the same file loses neither growth time", () => {
     at: 4000,
     size: 26,
     before: 1000,
+    storedBefore: null,
     seen: 9000,
   });
   expect(read.observe("two", 8, 9000)).toEqual({
@@ -197,6 +242,7 @@ test("a second process writing the same file loses neither growth time", () => {
     at: 6000,
     size: 3,
     before: 1000,
+    storedBefore: null,
     seen: 9000,
   });
 });
@@ -216,8 +262,11 @@ test("a growth time on disk is never replaced by an older one", () => {
   read.load();
   expect(read.observe("fs", 30, 9000).at).toBe(8000);
   // The reading the merge took from the other process is its last one
-  // written, so it bounds no growth after it either.
-  expect(stale.observe("fs", 31, 9000).before).toBeNull();
+  // written, so it bounds no growth after it either, beyond its own time.
+  expect(stale.observe("fs", 31, 9000)).toMatchObject({
+    before: null,
+    storedBefore: 8000,
+  });
 });
 
 test("a reboot does not hide the errors counted after it", () => {
@@ -239,6 +288,7 @@ test("a reboot does not hide the errors counted after it", () => {
     at: 7000,
     size: 26,
     before: 5000,
+    storedBefore: null,
     seen: 7000,
   });
   after.save();

@@ -30,6 +30,8 @@ export interface ScrubReport {
   duration: number | null;
   uncorrectable: number | null;
   corrected: number | null;
+  /** The checksum errors the scrub counted, from its `Error summary`. */
+  csum: number | null;
   /**
    * The damaged addresses, or null where the report has no such section. A
    * report written before the section existed lists no files; it does not
@@ -76,6 +78,22 @@ const duration = (raw: string): number | null => {
   if (hours === undefined || minutes === undefined || seconds === undefined)
     return null;
   return ((hours * 60 + minutes) * 60 + seconds) * 1000;
+};
+/**
+ * The checksum errors an `Error summary` field counts. btrfs-progs writes
+ * `no errors found`, or one `kind=N` entry per kind it counted, so a summary
+ * that lists other kinds and no csum counted none. Any other text is no
+ * reading.
+ */
+const csum = (raw: string): number | null => {
+  const text = field(raw, "Error summary");
+  if (text === null) return null;
+  if (text === "no errors found") return 0;
+  const entries = text
+    .split(/\s+/)
+    .map((entry) => entry.match(/^(\w+)=(\d+)$/));
+  if (entries.some((entry) => entry === null)) return null;
+  return Number(entries.find((entry) => entry?.[1] === "csum")?.[2] ?? 0);
 };
 /**
  * Whether a labelled count is a reading. A label the report states more than
@@ -163,6 +181,7 @@ export function parseScrub(raw: string): ScrubReport {
     duration: duration(raw),
     uncorrectable: number(raw, "Uncorrectable"),
     corrected: number(raw, "Corrected"),
+    csum: csum(raw),
     addresses,
   };
 }

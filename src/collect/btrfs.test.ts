@@ -333,8 +333,10 @@ test("a scrub that corrected every error it found is not new errors since that s
   expect(finished.item?.complete).toBe(true);
   expect(finished.item?.state).toBe("healthy");
   expect(finished.storage.lastFinishedScrub?.[uuid]?.covers).toEqual({
+    startedAt: started,
     endedAt: started + 30 * 60_000,
     errors: 3,
+    csum: 3,
   });
   // A later scrub that stops early overwrites the report, and the
   // remembered check still accounts for the growth it found.
@@ -353,7 +355,7 @@ Error summary:    no errors found
   expect((await state(started + 110 * 60_000)).item?.state).toBe("new-errors");
 });
 
-test("a scrub covers growth only where this process took the reading before it", async () => {
+test("a scrub covers growth this process bounded by its end, or its exact csum count from a baseline saved before it", async () => {
   // Each step reads the counter, minutes from the scrub's start, from the
   // same collector or a new one reading what the last saved, and names the
   // state it must read, or null.
@@ -381,6 +383,35 @@ test("a scrub covers growth only where this process took the reading before it",
         [4320, 1, true, "new-errors"],
       ],
     ],
+    [
+      "a baseline saved before the scrub, then the scrub's count a new process sees after it",
+      [
+        [-60, 0, false, null],
+        [40, 3, true, "healthy"],
+      ],
+    ],
+    [
+      "the same, then a later new process days later still at the scrub's count",
+      [
+        [-60, 0, false, null],
+        [40, 3, true, "healthy"],
+        [4320, 3, true, "healthy"],
+      ],
+    ],
+    [
+      "a baseline saved before the scrub, then one more than its count a new process sees days later",
+      [
+        [-60, 0, false, null],
+        [4320, 4, true, "new-errors"],
+      ],
+    ],
+    [
+      "a baseline saved after the scrub started, then its count a new process sees after it",
+      [
+        [5, 0, false, null],
+        [40, 3, true, "new-errors"],
+      ],
+    ],
   ];
   for (const [name, steps] of rows) {
     const { f, count } = corrected();
@@ -401,6 +432,32 @@ test("a scrub covers growth only where this process took the reading before it",
         });
     }
   }
+});
+
+test("a stored reading is dated when the counter was read, not when its sample began", async () => {
+  const { f, count } = corrected();
+  const r = new Reader();
+  // A sample that began a moment before the scrub started read the counter
+  // after it, with the scrub's first error already counted.
+  count(1);
+  await new StorageCollector().collect(
+    r,
+    f.config,
+    started - 1000,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    () => started + 1000,
+  );
+  // A new process after the scrub sees the scrub's other two errors and one
+  // failure after it: growth of the csum count that is not the scrub's own.
+  count(4);
+  const s = emptySnapshot();
+  s.time = started + 40 * 60_000;
+  s.storage = await new StorageCollector().collect(r, f.config, s.time);
+  expect(integrities(s, f.config)[0]?.state).toBe("new-errors");
 });
 
 test("a stale finished report never moves the remembered time backward", async () => {
@@ -579,6 +636,7 @@ test("an unreadable report stays a report rather than vanishing", async () => {
       duration: null,
       uncorrectable: null,
       corrected: null,
+      csum: null,
       addresses: null,
     },
   ]);

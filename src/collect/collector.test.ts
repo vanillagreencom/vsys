@@ -2194,3 +2194,37 @@ test("createCollector shares the predecessor's scrub memory rather than copying 
     after.close();
   }
 });
+
+test("a sample dates a counter reading when it was read, on the sample's own time base", async () => {
+  const f = setup();
+  const root = join(f.config.btrfsRoot, "fsid");
+  mkdirSync(join(root, "devices"), { recursive: true });
+  symlinkSync("/sys/devices/test", join(root, "devices/test"));
+  const count = (n: number) =>
+    f.write(
+      join(root, "devinfo/1/error_stats"),
+      `corruption_errs ${n}\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0`,
+    );
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  count(0);
+  const collector = new Collector(f.config, 100, 4096);
+  try {
+    await collector.sample(1000);
+    count(3);
+    // The sample begins at zero on its clock, so every read inside it comes
+    // at least this long after the time it was given.
+    const begun = performance.now();
+    const clock = spyOn(performance, "now").mockReturnValueOnce(0);
+    const grown = await collector
+      .sample(2000)
+      .finally(() => clock.mockRestore());
+    expect(grown.storage.volumes[0]?.lastErrorAt).toBeGreaterThanOrEqual(
+      2000 + begun,
+    );
+  } finally {
+    collector.close();
+  }
+});

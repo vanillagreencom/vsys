@@ -10,7 +10,7 @@ import {
   integrityLevel,
   volumesByDevice,
 } from "./integrity";
-import type { Scrub, Storage, Volume } from "./types";
+import type { Scrub, ScrubCoverage, Storage, Volume } from "./types";
 import type { Level } from "./verdict";
 
 const day = 86400000;
@@ -696,12 +696,19 @@ test("growth a finished scrub could have counted is that scrub's finding, not ne
       duration: 30 * 60000,
       corrected: 3,
       uncorrectable: 0,
+      csum: 3,
       ...overrides,
     });
-  const grew = (at: number, before: number | null, size: number | null) => ({
+  const grew = (
+    at: number,
+    before: number | null,
+    size: number | null,
+    storedBefore: number | null = null,
+  ) => ({
     lastErrorAt: at,
     lastErrorBefore: before,
     lastErrorSize: size,
+    lastErrorStoredBefore: storedBefore,
   });
   const rows: [string, Partial<Volume>, Scrub[], IntegrityState][] = [
     [
@@ -759,9 +766,47 @@ test("growth a finished scrub could have counted is that scrub's finding, not ne
       "new-errors",
     ],
     [
-      "growth first seen after the run, the reading before it from disk",
+      "growth first seen after the run, the reading before it from disk and undated",
       grew(after, null, 3),
       [scrub()],
+      "new-errors",
+    ],
+    // With no reading of its own before it, growth measured from a reading on
+    // disk taken before the run is covered only at exactly the csum count.
+    [
+      "growth from a reading on disk before the run, equal to its csum count",
+      grew(after, null, 3, ahead),
+      [scrub()],
+      "healthy",
+    ],
+    [
+      "growth from a reading on disk taken the moment the run started",
+      grew(after, null, 3, startedAt),
+      [scrub()],
+      "healthy",
+    ],
+    [
+      "growth from a reading on disk before the run, larger than its csum count",
+      grew(after, null, 4, ahead),
+      [scrub({ corrected: 4, csum: 3 })],
+      "new-errors",
+    ],
+    [
+      "growth from a reading on disk before the run, smaller than its csum count",
+      grew(after, null, 2, ahead),
+      [scrub()],
+      "new-errors",
+    ],
+    [
+      "growth from a reading on disk taken after the run started",
+      grew(after, null, 3, startedAt + 1),
+      [scrub()],
+      "new-errors",
+    ],
+    [
+      "growth from a reading on disk, the csum count unread",
+      grew(after, null, 3, ahead),
+      [scrub({ csum: null })],
       "new-errors",
     ],
   ];
@@ -772,9 +817,12 @@ test("growth a finished scrub could have counted is that scrub's finding, not ne
     }).toEqual({ name, state });
   // The remembered check covers the same growth once a later scrub that
   // stopped early overwrote its report.
-  const remembered = (covers: { endedAt: number; errors: number }) =>
+  const remembered = (
+    covers: ScrubCoverage,
+    volume: Partial<Volume> = grew(after, during, 3),
+  ) =>
     integrity(
-      filesystem(grew(after, during, 3)),
+      filesystem(volume),
       {
         scrubs: [report({ status: "aborted", problem: true, startedAt: now })],
         lastFinishedScrub: { fs: { at: startedAt, damaged: false, covers } },
@@ -782,8 +830,13 @@ test("growth a finished scrub could have counted is that scrub's finding, not ne
       now,
       c,
     ).state;
-  expect(remembered({ endedAt, errors: 3 })).toBe("healthy");
-  expect(remembered({ endedAt: during - 1, errors: 3 })).toBe("new-errors");
+  const covers = { startedAt, endedAt, errors: 3, csum: 3 };
+  expect(remembered(covers)).toBe("healthy");
+  expect(remembered({ ...covers, endedAt: during - 1 })).toBe("new-errors");
+  // And its csum count, for growth measured from a reading on disk.
+  const fromDisk = grew(after, null, 3, ahead);
+  expect(remembered(covers, fromDisk)).toBe("healthy");
+  expect(remembered({ ...covers, csum: null }, fromDisk)).toBe("new-errors");
 });
 
 test("only a check that says it finished counts as a check", () => {

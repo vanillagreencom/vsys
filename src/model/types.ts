@@ -113,6 +113,12 @@ export interface Volume {
    */
   lastErrorBefore?: number | null;
   /**
+   * When the reading from disk that growth was measured against was taken,
+   * null where `lastErrorBefore` holds the bound or that reading carries no
+   * time. The counter read no higher then, so the growth happened after it.
+   */
+  lastErrorStoredBefore?: number | null;
+  /**
    * False where the record of past growth could not be read, so a null
    * `lastErrorAt` is a reading vsys does not have rather than one of none.
    */
@@ -176,6 +182,8 @@ export interface Scrub {
   duration?: number | null;
   uncorrectable?: number | null;
   corrected?: number | null;
+  /** The checksum errors its `Error summary` counted. */
+  csum?: number | null;
   /**
    * Damaged block addresses with the paths still on disk. Null where the
    * report carries no damaged-file section, which says nothing about files.
@@ -201,10 +209,17 @@ export interface FinishedScrub {
  * own finding rather than an error after it.
  */
 export interface ScrubCoverage {
+  /** When the scrub started. */
+  startedAt: number;
   /** When the scrub ended: its start plus its duration. */
   endedAt: number;
   /** The errors it counted, corrected and uncorrectable. */
   errors: number;
+  /**
+   * The checksum errors it counted, null where its report states none that
+   * vsys could read. The corruption counter grows by one for each of these.
+   */
+  csum: number | null;
 }
 /**
  * One inode the kernel failed a checksum read in, as its log names it. The
