@@ -1,0 +1,1 @@
+- A Settings save made while vsys is running no longer reverts a value the reader hand-edited into `config.toml`, or drops the file's comments, when that save changes an unrelated setting.
