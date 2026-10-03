@@ -1,0 +1,1 @@
+- Storage's scratch rows and markdown export no longer show "0s ago" for a scratch root vsys could not read.

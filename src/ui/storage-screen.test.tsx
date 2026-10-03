@@ -1173,6 +1173,33 @@ test("a missing scratch root's error follows its age on the row", async () => {
   }
 });
 
+test("an unreadable scratch root shows no age it never read", async () => {
+  const s = emptySnapshot();
+  s.storage.scratch = [
+    {
+      path: "/unread-root",
+      bytes: null,
+      age: null,
+      modifiedAt: null,
+      error: "ENOENT: no such file or directory",
+      origin: "configured",
+    },
+  ];
+  const t = await mount(s, defaults(), { width: 120, height: 30 });
+  try {
+    await t.press("5");
+    const line =
+      t
+        .frame()
+        .split("\n")
+        .find((row) => row.includes("/unread-root")) ?? "";
+    expect(line).not.toMatch(/\bago\b/);
+    expect(line).toContain("ENOENT");
+  } finally {
+    await t.close();
+  }
+});
+
 test("every kind of Storage row is placed, marked, opened and followed by one rule", async () => {
   const c = defaults();
   const s = emptySnapshot();

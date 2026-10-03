@@ -312,7 +312,7 @@ export function exportSnapshot(
       [...s.storage.scratch, ...s.storage.sessions].map((d) => [
         d.path,
         d.bytes,
-        d.age,
+        d.age ?? "unavailable",
         d.error ?? "",
       ]),
     ),
