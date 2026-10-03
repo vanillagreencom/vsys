@@ -281,6 +281,53 @@ test("a group-less agent lane reports the 512 MiB cap of the service it runs in"
     group: `${kernelRoot}/app.slice/agent.service`,
   });
   const lane = present(lanes(groups, [proc], c)[0], "the agent lane");
+  expect([lane.memoryMax, lane.memoryMaxKnown, lane.dangerous]).toEqual([
+    512 * 1024 * 1024,
+    true,
+    true,
+  ]);
+});
+
+test("a group-less lane's cap is its nearest covering group's, not a looser root's", () => {
+  const c = defaults();
+  const groups = [
+    groupSnapshot({
+      path: ".",
+      name: "user@1000.service",
+      parent: ".",
+      kernelPath: kernelRoot,
+      max: null,
+    }),
+    groupSnapshot({
+      path: "app.slice",
+      name: "app.slice",
+      parent: ".",
+      kernelPath: `${kernelRoot}/app.slice`,
+      max: null,
+    }),
+    groupSnapshot({
+      path: "app.slice/agent.service",
+      name: "agent.service",
+      parent: "app.slice",
+      pids: [7],
+      max: 512 * 1024 * 1024,
+      kernelPath: `${kernelRoot}/app.slice/agent.service`,
+    }),
+    // A sibling service whose kernelPath is not an ancestor of the process's:
+    // it must never be picked as covering, however its own cap compares.
+    groupSnapshot({
+      path: "other.slice/sibling.service",
+      name: "sibling.service",
+      parent: "other.slice",
+      kernelPath: `${kernelRoot}/other.slice/sibling.service`,
+      max: 1024,
+    }),
+  ];
+  const proc = processSnapshot({
+    pid: 7,
+    group: `${kernelRoot}/app.slice/agent.service`,
+  });
+  const lane = present(lanes(groups, [proc], c)[0], "the agent lane");
   expect([lane.memoryMax, lane.memoryMaxKnown]).toEqual([
     512 * 1024 * 1024,
     true,
@@ -290,7 +337,12 @@ test("a group-less agent lane reports the 512 MiB cap of the service it runs in"
 test("an agent outside the configured root does not read as known-unlimited", () => {
   const c = defaults();
   const groups = [
-    groupSnapshot({ path: ".", name: "user@1000.service", parent: "." }),
+    groupSnapshot({
+      path: ".",
+      name: "user@1000.service",
+      parent: ".",
+      kernelPath: kernelRoot,
+    }),
   ];
   const proc = processSnapshot({
     pid: 8,

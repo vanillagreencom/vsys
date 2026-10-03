@@ -330,7 +330,9 @@ export function lanes(
       blocked: members.filter((p) => p.state === "D").length,
       blockedOn: blockedOn(ioPressure, memoryPressure),
       unconfined: members.some((p) => escaped(p, c, capabilities)),
-      dangerous: group ? dangerousCap(group, groups, c.memoryFloor) : false,
+      dangerous: capsGroup
+        ? dangerousCap(capsGroup, groups, c.memoryFloor)
+        : false,
     });
     for (const p of members) covered.add(p.pid);
   }
