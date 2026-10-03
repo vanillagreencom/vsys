@@ -93,18 +93,19 @@ export function coveringGroup(
   kernelPath: string,
 ): Group | null {
   let best: Group | null = null;
+  let bestKernelPath = "";
   for (const g of groups) {
-    if (g.kernelPath === undefined) continue;
+    const groupKernelPath = g.kernelPath;
+    if (groupKernelPath === undefined) continue;
     if (
-      g.kernelPath !== kernelPath &&
-      !kernelPath.startsWith(`${g.kernelPath}/`)
+      groupKernelPath !== kernelPath &&
+      !kernelPath.startsWith(`${groupKernelPath}/`)
     )
       continue;
-    if (
-      best === null ||
-      g.kernelPath.length > (best.kernelPath as string).length
-    )
+    if (best === null || groupKernelPath.length > bestKernelPath.length) {
       best = g;
+      bestKernelPath = groupKernelPath;
+    }
   }
   return best;
 }
