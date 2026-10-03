@@ -688,6 +688,80 @@ export interface ConfigEdit {
   changedKeyActions: readonly KeyAction[];
 }
 
+/** True for two values `Bun.TOML.parse` could produce that read the same. */
+function sameTomlValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b))
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, i) => sameTomlValue(v, b[i]))
+    );
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+    return [...keys].every((key) => sameTomlValue(left[key], right[key]));
+  }
+  return false;
+}
+
+/**
+ * Refuses a patch whose raw TOML, reparsed, differs anywhere from
+ * `currentBody`'s own parse except at the keys and keybindings `edit`
+ * names: the one proof that `applyConfigLineEdits`' line-oriented scan
+ * placed every edit where it meant to and moved nothing else, catching a
+ * misread it cannot see from its own text position, a triple-quoted
+ * string's embedded quote among them, before it reaches the file as a
+ * silently lost or altered line.
+ */
+function verifyOnlyNamedKeysChanged(
+  currentBody: string,
+  configText: string,
+  edit: ConfigEdit,
+): void {
+  let currentParsed: Record<string, unknown>;
+  let newParsed: Record<string, unknown>;
+  try {
+    currentParsed = Bun.TOML.parse(currentBody) as Record<string, unknown>;
+    newParsed = Bun.TOML.parse(configText) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(
+      `Settings save produced a config.toml this project's own loader refuses: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const changedTop = new Set<string>(edit.changedKeys);
+  const topKeys = new Set([
+    ...Object.keys(currentParsed),
+    ...Object.keys(newParsed),
+  ]);
+  for (const key of topKeys) {
+    if (key === "keys" || changedTop.has(key)) continue;
+    if (!sameTomlValue(currentParsed[key], newParsed[key]))
+      throw new Error(
+        `Settings save would change ${key}, which this save never touched: refusing to write a config.toml that moved content it did not mean to change`,
+      );
+  }
+  const changedActions = new Set<string>(edit.changedKeyActions);
+  const currentKeysTable = (currentParsed.keys ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const newKeysTable = (newParsed.keys ?? {}) as Record<string, unknown>;
+  const actions = new Set([
+    ...Object.keys(currentKeysTable),
+    ...Object.keys(newKeysTable),
+  ]);
+  for (const action of actions) {
+    if (changedActions.has(action)) continue;
+    if (!sameTomlValue(currentKeysTable[action], newKeysTable[action]))
+      throw new Error(
+        `Settings save would change the ${action} keybinding, which this save never touched: refusing to write a config.toml that moved content it did not mean to change`,
+      );
+  }
+}
+
 /**
  * A patch this project's own loader cannot read back the way it was meant: a
  * hand edit left in an untouched line combined with a value this patch wrote
@@ -732,8 +806,9 @@ function verifyPatchedBody(
  * setting keeps the file's current value, its line and any comment beside
  * it, whether or not that value matches `base`'s default. Refuses, throwing,
  * rather than returning a body that would not load back the way it was
- * meant to, whether from a hand edit this patch's own new value combines
- * into an invalid config, or an edit `applyConfigLineEdits` could not place.
+ * meant to: whether from a hand edit this patch's own new value combines
+ * into an invalid config, or a line `applyConfigLineEdits` moved, lost or
+ * altered that `edit` never named as changed.
  */
 export function patchConfigBody(
   currentBody: string,
@@ -758,6 +833,7 @@ export function patchConfigBody(
     ]),
   );
   const configText = applyConfigLineEdits(currentBody, topEdits, keyEdits);
+  verifyOnlyNamedKeysChanged(currentBody, configText, edit);
   verifyPatchedBody(configText, next, base, edit);
   return configText;
 }

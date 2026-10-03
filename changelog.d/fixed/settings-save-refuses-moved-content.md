@@ -1,0 +1,1 @@
+- A live Settings save now refuses, rather than writes, a config.toml that would silently move or lose content it never meant to change, closing a rare case around a hand-written triple-quoted string.
