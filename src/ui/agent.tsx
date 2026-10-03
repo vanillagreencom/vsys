@@ -4,11 +4,7 @@ import { Reader } from "../collect/io";
 import { scratchFiles } from "../collect/procs";
 import { switchCommand } from "../collect/tmux";
 import type { Config } from "../config/config";
-import {
-  type LaneIntent,
-  laneIntent,
-  laneTarget,
-} from "../model/actions";
+import { type LaneIntent, laneIntent, laneTarget } from "../model/actions";
 import { safe } from "../model/export";
 import { parentChain, processTree } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";

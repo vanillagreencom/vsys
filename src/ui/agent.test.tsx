@@ -215,10 +215,14 @@ test("a scope nested in another unit's subtree lists Freeze and Thaw but no Stop
   const s = emptySnapshot();
   const cgroup = "user.slice/libpod-abc.scope/container/init.scope";
   s.lanes = [laneSnapshot({ id: cgroup, cgroup })];
-  const t = await mount(s, { ...defaults(), writeMode: true }, {
-    width: 200,
-    height: 45,
-  });
+  const t = await mount(
+    s,
+    { ...defaults(), writeMode: true },
+    {
+      width: 200,
+      height: 45,
+    },
+  );
   try {
     await t.press("2");
     await t.press("enter");
