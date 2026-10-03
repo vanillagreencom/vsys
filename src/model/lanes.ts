@@ -81,6 +81,39 @@ export function effectiveMax(
   };
 }
 /**
+ * The configured group covering a process's absolute kernel cgroup path: the
+ * one whose `kernelPath` equals it, or is its nearest ancestor. `effectiveMax`
+ * only matches root-relative paths, so a group-less lane — whose cgroup is
+ * that absolute kernel path, not one of vsys's own group paths — has to
+ * resolve to a group here first. None found, root included, means the
+ * process sits outside the configured root.
+ */
+export function coveringGroup(
+  groups: Group[],
+  kernelPath: string,
+): Group | null {
+  let best: Group | null = null;
+  let bestKernelPath = "";
+  for (const g of groups) {
+    const groupKernelPath = g.kernelPath;
+    if (groupKernelPath === undefined) continue;
+    // "/" is the mount root: every real kernel path already starts with it,
+    // so "/" plus a separator would build "//", which none of them start
+    // with, and the plain equality check never matches a deeper path either.
+    const covers =
+      groupKernelPath === kernelPath ||
+      (groupKernelPath === "/"
+        ? kernelPath.startsWith("/")
+        : kernelPath.startsWith(`${groupKernelPath}/`));
+    if (!covers) continue;
+    if (best === null || groupKernelPath.length > bestKernelPath.length) {
+      best = g;
+      bestKernelPath = groupKernelPath;
+    }
+  }
+  return best;
+}
+/**
  * A blocked lane waits on storage or on memory reclaim. The resource with the
  * higher stall share is the one to name; unknown pressure names neither.
  */
@@ -200,7 +233,14 @@ export function lanes(
     const builds: Record<string, number> = {};
     for (const p of members)
       if (p.build) builds[p.build] = (builds[p.build] ?? 0) + 1;
-    const caps = effectiveMax(groups, cgroup);
+    // A group-less lane's `cgroup` is the process's absolute kernel path, not
+    // one of vsys's own root-relative group paths, so effectiveMax() needs
+    // the group that absolute path resolves to first.
+    const capsGroup =
+      group ?? (main ? coveringGroup(groups, main.group) : null);
+    const caps = capsGroup
+      ? effectiveMax(groups, capsGroup.path)
+      : { max: null, known: false };
     const ioPressure = group?.pressure.io?.some ?? null;
     const memoryPressure = group?.pressure.memory?.some ?? null;
     result.push({
@@ -295,7 +335,9 @@ export function lanes(
       blocked: members.filter((p) => p.state === "D").length,
       blockedOn: blockedOn(ioPressure, memoryPressure),
       unconfined: members.some((p) => escaped(p, c, capabilities)),
-      dangerous: group ? dangerousCap(group, groups, c.memoryFloor) : false,
+      dangerous: capsGroup
+        ? dangerousCap(capsGroup, groups, c.memoryFloor)
+        : false,
     });
     for (const p of members) covered.add(p.pid);
   }
