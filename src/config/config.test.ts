@@ -594,3 +594,23 @@ test("patchConfigBody refuses to edit a triple-quoted value rather than guess wh
   );
   expect(kept).toBe(`${withComment}refreshMs = 2000\n`);
 });
+
+test("the data-loss backstop refuses a save whose line scan edits a line inside a multi-line value", () => {
+  const base = defaults();
+  // procRoot is a triple-quoted string whose middle line reads `sort = "rss"`,
+  // so the line scanner takes that line for the top-level sort. The real sort
+  // line below it carries the same value, so isSingleLineValue accepts the
+  // inner line and the save replaces it. Only verifyOnlyNamedKeysChanged sees
+  // that procRoot's value moved, and must refuse before anything is written.
+  const body = 'procRoot = """/proc"\nsort = "rss"\nx"""\nsort = "rss"\n';
+  expect(Bun.TOML.parse(body)).toEqual({
+    procRoot: '/proc"\nsort = "rss"\nx',
+    sort: "rss",
+  });
+  expect(() =>
+    patchConfigBody(body, { ...base, sort: "cpu" }, base, {
+      changedKeys: ["sort"],
+      changedKeyActions: [],
+    }),
+  ).toThrow("Settings save would change procRoot");
+});
