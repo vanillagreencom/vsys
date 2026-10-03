@@ -8,17 +8,19 @@ interface IoTotals {
   /** Bytes written since boot, keyed by the kernel device number "MAJ:MIN". */
   byDevice: Record<string, number>;
 }
-/** io.stat has one line per device; the group's cost is their sum. */
-function ioTotals(text: string): IoTotals | null {
+/**
+ * io.stat has one line per device; the group's cost is their sum. The kernel
+ * adds a device's line on the group's first I/O to it, so readable text with
+ * no counter is a measured zero, not an unknown.
+ */
+function ioTotals(text: string): IoTotals {
   const totals: IoTotals = { read: 0, write: 0, byDevice: {} };
-  let seen = false;
   for (const line of text.split("\n")) {
     const device = line.trim().split(/\s+/)[0];
     if (!device) continue;
     for (const [, key, raw] of line.matchAll(/\b(rbytes|wbytes)=(\S+)/g)) {
       if (raw === undefined || !/^\d+$/.test(raw))
         throw new Error("Invalid io.stat counter");
-      seen = true;
       if (key === "rbytes") totals.read += Number(raw);
       else {
         totals.write += Number(raw);
@@ -26,7 +28,7 @@ function ioTotals(text: string): IoTotals | null {
       }
     }
   }
-  return seen ? totals : null;
+  return totals;
 }
 /**
  * The cgroup v2 root counts every writer on the machine, including services and
@@ -40,7 +42,7 @@ export function collectDeviceWrites(
   const raw = r.text(file, true);
   if (raw === null) return null;
   try {
-    return ioTotals(raw)?.byDevice ?? null;
+    return ioTotals(raw).byDevice;
   } catch (e) {
     r.error(file, e);
     return null;

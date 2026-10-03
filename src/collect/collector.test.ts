@@ -1192,6 +1192,46 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   expect(group?.cache).toBeNull();
   expect(bad.errors.map((e) => e.source)).toContain(join(path, "io.stat"));
 });
+// The kernel adds a device line to a group's io.stat on the group's first I/O
+// to that device, so a scope that has not reached a disk has a readable, empty
+// io.stat: a measured zero.
+test("an empty but readable io.stat is zero bytes, not unknown", async () => {
+  const f = setup();
+  f.group("agents.slice/quiet.scope", [40]);
+  f.proc(40, "agents.slice/quiet.scope");
+  const path = join(f.config.cgroupRoot, "agents.slice/quiet.scope");
+  f.write(join(path, "io.stat"), "");
+  const collector = new Collector(f.config, 100, 4096);
+  await collector.sample(1000);
+  const s = await collector.sample(2000);
+  expect(s.errors).toEqual([]);
+  const g = s.groups.find((x) => x.path === "agents.slice/quiet.scope");
+  expect({ write: g?.ioWrite, rate: g?.writeRate }).toEqual({
+    write: 0,
+    rate: 0,
+  });
+  // A missing io.stat was not read, so it stays unknown.
+  rmSync(join(path, "io.stat"));
+  const gone = await collector.sample(3000);
+  const missing = gone.groups.find((x) => x.path === "agents.slice/quiet.scope");
+  expect({ write: missing?.ioWrite, rate: missing?.writeRate }).toEqual({
+    write: null,
+    rate: null,
+  });
+});
+test("a scope's first I/O after an empty io.stat gets a rate", async () => {
+  const f = setup();
+  f.group("agents.slice/quiet.scope", [40]);
+  f.proc(40, "agents.slice/quiet.scope");
+  const path = join(f.config.cgroupRoot, "agents.slice/quiet.scope");
+  f.write(join(path, "io.stat"), "");
+  const collector = new Collector(f.config, 100, 4096);
+  await collector.sample(1000);
+  f.write(join(path, "io.stat"), "259:0 rbytes=0 wbytes=4096 rios=0 wios=1\n");
+  const s = await collector.sample(2000);
+  const g = s.groups.find((x) => x.path === "agents.slice/quiet.scope");
+  expect(g?.writeRate).toBe(4096);
+});
 test("device totals come from the cgroup root, not the watched user tree", async () => {
   const f = setup();
   f.group("agents.slice/a.scope", [40]);
@@ -1209,6 +1249,9 @@ test("device totals come from the cgroup root, not the watched user tree", async
     "259:0": 900,
     "8:0": 50,
   });
+  // A readable root with no device line is a machine that wrote nothing yet.
+  f.write(join(f.config.cgroupTop, "io.stat"), "");
+  expect((await collector.sample(1500)).storage.deviceWrites).toEqual({});
   // An unreadable root leaves the totals unknown rather than falling back.
   f.write(join(f.config.cgroupTop, "io.stat"), "259:0 wbytes=x\n");
   const bad = await collector.sample(2000);
