@@ -541,6 +541,34 @@ test("Home counts the alerts that open while it runs", async () => {
   }
 });
 
+test("Home counts an alert once when the clock steps back and recovers", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const h = new History(c);
+  const quiet = emptySnapshot(1000);
+  h.add(quiet);
+  const t = await mount(quiet, c, { width: 160, height: 44 }, { history: h });
+  try {
+    await t.press("1");
+    const firing = (time: number) => {
+      const s = emptySnapshot(time);
+      s.lanes = [
+        laneSnapshot({ id: "e.scope", name: "escaped", unconfined: true }),
+      ];
+      return s;
+    };
+    for (const time of [3000, 1500, 3500]) {
+      // The frame at 1500 is behind the alert's sample, and history keeps it
+      // out; the one at 3500 is the clock past that sample again.
+      const s = firing(time);
+      h.add(s);
+      await t.update(s);
+      expect(t.frame()).toContain("1 alert opened since vsys started");
+    }
+  } finally {
+    await t.close();
+  }
+});
+
 test("Home marks one focus at a time, on every kind of row it lists", async () => {
   const c = { ...defaults(), pressureHoldSeconds: 0 };
   // A sample with all three row types on screen at once: concerns, a change,

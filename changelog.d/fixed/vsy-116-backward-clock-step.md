@@ -1,0 +1,1 @@
+- The dashboard no longer exits with "Snapshot times must increase" when the system clock steps backward. It keeps running, and history records nothing until the clock passes the newest stored sample.

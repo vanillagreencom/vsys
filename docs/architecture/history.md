@@ -36,6 +36,7 @@ The store keeps complete snapshots for replay and one point per sample for the c
 14. Unknown memory readings stay unknown in a point instead of becoming zero. `src/store/point.test.ts` checks them.
 15. One read of many lanes inflates each sealed segment and decompresses each stored row once, whatever the number of lanes, and the same read again decompresses nothing and duplicates no sample. A lane that ends, and a checkpoint or stored row the window has passed, leaves its cache, and two readers of one window length whose starts differ by a trend bucket reread at most the rows between. `src/store/archive.test.ts` and `src/store/lane-series.test.ts` count the decompressions for forty lanes and read the caches back.
 16. With SQLite on and no other program writing to the disk, the median cost of the history writes for the bench's sample stays within the write budget. `bun run bench:writes`, in the check contract, fails when it does not. Limits of the checks says why the cost under load is not held.
+17. A sample whose time is at or before the newest stored one is not stored, so a clock stepped back, or a restart behind the newest stored row, never ends the dashboard and every stored time stays the clock's reading when the sample was taken. History and events record nothing until the clock passes the newest stored time. `src/store/history.test.ts` checks a backward step, a repeated time, and a reopened database whose newest row is ahead of the clock.
 
 ## Limits of the checks
 

@@ -30,6 +30,69 @@ test("cursor gets the prior snapshot and keeps independent historical values", (
   expect(h.at(2000)?.system.host).toBe("changed");
   expect(h.window(2000, 500).map((p) => p.time)).toEqual([2000]);
 });
+test("a sample stamped at or before the newest stored one is not stored", () => {
+  const h = new History(defaults());
+  cleanup.push(() => h.close());
+  h.add(emptySnapshot(1_000_000));
+  const back = emptySnapshot(998_000);
+  back.system.host = "after the step";
+  // The clock stepped back two seconds, then a sample repeats a stored time.
+  expect(() => h.add(back)).not.toThrow();
+  h.add({ ...back, time: 1_000_000 });
+  expect(h.window(1_000_000, 10_000).map((p) => p.time)).toEqual([1_000_000]);
+  expect(h.at(1_000_000)?.system.host).toBe("fixture");
+  expect(h.at(998_000)).toBeNull();
+  // The clock passed the newest stored time, so recording continues.
+  h.add({ ...back, time: 1_000_001 });
+  expect(h.window(1_000_001, 10_000).map((p) => p.time)).toEqual([
+    1_000_000, 1_000_001,
+  ]);
+  expect(h.at(1_000_001)?.system.host).toBe("after the step");
+});
+test("a sample that is not stored changes no event state", () => {
+  const h = new History(defaults());
+  cleanup.push(() => h.close());
+  const laned = (time: number) => {
+    const s = emptySnapshot(time);
+    s.lanes = [laneSnapshot()];
+    return s;
+  };
+  h.add(laned(1_000_000));
+  // The lane is gone only in the sample the clock step keeps out of history.
+  h.add(emptySnapshot(998_000));
+  h.add(laned(1_000_001));
+  expect(h.events(1_000_001, 10_000)).toEqual([]);
+});
+test("a restart whose clock is behind the newest stored row stores nothing until the clock passes it", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  // The row a session wrote before the clock was set back a minute.
+  const ahead = Date.now() + 60_000;
+  const first = new History(f.config);
+  first.add(emptySnapshot(ahead));
+  first.close();
+  const reopened = new History(f.config);
+  const live = emptySnapshot(ahead - 60_000);
+  live.system.host = "restarted";
+  reopened.add(live);
+  expect(reopened.window(ahead, 120_000).map((p) => p.time)).toEqual([ahead]);
+  reopened.add({ ...live, time: ahead + 1 });
+  expect(reopened.window(ahead + 1, 120_000).map((p) => p.time)).toEqual([
+    ahead,
+    ahead + 1,
+  ]);
+  expect(reopened.at(ahead + 1)?.system.host).toBe("restarted");
+  reopened.close();
+  const db = new Database(f.config.sqlitePath, { readonly: true });
+  cleanup.push(() => db.close());
+  expect(
+    db
+      .query<{ time: number }, []>("SELECT time FROM samples ORDER BY time")
+      .all()
+      .map((row) => row.time),
+  ).toEqual([ahead, ahead + 1]);
+});
 test("SQLite reopens full process snapshots and alert history", () => {
   const f = fixture();
   cleanup.push(f.cleanup);
