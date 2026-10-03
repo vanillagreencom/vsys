@@ -35,7 +35,12 @@ export function btrfsMounts(
 
 /** Reject unknown scrub output instead of calling it healthy. */
 export function scrubProblem(raw: string): boolean {
-  if (/\b(aborted|canceled|cancelled|failed)\b/i.test(raw)) return true;
+  // The same rule integrity() uses: only a report that says it finished, or
+  // one still running, carries a result worth reading past the status word.
+  // Any other status, interrupted included, is a problem on its own.
+  const status = parseScrub(raw).status;
+  if (status !== null && status !== "finished" && status !== "running")
+    return true;
   // The counted-error lines under the summary are the reading wherever the
   // report carries them. A label it states more than once, as a per-device
   // listing does, holds no single count: reading the first would let one
