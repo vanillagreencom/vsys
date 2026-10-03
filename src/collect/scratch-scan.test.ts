@@ -46,6 +46,10 @@ test("one traversal counts hard links once per root and once per session", async
     expect(result.scratch[1]?.bytes).toBeNull();
     expect(result.errors.map((e) => e.source)).toEqual([missing]);
     expect(result.scratch[0]?.error).toBeNull();
+    // Nor does it report an age it never read, while a root that was
+    // stat'd reports the numeric age it measured.
+    expect(result.scratch[1]?.age).toBeNull();
+    expect(result.scratch[0]?.age).not.toBeNull();
   } finally {
     f.cleanup();
   }
