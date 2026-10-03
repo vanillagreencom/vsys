@@ -211,6 +211,13 @@ export class History {
     }
   }
   add(s: Snapshot): void {
+    // A clock stepped back, or a restart behind the newest stored row, hands
+    // over a sample at or before one already kept. It is not stored: a stored
+    // time stays the clock's reading when the sample was taken, so the gap
+    // until the clock passes the newest stored time is a gap and never a
+    // wrong time.
+    const newest = this.points.get(this.points.size - 1)?.time;
+    if (newest !== undefined && s.time <= newest) return;
     const p = point(s, this.c, this.eventLog.advance(s, this.c));
     const json = JSON.stringify(s);
     const cutoff = s.time - this.c.historyHours * 3600000;

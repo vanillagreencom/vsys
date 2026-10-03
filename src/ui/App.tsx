@@ -238,6 +238,9 @@ export function App({
     // window and filtering it meant scanning every point vsys holds, on every
     // sample, to count the handful that were new.
     const since = counted.current;
+    // A clock stepped back hands over frames at or before the counted time.
+    // Following them would count stored alerts again as the clock recovers.
+    if (since !== null && snapshot.time <= since) return;
     counted.current = snapshot.time;
     if (since === null) return;
     const fresh = history
