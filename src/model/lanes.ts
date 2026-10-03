@@ -227,7 +227,7 @@ export function lanes(
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
       group?.cpuPercent ??
-      (members.every((p) => p.cpuPercent !== null)
+      (members.length > 0 && members.every((p) => p.cpuPercent !== null)
         ? members.reduce((n, p) => n + (p.cpuPercent ?? 0), 0)
         : null);
     const builds: Record<string, number> = {};
@@ -305,7 +305,7 @@ export function lanes(
       cache: group?.cache ?? null,
       swap:
         group?.swap ??
-        (members.every((p) => p.swap !== null)
+        (members.length > 0 && members.every((p) => p.swap !== null)
           ? members.reduce((n, p) => n + (p.swap ?? 0), 0)
           : null),
       readRate: group?.readRate ?? null,

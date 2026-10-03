@@ -231,6 +231,23 @@ test("counters the kernel did not report stay unknown rather than becoming zero"
   ]).toEqual([null, null, null, null, null, null]);
 });
 
+// A watched scope whose group CPU and swap are both unknown, with no member
+// process read on this sample (it exited between the cgroup.procs read and
+// the /proc read): the empty-member fallback must not read as "every member
+// known", which `[].every(...)` answers true and sums to zero.
+test("unknown group CPU and swap with no readable member stay unknown", () => {
+  const c = defaults();
+  const group = groupSnapshot({
+    path: "agents.slice/gone.scope",
+    name: "gone.scope",
+    pids: [99],
+    cpuPercent: null,
+    swap: null,
+  });
+  const lane = present(lanes([group], [], c)[0], "the watched lane");
+  expect([lane.cpu, lane.swap]).toEqual([null, null]);
+});
+
 test("an unread cgroup tree leaves the memory cap unknown rather than unlimited", () => {
   const c = defaults();
   const covered = groupSnapshot({

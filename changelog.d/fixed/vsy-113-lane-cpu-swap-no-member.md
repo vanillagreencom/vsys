@@ -1,0 +1,1 @@
+- A watched scope with no readable member now reads unknown CPU and swap instead of 0.
