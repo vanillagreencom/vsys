@@ -473,7 +473,7 @@ test("reverting a keybinding under [keys] to default removes the line rather tha
   );
 });
 
-test("patchConfigBody leaves a hand-written multi-line array alone and replaces it whole when it is the changed key", () => {
+test("patchConfigBody leaves a hand-written multi-line array alone when an unrelated key changes", () => {
   const base = defaults();
   const body = 'columns = [\n  "name",\n  "cpu"\n]\n';
   const untouched = patchConfigBody(
@@ -483,11 +483,33 @@ test("patchConfigBody leaves a hand-written multi-line array alone and replaces 
     { changedKeys: ["refreshMs"], changedKeyActions: [] },
   );
   expect(untouched).toBe(`${body}refreshMs = 2000\n`);
-  const replaced = patchConfigBody(body, { ...base, columns: ["rss"] }, base, {
-    changedKeys: ["columns"],
-    changedKeyActions: [],
-  });
-  expect(replaced).toBe('columns = ["rss"]\n');
+});
+
+test("patchConfigBody keeps a comment and an untouched hand-formatted multi-line key byte for byte", () => {
+  const base = defaults();
+  const body =
+    '# keep storage columns in this order\ncolumns = [\n  "name",\n  "cpu"\n]\nsort = "rss"\n';
+  const out = patchConfigBody(
+    body,
+    { ...base, sort: "rss", descending: false },
+    base,
+    { changedKeys: ["descending"], changedKeyActions: [] },
+  );
+  expect(out).toBe(`${body}descending = false\n`);
+});
+
+test("patchConfigBody refuses to edit a key whose current value spans more than one line", () => {
+  const base = defaults();
+  // vsys's own writer always emits one line per setting, so a span over more
+  // than one line is always a hand-written value; editing it from Settings
+  // would need to guess where it ends, which this never does.
+  const body = 'columns = [\n  "name",\n  "cpu"\n]\n';
+  expect(() =>
+    patchConfigBody(body, { ...base, columns: ["rss"] }, base, {
+      changedKeys: ["columns"],
+      changedKeyActions: [],
+    }),
+  ).toThrow("Settings save cannot edit columns: its line in config.toml");
 });
 
 test("patchConfigBody opens a [keys] table when a keybinding change has none to join", () => {
@@ -529,50 +551,46 @@ test("patchConfigBody refuses a write that would combine into a config the loade
   ).toThrow("Keybindings must be unique");
 });
 
-test("patchConfigBody refuses rather than silently drops a value beside a triple-quoted string", () => {
+test("patchConfigBody refuses to edit a triple-quoted value rather than guess where it ends", () => {
   const base = defaults();
-  // assignmentLineCount tracks only a single-character quote toggle, which
-  // an embedded, unescaped quote inside this triple-quoted string desyncs
-  // from where the excludeArgv assignment actually ends, so it over-consumes
-  // the untouched sort line below it. verifyOnlyNamedKeysChanged's
-  // parsed-value diff catches sort's loss without needing to know which raw
-  // line held it: this never writes a shortened file.
-  const body = 'excludeArgv = [\n  """foo " bar""",\n]\nsort = "rss"\n';
-  expect(Bun.TOML.parse(body)).toEqual({
+  // assignmentLineCount tracks only a single-character quote toggle, which an
+  // embedded, unescaped quote inside this triple-quoted string desyncs from
+  // where the excludeArgv assignment actually ends; isSingleLineValue never
+  // trusts that count for a key this save means to edit, so excludeArgv's
+  // multi-line span is refused by name rather than guessed, whether a value
+  // (sort) or a comment sits beside it.
+  const withValue = 'excludeArgv = [\n  """foo " bar""",\n]\nsort = "rss"\n';
+  expect(Bun.TOML.parse(withValue)).toEqual({
     excludeArgv: ['foo " bar'],
     sort: "rss",
   });
   expect(() =>
-    patchConfigBody(body, { ...base, excludeArgv: ['foo " bar'] }, base, {
+    patchConfigBody(withValue, { ...base, excludeArgv: ['foo " bar'] }, base, {
       changedKeys: ["excludeArgv"],
       changedKeyActions: [],
     }),
-  ).toThrow("sort, which this save never touched");
-});
-
-test("patchConfigBody refuses rather than silently drops a comment beside a triple-quoted string", () => {
-  const base = defaults();
-  // Bun.TOML.parse carries no comments, so the parsed-value diff alone
-  // cannot see this one vanish: verifyLineIdentity's raw line-level diff
-  // is what catches excludeArgv's over-consumed span swallowing the
-  // comment below it, with no other key in the file for the value diff to
-  // catch it by coincidence.
-  const body =
+  ).toThrow("Settings save cannot edit excludeArgv: its line in config.toml");
+  const withComment =
     'excludeArgv = [\n  """foo " bar""",\n]\n# Keep this local exclusion note\n';
   expect(() =>
-    patchConfigBody(body, { ...base, excludeArgv: ['foo " bar'] }, base, {
-      changedKeys: ["excludeArgv"],
-      changedKeyActions: [],
-    }),
-  ).toThrow(
-    '"# Keep this local exclusion note", which this save never touched',
-  );
+    patchConfigBody(
+      withComment,
+      { ...base, excludeArgv: ['foo " bar'] },
+      base,
+      { changedKeys: ["excludeArgv"], changedKeyActions: [] },
+    ),
+  ).toThrow("Settings save cannot edit excludeArgv: its line in config.toml");
   // An unrelated key leaves excludeArgv's own line untouched (the line
-  // editor only ever copies it verbatim when it is not the edited key), so
-  // nothing is actually lost here and this save keeps the comment.
-  const kept = patchConfigBody(body, { ...base, refreshMs: 2000 }, base, {
-    changedKeys: ["refreshMs"],
-    changedKeyActions: [],
-  });
-  expect(kept).toBe(`${body}refreshMs = 2000\n`);
+  // editor only ever copies a key it is not editing verbatim), so the
+  // comment beside it survives and this save does not refuse.
+  const kept = patchConfigBody(
+    withComment,
+    { ...base, refreshMs: 2000 },
+    base,
+    {
+      changedKeys: ["refreshMs"],
+      changedKeyActions: [],
+    },
+  );
+  expect(kept).toBe(`${withComment}refreshMs = 2000\n`);
 });

@@ -1,1 +1,1 @@
-- A live Settings save now refuses a key held in a triple-quoted string rather than guess past it, closing a case where a comment beside one could be silently lost.
+- A live Settings save now refuses, naming the key, to edit a setting whose config.toml value spans more than one line, rather than guess where it ends and risk losing a comment or value beside it.
