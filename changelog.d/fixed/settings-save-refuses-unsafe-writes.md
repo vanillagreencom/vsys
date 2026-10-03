@@ -1,0 +1,1 @@
+- A live Settings save now reads a quoted key or an indented `[keys]` table in a hand-edited `config.toml` correctly, and refuses rather than silently writes a config the loader would reject.

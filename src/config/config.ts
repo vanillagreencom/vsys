@@ -569,8 +569,18 @@ export function configBody(c: Config, agentTools: string[]): string {
   return serialize(c, defaults(agentTools));
 }
 
-const sectionPattern = /^\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*$/;
-const assignmentPattern = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/;
+// Bun.TOML.parse accepts a table header indented and followed by a comment,
+// and a key wrapped in matching quotes, the same as the bare forms; these
+// patterns recognize what the loader already does, so a hand-written file in
+// either style is read as the table or key it is, never mistaken for one.
+const sectionPattern = /^\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\](?:\s*#.*)?$/;
+const assignmentPattern =
+  /^\s*(?:"([A-Za-z_][A-Za-z0-9_]*)"|'([A-Za-z_][A-Za-z0-9_]*)'|([A-Za-z_][A-Za-z0-9_]*))\s*=/;
+
+/** The identifier `assignmentPattern` matched, bare or quoted alike. */
+function assignmentKey(match: RegExpExecArray): string {
+  return match[1] ?? match[2] ?? match[3] ?? "";
+}
 
 /**
  * How many lines the assignment starting at `lines[start]` occupies. More
@@ -643,7 +653,7 @@ function applyConfigLineEdits(
     const assignment = assignmentPattern.exec(line);
     if (assignment) {
       const pending = inKeys ? remainingKeys : remainingTop;
-      const key = assignment[1] ?? "";
+      const key = assignmentKey(assignment);
       const count = assignmentLineCount(lines, i);
       if (pending.has(key)) {
         const replacement = pending.get(key) ?? null;
@@ -679,11 +689,51 @@ export interface ConfigEdit {
 }
 
 /**
+ * A patch this project's own loader cannot read back the way it was meant: a
+ * hand edit left in an untouched line combined with a value this patch wrote
+ * into a config `validate()` refuses whole, or a line `applyConfigLineEdits`
+ * could not place the way `patchConfigBody` intended. Thrown instead of
+ * writing the file, because a reader who then restarts vsys would meet a
+ * config.toml it cannot load, with no save-time error to explain why.
+ */
+function verifyPatchedBody(
+  configText: string,
+  next: Config,
+  base: Config,
+  edit: ConfigEdit,
+): void {
+  let reloaded: Config;
+  try {
+    const parsed = Bun.TOML.parse(configText) as Record<string, unknown>;
+    reloaded = validate(prepareConfigInput(parsed, base).input, base);
+  } catch (error) {
+    throw new Error(
+      `Settings save produced a config.toml this project's own loader refuses: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const key of edit.changedKeys) {
+    if (!sameValue(key, reloaded[key], next[key]))
+      throw new Error(
+        `Settings save did not take effect for ${key}: the written config.toml would load it as ${JSON.stringify(reloaded[key])}, not ${JSON.stringify(next[key])}`,
+      );
+  }
+  for (const action of edit.changedKeyActions) {
+    if (reloaded.keys[action] !== next.keys[action])
+      throw new Error(
+        `Settings save did not take effect for the ${action} keybinding: the written config.toml would load it as ${JSON.stringify(reloaded.keys[action])}, not ${JSON.stringify(next.keys[action])}`,
+      );
+  }
+}
+
+/**
  * The body for a save made while vsys is running, which keeps every line a
  * hand edit added to `currentBody` since the session started: only the keys
  * `edit` names get a line changed, added or removed, so an untouched
  * setting keeps the file's current value, its line and any comment beside
- * it, whether or not that value matches `base`'s default.
+ * it, whether or not that value matches `base`'s default. Refuses, throwing,
+ * rather than returning a body that would not load back the way it was
+ * meant to, whether from a hand edit this patch's own new value combines
+ * into an invalid config, or an edit `applyConfigLineEdits` could not place.
  */
 export function patchConfigBody(
   currentBody: string,
@@ -707,5 +757,7 @@ export function patchConfigBody(
         : `${action} = ${JSON.stringify(next.keys[action])}`,
     ]),
   );
-  return applyConfigLineEdits(currentBody, topEdits, keyEdits);
+  const configText = applyConfigLineEdits(currentBody, topEdits, keyEdits);
+  verifyPatchedBody(configText, next, base, edit);
+  return configText;
 }
