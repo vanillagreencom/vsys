@@ -986,3 +986,39 @@ test("settings agent tools edits match the warden overlay loader", async () => {
     f.cleanup();
   }
 });
+
+test("an unrelated save removes a dormant agentTools list that matches the shipped defaults", async () => {
+  // D006: a hand-written list equal to the shipped and layered lists is not a
+  // pin. An unrelated Settings save must remove it, so a later overlay tool is
+  // not hidden by a stale pin on restart.
+  const f = fixture();
+  const configPath = join(f.root, "config.toml");
+  f.write(configPath, `agentTools = ${JSON.stringify(f.config.agentTools)}\n`);
+  const config = await loadConfig(configPath, f.agentToolsPath);
+  const h = new History(config);
+  const session = new Session(
+    config,
+    () => configPath,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    {
+      makeSource: async () => ({
+        sample: async () => emptySnapshot(2000),
+      }),
+      agentToolsPath: f.agentToolsPath,
+    },
+  );
+  try {
+    await session.configure({ ...config, refreshMs: 2000 });
+    const body = readFileSync(configPath, "utf8");
+    expect(body).not.toContain("agentTools");
+    expect(body).toContain("refreshMs = 2000");
+    expect((await loadConfig(configPath, f.agentToolsPath)).agentTools).toEqual(
+      f.config.agentTools,
+    );
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});

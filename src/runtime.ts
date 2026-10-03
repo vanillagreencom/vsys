@@ -278,9 +278,10 @@ export class Session {
         agentToolSave?.agentTools ?? currentState.layeredAgentTools,
       );
       const configText = patchConfigBody(currentBody, next, base, {
-        changedKeys: agentToolsChanged
-          ? [...changedKeys, "agentTools"]
-          : changedKeys,
+        changedKeys:
+          agentToolsChanged || !currentState.agentToolsPinned
+            ? [...changedKeys, "agentTools"]
+            : changedKeys,
         changedKeyActions,
       });
       const collectionChanged = collectionKeys.some((k) =>
