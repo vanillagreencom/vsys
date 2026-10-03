@@ -583,12 +583,18 @@ function assignmentKey(match: RegExpExecArray): string {
 }
 
 /**
- * How many lines the assignment starting at `lines[start]` occupies. More
- * than one only for a hand-written array split across lines: this project's
- * own writer always emits one line, and a triple-quoted multi-line string is
- * not a value any setting here takes.
+ * How many lines the assignment starting at `lines[start]` occupies, or
+ * `null` when a TOML triple-quote delimiter (`"""` or `'''`) opens within it:
+ * this scan tracks only a single-character quote toggle, which an embedded,
+ * unescaped quote inside a triple-quoted string desyncs from where the value
+ * actually ends, so it gives up there rather than guess. More than one line
+ * otherwise only for a hand-written array split across lines: this project's
+ * own writer always emits one line.
  */
-function assignmentLineCount(lines: readonly string[], start: number): number {
+function assignmentLineCount(
+  lines: readonly string[],
+  start: number,
+): number | null {
   let depth = 0;
   let quote: '"' | "'" | null = null;
   let count = 0;
@@ -602,6 +608,12 @@ function assignmentLineCount(lines: readonly string[], start: number): number {
         else if (ch === quote) quote = null;
         continue;
       }
+      if (
+        (ch === '"' || ch === "'") &&
+        text[pos + 1] === ch &&
+        text[pos + 2] === ch
+      )
+        return null;
       if (ch === "#") break;
       if (ch === '"' || ch === "'") quote = ch;
       else if (ch === "[") depth++;
@@ -620,7 +632,10 @@ function assignmentLineCount(lines: readonly string[], start: number): number {
  * top-level line lands at the end of the top-level block, before `[keys]`
  * when the file has one. A new `[keys]` line lands at the end of that table,
  * which this function creates, after a blank line, when `keyEdits` needs one
- * and `currentBody` has none.
+ * and `currentBody` has none. Throws, rather than guesses, when
+ * `assignmentLineCount` cannot place a triple-quoted assignment's end: every
+ * line after it would then rest on a span this scan does not trust, whether
+ * or not that assignment's own key is one of the edits named here.
  */
 function applyConfigLineEdits(
   currentBody: string,
@@ -655,6 +670,10 @@ function applyConfigLineEdits(
       const pending = inKeys ? remainingKeys : remainingTop;
       const key = assignmentKey(assignment);
       const count = assignmentLineCount(lines, i);
+      if (count === null)
+        throw new Error(
+          `Settings save cannot safely edit config.toml: ${key} holds a triple-quoted string, whose end this save cannot scan around. Edit ${key} by hand, or remove the triple quotes, before saving from Settings.`,
+        );
       if (pending.has(key)) {
         const replacement = pending.get(key) ?? null;
         if (replacement !== null) out.push(replacement);
