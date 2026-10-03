@@ -61,19 +61,19 @@ export interface LaneTarget {
  * command aimed at the wrong cgroup.
  *
  * Stop names the scope to the user manager by its bare name, which is only
- * this lane's unit when systemd created the scope: directly under the root or
- * directly in a slice. A scope nested in another unit's delegated subtree,
- * such as a container's own `init.scope`, shares its name with a different
- * unit, so it keeps Freeze and Thaw, which address its directory, and gets no
- * Stop.
+ * this lane's unit when systemd created the scope: every directory between the
+ * root and the scope is a slice. Any other directory on the way, such as a
+ * container's `libpod-<id>.scope` or a nested `user@0.service`, belongs to a
+ * unit whose subtree a different systemd manages, and there the bare name can
+ * name a different unit. Such a scope keeps Freeze and Thaw, which address its
+ * directory, and gets no Stop.
  */
 export function laneTarget(lane: Lane, c: Config): LaneTarget | null {
   const parts = lane.cgroup.split("/").filter(Boolean);
   const scope = parts.at(-1);
   if (lane.cgroup.startsWith("/") || parts.includes("..")) return null;
   if (scope === undefined || !scope.endsWith(".scope")) return null;
-  const parent = parts.at(-2);
-  const unit = parent === undefined || parent.endsWith(".slice");
+  const unit = parts.slice(0, -1).every((part) => part.endsWith(".slice"));
   return {
     laneId: lane.id,
     mainPid: lane.mainPid,

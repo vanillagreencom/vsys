@@ -112,8 +112,19 @@ test("Stop is offered only for a scope systemd created as a unit", () => {
   const rows: [string, LaneAction[]][] = [
     ["a.scope", ["Freeze", "Thaw", "Stop"]],
     ["agents.slice/a.scope", ["Freeze", "Thaw", "Stop"]],
+    ["app.slice/app-x.slice/b.scope", ["Freeze", "Thaw", "Stop"]],
     ["user.slice/libpod-abc.scope/init.scope", ["Freeze", "Thaw"]],
     ["user.slice/libpod-abc.scope/container/init.scope", ["Freeze", "Thaw"]],
+    // The container's own systemd makes slices of its own below the scope, so
+    // a slice parent alone does not make the scope a host unit.
+    [
+      "user.slice/libpod-abc.scope/container/system.slice/a.scope",
+      ["Freeze", "Thaw"],
+    ],
+    [
+      "user.slice/libpod-abc.scope/container/user.slice/user-0.slice/user@0.service/app.slice/app-x.scope",
+      ["Freeze", "Thaw"],
+    ],
   ];
   for (const [cgroup, actions] of rows)
     expect({
