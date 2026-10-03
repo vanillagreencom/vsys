@@ -583,14 +583,15 @@ function assignmentKey(match: RegExpExecArray): string {
 }
 
 /**
- * How many lines the assignment starting at `lines[start]` occupies. More
+ * How many lines the assignment starting at `lines[start]` occupies, used
+ * only to skip past a key `applyConfigLineEdits` is not editing: a wrong
+ * count there just copies that many lines verbatim, changing nothing. More
  * than one only for a hand-written array split across lines: this project's
  * own writer always emits one line. This tracks only a single-character
  * quote toggle, which an embedded, unescaped quote inside a TOML
- * triple-quoted string desyncs from where the value actually ends; a wrong
- * count from that, or from any other form this scan misreads, is caught
- * after the fact by `verifyLineIdentity` and `verifyOnlyNamedKeysChanged`,
- * never by guessing here.
+ * triple-quoted string desyncs from where the value actually ends; a key
+ * `applyConfigLineEdits` does edit never trusts this count for that reason,
+ * verifying with `isSingleLineValue` instead.
  */
 function assignmentLineCount(lines: readonly string[], start: number): number {
   let depth = 0;
@@ -617,6 +618,29 @@ function assignmentLineCount(lines: readonly string[], start: number): number {
 }
 
 /**
+ * Whether `line`, read alone as a standalone TOML document, already gives
+ * `key` the exact value `currentValue` holds for it in the real file's own
+ * full parse: proof this one line holds the key's whole value, with nothing
+ * carried over from an earlier or later line. A value that takes more than
+ * this line — a multi-line array, a string split across lines, a
+ * triple-quoted string opened here — parses differently alone, or not at
+ * all, and this reports false rather than guess from brackets or quotes.
+ */
+function isSingleLineValue(
+  line: string,
+  key: string,
+  currentValue: unknown,
+): boolean {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = Bun.TOML.parse(line) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  return Object.hasOwn(parsed, key) && sameTomlValue(parsed[key], currentValue);
+}
+
+/**
  * Rewrites only the lines `topEdits` and `keyEdits` name, leaving every
  * other line, comments and blank lines included, exactly as `currentBody`
  * has it. A `null` edit value removes that key's line; any other string
@@ -624,12 +648,18 @@ function assignmentLineCount(lines: readonly string[], start: number): number {
  * top-level line lands at the end of the top-level block, before `[keys]`
  * when the file has one. A new `[keys]` line lands at the end of that table,
  * which this function creates, after a blank line, when `keyEdits` needs one
- * and `currentBody` has none.
+ * and `currentBody` has none. Refuses, throwing, a key or keybinding that
+ * `topEdits`/`keyEdits` names whose current line is not `isSingleLineValue`
+ * on its own: vsys's own writer always emits one line per setting, so only a
+ * hand-formatted value reaches this refusal, and changing it by hand is
+ * already how the reader put it there.
  */
 function applyConfigLineEdits(
   currentBody: string,
   topEdits: ReadonlyMap<string, string | null>,
   keyEdits: ReadonlyMap<string, string | null>,
+  currentTop: Readonly<Record<string, unknown>>,
+  currentKeysTable: Readonly<Record<string, unknown>>,
 ): string {
   const lines = currentBody.length ? currentBody.split("\n") : [];
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
@@ -658,14 +688,20 @@ function applyConfigLineEdits(
     if (assignment) {
       const pending = inKeys ? remainingKeys : remainingTop;
       const key = assignmentKey(assignment);
-      const count = assignmentLineCount(lines, i);
       if (pending.has(key)) {
+        const currentValue = (inKeys ? currentKeysTable : currentTop)[key];
+        if (!isSingleLineValue(line, key, currentValue))
+          throw new Error(
+            `Settings save cannot edit ${key}: its line in config.toml holds more than this one line's value. Edit ${key} by hand in config.toml to one line, then Settings can save it again.`,
+          );
         const replacement = pending.get(key) ?? null;
         if (replacement !== null) out.push(replacement);
         pending.delete(key);
-      } else {
-        for (let k = 0; k < count; k++) out.push(lines[i + k] ?? "");
+        i += 1;
+        continue;
       }
+      const count = assignmentLineCount(lines, i);
+      for (let k = 0; k < count; k++) out.push(lines[i + k] ?? "");
       i += count;
       continue;
     }
@@ -711,127 +747,15 @@ function sameTomlValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
-/** True for a line TOML gives no value of its own: blank, or a comment. */
-function isCommentOrBlank(line: string): boolean {
-  const trimmed = line.trim();
-  return trimmed.length === 0 || trimmed.startsWith("#");
-}
-
-/**
- * The classic line-level LCS alignment between `oldLines` and `newLines`:
- * the lines only `oldLines` has and the lines only `newLines` has, each in
- * the order its own side holds them. Every other line is common to both, in
- * the same relative order on each side, as a longest-common-subsequence
- * always preserves.
- */
-function lineDiff(
-  oldLines: readonly string[],
-  newLines: readonly string[],
-): { deleted: string[]; inserted: string[] } {
-  const n = oldLines.length;
-  const m = newLines.length;
-  const lengths: number[][] = Array.from({ length: n + 1 }, () =>
-    new Array<number>(m + 1).fill(0),
-  );
-  for (let i = n - 1; i >= 0; i--) {
-    const row = lengths[i];
-    const nextRow = lengths[i + 1];
-    if (!row || !nextRow) continue;
-    for (let j = m - 1; j >= 0; j--) {
-      row[j] =
-        oldLines[i] === newLines[j]
-          ? (nextRow[j + 1] ?? 0) + 1
-          : Math.max(nextRow[j] ?? 0, row[j + 1] ?? 0);
-    }
-  }
-  const deleted: string[] = [];
-  const inserted: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    const oldLine = oldLines[i];
-    const newLine = newLines[j];
-    if (oldLine === undefined || newLine === undefined) break;
-    if (oldLine === newLine) {
-      i++;
-      j++;
-      continue;
-    }
-    const keepOld = (lengths[i + 1]?.[j] ?? 0) >= (lengths[i]?.[j + 1] ?? 0);
-    if (keepOld) {
-      deleted.push(oldLine);
-      i++;
-    } else {
-      inserted.push(newLine);
-      j++;
-    }
-  }
-  while (i < n) {
-    const oldLine = oldLines[i++];
-    if (oldLine !== undefined) deleted.push(oldLine);
-  }
-  while (j < m) {
-    const newLine = newLines[j++];
-    if (newLine !== undefined) inserted.push(newLine);
-  }
-  return { deleted, inserted };
-}
-
-/**
- * Refuses a patch that drops a comment or blank line, or adds a line
- * `edit`'s own replacements do not name: the general proof, independent of
- * why `applyConfigLineEdits` miscounted a span, that every line of
- * `currentBody` carrying no TOML value of its own survives into `configText`
- * unchanged and in order, and that nothing new lands beyond the lines
- * `topEdits` and `keyEdits` computed, the `[keys]` header and a separating
- * blank line this function itself may open for them included. A line that
- * does carry a value, lost from an untouched key, is `verifyOnlyNamedKeysChanged`'s
- * proof instead: a parsed-value diff sees that loss without needing to know
- * which raw line held it.
- */
-function verifyLineIdentity(
-  currentBody: string,
-  configText: string,
-  topEdits: ReadonlyMap<string, string | null>,
-  keyEdits: ReadonlyMap<string, string | null>,
-): void {
-  const splitLines = (body: string): string[] => {
-    const lines = body.length ? body.split("\n") : [];
-    if (lines.length && lines[lines.length - 1] === "") lines.pop();
-    return lines;
-  };
-  const { deleted, inserted } = lineDiff(
-    splitLines(currentBody),
-    splitLines(configText),
-  );
-  const lost = deleted.find(isCommentOrBlank);
-  if (lost !== undefined)
-    throw new Error(
-      `Settings save would drop ${JSON.stringify(lost)}, which this save never touched: refusing to write a config.toml that loses content it did not mean to change`,
-    );
-  const expected = new Map<string, number>();
-  for (const line of [...topEdits.values(), ...keyEdits.values()]) {
-    if (line !== null) expected.set(line, (expected.get(line) ?? 0) + 1);
-  }
-  for (const line of inserted) {
-    if (line === "" || line === "[keys]") continue;
-    const remaining = expected.get(line) ?? 0;
-    if (remaining <= 0)
-      throw new Error(
-        `Settings save would add ${JSON.stringify(line)}, which this save never meant to write: refusing to write a config.toml with content it did not mean to add`,
-      );
-    expected.set(line, remaining - 1);
-  }
-}
-
 /**
  * Refuses a patch whose raw TOML, reparsed, differs anywhere from
  * `currentBody`'s own parse except at the keys and keybindings `edit`
- * names: the one proof, independent of which raw line carried it, that a
- * setting or keybinding `applyConfigLineEdits` never meant to touch keeps
- * its value. `verifyLineIdentity` is the complementary proof for a line
- * carrying no value of its own, a comment or a blank line, which a
- * parsed-value diff cannot see vanish.
+ * names: the backstop proof, independent of which raw line carried it, that
+ * a setting or keybinding `applyConfigLineEdits` never meant to touch keeps
+ * its value. It compares values, never raw lines, so it never refuses a
+ * comment or a blank line that happens to sit inside the old or new text of
+ * a key this save does mean to change; `isSingleLineValue` is what keeps
+ * `applyConfigLineEdits` from touching such a line in the first place.
  */
 function verifyOnlyNamedKeysChanged(
   currentBody: string,
@@ -922,10 +846,13 @@ function verifyPatchedBody(
  * `edit` names get a line changed, added or removed, so an untouched
  * setting keeps the file's current value, its line and any comment beside
  * it, whether or not that value matches `base`'s default. Refuses, throwing,
- * rather than returning a body that would not load back the way it was
- * meant to: whether from a hand edit this patch's own new value combines
- * into an invalid config, or a line `applyConfigLineEdits` moved, lost or
- * altered that `edit` never named as changed.
+ * a changed key or keybinding whose line in `currentBody` is not
+ * `isSingleLineValue`, rather than guess at a multi-line or triple-quoted
+ * value's real span: vsys's own writer always emits one line, so this names
+ * only a value the reader hand-formatted across more than one. Also refuses,
+ * throwing, rather than returning a body that would not load back the way it
+ * was meant to, when a hand edit this patch's own new value combines into an
+ * invalid config.
  */
 export function patchConfigBody(
   currentBody: string,
@@ -949,8 +876,18 @@ export function patchConfigBody(
         : `${action} = ${JSON.stringify(next.keys[action])}`,
     ]),
   );
-  const configText = applyConfigLineEdits(currentBody, topEdits, keyEdits);
-  verifyLineIdentity(currentBody, configText, topEdits, keyEdits);
+  const currentParsed = Bun.TOML.parse(currentBody) as Record<string, unknown>;
+  const currentKeysTable = (currentParsed.keys ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const configText = applyConfigLineEdits(
+    currentBody,
+    topEdits,
+    keyEdits,
+    currentParsed,
+    currentKeysTable,
+  );
   verifyOnlyNamedKeysChanged(currentBody, configText, edit);
   verifyPatchedBody(configText, next, base, edit);
   return configText;
