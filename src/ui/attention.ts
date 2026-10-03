@@ -354,7 +354,7 @@ function copy(
       // whole card's filesystems.
       const groupPhrase = "each of these filesystems";
       const namedClause = (text: string, names: string[]): string =>
-        text.replace(groupPhrase, list(names));
+        text.replace(groupPhrase, () => list(names));
       // [singular, plural] pairs; `p()` below picks between them once rather
       // than at each branch. `checkUnread` is read with `unread`'s own count,
       // scoped to the filesystems that stayed unread; `knownRemedy` with

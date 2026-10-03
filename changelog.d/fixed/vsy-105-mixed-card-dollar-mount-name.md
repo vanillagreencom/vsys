@@ -1,0 +1,1 @@
+- A mixed damaged-files card's next step no longer corrupts a mount name that contains a `$` sequence (e.g. `$&`, `$$`).

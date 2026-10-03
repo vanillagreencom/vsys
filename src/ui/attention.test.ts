@@ -1599,6 +1599,122 @@ test("a damaged-files card's mixed next step names each clause's own mounts, not
   expect(moreKnownCard?.next).not.toContain("each of these filesystems");
 });
 
+test("a damaged-files card's mixed next step keeps a `$`-bearing mount name literal", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // /mnt/a$& is unread (its scrub aborted with no report of its own);
+  // /mnt/b$$ has a finished report naming its damage. Both mount names carry
+  // a sequence (`$&`, `$$`) `String.prototype.replace` treats specially in a
+  // plain-string replacement argument; the mixed clause must substitute each
+  // one literally rather than letting it rewrite the surrounding sentence.
+  s.storage.volumes = [
+    volumeSnapshot("/mnt/a$&", {
+      fsid: "a",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    volumeSnapshot("/mnt/b$$", {
+      fsid: "b",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/a.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "a",
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+    {
+      path: "/run/btrfs-scrub/b.result",
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid: "b",
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [{ logical: 1, paths: ["/r/target/b"] }],
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    a: { at: s.time - 3 * 86400000, damaged: true },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  // `$&` in a plain-string replacement would insert the matched text ("each
+  // of these filesystems") in its place; `$$` would collapse to one `$`.
+  // Neither corruption belongs in the mount name the reader sees.
+  expect(card?.next).toContain("run a check on /mnt/a$& to find out");
+  expect(card?.next).toContain("open /mnt/b$$, then restore");
+  expect(card?.next).not.toContain("each of these filesystems");
+});
+
+test("a damaged-files card's mixed next step reaches the known-side unnamed-blocks remedy too", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // /c is unread (its scrub aborted with no report). /a has a finished,
+  // readable report that names blocks but no file — the `!files && unnamed`
+  // branch of `knownRemedy`, whose plural form no other mixed-card test
+  // exercises.
+  s.storage.volumes = [
+    volumeSnapshot("/a", {
+      fsid: "a",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    volumeSnapshot("/c", {
+      fsid: "c",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/a.result",
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid: "a",
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [],
+    },
+    {
+      path: "/run/btrfs-scrub/c.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "c",
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    c: { at: s.time - 3 * 86400000, damaged: true },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(card?.next).toContain(
+    "run a check on /c to find out which files hold the damage",
+  );
+  expect(card?.next).toContain(
+    "read the check report for /a; restore what the unnamed blocks held from a backup or a snapshot.",
+  );
+  expect(card?.next).not.toContain("each of these filesystems");
+});
+
 test("a damaged-files card's block total discloses a filesystem whose own block count is unread, independent of its files", () => {
   const c = defaults();
   // A finished, readable report whose own files are always named, so `files`
