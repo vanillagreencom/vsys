@@ -529,14 +529,14 @@ test("patchConfigBody refuses a write that would combine into a config the loade
   ).toThrow("Keybindings must be unique");
 });
 
-test("patchConfigBody refuses rather than silently drops an untouched line beside a triple-quoted string", () => {
+test("patchConfigBody refuses rather than silently drops a value beside a triple-quoted string", () => {
   const base = defaults();
-  // assignmentLineCount gives up the moment it sees a triple-quote
-  // delimiter open, rather than tracking a single-character quote toggle
-  // that an embedded, unescaped quote inside the string would desync from
-  // where the excludeArgv assignment actually ends — which would otherwise
-  // swallow the untouched sort line below it. This never writes a
-  // shortened file; it refuses before building one at all.
+  // assignmentLineCount tracks only a single-character quote toggle, which
+  // an embedded, unescaped quote inside this triple-quoted string desyncs
+  // from where the excludeArgv assignment actually ends, so it over-consumes
+  // the untouched sort line below it. verifyOnlyNamedKeysChanged's
+  // parsed-value diff catches sort's loss without needing to know which raw
+  // line held it: this never writes a shortened file.
   const body = 'excludeArgv = [\n  """foo " bar""",\n]\nsort = "rss"\n';
   expect(Bun.TOML.parse(body)).toEqual({
     excludeArgv: ['foo " bar'],
@@ -547,16 +547,16 @@ test("patchConfigBody refuses rather than silently drops an untouched line besid
       changedKeys: ["excludeArgv"],
       changedKeyActions: [],
     }),
-  ).toThrow("excludeArgv holds a triple-quoted string");
+  ).toThrow("sort, which this save never touched");
 });
 
 test("patchConfigBody refuses rather than silently drops a comment beside a triple-quoted string", () => {
   const base = defaults();
-  // Bun.TOML.parse carries no comments, so the round-trip value comparison
-  // alone cannot see this one vanish: with no other key in the file for it
-  // to catch by coincidence, only refusing before the line editor guesses
-  // past the triple-quote delimiter keeps the comment from being lost with
-  // no error when excludeArgv itself is the edited key.
+  // Bun.TOML.parse carries no comments, so the parsed-value diff alone
+  // cannot see this one vanish: verifyLineIdentity's raw line-level diff
+  // is what catches excludeArgv's over-consumed span swallowing the
+  // comment below it, with no other key in the file for the value diff to
+  // catch it by coincidence.
   const body =
     'excludeArgv = [\n  """foo " bar""",\n]\n# Keep this local exclusion note\n';
   expect(() =>
@@ -564,13 +564,15 @@ test("patchConfigBody refuses rather than silently drops a comment beside a trip
       changedKeys: ["excludeArgv"],
       changedKeyActions: [],
     }),
-  ).toThrow("excludeArgv holds a triple-quoted string");
-  // The same refusal covers an unrelated key too: this save still cannot
-  // trust where excludeArgv's own span ends, whether or not it touches it.
-  expect(() =>
-    patchConfigBody(body, { ...base, refreshMs: 2000 }, base, {
-      changedKeys: ["refreshMs"],
-      changedKeyActions: [],
-    }),
-  ).toThrow("excludeArgv holds a triple-quoted string");
+  ).toThrow(
+    '"# Keep this local exclusion note", which this save never touched',
+  );
+  // An unrelated key leaves excludeArgv's own line untouched (the line
+  // editor only ever copies it verbatim when it is not the edited key), so
+  // nothing is actually lost here and this save keeps the comment.
+  const kept = patchConfigBody(body, { ...base, refreshMs: 2000 }, base, {
+    changedKeys: ["refreshMs"],
+    changedKeyActions: [],
+  });
+  expect(kept).toBe(`${body}refreshMs = 2000\n`);
 });
