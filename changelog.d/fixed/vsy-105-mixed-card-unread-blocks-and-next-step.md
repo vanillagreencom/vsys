@@ -1,0 +1,1 @@
+- The damaged-files card now says when no filesystem's block count could be read, and its next step checks an unread filesystem before pointing to a backup for one with a report.

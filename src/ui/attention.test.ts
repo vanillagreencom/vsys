@@ -1443,6 +1443,408 @@ test("a damage card known only from a remembered check never says the damage is 
   expect(said(gone)).toContain("no longer available");
 });
 
+test("a damaged-files card keeps a readable filesystem's own count beside one that is unread", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // /a has a live, complete report naming one damaged file.
+  s.storage.volumes = [
+    volumeSnapshot("/a", {
+      fsid: "a",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    // /b is damaged only through a remembered finished check: its current
+    // report stopped early and names no address data of its own.
+    volumeSnapshot("/b", {
+      fsid: "b",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/a.result",
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid: "a",
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [{ logical: 1, paths: ["/r/target/a"] }],
+    },
+    {
+      path: "/run/btrfs-scrub/b.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "b",
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    b: { at: s.time - 3 * 86400000, damaged: true },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  // /a's own file is still named and counted, not collapsed to unknown
+  // because /b's report cannot say anything about its own damage.
+  expect(card?.title).toBe("Damage on /a, /b: 1 possibly damaged file");
+  expect(said(card)).toContain("a listed file may be sound");
+  expect(said(card)).toContain(
+    "1 filesystem here has no report naming its damage, so the damage there is not in this count.",
+  );
+  // The block total is /a's own count alone, and says so: /b's block count
+  // is just as unread as the rest of its damage, never folded in as zero.
+  expect(said(card)).toContain(
+    "The last check could not repair 1 block, not counting 1 filesystem whose block count is unread.",
+  );
+  // /a's card never reads as if /b had no damage at all.
+  expect(said(card)).not.toContain("no longer available");
+  // /b has no report of its own, so the next step sends the reader to check
+  // it first, before telling them to restore /a's own named damage as if
+  // every filesystem in the card already had a report in hand. Each clause
+  // names its own mount rather than a generic "that filesystem", so the
+  // reader can tell which instruction is theirs to act on for which mount.
+  expect(card?.next).toContain(
+    "run a check on /b to find out which files hold the damage",
+  );
+  expect(card?.next).toContain("open /a, then restore");
+  expect(card?.next).not.toContain("each of these filesystems");
+  expect(card?.next).not.toContain("that filesystem");
+  // The first affected filesystem still lands the card, VSY-98's precedent.
+  expect(card?.target).toEqual({ kind: "path", path: "a" });
+});
+
+test("a damaged-files card's mixed next step names each clause's own mounts, not the card's total", () => {
+  const c = defaults();
+  const unreadFs = (s: Snapshot, fsid: string, mount: string) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    });
+    s.storage.lastFinishedScrub = {
+      ...s.storage.lastFinishedScrub,
+      [fsid]: { at: s.time - 3 * 86400000, damaged: true },
+    };
+  };
+  const knownFs = (s: Snapshot, fsid: string, mount: string) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [{ logical: 1, paths: [`/r/target/${fsid}`] }],
+    });
+  };
+  // Two unread filesystems beside one known one: the check-first clause must
+  // name its own two mounts, the remedy clause its own one mount, neither
+  // reading off the card's total of three or falling back to the generic
+  // "that filesystem"/"each of these filesystems" phrasing.
+  const moreUnread = emptySnapshot();
+  knownFs(moreUnread, "a", "/a");
+  unreadFs(moreUnread, "b", "/b");
+  unreadFs(moreUnread, "c", "/c");
+  const moreUnreadCard = attention(moreUnread, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(moreUnreadCard?.next).toContain(
+    "run a check on /b, /c to find out which files hold the damage",
+  );
+  expect(moreUnreadCard?.next).toContain("open /a, then restore");
+  expect(moreUnreadCard?.next).not.toContain("that filesystem");
+  expect(moreUnreadCard?.next).not.toContain("each of these filesystems");
+  // The reverse asymmetry: one unread filesystem beside two known ones.
+  const moreKnown = emptySnapshot();
+  knownFs(moreKnown, "a", "/a");
+  knownFs(moreKnown, "b", "/b");
+  unreadFs(moreKnown, "c", "/c");
+  const moreKnownCard = attention(moreKnown, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(moreKnownCard?.next).toContain(
+    "run a check on /c to find out which files hold the damage",
+  );
+  expect(moreKnownCard?.next).toContain("open /a, /b, then restore");
+  expect(moreKnownCard?.next).not.toContain("that filesystem");
+  expect(moreKnownCard?.next).not.toContain("each of these filesystems");
+});
+
+test("a damaged-files card's mixed next step keeps a `$`-bearing mount name literal", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // /mnt/a$& is unread (its scrub aborted with no report of its own);
+  // /mnt/b$$ has a finished report naming its damage. Both mount names carry
+  // a sequence (`$&`, `$$`) `String.prototype.replace` treats specially in a
+  // plain-string replacement argument; the mixed clause must substitute each
+  // one literally rather than letting it rewrite the surrounding sentence.
+  s.storage.volumes = [
+    volumeSnapshot("/mnt/a$&", {
+      fsid: "a",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    volumeSnapshot("/mnt/b$$", {
+      fsid: "b",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/a.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "a",
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+    {
+      path: "/run/btrfs-scrub/b.result",
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid: "b",
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [{ logical: 1, paths: ["/r/target/b"] }],
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    a: { at: s.time - 3 * 86400000, damaged: true },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  // `$&` in a plain-string replacement would insert the matched text ("each
+  // of these filesystems") in its place; `$$` would collapse to one `$`.
+  // Neither corruption belongs in the mount name the reader sees.
+  expect(card?.next).toContain("run a check on /mnt/a$& to find out");
+  expect(card?.next).toContain("open /mnt/b$$, then restore");
+  expect(card?.next).not.toContain("each of these filesystems");
+});
+
+test("a damaged-files card's mixed next step reaches the known-side unnamed-blocks remedy too", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // /c is unread (its scrub aborted with no report). /a has a finished,
+  // readable report that names blocks but no file — the `!files && unnamed`
+  // branch of `knownRemedy`, whose plural form no other mixed-card test
+  // exercises.
+  s.storage.volumes = [
+    volumeSnapshot("/a", {
+      fsid: "a",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    volumeSnapshot("/c", {
+      fsid: "c",
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/run/btrfs-scrub/a.result",
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid: "a",
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable: 1,
+      addresses: [],
+    },
+    {
+      path: "/run/btrfs-scrub/c.result",
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid: "c",
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    },
+  ];
+  s.storage.lastFinishedScrub = {
+    c: { at: s.time - 3 * 86400000, damaged: true },
+  };
+  const card = attention(s, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(card?.next).toContain(
+    "run a check on /c to find out which files hold the damage",
+  );
+  expect(card?.next).toContain(
+    "read the check report for /a; restore what the unnamed blocks held from a backup or a snapshot.",
+  );
+  expect(card?.next).not.toContain("each of these filesystems");
+});
+
+test("a damaged-files card's block total discloses a filesystem whose own block count is unread, independent of its files", () => {
+  const c = defaults();
+  // A finished, readable report whose own files are always named, so `files`
+  // is known for every row here; only `blocks` (the "Uncorrectable:" field)
+  // varies, to isolate the block-only disclosure from the files-based one.
+  const row = (fsid: string, mount: string, blocks: number | null) => ({
+    volume: volumeSnapshot(mount, {
+      fsid,
+      errors: { "1/corruption_errs": 1 },
+      countersAvailable: true,
+    }),
+    scrub: {
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: 500,
+      status: "finished",
+      uncorrectable: blocks,
+      addresses: [{ logical: 1, paths: [`/r/target/${fsid}`] }],
+    },
+  });
+  const build = (rows: ReturnType<typeof row>[]) => {
+    const s = emptySnapshot();
+    s.storage.volumes = rows.map((r) => r.volume);
+    s.storage.scrubs = rows.map((r) => r.scrub);
+    return attention(s, c, { basePath: base }).find(
+      (i) => i.id === "damaged-files",
+    );
+  };
+  // /b's own file is still named and counted (`files` known for both), so
+  // the files-based unread note stays silent; only /b's block count could
+  // not be read, which must still be disclosed rather than dropped as zero.
+  const mixed = build([row("a", "/a", 9), row("b", "/b", null)]);
+  expect(said(mixed)).not.toContain("no report naming its damage");
+  expect(said(mixed)).toContain(
+    "The last check could not repair 9 blocks, not counting 1 filesystem whose block count is unread.",
+  );
+  // Every filesystem's own block count is unread: the card still discloses
+  // that, rather than stating a total of zero blocks repaired or, worse,
+  // staying silent about blocks entirely.
+  const allUnknown = build([row("a", "/a", null), row("b", "/b", null)]);
+  expect(said(allUnknown)).not.toContain("The last check could not repair");
+  expect(said(allUnknown)).toContain(
+    "No filesystem here has a readable block count.",
+  );
+});
+
+test("a damaged-files card's unread note reaches the unnamed-only and free-space branches too", () => {
+  const c = defaults();
+  const unread = (s: Snapshot, fsid: string, mount: string) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "scrub status:\naborted",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 500,
+      status: "aborted",
+      uncorrectable: null,
+      addresses: null,
+    });
+    s.storage.lastFinishedScrub = {
+      ...s.storage.lastFinishedScrub,
+      [fsid]: { at: s.time - 3 * 86400000, damaged: true },
+    };
+  };
+  const known = (
+    s: Snapshot,
+    fsid: string,
+    mount: string,
+    uncorrectable: number | null,
+  ) => {
+    s.storage.volumes.push(
+      volumeSnapshot(mount, {
+        fsid,
+        errors: { "1/corruption_errs": 1 },
+        countersAvailable: true,
+      }),
+    );
+    s.storage.scrubs.push({
+      path: `/run/btrfs-scrub/${fsid}.result`,
+      text: "Error summary: csum=1",
+      problem: true,
+      readable: true,
+      fsid,
+      startedAt: s.time - 1000,
+      status: "finished",
+      uncorrectable,
+      addresses: [],
+    });
+  };
+  // The readable filesystem names blocks but no file: the unnamed-only
+  // branch, beside a filesystem whose damage is only remembered.
+  const unnamedOnly = emptySnapshot();
+  known(unnamedOnly, "a", "/a", 1);
+  unread(unnamedOnly, "b", "/b");
+  const unnamedCard = attention(unnamedOnly, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(said(unnamedCard)).toContain(
+    "The report could not name a file for 1 damaged block",
+  );
+  expect(said(unnamedCard)).toContain(
+    "1 filesystem here has no report naming its damage, so the damage there is not in this count.",
+  );
+  // The readable filesystem names neither block nor file: the free-space
+  // branch, beside the same kind of remembered-only filesystem.
+  const freeSpace = emptySnapshot();
+  known(freeSpace, "a", "/a", null);
+  unread(freeSpace, "b", "/b");
+  const freeCard = attention(freeSpace, c, { basePath: base }).find(
+    (i) => i.id === "damaged-files",
+  );
+  expect(said(freeCard)).toContain(
+    "The report named no file, so the damage is in free space or in a file already deleted.",
+  );
+  expect(said(freeCard)).toContain(
+    "1 filesystem here has no report naming its damage, so the damage there is not in this count.",
+  );
+});
+
 test("a damaged-files card's next step matches the ways text's singular/plural framing across every branch", () => {
   // One row per `next` branch in copy()'s damaged-files case: the report is
   // gone, the report named neither block nor file, the report named blocks

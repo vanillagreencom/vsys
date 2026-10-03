@@ -325,7 +325,7 @@ test("the cause order table is the ladder's own tie order", () => {
   expect(danger).toEqual([...danger].sort((a, b) => a - b));
 });
 
-test("the damage card counts blocks across every filesystem it names", () => {
+test("the damage card keeps each named filesystem's own block count apart", () => {
   const c = defaults();
   const damaged = (fsid: string, mount: string, blocks: number | null) => ({
     volume: volumeSnapshot(mount, {
@@ -351,18 +351,23 @@ test("the damage card counts blocks across every filesystem it names", () => {
     s.storage.scrubs = rows.map((row) => row.scrub);
     return causes(s, c).find((cause) => cause.id === "damaged-files");
   };
-  // Two filesystems, both counted, so the card states their total.
+  // Two filesystems, both counted: each keeps its own figure, in `paths`
+  // order.
   expect(
-    build([damaged("a", "/a", 26), damaged("b", "/b", 9)])?.values.blocks,
-  ).toBe(35);
-  // One report carried no count, so the total is unknown rather than a sum
-  // that quietly leaves that filesystem out.
+    build([damaged("a", "/a", 26), damaged("b", "/b", 9)])?.damage.map(
+      (d) => d.blocks,
+    ),
+  ).toEqual([26, 9]);
+  // One report carried no count. That filesystem's own figure is unknown,
+  // but the other's stays a number rather than being nulled along with it.
   expect(
-    build([damaged("a", "/a", 26), damaged("b", "/b", null)])?.values.blocks,
-  ).toBeNull();
+    build([damaged("a", "/a", 26), damaged("b", "/b", null)])?.damage.map(
+      (d) => d.blocks,
+    ),
+  ).toEqual([26, null]);
 });
 
-test("the damage card's file and unnamed counts are unknown when any filesystem's damage is only remembered", () => {
+test("the damage card's file and unnamed counts stay per filesystem when one's damage is only remembered", () => {
   const c = defaults();
   const s = emptySnapshot();
   s.storage.volumes = [
@@ -387,12 +392,12 @@ test("the damage card's file and unnamed counts are unknown when any filesystem'
   ];
   const named = () =>
     causes(s, c).find((cause) => cause.id === "damaged-files");
-  expect(named()?.values.files).toBe(1);
-  expect(named()?.values.unnamed).toBe(0);
+  expect(named()?.damage).toEqual([{ files: 1, unnamed: 0, blocks: 1 }]);
   // A second filesystem whose current report stopped early. Its damage is
   // known only from a remembered finished check, with no address data at
-  // all, so the card's totals must not silently read that filesystem's share
-  // as zero files and zero unnamed blocks.
+  // all, so its own entry reads unknown rather than reusing the first
+  // filesystem's known figure, or reading as zero files and zero unnamed
+  // blocks.
   s.storage.volumes.push(
     volumeSnapshot("/b", {
       fsid: "b",
@@ -412,8 +417,10 @@ test("the damage card's file and unnamed counts are unknown when any filesystem'
     addresses: null,
   });
   s.storage.lastFinishedScrub = { b: { at: 100, damaged: true } };
-  expect(named()?.values.files).toBeNull();
-  expect(named()?.values.unnamed).toBeNull();
+  expect(named()?.damage).toEqual([
+    { files: 1, unnamed: 0, blocks: 1 },
+    { files: null, unnamed: null, blocks: null },
+  ]);
 });
 
 test("every integrity state but healthy and checking reaches the verdict", () => {

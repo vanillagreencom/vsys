@@ -306,56 +306,107 @@ function copy(
     case "damaged-files": {
       // A remembered damaged check carries no address data at all: the
       // current report that would have named files is gone or aborted, so
-      // this is unread, not a report that named none.
-      const filesKnown = v.files !== null && v.files !== undefined;
-      const files = v.files ?? 0;
-      const unnamed = v.unnamed ?? 0;
-      // A block count vsys did not read is left out rather than shown as zero.
+      // that filesystem's own figure here is unread, not a report that named
+      // none. Summing only the filesystems that do have a figure means one
+      // unread filesystem never erases another, readable filesystem's own
+      // known count the way one shared all-or-nothing total once did.
+      const known = cause.damage.filter((d) => d.files !== null);
+      const unread = cause.damage.length - known.length;
+      const allUnread = known.length === 0;
+      const files = known.reduce((sum, d) => sum + (d.files ?? 0), 0);
+      const unnamed = known.reduce((sum, d) => sum + (d.unnamed ?? 0), 0);
+      // A filesystem's own block count is null independently of its files
+      // count: a finished, readable report can still carry no uncorrectable
+      // figure. Summing only the filesystems that do have one, with no word
+      // about the rest, would fold their unread share in as if it were zero;
+      // naming how many are missing keeps the stated total honest instead.
+      const blocksKnown = cause.damage.filter((d) => d.blocks !== null);
+      const blocksUnread = cause.damage.length - blocksKnown.length;
+      const blocks = blocksKnown.length
+        ? blocksKnown.reduce((sum, d) => sum + (d.blocks ?? 0), 0)
+        : null;
+      // `allUnread`'s own sentence already says the report is gone, which
+      // covers blocks too; everywhere else, no filesystem's own block count
+      // being known is itself a reading this card must not pass over, same
+      // as a partial one.
       const repaired =
-        v.blocks === null || v.blocks === undefined
-          ? ""
-          : `The last check could not repair ${count(v.blocks, "block")}. `;
-      // [singular, plural] for next's one branch; `p()` below picks between
-      // them once rather than at each branch.
-      const nextStep: [string, string] = !filesKnown
-        ? [
-            "Open Storage and run a check on that filesystem to find out which files hold the damage.",
-            "Open Storage and run a check on each of these filesystems to find out which files hold the damage.",
-          ]
-        : !files && !unnamed
+        blocks !== null
+          ? `The last check could not repair ${count(blocks, "block")}${blocksUnread ? `, not counting ${count(blocksUnread, "filesystem")} whose block count is unread` : ""}. `
+          : allUnread
+            ? ""
+            : "No filesystem here has a readable block count. ";
+      // Names how many of the aggregated filesystems have no report of their
+      // own, so a mixed card never reads a readable filesystem's own total as
+      // if it already covered one that stayed unread.
+      const unreadNote = unread
+        ? ` ${count(unread, "filesystem")} here ${p(unread, "has", "have")} no report naming its damage, so the damage there is not in this count.`
+        : "";
+      // `cause.paths` and `cause.damage` are built from the same
+      // `damaged.map(...)` call and so share one index in `paths` order (see
+      // `Cause.damage`'s own doc comment). A mixed card's two instructions
+      // each address a different subset of that one list, so the reader needs
+      // each subset's own mounts named, not just its count.
+      const isUnread = (i: number): boolean => cause.damage[i]?.files === null;
+      const unreadMounts = cause.paths.filter((_, i) => isUnread(i));
+      const knownMounts = cause.paths.filter((_, i) => !isUnread(i));
+      // The plural clause's own group phrase, substituted with the specific
+      // mounts it covers when a mixed card names a subset instead of the
+      // whole card's filesystems.
+      const groupPhrase = "each of these filesystems";
+      const namedClause = (text: string, names: string[]): string =>
+        text.replace(groupPhrase, () => list(names));
+      // [singular, plural] pairs; `p()` below picks between them once rather
+      // than at each branch. `checkUnread` is read with `unread`'s own count,
+      // scoped to the filesystems that stayed unread; `knownRemedy` with
+      // `known.length`'s, scoped to the ones a report speaks for.
+      const checkUnread: [string, string] = [
+        "Open Storage and run a check on that filesystem to find out which files hold the damage.",
+        `Open Storage and run a check on ${groupPhrase} to find out which files hold the damage.`,
+      ];
+      const knownRemedy: [string, string] =
+        !files && !unnamed
           ? [
               "Open Storage and check the filesystem again; an address with no file clears on the next check.",
-              "Open Storage and check each of these filesystems again; an address with no file clears on the next check.",
+              `Open Storage and check ${groupPhrase} again; an address with no file clears on the next check.`,
             ]
           : !files
             ? [
                 "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot.",
-                "Open Storage and read the check report for each of these filesystems; restore what the unnamed blocks held from a backup or a snapshot.",
+                `Open Storage and read the check report for ${groupPhrase}; restore what the unnamed blocks held from a backup or a snapshot.`,
               ]
             : [
                 "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
-                "Open Storage and open each of these filesystems, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
+                `Open Storage and open ${groupPhrase}, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.`,
               ];
+      // A mixed card never tells the reader to restore from a report as if
+      // every damaged filesystem had one: the unread filesystems take their
+      // own check-first instruction before the readable ones' remedy. Neither
+      // clause leaves the reader to guess which mount it addresses: a mixed
+      // card names each subset's own mounts instead of the generic phrase the
+      // single-state branches below keep.
+      const next = allUnread
+        ? p(paths, ...checkUnread)
+        : unread
+          ? `${namedClause(checkUnread[1], unreadMounts)} ${namedClause(knownRemedy[1], knownMounts)}`
+          : p(paths, ...knownRemedy);
       return {
         word: "Danger",
         title: files
           ? `Damage on ${mounts}: ${count(files, "possibly damaged file")}`
           : `Damaged data on ${mounts}`,
         ways: [
-          !filesKnown
+          allUnread
             ? `${repaired}The report naming this damage is no longer available, so vsys cannot say which files hold it.`
             : files
-              ? `${repaired}${possibleSentence}${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}`
+              ? `${repaired}${possibleSentence}${unnamed ? ` ${count(unnamed, "damaged block")} could not be tied to a file, so the files listed are not all of the damage.` : ""}${unreadNote}`
               : unnamed
-                ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.`
-                : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.`,
+                ? `${repaired}The report could not name a file for ${count(unnamed, "damaged block")}, so the damage may sit in files it does not list.${unreadNote}`
+                : `${repaired}The report named no file, so the damage is in free space or in a file already deleted.${unreadNote}`,
         ],
         // The step never says to remove a listed file: the report cannot say
         // which file under a block is damaged, so a step that names one may
-        // name a sound file. The wording picks its branch once and lets `p`
-        // own the one singular/plural decision, rather than repeating the
-        // `paths === 1` check at each branch.
-        next: p(paths, ...nextStep),
+        // name a sound file.
+        next,
         view: "Storage",
         target: cause.at ?? first,
       };
