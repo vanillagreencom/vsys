@@ -1,0 +1,1 @@
+- A group-less agent lane no longer draws the root group's memory cap as its own; it reads the cap of the group actually covering it, or unknown outside the configured root.

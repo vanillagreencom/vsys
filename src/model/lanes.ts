@@ -81,6 +81,34 @@ export function effectiveMax(
   };
 }
 /**
+ * The configured group covering a process's absolute kernel cgroup path: the
+ * one whose `kernelPath` equals it, or is its nearest ancestor. `effectiveMax`
+ * only matches root-relative paths, so a group-less lane — whose cgroup is
+ * that absolute kernel path, not one of vsys's own group paths — has to
+ * resolve to a group here first. None found, root included, means the
+ * process sits outside the configured root.
+ */
+export function coveringGroup(
+  groups: Group[],
+  kernelPath: string,
+): Group | null {
+  let best: Group | null = null;
+  for (const g of groups) {
+    if (g.kernelPath === undefined) continue;
+    if (
+      g.kernelPath !== kernelPath &&
+      !kernelPath.startsWith(`${g.kernelPath}/`)
+    )
+      continue;
+    if (
+      best === null ||
+      g.kernelPath.length > (best.kernelPath as string).length
+    )
+      best = g;
+  }
+  return best;
+}
+/**
  * A blocked lane waits on storage or on memory reclaim. The resource with the
  * higher stall share is the one to name; unknown pressure names neither.
  */
@@ -200,7 +228,14 @@ export function lanes(
     const builds: Record<string, number> = {};
     for (const p of members)
       if (p.build) builds[p.build] = (builds[p.build] ?? 0) + 1;
-    const caps = effectiveMax(groups, cgroup);
+    // A group-less lane's `cgroup` is the process's absolute kernel path, not
+    // one of vsys's own root-relative group paths, so effectiveMax() needs
+    // the group that absolute path resolves to first.
+    const capsGroup =
+      group ?? (main ? coveringGroup(groups, main.group) : null);
+    const caps = capsGroup
+      ? effectiveMax(groups, capsGroup.path)
+      : { max: null, known: false };
     const ioPressure = group?.pressure.io?.some ?? null;
     const memoryPressure = group?.pressure.memory?.some ?? null;
     result.push({
