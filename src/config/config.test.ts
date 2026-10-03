@@ -531,11 +531,12 @@ test("patchConfigBody refuses a write that would combine into a config the loade
 
 test("patchConfigBody refuses rather than silently drops an untouched line beside a triple-quoted string", () => {
   const base = defaults();
-  // The scanner tracks quote state one character at a time, with no notion
-  // of TOML's triple-quote delimiter: the embedded, unescaped quote inside
-  // this valid triple-quoted string desyncs its idea of where the
-  // excludeArgv assignment ends, so it would otherwise swallow the untouched
-  // sort line below it. This never writes a shortened file; it refuses.
+  // assignmentLineCount gives up the moment it sees a triple-quote
+  // delimiter open, rather than tracking a single-character quote toggle
+  // that an embedded, unescaped quote inside the string would desync from
+  // where the excludeArgv assignment actually ends — which would otherwise
+  // swallow the untouched sort line below it. This never writes a
+  // shortened file; it refuses before building one at all.
   const body = 'excludeArgv = [\n  """foo " bar""",\n]\nsort = "rss"\n';
   expect(Bun.TOML.parse(body)).toEqual({
     excludeArgv: ['foo " bar'],
@@ -546,5 +547,30 @@ test("patchConfigBody refuses rather than silently drops an untouched line besid
       changedKeys: ["excludeArgv"],
       changedKeyActions: [],
     }),
-  ).toThrow("sort, which this save never touched");
+  ).toThrow("excludeArgv holds a triple-quoted string");
+});
+
+test("patchConfigBody refuses rather than silently drops a comment beside a triple-quoted string", () => {
+  const base = defaults();
+  // Bun.TOML.parse carries no comments, so the round-trip value comparison
+  // alone cannot see this one vanish: with no other key in the file for it
+  // to catch by coincidence, only refusing before the line editor guesses
+  // past the triple-quote delimiter keeps the comment from being lost with
+  // no error when excludeArgv itself is the edited key.
+  const body =
+    'excludeArgv = [\n  """foo " bar""",\n]\n# Keep this local exclusion note\n';
+  expect(() =>
+    patchConfigBody(body, { ...base, excludeArgv: ['foo " bar'] }, base, {
+      changedKeys: ["excludeArgv"],
+      changedKeyActions: [],
+    }),
+  ).toThrow("excludeArgv holds a triple-quoted string");
+  // The same refusal covers an unrelated key too: this save still cannot
+  // trust where excludeArgv's own span ends, whether or not it touches it.
+  expect(() =>
+    patchConfigBody(body, { ...base, refreshMs: 2000 }, base, {
+      changedKeys: ["refreshMs"],
+      changedKeyActions: [],
+    }),
+  ).toThrow("excludeArgv holds a triple-quoted string");
 });
