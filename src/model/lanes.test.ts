@@ -288,6 +288,25 @@ test("a group-less agent lane reports the 512 MiB cap of the service it runs in"
   ]);
 });
 
+test('a root kernelPath of "/" still covers a group-less lane\'s absolute path', () => {
+  const c = defaults();
+  const groups = [
+    groupSnapshot({
+      path: ".",
+      name: "mount-root",
+      parent: ".",
+      kernelPath: "/",
+      max: 2 * 1024 * 1024 * 1024,
+    }),
+  ];
+  const proc = processSnapshot({ pid: 9, group: "/app.slice/agent.service" });
+  const lane = present(lanes(groups, [proc], c)[0], "the agent lane");
+  expect([lane.memoryMax, lane.memoryMaxKnown]).toEqual([
+    2 * 1024 * 1024 * 1024,
+    true,
+  ]);
+});
+
 test("a group-less lane's cap is its nearest covering group's, not a looser root's", () => {
   const c = defaults();
   const groups = [

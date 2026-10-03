@@ -97,11 +97,15 @@ export function coveringGroup(
   for (const g of groups) {
     const groupKernelPath = g.kernelPath;
     if (groupKernelPath === undefined) continue;
-    if (
-      groupKernelPath !== kernelPath &&
-      !kernelPath.startsWith(`${groupKernelPath}/`)
-    )
-      continue;
+    // "/" is the mount root: every real kernel path already starts with it,
+    // so "/" plus a separator would build "//", which none of them start
+    // with, and the plain equality check never matches a deeper path either.
+    const covers =
+      groupKernelPath === kernelPath ||
+      (groupKernelPath === "/"
+        ? kernelPath.startsWith("/")
+        : kernelPath.startsWith(`${groupKernelPath}/`));
+    if (!covers) continue;
     if (best === null || groupKernelPath.length > bestKernelPath.length) {
       best = g;
       bestKernelPath = groupKernelPath;
