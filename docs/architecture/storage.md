@@ -2,7 +2,7 @@
 
 Covers: src/collect/btrfs.ts src/collect/cgroups.ts src/collect/devices.ts src/collect/devices.test.ts src/collect/errors.ts src/collect/mounts.ts src/collect/scratch.ts src/collect/scratch-scan.ts src/collect/scratch-worker.ts src/collect/worker-file.ts src/collect/scratch.test.ts src/collect/scratch-scan.test.ts src/collect/scratch-worker.test.ts src/collect/btrfs.test.ts scripts/bench-scratch.ts scripts/sample-check.ts src/collect/scrub.ts src/model/integrity.ts src/model/integrity.test.ts src/model/writes.ts src/model/writes.test.ts src/ui/integrity.ts src/ui/storage-screen.tsx src/collect/udisks.ts src/collect/udisks.test.ts src/test/udisks.ts
 
-Storage collection reads filesystem state, device counters, drive reports and scratch sizes. A counter the kernel or a drive did not report stays unknown rather than becoming a zero. Whether a filesystem's data is damaged, and the sources that answer it, are in [storage integrity](storage-integrity.md).
+Storage collection reads filesystem state, device counters, drive reports and scratch sizes. A counter the kernel or a drive did not report stays unknown rather than becoming a zero, except a group's `io.stat` counters, which the kernel omits until the group's first I/O. Whether a filesystem's data is damaged, and the sources that answer it, are in [storage integrity](storage-integrity.md).
 
 ## Boundaries
 
@@ -37,7 +37,7 @@ busctl's refusal is classified from its own words in `classifyBusctl()`: no bus,
 
 ## Invariants
 
-1. Invalid `io.stat` counters stay unknown rather than becoming a zero write rate. `src/collect/collector.test.ts` plants an invalid counter; `src/model/writes.test.ts` checks an unreadable counter.
+1. Invalid `io.stat` counters stay unknown rather than becoming a zero write rate, and so does a missing or unreadable `io.stat`. A readable `io.stat` with no counter is zero bytes, because the kernel adds a device's line only on the group's first I/O to it. `src/collect/collector.test.ts` plants an invalid counter, an empty file for a scope and for the root, and a removed file; `src/model/writes.test.ts` checks an unreadable counter.
 2. Bytes written since boot are reported per slice and per named device. Device totals are read once at the cgroup v2 root, which counts every writer on the machine, including services outside the watched user tree. `src/collect/collector.test.ts` checks the root against the watched tree; `src/model/writes.test.ts` checks the split.
 3. Lifetime writes are parsed from NVMe data units and ATA logical blocks, and a drive reporting no counter stays unknown rather than zero. `src/collect/devices.test.ts` checks both units and the missing counter.
 4. Every drive keeps a row of its own, so a drive without a readable report is named as the one missing its lifetime writes. `src/model/writes.test.ts` and `src/collect/devices.test.ts` check a report among two drives.
