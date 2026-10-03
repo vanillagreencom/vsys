@@ -146,7 +146,7 @@ export interface ProcessSource {
 export class ProcessCollector implements ProcessSource {
   private env = new Map<
     number,
-    { start: number; values: Record<string, string> }
+    { start: number; command: string; values: Record<string, string> }
   >();
   private previous?: {
     time: number;
@@ -322,8 +322,12 @@ export class ProcessCollector implements ProcessSource {
     for (const pid of envPids) {
       const p = byPid.get(pid);
       if (!p) throw new Error("Selected process is missing");
+      // execve() keeps a process's pid and start time but replaces its
+      // environment, so a changed command line (read fresh every sample,
+      // per Invariant 2) invalidates the cache even under the same identity.
+      const commandKey = p.command.join("\0");
       const cached = this.env.get(pid);
-      if (cached?.start === p.start) {
+      if (cached?.start === p.start && cached.command === commandKey) {
         p.env = cached.values;
         p.envAvailable = true;
       } else {
@@ -335,7 +339,11 @@ export class ProcessCollector implements ProcessSource {
             if (split >= 0 && allowed.has(name))
               p.env[name] = entry.slice(split + 1);
           }
-          this.env.set(pid, { start: p.start, values: p.env });
+          this.env.set(pid, {
+            start: p.start,
+            command: commandKey,
+            values: p.env,
+          });
           p.envAvailable = true;
         } catch (e) {
           if (
