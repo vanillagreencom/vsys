@@ -1213,7 +1213,9 @@ test("an empty but readable io.stat is zero bytes, not unknown", async () => {
   // A missing io.stat was not read, so it stays unknown.
   rmSync(join(path, "io.stat"));
   const gone = await collector.sample(3000);
-  const missing = gone.groups.find((x) => x.path === "agents.slice/quiet.scope");
+  const missing = gone.groups.find(
+    (x) => x.path === "agents.slice/quiet.scope",
+  );
   expect({ write: missing?.ioWrite, rate: missing?.writeRate }).toEqual({
     write: null,
     rate: null,
