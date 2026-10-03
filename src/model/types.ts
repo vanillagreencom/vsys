@@ -127,7 +127,8 @@ export interface Volume {
 export interface Scratch {
   path: string;
   bytes: number | null;
-  age: number;
+  /** Seconds since the entry's last modification; null where the scan could not measure it, whether or not its own stat succeeded. */
+  age: number | null;
   modifiedAt?: number | null;
   error: string | null;
 }

@@ -122,7 +122,7 @@ async function scanRoot(
   ): Scratch => ({
     path,
     bytes,
-    age: stat ? Math.max(0, (now - stat.mtimeMs) / 1000) : 0,
+    age: stat ? Math.max(0, (now - stat.mtimeMs) / 1000) : null,
     modifiedAt: stat?.mtimeMs ?? null,
     error:
       error === null

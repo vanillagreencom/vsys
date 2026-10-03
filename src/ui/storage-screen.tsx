@@ -565,11 +565,11 @@ export function Storage({
   ) => {
     const x = item.scratch;
     const over = x.bytes !== null && !item.session && x.bytes > c.scratchQuota;
-    const modified = age(
+    const modifiedSeconds =
       x.modifiedAt == null
         ? x.age
-        : Math.max(0, (s.time - x.modifiedAt) / 1000),
-    );
+        : Math.max(0, (s.time - x.modifiedAt) / 1000);
+    const modified = modifiedSeconds == null ? null : age(modifiedSeconds);
     return storageRow(
       i,
       () => (
@@ -587,7 +587,9 @@ export function Storage({
             value={x.bytes}
             text={fit(amount(x.bytes, c), 10, "right")}
           />
-          <span attributes={ui.dim}>{`  ${modified} ago`}</span>
+          {modified != null && (
+            <span attributes={ui.dim}>{`  ${modified} ago`}</span>
+          )}
           {x.error && <Ink color={ui.warn}>{`  ${safe(x.error)}`}</Ink>}
         </>
       ),

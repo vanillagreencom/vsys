@@ -28,6 +28,23 @@ test("JSON preserves evidence and display text removes terminal controls", () =>
   expect(JSON.parse(exportSnapshot(s, "json"))).toEqual(s);
   expect(safe("a\u001b[2J\nb")).toBe("a [2J b");
 });
+test("the scratch table writes no age for a root it never read", () => {
+  const s = emptySnapshot();
+  s.storage.scratch = [
+    {
+      path: "/unread-root",
+      bytes: null,
+      age: null,
+      modifiedAt: null,
+      error: "ENOENT: no such file or directory",
+      origin: "configured",
+    },
+  ];
+  const report = exportSnapshot(s, "markdown");
+  const row = report.split("\n").find((line) => line.includes("/unread-root"));
+  expect(row).toContain("unavailable");
+  expect(row).not.toMatch(/\|\s*0\s*\|/);
+});
 
 test("summary subjects never use navigation-only targets", () => {
   const c = defaults();

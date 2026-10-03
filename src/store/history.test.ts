@@ -134,6 +134,50 @@ test("a stored scratch row written before root origins loads with an unknown ori
     { path: "/scratch", bytes: 1, age: 0, error: null, origin: null },
   ]);
 });
+test("a stored scratch row written before nullable age loads a failed root with no age", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  first.add(s);
+  first.close();
+  // What an older build wrote for a root it could not read: a synthetic
+  // zero age beside the null size no successful reading ever leaves.
+  const stored = {
+    ...s,
+    storage: {
+      ...s.storage,
+      scratch: [
+        {
+          path: "/gone",
+          bytes: null,
+          age: 0,
+          error: "ENOENT",
+          origin: "configured",
+        },
+      ],
+    },
+  };
+  const db = new Database(f.config.sqlitePath);
+  db.query("UPDATE samples SET data = ? WHERE time = ?").run(
+    Bun.gzipSync(JSON.stringify(stored)),
+    now,
+  );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  expect(reopened.at(now)?.storage.scratch).toEqual([
+    {
+      path: "/gone",
+      bytes: null,
+      age: null,
+      error: "ENOENT",
+      origin: "configured",
+    },
+  ]);
+});
 test("a stored device row written before lifetime-write sources loads with an unknown source", () => {
   const f = fixture();
   cleanup.push(f.cleanup);

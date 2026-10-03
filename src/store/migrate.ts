@@ -94,9 +94,15 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
       ...s.storage,
       // A build older than root origins stored rows with none. Null is the
       // unknown value: the row is drawn with no origin word.
+      //
+      // A build older than the nullable age wrote a failed root's age as a
+      // synthetic 0 rather than unknown. That root never carried a size or a
+      // modification time either, which no successful reading leaves null,
+      // so the same shape identifies it here.
       scratch: s.storage.scratch.map((root) => ({
         ...root,
         origin: root.origin ?? null,
+        age: root.bytes === null && root.modifiedAt == null ? null : root.age,
       })),
       // A build older than lifetime-write sources stored device rows with
       // none. Null is the unknown value: the row names no source.
