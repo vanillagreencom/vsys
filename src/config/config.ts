@@ -583,18 +583,16 @@ function assignmentKey(match: RegExpExecArray): string {
 }
 
 /**
- * How many lines the assignment starting at `lines[start]` occupies, or
- * `null` when a TOML triple-quote delimiter (`"""` or `'''`) opens within it:
- * this scan tracks only a single-character quote toggle, which an embedded,
- * unescaped quote inside a triple-quoted string desyncs from where the value
- * actually ends, so it gives up there rather than guess. More than one line
- * otherwise only for a hand-written array split across lines: this project's
- * own writer always emits one line.
+ * How many lines the assignment starting at `lines[start]` occupies. More
+ * than one only for a hand-written array split across lines: this project's
+ * own writer always emits one line. This tracks only a single-character
+ * quote toggle, which an embedded, unescaped quote inside a TOML
+ * triple-quoted string desyncs from where the value actually ends; a wrong
+ * count from that, or from any other form this scan misreads, is caught
+ * after the fact by `verifyLineIdentity` and `verifyOnlyNamedKeysChanged`,
+ * never by guessing here.
  */
-function assignmentLineCount(
-  lines: readonly string[],
-  start: number,
-): number | null {
+function assignmentLineCount(lines: readonly string[], start: number): number {
   let depth = 0;
   let quote: '"' | "'" | null = null;
   let count = 0;
@@ -608,12 +606,6 @@ function assignmentLineCount(
         else if (ch === quote) quote = null;
         continue;
       }
-      if (
-        (ch === '"' || ch === "'") &&
-        text[pos + 1] === ch &&
-        text[pos + 2] === ch
-      )
-        return null;
       if (ch === "#") break;
       if (ch === '"' || ch === "'") quote = ch;
       else if (ch === "[") depth++;
@@ -632,10 +624,7 @@ function assignmentLineCount(
  * top-level line lands at the end of the top-level block, before `[keys]`
  * when the file has one. A new `[keys]` line lands at the end of that table,
  * which this function creates, after a blank line, when `keyEdits` needs one
- * and `currentBody` has none. Throws, rather than guesses, when
- * `assignmentLineCount` cannot place a triple-quoted assignment's end: every
- * line after it would then rest on a span this scan does not trust, whether
- * or not that assignment's own key is one of the edits named here.
+ * and `currentBody` has none.
  */
 function applyConfigLineEdits(
   currentBody: string,
@@ -670,10 +659,6 @@ function applyConfigLineEdits(
       const pending = inKeys ? remainingKeys : remainingTop;
       const key = assignmentKey(assignment);
       const count = assignmentLineCount(lines, i);
-      if (count === null)
-        throw new Error(
-          `Settings save cannot safely edit config.toml: ${key} holds a triple-quoted string, whose end this save cannot scan around. Edit ${key} by hand, or remove the triple quotes, before saving from Settings.`,
-        );
       if (pending.has(key)) {
         const replacement = pending.get(key) ?? null;
         if (replacement !== null) out.push(replacement);
@@ -726,14 +711,127 @@ function sameTomlValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
+/** True for a line TOML gives no value of its own: blank, or a comment. */
+function isCommentOrBlank(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.length === 0 || trimmed.startsWith("#");
+}
+
+/**
+ * The classic line-level LCS alignment between `oldLines` and `newLines`:
+ * the lines only `oldLines` has and the lines only `newLines` has, each in
+ * the order its own side holds them. Every other line is common to both, in
+ * the same relative order on each side, as a longest-common-subsequence
+ * always preserves.
+ */
+function lineDiff(
+  oldLines: readonly string[],
+  newLines: readonly string[],
+): { deleted: string[]; inserted: string[] } {
+  const n = oldLines.length;
+  const m = newLines.length;
+  const lengths: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array<number>(m + 1).fill(0),
+  );
+  for (let i = n - 1; i >= 0; i--) {
+    const row = lengths[i];
+    const nextRow = lengths[i + 1];
+    if (!row || !nextRow) continue;
+    for (let j = m - 1; j >= 0; j--) {
+      row[j] =
+        oldLines[i] === newLines[j]
+          ? (nextRow[j + 1] ?? 0) + 1
+          : Math.max(nextRow[j] ?? 0, row[j + 1] ?? 0);
+    }
+  }
+  const deleted: string[] = [];
+  const inserted: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    const oldLine = oldLines[i];
+    const newLine = newLines[j];
+    if (oldLine === undefined || newLine === undefined) break;
+    if (oldLine === newLine) {
+      i++;
+      j++;
+      continue;
+    }
+    const keepOld = (lengths[i + 1]?.[j] ?? 0) >= (lengths[i]?.[j + 1] ?? 0);
+    if (keepOld) {
+      deleted.push(oldLine);
+      i++;
+    } else {
+      inserted.push(newLine);
+      j++;
+    }
+  }
+  while (i < n) {
+    const oldLine = oldLines[i++];
+    if (oldLine !== undefined) deleted.push(oldLine);
+  }
+  while (j < m) {
+    const newLine = newLines[j++];
+    if (newLine !== undefined) inserted.push(newLine);
+  }
+  return { deleted, inserted };
+}
+
+/**
+ * Refuses a patch that drops a comment or blank line, or adds a line
+ * `edit`'s own replacements do not name: the general proof, independent of
+ * why `applyConfigLineEdits` miscounted a span, that every line of
+ * `currentBody` carrying no TOML value of its own survives into `configText`
+ * unchanged and in order, and that nothing new lands beyond the lines
+ * `topEdits` and `keyEdits` computed, the `[keys]` header and a separating
+ * blank line this function itself may open for them included. A line that
+ * does carry a value, lost from an untouched key, is `verifyOnlyNamedKeysChanged`'s
+ * proof instead: a parsed-value diff sees that loss without needing to know
+ * which raw line held it.
+ */
+function verifyLineIdentity(
+  currentBody: string,
+  configText: string,
+  topEdits: ReadonlyMap<string, string | null>,
+  keyEdits: ReadonlyMap<string, string | null>,
+): void {
+  const splitLines = (body: string): string[] => {
+    const lines = body.length ? body.split("\n") : [];
+    if (lines.length && lines[lines.length - 1] === "") lines.pop();
+    return lines;
+  };
+  const { deleted, inserted } = lineDiff(
+    splitLines(currentBody),
+    splitLines(configText),
+  );
+  const lost = deleted.find(isCommentOrBlank);
+  if (lost !== undefined)
+    throw new Error(
+      `Settings save would drop ${JSON.stringify(lost)}, which this save never touched: refusing to write a config.toml that loses content it did not mean to change`,
+    );
+  const expected = new Map<string, number>();
+  for (const line of [...topEdits.values(), ...keyEdits.values()]) {
+    if (line !== null) expected.set(line, (expected.get(line) ?? 0) + 1);
+  }
+  for (const line of inserted) {
+    if (line === "" || line === "[keys]") continue;
+    const remaining = expected.get(line) ?? 0;
+    if (remaining <= 0)
+      throw new Error(
+        `Settings save would add ${JSON.stringify(line)}, which this save never meant to write: refusing to write a config.toml with content it did not mean to add`,
+      );
+    expected.set(line, remaining - 1);
+  }
+}
+
 /**
  * Refuses a patch whose raw TOML, reparsed, differs anywhere from
  * `currentBody`'s own parse except at the keys and keybindings `edit`
- * names: the one proof that `applyConfigLineEdits`' line-oriented scan
- * placed every edit where it meant to and moved nothing else, catching a
- * misread it cannot see from its own text position, a triple-quoted
- * string's embedded quote among them, before it reaches the file as a
- * silently lost or altered line.
+ * names: the one proof, independent of which raw line carried it, that a
+ * setting or keybinding `applyConfigLineEdits` never meant to touch keeps
+ * its value. `verifyLineIdentity` is the complementary proof for a line
+ * carrying no value of its own, a comment or a blank line, which a
+ * parsed-value diff cannot see vanish.
  */
 function verifyOnlyNamedKeysChanged(
   currentBody: string,
@@ -852,6 +950,7 @@ export function patchConfigBody(
     ]),
   );
   const configText = applyConfigLineEdits(currentBody, topEdits, keyEdits);
+  verifyLineIdentity(currentBody, configText, topEdits, keyEdits);
   verifyOnlyNamedKeysChanged(currentBody, configText, edit);
   verifyPatchedBody(configText, next, base, edit);
   return configText;

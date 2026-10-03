@@ -1,0 +1,1 @@
+- A live Settings save now checks every untouched line survives unchanged, catching a lost comment near any misread TOML form, and no longer refuses a save that was actually safe.
