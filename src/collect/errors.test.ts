@@ -28,23 +28,28 @@ test("a counter already above zero establishes a baseline and claims no time", (
     counter: 1390,
     at: null,
     size: null,
+    before: null,
     seen: 1000,
   });
   expect(memory.observe("fs", 1390, 2000)).toEqual({
     counter: 1390,
     at: null,
     size: null,
+    before: null,
     seen: 2000,
   });
 });
 
-test("growth records when the counter grew and by how much", () => {
+test("growth records when the counter grew, by how much, and the reading before it", () => {
   const memory = new ErrorMemory(statePath());
   memory.observe("fs", 10, 1000);
+  // A reading that changes nothing is still the latest one below the growth.
+  memory.observe("fs", 10, 3000);
   expect(memory.observe("fs", 36, 5000)).toEqual({
     counter: 36,
     at: 5000,
     size: 26,
+    before: 3000,
     seen: 5000,
   });
   // A later sample that finds no growth keeps the time of the growth it saw.
@@ -52,6 +57,7 @@ test("growth records when the counter grew and by how much", () => {
     counter: 36,
     at: 5000,
     size: 26,
+    before: 3000,
     seen: 9000,
   });
 });
@@ -65,6 +71,7 @@ test("a counter reset moves the baseline and never reads as a repair", () => {
     counter: 0,
     at: 5000,
     size: 26,
+    before: 1000,
     seen: 9000,
   });
   // And growth from the new baseline is measured against it, not against 36.
@@ -72,6 +79,7 @@ test("a counter reset moves the baseline and never reads as a repair", () => {
     counter: 2,
     at: 12000,
     size: 2,
+    before: 9000,
     seen: 12000,
   });
 });
@@ -99,6 +107,7 @@ test("what was remembered survives a restart", () => {
     counter: 36,
     at: 5000,
     size: 26,
+    before: 1000,
     seen: 90000000,
   });
 });
@@ -117,6 +126,13 @@ test("a state file that is not what it claims is refused, not half read", () => 
   const memory = new ErrorMemory(good);
   memory.load();
   expect(memory.observe("fs", 3, 9000).at).toBe(5000);
+  // A record that does not say when it was read bounds no growth from it.
+  const unread = statePath();
+  mkdirSync(dirname(unread), { recursive: true });
+  writeFileSync(unread, '{"fs":{"counter":3,"at":5000,"size":2}}');
+  const fresh = new ErrorMemory(unread);
+  fresh.load();
+  expect(fresh.observe("fs", 5, 9000).before).toBeNull();
 });
 
 test("a write that failed is tried again rather than dropped", () => {
@@ -175,12 +191,14 @@ test("a second process writing the same file loses neither growth time", () => {
     counter: 36,
     at: 4000,
     size: 26,
+    before: 1000,
     seen: 9000,
   });
   expect(read.observe("two", 8, 9000)).toEqual({
     counter: 8,
     at: 6000,
     size: 3,
+    before: 1000,
     seen: 9000,
   });
 });
@@ -219,6 +237,7 @@ test("a reboot does not hide the errors counted after it", () => {
     counter: 26,
     at: 7000,
     size: 26,
+    before: 5000,
     seen: 7000,
   });
   after.save();

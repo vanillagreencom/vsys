@@ -321,6 +321,71 @@ Error summary:    no errors found
   expect((await state(started + 110 * 60_000)).item?.state).toBe("new-errors");
 });
 
+test("a scrub no vsys sample watched still accounts for the growth it found", async () => {
+  const started = Date.parse("Fri Sep 11 13:25:54 2026");
+  // A monthly scrub runs while no dashboard samples: the last reading before
+  // it is a minute ahead of its start, and the next comes ten minutes after
+  // its thirty-minute run ended, from the same process or a new one reading
+  // the baseline the old one saved.
+  for (const fresh of [false, true]) {
+    const f = fixture();
+    fixtures.push(f);
+    const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+    const root = join(f.config.btrfsRoot, uuid);
+    mkdirSync(join(root, "devices"), { recursive: true });
+    symlinkSync("/sys/devices/test", join(root, "devices/test"));
+    const stats = (n: number) =>
+      `corruption_errs ${n}\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0`;
+    const file = join(root, "devinfo/1/error_stats");
+    f.write(
+      join(f.config.procRoot, "self/mountinfo"),
+      `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+    );
+    const r = new Reader();
+    let collector = new StorageCollector();
+    const state = async (time: number) => {
+      const s = emptySnapshot();
+      s.storage = await collector.collect(r, f.config, time);
+      s.time = time;
+      return integrities(s, f.config)[0]?.state;
+    };
+    f.write(file, stats(0));
+    await collector.collect(r, f.config, started - 60_000);
+    if (fresh) collector = new StorageCollector();
+    f.write(file, stats(3));
+    f.write(
+      join(f.config.scrubDir, "root.result"),
+      `btrfs scrub finished, csum=3: /
+UUID:             ${uuid}
+Scrub started:    Fri Sep 11 13:25:54 2026
+Status:           finished
+Duration:         0:30:00
+Error summary:    csum=3
+  Corrected:      3
+  Uncorrectable:  0
+  Unverified:     0
+`,
+    );
+    expect({ fresh, state: await state(started + 40 * 60_000) }).toEqual({
+      fresh,
+      state: "healthy",
+    });
+    // Growth after a reading taken past the scrub's end happened after it,
+    // however many the scrub corrected, in this process and the next.
+    f.write(file, stats(4));
+    expect({ fresh, state: await state(started + 50 * 60_000) }).toEqual({
+      fresh,
+      state: "new-errors",
+    });
+    collector = new StorageCollector();
+    f.write(file, stats(5));
+    expect({ fresh, state: await state(started + 60 * 60_000) }).toEqual({
+      fresh,
+      state: "new-errors",
+    });
+  }
+});
+
 test("a stale finished report never moves the remembered time backward", async () => {
   const f = fixture();
   fixtures.push(f);

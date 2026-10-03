@@ -547,6 +547,7 @@ test("the new-errors card names no growth the last check itself counted", () => 
       errors: { "1/corruption_errs": 3 },
       countersAvailable: true,
       lastErrorAt: s.time - 40 * 60000,
+      lastErrorBefore: s.time - 61 * 60000,
       lastErrorSize: 3,
     }),
   );

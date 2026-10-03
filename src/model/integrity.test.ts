@@ -678,12 +678,15 @@ test("a check that repaired every error it found leaves no damage", () => {
   ).toBe("damaged");
 });
 
-test("growth a finished scrub counted while it ran is that scrub's finding, not new errors", () => {
+test("growth a finished scrub could have counted is that scrub's finding, not new errors", () => {
   const c = defaults();
   // The scrub started an hour ago and ran thirty minutes. The kernel counts
-  // every mismatch the scrub finds, so the counter grew during the run, and
-  // vsys dated that growth at the sample that saw it, after the start.
+  // every mismatch the scrub finds, and vsys dates that growth at the sample
+  // that saw it, which follows the scrub's end when no vsys process watched
+  // it. The reading before that sample bounds when the growth happened.
   const startedAt = now - 3600000;
+  const endedAt = startedAt + 30 * 60000;
+  const ahead = startedAt - 60000;
   const during = now - 40 * 60000;
   const after = now - 20 * 60000;
   const scrub = (overrides: Partial<Scrub> = {}) =>
@@ -695,46 +698,69 @@ test("growth a finished scrub counted while it ran is that scrub's finding, not 
       uncorrectable: 0,
       ...overrides,
     });
+  const grew = (at: number, before: number | null, size: number | null) => ({
+    lastErrorAt: at,
+    lastErrorBefore: before,
+    lastErrorSize: size,
+  });
   const rows: [string, Partial<Volume>, Scrub[], IntegrityState][] = [
     [
-      "growth during the run that the scrub corrected",
-      { lastErrorAt: during, lastErrorSize: 3 },
+      "growth seen during the run that the scrub corrected",
+      grew(during, ahead, 3),
       [scrub()],
       "healthy",
     ],
     [
-      "growth at the moment the run ended",
-      { lastErrorAt: startedAt + 30 * 60000, lastErrorSize: 3 },
+      "growth first seen after the run, the reading before it taken during the run",
+      grew(after, during, 3),
       [scrub()],
       "healthy",
     ],
     [
-      "growth after the run ended",
-      { lastErrorAt: after, lastErrorSize: 3 },
+      "growth first seen after the run, the reading before it taken before the run",
+      grew(after, ahead, 3),
+      [scrub()],
+      "healthy",
+    ],
+    [
+      "the reading before the growth taken the moment the run ended",
+      grew(after, endedAt, 3),
+      [scrub()],
+      "healthy",
+    ],
+    [
+      "the reading before the growth taken after the run ended",
+      grew(after, endedAt + 1, 3),
       [scrub()],
       "new-errors",
     ],
     [
       "growth larger than the scrub counted",
-      { lastErrorAt: during, lastErrorSize: 4 },
+      grew(during, ahead, 4),
       [scrub()],
       "new-errors",
     ],
     [
       "a report that does not say how long it ran",
-      { lastErrorAt: during, lastErrorSize: 3 },
+      grew(during, ahead, 3),
       [scrub({ duration: null })],
       "new-errors",
     ],
     [
       "a report whose corrected count is unread",
-      { lastErrorAt: during, lastErrorSize: 3 },
+      grew(during, ahead, 3),
       [scrub({ corrected: null })],
       "new-errors",
     ],
     [
       "growth whose size is unread",
-      { lastErrorAt: during, lastErrorSize: null },
+      grew(during, ahead, null),
+      [scrub()],
+      "new-errors",
+    ],
+    [
+      "growth whose reading before it is unread",
+      grew(during, null, 3),
       [scrub()],
       "new-errors",
     ],
@@ -748,7 +774,7 @@ test("growth a finished scrub counted while it ran is that scrub's finding, not 
   // stopped early overwrote its report.
   const remembered = (covers: { endedAt: number; errors: number }) =>
     integrity(
-      filesystem({ lastErrorAt: during, lastErrorSize: 3 }),
+      filesystem(grew(after, during, 3)),
       {
         scrubs: [report({ status: "aborted", problem: true, startedAt: now })],
         lastFinishedScrub: { fs: { at: startedAt, damaged: false, covers } },
@@ -756,9 +782,7 @@ test("growth a finished scrub counted while it ran is that scrub's finding, not 
       now,
       c,
     ).state;
-  expect(remembered({ endedAt: startedAt + 30 * 60000, errors: 3 })).toBe(
-    "healthy",
-  );
+  expect(remembered({ endedAt, errors: 3 })).toBe("healthy");
   expect(remembered({ endedAt: during - 1, errors: 3 })).toBe("new-errors");
 });
 

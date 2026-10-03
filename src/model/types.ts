@@ -108,6 +108,11 @@ export interface Volume {
   /** How far the counter grew then. */
   lastErrorSize?: number | null;
   /**
+   * When the reading before that growth was taken, so the growth happened
+   * after this and by `lastErrorAt`. Null where that time is unread.
+   */
+  lastErrorBefore?: number | null;
+  /**
    * False where the record of past growth could not be read, so a null
    * `lastErrorAt` is a reading vsys does not have rather than one of none.
    */

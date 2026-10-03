@@ -276,7 +276,7 @@ export class StorageCollector {
     const memory = this.errorMemory(r, c.errorMemoryPath);
     const growth = new Map<
       string,
-      { at: number | null; size: number | null }
+      { at: number | null; size: number | null; before: number | null }
     >();
     const counters = new Map<
       string,
@@ -421,6 +421,7 @@ export class StorageCollector {
         total,
         lastErrorAt: seen?.at ?? null,
         lastErrorSize: seen?.size ?? null,
+        lastErrorBefore: seen?.before ?? null,
         lastErrorKnown: memory.available,
         ...((fsid ? counters.get(fsid) : undefined) ?? {
           errors: {},
