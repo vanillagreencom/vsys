@@ -67,6 +67,39 @@
         }
       ]
     },
+    "agent:maintainer:copilot": {
+      "name": "maintainer",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "fe004bb42a01c3e5f2b626231fb42945a6da5bbea71b6f174fb1511b661865fd",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "f617af2cc67a56bcfa3a7945e1e88e4b0f9196598585ab8a30fbd37ba18ac66c",
+      "enabled": true,
+      "upstreamSkills": [
+        "code-quality",
+        "decider",
+        "dep-radar",
+        "dev",
+        "github",
+        "linear",
+        "preflight",
+        "review-gate"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "maintainer",
+        "paths": [
+          ".github/agents/maintainer.agent.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "agent:maintainer:pi": {
       "name": "maintainer",
       "kind": "agent",
@@ -146,6 +179,33 @@
         "name": "planner",
         "paths": [
           ".codex/agents/planner.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:planner:copilot": {
+      "name": "planner",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "a8eb598c3e17212a0a054fee7056f6e8ec09c56ce4873a6cf84ed2d487314d5f",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "1a45a0c5bf2256c0f0a2afaa4c326f44216a5cbc1fe8a31443ed3b5dfa3c75ad",
+      "enabled": true,
+      "upstreamSkills": [
+        "github",
+        "linear"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "planner",
+        "paths": [
+          ".github/agents/planner.agent.md"
         ]
       },
       "reasons": [
@@ -239,6 +299,35 @@
         }
       ]
     },
+    "agent:researcher:copilot": {
+      "name": "researcher",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "0bd63772219737fb18251ae1d47c140c2c45ad3de26f058bcd780130ff4612e3",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "ce2a9027305a5832459340c8361a669c5f95f7e3ef25d951d20b4d37ca117b41",
+      "enabled": true,
+      "upstreamSkills": [
+        "decider",
+        "deep-research",
+        "github",
+        "linear"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "researcher",
+        "paths": [
+          ".github/agents/researcher.agent.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "agent:researcher:pi": {
       "name": "researcher",
       "kind": "agent",
@@ -312,6 +401,32 @@
         "name": "reviewer-arch",
         "paths": [
           ".codex/agents/reviewer-arch.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:reviewer-arch:copilot": {
+      "name": "reviewer-arch",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "036a0845beaf14ec04b38b1396ddbfd75130571e71b8cf33ff1d17534a3053f9",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "3d7bc6a96ffe3298a36be39c1161e21e436189d34df65be4484e5b524554a1f8",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-arch",
+        "paths": [
+          ".github/agents/reviewer-arch.agent.md"
         ]
       },
       "reasons": [
@@ -398,6 +513,32 @@
         }
       ]
     },
+    "agent:reviewer-correctness:copilot": {
+      "name": "reviewer-correctness",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "ca8cdcd1a3675d0b6550685e8451ae3eac40748d47ffca11140e8a04b821bfa0",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "c0bfbb460516a1f25a096e53d6fd1343eb54bc253df6469d7d0eea89dbedd754",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-correctness",
+        "paths": [
+          ".github/agents/reviewer-correctness.agent.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "agent:reviewer-correctness:pi": {
       "name": "reviewer-correctness",
       "kind": "agent",
@@ -468,6 +609,32 @@
         "name": "reviewer-doc",
         "paths": [
           ".codex/agents/reviewer-doc.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:reviewer-doc:copilot": {
+      "name": "reviewer-doc",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "4403f3c0482bbf1ef3bb7fe7bc7dfc93e1d6d7bb461896b7ac1220e5310e83df",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "ac4efa09fd3bc64662752386d3e5018b3a693f95e30c766ba83a8378487c13df",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-doc",
+        "paths": [
+          ".github/agents/reviewer-doc.agent.md"
         ]
       },
       "reasons": [
@@ -554,6 +721,32 @@
         }
       ]
     },
+    "agent:reviewer-error:copilot": {
+      "name": "reviewer-error",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "097d99751b70e7a4a98214d959dc249073c4fe02065c8064a244136ebfe8a449",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "7cdc3b0c1ea3557bc11eb5f7a5528e33a278440423eb8ed80dc9886dd3638d33",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-error",
+        "paths": [
+          ".github/agents/reviewer-error.agent.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "agent:reviewer-error:pi": {
       "name": "reviewer-error",
       "kind": "agent",
@@ -624,6 +817,32 @@
         "name": "reviewer-perf",
         "paths": [
           ".codex/agents/reviewer-perf.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:reviewer-perf:copilot": {
+      "name": "reviewer-perf",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "f4ce74f293fa003651abe6590f7ac9a58601adc5fe5c046b56405614580b9fb6",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "8eb016ef83ceab650227075664e5609af55108cd9ba35e8d5ae2aa2fe6dd2d30",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-perf",
+        "paths": [
+          ".github/agents/reviewer-perf.agent.md"
         ]
       },
       "reasons": [
@@ -710,6 +929,32 @@
         }
       ]
     },
+    "agent:reviewer-quality:copilot": {
+      "name": "reviewer-quality",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "378412915be6a8dedfc9bd80a5aa99a50d0f18c7ef0b0e2d4bb5a5918451318e",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "924f2403afee27383a6072c3d32048c3656c3c2ecca90c0cb2c157ef58614f4a",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-quality",
+        "paths": [
+          ".github/agents/reviewer-quality.agent.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "agent:reviewer-quality:pi": {
       "name": "reviewer-quality",
       "kind": "agent",
@@ -780,6 +1025,32 @@
         "name": "reviewer-safety",
         "paths": [
           ".codex/agents/reviewer-safety.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:reviewer-safety:copilot": {
+      "name": "reviewer-safety",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "641cec079e2e8e313e425e83eb6983b2ad3c2cb1c7ac9dd53e00e8c998492539",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "8737c30a3922a32c6499240c24078fa8f63c9b3d1507452b164784a58c9f5427",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-safety",
+        "paths": [
+          ".github/agents/reviewer-safety.agent.md"
         ]
       },
       "reasons": [
@@ -866,6 +1137,32 @@
         }
       ]
     },
+    "agent:reviewer-security:copilot": {
+      "name": "reviewer-security",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "560ca015eae1db0c740497163de0d77c3fe4f4a1d6a3a77524fb7ee565498799",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "7544b09a81d5ac28c6d98f7520152a005bb919f4c3466ab907a706145d6bb8a0",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-security",
+        "paths": [
+          ".github/agents/reviewer-security.agent.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "agent:reviewer-security:pi": {
       "name": "reviewer-security",
       "kind": "agent",
@@ -936,6 +1233,32 @@
         "name": "reviewer-test",
         "paths": [
           ".codex/agents/reviewer-test.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:reviewer-test:copilot": {
+      "name": "reviewer-test",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "e9d29202e5605546c016147a11cf8360b453ba39dc1b589e9841d73391469d3e",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "25bb21569f1e3f2b0d49e5d304006f59abf542e78e3d5cea4ea58a911460a7c1",
+      "enabled": true,
+      "upstreamSkills": [
+        "reviewer"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "reviewer-test",
+        "paths": [
+          ".github/agents/reviewer-test.agent.md"
         ]
       },
       "reasons": [
@@ -1024,6 +1347,37 @@
         "name": "runtime",
         "paths": [
           ".codex/agents/runtime.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:runtime:copilot": {
+      "name": "runtime",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "c9994db6133bc0e83ba88aeaa66d7228d1ff934065e44a034282d7fd4510f765",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "f1ca17ecfaabc7235792a4a9d1091ec707e4ef57a549555c573681c210cd7e58",
+      "enabled": true,
+      "upstreamSkills": [
+        "code-quality",
+        "decider",
+        "dev",
+        "github",
+        "linear",
+        "preflight"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "runtime",
+        "paths": [
+          ".github/agents/runtime.agent.md"
         ]
       },
       "reasons": [
@@ -1125,6 +1479,37 @@
         }
       ]
     },
+    "agent:rust:copilot": {
+      "name": "rust",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "559d1f39b2685b5d224274b365fa7d1259a820518145b4e2a6ed327682a0dd16",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "8ab29c195dfc7ff53f7b5118e197b1c565a7b95fe695fa719841cfe01694eb0a",
+      "enabled": true,
+      "upstreamSkills": [
+        "code-quality",
+        "decider",
+        "dev",
+        "github",
+        "linear",
+        "preflight"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "rust",
+        "paths": [
+          ".github/agents/rust.agent.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "agent:rust:pi": {
       "name": "rust",
       "kind": "agent",
@@ -1202,6 +1587,33 @@
         "name": "scout",
         "paths": [
           ".codex/agents/scout.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:scout:copilot": {
+      "name": "scout",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "d8ef84c80b891ce03a8f34af8e80a266d0cd54e7c007e7bcf955d918dbec293f",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "1f34feed8c2d92892a55551b5226fce11e411ebdd7cbbc43564f1d288876998f",
+      "enabled": true,
+      "upstreamSkills": [
+        "github",
+        "linear"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "scout",
+        "paths": [
+          ".github/agents/scout.agent.md"
         ]
       },
       "reasons": [
@@ -1289,6 +1701,36 @@
         "name": "tpm",
         "paths": [
           ".codex/agents/tpm.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:tpm:copilot": {
+      "name": "tpm",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "53770839cbfba5622e72c8f60511be461bb4838fc8fbb62cd79787747c549966",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "0fd03d5a3c041004167b80064467a622bdd8f03973186b59e0cec43fe1eee7ab",
+      "enabled": true,
+      "upstreamSkills": [
+        "decider",
+        "dev",
+        "github",
+        "linear",
+        "project-management"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "tpm",
+        "paths": [
+          ".github/agents/tpm.agent.md"
         ]
       },
       "reasons": [
@@ -1452,6 +1894,34 @@
         }
       ]
     },
+    "hook:block-argv-kill:copilot": {
+      "name": "block-argv-kill",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "f30f3443c3de43e1a8a1e354713c599406e35f17745acfcc3b81da28361c84a3",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "a6936920c9345b717e73f88ca238ff18104a5b18c7e7777402e98b3aa377e18d",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "block-argv-kill",
+        "paths": [
+          ".github/hooks/block-argv-kill.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/block-argv-kill.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "bash|powershell"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "hook:block-argv-kill:pi": {
       "name": "block-argv-kill",
       "kind": "hook",
@@ -1529,6 +1999,34 @@
         "event": "PreToolUse",
         "command": "p='.codex/hooks/block-bare-cd.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; bash \"$r/$p\"",
         "matcher": "Bash"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "hook:block-bare-cd:copilot": {
+      "name": "block-bare-cd",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "491beeddabbf79df2ee910bd58be4abb8bef1ff737184f3edbdc2b06b4901e82",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "4c49652cf7b6493fff7eb5139b6634d7e1ac8e32b16a373ed04b7e815a9a3bc1",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "block-bare-cd",
+        "paths": [
+          ".github/hooks/block-bare-cd.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/block-bare-cd.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "bash|powershell"
       },
       "reasons": [
         {
@@ -1620,6 +2118,34 @@
         }
       ]
     },
+    "hook:block-repo-copy:copilot": {
+      "name": "block-repo-copy",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "e9e0add5adb5dfec9f37d8939d876d6f5cb42376ea886ba90cbe0afc9b771d1f",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "4e459eb44a371e13e20211610458f74590d437f683aa1cd1491b7ee044183623",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "block-repo-copy",
+        "paths": [
+          ".github/hooks/block-repo-copy.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/block-repo-copy.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "bash|powershell"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "hook:block-repo-copy:pi": {
       "name": "block-repo-copy",
       "kind": "hook",
@@ -1697,6 +2223,34 @@
         "event": "PreToolUse",
         "command": "p='.codex/hooks/block-unsafe-rm.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; bash \"$r/$p\"",
         "matcher": "Bash"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "hook:block-unsafe-rm:copilot": {
+      "name": "block-unsafe-rm",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "e8a4ebe9100e74375265dd2142c7cb1e806cecc8be30c9643e98eebf5fbd967f",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "a6234a4e45364206cd44c3f36fbfc4878c7552089575eccc8048b78bb8ff3128",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "block-unsafe-rm",
+        "paths": [
+          ".github/hooks/block-unsafe-rm.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/block-unsafe-rm.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "bash|powershell"
       },
       "reasons": [
         {
@@ -1788,6 +2342,34 @@
         }
       ]
     },
+    "hook:block-worktree-refresh:copilot": {
+      "name": "block-worktree-refresh",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "35f7416fa71a0196aef812f5749cec1af8d1aa16ca4b1ecf7df44ed843eaf5b2",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "69e7b7d446e2223773d0f86446a510c294ab33bda3cacf26cc3d92cc74b8f687",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "block-worktree-refresh",
+        "paths": [
+          ".github/hooks/block-worktree-refresh.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/block-worktree-refresh.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "bash|powershell"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "hook:block-worktree-refresh:pi": {
       "name": "block-worktree-refresh",
       "kind": "hook",
@@ -1872,6 +2454,34 @@
         }
       ]
     },
+    "hook:command-safety:copilot": {
+      "name": "command-safety",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "72b4ca839299f5a9fb9fa98ad2662be59e85adf7570e099f3d0cce6f1d8ce15f",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "f45f33b325caf71605e5075bee17d10bb9ea52d96ea49615d97c5fe3cddf8f4e",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "command-safety",
+        "paths": [
+          ".github/hooks/command-safety.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/command-safety.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "bash|powershell"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "hook:command-safety:pi": {
       "name": "command-safety",
       "kind": "hook",
@@ -1948,6 +2558,34 @@
       "registration": {
         "event": "Stop",
         "command": "p='.codex/hooks/doc-drift-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; bash \"$r/$p\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "hook:doc-drift-check:copilot": {
+      "name": "doc-drift-check",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "aff0b32e5272e43dcab87679f725b80ea750f54def2f905a9a9b2a9d222ca5c1",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "624bc2d5bfef79f8f88db7973ecf6932172f570ab049a38ff6cf968ff96b81f4",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "doc-drift-check",
+        "paths": [
+          ".github/hooks/doc-drift-check.sh"
+        ]
+      },
+      "registration": {
+        "event": "agentStop",
+        "command": "p='.github/hooks/doc-drift-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
         "matcher": "*"
       },
       "reasons": [
@@ -2076,6 +2714,88 @@
         }
       ]
     },
+    "hook:lane-mail-check:copilot": {
+      "name": "lane-mail-check",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "e62eb53e0a47c583719b1d75e2a8e88b6f2fa397acf0f8527c9d2780cd3834cb",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "6e882b1ef02521ce6a3dcf68baf70aed3c4ec210be7718a74bf619287a2b2d4f",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "lane-mail-check",
+        "paths": [
+          ".github/hooks/lane-mail-check.sh"
+        ]
+      },
+      "registration": {
+        "event": "agentStop",
+        "command": "p='.github/hooks/lane-mail-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "doc-drift-check",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-compact",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-deliver",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-halt",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-prompt",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-start",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "hook:lane-mail-check:pi": {
       "name": "lane-mail-check",
       "kind": "hook",
@@ -2119,6 +2839,34 @@
             "name": "lane-mail-halt",
             "harness": "pi"
           }
+        }
+      ]
+    },
+    "hook:lane-mail-compact:copilot": {
+      "name": "lane-mail-compact",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "1bfbcb2c43e6fab13888956bdc98691ec72d4eadf293187f4867af817d60bdbe",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "0d745dea4886373ef3fbfda41a1396101c34265d6b9be83501ce1df016941864",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "lane-mail-compact",
+        "paths": [
+          ".github/hooks/lane-mail-compact.sh"
+        ]
+      },
+      "registration": {
+        "event": "preCompact",
+        "command": "p='.github/hooks/lane-mail-compact.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
         }
       ]
     },
@@ -2192,6 +2940,43 @@
             "kind": "hook",
             "name": "lane-mail-check",
             "harness": "codex"
+          }
+        }
+      ]
+    },
+    "hook:lane-mail-deliver:copilot": {
+      "name": "lane-mail-deliver",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "5c31b598150b747239868dce442ce9eeca125b17f2b4d825a16fb6fe99acb5ae",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "65b898114946a7b8e514293ec85f6be10632c0f6b20afc675ce751fbd4979281",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "lane-mail-deliver",
+        "paths": [
+          ".github/hooks/lane-mail-deliver.sh"
+        ]
+      },
+      "registration": {
+        "event": "postToolUse",
+        "command": "p='.github/hooks/lane-mail-deliver.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-check",
+            "harness": "copilot"
           }
         }
       ]
@@ -2307,6 +3092,43 @@
         }
       ]
     },
+    "hook:lane-mail-halt:copilot": {
+      "name": "lane-mail-halt",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "72057cf3b0388f85677146e8b4f5dec9f49b8563d825c7864b04506f4c0aee55",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "b01b7d977de3535b43228a154ab3f2af0d10e7a575fc002501b5ca8a99e3d8c5",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "lane-mail-halt",
+        "paths": [
+          ".github/hooks/lane-mail-halt.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/lane-mail-halt.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-check",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "hook:lane-mail-halt:pi": {
       "name": "lane-mail-halt",
       "kind": "hook",
@@ -2340,6 +3162,71 @@
             "kind": "hook",
             "name": "lane-mail-check",
             "harness": "pi"
+          }
+        }
+      ]
+    },
+    "hook:lane-mail-prompt:copilot": {
+      "name": "lane-mail-prompt",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "ce1ac3b6cdbd999120613969db56bd46d4b053d3c3dfc5b679ebca4328a482d2",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "5ffd1ab2ee913eb5f7e98d631f0a80a6b7a5f81d8df2f4e31aad5f447eda37b1",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "lane-mail-prompt",
+        "paths": [
+          ".github/hooks/lane-mail-prompt.sh"
+        ]
+      },
+      "registration": {
+        "event": "userPromptSubmitted",
+        "command": "p='.github/hooks/lane-mail-prompt.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "hook:lane-mail-start:copilot": {
+      "name": "lane-mail-start",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "d48c4976200b2e2caacc97859f2ae3c9a52807772162fec72bda0c71246180d0",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "4b0a7e7486389382cad64367e4da6ce350b4e2cb31b7e9a891324a73ebf0649c",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "lane-mail-start",
+        "paths": [
+          ".github/hooks/lane-mail-start.sh"
+        ]
+      },
+      "registration": {
+        "event": "sessionStart",
+        "command": "p='.github/hooks/lane-mail-start.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-compact",
+            "harness": "copilot"
           }
         }
       ]
@@ -2393,6 +3280,34 @@
         "event": "PreToolUse",
         "command": "p='.codex/hooks/pre-commit-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; bash \"$r/$p\"",
         "matcher": "Bash"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "hook:pre-commit-check:copilot": {
+      "name": "pre-commit-check",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "f3b07bcfedb2e8e765982b44b7d4154581fd98f355ae19aecd35ba49910c2395",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "587eb4ad09dd0bd0af7b106b9000fe71dc1460ab13414cc2163b0e49afb625a2",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "pre-commit-check",
+        "paths": [
+          ".github/hooks/pre-commit-check.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/pre-commit-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "bash|powershell"
       },
       "reasons": [
         {
@@ -2512,6 +3427,34 @@
         }
       ]
     },
+    "hook:reviewer-stop-check:copilot": {
+      "name": "reviewer-stop-check",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "45b61fb450a6c1aa622b0af5216b257cfed7294261a40f885014ddd5034d4d69",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "52115db1d849e82e0492acf2f0326a86e6490b78c7ca6f21d7aae29d7dd4bbe1",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "reviewer-stop-check",
+        "paths": [
+          ".github/hooks/reviewer-stop-check.sh"
+        ]
+      },
+      "registration": {
+        "event": "subagentStop",
+        "command": "p='.github/hooks/reviewer-stop-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "hook:session-drift-check:claude": {
       "name": "session-drift-check",
       "kind": "hook",
@@ -2568,6 +3511,34 @@
         }
       ]
     },
+    "hook:session-drift-check:copilot": {
+      "name": "session-drift-check",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "412e6662a883addacb2d4db881fd1b4207935629f88d265f302e100247d3326d",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "e1e29ca10cc2f0c24e53e56b35c914f73f95ce9aeaa28991588fba8803af5ee2",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "session-drift-check",
+        "paths": [
+          ".github/hooks/session-drift-check.sh"
+        ]
+      },
+      "registration": {
+        "event": "sessionStart",
+        "command": "p='.github/hooks/session-drift-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "*"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "hook:skill-load-check:claude": {
       "name": "skill-load-check",
       "kind": "hook",
@@ -2593,6 +3564,15 @@
       "reasons": [
         {
           "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "skill-load-record",
+            "harness": "claude"
+          }
         }
       ]
     },
@@ -2621,6 +3601,52 @@
       "reasons": [
         {
           "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "skill-load-record",
+            "harness": "codex"
+          }
+        }
+      ]
+    },
+    "hook:skill-load-check:copilot": {
+      "name": "skill-load-check",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "9ef69fbcabcd85e8f6413952765cb9e861afa0cd5af2af30e37804b1cf995194",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "4ade0861a8ba7bea2db4e009046ca0a3a60b91ea22a2d002c712e1e9350f1ba9",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "skill-load-check",
+        "paths": [
+          ".github/hooks/skill-load-check.sh"
+        ]
+      },
+      "registration": {
+        "event": "preToolUse",
+        "command": "p='.github/hooks/skill-load-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "edit|str_replace_editor|apply_patch|NotebookEdit|create|bash|powershell"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "skill-load-record",
+            "harness": "copilot"
+          }
         }
       ]
     },
@@ -2645,6 +3671,136 @@
         "event": "tool_call",
         "command": "p='.pi/kendex/hooks/skill-load-check.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; bash \"$r/$p\"",
         "matcher": "Edit|MultiEdit|NotebookEdit|Write|Bash"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "skill-load-record",
+            "harness": "pi"
+          }
+        }
+      ]
+    },
+    "hook:skill-load-record:claude": {
+      "name": "skill-load-record",
+      "kind": "hook",
+      "harness": "claude",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "93218bebb2fff7b15ce400f5fdebe823baa5b4e7aea20c11fdb41ae74d0bd117",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "882fefe85111db37d236263c8b7843b39af28b23408a09821ad74c523f0ea02f",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "skill-load-record",
+        "paths": [
+          ".claude/hooks/skill-load-record.sh"
+        ]
+      },
+      "registration": {
+        "event": "PostToolUse",
+        "command": "[ -z \"${COPILOT_PROJECT_DIR-}\" ] || exit 0; bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/skill-load-record.sh\"",
+        "matcher": "Skill|skill"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "hook:skill-load-record:codex": {
+      "name": "skill-load-record",
+      "kind": "hook",
+      "harness": "codex",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "93218bebb2fff7b15ce400f5fdebe823baa5b4e7aea20c11fdb41ae74d0bd117",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "882fefe85111db37d236263c8b7843b39af28b23408a09821ad74c523f0ea02f",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "skill-load-record",
+        "paths": [
+          ".codex/hooks/skill-load-record.sh"
+        ]
+      },
+      "registration": {
+        "event": "PostToolUse",
+        "command": "p='.codex/hooks/skill-load-record.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; bash \"$r/$p\"",
+        "matcher": "Skill|skill"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "hook:skill-load-record:copilot": {
+      "name": "skill-load-record",
+      "kind": "hook",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "93218bebb2fff7b15ce400f5fdebe823baa5b4e7aea20c11fdb41ae74d0bd117",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "882fefe85111db37d236263c8b7843b39af28b23408a09821ad74c523f0ea02f",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "skill-load-record",
+        "paths": [
+          ".github/hooks/skill-load-record.sh"
+        ]
+      },
+      "registration": {
+        "event": "postToolUse",
+        "command": "p='.github/hooks/skill-load-record.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; o=$( { e=$(bash \"$r/$p\" 2>&1 >&3 3>&-); s=$?; [ -z \"$e\" ] || printf '%s\\n' \"$e\" >&2; printf '\\036'; [ \"$s\" != 2 ] || [ -z \"$e\" ] || printf '%s\\n' \"$e\" | awk 'BEGIN{for(i=1;i<32;i++)m[sprintf(\"%c\",i)]=sprintf(\"\\\\u%04x\",i);m[\"\\t\"]=\"\\\\t\";m[\"\\r\"]=\"\\\\r\";m[\"\\\\\"]=\"\\\\\\\\\";m[\"\\\"\"]=\"\\\\\\\"\";printf \"\\\"\"}{if(NR>1)printf \"\\\\n\";n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);printf \"%s\",((c in m)?m[c]:c)}}END{printf \"\\\"\"}'; exit \"$s\"; } 3>&1 ); s=$?; R=$(printf '\\036'); a=; case $o in *\"$R\"*) a=${o##*\"$R\"}; o=${o%\"$R\"*} ;; esac; case $o in *[![:space:]]*) printf '%s' \"$o\" ;; *) [ -z \"$a\" ] || printf '{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":%s}\\n' \"$a\" ;; esac; exit \"$s\"",
+        "matcher": "skill"
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "skill-load-check",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
+    "hook:skill-load-record:pi": {
+      "name": "skill-load-record",
+      "kind": "hook",
+      "harness": "pi",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "93218bebb2fff7b15ce400f5fdebe823baa5b4e7aea20c11fdb41ae74d0bd117",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "882fefe85111db37d236263c8b7843b39af28b23408a09821ad74c523f0ea02f",
+      "enabled": true,
+      "emitted": {
+        "kind": "hook",
+        "name": "skill-load-record",
+        "paths": [
+          ".pi/kendex/hooks/skill-load-record.sh"
+        ]
+      },
+      "registration": {
+        "event": "tool_result",
+        "command": "p='.pi/kendex/hooks/skill-load-record.sh'; r=$({ cd -P . && pwd; } 2>/dev/null); case $r in /*) ;; *) r=;; esac; while [ -n \"$r\" ] && ! [ -f \"$r/$p\" ]; do [ \"$r\" = / ] && r= || { r=${r%/*}; [ -n \"$r\" ] || r=/; }; done; [ -n \"$r\" ] || { printf 'kendex-hook-missing: %s\\nNo directory above %s holds this script. Run kendex refresh in the project.\\n' \"$p\" \"$PWD\" >&2; exit 1; }; bash \"$r/$p\"",
+        "matcher": "Skill|skill"
       },
       "reasons": [
         {
@@ -2708,6 +3864,29 @@
       "name": "bot-instructions",
       "kind": "skill",
       "harness": "codex",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "e7e5f2449b42c1ee2d9df229f15c40de0f18d956326612d50f64c0fbe8f0df03",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "9200ada4a49df411ded37880a26c959437fdefa6312b475c561b4e731f0d1420",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "bot-instructions",
+        "paths": [
+          ".agents/skills/bot-instructions"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "skill:bot-instructions:copilot": {
+      "name": "bot-instructions",
+      "kind": "skill",
+      "harness": "copilot",
       "source": "kendex",
       "sourceRepo": "vanillagreencom/kendex",
       "sourceHash": "e7e5f2449b42c1ee2d9df229f15c40de0f18d956326612d50f64c0fbe8f0df03",
@@ -2851,6 +4030,56 @@
         }
       ]
     },
+    "skill:code-quality:copilot": {
+      "name": "code-quality",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "6d04a6e47c01e88461f8f1a28797c7302c9ccc7de645b89b3b265d332a8c2399",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "5134ca06615201a948a3d7f5c3d8b71757decf7aea27814d600174e4b02d208b",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "code-quality",
+        "paths": [
+          ".agents/skills/code-quality"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "deep-research",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "dev",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "reviewer",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "skill:code-quality:pi": {
       "name": "code-quality",
       "kind": "skill",
@@ -2980,6 +4209,47 @@
             "kind": "hook",
             "name": "skill-load-check",
             "harness": "codex"
+          }
+        }
+      ]
+    },
+    "skill:commit-guards:copilot": {
+      "name": "commit-guards",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "17344863f49fe1f105915a28b646b91ac80c725c7336c8f5f91ce86a29db44f2",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "60f18c78d91a509b2b038028be45aac00aacee3953ff200a7139ec2b60b7e1a4",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "commit-guards",
+        "paths": [
+          ".agents/skills/commit-guards"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "doc-limits",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "skill-load-check",
+            "harness": "copilot"
           }
         }
       ]
@@ -3126,6 +4396,56 @@
         }
       ]
     },
+    "skill:decider:copilot": {
+      "name": "decider",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "da5c7c5cbc64b3aad973d74992b1126d05349f4a6a59a2d1f95f662070b2e704",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "d78f59c0ef83ec291e65d5117cd2f1a49071761b0219d973c71acb9a0792858e",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "decider",
+        "paths": [
+          ".agents/skills/decider"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "dev",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "docs-writing",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "orch",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "skill:decider:pi": {
       "name": "decider",
       "kind": "skill",
@@ -3223,6 +4543,29 @@
         }
       ]
     },
+    "skill:deep-research:copilot": {
+      "name": "deep-research",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "bf24254790992fd241495f6c83b75865ff01add00f9bf2d74818d4fa55ae7551",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "6b3be0428beab4b1df8aedd8bda29e7528d55bb189e33a5f3bb9ba6d6177800c",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "deep-research",
+        "paths": [
+          ".agents/skills/deep-research"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "skill:deep-research:pi": {
       "name": "deep-research",
       "kind": "skill",
@@ -3274,6 +4617,29 @@
       "name": "dep-radar",
       "kind": "skill",
       "harness": "codex",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "16e2438008968bdba6119fbe3f226ea26b58090890ab47944adbe756c228fa4c",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "956a6e4e941eec65174579a1ce108d40782f44eaec2959c905c0b1267021c3d4",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "dep-radar",
+        "paths": [
+          ".agents/skills/dep-radar"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "skill:dep-radar:copilot": {
+      "name": "dep-radar",
+      "kind": "skill",
+      "harness": "copilot",
       "source": "kendex",
       "sourceRepo": "vanillagreencom/kendex",
       "sourceHash": "16e2438008968bdba6119fbe3f226ea26b58090890ab47944adbe756c228fa4c",
@@ -3381,6 +4747,38 @@
         }
       ]
     },
+    "skill:dev:copilot": {
+      "name": "dev",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "876afd8ba7d0c24d52cb5e819ded470eed78c9cae1d08f14aa9ea54ed1d8ae6d",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "d4d6f3488c6cbf7d52ecf3f773b0c0a87ad3f522ae38b1c030ab1fa0151ddf40",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "dev",
+        "paths": [
+          ".agents/skills/dev"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "orch",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "skill:dev:pi": {
       "name": "dev",
       "kind": "skill",
@@ -3441,6 +4839,29 @@
       "name": "doc-limits",
       "kind": "skill",
       "harness": "codex",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "7836f1c54e0b86c2faeab5543ce7b6050c9dc6b5d31774547b43b0f81e371d16",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "2ec214330f0c63a5864bf00a366afdf6b24264ba43e2f61a6aac69e0de519673",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "doc-limits",
+        "paths": [
+          ".agents/skills/doc-limits"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "skill:doc-limits:copilot": {
+      "name": "doc-limits",
+      "kind": "skill",
+      "harness": "copilot",
       "source": "kendex",
       "sourceRepo": "vanillagreencom/kendex",
       "sourceHash": "7836f1c54e0b86c2faeab5543ce7b6050c9dc6b5d31774547b43b0f81e371d16",
@@ -3580,6 +5001,56 @@
             "kind": "skill",
             "name": "reviewer",
             "harness": "codex"
+          }
+        }
+      ]
+    },
+    "skill:docs-writing:copilot": {
+      "name": "docs-writing",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "5f16792721bfa16aed945f67cd1687c37ec2668f9f352941d1c7b3051ef1720d",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "e85c1d5f69a6fcd3051aab48ac2b8a7857c27ddc761397ab11147545b73af4a5",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "docs-writing",
+        "paths": [
+          ".agents/skills/docs-writing"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "code-quality",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "doc-limits",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "reviewer",
+            "harness": "copilot"
           }
         }
       ]
@@ -3789,6 +5260,83 @@
         }
       ]
     },
+    "skill:github:copilot": {
+      "name": "github",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "00f1e2e84fc64cf4342e62172e7950436c6b0fb05de7ba69872e765d0e3f7020",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "4a4dc9854449a9ea421e9c17443329a60e12f54fe98e4f6b9eb595c798e5649e",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "github",
+        "paths": [
+          ".agents/skills/github"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "dep-radar",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "dev",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "orch",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "project-management",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "reviewer",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "second-opinion",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "skill:github:pi": {
       "name": "github",
       "kind": "skill",
@@ -3931,6 +5479,38 @@
         }
       ]
     },
+    "skill:harness-ci:copilot": {
+      "name": "harness-ci",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "b5a5f18f88998bb5ab08a680a9aed9b16dd36304bc0635d9c64e42cc1f83f0bd",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "0ff8fce2f7c069668f35908f9b9771c101772fb44b887477de40d54931f65e60",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "harness-ci",
+        "paths": [
+          ".agents/skills/harness-ci"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "review-gate",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "skill:harness-ci:pi": {
       "name": "harness-ci",
       "kind": "skill",
@@ -4024,6 +5604,38 @@
             "kind": "skill",
             "name": "project-management",
             "harness": "codex"
+          }
+        }
+      ]
+    },
+    "skill:linear:copilot": {
+      "name": "linear",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "8a597f6df689bcda9d52df00612c3c5ecdcc0793af0bbd42fe2b5eba9356689e",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "b4a46a8a354e0e81671beeee23352aa462bebcd18f8cee8af21213201aed6445",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "linear",
+        "paths": [
+          ".agents/skills/linear"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "project-management",
+            "harness": "copilot"
           }
         }
       ]
@@ -4197,6 +5809,74 @@
         }
       ]
     },
+    "skill:orch:copilot": {
+      "name": "orch",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "139b10e6fa5787eb66decb6c189c345e12ea0dfbef70984b970beaf21cce7910",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "12f9e502f85dcc71745b9531c5cce777e6f8f215a5261da46de5316d0ebdfeb6",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "orch",
+        "paths": [
+          ".agents/skills/orch"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "dev",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "harness-ci",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "project-management",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "reviewer",
+            "harness": "copilot"
+          }
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "hook",
+            "name": "lane-mail-check",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "skill:orch:pi": {
       "name": "orch",
       "kind": "skill",
@@ -4312,6 +5992,29 @@
         }
       ]
     },
+    "skill:preflight:copilot": {
+      "name": "preflight",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "af9653d2c8a6dffd24a3574b8e021ee27f723dd63968d50687671fa70276a940",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "d498aeae330b2b2ffc867d91401523699a9c99b7b5ed687f67b5fe4fd11825f7",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "preflight",
+        "paths": [
+          ".agents/skills/preflight"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "skill:preflight:pi": {
       "name": "preflight",
       "kind": "skill",
@@ -4396,6 +6099,38 @@
             "kind": "skill",
             "name": "orch",
             "harness": "codex"
+          }
+        }
+      ]
+    },
+    "skill:project-management:copilot": {
+      "name": "project-management",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "6a270413a7774756778f1b345b6feadb6a5f1273a12d9b5c917616bb3cdba2e5",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "f1b3193d96c56f43546794e64ebdd6d5882c3dffb368e710919b9d837a8b6bc1",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "project-management",
+        "paths": [
+          ".agents/skills/project-management"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "orch",
+            "harness": "copilot"
           }
         }
       ]
@@ -4497,6 +6232,38 @@
         }
       ]
     },
+    "skill:review-gate:copilot": {
+      "name": "review-gate",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "a57ac2352050f723fc2b211820898ce486be0c137895b49a7317880d9d83abe8",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "f8c50852ea5f94ae9da748784f3dcad09663a9d8bba0467b0100a3bac22082bb",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "review-gate",
+        "paths": [
+          ".agents/skills/review-gate"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "orch",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "skill:review-gate:pi": {
       "name": "review-gate",
       "kind": "skill",
@@ -4594,6 +6361,38 @@
         }
       ]
     },
+    "skill:reviewer:copilot": {
+      "name": "reviewer",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "d0dcb755936d23d8112a837c224c8e6cd46bea7779911dfd6002c8ceb0ba28d8",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "cd92044e07dba3e173668ea7858710ee5bd60bcfca6ed26accff71f95ec9bf83",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "reviewer",
+        "paths": [
+          ".agents/skills/reviewer"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "orch",
+            "harness": "copilot"
+          }
+        }
+      ]
+    },
     "skill:reviewer:pi": {
       "name": "reviewer",
       "kind": "skill",
@@ -4654,6 +6453,29 @@
       "name": "second-opinion",
       "kind": "skill",
       "harness": "codex",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "1a4d4f5ccfa46d0b9f7a74e68fecca45a0c9b300a3f7cc820c212d74e5e5ee38",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "25d0b728760b7866ebb2f4e9e0fcfb3a6a06a1632a805303b3d03fe7070169a2",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "second-opinion",
+        "paths": [
+          ".agents/skills/second-opinion"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "skill:second-opinion:copilot": {
+      "name": "second-opinion",
+      "kind": "skill",
+      "harness": "copilot",
       "source": "kendex",
       "sourceRepo": "vanillagreencom/kendex",
       "sourceHash": "1a4d4f5ccfa46d0b9f7a74e68fecca45a0c9b300a3f7cc820c212d74e5e5ee38",
@@ -4757,6 +6579,38 @@
             "kind": "skill",
             "name": "orch",
             "harness": "codex"
+          }
+        }
+      ]
+    },
+    "skill:worktree:copilot": {
+      "name": "worktree",
+      "kind": "skill",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "805464c7d3a79aa46672e4ac007ac8d0dd6e9bc1eeb3afa3cc7cffa767402081",
+      "sourceCommit": "44e87aa2325424304184a50a9a4348ce8a0fb983",
+      "renderedHash": "042a641aa6c5518f412053dda642aa9700feca7df4aa6b612343f3f093635748",
+      "enabled": true,
+      "emitted": {
+        "kind": "skill",
+        "name": "worktree",
+        "paths": [
+          ".agents/skills/worktree"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        },
+        {
+          "reason": "required-by",
+          "by": {
+            "source": "kendex",
+            "kind": "skill",
+            "name": "orch",
+            "harness": "copilot"
           }
         }
       ]
