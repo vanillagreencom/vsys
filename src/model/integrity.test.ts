@@ -678,6 +678,90 @@ test("a check that repaired every error it found leaves no damage", () => {
   ).toBe("damaged");
 });
 
+test("growth a finished scrub counted while it ran is that scrub's finding, not new errors", () => {
+  const c = defaults();
+  // The scrub started an hour ago and ran thirty minutes. The kernel counts
+  // every mismatch the scrub finds, so the counter grew during the run, and
+  // vsys dated that growth at the sample that saw it, after the start.
+  const startedAt = now - 3600000;
+  const during = now - 40 * 60000;
+  const after = now - 20 * 60000;
+  const scrub = (overrides: Partial<Scrub> = {}) =>
+    report({
+      problem: true,
+      startedAt,
+      duration: 30 * 60000,
+      corrected: 3,
+      uncorrectable: 0,
+      ...overrides,
+    });
+  const rows: [string, Partial<Volume>, Scrub[], IntegrityState][] = [
+    [
+      "growth during the run that the scrub corrected",
+      { lastErrorAt: during, lastErrorSize: 3 },
+      [scrub()],
+      "healthy",
+    ],
+    [
+      "growth at the moment the run ended",
+      { lastErrorAt: startedAt + 30 * 60000, lastErrorSize: 3 },
+      [scrub()],
+      "healthy",
+    ],
+    [
+      "growth after the run ended",
+      { lastErrorAt: after, lastErrorSize: 3 },
+      [scrub()],
+      "new-errors",
+    ],
+    [
+      "growth larger than the scrub counted",
+      { lastErrorAt: during, lastErrorSize: 4 },
+      [scrub()],
+      "new-errors",
+    ],
+    [
+      "a report that does not say how long it ran",
+      { lastErrorAt: during, lastErrorSize: 3 },
+      [scrub({ duration: null })],
+      "new-errors",
+    ],
+    [
+      "a report whose corrected count is unread",
+      { lastErrorAt: during, lastErrorSize: 3 },
+      [scrub({ corrected: null })],
+      "new-errors",
+    ],
+    [
+      "growth whose size is unread",
+      { lastErrorAt: during, lastErrorSize: null },
+      [scrub()],
+      "new-errors",
+    ],
+  ];
+  for (const [name, volume, scrubs, state] of rows)
+    expect({
+      name,
+      state: integrity(filesystem(volume), { scrubs }, now, c).state,
+    }).toEqual({ name, state });
+  // The remembered check covers the same growth once a later scrub that
+  // stopped early overwrote its report.
+  const remembered = (covers: { endedAt: number; errors: number }) =>
+    integrity(
+      filesystem({ lastErrorAt: during, lastErrorSize: 3 }),
+      {
+        scrubs: [report({ status: "aborted", problem: true, startedAt: now })],
+        lastFinishedScrub: { fs: { at: startedAt, damaged: false, covers } },
+      },
+      now,
+      c,
+    ).state;
+  expect(remembered({ endedAt: startedAt + 30 * 60000, errors: 3 })).toBe(
+    "healthy",
+  );
+  expect(remembered({ endedAt: during - 1, errors: 3 })).toBe("new-errors");
+});
+
 test("only a check that says it finished counts as a check", () => {
   const c = defaults();
   // Every other status word, including one nothing has enumerated, leaves the

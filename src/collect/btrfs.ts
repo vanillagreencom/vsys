@@ -1,7 +1,13 @@
 import type { Dirent } from "node:fs";
 import { readdir, realpath, stat, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { FinishedScrub, Scrub, Storage, Volume } from "../model/types";
+import type {
+  FinishedScrub,
+  Scrub,
+  ScrubCoverage,
+  Storage,
+  Volume,
+} from "../model/types";
 import { classify, type Outcome } from "./capabilities";
 import { collectDevices, smartReports } from "./devices";
 import { ErrorMemory } from "./errors";
@@ -74,6 +80,29 @@ export function scrubFoundDamage(outcome: {
     (outcome.problem &&
       (outcome.uncorrectable === null || outcome.uncorrectable === undefined))
   );
+}
+
+/**
+ * The counter growth a FINISHED scrub's own numbers account for, judged by
+ * the same one rule for the live report and a remembered one. A report that
+ * does not carry its start, its duration, or both counts dates or counts no
+ * growth, so it covers none.
+ */
+export function scrubCoverage(report: {
+  startedAt?: number | null;
+  duration?: number | null;
+  corrected?: number | null;
+  uncorrectable?: number | null;
+}): ScrubCoverage | null {
+  const { startedAt, duration, corrected, uncorrectable } = report;
+  if (
+    startedAt == null ||
+    duration == null ||
+    corrected == null ||
+    uncorrectable == null
+  )
+    return null;
+  return { endedAt: startedAt + duration, errors: corrected + uncorrectable };
 }
 
 /**
@@ -428,6 +457,7 @@ export class StorageCollector {
             fsid: null,
             startedAt: null,
             status: null,
+            duration: null,
             uncorrectable: null,
             corrected: null,
             addresses: null,
@@ -453,6 +483,7 @@ export class StorageCollector {
           fsid: report.uuid,
           startedAt: report.startedAt,
           status: report.status,
+          duration: report.duration,
           uncorrectable: report.uncorrectable,
           corrected: report.corrected,
           addresses,
@@ -477,6 +508,7 @@ export class StorageCollector {
                 uncorrectable: report.uncorrectable,
                 problem,
               }),
+              covers: scrubCoverage(report),
             });
           }
         } catch (e) {

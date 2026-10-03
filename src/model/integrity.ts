@@ -1,4 +1,8 @@
-import { corruptionTotal, scrubFoundDamage } from "../collect/btrfs";
+import {
+  corruptionTotal,
+  scrubCoverage,
+  scrubFoundDamage,
+} from "../collect/btrfs";
 import type { Config } from "../config/config";
 import type { CsumFailure, Scrub, Snapshot, Storage, Volume } from "./types";
 import type { Level } from "./verdict";
@@ -111,8 +115,15 @@ export interface Integrity {
   errorSource: ErrorSource | null;
   /** Seconds since the counter last grew, null while no growth was observed. */
   growthAge: number | null;
+  /**
+   * Whether that growth is new: after the last finished check, and not that
+   * check's own finding.
+   */
+  growthNew: boolean;
   /** Seconds since the kernel last logged a failed checksum read here. */
   loggedAge: number | null;
+  /** Whether that failure was logged after the last finished check. */
+  loggedNew: boolean;
   /** False where the kernel log was not read, which is not a log of none. */
   kernelLog: boolean;
   /**
@@ -266,6 +277,27 @@ export function integrity(
   // soundness from that memory instead of reading the current report's own
   // unfinished or absent state as if nothing had ever finished.
   const hasFinishedRecord = finished || remembered !== null;
+  // The growth the last finished check accounts for, from the same report
+  // or memory `checkedAt` comes from.
+  const coverage =
+    finished && scrub ? scrubCoverage(scrub) : (remembered?.covers ?? null);
+  const errorSize = grew?.lastErrorSize ?? null;
+  // A scrub's own finding is dated at the sample that saw the counter grow,
+  // which is after the scrub started, so a check covers growth seen before
+  // it ended that its own count accounts for. Growth after it ended, or
+  // larger than it counted, is still new.
+  const grownCovered =
+    grownAt !== null &&
+    coverage !== null &&
+    grownAt <= coverage.endedAt &&
+    errorSize !== null &&
+    errorSize <= coverage.errors;
+  const growthNew =
+    grownAt !== null &&
+    (checkedAt === null || grownAt > checkedAt) &&
+    !grownCovered;
+  const loggedNew =
+    loggedAt !== null && (checkedAt === null || loggedAt > checkedAt);
   const since = (at: number | null) =>
     at === null ? null : Math.max(0, time - at) / 1000;
   const state: IntegrityState =
@@ -286,7 +318,7 @@ export function integrity(
           // backward in time.
           !finished && remembered?.damaged
           ? "damaged"
-          : errorAt != null && (checkedAt === null || errorAt > checkedAt)
+          : growthNew || loggedNew
             ? "new-errors"
             : running
               ? "checking"
@@ -316,13 +348,15 @@ export function integrity(
     errorAge: since(errorAt),
     errorSource,
     growthAge: since(grownAt),
+    growthNew,
     loggedAge: since(loggedAt),
+    loggedNew,
     kernelLog,
     logged: failures
       .filter((f) => checkedAt === null || f.at > checkedAt)
       .sort((a, b) => b.at - a.at),
     errorKnown,
-    errorSize: grew?.lastErrorSize ?? null,
+    errorSize,
     blocks: complete ? (scrub?.uncorrectable ?? null) : null,
     counter,
     groups,

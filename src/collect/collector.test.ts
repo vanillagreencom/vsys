@@ -2114,6 +2114,7 @@ Error summary:    no errors found
     expect(third.storage.lastFinishedScrub?.[key]).toEqual({
       at: finishedAt as number,
       damaged: false,
+      covers: null,
     });
   } finally {
     after.close();

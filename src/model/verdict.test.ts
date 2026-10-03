@@ -535,6 +535,46 @@ test("a cause naming several filesystems carries no one filesystem's numbers", (
   });
 });
 
+test("the new-errors card names no growth the last check itself counted", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The scrub started an hour ago, ran thirty minutes and corrected the three
+  // errors the counter grew by forty minutes ago. A read the kernel logged a
+  // second ago is the only new error.
+  s.storage.volumes.push(
+    volumeSnapshot("/f", {
+      fsid: "f",
+      errors: { "1/corruption_errs": 3 },
+      countersAvailable: true,
+      lastErrorAt: s.time - 40 * 60000,
+      lastErrorSize: 3,
+    }),
+  );
+  s.storage.scrubs.push({
+    path: "/run/btrfs-scrub/f.result",
+    text: "Corrected: 3",
+    problem: true,
+    readable: true,
+    fsid: "f",
+    startedAt: s.time - 3600000,
+    duration: 30 * 60000,
+    status: "finished",
+    uncorrectable: 0,
+    corrected: 3,
+    addresses: [],
+  });
+  s.storage.csumFailures = { f: [{ root: 5, inode: 257, at: s.time - 1000 }] };
+  expect(
+    causes(s, c).find((cause) => cause.id === "new-errors")?.values,
+  ).toEqual({
+    filesystems: 1,
+    size: null,
+    since: null,
+    logged: 1,
+    checked: 3600,
+  });
+});
+
 test("with no agent slice, agent totals sum the agent lanes and stay unknown on a gap", () => {
   const c = defaults();
   const s = emptySnapshot();
