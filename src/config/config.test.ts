@@ -447,6 +447,32 @@ test("patchConfigBody edits or removes a quoted key in place, never duplicating 
   expect(Bun.TOML.parse(changed)).toEqual({ historyHours: 6 });
 });
 
+test("reverting a quoted string key to default removes the line rather than keeping its old value", () => {
+  const base = defaults();
+  const reverted = patchConfigBody(
+    '"sort" = "rss"\n',
+    { ...base, sort: "cpu" },
+    base,
+    { changedKeys: ["sort"], changedKeyActions: [] },
+  );
+  expect(reverted).toBe("");
+  expect(validate(Bun.TOML.parse(reverted), base).sort).toBe("cpu");
+});
+
+test("reverting a keybinding under [keys] to default removes the line rather than keeping its old value", () => {
+  const base = defaults();
+  const reverted = patchConfigBody(
+    '[keys]\nquit = "ctrl+q"\n',
+    { ...base, keys: { ...base.keys, quit: base.keys.quit } },
+    base,
+    { changedKeys: [], changedKeyActions: ["quit"] },
+  );
+  expect(reverted).not.toContain("ctrl+q");
+  expect(validate(Bun.TOML.parse(reverted), base).keys.quit).toBe(
+    base.keys.quit,
+  );
+});
+
 test("patchConfigBody leaves a hand-written multi-line array alone and replaces it whole when it is the changed key", () => {
   const base = defaults();
   const body = 'columns = [\n  "name",\n  "cpu"\n]\n';
