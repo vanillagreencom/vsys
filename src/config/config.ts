@@ -568,3 +568,144 @@ export async function saveConfig(
 export function configBody(c: Config, agentTools: string[]): string {
   return serialize(c, defaults(agentTools));
 }
+
+const sectionPattern = /^\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*$/;
+const assignmentPattern = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/;
+
+/**
+ * How many lines the assignment starting at `lines[start]` occupies. More
+ * than one only for a hand-written array split across lines: this project's
+ * own writer always emits one line, and a triple-quoted multi-line string is
+ * not a value any setting here takes.
+ */
+function assignmentLineCount(lines: readonly string[], start: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  let count = 0;
+  for (let i = start; i < lines.length; i++) {
+    count++;
+    const text = lines[i] ?? "";
+    for (let pos = 0; pos < text.length; pos++) {
+      const ch = text[pos];
+      if (quote) {
+        if (quote === '"' && ch === "\\") pos++;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === "#") break;
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "[") depth++;
+      else if (ch === "]") depth--;
+    }
+    if (depth <= 0 && !quote) break;
+  }
+  return count;
+}
+
+/**
+ * Rewrites only the lines `topEdits` and `keyEdits` name, leaving every
+ * other line, comments and blank lines included, exactly as `currentBody`
+ * has it. A `null` edit value removes that key's line; any other string
+ * replaces it, or, for a key `currentBody` does not have, adds it. A new
+ * top-level line lands at the end of the top-level block, before `[keys]`
+ * when the file has one. A new `[keys]` line lands at the end of that table,
+ * which this function creates, after a blank line, when `keyEdits` needs one
+ * and `currentBody` has none.
+ */
+function applyConfigLineEdits(
+  currentBody: string,
+  topEdits: ReadonlyMap<string, string | null>,
+  keyEdits: ReadonlyMap<string, string | null>,
+): string {
+  const lines = currentBody.length ? currentBody.split("\n") : [];
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const remainingTop = new Map(topEdits);
+  const remainingKeys = new Map(keyEdits);
+  const out: string[] = [];
+  const flush = (pending: Map<string, string | null>) => {
+    for (const line of pending.values()) if (line !== null) out.push(line);
+    pending.clear();
+  };
+  let inKeys = false;
+  let sawKeys = false;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    const section = sectionPattern.exec(line);
+    if (section) {
+      flush(inKeys ? remainingKeys : remainingTop);
+      inKeys = section[1] === "keys";
+      if (inKeys) sawKeys = true;
+      out.push(line);
+      i++;
+      continue;
+    }
+    const assignment = assignmentPattern.exec(line);
+    if (assignment) {
+      const pending = inKeys ? remainingKeys : remainingTop;
+      const key = assignment[1] ?? "";
+      const count = assignmentLineCount(lines, i);
+      if (pending.has(key)) {
+        const replacement = pending.get(key) ?? null;
+        if (replacement !== null) out.push(replacement);
+        pending.delete(key);
+      } else {
+        for (let k = 0; k < count; k++) out.push(lines[i + k] ?? "");
+      }
+      i += count;
+      continue;
+    }
+    out.push(line);
+    i++;
+  }
+  flush(inKeys ? remainingKeys : remainingTop);
+  if (!sawKeys && remainingKeys.size) {
+    const keyLines = [...remainingKeys.values()].filter(
+      (line): line is string => line !== null,
+    );
+    if (keyLines.length) {
+      if (out.length) out.push("");
+      out.push("[keys]", ...keyLines);
+    }
+  }
+  return out.length ? `${out.join("\n")}\n` : "";
+}
+
+/** The settings and keybindings a Settings-screen save actually changed. */
+export interface ConfigEdit {
+  /** Every key but `keys`, which `changedKeyActions` carries instead. */
+  changedKeys: readonly Exclude<keyof Config, "keys">[];
+  changedKeyActions: readonly KeyAction[];
+}
+
+/**
+ * The body for a save made while vsys is running, which keeps every line a
+ * hand edit added to `currentBody` since the session started: only the keys
+ * `edit` names get a line changed, added or removed, so an untouched
+ * setting keeps the file's current value, its line and any comment beside
+ * it, whether or not that value matches `base`'s default.
+ */
+export function patchConfigBody(
+  currentBody: string,
+  next: Config,
+  base: Config,
+  edit: ConfigEdit,
+): string {
+  const topEdits = new Map<string, string | null>(
+    edit.changedKeys.map((key) => [
+      key,
+      sameValue(key, next[key], base[key])
+        ? null
+        : `${key} = ${JSON.stringify(next[key])}`,
+    ]),
+  );
+  const keyEdits = new Map<string, string | null>(
+    edit.changedKeyActions.map((action) => [
+      action,
+      next.keys[action] === base.keys[action]
+        ? null
+        : `${action} = ${JSON.stringify(next.keys[action])}`,
+    ]),
+  );
+  return applyConfigLineEdits(currentBody, topEdits, keyEdits);
+}
