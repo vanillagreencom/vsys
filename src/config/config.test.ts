@@ -13,6 +13,7 @@ import { shippedAgentTools } from "./agent-tools";
 import {
   defaults,
   loadConfig,
+  patchConfigBody,
   saveConfig,
   serialize,
   validate,
@@ -393,4 +394,203 @@ test("serialize writes only settings and keybindings changed from the base", () 
   expect(
     serialize({ ...base, agentTools: [...base.agentTools].reverse() }),
   ).toBe("");
+});
+
+test("patchConfigBody reads an indented or commented [keys] header as the keys table", () => {
+  const base = defaults();
+  // A same-named top-level setting change must not land inside [keys], and
+  // the keybinding sharing that name must survive untouched.
+  const indented = patchConfigBody(
+    '  [keys]\nsort = "ctrl+q"\n',
+    { ...base, sort: "rss" },
+    base,
+    { changedKeys: ["sort"], changedKeyActions: [] },
+  );
+  expect(indented).toBe('sort = "rss"\n  [keys]\nsort = "ctrl+q"\n');
+  expect(Bun.TOML.parse(indented)).toEqual({
+    sort: "rss",
+    keys: { sort: "ctrl+q" },
+  });
+  // A keybinding-only save must add its line to the existing table, never
+  // open a second one.
+  const commented = patchConfigBody(
+    '  [keys] # my keys\nquit = "ctrl+q"\n',
+    { ...base, keys: { ...base.keys, help: "shift+/" } },
+    base,
+    { changedKeys: [], changedKeyActions: ["help"] },
+  );
+  expect(commented).toBe(
+    '  [keys] # my keys\nquit = "ctrl+q"\nhelp = "shift+/"\n',
+  );
+  expect((commented.match(/\[keys\]/g) ?? []).length).toBe(1);
+  expect(Bun.TOML.parse(commented)).toEqual({
+    keys: { quit: "ctrl+q", help: "shift+/" },
+  });
+});
+
+test("patchConfigBody edits or removes a quoted key in place, never duplicating it", () => {
+  const base = defaults();
+  const reverted = patchConfigBody(
+    '"historyHours" = 12\n',
+    { ...base, historyHours: 24 },
+    base,
+    { changedKeys: ["historyHours"], changedKeyActions: [] },
+  );
+  expect(reverted).toBe("");
+  const changed = patchConfigBody(
+    '"historyHours" = 12\n',
+    { ...base, historyHours: 6 },
+    base,
+    { changedKeys: ["historyHours"], changedKeyActions: [] },
+  );
+  expect(changed).toBe("historyHours = 6\n");
+  expect(Bun.TOML.parse(changed)).toEqual({ historyHours: 6 });
+});
+
+test("reverting a quoted string key to default removes the line rather than keeping its old value", () => {
+  const base = defaults();
+  const reverted = patchConfigBody(
+    '"sort" = "rss"\n',
+    { ...base, sort: "cpu" },
+    base,
+    { changedKeys: ["sort"], changedKeyActions: [] },
+  );
+  expect(reverted).toBe("");
+  expect(validate(Bun.TOML.parse(reverted), base).sort).toBe("cpu");
+});
+
+test("reverting a keybinding under [keys] to default removes the line rather than keeping its old value", () => {
+  const base = defaults();
+  const reverted = patchConfigBody(
+    '[keys]\nquit = "ctrl+q"\n',
+    { ...base, keys: { ...base.keys, quit: base.keys.quit } },
+    base,
+    { changedKeys: [], changedKeyActions: ["quit"] },
+  );
+  expect(reverted).not.toContain("ctrl+q");
+  expect(validate(Bun.TOML.parse(reverted), base).keys.quit).toBe(
+    base.keys.quit,
+  );
+});
+
+test("patchConfigBody leaves a hand-written multi-line array alone when an unrelated key changes", () => {
+  const base = defaults();
+  const body = 'columns = [\n  "name",\n  "cpu"\n]\n';
+  const untouched = patchConfigBody(
+    body,
+    { ...base, columns: ["name", "cpu"], refreshMs: 2000 },
+    base,
+    { changedKeys: ["refreshMs"], changedKeyActions: [] },
+  );
+  expect(untouched).toBe(`${body}refreshMs = 2000\n`);
+});
+
+test("patchConfigBody keeps a comment and an untouched hand-formatted multi-line key byte for byte", () => {
+  const base = defaults();
+  const body =
+    '# keep storage columns in this order\ncolumns = [\n  "name",\n  "cpu"\n]\nsort = "rss"\n';
+  const out = patchConfigBody(
+    body,
+    { ...base, sort: "rss", descending: false },
+    base,
+    { changedKeys: ["descending"], changedKeyActions: [] },
+  );
+  expect(out).toBe(`${body}descending = false\n`);
+});
+
+test("patchConfigBody refuses to edit a key whose current value spans more than one line", () => {
+  const base = defaults();
+  // vsys's own writer always emits one line per setting, so a span over more
+  // than one line is always a hand-written value; editing it from Settings
+  // would need to guess where it ends, which this never does.
+  const body = 'columns = [\n  "name",\n  "cpu"\n]\n';
+  expect(() =>
+    patchConfigBody(body, { ...base, columns: ["rss"] }, base, {
+      changedKeys: ["columns"],
+      changedKeyActions: [],
+    }),
+  ).toThrow("Settings save cannot edit columns: its line in config.toml");
+});
+
+test("patchConfigBody opens a [keys] table when a keybinding change has none to join", () => {
+  const base = defaults();
+  const out = patchConfigBody(
+    "refreshMs = 2000\n",
+    { ...base, refreshMs: 2000, keys: { ...base.keys, help: "shift+/" } },
+    base,
+    { changedKeys: [], changedKeyActions: ["help"] },
+  );
+  expect(out).toBe('refreshMs = 2000\n\n[keys]\nhelp = "shift+/"\n');
+});
+
+test("patchConfigBody refuses a write that would combine into a config the loader rejects", () => {
+  const base = defaults();
+  // A hand-edited pressureRed, valid alone, combines with a Settings-raised
+  // pressureAmber, also valid alone against the session's own stale
+  // pressureRed, into a pair the loader refuses.
+  expect(() =>
+    patchConfigBody(
+      "pressureRed = 15\n",
+      { ...base, pressureAmber: 20 },
+      base,
+      {
+        changedKeys: ["pressureAmber"],
+        changedKeyActions: [],
+      },
+    ),
+  ).toThrow("Pressure thresholds must increase");
+  // A hand-edited keybinding, valid alone, collides with a different
+  // keybinding the Settings screen is saving to the same key.
+  expect(() =>
+    patchConfigBody(
+      '[keys]\nhelp = "ctrl+q"\n',
+      { ...base, keys: { ...base.keys, quit: "ctrl+q" } },
+      base,
+      { changedKeys: [], changedKeyActions: ["quit"] },
+    ),
+  ).toThrow("Keybindings must be unique");
+});
+
+test("patchConfigBody refuses to edit a triple-quoted value rather than guess where it ends", () => {
+  const base = defaults();
+  // assignmentLineCount tracks only a single-character quote toggle, which an
+  // embedded, unescaped quote inside this triple-quoted string desyncs from
+  // where the excludeArgv assignment actually ends; isSingleLineValue never
+  // trusts that count for a key this save means to edit, so excludeArgv's
+  // multi-line span is refused by name rather than guessed, whether a value
+  // (sort) or a comment sits beside it.
+  const withValue = 'excludeArgv = [\n  """foo " bar""",\n]\nsort = "rss"\n';
+  expect(Bun.TOML.parse(withValue)).toEqual({
+    excludeArgv: ['foo " bar'],
+    sort: "rss",
+  });
+  expect(() =>
+    patchConfigBody(withValue, { ...base, excludeArgv: ['foo " bar'] }, base, {
+      changedKeys: ["excludeArgv"],
+      changedKeyActions: [],
+    }),
+  ).toThrow("Settings save cannot edit excludeArgv: its line in config.toml");
+  const withComment =
+    'excludeArgv = [\n  """foo " bar""",\n]\n# Keep this local exclusion note\n';
+  expect(() =>
+    patchConfigBody(
+      withComment,
+      { ...base, excludeArgv: ['foo " bar'] },
+      base,
+      { changedKeys: ["excludeArgv"], changedKeyActions: [] },
+    ),
+  ).toThrow("Settings save cannot edit excludeArgv: its line in config.toml");
+  // An unrelated key leaves excludeArgv's own line untouched (the line
+  // editor only ever copies a key it is not editing verbatim), so the
+  // comment beside it survives and this save does not refuse.
+  const kept = patchConfigBody(
+    withComment,
+    { ...base, refreshMs: 2000 },
+    base,
+    {
+      changedKeys: ["refreshMs"],
+      changedKeyActions: [],
+    },
+  );
+  expect(kept).toBe(`${withComment}refreshMs = 2000\n`);
 });

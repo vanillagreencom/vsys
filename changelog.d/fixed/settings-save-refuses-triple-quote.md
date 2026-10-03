@@ -1,0 +1,1 @@
+- A live Settings save now refuses, naming the key, to edit a setting whose config.toml value spans more than one line, rather than guess where it ends and risk losing a comment or value beside it.

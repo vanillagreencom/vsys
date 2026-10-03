@@ -568,3 +568,327 @@ export async function saveConfig(
 export function configBody(c: Config, agentTools: string[]): string {
   return serialize(c, defaults(agentTools));
 }
+
+// Bun.TOML.parse accepts a table header indented and followed by a comment,
+// and a key wrapped in matching quotes, the same as the bare forms; these
+// patterns recognize what the loader already does, so a hand-written file in
+// either style is read as the table or key it is, never mistaken for one.
+const sectionPattern = /^\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\](?:\s*#.*)?$/;
+const assignmentPattern =
+  /^\s*(?:"([A-Za-z_][A-Za-z0-9_]*)"|'([A-Za-z_][A-Za-z0-9_]*)'|([A-Za-z_][A-Za-z0-9_]*))\s*=/;
+
+/** The identifier `assignmentPattern` matched, bare or quoted alike. */
+function assignmentKey(match: RegExpExecArray): string {
+  return match[1] ?? match[2] ?? match[3] ?? "";
+}
+
+/**
+ * How many lines the assignment starting at `lines[start]` occupies, used
+ * only to skip past a key `applyConfigLineEdits` is not editing: a wrong
+ * count there just copies that many lines verbatim, changing nothing. More
+ * than one only for a hand-written array split across lines: this project's
+ * own writer always emits one line. This tracks only a single-character
+ * quote toggle, which an embedded, unescaped quote inside a TOML
+ * triple-quoted string desyncs from where the value actually ends; a key
+ * `applyConfigLineEdits` does edit never trusts this count for that reason,
+ * verifying with `isSingleLineValue` instead.
+ */
+function assignmentLineCount(lines: readonly string[], start: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  let count = 0;
+  for (let i = start; i < lines.length; i++) {
+    count++;
+    const text = lines[i] ?? "";
+    for (let pos = 0; pos < text.length; pos++) {
+      const ch = text[pos];
+      if (quote) {
+        if (quote === '"' && ch === "\\") pos++;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === "#") break;
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "[") depth++;
+      else if (ch === "]") depth--;
+    }
+    if (depth <= 0 && !quote) break;
+  }
+  return count;
+}
+
+/**
+ * Whether `line`, read alone as a standalone TOML document, already gives
+ * `key` the exact value `currentValue` holds for it in the real file's own
+ * full parse: proof this one line holds the key's whole value, with nothing
+ * carried over from an earlier or later line. A value that takes more than
+ * this line — a multi-line array, a string split across lines, a
+ * triple-quoted string opened here — parses differently alone, or not at
+ * all, and this reports false rather than guess from brackets or quotes.
+ */
+function isSingleLineValue(
+  line: string,
+  key: string,
+  currentValue: unknown,
+): boolean {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = Bun.TOML.parse(line) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  return Object.hasOwn(parsed, key) && sameTomlValue(parsed[key], currentValue);
+}
+
+/**
+ * Rewrites only the lines `topEdits` and `keyEdits` name, leaving every
+ * other line, comments and blank lines included, exactly as `currentBody`
+ * has it. A `null` edit value removes that key's line; any other string
+ * replaces it, or, for a key `currentBody` does not have, adds it. A new
+ * top-level line lands at the end of the top-level block, before `[keys]`
+ * when the file has one. A new `[keys]` line lands at the end of that table,
+ * which this function creates, after a blank line, when `keyEdits` needs one
+ * and `currentBody` has none. Refuses, throwing, a key or keybinding that
+ * `topEdits`/`keyEdits` names whose current line is not `isSingleLineValue`
+ * on its own: vsys's own writer always emits one line per setting, so only a
+ * hand-formatted value reaches this refusal, and changing it by hand is
+ * already how the reader put it there.
+ */
+function applyConfigLineEdits(
+  currentBody: string,
+  topEdits: ReadonlyMap<string, string | null>,
+  keyEdits: ReadonlyMap<string, string | null>,
+  currentTop: Readonly<Record<string, unknown>>,
+  currentKeysTable: Readonly<Record<string, unknown>>,
+): string {
+  const lines = currentBody.length ? currentBody.split("\n") : [];
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const remainingTop = new Map(topEdits);
+  const remainingKeys = new Map(keyEdits);
+  const out: string[] = [];
+  const flush = (pending: Map<string, string | null>) => {
+    for (const line of pending.values()) if (line !== null) out.push(line);
+    pending.clear();
+  };
+  let inKeys = false;
+  let sawKeys = false;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    const section = sectionPattern.exec(line);
+    if (section) {
+      flush(inKeys ? remainingKeys : remainingTop);
+      inKeys = section[1] === "keys";
+      if (inKeys) sawKeys = true;
+      out.push(line);
+      i++;
+      continue;
+    }
+    const assignment = assignmentPattern.exec(line);
+    if (assignment) {
+      const pending = inKeys ? remainingKeys : remainingTop;
+      const key = assignmentKey(assignment);
+      if (pending.has(key)) {
+        const currentValue = (inKeys ? currentKeysTable : currentTop)[key];
+        if (!isSingleLineValue(line, key, currentValue))
+          throw new Error(
+            `Settings save cannot edit ${key}: its line in config.toml holds more than this one line's value. Edit ${key} by hand in config.toml to one line, then Settings can save it again.`,
+          );
+        const replacement = pending.get(key) ?? null;
+        if (replacement !== null) out.push(replacement);
+        pending.delete(key);
+        i += 1;
+        continue;
+      }
+      const count = assignmentLineCount(lines, i);
+      for (let k = 0; k < count; k++) out.push(lines[i + k] ?? "");
+      i += count;
+      continue;
+    }
+    out.push(line);
+    i++;
+  }
+  flush(inKeys ? remainingKeys : remainingTop);
+  if (!sawKeys && remainingKeys.size) {
+    const keyLines = [...remainingKeys.values()].filter(
+      (line): line is string => line !== null,
+    );
+    if (keyLines.length) {
+      if (out.length) out.push("");
+      out.push("[keys]", ...keyLines);
+    }
+  }
+  return out.length ? `${out.join("\n")}\n` : "";
+}
+
+/** The settings and keybindings a Settings-screen save actually changed. */
+export interface ConfigEdit {
+  /** Every key but `keys`, which `changedKeyActions` carries instead. */
+  changedKeys: readonly Exclude<keyof Config, "keys">[];
+  changedKeyActions: readonly KeyAction[];
+}
+
+/** True for two values `Bun.TOML.parse` could produce that read the same. */
+function sameTomlValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b))
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, i) => sameTomlValue(v, b[i]))
+    );
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+    return [...keys].every((key) => sameTomlValue(left[key], right[key]));
+  }
+  return false;
+}
+
+/**
+ * Refuses a patch whose raw TOML, reparsed, differs anywhere from
+ * `currentBody`'s own parse except at the keys and keybindings `edit`
+ * names: the backstop proof, independent of which raw line carried it, that
+ * a setting or keybinding `applyConfigLineEdits` never meant to touch keeps
+ * its value. It compares values, never raw lines, so it never refuses a
+ * comment or a blank line that happens to sit inside the old or new text of
+ * a key this save does mean to change; `isSingleLineValue` is what keeps
+ * `applyConfigLineEdits` from touching such a line in the first place.
+ */
+function verifyOnlyNamedKeysChanged(
+  currentBody: string,
+  configText: string,
+  edit: ConfigEdit,
+): void {
+  let currentParsed: Record<string, unknown>;
+  let newParsed: Record<string, unknown>;
+  try {
+    currentParsed = Bun.TOML.parse(currentBody) as Record<string, unknown>;
+    newParsed = Bun.TOML.parse(configText) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(
+      `Settings save produced a config.toml this project's own loader refuses: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const changedTop = new Set<string>(edit.changedKeys);
+  const topKeys = new Set([
+    ...Object.keys(currentParsed),
+    ...Object.keys(newParsed),
+  ]);
+  for (const key of topKeys) {
+    if (key === "keys" || changedTop.has(key)) continue;
+    if (!sameTomlValue(currentParsed[key], newParsed[key]))
+      throw new Error(
+        `Settings save would change ${key}, which this save never touched: refusing to write a config.toml that moved content it did not mean to change`,
+      );
+  }
+  const changedActions = new Set<string>(edit.changedKeyActions);
+  const currentKeysTable = (currentParsed.keys ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const newKeysTable = (newParsed.keys ?? {}) as Record<string, unknown>;
+  const actions = new Set([
+    ...Object.keys(currentKeysTable),
+    ...Object.keys(newKeysTable),
+  ]);
+  for (const action of actions) {
+    if (changedActions.has(action)) continue;
+    if (!sameTomlValue(currentKeysTable[action], newKeysTable[action]))
+      throw new Error(
+        `Settings save would change the ${action} keybinding, which this save never touched: refusing to write a config.toml that moved content it did not mean to change`,
+      );
+  }
+}
+
+/**
+ * A patch this project's own loader cannot read back the way it was meant: a
+ * hand edit left in an untouched line combined with a value this patch wrote
+ * into a config `validate()` refuses whole, or a line `applyConfigLineEdits`
+ * could not place the way `patchConfigBody` intended. Thrown instead of
+ * writing the file, because a reader who then restarts vsys would meet a
+ * config.toml it cannot load, with no save-time error to explain why.
+ */
+function verifyPatchedBody(
+  configText: string,
+  next: Config,
+  base: Config,
+  edit: ConfigEdit,
+): void {
+  let reloaded: Config;
+  try {
+    const parsed = Bun.TOML.parse(configText) as Record<string, unknown>;
+    reloaded = validate(prepareConfigInput(parsed, base).input, base);
+  } catch (error) {
+    throw new Error(
+      `Settings save produced a config.toml this project's own loader refuses: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const key of edit.changedKeys) {
+    if (!sameValue(key, reloaded[key], next[key]))
+      throw new Error(
+        `Settings save did not take effect for ${key}: the written config.toml would load it as ${JSON.stringify(reloaded[key])}, not ${JSON.stringify(next[key])}`,
+      );
+  }
+  for (const action of edit.changedKeyActions) {
+    if (reloaded.keys[action] !== next.keys[action])
+      throw new Error(
+        `Settings save did not take effect for the ${action} keybinding: the written config.toml would load it as ${JSON.stringify(reloaded.keys[action])}, not ${JSON.stringify(next.keys[action])}`,
+      );
+  }
+}
+
+/**
+ * The body for a save made while vsys is running, which keeps every line a
+ * hand edit added to `currentBody` since the session started: only the keys
+ * `edit` names get a line changed, added or removed, so an untouched
+ * setting keeps the file's current value, its line and any comment beside
+ * it, whether or not that value matches `base`'s default. Refuses, throwing,
+ * a changed key or keybinding whose line in `currentBody` is not
+ * `isSingleLineValue`, rather than guess at a multi-line or triple-quoted
+ * value's real span: vsys's own writer always emits one line, so this names
+ * only a value the reader hand-formatted across more than one. Also refuses,
+ * throwing, rather than returning a body that would not load back the way it
+ * was meant to, when a hand edit this patch's own new value combines into an
+ * invalid config.
+ */
+export function patchConfigBody(
+  currentBody: string,
+  next: Config,
+  base: Config,
+  edit: ConfigEdit,
+): string {
+  const topEdits = new Map<string, string | null>(
+    edit.changedKeys.map((key) => [
+      key,
+      sameValue(key, next[key], base[key])
+        ? null
+        : `${key} = ${JSON.stringify(next[key])}`,
+    ]),
+  );
+  const keyEdits = new Map<string, string | null>(
+    edit.changedKeyActions.map((action) => [
+      action,
+      next.keys[action] === base.keys[action]
+        ? null
+        : `${action} = ${JSON.stringify(next.keys[action])}`,
+    ]),
+  );
+  const currentParsed = Bun.TOML.parse(currentBody) as Record<string, unknown>;
+  const currentKeysTable = (currentParsed.keys ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const configText = applyConfigLineEdits(
+    currentBody,
+    topEdits,
+    keyEdits,
+    currentParsed,
+    currentKeysTable,
+  );
+  verifyOnlyNamedKeysChanged(currentBody, configText, edit);
+  verifyPatchedBody(configText, next, base, edit);
+  return configText;
+}

@@ -230,6 +230,89 @@ test("a settings save writes where the path resolves at save time", async () => 
     f.cleanup();
   }
 });
+test("a Settings save keeps a hand edit and a comment made while vsys runs", async () => {
+  const f = fixture();
+  const path = join(f.root, "config.toml");
+  const h = new History(f.config);
+  const session = new Session(
+    f.config,
+    () => path,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    { agentToolsPath: f.agentToolsPath },
+  );
+  try {
+    f.write(path, '# keep RSS first on this box\nsort = "rss"\n');
+    // One unrelated toggle on the Settings screen.
+    await session.configure({ ...f.config, descending: false });
+    const body = readFileSync(path, "utf8");
+    const after = await loadConfig(path, f.agentToolsPath);
+    expect({
+      comment: body.includes("# keep RSS"),
+      sort: after.sort,
+      descending: after.descending,
+    }).toEqual({ comment: true, sort: "rss", descending: false });
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+test("a Settings save that reverts a setting to default removes its line and keeps a comment beside it", async () => {
+  const f = fixture();
+  const path = join(f.root, "config.toml");
+  f.write(path, "# a note about this file\nhistoryHours = 12\n");
+  const config = { ...f.config, historyHours: 12 };
+  const h = new History(config);
+  const session = new Session(
+    config,
+    () => path,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    { agentToolsPath: f.agentToolsPath },
+  );
+  try {
+    await session.configure({ ...config, historyHours: 24 });
+    const body = readFileSync(path, "utf8");
+    expect(body).toContain("# a note about this file");
+    expect(body).not.toContain("historyHours");
+    expect((await loadConfig(path, f.agentToolsPath)).historyHours).toBe(24);
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
+test("a Settings save of a new keybinding preserves a hand-edited one in the keys table", async () => {
+  const f = fixture();
+  const path = join(f.root, "config.toml");
+  const h = new History(f.config);
+  const session = new Session(
+    f.config,
+    () => path,
+    { sample: async () => emptySnapshot(1000) },
+    h,
+    { frame: () => {}, error: () => {} },
+    { agentToolsPath: f.agentToolsPath },
+  );
+  try {
+    f.write(path, '[keys]\nquit = "ctrl+q"\n');
+    await session.configure({
+      ...f.config,
+      keys: { ...f.config.keys, help: "shift+/" },
+    });
+    const body = readFileSync(path, "utf8");
+    const after = await loadConfig(path, f.agentToolsPath);
+    expect(body).toContain('quit = "ctrl+q"');
+    expect({ quit: after.keys.quit, help: after.keys.help }).toEqual({
+      quit: "ctrl+q",
+      help: "shift+/",
+    });
+  } finally {
+    session.stop();
+    f.cleanup();
+  }
+});
 test("source jobs close even when history shutdown fails", () => {
   const f = fixture();
   const h = new History(f.config);

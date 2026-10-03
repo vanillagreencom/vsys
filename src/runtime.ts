@@ -14,9 +14,12 @@ import {
 import { writeFileAtomic } from "./config/atomic";
 import {
   type Config,
-  configBody,
+  defaults,
+  type KeyAction,
   loadConfigState,
+  patchConfigBody,
   sameStringSet,
+  sameValue,
   validate,
 } from "./config/config";
 import { notify } from "./model/alerts";
@@ -223,6 +226,7 @@ export class Session {
       if (this.latest)
         this.events.frame(this.latest, this.history, this.config, path);
       const currentState = await loadConfigState(path, this.agentToolsPath);
+      const currentBody = (await readOptionalFile(path)) ?? "";
       let agentToolSave: AgentToolNamesSave | null = null;
       if (agentToolsChanged) {
         if (currentState.agentToolsPinned) {
@@ -256,10 +260,29 @@ export class Session {
       } else if (!currentState.agentToolsPinned) {
         next = { ...next, agentTools: currentState.config.agentTools };
       }
-      const configText = configBody(
-        next,
+      // Only the keys and keybindings this Settings save itself changed get a
+      // line touched in config.toml: a key a hand edit changed in the file
+      // since the session started, untouched by this save, keeps its line
+      // and any comment beside it instead of reverting to what serializing
+      // the session's own full config would write.
+      const changedKeys = (Object.keys(this.config) as (keyof Config)[]).filter(
+        (key) =>
+          key !== "agentTools" &&
+          key !== "keys" &&
+          !sameValue(key, this.config[key], next[key]),
+      ) as Exclude<keyof Config, "keys" | "agentTools">[];
+      const changedKeyActions = (
+        Object.keys(this.config.keys) as KeyAction[]
+      ).filter((action) => this.config.keys[action] !== next.keys[action]);
+      const base = defaults(
         agentToolSave?.agentTools ?? currentState.layeredAgentTools,
       );
+      const configText = patchConfigBody(currentBody, next, base, {
+        changedKeys: agentToolsChanged
+          ? [...changedKeys, "agentTools"]
+          : changedKeys,
+        changedKeyActions,
+      });
       const collectionChanged = collectionKeys.some((k) =>
         k === "agentTools"
           ? !sameStringSet(this.config.agentTools, next.agentTools)
