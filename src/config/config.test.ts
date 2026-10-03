@@ -528,3 +528,23 @@ test("patchConfigBody refuses a write that would combine into a config the loade
     ),
   ).toThrow("Keybindings must be unique");
 });
+
+test("patchConfigBody refuses rather than silently drops an untouched line beside a triple-quoted string", () => {
+  const base = defaults();
+  // The scanner tracks quote state one character at a time, with no notion
+  // of TOML's triple-quote delimiter: the embedded, unescaped quote inside
+  // this valid triple-quoted string desyncs its idea of where the
+  // excludeArgv assignment ends, so it would otherwise swallow the untouched
+  // sort line below it. This never writes a shortened file; it refuses.
+  const body = 'excludeArgv = [\n  """foo " bar""",\n]\nsort = "rss"\n';
+  expect(Bun.TOML.parse(body)).toEqual({
+    excludeArgv: ['foo " bar'],
+    sort: "rss",
+  });
+  expect(() =>
+    patchConfigBody(body, { ...base, excludeArgv: ['foo " bar'] }, base, {
+      changedKeys: ["excludeArgv"],
+      changedKeyActions: [],
+    }),
+  ).toThrow("sort, which this save never touched");
+});
