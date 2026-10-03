@@ -266,3 +266,11 @@ reason = "Generated from vanillagreencom/kendex; fix the upstream package and re
 [[bot-instructions.exclusions.path]]
 glob = ".pi/prompts/**"
 reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".github/agents/**"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
+
+[[bot-instructions.exclusions.path]]
+glob = ".github/hooks/*"
+reason = "Generated from vanillagreencom/kendex; fix the upstream package and refresh."
