@@ -26,7 +26,7 @@ Reads go through `cache`; writes go through the live commands, which write throu
 | Resource | Actions |
 |----------|---------|
 | `issues` | list, get, bulk-get, create, update, bulk-update, archive, trash/delete, children, list-relations, add-relation, remove-relation, activate, block, unblock, complete, validate-completion |
-| `comments` / `labels` / `project-labels` | list, create, update, delete |
+| `comments` / `labels` / `project-labels` | list, create, update, delete (`labels` also audit) |
 | `projects` | list, get, create, update, delete, list-dependencies, add-dependency, remove-dependency, post-update, list-updates, reorder, set-sort-order |
 | `initiatives` / `milestones` | list, get, create, update, delete (`initiatives` also add-project, remove-project) |
 | `teams` / `users` / `statuses` / `documents` | list, get (`users` also has `me`; `teams keys` reads `{urlKey, keys}` for outbound tracker links without changing `teams list`'s array) |
@@ -57,7 +57,7 @@ The cache is `.cache/linear` under the physical worktree root ([README.md](READM
 
 ## Team Target
 
-`LINEAR_TEAM` has no default. With it unset every write refuses before any API call; reads drop the team filter. `--team <key-or-name>` overrides `LINEAR_TEAM` per call only on `issues create`, `projects create`, `cycles create`, `labels create`, `cycles list`, `statuses list` and `statuses get`; the `--team` filter of `issues list`, `projects list` and `labels list` takes a key or name too. On these reads and `statuses list|get`, an empty or dash-led `--team` value refuses before any request rather than reading every team. Run `auth-check --strict` before the first mutation in a project.
+`LINEAR_TEAM` has no default. With it unset every write refuses before any API call; reads drop the team filter. `--team <key-or-name>` overrides `LINEAR_TEAM` per call only on `issues create`, `projects create`, `cycles create`, `labels create`, `labels audit`, `cycles list`, `statuses list` and `statuses get`; the `--team` filter of `issues list`, `projects list` and `labels list` takes a key or name too. On these reads and `statuses list|get`, an empty or dash-led `--team` value refuses before any request rather than reading every team. Run `auth-check --strict` before the first mutation in a project.
 
 Set `LINEAR_APP_TOKEN` or the client pair in the project's private env file (`.env.local` unless `KENDEX_ENV_FILE` names another); `op://` references are supported. Use `auth-mint` on the host with the real pair to publish a token to the fleet. Credential precedence, expiry, caching and attribution: [README.md § Settings](README.md#settings).
 
@@ -78,6 +78,8 @@ Prepare dependent repository corrections before the label change. After an autho
 Never create a tracked issue directly from an orchestration or review session. Route it through the TPM pipeline (project-management skill), which owns labels, project, priority, estimate, and relations.
 
 Where `LINEAR_AGENT_LABELS` declares a taxonomy, `issues create` refuses before any API call a create with no agent label from that set (`--no-agent-label` permits a deliberate bare create). Where `LINEAR_REQUIRE_REACH` is set, it refuses a description with no `Reached by:` line and, with `--review-born` and `--priority 2`, one with no `Symptom:` line; a placeholder or null token counts as no line. Each guard is its own setting. What the lines say is the author's to judge; the rule is the project-management skill's SKILL.md § Disposition, **Name what reaches it**, which is also where a create decides whether it is review-born.
+
+Where the repository declares a label taxonomy ([project-management labels.md § Project Taxonomy Contract](../project-management/references/labels.md#project-taxonomy-contract)), `issues create`, `issues update --labels`, `issues bulk-update --labels`, `issues activate` and `issues block` refuse before any write a label it does not declare, naming the label and the taxonomy file; a label the issue already carries is kept, and `issues create` also refuses a declared label Linear does not have. `labels create` and `labels update --name` refuse an undeclared name, and a name a workspace label already uses (on create, only a `--team` label). `labels audit` lists the undeclared labels on the team's open issues and the same-name team/workspace pairs. With no taxonomy declared, none of this applies.
 
 ## Attachments
 
