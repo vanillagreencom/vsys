@@ -6,7 +6,6 @@ import { switchCommand } from "../collect/tmux";
 import type { Config } from "../config/config";
 import {
   type LaneIntent,
-  laneActions,
   laneIntent,
   laneTarget,
 } from "../model/actions";
@@ -366,7 +365,7 @@ export function Agent({
         : [{ kind: "section", name }],
     ),
     ...(open.has("Actions") && target
-      ? laneActions.map(
+      ? target.actions.map(
           (action) =>
             ({ kind: "action", intent: laneIntent(action, target) }) as const,
         )

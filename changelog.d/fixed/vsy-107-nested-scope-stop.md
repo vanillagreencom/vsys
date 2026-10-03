@@ -1,0 +1,1 @@
+- Stop is no longer offered for a scope nested inside a container, whose bare name could stop the user manager and end the session; Freeze and Thaw still are.

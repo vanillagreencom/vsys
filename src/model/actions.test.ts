@@ -1,6 +1,9 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { join } from "node:path";
+import { Collector } from "../collect/collector";
 import { defaults } from "../config/config";
-import { emptySnapshot, laneSnapshot } from "../test/fixture";
+import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import {
   type LaneAction,
   type LaneCommand,
@@ -15,6 +18,10 @@ import {
 import type { Lane } from "./types";
 
 const c = defaults();
+const fixtures: ReturnType<typeof fixture>[] = [];
+afterEach(() => {
+  for (const f of fixtures.splice(0)) f.cleanup();
+});
 const dir = `${c.cgroupRoot}/agents.slice/a.scope`;
 const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes });
 /**
@@ -47,6 +54,7 @@ test("each action names the lane's own scope and the exact work it would do", ()
     mainPid: 40,
     scope: "a.scope",
     directory: dir,
+    actions: ["Freeze", "Thaw", "Stop"],
   });
   if (target === null) throw new Error("the fixture lane runs in a scope");
   const rows: [LaneAction, string, LaneEffect][] = [
@@ -97,6 +105,58 @@ test("a lane vsys cannot address by scope gets no target at all", () => {
     }).toEqual({ reason, target: null });
 });
 
+test("Stop is offered only for a scope systemd created as a unit", () => {
+  // Stop names the scope by its bare name, so a scope systemd did not create
+  // would name whichever unit holds that name. Freeze and Thaw write the
+  // lane's own directory and stay.
+  const rows: [string, LaneAction[]][] = [
+    ["a.scope", ["Freeze", "Thaw", "Stop"]],
+    ["agents.slice/a.scope", ["Freeze", "Thaw", "Stop"]],
+    ["user.slice/libpod-abc.scope/init.scope", ["Freeze", "Thaw"]],
+    ["user.slice/libpod-abc.scope/container/init.scope", ["Freeze", "Thaw"]],
+  ];
+  for (const [cgroup, actions] of rows)
+    expect({
+      cgroup,
+      actions: laneTarget(laneSnapshot({ cgroup }), c)?.actions,
+    }).toEqual({ cgroup, actions });
+});
+
+// A rootless container booted with systemd and a memory limit under the floor
+// (`podman run --memory=512m <systemd image>`): the container's own systemd
+// sits in a nested `init.scope`, and the capped ancestor makes it a lane. To
+// the user manager that bare name is its own `user@UID.service/init.scope`,
+// and SIGTERM there ends the reader's whole session.
+test("Stop on a scope nested in a capped container never names the user manager's init.scope", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const container = "user.slice/libpod-abc.scope";
+  const nested = `${container}/container/init.scope`;
+  f.group("user.slice");
+  f.group(container);
+  f.write(join(f.config.cgroupRoot, container, "memory.max"), "536870912");
+  f.group(`${container}/container`);
+  f.group(nested, [500]);
+  f.proc(500, nested, { command: ["/sbin/init"], comm: "systemd" });
+  f.group("agents.slice/a.scope", [40]);
+  const s = await new Collector(f.config, 100, 4096).sample(1000);
+  const resolve = (cgroup: string, action: LaneAction) => {
+    const lane = present(
+      s.lanes.find((l) => l.cgroup === cgroup),
+      `the ${cgroup} lane`,
+    );
+    const target = present(laneTarget(lane, f.config) ?? undefined, cgroup);
+    return resolveIntent(laneIntent(action, target), s, f.config);
+  };
+  expect(resolve(nested, "Stop").state).toBe("unaddressable");
+  expect(resolve(nested, "Freeze").state).toBe("ready");
+  const stop = resolve("agents.slice/a.scope", "Stop");
+  expect(stop.state === "ready" ? stop.command.effect : stop.state).toEqual({
+    kind: "run",
+    argv: ["systemctl", "--user", "kill", "--signal=TERM", "a.scope"],
+  });
+});
+
 test("a copied command survives an escaped scope name and a path with a space", () => {
   // Real scope names carry systemd's own escapes: the Resources screen on a
   // desktop machine shows app-Hyprland-chromium\x2dpersonal-af7ff2b7.scope.
@@ -109,6 +169,7 @@ test("a copied command survives an escaped scope name and a path with a space", 
     mainPid: lane.mainPid,
     scope,
     directory: `${root}/agents.slice/${scope}`,
+    actions: ["Freeze", "Thaw", "Stop"],
   });
   if (target === null) throw new Error("the fixture lane runs in a scope");
   const freeze = commandFor("Freeze", target, [lane], {
