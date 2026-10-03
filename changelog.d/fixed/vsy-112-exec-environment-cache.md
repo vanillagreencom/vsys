@@ -1,0 +1,1 @@
+- An agent exec'd from its scope's own shell no longer keeps that shell's account, name, pane, title or jobserver value for its whole life; the dashboard reads the agent's own values after the exec.

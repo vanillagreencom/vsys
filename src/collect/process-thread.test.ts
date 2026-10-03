@@ -191,7 +191,7 @@ test("a collector on a thread publishes the snapshot a collector without one doe
   }
 });
 
-test("exit, identity reuse and a changed command line each read fresh through the thread", async () => {
+test("exit, identity reuse, a changed command line and an unchanged one each read through the thread as execve requires", async () => {
   const f = setup();
   f.group("agents.slice/a.scope", [40, 41]);
   f.proc(40, "agents.slice/a.scope", {
@@ -207,7 +207,9 @@ test("exit, identity reuse and a changed command line each read fresh through th
 
   // Exit: the process is gone and nothing is reported against it.
   rmSync(join(f.config.procRoot, "41"), { recursive: true });
-  // A changed command line under the same identity is read again, not kept.
+  // execve() keeps a process's pid and start time but replaces its
+  // environment, so a changed command line under the same identity is read
+  // again rather than kept.
   f.proc(40, "agents.slice/a.scope", {
     command: [claudeLink, "--resume"],
     env: "CLAUDE_CONFIG_DIR=/accounts/changed\0",
@@ -218,8 +220,21 @@ test("exit, identity reuse and a changed command line each read fresh through th
   expect(second.procs.map((p) => p.pid)).toEqual([40]);
   expect(second.procs[0]?.command).toEqual([claudeLink, "--resume"]);
   expect(second.procs[0]?.cpuPercent).toBe(50);
-  // The launch environment is fixed for one identity, so it stays cached.
-  expect(second.procs[0]?.env).toEqual({ CLAUDE_CONFIG_DIR: "/accounts/work" });
+  expect(second.procs[0]?.env).toEqual({
+    CLAUDE_CONFIG_DIR: "/accounts/changed",
+  });
+
+  // An unchanged command line under the same identity keeps the cached read,
+  // even though the environ file on disk now differs.
+  f.proc(40, "agents.slice/a.scope", {
+    command: [claudeLink, "--resume"],
+    env: "CLAUDE_CONFIG_DIR=/accounts/stale\0",
+    ticks: 61,
+  });
+  const third = await thread.collect(request(2500, [40]), live());
+  expect(third.procs[0]?.env).toEqual({
+    CLAUDE_CONFIG_DIR: "/accounts/changed",
+  });
 
   // Reuse: the same id with a later start is another process. Its counters
   // and environment are its own.
@@ -231,6 +246,31 @@ test("exit, identity reuse and a changed command line each read fresh through th
   const reused = await thread.collect(request(3000, [40]), live());
   expect(reused.procs[0]?.cpuPercent).toBeNull();
   expect(reused.procs[0]?.env).toEqual({ CLAUDE_CONFIG_DIR: "/accounts/new" });
+});
+
+test("a scope main that execs from bash into an agent reads the new account on the next sample", async () => {
+  const f = setup();
+  f.group("agents.slice/b.scope", [80]);
+  f.proc(80, "agents.slice/b.scope", {
+    command: ["/bin/bash"],
+    comm: "bash",
+  });
+  const thread = owned(
+    new ProcessThread(f.config, 100, 4096, shippedAgentTools),
+  );
+  const before = await thread.collect(request(1000, [80]), live());
+  expect(before.procs[0]?.tool).toBeNull();
+  expect(before.procs[0]?.env).toEqual({});
+
+  // execve() replaces /proc/PID/environ but keeps the pid and start time, so
+  // the shell's cached (empty) environment must not survive the exec.
+  f.proc(80, "agents.slice/b.scope", {
+    command: [claudeLink],
+    env: "CLAUDE_CONFIG_DIR=/accounts/work\0",
+  });
+  const after = await thread.collect(request(2000, [80]), live());
+  expect(after.procs[0]?.tool).toBe("claude");
+  expect(after.procs[0]?.env).toEqual({ CLAUDE_CONFIG_DIR: "/accounts/work" });
 });
 
 test("a new thread for new settings reads under those settings and the old one ends", async () => {
