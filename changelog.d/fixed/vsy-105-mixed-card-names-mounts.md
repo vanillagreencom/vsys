@@ -1,0 +1,1 @@
+- A mixed damaged-files card's next step now names the specific mount each clause addresses, instead of a generic "that filesystem"/"these filesystems".

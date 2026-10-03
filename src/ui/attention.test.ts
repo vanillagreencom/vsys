@@ -1507,17 +1507,20 @@ test("a damaged-files card keeps a readable filesystem's own count beside one th
   expect(said(card)).not.toContain("no longer available");
   // /b has no report of its own, so the next step sends the reader to check
   // it first, before telling them to restore /a's own named damage as if
-  // every filesystem in the card already had a report in hand.
+  // every filesystem in the card already had a report in hand. Each clause
+  // names its own mount rather than a generic "that filesystem", so the
+  // reader can tell which instruction is theirs to act on for which mount.
   expect(card?.next).toContain(
-    "run a check on that filesystem to find out which files hold the damage",
+    "run a check on /b to find out which files hold the damage",
   );
-  expect(card?.next).toContain("open the filesystem, then restore");
+  expect(card?.next).toContain("open /a, then restore");
   expect(card?.next).not.toContain("each of these filesystems");
+  expect(card?.next).not.toContain("that filesystem");
   // The first affected filesystem still lands the card, VSY-98's precedent.
   expect(card?.target).toEqual({ kind: "path", path: "a" });
 });
 
-test("a damaged-files card's mixed next step pluralizes each clause by its own count, not the card's total", () => {
+test("a damaged-files card's mixed next step names each clause's own mounts, not the card's total", () => {
   const c = defaults();
   const unreadFs = (s: Snapshot, fsid: string, mount: string) => {
     s.storage.volumes.push(
@@ -1564,8 +1567,9 @@ test("a damaged-files card's mixed next step pluralizes each clause by its own c
     });
   };
   // Two unread filesystems beside one known one: the check-first clause must
-  // pluralize on its own two, the remedy clause stay singular on its own
-  // one, neither reading off the card's total of three.
+  // name its own two mounts, the remedy clause its own one mount, neither
+  // reading off the card's total of three or falling back to the generic
+  // "that filesystem"/"each of these filesystems" phrasing.
   const moreUnread = emptySnapshot();
   knownFs(moreUnread, "a", "/a");
   unreadFs(moreUnread, "b", "/b");
@@ -1574,15 +1578,11 @@ test("a damaged-files card's mixed next step pluralizes each clause by its own c
     (i) => i.id === "damaged-files",
   );
   expect(moreUnreadCard?.next).toContain(
-    "run a check on each of these filesystems to find out which files hold the damage",
+    "run a check on /b, /c to find out which files hold the damage",
   );
-  expect(moreUnreadCard?.next).toContain("open the filesystem, then restore");
-  expect(moreUnreadCard?.next).not.toContain(
-    "run a check on that filesystem to find out",
-  );
-  expect(moreUnreadCard?.next).not.toContain(
-    "open each of these filesystems, then restore",
-  );
+  expect(moreUnreadCard?.next).toContain("open /a, then restore");
+  expect(moreUnreadCard?.next).not.toContain("that filesystem");
+  expect(moreUnreadCard?.next).not.toContain("each of these filesystems");
   // The reverse asymmetry: one unread filesystem beside two known ones.
   const moreKnown = emptySnapshot();
   knownFs(moreKnown, "a", "/a");
@@ -1592,17 +1592,11 @@ test("a damaged-files card's mixed next step pluralizes each clause by its own c
     (i) => i.id === "damaged-files",
   );
   expect(moreKnownCard?.next).toContain(
-    "run a check on that filesystem to find out which files hold the damage",
+    "run a check on /c to find out which files hold the damage",
   );
-  expect(moreKnownCard?.next).toContain(
-    "open each of these filesystems, then restore",
-  );
-  expect(moreKnownCard?.next).not.toContain(
-    "run a check on each of these filesystems to find out",
-  );
-  expect(moreKnownCard?.next).not.toContain(
-    "open the filesystem, then restore",
-  );
+  expect(moreKnownCard?.next).toContain("open /a, /b, then restore");
+  expect(moreKnownCard?.next).not.toContain("that filesystem");
+  expect(moreKnownCard?.next).not.toContain("each of these filesystems");
 });
 
 test("a damaged-files card's block total discloses a filesystem whose own block count is unread, independent of its files", () => {

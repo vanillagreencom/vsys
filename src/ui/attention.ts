@@ -341,36 +341,53 @@ function copy(
       const unreadNote = unread
         ? ` ${count(unread, "filesystem")} here ${p(unread, "has", "have")} no report naming its damage, so the damage there is not in this count.`
         : "";
+      // `cause.paths` and `cause.damage` are built from the same
+      // `damaged.map(...)` call and so share one index in `paths` order (see
+      // `Cause.damage`'s own doc comment). A mixed card's two instructions
+      // each address a different subset of that one list, so the reader needs
+      // each subset's own mounts named, not just its count.
+      const isUnread = (i: number): boolean => cause.damage[i]?.files === null;
+      const unreadMounts = cause.paths.filter((_, i) => isUnread(i));
+      const knownMounts = cause.paths.filter((_, i) => !isUnread(i));
+      // The plural clause's own group phrase, substituted with the specific
+      // mounts it covers when a mixed card names a subset instead of the
+      // whole card's filesystems.
+      const groupPhrase = "each of these filesystems";
+      const namedClause = (text: string, names: string[]): string =>
+        text.replace(groupPhrase, list(names));
       // [singular, plural] pairs; `p()` below picks between them once rather
       // than at each branch. `checkUnread` is read with `unread`'s own count,
       // scoped to the filesystems that stayed unread; `knownRemedy` with
       // `known.length`'s, scoped to the ones a report speaks for.
       const checkUnread: [string, string] = [
         "Open Storage and run a check on that filesystem to find out which files hold the damage.",
-        "Open Storage and run a check on each of these filesystems to find out which files hold the damage.",
+        `Open Storage and run a check on ${groupPhrase} to find out which files hold the damage.`,
       ];
       const knownRemedy: [string, string] =
         !files && !unnamed
           ? [
               "Open Storage and check the filesystem again; an address with no file clears on the next check.",
-              "Open Storage and check each of these filesystems again; an address with no file clears on the next check.",
+              `Open Storage and check ${groupPhrase} again; an address with no file clears on the next check.`,
             ]
           : !files
             ? [
                 "Open Storage and read the check report; restore what the unnamed blocks held from a backup or a snapshot.",
-                "Open Storage and read the check report for each of these filesystems; restore what the unnamed blocks held from a backup or a snapshot.",
+                `Open Storage and read the check report for ${groupPhrase}; restore what the unnamed blocks held from a backup or a snapshot.`,
               ]
             : [
                 "Open Storage and open the filesystem, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
-                "Open Storage and open each of these filesystems, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.",
+                `Open Storage and open ${groupPhrase}, then restore the damaged data from a backup or a snapshot; more than one file can share a block, and an older reporter may have listed only the block's start, so the one that failed may not be among the names shown.`,
               ];
       // A mixed card never tells the reader to restore from a report as if
       // every damaged filesystem had one: the unread filesystems take their
-      // own check-first instruction before the readable ones' remedy.
+      // own check-first instruction before the readable ones' remedy. Neither
+      // clause leaves the reader to guess which mount it addresses: a mixed
+      // card names each subset's own mounts instead of the generic phrase the
+      // single-state branches below keep.
       const next = allUnread
         ? p(paths, ...checkUnread)
         : unread
-          ? `${p(unread, ...checkUnread)} ${p(known.length, ...knownRemedy)}`
+          ? `${namedClause(checkUnread[1], unreadMounts)} ${namedClause(knownRemedy[1], knownMounts)}`
           : p(paths, ...knownRemedy);
       return {
         word: "Danger",
