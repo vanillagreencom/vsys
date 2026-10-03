@@ -269,17 +269,15 @@ pane_has_child() {
 }
 
 # Read the provider's documented status verb, not the local ssh process.
-# Returns 0 for running, 1 for exited, 2 for a failed read, 3 for an absent verb.
-# An absent status verb leaves pane judgment in place. A failed or malformed read
-# cannot prove an exit, even when the captured screen shows a shell prompt.
+# Returns 0 for running, 1 for exited, 2 for a failed read. The caller asks
+# only a host whose kind declares status=verb, so a provider answering the
+# absent-verb 2 is a provider fault, never a pane to judge instead. A failed
+# or malformed read cannot prove an exit, even when the captured screen shows
+# a shell prompt.
 pane_has_remote_harness() { # LANE_HOST ITEM HARNESS
   local answer
   LANE_PROBE_RC=0
   answer="$("$1" status --item "$2" --harness "$3")" || LANE_PROBE_RC=$?
-  if [[ "$LANE_PROBE_RC" -eq 2 ]]; then
-    printf 'lane-state: harness-probe-unsupported item=%s status=2 judgment=pane\n' "$2" >&2
-    return 3
-  fi
   if [[ "$LANE_PROBE_RC" -eq 0 ]]; then
     case "$answer" in
       running) return 0 ;;
@@ -908,7 +906,6 @@ lane_state() {
       0) ;;
       1) LANE_EXIT_SOURCE=provider; printf -v "$_ls_out" exited; return 0 ;;
       2) printf -v "$_ls_out" unjudged; return 0 ;;
-      3) ;; # The provider has no status verb; judge the pane below.
     esac
   elif is_bare_shell "$_ls_cmd" && [[ -n "$_ls_pid" ]]; then
     pane_has_child "$_ls_pid" || _ls_rc=$?
@@ -1043,19 +1040,22 @@ lane_key_tracker() {
   esac
 }
 
-# LANE_MERGED_JQ defines `lane_merged($branch; $owner; $since)`, the one
-# filter over a `gh pr list --state merged` array answering which pull requests
-# are a lane's own: head branch equal to the item key lower-cased, head owner
-# equal to the repository owner (a head GitHub returns with no owner, a
-# deleted fork, is not the lane's), merged at or after the epoch $since. Each
-# kept pull request gains `at`, its merge epoch. A caller prepends it to its
-# own program: jq -r "$LANE_MERGED_JQ"' lane_merged($b; $o; $s)[] | ...'.
-# mergedAt carries fractional seconds on some responses, which fromdateiso8601
-# refuses, so they are cut first.
-LANE_MERGED_JQ='def lane_merged($branch; $owner; $since):
+# LANE_MERGED_JQ defines `lane_own($branch; $owner)`, the one filter over a
+# `gh pr list` row answering whether a pull request is a lane's own: head
+# branch equal to the item key lower-cased, head owner equal to the repository
+# owner (a head GitHub returns with no owner, a deleted fork, is not the
+# lane's). Over a `--state merged` array, `lane_merged($branch; $owner;
+# $since)` keeps the lane's own merged at or after the epoch $since, each
+# gaining `at`, its merge epoch. A caller prepends it to its own program:
+# jq -r "$LANE_MERGED_JQ"' lane_merged($b; $o; $s)[] | ...'. mergedAt carries
+# fractional seconds on some responses, which fromdateiso8601 refuses, so they
+# are cut first.
+LANE_MERGED_JQ='def lane_own($branch; $owner):
+  select((.headRefName | ascii_downcase) == ($branch | ascii_downcase))
+  | select(((.headRepositoryOwner.login // "") | ascii_downcase) == ($owner | ascii_downcase));
+def lane_merged($branch; $owner; $since):
   [ .[]
-    | select((.headRefName | ascii_downcase) == ($branch | ascii_downcase))
-    | select(((.headRepositoryOwner.login // "") | ascii_downcase) == ($owner | ascii_downcase))
+    | lane_own($branch; $owner)
     | select(.mergedAt != null)
     | . + {at: (.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)}
     | select(.at >= $since) ];'

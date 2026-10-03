@@ -215,6 +215,16 @@ The long pass's events, checked and reported in this order:
                              such diagnostic. Reported once, again when the
                              cause changes, and every ORCH_OVERSEER_MARK_REPEAT
                              long passes while it stands. A success clears it.
+                             A new pair is reported only when its newer run is
+                             the newest run the watch has read and not yet
+                             judged. A pair that would open an incident, or
+                             any pair with no run recorded, is reported only
+                             when its newer run is also the newest completed
+                             run in the unfiltered run list. A later attempt
+                             of a re-run is newer. A page older than the
+                             newest run read, or a pair that list does not
+                             confirm, prints refresh-stale on stderr and
+                             judges nothing.
                              A repository without that workflow is skipped.
                              A failed read prints refresh-unread on stderr,
                              leaves the failure pair intact when the run list
@@ -275,7 +285,23 @@ The long pass's events, checked and reported in this order:
                              a relaunch renews, so the line after a relaunch
                              is a second stall. Reported once and again every
                              ORCH_OVERSEER_MARK_REPEAT passes while it stands;
-                             a record whose file once stood is never reported
+                             a record whose file once stood is never reported.
+                             A record whose host kind declares files=none, a
+                             cloud session, writes no file: its open pull
+                             request on the item branch stands in for it
+  EVENT lane-stalled <item> age=<secs>
+                             a running record whose host kind declares
+                             status=none, a cloud session, has an open pull
+                             request on the item branch whose head commit and
+                             body, its `## Lane status`, have not changed for
+                             ORCH_WATCH_LANE_STALL_SECS: one `gh pr list` per
+                             such lane per repository per long pass, shared
+                             with the start-stall check, where a fork's pull
+                             request on the branch name never counts, the
+                             watch state keeping the last head and a body
+                             digest. Reported once
+                             and again every ORCH_OVERSEER_MARK_REPEAT passes
+                             while it stands; a change starts a fresh window
   EVENT window-gone <lane>   the tmux window no longer exists. Nothing follows
                              the line: the remedy is one relaunch, which
                              reads the item's worktree and PR, not a screen
@@ -560,10 +586,15 @@ Options:
                       so is its mailbox once the worktree is gone. A window
                       watches the item it is named for, and gh-N watches
                       issue-N, as open-terminal names a GitHub item's lane.
-                      A run carrying any hosted lane, from this option or a
-                      state record with a host, while `lane-host resolve`
-                      answers local is refused as hosted-without-host rather
-                      than read on this disk
+                      A state record's lane is read under the host the
+                      record names and routed by what that host kind
+                      declares (lane-host capabilities): files=verb through
+                      lane-host, files=local on this disk, files=none not
+                      at all, only a channel=mailbox lane in the mail
+                      pass, and the provider's status verb asked only of a
+                      status=verb lane. A run carrying a lane passed with this option
+                      while `lane-host resolve` answers local is refused as
+                      hosted-without-host rather than read on this disk
   --root ITEM=PATH    the item's lane worktree on this disk, where its
                       mailbox is read; a lane whose worktree sits outside
                       this checkout is read nowhere else. Repeatable, once per
@@ -852,6 +883,11 @@ Environment:
                               running_at, its status file may still be missing before
                               start-stalled goes out, a positive whole number,
                               default 600
+  ORCH_WATCH_LANE_STALL_SECS  seconds a status=none lane's open pull request
+                              may hold its head and body unchanged before
+                              lane-stalled goes out, a positive whole number,
+                              default 3600, provisional until a cloud lane run
+                              measures one
 USAGE
 }
 # stderr messages start `oversee-watch: REASON field=value ...`. Backslash,
@@ -883,6 +919,8 @@ ow_message() { # REASON FIELD=VALUE...
     start-stall-secs-invalid) text='ORCH_WATCH_START_STALL_SECS takes a positive whole number of seconds, with no leading zero.' ;;
     start-stall-unread) text='The lane status file could not be read through lane-host, so whether the lane started settles nothing this pass: no start-stalled goes out for it and its row stands. The exit is lane_host_fetch'"'"'s: 2 a failed read, 4 no lane-host slot.' ;;
     refresh-unread) text='The refresh run list or failed-step log could not be read. A failed run-list read leaves the baseline intact; a failed log read reports cause=unread. The watch continues.' ;;
+    refresh-stale) text='GitHub answered the refresh run list with a page that judges nothing: newest= is the run it was checked against, the one the watch last read or, for a pair opening an incident or with none read, the newest completed run in the unfiltered list, none when it has none, and read= the newest run the page holds, none for an empty page. No pair is reported and none is cleared. The watch continues.' ;;
+    refresh-order-unknown) text='The refresh run-list judgement named an order other than newer, same, older or unrecorded, so the run list cannot be judged.' ;;
     lane-rows-unread) text='The Pi lane session rows could not be read, so the lane reads unjudged this pass and its pane is not read in their place. The exit is lane_host_fetch'"'"'s for a hosted lane, 2 a failed read and 4 no lane-host slot; 0 is a file this read reached and could not read, or whose last row names an event no writer writes, and 2 on a local lane is a record naming no mail_root.' ;;
     unread-secs-invalid) text='ORCH_DIRECTIVE_UNREAD_SECS takes a whole number of seconds, with no leading zero.' ;;
     dead-passes-invalid) text='ORCH_OVERSEER_DEAD_PASSES must be a positive integer.' ;;
@@ -948,6 +986,10 @@ ow_message() { # REASON FIELD=VALUE...
     root-unknown-item) text='The --root item is not one this run watches. Name it with --item, or drop the entry.' ;;
     root-duplicate) text='Name each --root item once: two roots for one lane would read one mailbox and drain the other.' ;;
     hosted-duplicate) text='Name each hosted item once.' ;;
+    host-capabilities-unread) text='lane-host could not declare the capability line of a host a lane record names, or declared a value this watch has no arm for, so nothing says where that lane is read or how it is judged; lane-host'"'"'s own words are above this line. Nothing of the fleet is carried.' ;;
+    lane-stall-secs-invalid) text='ORCH_WATCH_LANE_STALL_SECS takes a positive whole number of seconds, with no leading zero.' ;;
+    lane-stall-unread) text='The digest of a lane pull request body could not be taken, so whether the lane moved is unknown. The watch stops rather than report a stall it did not measure.' ;;
+    pr-read-failed) text='The open pull request on the item branch could not be listed, so this pass settles nothing about a lane whose kind writes no file this watch reads: no start-stalled or lane-stalled goes out for it and its rows stand. gh'"'"'s own words follow.' ;;
     hosted-without-host) text='A hosted lane is carried, and lane-host resolves this host to local, so its mailbox, state and close would be read on this disk where the lane is not. Set ORCH_LANE_HOST to the provider the lane was launched through, in kendex.settings.toml [env] or .env.local.' ;;
     host-resolve-failed) text='lane-host could not say which host the hosted lanes live on, so none of them is read. Its own words follow.' ;;
     session-resolved) text='The tmux session every bare lane window name is read in, and its server: ORCH_TMUX_SESSION, else the session of the pane that started this watch, resolved once while it exists.' ;;

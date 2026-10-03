@@ -270,7 +270,7 @@ def with_lane_selection_score($now):
       (if .projected_headroom_pct == null then null
        else .projected_headroom_pct * (if $hours == null then 1 else 1 + 1 / (1 + $hours) end) end)};
 
-def lane_public: del(._rate_prior, ._rate_elapsed_s, ._rate_sample_claims, ._id);
+def lane_public: del(._rate_prior, ._rate_elapsed_s, ._rate_sample_claims, ._tier, ._expires, ._score, ._credit_unread, ._id);
 
 # One spelling for every reset a lane record carries: whole-second UTC with a
 # Z, the form Codex resets are rendered in. The Claude usage endpoint writes
@@ -337,40 +337,67 @@ def with_lane_verdict($wall; $max; $credit_floor):
               usage_rate_pct_per_min: null, projected_wall_minutes: null}
     else . + {verdict: $v} end;
 
-# Partition on the same verdict the named pick reads. Score only orders room
-# lanes; it cannot buy a launch past the projected wall. The counts preserve
-# the distinction between an allowance spent and one never measured.
-#
-# Plan allowance resets and credits do not, so a second, stable sort puts
-# every account with plan room, in the order its score gave it, before any
-# account on credits; credit_rank orders those, the larger balance and then
-# fewer claims first.
-def credit_rank:
-  if .binding_bucket == "credits" then [(0 - .credits.balance), .claims] else [0, 0] end;
+# with_lane_tier($pool; $cloud_floor; $retire; $now) over one judged record
+# applies the expires-first rule, `lanes --help` § pick, whose one statement
+# that is. It adds the fields of the key, which lane_public drops as they order
+# the pick and are no record of it: _tier, _expires (E, 0 outside tier 0) and
+# _score (S); and _credit_unread, a measured Claude account of a
+# pool=cloud-credit kind whose usage body forms no tier 0 credit to judge.
+def with_lane_tier($pool; $cloud_floor; $retire; $now):
+  (.credits // {}) as $c
+  | ([($c.resets_at | utc_stamp | reset_epoch),
+      ($retire[.config_dir] // null | if . == null then null else (. + "T00:00:00Z" | fromdateiso8601) end)]
+     | map(select(. != null)) | min) as $e
+  | ($c.unit == "usd" and ($c.remaining_dollars | type) == "number" and ($c.limit_dollars | type) == "number"
+     and $e != null) as $read
+  | . + {_credit_unread: ($pool == "cloud-credit" and ($read | not) and .harness == "claude"
+                          and (.status == "ok" or .status == "rate_limited") and .headroom_pct != null)}
+  | if $pool == "cloud-credit" and $read and $c.remaining_dollars > $cloud_floor and $c.locked_reason == null
+       and $c.limit_dollars > 0 and $e > $now
+    then . + {verdict: "room", _tier: 0, _expires: $e,
+              _score: (100 * $c.remaining_dollars / $c.limit_dollars * (1 + 1 / (1 + ($e - $now) / 3600)))}
+    elif .binding_bucket == "credits" then . + {_tier: 2, _expires: 0, _score: .credits.balance}
+    else . + {_tier: 1, _expires: 0, _score: .selection_score} end;
 
-def lane_selection($model; $floor; $burn; $now; $max; $credit_floor):
+# Partition on the same verdict the named pick reads. The tier key orders the
+# room lanes, `lanes --help` § pick; a score cannot buy a launch past the
+# projected wall. The counts preserve the distinction between an allowance
+# spent and one never measured. A launch=cloud-session pick names in
+# $cloud_repo the accounts whose ORCH_LANE_CLOUD_REPOS entry names the
+# repository of the checkout, and every other account takes the verdict
+# cloud-repo-unset; null for any other launch.
+def lane_selection($model; $floor; $burn; $now; $max; $credit_floor; $pool; $cloud_floor; $retire; $cloud_repo):
+  def neg: if . == null then null else 0 - . end;
   [ .[] | with_lane_binding($model; $floor) | with_lane_projection($burn)
     | with_lane_selection_score($now)
-    | with_lane_verdict(judged_wall; $max; $credit_floor) ]
+    | with_lane_verdict(judged_wall; $max; $credit_floor)
+    | with_lane_tier($pool; $cloud_floor; $retire; $now)
+    | if $cloud_repo == null or (.config_dir as $d | any($cloud_repo[]; . == $d)) then .
+      else . + {verdict: "cloud-repo-unset"} end ]
   | { chosen: ([ .[] | select(.verdict == "room") ]
-                | sort_by([(0 - .selection_score), .claims, (0 - .projected_headroom_pct), .wall])
-                | sort_by([(.binding_bucket == "credits"), credit_rank]) | first
+                | sort_by([._tier, ._expires, (._score | neg), .claims, (.projected_headroom_pct | neg), .wall]) | first
                 | if . == null then null
                   else . + {effective_headroom_pct: (if .wall == null then null else 100 - .wall end)}
                   | del(.wall, .verdict) | lane_public end),
       qualifying: ([ .[] | select(.verdict == "room") ] | length),
       walled: ([ .[] | select(.verdict == "walled") ] | length),
       unmeasured: ([ .[] | select(.verdict == "unmeasured") ] | length),
+      cloud_repo_unset: [ .[] | select(.verdict == "cloud-repo-unset") | .config_dir ],
+      cloud_credit_unread: [ .[] | select(._credit_unread) | .alias ],
       unread: [ .[] | select(.verdict == "unmeasured") ] };
 '
 
 # Read lane records on stdin and judge all their reset bonuses at one instant.
-lane_select() { # MODEL BINDING_FLOOR BURN MAX_PCT CREDIT_FLOOR
+# POOL is the kind's declared pool, CLOUD_FLOOR the cloud credit floor in
+# dollars, RETIRE a JSON object of config_dir to ORCH_LANE_RETIRE date and
+# CLOUD_REPO the JSON array of admitted config dirs, or null.
+lane_select() { # MODEL BINDING_FLOOR BURN MAX_PCT CREDIT_FLOOR POOL CLOUD_FLOOR RETIRE CLOUD_REPO
   local now
   now="$(date +%s)" || return 1
   jq -c --arg model "$1" --argjson floor "$2" --argjson burn "$3" \
-    --argjson max "$4" --argjson credit_floor "$5" --argjson now "$now" "$LANE_MODEL_JQ"'
-    lane_selection($model; $floor; $burn; $now; $max; $credit_floor)'
+    --argjson max "$4" --argjson credit_floor "$5" --arg pool "$6" --argjson cloud_floor "$7" \
+    --argjson retire "$8" --argjson cloud_repo "$9" --argjson now "$now" "$LANE_MODEL_JQ"'
+    lane_selection($model; $floor; $burn; $now; $max; $credit_floor; $pool; $cloud_floor; $retire; $cloud_repo)'
 }
 
 # Consult DIR for an unreachable host or a measured Claude row missing MODEL.

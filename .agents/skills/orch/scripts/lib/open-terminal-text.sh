@@ -120,7 +120,17 @@ fix=File a prioritized issue in that repository and send it with lane-mail peer 
     resume-lineless) text='The host selected a matching Codex session and resumed it without a continuation line. Paste its continuation into the pane per oversee-lanes.md section Talking to a lane, Pane paste. A fresh start carries its brief and needs no paste.' ;;
     relaunch-selection-failed) text='The hosted Codex selection result could not be reset, read or recognized. The operation names the failed step. The lane is not counted as launched. Repair the host file access or selection command, then relaunch.' ;;
     host-resolve-failed) text='The lane-host helper could not resolve the host.' ;;
-    host-invalid) text='A hosted launch needs tmux mode, a resolved lane and --harness claude, codex, pi or copilot. Nothing was created.' ;;
+    host-invalid) text='A hosted launch needs tmux mode, a resolved lane and --harness claude, codex, pi or copilot, and a cloud-session launch a resolved lane. Nothing was created.' ;;
+    host-capabilities-failed) text='lane-host could not declare the host kind'"'"'s capability line, or declared a launch this launcher has no arm for, so nothing says how to launch on it; its own words are above this line. Nothing was launched.' ;;
+    kind-unbuilt) text='The host kind declares a launch this build does not make. Nothing was launched. Launch the item on another host kind.' ;;
+    cloud-session-invalid) text='A cloud-session launch runs Claude Code'"'"'s own cloud, so it takes --harness claude and no --cmd, and its relaunch is a fresh session this build does not make. It takes one item: its --brief-file is one item'"'"'s whole task, which a second item'"'"'s session would do on its own branch. Nothing was launched.' ;;
+    cloud-brief-missing) text='A cloud session reaches no tracker, so its task is the item'"'"'s whole brief, which no --brief-file names. Write the issue text to a file and pass it as --brief-file PATH. Nothing was launched.' ;;
+    cloud-bundle-risk) text='Claude Code would send this checkout to the cloud as a bundle with no git remote, so the session could push nothing. cause=shell is CCR_FORCE_BUNDLE set in this shell; cause=settings is CCR_FORCE_BUNDLE=1 in the env block of the settings file path= names, or a file that could not be read; cause=remote is an origin that is no github.com URL. Nothing was created.' ;;
+    cloud-push-failed) text='The item branch could not be pushed from the base tip, so the cloud session would clone no branch for it; worktree push names the cause above this line. Nothing was launched. The worktree stands as the item'"'"'s claim; remove it with worktree remove ID before a second launch.' ;;
+    cloud-launch-failed) text='claude -p --cloud failed under the lane'"'"'s account, its own words above this line. Nothing was recorded. The worktree stands as the item'"'"'s claim and its branch is on origin, which worktree remove keeps; before a second launch run worktree remove ID, then git push origin --delete BRANCH, the item branch.' ;;
+    cloud-session-unread) text='claude -p --cloud --output-format json printed no ok answer carrying a session id, so no lane record can name the session and nothing would watch it. Nothing was recorded; no pane or session list stands in for the id. The worktree stands as the item'"'"'s claim and its branch is on origin, which worktree remove keeps. Ask the owner whether a session began, then before a second launch run worktree remove ID, then git push origin --delete BRANCH, the item branch.' ;;
+    cloud-record-failed) text='The cloud session started, session= names it, but its lane record could not be written to the oversee workflow state, so the watch cannot carry it; workflow-state names the cause above this line. Record the lane by hand per oversee.md § 3 Lane record with that session id, host and kind claude-cloud and no window, or, before a second launch, archive the session from the claude.ai sidebar, then run worktree remove ID, then git push origin --delete BRANCH, the item branch, which worktree remove keeps.' ;;
+    cloud-session-started) text='The cloud session started on the pushed item branch.' ;;
     host-create-failed) text='The lane host failed to create this item. No local lane was started.' ;;
     host-start-failed) text='The item is recorded parked, its sandbox stopped with its disk kept, and the lane host could not bring that sandbox back: exit= is the start verb'"'"'s status, its own words above this line, and cause=answer-unparsed a start that succeeded without its sandbox-started item=ID line, so nothing confirms the sandbox is up. No create ran and the record still reads parked: fix what the provider names and relaunch the item again.' ;;
     host-started) text='The parked item'"'"'s sandbox is up again on the disk the park kept, and its record now reads stopped with parked dropped, which is that sandbox'"'"'s state from here: up, no harness in it. create --relaunch now resumes the harness on it; a create that fails after this line leaves the stopped record, which a plain relaunch recovers with no start, going straight to create --relaunch.' ;;
@@ -221,7 +231,7 @@ Options:
                     text less its trailing newlines, the one route for a brief
                     holding any quote, `$` or backtick. The two come as a pair:
                     a --brief-file with no --cmd carrying {brief} is refused
-                    as brief-unreferenced, a {brief} with no --brief-file as
+                    as brief-unreferenced outside a cloud-session launch, a {brief} with no --brief-file as
                     brief-file-missing, a path that is not a readable file as
                     brief-file-unreadable, and a file holding only whitespace
                     as brief-file-empty.
@@ -314,9 +324,26 @@ Options:
                     `oversee-watch` resolve the same $OVERSEE_WATCH_STATE_DIR;
                     set it explicitly when they do not share one project
                     configuration.
-  --host <spec>     Launch on a lane host: `local`, or a provider script path.
-                    Without it ORCH_LANE_HOST decides, as `lane-host resolve`
-                    prints it. A hosted launch needs tmux mode, a resolved --lane
+  --host <spec>     Launch on a lane host: `local`, `claude-cloud`, or a
+                    provider script path. Without it ORCH_LANE_HOST decides,
+                    as `lane-host resolve` prints it, and the launch arm is
+                    the `launch` that `lane-host capabilities` declares for it;
+                    a kind whose launch this build does not make refuses as
+                    kind-unbuilt. A cloud-session launch (`claude-cloud`)
+                    takes --harness claude, a resolved --lane, one item, a
+                    --brief-file holding that item's whole task (refused as
+                    cloud-brief-missing without one) and no --cmd or
+                    --relaunch, and opens no window: it refuses as
+                    cloud-bundle-risk on CCR_FORCE_BUNDLE in this shell,
+                    CCR_FORCE_BUNDLE=1 in the env block of the account's
+                    settings.json or of .claude/settings.json, or an origin
+                    that is no github.com URL; creates the item's worktree,
+                    pushes its branch from the base tip, runs
+                    `claude -p --cloud BRIEF --output-format json` there under
+                    the account, BRIEF the file's text closed by the session
+                    words of lib/lane-launch.sh, and records the session id it
+                    prints, refusing as cloud-session-unread where it prints
+                    none. A hosted launch needs tmux mode, a resolved --lane
                     and --harness claude, codex, pi or copilot. It creates no local worktree: `lane-host create`
                     receives the lane's config dir as --account, the window
                     types `ssh` to the returned target, waits for the remote
@@ -640,7 +667,9 @@ when absent); a launch with no --state-dir names no fleet, records nothing
 and creates no state. A record is one entry per
 item, keyed by its workflow-state id, the Linear id for a Linear item and
 issue-N for a GitHub item, carrying the tracker, repository, harness, window,
-account dir, host, mail_root, surface, model, session_id, session_since
+account dir, host, kind (the host kind's declared `kind`; a cloud session's
+record names host and kind claude-cloud, its session id and no window, its
+mail_root the local worktree), mail_root, surface, model, session_id, session_since
 (the time this launch or relaunch read before its terminal opened), allow_all
 (whether a copilot command grants --allow-all or --yolo), launched_at,
 status `running`, or `preparing` with its `prepare` record for a hosted lane

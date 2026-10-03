@@ -207,6 +207,10 @@ source "$SCRIPT_DIR/lib/watch-session.sh"
 source "$SCRIPT_DIR/lib/lane-context.sh"
 # shellcheck source=lib/lane-gitfile.sh
 source "$SCRIPT_DIR/lib/lane-gitfile.sh"
+# shellcheck source=lib/lane-capabilities.sh
+source "$SCRIPT_DIR/lib/lane-capabilities.sh"
+# shellcheck source=lib/watch-host-kinds.sh
+source "$SCRIPT_DIR/lib/watch-host-kinds.sh"
 # shellcheck source=lib/watch-pid.sh
 source "$SCRIPT_DIR/lib/watch-pid.sh"
 # shellcheck source=lib/mailbox-append.sh
@@ -267,7 +271,7 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 #   lane-failed<TAB><item><TAB><the last lane-local failure the long pass reported>
 #   merged<TAB><item><TAB><repo>#<number>[ <repo>#<number>...]
 #   outside-contribution<TAB><repo>#<number><TAB><pr HEAD_SHA|issue>
-#   refresh-failing<TAB><repo><TAB><passes since reported>|<cause>
+#   refresh-failing<TAB><repo><TAB><newest run's REFRESH_RUN as JSON>|[<passes since reported>|<cause>|unjudged]
 #   security-alert, bot-fix and security-alerts-unread rows, which
 #   lib/security-alerts.sh sets out above check_security_alerts
 #   account<TAB><harness>|<through>|<config dir><TAB><status>|<verdict>|<binding_resets_at or ->
@@ -284,24 +288,17 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 #   overseer-dead<TAB><server> <pane><TAB><count>|pending:<N>|reported
 #   overseer-walled<TAB><server> <pane><TAB><count>|pending:<N>|reported
 #   overseer-context-gap<TAB><server> <pane><TAB><gap>|told|alerted
-# overseer-dead and overseer-walled are one machinery under two names, one
-# per case the overseer's own pane can be recovered from: `exited` is the
-# harness gone and `walled` is the account spent under a harness still
-# running. Separate rows rather than
-# one carrying its case, so a pane that flips between the two starts its count
-# over instead of counting a wall's passes towards a death's threshold.
-# The usage-limit value is split apart where the event is emitted, some 200
-# lines below where it is written; the reset key's own layout is
-# usage_reset_key's, and it comes LAST because it carries `|` of its own.
-# The reported columns are what keeps a re-run from delivering a line again:
-# a lane parked on its wall, sitting idle, left at a bare shell, or an item
-# merged and still in --item read the same on every pass of every run, and the
-# overseer re-runs the watch after every event.
+# overseer-dead (harness gone) and overseer-walled (account spent, harness
+# running) are one machinery in two rows, so a pane flipping between the two
+# starts its count over rather than counting a wall towards a death.
+# The usage-limit reset key, laid out by usage_reset_key, comes LAST because
+# it carries `|` of its own.
+# The reported columns keep a re-run, which follows every event, from
+# delivering a line again for a walled, idle or exited lane or a merged --item.
 # Each helper takes the whole baseline blob and returns the answer or the
 # rewritten blob, so a pass mutates a local and commits once. `lane-exited` and
-# `lane-idle` hold the first of the two consecutive passes those kinds need.
-# Rows, not process globals: a pass that found any event exits the process, so
-# a debounce kept in memory never reaches its second pass.
+# `lane-idle` hold the first of the two passes they need in a row, not a
+# global: a pass that found any event exits the process.
 lane_row_get() {
   awk -F'\t' -v kind="$1" -v lane="$3" '$1 == kind && NF == 3 && $2 == lane { print $3 }' <<<"$2"
 }
@@ -420,6 +417,11 @@ UNREAD_SECS="${ORCH_DIRECTIVE_UNREAD_SECS:-300}"
 # on every harness, and its pane says nothing a watch may read about why.
 START_STALL_SECS="${ORCH_WATCH_START_STALL_SECS:-600}"
 [[ "$START_STALL_SECS" =~ ^[1-9][0-9]*$ ]] || die start-stall-secs-invalid "" "value=$START_STALL_SECS"
+# How long a status=none lane, a cloud session no process read reaches, may
+# hold its pull request's head and lane status body unchanged before
+# lane-stalled goes out. Provisional: the first cloud acceptance run sets it.
+LANE_STALL_SECS="${ORCH_WATCH_LANE_STALL_SECS:-3600}"
+[[ "$LANE_STALL_SECS" =~ ^[1-9][0-9]*$ ]] || die lane-stall-secs-invalid "" "value=$LANE_STALL_SECS"
 # The state's records the pane never judges and the start-stall check reads,
 # rebuilt by every fleet read: `<window>=<item>` for each Pi lane, judged from
 # the rows its own hook writes (lib/session-rows.sh), and `<item>=<epoch it went
@@ -490,23 +492,7 @@ check_item_set() {
   # mail pass never composes a path out of a value nobody judged.
   check_root_entries hosted ${HOSTED[@]+"${HOSTED[@]}"}
   check_root_entries root ${ROOTS[@]+"${ROOTS[@]}"}
-  [[ ${#HOSTED[@]} -eq 0 ]] || check_lane_host
-}
-# A hosted lane is read through `lane-host`, which answers `local` where no
-# provider is set, and on that answer every hosted read would be made on this
-# disk where the lane is not. Asked once per process, the first time a hosted
-# lane is carried, so a fleet that gains one while the run loops is judged then.
-LANE_HOST_SPEC=""
-check_lane_host() {
-  local out entry items=""
-  if [[ -z "$LANE_HOST_SPEC" ]]; then
-    out="$("$SCRIPT_DIR/lane-host" resolve 2>&1)" \
-      || die host-resolve-failed "$out" "path=$SCRIPT_DIR/lane-host"
-    LANE_HOST_SPEC="$out"
-  fi
-  [[ "$LANE_HOST_SPEC" == local ]] || return 0
-  for entry in "${HOSTED[@]}"; do items+="${items:+,}${entry%%=*}"; done
-  die hosted-without-host "" "items=$items" "host=local"
+  check_lane_host
 }
 # One entry per item: two roots for one lane would read one of its mailboxes
 # and drain the other. An entry for an item this run does not watch reads no
@@ -540,41 +526,6 @@ item_parked() { # ITEM
   done
   return 1
 }
-# HOSTED_ROOT is the item's lane root on its own host, empty for a lane on this
-# disk. Set rather than printed: a substitution would carry the lookup's own
-# status out under errexit, and a fleet with no hosted lane at all is the
-# common case.
-HOSTED_ROOT=""
-hosted_root() { # ITEM
-  local entry
-  HOSTED_ROOT=""
-  for entry in ${HOSTED[@]+"${HOSTED[@]}"}; do
-    [[ "${entry%%=*}" == "$1" ]] || continue
-    HOSTED_ROOT="${entry#*=}"
-    return 0
-  done
-}
-# The item's lane worktree on this disk as LOCAL_ROOT, from a --root entry;
-# empty when none names it, and the mail pass then lets lane-mail resolve it.
-LOCAL_ROOT=""
-local_root() { # ITEM
-  local entry
-  LOCAL_ROOT=""
-  for entry in ${ROOTS[@]+"${ROOTS[@]}"}; do
-    [[ "${entry%%=*}" == "$1" ]] || continue
-    LOCAL_ROOT="${entry#*=}"
-    return 0
-  done
-}
-# Whether a route of either type already names the item, for the state merge:
-# a state record of either type displaces a hand-passed entry, so a lane that
-# moved between this disk and a host is read where its record says.
-route_listed() { # ITEM
-  hosted_root "$1"
-  [[ -z "$HOSTED_ROOT" ]] || return 0
-  local_root "$1"
-  [[ -n "$LOCAL_ROOT" ]]
-}
 # Whether an item or a window is already carried, for the state merge.
 item_listed() { # ITEM
   local entry
@@ -598,7 +549,7 @@ lane_skipped() { # WINDOW
 # The live fleet, read from the oversee workflow state open-terminal writes
 # (../schemas/workflow-state.md § Oversee state): a first line counting the
 # records no pass carries, then one line per running lane record, item,
-# window, local|hosted, mail_root, harness and the time the record went
+# window, its host (`local` for a record naming none), mail_root, harness and the time the record went
 # running in epoch seconds, its running_at or, on a record written before that
 # stamp, its launched_at, joined by the unit separator. `running`,
 # lib/lane-claims.sh's LANE_RUNNING_JQ, is the one answer to which records a
@@ -611,7 +562,7 @@ LANE_ROWS_FILTER="$LANE_RUNNING_JQ"'
   | ([.[] | select(running | not)] | length),
     (.[] | select(running)
   | if ((.item? | type) == "string" and (.item | length) > 0) then . else error("lane-field field=item value=\(.item | tojson)") end
-  | [.item, (.window // ""), (if .host == null then "local" else "hosted" end), (.mail_root // ""),
+  | [.item, (.window // ""), (.host // "local"), (.mail_root // ""),
      (.harness // ""), ((.running_at // .launched_at) | if . == null then "" else (fromdateiso8601 | tostring) end)]
   | join("\u001f"))'
 
@@ -662,7 +613,7 @@ FLEET_CARRIED=""
 # The state text the last read parsed, which the heartbeat's owed items judge.
 FLEET_STATE=""
 fleet_merge() { # [quiet]
-  local state rows dropped line item window where root harness running kept carried parked
+  local state rows dropped line item window host root harness running kept carried parked
   state="$(cat -- "$STATE_FILE" 2>&1)" || die state-unreadable "$state" "option=--state" "path=$STATE_FILE"
   FLEET_STATE="$state"
   rows="$(jq -r "$LANE_ROWS_FILTER" <<<"$state" 2>&1)" || die state-invalid "$rows" "option=--state" "path=$STATE_FILE"
@@ -684,14 +635,14 @@ fleet_merge() { # [quiet]
   ROOTS=()
   PI_LANES=()
   LAUNCHES=()
-  while IFS=$'\x1f' read -r item window where root harness running; do
+  host_routes_reset
+  while IFS=$'\x1f' read -r item window host root harness running; do
     [[ -n "$item" ]] || continue
+    host_route "$item" "$host" "$root"
     ITEMS+=("$item")
     [[ -z "$window" ]] || LANES+=("$window")
     [[ -z "$window" || "$harness" != pi ]] || PI_LANES+=("$window=$item")
     [[ -z "$running" || -z "$root" ]] || LAUNCHES+=("$item=$running")
-    if [[ "$where" == hosted ]]; then HOSTED+=("$item=$root")
-    elif [[ -n "$root" ]]; then ROOTS+=("$item=$root"); fi
   done <<<"$rows"
   for line in ${GIVEN_ITEMS[@]+"${GIVEN_ITEMS[@]}"}; do item_listed "$line" || item_parked "$line" || ITEMS+=("$line"); done
   for line in ${GIVEN_LANES[@]+"${GIVEN_LANES[@]}"}; do window_listed "$line" || LANES+=("$line"); done
@@ -1005,35 +956,6 @@ hosted_lane_item() { # LANE
 # The hosted items whose worktree this pass's mail read found gone, one per line.
 HOSTED_GONE_ITEMS=""
 
-# The clone a hosted lane's worktree belongs to, which its record does not
-# carry: the worktree's `.git` file names it while the worktree stands, read
-# through lib/lane-gitfile.sh's lane_hosted_clone, and STATE's clone-root row
-# keeps it for after ../workflows/merge-pr.md § 5 removes the worktree. A root that is
-# itself a clone is its own clone. Sets HOSTED_CLONE, and HOSTED_GONE to 1
-# when the worktree is gone. Call after hosted_root.
-hosted_clone() { # ITEM STATE
-  local rc=0
-  HOSTED_GONE=0
-  lane_hosted_clone "$SCRIPT_DIR/lane-host" "$1" "$HOSTED_ROOT" "$WORK_DIR/gitfile" "$WORK_DIR/host.err" || rc=$?
-  case "$rc" in
-    0) HOSTED_CLONE="$LANE_HOSTED_CLONE" ;;
-    3)
-      lane_failure_set handoff-read-failed "" "item=$1" "path=$HOSTED_ROOT/.git" "value=${LANE_HOSTED_GITLINE:-<empty>}"
-      return 1 ;;
-    4) lane_failure_set lane-host-busy "" "item=$1"; return 1 ;;
-    1)
-      HOSTED_GONE=1
-      if ! HOSTED_CLONE="$(lane_row_get clone-root "$2" "$1")" || [[ -z "$HOSTED_CLONE" ]]; then
-        lane_failure_set handoff-read-failed "" "item=$1" "clone=unknown"
-        return 1
-      fi ;;
-    *)
-      lane_failure_set handoff-read-failed "$(cat "$WORK_DIR/host.err")" \
-        "item=$1" "path=$HOSTED_ROOT/.git"
-      return 1 ;;
-  esac
-}
-
 # The directory an item's workflow state is read from, as ITEM_STATE_DIR, and
 # the lane root `handoff-standing --worktree` reads beside it, as ITEM_WORKTREE,
 # empty where none is known. A local lane's root is its --root entry. A hosted
@@ -1065,19 +987,6 @@ item_state_dir() { # ITEM
   ITEM_HOSTED_STATE="$LANE_HOSTED_STATE_PATH"
   hosted_state_fetch "$1" "$HOSTED_ROOT" tmp "$ITEM_WORKTREE/tmp"
 }
-# One hosted state file, ROOT's STATE_DIR copy of ITEM's, fetched into DEST.
-hosted_state_fetch() { # ITEM ROOT STATE_DIR DEST
-  local rc=0
-  lane_hosted_state_path "$2" "$3" "$1"
-  lane_host_fetch "$SCRIPT_DIR/lane-host" "$1" "$LANE_HOSTED_STATE_PATH" \
-    "$4/workflow-state-$1.json" "$WORK_DIR/host.err" || rc=$?
-  [[ "$rc" -ne 4 ]] || { lane_failure_set lane-host-busy "" "item=$1"; return 1; }
-  if [[ "$rc" -gt 1 ]]; then
-    lane_failure_set handoff-read-failed "$(cat "$WORK_DIR/host.err")" "item=$1" "path=${LANE_HOSTED_STATE_PATH%/*}"
-    return 1
-  fi
-}
-
 # Run the one lane close-out verb where a hosted item's lane-exited is reported,
 # once per pane, after its merge. Exit 3 is a checkout with user-owned changes:
 # the user settles it, so it is reported and never retried or forced. Any other
@@ -1455,6 +1364,7 @@ check_handoff() {
   local item rec key prior file errf="$WORK_DIR/handoff.err" state="${PW_SEEN[0]}"
   for item in "${ITEMS[@]}"; do
     grep -qxF -- "$item" <<<"$PASS_FAILED_ITEMS" && continue
+    ! item_in "$item" ${FILELESS[@]+"${FILELESS[@]}"} || continue
     if ! item_state_dir "$item"; then
       lane_failure_report "$item" "$state"
       state="$LANE_FAILURE_STATE"
@@ -1527,14 +1437,27 @@ check_prepare() {
 }
 
 # One completed-run list per repository proves the failure pair. A failed
-# read cannot clear a standing pair or end the other fleet checks.
+# read cannot clear a standing pair or end the other fleet checks. GitHub can
+# answer with a stale page. The row records the newest completed run read; a
+# page older than it judges nothing, and a pair with no record or one that
+# would open an incident counts only when its newer run is the newest
+# completed run in the unfiltered list. When it is not, the row records the
+# newer of that list's newest run and the pair's, unjudged, so a page reaching
+# it is still judged. REFRESH_RUN alone orders and matches runs: a re-run keeps
+# its id and createdAt and takes the next attempt. A row in the earlier
+# layout, <passes>|<cause>, reads as a standing incident with no record.
+REFRESH_RUN='def run: [.createdAt, .databaseId, .attempt];
+  def valid: (.databaseId | type) == "number" and (.attempt | type) == "number" and
+    (.createdAt | type) == "string" and (.createdAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"));'
+REFRESH_ROW='^(\["[0-9TZ:-]{20}",([0-9]+),[0-9]+\])\|(unjudged|[0-9]+\|.+)?$'
+REFRESH_ROW_UNRECORDED='^[0-9]+\|.+$'
 check_refresh() {
-  local repo runs pair last since log cause prior passes rc workflows report
+  local repo runs order newest run since recent log cause prior rec rec_id standing passes rc workflows report
   local rows="${PW_SEEN[0]}" errf="$WORK_DIR/refresh.err"
   for repo in "${REPOS[@]}"; do
     rc=0
     runs="$(gh run list --repo "$repo" --workflow kendex-refresh.yml --status completed --limit 2 \
-      --json databaseId,conclusion,createdAt 2>"$errf")" || rc=$?
+      --json databaseId,attempt,conclusion,createdAt 2>"$errf")" || rc=$?
     if (( rc != 0 )); then
       # gh rewrites every workflow-endpoint 404, including access failures.
       # Only a complete successful workflow list can prove absence.
@@ -1550,30 +1473,90 @@ check_refresh() {
       ow_message refresh-unread "repo=$repo" "read=runs" "exit=$rc" >&2
       continue
     fi
+    if ! prior="$(lane_row_get refresh-failing "$rows" "$repo")"; then
+      die state-read-failed "" "repo=$repo" "row=refresh-failing"
+    fi
+    rec=null rec_id='' standing=''
+    if [[ "$prior" =~ $REFRESH_ROW ]]; then
+      rec="${BASH_REMATCH[1]}" rec_id="${BASH_REMATCH[2]}" standing="${BASH_REMATCH[3]}"
+    elif [[ "$prior" =~ $REFRESH_ROW_UNRECORDED ]]; then
+      standing="$prior"
+    elif [[ -n "$prior" ]]; then
+      die state-read-failed "" "repo=$repo" "row=refresh-failing" "layout=unknown"
+    fi
+    # order is the page's newest run against the record: newer, same, older
+    # (an empty page included), or unrecorded; unjudged is same on an unjudged
+    # record. since is the older run's createdAt when both runs failed.
     rc=0
-    pair="$(jq -er '
-      if type == "array" and length <= 2 and all(.[];
-        (.databaseId | type) == "number" and (.conclusion | type) == "string" and
-        (.createdAt | type) == "string") then
-        if length == 2 and all(.[]; .conclusion == "failure") then
-          "\(.[0].databaseId)\t\(.[1].createdAt)"
-        else "" end
+    runs="$(jq -er --argjson rec "$rec" "$REFRESH_RUN"'
+      if type == "array" and length <= 2 and all(.[]; valid and (.conclusion | type) == "string") then
+        (if $rec == null then "unrecorded"
+         elif length == 0 then "older"
+         elif (.[0] | run) > $rec then "newer"
+         elif (.[0] | run) == $rec then "same"
+         else "older" end) as $order
+        | [$order, (.[0] // {} | .databaseId // "", (run | tojson)),
+           (if length == 2 and all(.[]; .conclusion == "failure") then .[1].createdAt else "" end)]
+        | map(tostring) | join("|")
       else error("invalid completed refresh runs") end' <<<"$runs" 2>"$errf")" || rc=$?
     if (( rc != 0 )); then
       ow_message refresh-unread "repo=$repo" "read=runs" "exit=$rc" >&2
       continue
     fi
-    if [[ -z "$pair" ]]; then
-      rows="$(lane_row_clear refresh-failing "$rows" "$repo")" \
+    IFS='|' read -r order newest run since <<<"$runs"
+    if [[ "$standing" == unjudged ]]; then
+      standing=''
+      [[ "$order" != same ]] || order=unjudged
+    fi
+    case "$order" in
+      older)
+        ow_message refresh-stale "repo=$repo" "newest=$rec_id" "read=${newest:-none}" >&2
+        continue ;;
+      unrecorded)
+        if [[ -z "$newest" ]]; then
+          rows="$(lane_row_clear refresh-failing "$rows" "$repo")" \
+            || die state-read-failed "" "repo=$repo" "row=refresh-failing"
+          continue
+        fi ;;
+      newer | same | unjudged) ;;
+      *) die refresh-order-unknown "" "repo=$repo" "order=$order" ;;
+    esac
+    if [[ -z "$since" ]]; then
+      rows="$(lane_row_set refresh-failing "$rows" "$repo" "$run|")" \
         || die state-read-failed "" "repo=$repo" "row=refresh-failing"
       continue
     fi
-    IFS=$'\t' read -r last since <<<"$pair"
+    # A pair whose newer run is the one already judged is no news.
+    [[ "$order" != same || -n "$standing" ]] || continue
+    if [[ "$order" == unrecorded || -z "$standing" ]]; then
+      # gh's default page leaves room for queued and running runs above it.
+      rc=0
+      recent="$(gh run list --repo "$repo" --workflow kendex-refresh.yml --limit 20 \
+        --json databaseId,attempt,createdAt,status 2>"$errf")" || rc=$?
+      if (( rc == 0 )); then
+        recent="$(jq -er --argjson run "$run" "$REFRESH_RUN"'
+          if type == "array" and all(.[]; valid and (.status | type) == "string") then
+            map(select(.status == "completed"))[0]
+            | if . == null then "none|\($run | tojson)" elif run == $run then "same|"
+              else "\(.databaseId)|\([run, $run] | max | tojson)" end
+          else error("invalid refresh runs") end' <<<"$recent" 2>"$errf")" || rc=$?
+      fi
+      if (( rc != 0 )); then
+        ow_message refresh-unread "repo=$repo" "read=all-runs" "exit=$rc" >&2
+        continue
+      fi
+      if [[ "${recent%%|*}" != same ]]; then
+        ow_message refresh-stale "repo=$repo" "newest=${recent%%|*}" "read=$newest" >&2
+        rows="$(lane_row_set refresh-failing "$rows" "$repo" "${recent#*|}|${standing:-unjudged}")" \
+          || die state-read-failed "" "repo=$repo" "row=refresh-failing"
+        continue
+      fi
+    fi
     cause=unread
     rc=0
-    log="$(gh run view "$last" --repo "$repo" --log-failed 2>"$errf")" || rc=$?
+    log="$(gh run view "$newest" --repo "$repo" --log-failed 2>"$errf")" || rc=$?
     if (( rc != 0 )); then
-      ow_message refresh-unread "repo=$repo" "read=log" "run=$last" "exit=$rc" >&2
+      ow_message refresh-unread "repo=$repo" "read=log" "run=$newest" "exit=$rc" >&2
     else
       # refresh-consumer and the commit hooks emit these diagnostics. gh
       # prefixes each failed-step log line with job, step and timestamp.
@@ -1581,25 +1564,22 @@ check_refresh() {
         END { gsub("\t", " ", cause); sub(/\r$/, "", cause); print cause }' <<<"$log")" \
         || rc=$?
       if (( rc != 0 )); then
-        ow_message refresh-unread "repo=$repo" "read=log" "run=$last" "exit=$rc" >&2
+        ow_message refresh-unread "repo=$repo" "read=log" "run=$newest" "exit=$rc" >&2
       fi
       [[ -n "$cause" ]] || cause=unread
     fi
-    if ! prior="$(lane_row_get refresh-failing "$rows" "$repo")"; then
-      die state-read-failed "" "repo=$repo" "row=refresh-failing"
-    fi
     passes=0
-    if [[ -n "$prior" && "${prior#*|}" == "$cause" ]]; then
-      passes=$(( ${prior%%|*} + 1 ))
+    if [[ -n "$standing" && "${standing#*|}" == "$cause" ]]; then
+      passes=$(( ${standing%%|*} + 1 ))
       (( passes < MARK_REPEAT )) || passes=0
     fi
     if (( passes == 0 )); then
       report=initial
-      [[ -z "$prior" ]] || report=repeat
-      printf 'EVENT refresh-failing %s runs=2 last=%s since=%s report=%s cause=%s\n' "$repo" "$last" "$since" "$report" "$cause"
+      [[ -z "$standing" ]] || report=repeat
+      printf 'EVENT refresh-failing %s runs=2 last=%s since=%s report=%s cause=%s\n' "$repo" "$newest" "$since" "$report" "$cause"
       PASS_EVENT=1
     fi
-    rows="$(lane_row_set refresh-failing "$rows" "$repo" "$passes|$cause")" \
+    rows="$(lane_row_set refresh-failing "$rows" "$repo" "$run|$passes|$cause")" \
       || die state-read-failed "" "repo=$repo" "row=refresh-failing"
   done
   lane_row_commit "$rows"
@@ -1617,7 +1597,9 @@ check_refresh() {
 # local root that is no directory is that removal too, and so is a hosted item
 # this run's mail pass found with its worktree gone. A hosted file is read
 # through lane-host, and a read that failed settles nothing: the row stands
-# and the failure is noted.
+# and the failure is noted. A lane whose kind declares files=none, a cloud
+# session, writes no file this watch can read: its start is the draft pull
+# request it opens on the item branch.
 check_start_stall() {
   local entry item running age prior passes path rc rows="${PW_SEEN[0]}" items=()
   for entry in ${LAUNCHES[@]+"${LAUNCHES[@]}"}; do
@@ -1630,9 +1612,11 @@ check_start_stall() {
     [[ "$prior" != "$running|seen" ]] || continue
     rc=0
     hosted_root "$item"
-    if [[ -n "$HOSTED_ROOT" ]]; then
+    if item_in "$item" ${FILELESS[@]+"${FILELESS[@]}"}; then
+      item_open_pr "$item" || rc=$?
+    elif [[ -n "$HOSTED_ROOT" ]]; then
       ! grep -qxF -- "$item" <<<"$HOSTED_GONE_ITEMS" || continue
-      lane_host_fetch "$SCRIPT_DIR/lane-host" "$item" "$HOSTED_ROOT/tmp/lane-status-$item.md" \
+      ORCH_LANE_HOST="$HOSTED_HOST" lane_host_fetch "$SCRIPT_DIR/lane-host" "$item" "$HOSTED_ROOT/tmp/lane-status-$item.md" \
         "$WORK_DIR/status-probe" "$WORK_DIR/host.err" || rc=$?
     else
       local_root "$item"
@@ -1694,9 +1678,10 @@ resolve_due_owner_asks() {
 # failed is set as the lane's failure and returns 1, for the caller to report.
 MAIL_OUT=""
 mail_read() { # ITEM LANE_MAIL_ARGS...
-  local item="$1" rc=0
+  local item="$1" rc=0 host_env=()
   shift
-  MAIL_OUT="$("$LANE_MAIL" "$@" 2>"$WORK_DIR/mail.err")" || rc=$?
+  [[ "$item" == overseer || -z "$HOSTED_HOST" ]] || host_env=("ORCH_LANE_HOST=$HOSTED_HOST")
+  MAIL_OUT="$(env ${host_env[@]+"${host_env[@]}"} "$LANE_MAIL" "$@" 2>"$WORK_DIR/mail.err")" || rc=$?
   [[ "$rc" -ne 0 ]] || return 0
   [[ "$rc" -ne "$LANE_HOST_BUSY_EXIT" ]] || { lane_failure_set lane-host-busy "" "item=$item"; return 1; }
   lane_failure_set mail-read-failed "$(cat "$WORK_DIR/mail.err")" "item=$item" "exit=$rc"
@@ -1715,13 +1700,15 @@ mail_read() { # ITEM LANE_MAIL_ARGS...
 check_mail() {
   local item stored prior seen header count first line fields id kind options text rest root cursor from re by class
   local envelopes receipts replaced hold lane_read to_first read_at unread_at at
-  local mail_items host_flag args
-  local state="$MAIL_SEEN"
+  local mail_items host_flag args state="$MAIL_SEEN"
   HOSTED_GONE_ITEMS=""
   # This pass's failures alone, as HOSTED_GONE_ITEMS is this pass's: a long
   # pass forked after it skips only the lanes whose read failed just now.
   PASS_FAILED_ITEMS=""
-  mail_items=(${ITEMS[@]+"${ITEMS[@]}"})
+  mail_items=()
+  for item in ${ITEMS[@]+"${ITEMS[@]}"}; do
+    item_in "$item" ${MAILLESS[@]+"${MAILLESS[@]}"} || mail_items+=("$item")
+  done
   mail_items+=(overseer)
   for item in "${mail_items[@]}"; do
     root=""
@@ -2103,7 +2090,7 @@ lane_rows_read() { # I LANE
   hosted_root "$item"
   if [[ -n "$HOSTED_ROOT" ]]; then
     src="$WORK_DIR/rows-src.$1"
-    lane_host_fetch "$SCRIPT_DIR/lane-host" "$item" "$HOSTED_ROOT/tmp/lane-mail/$item/$SESSION_ROWS_LANE" \
+    ORCH_LANE_HOST="$HOSTED_HOST" lane_host_fetch "$SCRIPT_DIR/lane-host" "$item" "$HOSTED_ROOT/tmp/lane-mail/$item/$SESSION_ROWS_LANE" \
       "$src" "$WORK_DIR/host.err" || rc=$?
   else
     local_root "$item"
@@ -2595,12 +2582,8 @@ overseer_mark_check() { # ROWS IDENTITY PANE
 # wrote, a predecessor's until this one's first reading, says nothing of this
 # one: one naming another pane, a harness other than the one the fleet record
 # names for this pane (check_overseer's OVERSEER_RECORD_HARNESS), or a session
-# other than the one the pane's latest SessionStart row names. A Copilot
-# overseer writes records, readings and gaps, and Stop rows but no
-# SessionStart row (hooks/session-start-row.sh is not run on copilot), so only
-# the harness separates it from a predecessor in the same pane: a Copilot
-# predecessor's record, a gap drawing overseer-context-unmeasured among them,
-# stands as this session's until this session's first reading rewrites it.
+# other than the one the pane's latest SessionStart row names, a Copilot
+# overseer's included, whose session-start-row hook writes that row too.
 # Returns 0 where the record is this session's, 1 otherwise: no record,
 # another session's, or one or its rows that cannot be read, which is noted
 # and settles nothing. Reads the state overseer_pane_read left.
@@ -3144,13 +3127,13 @@ check_lanes() {
     # having no news.
     hosted_lane_item "$lane"
     hosted_item=""; hosted_harness=""
-    if [[ -n "$HOSTED_ROOT" ]]; then
+    if item_in "$LANE_ITEM" ${STATUS_VERB[@]+"${STATUS_VERB[@]}"}; then
       hosted_harness="$(jq -r --arg item "$LANE_ITEM" "$LANE_RUNNING_JQ"'
         [.lanes[]? | select(running and .item == $item)][0].harness // ""' <<<"${FLEET_STATE:-null}")" \
         || die state-invalid "" "item=$LANE_ITEM"
       [[ -z "$hosted_harness" ]] || hosted_item="$LANE_ITEM"
     fi
-    lane_state state "$window" "$cmd" "$pid" "$pane" "" "" "${LANE_ROWS[$i]:-}" "$hosted_item" "$hosted_harness" \
+    ORCH_LANE_HOST="$HOSTED_HOST" lane_state state "$window" "$cmd" "$pid" "$pane" "" "" "${LANE_ROWS[$i]:-}" "$hosted_item" "$hosted_harness" \
       || die limit-scan-failed "" "lane=$lane"
     # Provider failures stay unjudged; local probe failures still permit pane judgment.
     [[ -n "$hosted_item" || "$LANE_PROBE_RC" -le 1 ]] || note_probe_unusable "$lane"
@@ -3806,6 +3789,7 @@ long_pass() {
     check_security_alerts
     check_prepare
     check_start_stall
+    check_lane_stall
     check_lanes
     check_accounts
     check_report

@@ -8,7 +8,7 @@ Repository checks installed as Git hooks. Maintainers use them to check source f
 kendex add vanillagreencom/kendex --skill commit-guards
 ```
 
-Requires Git, awk, jq and standard POSIX tools, plus ruff or pyflakes in a repository with Python files. Where that tool is installed in CI is in [CHECKS.md § py-names](CHECKS.md#py-names). Bash 3.2 is supported. Run `kendex guard install` in each fresh clone, then `kendex guard check` to check the hooks.
+Requires Git, awk, jq and standard POSIX tools, plus ruff or pyflakes in a repository with Python files, and gitleaks 8.19 or newer for the credential scan. Where those tools are installed in CI is in [CHECKS.md § py-names](CHECKS.md#py-names) and [CHECKS.md § secrets](CHECKS.md#secrets). Bash 3.2 is supported. Run `kendex guard install` in each fresh clone, then `kendex guard check` to check the hooks.
 
 ## Features
 
@@ -16,12 +16,13 @@ Requires Git, awk, jq and standard POSIX tools, plus ruff or pyflakes in a repos
 - Check changelog fragments and required change entries.
 - Check markdown layout and references.
 - Check Python files for undefined names.
+- Check added lines for credentials with gitleaks.
 - Optionally check dates and issue references in source comments.
 - Reflow markdown paragraphs with md-reflow.
 
 ## How it works
 
-You select checks in the project settings and install the Git hooks. When you commit, the pre-commit hook runs the enabled checks on the staged files. The commit-msg hook checks the commit message. When you push, the pre-push hook runs the document byte-ceiling check over the pushed tree and then the enabled checks over what the push would change on the remote. A check that reads only staged files is skipped there where the push gives it no range to read instead, because a push stages nothing, and the hook names each one it skipped. A failed check stops the commit or the push and prints the problem.
+You select checks in the project settings and install the Git hooks. When you commit, the pre-commit hook runs the enabled checks on the staged files. The commit-msg hook checks the commit message. When you push, the pre-push hook runs the document byte-ceiling check over the pushed tree and then the enabled checks over what the push would change on the remote. A check that reads only staged files is skipped there where the push gives it no range to read instead, because a push stages nothing, and the hook names each one it skipped. The credential scan runs at commit and in CI, never at push: [CHECKS.md § secrets](CHECKS.md#secrets) says why and what that leaves to CI. A failed check stops the commit or the push and prints the problem.
 
 The push check is there because Git runs no hook when it replays a commit. A rebase or a cherry-pick can leave a branch in a state no commit hook ever saw.
 

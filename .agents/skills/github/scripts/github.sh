@@ -40,6 +40,8 @@ Commands:
   pr-merge           Merge PR as bot account (with safety checks)
   ci-classify-refusal  Name the cause of a pr-merge refusal (conflicts,
                      current vs superseded CI failures)
+  check-review-replies  Judge what a PR's review replies say, read live
+                     (read-only)
   pr-cross-check     Analyze multiple PRs for conflicts/dependencies
   pr-issue           Extract issue ID from PR branch name
   label-add          Add a PR/issue label
@@ -124,6 +126,9 @@ Auth preflight:
   When GH_TOKEN or GITHUB_TOKEN is selected, gh api user is authoritative.
   gh auth status is authoritative only when no environment token is selected.
   A failed non-bot environment token is removed only when keyring auth passes.
+  An accepted token is exported as KENDEX_GITHUB_VALIDATED_TOKEN, so the
+  subcommand does not ask GitHub again about that same value; any other value
+  is validated again.
 
 Errors and retries:
   Most commands write {"error": "message"} JSON to stderr and exit 1.
@@ -256,7 +261,7 @@ unset _help_route
 
 
 case "$command" in
-    pr-data|pr-view|pr-threads|pr-timeline|pr-list-ready|pr-list-failing|pr-create|pr-edit-body|pr-merge|ci-classify-refusal|pr-cross-check|pr-issue|label-add|label-remove|ci-logs|bot-token|dismiss-review|resolve-thread|unresolve-thread|post-reply|post-comment|find-comment|edit-comment|sticky-comment)
+    pr-data|pr-view|pr-threads|pr-timeline|pr-list-ready|pr-list-failing|pr-create|pr-edit-body|pr-merge|ci-classify-refusal|check-review-replies|pr-cross-check|pr-issue|label-add|label-remove|ci-logs|bot-token|dismiss-review|resolve-thread|unresolve-thread|post-reply|post-comment|find-comment|edit-comment|sticky-comment)
         script="$SCRIPT_DIR/commands/${command}.sh"
         if [ -f "$script" ]; then
             if [ -n "$WORK_DIR" ]; then

@@ -19,14 +19,14 @@ Actions:
   delete  Delete a label
 
 List Options:
-  --team <name>         Filter by team (workspace labels if omitted)
+  --team <ref>          Filter by team key or name (workspace labels if omitted)
   --limit <n>           Max results (default: 50)
 
 Create Options:
   --name <text>         Label name (required)
   --color <hex>         Color hex code (e.g., "#FF6B35")
   --description <text>  Label description
-  --team <name>         Team name (workspace label if omitted)
+  --team <ref>          Team key or name (workspace label if omitted)
   --parent <name>       Parent label group name (e.g., "Agent", "Stack")
   --group               Create as a group label (can have children)
 
@@ -48,14 +48,15 @@ case "${1:-help}" in help|--help|-h) show_help; exit 0 ;; esac
 source "$SCRIPT_DIR/../lib/common.sh"
 
 list_labels() {
-    local filter_parts=()
+    local team=""
     local first=75
     FORMAT="${DEFAULT_FORMAT}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --team)
-                filter_parts+=("\"team\": {\"name\": {\"eq\": \"$2\"}}")
+                linear_require_team_value "$@" || return 1
+                team="$2"
                 shift 2
                 ;;
             --limit)
@@ -70,11 +71,11 @@ list_labels() {
         esac
     done
 
-    local filter_json
-    if [ ${#filter_parts[@]} -gt 0 ]; then
-        filter_json=$(IFS=,; echo "{${filter_parts[*]}}")
-    else
-        filter_json="{}"
+    local filter_json="{}"
+    if [ -n "$team" ]; then
+        local team_id
+        team_id=$(resolve_team_id "$team") || return 1
+        filter_json=$(jq -cn --arg id "$team_id" '{team: {id: {eq: $id}}}')
     fi
 
     local query='
@@ -157,15 +158,8 @@ create_label() {
 
     # Get team ID if specified
     if [ -n "$team" ]; then
-        local team_query='query GetTeam($name: String!) { teams(filter: {name: {eq: $name}}) { nodes { id } } }'
-        local team_result
-        team_result=$(graphql_query "$team_query" "{\"name\": \"$team\"}")
         local team_id
-        team_id=$(echo "$team_result" | jq -r '.teams.nodes[0].id // empty')
-        if [ -z "$team_id" ]; then
-            echo "{\"error\": \"Team not found: $team\"}" >&2
-            return 1
-        fi
+        team_id=$(resolve_team_id "$team") || return 1
         input_parts+=("\"teamId\": \"$team_id\"")
     fi
 

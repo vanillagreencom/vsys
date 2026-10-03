@@ -16,6 +16,7 @@ source "$SCRIPT_DIR/lib/lane-state.sh"
 source "$SCRIPT_DIR/lib/lane-host-slots.sh"
 source "$SCRIPT_DIR/lib/date-ladder.sh"
 source "$SCRIPT_DIR/lib/usage-reset.sh"
+source "$SCRIPT_DIR/lib/lane-capabilities.sh"
 
 message() { # REASON FIELD=VALUE...
   local reason="$1" field
@@ -103,6 +104,9 @@ message() { # REASON FIELD=VALUE...
         'A stopped record is what --keep-sandbox leaves: a relaunch recovers it, and lane-close --park --pr N on it retries the stop from the record alone.' ;;
     parked) printf '%s\n' 'The lane window closed, its harness ended and its sandbox stopped with its disk kept. The record reads parked and names the pull request and head it was judged on; the watch keeps its merged check, which hands that merge to the overseer as parked-merged.' ;;
     stopped) printf '%s\n' 'The lane window closed and its sandbox was kept.' ;;
+    host-kept) printf '%s\n' 'The host kind has no stop: the session runs on until the operator archives it from the claude.ai sidebar. The record reads done and the local worktree is removed.' ;;
+    host-capabilities-unread) printf '%s\n' 'lane-host could not declare the capability line of the host the record names, or declared a stop this close has no arm for; lane-host'"'"'s own words are above this line. Nothing was stopped and the record is unchanged.' ;;
+    worktree-remove-failed) printf '%s\n' "The item's worktree on this machine could not be removed; worktree remove names the cause above this line. The record is unchanged, and a second close retries the removal." ;;
     closed) printf '%s\n' 'The lane, sandbox and fleet record closed.' ;;
   esac
 }
@@ -114,8 +118,11 @@ Usage: lane-close [--state-dir PATH] [--keep-sandbox | --park --pr N]
                   [--repo OWNER/REPO] ITEM
 
 Close one lane recorded in the oversee workflow state. The command refuses a
-live lane. It accepts an exited lane, or an idle lane whose tracker item is
-terminal. A limit banner below the lane's last turn is passed over only where
+live lane. It accepts an exited lane, an idle lane whose tracker item is
+terminal, in a full close a hosted record whose window no pane carries on a
+terminal item, or a record whose host kind declares stop=none, in any state,
+which the close ends on this machine alone (the stop=none paragraph below).
+A limit banner below the lane's last turn is passed over only where
 `lanes pick --lane`, run under the record's host, so a hosted lane is read
 through the provider's copy, reads the account the record names as room, for
 the model the record names or over the whole account where it names none, and
@@ -155,7 +162,16 @@ record's wake names before the record reads done or stopped, every close of a
 local lane, an exited one included, an idle one's in the same stop as its
 harness, and refuses as stop-failed target=wake where it does not end. A wake identity whose process has exited or whose pid a later
 process holds is a turn already over.
-A record already marked stopped can close its kept sandbox without a pane. A
+A record already marked stopped can close its kept sandbox without a pane.
+A full close of a hosted record whose window no pane carries, on an item its
+tracker answers terminal, closes with no lane state read and no exit wait:
+the harness is stopped through lane-host stop and the host closed.
+A record whose host kind declares stop=none (lane-host capabilities), a Claude
+cloud session, has no harness, pane or sandbox this machine can stop: the
+close removes the item's files as below, removes its worktree on this machine,
+the record's mail_root, through worktree remove, records it done and prints
+host-kept kind=KIND session=ID, the session the operator archives from the
+claude.ai sidebar. --park refuses on its stop-sandbox --check read. A
 preparing record, a hosted launch whose background job has written no
 outcome, closes without a harness exit: the job the record names is stopped
 and its window closed. --keep-sandbox ends the harness, closes its window and
@@ -747,6 +763,28 @@ finish_close() {
   exit 0
 }
 
+# The record's host kind declares whether this machine can stop its lane. A
+# stop=none kind, a Claude cloud session, has no harness, pane or sandbox to
+# reach and no mailbox to ask: the close removes the item's files and its
+# worktree on this machine and closes the record, and the session stays the
+# operator's to archive. A park keeps its stop-sandbox --check read, which the
+# kind refuses.
+lane_capabilities_read "$LANE_HOST" "${host:-local}" || { message host-capabilities-unread "item=$ITEM" "host=${host:-local}" >&2; exit 1; }
+lane_capability host_stop stop
+case "$host_stop" in
+  window | verb) ;;
+  none)
+    [[ "$PARK" != true ]] || park_judge
+    remove_item_files
+    [[ -x "$WORKTREE" ]] || { message helper-missing "item=$ITEM" "path=$WORKTREE" >&2; exit 1; }
+    "$WORKTREE" remove "$mail_root" >&2 || { message worktree-remove-failed "item=$ITEM" "path=$mail_root" >&2; exit 1; }
+    update_status done || { message state-write-failed "item=$ITEM" "status=done" >&2; exit 1; }
+    lane_capability host_kind kind
+    message host-kept "kind=$host_kind" "session=$(record_field session_id)"
+    exit 0 ;;
+  *) message host-capabilities-unread "item=$ITEM" "host=${host:-local}" "stop=$host_stop" >&2; exit 1 ;;
+esac
+
 # A stopped record means an earlier --keep-sandbox call already exited the
 # harness and removed its window. Only the kept sandbox and the record remain.
 if [[ "$status" == stopped ]]; then
@@ -814,7 +852,6 @@ fi
 [[ -n "$window_name" ]] || { message record-invalid "item=$ITEM" "field=window" >&2; exit 1; }
 
 resolve_window
-[[ -n "$RESOLVED_PANE" ]] || { message pane-missing "item=$ITEM" "window=$window_name" >&2; exit 1; }
 pane_id="$LANE_PANE_ID"
 pane_pid="$LANE_PANE_PID"
 pane_cmd="$LANE_PANE_CMD"
@@ -825,10 +862,20 @@ pane_cmd="$LANE_PANE_CMD"
 case "$pane_cmd" in
   claude|codex|pi|copilot) derive_identity harness "$pane_cmd" ;;
 esac
-pane_screen="$(tmux capture-pane -pJ -t "$pane_id" 2>/dev/null)" \
-  || { message pane-read-failed "item=$ITEM" "pane=$pane_id" >&2; exit 1; }
-lane_state state listed "$pane_cmd" "$pane_pid" "$pane_screen" \
-  || { message pane-read-failed "item=$ITEM" "pane=$pane_id" >&2; exit 1; }
+if [[ -n "$pane_id" ]]; then
+  pane_screen="$(tmux capture-pane -pJ -t "$pane_id" 2>/dev/null)" \
+    || { message pane-read-failed "item=$ITEM" "pane=$pane_id" >&2; exit 1; }
+  lane_state state listed "$pane_cmd" "$pane_pid" "$pane_screen" \
+    || { message pane-read-failed "item=$ITEM" "pane=$pane_id" >&2; exit 1; }
+else
+  # A hosted lane's sandbox outlives its window; elsewhere it reads as open.
+  tracker_rc=0; [[ -n "$host" && "$PARK" == false && "$KEEP_SANDBOX" == false ]] && tracker_terminal || tracker_rc=$?
+  case "$tracker_rc" in
+    0) state=windowless ;;
+    1) message pane-missing "item=$ITEM" "window=$window_name" >&2; exit 1 ;;
+    *) message tracker-read-failed "item=$ITEM" "tracker=$tracker" "source=$tracker_source" "cause=$TRACKER_CAUSE" >&2; exit 1 ;;
+  esac
+fi
 
 # usage-reset.sh's one import: a reset clause the banner scan could not read.
 die() { message pane-read-failed "item=$ITEM" "pane=$pane_id" "cause=$1" >&2; exit 1; }
@@ -914,7 +961,7 @@ if [[ "$state" == walled ]]; then
 fi
 
 case "$state" in
-  exited) ;;
+  exited | windowless) ;;
   idle)
     tracker_rc=0
     tracker_terminal || tracker_rc=$?
@@ -976,7 +1023,8 @@ stop_harness() {
     # A merged lane's own close-out removes its worktree before the lane goes
     # idle, so a provider that finds the harness by that directory has nothing
     # to find it by; lane-host-ssh stops by launch identity instead. Only an
-    # idle lane on a terminal item reaches this stop, and what follows ends the
+    # idle lane on a terminal item, or the windowless close of a hosted record
+    # on one, reaches this stop, and what follows ends the
     # harness, so the stop is skipped rather than refused: the host close where
     # the provider's close ends the sandbox, otherwise the window kill, which
     # hangs up the lane's ssh session, as a static host's close ends no
@@ -1010,7 +1058,7 @@ stop_harness() {
 
 # End the harness by signal and wait for its pane to read exited, for an idle
 # lane's close and for a park alike; a park's lane is working, and the
-# signal is the same. A stop the full close skipped ends the close-out.
+# signal is the same. A skipped stop, or no pane to wait on, ends the close-out.
 stop_and_await_exit() {
   case "$harness" in
     claude|codex|pi|copilot) ;;
@@ -1021,7 +1069,7 @@ stop_and_await_exit() {
   [[ "$close_secs" =~ ^[1-9][0-9]*$ ]] \
     || { message record-invalid "item=$ITEM" "field=ORCH_LANE_CLOSE_SECS" >&2; exit 1; }
   stop_harness
-  [[ "$STOP_SKIPPED" == false ]] || finish_close
+  [[ "$STOP_SKIPPED" == false && -n "$pane_id" ]] || finish_close
   passes=$((close_secs * 5))
   while :; do
     rc=0
@@ -1053,6 +1101,6 @@ if [[ "$PARK" == true ]]; then
   park_sandbox
 fi
 
-[[ "$state" != idle ]] || stop_and_await_exit
+[[ "$state" != idle && "$state" != windowless ]] || stop_and_await_exit
 
 finish_close

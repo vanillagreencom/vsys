@@ -102,7 +102,7 @@
 #     "baseline_lines": 138,                  // implement only; additions + deletions
 #                                             // outside the render mirror, floor 1
 #     "validate": "pass" | "no-verdict" | "FAILING: c1,c2", // required
-#     "validate_mode": "full" | "range" | null, // read from --validate-run-dir;
+#     "validate_mode": "full" | "range" | "ci" | null, // read from --validate-run-dir;
 #                                             // null only for a FAILING round
 #                                             // with no run
 #     "validate_time": {"started_at": "…", "ended_at": "…", "seconds": 3300} | null,
@@ -228,8 +228,8 @@ test-only validation-ceiling re-run dev-implement.md section 5 names, a flake
 worth recording); it never relaxes --validate. Outside that named ceiling a
 failing validation ends the round and is never re-run into a pass.
 --validate-run-dir RUN_DIR is the run directory dev-validate-run printed;
-validate_mode is the mode dev-validate-run --record reports for it, full or
-range, and a --validate pass needs a run that passed, no-verdict a run the
+validate_mode is the mode dev-validate-run --record reports for it, full,
+range or ci, and a --validate pass needs a run that passed, no-verdict a run the
 timeout ended and a --validate-note naming the scoped suites that passed; a
 FAILING result is accepted beside any run. A pass or no-verdict requires it; a FAILING round with no run omits it and
 records validate_mode null. Submit reuses only a full pass. validate_time is
