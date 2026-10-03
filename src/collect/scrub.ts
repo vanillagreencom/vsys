@@ -26,6 +26,8 @@ export interface ScrubReport {
   startedAt: number | null;
   /** The scrub's own status word, lowercased: finished, running, aborted. */
   status: string | null;
+  /** How long the scrub ran, in milliseconds. */
+  duration: number | null;
   uncorrectable: number | null;
   corrected: number | null;
   /**
@@ -62,6 +64,18 @@ const number = (raw: string, name: string): number | null => {
   if (text === null || !/^\d+$/.test(text)) return null;
   const value = Number(text);
   return Number.isFinite(value) ? value : null;
+};
+/**
+ * A `Duration` field: hours, minutes and seconds, as btrfs-progs prints it.
+ * The hours are not bounded at a day, because a scrub can run for longer.
+ */
+const duration = (raw: string): number | null => {
+  const parts = field(raw, "Duration")?.match(/^(\d+):([0-5]\d):([0-5]\d)$/);
+  if (!parts) return null;
+  const [hours, minutes, seconds] = parts.slice(1).map(Number);
+  if (hours === undefined || minutes === undefined || seconds === undefined)
+    return null;
+  return ((hours * 60 + minutes) * 60 + seconds) * 1000;
 };
 /**
  * Whether a labelled count is a reading. A label the report states more than
@@ -146,6 +160,7 @@ export function parseScrub(raw: string): ScrubReport {
     uuid: field(raw, "UUID")?.match(/^[0-9a-f-]{36}$/i)?.[0] ?? null,
     startedAt: Number.isFinite(at) ? at : null,
     status: field(raw, "Status")?.toLowerCase().split(/\s/)[0] ?? null,
+    duration: duration(raw),
     uncorrectable: number(raw, "Uncorrectable"),
     corrected: number(raw, "Corrected"),
     addresses,

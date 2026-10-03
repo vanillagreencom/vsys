@@ -108,6 +108,11 @@ export interface Volume {
   /** How far the counter grew then. */
   lastErrorSize?: number | null;
   /**
+   * When the reading before that growth was taken, so the growth happened
+   * after this and by `lastErrorAt`. Null where that reading came from disk.
+   */
+  lastErrorBefore?: number | null;
+  /**
    * False where the record of past growth could not be read, so a null
    * `lastErrorAt` is a reading vsys does not have rather than one of none.
    */
@@ -167,6 +172,8 @@ export interface Scrub {
   fsid?: string | null;
   startedAt?: number | null;
   status?: string | null;
+  /** How long the scrub ran, in milliseconds. */
+  duration?: number | null;
   uncorrectable?: number | null;
   corrected?: number | null;
   /**
@@ -184,6 +191,20 @@ export interface FinishedScrub {
    * block, or a problem report whose count could not be read.
    */
   damaged: boolean;
+  /** The counter growth it accounts for, null where its report dated or counted none. */
+  covers?: ScrubCoverage | null;
+}
+/**
+ * The counter growth a finished scrub accounts for. The kernel counts every
+ * checksum mismatch a scrub finds, corrected or not, so growth seen before
+ * the scrub ended, and no larger than the errors it counted, is the scrub's
+ * own finding rather than an error after it.
+ */
+export interface ScrubCoverage {
+  /** When the scrub ended: its start plus its duration. */
+  endedAt: number;
+  /** The errors it counted, corrected and uncorrectable. */
+  errors: number;
 }
 /**
  * One inode the kernel failed a checksum read in, as its log names it. The

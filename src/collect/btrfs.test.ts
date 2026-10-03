@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { type IntegrityState, integrities } from "../model/integrity";
 import { point } from "../store/point";
 import { emptySnapshot, fixture } from "../test/fixture";
 import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
@@ -176,6 +177,7 @@ Error summary:    no errors found
   expect(first.lastFinishedScrub?.[key]).toEqual({
     at: finishedAt as number,
     damaged: false,
+    covers: null,
   });
   // The reporter's one report for this filesystem is overwritten by a scrub
   // that stops early. Nothing on disk still says the earlier one finished.
@@ -194,6 +196,7 @@ Error summary:    no errors found
   expect(second.lastFinishedScrub?.[key]).toEqual({
     at: finishedAt as number,
     damaged: false,
+    covers: null,
   });
 });
 
@@ -233,6 +236,7 @@ Error summary:    csum=1
   expect(first.lastFinishedScrub?.[key]).toEqual({
     at: finishedAt as number,
     damaged: true,
+    covers: null,
   });
   // A scrub that stops early overwrites the report naming that damage.
   // Nothing on disk still says the filesystem was ever found damaged.
@@ -248,6 +252,134 @@ Error summary:    no errors found
   const second = await collector.collect(r, f.config, 2000);
   // The collector's memory still says that finished check found damage.
   expect(second.lastFinishedScrub?.[key]?.damaged).toBe(true);
+});
+
+const started = Date.parse("Fri Sep 11 13:25:54 2026");
+/**
+ * A filesystem whose scrub from `started` ran thirty minutes and corrected
+ * three errors, with a writer for its corruption counter.
+ */
+function corrected() {
+  const f = fixture();
+  fixtures.push(f);
+  const uuid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+  const root = join(f.config.btrfsRoot, uuid);
+  mkdirSync(join(root, "devices"), { recursive: true });
+  symlinkSync("/sys/devices/test", join(root, "devices/test"));
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  const reportPath = join(f.config.scrubDir, "root.result");
+  f.write(
+    reportPath,
+    `btrfs scrub finished, csum=3: /
+UUID:             ${uuid}
+Scrub started:    Fri Sep 11 13:25:54 2026
+Status:           finished
+Duration:         0:30:00
+Error summary:    csum=3
+  Corrected:      3
+  Uncorrectable:  0
+  Unverified:     0
+`,
+  );
+  const count = (n: number) =>
+    f.write(
+      join(root, "devinfo/1/error_stats"),
+      `corruption_errs ${n}\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0`,
+    );
+  return { f, uuid, reportPath, count };
+}
+
+test("a scrub that corrected every error it found is not new errors since that scrub", async () => {
+  const { f, uuid, reportPath, count } = corrected();
+  const collector = new StorageCollector();
+  const r = new Reader();
+  const state = async (time: number) => {
+    const s = emptySnapshot();
+    s.storage = await collector.collect(r, f.config, time);
+    s.time = time;
+    return { storage: s.storage, item: integrities(s, f.config)[0] };
+  };
+  count(0);
+  await collector.collect(r, f.config, started - 60_000);
+  // Five minutes into the scrub, the kernel has counted the three bad
+  // copies it found and repaired.
+  count(3);
+  await collector.collect(r, f.config, started + 5 * 60_000);
+  const finished = await state(started + 40 * 60_000);
+  expect(finished.item?.complete).toBe(true);
+  expect(finished.item?.state).toBe("healthy");
+  expect(finished.storage.lastFinishedScrub?.[uuid]?.covers).toEqual({
+    endedAt: started + 30 * 60_000,
+    errors: 3,
+  });
+  // A later scrub that stops early overwrites the report, and the
+  // remembered check still accounts for the growth it found.
+  f.write(
+    reportPath,
+    `btrfs scrub aborted after 00:00:01, interrupted: /
+UUID:             ${uuid}
+Scrub started:    Fri Sep 11 15:00:00 2026
+Status:           aborted
+Error summary:    no errors found
+`,
+  );
+  expect((await state(started + 100 * 60_000)).item?.state).toBe("healthy");
+  // Growth after the scrub ended is new however many it corrected.
+  count(4);
+  expect((await state(started + 110 * 60_000)).item?.state).toBe("new-errors");
+});
+
+test("a scrub covers growth only where this process took the reading before it", async () => {
+  // Each step reads the counter, minutes from the scrub's start, from the
+  // same collector or a new one reading what the last saved, and names the
+  // state it must read, or null.
+  const rows: [string, [number, number, boolean, IntegrityState | null][]][] = [
+    [
+      "growth first seen after the scrub by the process that read before it",
+      [
+        [-1, 0, false, null],
+        [40, 3, false, "healthy"],
+      ],
+    ],
+    [
+      "growth seen during the scrub, then more a new process sees a week later",
+      [
+        [-1, 0, false, null],
+        [5, 3, false, null],
+        [40, 3, true, "healthy"],
+        [10080, 4, true, "new-errors"],
+      ],
+    ],
+    [
+      "a baseline saved an hour before the scrub, then growth a new process sees three days later",
+      [
+        [-60, 0, false, null],
+        [4320, 1, true, "new-errors"],
+      ],
+    ],
+  ];
+  for (const [name, steps] of rows) {
+    const { f, count } = corrected();
+    const r = new Reader();
+    let collector = new StorageCollector();
+    for (const [minutes, counter, fresh, want] of steps) {
+      if (fresh) collector = new StorageCollector();
+      count(counter);
+      const s = emptySnapshot();
+      s.time = started + minutes * 60_000;
+      s.storage = await collector.collect(r, f.config, s.time);
+      const state = integrities(s, f.config)[0]?.state;
+      if (want)
+        expect({ name, minutes, state }).toEqual({
+          name,
+          minutes,
+          state: want,
+        });
+    }
+  }
 });
 
 test("a stale finished report never moves the remembered time backward", async () => {
@@ -423,6 +555,7 @@ test("an unreadable report stays a report rather than vanishing", async () => {
       fsid: null,
       startedAt: null,
       status: null,
+      duration: null,
       uncorrectable: null,
       corrected: null,
       addresses: null,

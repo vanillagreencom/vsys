@@ -355,13 +355,9 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   const grown = filesystems.filter((item) => item.state === "new-errors");
   const [firstGrown, ...moreGrown] = grown;
   if (firstGrown) {
-    // Only an error newer than the last check is new. The card says nothing has
-    // read the filesystem since, which an older one would contradict.
-    const sinceCheck = (age: number | null): number | null =>
-      age !== null &&
-      (firstGrown.checkAge === null || age < firstGrown.checkAge)
-        ? age
-        : null;
+    // Only an error `integrity()` judged new is named. The card says nothing
+    // has read the filesystem since, which an older one, or growth the last
+    // check itself accounts for, would contradict.
     add("new-errors", "danger", {
       paths: grown.map((item) => item.mounts[0] ?? item.device),
       at: { kind: "path", path: firstGrown.id },
@@ -373,12 +369,9 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         moreGrown.length === 0
           ? {
               filesystems: 1,
-              size:
-                sinceCheck(firstGrown.growthAge) === null
-                  ? null
-                  : firstGrown.errorSize,
-              since: sinceCheck(firstGrown.growthAge),
-              logged: sinceCheck(firstGrown.loggedAge),
+              size: firstGrown.growthNew ? firstGrown.errorSize : null,
+              since: firstGrown.growthNew ? firstGrown.growthAge : null,
+              logged: firstGrown.loggedNew ? firstGrown.loggedAge : null,
               checked: firstGrown.checkAge,
             }
           : {

@@ -29,6 +29,7 @@ test("a report names its filesystem, its check and every path of each address", 
   expect(report.status).toBe("finished");
   expect(report.uncorrectable).toBe(26);
   expect(report.corrected).toBe(0);
+  expect(report.duration).toBe(122_000);
   expect(report.startedAt).toBe(Date.parse("Fri Sep 11 13:25:54 2026"));
   // Both names of the first address, because one extent under two names is
   // one piece of damage and removing the first leaves it on disk.
@@ -149,12 +150,26 @@ test("fields the report did not carry stay null rather than becoming zero", () =
     uuid: null,
     startedAt: null,
     status: null,
+    duration: null,
     uncorrectable: null,
     corrected: null,
     addresses: null,
   });
   // A start time that is not a time is unread, never the epoch.
   expect(parseScrub("Scrub started:    never\n").startedAt).toBeNull();
+  // A run longer than a day keeps its hours; a duration that is not one is
+  // unread, never a zero-length run.
+  expect(parseScrub("Duration:         27:00:05\n").duration).toBe(
+    (27 * 3600 + 5) * 1000,
+  );
+  for (const text of ["0:61:00", "0:30", "1:00:00 (running)", "soon"])
+    expect({
+      text,
+      duration: parseScrub(`Duration:   ${text}\n`).duration,
+    }).toEqual({
+      text,
+      duration: null,
+    });
 });
 
 test("a field the report states twice holds no single reading", () => {
