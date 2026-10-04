@@ -68,6 +68,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 ## Topics
 
 - [lanes.md](lanes.md): read when changing how a lane is found, named, or traced back to its launcher.
+- [lanes-tmux.md](lanes-tmux.md): read when changing how a lane's tmux pane is resolved, or whether a lane holds the pane vsys draws in.
 - [agent-tools.md](agent-tools.md): read when changing which processes count as agent tools, or the shared agent-tool data.
 - [processes.md](processes.md): read when changing how processes are read, the thread that reads them, or the lifecycle every collection thread shares.
 - [verdict.md](verdict.md): read when changing what counts as a problem, how problems rank, or the summary JSON.
