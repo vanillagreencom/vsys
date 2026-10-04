@@ -20,9 +20,9 @@ function restrict(sqlitePath: string): void {
 /**
  * How long a history write waits for another connection's write lock before
  * failing. Two dashboards may share one database, and write-ahead logging lets
- * only one of them write at a time. The wait runs on the dashboard thread, so
- * it is held to the history write budget: docs/architecture/history.md
- * states the choice.
+ * only one of them write at a time. The wait runs on the dashboard thread and
+ * adds to the history write budget rather than fitting inside it:
+ * docs/architecture/history.md states the choice and what it costs a refresh.
  */
 const BUSY_TIMEOUT_MS = 50;
 
@@ -171,7 +171,15 @@ export class History {
       ? "Process replay reached the memory limit. Enable SQLite to retain the full history window."
       : null;
   }
-  constructor(private c: Config) {
+  /**
+   * `busyTimeoutMs` is how long a write waits for another connection's write
+   * lock. The dashboard always takes the default; a caller passes another
+   * value only to stage that wait without racing it.
+   */
+  constructor(
+    private c: Config,
+    private busyTimeoutMs = BUSY_TIMEOUT_MS,
+  ) {
     const capacity = Math.ceil((c.historyHours * 3600000) / c.refreshMs);
     this.points = new Points(capacity);
     if (c.persistence) {
@@ -179,7 +187,7 @@ export class History {
       const fresh = !existsSync(c.sqlitePath);
       this.db = new Database(c.sqlitePath, { create: true, strict: true });
       try {
-        this.db.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`);
+        this.db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
         if (fresh) restrict(c.sqlitePath);
         const application = this.db
           .query<{ application_id: number }, []>("PRAGMA application_id")
@@ -264,7 +272,7 @@ export class History {
   }
   /** Copy retained evidence before the scheduler commits new settings. */
   reconfigure(c: Config): History {
-    const next = new History(c);
+    const next = new History(c, this.busyTimeoutMs);
     try {
       const end = Math.max(
         this.points.get(this.points.size - 1)?.time ?? 0,

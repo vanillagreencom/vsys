@@ -551,64 +551,127 @@ test("persisted snapshots and their sidecars stay readable only by the owner", (
   expect(modes()).toEqual(Array(modes().length).fill(0o600));
 });
 
-test("a write that overlaps another connection's write lock waits and succeeds", async () => {
-  const root = mkdtempSync(join(tmpdir(), "vsys-history-lock-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const config = { ...defaults(), persistence: true };
-  config.sqlitePath = join(root, "history.db");
-  const h = new History(config);
-  cleanup.push(() => h.close());
-  // The other dashboard runs on its own thread, so it can commit while this
-  // one is blocked inside its write. Its hold is a fifth of the wait History
-  // allows, the margin left for that thread to wake.
-  const other = join(root, "other-dashboard.ts");
+/**
+ * Another dashboard, on its own thread, that takes the write lock on the
+ * history database at `path` with a row of its own. It holds the lock until
+ * this thread calls `start`, then for `holdMs` more on its own thread, or
+ * until this thread calls `release`, and then commits. It waits on shared
+ * memory rather than on a timer or a message, so how late either thread is
+ * scheduled never shortens the hold.
+ */
+async function otherDashboard(
+  root: string,
+  path: string,
+  time: number,
+  holdMs: number,
+) {
+  const script = join(root, "other-dashboard.ts");
   writeFileSync(
-    other,
+    script,
     `import { Database } from "bun:sqlite";
 declare const self: Worker;
 self.onmessage = (event) => {
-  const db = new Database(event.data.path);
+  const { path, time, holdMs, signal } = event.data;
+  const flags = new Int32Array(signal);
+  const db = new Database(path);
   db.exec("BEGIN IMMEDIATE");
-  db.query("INSERT INTO samples VALUES (?, x'00', '{}')").run(event.data.time);
+  db.query("INSERT INTO samples VALUES (?, x'00', '{}')").run(time);
   postMessage("locked");
-  setTimeout(() => {
-    db.exec("COMMIT");
-    db.close();
-    postMessage("released");
-  }, 10);
+  Atomics.wait(flags, 0, 0);
+  Atomics.wait(flags, 1, 0, holdMs);
+  db.exec("COMMIT");
+  db.close();
+  postMessage("released");
 };
 `,
   );
-  const worker = new Worker(other);
+  const worker = new Worker(script);
   cleanup.push(() => worker.terminate());
-  const messages: string[] = [];
   const next = () =>
     new Promise<string>((resolve) => {
       worker.addEventListener("message", (e) => resolve(e.data), {
         once: true,
       });
     });
-  // The other dashboard's row is a second older than this one's, inside the
-  // window, so this write's retention delete keeps it.
-  const time = Date.now();
-  let pending = next();
-  worker.postMessage({ path: config.sqlitePath, time: time - 1000 });
-  messages.push(await pending);
-  pending = next();
-  // The lock is really held: a connection that does not wait is refused.
+  const flags = new Int32Array(new SharedArrayBuffer(8));
+  const signal = (index: number) => {
+    Atomics.store(flags, index, 1);
+    Atomics.notify(flags, index);
+  };
+  const locked = next();
+  worker.postMessage({ path, time, holdMs, signal: flags.buffer });
+  expect(await locked).toBe("locked");
+  const released = next();
+  return {
+    start: () => signal(0),
+    release: () => signal(1),
+    released,
+  };
+}
+
+/** A History on SQLite in its own scratch directory, with a connection that reads it back. */
+function sharedHistory(busyTimeoutMs?: number) {
+  const root = mkdtempSync(join(tmpdir(), "vsys-history-lock-"));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  const config = { ...defaults(), persistence: true };
+  config.sqlitePath = join(root, "history.db");
+  const h = new History(config, busyTimeoutMs);
+  cleanup.push(() => h.close());
   const probe = new Database(config.sqlitePath);
   cleanup.push(() => probe.close());
-  expect(() => probe.exec("BEGIN IMMEDIATE")).toThrow("database is locked");
-  expect(() => h.add(emptySnapshot(time))).not.toThrow();
-  messages.push(await pending);
-  expect(messages).toEqual(["locked", "released"]);
-  expect(
+  const stored = () =>
     probe
       .query<{ time: number }, []>("SELECT time FROM samples ORDER BY time")
       .all()
-      .map((row) => row.time),
-  ).toEqual([time - 1000, time]);
-});
+      .map((row) => row.time);
+  return { root, path: config.sqlitePath, h, probe, stored };
+}
+
+// Starting a worker thread is the slow part of both rows below, and a loaded
+// host can stretch it past the runner's default; neither row's verdict rests
+// on the runner's timeout.
+const workerStartMs = 30_000;
+
+test(
+  "a write that overlaps another connection's write lock waits and succeeds",
+  async () => {
+    // This History waits ten seconds, so the other dashboard's thread commits
+    // inside the wait however long a loaded host leaves it unscheduled.
+    const { root, path, h, probe, stored } = sharedHistory(10_000);
+    // The other dashboard's row is a second older than this one's, inside the
+    // window, so this write's retention delete keeps it.
+    const time = Date.now();
+    // It keeps the lock 100 ms past `start`, far longer than this thread
+    // takes from there to its own write, so the write meets the lock.
+    const other = await otherDashboard(root, path, time - 1000, 100);
+    // The lock is really held: a connection that does not wait is refused.
+    expect(() => probe.exec("BEGIN IMMEDIATE")).toThrow("database is locked");
+    other.start();
+    expect(() => h.add(emptySnapshot(time))).not.toThrow();
+    expect(await other.released).toBe("released");
+    expect(stored()).toEqual([time - 1000, time]);
+  },
+  workerStartMs,
+);
+
+test(
+  "a write that another connection's write lock outlasts fails within the dashboard's wait",
+  async () => {
+    const { root, path, h, stored } = sharedHistory();
+    const time = Date.now();
+    // The other dashboard keeps the lock for two seconds, forty times the
+    // dashboard's wait, unless this thread releases it first. A write that
+    // waits out the hold succeeds, so the refusal shows the wait ended inside
+    // it; this thread releases the lock only once the write has returned.
+    const other = await otherDashboard(root, path, time - 1000, 2000);
+    other.start();
+    expect(() => h.add(emptySnapshot(time))).toThrow("database is locked");
+    other.release();
+    expect(await other.released).toBe("released");
+    expect(stored()).toEqual([time - 1000]);
+  },
+  workerStartMs,
+);
 
 test("reading recent history costs the same whether or not there is much to read", () => {
   const c = {
