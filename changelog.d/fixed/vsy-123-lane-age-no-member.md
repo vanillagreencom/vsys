@@ -1,1 +1,1 @@
-- A lane with no readable member, live or recorded by an earlier version, now shows no age, memory or PID in agent views, the Timeline or the export, instead of 0.
+- A lane with no readable member shows no age or memory in agent views or the export, no age in its Timeline stop line, and no PID in agent detail; old recordings replay with no age or memory.
