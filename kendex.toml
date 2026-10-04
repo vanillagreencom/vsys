@@ -204,6 +204,15 @@ source = "kendex"
 [hooks.skill-load-record]
 source = "kendex"
 
+[hooks.session-start-row]
+source = "kendex"
+
+[hooks.session-end-row]
+source = "kendex"
+
+[hooks.stop-failure-row]
+source = "kendex"
+
 [commands.code-scrub]
 source = "kendex"
 
