@@ -163,7 +163,7 @@ test("a lane reports its cgroup, its charged resources and its effective caps", 
       group,
       env: { MAKEFLAGS: "-j6 --jobserver-auth=fifo:/tmp/f" },
     }),
-    processSnapshot({ pid: 2, group, build: "rustc", tool: null }),
+    processSnapshot({ pid: 2, group, build: "rustc", tool: null, age: 90 }),
     processSnapshot({ pid: 3, group, build: "ld.mold", tool: null }),
     processSnapshot({ pid: 4, group, build: "test", tool: null }),
     processSnapshot({
@@ -180,6 +180,8 @@ test("a lane reports its cgroup, its charged resources and its effective caps", 
     4096, 1048576, 2097152,
   ]);
   expect([lane.cpu, lane.cpuShare]).toEqual([200, 50]);
+  // The oldest member gives the age, and every member's resident memory sums.
+  expect([lane.age, lane.rss]).toEqual([90, 5 * 1024]);
   expect(lane.builds).toEqual({ rustc: 1, "ld.mold": 1, test: 1 });
   expect([lane.linkers, lane.rustc, lane.tests, lane.sccache]).toEqual([
     1, 1, 1, 1,
