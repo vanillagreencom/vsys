@@ -627,10 +627,11 @@ function sharedHistory(busyTimeoutMs?: number) {
   return { root, path: config.sqlitePath, config, h, probe, stored };
 }
 
-// Starting a worker thread is the slow part of both rows below, and a loaded
-// host can stretch it past the runner's default; neither row's verdict rests
-// on the runner's timeout.
-const workerStartMs = 30_000;
+// A margin for the rows below. Two start a worker thread, and one commits 132
+// samples as synced SQLite transactions, the workload the lane-series suite
+// records failing on time inside the full suite. A loaded host can stretch
+// either past the runner's default; no row's verdict rests on the timeout.
+const slowRowMs = 30_000;
 
 test(
   "a write that overlaps another connection's write lock waits and succeeds",
@@ -651,7 +652,7 @@ test(
     expect(await other.released).toBe("released");
     expect(stored()).toEqual([time - 1000, time]);
   },
-  workerStartMs,
+  slowRowMs,
 );
 
 test(
@@ -676,33 +677,42 @@ test(
     expect(await other.released).toBe("released");
     expect(stored()).toEqual([time - 1000]);
   },
-  workerStartMs,
+  slowRowMs,
 );
 
-test("a lane read that yields leaves the next write free to wait for another dashboard", async () => {
-  const { config, h: other, stored } = sharedHistory();
-  const id = laneSnapshot().id;
-  const sample = (time: number) => {
-    const s = emptySnapshot(time);
-    s.lanes = [laneSnapshot()];
-    return s;
-  };
-  // More rows than one page of the stored pass, so the read yields with rows
-  // still to read, and those rows are older than anything this dashboard
-  // holds in memory, so the read takes them from the database.
-  const first = Date.now() - 200_000;
-  for (let i = 0; i < 130; i++) other.add(sample(first + i * 1000));
-  const h = new History(config);
-  cleanup.push(() => h.close());
-  const last = first + 129_000;
-  const read = h.laneWindows([id], last, 3_600_000);
-  // The read is out, between two pages. The other dashboard commits, and
-  // this one then writes its own sample on the connection the read uses.
-  other.add(sample(last + 1000));
-  expect(() => h.add(sample(last + 2000))).not.toThrow();
-  expect((await read).get(id)).toHaveLength(130);
-  expect(stored().slice(-2)).toEqual([last + 1000, last + 2000]);
-});
+test(
+  "a lane read that yields leaves the next write free to wait for another dashboard",
+  async () => {
+    const { config, h: other, stored } = sharedHistory();
+    const id = laneSnapshot().id;
+    const sample = (time: number) => {
+      const s = emptySnapshot(time);
+      s.lanes = [laneSnapshot()];
+      return s;
+    };
+    // More rows than one page of the stored pass, so the read yields with rows
+    // still to read, and those rows are older than anything this dashboard
+    // holds in memory, so the read takes them from the database.
+    const first = Date.now() - 200_000;
+    for (let i = 0; i < 130; i++) other.add(sample(first + i * 1000));
+    const h = new History(config);
+    cleanup.push(() => h.close());
+    const last = first + 129_000;
+    const sleep = spyOn(Bun, "sleep");
+    cleanup.push(() => sleep.mockRestore());
+    const read = h.laneWindows([id], last, 3_600_000);
+    // The first page runs inside the call and ends at the read's yield, so the
+    // read is out before the writes below and not merely unsettled.
+    expect(sleep).toHaveBeenCalled();
+    // The read is out, between two pages. The other dashboard commits, and
+    // this one then writes its own sample on the connection the read uses.
+    other.add(sample(last + 1000));
+    expect(() => h.add(sample(last + 2000))).not.toThrow();
+    expect((await read).get(id)).toHaveLength(130);
+    expect(stored().slice(-2)).toEqual([last + 1000, last + 2000]);
+  },
+  slowRowMs,
+);
 
 test("reading recent history costs the same whether or not there is much to read", () => {
   const c = {
