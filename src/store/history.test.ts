@@ -665,7 +665,13 @@ test(
     // it; this thread releases the lock only once the write has returned.
     const other = await otherDashboard(root, path, time - 1000, 2000);
     other.start();
+    // The wait is read on the real clock because SQLite's busy handler sleeps
+    // through its VFS, which takes no injected clock. The floor is half the
+    // dashboard's 50 ms wait: a write that never waits refuses at once and
+    // falls under it, and a loaded host only lengthens a wait, never shortens it.
+    const began = performance.now();
     expect(() => h.add(emptySnapshot(time))).toThrow("database is locked");
+    expect(performance.now() - began).toBeGreaterThanOrEqual(25);
     other.release();
     expect(await other.released).toBe("released");
     expect(stored()).toEqual([time - 1000]);
