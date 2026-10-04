@@ -1,6 +1,15 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
 import { History, Ring } from "./history";
@@ -541,6 +550,169 @@ test("persisted snapshots and their sidecars stay readable only by the owner", (
   cleanup.push(() => reopened.close());
   expect(modes()).toEqual(Array(modes().length).fill(0o600));
 });
+
+/**
+ * Another dashboard, on its own thread, that takes the write lock on the
+ * history database at `path` with a row of its own. It holds the lock until
+ * this thread calls `start`, then for `holdMs` more on its own thread, or
+ * until this thread calls `release`, and then commits. It waits on shared
+ * memory rather than on a timer or a message, so how late either thread is
+ * scheduled never shortens the hold.
+ */
+async function otherDashboard(
+  root: string,
+  path: string,
+  time: number,
+  holdMs: number,
+) {
+  const script = join(root, "other-dashboard.ts");
+  writeFileSync(
+    script,
+    `import { Database } from "bun:sqlite";
+declare const self: Worker;
+self.onmessage = (event) => {
+  const { path, time, holdMs, signal } = event.data;
+  const flags = new Int32Array(signal);
+  const db = new Database(path);
+  db.exec("BEGIN IMMEDIATE");
+  db.query("INSERT INTO samples VALUES (?, x'00', '{}')").run(time);
+  postMessage("locked");
+  Atomics.wait(flags, 0, 0);
+  Atomics.wait(flags, 1, 0, holdMs);
+  db.exec("COMMIT");
+  db.close();
+  postMessage("released");
+};
+`,
+  );
+  const worker = new Worker(script);
+  cleanup.push(() => worker.terminate());
+  const next = () =>
+    new Promise<string>((resolve) => {
+      worker.addEventListener("message", (e) => resolve(e.data), {
+        once: true,
+      });
+    });
+  const flags = new Int32Array(new SharedArrayBuffer(8));
+  const signal = (index: number) => {
+    Atomics.store(flags, index, 1);
+    Atomics.notify(flags, index);
+  };
+  const locked = next();
+  worker.postMessage({ path, time, holdMs, signal: flags.buffer });
+  expect(await locked).toBe("locked");
+  const released = next();
+  return {
+    start: () => signal(0),
+    release: () => signal(1),
+    released,
+  };
+}
+
+/** A History on SQLite in its own scratch directory, with a connection that reads it back. */
+function sharedHistory(busyTimeoutMs?: number) {
+  const root = mkdtempSync(join(tmpdir(), "vsys-history-lock-"));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  const config = { ...defaults(), persistence: true };
+  config.sqlitePath = join(root, "history.db");
+  const h = new History(config, busyTimeoutMs);
+  cleanup.push(() => h.close());
+  const probe = new Database(config.sqlitePath);
+  cleanup.push(() => probe.close());
+  const stored = () =>
+    probe
+      .query<{ time: number }, []>("SELECT time FROM samples ORDER BY time")
+      .all()
+      .map((row) => row.time);
+  return { root, path: config.sqlitePath, config, h, probe, stored };
+}
+
+// A margin for the rows below. Two start a worker thread, and one commits 132
+// samples as synced SQLite transactions, the workload the lane-series suite
+// records failing on time inside the full suite. A loaded host can stretch
+// either past the runner's default; no row's verdict rests on the timeout.
+const slowRowMs = 30_000;
+
+test(
+  "a write that overlaps another connection's write lock waits and succeeds",
+  async () => {
+    // This History waits ten seconds, so the other dashboard's thread commits
+    // inside the wait however long a loaded host leaves it unscheduled.
+    const { root, path, h, probe, stored } = sharedHistory(10_000);
+    // The other dashboard's row is a second older than this one's, inside the
+    // window, so this write's retention delete keeps it.
+    const time = Date.now();
+    // It keeps the lock 100 ms past `start`, far longer than this thread
+    // takes from there to its own write, so the write meets the lock.
+    const other = await otherDashboard(root, path, time - 1000, 100);
+    // The lock is really held: a connection that does not wait is refused.
+    expect(() => probe.exec("BEGIN IMMEDIATE")).toThrow("database is locked");
+    other.start();
+    expect(() => h.add(emptySnapshot(time))).not.toThrow();
+    expect(await other.released).toBe("released");
+    expect(stored()).toEqual([time - 1000, time]);
+  },
+  slowRowMs,
+);
+
+test(
+  "a write that another connection's write lock outlasts fails within the dashboard's wait",
+  async () => {
+    const { root, path, h, stored } = sharedHistory();
+    const time = Date.now();
+    // The other dashboard keeps the lock for two seconds, forty times the
+    // dashboard's wait, unless this thread releases it first. A write that
+    // waits out the hold succeeds, so the refusal shows the wait ended inside
+    // it; this thread releases the lock only once the write has returned.
+    const other = await otherDashboard(root, path, time - 1000, 2000);
+    other.start();
+    // The wait is read on the real clock because SQLite's busy handler sleeps
+    // through its VFS, which takes no injected clock. The floor is half the
+    // dashboard's 50 ms wait: a write that never waits refuses at once and
+    // falls under it, and a loaded host only lengthens a wait, never shortens it.
+    const began = performance.now();
+    expect(() => h.add(emptySnapshot(time))).toThrow("database is locked");
+    expect(performance.now() - began).toBeGreaterThanOrEqual(25);
+    other.release();
+    expect(await other.released).toBe("released");
+    expect(stored()).toEqual([time - 1000]);
+  },
+  slowRowMs,
+);
+
+test(
+  "a lane read that yields leaves the next write free to wait for another dashboard",
+  async () => {
+    const { config, h: other, stored } = sharedHistory();
+    const id = laneSnapshot().id;
+    const sample = (time: number) => {
+      const s = emptySnapshot(time);
+      s.lanes = [laneSnapshot()];
+      return s;
+    };
+    // More rows than one page of the stored pass, so the read yields with rows
+    // still to read, and those rows are older than anything this dashboard
+    // holds in memory, so the read takes them from the database.
+    const first = Date.now() - 200_000;
+    for (let i = 0; i < 130; i++) other.add(sample(first + i * 1000));
+    const h = new History(config);
+    cleanup.push(() => h.close());
+    const last = first + 129_000;
+    const sleep = spyOn(Bun, "sleep");
+    cleanup.push(() => sleep.mockRestore());
+    const read = h.laneWindows([id], last, 3_600_000);
+    // The first page runs inside the call and ends at the read's yield, so the
+    // read is out before the writes below and not merely unsettled.
+    expect(sleep).toHaveBeenCalled();
+    // The read is out, between two pages. The other dashboard commits, and
+    // this one then writes its own sample on the connection the read uses.
+    other.add(sample(last + 1000));
+    expect(() => h.add(sample(last + 2000))).not.toThrow();
+    expect((await read).get(id)).toHaveLength(130);
+    expect(stored().slice(-2)).toEqual([last + 1000, last + 2000]);
+  },
+  slowRowMs,
+);
 
 test("reading recent history costs the same whether or not there is much to read", () => {
   const c = {

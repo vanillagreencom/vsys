@@ -1,0 +1,1 @@
+- Two dashboards sharing a history database no longer end one with `database is locked` when sample writes overlap; a write waits up to 50 ms. Moving history into it from settings still can.
