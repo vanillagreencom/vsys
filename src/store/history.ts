@@ -18,6 +18,15 @@ function restrict(sqlitePath: string): void {
 }
 
 /**
+ * How long a history write waits for another connection's write lock before
+ * failing. Two dashboards may share one database, and write-ahead logging lets
+ * only one of them write at a time. The wait runs on the dashboard thread, so
+ * it is held to the history write budget: docs/architecture/history.md
+ * states the choice.
+ */
+const BUSY_TIMEOUT_MS = 50;
+
+/**
  * Lane series read back from SQLite. Every lane it holds has a sample for each
  * stored row from `start` through `through`, so one pass over the rows past
  * `through` brings all of them up to date at once.
@@ -170,6 +179,7 @@ export class History {
       const fresh = !existsSync(c.sqlitePath);
       this.db = new Database(c.sqlitePath, { create: true, strict: true });
       try {
+        this.db.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`);
         if (fresh) restrict(c.sqlitePath);
         const application = this.db
           .query<{ application_id: number }, []>("PRAGMA application_id")

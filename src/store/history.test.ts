@@ -1,6 +1,15 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defaults } from "../config/config";
 import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
 import { History, Ring } from "./history";
@@ -540,6 +549,65 @@ test("persisted snapshots and their sidecars stay readable only by the owner", (
   const reopened = new History(f.config);
   cleanup.push(() => reopened.close());
   expect(modes()).toEqual(Array(modes().length).fill(0o600));
+});
+
+test("a write that overlaps another connection's write lock waits and succeeds", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vsys-history-lock-"));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  const config = { ...defaults(), persistence: true };
+  config.sqlitePath = join(root, "history.db");
+  const h = new History(config);
+  cleanup.push(() => h.close());
+  // The other dashboard runs on its own thread, so it can commit while this
+  // one is blocked inside its write. Its hold is a fifth of the wait History
+  // allows, the margin left for that thread to wake.
+  const other = join(root, "other-dashboard.ts");
+  writeFileSync(
+    other,
+    `import { Database } from "bun:sqlite";
+declare const self: Worker;
+self.onmessage = (event) => {
+  const db = new Database(event.data.path);
+  db.exec("BEGIN IMMEDIATE");
+  db.query("INSERT INTO samples VALUES (?, x'00', '{}')").run(event.data.time);
+  postMessage("locked");
+  setTimeout(() => {
+    db.exec("COMMIT");
+    db.close();
+    postMessage("released");
+  }, 10);
+};
+`,
+  );
+  const worker = new Worker(other);
+  cleanup.push(() => worker.terminate());
+  const messages: string[] = [];
+  const next = () =>
+    new Promise<string>((resolve) => {
+      worker.addEventListener("message", (e) => resolve(e.data), {
+        once: true,
+      });
+    });
+  // The other dashboard's row is a second older than this one's, inside the
+  // window, so this write's retention delete keeps it.
+  const time = Date.now();
+  let pending = next();
+  worker.postMessage({ path: config.sqlitePath, time: time - 1000 });
+  messages.push(await pending);
+  pending = next();
+  // The lock is really held: a connection that does not wait is refused.
+  const probe = new Database(config.sqlitePath);
+  cleanup.push(() => probe.close());
+  expect(() => probe.exec("BEGIN IMMEDIATE")).toThrow("database is locked");
+  expect(() => h.add(emptySnapshot(time))).not.toThrow();
+  messages.push(await pending);
+  expect(messages).toEqual(["locked", "released"]);
+  expect(
+    probe
+      .query<{ time: number }, []>("SELECT time FROM samples ORDER BY time")
+      .all()
+      .map((row) => row.time),
+  ).toEqual([time - 1000, time]);
 });
 
 test("reading recent history costs the same whether or not there is much to read", () => {

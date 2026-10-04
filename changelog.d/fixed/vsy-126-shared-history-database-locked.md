@@ -1,0 +1,1 @@
+- Two dashboards keeping history in the same database no longer end one of them with `database is locked`; a write that meets the other's write now waits for it.
