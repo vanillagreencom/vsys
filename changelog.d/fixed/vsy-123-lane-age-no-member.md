@@ -1,0 +1,1 @@
+- A lane with no readable member now shows no age in the Agents list, the agent header, the Timeline stop line or the export, instead of 0s.

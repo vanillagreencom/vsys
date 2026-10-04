@@ -47,7 +47,7 @@ function laneUnknowns(): Lane {
     cpuWeight: null,
     jobs: null,
     jobserver: null,
-    age: 0,
+    age: null,
     state: "",
     blocked: 0,
     blockedOn: null,

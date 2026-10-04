@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
+import { lanes } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import { type Cause, type CauseId, causes } from "../model/verdict";
 import {
@@ -62,6 +63,27 @@ test("a lane start and stop name the account and the slice", () => {
   expect(stop[0]?.subject).toBe("lane-a PID 40");
   expect(stop[0]?.names.slice).toBe("agents.slice");
   expect(stop[0]?.values.age).toBe(30);
+});
+test("a lane with no readable member stops with no age", () => {
+  const log = started();
+  const running = emptySnapshot(2000);
+  running.lanes = lanes(
+    [
+      groupSnapshot({
+        path: "agents.slice/gone.scope",
+        name: "gone.scope",
+        pids: [99],
+      }),
+    ],
+    [],
+    c,
+  );
+  expect(running.lanes).toHaveLength(1);
+  log.advance(running, c);
+  const stop = log
+    .advance(emptySnapshot(3000), c)
+    .filter((e) => e.kind === "lane-stop");
+  expect(stop.map((e) => e.values.age)).toEqual([null]);
 });
 test("a process changing cgroup is one move, and a reused PID is not", () => {
   const first = emptySnapshot(1000);

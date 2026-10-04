@@ -398,7 +398,11 @@ export interface Lane {
   cpuWeight: number | null;
   jobs: number | null;
   jobserver: string | null;
-  age: number;
+  /**
+   * Seconds since the lane's oldest member started; unknown for a lane with no
+   * member read on this sample.
+   */
+  age: number | null;
   state: string;
   /** Tasks in uninterruptible wait, and the resource they wait on. */
   blocked: number;

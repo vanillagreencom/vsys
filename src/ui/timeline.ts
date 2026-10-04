@@ -90,11 +90,7 @@ export function eventParts(e: TimelineEvent, c: Config): EventParts {
     return {
       time,
       kind: "Lane stopped",
-      text: parts(
-        e.subject,
-        where,
-        `up ${age(e.values.age ?? 0)} when last seen`,
-      ),
+      text: parts(e.subject, where, `up ${age(e.values.age)} when last seen`),
       level: "ok",
     };
   if (e.kind === "cgroup-move") {
