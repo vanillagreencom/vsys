@@ -400,7 +400,7 @@ def _tasks_max(raw):
 
 def env_number(name, default, parse=int):
     """The numeric setting `name`. Empty reads as unset, as the launcher's
-    ${VAR:-default} does. A value `parse` refuses is logged and reads as
+    ${AGENT_SCOPE_TASKS_MAX:-8192} does. A value `parse` refuses is logged and reads as
     `default`: the module is imported by every tick and by the nested-launch
     helper, so a raise here would stop both."""
     raw = os.environ.get(name, "")
