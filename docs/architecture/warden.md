@@ -30,7 +30,7 @@ A contained job unit is never a move root and never rides along with a moved tre
 
 A unit also counts as contained when it is outside `agents.slice` and its own cgroup directory has a real memory, swap, CPU, I/O or cpuset limit. `pids.max` is not enough, because systemd can set a default task limit on every unit.
 
-This rule protects transient validation services such as `orch-validate-vsy-50-12345.service`. The service owns its own process group and time limit. Moving it into an `agent-warden-*.scope` would make the orphan reaper stop a long validation run after the launcher exits. The job-unit rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` cover this regression.
+This rule protects transient validation services such as `orch-validate-vsy-50-12345.service`. The service owns its own process group and time limit. Moving it into an `agent-warden-*.scope` would make the [orphan reaper](warden-reaper.md) stop a long validation run after the launcher exits. The job-unit rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` cover this regression.
 
 ## What it caps
 
@@ -40,13 +40,7 @@ The template `warden/systemd/agents.slice` uses percentages for fleet installs: 
 
 ## What it reaps
 
-The warden reaps only orphaned `.scope` units under `agents.slice`.
-
-A scope is an orphan only when every member has lost its launcher, no member has a controlling terminal, no member is a live agent session and no live external parent still holds it. "Live agent session" reads `Proc.is_named_agent`, D010's comm-only match; `is_agent` gates only the automatic move into `agents.slice`. A `paths`-only install (claude's and codex's native) never satisfies D010, but still protects its scope, and `lane_label` reads the same comm-only match to name a lane's tool and worktree in `status.json` (`test_lane_label_names_paths_only_native_install`, `test_lane_label_location_match_mutant_fails`). A scope named `agent-confine-<pid>-<n>.scope` is not an orphan while `<pid>` is a live member and its parent is outside the scope. A scope named `agent-warden-<pid>-<start>.scope` uses the same rule and also requires the member start time to match. Those rules protect unlisted agent CLIs started through `agent-confine` or adopted by the warden, such as a marked `node server.js`, while their launch root runs. A scope named `agent-warden-build-<pid>-<start>.scope` is not protected by its root, because an adopted build root can still leak leftover work. The reaper waits at least 300 s. It then stops the whole scope only when it is harmful: at least 40 processes or at least 0.5 core on two ticks.
-
-The warden never kills an individual process. It never kills a live session. A scope with a tty, a live agent, a live launch root or a live external parent is not an orphan. The final pre-stop recheck refuses to reap when it cannot enumerate every `cgroup.procs` file that still exists under the scope. The orphan rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` enforce this claim, `test_orphan_protection_uses_comm_only_name_match` included.
-
-The warden removes a lane's scratch directory once its scope is gone. `agent-confine` execs `systemd-run` and cannot clean up after its own scope ends, so this pass reuses `enforce_task_caps`'s scope listing and removes any `agent-confine-<pid>-<n>` directory under `AGENT_TMPDIR` whose matching scope is gone. A directory younger than `AGENT_WARDEN_SCRATCH_GRACE` (60 s) survives with no matching scope yet, closing the startup gap before registration. An unreadable scope list is never read as every scope being gone. A gone scope does not prove the directory is free: `move()` relocates a nested session by cgroup membership only, not its environment, so a moved child can keep its parent's old scope's `TMPDIR`. The reap pass resolves both sides with `os.path.realpath` (symlinks included) from a fresh scan taken for this check, not plan()'s earlier one, keeping a directory one resolves inside. A process whose environment cannot be read does not keep it: non-dumpable programs such as `ssh-agent` and `op` refuse it even to their own user, and a desktop always runs some. Skipping them loses no holder while a readable ancestor is in the scan, because such a process inherits its `TMPDIR` from that ancestor, which the pass checks itself. With no readable ancestor, a process still in its original scope cannot hold a gone scope's directory, because a scope stays alive while any process in it runs. The exception is a process in a scope `move()` created (`agent-warden-<pid>-<n>.scope` or `agent-warden-build-<pid>-<n>.scope`). It has left the scope its `TMPDIR` names, and once its agent parents exit, no readable ancestor is left to check. Nothing ties an unreadable process there to one directory, so every gone-scope directory reads as unknown while it lives, unless a readable process already holds that directory. The pass keeps each unknown directory for as long as that process lives. This fail-closed cost is accepted, and only a process in a warden move scope causes it. Without the warden, these directories stay until removed by hand. `test_reap_scratch_dirs_tmpdir_liveness_rows`, `test_reap_scratch_dirs_tmpdir_symlinked_parent` and `test_reap_scratch_dirs_stale_snapshot_misses_a_new_live_pid` cover this.
+The warden reaps orphaned scopes under `agents.slice` and the scratch directories of scopes that are gone. [warden-reaper.md](warden-reaper.md) states when a scope is an orphan, when it is harmful enough to stop, and when a scratch directory is free to remove.
 
 ## Classification data
 
@@ -68,30 +62,7 @@ Owners set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` before starting the wrappers
 
 ## Tunables
 
-| Variable | Consumer | Default | Accepted value | Effect |
-| --- | --- | --- | --- | --- |
-| `AGENT_WARDEN_ONLY` | warden | unset | Comma-separated process ids | Limits one scan to listed process ids. |
-| `AGENT_WARDEN_INTERVAL` | warden | `30` | Decimal number above 0 | Seconds between status ticks. Keep it equal to `OnUnitActiveSec` in `warden/systemd/agent-warden.timer`. |
-| `AGENT_WARDEN_SPLIT_SESSIONS` | warden | `1` | `0` disables; any other value enables | Splits nested agent sessions when the lineage is not capped. |
-| `AGENT_WARDEN_ORPHAN_GRACE` | warden | `300` | Finite decimal number | Seconds an orphan must stay orphaned before a reap can happen. |
-| `AGENT_WARDEN_SCRATCH_GRACE` | warden | `60` | Finite decimal number | Seconds a scratch directory with no matching scope yet survives a reap tick. |
-| `AGENT_WARDEN_REAP` | warden | `1` | `0` disables; any other value enables | Enables orphan reaping. |
-| `AGENT_WARDEN_JOB_UNITS` | warden | `orch-*.service` | Unit name patterns | Whitespace-separated systemd unit patterns left in place. |
-| `AGENT_WARDEN_ORPHAN_PROCS` | warden | `40` | Integer | Process count that makes an orphan harmful. |
-| `AGENT_WARDEN_ORPHAN_CPU` | warden | `0.5` | Finite decimal number | CPU cores that make an orphan harmful. |
-| `AGENT_SCOPE_TASKS_MAX` | both | `8192` | Integer or `infinity` | Per-session task ceiling. `infinity` sets no per-session cap, and the warden then caps no scope. |
-| `AGENT_SCOPE_TASKS_WARN` | warden | 75% of `AGENT_SCOPE_TASKS_MAX` (`6144`), or none when it is `infinity` | Integer | Per-session task warning threshold. |
-| `AGENT_SCOPE_MEM_HIGH` | launcher | `64G` | systemd size | Per-session soft memory ceiling passed to systemd. |
-| `AGENT_SCOPE_MEM_HIGH_BYTES` | warden | `68719476736` | Integer | Per-session soft memory ceiling used for warden-created scopes and lineage baseline. |
-| `AGENT_SCOPE_MEM_WARN_BYTES` | warden | 75% of `AGENT_SCOPE_MEM_HIGH_BYTES` | Integer | Per-session memory warning threshold. |
-| `AGENT_TMPDIR` | both | unset | Directory path | Overrides the scratch parent directory. The launcher creates each lane's subdirectory under it; the warden reads the same value to find which subdirectories to reap. |
-| `AGENT_TEST_THREADS` | launcher | `8` | Positive integer | Test-thread cap exported by the launcher. |
-| `AGENT_BUILD_JOBS` | launcher | `16` | Integer | Build-job cap exported by the launcher. |
-| `AGENT_MOLD_JOBS` | launcher | `1` | `1`, or empty | One mold link at a time machine-wide. Mold honours only `1`, so empty or `2` sets no cap. |
-
-The warden reads an empty numeric setting as unset, as the launcher does for `AGENT_SCOPE_TASKS_MAX`. It logs any other value outside the accepted format and uses the default, so a bad value never stops a tick or the nested-launch helper. A percentage `AGENT_SCOPE_TASKS_MAX`, which systemd accepts, is outside the warden's format: the launcher passes it to systemd, and the warden uses `8192`. `warden/agent_warden_settings_test.py` covers this in `test_numeric_setting_rows`, `test_task_cap_rows`, `test_start_scope_tasks_max_rows`, `test_lineage_helper_answers_rows` and `test_settings_mutants_fail`.
-
-`AGENT_SCOPE_MEM_HIGH` and `AGENT_SCOPE_MEM_HIGH_BYTES` must name the same size. The launcher reads the systemd size string. The warden reads the byte value for warden-created scopes and for the lineage baseline.
+The launcher and the warden read their limits, grace periods and switches from environment variables. [warden-tunables.md](warden-tunables.md) lists each variable with its consumer, default, accepted value and effect, and states how the warden treats an empty or out-of-format value.
 
 ## Notifications
 

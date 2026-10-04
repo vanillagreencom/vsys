@@ -996,7 +996,7 @@ def reap_scratch_dirs(correct, procs):
     so this pass -- which already enumerates agents.slice scopes via
     scope_units() for enforce_task_caps -- is the only thing that can clean
     these up. Without the warden installed the directories stay until
-    removed by hand (docs/architecture/warden.md). Returns the directory
+    removed by hand (docs/architecture/warden-reaper.md). Returns the directory
     names removed."""
     try:
         entries = os.listdir(AGENT_TMPDIR_PARENT)
