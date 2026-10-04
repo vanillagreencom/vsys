@@ -153,9 +153,13 @@ create_comment() {
         read_body_file "$body_file"
     fi
 
-    # --attach: refuse unreadable paths before any API call.
+    local comment_issue_id="$issue_id"
+    # An unresolved issue would strand uploaded files without a comment.
     if [ ${#attach_paths[@]} -gt 0 ]; then
         attach_preflight_files "${attach_paths[@]}" || return 1
+        local issue_result
+        issue_result=$(bash "$SCRIPT_DIR/issues.sh" get "$issue_id" --format=raw) || return 1
+        comment_issue_id=$(jq -r '.issue.id' <<<"$issue_result") || return 1
     fi
 
     if [ -z "$body" ] && [ ${#attach_paths[@]} -eq 0 ]; then
@@ -187,7 +191,7 @@ create_comment() {
     local escaped_body
     escaped_body=$(echo "$body" | jq -Rs '.')
 
-    local input_parts=("\"issueId\": \"$issue_id\"" "\"body\": $escaped_body")
+    local input_parts=("\"issueId\": \"$comment_issue_id\"" "\"body\": $escaped_body")
 
     [ -n "$parent_id" ] && input_parts+=("\"parentId\": \"$parent_id\"")
 
@@ -323,8 +327,8 @@ delete_comment() {
 action="${1:-help}"
 shift || true
 
-# Fail closed: a write needs a resolved team target before any API call.
-linear_guard_write_action "$action" "create update delete" "$@" || exit 1
+# Comment creation routes by the issue identifier.
+linear_guard_write_action "$action" "update delete" "$@" || exit 1
 
 case "$action" in
     list)

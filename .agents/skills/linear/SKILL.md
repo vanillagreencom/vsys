@@ -33,7 +33,7 @@ Reads go through `cache`; writes go through the live commands, which write throu
 | `cycles` | list, create, update |
 | `sync` | Refresh the local cache (`--full`, `--reconcile`, `--if-stale N`, `--stats`) |
 | `cache` | Cache-only reads: issues, projects, comments, labels, initiatives, cycles, attachments, status |
-| `auth-check` | Report the selected credential, actor, team and `writes_enabled` (`--strict` exits non-zero when writes would refuse) |
+| `auth-check` | Report the selected credential, actor, team and `writes_enabled` for writes that need a configured team (`--strict` exits non-zero when no team is configured) |
 | `auth-mint` | Mint application token JSON from the client pair without writing files |
 | `session-status` | Aggregated status for the `/start` workflow |
 
@@ -57,7 +57,7 @@ The cache is `.cache/linear` under the physical worktree root ([README.md](READM
 
 ## Team Target
 
-`LINEAR_TEAM` has no default. With it unset every write refuses before any API call; reads drop the team filter. `--team <key-or-name>` overrides `LINEAR_TEAM` per call only on `issues create`, `projects create`, `cycles create`, `labels create`, `labels audit`, `cycles list`, `statuses list` and `statuses get`; the `--team` filter of `issues list`, `projects list` and `labels list` takes a key or name too. On these reads and `statuses list|get`, an empty or dash-led `--team` value refuses before any request rather than reading every team. Run `auth-check --strict` before the first mutation in a project.
+`LINEAR_TEAM` has no default. Existing-issue writes, including `comments create`, route by the issue identifier and need no configured team. Other writes refuse when it is unset; reads drop the team filter. `--team <key-or-name>` overrides `LINEAR_TEAM` per call only on `issues create`, `projects create`, `cycles create`, `labels create`, `labels audit`, `cycles list`, `statuses list` and `statuses get`; the `--team` filter of `issues list`, `projects list` and `labels list` takes a key or name too. On these reads and `statuses list|get`, an empty or dash-led `--team` value refuses before any request rather than reading every team. Run `auth-check --strict` before the first mutation that needs a configured team in a project.
 
 Set `LINEAR_APP_TOKEN` or the client pair in the project's private env file (`.env.local` unless `KENDEX_ENV_FILE` names another); `op://` references are supported. Use `auth-mint` on the host with the real pair to publish a token to the fleet. Credential precedence, expiry, caching and attribution: [README.md § Settings](README.md#settings).
 
@@ -65,7 +65,7 @@ Set `LINEAR_APP_TOKEN` or the client pair in the project's private env file (`.e
 
 ## Shared label maintenance
 
-`LINEAR_TEAM` requires a target before writes; it does not restrict an API key or check a label's owning team. `auth-check` verifies authentication and the local target, not the key's permission mask. Inspect key permissions in Linear settings; report fingerprints only.
+`LINEAR_TEAM` requires a target before writes that do not address an issue; it does not restrict an API key or check a label's owning team. `auth-check` verifies authentication and the local target, not the key's permission mask. Inspect key permissions in Linear settings; report fingerprints only.
 
 Before changing a label definition, read its ID, team, parent and group status. An empty team means workspace scope. Read issue use across affected teams and check references in their manifests, scripts, gates and generated instructions. A team-restricted key cannot establish workspace-wide issue use.
 
@@ -83,7 +83,7 @@ Where the repository declares a label taxonomy ([project-management labels.md §
 
 ## Attachments
 
-`issues create`, `issues update`, and `comments create` take a repeatable `--attach <path>`. Images embed as markdown in the description/body. On `issues update` without `--description`, the embed appends to the existing description rather than replacing it. Other files become Linear attachments on issues, or markdown links on comments (comments have no attachment surface). An unreadable path refuses before any API call; an attachment failure after a successful issue write reports `partial: true` and exits non-zero.
+`issues create`, `issues update`, and `comments create` take a repeatable `--attach <path>`. Images embed as markdown in the description/body. On `issues update` without `--description`, the embed appends to the existing description rather than replacing it. Other files become Linear attachments on issues, or markdown links on comments (comments have no attachment surface). An unreadable path refuses before any API call; an attachment failure after a successful issue write reports `partial: true` and exits non-zero. Existing-issue attachments require a successful live issue lookup with a nonempty canonical ID before upload, including for UUID input.
 
 `issues create` and attach-only `issues update` report `attachments_requested`, the number of non-image records requested, and `attachments`, one `{url, repo_path}` object per record in request order once every `attachmentCreate` succeeded. On `issues create` they appear in the default JSON response only, so a create that needs this verification takes the default output: `--format=ids` prints the identifier alone and discards both fields. Those fields are the immediate verification: an attachment write does not make the local attachment manifest current, so `cache attachments list` can still be empty for a record that landed. Run `linear.sh sync --reconcile` before reading the cache to verify a just-written attachment.
 
