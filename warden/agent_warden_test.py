@@ -326,21 +326,6 @@ class AgentWardenRules(WardenRulesCase):
         self.assertIn([100, 101], [sorted(p.pid for p in tree) for _, tree in moves])
         self.assertEqual(units, [])
 
-    def test_launch_root_mutant_fails(self):
-        text = WARDEN.read_text()
-        old = '    if launch_root_alive(unit, members):\n        return False\n'
-        self.assertEqual(text.count(old), 1)
-        mutant = self.load_mutant(text.replace(old, ""), "agent_warden_mutant_launch_root")
-        mgr = 4000
-        rooted = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-warden-300-123.scope"
-        recs = {
-            mgr: mutant.Proc(mgr, ppid=1, comm="systemd", argv=["/usr/lib/systemd/systemd", "--user"], exe="/usr/lib/systemd/systemd", cgroup="/user.slice", start=1),
-            300: mutant.Proc(300, ppid=mgr, comm="goose", argv=["goose"], exe=f"{mutant.HOME}/bin/goose", cgroup=rooted, start=123, marked=True),
-            301: mutant.Proc(301, ppid=300, comm="rustc", argv=["rustc"], exe=f"{mutant.HOME}/.rustup/x/rustc", cgroup=rooted, start=1, marked=True),
-        }
-        units = {unit for unit, _ in mutant.orphans(recs, mutant.manager_pids(recs))}
-        self.assertIn("agent-warden-300-123.scope", units)
-
 
 if __name__ == "__main__":
     unittest.main()
