@@ -141,7 +141,7 @@ export function blockedOn(
  * the capture that draws vsys's screen inside itself, one copy deeper on every
  * sample.
  *
- * `docs/architecture/lanes.md` holds the reasoning behind the three answers.
+ * `docs/architecture/lanes-tmux.md` holds the reasoning behind the three answers.
  */
 export function ownPaneMark(
   target: string,
