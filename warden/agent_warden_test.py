@@ -1717,7 +1717,6 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         with scratch() as tmp:
             repo = Path(tmp)
             env = {"PATH": BASE_PATH}
-            subprocess.run(["git", "init", "-q", str(repo)], env=env, capture_output=True, check=True)
             files = {
                 "warden/agent-warden": f"src = '{forbidden}/x'\n",
                 "warden/clean": "nothing here\n",
@@ -1727,6 +1726,9 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             for name, text in files.items():
                 (repo / name).parent.mkdir(parents=True, exist_ok=True)
                 (repo / name).write_text(text)
+            with self.assertRaisesRegex(unittest.SkipTest, "no git metadata"):
+                tracked_offenders(repo, forbidden)
+            subprocess.run(["git", "init", "-q", str(repo)], env=env, capture_output=True, check=True)
             with self.assertRaisesRegex(AssertionError, "portability extractor is broken"):
                 tracked_offenders(repo, forbidden)
             subprocess.run(["git", "-C", str(repo), "add", "--", "warden/agent-warden", "warden/clean"], env=env, capture_output=True, check=True)
