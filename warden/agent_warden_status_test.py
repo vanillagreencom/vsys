@@ -710,6 +710,42 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(lane["scope"], "agent-warden-321-654.scope")
         self.assertEqual(lane["label"], {"tool": "claude", "worktree": "vsy-52"})
 
+    def native_install_labels(self, module):
+        # claude's and codex's native installs are described only through `paths`,
+        # so D010 leaves is_agent false; the label still names the lane's agent
+        rows = [
+            ("claude", f"{module.HOME}/.local/share/claude/versions/2.1.0/claude"),
+            ("codex", "/usr/lib/openai-codex/codex"),
+        ]
+        labels = {}
+        old_worktree = module._worktree_label
+        module._worktree_label = lambda pid: "vsy-122"
+        try:
+            for tool, exe in rows:
+                scope = f"agent-warden-700-1-{tool}.scope"
+                proc = module.Proc(700, ppid=1, comm=tool, argv=[tool], exe=exe, cgroup=self._cg(scope), start=1)
+                self.assertFalse(proc.is_agent, tool)
+                labels[tool] = module.lane_label(scope, {700: proc})
+        finally:
+            module._worktree_label = old_worktree
+        return labels
+
+    def test_lane_label_names_paths_only_native_install(self):
+        self.assertEqual(self.native_install_labels(self.w), {
+            "claude": {"tool": "claude", "worktree": "vsy-122"},
+            "codex": {"tool": "codex", "worktree": "vsy-122"},
+        })
+
+    def test_lane_label_location_match_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "if _scope_of_proc(p) == scope and p.is_named_agent]"
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, "if _scope_of_proc(p) == scope and p.is_agent]"), "agent_warden_mutant_lane_label")
+        self.assertEqual(self.native_install_labels(mutant), {
+            "claude": {"tool": None, "worktree": None},
+            "codex": {"tool": None, "worktree": None},
+        })
+
     def test_status_event_ring_and_episode_dedupe(self):
         st = {}
         for i in range(60):

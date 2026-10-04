@@ -1579,7 +1579,7 @@ def _scope_of_proc(p):
 
 
 def lane_label(scope, procs):
-    members = [p for p in (procs or {}).values() if _scope_of_proc(p) == scope and p.is_agent]
+    members = [p for p in (procs or {}).values() if _scope_of_proc(p) == scope and p.is_named_agent]
     if not members:
         return {"tool": None, "worktree": None}
     root = min(members, key=lambda p: (p.start, p.pid))
