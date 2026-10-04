@@ -31,8 +31,10 @@ export const count = (
 /**
  * A span in the largest unit that still says something. Past two days an
  * hour count is arithmetic the reader has to do: `54.9h ago` is `2.3d ago`.
+ * A span vsys could not read is a gap, never `0s`.
  */
-export function age(n: number): string {
+export function age(n: number | null | undefined): string {
+  if (n === null || n === undefined) return gap;
   return n < 60
     ? `${Math.floor(n)}s`
     : n < 3600

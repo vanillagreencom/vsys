@@ -163,7 +163,7 @@ test("a lane reports its cgroup, its charged resources and its effective caps", 
       group,
       env: { MAKEFLAGS: "-j6 --jobserver-auth=fifo:/tmp/f" },
     }),
-    processSnapshot({ pid: 2, group, build: "rustc", tool: null }),
+    processSnapshot({ pid: 2, group, build: "rustc", tool: null, age: 90 }),
     processSnapshot({ pid: 3, group, build: "ld.mold", tool: null }),
     processSnapshot({ pid: 4, group, build: "test", tool: null }),
     processSnapshot({
@@ -180,6 +180,8 @@ test("a lane reports its cgroup, its charged resources and its effective caps", 
     4096, 1048576, 2097152,
   ]);
   expect([lane.cpu, lane.cpuShare]).toEqual([200, 50]);
+  // The oldest member gives the age, and every member's resident memory sums.
+  expect([lane.age, lane.rss]).toEqual([90, 5 * 1024]);
   expect(lane.builds).toEqual({ rustc: 1, "ld.mold": 1, test: 1 });
   expect([lane.linkers, lane.rustc, lane.tests, lane.sccache]).toEqual([
     1, 1, 1, 1,
@@ -234,8 +236,9 @@ test("counters the kernel did not report stay unknown rather than becoming zero"
 // A watched scope whose group CPU and swap are both unknown, with no member
 // process read on this sample (it exited between the cgroup.procs read and
 // the /proc read): the empty-member fallback must not read as "every member
-// known", which `[].every(...)` answers true and sums to zero.
-test("unknown group CPU and swap with no readable member stay unknown", () => {
+// known", which `[].every(...)` answers true and sums to zero, and no member
+// leaves no resident memory to sum and no start time to take an age from.
+test("a scope with no readable member reads unknown CPU, swap, memory and age", () => {
   const c = defaults();
   const group = groupSnapshot({
     path: "agents.slice/gone.scope",
@@ -245,7 +248,12 @@ test("unknown group CPU and swap with no readable member stay unknown", () => {
     swap: null,
   });
   const lane = present(lanes([group], [], c)[0], "the watched lane");
-  expect([lane.cpu, lane.swap]).toEqual([null, null]);
+  expect([lane.cpu, lane.swap, lane.rss, lane.age]).toEqual([
+    null,
+    null,
+    null,
+    null,
+  ]);
 });
 
 test("an unread cgroup tree leaves the memory cap unknown rather than unlimited", () => {

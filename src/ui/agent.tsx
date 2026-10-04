@@ -122,7 +122,7 @@ export function AgentIdentity({
       </Line>
       <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
         {safe(
-          `${lane.cwd || "no worktree"}${lane.branch ? `  ${lane.branch}` : ""}  ·  ${(proc?.group ?? lane.cgroup).split("/").filter(Boolean).at(-1) ?? lane.cgroup}  ·  PID ${lane.mainPid}  ·  up ${age(lane.age)}`,
+          `${lane.cwd || "no worktree"}${lane.branch ? `  ${lane.branch}` : ""}  ·  ${(proc?.group ?? lane.cgroup).split("/").filter(Boolean).at(-1) ?? lane.cgroup}  ·  PID ${lane.mainPid ? lane.mainPid : gap}  ·  up ${age(lane.age)}`,
         )}
       </Line>
     </>

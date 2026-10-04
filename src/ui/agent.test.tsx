@@ -93,6 +93,29 @@ test("a lane record from an older build opens in agent detail without throwing",
   }
 });
 
+test("a lane with no readable member names no PID or age in its header", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({
+      mainPid: 0,
+      pids: [],
+      rss: null,
+      age: null,
+      state: "empty",
+    }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    expect(t.frame()).toContain("PID not available  ·  up not available");
+  } finally {
+    await t.close();
+  }
+});
+
 /** Opens one agent, opens its Actions section and selects Stop. */
 async function stopSelected(c: Config, calls: LaneCommand[]) {
   const s = emptySnapshot();

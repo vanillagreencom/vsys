@@ -6,7 +6,7 @@ import type { Alert, Snapshot } from "../model/types";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
 import type { LaneSample } from "./lane-series";
-import { normalizePoint, normalizeSnapshot } from "./migrate";
+import { memberless, normalizePoint, normalizeSnapshot } from "./migrate";
 import { type Point, point } from "./point";
 
 /** Snapshots hold command lines and environment values, so only the owner may read them. */
@@ -582,7 +582,10 @@ export class History {
                 samples.push({
                   time: row.time,
                   cpu: lane?.cpu ?? null,
-                  rss: lane?.rss ?? null,
+                  rss:
+                    lane === undefined || memberless(lane.mainPid)
+                      ? null
+                      : (lane.rss ?? null),
                   pressure: group?.pressure.cpu?.some ?? lane?.pressure ?? null,
                   memoryPressure:
                     group?.pressure.memory?.some ??

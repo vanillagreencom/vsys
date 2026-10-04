@@ -375,7 +375,8 @@ export interface Lane {
   pressure: number | null;
   memoryPressure: number | null;
   ioPressure: number | null;
-  rss: number;
+  /** Resident memory summed over the members; unknown with no member read. */
+  rss: number | null;
   /** Page cache the kernel charges to this lane's cgroup. */
   cache: number | null;
   swap: number | null;
@@ -398,7 +399,11 @@ export interface Lane {
   cpuWeight: number | null;
   jobs: number | null;
   jobserver: string | null;
-  age: number;
+  /**
+   * Seconds since the lane's oldest member started; unknown for a lane with no
+   * member read on this sample.
+   */
+  age: number | null;
   state: string;
   /** Tasks in uninterruptible wait, and the resource they wait on. */
   blocked: number;

@@ -57,6 +57,9 @@ test("unreadable lane quantities say so instead of showing a question mark", () 
   expect(laneValue(laneSnapshot({ account: null }), "account", c)).toBe(
     "not available",
   );
+  expect(laneValue(laneSnapshot({ age: null }), "age", c)).toBe(
+    "not available",
+  );
 });
 test("an unread memory cap says so instead of claiming the lane is unlimited", () => {
   const c = defaults();

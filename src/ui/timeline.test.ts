@@ -67,6 +67,11 @@ test("every event is one line that states its cause", () => {
   expect(bare).toContain("account not available in app.slice");
   expect(bare).toEndWith("| no agent tool runs in it");
   expect(lines[1]).toEndWith("| up 2m when last seen");
+  const unread = eventLine(
+    event({ kind: "lane-stop", subject: "lane-a", values: { age: null } }),
+    c,
+  );
+  expect(unread).toEndWith("| up not available when last seen");
   expect(lines[2]).toContain("an agent ran outside the agent slice");
   expect(lines[3]).toContain("Alert closed: storage stalled tasks");
   expect(lines[3]).toContain("open for 1m");
