@@ -10,6 +10,7 @@ import {
   causes,
   consumerName,
   type Level,
+  unjudged,
 } from "../model/verdict";
 
 export type EventKind =
@@ -54,6 +55,12 @@ interface Watch {
   values: Record<string, number | null>;
   firstSeen: number;
   lastSeen: number;
+  /**
+   * The last sample that could not judge the cause. The close waits out the
+   * hold from the later of this and `lastSeen`, so a reading that returns
+   * below its threshold must stay there for the whole hold.
+   */
+  closeFrom: number;
   opened: boolean;
 }
 /** Severity leads the verdict, exactly as it leads the ladder. */
@@ -144,6 +151,10 @@ export function subjects(cause: Cause, s: Snapshot): Subject[] {
  * opens on the sample that shows it, since its evidence is gone by the next
  * one. The recorded duration is the time the cause was observed, which
  * excludes the wait before the close.
+ *
+ * A cause whose reading could not be taken is not away. An open alert stays
+ * open while its subject goes unread, and a pending one ends, since an unread
+ * sample holds nothing.
  */
 export class EventLog {
   private previous: Snapshot | null = null;
@@ -240,6 +251,7 @@ export class EventLog {
           values: {},
           firstSeen: s.time,
           lastSeen: s.time,
+          closeFrom: s.time,
           opened: false,
         };
         watch.lastSeen = s.time;
@@ -275,15 +287,21 @@ export class EventLog {
         });
       }
     }
+    const unread = unjudged(s, c);
     for (const [key, watch] of this.watching) {
       if (live.has(key)) continue;
       // A cause must hold without a gap to open, so a pending watch ends the
-      // moment it is absent. Only an alert already recorded waits out a gap.
+      // moment it is absent or unread. Only an alert already recorded waits
+      // out a gap.
       if (!watch.opened) {
         this.watching.delete(key);
         continue;
       }
-      if (s.time - watch.lastSeen < hold) continue;
+      if (unread[watch.cause]?.has(watch.subjectId)) {
+        watch.closeFrom = s.time;
+        continue;
+      }
+      if (s.time - Math.max(watch.lastSeen, watch.closeFrom) < hold) continue;
       this.watching.delete(key);
       add("alert-close", watch.subject, {
         subjectId: watch.subjectId,

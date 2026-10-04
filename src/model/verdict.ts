@@ -5,7 +5,7 @@ import type { Config } from "../config/config";
 import { damageCounts, integrities } from "./integrity";
 import { inSlice, lanePressure, sliceCompared } from "./lanes";
 import { laneText, unitLabel } from "./naming";
-import type { Group, Lane, Proc, Snapshot, Volume } from "./types";
+import type { Group, Lane, Proc, ScratchRoot, Snapshot, Volume } from "./types";
 
 export type Level = "ok" | "warn" | "danger";
 /** Every cause is detected once. The verdict, the meters and the cards read it. */
@@ -268,6 +268,131 @@ function busiest(lanes: Lane[]): Lane | undefined {
   return [...lanes].sort((a, b) => (b.cpu ?? 0) - (a.cpu ?? 0))[0];
 }
 /**
+ * How one cause stands on one subject this sample: its input read over the
+ * threshold, read under it, or not read at all. A cause that is absent and a
+ * cause that could not be judged look alike on the ladder, which raises
+ * neither, so anything that acts on a cause going away reads this instead.
+ */
+type Judged = "fired" | "absent" | "unjudged";
+/**
+ * Fired when any reading taken crosses, since an unread one cannot undo it.
+ * Otherwise a reading not taken might have crossed, so the cause is unjudged.
+ */
+function judge(
+  readings: readonly (number | null)[],
+  fires: (n: number) => boolean,
+): Judged {
+  if (readings.some((n) => n !== null && fires(n))) return "fired";
+  return readings.includes(null) ? "unjudged" : "absent";
+}
+interface Judgment<T> {
+  subject: T;
+  judged: Judged;
+}
+/** The causes judged on one host reading, so an unread one covers every subject. */
+const hostCauses = [
+  "disk",
+  "desktop-swap",
+  "system-memory",
+  "system-cpu",
+] as const satisfies readonly CauseId[];
+type HostCause = (typeof hostCauses)[number];
+/**
+ * The one pass over every reading a cause can fail to take. `causes()` raises
+ * what fired and `unjudged()` reports what could not be read, so the two can
+ * never disagree about which reading decided a cause.
+ */
+interface Judgments {
+  io: number | null;
+  cpu: number | null;
+  memory: number | null;
+  swap: number | null;
+  writer: Group | undefined;
+  host: Record<HostCause, Judged>;
+  stalls: Judgment<Lane>[];
+  "memory-high": Judgment<Group>[];
+  scratch: Judgment<ScratchRoot>[];
+}
+function judgments(s: Snapshot, c: Config): Judgments {
+  const io = s.system.pressure.io?.some ?? null;
+  const cpu = s.system.pressure.cpu?.some ?? null;
+  const memory = s.system.pressure.memory?.some ?? null;
+  const swap = sliceSum(s.groups, c.desktopSlice, (g) => g.swap);
+  const writer = topWriter(s.groups);
+  return {
+    io,
+    cpu,
+    memory,
+    swap,
+    writer,
+    host: {
+      disk: judge([io], (n) => n > c.pressureAmber && writer !== undefined),
+      // A slice the sample holds no root of has no swap left to judge: it is
+      // gone, not unread. A root is matched by name, so one the cgroup root
+      // points at, at path ".", counts.
+      "desktop-swap": sliceRoots(s.groups, c.desktopSlice).length
+        ? judge([swap], (n) => n > c.swapFloor)
+        : "absent",
+      "system-memory": judge([memory], (n) => n > c.pressureRed),
+      "system-cpu": judge([cpu], (n) => n > c.pressureRed),
+    },
+    // Each resource's pressure is read on its own, so one that failed leaves
+    // the stall unjudged unless another already crossed.
+    stalls: s.lanes.map((lane) => ({
+      subject: lane,
+      judged: judge(
+        [lane.pressure, lane.memoryPressure, lane.ioPressure],
+        (n) => n > c.pressureAmber,
+      ),
+    })),
+    // A null limit reads the same for `max` and for a file that failed to
+    // read, so it is judged absent: no limit, nothing to come near.
+    "memory-high": s.groups.map((group) => {
+      const high = group.high;
+      return {
+        subject: group,
+        judged:
+          high === null
+            ? "absent"
+            : judge([group.memory], (n) => n >= high * 0.9),
+      };
+    }),
+    scratch: s.storage.scratch.map((root) => ({
+      subject: root,
+      judged: judge([root.bytes], (n) => n > c.scratchQuota),
+    })),
+  };
+}
+const where = <T>(rows: Judgment<T>[], judged: Judged): T[] =>
+  rows.filter((row) => row.judged === judged).map((row) => row.subject);
+/**
+ * The subjects each cause could not judge this sample, by the identifier an
+ * alert about it carries: the host as the empty id, a lane id, a group path
+ * or a scratch path. A host cause whose reading failed covers every subject
+ * the sample holds, and a lane listed under one is judged by that reading
+ * alone. A subject the sample no longer holds is never here: it is gone, not
+ * unread.
+ */
+export type Unjudged = Partial<Record<CauseId, ReadonlySet<string>>>;
+export function unjudged(s: Snapshot, c: Config): Unjudged {
+  const j = judgments(s, c);
+  const held = [
+    "",
+    ...s.lanes.map((lane) => lane.id),
+    ...s.groups.map((group) => group.path),
+  ];
+  const subjects: [CauseId, string[]][] = [
+    ["stalls", where(j.stalls, "unjudged").map((lane) => lane.id)],
+    ["memory-high", where(j["memory-high"], "unjudged").map((g) => g.path)],
+    ["scratch", where(j.scratch, "unjudged").map((root) => root.path)],
+  ];
+  for (const id of hostCauses)
+    if (j.host[id] === "unjudged") subjects.push([id, held]);
+  const out: Unjudged = {};
+  for (const [id, ids] of subjects) if (ids.length) out[id] = new Set(ids);
+  return out;
+}
+/**
  * The ladder of causes, worst first. Every element is an attention card, the
  * first verdict-worthy one is the verdict, and the meters read the same
  * numbers. Severity ranks it, then the impact on the person at the keyboard.
@@ -288,22 +413,18 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       verdictWorthy: true,
       ...rest,
     });
-  const io = s.system.pressure.io?.some ?? null;
-  const cpu = s.system.pressure.cpu?.some ?? null;
-  const memory = s.system.pressure.memory?.some ?? null;
-  const writer = topWriter(s.groups);
+  const j = judgments(s, c);
+  const { io, cpu, memory, swap, writer } = j;
   // A lane stalling on a resource a specific cause reports belongs to that
   // card, so one contention never produces two cards.
-  const diskFired = io !== null && io > c.pressureAmber && writer !== undefined;
-  const cpuFired = cpu !== null && cpu > c.pressureRed;
-  const memoryFired = memory !== null && memory > c.pressureRed;
+  const diskFired = j.host.disk === "fired";
+  const cpuFired = j.host["system-cpu"] === "fired";
+  const memoryFired = j.host["system-memory"] === "fired";
   const covered = new Set<Kind>();
   if (diskFired) covered.add("io");
   if (cpuFired) covered.add("cpu");
   if (memoryFired) covered.add("memory");
-  const stalling = s.lanes.filter(
-    (l) => (lanePressure(l) ?? 0) > c.pressureAmber,
-  );
+  const stalling = where(j.stalls, "fired");
   const owned = (kind: Kind) => stalling.filter((l) => worstKind(l) === kind);
   const loose = stalling.filter((l) => {
     const kind = worstKind(l);
@@ -415,7 +536,6 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       },
     });
   }
-  const swap = sliceSum(s.groups, c.desktopSlice, (g) => g.swap);
   /**
    * The scope holding the most swap, resolved once because two causes name it
    * — and they mean different things by it. The swap cause is about that
@@ -429,7 +549,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   const holderAt: CauseAt | undefined = swapHolder
     ? { kind: "group", path: swapHolder.path }
     : undefined;
-  if (swap !== null && swap > c.swapFloor)
+  if (j.host["desktop-swap"] === "fired")
     add("desktop-swap", "danger", {
       groups: swapHolder ? [swapHolder] : [],
       consumer: holderName,
@@ -476,9 +596,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       consumer: laneOrNone(busiest(s.lanes)),
       values: { some: cpu },
     });
-  const near = s.groups.filter(
-    (g) => g.memory !== null && g.high !== null && g.memory >= g.high * 0.9,
-  );
+  const near = where(j["memory-high"], "fired");
   const [firstNear] = near;
   if (firstNear)
     add("memory-high", "warn", {
@@ -530,9 +648,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       consumer: firstOpaque.mounts[0] ?? firstOpaque.device,
       values: { filesystems: opaque.length },
     });
-  const large = s.storage.scratch.filter(
-    (scratch) => scratch.bytes !== null && scratch.bytes > c.scratchQuota,
-  );
+  const large = where(j.scratch, "fired");
   const [firstLarge] = large;
   if (firstLarge)
     add("scratch", "warn", {
