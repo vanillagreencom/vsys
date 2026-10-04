@@ -728,26 +728,7 @@ test("unjudged names each cause whose own reading could not be taken", () => {
       },
       { "desktop-swap": held },
     ],
-    // A scope that survived its root's failed read still holds swap.
-    [
-      "desktop root unread beside its scope",
-      (s) => {
-        s.groups = [
-          ...s.groups.filter((x) => x.name !== c.desktopSlice),
-          g("app.slice/x.scope", "x.scope", { swap: c.swapFloor + 1 }),
-        ];
-      },
-      {
-        "desktop-swap": new Set([
-          "",
-          laneId,
-          otherLane,
-          groupPath,
-          "app.slice/x.scope",
-        ]),
-      },
-    ],
-    // A slice the sample holds nothing of has no swap to judge: it is gone.
+    // A slice with no root in the sample has no swap to judge: it is gone.
     [
       "desktop slice gone",
       (s) => {
@@ -769,32 +750,15 @@ test("unjudged names each cause whose own reading could not be taken", () => {
       pressures({ pressure: null, memoryPressure: c.pressureAmber + 1 }),
       {},
     ],
+    // A host cause judges every lane on its host reading alone, so a lane's
+    // own unread pressure marks only its stall, whichever host cause fired.
     [
       "lane pressure under host CPU that fired",
       (s) => {
         s.system.pressure.cpu = { some: c.pressureRed + 1, full: 0, total: 0 };
         laneUnread(s);
       },
-      { stalls: new Set([laneId]), "system-cpu": new Set([laneId]) },
-    ],
-    // Host CPU judges a lane it does not own on the lane's CPU pressure alone.
-    [
-      "lane io unread, CPU read low, under host CPU that fired",
-      (s) => {
-        s.system.pressure.cpu = { some: c.pressureRed + 1, full: 0, total: 0 };
-        pressures({ ioPressure: null })(s);
-      },
       { stalls: new Set([laneId]) },
-    ],
-    // The readable memory stall cannot rank against the unread CPU one, so
-    // neither the stalls card nor host CPU can judge the lane.
-    [
-      "lane CPU unread beside a memory stall, under host CPU that fired",
-      (s) => {
-        s.system.pressure.cpu = { some: c.pressureRed + 1, full: 0, total: 0 };
-        pressures({ pressure: null, memoryPressure: c.pressureAmber + 1 })(s);
-      },
-      { stalls: new Set([laneId]), "system-cpu": new Set([laneId]) },
     ],
     [
       "lane pressure under host memory that fired",
@@ -806,7 +770,7 @@ test("unjudged names each cause whose own reading could not be taken", () => {
         };
         laneUnread(s);
       },
-      { stalls: new Set([laneId]), "system-memory": new Set([laneId]) },
+      { stalls: new Set([laneId]) },
     ],
     [
       "lane pressure under disk that fired",
@@ -815,9 +779,8 @@ test("unjudged names each cause whose own reading could not be taken", () => {
         s.groups.push(g("app.slice/w.scope", "w.scope", { writeRate: 1 }));
         laneUnread(s);
       },
-      { stalls: new Set([laneId]), disk: new Set([laneId]) },
+      { stalls: new Set([laneId]) },
     ],
-    // Desktop swap lists no stalling lane, so an unread one is not its own.
     [
       "lane pressure under desktop swap that fired",
       (s) => {

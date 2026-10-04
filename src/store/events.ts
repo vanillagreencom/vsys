@@ -236,26 +236,9 @@ export class EventLog {
     }
     const hold = c.pressureHoldSeconds * 1000;
     const ladder = causes(s, c);
-    const unread = unjudged(s, c);
-    /** An open alert this sample keeps only because its subject went unread. */
-    const waiting = (watch: Watch) =>
-      watch.opened && unread[watch.cause]?.has(watch.subjectId) === true;
     const live = new Set<string>();
     for (const cause of ladder) {
       for (const subject of subjects(cause, s)) {
-        // The host stands in for a cause that names nothing, and a lane the
-        // cause can no longer judge may still be what it is about, so the host
-        // does not open a second alert beside that lane's.
-        if (
-          subject.id === "" &&
-          [...this.watching.values()].some(
-            (watch) =>
-              watch.cause === cause.id &&
-              watch.subjectId !== "" &&
-              waiting(watch),
-          )
-        )
-          continue;
         const key = `${cause.id}\u0000${subject.id}`;
         live.add(key);
         const watch: Watch = this.watching.get(key) ?? {
@@ -304,6 +287,7 @@ export class EventLog {
         });
       }
     }
+    const unread = unjudged(s, c);
     for (const [key, watch] of this.watching) {
       if (live.has(key)) continue;
       // A cause must hold without a gap to open, so a pending watch ends the
@@ -313,7 +297,7 @@ export class EventLog {
         this.watching.delete(key);
         continue;
       }
-      if (waiting(watch)) {
+      if (unread[watch.cause]?.has(watch.subjectId)) {
         watch.closeFrom = s.time;
         continue;
       }

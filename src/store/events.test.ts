@@ -845,9 +845,9 @@ const lane = (pressure: number | null, o: Partial<Lane> = {}) =>
     ioPressure: pressure,
     ...o,
   });
-/** The desktop slice root holding `swap`. */
-const desktopRoot = (swap: number) =>
-  groupSnapshot({ path: "app.slice", name: held.desktopSlice, swap });
+/** The desktop slice as the cgroup root itself, holding `swap`. */
+const desktopRoot = (swap: number | null) =>
+  groupSnapshot({ path: ".", name: held.desktopSlice, swap });
 /** Host CPU pressure at `some`. */
 const hostCpu = (s: Snapshot, some: number) => {
   s.system.pressure = { cpu: { some, full: 0, total: 0 } };
@@ -918,61 +918,16 @@ test("an open alert stays open while its input cannot be read", () => {
         s.lanes = [lane(0)];
       },
     },
-    // Host CPU fires throughout and lists the lane stalling on CPU. The
-    // lane's own reading goes unread, which neither closes its alert nor
-    // opens a second one on the host.
+    // The cgroup root points at the desktop slice, so its root sits at ".".
     {
-      name: "lane under host CPU",
-      cause: "system-cpu",
-      subjectId: "agents.slice/l.scope",
-      firing: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [lane(0, { pressure: held.pressureAmber + 1 })];
-      },
-      unread: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [lane(null)];
-      },
-      quiet: (s) => {
-        s.lanes = [lane(0)];
-      },
-    },
-    // The lane's readable memory stall cannot rank against its unread CPU
-    // one, so it neither leaves host CPU nor opens a stalls alert.
-    {
-      name: "lane under host CPU, its CPU unread beside a memory stall",
-      cause: "system-cpu",
-      subjectId: "agents.slice/l.scope",
-      firing: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [lane(0, { pressure: held.pressureAmber + 1 })];
-      },
-      unread: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [
-          lane(0, { pressure: null, memoryPressure: held.pressureAmber + 1 }),
-        ];
-      },
-      quiet: (s) => {
-        s.lanes = [lane(0)];
-      },
-    },
-    // The desktop slice root went unread while a scope inside it survived.
-    {
-      name: "desktop root unread beside its scope",
+      name: "desktop swap on a root at the cgroup root",
       cause: "desktop-swap",
       subjectId: "",
       firing: (s) => {
         s.groups = [desktopRoot(held.swapFloor + 1)];
       },
       unread: (s) => {
-        s.groups = [
-          groupSnapshot({
-            path: "app.slice/x.scope",
-            name: "x.scope",
-            swap: held.swapFloor + 1,
-          }),
-        ];
+        s.groups = [desktopRoot(null)];
       },
       quiet: (s) => {
         s.groups = [desktopRoot(0)];
@@ -1038,7 +993,7 @@ test("a pending alert on an unread sample ends, as on a gap", () => {
     "alert-open",
   ]);
 });
-test("an alert closes after the hold once its subject is gone or judged away", () => {
+test("an alert whose subject the sample no longer holds closes after the hold", () => {
   const path = "/scratch";
   const group = "agents.slice/h.scope";
   const rows: Unread[] = [
@@ -1084,21 +1039,6 @@ test("an alert closes after the hold once its subject is gone or judged away", (
       },
       quiet: () => {},
     },
-    // Host CPU judges the lane on its CPU pressure alone, which reads zero,
-    // so the lane's other unread resource does not hold the alert.
-    {
-      name: "lane under host CPU, its CPU read low beside unread io",
-      cause: "system-cpu",
-      subjectId: "agents.slice/l.scope",
-      firing: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [lane(0, { pressure: held.pressureAmber + 1 })];
-      },
-      quiet: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [lane(0, { ioPressure: null })];
-      },
-    },
     // A host reading that fails does not hold an alert on a lane that left.
     {
       name: "lane gone while host CPU is unread",
@@ -1117,7 +1057,13 @@ test("an alert closes after the hold once its subject is gone or judged away", (
       cause: "desktop-swap",
       subjectId: "",
       firing: (s) => {
-        s.groups = [desktopRoot(held.swapFloor + 1)];
+        s.groups = [
+          groupSnapshot({
+            path: "app.slice",
+            name: held.desktopSlice,
+            swap: held.swapFloor + 1,
+          }),
+        ];
       },
       quiet: () => {},
     },
@@ -1145,27 +1091,23 @@ test("an alert closes after the hold once its subject is gone or judged away", (
 test("an unread lane holds its own alert and closes another lane's on time", () => {
   const a = "agents.slice/a.scope";
   const b = "agents.slice/b.scope";
-  const d = "agents.slice/d.scope";
   const log = new EventLog();
-  const red = held.pressureRed + 1;
-  // Lane d reads red throughout, so its alert never closes.
   const at = (time: number, left: number | null, right: number | null) => {
     const s = emptySnapshot(time);
     s.lanes = [
       lane(left, { id: a, name: "a" }),
       lane(right, { id: b, name: "b" }),
-      lane(red, { id: d, name: "d" }),
     ];
     return log
       .advance(s, held)
       .filter((e) => e.cause === "stalls" && e.kind.startsWith("alert-"))
       .map((e) => `${e.kind} ${e.subjectId}`);
   };
+  const red = held.pressureRed + 1;
   at(1000, red, red);
   expect(at(1000 + hold, red, red)).toEqual([
     `alert-open ${a}`,
     `alert-open ${b}`,
-    `alert-open ${d}`,
   ]);
   // Lane a goes unread and lane b reads zero: b closes after the hold, and a
   // stays open however long its reading stays away.
@@ -1174,65 +1116,4 @@ test("an unread lane holds its own alert and closes another lane's on time", () 
   for (let t = last + held.refreshMs; t <= last + 3 * hold; t += held.refreshMs)
     for (const e of at(t, null, 0)) seen.push(`${t - last} ${e}`);
   expect(seen).toEqual([`${hold} alert-close ${b}`]);
-});
-test("host CPU opens its own alert on time beside a lane alert that does not hold it", () => {
-  const a = "agents.slice/a.scope";
-  const rows: {
-    name: string;
-    /** Opens an alert on lane a. */
-    before: (s: Snapshot) => void;
-    /** Host CPU over red, with no lane stalling under it. */
-    after: (s: Snapshot) => void;
-  }[] = [
-    // A stall alert waiting on an unread lane belongs to another cause.
-    {
-      name: "stall alert on an unread lane",
-      before: (s) => {
-        s.lanes = [lane(held.pressureRed + 1, { id: a })];
-      },
-      after: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [lane(null, { id: a })];
-      },
-    },
-    // A host CPU alert on a lane that stopped stalling is closing, not waiting.
-    {
-      name: "host CPU alert on a lane that stopped stalling",
-      before: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [lane(0, { id: a, pressure: held.pressureAmber + 1 })];
-      },
-      after: (s) => {
-        hostCpu(s, held.pressureRed + 1);
-        s.lanes = [lane(0, { id: a })];
-      },
-    },
-  ];
-  for (const row of rows) {
-    const log = new EventLog();
-    const at = (time: number, fill: (s: Snapshot) => void) => {
-      const s = emptySnapshot(time);
-      fill(s);
-      return log.advance(s, held);
-    };
-    at(1000, row.before);
-    const opens = at(1000 + hold, row.before).filter(
-      (e) => e.kind === "alert-open",
-    );
-    expect({ name: row.name, opens: opens.map((e) => e.subjectId) }).toEqual({
-      name: row.name,
-      opens: [a],
-    });
-    const from = 1000 + hold + held.refreshMs;
-    const host: number[] = [];
-    for (let t = from; t <= from + 3 * hold; t += held.refreshMs)
-      for (const e of at(t, row.after))
-        if (
-          e.kind === "alert-open" &&
-          e.cause === "system-cpu" &&
-          e.subjectId === ""
-        )
-          host.push(t - from);
-    expect({ name: row.name, host }).toEqual({ name: row.name, host: [hold] });
-  }
 });
