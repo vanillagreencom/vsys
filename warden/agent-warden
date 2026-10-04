@@ -1045,21 +1045,24 @@ def reap_scratch_dirs(correct, procs):
 
 
 def slice_tasks_max():
-    """The agents.slice task ceiling (the whole-slice cap), or a safe default."""
+    """The agents.slice task ceiling (the whole-slice cap), or math.inf when the
+    slice sets none (`max`) or its value is unreadable: no number stands in for a
+    ceiling the warden could not read."""
     v = (read(CG_ROOT / SLICE / "pids.max", "") or "").strip()
     try:
         return int(v)
     except ValueError:
-        return 16384
+        return math.inf
 
 
 def enforce_task_caps(correct):
-    """Cap any agents.slice scope left UNBOUNDED (TasksMax `max`, or at/above the
-    whole-slice ceiling, i.e. one scope free to consume the entire slice). Covers
-    a scope created without the cap: a shadowed launcher, a raw systemd-run, one
-    predating the cap. A scope with any smaller explicit cap, or a deliberate
-    larger one still below the slice ceiling, is left alone, so an
-    AGENT_SCOPE_TASKS_MAX override survives. agent-confine sets the cap at
+    """Cap any agents.slice scope left UNBOUNDED (TasksMax `max`, or above
+    SCOPE_TASKS_MAX and at/above a numeric whole-slice ceiling, i.e. one scope
+    free to consume the entire slice). Covers a scope created without the cap: a
+    shadowed launcher, a raw systemd-run, one predating the cap. A scope at or
+    below SCOPE_TASKS_MAX, or a deliberate larger one still below the slice
+    ceiling or under a slice with none, is left alone, so an
+    AGENT_SCOPE_TASKS_MAX override survives and no tick re-sets a cap. agent-confine sets the cap at
     creation, so this is a backstop: a fast storm from an uncapped scope can
     still fill the slice inside one 30 s tick. Returns the units capped."""
     capped = []
@@ -1072,13 +1075,13 @@ def enforce_task_caps(correct):
         return capped
     for unit, cur in units.items():
         try:
-            unbounded = cur == "max" or int(cur) >= ceiling
+            unbounded = cur == "max" or (int(cur) >= ceiling and int(cur) > SCOPE_TASKS_MAX)
         except ValueError:
             unbounded = True
         if not unbounded:
             continue
         if not correct:
-            log(f"scope {unit}: TasksMax {cur} is unbounded (>= slice {ceiling}); would cap (report mode)")
+            log(f"scope {unit}: TasksMax {cur} is unbounded; would cap (report mode)")
             continue
         r = subprocess.run(["systemctl", "--user", "set-property", "--runtime", unit,
                            f"TasksMax={SCOPE_TASKS_MAX}"], capture_output=True, text=True, timeout=15)

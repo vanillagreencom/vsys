@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 import unittest
 
 from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, materialize_warden_script, scratch
@@ -663,6 +664,66 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
                 self.assertFalse(any("scope bounded.scope:" in line for line in logs))
             finally:
                 self.w.CG_ROOT = old_root
+
+    # (name, slice pids.max or None when absent, scope pids.max, ticks, TasksMax values set)
+    TASK_CAP_TICK_ROWS = [
+        ("unlimited slice keeps a deliberate cap", "max", "20000", 1, []),
+        ("unreadable slice keeps a deliberate cap", None, "20000", 1, []),
+        ("unlimited slice still caps an unbounded scope", "max", "max", 3, [8192]),
+        ("cap at the slice ceiling is capped", "16384", "16384", 3, [8192]),
+        ("cap equal to the scope cap makes no call", "8192", "8192", 3, []),
+        ("cap below the scope cap is never raised", "4096", "4096", 1, []),
+    ]
+
+    def task_cap_ticks(self, module, slice_pids, scope_pids, ticks):
+        """The TasksMax values enforce_task_caps sets over `ticks` corrective
+        ticks on one scope; the systemctl stub writes each value back to the
+        scope's pids.max, as systemd does."""
+        sets = []
+        with scratch() as tmp:
+            agent_slice = Path(tmp) / "cg" / module.SLICE
+            scope = agent_slice / "lane.scope"
+            scope.mkdir(parents=True)
+            if slice_pids is not None:
+                (agent_slice / "pids.max").write_text(slice_pids)
+            (scope / "pids.max").write_text(scope_pids)
+
+            def run(argv, **_):
+                value = argv[-1].removeprefix("TasksMax=")
+                sets.append(int(value))
+                (scope / "pids.max").write_text(value)
+                return SimpleNamespace(returncode=0, stderr="")
+
+            old = module.CG_ROOT, module.subprocess, module.log
+            module.CG_ROOT, module.subprocess, module.log = Path(tmp) / "cg", SimpleNamespace(run=run), lambda msg: None
+            try:
+                for _ in range(ticks):
+                    module.enforce_task_caps(True)
+            finally:
+                module.CG_ROOT, module.subprocess, module.log = old
+        return sets
+
+    def test_task_cap_tick_rows(self):
+        self.assertEqual(self.w.SCOPE_TASKS_MAX, 8192)
+        for name, slice_pids, scope_pids, ticks, expected in self.TASK_CAP_TICK_ROWS:
+            with self.subTest(name=name):
+                self.assertEqual(self.task_cap_ticks(self.w, slice_pids, scope_pids, ticks), expected)
+
+    def test_task_cap_tick_mutants_fail(self):
+        text = WARDEN.read_text()
+        mutants = [
+            ("unlimited slice read as a number", "        return math.inf\n\n\ndef enforce_task_caps",
+             "        return 16384\n\n\ndef enforce_task_caps", "unlimited slice keeps a deliberate cap"),
+            ("cap at or below the scope cap re-set", " and int(cur) > SCOPE_TASKS_MAX)", ")",
+             "cap equal to the scope cap makes no call"),
+        ]
+        rows = {row[0]: row[1:] for row in self.TASK_CAP_TICK_ROWS}
+        for name, old, new, row in mutants:
+            with self.subTest(mutant=name):
+                self.assertEqual(text.count(old), 1)
+                mutant = self.load_mutant(text.replace(old, new), "agent_warden_mutant_task_cap_ticks")
+                slice_pids, scope_pids, ticks, expected = rows[row]
+                self.assertNotEqual(self.task_cap_ticks(mutant, slice_pids, scope_pids, ticks), expected)
 
     def test_reap_scratch_dirs_rows(self):
         with scratch() as tmp:
