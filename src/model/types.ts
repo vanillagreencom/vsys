@@ -375,7 +375,8 @@ export interface Lane {
   pressure: number | null;
   memoryPressure: number | null;
   ioPressure: number | null;
-  rss: number;
+  /** Resident memory summed over the members; unknown with no member read. */
+  rss: number | null;
   /** Page cache the kernel charges to this lane's cgroup. */
   cache: number | null;
   swap: number | null;

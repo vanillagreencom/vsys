@@ -30,7 +30,7 @@ function laneUnknowns(): Lane {
     pressure: null,
     memoryPressure: null,
     ioPressure: null,
-    rss: 0,
+    rss: null,
     cache: null,
     swap: null,
     readRate: null,

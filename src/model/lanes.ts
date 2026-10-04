@@ -301,7 +301,7 @@ export function lanes(
       pressure: group?.pressure.cpu?.some ?? null,
       memoryPressure,
       ioPressure,
-      rss: members.reduce((n, p) => n + p.rss, 0),
+      rss: members.length ? members.reduce((n, p) => n + p.rss, 0) : null,
       cache: group?.cache ?? null,
       swap:
         group?.swap ??
