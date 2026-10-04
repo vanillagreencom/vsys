@@ -151,14 +151,30 @@ export interface Meter {
   values: Record<string, number | null>;
 }
 export type Kind = "cpu" | "memory" | "io";
+const kinds: readonly Kind[] = ["cpu", "memory", "io"];
+/**
+ * A lane's own pressure on one resource. Ranking a lane, judging its stall and
+ * judging it under a host cause on that resource all read it here.
+ */
+function kindPressure(l: Lane, kind: Kind): number | null {
+  switch (kind) {
+    case "cpu":
+      return l.pressure;
+    case "memory":
+      return l.memoryPressure;
+    case "io":
+      return l.ioPressure;
+    default: {
+      const unknown: never = kind;
+      throw new Error(`kindPressure: unknown resource ${String(unknown)}`);
+    }
+  }
+}
 /** The resource a lane stalls on most, so one card can own that lane. */
 export function worstKind(l: Lane): Kind | null {
-  const r: [Kind, number | null][] = [
-    ["cpu", l.pressure],
-    ["memory", l.memoryPressure],
-    ["io", l.ioPressure],
-  ];
-  const best = r.filter(([, v]) => v !== null);
+  const best = kinds
+    .map((kind): [Kind, number | null] => [kind, kindPressure(l, kind)])
+    .filter(([, v]) => v !== null);
   return best.sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))[0]?.[0] ?? null;
 }
 /** A slice name can appear at more than one path; nested copies are not summed. */
@@ -290,16 +306,33 @@ interface Judgment<T> {
   judged: Judged;
 }
 /**
- * The causes judged on one host reading, and whether each lists the lanes
- * stalling on its resource as subjects of its own.
+ * The causes judged on one host reading, and the resource whose stalling lanes
+ * each lists as subjects of its own, null for one that lists none.
  */
 const hostCauses = [
-  ["disk", true],
-  ["desktop-swap", false],
-  ["system-memory", true],
-  ["system-cpu", true],
-] as const satisfies readonly (readonly [CauseId, boolean])[];
+  ["disk", "io"],
+  ["desktop-swap", null],
+  ["system-memory", "memory"],
+  ["system-cpu", "cpu"],
+] as const satisfies readonly (readonly [CauseId, Kind | null])[];
 type HostCause = (typeof hostCauses)[number][0];
+/** One host cause that fired and lists lanes, each lane judged under it. */
+interface Under {
+  id: HostCause;
+  kind: Kind;
+  lanes: Judgment<Lane>[];
+}
+/**
+ * Where a stalling lane's card stands. The stalls card holds the stalling
+ * lanes no host card holds. A lane a host card might hold, had the lane's own
+ * pressure on its resource been read, belongs to neither card yet, so the
+ * stalls card cannot judge it either.
+ */
+function looseStall(own: Judged, hosts: readonly Judged[]): Judged {
+  if (own !== "fired") return own;
+  if (hosts.includes("fired")) return "absent";
+  return hosts.includes("unjudged") ? "unjudged" : "fired";
+}
 /**
  * The one pass over every reading a cause can fail to take. `causes()` raises
  * what fired and `unjudged()` reports what could not be read, so the two can
@@ -312,6 +345,7 @@ interface Judgments {
   swap: number | null;
   writer: Group | undefined;
   host: Record<HostCause, Judged>;
+  under: Under[];
   stalls: Judgment<Lane>[];
   "memory-high": Judgment<Group>[];
   scratch: Judgment<ScratchRoot>[];
@@ -322,29 +356,64 @@ function judgments(s: Snapshot, c: Config): Judgments {
   const memory = s.system.pressure.memory?.some ?? null;
   const swap = sliceSum(s.groups, c.desktopSlice, (g) => g.swap);
   const writer = topWriter(s.groups);
+  const host: Record<HostCause, Judged> = {
+    disk: judge([io], (n) => n > c.pressureAmber && writer !== undefined),
+    // Only a slice the sample holds nothing of is gone. A group inside it
+    // that survived means its root went unread, not that its swap went away.
+    "desktop-swap": s.groups.some((g) => inSlice(g.path, c.desktopSlice))
+      ? judge([swap], (n) => n > c.swapFloor)
+      : "absent",
+    "system-memory": judge([memory], (n) => n > c.pressureRed),
+    "system-cpu": judge([cpu], (n) => n > c.pressureRed),
+  };
+  // Each resource's pressure is read on its own, so one that failed leaves
+  // the stall unjudged unless another already crossed.
+  const stalls = s.lanes.map((lane) => ({
+    lane,
+    own: judge(
+      kinds.map((kind) => kindPressure(lane, kind)),
+      (n) => n > c.pressureAmber,
+    ),
+  }));
+  // A host cause that fired owns the lanes stalling on its resource most. One
+  // it does not own it judges on the lane's own pressure there alone, so only
+  // a lane whose pressure on that resource went unread is unjudged.
+  const under: Under[] = hostCauses.flatMap(([id, kind]) =>
+    kind === null || host[id] !== "fired"
+      ? []
+      : [
+          {
+            id,
+            kind,
+            lanes: stalls.map(({ lane, own }) => ({
+              subject: lane,
+              judged:
+                own === "fired" && worstKind(lane) === kind
+                  ? "fired"
+                  : kindPressure(lane, kind) === null
+                    ? "unjudged"
+                    : "absent",
+            })),
+          },
+        ],
+  );
   return {
     io,
     cpu,
     memory,
     swap,
     writer,
-    host: {
-      disk: judge([io], (n) => n > c.pressureAmber && writer !== undefined),
-      // A slice the sample holds no root of has no swap left to judge: it is
-      // gone, not unread.
-      "desktop-swap": sliceRoots(s.groups, c.desktopSlice).length
-        ? judge([swap], (n) => n > c.swapFloor)
-        : "absent",
-      "system-memory": judge([memory], (n) => n > c.pressureRed),
-      "system-cpu": judge([cpu], (n) => n > c.pressureRed),
-    },
-    // Each resource's pressure is read on its own, so one that failed leaves
-    // the stall unjudged unless another already crossed.
-    stalls: s.lanes.map((lane) => ({
+    host,
+    under,
+    stalls: stalls.map(({ lane, own }) => ({
       subject: lane,
-      judged: judge(
-        [lane.pressure, lane.memoryPressure, lane.ioPressure],
-        (n) => n > c.pressureAmber,
+      judged: looseStall(
+        own,
+        under.flatMap((u) =>
+          u.lanes
+            .filter((row) => row.subject === lane)
+            .map((row) => row.judged),
+        ),
       ),
     })),
     // A null limit reads the same for `max` and for a file that failed to
@@ -371,31 +440,32 @@ const where = <T>(rows: Judgment<T>[], judged: Judged): T[] =>
  * The subjects each cause could not judge this sample, by the identifier an
  * alert about it carries: the host as the empty id, a lane id, a group path
  * or a scratch path. A host cause whose reading failed covers every subject
- * the sample holds. One that fired covers the lanes whose stall went unread,
- * since any of them may be stalling on its resource. A subject the sample no
- * longer holds is never here: it is gone, not unread.
+ * the sample holds. One that fired covers the lanes it does not own whose own
+ * pressure on its resource went unread, since any of them may be stalling on
+ * it. A subject the sample no longer holds is never here: it is gone, not
+ * unread.
  */
 export type Unjudged = Partial<Record<CauseId, ReadonlySet<string>>>;
 export function unjudged(s: Snapshot, c: Config): Unjudged {
   const j = judgments(s, c);
-  const unreadLanes = where(j.stalls, "unjudged").map((lane) => lane.id);
+  const ids = (lanes: Lane[]) => lanes.map((lane) => lane.id);
   const held = [
     "",
     ...s.lanes.map((lane) => lane.id),
     ...s.groups.map((group) => group.path),
   ];
   const subjects: [CauseId, string[]][] = [
-    ["stalls", unreadLanes],
+    ["stalls", ids(where(j.stalls, "unjudged"))],
     ["memory-high", where(j["memory-high"], "unjudged").map((g) => g.path)],
     ["scratch", where(j.scratch, "unjudged").map((root) => root.path)],
   ];
-  for (const [id, listsLanes] of hostCauses) {
-    const judged = j.host[id];
-    if (judged === "unjudged") subjects.push([id, held]);
-    else if (judged === "fired" && listsLanes) subjects.push([id, unreadLanes]);
-  }
+  for (const [id] of hostCauses)
+    if (j.host[id] === "unjudged") subjects.push([id, held]);
+  for (const u of j.under)
+    subjects.push([u.id, ids(where(u.lanes, "unjudged"))]);
   const out: Unjudged = {};
-  for (const [id, ids] of subjects) if (ids.length) out[id] = new Set(ids);
+  for (const [id, names] of subjects)
+    if (names.length) out[id] = new Set(names);
   return out;
 }
 /**
@@ -426,16 +496,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   const diskFired = j.host.disk === "fired";
   const cpuFired = j.host["system-cpu"] === "fired";
   const memoryFired = j.host["system-memory"] === "fired";
-  const covered = new Set<Kind>();
-  if (diskFired) covered.add("io");
-  if (cpuFired) covered.add("cpu");
-  if (memoryFired) covered.add("memory");
-  const stalling = where(j.stalls, "fired");
-  const owned = (kind: Kind) => stalling.filter((l) => worstKind(l) === kind);
-  const loose = stalling.filter((l) => {
-    const kind = worstKind(l);
-    return kind === null || !covered.has(kind);
-  });
+  const owned = (kind: Kind) =>
+    j.under
+      .filter((u) => u.kind === kind)
+      .flatMap((u) => where(u.lanes, "fired"));
+  const loose = where(j.stalls, "fired");
   const escaped = s.lanes.filter((l) => l.unconfined);
   const [firstEscaped] = escaped;
   if (firstEscaped)

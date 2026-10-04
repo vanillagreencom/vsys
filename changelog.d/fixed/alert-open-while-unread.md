@@ -1,1 +1,1 @@
-- A Timeline alert now stays open while the reading it was judged on cannot be taken, instead of closing and reopening as a new alert when the reading returns.
+- A Timeline alert now stays open while the reading it depends on cannot be taken, a lane's own pressure on a busy resource included, instead of closing and reopening when the reading returns.
