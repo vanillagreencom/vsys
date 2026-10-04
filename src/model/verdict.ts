@@ -274,21 +274,32 @@ function busiest(lanes: Lane[]): Lane | undefined {
  * neither, so anything that acts on a cause going away reads this instead.
  */
 type Judged = "fired" | "absent" | "unjudged";
-function judge(n: number | null, fires: (n: number) => boolean): Judged {
-  return n === null ? "unjudged" : fires(n) ? "fired" : "absent";
+/**
+ * Fired when any reading taken crosses, since an unread one cannot undo it.
+ * Otherwise a reading not taken might have crossed, so the cause is unjudged.
+ */
+function judge(
+  readings: readonly (number | null)[],
+  fires: (n: number) => boolean,
+): Judged {
+  if (readings.some((n) => n !== null && fires(n))) return "fired";
+  return readings.includes(null) ? "unjudged" : "absent";
 }
 interface Judgment<T> {
   subject: T;
   judged: Judged;
 }
-/** The causes judged on one host reading, so an unread one covers every subject. */
+/**
+ * The causes judged on one host reading, and whether each lists the lanes
+ * stalling on its resource as subjects of its own.
+ */
 const hostCauses = [
-  "disk",
-  "desktop-swap",
-  "system-memory",
-  "system-cpu",
-] as const satisfies readonly CauseId[];
-type HostCause = (typeof hostCauses)[number];
+  ["disk", true],
+  ["desktop-swap", false],
+  ["system-memory", true],
+  ["system-cpu", true],
+] as const satisfies readonly (readonly [CauseId, boolean])[];
+type HostCause = (typeof hostCauses)[number][0];
 /**
  * The one pass over every reading a cause can fail to take. `causes()` raises
  * what fired and `unjudged()` reports what could not be read, so the two can
@@ -318,14 +329,23 @@ function judgments(s: Snapshot, c: Config): Judgments {
     swap,
     writer,
     host: {
-      disk: judge(io, (n) => n > c.pressureAmber && writer !== undefined),
-      "desktop-swap": judge(swap, (n) => n > c.swapFloor),
-      "system-memory": judge(memory, (n) => n > c.pressureRed),
-      "system-cpu": judge(cpu, (n) => n > c.pressureRed),
+      disk: judge([io], (n) => n > c.pressureAmber && writer !== undefined),
+      // A slice the sample holds no root of has no swap left to judge: it is
+      // gone, not unread.
+      "desktop-swap": sliceRoots(s.groups, c.desktopSlice).length
+        ? judge([swap], (n) => n > c.swapFloor)
+        : "absent",
+      "system-memory": judge([memory], (n) => n > c.pressureRed),
+      "system-cpu": judge([cpu], (n) => n > c.pressureRed),
     },
+    // Each resource's pressure is read on its own, so one that failed leaves
+    // the stall unjudged unless another already crossed.
     stalls: s.lanes.map((lane) => ({
       subject: lane,
-      judged: judge(lanePressure(lane), (n) => n > c.pressureAmber),
+      judged: judge(
+        [lane.pressure, lane.memoryPressure, lane.ioPressure],
+        (n) => n > c.pressureAmber,
+      ),
     })),
     // A null limit reads the same for `max` and for a file that failed to
     // read, so it is judged absent: no limit, nothing to come near.
@@ -336,33 +356,45 @@ function judgments(s: Snapshot, c: Config): Judgments {
         judged:
           high === null
             ? "absent"
-            : judge(group.memory, (n) => n >= high * 0.9),
+            : judge([group.memory], (n) => n >= high * 0.9),
       };
     }),
     scratch: s.storage.scratch.map((root) => ({
       subject: root,
-      judged: judge(root.bytes, (n) => n > c.scratchQuota),
+      judged: judge([root.bytes], (n) => n > c.scratchQuota),
     })),
   };
 }
 const where = <T>(rows: Judgment<T>[], judged: Judged): T[] =>
   rows.filter((row) => row.judged === judged).map((row) => row.subject);
 /**
- * The causes this sample could not judge: every subject of a host cause whose
- * reading failed, or the identifiers of the subjects whose own reading did,
- * the lane id, group path or scratch path an alert about it carries. A
- * subject the sample no longer holds is not here: it is gone, not unread.
+ * The subjects each cause could not judge this sample, by the identifier an
+ * alert about it carries: the host as the empty id, a lane id, a group path
+ * or a scratch path. A host cause whose reading failed covers every subject
+ * the sample holds. One that fired covers the lanes whose stall went unread,
+ * since any of them may be stalling on its resource. A subject the sample no
+ * longer holds is never here: it is gone, not unread.
  */
-export type Unjudged = Partial<Record<CauseId, "all" | ReadonlySet<string>>>;
+export type Unjudged = Partial<Record<CauseId, ReadonlySet<string>>>;
 export function unjudged(s: Snapshot, c: Config): Unjudged {
   const j = judgments(s, c);
-  const out: Unjudged = {};
-  for (const id of hostCauses) if (j.host[id] === "unjudged") out[id] = "all";
+  const unreadLanes = where(j.stalls, "unjudged").map((lane) => lane.id);
+  const held = [
+    "",
+    ...s.lanes.map((lane) => lane.id),
+    ...s.groups.map((group) => group.path),
+  ];
   const subjects: [CauseId, string[]][] = [
-    ["stalls", where(j.stalls, "unjudged").map((lane) => lane.id)],
+    ["stalls", unreadLanes],
     ["memory-high", where(j["memory-high"], "unjudged").map((g) => g.path)],
     ["scratch", where(j.scratch, "unjudged").map((root) => root.path)],
   ];
+  for (const [id, listsLanes] of hostCauses) {
+    const judged = j.host[id];
+    if (judged === "unjudged") subjects.push([id, held]);
+    else if (judged === "fired" && listsLanes) subjects.push([id, unreadLanes]);
+  }
+  const out: Unjudged = {};
   for (const [id, ids] of subjects) if (ids.length) out[id] = new Set(ids);
   return out;
 }

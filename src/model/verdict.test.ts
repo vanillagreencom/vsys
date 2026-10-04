@@ -675,39 +675,49 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
 test("unjudged names each cause whose own reading could not be taken", () => {
   const c = defaults();
   const laneId = "agents.slice/l.scope";
+  const otherLane = "agents.slice/m.scope";
   const groupPath = "agents.slice/h.scope";
   const scratchPath = "/scratch";
+  const otherScratch = "/scratch-b";
   /** Every reading a cause can fail to take, taken and under its threshold. */
   const read = (): Snapshot => {
     const s = healthy();
-    s.lanes = [laneSnapshot({ id: laneId })];
+    s.lanes = [laneSnapshot({ id: laneId }), laneSnapshot({ id: otherLane })];
     s.groups = [
       g("app.slice", c.desktopSlice, { swap: 0 }),
       g(groupPath, "h.scope", { memory: 10, high: 100 }),
     ];
-    s.storage.scratch = [
-      {
-        path: scratchPath,
-        bytes: 0,
-        age: 0,
-        error: null,
-        origin: "configured",
-      },
-    ];
+    s.storage.scratch = [scratchPath, otherScratch].map((path) => ({
+      path,
+      bytes: 0,
+      age: 0,
+      error: null,
+      origin: "configured",
+    }));
     return s;
   };
+  /** Every subject `read()` holds: the host, both lanes and both groups. */
+  const held = new Set(["", laneId, otherLane, "app.slice", groupPath]);
+  const pressures = (lane: Partial<Lane>) => (s: Snapshot) => {
+    s.lanes = s.lanes.map((x) => (x.id === laneId ? { ...x, ...lane } : x));
+  };
+  const laneUnread = pressures({
+    pressure: null,
+    memoryPressure: null,
+    ioPressure: null,
+  });
   const rows: [string, (s: Snapshot) => void, Unjudged][] = [
     ["every reading taken", () => {}, {}],
-    ["io pressure", (s) => delete s.system.pressure.io, { disk: "all" }],
+    ["io pressure", (s) => delete s.system.pressure.io, { disk: held }],
     [
       "cpu pressure",
       (s) => delete s.system.pressure.cpu,
-      { "system-cpu": "all" },
+      { "system-cpu": held },
     ],
     [
       "memory pressure",
       (s) => delete s.system.pressure.memory,
-      { "system-memory": "all" },
+      { "system-memory": held },
     ],
     [
       "desktop swap",
@@ -716,20 +726,67 @@ test("unjudged names each cause whose own reading could not be taken", () => {
           x.name === c.desktopSlice ? { ...x, swap: null } : x,
         );
       },
-      { "desktop-swap": "all" },
+      { "desktop-swap": held },
     ],
-    // A lane's own unread pressure marks its stall alone, never a host cause.
+    // A slice with no root in the sample has no swap to judge: it is gone.
     [
-      "lane pressure",
+      "desktop slice gone",
       (s) => {
-        s.lanes = [
-          laneSnapshot({
-            id: laneId,
-            pressure: null,
-            memoryPressure: null,
-            ioPressure: null,
-          }),
-        ];
+        s.groups = s.groups.filter((x) => x.name !== c.desktopSlice);
+      },
+      {},
+    ],
+    // A lane's own unread pressure marks its stall alone, never a host cause
+    // that did not fire, and never the other lane.
+    ["lane pressure", laneUnread, { stalls: new Set([laneId]) }],
+    [
+      "one lane resource",
+      pressures({ pressure: null }),
+      { stalls: new Set([laneId]) },
+    ],
+    // A resource that crossed fires the stall whatever another failed to read.
+    [
+      "one lane resource beside one that crossed",
+      pressures({ pressure: null, memoryPressure: c.pressureAmber + 1 }),
+      {},
+    ],
+    [
+      "lane pressure under host CPU that fired",
+      (s) => {
+        s.system.pressure.cpu = { some: c.pressureRed + 1, full: 0, total: 0 };
+        laneUnread(s);
+      },
+      { stalls: new Set([laneId]), "system-cpu": new Set([laneId]) },
+    ],
+    [
+      "lane pressure under host memory that fired",
+      (s) => {
+        s.system.pressure.memory = {
+          some: c.pressureRed + 1,
+          full: 0,
+          total: 0,
+        };
+        laneUnread(s);
+      },
+      { stalls: new Set([laneId]), "system-memory": new Set([laneId]) },
+    ],
+    [
+      "lane pressure under disk that fired",
+      (s) => {
+        s.system.pressure.io = { some: c.pressureAmber + 1, full: 0, total: 0 };
+        s.groups.push(g("app.slice/w.scope", "w.scope", { writeRate: 1 }));
+        laneUnread(s);
+      },
+      { stalls: new Set([laneId]), disk: new Set([laneId]) },
+    ],
+    // Desktop swap lists no stalling lane, so an unread one is not its own.
+    [
+      "lane pressure under desktop swap that fired",
+      (s) => {
+        s.groups = s.groups.map((x) =>
+          x.name === c.desktopSlice ? { ...x, swap: c.swapFloor + 1 } : x,
+        );
+        laneUnread(s);
       },
       { stalls: new Set([laneId]) },
     ],
@@ -755,10 +812,9 @@ test("unjudged names each cause whose own reading could not be taken", () => {
     [
       "scratch size",
       (s) => {
-        s.storage.scratch = s.storage.scratch.map((x) => ({
-          ...x,
-          bytes: null,
-        }));
+        s.storage.scratch = s.storage.scratch.map((x) =>
+          x.path === scratchPath ? { ...x, bytes: null } : x,
+        );
       },
       { scratch: new Set([scratchPath]) },
     ],
@@ -783,6 +839,14 @@ test("unjudged names each cause whose own reading could not be taken", () => {
         s.storage.scratch = [];
       },
       {},
+    ],
+    [
+      "lane gone with cpu pressure unread",
+      (s) => {
+        s.lanes = s.lanes.filter((x) => x.id !== laneId);
+        delete s.system.pressure.cpu;
+      },
+      { "system-cpu": new Set(["", otherLane, "app.slice", groupPath]) },
     ],
   ];
   for (const [name, change, expected] of rows) {
