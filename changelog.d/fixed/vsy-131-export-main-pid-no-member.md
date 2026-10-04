@@ -1,0 +1,1 @@
+- An exported snapshot no longer gives a lane with no readable process a main PID of 0: the JSON carries `null` and the Markdown report writes `?`.

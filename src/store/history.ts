@@ -2,11 +2,12 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "../config/config";
+import { memberless } from "../model/lanes";
 import type { Alert, Snapshot } from "../model/types";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
 import type { LaneSample } from "./lane-series";
-import { memberless, normalizePoint, normalizeSnapshot } from "./migrate";
+import { normalizePoint, normalizeSnapshot } from "./migrate";
 import { type Point, point } from "./point";
 
 /** Snapshots hold command lines and environment values, so only the owner may read them. */

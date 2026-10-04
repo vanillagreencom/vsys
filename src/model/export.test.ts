@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
-import { emptySnapshot, groupSnapshot, processSnapshot } from "../test/fixture";
+import {
+  emptySnapshot,
+  groupSnapshot,
+  laneSnapshot,
+  processSnapshot,
+} from "../test/fixture";
 import { exportSnapshot, safe, summarySnapshot } from "./export";
 
 test("reports retain process threads and the exact memory cap", () => {
@@ -44,6 +49,21 @@ test("the scratch table writes no age for a root it never read", () => {
   const row = report.split("\n").find((line) => line.includes("/unread-root"));
   expect(row).toContain("unavailable");
   expect(row).not.toMatch(/\|\s*0\s*\|/);
+});
+test("a lane with no member read exports its main process as unknown", () => {
+  const s = emptySnapshot();
+  s.lanes = [
+    laneSnapshot({ id: "led.scope", name: "led", mainPid: 4071 }),
+    laneSnapshot({ id: "bare.scope", name: "bare", mainPid: 0, pids: [] }),
+  ];
+  const stored = JSON.parse(exportSnapshot(s, "json")) as {
+    lanes: { mainPid: number | null }[];
+  };
+  expect(stored.lanes.map((lane) => lane.mainPid)).toEqual([4071, null]);
+  const rows = exportSnapshot(s, "markdown").split("\n");
+  const pid = (name: string) =>
+    rows.find((row) => row.startsWith(`| ${name} |`))?.split(" | ")[5];
+  expect([pid("led"), pid("bare")]).toEqual(["4071", "?"]);
 });
 
 test("summary subjects never use navigation-only targets", () => {

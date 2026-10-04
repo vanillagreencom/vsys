@@ -19,6 +19,14 @@ import {
 import { scopeMain } from "./scopes";
 import type { Capability, Group, Lane, Proc } from "./types";
 
+/**
+ * Whether a lane held no member read on its sample. A lane takes its main
+ * process from its members, so a main PID of 0 is exactly that lane and names
+ * no process. A build older than the unknown memory and age also stored both
+ * for it as a synthetic 0, so every reader of a stored lane's memory or age
+ * asks this, and so does the export before it writes the main PID.
+ */
+export const memberless = (mainPid: unknown): boolean => mainPid === 0;
 export function inSlice(path: string, slice: string): boolean {
   return path.split("/").includes(slice);
 }

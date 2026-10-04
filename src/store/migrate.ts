@@ -1,3 +1,4 @@
+import { memberless } from "../model/lanes";
 import { unitLabel } from "../model/naming";
 import type { Lane, Sccache, Snapshot } from "../model/types";
 import type { TimelineEvent } from "./events";
@@ -55,13 +56,6 @@ function laneUnknowns(): Lane {
     dangerous: false,
   };
 }
-/**
- * Whether a stored lane held no member read on its sample. A lane takes its
- * main process from its members, so a main PID of 0 is exactly that lane, and
- * a build older than the unknown memory and age stored both for it as a
- * synthetic 0. Every reader of a stored lane's memory or age asks this.
- */
-export const memberless = (mainPid: unknown): boolean => mainPid === 0;
 /**
  * Fill the fields a stored lane predates. A fresh object per lane keeps two
  * historical lanes from sharing one build table.
