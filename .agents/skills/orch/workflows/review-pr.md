@@ -217,13 +217,13 @@ Still `ok == false` after that, or the § 3.2 deadline reached → mark the agen
 
 **Replace a wake source without a verdict once, immediately.** `review-artifact-check` returns a result on stdout at exit 0 or 1. A keyed refusal at exit 2, or any other status, leaves the agent's deadlines unarmed. If the replacement also ends without a verdict, stop and report an environment failure with its status and any keyed line. Never arm a third source or mark the reviewer `unresponsive` for this failure.
 
-Sweep the filesystem on every wake. Per-agent deadline from `review_delegated_at`: 25 minutes for an agent whose name contains `perf`, 15 minutes for every other agent. The external lane's printed deadline is absolute Unix epoch seconds; compare it with `date +%s`. If no deadline metadata prints, use 2 × `SECOND_OPINION_TIMEOUT` plus 3 minutes, with 1080 seconds as the timeout default. It is not a messageable agent, so the ping row and its early end never apply to it.
+Sweep the filesystem on every wake. Per-agent deadline from `review_delegated_at`: 25 minutes for an agent whose name contains `perf`, 75 minutes for `reviewer-test`, 15 minutes for every other agent. The `reviewer-test` figure is one [`mutation-stability`](../../reviewer/scripts/mutation-stability) run at that script's defaults plus 5 minutes: a control build and test, a mutant build and test, and `--stability` clean-copy test runs, each bounded by `--timeout`, so (`--stability` + 4) × `--timeout`, 70 minutes at the defaults of 10 and 300 s. `skills/orch/tests/reviewer-test-deadline.test.sh` fails when the figure falls below that run. The external lane's printed deadline is absolute Unix epoch seconds; compare it with `date +%s`. If no deadline metadata prints, use 2 × `SECOND_OPINION_TIMEOUT` plus 3 minutes, with 1080 seconds as the timeout default. It is not a messageable agent, so the ping row and its early end never apply to it.
 
 | Event | Action |
 |-------|--------|
 | Return arrives | Run `review-artifact-check` (§ 3.1) |
 | 2 min after the first return, or 10 min from delegation with no returns — once per cycle (wave mode: per wave) | Ping each outstanding agent once (external exempt): `Status check on [ISSUE_ID] review — return your verdict if complete, or report the blocker.` |
-| 2 min after that ping | Mark each non-perf **agent** still outstanding `unresponsive` — never the external lane |
+| 2 min after that ping | Mark each **agent** still outstanding `unresponsive`, bar a perf agent and `reviewer-test` — never the external lane |
 | Per-agent deadline (external: printed deadline, else 2 × timeout + 3 min) | Mark that agent or lane `unresponsive` |
 
 Wave mode also shuts an `unresponsive` reviewer down and records it, so the slot frees and the reviewer does not relaunch this cycle:
