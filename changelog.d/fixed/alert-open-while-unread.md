@@ -1,0 +1,1 @@
+- A Timeline alert now stays open while its reading cannot be taken, instead of closing and reopening as a new alert when the reading returns.

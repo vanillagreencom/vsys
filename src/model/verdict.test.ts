@@ -22,6 +22,8 @@ import {
   sliceSum,
   topSwapHolder,
   topWriter,
+  type Unjudged,
+  unjudged,
   worstKind,
 } from "./verdict";
 
@@ -668,4 +670,127 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
         { ...c, procRoot },
       ),
     }).toEqual({ name, cpu, meterCpu, meterCache, swapCache });
+});
+
+test("unjudged names each cause whose own reading could not be taken", () => {
+  const c = defaults();
+  const laneId = "agents.slice/l.scope";
+  const groupPath = "agents.slice/h.scope";
+  const scratchPath = "/scratch";
+  /** Every reading a cause can fail to take, taken and under its threshold. */
+  const read = (): Snapshot => {
+    const s = healthy();
+    s.lanes = [laneSnapshot({ id: laneId })];
+    s.groups = [
+      g("app.slice", c.desktopSlice, { swap: 0 }),
+      g(groupPath, "h.scope", { memory: 10, high: 100 }),
+    ];
+    s.storage.scratch = [
+      {
+        path: scratchPath,
+        bytes: 0,
+        age: 0,
+        error: null,
+        origin: "configured",
+      },
+    ];
+    return s;
+  };
+  const rows: [string, (s: Snapshot) => void, Unjudged][] = [
+    ["every reading taken", () => {}, {}],
+    ["io pressure", (s) => delete s.system.pressure.io, { disk: "all" }],
+    [
+      "cpu pressure",
+      (s) => delete s.system.pressure.cpu,
+      { "system-cpu": "all" },
+    ],
+    [
+      "memory pressure",
+      (s) => delete s.system.pressure.memory,
+      { "system-memory": "all" },
+    ],
+    [
+      "desktop swap",
+      (s) => {
+        s.groups = s.groups.map((x) =>
+          x.name === c.desktopSlice ? { ...x, swap: null } : x,
+        );
+      },
+      { "desktop-swap": "all" },
+    ],
+    // A lane's own unread pressure marks its stall alone, never a host cause.
+    [
+      "lane pressure",
+      (s) => {
+        s.lanes = [
+          laneSnapshot({
+            id: laneId,
+            pressure: null,
+            memoryPressure: null,
+            ioPressure: null,
+          }),
+        ];
+      },
+      { stalls: new Set([laneId]) },
+    ],
+    [
+      "group memory",
+      (s) => {
+        s.groups = s.groups.map((x) =>
+          x.path === groupPath ? { ...x, memory: null } : x,
+        );
+      },
+      { "memory-high": new Set([groupPath]) },
+    ],
+    // A null limit reads alike for `max` and an unread file: judged absent.
+    [
+      "group memory with no limit",
+      (s) => {
+        s.groups = s.groups.map((x) =>
+          x.path === groupPath ? { ...x, memory: null, high: null } : x,
+        );
+      },
+      {},
+    ],
+    [
+      "scratch size",
+      (s) => {
+        s.storage.scratch = s.storage.scratch.map((x) => ({
+          ...x,
+          bytes: null,
+        }));
+      },
+      { scratch: new Set([scratchPath]) },
+    ],
+    // A subject the sample no longer holds is gone, not unread.
+    [
+      "lane gone",
+      (s) => {
+        s.lanes = [];
+      },
+      {},
+    ],
+    [
+      "group gone",
+      (s) => {
+        s.groups = s.groups.filter((x) => x.path !== groupPath);
+      },
+      {},
+    ],
+    [
+      "scratch path gone",
+      (s) => {
+        s.storage.scratch = [];
+      },
+      {},
+    ],
+  ];
+  for (const [name, change, expected] of rows) {
+    const s = read();
+    change(s);
+    expect({ name, unjudged: unjudged(s, c) }).toEqual({
+      name,
+      unjudged: expected,
+    });
+  }
 });

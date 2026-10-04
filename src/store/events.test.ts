@@ -763,6 +763,11 @@ test("a scope that becomes a lane while its alert waits opens under one name", (
   // The swap goes. The close waits out its own hold and then names the alert
   // the way its open did.
   const quiet = emptySnapshot(30000);
+  // Read at zero: a desktop slice the sample does not hold is an unread swap
+  // total, which keeps the alert open.
+  quiet.groups = [
+    groupSnapshot({ path: "app.slice", name: held.desktopSlice, swap: 0 }),
+  ];
   quiet.lanes = [laneSnapshot({ id: path, name: "confine" })];
   out.push(log.advance(quiet, held));
   const events = out
@@ -822,4 +827,203 @@ test("a lane that starts writing the most while its alert waits keeps its handle
   // all, so the selected row cannot show the scope the reader would run
   // `systemctl` against.
   expect(opened).toEqual(["l.scope"]);
+});
+
+/** A row of the unread-input tests: one cause on one subject, sample by sample. */
+interface Unread {
+  name: string;
+  cause: CauseId;
+  subjectId: string;
+  /** The input read over its threshold. */
+  firing: (s: Snapshot) => void;
+  /** The input read under it, or the subject gone, by row. */
+  quiet: (s: Snapshot) => void;
+}
+const held = defaults();
+const hold = held.pressureHoldSeconds * 1000;
+const lane = (pressure: number | null) =>
+  laneSnapshot({
+    id: "agents.slice/l.scope",
+    name: "worker",
+    pressure,
+    memoryPressure: pressure,
+    ioPressure: pressure,
+  });
+/** Opens the row's alert and returns the log with the time it last fired. */
+function opened(row: Unread): { log: EventLog; last: number } {
+  const log = new EventLog();
+  const at = (time: number) => {
+    const s = emptySnapshot(time);
+    row.firing(s);
+    return log.advance(s, held);
+  };
+  at(1000);
+  const open = at(1000 + hold).filter(
+    (e) => e.kind === "alert-open" && e.cause === row.cause,
+  );
+  expect({ name: row.name, open: open.map((e) => e.subjectId) }).toEqual({
+    name: row.name,
+    open: [row.subjectId],
+  });
+  return { log, last: 1000 + hold };
+}
+test("an open alert stays open while its input cannot be read", () => {
+  // The unread run must outlast the hold several times over, or a close the
+  // hold would have issued never comes due.
+  expect(hold).toBeGreaterThan(held.refreshMs);
+  const rows: (Unread & { unread: (s: Snapshot) => void })[] = [
+    {
+      name: "host CPU",
+      cause: "system-cpu",
+      subjectId: "",
+      firing: (s) => {
+        s.system.pressure = {
+          cpu: { some: held.pressureRed + 1, full: 0, total: 0 },
+        };
+      },
+      unread: (s) => {
+        s.system.pressure = {};
+      },
+      quiet: () => {},
+    },
+    {
+      name: "lane stall",
+      cause: "stalls",
+      subjectId: "agents.slice/l.scope",
+      firing: (s) => {
+        s.lanes = [lane(held.pressureRed + 1)];
+      },
+      unread: (s) => {
+        s.lanes = [lane(null)];
+      },
+      quiet: (s) => {
+        s.lanes = [lane(0)];
+      },
+    },
+  ];
+  for (const row of rows) {
+    const { log, last } = opened(row);
+    const changes: string[] = [];
+    const at = (time: number, fill: (s: Snapshot) => void) => {
+      const s = emptySnapshot(time);
+      fill(s);
+      for (const e of log.advance(s, held))
+        if (e.kind === "verdict" || e.cause === row.cause)
+          changes.push(`${time} ${e.kind}`);
+    };
+    const samples = 3 * (hold / held.refreshMs);
+    for (let i = 1; i <= samples; i++)
+      at(last + i * held.refreshMs, row.unread);
+    // Unread past the hold: no close, and the verdict does not move.
+    expect({ name: row.name, changes }).toEqual({
+      name: row.name,
+      changes: [],
+    });
+    // Read again below the threshold: the close waits a full hold from the
+    // last sample that could not judge it, then reports the observed time.
+    const unreadUntil = last + samples * held.refreshMs;
+    at(unreadUntil + held.refreshMs, row.quiet);
+    at(unreadUntil + hold - 1, row.quiet);
+    expect({ name: row.name, changes }).toEqual({
+      name: row.name,
+      changes: [],
+    });
+    const close = emptySnapshot(unreadUntil + hold);
+    row.quiet(close);
+    const out = log.advance(close, held);
+    expect({
+      name: row.name,
+      kinds: out.map((e) => e.kind).sort(),
+      duration: out.find((e) => e.kind === "alert-close")?.values.durationMs,
+    }).toEqual({
+      name: row.name,
+      kinds: ["alert-close", "verdict"],
+      duration: hold,
+    });
+  }
+});
+test("a pending alert on an unread sample ends, as on a gap", () => {
+  const log = new EventLog();
+  const at = (time: number, pressure: number | null) => {
+    const s = emptySnapshot(time);
+    s.lanes = [lane(pressure)];
+    return log
+      .advance(s, held)
+      .filter((e) => e.cause === "stalls" && e.kind.startsWith("alert-"));
+  };
+  at(1000, held.pressureRed + 1);
+  at(1000 + held.refreshMs, null);
+  // Fired for the hold counted from the first sample, but an unread sample
+  // broke it, so nothing opens until the hold runs again from the return.
+  expect(at(1000 + hold, held.pressureRed + 1)).toEqual([]);
+  expect(at(1000 + 2 * hold, held.pressureRed + 1).map((e) => e.kind)).toEqual([
+    "alert-open",
+  ]);
+});
+test("an alert whose subject the sample no longer holds closes after the hold", () => {
+  const path = "/scratch";
+  const group = "agents.slice/h.scope";
+  const rows: Unread[] = [
+    {
+      name: "lane gone",
+      cause: "stalls",
+      subjectId: "agents.slice/l.scope",
+      firing: (s) => {
+        s.lanes = [lane(held.pressureRed + 1)];
+      },
+      quiet: () => {},
+    },
+    {
+      name: "scratch path gone",
+      cause: "scratch",
+      subjectId: path,
+      firing: (s) => {
+        s.storage.scratch = [
+          {
+            path,
+            bytes: held.scratchQuota + 1,
+            age: 0,
+            error: null,
+            origin: "configured",
+          },
+        ];
+      },
+      quiet: () => {},
+    },
+    {
+      name: "group gone",
+      cause: "memory-high",
+      subjectId: group,
+      firing: (s) => {
+        s.groups = [
+          groupSnapshot({
+            path: group,
+            name: "h.scope",
+            memory: 100,
+            high: 100,
+          }),
+        ];
+      },
+      quiet: () => {},
+    },
+  ];
+  for (const row of rows) {
+    const { log, last } = opened(row);
+    const closes = (time: number) => {
+      const s = emptySnapshot(time);
+      row.quiet(s);
+      return log
+        .advance(s, held)
+        .filter((e) => e.kind === "alert-close" && e.cause === row.cause)
+        .map((e) => e.subjectId);
+    };
+    expect({ name: row.name, early: closes(last + hold - 1) }).toEqual({
+      name: row.name,
+      early: [],
+    });
+    expect({ name: row.name, due: closes(last + hold) }).toEqual({
+      name: row.name,
+      due: [row.subjectId],
+    });
+  }
 });
