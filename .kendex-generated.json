@@ -596,7 +596,7 @@
   ".github/hooks/skill-load-check.sh",
   ".github/hooks/skill-load-record.json",
   ".github/hooks/skill-load-record.sh",
-  {"path":".github/workflows/kendex-refresh.yml","template":".agents/skills/review-gate/templates/kendex-refresh.yml","templateHash":"sha256:e9bc5793e4488cf481ba3f8ad02601edc0664582b6e6d03d21f9edfd3f43b3a2"},
+  {"path":".github/workflows/kendex-refresh.yml","template":".agents/skills/review-gate/templates/kendex-refresh.yml","templateHash":"sha256:dab6a77e18cf6ee508f32210d4494caa040f1a2dde6ccc30eb4d9619fa8cfd8e"},
   ".kendex-generated.json",
   ".kendex-lock.json",
   ".pi/agents/maintainer.md",
