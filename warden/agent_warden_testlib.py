@@ -95,3 +95,34 @@ class WardenMutantMixin:
             for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
                 Path(env[key]).mkdir(parents=True, exist_ok=True)
             return load_warden(env, name, path)
+
+
+class WardenRulesCase(WardenMutantMixin, unittest.TestCase):
+    """One warden module loaded under a private home, shared by a suite's rows."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = scratch()
+        base = Path(cls.tmp.name)
+        cls.env = clean_env({
+            "HOME": base / "home",
+            "XDG_RUNTIME_DIR": base / "run",
+            "MISE_DATA_DIR": base / "mise-data",
+        })
+        for path in (base / "home", base / "run", base / "mise-data"):
+            path.mkdir(parents=True, exist_ok=True)
+        cls.w = load_warden(cls.env)
+        cls.A = "/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope"
+        cls.S = "/user.slice/user-1000.slice/user@1000.service/agents.slice/lane.scope"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def P(self, pid, ppid, comm, argv, cg=None, exe=None, start=1, marked=False, tty=0):
+        if exe is None:
+            exe = default_tool_exe(self.w, comm)
+        return self.w.Proc(pid, ppid=ppid, comm=comm, argv=argv, exe=exe, cgroup=cg or self.A, start=start, marked=marked, tty=tty)
+
+    def _cg(self, unit):
+        return f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service/{self.w.SLICE}/{unit}"

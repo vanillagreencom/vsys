@@ -1,6 +1,6 @@
 # Agent warden
 
-Covers: warden/agent-confine warden/agent-confine-lineage-capped warden/agent-warden warden/agent_warden_test.py warden/agent_warden_settings_test.py warden/agent_warden_status_test.py warden/agent_warden_testlib.py
+Covers: warden/agent-confine warden/agent-confine-lineage-capped warden/agent-warden warden/agent_warden_test.py warden/agent_warden_classify_test.py warden/agent_warden_limits_test.py warden/agent_confine_test.py warden/agent_warden_settings_test.py warden/agent_warden_status_test.py warden/agent_warden_testlib.py
 
 The agent warden is an optional Python component shipped beside the `vsys` dashboard. The dashboard observes the machine. The warden changes process placement automatically.
 
@@ -34,7 +34,7 @@ This rule protects transient validation services such as `orch-validate-vsy-50-1
 
 ## What it caps
 
-The launcher gives each new scope `CPUWeight=99`, `TasksMax=8192` and `MemoryHigh=64G` by default. The non-default CPU weight enables the CPU controller below `agents.slice`; CPUWeight 100 was measured not to enable it. The default per-scope `MemoryHigh=64G` is not a deliberate nested cap even when `agents.slice` has a higher `MemoryHigh`. The warden also caps a scope under `agents.slice` whose task cap is `max`, or above `AGENT_SCOPE_TASKS_MAX` and at or above a numeric slice `pids.max`, unless `AGENT_SCOPE_TASKS_MAX` is `infinity`. `test_task_cap_tick_rows` covers the cap rule, and `test_task_cap_rows` in `warden/agent_warden_settings_test.py` covers `infinity`. `warden/agent_warden_test.py` covers task-cap report mode, capped and plain lineage rows, the default memory-high baseline, and the CPUWeight value. `warden/agent-warden --selftest` covers contained lineage in planning.
+The launcher gives each new scope `CPUWeight=99`, `TasksMax=8192` and `MemoryHigh=64G` by default. The non-default CPU weight enables the CPU controller below `agents.slice`; CPUWeight 100 was measured not to enable it. The default per-scope `MemoryHigh=64G` is not a deliberate nested cap even when `agents.slice` has a higher `MemoryHigh`. The warden also caps a scope under `agents.slice` whose task cap is `max`, or above `AGENT_SCOPE_TASKS_MAX` and at or above a numeric slice `pids.max`, unless `AGENT_SCOPE_TASKS_MAX` is `infinity`. `test_task_cap_tick_rows` covers the cap rule, and `test_task_cap_rows` in `warden/agent_warden_settings_test.py` covers `infinity`. `warden/agent_warden_limits_test.py` covers task-cap report mode, capped and plain lineage rows, the default memory-high baseline, and the CPUWeight value. `warden/agent-warden --selftest` covers contained lineage in planning.
 
 The template `warden/systemd/agents.slice` uses percentages for fleet installs: `MemoryHigh=65%` and `MemoryMax=90%`. The owner workstation can keep its tuned absolute values instead.
 
@@ -58,7 +58,7 @@ D005 records why the dashboard and the warden share this data file. D006 records
 
 Owners set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` before starting the wrappers, tmux shell or user manager, to keep scratch on the existing subvolume. The warden reads the mise path from `MISE_DATA_DIR`, defaulting to `${XDG_DATA_HOME:-$HOME/.local/share}/mise`; a systemd unit needs it set in `environment.d` when it differs, since it inherits no shell-only value.
 
-`warden/agent_warden_test.py`'s portability rows cover mise and scratch, including `test_agent_confine_and_warden_scratch_parent_agree`, proving the two formulas agree under one environment. Their home-path scan reads only files git tracks under `warden/`, never `__pycache__`, and skips in a copy with no git metadata; `test_portability_scan_reads_only_tracked_files` enforces it.
+`warden/agent_warden_test.py`'s portability rows cover mise and scratch, and `test_agent_confine_and_warden_scratch_parent_agree` in `warden/agent_confine_test.py` proves the two formulas agree under one environment. Their home-path scan reads only files git tracks under `warden/`, never `__pycache__`, and skips in a copy with no git metadata; `test_portability_scan_reads_only_tracked_files` enforces it.
 
 ## Tunables
 
