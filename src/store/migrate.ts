@@ -56,11 +56,19 @@ function laneUnknowns(): Lane {
   };
 }
 /**
+ * Whether a stored lane held no member read on its sample. A lane takes its
+ * main process from its members, so a main PID of 0 is exactly that lane, and
+ * a build older than the unknown memory and age stored both for it as a
+ * synthetic 0. Every reader of a stored lane's memory or age asks this.
+ */
+export const memberless = (mainPid: unknown): boolean => mainPid === 0;
+/**
  * Fill the fields a stored lane predates. A fresh object per lane keeps two
  * historical lanes from sharing one build table.
  */
 export function normalizeLane(stored: Partial<Lane>): Lane {
-  return { ...laneUnknowns(), ...stored };
+  const lane = { ...laneUnknowns(), ...stored };
+  return memberless(stored.mainPid) ? { ...lane, rss: null, age: null } : lane;
 }
 /** A cache reading as a build before the query outcome stored it. */
 type StoredSccache = Omit<Sccache, "state"> & { available: boolean };

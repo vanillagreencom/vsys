@@ -334,6 +334,25 @@ test("one read of many lanes inflates each sealed segment once, whatever their n
     checkpoints(archive).slice(1),
   );
 });
+test("an archived memberless lane's synthetic zero memory charts as unknown", () => {
+  const archive = new Archive();
+  const s = emptySnapshot(1000);
+  // An older build stored a lane with no member read as 0 bytes.
+  const empty = laneSnapshot({
+    id: "gone.scope",
+    mainPid: 0,
+    pids: [],
+    rss: 0,
+  });
+  const live = laneSnapshot({ rss: 2048 });
+  s.lanes = [empty, live];
+  archive.add(s.time, JSON.stringify(s));
+  const series = archive.laneWindows([empty.id, live.id], 0, 1000);
+  expect([
+    series.get(empty.id)?.map((x) => x.rss),
+    series.get(live.id)?.map((x) => x.rss),
+  ]).toEqual([[null], [2048]]);
+});
 test("a lane that ends leaves the lane projections", () => {
   const archive = new Archive();
   const kept = present(many[0], "the first lane");

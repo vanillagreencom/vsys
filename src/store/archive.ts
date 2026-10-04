@@ -1,5 +1,6 @@
 import type { Snapshot } from "../model/types";
 import type { LaneSample } from "./lane-series";
+import { memberless } from "./migrate";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
@@ -336,7 +337,7 @@ function laneSample(
   return {
     time,
     cpu: metric("cpu"),
-    rss: metric("rss"),
+    rss: memberless(metric("mainPid")) ? null : metric("rss"),
     pressure: metric("pressure"),
     memoryPressure: metric("memoryPressure"),
     ioPressure: metric("ioPressure"),

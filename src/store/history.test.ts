@@ -155,6 +155,40 @@ test("a stored lane written before this build's fields loads with unknown values
     null,
   ]);
 });
+test("a stored memberless lane written before unknown memory and age loads with neither", async () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  // What an older build wrote: a synthetic 0 for the memory and age of a lane
+  // with no member read, beside a lane with members whose readings stand.
+  const empty = laneSnapshot({
+    id: "agents.slice/gone.scope",
+    mainPid: 0,
+    pids: [],
+    rss: 0,
+    age: 0,
+  });
+  const live = laneSnapshot({ rss: 2048, age: 30 });
+  s.lanes = [empty, live];
+  first.add(s);
+  first.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  expect(
+    reopened.at(now)?.lanes.map((lane) => [lane.id, lane.rss, lane.age]),
+  ).toEqual([
+    [empty.id, null, null],
+    [live.id, 2048, 30],
+  ]);
+  const series = await reopened.laneWindows([empty.id, live.id], now, 1000);
+  expect([
+    series.get(empty.id)?.map((x) => x.rss),
+    series.get(live.id)?.map((x) => x.rss),
+  ]).toEqual([[null], [2048]]);
+});
 test("a stored snapshot written before the capability probe loads with none", () => {
   const f = fixture();
   cleanup.push(f.cleanup);
