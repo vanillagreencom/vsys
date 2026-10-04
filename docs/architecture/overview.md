@@ -74,6 +74,7 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [builds.md](builds.md): read when changing how compile and link work, the build cache or the token pools are counted.
 - [storage.md](storage.md): read when changing filesystem, device, drive or scratch collection, or the udisks2 reading.
 - [storage-integrity.md](storage-integrity.md): read when changing whether a filesystem reads as damaged or checked.
+- [storage-check-memory.md](storage-check-memory.md): read when changing how a finished check is remembered, or what counter growth a finished check covers.
 - [kernel-log.md](kernel-log.md): read when changing how vsys searches the kernel log for failed checksum reads.
 - [scrub-reporter.md](scrub-reporter.md): read when changing the check report format or the scrub reporter under `scripts/scrub-reporter/`.
 - [smart-reporter.md](smart-reporter.md): read when changing the drive reporter under `scripts/smart-reporter/`.
