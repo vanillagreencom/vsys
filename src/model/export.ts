@@ -1,4 +1,5 @@
 import type { Config } from "../config/config";
+import { memberless } from "./lanes";
 import type { Snapshot, SourceError } from "./types";
 import {
   type CauseId,
@@ -124,11 +125,22 @@ export function exportSummary(
     2,
   )}\n`;
 }
-/** Reports retain resource limits and launch evidence alongside each rule hit. */
+/**
+ * Reports retain resource limits and launch evidence alongside each rule hit.
+ * A lane with no member read leads no process, so its main PID is written as
+ * unknown in both formats.
+ */
 export function exportSnapshot(
-  s: Snapshot,
+  snapshot: Snapshot,
   format: "json" | "markdown",
 ): string {
+  const s = {
+    ...snapshot,
+    lanes: snapshot.lanes.map((lane) => ({
+      ...lane,
+      mainPid: memberless(lane.mainPid) ? null : lane.mainPid,
+    })),
+  };
   if (format === "json") return `${JSON.stringify(s, null, 2)}\n`;
   const cell = (value: unknown) =>
     safe(value)

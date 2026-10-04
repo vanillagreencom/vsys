@@ -1,6 +1,6 @@
+import { memberless } from "../model/lanes";
 import type { Snapshot } from "../model/types";
 import type { LaneSample } from "./lane-series";
-import { memberless } from "./migrate";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
