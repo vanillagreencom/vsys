@@ -115,6 +115,8 @@ NOTIFIER_FRESH_SECONDS = 120.0
 HEADROOM = 0.90
 MOVE_VERIFY_SECONDS = 3.0
 BUS_TIMEOUT_USEC = 10_000_000
+# systemd's D-Bus spelling of an `infinity` limit property: the largest uint64.
+SD_BUS_INFINITY = 2**64 - 1
 HOME = os.path.expanduser("~")
 MISE_DATA = os.environ.get("MISE_DATA_DIR") or os.path.join(
     os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local/share"), "mise")
@@ -373,6 +375,44 @@ TMUX_COMM = "tmux: server"
 ENV_MARKERS = ("MAKEFLAGS", "CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "MOLD_JOBS")
 CAP_FILES = (("memory.max", "max"), ("memory.high", "max"), ("memory.swap.max", "max"),
              ("pids.max", "max"))
+
+
+def _finite(raw):
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(raw)
+    return value
+
+
+def _interval(raw):
+    value = _finite(raw)
+    if value <= 0:
+        raise ValueError(raw)
+    return int(value) if value.is_integer() else value
+
+
+def _tasks_max(raw):
+    """systemd's TasksMax as the launcher passes it: `infinity` is no per-scope
+    cap. A percentage is relative to a system limit this module does not read,
+    so it is refused like any other unparsable value."""
+    return math.inf if raw == "infinity" else int(raw)
+
+
+def env_number(name, default, parse=int):
+    """The numeric setting `name`. Empty reads as unset, as the launcher's
+    ${VAR:-default} does. A value `parse` refuses is logged and reads as
+    `default`: the module is imported by every tick and by the nested-launch
+    helper, so a raise here would stop both."""
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    try:
+        return parse(raw)
+    except ValueError:
+        print(f"invalid {name}={raw!r}; using {default}", file=sys.stderr, flush=True)
+        return default
+
+
 # Orphan reaper: a scope under agents.slice whose launching agent has exited but
 # whose leftover processes keep running. Twice on 2026-09-09/10 this took the
 # machine down: an exited lane left 21 `bun` dev servers (16 cores, 7 GiB), and
@@ -383,7 +423,7 @@ CAP_FILES = (("memory.max", "max"), ("memory.high", "max"), ("memory.swap.max", 
 # real parent died) and none holds a controlling terminal (nothing interactive
 # is attached). Reaped only after ORPHAN_GRACE seconds in that state, so a brief
 # reparenting during startup or teardown is never touched.
-ORPHAN_GRACE = float(os.environ.get("AGENT_WARDEN_ORPHAN_GRACE", "300"))
+ORPHAN_GRACE = env_number("AGENT_WARDEN_ORPHAN_GRACE", 300, _finite)
 REAP = os.environ.get("AGENT_WARDEN_REAP", "1") != "0"
 JOB_UNIT_PATTERNS = tuple(x for x in os.environ.get("AGENT_WARDEN_JOB_UNITS", "orch-*.service").split() if x)
 SCOPE_RE = re.compile(r"/agents\.slice/([^/]+\.scope)(?:/|$)")
@@ -392,8 +432,8 @@ SCOPE_RE = re.compile(r"/agents\.slice/([^/]+\.scope)(?:/|$)")
 # two outages both crossed one of these: the npm storm reached 5140 processes in
 # one scope; the bun servers each burned ~0.8 of a core. A normal orphaned dev
 # server is ~6 idle processes.
-ORPHAN_PROC_MAX = int(os.environ.get("AGENT_WARDEN_ORPHAN_PROCS", "40"))
-ORPHAN_CPU_CORES = float(os.environ.get("AGENT_WARDEN_ORPHAN_CPU", "0.5"))
+ORPHAN_PROC_MAX = env_number("AGENT_WARDEN_ORPHAN_PROCS", 40)
+ORPHAN_CPU_CORES = env_number("AGENT_WARDEN_ORPHAN_CPU", 0.5, _finite)
 # Per-scope task ceiling. The slice as a whole caps at 16384 tasks; without a
 # per-scope cap one runaway lane consumes all of it and every other lane dies on
 # thread creation (EAGAIN). The cap must protect against a clearly-pathological
@@ -406,31 +446,22 @@ ORPHAN_CPU_CORES = float(os.environ.get("AGENT_WARDEN_ORPHAN_CPU", "0.5"))
 # left UNBOUNDED (an escapee, a raw systemd-run, an old scope) -- a smaller
 # explicit cap or a deliberate larger one is left alone.
 SCOPE_CPU_WEIGHT = 99
-SCOPE_TASKS_MAX = int(os.environ.get("AGENT_SCOPE_TASKS_MAX", "8192"))
-SCOPE_TASKS_WARN = int(os.environ.get("AGENT_SCOPE_TASKS_WARN", str(SCOPE_TASKS_MAX * 3 // 4)))
+# AGENT_SCOPE_TASKS_MAX=infinity reads as math.inf: no per-scope cap, and so
+# no default warning threshold below one.
+SCOPE_TASKS_MAX = env_number("AGENT_SCOPE_TASKS_MAX", 8192, _tasks_max)
+SCOPE_TASKS_WARN = env_number("AGENT_SCOPE_TASKS_WARN",
+                              math.inf if SCOPE_TASKS_MAX == math.inf else SCOPE_TASKS_MAX * 3 // 4)
 # Per-scope soft memory ceiling (bytes). A leaking lane reclaims its own pages
 # first instead of pressuring the others; soft, so a real build (peak 31 GiB) is
 # never killed. Applied to scopes the warden creates; agent-confine sets it at
 # launch. 64 GiB default.
-SCOPE_MEM_HIGH = int(os.environ.get("AGENT_SCOPE_MEM_HIGH_BYTES", str(64 * 1024**3)))
-SCOPE_MEM_WARN = int(os.environ.get("AGENT_SCOPE_MEM_WARN_BYTES", str(SCOPE_MEM_HIGH * 3 // 4)))
+SCOPE_MEM_HIGH = env_number("AGENT_SCOPE_MEM_HIGH_BYTES", 64 * 1024**3)
+SCOPE_MEM_WARN = env_number("AGENT_SCOPE_MEM_WARN_BYTES", SCOPE_MEM_HIGH * 3 // 4)
 STATUS_SCHEMA = "1.0"
 STATUS_EVENT_LIMIT = 50
 STATUS_EVENT_KINDS = {"moved", "partial", "reaped", "near-cap", "waiting", "failed"}
 STATUS_NEAR_KINDS = {"tasks", "memory"}
-def parse_status_interval(raw):
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        print(f"invalid AGENT_WARDEN_INTERVAL={raw!r}; using 30", flush=True)
-        return 30
-    if not math.isfinite(value) or value <= 0:
-        print(f"invalid AGENT_WARDEN_INTERVAL={raw!r}; using 30", flush=True)
-        return 30
-    return int(value) if value.is_integer() else value
-
-
-STATUS_INTERVAL = parse_status_interval(os.environ.get("AGENT_WARDEN_INTERVAL", "30"))
+STATUS_INTERVAL = env_number("AGENT_WARDEN_INTERVAL", 30, _interval)
 
 
 def scope_harm(nproc, cores):
@@ -876,7 +907,7 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # purpose (protect a startup-timing window from being read as "gone") at a
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
-SCRATCH_GRACE = float(os.environ.get("AGENT_WARDEN_SCRATCH_GRACE", "60"))
+SCRATCH_GRACE = env_number("AGENT_WARDEN_SCRATCH_GRACE", 60, _finite)
 # The scopes move() creates (warden_scope_name). A process in one has left the
 # agent-confine scope its TMPDIR names.
 WARDEN_MOVE_SCOPE_RE = re.compile(r"agent-warden(?:-build)?-\d+-\d+\.scope")
@@ -1031,8 +1062,10 @@ def enforce_task_caps(correct):
     AGENT_SCOPE_TASKS_MAX override survives. agent-confine sets the cap at
     creation, so this is a backstop: a fast storm from an uncapped scope can
     still fill the slice inside one 30 s tick. Returns the units capped."""
-    ceiling = slice_tasks_max()
     capped = []
+    if SCOPE_TASKS_MAX == math.inf:
+        return capped  # the owner set no per-scope cap, so no scope is unbounded against it
+    ceiling = slice_tasks_max()
     units = scope_units()
     if units is None:
         log("task caps: agents.slice scope list unreadable; not capping this tick")
@@ -1393,7 +1426,7 @@ class Bus:
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"Delegate"), c(b"b"), ctypes.c_int(1)) >= 0
         # A non-default weight enables the CPU controller inside agents.slice; 100 was measured not to.
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"CPUWeight"), c(b"t"), ctypes.c_uint64(SCOPE_CPU_WEIGHT)) >= 0
-        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"TasksMax"), c(b"t"), ctypes.c_uint64(SCOPE_TASKS_MAX)) >= 0
+        ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"TasksMax"), c(b"t"), ctypes.c_uint64(SD_BUS_INFINITY if SCOPE_TASKS_MAX == math.inf else SCOPE_TASKS_MAX)) >= 0
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"MemoryHigh"), c(b"t"), ctypes.c_uint64(SCOPE_MEM_HIGH)) >= 0
         ok &= lib.sd_bus_message_append(m, b"(sv)", c(b"CollectMode"), c(b"s"), c(b"inactive-or-failed")) >= 0
         ok &= lib.sd_bus_message_close_container(m) >= 0
