@@ -547,39 +547,56 @@ export class History {
       ids.map((id): [string, LaneSample[]] => [id, held.get(id) ?? []]),
     );
     if (passes.length) {
+      // The pass reads a page of rows at a time and yields only between pages,
+      // when no statement is open. A statement left open across a yield would
+      // keep its read snapshot, and a sample written on this connection during
+      // the yield, after another dashboard has committed, would then fail at
+      // once with `database is locked`, without waiting.
+      const page = 64;
       const load = async () => {
-        let count = 0;
         for (const pass of passes) {
           const lists = pass.lanes.map((id): [string, LaneSample[]] => {
             const list = pass.into.get(id) ?? [];
             pass.into.set(id, list);
             return [id, list];
           });
-          for (const row of db
-            .query<{ time: number; data: Uint8Array }, [number, number]>(
-              "SELECT time, data FROM samples WHERE time >= ? AND time <= ? ORDER BY time",
-            )
-            .iterate(pass.from, pass.to)) {
+          let after = pass.from - 1;
+          for (;;) {
             if (this.closed)
               throw new Error("History closed while a lane read was out");
-            const s = JSON.parse(History.decodeRow(row.data)) as Snapshot;
-            const lanes = new Map(s.lanes.map((l) => [l.id, l]));
-            const groups = new Map(s.groups.map((g) => [g.path, g]));
-            for (const [id, samples] of lists) {
-              const lane = lanes.get(id);
-              const group = groups.get(id);
-              samples.push({
-                time: row.time,
-                cpu: lane?.cpu ?? null,
-                rss: lane?.rss ?? null,
-                pressure: group?.pressure.cpu?.some ?? lane?.pressure ?? null,
-                memoryPressure:
-                  group?.pressure.memory?.some ?? lane?.memoryPressure ?? null,
-                ioPressure:
-                  group?.pressure.io?.some ?? lane?.ioPressure ?? null,
-              });
+            const rows = db
+              .query<
+                { time: number; data: Uint8Array },
+                [number, number, number]
+              >(
+                "SELECT time, data FROM samples WHERE time > ? AND time <= ? ORDER BY time LIMIT ?",
+              )
+              .all(after, pass.to, page);
+            for (const row of rows) {
+              const s = JSON.parse(History.decodeRow(row.data)) as Snapshot;
+              const lanes = new Map(s.lanes.map((l) => [l.id, l]));
+              const groups = new Map(s.groups.map((g) => [g.path, g]));
+              for (const [id, samples] of lists) {
+                const lane = lanes.get(id);
+                const group = groups.get(id);
+                samples.push({
+                  time: row.time,
+                  cpu: lane?.cpu ?? null,
+                  rss: lane?.rss ?? null,
+                  pressure: group?.pressure.cpu?.some ?? lane?.pressure ?? null,
+                  memoryPressure:
+                    group?.pressure.memory?.some ??
+                    lane?.memoryPressure ??
+                    null,
+                  ioPressure:
+                    group?.pressure.io?.some ?? lane?.ioPressure ?? null,
+                });
+              }
             }
-            if (++count % 64 === 0) await Bun.sleep(0);
+            const last = rows.at(-1);
+            if (!last || rows.length < page) break;
+            after = last.time;
+            await Bun.sleep(0);
           }
         }
       };
