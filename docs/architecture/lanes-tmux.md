@@ -1,6 +1,6 @@
 # Lanes and tmux panes
 
-Covers: src/collect/tmux.ts src/collect/tmux.test.ts src/model/lanes.ts src/model/lanes.test.ts src/model/naming.ts src/collect/procs.ts src/collect/collector.test.ts
+Covers: src/collect/tmux.ts src/collect/tmux.test.ts src/model/lanes.ts src/model/lanes.test.ts src/model/naming.ts src/model/types.ts src/collect/procs.ts src/collect/collector.test.ts
 
 How a lane's tmux pane is resolved, and whether it is the pane vsys draws in. The lane, its name and the `spawnText()` bound every tmux read runs under are in [lanes](lanes.md), with invariants 1 to 13, 17 and 18. The invariant numbers here are shared with that file.
 
