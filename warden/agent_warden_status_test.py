@@ -710,6 +710,25 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(lane["scope"], "agent-warden-321-654.scope")
         self.assertEqual(lane["label"], {"tool": "claude", "worktree": "vsy-52"})
 
+    def test_lane_label_names_paths_only_native_install(self):
+        # claude's and codex's native installs are described only through `paths`,
+        # so D010 leaves is_agent false; the label still names the lane's agent
+        rows = [
+            ("claude", f"{self.w.HOME}/.local/share/claude/versions/2.1.0/claude"),
+            ("codex", "/usr/lib/openai-codex/codex"),
+        ]
+        old_worktree = self.w._worktree_label
+        self.w._worktree_label = lambda pid: "vsy-122"
+        try:
+            for tool, exe in rows:
+                with self.subTest(tool=tool):
+                    scope = f"agent-warden-700-1-{tool}.scope"
+                    proc = self.P(700, 1, tool, [tool], self._cg(scope), exe=exe)
+                    self.assertFalse(proc.is_agent)
+                    self.assertEqual(self.w.lane_label(scope, {700: proc}), {"tool": tool, "worktree": "vsy-122"})
+        finally:
+            self.w._worktree_label = old_worktree
+
     def test_status_event_ring_and_episode_dedupe(self):
         st = {}
         for i in range(60):
