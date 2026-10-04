@@ -3,7 +3,9 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
+import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WARDEN = ROOT / "warden" / "agent-warden"
@@ -51,6 +53,22 @@ def default_tool_exe(module, comm):
         directory = location["mise"][0]
         return f"{module.MISE_DATA}/installs/{directory}/0.0.0/{comm}"
     return "/usr/bin/x"
+
+
+def tracked_offenders(root, forbidden):
+    """Paths under `root`/warden that git tracks and whose text holds
+    `forbidden`. Only the tracked set ships, so build output git ignores,
+    such as a `.pyc` embedding its absolute source path, is never read.
+    A copy with no git metadata, such as a `git archive` extract, has no
+    tracked set to read, so the scan skips there."""
+    if not (Path(root) / ".git").exists():
+        raise unittest.SkipTest(f"{root} has no git metadata: the portability scan cannot list the tracked set")
+    listing = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "warden"],
+                             env={"PATH": BASE_PATH}, capture_output=True, check=True).stdout
+    paths = [name for name in listing.decode().split("\0") if name]
+    if not paths:
+        raise AssertionError(f"git ls-files listed no file under {root}/warden: the portability extractor is broken")
+    return [name for name in paths if (Path(root) / name).is_file() and forbidden in (Path(root) / name).read_text(errors="ignore")]
 
 
 def materialize_warden_script(base, text=None):

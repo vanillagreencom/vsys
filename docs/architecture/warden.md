@@ -58,7 +58,7 @@ D005 records why the dashboard and the warden share this data file. D006 records
 
 Owners set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` before starting the wrappers, tmux shell or user manager, to keep scratch on the existing subvolume. The warden reads the mise path from `MISE_DATA_DIR`, defaulting to `${XDG_DATA_HOME:-$HOME/.local/share}/mise`; a systemd unit needs it set in `environment.d` when it differs, since it inherits no shell-only value.
 
-`warden/agent_warden_test.py`'s portability rows cover mise and scratch, including `test_agent_confine_and_warden_scratch_parent_agree`, proving the two formulas agree under one environment.
+`warden/agent_warden_test.py`'s portability rows cover mise and scratch, including `test_agent_confine_and_warden_scratch_parent_agree`, proving the two formulas agree under one environment. Their home-path scan reads only files git tracks under `warden/`, never `__pycache__`, and skips in a copy with no git metadata; `test_portability_scan_reads_only_tracked_files` enforces it.
 
 ## Tunables
 
