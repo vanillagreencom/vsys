@@ -9,7 +9,7 @@ import time
 from types import SimpleNamespace
 import unittest
 
-from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, materialize_warden_script, scratch
+from agent_warden_testlib import BASE_PATH, ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, materialize_warden_script, scratch, tracked_offenders
 
 sys.dont_write_bytecode = True
 
@@ -1710,9 +1710,25 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
         for name, actual, expected in rows:
             with self.subTest(name=name):
                 self.assertEqual(actual, expected)
+        self.assertEqual(tracked_offenders(ROOT, "/home/" + "method"), [])
+
+    def test_portability_scan_reads_only_tracked_files(self):
         forbidden = "/home/" + "method"
-        offenders = [str(path.relative_to(ROOT)) for path in (ROOT / "warden").rglob("*") if path.is_file() and forbidden in path.read_text(errors="ignore")]
-        self.assertEqual(offenders, [])
+        with scratch() as tmp:
+            repo = Path(tmp)
+            env = {"PATH": BASE_PATH}
+            subprocess.run(["git", "init", "-q", str(repo)], env=env, capture_output=True, check=True)
+            files = {
+                "warden/agent-warden": f"src = '{forbidden}/x'\n",
+                "warden/clean": "nothing here\n",
+                "warden/__pycache__/agent_warden_testlib.cpython-314.pyc": f"\x00{forbidden}/dev/vsys/warden\x00",
+                "warden/untracked-note": f"{forbidden}\n",
+            }
+            for name, text in files.items():
+                (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / name).write_text(text)
+            subprocess.run(["git", "-C", str(repo), "add", "--", "warden/agent-warden", "warden/clean"], env=env, capture_output=True, check=True)
+            self.assertEqual(tracked_offenders(repo, forbidden), ["warden/agent-warden"])
 
     def test_contained_unit_limit_rows(self):
         with scratch() as tmp:
