@@ -107,6 +107,12 @@ ORCH_OVERSEER_WALL_MINUTES = "20"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
 ORCH_LANE_MAX_PCT = "95"
 
+# Accounts whose cloud sessions can reach this repository: each pair records
+# an approved repository card. The operator adds a pair after approving the
+# card in a session of that account; a cloud-session pick keeps no other
+# account.
+ORCH_LANE_CLOUD_REPOS = "2claude=vanillagreencom/vsys,3claude=vanillagreencom/vsys,4claude=vanillagreencom/vsys"
+
 # Execute the audit's accepted creations and cancellations without a question.
 PM_CREATE_AUTONOMY = "auto"
 
