@@ -1727,6 +1727,8 @@ class AgentWardenRules(WardenMutantMixin, unittest.TestCase):
             for name, text in files.items():
                 (repo / name).parent.mkdir(parents=True, exist_ok=True)
                 (repo / name).write_text(text)
+            with self.assertRaisesRegex(AssertionError, "portability extractor is broken"):
+                tracked_offenders(repo, forbidden)
             subprocess.run(["git", "-C", str(repo), "add", "--", "warden/agent-warden", "warden/clean"], env=env, capture_output=True, check=True)
             self.assertEqual(tracked_offenders(repo, forbidden), ["warden/agent-warden"])
 
