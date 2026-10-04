@@ -85,6 +85,8 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [ui-screens.md](ui-screens.md): read when changing Home's cards, Storage's integrity rows, or the Agents list and agent detail.
 - [warden.md](warden.md): read when changing the optional process-placement corrector under `warden/`.
 - [warden-install.md](warden-install.md): read when changing `vsys warden install`, `warden/install` or the warden unit templates.
+- [warden-reaper.md](warden-reaper.md): read when changing when the warden stops an orphaned scope or removes a lane's scratch directory.
+- [warden-tunables.md](warden-tunables.md): read when adding or changing a launcher or warden environment setting, its default or its accepted value.
 - [warden-notifications.md](warden-notifications.md): read when changing the warden's desktop notices or episode retries.
 - [warden-status.md](warden-status.md): read when changing the warden status file or its fixtures.
 

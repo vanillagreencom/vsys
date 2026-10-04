@@ -2,7 +2,7 @@
 
 Covers: warden/agent-warden warden/agent_warden_notify_test.py
 
-[warden.md](warden.md) covers what the warden moves, caps and reaps. This file covers how it tells a consumer about near-cap, headroom and move-failure conditions.
+[warden.md](warden.md) covers what the warden moves and caps, and [warden-reaper.md](warden-reaper.md) what it reaps. This file covers how it tells a consumer about near-cap, headroom and move-failure conditions.
 
 The warden sends desktop notices through `notify-send` only when no consumer owns them. A consumer owns notices by touching `$XDG_RUNTIME_DIR/agent-warden/notifier`. The warden trusts that heartbeat while its mtime is under 120 s old, and treats an absent, unreadable or far-future heartbeat as stale. A consumer should touch it every 60 s. `warden/agent-warden --selftest` covers the heartbeat rows. `warden/agent_warden_notify_test.py` covers the module path and event suppression in `test_notifier_heartbeat_rows`, `test_notifier_fresh_stale_mutant_fails` and `test_notice_handoff_rows`.
 
