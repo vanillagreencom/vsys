@@ -212,7 +212,7 @@ class InstallScript(unittest.TestCase):
 
     def write_curl_stub(self) -> Path:
         commands = self.root / "commands"
-        commands.mkdir()
+        commands.mkdir(exist_ok=True)
         curl = commands / "curl"
         curl.write_text(
             "#!/bin/sh\n"
@@ -420,6 +420,25 @@ class InstallScript(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.bin_dir / "vsys").read_text(), "legacy binary\n")
         self.assertFalse((self.root / "home" / ".local" / "lib" / "vsys").exists())
+
+    def test_checksum_refusal_leaves_existing_binary(self) -> None:
+        self.make_archive("full")
+        self.bin_dir.mkdir(parents=True)
+        binary = self.bin_dir / "vsys"
+        binary.write_text("old binary\n")
+        binary.chmod(0o755)
+        digest = hashlib.sha256((self.root / self.asset).read_bytes()).hexdigest()
+        rows = (
+            ("mismatch", f"{'0' * 64}  {self.asset}\n"),
+            ("unlisted", f"{digest}  vsys-vfixture-linux-aarch64.tar.gz\n"),
+        )
+        for key, sums in rows:
+            with self.subTest(key=key):
+                (self.root / "SHA256SUMS").write_text(sums)
+                result = self.run_install()
+                self.assertEqual(self.refusal(result), f"vsys install: checksum={self.asset} {key}")
+                self.assertEqual(binary.read_text(), "old binary\n")
+                self.assertFalse(self.lib_root().exists())
 
     def test_partial_lib_tree_refuses_before_replacing_binary(self) -> None:
         self.make_archive("partial")

@@ -1,1 +1,1 @@
-- The vsys installer now starts each error with one fixed `key=value` line naming what failed, such as `checksum=vsys-v1.2.0-linux-x86_64.tar.gz mismatch`, and explains it on the lines after.
+- The vsys installer now opens each refusal it reports with one fixed `key=value` line naming what failed, such as `checksum=vsys-v1.2.0-linux-x86_64.tar.gz mismatch`, then explains it.
