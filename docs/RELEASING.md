@@ -43,7 +43,7 @@ Running the publish script by hand takes `AUR_SSH_KEY_FILE` instead, the path to
 
 `packaging/vsys-git/PKGBUILD` builds from `main` with Bun and stages the same `lib/vsys/` files from the checkout. Its `pkgver()` derives a version from `git describe`, so it needs no edit per release. `.github/workflows/aur-git.yml` pushes it when `main` or the warden files move.
 
-Both AUR packages depend on `python` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`. They install no systemd user units and enable no timer. The user runs `vsys warden install` to write units into the user's config directory.
+Both AUR packages depend on `python`, `systemd` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`, and vsys and the warden run the systemd tools. Feature programs are optional dependencies; [warden install](architecture/warden-install.md) lists them. They install no systemd user units and enable no timer. The user runs `vsys warden install` to write units into the user's config directory.
 
 Both AUR packages disable makepkg strip and debug splitting, because stripping a Bun compiled binary removes its appended program bundle.
 
