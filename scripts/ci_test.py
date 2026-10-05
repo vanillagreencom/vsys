@@ -1,4 +1,4 @@
-"""Exercise the planning boundary and failure propagation of application CI."""
+"""Exercise the required inputs and failure propagation of the check contract."""
 
 import json
 import os
@@ -16,6 +16,8 @@ sys.path.insert(0, str(CI.parent))
 from ci import ARTIFACTS, CHECKS  # noqa: E402
 
 emits = " ".join(ARTIFACTS)
+# What the fixture suites and package check log, in the order ci.py runs them.
+PRELUDE = ["scripts unittest", "warden unittest", "package check"]
 
 
 class ApplicationChecks(unittest.TestCase):
@@ -45,6 +47,34 @@ class ApplicationChecks(unittest.TestCase):
             "CI_FAIL_COMMAND": "",
             "CI_BUILD_EMITS": emits,
         }
+        # Every suite the contract runs is present and passes. Each stand-in
+        # logs one line and fails when CI_FAIL_COMMAND names it. No packaging/
+        # is made: the real package check owns that directory, and ci.py must
+        # run the check without looking for it.
+        self.suite("scripts/ci_fixture_test.py", "scripts unittest")
+        self.suite("warden/agent_warden_test.py", "warden unittest")
+        (self.root / "scripts" / "package_file_list_check.py").write_text(
+            "import os\n"
+            "import sys\n"
+            "with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
+            "    handle.write('package check\\n')\n"
+            "if os.environ['CI_FAIL_COMMAND'] == 'package check':\n"
+            "    sys.exit(29)\n"
+        )
+
+    def suite(self, path, line):
+        test = self.root / path
+        test.parent.mkdir(exist_ok=True)
+        test.write_text(
+            "import os\n"
+            "import unittest\n"
+            "class Fixture(unittest.TestCase):\n"
+            "    def test_env(self):\n"
+            "        with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
+            f"            handle.write('{line}\\n')\n"
+            "        self.assertEqual(os.environ.get('PYTHONDONTWRITEBYTECODE'), '1')\n"
+            f"        self.assertNotEqual(os.environ['CI_FAIL_COMMAND'], '{line}')\n"
+        )
 
     def run_ci(self):
         return subprocess.run(
@@ -52,51 +82,41 @@ class ApplicationChecks(unittest.TestCase):
             capture_output=True, text=True,
         )
 
+    def logged(self):
+        return self.commands.read_text().splitlines() if self.commands.exists() else []
+
     def package(self, scripts=None):
         if scripts is None:
             scripts = {name: "fixture" for name in CHECKS}
         (self.root / "package.json").write_text(json.dumps({"scripts": scripts}))
         (self.root / "bun.lock").write_text("fixture")
 
-    def make_packaging_check(self, exit_code=0):
-        (self.root / "packaging").mkdir()
-        scripts = self.root / "scripts"
-        scripts.mkdir()
-        check = scripts / "package_file_list_check.py"
-        check.write_text(
-            "import os\n"
-            "import sys\n"
-            "with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
-            "    handle.write('package check\\n')\n"
-            f"sys.exit({exit_code})\n"
+    def test_missing_input_fails(self):
+        # Each row renames one input of an otherwise complete tree; the log
+        # shows how far the run got before it failed.
+        rows = (
+            ("scripts", []),
+            # Discovery of a directory with no suite left in it fails too.
+            ("scripts/ci_fixture_test.py", []),
+            ("warden", []),
+            # Discovery passes a warden tree that still holds another suite,
+            # so only the named-file check stops this one.
+            ("warden/agent_warden_test.py", []),
+            ("package.json", PRELUDE),
         )
-
-    def test_planning_tree_reports_no_application_checks(self):
-        result = self.run_ci()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("application checks are not available", result.stdout)
-        self.assertFalse(self.commands.exists())
-
-    def test_packaging_check_runs_when_packaging_exists(self):
-        self.make_packaging_check()
-        result = self.run_ci()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("application checks are not available", result.stdout)
-        self.assertEqual(self.commands.read_text().splitlines(), ["package check"])
-
-    def test_failing_packaging_check_fails_ci(self):
-        self.make_packaging_check(exit_code=29)
-        result = self.run_ci()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.commands.read_text().splitlines(), ["package check"])
-
-    def test_application_without_manifest_fails(self):
-        for path in ("src", "bun.lock"):
+        self.suite("warden/neighbour_test.py", "warden neighbour")
+        for path, expected in rows:
             with self.subTest(path=path):
-                marker = self.root / path
-                marker.touch()
-                self.assertNotEqual(self.run_ci().returncode, 0)
-                marker.unlink()
+                self.package()
+                source = self.root / path
+                renamed = source.with_name(source.name + ".renamed")
+                source.rename(renamed)
+                try:
+                    self.assertNotEqual(self.run_ci().returncode, 0)
+                    self.assertEqual([line for line in self.logged() if line != "warden neighbour"], expected)
+                finally:
+                    renamed.rename(source)
+                    self.commands.unlink(missing_ok=True)
 
     def test_contract_holds_the_required_checks_and_every_worker(self):
         # Every other expectation here is derived from these two. Dropping a
@@ -127,81 +147,22 @@ class ApplicationChecks(unittest.TestCase):
                         f"package.json must define a nonempty {check} script",
                         result.stderr,
                     )
-                    self.assertFalse(self.commands.exists())
+                    self.assertEqual(self.logged(), PRELUDE)
+                    self.commands.unlink()
 
     def test_missing_lockfile_fails(self):
         self.package()
         (self.root / "bun.lock").unlink()
         self.assertNotEqual(self.run_ci().returncode, 0)
-        self.assertFalse(self.commands.exists())
+        self.assertEqual(self.logged(), PRELUDE)
 
     def test_invalid_manifest_fails(self):
         for contents in ("{", "null", "[]", '{"scripts": []}'):
             with self.subTest(contents=contents):
                 (self.root / "package.json").write_text(contents)
                 self.assertNotEqual(self.run_ci().returncode, 0)
-                self.assertFalse(self.commands.exists())
-
-    def make_warden(self, exit_code=0, test_fails=False):
-        warden = self.root / "warden"
-        warden.mkdir()
-        script = warden / "agent-warden"
-        script.write_text(
-            "#!/usr/bin/env python3\n"
-            "import os\n"
-            "import sys\n"
-            "with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
-            "    handle.write('warden ' + ' '.join(sys.argv[1:]) + '\\n')\n"
-            f"sys.exit({exit_code})\n"
-        )
-        script.chmod(0o755)
-        test = warden / "agent_warden_test.py"
-        test.write_text(
-            "import os\n"
-            "import unittest\n"
-            "class Fixture(unittest.TestCase):\n"
-            "    def test_env(self):\n"
-            "        with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
-            "            handle.write('warden unittest\\n')\n"
-            "        self.assertEqual(os.environ.get('PYTHONDONTWRITEBYTECODE'), '1')\n"
-            f"        self.assertFalse({test_fails!r})\n"
-        )
-
-    def test_warden_checks_run_when_warden_exists(self):
-        self.package()
-        self.make_warden()
-        result = self.run_ci()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        lines = self.commands.read_text().splitlines()
-        self.assertEqual(lines[:2], ["warden --selftest", "warden unittest"])
-        self.assertEqual(lines[2:], ["install --frozen-lockfile", *(f"run {check}" for check in CHECKS)])
-
-    def test_failing_warden_selftest_fails_ci(self):
-        self.package()
-        self.make_warden(exit_code=19)
-        result = self.run_ci()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.commands.read_text().splitlines(), ["warden --selftest"])
-
-    def test_failing_warden_unit_suite_fails_ci(self):
-        self.package()
-        self.make_warden(test_fails=True)
-        result = self.run_ci()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.commands.read_text().splitlines(), ["warden --selftest", "warden unittest"])
-
-    def test_warden_without_agent_warden_fails(self):
-        self.package()
-        (self.root / "warden").mkdir()
-        self.assertNotEqual(self.run_ci().returncode, 0)
-        self.assertFalse(self.commands.exists())
-
-    def test_warden_without_test_file_fails(self):
-        self.package()
-        self.make_warden()
-        (self.root / "warden" / "agent_warden_test.py").unlink()
-        self.assertNotEqual(self.run_ci().returncode, 0)
-        self.assertFalse(self.commands.exists())
+                self.assertEqual(self.logged(), PRELUDE)
+                self.commands.unlink()
 
     def test_build_missing_an_entry_point_fails(self):
         # Each worker thread is a build output of its own. A build that emits
@@ -233,17 +194,17 @@ class ApplicationChecks(unittest.TestCase):
         del self.env["CI_BUILD_EMPTY"]
 
     def test_check_order_and_each_command_failure(self):
-        commands = ["install --frozen-lockfile", *(f"run {check}" for check in CHECKS)]
+        commands = [*PRELUDE, "install --frozen-lockfile", *(f"run {check}" for check in CHECKS)]
         self.package()
         result = self.run_ci()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.commands.read_text().splitlines(), commands)
+        self.assertEqual(self.logged(), commands)
         for index, command in enumerate(commands):
             with self.subTest(command=command):
                 self.commands.unlink()
                 self.env["CI_FAIL_COMMAND"] = command
                 self.assertNotEqual(self.run_ci().returncode, 0)
-                self.assertEqual(self.commands.read_text().splitlines(), commands[:index + 1])
+                self.assertEqual(self.logged(), commands[:index + 1])
 
 
 if __name__ == "__main__":

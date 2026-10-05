@@ -104,4 +104,4 @@ Dotfiles commits read for the import history:
 
 - `python3 warden/agent-warden --selftest` covers classification, planning, job units, orphan rules and scope harm with injected records.
 - `python3 -m unittest discover -s warden -p '*_test.py'` covers module loading, classification data lookup, the owner overlay, portability, mutant controls, launcher scratch creation, the job-unit regression and the user installer in `warden/install_test.py`.
-- `python3 scripts/ci.py` runs both warden checks before the Bun checks when `warden/` exists.
+- `python3 scripts/ci.py` runs the `warden/` suites, the selftest among them as `test_selftest_subprocess_exits_zero`, before the Bun checks. A missing `warden/` fails the run; `test_missing_input_fails` in `scripts/ci_test.py` covers it.

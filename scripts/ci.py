@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the warden checks and the application checks from the repository root."""
+"""Run the Python suites, the package check and the application checks from the repository root."""
 
 import json
 import os
@@ -27,39 +27,24 @@ ARTIFACTS = (
 CHECKS = ("lint", "typecheck", "test", "build", "smoke", "bench:scratch", "bench:writes")
 
 
-def run_warden_checks() -> None:
-    warden = Path("warden")
-    if not warden.exists():
-        return
-    script = warden / "agent-warden"
-    if not script.is_file():
-        raise ValueError("warden/ exists without warden/agent-warden")
-    tests = warden / "agent_warden_test.py"
+def run_python_suites() -> None:
+    # Discovery refuses a missing start directory and, from Python 3.12,
+    # exits nonzero when it finds no tests, so a renamed directory or suite
+    # fails here instead of passing.
+    # The warden selftest runs inside its suite, as
+    # test_selftest_subprocess_exits_zero.
+    tests = Path("warden") / "agent_warden_test.py"
     if not tests.is_file():
-        raise ValueError("warden/ exists without warden/agent_warden_test.py")
+        raise ValueError(f"{tests} is missing")
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    subprocess.run([sys.executable, str(script), "--selftest"], check=True, env=env)
-    subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "warden", "-p", "*_test.py"], check=True, env=env)
-
-
-def run_packaging_checks() -> None:
-    if not Path("packaging").exists():
-        return
-    subprocess.run([sys.executable, "scripts/package_file_list_check.py"], check=True)
+    for directory in ("scripts", "warden"):
+        subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", directory, "-p", "*_test.py"], check=True, env=env)
 
 
 def main() -> int:
-    """Allow a planning-only tree, or require the complete check contract."""
-    run_warden_checks()
-    run_packaging_checks()
-    manifest = Path("package.json")
-    if not manifest.exists():
-        if Path("src").exists() or Path("bun.lock").exists():
-            raise ValueError("Application files exist without package.json")
-        print("::notice::Planning stage: no package.json or src; application checks are not available.")
-        return 0
-
-    package = json.loads(manifest.read_text())
+    run_python_suites()
+    subprocess.run([sys.executable, "scripts/package_file_list_check.py"], check=True)
+    package = json.loads(Path("package.json").read_text())
     scripts = package.get("scripts", {})
     for check in CHECKS:
         command = scripts.get(check)

@@ -156,8 +156,9 @@ DECISIONS_DIR = "docs/decisions"
 
 # Full validation runs at development completion. Submit reuses that result
 # for the same commit; CI runs the full suites independently. scripts/ci.py
-# holds the dependency, lint, type, test and build checks.
-DEV_VALIDATE_CMD = "python3 scripts/ci.py && python3 -m unittest discover -s scripts -p '*_test.py' && .agents/skills/bot-instructions/scripts/bot-instructions check"
+# holds the Python suites and the dependency, lint, type, test and build
+# checks.
+DEV_VALIDATE_CMD = "python3 scripts/ci.py && .agents/skills/bot-instructions/scripts/bot-instructions check"
 
 # Queue-only paths beside the shipped list, which already names
 # .github/workflows/*, this file and the harness-ci scripts: a change to one
