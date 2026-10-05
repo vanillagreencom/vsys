@@ -205,6 +205,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                     json.dumps({"events": [{"id": 1, "time": 1, "kind": [], "scope": None, "pid": None, "processes": None, "near": None}]}),
                     json.dumps({"event_seq": "1"}),
                     json.dumps({"near_open": [1]}),
+                    json.dumps({"scratch_failed": [1]}),
                 ):
                     with self.subTest(bad_state=bad_state):
                         self.w.STATE.write_text(bad_state)

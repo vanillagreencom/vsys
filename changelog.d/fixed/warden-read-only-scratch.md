@@ -1,0 +1,1 @@
+- The warden now removes a gone lane's scratch folder that holds a read-only directory. A folder it still cannot remove is logged once, not at every sweep.

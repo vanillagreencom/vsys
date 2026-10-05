@@ -980,7 +980,36 @@ def _scratch_in_use(path, procs):
     return "unknown" if unknown else "free"
 
 
-def reap_scratch_dirs(correct, procs):
+def _rmtree_writable(root):
+    """shutil.rmtree's documented error handler for removing root: an entry
+    whose directory is read-only for its owner (an agent's mode-555 test
+    fixture) is retried once that directory is made writable for its owner.
+    Only a real directory this user owns inside root is changed; any other
+    failure is raised, naming the entry's path."""
+    real_root = os.path.realpath(root)
+
+    def onexc(func, path, exc):
+        parent = os.path.dirname(path)
+        exc.filename = path
+        if not isinstance(exc, PermissionError) or func not in (os.unlink, os.rmdir):
+            raise exc
+        real = os.path.realpath(parent)
+        if real != real_root and not real.startswith(real_root + os.sep):
+            raise exc
+        st = os.lstat(parent)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != UID:
+            raise exc
+        os.chmod(parent, stat.S_IMODE(st.st_mode) | stat.S_IRWXU)
+        func(path)
+
+    # onexc arrived in Python 3.12. onerror serves the 3.9 floor warden.md
+    # states and goes once that floor reaches 3.12.
+    if sys.version_info >= (3, 12):
+        return {"onexc": onexc}
+    return {"onerror": lambda func, path, info: onexc(func, path, info[1])}
+
+
+def reap_scratch_dirs(correct, procs, failed):
     """Remove a per-scope scratch directory agent-confine created under
     AGENT_TMPDIR once its scope unit is gone from agents.slice AND no live
     process this user owns still has TMPDIR pointing there. procs must be a
@@ -997,8 +1026,10 @@ def reap_scratch_dirs(correct, procs):
     so this pass -- which already enumerates agents.slice scopes via
     scope_units() for enforce_task_caps -- is the only thing that can clean
     these up. Without the warden installed the directories stay until
-    removed by hand (docs/architecture/warden-reaper.md). Returns the directory
-    names removed."""
+    removed by hand (docs/architecture/warden-reaper.md). failed holds the
+    names whose removal failure is already logged, kept in the state file so a
+    folder that keeps failing is logged once, not at every sweep; it is updated
+    in place. Returns the directory names removed."""
     try:
         entries = os.listdir(AGENT_TMPDIR_PARENT)
     except OSError:
@@ -1037,11 +1068,15 @@ def reap_scratch_dirs(correct, procs):
             log(f"scratch {name}: scope gone; would remove (report mode)")
             continue
         try:
-            shutil.rmtree(path)
+            shutil.rmtree(path, **_rmtree_writable(path))
             removed.append(name)
+            failed.discard(name)
             log(f"  removed scratch {name}: scope gone")
         except OSError as e:
-            log(f"  remove of scratch {name} failed: {e}")
+            if name not in failed:
+                failed.add(name)
+                log(f"  scratch remove failed: kind={type(e).__name__} name={name} path={e.filename or path}")
+    failed.intersection_update(entries)
     return removed
 
 
@@ -2230,7 +2265,7 @@ def record_move_result(st, summary, failures, root, reason, done, name, moved, m
 DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "partial": 0,
                  "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {},
                  "episodes": {}, "events": [], "event_seq": 0, "near_open": [], "waiting_open": [],
-                 "counters_unknown": False}
+                 "scratch_failed": [], "counters_unknown": False}
 STATE_COUNTER_KEYS = ("skips", "moves", "partial", "scan_failures", "move_failures", "reaped")
 
 
@@ -2344,6 +2379,7 @@ def state_object(raw):
     _check_events(errors, raw.get("events", []), "state.events")
     _check_string_list(errors, raw.get("near_open", []), "state.near_open")
     _check_string_list(errors, raw.get("waiting_open", []), "state.waiting_open")
+    _check_string_list(errors, raw.get("scratch_failed", []), "state.scratch_failed")
     if not isinstance(raw.get("counters_unknown", False), bool):
         errors.append("state.counters_unknown must be a boolean")
     raw_orphans = raw.get("orphans", {})
@@ -2485,7 +2521,9 @@ def run(correct):
                 # (scan() itself is not atomic); SCRATCH_GRACE and
                 # ORPHAN_GRACE already accept the same class of residual risk
                 # elsewhere in this file.
-                reap_scratch_dirs(correct, scan())
+                scratch_failed = set(st["scratch_failed"])
+                reap_scratch_dirs(correct, scan(), scratch_failed)
+                st["scratch_failed"] = sorted(scratch_failed)
                 near, unknown_near, near_complete = warn_near_cap()
                 record_near_events(st, near, unknown_near, near_complete, now=tick_now)
                 for unit, kind, human in near:

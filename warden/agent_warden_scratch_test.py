@@ -37,7 +37,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 old_log = self.w.log
                 self.w.log = logs.append
                 try:
-                    self.assertEqual(self.w.reap_scratch_dirs(False, {}), [])
+                    self.assertEqual(self.w.reap_scratch_dirs(False, {}, set()), [])
                 finally:
                     self.w.log = old_log
                 report_rows = [
@@ -48,7 +48,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 for name, actual, expected in report_rows:
                     with self.subTest(name=name):
                         self.assertEqual(actual, expected)
-                removed = self.w.reap_scratch_dirs(True, {})
+                removed = self.w.reap_scratch_dirs(True, {}, set())
                 correct_rows = [
                     ("a live scope's directory survives", live.is_dir(), True),
                     ("a gone scope's directory is removed", gone.exists(), False),
@@ -61,49 +61,97 @@ class AgentWardenScratchRules(WardenRulesCase):
             finally:
                 self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
 
-    def test_reap_scratch_dirs_rmtree_failure_rows(self):
+    def _reap_failing_twice(self, w):
+        """Two sweeps over a gone scope's folder whose removal keeps failing,
+        sharing one failed set as run() shares it through the state file."""
         with scratch() as tmp:
             base = Path(tmp)
-            old_cg, old_parent = self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT
-            self.w.CG_ROOT = base / "cg"
-            self.w.AGENT_TMPDIR_PARENT = str(base / "scratch")
+            old_cg, old_parent = w.CG_ROOT, w.AGENT_TMPDIR_PARENT
+            w.CG_ROOT = base / "cg"
+            w.AGENT_TMPDIR_PARENT = str(base / "scratch")
             try:
-                agent_slice = self.w.CG_ROOT / self.w.SLICE
+                agent_slice = w.CG_ROOT / w.SLICE
                 agent_slice.mkdir(parents=True)
-                scratch_dir = Path(self.w.AGENT_TMPDIR_PARENT)
+                scratch_dir = Path(w.AGENT_TMPDIR_PARENT)
                 scratch_dir.mkdir(parents=True)
                 fails = scratch_dir / "agent-confine-500-600"
                 fails.mkdir()
                 also_gone = scratch_dir / "agent-confine-700-800"
                 also_gone.mkdir()
-                old = time.time() - self.w.SCRATCH_GRACE - 1
+                old = time.time() - w.SCRATCH_GRACE - 1
                 os.utime(fails, (old, old))
                 os.utime(also_gone, (old, old))
-                logs = []
-                old_log, old_rmtree = self.w.log, self.w.shutil.rmtree
-                self.w.log = logs.append
+                logs, failed = [], set()
+                old_log, old_rmtree = w.log, w.shutil.rmtree
+                w.log = logs.append
 
                 def flaky_rmtree(path, *a, **kw):
                     if str(path) == str(fails):
                         raise OSError("boom")
                     return old_rmtree(path, *a, **kw)
 
-                self.w.shutil.rmtree = flaky_rmtree
+                w.shutil.rmtree = flaky_rmtree
                 try:
-                    removed = self.w.reap_scratch_dirs(True, {})
+                    removed = w.reap_scratch_dirs(True, {}, failed) + w.reap_scratch_dirs(True, {}, failed)
                 finally:
-                    self.w.log, self.w.shutil.rmtree = old_log, old_rmtree
-                rows = [
-                    ("the failing directory survives", fails.is_dir(), True),
-                    ("the failure is logged", any("agent-confine-500-600" in line and "failed" in line for line in logs), True),
-                    ("the other gone scope is still removed despite the failure", also_gone.exists(), False),
-                    ("removed reports only the one that succeeded", removed, ["agent-confine-700-800"]),
-                ]
-                for name, actual, expected in rows:
-                    with self.subTest(name=name):
-                        self.assertEqual(actual, expected)
+                    w.log, w.shutil.rmtree = old_log, old_rmtree
+                return (fails.is_dir(), also_gone.exists(), removed, failed,
+                        sum("name=agent-confine-500-600" in line for line in logs))
             finally:
-                self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+                w.CG_ROOT, w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def test_reap_scratch_dirs_rmtree_failure_rows(self):
+        # The failing folder survives, the other gone scope is still removed,
+        # and the failure is logged once over two sweeps; with the once-only
+        # guard removed it is logged at every sweep.
+        text = WARDEN.read_text()
+        guard = "            if name not in failed:\n"
+        self.assertEqual(text.count(guard), 1)
+        mutant = self.load_mutant(text.replace(guard, "            if True:\n"), "agent_warden_mutant_scratch_log_once")
+        rows = [
+            ("the reaper logs the failure once", self.w, 1),
+            ("with the guard removed it logs at every sweep", mutant, 2),
+        ]
+        for name, w, logged in rows:
+            with self.subTest(name=name):
+                self.assertEqual(self._reap_failing_twice(w),
+                                 (True, False, ["agent-confine-700-800"], {"agent-confine-500-600"}, logged))
+
+    def _reap_read_only(self, w):
+        """Reap a gone scope's folder holding a mode-555 directory, as an
+        agent's tui-fixtures leave it."""
+        with scratch() as tmp:
+            base = Path(tmp)
+            old_cg, old_parent = w.CG_ROOT, w.AGENT_TMPDIR_PARENT
+            w.CG_ROOT = base / "cg"
+            w.AGENT_TMPDIR_PARENT = str(base / "scratch")
+            try:
+                (w.CG_ROOT / w.SLICE).mkdir(parents=True)
+                gone = Path(w.AGENT_TMPDIR_PARENT) / "agent-confine-300-400"
+                updates = gone / "vgsh-smoke.x" / "tui-fixtures" / "vgs.updates"
+                updates.mkdir(parents=True)
+                (updates / "f").write_text("x")
+                updates.chmod(0o555)
+                old = time.time() - w.SCRATCH_GRACE - 1
+                os.utime(gone, (old, old))
+                failed = set()
+                removed = w.reap_scratch_dirs(True, {}, failed)
+                return removed, gone.exists(), failed
+            finally:
+                w.CG_ROOT, w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def test_reap_scratch_dirs_read_only_directory_rows(self):
+        text = WARDEN.read_text()
+        retry = "        os.chmod(parent, stat.S_IMODE(st.st_mode) | stat.S_IRWXU)\n        func(path)\n"
+        self.assertEqual(text.count(retry), 1)
+        mutant = self.load_mutant(text.replace(retry, "        raise exc\n"), "agent_warden_mutant_scratch_read_only")
+        rows = [
+            ("the reaper removes the folder", self.w, (["agent-confine-300-400"], False, set())),
+            ("with the retry removed the folder stays", mutant, ([], True, {"agent-confine-300-400"})),
+        ]
+        for name, w, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(self._reap_read_only(w), expected)
 
     def test_reap_scratch_dirs_liveness_mutant_fails(self):
         text = WARDEN.read_text()
@@ -125,7 +173,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 live.mkdir()
                 old_mtime = time.time() - mutant.SCRATCH_GRACE - 1
                 os.utime(live, (old_mtime, old_mtime))
-                mutant.reap_scratch_dirs(True, {})
+                mutant.reap_scratch_dirs(True, {}, set())
                 self.assertFalse(live.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -148,7 +196,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 scratch_dir.mkdir(parents=True)
                 fresh = scratch_dir / "agent-confine-900-111"
                 fresh.mkdir()  # no matching scope yet, and not backdated
-                removed = self.w.reap_scratch_dirs(True, {})
+                removed = self.w.reap_scratch_dirs(True, {}, set())
                 self.assertTrue(fresh.is_dir())
                 self.assertEqual(removed, [])
             finally:
@@ -172,7 +220,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 scratch_dir.mkdir(parents=True)
                 fresh = scratch_dir / "agent-confine-900-111"
                 fresh.mkdir()
-                mutant.reap_scratch_dirs(True, {})
+                mutant.reap_scratch_dirs(True, {}, set())
                 self.assertFalse(fresh.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -201,7 +249,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 self.w.log = logs.append
                 try:
                     self.assertIsNone(self.w.scope_units())
-                    removed = self.w.reap_scratch_dirs(True, {})
+                    removed = self.w.reap_scratch_dirs(True, {}, set())
                 finally:
                     self.w.log = old_log
                 self.assertEqual(removed, [])
@@ -234,7 +282,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 live.mkdir()
                 old_mtime = time.time() - mutant.SCRATCH_GRACE - 1
                 os.utime(live, (old_mtime, old_mtime))
-                mutant.reap_scratch_dirs(True, {})
+                mutant.reap_scratch_dirs(True, {}, set())
                 self.assertFalse(live.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -320,7 +368,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         self.w.read = flaky_read
                         try:
                             self.assertEqual(self.w._scratch_in_use(str(moved), procs), status)
-                            removed = self.w.reap_scratch_dirs(True, procs)
+                            removed = self.w.reap_scratch_dirs(True, procs, set())
                         finally:
                             self.w.read = old_read
                         if status == "free":
@@ -364,7 +412,7 @@ class AgentWardenScratchRules(WardenRulesCase):
 
                 mutant.read = flaky_read
                 try:
-                    mutant.reap_scratch_dirs(True, {555: None})
+                    mutant.reap_scratch_dirs(True, {555: None}, set())
                 finally:
                     mutant.read = old_read
                 self.assertFalse(moved.is_dir())
@@ -410,7 +458,7 @@ class AgentWardenScratchRules(WardenRulesCase):
 
                 self.w.read = flaky_read
                 try:
-                    removed = self.w.reap_scratch_dirs(True, {555: None})
+                    removed = self.w.reap_scratch_dirs(True, {555: None}, set())
                 finally:
                     self.w.read = old_read
                 self.assertTrue(moved.is_dir())
@@ -428,8 +476,8 @@ class AgentWardenScratchRules(WardenRulesCase):
         # absent from it, which _scratch_in_use cannot tell apart from "no
         # such process". The call site must take a fresh snapshot instead.
         text = WARDEN.read_text()
-        self.assertEqual(text.count("reap_scratch_dirs(correct, scan())\n"), 1)
-        self.assertEqual(text.count("reap_scratch_dirs(correct, procs)\n"), 0)
+        self.assertEqual(text.count("reap_scratch_dirs(correct, scan(), scratch_failed)\n"), 1)
+        self.assertEqual(text.count("reap_scratch_dirs(correct, procs, scratch_failed)\n"), 0)
 
     def test_reap_scratch_dirs_stale_snapshot_misses_a_new_live_pid(self):
         # Behavioral proof, against a real subprocess and its real
@@ -481,13 +529,13 @@ class AgentWardenScratchRules(WardenRulesCase):
                     self.assertIn(proc.pid, self.w.scan())
                     fresh = {proc.pid: None}
 
-                    removed = self.w.reap_scratch_dirs(True, stale)
+                    removed = self.w.reap_scratch_dirs(True, stale, set())
                     self.assertEqual(removed, ["agent-confine-100-200"])
                     self.assertFalse(moved.is_dir())
 
                     moved.mkdir()
                     os.utime(moved, (old_mtime, old_mtime))
-                    removed = self.w.reap_scratch_dirs(True, fresh)
+                    removed = self.w.reap_scratch_dirs(True, fresh, set())
                     self.assertEqual(removed, [])
                     self.assertTrue(moved.is_dir())
                 finally:
