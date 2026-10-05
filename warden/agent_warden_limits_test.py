@@ -60,12 +60,16 @@ class AgentWardenLimitRules(WardenRulesCase):
                 bounded.mkdir()
                 (unbounded / "pids.max").write_text("max")
                 (bounded / "pids.max").write_text("10")
-                old_log = self.w.log
+                calls = []
+                old = self.w.log, self.w.subprocess
                 self.w.log = lambda _line: None
+                self.w.subprocess = SimpleNamespace(run=lambda argv, **_: calls.append(argv) or SimpleNamespace(returncode=0, stderr=""))
                 try:
                     self.assertEqual(self.w.enforce_task_caps(False), ["unbounded.scope"])
                 finally:
-                    self.w.log = old_log
+                    self.w.log, self.w.subprocess = old
+                # Report mode names the unit and never sets a property.
+                self.assertFalse(any("set-property" in argv for argv in calls))
             finally:
                 self.w.CG_ROOT = old_root
 

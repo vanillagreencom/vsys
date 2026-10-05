@@ -410,7 +410,8 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(after_mtime, before_mtime)
         self.assertFalse(lock_exists)
         # The status read keeps only the well-formed episode.
-        self.assertEqual(set(self.w.state_from_text(body.decode())["episodes"]), {"tasks:lane.scope"})
+        episodes = {tuple(line.split()[1:3]) for line in result.stdout.splitlines() if line.startswith("  EPISODE ")}
+        self.assertEqual(episodes, {("tasks", "lane.scope:")})
 
     def test_invalid_episode_state_is_dropped_on_tick(self):
         with scratch() as tmp:
