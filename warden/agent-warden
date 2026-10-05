@@ -1065,7 +1065,8 @@ def enforce_task_caps(correct):
     ceiling or under a slice with none, is left alone, so an
     AGENT_SCOPE_TASKS_MAX override survives and no tick re-sets a cap. agent-confine sets the cap at
     creation, so this is a backstop: a fast storm from an uncapped scope can
-    still fill the slice inside one 30 s tick. Returns the units capped."""
+    still fill the slice inside one 30 s tick. Returns the units capped, or in
+    report mode the units it would cap."""
     capped = []
     if SCOPE_TASKS_MAX == math.inf:
         return capped  # the owner set no per-scope cap, so no scope is unbounded against it
@@ -1083,6 +1084,7 @@ def enforce_task_caps(correct):
             continue
         if not correct:
             log(f"scope {unit}: TasksMax {cur} is unbounded; would cap (report mode)")
+            capped.append(unit)
             continue
         r = subprocess.run(["systemctl", "--user", "set-property", "--runtime", unit,
                            f"TasksMax={SCOPE_TASKS_MAX}"], capture_output=True, text=True, timeout=15)
@@ -2094,14 +2096,16 @@ def status_failed_scan_fixture():
                         orphans_status=None, contained=None, error="scan")
 
 
-def notify(summary, body):
+def notify(kind, summary, body):
+    """Send one desktop notice. `kind` names the condition it reports, the
+    episode kind or the event (`moved`, `reaped`), for the journal line."""
     try:
         result = subprocess.run(["notify-send", "-a", "agent-warden", summary, body], timeout=5)
     except (OSError, subprocess.SubprocessError) as e:
-        log(f"notify-send failed: error={type(e).__name__} summary={summary}")
+        log(f"notify-send failed: kind={kind} error={type(e).__name__} summary={summary}")
         return False
     if result.returncode != 0:
-        log(f"notify-send failed: exit={result.returncode} summary={summary}")
+        log(f"notify-send failed: kind={kind} exit={result.returncode} summary={summary}")
         return False
     return True
 
@@ -2117,11 +2121,13 @@ def notifier_fresh(path=NOTIFIER, now=None):
     return age < NOTIFIER_FRESH_SECONDS and age >= -NOTIFIER_FRESH_SECONDS
 
 
-def deliver_notice(summary, body, consumer_fresh, sender=None):
+def deliver_notice(kind, summary, body, consumer_fresh, sender=None):
+    """Returns the delivery: `consumer` when a fresh consumer owns the notice,
+    else `sent` or `failed`."""
     if consumer_fresh:
         log(f"notice left to consumer: {summary}")
-        return False
-    return bool((sender or notify)(summary, body))
+        return "consumer"
+    return "sent" if (sender or notify)(kind, summary, body) else "failed"
 
 
 EPISODE_KINDS = {"tasks", "memory", "not-moving", "move-failure"}
@@ -2188,16 +2194,18 @@ def mark_episode_notified(st, key):
 
 
 def deliver_episode_notice(st, kind, scope, summary, body, consumer_fresh, now, sender=None):
+    """Returns (delivery, key): `none` when the episode was already notified,
+    else the deliveries deliver_notice names."""
     action, key = episode_delivery(st, kind, scope, consumer_fresh, now)
     if action == "consumer":
         log(f"notice left to consumer: {summary}")
-        return False, key
+        return "consumer", key
     if action == "send":
-        if (sender or notify)(summary, body):
+        if (sender or notify)(kind, summary, body):
             mark_episode_notified(st, key)
-            return True, key
-        return False, key
-    return False, key
+            return "sent", key
+        return "failed", key
+    return "none", key
 
 
 def record_move_result(st, summary, failures, root, reason, done, name, moved, missing, now=None):
@@ -2482,7 +2490,7 @@ def run(correct):
                 record_near_events(st, near, unknown_near, near_complete, now=tick_now)
                 for unit, kind, human in near:
                     log(f"scope {unit} near its {kind} ceiling: {human}")
-                    sent, key = deliver_episode_notice(
+                    _, key = deliver_episode_notice(
                         st, kind, unit,
                         f"agent-warden: a lane is near its {kind} ceiling",
                         f"{unit}: {human}. A big legit build (raise the ceiling) "
@@ -2508,8 +2516,8 @@ def run(correct):
             st["_tick"]["orphans"] = None
             log(f"orphan reap raised {e!r}")
         if reaped:
-            deliver_notice(f"agent-warden: reaped {len(reaped)} orphan scope(s)", "\n".join(reaped[:6])
-                           + ("\n..." if len(reaped) > 6 else ""), consumer_fresh)
+            deliver_notice("reaped", f"agent-warden: reaped {len(reaped)} orphan scope(s)",
+                           "\n".join(reaped[:6]) + ("\n..." if len(reaped) > 6 else ""), consumer_fresh)
         if not moves:
             st["skips"] = 0
             if correct:
@@ -2545,7 +2553,7 @@ def run(correct):
                     where = "unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30} GiB"
                     log(f"headroom {where}: NOT moving {tree[0].comm} pid {tree[0].pid} (skip {st['skips']})")
                     if st["skips"] >= 3:
-                        sent, key = deliver_episode_notice(
+                        _, key = deliver_episode_notice(
                             st, "not-moving", SLICE, "agent-warden: not moving",
                             f"{tree[0].comm} pid {tree[0].pid} waits; {SLICE} headroom {where}",
                             consumer_fresh, tick_now)
@@ -2567,7 +2575,7 @@ def run(correct):
             bus.close()
         st["_tick"]["waiting_events"] = waiting
         if summary:
-            deliver_notice(f"agent-warden: {len(summary)} move(s) into agents.slice",
+            deliver_notice("moved", f"agent-warden: {len(summary)} move(s) into agents.slice",
                            "\n".join(summary[:6]) + ("\n..." if len(summary) > 6 else ""), consumer_fresh)
         failure_notice_lines = []
         failure_notice_keys = []
@@ -2581,7 +2589,7 @@ def run(correct):
             elif action == "consumer":
                 failure_left_to_consumer = True
         if failure_notice_lines:
-            if notify(f"agent-warden: {len(failure_notice_lines)} move failure(s)",
+            if notify("move-failure", f"agent-warden: {len(failure_notice_lines)} move failure(s)",
                       "\n".join(failure_notice_lines[:6]) + ("\n..." if len(failure_notice_lines) > 6 else "")):
                 for key in failure_notice_keys:
                     mark_episode_notified(st, key)
@@ -2801,20 +2809,20 @@ def selftest():
     old_log = globals()["log"]
     globals()["log"] = logs.append
     try:
-        deliver_notice("summary", "body", True, lambda s, b: calls.append((s, b)) or True)
-        check("fresh consumer suppresses event notify-send", calls == [] and logs[-1] == "notice left to consumer: summary")
-        deliver_notice("summary", "body", False, lambda s, b: calls.append((s, b)) or True)
+        delivery = deliver_notice("moved", "summary", "body", True, lambda k, s, b: calls.append((s, b)) or True)
+        check("fresh consumer suppresses event notify-send", calls == [] and delivery == "consumer")
+        deliver_notice("moved", "summary", "body", False, lambda k, s, b: calls.append((s, b)) or True)
         check("stale consumer uses fallback notify-send", calls == [("summary", "body")])
         st = default_state()
-        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda s, b: calls.append((s, b)) or True)
-        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda s, b: calls.append((s, b)) or True)
+        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda k, s, b: calls.append((s, b)) or True)
+        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda k, s, b: calls.append((s, b)) or True)
         check("episode fallback notifies once across ticks", calls.count(("near", "body")) == 1)
         clear_episodes(st, {"tasks"})
-        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1002.0, lambda s, b: calls.append((s, b)) or True)
+        deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1002.0, lambda k, s, b: calls.append((s, b)) or True)
         check("episode fallback re-notifies after clear", calls.count(("near", "body")) == 2)
         st = default_state()
-        deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", True, 1000.0, lambda s, b: calls.append((s, b)) or True)
-        deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", False, 1001.0, lambda s, b: calls.append((s, b)) or True)
+        deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", True, 1000.0, lambda k, s, b: calls.append((s, b)) or True)
+        deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", False, 1001.0, lambda k, s, b: calls.append((s, b)) or True)
         check("fallback resumes once after consumer heartbeat goes stale", calls.count(("memory", "body")) == 1)
     finally:
         globals()["log"] = old_log

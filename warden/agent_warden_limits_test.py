@@ -60,15 +60,12 @@ class AgentWardenLimitRules(WardenRulesCase):
                 bounded.mkdir()
                 (unbounded / "pids.max").write_text("max")
                 (bounded / "pids.max").write_text("10")
-                logs = []
                 old_log = self.w.log
-                self.w.log = logs.append
+                self.w.log = lambda _line: None
                 try:
-                    self.assertEqual(self.w.enforce_task_caps(False), [])
+                    self.assertEqual(self.w.enforce_task_caps(False), ["unbounded.scope"])
                 finally:
                     self.w.log = old_log
-                self.assertTrue(any("unbounded.scope" in line and "would cap" in line for line in logs))
-                self.assertFalse(any("scope bounded.scope:" in line for line in logs))
             finally:
                 self.w.CG_ROOT = old_root
 

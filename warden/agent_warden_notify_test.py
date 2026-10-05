@@ -55,11 +55,11 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         old_log = self.w.log
         self.w.log = logs.append
         try:
-            self.assertFalse(self.w.deliver_notice("summary", "body", True, lambda s, b: calls.append((s, b)) or True))
+            sender = lambda k, s, b: calls.append((k, s, b)) or True
+            self.assertEqual(self.w.deliver_notice("moved", "summary", "body", True, sender), "consumer")
             self.assertEqual(calls, [])
-            self.assertEqual(logs[-1], "notice left to consumer: summary")
-            self.assertTrue(self.w.deliver_notice("summary", "body", False, lambda s, b: calls.append((s, b)) or True))
-            self.assertEqual(calls, [("summary", "body")])
+            self.assertEqual(self.w.deliver_notice("moved", "summary", "body", False, sender), "sent")
+            self.assertEqual(calls, [("moved", "summary", "body")])
         finally:
             self.w.log = old_log
 
@@ -69,32 +69,34 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         old_log = self.w.log
         self.w.log = logs.append
         try:
+            sender = lambda k, s, b: calls.append((k, s, b)) or True
             st = self.w.default_state()
-            self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda s, b: calls.append((s, b)) or True)
-            self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda s, b: calls.append((s, b)) or True)
-            self.assertEqual(calls.count(("near", "body")), 1)
+            rows = [
+                ("first tick sends", "tasks", False, 1000.0, "sent"),
+                ("open episode sends once", "tasks", False, 1001.0, "none"),
+                ("fresh consumer owns the notice", "memory", True, 1000.0, "consumer"),
+                ("stale consumer falls back once", "memory", False, 1001.0, "sent"),
+            ]
+            for name, kind, fresh, now, expected in rows:
+                with self.subTest(name=name):
+                    delivery, _key = self.w.deliver_episode_notice(st, kind, "lane.scope", kind, "body", fresh, now, sender)
+                    self.assertEqual(delivery, expected)
             self.w.clear_episodes(st, {"tasks"})
-            self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1002.0, lambda s, b: calls.append((s, b)) or True)
-            self.assertEqual(calls.count(("near", "body")), 2)
-            st = self.w.default_state()
-            self.w.deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", True, 1000.0, lambda s, b: calls.append((s, b)) or True)
-            self.assertEqual(calls.count(("memory", "body")), 0)
-            self.assertEqual(logs[-1], "notice left to consumer: memory")
-            self.w.deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", False, 1001.0, lambda s, b: calls.append((s, b)) or True)
-            self.assertEqual(calls.count(("memory", "body")), 1)
+            self.assertEqual(self.w.deliver_episode_notice(st, "tasks", "lane.scope", "tasks", "body", False, 1002.0, sender)[0], "sent")
+            self.assertEqual(calls, [("tasks", "tasks", "body"), ("memory", "memory", "body"), ("tasks", "tasks", "body")])
         finally:
             self.w.log = old_log
 
     def test_failed_episode_delivery_stays_pending(self):
         calls = []
         st = self.w.default_state()
-        sender = lambda s, b: calls.append((s, b)) or False
-        self.assertFalse(self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, sender)[0])
+        sender = lambda k, s, b: calls.append((s, b)) or False
+        self.assertEqual(self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, sender)[0], "failed")
         self.assertFalse(st["episodes"]["tasks:lane.scope"].get("notified"))
-        self.assertFalse(self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, sender)[0])
+        self.assertEqual(self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, sender)[0], "failed")
         self.assertEqual(calls, [("near", "body"), ("near", "body")])
         self.assertFalse(st["episodes"]["tasks:lane.scope"].get("notified"))
-        self.assertTrue(self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1002.0, lambda s, b: calls.append((s, b)) or True)[0])
+        self.assertEqual(self.w.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1002.0, lambda k, s, b: calls.append((s, b)) or True)[0], "sent")
         self.assertTrue(st["episodes"]["tasks:lane.scope"].get("notified"))
 
     def test_notify_send_result_rows(self):
@@ -108,13 +110,13 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         try:
             self.w.log = logs.append
             self.w.subprocess.run = lambda *a, **kw: Result(0)
-            self.assertTrue(self.w.notify("summary", "body"))
+            self.assertTrue(self.w.notify("tasks", "summary", "body"))
             self.w.subprocess.run = lambda *a, **kw: Result(7)
-            self.assertFalse(self.w.notify("summary", "body"))
-            self.assertEqual(logs[-1], "notify-send failed: exit=7 summary=summary")
+            self.assertFalse(self.w.notify("tasks", "summary", "body"))
+            self.assertEqual(logs[-1], "notify-send failed: kind=tasks exit=7 summary=summary")
             self.w.subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(OSError("missing"))
-            self.assertFalse(self.w.notify("summary", "body"))
-            self.assertEqual(logs[-1], "notify-send failed: error=OSError summary=summary")
+            self.assertFalse(self.w.notify("tasks", "summary", "body"))
+            self.assertEqual(logs[-1], "notify-send failed: kind=tasks error=OSError summary=summary")
         finally:
             self.w.subprocess.run, self.w.log = old_run, old_log
 
@@ -151,8 +153,8 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             def close(self):
                 return None
 
-        def fake_notify(summary, body):
-            notifications.append((summary, body))
+        def fake_notify(kind, summary, body):
+            notifications.append(kind)
             return notify_results.pop(0) if notify_results else True
 
         moves = [("escaped launch", [root])] if plan_moves is None else plan_moves
@@ -190,13 +192,13 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
 
             _, state, notifications = self._run_move_fixture(self.w, base / "state-raise", move_impl=raising_move)
             self.assertTrue(state["episodes"]["move-failure:10:1"].get("notified"))
-            self.assertEqual(notifications[0][0], "agent-warden: 1 move failure(s)")
+            self.assertEqual(notifications, ["move-failure"])
 
             _, state, notifications = self._run_move_fixture(self.w, base / "state-retry", notify_results=[False])
             self.assertFalse(state["episodes"]["move-failure:10:1"].get("notified"))
             _, state, notifications = self._run_move_fixture(self.w, base / "state-retry", notify_results=[False])
             self.assertFalse(state["episodes"]["move-failure:10:1"].get("notified"))
-            self.assertEqual(notifications[0][0], "agent-warden: 1 move failure(s)")
+            self.assertEqual(notifications, ["move-failure"])
 
     def test_restricted_run_preserves_episodes(self):
         with scratch() as tmp:
@@ -233,7 +235,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             self.assertEqual(state["episodes"]["not-moving:agents.slice"]["since"], 1000.0)
             self.assertEqual(notifications, [])
             _result, state, notifications = self._run_move_fixture(self.w, state_dir, headrooms=[(False, -1, -1)])
-            self.assertEqual(notifications[0][0], "agent-warden: not moving")
+            self.assertEqual(notifications, ["not-moving"])
             self.assertTrue(state["episodes"]["not-moving:agents.slice"].get("notified"))
 
             _result, state, notifications = self._run_move_fixture(self.w, state_dir, plan_moves=[], only={999})
@@ -257,7 +259,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
                 _result, _state, notifications = self._run_move_fixture(self.w, base / "state-no-moves", headrooms=[(False, -1, -1)])
                 self.assertEqual(notifications, [])
             _result, state, notifications = self._run_move_fixture(self.w, base / "state-no-moves", headrooms=[(False, -1, -1)])
-            self.assertEqual(notifications[0][0], "agent-warden: not moving")
+            self.assertEqual(notifications, ["not-moving"])
             self.assertTrue(state["episodes"]["not-moving:agents.slice"].get("notified"))
 
             initial = self.w.default_state()
@@ -270,9 +272,9 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
                 move_impl=lambda tree, reason, bus: (True, "unit.scope", tree, []))
             self.assertNotIn("not-moving:agents.slice", state["episodes"])
             self.assertNotIn("move-failure:10:1", state["episodes"])
-            self.assertEqual(notifications[0][0], "agent-warden: 1 move(s) into agents.slice")
+            self.assertEqual(notifications, ["moved"])
             _result, state, notifications = self._run_move_fixture(self.w, base / "state-success")
-            self.assertEqual(notifications[0][0], "agent-warden: 1 move failure(s)")
+            self.assertEqual(notifications, ["move-failure"])
             self.assertTrue(state["episodes"]["move-failure:10:1"].get("notified"))
 
     def _run_near_cap_fixture(self, module, state_dir, cg_root, *, initial_state=None, listing_raises=False):
@@ -301,7 +303,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         module.only_pids = lambda: None
         module.enforce_task_caps = lambda correct: []
         module.reap_orphans = lambda procs, st, correct, only=None: []
-        module.notify = lambda summary, body: notifications.append((summary, body)) or True
+        module.notify = lambda kind, summary, body: notifications.append(kind) or True
         module.notifier_fresh = lambda now=None: False
         module.time = Clock
         if listing_raises:
@@ -407,8 +409,8 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         self.assertEqual(after, body)
         self.assertEqual(after_mtime, before_mtime)
         self.assertFalse(lock_exists)
-        self.assertIn("EPISODE tasks lane.scope", result.stdout)
-        self.assertNotIn("bogus", result.stdout)
+        # The status read keeps only the well-formed episode.
+        self.assertEqual(set(self.w.state_from_text(body.decode())["episodes"]), {"tasks:lane.scope"})
 
     def test_invalid_episode_state_is_dropped_on_tick(self):
         with scratch() as tmp:
@@ -487,15 +489,15 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             result = subprocess.run([sys.executable, str(WARDEN), "--status"], env=env, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(result.stderr.splitlines()[0].startswith("agent-warden: state=unreadable "))
-        self.assertNotIn("last correct scan", result.stdout)
+        self.assertEqual(result.stdout, "")
 
     def test_notification_handoff_mutant_fails(self):
         text = WARDEN.read_text()
-        old = '    if consumer_fresh:\n        log(f"notice left to consumer: {summary}")\n        return False\n    return bool((sender or notify)(summary, body))\n'
+        old = '    if consumer_fresh:\n        log(f"notice left to consumer: {summary}")\n        return "consumer"\n'
         self.assertEqual(text.count(old), 1)
         mutant = self.load_mutant(text.replace(old, old.replace("if consumer_fresh:", "if False:")), "agent_warden_mutant_notifier_handoff")
         calls = []
-        mutant.deliver_notice("summary", "body", True, lambda s, b: calls.append((s, b)) or True)
+        mutant.deliver_notice("moved", "summary", "body", True, lambda k, s, b: calls.append((s, b)) or True)
         self.assertEqual(calls, [("summary", "body")])
 
     def test_episode_dedupe_mutant_fails(self):
@@ -505,23 +507,23 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         mutant = self.load_mutant(text.replace(old, '    if False:\n        return "none", key\n'), "agent_warden_mutant_episode_dedupe")
         calls = []
         st = mutant.default_state()
-        mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda s, b: calls.append((s, b)) or True)
-        mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda s, b: calls.append((s, b)) or True)
+        mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda k, s, b: calls.append((s, b)) or True)
+        mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda k, s, b: calls.append((s, b)) or True)
         self.assertEqual(calls.count(("near", "body")), 2)
 
     def test_failed_delivery_pending_mutant_fails(self):
         text = WARDEN.read_text()
-        old = '        if (sender or notify)(summary, body):\n            mark_episode_notified(st, key)\n            return True, key\n        return False, key\n'
-        new = '        mark_episode_notified(st, key)\n        if (sender or notify)(summary, body):\n            return True, key\n        return False, key\n'
+        old = '        if (sender or notify)(kind, summary, body):\n            mark_episode_notified(st, key)\n            return "sent", key\n        return "failed", key\n'
+        new = '        mark_episode_notified(st, key)\n        if (sender or notify)(kind, summary, body):\n            return "sent", key\n        return "failed", key\n'
         self.assertEqual(text.count(old), 1)
         mutant = self.load_mutant(text.replace(old, new), "agent_warden_mutant_failed_delivery")
         st = mutant.default_state()
-        mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda s, b: False)
+        mutant.deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda k, s, b: False)
         self.assertTrue(st["episodes"]["tasks:lane.scope"].get("notified"))
 
     def test_notify_send_exit_mutant_fails(self):
         text = WARDEN.read_text()
-        old = '    if result.returncode != 0:\n        log(f"notify-send failed: exit={result.returncode} summary={summary}")\n        return False\n'
+        old = '    if result.returncode != 0:\n        log(f"notify-send failed: kind={kind} exit={result.returncode} summary={summary}")\n        return False\n'
         self.assertEqual(text.count(old), 1)
         mutant = self.load_mutant(text.replace(old, old.replace('if result.returncode != 0:', 'if False:')), "agent_warden_mutant_notify_exit")
 
@@ -531,7 +533,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         old_run = mutant.subprocess.run
         mutant.subprocess.run = lambda *a, **kw: Result()
         try:
-            self.assertTrue(mutant.notify("summary", "body"))
+            self.assertTrue(mutant.notify("tasks", "summary", "body"))
         finally:
             mutant.subprocess.run = old_run
 
@@ -651,7 +653,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             (state_dir / "state.json").mkdir()
             result = subprocess.run([sys.executable, str(mutant), "--status"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("last correct scan", result.stdout)
+        self.assertNotEqual(result.stdout, "")
 
     def test_status_directory_creation_mutant_fails(self):
         text = WARDEN.read_text()

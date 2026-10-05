@@ -517,14 +517,14 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), version=None, fail_api=True)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: could not reach GitHub to read the latest release tag.")
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: lookup=latest-release failed")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_a_release_response_with_no_tag_installs_nothing(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), version=None, api_tag=None)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: GitHub reported no latest release for vanillagreencom/vsys.")
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: lookup=latest-release empty repo=vanillagreencom/vsys")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_no_smartctl_installs_nothing(self) -> None:
@@ -552,10 +552,7 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), checksum_tool="none")
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(
-                done.stderr.splitlines()[0],
-                "smart-reporter: this installer needs sha256sum or shasum to verify the download.",
-            )
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: command=sha256sum,shasum missing")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_a_failed_download_installs_nothing(self) -> None:
@@ -569,7 +566,7 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), fail_sums=True)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: release vfixture publishes no SHA256SUMS; refusing to install an unverified reporter.")
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: download=SHA256SUMS failed release=vfixture")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_a_checksum_mismatch_installs_nothing(self) -> None:
@@ -577,11 +574,7 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), sums_text=wrong)
             self.assertEqual(done.returncode, 1)
-            got = hashlib.sha256((REPORTER / "vsys-smart-report").read_bytes()).hexdigest()
-            self.assertEqual(
-                done.stderr.splitlines()[0],
-                f"smart-reporter: checksum mismatch for vsys-smart-report: got {got}, release names {'0' * 64}; nothing was installed.",
-            )
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: checksum=vsys-smart-report mismatch")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_sha256sums_missing_a_file_installs_nothing(self) -> None:
@@ -590,10 +583,7 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), sums_text=partial)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(
-                done.stderr.splitlines()[0],
-                "smart-reporter: SHA256SUMS names no checksum for vsys-smart-report.service; refusing to install unverified.",
-            )
+            self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: checksum=vsys-smart-report.service unlisted")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_the_release_checksums_every_file_the_installer_fetches(self) -> None:

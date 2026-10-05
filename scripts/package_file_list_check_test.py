@@ -55,6 +55,11 @@ class PackageFileListCheck(unittest.TestCase):
             text=True,
         )
 
+    def refusal(self, result: subprocess.CompletedProcess[str]) -> str:
+        """The refusal's key=value line, which the check prints first."""
+        self.assertNotEqual(result.returncode, 0)
+        return result.stderr.splitlines()[0]
+
     def test_current_package_contract_passes(self) -> None:
         result = self.run_check()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -65,24 +70,26 @@ class PackageFileListCheck(unittest.TestCase):
         row = "755 lib/vsys/warden/install warden/install\n"
         self.assertIn(row, original)
         for name, text, expected in (
-            ("required row missing", original.replace(row, ""), "manifest missing required"),
-            ("required row wrong mode", original.replace(row, "644" + row[3:]), "manifest bad-mode"),
+            ("required row missing", original.replace(row, ""), "manifest=missing-required path=lib/vsys/warden/install"),
+            (
+                "required row wrong mode",
+                original.replace(row, "644" + row[3:]),
+                "manifest=bad-mode path=lib/vsys/warden/install actual=644 expected=755",
+            ),
             (
                 "row outside lib/vsys",
                 original + "644 lib/systemd/user/x.service warden/systemd/agents.slice\n",
-                "manifest path-source mismatch",
+                "manifest=path-source-mismatch path=lib/systemd/user/x.service source=warden/systemd/agents.slice",
             ),
             (
                 "required path from another warden script",
                 original.replace(row, "755 lib/vsys/warden/install warden/agent-warden\n"),
-                "manifest path-source mismatch",
+                "manifest=path-source-mismatch path=lib/vsys/warden/install source=warden/agent-warden",
             ),
         ):
             with self.subTest(name):
                 manifest.write_text(text)
-                result = self.run_check()
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(expected, result.stderr)
+                self.assertEqual(self.refusal(self.run_check()), expected)
 
     def test_extra_manifest_row_passes(self) -> None:
         (self.repo / "data" / "extra.json").write_text("{}\n")
@@ -94,23 +101,17 @@ class PackageFileListCheck(unittest.TestCase):
     def test_user_unit_install_path_fails(self) -> None:
         pkgbuild = self.repo / "packaging" / "vsys" / "PKGBUILD"
         pkgbuild.write_text(pkgbuild.read_text() + "\ninstall -Dm644 x \"$pkgdir/usr/lib/systemd/user/x\"\n")
-        result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("systemd/user", result.stderr)
+        self.assertEqual(self.refusal(self.run_check()), "pkgbuild=user-units package=vsys value=/usr/lib/systemd/user")
 
     def test_strip_enabled_pkgbuild_fails(self) -> None:
         pkgbuild = self.repo / "packaging" / "vsys-git" / "PKGBUILD"
         pkgbuild.write_text(pkgbuild.read_text().replace("options=('!strip' '!debug')\n", ""))
-        result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not disable binary stripping", result.stderr)
+        self.assertEqual(self.refusal(self.run_check()), "pkgbuild=strip-enabled package=vsys-git")
 
     def test_arch_package_source_without_commit_fails(self) -> None:
         workflow = self.repo / ".github" / "workflows" / "ci.yml"
         workflow.write_text(workflow.read_text().replace("#commit={commit}", ""))
-        result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("pin the local git source", result.stderr)
+        self.assertEqual(self.refusal(self.run_check()), "ci-workflow=unpinned-git-source")
 
     def test_arch_package_build_step_github_expression_fails(self) -> None:
         workflow = self.repo / ".github" / "workflows" / "ci.yml"
@@ -118,9 +119,7 @@ class PackageFileListCheck(unittest.TestCase):
             'pkg_var = "$" + "{pkgname}"',
             'pkg_var = "${{pkgname}}"',
         ))
-        result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("GitHub expression", result.stderr)
+        self.assertEqual(self.refusal(self.run_check()), "ci-workflow=build-step-expression")
 
     def test_ownership_preserving_release_copy_fails(self) -> None:
         pkgbuild = self.repo / "packaging" / "vsys" / "PKGBUILD"
@@ -128,9 +127,7 @@ class PackageFileListCheck(unittest.TestCase):
             'cp -R --no-preserve=ownership "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"',
             'cp -a "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"',
         ))
-        result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("preserves archive ownership", result.stderr)
+        self.assertEqual(self.refusal(self.run_check()), "pkgbuild=ownership-preserved package=vsys")
 
     def test_ownership_preserving_installer_copy_fails(self) -> None:
         installer = self.repo / "install.sh"
@@ -138,9 +135,7 @@ class PackageFileListCheck(unittest.TestCase):
             'cp -R --no-preserve=ownership "${source_root}/." "$WARDEN_NEW_ROOT/"',
             'cp -Rp "${source_root}/." "$WARDEN_NEW_ROOT/"',
         ))
-        result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("install.sh preserves archive ownership", result.stderr)
+        self.assertEqual(self.refusal(self.run_check()), "install-sh=ownership-preserved")
 
     def test_staged_content_must_match_manifest_source(self) -> None:
         stage_script = self.repo / "packaging" / "stage-runtime-files.sh"
@@ -148,9 +143,9 @@ class PackageFileListCheck(unittest.TestCase):
             'install -Dm"$mode" "$source" "$target"',
             'install -Dm"$mode" "${repo_root}/warden/agent-warden" "$target"',
         ))
-        result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("content mismatch", result.stderr)
+        # The first manifest row not sourced from agent-warden is refused;
+        # which one that is belongs to the manifest's order.
+        self.assertEqual(self.refusal(self.run_check()).split()[0], "staged=content-mismatch")
 
 
 class InstallScript(unittest.TestCase):
