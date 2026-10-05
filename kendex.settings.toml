@@ -176,6 +176,11 @@ DEV_VALIDATE_CMD = "python3 scripts/ci.py && .agents/skills/bot-instructions/scr
 # it runs. Use a glob where a category is a whole directory or file family.
 HARNESS_CI_QUEUE_PATHS = "scripts/ci.py scripts/package_file_list_check.py scripts/refusal.py scripts/build.ts scripts/sample-check.ts scripts/bench-*.ts scripts/percentile.ts package.json bun.lock .bun-version biome.json tsconfig.json bunfig.toml src/test/* warden/agent_warden_testlib.py .agents/skills/bot-instructions/scripts/*"
 
+# Test files outside the built-in test rule, counted as test lines rather
+# than production by the branch size and change-class measurements: the
+# Python suites and the warden's shared test library. `*` also matches `/`.
+ORCH_SIZE_TEST_PATHS = "warden/*_test.py warden/agent_warden_testlib.py scripts/*_test.py"
+
 # The repo-root executable the guard chain runs last, after doc-limits,
 # preflight, the bot-instructions check and the commit-guards batch. This
 # repository has no guard of its own; the full checks run through
