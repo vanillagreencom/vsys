@@ -155,7 +155,10 @@ test("a source that could not be asked, or answered for no drive, says why", asy
     status: 0,
     timedOut: false,
   }));
-  expect(garbled.outcome?.cause).toBe("malformed");
+  expect(garbled.outcome).toMatchObject({
+    failure: "malformed",
+    cause: "malformed",
+  });
   // One refusal among two drives keeps both rows and is no outcome; refusals
   // for every drive are.
   const bus = (second: unknown) =>
@@ -178,6 +181,18 @@ test("a source that could not be asked, or answered for no drive, says why", asy
     cause: "refused",
   });
   expect(both.drives.map((d) => d.written)).toEqual([null, null]);
+  // Every drive answering with output that does not parse is the same
+  // reading-wide failure, with the parse failure as its cause.
+  const unparsed: typeof spawnText = async (argv, timeoutMs) =>
+    argv.includes("GetManagedObjects")
+      ? bus(null)(argv, timeoutMs)
+      : { out: "{", error: "", status: 0, timedOut: false };
+  const neither = await readUdisks(unparsed);
+  expect(neither.outcome).toMatchObject({
+    failure: "incomplete",
+    cause: "malformed",
+  });
+  expect(neither.drives.map((d) => d.written)).toEqual([null, null]);
 });
 test("a block device with no drive, and a drive with no SMART interface, are excluded", async () => {
   const calls: string[][] = [];
