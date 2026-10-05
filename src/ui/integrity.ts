@@ -55,9 +55,20 @@ export function integrityWords(item: Integrity, scrub?: Capability): string {
 export function integrityLine(item: Integrity, scrub?: Capability): string {
   return [
     integrityWords(item, scrub),
+    // A cleared verdict and one with nothing ever logged read alike without
+    // this, so the reader is told old errors from none.
+    ...(item.cleared ? [clearedText(item.cleared)] : []),
     `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago (scrub report)`}`,
     `last new error ${errorTime(item)}`,
   ].join(" · ");
+}
+const calendarDay = (at: number): string =>
+  new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+/** The days the kernel logged the failures, and the day the check cleared them. */
+function clearedText(cleared: NonNullable<Integrity["cleared"]>): string {
+  const first = calendarDay(cleared.first);
+  const last = calendarDay(cleared.last);
+  return `errors on ${first === last ? first : `${first} to ${last}`}, clean check ${calendarDay(cleared.checkedAt)}`;
 }
 /**
  * Whether the remembered finished check standing in for an unavailable

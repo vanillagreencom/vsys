@@ -523,3 +523,28 @@ test("a check that has not finished counted nothing, and its report is not blame
     "not available: the report carried no count",
   );
 });
+
+test("a healthy line with cleared failures reads apart from one with none logged", () => {
+  const cleared = integrity(
+    present(
+      volumesByDevice([
+        volumeSnapshot("/", {
+          fsid: "fs",
+          errors: { "1/corruption_errs": 0 },
+          countersAvailable: true,
+        }),
+      ])[0],
+      "root device",
+    ),
+    {
+      scrubs: [report({ startedAt: now - 3600000 })],
+      csumFailures: { fs: [{ root: 5, inode: 9, at: now - 20 * day }] },
+    },
+    now,
+    c,
+  );
+  expect(cleared.state).toBe("healthy");
+  expect(integrityLine(cleared)).not.toBe(
+    integrityLine({ ...cleared, cleared: null }),
+  );
+});

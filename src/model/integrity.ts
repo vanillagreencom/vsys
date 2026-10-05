@@ -132,6 +132,14 @@ export interface Integrity {
    * to end, so an older failure is its to report.
    */
   logged: CsumFailure[];
+  /**
+   * The logged failures a clean check has since read past, where the state is
+   * `healthy` or `stale` and the kernel logged any: the oldest and newest
+   * failure time and the start of the check that cleared them, in
+   * milliseconds. Null otherwise, so a cleared verdict never hides that
+   * failures were logged before it.
+   */
+  cleared: { first: number; last: number; checkedAt: number } | null;
   /** False where the record of past growth could not be read at all. */
   errorKnown: boolean;
   /** How far the counter grew that time. */
@@ -373,6 +381,18 @@ export function integrity(
     logged: failures
       .filter((f) => checkedAt === null || f.at > checkedAt)
       .sort((a, b) => b.at - a.at),
+    // Both states are reached only once no failure is newer than a finished
+    // check that found no damage, so that check cleared every one of them.
+    cleared:
+      (state === "healthy" || state === "stale") &&
+      loggedAt !== null &&
+      checkedAt !== null
+        ? {
+            first: Math.min(...failures.map((f) => f.at)),
+            last: loggedAt,
+            checkedAt,
+          }
+        : null,
     errorKnown,
     errorSize,
     blocks: complete ? (scrub?.uncorrectable ?? null) : null,

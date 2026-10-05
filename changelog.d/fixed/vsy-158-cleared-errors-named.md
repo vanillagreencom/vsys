@@ -1,0 +1,1 @@
+- A healthy Storage line now names the days of the logged checksum failures a later clean check cleared, and that check's day, so old errors read apart from none.
