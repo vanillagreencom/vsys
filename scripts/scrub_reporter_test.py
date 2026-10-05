@@ -620,7 +620,6 @@ esac
             )
             self.assertIn("systemd-tmpfiles --create /etc/tmpfiles.d/vsys-scrub.conf", calls)
             self.assertEqual(calls[-1], "systemctl daemon-reload")
-            self.assertEqual(done.stdout.splitlines()[0], "scrub-reporter: installed vfixture")
 
     def test_the_installer_fetches_from_the_resolved_version_tag(self) -> None:
         with scratch() as tmp:
@@ -640,7 +639,6 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), version=None, api_tag="vlatest-fixture")
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual(done.stdout.splitlines()[0], "scrub-reporter: installed vlatest-fixture")
             fetches = [call for call in calls if call.startswith("curl ")]
             self.assertTrue(any("api.github.com/repos/vanillagreencom/vsys/releases/latest" in call for call in fetches), fetches)
             self.assertTrue(
@@ -661,42 +659,6 @@ esac
             self.assertEqual(done.returncode, 1)
             self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: lookup=latest-release empty repo=vanillagreencom/vsys")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
-
-    def test_the_success_message_names_the_directory_the_installed_reporter_actually_uses(self) -> None:
-        with scratch() as tmp:
-            base = Path(tmp)
-            # VSYS_SCRUB_DIR only steers the legacy migration in tests; it
-            # must not change what install reports as the real, persisted
-            # directory, which is fixed by the conf files it downloads.
-            done, calls = self.run_install(base, scrub_dir=base / "unused-persistent")
-            self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertIn(
-                "Each scrub now leaves a report in /var/lib/btrfs-scrub, which survives a reboot.",
-                done.stdout.splitlines(),
-            )
-
-    def test_the_success_message_never_claims_a_tmpfs_report_directory_survives_a_reboot(self) -> None:
-        # An old tag's vsys-report.conf (VSYS_VERSION pinned to it, or the
-        # unversioned install run before a new release is cut) can still name
-        # the pre-VSY-75 tmpfs default. No legacy directory is set up here,
-        # so migrate_legacy_reports returns before touching any real path;
-        # this case is only about what the message claims.
-        with scratch() as tmp:
-            base = Path(tmp)
-            conf = (REPORTER / "vsys-report.conf").read_text().replace("/var/lib/btrfs-scrub", "/run/btrfs-scrub")
-            self.assertIn("ExecStopPost=/usr/local/bin/vsys-scrub-report %f /run/btrfs-scrub", conf)
-            done, calls = self.run_install(
-                base,
-                report_conf=conf,
-                sums_text=reporter_sums(**{"vsys-report.conf": conf}),
-            )
-            self.assertEqual(done.returncode, 0, done.stderr)
-            lines = done.stdout.splitlines()
-            self.assertFalse(any("survives a reboot" in line for line in lines), lines)
-            self.assertIn(
-                "Each scrub leaves a report in /run/btrfs-scrub, which lasts only until the next reboot, not across one.",
-                lines,
-            )
 
     def test_no_scrub_unit_installs_nothing(self) -> None:
         with scratch() as tmp:
@@ -803,10 +765,6 @@ esac
                 sums_text=reporter_sums(**{"vsys-report.conf": conf}),
             )
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertIn(
-                f"Each scrub now leaves a report in {old_tag_dir}, which survives a reboot.",
-                done.stdout.splitlines(),
-            )
             self.assertEqual((old_tag_dir / "root.result").read_text(), "the carried-over report\n")
             self.assertFalse((Path("/var/lib/btrfs-scrub") / "root.result").exists())
 

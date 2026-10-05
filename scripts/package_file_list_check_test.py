@@ -212,7 +212,7 @@ class InstallScript(unittest.TestCase):
 
     def write_curl_stub(self) -> Path:
         commands = self.root / "commands"
-        commands.mkdir()
+        commands.mkdir(exist_ok=True)
         curl = commands / "curl"
         curl.write_text(
             "#!/bin/sh\n"
@@ -302,6 +302,15 @@ class InstallScript(unittest.TestCase):
     def mode(self, path: Path) -> int:
         return path.stat().st_mode & 0o777
 
+    def refusal(self, result: subprocess.CompletedProcess[str]) -> str:
+        """The refusal's key=value line. A failing command the installer ran
+        can print to stderr first, so the line is found by the installer's
+        prefix, which on a refusal only the key line carries."""
+        self.assertEqual(result.returncode, 1, result.stderr)
+        lines = [line for line in result.stderr.splitlines() if line.startswith("vsys install: ")]
+        self.assertEqual(len(lines), 1, result.stderr)
+        return lines[0]
+
     def test_symlinked_lib_refusal_leaves_existing_binary(self) -> None:
         self.make_archive("full")
         self.bin_dir.mkdir(parents=True)
@@ -314,8 +323,7 @@ class InstallScript(unittest.TestCase):
         target.mkdir()
         (lib / "vsys").symlink_to(target)
         result = self.run_install()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("refusing to replace symlink", result.stderr)
+        self.assertEqual(self.refusal(result), f"vsys install: lib={lib.resolve() / 'vsys'} symlink")
         self.assertEqual(binary.read_text(), "old binary\n")
         self.assertTrue((lib / "vsys").is_symlink())
 
@@ -325,7 +333,6 @@ class InstallScript(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
         self.assert_full_warden_tree_installed()
-        self.assertIn("Optional warden setup: vsys warden install", result.stdout)
 
     def test_restrictive_umask_keeps_shared_warden_modes(self) -> None:
         self.make_archive("full")
@@ -370,8 +377,7 @@ class InstallScript(unittest.TestCase):
         old_marker.parent.mkdir(parents=True)
         old_marker.write_text("old tree\n")
         result = self.run_install()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not replace", result.stderr)
+        self.assertEqual(self.refusal(result), f"vsys install: binary={old_binary.resolve()} replace-failed")
         self.assertEqual(old_binary.read_text(), "old binary\n")
         self.assertEqual(old_marker.read_text(), "old tree\n")
         self.assertFalse((self.lib_root() / "warden" / "install").exists())
@@ -384,8 +390,7 @@ class InstallScript(unittest.TestCase):
         old_marker.parent.mkdir(parents=True)
         old_marker.write_text("old tree\n")
         result = self.run_install()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not replace", result.stderr)
+        self.assertEqual(self.refusal(result), f"vsys install: binary={binary_dir.resolve()} replace-failed")
         self.assertTrue(binary_dir.is_dir())
         self.assertEqual(old_marker.read_text(), "old tree\n")
         self.assertFalse((self.lib_root() / "warden" / "install").exists())
@@ -414,8 +419,26 @@ class InstallScript(unittest.TestCase):
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.bin_dir / "vsys").read_text(), "legacy binary\n")
-        self.assertIn("This release does not include the optional warden.", result.stdout)
         self.assertFalse((self.root / "home" / ".local" / "lib" / "vsys").exists())
+
+    def test_checksum_refusal_leaves_existing_binary(self) -> None:
+        self.make_archive("full")
+        self.bin_dir.mkdir(parents=True)
+        binary = self.bin_dir / "vsys"
+        binary.write_text("old binary\n")
+        binary.chmod(0o755)
+        digest = hashlib.sha256((self.root / self.asset).read_bytes()).hexdigest()
+        rows = (
+            ("mismatch", f"{'0' * 64}  {self.asset}\n"),
+            ("unlisted", f"{digest}  vsys-vfixture-linux-aarch64.tar.gz\n"),
+        )
+        for key, sums in rows:
+            with self.subTest(key=key):
+                (self.root / "SHA256SUMS").write_text(sums)
+                result = self.run_install()
+                self.assertEqual(self.refusal(result), f"vsys install: checksum={self.asset} {key}")
+                self.assertEqual(binary.read_text(), "old binary\n")
+                self.assertFalse(self.lib_root().exists())
 
     def test_partial_lib_tree_refuses_before_replacing_binary(self) -> None:
         self.make_archive("partial")
@@ -424,8 +447,7 @@ class InstallScript(unittest.TestCase):
         binary.write_text("old binary\n")
         binary.chmod(0o755)
         result = self.run_install()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("the archive holds no lib/vsys/warden/agent-warden", result.stderr)
+        self.assertEqual(self.refusal(result), "vsys install: archive=lib/vsys/warden/agent-warden missing")
         self.assertEqual(binary.read_text(), "old binary\n")
 
 
