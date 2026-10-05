@@ -12,7 +12,7 @@ The installer writes the optional warden's systemd user units and its shared dat
 
 ## Package payload
 
-`packaging/vsys-runtime-files.txt` is the payload list for files that ship beside the `vsys` binary. `packaging/stage-runtime-files.sh` reads that list and stages the tree as `lib/vsys/warden` and `lib/vsys/data`. Each row ships its source file at `lib/vsys/` plus the source path, because `warden/install` finds `../data/agent-tools.json` and `systemd/` beside itself; `scripts/package_file_list_check.py` refuses any other row, and `test_manifest_defects_fail` proves it for a required path that names another warden script.
+`packaging/vsys-runtime-files.txt` is the payload list for files that ship beside the `vsys` binary. `packaging/stage-runtime-files.sh` reads that list and stages the tree as `lib/vsys/warden` and `lib/vsys/data`.
 
 The release archive contains that staged `lib/vsys` tree. `packaging/vsys/PKGBUILD` copies it from the archive into `/usr/lib/vsys` without preserving archive ownership. `install.sh` copies it from the same archive into `<prefix>/lib/vsys`, where `<prefix>` is the parent of the resolved install directory. If an older release archive has no `lib/vsys` tree, `install.sh` installs the dashboard binary and says that the release does not include the optional warden. A partial `lib/vsys` tree is an archive error. `packaging/vsys-git/PKGBUILD` builds the binary from a checkout and runs the same staging script into `/usr/lib/vsys`.
 
