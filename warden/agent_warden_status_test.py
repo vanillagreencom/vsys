@@ -769,16 +769,22 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             doc["waiting"][0][field] = None
             rows.append((f"waiting {field} null", doc, f"waiting[0].{field}"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": None, "cores": None, "since": 1, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": None, "cores": None, "memory": None, "since": 1, "harmful": False}]
         rows.append(("orphan processes null", doc, "orphans[0].processes"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": True, "since": 1, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": True, "memory": None, "since": 1, "harmful": False}]
         rows.append(("orphan cores bool", doc, "orphans[0].cores"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": float("inf"), "since": 1, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": float("inf"), "memory": None, "since": 1, "harmful": False}]
         rows.append(("orphan cores infinite", doc, "orphans[0].cores"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "since": True, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": 1.5, "since": 1, "harmful": False}]
+        rows.append(("orphan memory fraction", doc, "orphans[0].memory"))
+        doc = json.loads(json.dumps(base))
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "since": 1, "harmful": False}]
+        rows.append(("orphan memory missing", doc, "orphans[0]"))
+        doc = json.loads(json.dumps(base))
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": None, "since": True, "harmful": False}]
         rows.append(("orphan since bool", doc, "orphans[0].since"))
         doc = json.loads(json.dumps(base))
         doc["contained"] = [{"unit": "orch.service", "processes": None}]

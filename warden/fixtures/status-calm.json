@@ -28,7 +28,7 @@
   "mode": "report",
   "orphans": [],
   "outside": [],
-  "schema": "1.0",
+  "schema": "1.1",
   "slice": {
     "headroomOk": true,
     "high": 68719476736,

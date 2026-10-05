@@ -18,7 +18,7 @@ A write failure logs `status write failed` and does not fail the tick. The state
 
 ## Versioning
 
-`schema` is `1.0`.
+`schema` is `1.1`.
 
 A minor version adds fields or enum values that old consumers can ignore.
 
@@ -89,6 +89,7 @@ An absent `agents.slice` makes `slice` null. The move guard still treats an abse
 | `scope` | string | systemd unit name | Never null. |
 | `processes` | integer | process count | Never null. |
 | `cores` | number or null | CPU cores | Null means CPU has not yet been measured across two ticks. |
+| `memory` | integer or null | bytes of anonymous memory | Null means the scope's `memory.stat` or its `anon` line could not be read. |
 | `since` | number | Unix epoch seconds | Never null. |
 | `harmful` | boolean | id | Never null. |
 
