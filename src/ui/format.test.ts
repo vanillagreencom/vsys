@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { columns, defaults } from "../config/config";
-import { exportSnapshot, safe } from "../model/export";
+import { safe } from "../model/export";
 import { emptySnapshot, laneSnapshot } from "../test/fixture";
+import { exportSnapshot } from "./export";
 import {
   age,
   amount,
