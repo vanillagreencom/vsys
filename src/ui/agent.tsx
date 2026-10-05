@@ -10,7 +10,7 @@ import { parentChain, processTree } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
-import { laneBadge, laneLevel } from "./agents";
+import { badgeText, laneBadge, laneLevel } from "./agents";
 import { keyLabel, screenPad } from "./chrome";
 import { fit } from "./columns";
 import {
@@ -95,14 +95,18 @@ export function AgentIdentity({
   config: Config;
 }) {
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
-  const badge = laneBadge(lane);
+  const badge = laneBadge(lane, c);
   return (
     <>
       <Line height={1} flexShrink={0} truncate>
         <span attributes={ui.bold} fg={levelColor(laneLevel(lane, c))}>
           {safe(lane.name)}
         </span>
-        {badge && <span fg={levelColor(badge.level)}>{`  ${badge.text}`}</span>}
+        {badge && (
+          <span fg={levelColor(badge.level)}>
+            {`  ${badgeText(badge, lane, c)}`}
+          </span>
+        )}
       </Line>
       <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
         {safe(

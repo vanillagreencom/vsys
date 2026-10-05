@@ -24,6 +24,8 @@ import {
   scratchSummary,
   storageItems,
   udisksText,
+  type VolumeCause,
+  volumeCause,
   volumeLevel,
 } from "./storage-screen";
 import { ui } from "./theme";
@@ -59,6 +61,27 @@ test("a filesystem is serious when read-only, when errors grow, or when space is
   for (const [overrides, level] of rows)
     expect(volumeLevel(volumeSnapshot("/m", overrides), c.freeFloor)).toBe(
       level,
+    );
+});
+
+test("a serious filesystem row carries its cause with the number that tripped it", () => {
+  const c = defaults();
+  const rows: [Parameters<typeof volumeSnapshot>[1], VolumeCause | null][] = [
+    [{}, null],
+    [{ readOnly: true, free: 0 }, { kind: "read-only" }],
+    [
+      { delta: { "x/read_io_errs": 1, "x/corruption_errs": 3 } },
+      { kind: "errors", counter: "x/corruption_errs", growth: 3 },
+    ],
+    [
+      { free: c.freeFloor - 1 },
+      { kind: "free", free: c.freeFloor - 1, floor: c.freeFloor },
+    ],
+    [{ free: null }, null],
+  ];
+  for (const [overrides, cause] of rows)
+    expect(volumeCause(volumeSnapshot("/m", overrides), c.freeFloor)).toEqual(
+      cause,
     );
 });
 

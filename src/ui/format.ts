@@ -75,6 +75,14 @@ export function blockedText(l: Lane): string {
   const tasks = `${l.blocked} ${l.blocked === 1 ? "task" : "tasks"}`;
   return `blocked: ${tasks} waiting on ${on}`;
 }
+/** A stall over a threshold, named with both numbers. */
+export function waitText(resource: string, some: number, threshold: number) {
+  return `${resource} wait ${percent(some)} over ${percent(threshold)}`;
+}
+/** A memory cap under the floor, named with both numbers. */
+export function floorText(cap: number | null, floor: number, c: Config) {
+  return `memory cap ${amount(cap, c)} under ${bytes(floor, c)}`;
+}
 export function laneValue(l: Lane, key: string, c: Config): string {
   const value = l[key as keyof Lane];
   if (key === "rss" || key === "swap" || key === "cache")

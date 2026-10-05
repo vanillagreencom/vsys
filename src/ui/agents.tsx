@@ -2,7 +2,6 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Config, columns, validate } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
-import { lanePressure } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
@@ -24,10 +23,12 @@ import {
   amount,
   blockedText,
   bucketPeaks,
+  floorText,
   laneValue,
   share,
   sortLanes,
   sparkline,
+  waitText,
 } from "./format";
 import { heldLabel, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
@@ -339,21 +340,75 @@ export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
     c.descending,
   );
 }
-/** The one word that says what is wrong with a lane, or nothing. */
-export function laneBadge(lane: Lane): { text: string; level: Level } | null {
-  if (lane.unconfined) return { text: "outside agent slice", level: "danger" };
-  if (lane.dangerous) return { text: "low memory limit", level: "danger" };
-  if (lane.state === "blocked")
-    return { text: blockedText(lane), level: "warn" };
+/**
+ * What is wrong with a lane, worst first, with the numbers that tripped it.
+ * Every level but ok has one, so a coloured row always says why.
+ */
+export type LaneBadge =
+  | { kind: "unconfined"; level: "danger" }
+  | { kind: "cap"; level: "danger"; cap: number | null; floor: number }
+  | {
+      kind: "pressure";
+      level: "danger" | "warn";
+      resource: "cpu" | "memory" | "io";
+      some: number;
+      threshold: number;
+    }
+  | { kind: "blocked"; level: "warn" };
+export function laneBadge(lane: Lane, c: Config): LaneBadge | null {
+  if (lane.unconfined) return { kind: "unconfined", level: "danger" };
+  if (lane.dangerous)
+    return {
+      kind: "cap",
+      level: "danger",
+      cap: lane.memoryMax,
+      floor: c.memoryFloor,
+    };
+  const waits = [
+    { resource: "cpu", some: lane.pressure },
+    { resource: "memory", some: lane.memoryPressure },
+    { resource: "io", some: lane.ioPressure },
+  ] as const;
+  let worst: { resource: "cpu" | "memory" | "io"; some: number } | null = null;
+  // A lane stored before a pressure was read carries none at all.
+  for (const { resource, some } of waits)
+    if (typeof some === "number" && (worst === null || some > worst.some))
+      worst = { resource, some };
+  if (worst && worst.some > c.pressureRed)
+    return {
+      kind: "pressure",
+      level: "danger",
+      ...worst,
+      threshold: c.pressureRed,
+    };
+  if (worst && worst.some > c.pressureAmber)
+    return {
+      kind: "pressure",
+      level: "warn",
+      ...worst,
+      threshold: c.pressureAmber,
+    };
+  if (lane.state === "blocked") return { kind: "blocked", level: "warn" };
   return null;
 }
+export function badgeText(badge: LaneBadge, lane: Lane, c: Config): string {
+  switch (badge.kind) {
+    case "unconfined":
+      return "outside agent slice";
+    case "cap":
+      return floorText(badge.cap, badge.floor, c);
+    case "pressure":
+      return waitText(badge.resource, badge.some, badge.threshold);
+    case "blocked":
+      return blockedText(lane);
+    default:
+      return badge satisfies never;
+  }
+}
+/** A blocked lane is badged without colouring its row. */
 export function laneLevel(lane: Lane, c: Config): Level {
-  const wait = lanePressure(lane) ?? 0;
-  return lane.unconfined || lane.dangerous || wait > c.pressureRed
-    ? "danger"
-    : wait > c.pressureAmber
-      ? "warn"
-      : "ok";
+  const badge = laneBadge(lane, c);
+  return badge && badge.kind !== "blocked" ? badge.level : "ok";
 }
 
 /**
@@ -904,7 +959,7 @@ export function Agents({
                   : "No process runs in a watched scope, and no agent has escaped one."
               }
               render={(lane, _, isSelected) => {
-                const badge = laneBadge(lane);
+                const badge = laneBadge(lane, c);
                 return laneRow(
                   lane,
                   isSelected,
@@ -961,7 +1016,7 @@ export function Agents({
                     {columnGap}
                     {badge ? (
                       <Ink color={levelColor(badge.level)}>
-                        {cell(laneColumn("State"), badge.text)}
+                        {cell(laneColumn("State"), badgeText(badge, lane, c))}
                       </Ink>
                     ) : (
                       <span attributes={ui.dim}>
