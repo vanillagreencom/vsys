@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { present } from "../test/present";
 import {
+  WorkerError,
+  type WorkerFailure,
   WorkerHost,
   type WorkerPort,
   type WorkerReply,
@@ -110,32 +112,22 @@ test("a failed answer, a thread error and an early exit each reject, and the nex
   // What the thread does, what the caller is told, and whether the thread
   // is ended: a failed answer leaves a working thread, which keeps whatever
   // state the next answer depends on.
-  const cases: [string, (port: FakePort) => void, string, boolean][] = [
+  const cases: [string, (port: FakePort) => void, WorkerFailure, boolean][] = [
     [
       "failed",
       (port) =>
         port.reply({ kind: "failed", id: port.lastId(), message: "no /proc" }),
-      "no /proc",
+      "failed",
       false,
     ],
-    [
-      "error",
-      (port) => port.fail("module not found"),
-      "Test thread failed: module not found",
-      true,
-    ],
-    [
-      "exit",
-      (port) => port.exit(),
-      "Test thread exited before it answered",
-      true,
-    ],
+    ["error", (port) => port.fail("module not found"), "crashed", true],
+    ["exit", (port) => port.exit(), "exited", true],
   ];
-  for (const [name, act, message, ends] of cases) {
+  for (const [name, act, kind, ends] of cases) {
     const answer = host.request(ask, live());
     const port = present(ports.at(-1), "latest thread");
     act(port);
-    await expect(answer, name).rejects.toThrow(message);
+    await expect(answer, name).rejects.toMatchObject({ kind });
     expect(port.calls.includes("terminate"), name).toBe(ends);
   }
   expect(ports.length).toBe(2);
@@ -172,7 +164,7 @@ test("cancelling and closing end the thread, and a late reply publishes nothing"
   await Bun.sleep(0);
   expect(settled).toBe(false);
   host.close();
-  await expect(waiting).rejects.toThrow("Test thread has closed");
+  await expect(waiting).rejects.toMatchObject({ kind: "closed" });
   expect(second.calls).toContain("terminate");
   expect(ports.length).toBe(2);
 });
@@ -187,7 +179,7 @@ test("a late error or exit from a thread already replaced leaves the thread now 
     const first = host.request(ask, live());
     const ended = present(ports[0], "first thread");
     ended.fail("ended");
-    await expect(first, name).rejects.toThrow("Test thread failed: ended");
+    await expect(first, name).rejects.toMatchObject({ kind: "crashed" });
     const second = host.request(ask, live());
     const running = present(ports[1], "replacement thread");
     late(ended);
@@ -226,13 +218,15 @@ test("every ending releases the thread before ending it, so a blocked read never
 });
 
 test("a request the host cannot serve is refused before it reaches a thread", async () => {
-  // How the host is left, and the refusal the next request meets. An
-  // accepted overlap would leave the first request waiting forever, so each
-  // answer is read here rather than left for the runner's timeout to find.
+  // How the host is left, and the refusal the next request meets: the
+  // host's kind, or an abort's own reason. An accepted overlap would leave
+  // the first request waiting forever, so each answer is read here rather
+  // than left for the runner's timeout to find.
+  const gone = new Error("gone");
   const rows: [
     string,
     (host: WorkerHost<Message, Reply, string>) => AbortSignal,
-    string,
+    unknown,
     number,
   ][] = [
     [
@@ -241,7 +235,7 @@ test("a request the host cannot serve is refused before it reaches a thread", as
         host.request(ask, live()).catch(() => {});
         return live();
       },
-      "Test thread was asked to overlap: a request is already in flight",
+      "overlap",
       1,
     ],
     [
@@ -250,24 +244,24 @@ test("a request the host cannot serve is refused before it reaches a thread", as
         host.close();
         return live();
       },
-      "Test thread has closed",
+      "closed",
       0,
     ],
-    ["aborted", () => AbortSignal.abort(new Error("gone")), "gone", 0],
+    ["aborted", () => AbortSignal.abort(gone), gone, 0],
   ];
-  for (const [name, leave, message, started] of rows) {
+  for (const [name, leave, expected, started] of rows) {
     const { ports, host } = fakes();
     const signal = leave(host);
-    let refusal: string;
+    let refusal: unknown;
     try {
       host.request(ask, signal).catch(() => {});
       refusal = "accepted";
     } catch (error) {
-      refusal = (error as Error).message;
+      refusal = error instanceof WorkerError ? error.kind : error;
     }
     expect({ name, refusal, started: ports.length }).toEqual({
       name,
-      refusal: message,
+      refusal: expected,
       started,
     });
     host.close();

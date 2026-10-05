@@ -308,7 +308,7 @@ test("a new thread for new settings reads under those settings and the old one e
   );
   before.close();
   expect(() => old.collect(request(2000), live())).toThrow(
-    "Process thread has closed",
+    expect.objectContaining({ kind: "closed" }),
   );
   expect((await after.sample(2000)).procs[0]?.tool).toBe("newagent");
 });

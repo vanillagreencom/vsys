@@ -283,7 +283,15 @@ export class StorageCollector {
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
       devices: collectDevices(r, c, smart.reports, udisks?.drives ?? null),
-      ...(udisks ? { udisks: udisks.outcome } : {}),
+      // The model carries failure and detail; the cause is the reading's own.
+      ...(udisks
+        ? {
+            udisks: udisks.outcome && {
+              failure: udisks.outcome.failure,
+              detail: udisks.outcome.detail,
+            },
+          }
+        : {}),
       volumes: [],
       scratch: [],
       sessions: [],

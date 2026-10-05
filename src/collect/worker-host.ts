@@ -3,6 +3,22 @@ export type WorkerReply<T> =
   | { kind: "answer"; id: number; value: T }
   | { kind: "failed"; id: number; message: string };
 
+/** Why a host rejected a request; an abort rejects with the caller's own reason. */
+export type WorkerFailure =
+  | "failed"
+  | "crashed"
+  | "exited"
+  | "closed"
+  | "overlap";
+export class WorkerError extends Error {
+  constructor(
+    readonly kind: WorkerFailure,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /**
  * What a host calls on a thread, and all of it. A real Bun `Worker`
  * satisfies it, so a test stands up its own and the compiler still checks
@@ -54,6 +70,10 @@ export class WorkerHost<Message, Data, Answer> {
   };
   private closed = false;
   constructor(private spec: WorkerSpec<Message, Data, Answer>) {}
+  /** An error naming this host's thread. */
+  private error(kind: WorkerFailure, what: string): WorkerError {
+    return new WorkerError(kind, `${this.spec.name} ${what}`);
+  }
   private thread(): WorkerPort<Message, Data> {
     if (this.worker) return this.worker;
     const worker = this.spec.start();
@@ -66,11 +86,11 @@ export class WorkerHost<Message, Data, Answer> {
     // acting on one would end the thread now running.
     worker.onerror = (event) => {
       if (this.worker === worker)
-        this.fail(new Error(`${this.spec.name} failed: ${event.message}`));
+        this.fail(this.error("crashed", `failed: ${event.message}`));
     };
     worker.addEventListener("close", () => {
       if (this.worker === worker)
-        this.fail(new Error(`${this.spec.name} exited before it answered`));
+        this.fail(this.error("exited", "exited before it answered"));
     });
     if (this.spec.setup !== undefined) worker.postMessage(this.spec.setup);
     this.worker = worker;
@@ -106,7 +126,7 @@ export class WorkerHost<Message, Data, Answer> {
         pending.resolve(reply.value);
         return;
       case "failed":
-        pending.reject(new Error(reply.message));
+        pending.reject(new WorkerError("failed", reply.message));
         return;
       default: {
         const unhandled: never = reply;
@@ -121,10 +141,11 @@ export class WorkerHost<Message, Data, Answer> {
     build: (id: number) => Message,
     signal: AbortSignal,
   ): Promise<Answer> {
-    if (this.closed) throw new Error(`${this.spec.name} has closed`);
+    if (this.closed) throw this.error("closed", "has closed");
     if (this.pending)
-      throw new Error(
-        `${this.spec.name} was asked to overlap: a request is already in flight`,
+      throw this.error(
+        "overlap",
+        "was asked to overlap: a request is already in flight",
       );
     signal.throwIfAborted();
     const id = ++this.id;
@@ -150,6 +171,6 @@ export class WorkerHost<Message, Data, Answer> {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.fail(new Error(`${this.spec.name} has closed`));
+    this.fail(this.error("closed", "has closed"));
   }
 }

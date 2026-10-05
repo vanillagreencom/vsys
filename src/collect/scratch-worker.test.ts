@@ -27,7 +27,7 @@ test("the scan thread answers with a complete reading and closes", async () => {
       runner.close();
     }
     expect(() => runner.run(roots, 7000, full, loose())).toThrow(
-      "Scratch scan thread has closed",
+      expect.objectContaining({ kind: "closed" }),
     );
   } finally {
     f.cleanup();
