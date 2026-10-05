@@ -82,6 +82,18 @@ class ApplicationChecks(unittest.TestCase):
             capture_output=True, text=True,
         )
 
+    def assertRefused(self, result, line):
+        """The run failed on the refusal whose key=value line is `line`, and
+        the error annotation after it carries the refusal's prose."""
+        self.assertNotEqual(result.returncode, 0)
+        lines = result.stderr.splitlines()
+        self.assertIn(line, lines)
+        after = lines[lines.index(line) + 1:]
+        self.assertTrue(after, result.stderr)
+        annotation = after[0]
+        self.assertTrue(annotation.startswith("::error::"), annotation)
+        self.assertNotIn(annotation.partition(": ")[2], ("", line))
+
     def logged(self):
         return self.commands.read_text().splitlines() if self.commands.exists() else []
 
@@ -93,26 +105,31 @@ class ApplicationChecks(unittest.TestCase):
 
     def test_missing_input_fails(self):
         # Each row renames one input of an otherwise complete tree; the log
-        # shows how far the run got before it failed.
+        # shows how far the run got before it failed, and a row the runner
+        # refuses itself names its refusal line.
+        suite_missing = "suite=missing path=warden/agent_warden_test.py"
         rows = (
-            ("scripts", []),
+            ("scripts", [], None),
             # Discovery of a directory with no suite left in it fails too.
-            ("scripts/ci_fixture_test.py", []),
-            ("warden", []),
+            ("scripts/ci_fixture_test.py", [], None),
+            ("warden", [], suite_missing),
             # Discovery passes a warden tree that still holds another suite,
             # so only the named-file check stops this one.
-            ("warden/agent_warden_test.py", []),
-            ("package.json", PRELUDE),
+            ("warden/agent_warden_test.py", [], suite_missing),
+            ("package.json", PRELUDE, None),
         )
         self.suite("warden/neighbour_test.py", "warden neighbour")
-        for path, expected in rows:
+        for path, expected, refusal in rows:
             with self.subTest(path=path):
                 self.package()
                 source = self.root / path
                 renamed = source.with_name(source.name + ".renamed")
                 source.rename(renamed)
                 try:
-                    self.assertNotEqual(self.run_ci().returncode, 0)
+                    result = self.run_ci()
+                    self.assertNotEqual(result.returncode, 0)
+                    if refusal is not None:
+                        self.assertRefused(result, refusal)
                     self.assertEqual([line for line in self.logged() if line != "warden neighbour"], expected)
                 finally:
                     renamed.rename(source)
@@ -139,21 +156,16 @@ class ApplicationChecks(unittest.TestCase):
                     scripts = {name: "fixture" for name in CHECKS}
                     scripts[check] = value
                     self.package(scripts)
-                    result = self.run_ci()
-                    self.assertNotEqual(result.returncode, 0)
                     # The named check is the only invalid entry, so a subtest
                     # that passes on another check's absence is not a pass.
-                    self.assertIn(
-                        f"package.json must define a nonempty {check} script",
-                        result.stderr,
-                    )
+                    self.assertRefused(self.run_ci(), f"script=missing check={check}")
                     self.assertEqual(self.logged(), PRELUDE)
                     self.commands.unlink()
 
     def test_missing_lockfile_fails(self):
         self.package()
         (self.root / "bun.lock").unlink()
-        self.assertNotEqual(self.run_ci().returncode, 0)
+        self.assertRefused(self.run_ci(), "lockfile=missing path=bun.lock")
         self.assertEqual(self.logged(), PRELUDE)
 
     def test_invalid_manifest_fails(self):
@@ -171,12 +183,10 @@ class ApplicationChecks(unittest.TestCase):
             with self.subTest(emitted=emitted):
                 self.package()
                 self.env["CI_BUILD_EMITS"] = emitted
-                result = self.run_ci()
-                self.assertNotEqual(result.returncode, 0)
                 missing = next(
                     name for name in ARTIFACTS if name != emitted
                 )
-                self.assertIn(f"The build emitted no {missing}", result.stderr)
+                self.assertRefused(self.run_ci(), f"artifact=missing path={missing}")
                 self.commands.unlink()
         self.env["CI_BUILD_EMITS"] = emits
 
@@ -187,9 +197,7 @@ class ApplicationChecks(unittest.TestCase):
             with self.subTest(name=name):
                 self.package()
                 self.env["CI_BUILD_EMPTY"] = name
-                result = self.run_ci()
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(f"The build emitted no {name}", result.stderr)
+                self.assertRefused(self.run_ci(), f"artifact=empty path={name}")
                 self.commands.unlink()
         del self.env["CI_BUILD_EMPTY"]
 

@@ -1,6 +1,6 @@
 # Warden installer
 
-Covers: warden/install warden/install_test.py warden/systemd/ src/warden.ts src/warden.test.ts packaging/vsys-runtime-files.txt packaging/stage-runtime-files.sh packaging/vsys/PKGBUILD packaging/vsys-git/PKGBUILD .github/workflows/release.yml .github/workflows/aur-git.yml .github/workflows/ci.yml install.sh scripts/package_file_list_check.py scripts/package_file_list_check_test.py
+Covers: warden/install warden/install_test.py warden/systemd/ src/warden.ts src/warden.test.ts packaging/vsys-runtime-files.txt packaging/stage-runtime-files.sh packaging/vsys/PKGBUILD packaging/vsys-git/PKGBUILD .github/workflows/release.yml .github/workflows/aur-git.yml .github/workflows/ci.yml install.sh scripts/package_file_list_check.py scripts/package_file_list_check_test.py scripts/refusal.py
 
 The installer writes the optional warden's systemd user units and its shared data file. It lives in the warden component. The dashboard only dispatches to it. [warden.md](warden.md) covers what the warden does once it runs.
 

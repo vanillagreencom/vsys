@@ -11,6 +11,8 @@ import stat
 import subprocess
 import sys
 
+from refusal import Refusal, refuse, report
+
 
 # The members a shipped consumer cannot work without, at the mode it needs:
 # install.sh refuses an archive that lacks any of them, `vsys warden install`
@@ -38,19 +40,11 @@ REQUIRED_MODES = {
 PAYLOAD_PREFIX = "lib/vsys/"
 
 
-class CheckFailure(Exception):
-    pass
-
-
-def fail(message: str) -> None:
-    raise CheckFailure(message)
-
-
 def read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except OSError as error:
-        fail(f"read failed path={path}: {error}")
+        refuse(f"read=failed path={path}", str(error))
 
 
 def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
@@ -62,28 +56,28 @@ def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
             continue
         parts = line.split()
         if len(parts) != 3:
-            fail(f"manifest malformed line={number}")
+            refuse(f"manifest=malformed line={number}", "A manifest row needs a mode, an archive path and a source path.")
         mode_text, archive_path, source_path = parts
         if archive_path.startswith("/") or ".." in Path(archive_path).parts:
-            fail(f"manifest unsafe archive path={archive_path}")
+            refuse(f"manifest=unsafe-archive-path path={archive_path}")
         if source_path.startswith("/") or ".." in Path(source_path).parts:
-            fail(f"manifest unsafe source path={source_path}")
+            refuse(f"manifest=unsafe-source-path path={source_path}")
         try:
             mode = int(mode_text, 8)
         except ValueError:
-            fail(f"manifest bad mode line={number} mode={mode_text}")
+            refuse(f"manifest=bad-mode-text line={number} mode={mode_text}")
         if archive_path != PAYLOAD_PREFIX + source_path:
-            fail(f"manifest path-source mismatch path={archive_path} source={source_path}")
+            refuse(f"manifest=path-source-mismatch path={archive_path} source={source_path}")
         rows[archive_path] = (mode, source_path)
     for archive_path, mode in REQUIRED_MODES.items():
         if archive_path not in rows:
-            fail(f"manifest missing required path={archive_path}")
+            refuse(f"manifest=missing-required path={archive_path}")
         actual = rows[archive_path][0]
         if actual != mode:
-            fail(f"manifest bad-mode path={archive_path} actual={actual:o} expected={mode:o}")
+            refuse(f"manifest=bad-mode path={archive_path} actual={actual:o} expected={mode:o}")
     for _mode, source_path in rows.values():
         if not (repo / source_path).is_file():
-            fail(f"manifest source missing path={source_path}")
+            refuse(f"manifest=source-missing path={source_path}")
     return rows
 
 
@@ -91,7 +85,7 @@ def read_bytes(path: Path) -> bytes:
     try:
         return path.read_bytes()
     except OSError as error:
-        fail(f"read failed path={path}: {error}")
+        refuse(f"read=failed path={path}", str(error))
 
 
 def check_tree(
@@ -105,16 +99,16 @@ def check_tree(
         try:
             info = path.lstat()
         except FileNotFoundError:
-            fail(f"{label} missing path={archive_path}")
+            refuse(f"{label}=missing path={archive_path}")
         if stat.S_ISLNK(info.st_mode):
-            fail(f"{label} symlink path={archive_path}")
+            refuse(f"{label}=symlink path={archive_path}")
         if not stat.S_ISREG(info.st_mode):
-            fail(f"{label} not-file path={archive_path}")
+            refuse(f"{label}=not-file path={archive_path}")
         actual = stat.S_IMODE(info.st_mode)
         if actual != mode:
-            fail(f"{label} bad-mode path={archive_path} actual={actual:o} expected={mode:o}")
+            refuse(f"{label}=bad-mode path={archive_path} actual={actual:o} expected={mode:o}")
         if repo is not None and read_bytes(path) != read_bytes(repo / source_path):
-            fail(f"{label} content mismatch path={archive_path} source={source_path}")
+            refuse(f"{label}=content-mismatch path={archive_path} source={source_path}")
 
 
 def check_stage_script(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
@@ -130,60 +124,60 @@ def check_stage_script(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
         if path.is_file() and not path.is_symlink()
     }
     if shipped != set(rows):
-        fail(f"staged extra files paths={sorted(shipped - set(rows))}")
+        refuse(f"staged=extra-files paths={sorted(shipped - set(rows))}")
     shutil.rmtree(scratch)
 
 
 def check_release_workflow(repo: Path) -> None:
     text = read_text(repo / ".github" / "workflows" / "release.yml")
     if "packaging/stage-runtime-files.sh stage" not in text:
-        fail("release workflow does not stage runtime files")
+        refuse("release-workflow=no-stage", "The release workflow does not stage runtime files.")
     if not re.search(r"tar -czf .*\bvsys LICENSE README\.md lib\b", text):
-        fail("release workflow archive does not include lib")
+        refuse("release-workflow=archive-without-lib", "The release workflow archive does not include lib.")
 
 
 def check_aur_git_workflow(repo: Path) -> None:
     text = read_text(repo / ".github" / "workflows" / "aur-git.yml")
     for required in ('"warden/**"', '"packaging/stage-runtime-files.sh"', '"packaging/vsys-runtime-files.txt"'):
         if required not in text:
-            fail(f"aur-git workflow path missing value={required}")
+            refuse(f"aur-git-workflow=path-missing value={required}")
 
 
 def check_ci_workflow(repo: Path) -> None:
     text = read_text(repo / ".github" / "workflows" / "ci.yml")
     if "#commit={commit}" not in text:
-        fail("arch-package workflow does not pin the local git source to HEAD")
+        refuse("ci-workflow=unpinned-git-source", "The arch-package workflow does not pin the local git source to HEAD.")
     start = text.find("name: Build the local vsys-git package")
     end = text.find("name: Install the package and check the warden path", start)
     if start == -1 or end == -1:
-        fail("arch-package workflow build step not found")
+        refuse("ci-workflow=build-step-missing", "The arch-package workflow build step was not found.")
     build_step = text[start:end]
     if "${{" in build_step:
-        fail("arch-package workflow build step contains a GitHub expression")
+        refuse("ci-workflow=build-step-expression", "The arch-package workflow build step contains a GitHub expression.")
 
 
 def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:
     text = read_text(repo / "packaging" / name / "PKGBUILD")
     for dependency in ("'python'", "'systemd-libs'"):
         if dependency not in text:
-            fail(f"{name} dependency missing value={dependency}")
+            refuse(f"pkgbuild=dependency-missing package={name} value={dependency}")
     forbidden = ("/usr/lib/systemd/user", "systemctl", "preset")
     for value in forbidden:
         if value in text:
-            fail(f"{name} enables or installs user units value={value}")
+            refuse(f"pkgbuild=user-units package={name} value={value}", f"{name} enables or installs user units.")
     if re.search(r"^install=", text, flags=re.MULTILINE):
-        fail(f"{name} declares an install hook")
+        refuse(f"pkgbuild=install-hook package={name}", f"{name} declares an install hook.")
     if "'!strip'" not in text:
-        fail(f"{name} does not disable binary stripping")
+        refuse(f"pkgbuild=strip-enabled package={name}", f"{name} does not disable binary stripping.")
     if "'!debug'" not in text:
-        fail(f"{name} does not disable debug package splitting")
+        refuse(f"pkgbuild=debug-enabled package={name}", f"{name} does not disable debug package splitting.")
     if re.search(r"\bcp\s+-a\b", text) or "--preserve=ownership" in text:
-        fail(f"{name} preserves archive ownership while copying payload files")
+        refuse(f"pkgbuild=ownership-preserved package={name}", f"{name} preserves archive ownership while copying payload files.")
     if release:
         if 'cp -R --no-preserve=ownership "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"' not in text:
-            fail("vsys PKGBUILD does not copy the release lib/vsys tree without ownership")
+            refuse("pkgbuild=release-copy-missing package=vsys", "The vsys PKGBUILD does not copy the release lib/vsys tree without ownership.")
     elif 'packaging/stage-runtime-files.sh "${pkgdir}/usr"' not in text:
-        fail("vsys-git PKGBUILD does not use the runtime staging script")
+        refuse("pkgbuild=no-stage-script package=vsys-git", "The vsys-git PKGBUILD does not use the runtime staging script.")
 
 
 def check_install_sh(repo: Path) -> None:
@@ -192,7 +186,7 @@ def check_install_sh(repo: Path) -> None:
     # leaves the installed warden scripts owned by whichever local account has
     # the release builder's uid, and that account can rewrite them.
     if re.search(r"\bcp\s+-[A-Za-z]*p[A-Za-z]*\b", text) or "--preserve=ownership" in text:
-        fail("install.sh preserves archive ownership while copying payload files")
+        refuse("install-sh=ownership-preserved", "install.sh preserves archive ownership while copying payload files.")
 
 
 def check_installed_root(root: Path, rows: dict[str, tuple[int, str]]) -> None:
@@ -204,8 +198,8 @@ def check_installed_root(root: Path, rows: dict[str, tuple[int, str]]) -> None:
         if path.is_file() and not path.is_symlink()
     }
     if installed_paths != manifest_paths:
-        fail(
-            "installed tree mismatch "
+        refuse(
+            "installed=tree-mismatch "
             f"missing={sorted(manifest_paths - installed_paths)} "
             f"extra={sorted(installed_paths - manifest_paths)}"
         )
@@ -237,7 +231,10 @@ def main(argv: list[str] | None = None) -> int:
     installed_root = Path(args.installed_root).resolve() if args.installed_root else None
     try:
         run(repo, installed_root)
-    except (CheckFailure, OSError, subprocess.CalledProcessError) as error:
+    except Refusal as error:
+        report(error, "Package file-list check failed")
+        return 1
+    except (OSError, subprocess.CalledProcessError) as error:
         print(f"::error::Package file-list check failed: {error}", file=sys.stderr)
         return 1
     print("Package file-list check passed.")

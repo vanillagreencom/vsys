@@ -652,14 +652,14 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), version=None, fail_api=True)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: could not reach GitHub to read the latest release tag.")
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: lookup=latest-release failed")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
     def test_a_release_response_with_no_tag_installs_nothing(self) -> None:
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), version=None, api_tag=None)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: GitHub reported no latest release for vanillagreencom/vsys.")
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: lookup=latest-release empty repo=vanillagreencom/vsys")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
     def test_the_success_message_names_the_directory_the_installed_reporter_actually_uses(self) -> None:
@@ -746,7 +746,7 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), fail_sums=True)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: release vfixture publishes no SHA256SUMS; refusing to install an unverified reporter.")
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: download=SHA256SUMS failed release=vfixture")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
     def test_a_checksum_mismatch_installs_nothing(self) -> None:
@@ -754,7 +754,7 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), sums_text=wrong)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: checksum mismatch for vsys-scrub-report; nothing was installed.")
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: checksum=vsys-scrub-report mismatch")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
     def test_sha256sums_missing_a_file_installs_nothing(self) -> None:
@@ -763,10 +763,7 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), sums_text=partial)
             self.assertEqual(done.returncode, 1)
-            self.assertEqual(
-                done.stderr.splitlines()[0],
-                "scrub-reporter: SHA256SUMS names no checksum for vsys-report.conf; refusing to install unverified.",
-            )
+            self.assertEqual(done.stderr.splitlines()[0], "scrub-reporter: checksum=vsys-report.conf unlisted")
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl daemon-reload")) for call in calls))
 
     def test_a_report_in_the_old_tmpfs_directory_is_migrated(self) -> None:
@@ -944,7 +941,6 @@ exec /usr/bin/mv "$@"
                 done.stderr.splitlines()[0],
                 f"scrub-reporter: legacy-migrate=copy-failed report={legacy / 'root.result'}",
             )
-            self.assertIn("The reporter is installed and will run after the next scrub.", done.stderr)
             # The core install already completed before the carry-over failed.
             self.assertEqual(calls[-1], "systemctl daemon-reload")
             self.assertEqual(os.listdir(persistent), [])

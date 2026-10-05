@@ -516,7 +516,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
             self.w.warn_near_cap = lambda: []
             self.w.headroom = lambda: (False, 95, 100)
             self.w.Bus = FakeBus
-            self.w.notify = lambda summary, body: None
+            self.w.notify = lambda kind, summary, body: None
             try:
                 self.assertEqual(self.w.run(True), 0)
                 self.assertEqual(self.w.run(True), 0)
@@ -560,7 +560,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
                 self.w.warn_near_cap = lambda: []
                 self.w.headroom = lambda: (False, 95, 100)
                 self.w.Bus = lambda: next(buses)()
-                self.w.notify = lambda summary, body: None
+                self.w.notify = lambda kind, summary, body: None
                 try:
                     results = [self.w.run(correct) for correct in correct_flags]
                     state = json.loads(self.w.STATE.read_text())
@@ -655,7 +655,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
             self.w.headroom = lambda: (True, 1, 100)
             self.w.Bus = FakeBus
             self.w.move = lambda tree, reason, bus: (_ for _ in ()).throw(RuntimeError("boom"))
-            self.w.notify = lambda summary, body: None
+            self.w.notify = lambda kind, summary, body: None
             try:
                 self.assertEqual(self.w.run(True), 0)
                 doc = json.loads(self.w.STATUS.read_text())
@@ -697,7 +697,7 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
             self.w.Bus = FakeBus
             self.w.move = lambda tree, reason, bus: (True, "agent-warden-321-654.scope", [after], [])
             self.w._worktree_label = lambda pid: "vsy-52"
-            self.w.notify = lambda summary, body: None
+            self.w.notify = lambda kind, summary, body: None
             try:
                 self.assertEqual(self.w.run(True), 0)
                 doc = json.loads(self.w.STATUS.read_text())

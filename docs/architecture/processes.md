@@ -1,6 +1,6 @@
 # Process collection
 
-Covers: src/collect/procs.ts src/collect/process-thread.ts src/collect/process-worker.ts src/collect/collector.ts src/collect/process-thread.test.ts src/collect/worker-host.ts src/collect/worker-host.test.ts scripts/bench.ts scripts/sample-check.ts scripts/build.ts src/collect/worker-file.ts scripts/ci.py scripts/ci_test.py src/main.test.ts src/test/fixture.ts
+Covers: src/collect/procs.ts src/collect/process-thread.ts src/collect/process-worker.ts src/collect/collector.ts src/collect/process-thread.test.ts src/collect/worker-host.ts src/collect/worker-host.test.ts scripts/bench.ts scripts/sample-check.ts scripts/build.ts src/collect/worker-file.ts scripts/ci.py scripts/ci_test.py scripts/refusal.py src/main.test.ts src/test/fixture.ts
 
 Process collection reads every process in the configured `/proc` once per sample. The program runs it on a thread of its own, so a keystroke no longer waits while `/proc` is read, and that thread keeps the state the next reading compares against. Parsing the thread's reply still runs on the dashboard's thread.
 

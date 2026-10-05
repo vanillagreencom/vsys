@@ -1,0 +1,1 @@
+- The drive and scrub reporter installers now start each error with one fixed `key=value` line naming what failed, such as `checksum=vsys-smart-report mismatch`, and explain it on the lines after.

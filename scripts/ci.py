@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from refusal import Refusal, refuse, report
+
 
 ARTIFACTS = (
     "dist/main.js",
@@ -35,7 +37,7 @@ def run_python_suites() -> None:
     # test_selftest_subprocess_exits_zero.
     tests = Path("warden") / "agent_warden_test.py"
     if not tests.is_file():
-        raise ValueError(f"{tests} is missing")
+        refuse(f"suite=missing path={tests}", f"{tests} is missing.")
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     for directory in ("scripts", "warden"):
         subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", directory, "-p", "*_test.py"], check=True, env=env)
@@ -49,9 +51,9 @@ def main() -> int:
     for check in CHECKS:
         command = scripts.get(check)
         if not isinstance(command, str) or not command.strip():
-            raise ValueError(f"package.json must define a nonempty {check} script")
+            refuse(f"script=missing check={check}", f"package.json must define a nonempty {check} script.")
     if not Path("bun.lock").is_file():
-        raise ValueError("Commit bun.lock before running application checks")
+        refuse("lockfile=missing path=bun.lock", "Commit bun.lock before running application checks.")
 
     subprocess.run(["bun", "install", "--frozen-lockfile"], check=True)
     # Each worker thread is an entry point of its own, because the bundler
@@ -63,14 +65,19 @@ def main() -> int:
         subprocess.run(["bun", "run", check], check=True)
     for name in ARTIFACTS:
         artifact = Path(name)
-        if not artifact.is_file() or artifact.stat().st_size == 0:
-            raise ValueError(f"The build emitted no {name}")
+        if not artifact.is_file():
+            refuse(f"artifact=missing path={name}", f"The build emitted no {name}.")
+        if artifact.stat().st_size == 0:
+            refuse(f"artifact=empty path={name}", f"The build left {name} empty.")
     return 0
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except Refusal as error:
+        report(error, "Application checks failed")
+        sys.exit(1)
     except (OSError, ValueError, TypeError, AttributeError, subprocess.CalledProcessError) as error:
         print(f"::error::Application checks failed: {error}", file=sys.stderr)
         sys.exit(1)

@@ -46,15 +46,18 @@ Install coreutils, which ships it on nearly every Linux distribution, then run t
 	elif command -v shasum >/dev/null 2>&1; then
 		checksum() { shasum -a 256 "$1" | cut -d' ' -f1; }
 	else
-		die "this installer needs sha256sum or shasum to verify the download."
+		die "command=sha256sum,shasum missing
+This installer needs sha256sum or shasum to verify the download."
 	fi
 
 	local version="${VSYS_VERSION:-}"
 	if [[ -z $version ]]; then
 		version=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
 			sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) ||
-			die "could not reach GitHub to read the latest release tag."
-		[[ -n $version ]] || die "GitHub reported no latest release for ${REPO}."
+			die "lookup=latest-release failed
+Could not reach GitHub to read the latest release tag."
+		[[ -n $version ]] || die "lookup=latest-release empty repo=${REPO}
+GitHub reported no latest release for ${REPO}."
 	fi
 	local source="https://raw.githubusercontent.com/${REPO}/${version}/scripts/smart-reporter"
 	local sums_url="https://github.com/${REPO}/releases/download/${version}/SHA256SUMS"
@@ -63,7 +66,8 @@ Install coreutils, which ships it on nearly every Linux distribution, then run t
 	trap cleanup EXIT
 
 	curl -fsSL "$sums_url" -o "$WORK/SHA256SUMS" ||
-		die "release ${version} publishes no SHA256SUMS; refusing to install an unverified reporter."
+		die "download=SHA256SUMS failed release=${version}
+Release ${version} publishes no SHA256SUMS; refusing to install an unverified reporter."
 
 	local name sum expected
 	for name in vsys-smart-report vsys-smart-report.service vsys-smart-report.timer vsys-smart.conf; do
@@ -71,13 +75,17 @@ Install coreutils, which ships it on nearly every Linux distribution, then run t
 			die "download=$name failed
 Could not fetch $source/$name. Nothing was installed."
 		if ! expected=$(sed -n "s/^\([0-9a-f]\{64\}\)[[:space:]]\+\*\?${name}\$/\1/p" "$WORK/SHA256SUMS"); then
-			die "could not read SHA256SUMS."
+			die "read=SHA256SUMS failed
+Could not read SHA256SUMS."
 		fi
-		[[ -n $expected ]] || die "SHA256SUMS names no checksum for $name; refusing to install unverified."
+		[[ -n $expected ]] || die "checksum=$name unlisted
+SHA256SUMS names no checksum for $name; refusing to install unverified."
 		if ! sum=$(checksum "$WORK/$name"); then
-			die "could not checksum $name."
+			die "checksum=$name failed
+Could not checksum $name."
 		fi
-		[[ "$sum" == "$expected" ]] || die "checksum mismatch for $name: got $sum, release names $expected; nothing was installed."
+		[[ "$sum" == "$expected" ]] || die "checksum=$name mismatch
+Got $sum, release names $expected; nothing was installed."
 	done
 	install -Dm755 "$WORK/vsys-smart-report" /usr/local/bin/vsys-smart-report
 	install -Dm644 "$WORK/vsys-smart-report.service" /etc/systemd/system/vsys-smart-report.service
