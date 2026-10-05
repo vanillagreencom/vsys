@@ -3,15 +3,15 @@ import { dirname, join, resolve } from "node:path";
 
 export type InstallFileProbe = (path: string) => boolean;
 
-/** The refusals a caller or a test tells apart; the message is for the reader. */
+/**
+ * The refusals a caller or a test tells apart. `errorText()` in
+ * `src/ui/refusals.ts` writes what the reader sees.
+ */
 export type WardenRefusal = { kind: "installer-not-found"; tried: string[] };
 
 export class WardenError extends Error {
-  constructor(
-    readonly refusal: WardenRefusal,
-    message: string,
-  ) {
-    super(message);
+  constructor(readonly refusal: WardenRefusal) {
+    super(refusal.kind);
   }
 }
 
@@ -39,10 +39,7 @@ export function resolveWardenDir(
   for (const candidate of candidates) {
     if (isInstallFile(join(candidate, "install"))) return candidate;
   }
-  throw new WardenError(
-    { kind: "installer-not-found", tried: candidates },
-    `vsys warden installer not found; tried ${candidates.join(", ")}`,
-  );
+  throw new WardenError({ kind: "installer-not-found", tried: candidates });
 }
 
 export async function dispatchWarden(

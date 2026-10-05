@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Collector } from "./collect/collector";
-import { saveConfig } from "./config/config";
+import { ConfigError, saveConfig } from "./config/config";
 import { main, sampleSummary } from "./main";
 import { summarySnapshot } from "./model/export";
 import { fixture, hermeticBin } from "./test/fixture";
+import { errorText } from "./ui/refusals";
 
 test("once exports structured evidence and fails visibly on source errors", async () => {
   const f = fixture();
@@ -48,6 +49,15 @@ test("once exports structured evidence and fails visibly on source errors", asyn
     expect(invalid.code).toBe(1);
     const empty = await run(["--config", ""]);
     expect(empty.code).toBe(1);
+    // A typed refusal reaches the terminal written out, never as its kind.
+    const pressure = join(f.root, "pressure.toml");
+    writeFileSync(pressure, "pressureAmber = 90\npressureRed = 50\n");
+    const refused = await run(["--config", pressure]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(
+      errorText(new ConfigError({ kind: "pressure-order" })),
+    );
+    expect(refused.stderr).not.toContain("pressure-order");
   } finally {
     f.cleanup();
   }

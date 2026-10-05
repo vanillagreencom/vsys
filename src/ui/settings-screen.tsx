@@ -16,6 +16,7 @@ import type { Level } from "../model/verdict";
 import { keyLabel, screenPad, wideWidth } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { useScreenKeys } from "./keys";
+import { errorText } from "./refusals";
 import { rowsById } from "./selection";
 import {
   capabilityLabels,
@@ -265,10 +266,7 @@ export function Settings({
       setPicking(null);
       onNotice(`${settingLabel(key)} saved`, "ok");
     } catch (error) {
-      onNotice(
-        error instanceof Error ? error.message : String(error),
-        "danger",
-      );
+      onNotice(errorText(error), "danger");
     }
   }
   /**

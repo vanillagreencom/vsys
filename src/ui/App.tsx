@@ -40,6 +40,7 @@ import {
 import { type Output, osc52 } from "./clipboard";
 import { Home, homeTarget, recentChanges } from "./home";
 import { type KeyHandler, KeyProvider } from "./keys";
+import { errorText } from "./refusals";
 import { homeRegions, jumpKeys, storageRegions } from "./regions";
 import { Resources } from "./resources";
 import { Settings } from "./settings-screen";
@@ -260,8 +261,7 @@ export function App({
       renderer.triggerNotification(fresh.headline, "vsys");
     }
   }, [issues, renderer]);
-  const report = (error: unknown) =>
-    notice(error instanceof Error ? error.message : String(error), "danger");
+  const report = (error: unknown) => notice(errorText(error), "danger");
   const navigate = (next: View) => {
     setView(next);
     setHelp(false);

@@ -63,7 +63,10 @@ interface Events {
   error(error: unknown): void;
 }
 
-/** The refusals a caller or a test tells apart; the message is for the reader. */
+/**
+ * The refusals a caller or a test tells apart. `errorText()` in
+ * `src/ui/refusals.ts` writes what the reader sees.
+ */
 export type SettingsRefusal =
   | { kind: "pinned-omits-shipped"; missing: string[] }
   | { kind: "overlay-changed" }
@@ -74,11 +77,8 @@ export type SettingsRefusal =
     };
 
 export class SettingsError extends Error {
-  constructor(
-    readonly refusal: SettingsRefusal,
-    message: string,
-  ) {
-    super(message);
+  constructor(readonly refusal: SettingsRefusal) {
+    super(refusal.kind);
   }
 }
 
@@ -98,10 +98,7 @@ async function restoreOptionalFile(
 ): Promise<void> {
   const current = await readOptionalFile(path);
   if (current !== expectedCurrentBody)
-    throw new SettingsError(
-      { kind: "overlay-changed" },
-      "Agent-tools rollback skipped because the overlay changed after this save",
-    );
+    throw new SettingsError({ kind: "overlay-changed" });
   if (body === null) {
     await rm(path, { force: true });
     return;
@@ -255,13 +252,10 @@ export class Session {
             .map((tool) => tool.name)
             .filter((name) => !pinnedNames.has(name));
           if (missingShippedNames.length)
-            throw new SettingsError(
-              {
-                kind: "pinned-omits-shipped",
-                missing: missingShippedNames,
-              },
-              `Pinned agentTools omits shipped agent tools: ${missingShippedNames.join(", ")}. Edit agentTools in config.toml, or remove it there to use the shared list.`,
-            );
+            throw new SettingsError({
+              kind: "pinned-omits-shipped",
+              missing: missingShippedNames,
+            });
         }
         const currentAgentTools = [...currentState.config.agentTools];
         const currentAgentToolSet = new Set(currentAgentTools);
@@ -347,16 +341,11 @@ export class Session {
             const skipped =
               rollbackError instanceof SettingsError &&
               rollbackError.refusal.kind === "overlay-changed";
-            throw new SettingsError(
-              {
-                kind: skipped ? "rollback-skipped" : "rollback-failed",
-                saveError: error,
-                rollbackError,
-              },
-              skipped
-                ? "Config save failed and agent-tools rollback skipped because the overlay changed after this save"
-                : "Config save failed and agent-tools rollback failed",
-            );
+            throw new SettingsError({
+              kind: skipped ? "rollback-skipped" : "rollback-failed",
+              saveError: error,
+              rollbackError,
+            });
           }
         }
         throw error;

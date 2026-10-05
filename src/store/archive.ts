@@ -11,7 +11,10 @@ type Change =
   | { kind: "array"; length: number; entries: [number, Change][] }
   | { kind: "object"; entries: [string, Change][]; removed: string[] };
 
-/** The refusals a caller or a test tells apart; the message is for the reader. */
+/**
+ * The refusals a caller or a test tells apart. `errorText()` in
+ * `src/ui/refusals.ts` writes what the reader sees.
+ */
 export type ArchiveRefusal =
   | { kind: "invalid-column"; table: string; field: string }
   | { kind: "short-column"; table: string; field: string; row: number }
@@ -19,11 +22,8 @@ export type ArchiveRefusal =
   | { kind: "over-budget" };
 
 export class ArchiveError extends Error {
-  constructor(
-    readonly refusal: ArchiveRefusal,
-    message: string,
-  ) {
-    super(message);
+  constructor(readonly refusal: ArchiveRefusal) {
+    super(refusal.kind);
   }
 }
 
@@ -72,10 +72,7 @@ function decode(encoded: Json): Snapshot {
     const columns = Object.entries(table.columns).map(
       ([field, values]): [string, Json[]] => {
         if (!Array.isArray(values))
-          throw new ArchiveError(
-            { kind: "invalid-column", table: key, field },
-            `Invalid archived column: ${key}.${field}`,
-          );
+          throw new ArchiveError({ kind: "invalid-column", table: key, field });
         return [field, values];
       },
     );
@@ -91,10 +88,12 @@ function decode(encoded: Json): Snapshot {
           if (missing.get(field)?.has(i)) return [];
           const cell = values[i];
           if (cell === undefined)
-            throw new ArchiveError(
-              { kind: "short-column", table: key, field, row: i },
-              `Archived column ${key}.${field} has no row ${i}`,
-            );
+            throw new ArchiveError({
+              kind: "short-column",
+              table: key,
+              field,
+              row: i,
+            });
           return [[field, cell]];
         }),
       ),
@@ -321,10 +320,7 @@ class Reader {
         ? this.chunk.open[index - this.sealed]
         : this.sealedLine(index);
     if (line === undefined)
-      throw new ArchiveError(
-        { kind: "missing-line", line: index },
-        `Archive checkpoint has no line ${index}`,
-      );
+      throw new ArchiveError({ kind: "missing-line", line: index });
     return line;
   }
   private sealedLine(index: number): string | undefined {
@@ -430,10 +426,7 @@ export class Archive {
       this.projections.delete(old);
     }
     if (this.bytes > this.maxBytes)
-      throw new ArchiveError(
-        { kind: "over-budget" },
-        "A history checkpoint exceeds the memory budget",
-      );
+      throw new ArchiveError({ kind: "over-budget" });
     // A projection keeps a lane only while the lane lives. A lane that ended
     // leaves the list that asked for it, and holding its samples until its
     // checkpoints expire would keep every lane that ran inside the window.
