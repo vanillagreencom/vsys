@@ -3,7 +3,7 @@ import sys
 from types import SimpleNamespace
 import unittest
 
-from agent_warden_testlib import WARDEN, WardenRulesCase, clean_env, load_warden, scratch
+from agent_warden_testlib import WARDEN, WardenRulesCase, clean_env, load_warden, scratch, started_scope
 
 sys.dont_write_bytecode = True
 
@@ -171,9 +171,8 @@ class AgentWardenLimitRules(WardenRulesCase):
                 self.w.CG_ROOT = old_root
 
     def test_cpu_weight_rows(self):
-        self.assertEqual(self.w.SCOPE_CPU_WEIGHT, 99)
-        source = WARDEN.read_text()
-        self.assertIn("ctypes.c_uint64(SCOPE_CPU_WEIGHT)", source)
+        # A non-default weight enables the CPU controller inside agents.slice.
+        self.assertEqual(started_scope(self.w).values(b"CPUWeight"), [99])
 
     def test_memory_warn_default_rows(self):
         with scratch() as tmp:

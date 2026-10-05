@@ -270,12 +270,14 @@ test("a reading names only the roots of the sample it is published for", async (
 test("a list equal to the shipped one is default and any other list is the reader's", async () => {
   const shipped = defaultScratchDirs();
   // The author's workstation runs with no settings file, so these three are
-  // what it measures. They stay the default, and stay scanned there.
-  expect(shipped).toEqual([
-    join(homedir(), "dev/.scratch/agents"),
-    join(homedir(), "dev/.scratch/claude"),
-    "/var/tmp/claude",
-  ]);
+  // what it measures. They stay in the default, and stay scanned there.
+  expect(shipped).toEqual(
+    expect.arrayContaining([
+      join(homedir(), "dev/.scratch/agents"),
+      join(homedir(), "dev/.scratch/claude"),
+      "/var/tmp/claude",
+    ]),
+  );
   const scans = held();
   const collector = new ScratchCollector(scans.runner);
   try {

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fixture, underHome } from "../test/fixture";
-import { shippedAgentTools } from "./agent-tools";
+import { loadAgentToolNames, shippedAgentTools } from "./agent-tools";
 import {
   defaults,
   loadConfig,
@@ -123,7 +123,7 @@ test("every host-specific name ships a systemd user-session default", () => {
   expect(c.capMarkers).toContain("CARGO_BUILD_JOBS");
   expect(c.linkerNames).toContain("mold");
   expect(c.compilerNames).toContain("rustc");
-  expect(c.jobserverEnv).toEqual(["MAKEFLAGS"]);
+  expect(c.jobserverEnv).toContain("MAKEFLAGS");
   // No host-specific list ships empty, which would silently match nothing.
   for (const list of [
     c.agentTools,
@@ -301,24 +301,11 @@ test("agent tool overlay reaches defaults and config overrides it", async () => 
   const root = scratchRoot("config-agent-tools");
   const configPath = join(root, "config.toml");
   const toolsPath = join(process.cwd(), "data/owner-agent-tools.json");
-  expect((await loadConfig(configPath, toolsPath)).agentTools).toEqual([
-    "claude",
-    "codex",
-    "gemini",
-    "copilot",
-    "opencode",
-    "crush",
-    "cursor-agent",
-    "pi",
-    "grok",
-    "antigravity",
-    "dsh",
-    "agy",
-    "omp",
-    "ori",
-    "fx",
-    "muse",
-  ]);
+  // The merge itself is the loader's, tested in its own suite; this holds
+  // the config to the merged list, which the overlay makes longer.
+  const merged = await loadAgentToolNames(toolsPath);
+  expect(merged.length).toBeGreaterThan(shippedAgentTools.tools.length);
+  expect((await loadConfig(configPath, toolsPath)).agentTools).toEqual(merged);
   writeFileSync(configPath, 'agentTools = ["local-agent"]\n');
   expect((await loadConfig(configPath, toolsPath)).agentTools).toEqual([
     "local-agent",

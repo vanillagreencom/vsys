@@ -14,7 +14,6 @@ import { point } from "../store/point";
 import { claudeLink, fixture } from "../test/fixture";
 import { present } from "../test/present";
 import { fakeBus, noBus } from "../test/udisks";
-import { capabilityLine } from "../ui/settings";
 import { FinishedScrubMemory } from "./btrfs";
 import { buildKind, excludedArgv, toolSignals } from "./builds";
 import { Collector, createCollector } from "./collector";
@@ -222,7 +221,7 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
       agents: 0,
       // The slice's own page cache, which the fixture writes for every group.
       cache: 4000,
-      line: "Agent slice: available",
+      failure: null,
     },
     {
       slice: "absent",
@@ -232,7 +231,7 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
       agents: 30,
       // Each agent scope's own page cache.
       cache: 8000,
-      line: "Agent slice: not available: no agent slice is defined or running",
+      failure: "absent",
     },
   ] as const;
   for (const row of rows) {
@@ -273,7 +272,7 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
       cache: meters(s, f.config).find((m) => m.id === "memory")?.values.cache,
       // What the history keeps for the sample says the same.
       stored: [point(s, f.config).unconfined, point(s, f.config).agents],
-      line: capabilityLine(slice).startsWith(row.line),
+      failure: slice.failure,
       source: slice.source,
     }).toEqual({
       slice: row.slice,
@@ -287,7 +286,7 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
       agents: row.agents,
       cache: row.cache,
       stored: [row.escaped, row.agents],
-      line: true,
+      failure: row.failure,
       source: join(f.config.cgroupRoot, "agents.slice"),
     });
   }
@@ -1135,7 +1134,7 @@ test("branch naming follows a linked worktree and does not hide a broken gitdir"
   rmSync(join(f.root, "repo/.git/worktrees/lane/HEAD"));
   const broken = await collector.sample(2000);
   expect(broken.procs[0]?.branch).toBeNull();
-  expect(broken.errors.length).toBeGreaterThan(0);
+  expect(broken.errors.map((e) => e.source)).toContain(join(cwd, ".git"));
 });
 test("an unreadable environment is not labelled as the default account", async () => {
   const f = setup();
@@ -1344,10 +1343,7 @@ test("with no report directory, udisks answers in its place or says why it canno
   // udisks-only machine must never be told by Settings that Storage has
   // nothing when the row above it already has a number.
   const smart = alone.capabilities.find((c) => c.id === "smart");
-  expect(smart?.available).toBe(true);
-  expect(capabilityLine(smart as NonNullable<typeof smart>)).toBe(
-    "Drive lifetime reports: available",
-  );
+  expect(smart).toMatchObject({ available: true, failure: null });
   // The capability must name udisks2 as what actually answered, not the
   // report directory this machine never populated. Pinned to the literal
   // D-Bus service name, not the production constant, so a wrong rename of
@@ -1456,9 +1452,10 @@ test("the drive capability needs only one supplying device, never every one or o
       },
     ]),
   ).sample();
-  expect((none.storage.devices ?? []).every((d) => d.source === null)).toBe(
-    true,
-  );
+  expect(none.storage.devices?.map((d) => [d.name, d.source])).toEqual([
+    ["sda", null],
+    ["sdb", null],
+  ]);
   expect(none.capabilities.find((c) => c.id === "smart")?.failure).toBe(
     "absent",
   );

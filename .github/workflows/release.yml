@@ -23,6 +23,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # A manual run takes the tag as typed text, where the push trigger's
+      # `v*` filter does not apply. A tag without its `v`, or a branch name,
+      # would otherwise draft a release under that name and hand the AUR job
+      # a `pkgver` that `${TAG#v}` left unchanged.
       - name: Check the tag shape
         run: |
           case "$TAG" in
@@ -94,6 +98,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version-file: .bun-version
+      # Setting the version is a manual step of docs/RELEASING.md before the
+      # tag. A tag pushed on a commit that skipped it would ship archives and
+      # an AUR package built from a tree whose package.json and CHANGELOG.md
+      # name another release.
       - name: Check that package.json matches the tag
         run: |
           want="${TAG#v}"

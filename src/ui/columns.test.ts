@@ -161,7 +161,8 @@ test("text wraps between words, and a word wider than the column is broken", () 
   // A control byte is measured as the blank it draws as, which is a break.
   expect(wrapLines("ab\u0007cd", 2)).toEqual(["ab", "cd"]);
   // A column narrower than one character is a caller's mistake, not a wrap.
-  expect(() => wrapLines("x", 0)).toThrow("needs at least 1");
+  expect(() => wrapLines("x", 0)).toThrow(RangeError);
+  expect(wrapLines("x", 1)).toEqual(["x"]);
 });
 
 test("a capped text ends in the mark and fits the rows it was given", () => {

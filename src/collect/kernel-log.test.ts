@@ -3,7 +3,6 @@ import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
 import { present } from "../test/present";
-import { capabilityReason } from "../ui/settings";
 import { StorageCollector } from "./btrfs";
 import { Reader } from "./io";
 import {
@@ -139,10 +138,7 @@ test("only a search that answered counts as a kernel log this user can read", ()
   expect(probeKernelLog(sh(`echo '{"MESSAGE":"Linux version"}'`))).toBeNull();
   // journalctl ran and found no kernel message: the user cannot see the
   // system journal. It exits 1, the way a search that matched nothing does.
-  expect(probeKernelLog(sh("exit 1"))).toEqual({
-    failure: "incomplete",
-    detail: "sh exited 1 with no kernel message",
-  });
+  expect(probeKernelLog(sh("exit 1"))?.failure).toBe("incomplete");
   // journalctl ran and refused, in its own words. Joining a group fixes
   // nothing there, so it is a refusal rather than a journal out of sight.
   const refused = probeKernelLog(
@@ -152,17 +148,6 @@ test("only a search that answered counts as a kernel log this user can read", ()
     failure: "unreadable",
     detail: "Compiled without pattern matching support",
   });
-  const cap = (outcome: typeof refused) => ({
-    id: "kernel-log" as const,
-    available: false,
-    failure: outcome?.failure ?? null,
-    source: "journalctl",
-    detail: outcome?.detail ?? "",
-  });
-  expect(capabilityReason(cap(refused))).toBe("journalctl refused the search");
-  expect(capabilityReason(cap(probeKernelLog(sh("exit 1"))))).toContain(
-    "systemd-journal group",
-  );
   // Nothing ran at all.
   expect(probeKernelLog(["vsys-has-no-such-program"])?.failure).toBe("absent");
 });

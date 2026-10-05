@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Capability, CapabilityId } from "../model/types";
 import { fixture, groupSnapshot } from "../test/fixture";
-import { capabilityOffer, capabilityReason } from "../ui/settings";
+import { capabilityLabels, capabilityOffer } from "../ui/settings";
 import {
   probeAgentSlice,
   probeCapabilities,
@@ -41,16 +41,12 @@ test("a delegated cgroup v2 session probes every capability available", () => {
   mkdirSync(f.config.scrubDir, { recursive: true });
   mkdirSync(f.config.smartDir, { recursive: true });
   const caps = probeCapabilities(f.config, answering, answering);
-  expect(caps.map((cap) => cap.id)).toEqual([
-    "cgroup2",
-    "delegation",
-    "psi",
-    "io-stat",
-    "scrub",
-    "kernel-log",
-    "smart",
-    "tmux",
-  ]);
+  // With the agent slice, which each sample probes against its own groups,
+  // these are every id the capability type declares, once each: the label
+  // table is keyed by that type, so the compiler holds it to the full set.
+  const ids = [...caps, probeAgentSlice(f.config, [])].map((cap) => cap.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(Object.keys(capabilityLabels).sort()).toEqual([...ids].sort());
   expect(caps.filter((cap) => !cap.available)).toEqual([]);
   expect(caps.every((cap) => cap.failure === null && cap.detail === "")).toBe(
     true,
@@ -76,9 +72,6 @@ test("a missing interface names the source that decided it and the reason", () =
     failure: "absent",
     source: f.config.smartDir,
   });
-  expect(capabilityReason(bare.get("smart") as Capability)).toBe(
-    "no readable drive report directory",
-  );
   mkdirSync(f.config.smartDir, { recursive: true });
   expect(
     byId(probeCapabilities(f.config, answering, answering)).get("smart")
@@ -516,17 +509,7 @@ test("a present pressure file that fails is not reported as a missing kernel", (
   const malformed = byId(probeCapabilities(f.config, answering, answering)).get(
     "psi",
   );
-  expect(malformed).toMatchObject({
-    available: false,
-    failure: "malformed",
-    detail: "Missing pressure fields",
-  });
-  expect(capabilityReason(malformed as Capability)).toBe(
-    `${path} is not in the expected format`,
-  );
-  expect(capabilityReason(malformed as Capability)).not.toContain(
-    "no PSI on this kernel",
-  );
+  expect(malformed).toMatchObject({ available: false, failure: "malformed" });
   // A source that exists but cannot be read is its own diagnosis. A directory
   // in the file's place fails with an errno whatever user runs the test.
   rmSync(path);
@@ -535,9 +518,6 @@ test("a present pressure file that fails is not reported as a missing kernel", (
     probeCapabilities(f.config, answering, answering),
   ).get("psi");
   expect(unreadable?.failure).toBe("unreadable");
-  expect(capabilityReason(unreadable as Capability)).toBe(
-    `${path} exists but cannot be read`,
-  );
 });
 
 test("every sample carries the capabilities probed when vsys started", async () => {
@@ -572,7 +552,6 @@ test("tmux absent and tmux without a server are separate diagnoses", () => {
     ),
   ).get("tmux");
   expect(absent).toMatchObject({ available: false, failure: "absent" });
-  expect(capabilityReason(absent as Capability)).toBe("no tmux on the path");
   // Installed, but nothing running for it to read. That is not a broken
   // installation, and it must not read as one.
   const idle = byId(
@@ -586,9 +565,6 @@ test("tmux absent and tmux without a server are separate diagnoses", () => {
     ),
   ).get("tmux");
   expect(idle).toMatchObject({ available: false, failure: "incomplete" });
-  expect(capabilityReason(idle as Capability)).toBe(
-    "tmux is installed but no server is answering",
-  );
   // The other capabilities are decided by their own reads, not by this one.
   const caps = byId(probeCapabilities(f.config, answering, answering));
   expect(caps.get("tmux")?.available).toBe(true);

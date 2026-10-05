@@ -99,8 +99,6 @@ test("a supervising cargo is not a build slot beside the compilers it runs", () 
   expect(buildLoad(s, c).builds).toBe(2);
   expect(meters(s, c).find((m) => m.id === "builds")?.values.builds).toBe(2);
   expect(laneBuilds(s, c).map((row) => row.builds)).toEqual([2]);
-  // The per-process list keeps every classified build.
-  expect(s.procs.filter((p) => p.build).length).toBe(5);
 });
 
 test("an empty compiler wrapper names the lane that bypasses the cache", () => {

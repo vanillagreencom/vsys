@@ -122,7 +122,7 @@ test("a list windows around the selection and says what it left out", async () =
     await ui.renderOnce();
     const frame = ui.captureCharFrame();
     expect(frame).toContain("▍row-15");
-    expect(frame).not.toContain("row-0\n");
+    expect(frame).not.toContain("row-0");
     expect(frame).toContain("of 20");
   } finally {
     await act(async () => {

@@ -9,7 +9,7 @@ import {
 } from "../test/fixture";
 import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
-import { markerRuns, pointAt, windowLabel } from "./timeline-screen";
+import { markerRuns, pointAt, windowLabel, windows } from "./timeline-screen";
 
 test("marker runs merge neighbours and let the cursor win over a change", () => {
   expect(markerRuns([false, false, true, true, false], undefined)).toEqual([
@@ -343,15 +343,14 @@ test("a shorter window leaves the Timeline selection on a row that exists", asyn
   try {
     await t.press("6");
     // Widen to an hour, then select a deep row.
-    await t.press("w");
-    await t.press("w");
+    const hour = windows.indexOf(3600000);
+    expect(hour).toBeGreaterThan(0);
+    for (let i = 0; i < hour; i++) await t.press("w");
     for (let i = 0; i < 8; i++) await t.press("j");
     expect(selectedRow(t.frame())).not.toBe("");
-    // Cycle back to a window that holds fewer changes. The row number the
-    // reader was on names nothing there.
-    await t.press("w");
-    await t.press("w");
-    await t.press("w");
+    // Cycle past the longest window back to the shortest, which holds fewer
+    // changes. The row number the reader was on names nothing there.
+    for (let i = hour; i < windows.length; i++) await t.press("w");
     const frame = t.frame();
     expect(frame).toContain("Last 5m");
     // A row that exists is marked, and Enter acts on it rather than on a

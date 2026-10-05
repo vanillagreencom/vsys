@@ -98,22 +98,19 @@ class ApplicationChecks(unittest.TestCase):
                 self.assertNotEqual(self.run_ci().returncode, 0)
                 marker.unlink()
 
-    def test_contract_names_every_check_and_artifact(self):
-        # Every other expectation here is derived from these two, so their
-        # contents are asserted once. Dropping a check leaves the thing it
-        # gates unmeasured with the rest of the suite green.
-        self.assertEqual(
-            CHECKS,
-            ("lint", "typecheck", "test", "build", "smoke", "bench:scratch", "bench:writes"),
-        )
-        self.assertEqual(
-            ARTIFACTS,
-            (
-                "dist/main.js",
-                "dist/collect/process-worker.js",
-                "dist/collect/scratch-worker.js",
-            ),
-        )
+    def test_contract_holds_the_required_checks_and_every_worker(self):
+        # Every other expectation here is derived from these two. Dropping a
+        # required check leaves the thing it gates unmeasured with the rest of
+        # the suite green, and smoke reads the bundle build just wrote.
+        required = {"lint", "typecheck", "test", "build", "smoke", "bench:scratch", "bench:writes"}
+        self.assertLessEqual(required, set(CHECKS))
+        self.assertLess(CHECKS.index("build"), CHECKS.index("smoke"))
+        # Each worker thread is a bundle entry point of its own, found here
+        # from the source tree rather than from a second list.
+        source = CI.parents[1] / "src"
+        workers = [path.relative_to(source).with_suffix(".js") for path in source.rglob("*-worker.ts")]
+        self.assertGreater(len(workers), 0)
+        self.assertLessEqual({"dist/main.js", *(f"dist/{path}" for path in workers)}, set(ARTIFACTS))
 
     def test_missing_or_empty_script_fails(self):
         for check in CHECKS:

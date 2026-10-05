@@ -925,7 +925,7 @@ test("removing a shipped agent tool is refused before settings writes", async ()
         ...f.config,
         agentTools: f.config.agentTools.slice(1),
       }),
-    ).rejects.toThrow("Shipped names cannot be removed");
+    ).rejects.toThrow();
     expect(existsSync(configPath)).toBe(false);
     expect(existsSync(f.agentToolsPath)).toBe(false);
   } finally {

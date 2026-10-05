@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { defaults } from "../config/config";
+import { type Config, defaults } from "../config/config";
 import {
   emptySnapshot,
   everyCauseSnapshot,
@@ -8,15 +8,19 @@ import {
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
+import { present } from "../test/present";
 import { type IntegrityState, integrities } from "./integrity";
 import type { Group, Lane, Scrub, Snapshot, Volume } from "./types";
 import {
   agentTotal,
   buildLoad,
+  type CauseId,
+  causeOrder,
   causeRank,
   causes,
   laneLinkers,
   leastFree,
+  type Meter,
   meters,
   sliceRoots,
   sliceSum,
@@ -29,6 +33,12 @@ import {
 
 const g = (path: string, name: string, o: Partial<Group> = {}) =>
   groupSnapshot({ path, name, ...o });
+/** A meter by its id, so a meter added later moves no reading here. */
+const meterOf = (s: Snapshot, c: Config, id: Meter["id"]) =>
+  present(
+    meters(s, c).find((m) => m.id === id),
+    `the ${id} meter`,
+  );
 function healthy(): Snapshot {
   const s = emptySnapshot();
   s.system.pressure = {
@@ -96,9 +106,9 @@ test("the agent slice name comes from config, not a hardcoded name", () => {
     g("app.slice", c.desktopSlice, { swap: c.swapFloor + 1 }),
   ];
   expect(causes(s, c)[0]?.values.cache).toBe(7);
-  expect(meters(s, c)[1]?.values.cache).toBe(7);
+  expect(meterOf(s, c, "memory").values.cache).toBe(7);
   // The default slice name must not be consulted anywhere.
-  expect(meters(s, defaults())[1]?.values.cache).toBeNull();
+  expect(meterOf(s, defaults(), "memory").values.cache).toBeNull();
 });
 
 test("a saturated disk names the writing scope and carries its numbers", () => {
@@ -152,7 +162,7 @@ test("a filesystem below the free-space floor is its own cause", () => {
     paths: ["/full"],
     values: { free: 5, total: 100 },
   });
-  expect(meters(s, c)[2]?.values.free).toBe(5);
+  expect(meterOf(s, c, "disk").values.free).toBe(5);
   // Above the floor there is no cause at all.
   s.storage.volumes = [volume("/big", c.freeFloor + 1)];
   expect(causes(s, c).find((item) => item.id === "free-space")).toBeUndefined();
@@ -232,8 +242,9 @@ test("four meters carry exact numbers and the biggest consumer", () => {
       group: "/agents.slice/b.scope",
     }),
   ];
-  const [cpu, memory, disk, builds] = meters(s, c);
-  expect(meters(s, c)).toHaveLength(4);
+  const [cpu, memory, disk, builds] = (
+    ["cpu", "memory", "disk", "builds"] as const
+  ).map((id) => meterOf(s, c, id));
   expect(cpu).toEqual({
     id: "cpu",
     level: "ok",
@@ -315,6 +326,16 @@ test("the cause order table is the ladder's own tie order", () => {
     "unconfirmed-tool",
     "scratch",
   ]);
+  // Stalls is the one cause that snapshot cannot raise: every host pressure
+  // fires there, and a host card owns each lane stalling on its resource. A
+  // quiet host with one stalling lane raises it, so the two ladders together
+  // cover every cause the order table ranks.
+  const quiet = healthy();
+  quiet.lanes = [laneSnapshot({ pressure: c.pressureRed + 1 })];
+  const stalls = causes(quiet, c).map((cause) => cause.id);
+  expect(stalls).toContain("stalls");
+  const covered = new Set([...ladder.map((cause) => cause.id), ...stalls]);
+  expect(Object.keys(causeOrder).sort()).toEqual([...covered].sort());
   // A cause that names a lane names it in text, its process id included.
   const lanes = ["unconfined", "memory-cap", "system-cpu"].map(
     (id) => ladder.find((cause) => cause.id === id)?.consumer,
@@ -449,26 +470,34 @@ test("every integrity state but healthy and checking reaches the verdict", () =>
     });
   // One filesystem per state, each in its own snapshot so one cause cannot
   // stand in for another.
-  const rows: [IntegrityState, Volume, Scrub[]][] = [
+  const rows: [IntegrityState, Volume, Scrub[], CauseId][] = [
     [
       "damaged",
       volume("a"),
       [report("a", { problem: true, uncorrectable: 26 })],
+      "damaged-files",
     ],
     [
       "new-errors",
       volume("b", { lastErrorAt: 1000 - 1000, lastErrorSize: 26 }),
       [report("b")],
+      "new-errors",
     ],
-    ["never-checked", volume("c"), []],
+    ["never-checked", volume("c"), [], "unchecked"],
     [
       "stale",
       volume("d"),
       [report("d", { startedAt: 1000 - (c.scrubMaxAgeDays + 1) * 86400000 })],
+      "unchecked",
     ],
-    ["unknown", volume("e"), [report("e", { readable: false, problem: true })]],
+    [
+      "unknown",
+      volume("e"),
+      [report("e", { readable: false, problem: true })],
+      "integrity-unknown",
+    ],
   ];
-  for (const [state, v, scrubs] of rows) {
+  for (const [state, v, scrubs, card] of rows) {
     const s = emptySnapshot();
     s.storage.volumes = [v];
     s.storage.scrubs = scrubs;
@@ -476,17 +505,12 @@ test("every integrity state but healthy and checking reaches the verdict", () =>
       state,
       integrity: state,
     });
-    // The ladder speaks for it, so Home cannot read Healthy while Storage
-    // reads anything else.
-    const ladder = causes(s, c);
-    expect({ state, causes: ladder.length > 0 }).toEqual({
-      state,
-      causes: true,
-    });
-    expect({
-      state,
-      verdict: ladder.some((cause) => cause.verdictWorthy),
-    }).toEqual({ state, verdict: true });
+    // The ladder speaks for it with the card for that state, so Home cannot
+    // read Healthy while Storage reads anything else.
+    const spoken = causes(s, c).find((cause) => cause.id === card);
+    expect({ state, card: spoken?.id, verdict: spoken?.verdictWorthy }).toEqual(
+      { state, card, verdict: true },
+    );
   }
   // A filesystem that was checked and found sound raises nothing at all.
   const well = emptySnapshot();
