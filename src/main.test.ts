@@ -188,13 +188,19 @@ test("quit, hangup and terminate all take the quit key's shutdown", async () => 
   const f = fixture();
   try {
     const path = join(f.root, "config.toml");
-    await saveConfig({ ...f.config, refreshMs: 100 }, path, f.agentToolsPath);
+    // History persists so the refresh row can count the samples the child has
+    // stored, each one a refresh it ran.
+    await saveConfig(
+      { ...f.config, refreshMs: 100, persistence: true },
+      path,
+      f.agentToolsPath,
+    );
     // The child owns the terminal as its controlling terminal, so closing the
     // master side is the hangup a closed window or a killed tmux pane sends.
     // A hangup leaves no terminal whose settings could be restored. The
     // shutdown report goes to a file, which outlives the terminal.
-    const script = `import fcntl, os, pty, select, signal, subprocess, sys, termios, time
-binary, config, trigger, home, fault = sys.argv[1:6]
+    const script = `import fcntl, os, pty, select, signal, sqlite3, subprocess, sys, termios, time
+binary, config, trigger, home, fault, history = sys.argv[1:7]
 master, slave = pty.openpty()
 before = termios.tcgetattr(slave)
 argv = [binary, "src/main.ts", "--config", config]
@@ -210,6 +216,19 @@ with open(report_path, "wb") as report_file:
 output = b""
 sent = False
 ready_at = None
+launched = time.time() * 1000
+# The runtime warns at the eleventh listener on one event, so a refresh that
+# leaks one warns by the eleventh refresh. Each refresh stores its sample
+# before it draws, so a twelfth stored sample means eleven refreshes drew.
+def refreshes():
+    try:
+        db = sqlite3.connect(f"file:{history}?mode=ro", uri=True)
+        try:
+            return db.execute("SELECT count(*) FROM samples WHERE time >= ?", (launched,)).fetchone()[0]
+        finally:
+            db.close()
+    except sqlite3.OperationalError:
+        return 0
 try:
     deadline = time.monotonic() + 6
     while child.poll() is None and time.monotonic() < deadline:
@@ -224,7 +243,7 @@ try:
             output += os.read(master, 65536)
         if ready_at is None and b"Agents" in output:
             ready_at = time.monotonic()
-        if not sent and ready_at is not None and (trigger != "refresh" or time.monotonic() - ready_at > 2):
+        if not sent and ready_at is not None and (trigger != "refresh" or refreshes() >= 12):
             if trigger == "hangup":
                 os.close(master)
                 master = None
@@ -277,6 +296,7 @@ finally:
           trigger,
           f.root,
           fault,
+          f.config.sqlitePath,
         ],
         {
           stdout: "pipe",

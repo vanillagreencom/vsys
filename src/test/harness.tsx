@@ -1,5 +1,6 @@
 import {
   type BaseRenderable,
+  type KeyEvent,
   type RGBA,
   TextAttributes,
   TextBufferRenderable,
@@ -94,9 +95,28 @@ export async function mount(
   const send = async (key: string) => {
     if (key === "enter") ui.mockInput.pressEnter();
     else if (key === "escape") {
-      // A lone escape waits for the rest of a sequence before it is a key.
-      ui.mockInput.pressEscape();
-      await Bun.sleep(50);
+      // A lone escape waits on the renderer's clock for the rest of a
+      // sequence before it is a key, so the press ends when the key reaches
+      // the handlers, and fails if it has not within the deadline.
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      let delivered: ((event: KeyEvent) => void) | undefined;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          delivered = (event) => {
+            if (event.name === "escape") resolve();
+          };
+          ui.renderer.keyInput.on("keypress", delivered);
+          deadline = setTimeout(
+            () =>
+              reject(new Error("escape-undelivered: no key within 1000 ms")),
+            1000,
+          );
+          ui.mockInput.pressEscape();
+        });
+      } finally {
+        clearTimeout(deadline);
+        if (delivered) ui.renderer.keyInput.off("keypress", delivered);
+      }
     } else if (key === "tab") ui.mockInput.pressTab();
     else if (key === "shift+tab") ui.mockInput.pressTab({ shift: true });
     else if (["up", "down", "left", "right"].includes(key))
