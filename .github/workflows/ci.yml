@@ -1,5 +1,8 @@
 name: CI
 
+# push and workflow_dispatch stay beside the two events the CI context is
+# required on. The classifier answers false on workflow_dispatch, so a manual
+# run runs every job.
 on:
   pull_request:
   merge_group:
@@ -11,8 +14,68 @@ permissions:
   contents: read
 
 jobs:
+  # The harness-ci classifier in docs mode, run from the default branch
+  # against the tree under judgement, so a pull request cannot edit the
+  # script that stands its own jobs down. It calls harness-only directly in
+  # place of the composite change-class action: that action is a remote
+  # action at @main where this workflow pins every action by SHA, its render
+  # class needs a kendex install, and its proof reuse needs actions: read.
+  # The docs verdict is the one it would publish for these jobs.
+  changes:
+    name: Classify the diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      lane_application: ${{ steps.lanes.outputs.lane_application }}
+      lane_package: ${{ steps.lanes.outputs.lane_package }}
+    env:
+      EVENT: ${{ github.event_name }}
+      BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+      HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after || github.sha }}
+    steps:
+      - name: The classifier, from the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: classifier
+          persist-credentials: false
+      - name: The tree under judgement
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: subject
+          persist-credentials: false
+      - id: classify
+        run: >-
+          classifier/.agents/skills/harness-ci/scripts/harness-only
+          --mode docs --repo subject --event "$EVENT" --base "$BASE" --head "$HEAD"
+          --paths-output "$RUNNER_TEMP/changed-paths"
+      # arch-package stands down only where README.md is unchanged too,
+      # because the package installs README.md, and a lane that reads a file
+      # in the docs set must not skip on it.
+      - id: lanes
+        env:
+          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+        run: |
+          set -euo pipefail
+          application=true
+          package=true
+          if [ "$DOCS_ONLY" = true ]; then
+            application=false
+            found=0
+            grep -qxF README.md "$RUNNER_TEMP/changed-paths" || found=$?
+            case "$found" in
+              0) ;;
+              1) package=false ;;
+              *) echo "::error::Could not read the changed paths"; exit "$found" ;;
+            esac
+          fi
+          printf 'lane_application=%s\nlane_package=%s\n' "$application" "$package" | tee -a "$GITHUB_OUTPUT"
+
   application:
     name: Bun (lint, types, tests, build)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.lane_application != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,6 +92,8 @@ jobs:
 
   arch-package:
     name: Arch package warden status
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.lane_package != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container: archlinux:base-devel
@@ -87,6 +152,8 @@ jobs:
           esac
           python3 scripts/package_file_list_check.py --installed-root /
 
+  # Runs on every change: it takes seconds, and its inputs include the
+  # markdown instruction files a docs-only diff changes.
   bot-instructions:
     name: Bot instructions
     runs-on: ubuntu-latest
@@ -117,33 +184,47 @@ jobs:
 
   ci:
     name: CI
-    # Fails when any job in its needs list does not succeed. It is the
-    # aggregate the main ruleset is to require in place of the per-job checks.
-    # Its "Require every needed job to succeed" step parses this file with yq
-    # and fails when needs differs from the
-    # other job ids, so every job above stays in the list.
-    # No job here is skipped by a change-classifier rule, so no skip is
-    # expected and a skipped, failed or cancelled job fails this one.
-    needs: [application, arch-package, bot-instructions]
+    # The aggregate the main ruleset is to require in place of the per-job
+    # checks. It fails when the classifier, or any other needed job, fails or
+    # is cancelled, and when a job skips that its lane verdict from the
+    # changes job did not stand down. application and arch-package are the
+    # only jobs a verdict may stand down, and only on a docs-only diff.
+    needs: [changes, application, arch-package, bot-instructions]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: This workflow, from the tree under judgement
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: subject
           sparse-checkout: .github/workflows/ci.yml
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - name: Require every needed job to succeed
+      - name: The aggregate helper, from the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: classifier
+          sparse-checkout: .agents/skills/harness-ci/scripts
+          persist-credentials: false
+      # Kept beside aggregate-needs: that helper reads only the results it is
+      # handed, so it cannot see a job missing from needs.
+      - name: Require every other job in needs
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          jobs=$(yq -o=json '.jobs | keys | map(select(. != "ci")) | sort' .github/workflows/ci.yml | jq -c .)
+          jobs=$(yq -o=json '.jobs | keys | map(select(. != "ci")) | sort' subject/.github/workflows/ci.yml | jq -c .)
           needed=$(jq -c 'keys | sort' <<<"$NEEDS")
           if [ "$jobs" != "$needed" ]; then
             echo "::error::CI needs $needed but the workflow's other jobs are $jobs"
             exit 1
           fi
-          failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "::error::\(.key) finished \(.value.result)"' <<<"$NEEDS")
-          if [ -n "$failed" ]; then printf '%s\n' "$failed"; exit 1; fi
+      - name: Require every needed job to succeed or to skip on its verdict
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          classifier/.agents/skills/harness-ci/scripts/aggregate-needs
+          --results "$NEEDS" --classifier changes
+          --lane application=application --lane arch-package=package
