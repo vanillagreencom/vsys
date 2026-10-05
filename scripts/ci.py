@@ -28,8 +28,9 @@ CHECKS = ("lint", "typecheck", "test", "build", "smoke", "bench:scratch", "bench
 
 
 def run_python_suites() -> None:
-    # Discovery refuses a missing start directory and exits nonzero when it
-    # finds no tests, so a renamed directory fails here instead of passing.
+    # Discovery refuses a missing start directory and, from Python 3.12,
+    # exits nonzero when it finds no tests, so a renamed directory or suite
+    # fails here instead of passing.
     # The warden selftest runs inside its suite, as
     # test_selftest_subprocess_exits_zero.
     tests = Path("warden") / "agent_warden_test.py"

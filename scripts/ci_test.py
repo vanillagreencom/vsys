@@ -47,17 +47,18 @@ class ApplicationChecks(unittest.TestCase):
             "CI_FAIL_COMMAND": "",
             "CI_BUILD_EMITS": emits,
         }
-        # Every directory the contract reads is present and passes. Each
-        # stand-in logs one line and fails when CI_FAIL_COMMAND names it.
+        # Every suite the contract runs is present and passes. Each stand-in
+        # logs one line and fails when CI_FAIL_COMMAND names it. No packaging/
+        # is made: the real package check owns that directory, and ci.py must
+        # run the check without looking for it.
         self.suite("scripts/ci_fixture_test.py", "scripts unittest")
         self.suite("warden/agent_warden_test.py", "warden unittest")
-        (self.root / "packaging").mkdir()
         (self.root / "scripts" / "package_file_list_check.py").write_text(
             "import os\n"
             "import sys\n"
             "with open(os.environ['CI_COMMAND_LOG'], 'a') as handle:\n"
             "    handle.write('package check\\n')\n"
-            "if os.environ['CI_FAIL_COMMAND'] == 'package check' or not os.path.isdir('packaging'):\n"
+            "if os.environ['CI_FAIL_COMMAND'] == 'package check':\n"
             "    sys.exit(29)\n"
         )
 
@@ -95,11 +96,12 @@ class ApplicationChecks(unittest.TestCase):
         # shows how far the run got before it failed.
         rows = (
             ("scripts", []),
+            # Discovery of a directory with no suite left in it fails too.
+            ("scripts/ci_fixture_test.py", []),
             ("warden", []),
             # Discovery passes a warden tree that still holds another suite,
             # so only the named-file check stops this one.
             ("warden/agent_warden_test.py", []),
-            ("packaging", PRELUDE),
             ("package.json", PRELUDE),
         )
         self.suite("warden/neighbour_test.py", "warden neighbour")
